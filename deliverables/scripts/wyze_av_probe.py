@@ -47,6 +47,48 @@ def build_frame(args):
     return bytes(buf)
 
 
+def k_auth(cam, timeout=6.0):
+    """Answer K10001 challenges; return True once K10003 arrives."""
+    end = time.time() + timeout
+    seen = set()
+    while time.time() < end:
+        got = cam.recv_app(1.0)
+        if not got:
+            continue
+        off = 0
+        while off + 2 <= len(got):
+            if got[off:off + 2] == b"HL":
+                if off + 16 > len(got):
+                    break
+                cmd = struct.unpack_from("<H", got, off + 4)[0]
+                plen = struct.unpack_from("<H", got, off + 6)[0]
+                payload = got[off + 16:off + 16 + plen]
+                if cmd == 10001 and len(payload) >= 17:
+                    cam.k10002(payload[0], payload[1:17])
+                    seen.add(cmd)
+                elif cmd == 10003:
+                    print("K10003 ok")
+                    cam.hl(10010, bytes([1,1]))
+                    return True
+                off += 16 + plen
+            else:
+                # 0x1000 wrapper: HL sits at offset 36.
+                if len(got) >= 36 and got[16:18] == b"\x00\x70":
+                    cmd = struct.unpack_from("<H", got, 36 + 4)[0]
+                    plen = struct.unpack_from("<H", got, 36 + 6)[0]
+                    payload = got[36 + 16:36 + 16 + plen]
+                    if cmd == 10001 and len(payload) >= 17:
+                        cam.k10002(payload[0], payload[1:17])
+                        seen.add(cmd)
+                    elif cmd == 10003:
+                        print("K10003 ok (wrapped)")
+                        cam.hl(10010, bytes([1,1]))
+                        return True
+                off += 1
+    print(f"k_auth seen={sorted(seen)}")
+    return False
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--ip", required=True)
@@ -89,9 +131,12 @@ def main():
             return 1
         print("dtls established")
         ok = cam.login()
-        print("login ok" if ok else "login response not observed")
+        print("login ok" if ok else "login response not observed (continuing)")
         if not ok:
-            return 1
+            # The v4 answers 0x1000-wrapped IOCTRL rather than a bare 0x2100;
+            # drive the K-auth dance directly so the stream starts.
+            if not k_auth(cam, timeout=6.0):
+                print("K-auth did not complete")
     frame = build_frame(args)
     if args.out:
         with open(args.out, "wb") as fh:

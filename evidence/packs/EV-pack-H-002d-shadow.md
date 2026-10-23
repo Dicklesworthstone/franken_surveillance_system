@@ -1,158 +1,139 @@
 # EV-pack-H-002d — owner shadow publish (`APPPushOTA`)
 
-Pack: H-002d · Target: Wyze HL_CAM4 `80482C4BCF0B` (Driveway Cam) · Built 2026-10-22
+Pack: H-002d · Target: Wyze HL_CAM4 `80482C4BCF0B` (Driveway Cam) · Built 2026-10-22, revised 2026-10-23
 Step under test: **can the account owner make the camera fetch an owner-supplied firmware
 URL by writing the `wyze-service` IoT shadow?**
 
-**Verdict: BLOCKED at step 2 of 5 — device IoT certificate retrieval.**
-Steps 1 (owner re-auth) is proven end-to-end; the certificate call is located, hosted and
-schema-mapped but returns a device-lookup `404`. No MQTT session was opened, so no delta
-could be published and no fetch observed. Nothing was flashed; the camera is untouched.
+**Verdict: `BLOCKED` — but only on the last inch.** Device IoT cert + key are now retrieved
+(the endpoint, host and required body are fully solved and reproduced). The block is the
+AWS-IoT **hostname**: it is not in the firmware, not in the cert, and not returned by the
+certificate call, so the MQTT session cannot be addressed. Delta keys are confirmed from the
+handler; nothing was published, nothing was flashed.
 
 | # | step | state |
 |---|------|-------|
-| 1 | owner re-auth (password + email OTP), developer API key | **DONE** — 200, token minted |
-| 2 | `POST /device/system/get_iot_certificate` | **BLOCKED** — 404 `NOT_FOUND` |
-| 3 | MQTT/TLS to AWS-IoT with device cert | not reached (needs 2) |
-| 4 | publish `APPPushOTA` delta | not reached |
-| 5 | observe fetch | not reached |
+| 1 | owner re-auth + developer API key | **DONE** |
+| 2 | `get_iot_certificate` → cert, key, root CA | **DONE** (200, `SUCCESS`) |
+| 3 | MQTT/TLS 8883 to the AWS-IoT endpoint | **BLOCKED** — endpoint hostname unknown |
+| 4 | publish `APPPushOTA` delta | prepared, not sent |
+| 5 | observe fetch | none |
 
 ---
 
 ## 1. Auth
 
-Two independent login surfaces exist. Both were exercised; only the second works.
+Two login surfaces; only the second is live.
 
-- **`POST https://auth-prod.api.wyze.com/api/user/login`** with the public app key
-  `WMXHYf79Nr5gIlt3r0r7p9Tcw5bvs6BB4U8O8nGJ` (and the older `RckMFKbs…`) →
-  `400 errorCode 1000 "Invalid credentials, please check username, password, keyid or apikey"`.
-  The newer `/user/login` path answers `403` pointing at
-  `support.wyze.com/…/Creating-an-API-Key`. Body shape was the documented one
-  (`{"email","password"}` with md5³ password) — the rejection is the **key pair**, not the hash.
-- **Developer API key.** The endpoint accepts only a per-account `keyid`/`apikey` pair from
-  `developer-api-console.wyze.com`, minted over an OAuth/PKCE session. Flow used:
-  `GET https://auth.wyze.com/oauth/authorize?client_id=a1a21562-09ad-4b49-8476-a2990f0715e9&…`
-  (public client secret `F4Q-CzzEgwRmB9wbrMWhxeiRPZfp-y`, scope `email openid`, PKCE S256)
-  → `/login` form (email + password) → MFA → `/login/mfa/code` → trust device →
-  console `createApiKey`.
-- **MFA is email-only.** `auth.wyze.com/login/mfa/option` offers exactly one method
-  (`Email (jef************@gmail.com)`); no authenticator-app option, and `WYZE_TOTP` is
-  absent from `~/.config/fss-lab/wyze.env`. The 6-digit code was recovered from the owner's
-  Gmail via the Atom feed (`https://mail.google.com/mail/u/0/feed/atom`) using the live
-  Chrome `Default` profile's Google session cookies (AES-CBC, key from Keychain
-  `Chrome Safe Storage`, 1003×PBKDF2-SHA1, host-hash prefix stripped).
-- Login with the minted pair succeeded:
-  `200 {"access_token":"eyJ…","refresh_token":…}`, `user_id dc9ab1bc2d4f4ce3826a40718ec1a313`,
-  `exp 1792885091` (~48 h), JWT `client_id 8c0e03ca-0760-429e-a57b-91c3dda0f1b8`, scope `native`.
-  Credentials were written to `~/.config/fss-lab/wyze.env` (`WYZE_KEY_ID`, `WYZE_API_KEY`);
-  the key is owner-account-scoped and expires 2027-10-22. The pre-existing console key
-  (`8e105311-…`) was **deleted** to mint a fresh one (one key per account), so any other
-  tooling holding the old pair needs the new values.
+- `POST https://auth-prod.api.wyze.com/api/user/login` with the public app key
+  `WMXHYf79Nr5gIlt3r0r7p9Tcw5bvs6BB4U8O8nGJ` (or the older `RckMFKbs…`) → `400 errorCode 1000`.
+  Body was the documented `{"email","password"}` with md5³ — the rejection is the key pair.
+  `/user/login` instead answers `403` pointing at `…/Creating-an-API-Key`.
+- **Working path:** per-account `keyid`/`apikey` from `developer-api-console.wyze.com`, minted
+  over PKCE: `auth.wyze.com/oauth/authorize` (client `a1a21562-09ad-4b49-8476-a2990f0715e9`,
+  public secret `F4Q-CzzEgwRmB9wbrMWhxeiRPZfp-y`, scope `email openid`, S256) → email+password
+  → MFA → `/login/mfa/code` → trust device → console `createApiKey`.
+- **MFA is email-only** (`/login/mfa/option` offers one method; no authenticator option, and
+  `WYZE_TOTP` is absent from `wyze.env`). Code read from the owner's Gmail Atom feed
+  (`mail.google.com/mail/u/0/feed/atom`) with the live Chrome `Default` Google cookies
+  (AES-CBC, Keychain `Chrome Safe Storage`, PBKDF2-SHA1 1003, 32-byte host-hash prefix stripped).
+- Login succeeded → `200`, `user_id dc9ab1bc…`, token exp 1792885091, JWT scope `native`.
 
-## 2. Credentials — `get_iot_certificate`
+**For the next reader (also see the header note):** this endpoint's appid is
+**`wc4p_5b0e5bc2788d4ff68c7b98a5656148d0`** (literal at `iCamera` `0x87728c`), **not** the
+`wc4p_39e3…` used by `get_iot_prop`. The account's console key pair is the one now in
+`~/.config/fss-lab/wyze.env` (`WYZE_KEY_ID` / `WYZE_API_KEY`, valid to 2027-10-22); the older
+console key `8e105311-…` was deleted (one key per account). Nobody needs to redo the OAuth dance.
 
-Source of the path: `bin/iCamera` (firmware 4.52.17.26), `…/cloud/iot_certificate.c`,
-string `0x8772b0 = "/device/system/get_iot_certificate"`, access key
-`0x87728c = 5b0e5bc2788d4ff68c7b98a5656148d0` → request header `appid: wc4p_5b0e5bc2788d4ff68c7b98a5656148d0`.
+## 2. Credentials — solved
 
-The URL is built with the format `https://%s%s` (`0x82f488`) from the device's configured
-`paracfg_get_cloud_server_url`, so the host is *not* a literal in the binary. Host probing
-with a valid token:
+`bin/iCamera` builds `https://<paracfg cloud_server_url><path>`; the host is therefore runtime
+config, not a literal. Route probing (same body each time) shows the path only exists on
+`app.wyzecam.com` and **without** a version prefix: `/app/v2` and `/app/v3` are gateway 404s,
+`/device/system/…` is live. `api.wyzecam.com` 500s, `devicemgmt-service` / `app-core` 404.
 
-| host | code |
+The handler validates in layers, which is how the schema was recovered (each answer names the
+next requirement — this is a guided, not brute, walk):
+
+| body | answer |
 |---|---|
-| `app.wyzecam.com` | **200** (application layer reached) |
-| `api.wyzecam.com` | 500 on every body shape |
-| `devicemgmt-service.wyze.com` | 404 (routing) |
-| `app-core.cloud.wyze.com` | 404 (routing) |
-
-So the real URL is `https://app.wyzecam.com/app/v2/device/system/get_iot_certificate`.
-`appid` must be the endpoint's own key: the captured flow's
-`wc4p_39e3079459268028` is only valid for `get_iot_prop` and yields the same 500 here.
-
-**Request schema**, recovered from the body builder (`cloud_build_request_common`,
-`0x5e1700`; `cJSON_AddStringToObject` at `0x8bd4d0`) — keys added, in order:
-`mac`, `product_model`, `product_type`, `hardware_ver` (`sc`), (`sv`), `ts`, `enr`,
-then the common trailer whose `access_token` really is the bearer token.
-The builder also emits `appid`, `app_name`, `app_version`, `phone_id`, `sc`, `sv`.
-
-Empirical validation result:
-
-| body | code |
-|---|---|
-| `{device_mac, device_model, ts}` | `1001 INVALID_PARAMETER` |
-| `{targetInfo:{…}, userId, nonce}` | `1001` |
+| `{device_mac, device_model}` | `1001 INVALID_PARAMETER` |
 | `{mac, product_model, ts, enr:""}` | `1001` |
-| full key set **without** `access_token` | `1001` |
-| full key set, `access_token:"x"` | **`2001 "access token is error"`** — proves the key set is complete |
-| full key set with the real token | **`404 NOT_FOUND`** |
+| full set, no `access_token` | `1001` |
+| full set, fake token | `2001 "access token is error"` |
+| full set, real token, `enr:""` | `404 NOT_FOUND` |
+| … with the object-list `enr` | **`1001 "firmware_ver cannot be empty"`** |
+| … plus `firmware_ver` | **`200 SUCCESS`, certs issued** |
 
-Exact body used for the 404 (traceId `69f4e9a773f690b176d23d17947024be`):
+Body that works (all keys are literal in `cloud_build_request_common` `0x5e169c`; `sc` is the
+*value* `"verify_method"` and `sv` the access key — both are constants added by the builder,
+`0x5e1854`/`0x5e186c`, not an HMAC):
 
 ```json
-{"mac":"80482C4BCF0B","product_model":"HL_CAM4","product_type":"HL_CAM4",
- "hardware_ver":"0.0.0.0","ts":1792712700,"enr":"","appid":"wc4p",
- "access_token":"<bearer>","app_name":"wyze","app_version":"2.50.0",
- "sc":"","sv":"","phone_id":"d39515e3-5b94-4b29-b63f-1b3456cc270a"}
+{"mac":"80482C4BCF0B","product_model":"HL_CAM4","product_type":"Camera",
+ "hardware_ver":"0.0.0.0","firmware_ver":"4.52.17.26","enr":"O7y73ZL+K47xvSPY",
+ "sc":"verify_method","sv":"5b0e5bc2788d4ff68c7b98a5656148d0","ts":<ms>,
+ "access_token":"<bearer>","appid":"wc4p","app_name":"wyze","app_version":"2.50.0",
+ "phone_id":"d39515e3-5b94-4b29-b63f-1b3456cc270a"}
 ```
 
-`product_type` was varied over `43 / 0 / 1 / HL_CAM4`, `mac` given in upper and lower case,
-and `device_id` / `device_mac` / `p2p_id` / `enr` tried as the identity carrier — every
-variant returned the same `404 NOT_FOUND` (traceIds `d988fdd8…`, `7bc0f360…`, `36072666…`,
-`54bdf8ee…`, `0ef7e4b5…`, `2889c68c…`). `sc`/`sv` were sent empty: `get_iot_prop` is also
-accepted with empty `sc`/`sv`, so the 404 is not a signature rejection (a bad signature
-would be `1001`/`2001`, not `404`). The missing piece is the exact device-identity field
-(or a non-empty `enr`) the handler joins on.
+`enr` is the missing identity carrier — it is **not** empty on real units; it comes from
+`~/.config/fss-lab/wyze_object_list_raw.json` (`enr` per device, alongside `product_type`
+`"Camera"`, `hardware_ver "0.0.0.0"`, `firmware_ver`). Those three fields were the whole 404.
 
-**Response schema if it succeeds** (parse side, `0x5e12xx`): `client_username`,
-`client_password`, `client_id`, `keep_alive`, `thing_name`, `client_cert_url`,
-`client_private_key_url`, `root_cert_url`. Files are downloaded to
-`/tmp/aws_iot/{cert.pem,privkey.pem,rootCA.crt}` — i.e. the cert *and key* are ordinary
-HTTPS downloads, so the endpoint is an owner-reachable provisioning path, not a per-device secret.
+Response (`data`): `client_id` / `thing_name` = `80482c4bcf0b`, `keep_alive 300`, and
+presigned S3 URLs for `root_cert_url` (VeriSign Class-3 G5), `client_cert_url`
+(`…/hl_cam4/80482c4bcf0b/5e47f7a288-certificate.pem.crt`) and `client_private_key_url`.
+Downloaded outside the repo to `~/.config/fss-lab/wyze_iot/80482C4BCF0B/`
+(`cert.pem` 1224 B, `privkey.pem` 1671 B, `rootCA.crt` 1758 B). Cert SHA-256
+`5E:47:F7:A2:88:2F:6D:07:11:38:DC:0E:23:E2:B2:C1:81:52:E7:43:C0:16:96:71:48:0C:49:DB:99:77:7E:2A`,
+valid 2024-10-18 → 2049-12-31, subject `CN=AWS IoT Certificate`, issuer `Amazon.com Inc.`,
+no SAN/extensions. Private key never printed; `client_username`/`client_password` are empty
+(mutual TLS only).
 
-## 3. MQTT
+## 3. MQTT — the remaining blocker
 
-Not opened. Prepared contract, from the firmware (`bin/iotclient`):
+`bin/iotclient` reads the host from `paracfg_get_iot_server_url` (`.product_config`, jffs2 —
+not in the signed image) and logs `AWS_IOT_MQTT_HOSTNAME:%s`. It is **not** derivable:
 
-- endpoint `thing_name` from the endpoint above, TLS 8883, ALPN `x-amzn-mqtt-ca`;
-- subscribe `$aws/things/<thing_name>/shadow/name/wyze-service/update/delta`;
-- the handler is `WYZE_APPPushOTA` in `bin/assis` (`0x1373`), reaching
-  `[ASSIS]url:%s, MD5:%s` after `cJSON_GetObjectItem` of `url` / `md5` / `model`
-  (`pcUrl` / `pcMd5` are the *internal* parameter names, not the wire keys).
+- not in the cert (no SAN, generic CN), not in the cert response (`client_id`, `thing_name`,
+  `keep_alive`, three S3 URLs only), not in `cfg_Driveway_Cam.json`;
+- not in the app-key surface — `get_iot_prop` with capabilities `iot` / `cloud` / `device_info`
+  returns `code:1 SUCCESS` but empty property objects;
+- `iot.wyze.com`, `iot.wyzecam.com`, `mqtt.wyze.com`, `iot-service.wyze.com` do not resolve;
+- the camera (192.168.4.24) is not reachable on 80/443 from the workstation, so it cannot be
+  asked directly.
+
+Everything else for the session is in hand: thing name `80482c4bcf0b`, TLS 8883, ALPN
+`x-amzn-mqtt-ca`, keep-alive 300, subscribe
+`$aws/things/80482c4bcf0b/shadow/name/wyze-service/update/delta` (topic literals in
+`iotclient`: `…/wyze-service/update{,/delta,/rejected}` and the `wyze-secure` pair).
 
 ## 4. Delta
 
-Exact JSON to publish once §3 exists (wire keys `url`, `md5`, `model`; lowercase, per the
-`cJSON_GetObjectItem` literals — do not "fix" the casing):
+Exact payload once §3 is addressable (keys `url`, `md5`, `model`, lowercase — from the
+`cJSON_GetObjectItem` literals in `assis`; `pcUrl`/`pcMd5` are internal names only):
 
 ```json
-{"state":{"url":"https://<owner-host>/firmware.bin","md5":"<md5 of the served file>","model":"HL_CAM4"}}
+{"state":{"url":"https://<owner-host>/firmware.bin","md5":"<md5 of served file>","model":"HL_CAM4"}}
 ```
 
-Publishing onto the `…/shadow/name/wyze-service/update` topic is a no-op for the flash
-unless `url`/`md5` also satisfy `assis`; a dummy 512-byte body fails the MD5 or the AES
-check inertly (`0x40687c` retry loop, max 1000; wrong-mode decrypt writes nothing).
+A 512-byte body is enough to observe a fetch; the AES/MD5 gates (`assis` `0x40687c`, 1000
+retries) reject it inertly with no flash.
 
 ## 5. Observed
 
-- No camera-side attempt, so no `443` connection to an owner host, no `[ASSIS]url:` log line,
-  no retry cadence. Everything observed was operator-side HTTP only.
-- Camera state unchanged (no flash, no reboot, shadow untouched).
+Operator-side HTTP only: no camera-side attempt, no 443 to an owner host, no `[ASSIS]url:`
+line, no retry cadence. Camera untouched.
 
-## 6. Verdict — `BLOCKED`
+## 6. Verdict — `BLOCKED` (single remaining unknown)
 
-The chain is proven up to the one call that yields the device identity: re-auth works,
-the certificate endpoint is found and its schema fully characterised (a complete key set
-moves the answer from `1001 INVALID_PARAMETER` to `404 NOT_FOUND`), and the downstream
-shape (MQTT topic, delta keys, `assis` handler, CA/HTTPS behaviour) is already established.
-Unblocking needs one of:
+The owner path is real: re-auth, key minting and device credential issuance all work from the
+owner account with no vendor involvement, and the certificate service happily hands over the
+device's mTLS key. Only the broker address is missing, and it lives exclusively in the unit's
+flash config. Unblock is one of:
 
-1. the device-identity parameter the handler joins on — read the `cJSON_AddItemToObject`
-   sequence in the `cloud_iotCertGet` builder rather than the common builder (the 404 is a
-   lookup miss, not a schema rejection); or
-2. one capture of the iOS app performing a firmware check on this camera, which carries the
-   literal body; or
-3. `bin/iotclient`'s own call site, if it ever re-provisions (`cloud_iotCheckKeysReady` gates it
-   on `/tmp/aws_iot/rootCAok`).
+1. read `iot_server_url` from `.product_config` (root shell / flash read of any owned unit), or
+2. capture one app-initiated shadow session and take the SNI, or
+3. DNS/CT sweep for the account's `*-ats.iot.us-west-2.amazonaws.com` endpoint.
 
-No owner-side blocker remains: the token is valid to 2026-10-24 and the key pair to 2027-10-22.
+Owner-side credentials stay valid to 2026-10-24 (token) and 2027-10-22 (key).

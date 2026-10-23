@@ -837,6 +837,7 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--jobs", type=int, default=1, choices=range(1, MAX_JOBS + 1))
     ap.add_argument("--classes", default="", help="comma-separated class filter")
     ap.add_argument("--pace", type=float, default=0.4, help="seconds between cases")
+    ap.add_argument("--wait", type=float, default=240.0, help="seconds to wait for the server")
     ap.add_argument("--log", default=LOG_DEFAULT)
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--list-classes", action="store_true")
@@ -909,8 +910,8 @@ def main(argv: list[str]) -> int:
         return 0
 
     canary = Canary(args.host, args.port)
-    print(f"waiting for {args.host}:{args.port} (up to 240s) ...", file=sys.stderr)
-    baseline_ok, why = canary.ensure(attempts=120, gap=2.0)
+    print(f"waiting for {args.host}:{args.port} (up to {args.wait:.0f}s) ...", file=sys.stderr)
+    baseline_ok, why = canary.ensure(attempts=max(1, int(args.wait / 2)), gap=2.0)
     if not baseline_ok:
         print(f"camera not answering OPTIONS: {why}", file=sys.stderr)
         return 3
