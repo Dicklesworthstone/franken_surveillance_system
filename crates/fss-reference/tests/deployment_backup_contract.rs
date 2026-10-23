@@ -883,7 +883,7 @@ fn source_and_destination_authority_remain_live_during_semantic_reads_and_copy()
     impl BackupAuthority for RevokedAfter {
         fn permit(&self, _: BackupAccess<'_>) -> bool {
             self.remaining
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                .try_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
                     left.checked_sub(1)
                 })
                 .is_ok()

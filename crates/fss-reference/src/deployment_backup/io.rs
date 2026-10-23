@@ -248,7 +248,7 @@ impl<'a> ReadIo<'a> {
         self.check().map_err(|error| self.fail(error))?;
         if self
             .calls
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
                 (n < self.max_calls).then(|| n + 1)
             })
             .is_err()
@@ -386,7 +386,7 @@ impl SpoolIo for ReadIo<'_> {
         let admitted = limit.min(meta.len().saturating_add(1));
         if self
             .bytes
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
                 n.checked_add(admitted)
                     .filter(|next| *next <= self.max_bytes)
             })

@@ -84,7 +84,7 @@ impl ArchiveReadBudget {
         }
         if operation {
             self.remaining_operations
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
+                .try_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
                     remaining.checked_sub(1)
                 })
                 .map_err(|_| self.refuse(2))?;
@@ -94,7 +94,7 @@ impl ArchiveReadBudget {
 
     fn reserve_read(&self, bytes: u64) -> io::Result<()> {
         self.remaining_bytes
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
                 remaining.checked_sub(bytes)
             })
             .map(|_| ())
