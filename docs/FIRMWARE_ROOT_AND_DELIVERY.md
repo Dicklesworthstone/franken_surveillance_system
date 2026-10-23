@@ -147,6 +147,14 @@ and that tar is itself signature-checked. So: **install root, not persistent.** 
 edit changes that, and it is unproven twice over: the build may be `CONFIG_ENV_IS_NOWHERE`, and
 `/configs` is not mounted at `init=` time so the script must mount `mtdblock4` itself.
 
+**Where that leaves the install test.** All three lab units are now broker-absent (a fresh connect with the
+thing id survives 12 s+ on each), so no shadow push can land on any of them and the next attempt needs
+a physical power cycle. Two shapes were tried and neither helped while absent: a plain `/fw7.bin` name
+and a cloud-shaped `/wuv2/upgrade/HL_CAM4/firmware/9.9.9.9.tar`; note the one *successful* fetch used a
+plain `firmware.bin`, so version-shaped filenames are not required. The working recipe, recorded
+verbatim from that success: single publish of `{"state":{"desired":{"url","md5","model"}}}` to
+`$aws/things/<thing>/shadow/name/wyze-service/update`, QoS 1, then hang up and wait ~40 s.
+
 ## 3. What is usable today
 
 - **Wyze RTSP, on the stock firmware, over the LAN — no app, no cloud, no card.** IOCTRL `0x29e8`
