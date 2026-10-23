@@ -95,6 +95,17 @@ so the provider list is not the whole gate either.
 `pcMd5:%s`, next to `action:[IOT_BACK_CMD_UPGRADE]`). A delta carrying `pcUrl`/`pcMd5` was published
 and acked; it still produced no fetch, so the key names are necessary-looking but not sufficient.
 
+**The dynamic signature is solved, the token class is not.** `WpkSecurity.getSignature` is native
+(`libwyze_olive-lib.so`, XXTEA/MD5), but the public `wyze-sdk` reproduces it: `Signature2 =
+HMAC-MD5(key = md5(access_token + app_secret), body)` with `app_secret = "wyze_app_secret_key_132"` for
+appid `9319141212m2ik`. The upgrade API is a **different host** — `https://wyze-upgrade-service.wyzecam.com`
+— and `get_upgrade_firmware` takes `device_id`, `device_model`, `current_ver`, `testcode`,
+`hardware_ver`. With the signature accepted, requests pass auth only when the token is also sent as an
+**`access_token` header**, then answer `1000 Internal server error`: the console token we hold is the
+wrong audience for this service. An app-session token (the app login path) is the missing piece, and
+with it the entire native upgrade flow — including `begin_upgrade`, which is what tells a camera to
+fetch — becomes reachable without any shadow or app interaction.
+
 **There is a separate command channel: `hl/devices/<thing>/cmd`** (with `/ack`; iotclient carries
 `IOT_CMD_START`/`IOT_CMD_STOP` and logs `cmd:%d, len:%d, data:%s`). Publishing
 `{"cmd":1|2|3,"len":0,"data":""}` there is accepted and PUBACKed, so it is writable from outside. **But every PUBACK there is the broker's, not the camera's**: cmd 1..11
