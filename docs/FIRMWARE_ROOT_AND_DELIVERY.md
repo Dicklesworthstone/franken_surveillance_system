@@ -279,6 +279,14 @@ captures + `digest.py`), `docs/exploit/flash-plan.md` (wire-only replacement run
 the Tapo advisories (`tp-link.com/us/support/faq/5351`, `/5352`) and CVE records; the CVE-2026-38698
 PoC repository named in §7; `github.com/kennedn/tapo-onboarding`; `thingino` / `wz_flash-helper`.
 
+Redaction inventory (what is *not* safe to paste elsewhere): ENR literals live in
+`docs/research/EV-pack-H-002d-shadow.md`, `docs/research/AUDIT-FRESH-EYES.md`, `docs/exploit/ota-path.md`
+and the three `deliverables/scripts/fuzz*.py`; UID/MAC sit beside them. No account password, no bearer
+token and no AWS private key is in the tree — the only credentials named are public constants (the Tapo
+default `TPL075526460603`, the OTA AES key, the Wyze `appid`/`sv`). LAN addresses (192.168.x) are
+private by definition; the only public addresses are AWS/CDN ones. `wyze_auth.json` in
+`~/.config/fss-lab/` does hold a live bearer and stays outside the repo.
+
 Redaction: the probes carry one lab unit's UID/ENR/MAC (`192.168.4.24`, `S3X2…`, `O7y7…`,
 `80:48:2C:4B:CF:0B`) as literals. UID/MAC are identifiers; **the ENR is the device secret** — it
 authenticates the TUTK session and derives the DTLS PSK, so it is per-unit and not reproducible
