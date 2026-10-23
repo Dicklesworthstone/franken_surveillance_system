@@ -97,9 +97,10 @@ and acked; it still produced no fetch, so the key names are necessary-looking bu
 
 **There is a separate command channel: `hl/devices/<thing>/cmd`** (with `/ack`; iotclient carries
 `IOT_CMD_START`/`IOT_CMD_STOP` and logs `cmd:%d, len:%d, data:%s`). Publishing
-`{"cmd":1|2|3,"len":0,"data":""}` there is accepted and PUBACKed, so it is writable from outside — but
-poking `cmd 1` before a delta still produced no fetch, so the START payload is not simply
-`{cmd,len,data}` with an empty body, or more than one command is needed.
+`{"cmd":1|2|3,"len":0,"data":""}` there is accepted and PUBACKed, so it is writable from outside. **But every PUBACK there is the broker's, not the camera's**: cmd 1..11
+all ack identically, with bare bodies and with a full `{pcUrl,pcMd5,…}` payload, and none produces a
+fetch. So the topic proves nothing on its own and the command numbering is not 1..11 in that order — or
+a subscription/ack round-trip we are not doing is required.
 
 **`.../get` is not usable from our side, framing or not:** SUBSCRIBE to `get/accepted` is granted
 (`90 03 00 01 00`) and publishing a QoS-0 `get` then closes the connection before any reply — three
