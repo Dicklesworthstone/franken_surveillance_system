@@ -107,6 +107,12 @@ could not be observed (no console), and the probe produced no reboot and no call
 one delta per wake, so drive it by repointing an already-fetched path rather than publishing more.
 `md5` in the delta is the **ciphertext** digest, the value `assis` logs before its call.
 
+Certificates are per-device and cheap to obtain (same endpoint, that unit's `enr`/`mac`), so the latch
+can be worked around by preparing a second unit and rebooting it instead of fighting one. The crash
+frame is 1264 bytes, channel `0x05`, type `0x04`, total `1264` at `[12:14]`, declared `0xFFFF` at
+`[16:18]`, `A`-filled, sent as raw appdata; it rebooted one unit twice and never moved another in 14
+attempts, so treat it as a probabilistic wake and not a control.
+
 A replay 40 min later could not raise a second fetch: five publishes across three paths (including a
 fresh path with a matching digest), eight crash-frame reboot attempts on that unit, and a four-minute
 quiet window all produced nothing, while the unit stayed at 5–30 ms ping and served streams. So the
