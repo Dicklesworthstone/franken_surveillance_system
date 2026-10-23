@@ -504,6 +504,11 @@ impl TutkSession {
         self.resend_next_ns = Some(self.now_ns + RESEND_INTERVAL_NS);
     }
 
+    /// Send raw application data (already DTLS-wrapped by the session).
+    pub fn send_raw_appdata(&mut self, data: &[u8]) {
+        self.send_appdata(data);
+    }
+
     /// Send an IOCTRL (`0x7000`) command on the main channel. Valid once the
     /// DTLS channel exists; commands are vendor-defined (see the camera's
     /// ioctl descriptor table). The frame is retained for retransmission.

@@ -37,7 +37,10 @@ fn main() {
         k10000_json: None,
     };
     let mut session = TutkSession::new(cfg).expect("session");
-    let sock = UdpSocket::bind("0.0.0.0:0").expect("bind");
+    let bind = std::env::var("TUTK_BIND_PORT")
+        .map(|p| format!("0.0.0.0:{p}"))
+        .unwrap_or_else(|_| "0.0.0.0:0".to_owned());
+    let sock = UdpSocket::bind(&bind).expect("bind");
     sock.set_read_timeout(Some(Duration::from_millis(5)))
         .expect("timeout");
     let mut peer = peer;
@@ -81,7 +84,14 @@ fn main() {
                         Some(h) => (0..h.len()).step_by(2).map(|i| u8::from_str_radix(&h[i..i+2], 16).unwrap()).collect::<Vec<u8>>(),
                         None => args[6].as_bytes().to_vec(),
                     };
-                    session.send_ioctl(cmd, &payload);
+                    if let Some(rest) = args[6].strip_prefix("raw:") {
+                        let bytes = (0..rest.len()).step_by(2)
+                            .map(|i| u8::from_str_radix(&rest[i..i + 2], 16).unwrap())
+                            .collect::<Vec<u8>>();
+                        session.send_raw_appdata(&bytes);
+                    } else {
+                        session.send_ioctl(cmd, &payload);
+                    }
                     sent = true;
                     println!("sent hl {cmd:#06x}");
                 }
