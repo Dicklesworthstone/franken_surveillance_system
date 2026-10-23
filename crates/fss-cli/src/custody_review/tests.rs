@@ -166,3 +166,30 @@ fn recheck_accounting_admission_is_explicit_and_not_a_refill() -> TestResult {
         Err(CustodyReviewError::ContextBound)));
     Ok(())
 }
+
+#[test]
+fn historical_custody_rechecks_the_current_head_as_well_as_the_selected_prefix() -> TestResult {
+    use fss_reference::agent_follow::{AnchorToken, snapshot_anchor_token};
+    use fss_reference::{ReferenceDeployment, ReferencePolicyAction, ReferencePolicyDecision};
+
+    let f = Fixture::new("historical-recheck")?;
+    let token = AnchorToken::parse(&snapshot_anchor_token(&read(&f)?)).ok_or("anchor")?;
+    let (before, scope) = crate::orient_cmd::history::read(
+        "explain", &f.root, &OrientLimits::default(), Some(&token),
+    ).map_err(|(text, _)| text)?;
+    let scope = scope.ok_or("historical scope")?;
+    assert!(check_event_at(&f.root, &before, &f.event.event_id,
+        CustodyAuditLimits::default(), &scope, &|| false)?.audit().all_verified());
+
+    // Keep the selected event and its bytes intact while advancing unrelated authority.
+    // Historical selection alone must not hide a new deletion/authorization basis.
+    let mut later = f.event.clone();
+    later.event_id = EventId::parse("event:later-custody-authority")?;
+    let cx = fixture::context(&f.directory)?;
+    ReferenceDeployment::open(&f.root, fixture::SITE, &cx)?.publish_event(
+        &ReferencePolicyDecision { event: later, action: ReferencePolicyAction::Hold }, &cx,
+    )?;
+    assert!(matches!(check_event_at(&f.root, &before, &f.event.event_id,
+        CustodyAuditLimits::default(), &scope, &|| false), Err(CustodyReviewError::RecheckFailed)));
+    Ok(())
+}

@@ -16,6 +16,8 @@ mod evidence;
 mod explain_options;
 #[path = "orient_cmd/fusion.rs"]
 mod fusion;
+#[path = "orient_cmd/history.rs"]
+pub(crate) mod history;
 
 use std::path::PathBuf;
 
@@ -26,6 +28,7 @@ use fss_core::{
     EnvelopeProposition, EventId, EventState, ExecutionBoundary, KnowledgeState, LedgerAnchor,
     PrincipalId, ResponseOutcome, ResponseSafeRetry, ResponseTaskState,
 };
+use fss_reference::agent_follow::AnchorToken;
 use fss_reference::agent_orient::{
     AFFORDANCE_REORIENT, CAPABILITY_EXPLAIN, CAPABILITY_SITUATION_READ, DeploymentOrientation,
     DeploymentReadError, DeploymentSnapshot, EventExplanation, ORIENT_DATA_CLASSES, OrientError,
@@ -66,6 +69,8 @@ pub struct OrientArgs {
 pub struct ExplainArgs {
     /// Existing deployment root, read-only.
     pub root: PathBuf,
+    /// Explicit historical metadata prefix; current deletion restrictions still apply.
+    pub at: Option<AnchorToken>,
     /// Published event to explain.
     pub event_id: EventId,
     /// Requesting principal label.
@@ -278,6 +283,7 @@ pub fn parse_explain_args(tokens: &[ArgToken]) -> Result<ExplainArgs, CliError> 
         &[
             "--root",
             "--event-id",
+            "--at",
             "--principal",
             "--custody",
             "--view",
@@ -303,6 +309,7 @@ pub fn parse_explain_args(tokens: &[ArgToken]) -> Result<ExplainArgs, CliError> 
     })?;
     Ok(ExplainArgs {
         root,
+        at: history::parse("explain", &values)?,
         event_id,
         principal: principal("explain", &values)?,
         view,
@@ -1454,6 +1461,7 @@ fn unknown_event_response(
     request_digest: ContentDigest,
     view: AgentView,
     token_limit: u64,
+    historical: Option<&history::HistoricalScope>,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let capsule = orientation.capsule();
     let evidence = if snapshot.batch_count == 0 {
@@ -1471,6 +1479,9 @@ fn unknown_event_response(
         encoder.text(event_id.as_str());
         capsule.anchor.encode_canonical(encoder);
         encoder.digest(evidence);
+        if let Some(scope) = historical {
+            scope.encode_request(encoder);
+        }
     });
     let reorient: Vec<ActionAffordance> = capsule
         .affordances
@@ -1480,6 +1491,28 @@ fn unknown_event_response(
         .collect();
     let mut requested = orientation.requested;
     requested.tokens = token_limit;
+    let mut consumed = orientation.consumed;
+    let mut propositions = vec![EnvelopeProposition {
+        id: "claim:event-index:requested".to_owned(),
+        statement,
+        state: KnowledgeState::Known,
+        provenance: "derived".to_owned(),
+        evidence: vec![evidence.to_text()],
+    }];
+    if let Some(scope) = historical {
+        consumed.tokens = consumed.tokens.saturating_add(scope.context_tokens());
+        if consumed.tokens > token_limit {
+            return explain_options::orientation_refusal(
+                snapshot,
+                request_digest,
+                view,
+                &capsule.principal_id,
+                token_limit,
+                "Historical scope does not fit the admitted context budget.".to_owned(),
+            );
+        }
+        propositions.insert(0, scope.proposition());
+    }
     let (payload, next_ids, next_objects) = cognitive_payload_with_budget(
         orientation,
         request_digest,
@@ -1488,13 +1521,7 @@ fn unknown_event_response(
         CognitiveParts {
             answer_class: CognitiveAnswerClass::Refusal,
             epistemic: EnvelopeEpistemic {
-                propositions: vec![EnvelopeProposition {
-                    id: "claim:event-index:requested".to_owned(),
-                    statement,
-                    state: KnowledgeState::Known,
-                    provenance: "derived".to_owned(),
-                    evidence: vec![evidence.to_text()],
-                }],
+                propositions,
                 assumptions: Vec::new(),
                 invalidators: vec![
                     "A later commit that publishes the event would answer the question.".to_owned(),
@@ -1514,8 +1541,8 @@ fn unknown_event_response(
         },
         Some(EnvelopeBudget {
             requested_json: agent_json::budget(&requested),
-            consumed_json: agent_json::budget(&orientation.consumed),
-            remaining_json: agent_json::remaining(&requested, &orientation.consumed),
+            consumed_json: agent_json::budget(&consumed),
+            remaining_json: agent_json::remaining(&requested, &consumed),
             degraded_dimensions: Vec::new(),
             marginal_work_declined: Vec::new(),
         }),
@@ -1535,10 +1562,10 @@ fn unknown_event_response(
         payload_json: payload,
         epistemic_state: KnowledgeState::Known,
         completeness: Completeness::Complete,
-        warnings: Vec::new(),
+        warnings: historical.map_or_else(Vec::new, |scope| vec![scope.warning()]),
         contradictions: Vec::new(),
         degradation: Vec::new(),
-        budgets_json: agent_json::budget_summary(&requested, &orientation.consumed),
+        budgets_json: agent_json::budget_summary(&requested, &consumed),
         proof_pointers: vec![evidence.to_text()],
         affordances: next_ids,
         affordance_objects: next_objects,
@@ -1567,14 +1594,18 @@ pub fn execute_explain(args: &ExplainArgs) -> (String, ExitIdentity) {
     let started = args.custody.then(std::time::Instant::now);
     let cancelled = || started.is_some_and(|at| at.elapsed() >= custody::TIMEOUT);
     let limits = OrientLimits::default();
-    let snapshot = match read_deployment(&args.root, &limits) {
-        Ok(snapshot) => snapshot,
-        Err(error) => return read_refusal("explain", &args.root, &error),
-    };
+    let (snapshot, historical) =
+        match history::read("explain", &args.root, &limits, args.at.as_ref()) {
+            Ok(read) => read,
+            Err(refusal) => return refusal,
+        };
     let request_digest = request_identity("fss.cli.explain.request.v1", |encoder| {
         encoder.text(args.event_id.as_str());
         args.principal.encode_canonical(encoder);
         snapshot.anchor.encode_canonical(encoder);
+        if let Some(scope) = &historical {
+            scope.encode_request(encoder);
+        }
         // Preserve every old request digest when custody was not explicitly requested.
         if args.custody {
             encoder.text("custody=yes");
@@ -1655,13 +1686,24 @@ pub fn execute_explain(args: &ExplainArgs) -> (String, ExitIdentity) {
                 }
             };
             if args.custody {
-                let checked = crate::custody_review::check_event(
-                    &args.root,
-                    &snapshot,
-                    &args.event_id,
-                    fss_publication::custody_audit::CustodyAuditLimits::default(),
-                    &cancelled,
-                )
+                let audit_limits = fss_publication::custody_audit::CustodyAuditLimits::default();
+                let checked = match &historical {
+                    Some(scope) => crate::custody_review::check_event_at(
+                        &args.root,
+                        &snapshot,
+                        &args.event_id,
+                        audit_limits,
+                        scope,
+                        &cancelled,
+                    ),
+                    None => crate::custody_review::check_event(
+                        &args.root,
+                        &snapshot,
+                        &args.event_id,
+                        audit_limits,
+                        &cancelled,
+                    ),
+                }
                 .and_then(|review| custody::augment(&mut support, &review));
                 if let Err(error) = checked {
                     return rendered(
@@ -1687,6 +1729,23 @@ pub fn execute_explain(args: &ExplainArgs) -> (String, ExitIdentity) {
                             request_digest,
                             &support,
                             &error,
+                        ),
+                        ExitIdentity::AGENT_REFUSED,
+                        "explain",
+                        &args.root,
+                    );
+                }
+            }
+            if let Some(scope) = &historical {
+                if scope.augment(&mut support).is_err() {
+                    return rendered(
+                        evidence::refusal(
+                            &orientation,
+                            &explanation,
+                            request_digest,
+                            ERR_AGENT_CONTEXT_INCOMPLETE,
+                            args.view,
+                            token_limit,
                         ),
                         ExitIdentity::AGENT_REFUSED,
                         "explain",
@@ -1755,6 +1814,7 @@ pub fn execute_explain(args: &ExplainArgs) -> (String, ExitIdentity) {
                 request_digest,
                 args.view,
                 token_limit,
+                historical.as_ref(),
             ),
             ExitIdentity::AGENT_REFUSED,
             "explain",

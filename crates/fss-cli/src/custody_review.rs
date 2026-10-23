@@ -179,6 +179,24 @@ pub fn check_event(
         || read_deployment(root, &OrientLimits::default()), cancelled)
 }
 
+/// Check the currently observed bytes of one explicitly selected historical event revision.
+/// Current deletion denials apply, and both the selected prefix and current head are rechecked.
+/// This does not reconstruct past byte availability or restore past disclosure permissions.
+pub(crate) fn check_event_at(
+    root: &Path,
+    before: &DeploymentSnapshot,
+    event_id: &EventId,
+    limits: CustodyAuditLimits,
+    scope: &crate::orient_cmd::history::HistoricalScope,
+    cancelled: &(impl Fn() -> bool + Sync),
+) -> Result<CustodyReview, CustodyReviewError> {
+    if fss_reference::agent_follow::snapshot_anchor_token(before) != scope.selected.as_str() {
+        return Err(CustodyReviewError::InvalidBinding);
+    }
+    check_with(root, before, event_id, limits, &HostSpoolIo,
+        || scope.recheck(root), cancelled)
+}
+
 fn check_with(
     root: &Path,
     before: &DeploymentSnapshot,

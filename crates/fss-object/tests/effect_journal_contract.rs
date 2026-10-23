@@ -16,8 +16,8 @@ use fss_object::effect_journal::{
     EFFECT_JOURNAL_RECORD_DOMAIN, EffectJournalLimits, FileEffectJournal,
 };
 use fss_object::{
-    FaultInjectingSpoolIo, HostSpoolIo, SPOOL_LOCK_FILE, SPOOL_OBJECTS_DIR, SPOOL_STAGING_DIR,
-    SpoolFaultPlan, SpoolIoCall, SpoolLimits, StagingSpool,
+    FaultInjectingSpoolIo, HostSpoolIo, SPOOL_HOLDS_DIR, SPOOL_LOCK_FILE, SPOOL_OBJECTS_DIR,
+    SPOOL_STAGING_DIR, SpoolFaultPlan, SpoolIoCall, SpoolLimits, StagingSpool,
 };
 use fss_runtime::authority::AuthorityCx;
 use fss_runtime::effect::{
@@ -155,7 +155,14 @@ fn independent_pin_rejects_rollback_and_unknown_history() -> Test {
     let (mut journal, first) = seed(&root)?;
     let second = journal.append(Some(first), b"committed")?;
     drop(journal);
-    fs::remove_file(object_path(&root, second.root)?)?;
+    let second_path = object_path(&root, second.root)?;
+    fs::remove_file(&second_path)?;
+    // A coherent older snapshot loses both the new object and its verification hold.
+    // Keeping the hold instead exercises vanished-object corruption before pin validation.
+    fs::remove_file(
+        root.join(SPOOL_HOLDS_DIR)
+            .join(second_path.file_name().ok_or("object name missing")?),
+    )?;
     assert!(matches!(
         FileEffectJournal::open(&root, limits(), Arc::new(HostSpoolIo), second),
         Err(EffectPersistenceError::PinMismatch)

@@ -15,7 +15,6 @@ use fss_core::{
 use fss_reference::agent_follow::{AnchorToken, snapshot_anchor_token};
 use fss_reference::agent_orient::{
     DeploymentOrientation, DeploymentSnapshot, OrientLimits, OrientRequest, orient_deployment,
-    read_deployment,
 };
 use fss_reference::agent_query::{
     CAPABILITY_QUERY, DEFAULT_QUERY_ENTRIES, DeploymentQuery, EventQueryFilter, EventQueryRequest,
@@ -24,10 +23,11 @@ use fss_reference::agent_query::{
 
 use crate::agent_json;
 use crate::error::{CliError, ExitIdentity};
+use crate::orient_cmd::history::{self, HistoricalScope};
 use crate::orient_cmd::{
     ERR_AGENT_CONTEXT_INCOMPLETE, RenderError, ResponseParts, build_response, collect_options,
-    contexts, internal_failure, principal, read_only_boundary, read_refusal, rendered,
-    request_identity, required_root, take,
+    contexts, internal_failure, principal, read_only_boundary, rendered, request_identity,
+    required_root, take,
 };
 use crate::token::ArgToken;
 
@@ -40,6 +40,8 @@ pub const MAX_QUERY_OUTPUT_BYTES: usize = 256 * 1024;
 pub struct QueryArgs {
     /// Existing deployment root; read-only.
     pub root: PathBuf,
+    /// Explicit historical metadata prefix, distinct from a current-head precondition.
+    pub at: Option<AnchorToken>,
     /// Native query request, including any exact anchor and continuation preconditions.
     pub request: EventQueryRequest,
 }
@@ -90,6 +92,7 @@ pub fn parse_query_args(tokens: &[ArgToken]) -> Result<QueryArgs, CliError> {
             "--through-ns",
             "--max-entries",
             "--anchor",
+            "--at",
             "--continuation",
         ],
     )?;
@@ -136,6 +139,15 @@ pub fn parse_query_args(tokens: &[ArgToken]) -> Result<QueryArgs, CliError> {
             })
         })
         .transpose()?;
+    let at = history::parse("query", &values)?;
+    if at.is_some() && expected_anchor.is_some() {
+        return Err(malformed(
+            "--at",
+            "[redacted]",
+            "historical --at cannot be combined with the current-head --anchor precondition",
+            take(&values, "--at").map_or(0, |(_, _, index)| *index),
+        ));
+    }
     let request = EventQueryRequest {
         filter: EventQueryFilter {
             event_id,
@@ -155,6 +167,7 @@ pub fn parse_query_args(tokens: &[ArgToken]) -> Result<QueryArgs, CliError> {
         .map_err(|error| malformed("query", "[redacted]", &error.to_string(), 0))?;
     Ok(QueryArgs {
         root: required_root("query", &values)?,
+        at,
         request,
     })
 }
@@ -163,8 +176,14 @@ fn query_response(
     args: &QueryArgs,
     query: &DeploymentQuery,
     orientation: &DeploymentOrientation,
+    historical: Option<&HistoricalScope>,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    let request_digest = query.request_digest;
+    let request_digest = historical.map_or(query.request_digest, |scope| {
+        request_identity("fss.cli.query.historical_request.v1", |encoder| {
+            encoder.digest(query.request_digest);
+            scope.encode_request(encoder);
+        })
+    });
     let text = request_digest.to_text();
     let hex = text.strip_prefix("sha256:").unwrap_or(&text);
     let capsule = orientation.capsule();
@@ -174,6 +193,9 @@ fn query_response(
         .as_ref()
         .map(|cursor| cursor.token().to_owned());
     let mut epistemic = query.epistemic();
+    if let Some(scope) = historical {
+        epistemic.propositions.insert(0, scope.proposition());
+    }
     epistemic.propositions.push(EnvelopeProposition {
         id: "claim:query:anchor".to_owned(),
         statement: format!(
@@ -242,6 +264,9 @@ fn query_response(
     let decision = request_identity("fss.cli.query.context_decision.v1", |encoder| {
         encoder.digest(query.decision_digest);
         encoder.digest(frame_digest);
+        if let Some(scope) = historical {
+            scope.encode_request(encoder);
+        }
     });
     let cognitive = AgentCognitiveEnvelope::new(
         capsule.contract_basis.clone(),
@@ -281,6 +306,11 @@ fn query_response(
     )?;
     let payload = agent_json::cognitive_envelope(&cognitive, &handles, &action_objects)
         .ok_or(RenderError("query cognitive envelope"))?;
+    let mut warnings =
+        vec!["Metadata-only query; no certified physical absence or effect authority.".to_owned()];
+    if let Some(scope) = historical {
+        warnings.push(scope.warning());
+    }
     build_response(ResponseParts {
         operation: "query",
         request_digest,
@@ -296,7 +326,7 @@ fn query_response(
         payload_json: payload,
         epistemic_state: KnowledgeState::Unknown,
         completeness: Completeness::Bounded,
-        warnings: vec!["Metadata-only query; no certified physical absence or effect authority.".to_owned()],
+        warnings,
         contradictions: orientation.contradictions.clone(),
         degradation: vec!["Query CPU, output tokens and elapsed latency are not metered. The native latency allowance is not a measurement or enforced deadline.".to_owned()],
         budgets_json: agent_json::budget_summary(&orientation.requested, &orientation.consumed),
@@ -333,6 +363,10 @@ fn refusal(
                 .map_or("", AnchorToken::as_str),
         );
         encoder.text(args.request.continuation.as_deref().unwrap_or(""));
+        if let Some(at) = &args.at {
+            encoder.text("historical_at");
+            encoder.text(at.as_str());
+        }
         encoder.text(&snapshot_anchor_token(snapshot));
         encoder.text(reason);
     });
@@ -358,10 +392,24 @@ fn refusal(
 /// registered answer. Neither a smaller page nor an empty match set bypasses a scan failure.
 #[must_use]
 pub fn execute_query(args: &QueryArgs) -> (String, ExitIdentity) {
+    // Public library callers can construct QueryArgs directly. Preserve the same exclusion
+    // before opening the deployment rather than reinterpreting a current-head precondition.
+    if args.at.is_some() && args.request.expected_anchor.is_some() {
+        return (
+            crate::orient_cmd::execution_diagnostic(
+                "query",
+                &args.root,
+                crate::error::ERR_CLI_MALFORMED_VALUE,
+                ExitIdentity::MALFORMED_VALUE,
+            ),
+            ExitIdentity::MALFORMED_VALUE,
+        );
+    }
     let limits = OrientLimits::default();
-    let snapshot = match read_deployment(&args.root, &limits) {
-        Ok(snapshot) => snapshot,
-        Err(error) => return read_refusal("query", &args.root, &error),
+    let (snapshot, historical) = match history::read("query", &args.root, &limits, args.at.as_ref())
+    {
+        Ok(read) => read,
+        Err(refusal) => return refusal,
     };
     let query = match query_deployment(&snapshot, &args.request) {
         Ok(query) => query,
@@ -398,7 +446,7 @@ pub fn execute_query(args: &QueryArgs) -> (String, ExitIdentity) {
             );
         }
     };
-    match query_response(args, &query, &orientation) {
+    match query_response(args, &query, &orientation, historical.as_ref()) {
         Ok(output) if output.len() <= MAX_QUERY_OUTPUT_BYTES => (output, ExitIdentity::SUCCESS),
         Ok(_) => rendered(
             refusal(

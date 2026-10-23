@@ -8,6 +8,7 @@ use std::fs;
 use std::path::Path;
 
 use fss_core::{ContextAuthority, OperationId, RootAuthoritySpec};
+use fss_reference::agent_orient::read_deployment;
 use fss_reference::{ADP_REPLAY_ROW_ID, ReferenceDeployment, ReplayCx, ReplayIoAuthority};
 
 use super::*;
@@ -85,6 +86,7 @@ fn malformed_ambiguous_and_mutating_inputs_are_refused() {
         vec!["--kind", "person"],
         vec!["--state", "safe"],
         vec!["--anchor", "latest"],
+        vec!["--at", "latest"],
         vec!["--continuation", "--root=/other"],
         vec!["--approve", "yes"],
         vec!["--certify-absence"],
@@ -190,6 +192,16 @@ fn exact_anchor_and_wrong_cursor_refusals_are_not_empty_successes() -> TestResul
     let before = snapshot(&root)?;
     let current = read_deployment(&root, &OrientLimits::default())?;
     let token = snapshot_anchor_token(&current);
+    let historical = parse(&["--at", &token])?;
+    assert_eq!(
+        historical.at.as_ref().map(AnchorToken::as_str),
+        Some(token.as_str())
+    );
+    assert!(historical.request.expected_anchor.is_none());
+    assert!(parse(&["--at", &token, "--anchor", &token]).is_err());
+    let mut conflict = historical.clone();
+    conflict.request.expected_anchor = historical.at;
+    assert_eq!(execute_query(&conflict).1, ExitIdentity::MALFORMED_VALUE);
     let mut args = parse(&["--anchor", &token])?;
     args.root = root.clone();
     assert_eq!(execute_query(&args).1, ExitIdentity::SUCCESS);

@@ -12,10 +12,11 @@ use std::process::{Command, Output, Stdio};
 
 use fss_cli::{ExitIdentity, escape_json_str, execute_fss_with_exit, parse_fss_args};
 use fss_core::{
-    BudgetVector, CaptureInterval, ContentDigest, ContextAuthority, DecisionPath, EventHypothesis,
-    EventId, EventKind, EventState, OperationId, ProbabilityInterval, RootAuthoritySpec,
-    TimestampNs,
+    BudgetVector, CaptureInterval, ContentDigest, ContextAuthority, DecisionPath, EventEvidence,
+    EventHypothesis, EventId, EventKind, EventState, EvidenceClass, EvidenceEdgeRelation,
+    OperationId, ProbabilityInterval, RootAuthoritySpec, TimestampNs,
 };
+use fss_reference::agent_follow::snapshot_anchor_token;
 use fss_reference::agent_orient::{OrientLimits, read_deployment};
 use fss_reference::media_fixture::jpeg::{JpegConfig, Subsampling, encode_jpeg};
 use fss_reference::{
@@ -93,9 +94,12 @@ impl Fixture {
             &authority,
             self.directory.join("catalogue-cx"),
         )?);
+        let start = read_deployment(&self.root, &OrientLimits::default())?
+            .events
+            .len();
         let mut deployment = ReferenceDeployment::open(&self.root, SITE, &cx)?;
         let mut ids = Vec::new();
-        for index in 0..count {
+        for index in start..start + count {
             let event = EventHypothesis {
                 schema: EventHypothesis::SCHEMA.to_owned(),
                 event_id: EventId::parse(format!("event:query-catalogue:{index:04}"))?,
@@ -130,7 +134,60 @@ impl Fixture {
         Ok(ids)
     }
 
+    fn revise(&self, id: &str) -> TestResult {
+        let snapshot = read_deployment(&self.root, &OrientLimits::default())?;
+        let mut event = snapshot
+            .event(&EventId::parse(id)?)
+            .ok_or("missing event")?
+            .event
+            .clone();
+        let predecessor = event.revision_digest();
+        event.revision += 1;
+        event.supersedes = Some(predecessor);
+        event.state = EventState::Indeterminate;
+        event.uncertainty_reason = Some("synthetic revision remains unadjudicated".to_owned());
+        event.evidence.push(EventEvidence {
+            digest: predecessor,
+            class: EvidenceClass::Derived,
+            failure_domain: "synthetic:query-catalogue".to_owned(),
+            supports: true,
+            relation: EvidenceEdgeRelation::Supports,
+            capsule_digest: None,
+            identity_digest: None,
+        });
+        event.decision_path.fingerprint = ContentDigest::sha256(b"revised query hypothesis");
+        let authority = ContextAuthority::new_root(RootAuthoritySpec {
+            trace_id: "trace:query-revision".to_owned(),
+            operation_id: OperationId::parse("operation:query-revision")?,
+            principal: "operator:query-revision".to_owned(),
+            capabilities: vec![ADP_REPLAY_ROW_ID.to_owned()],
+            deadline: None,
+            priority: 10,
+            budgets: BudgetVector::default(),
+            privacy_scope: "privacy:internal".to_owned(),
+            retention_scope: "retention:ephemeral".to_owned(),
+            anchor_universe: ContentDigest::sha256(b"query-revision"),
+            generation: 1,
+        })?;
+        let cx = ReplayCx::new(ReplayIoAuthority::from_context_authority(
+            &authority,
+            self.directory.join("revision-cx"),
+        )?);
+        ReferenceDeployment::open(&self.root, SITE, &cx)?.publish_event(
+            &ReferencePolicyDecision {
+                event,
+                action: ReferencePolicyAction::Hold,
+            },
+            &cx,
+        )?;
+        Ok(())
+    }
+
     fn publish(&self, sensor: &str) -> TestResult<String> {
+        self.publish_recording(sensor).map(|(event, _)| event)
+    }
+
+    fn publish_recording(&self, sensor: &str) -> TestResult<(String, String)> {
         let config = JpegConfig {
             quality: 90,
             subsampling: Subsampling::Grayscale,
@@ -205,7 +262,10 @@ impl Fixture {
         let proposal = quoted_field(&prepared, "proposal_digest")?;
         let published = watch(Some(&proposal))?;
         success(&published);
-        quoted_field(&String::from_utf8(published.stdout)?, "event_id")
+        Ok((
+            quoted_field(&String::from_utf8(published.stdout)?, "event_id")?,
+            identity.to_owned(),
+        ))
     }
 }
 
@@ -266,8 +326,16 @@ fn tree(root: &Path) -> TestResult<BTreeMap<PathBuf, (bool, Vec<u8>)>> {
 }
 
 fn query(root: &Path, extra: &[&str]) -> TestResult<(String, ExitIdentity)> {
+    native_command(root, "query", extra)
+}
+
+fn native_command(
+    root: &Path,
+    operation: &str,
+    extra: &[&str],
+) -> TestResult<(String, ExitIdentity)> {
     let mut args: Vec<OsString> = vec![
-        "query".into(),
+        operation.into(),
         "--json".into(),
         "--root".into(),
         root.as_os_str().to_owned(),
@@ -287,8 +355,18 @@ fn query(root: &Path, extra: &[&str]) -> TestResult<(String, ExitIdentity)> {
 }
 
 fn mcp(root: &Path, arguments: &str, expected: &(String, ExitIdentity)) -> TestResult {
+    mcp_tool(root, "query", arguments, expected)
+}
+
+fn mcp_tool(
+    root: &Path,
+    name: &str,
+    arguments: &str,
+    expected: &(String, ExitIdentity),
+) -> TestResult {
     let request = format!(
-        r#"{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"query","arguments":{arguments}}}}}"#
+        r#"{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":{},"arguments":{arguments}}}}}"#,
+        quote(name)
     );
     let mut process = Command::new(env!("CARGO_BIN_EXE_fss-mcp"))
         .arg("--root")
@@ -496,6 +574,236 @@ fn large_native_catalogue_paginates_across_cli_library_and_mcp_without_mutation(
     for id in &ids {
         assert!(seen.contains_key(id), "missing {id}");
     }
+    assert_eq!(tree(&fixture.root)?, before);
+    Ok(())
+}
+
+#[test]
+fn historical_catalogue_and_explanation_replay_exact_revisions_across_fresh_processes() -> TestResult
+{
+    let fixture = Fixture::new("history")?;
+    let ids = fixture.publish_hypotheses(2)?;
+    let old = read_deployment(&fixture.root, &OrientLimits::default())?;
+    let at = snapshot_anchor_token(&old);
+    let old_revision = old.events[0].revision_digest;
+    let page_one = query(&fixture.root, &["--at", &at, "--max-entries", "1"])?;
+    assert_eq!(page_one.1, ExitIdentity::SUCCESS, "{}", page_one.0);
+    let cursor = quoted_field(&page_one.0, "continuation")?;
+    fixture.revise(&ids[0])?;
+    let later = fixture.publish_hypotheses(1)?.remove(0);
+    let head = snapshot_anchor_token(&read_deployment(&fixture.root, &OrientLimits::default())?);
+    let before = tree(&fixture.root)?;
+
+    let historical = query(&fixture.root, &["--at", &at, "--state", "hypothesized"])?;
+    assert_eq!(historical.1, ExitIdentity::SUCCESS, "{}", historical.0);
+    assert!(historical.0.contains("claim:read:historical-scope"));
+    assert!(historical.0.contains(&at));
+    assert!(historical.0.contains(&head));
+    assert!(historical.0.contains(&format!("\"id\":{}", quote(&ids[0]))));
+    assert!(!historical.0.contains(&format!("\"id\":{}", quote(&later))));
+    conforms(&fixture, &historical.0)?;
+    mcp(
+        &fixture.root,
+        &format!(r#"{{"at":{},"state":"hypothesized"}}"#, quote(&at)),
+        &historical,
+    )?;
+
+    let current = query(
+        &fixture.root,
+        &["--event-id", &ids[0], "--state", "hypothesized"],
+    )?;
+    assert_eq!(current.1, ExitIdentity::SUCCESS);
+    assert!(!current.0.contains(&format!("\"id\":{}", quote(&ids[0]))));
+    let stale_head = query(&fixture.root, &["--anchor", &at])?;
+    assert_eq!(stale_head.1, ExitIdentity::AGENT_REFUSED);
+    assert!(stale_head.0.contains("query anchor changed"));
+
+    // The selected retained prefix is stable even as the deployment head advances. The native
+    // continuation stays bound to that prefix; omitting --at must not silently replay it.
+    let page_two = query(
+        &fixture.root,
+        &["--at", &at, "--max-entries", "1", "--continuation", &cursor],
+    )?;
+    assert_eq!(page_two.1, ExitIdentity::SUCCESS, "{}", page_two.0);
+    assert!(page_two.0.contains("\"continuation\":null"));
+    for id in &ids {
+        let marker = format!("\"id\":{}", quote(id));
+        assert_eq!(
+            page_one.0.matches(&marker).count() + page_two.0.matches(&marker).count(),
+            1
+        );
+    }
+    assert!(!page_two.0.contains(&format!("\"id\":{}", quote(&later))));
+    assert_eq!(
+        query(
+            &fixture.root,
+            &["--max-entries", "1", "--continuation", &cursor,]
+        )?
+        .1,
+        ExitIdentity::AGENT_REFUSED
+    );
+    mcp(
+        &fixture.root,
+        &format!(
+            r#"{{"at":{},"max_entries":1,"continuation":{}}}"#,
+            quote(&at),
+            quote(&cursor)
+        ),
+        &page_two,
+    )?;
+
+    let explanation = native_command(
+        &fixture.root,
+        "explain",
+        &[
+            "--event-id",
+            &ids[0],
+            "--at",
+            &at,
+            "--view",
+            "forensic",
+            "--custody",
+            "yes",
+        ],
+    )?;
+    assert_eq!(explanation.1, ExitIdentity::SUCCESS, "{}", explanation.0);
+    assert!(explanation.0.contains(&old_revision.to_text()));
+    assert!(explanation.0.contains("revision 1 at commit"));
+    assert!(explanation.0.contains("claim:read:historical-scope"));
+    assert!(explanation.0.contains("publication-closure"));
+    conforms(&fixture, &explanation.0)?;
+    mcp_tool(
+        &fixture.root,
+        "explain",
+        &format!(
+            r#"{{"event_id":{},"at":{},"view":"forensic","custody":"yes"}}"#,
+            quote(&ids[0]),
+            quote(&at)
+        ),
+        &explanation,
+    )?;
+    let latest = native_command(
+        &fixture.root,
+        "explain",
+        &["--event-id", &ids[0], "--view", "forensic"],
+    )?;
+    assert_eq!(latest.1, ExitIdentity::SUCCESS, "{}", latest.0);
+    assert!(latest.0.contains("revision 2 at commit"));
+
+    let missing = native_command(
+        &fixture.root,
+        "explain",
+        &["--event-id", &later, "--at", &at, "--view", "forensic"],
+    )?;
+    assert_eq!(missing.1, ExitIdentity::AGENT_REFUSED);
+    assert!(missing.0.contains("ERR-AGENT-EVENT-NOT-FOUND-001"));
+    assert!(missing.0.contains("claim:read:historical-scope"));
+    conforms(&fixture, &missing.0)?;
+    assert_eq!(tree(&fixture.root)?, before);
+    Ok(())
+}
+
+#[test]
+fn unknown_foreign_and_forged_historical_tokens_refuse_without_mutation() -> TestResult {
+    let fixture = Fixture::new("history-refusal")?;
+    fixture.publish_hypotheses(1)?;
+    let token = snapshot_anchor_token(&read_deployment(&fixture.root, &OrientLimits::default())?);
+    let mut tokens = Vec::new();
+    for (field, replacement) in [
+        (1, "0".repeat(16)),
+        (2, "999999".to_owned()),
+        (4, "0".repeat(64)),
+    ] {
+        let mut parts: Vec<_> = token.split(':').map(str::to_owned).collect();
+        parts[field] = replacement;
+        tokens.push(parts.join(":"));
+    }
+    let before = tree(&fixture.root)?;
+    for at in tokens {
+        let answer = query(&fixture.root, &["--at", &at])?;
+        assert_eq!(answer.1, ExitIdentity::AGENT_REFUSED);
+        assert!(answer.0.contains("ERR-AGENT-RESNAPSHOT-001"));
+        mcp(
+            &fixture.root,
+            &format!(r#"{{"at":{}}}"#, quote(&at)),
+            &answer,
+        )?;
+        let explain = native_command(
+            &fixture.root,
+            "explain",
+            &["--at", &at, "--event-id", "event:query-catalogue:0000"],
+        )?;
+        assert_eq!(explain.1, ExitIdentity::AGENT_REFUSED);
+        assert!(explain.0.contains("ERR-AGENT-RESNAPSHOT-001"));
+    }
+    assert_eq!(tree(&fixture.root)?, before);
+    Ok(())
+}
+
+#[test]
+fn historical_reads_keep_current_deletion_denials_and_never_restore_evidence() -> TestResult {
+    let fixture = Fixture::new("history-deletion")?;
+    let (event, import) = fixture.publish_recording("sensor:historical-deletion")?;
+    let at = snapshot_anchor_token(&read_deployment(&fixture.root, &OrientLimits::default())?);
+    let planned = Command::new(env!("CARGO_BIN_EXE_fss-event"))
+        .args(["delete", "plan", "--root"])
+        .arg(&fixture.root)
+        .args(["--site", SITE, "--import-id", &import])
+        .output()?;
+    success(&planned);
+    let planned = String::from_utf8(planned.stdout)?;
+    let plan = quoted_field(&planned, "plan_digest")?;
+    let approval = quoted_field(&planned, "approval_digest")?;
+    let deleted = Command::new(env!("CARGO_BIN_EXE_fss-event"))
+        .args(["delete", "commit", "--root"])
+        .arg(&fixture.root)
+        .args(["--site", SITE, "--plan", &plan, "--approve", &approval])
+        .output()?;
+    success(&deleted);
+    let before = tree(&fixture.root)?;
+
+    let catalogue = query(&fixture.root, &["--at", &at, "--event-id", &event])?;
+    assert_eq!(catalogue.1, ExitIdentity::SUCCESS, "{}", catalogue.0);
+    assert!(catalogue.0.contains("Historical metadata"));
+    assert!(catalogue.0.contains("deleted"));
+    mcp(
+        &fixture.root,
+        &format!(r#"{{"at":{},"event_id":{}}}"#, quote(&at), quote(&event)),
+        &catalogue,
+    )?;
+
+    let explanation = native_command(
+        &fixture.root,
+        "explain",
+        &[
+            "--at",
+            &at,
+            "--event-id",
+            &event,
+            "--view",
+            "forensic",
+            "--budget-tokens",
+            "16000",
+            "--custody",
+            "yes",
+        ],
+    )?;
+    assert_eq!(explanation.1, ExitIdentity::SUCCESS, "{}", explanation.0);
+    assert!(explanation.0.contains("deleted"));
+    assert!(explanation.0.contains(&plan));
+    assert!(explanation.0.contains("all_verified=false"));
+    assert!(explanation.0.contains("claim:read:historical-scope"));
+    conforms(&fixture, &explanation.0)?;
+    mcp_tool(
+        &fixture.root,
+        "explain",
+        &format!(
+            r#"{{"at":{},"event_id":{},"view":"forensic","budget_tokens":16000,"custody":"yes"}}"#,
+            quote(&at),
+            quote(&event)
+        ),
+        &explanation,
+    )?;
     assert_eq!(tree(&fixture.root)?, before);
     Ok(())
 }
