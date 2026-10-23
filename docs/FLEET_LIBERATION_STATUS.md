@@ -265,3 +265,28 @@ Corollary: `tecrkcehc_ext` is **parsed**, not ignored. Leaving a hex-digest or r
 makes `cmd 0` fault at `pc=0`; a BMP-shaped file (even the wrong one) runs clean to `INIT=null`. So
 the extension blob has a structured format, and its absence is currently masked by a stand-in that
 parses — which keeps the baseline stable but cannot satisfy the checker.
+
+`tecrkcehc_ext`'s format is now known from the parser at `0x192d0`: it scans for the first `\n`,
+parses the **decimal integer** before it into `ctx+0x14`, then **base64-decodes** everything after the
+newline (`mbedtls_base64_decode` at `0x18ce0`) and hands the bytes to `0x18c68`. So the file is
+`"<decimal>\n<base64>"`, and a random/hex file crashes exactly because it has no such shape.
+
+Placeholders in that shape (a decimal plus base64 of the cert digest, upper/lower hex variants, with
+and without trailing newline) all parse cleanly and all still leave `checkStatus` at `-1`, so the
+blob's *content* is an encrypted or signed record, not a bare digest. The parser being mapped means
+the remaining work on this file is content-only, not structure.
+
+Server identity was worth checking: port 8443 was held by a stray **`openssl s_server`** (root, IPv6
+wildcard, its own document root, no request log), not by `serve.py`. It is replaced by the Python
+server bound to `192.168.4.160:8443`, and the handler now logs the **User-Agent** so a device request
+is distinguishable from our own probes (`ua=curl/8.7.1`). Earlier attempts could have been answered by
+a different root without anyone seeing it.
+
+The `cmd 1` path calls `read_keys_from_content(content, &arr, &count)` at `0x14020` and bails when it
+returns non-zero — so keys are *extracted from content*. Two 20-char secrets (740 candidate strings
+lifted from the dex, including the clientId) all yield `cmd 1 = null`, which means the appSecret is
+**not** the gate: whatever feeds `read_keys_from_content` is. The natural reading is that
+`tecrkcehc_ext` is that content (base64-decoded at `0x18ce0` and passed straight in), with `t_s.bmp`
+supplying the stego key, and neither the real blob nor `t_s_daily.bmp` ships in this APKPure build.
+No asset pack is present either — the splits are only `config.*` — so a Play-installed copy (or its
+data dir) is the surest source of the blob.
