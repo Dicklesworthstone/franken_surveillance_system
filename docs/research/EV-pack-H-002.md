@@ -95,6 +95,12 @@ so the provider list is not the whole gate either.
 `pcMd5:%s`, next to `action:[IOT_BACK_CMD_UPGRADE]`). A delta carrying `pcUrl`/`pcMd5` was published
 and acked; it still produced no fetch, so the key names are necessary-looking but not sufficient.
 
+**There is a separate command channel: `hl/devices/<thing>/cmd`** (with `/ack`; iotclient carries
+`IOT_CMD_START`/`IOT_CMD_STOP` and logs `cmd:%d, len:%d, data:%s`). Publishing
+`{"cmd":1|2|3,"len":0,"data":""}` there is accepted and PUBACKed, so it is writable from outside — but
+poking `cmd 1` before a delta still produced no fetch, so the START payload is not simply
+`{cmd,len,data}` with an empty body, or more than one command is needed.
+
 **`.../get` is not usable from our side, framing or not:** SUBSCRIBE to `get/accepted` is granted
 (`90 03 00 01 00`) and publishing a QoS-0 `get` then closes the connection before any reply — three
 attempts, including one after a quiet window. Only `/update` publishes are answered. So `reported`
