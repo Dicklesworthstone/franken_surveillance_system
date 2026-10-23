@@ -142,7 +142,10 @@ fn main() -> ExitCode {
         audio: false,
         psk_truncated: false,
         seed,
-        known_tuples: vec![("HL_CAM4".into(), "4.52.17.26".into())],
+        known_tuples: vec![
+            ("HL_CAM4".into(), "4.52.17.26".into()),
+            ("HL_CAM4".into(), "4.52.17.32".into()),
+        ],
         psk_identity: a.identity.clone(),
         psk_override: a.psk_hex.clone(),
         audio_encoder_list: a.encoders.clone(),
