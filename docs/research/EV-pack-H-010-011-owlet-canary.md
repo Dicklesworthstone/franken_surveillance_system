@@ -19,7 +19,7 @@ All probing read-only. Nothing was written to either device.
 | C-3 | `192.168.6.85` | UDP top-60 | yes | absence | 51 `open|filtered` (no ICMP, no payload response), 9 closed with `port-unreach`. No service answered `\x00`×4, `\xf1\x30\x00\x00`, or TUTK `0x0601` | EV-941 |
 | C-4 | `192.168.6.85` | mDNS 5353 / SSDP 1900 | yes | absence | silent on `_services._dns-sd._udp`, `_canary._tcp`, `_rtsp._tcp`, `_onvif._tcp`, `_http._tcp`, and on multicast/unicast M-SEARCH | EV-941 |
 | C-5 | `192.168.6.85` | idle traffic | — | absence | 60 s on `en1`: ARP only. **This is a measurement artefact, not device silence** — a Wi-Fi station only sees its own frames plus broadcast, so other hosts' unicast is invisible. The device does hold persistent cloud connections; they only appear under ARP interception (C-6). Use `en1` captures for *own* traffic and spoofing for anyone else's | EV-941, EV-945 |
-| O-1 | — | vendor stack | — | attribution | Owlet cameras run **ThroughTek Kalay / TUTK**: Bitdefender `PReport-owlet-7745` (2024-05) names *Owlet Cam 2* explicitly; npm `scrypted-owlet` implements TUTK/IOTC/P2P (keywords `tutk, iotc, p2p`) | EV-942 |
+| O-1 | — | vendor stack | — | attribution | Owlet cameras run **ThroughTek Kalay / TUTK**: Bitdefender `PReport-owlet-7745` (2024-05) covers *Owlet Cam v1 and v2* and obtains root on Owlet via **CVE-2023-6321 (IOCTL `0x6008E` archive unpack)**, not the Wyze `0x284C` path; npm `scrypted-owlet` implements TUTK/IOTC/P2P (keywords `tutk, iotc, p2p`). **Owner correction 2026-10-22: the unit is a Cam 1, not Cam 2.** | EV-942, EV-946 |
 | O-2 | — | UDP 32761 `0x0601` | yes | absence | **No Owlet found.** 2 032 hosts swept (192.168.0–7/24 + 192.168.1/24), 4 attempts each: only hits are the three Wyze units (`192.168.4.23`, `.24`, `192.168.5.242`) | EV-943 |
 
 **C-7 — the cloud name.** Under interception the device resolved, unauthenticated and in clear:
@@ -115,9 +115,10 @@ verification — e.g. a trust store that includes a CA whose key is public, or a
 that can be skipped. Nothing about the *network* stands in the way any more.
 
 **Owlet — chain is known, reach is not.** If the unit is the Kalay consumer the vendor sources say it
-is, the Wyze lane transfers almost wholesale: `0x0601` UID leak → `0x1008` AuthKey (CVE-2023-6323
-class) → `0xCC51` DTLS with the empty-PSK bypass (CVE-2023-6324) → IOCTRL `0x284C` overflow
-(CVE-2023-6322) → root. Owlet is *less* likely than Wyze to carry the Jan-2024 hardening, because
+is, the Wyze lane transfers partially: `0x0601` UID leak → `0x1008` AuthKey (CVE-2023-6323 class) →
+`0xCC51` DTLS with the empty-PSK bypass (CVE-2023-6324) → IOCTL **`0x6008E` archive unpack
+(CVE-2023-6321)** → root. The Owlet handler is `0x6008E`, not Wyze's `0x284C`; the Wyze 6322 zone
+overflow is specific to Wyze/Roku devices. Owlet is *less* likely than Wyze to carry the Jan-2024 hardening, because
 Owlet's app has not shipped a security firmware wave and the Bitdefender report treats the stack as
 unmaintained. The blocker is purely that no Owlet answers today.
 
@@ -131,7 +132,8 @@ all run the mesh DNS resolver on `53/udp`, answer `example.com`, and expose noth
 nodes' locally-administered addresses). `.171` is a second Mac (NFS, rpcbind, `3283/tcp`).
 
 Hardware facts from FCC `2AIEP`: Owlet Cam V2 = `OC2A` (2022), Dream Sight = `OC3A` (2025, 2.4/5 GHz
-+ BLE). There is **no Owlet OUI** in any IEEE registry, so a MAC-prefix search cannot find it — the
++ BLE); **the Cam 1 FCC ID was not located**, and the owner confirms the unit is a Cam 1 — treat `OC2A`
+teardown data as adjacent, stack-level evidence only. There is **no Owlet OUI** in any IEEE registry, so a MAC-prefix search cannot find it — the
 device's address belongs to whatever Wi-Fi module the ODM chose. That closes the OUI route.
 
 State: Owlet reach is an open blocker, not a refuted hypothesis. Note the device may also be on a
