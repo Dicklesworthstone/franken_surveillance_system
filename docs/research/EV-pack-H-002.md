@@ -95,6 +95,11 @@ so the provider list is not the whole gate either.
 `pcMd5:%s`, next to `action:[IOT_BACK_CMD_UPGRADE]`). A delta carrying `pcUrl`/`pcMd5` was published
 and acked; it still produced no fetch, so the key names are necessary-looking but not sufficient.
 
+**`.../get` is not usable from our side, framing or not:** SUBSCRIBE to `get/accepted` is granted
+(`90 03 00 01 00`) and publishing a QoS-0 `get` then closes the connection before any reply — three
+attempts, including one after a quiet window. Only `/update` publishes are answered. So `reported`
+cannot be read back and "not delivered" vs "delivered and ignored" stays indistinguishable.
+
 **MQTT trap:** the broker accepts a QoS-1 PUBLISH with **no packet identifier**; send one anyway
 (`00 01`) and it parses the topic one field late and closes the connection with no PUBACK — which reads
 exactly like "camera absent". `deliverables/scripts/wyze_cloud.py push` therefore omits the id.
