@@ -295,3 +295,35 @@ Mirror attempts for a Play-style build: `apkmirror` answers the generic search p
 `/apk/<dev>/<app>` for this package under `glazero` or `aosu`, and its `uploads/?appcategory=` view
 returns 403 to curl. `apkpure` is Cloudflare-walled. So the blob currently has no automated source;
 an installed copy on a device (`/data/data/com.glazero.android/…`) or a Play-signed bundle is the way.
+
+## Tapo: the oracle is now offline (no network, no ban)
+
+`TP-Link Tapo 3.22.105` was used to settle the verifier from code, not inference —
+`SecureUtils__SecureUtilsKt.b` computes
+
+```
+device_confirm = SHA256(cnonce + SHA256(password) + nonce) + nonce + cnonce
+```
+
+(`h.p` is the inner SHA-256; the result is hex and compared case-insensitively). A captured triple
+from `evidence/excerpts/H-005b` (cnonce `EE5CA138D413A3D6`, nonce `C87CEA0BF708DC5D`, confirm
+`9E5645…`) makes that fully checkable locally: `tools/tapo_oracle.c` runs at ~2 M candidates/s over
+8 threads and exhausts `rockyou` (14 344 391 lines) in **7 s**.
+
+Already refuted: all of `rockyou`, and 2.1 M `Dickles`/`dickles`/`DICKLES` + 0-99999 + symbol masks.
+So the fleet password is not a dictionary word and not the AOSU pattern with a different number; it
+looks like the same generation as the Wyze one and needs a mask or a known string. The verifier no
+longer needs the unit to be awake, which removes the ban from the critical path entirely.
+
+## Yi is a TUTK camera, not ONVIF-only (from the 6.9.9 app)
+
+`config.armeabi_v7a.apk` ships `libIOTCAPIs.so`, `libAVAPIs.so` and `libPPPP_API.so` — the ThroughTek
+P2P SDK — so the Yi IPC speaks TUTK, the same family as the Wyze units and the same family this
+repository already has a first-party sans-IO stack for (`fss-tutk`). The provisioning UI also carries
+`activation_sendSoundWaves` and `activation_qrCodeBinding`, i.e. **sound-wave and QR** binding, both of
+which can be driven from a laptop instead of a phone.
+
+The unit itself is currently dormant: legacy `0x0601` on 32761 is silent and an unsigned `0xCC51
+0x1002` discovery is silent too, matching the earlier dead TCP 80 and now-silent WS-Discovery. That is
+the same "nothing answers until it is awake" state the Wyze pair showed, so a power cycle is the
+precondition for any of this — not a new finding about the camera.
