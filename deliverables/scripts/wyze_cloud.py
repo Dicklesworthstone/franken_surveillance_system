@@ -120,7 +120,10 @@ def push(thing: str, mac: str, url: str, md5: str) -> None:
     d = os.path.join(IOT_DIR, mac)
     ctx = ssl.create_default_context(cafile=os.path.join(d, "rootCA.crt"))
     ctx.load_cert_chain(os.path.join(d, "cert.pem"), os.path.join(d, "privkey.pem"))
-    body = json.dumps({"state": {"desired": {"url": url, "md5": md5, "model": "HL_CAM4"}}}).encode()
+    # both key sets: `pcUrl`/`pcMd5` are what iCamera's OTA parser reads, `url`/`md5` are what the
+    # shadow/app shape uses; sending both is harmless and covers either consumer.
+    body = json.dumps({"state": {"desired": {"url": url, "md5": md5, "model": "HL_CAM4",
+                                            "pcUrl": url, "pcMd5": md5}}}).encode()
     topic = _s(f"$aws/things/{thing}/shadow/name/wyze-service/update")
     for attempt in range(5):
         try:

