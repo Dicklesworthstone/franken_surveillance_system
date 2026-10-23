@@ -91,6 +91,10 @@ product model — that call works and returns per-provider `trigger_list`/`actio
 (`WYZEC1`, `WYZEC1-JZ`, `WYZECP1_JEF`, `WYZEC1-BL`, `HLQF3`, `CameraGroup`) still answers 3005 though,
 so the provider list is not the whole gate either.
 
+**The consumer's own key names are `pcUrl`/`pcMd5`**, not `url`/`md5` (`iCamera`: `pcUrl%d:%.960s`,
+`pcMd5:%s`, next to `action:[IOT_BACK_CMD_UPGRADE]`). A delta carrying `pcUrl`/`pcMd5` was published
+and acked; it still produced no fetch, so the key names are necessary-looking but not sufficient.
+
 **MQTT trap:** the broker accepts a QoS-1 PUBLISH with **no packet identifier**; send one anyway
 (`00 01`) and it parses the topic one field late and closes the connection with no PUBACK — which reads
 exactly like "camera absent". `deliverables/scripts/wyze_cloud.py push` therefore omits the id.
