@@ -1,0 +1,13 @@
+FROM --platform=linux/arm64 alpine:latest
+RUN apk add -q --no-cache gcc musl-dev openjdk21-jdk
+WORKDIR /w
+COPY libs/ /w/libs/
+COPY harness.c stub.c traps.h /w/
+COPY assets/ /w/assets/
+RUN gcc -shared -fPIC -o /w/libs/libandroid.so /w/stub.c -Wl,-soname,libandroid.so \
+ && cp /w/libs/libandroid.so /w/libs/liblog.so
+RUN gcc -O1 -o /w/harness /w/harness.c -ldl -I/usr/lib/jvm/java-21-openjdk/include -I/usr/lib/jvm/java-21-openjdk/include/linux
+COPY in.txt /data/in.txt
+ENV LD_LIBRARY_PATH=/w/libs
+ENV LD_PRELOAD=/w/libs/libandroid.so
+CMD ["/w/harness","/data/in.txt"]

@@ -209,3 +209,17 @@ all tested against a known pair and all miss.
 
 Both Wyze cameras now carry the negative delta; `docs/exploit/FINISH-WYZE.md` is the two-cycle
 runbook.
+
+## Tuya signer runs offline now (arm64 container)
+
+A working harness exists at `tools/thing-sign/`: the real `libthing_security.so` loads under
+Alpine/musl (musl ignores the bionic `LIBC` symbol versions) with a stub for the bionic-only surface,
+stub Android classes for the `Context` walk, a real DER certificate for the signature field, and
+assets served from disk. `computeDigest("abc","key")` → `aee1dd678aea01125dfc861f41d4072d` proves the
+crypto core runs, and `doCommandNative(ctx, 1, …)` reaches the signer and reads `assets/t_s.bmp`
+(100×75 BMP, stego key).
+
+Two gaps, both named: `assets/tecrkcehc_ext` (opened by the signer, absent from the APK) and the
+**appSecret** that `doCommandNative(ctx, 0, secret, appId, …)` needs at SDK init — we only have the
+appId (`clientId`). With the clientId substituted, `cmd 1` returns null, so the init path is where
+the next hour goes.
