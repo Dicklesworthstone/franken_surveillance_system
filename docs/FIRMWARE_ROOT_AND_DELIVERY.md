@@ -111,7 +111,9 @@ Certificates are per-device and cheap to obtain (same endpoint, that unit's `enr
 can be worked around by preparing a second unit and rebooting it instead of fighting one. The crash
 frame is 1264 bytes, channel `0x05`, type `0x04`, total `1264` at `[12:14]`, declared `0xFFFF` at
 `[16:18]`, `A`-filled, sent as raw appdata; it rebooted one unit twice and never moved another in 14
-attempts, so treat it as a probabilistic wake and not a control.
+attempts, so treat it as a probabilistic wake and not a control. **Four frames fired back-to-back left
+that unit dark for over five minutes** (no ICMP, 554 closed) — a reboot is not the only outcome, so
+budget the wake and stop rather than hammering.
 
 The shadow `get` topic is not usable from our side: a publish to `.../shadow/name/wyze-service/get`
 closes the connection even though the SUBACK to `get/accepted` was granted, so `reported` cannot be read
