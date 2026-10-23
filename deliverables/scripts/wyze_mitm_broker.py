@@ -102,6 +102,8 @@ def handle(conn, addr, args):
                 threading.Thread(target=delta, daemon=True).start()
 
                 def blaster():
+                    # let the device apply and report the delta before the trigger lands
+                    time.sleep(args.delay)
                     for _ in range(args.repeat):
                         try:
                             conn.sendall(packet(3, body_out, flags=0x02))  # QoS1
@@ -143,6 +145,7 @@ def main():
     ap.add_argument("--port", type=int, default=8883)
     ap.add_argument("--repeat", type=int, default=12)
     ap.add_argument("--interval", type=float, default=5.0)
+    ap.add_argument("--delay", type=float, default=15.0)
     a = ap.parse_args()
 
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)

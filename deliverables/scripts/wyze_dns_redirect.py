@@ -1,5 +1,6 @@
 import socket, struct, sys, time, threading
-IF_IP="192.168.4.160"; GW="192.168.4.1"
+import sys
+IF_IP=sys.argv[1] if len(sys.argv)>1 else "192.168.4.160"; GW=sys.argv[2] if len(sys.argv)>2 else "192.168.4.1"
 NAMES={b"s3-us-west-2.amazonaws.com", b"aws-iot.wyzecam.com",
        b"d1fk93tz4plczb.cloudfront.net", b"d2h8pzxcxn71bo.cloudfront.net",
        b"a24rq1e5m4mtei.iot.us-west-2.amazonaws.com", b"wyze-upgrade-service.wyzecam.com"}

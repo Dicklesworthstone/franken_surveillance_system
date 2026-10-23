@@ -2,7 +2,8 @@ import socket, ssl, os, threading, time
 THING="80482c4bcf0b"; D=os.path.expanduser("~/.config/fss-lab/wyze_iot/80482C4BCF0B")
 UP=("aws-iot.wyzecam.com",8883); SNI="a24rq1e5m4mtei.iot.us-west-2.amazonaws.com"
 def up_ctx():
-    c=ssl.create_default_context(cafile=D+"/rootCA.crt"); c.load_cert_chain(D+"/cert.pem",D+"/privkey.pem"); return c
+    c=ssl.create_default_context(cafile=D+"/rootCA.crt"); c.load_cert_chain(D+"/cert.pem",D+"/privkey.pem")
+    c.set_alpn_protocols(["x-amzn-mqtt-ca"]); return c
 def srv_ctx():
     c=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER); c.load_cert_chain("/tmp/serve443.pem")
     c.minimum_version=ssl.TLSVersion.TLSv1_2; c.maximum_version=ssl.TLSVersion.TLSv1_2
@@ -18,7 +19,8 @@ def pipe(a,b,tag):
             if tag=="C": log("C->S",d)
             else: print("S->C type", d[0]>>4, flush=True)
             b.sendall(d)
-    except Exception: pass
+    except Exception as e:
+        print("pipe",tag,"end",repr(e),flush=True)
     finally:
         for s in (a,b):
             try: s.close()
