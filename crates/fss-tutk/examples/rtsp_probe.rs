@@ -18,7 +18,6 @@ fn main() {
     let cmd = u16::from_str_radix(&args[5], 16).expect("hl cmd hex");
     let peer: std::net::SocketAddr = format!("{}:{}", args[3], args[4]).parse().expect("peer");
     let secs: u64 = args[7].parse().expect("secs");
-    
 
     let cfg = SessionConfig {
         uid: args[0].clone(),
@@ -48,6 +47,16 @@ fn main() {
     let t0 = Instant::now();
     let mut sent = false;
     let mut streamed_at: Option<Instant> = None;
+    let extra_cmds: Vec<u16> = std::env::var("TUTK_CMDS")
+        .ok()
+        .map(|spec| {
+            spec.split(',')
+                .filter_map(|x| u16::from_str_radix(x.trim().trim_start_matches("0x"), 16).ok())
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut extra_i = 0usize;
+    let mut next_extra: Option<Instant> = None;
     let mut buf = [0u8; 65535];
 
     while t0.elapsed() < Duration::from_secs(secs) {
@@ -81,11 +90,15 @@ fn main() {
             if let Some(at) = streamed_at {
                 if at.elapsed() > Duration::from_millis(400) {
                     let payload = match args[6].strip_prefix("hex:") {
-                        Some(h) => (0..h.len()).step_by(2).map(|i| u8::from_str_radix(&h[i..i+2], 16).unwrap()).collect::<Vec<u8>>(),
+                        Some(h) => (0..h.len())
+                            .step_by(2)
+                            .map(|i| u8::from_str_radix(&h[i..i + 2], 16).unwrap())
+                            .collect::<Vec<u8>>(),
                         None => args[6].as_bytes().to_vec(),
                     };
                     if let Some(rest) = args[6].strip_prefix("raw:") {
-                        let bytes = (0..rest.len()).step_by(2)
+                        let bytes = (0..rest.len())
+                            .step_by(2)
                             .map(|i| u8::from_str_radix(&rest[i..i + 2], 16).unwrap())
                             .collect::<Vec<u8>>();
                         session.send_raw_appdata(&bytes);
@@ -95,6 +108,23 @@ fn main() {
                     sent = true;
                     println!("sent hl {cmd:#06x}");
                 }
+            }
+        }
+        if sent && extra_i < extra_cmds.len() {
+            let now = Instant::now();
+            let due = match next_extra {
+                Some(t) => now >= t,
+                None => {
+                    next_extra = Some(now + Duration::from_millis(1500));
+                    false
+                }
+            };
+            if due {
+                let c = extra_cmds[extra_i];
+                extra_i += 1;
+                session.send_ioctl(c, b"{}");
+                println!("sent hl {c:#06x}");
+                next_extra = Some(now + Duration::from_millis(1500));
             }
         }
     }
