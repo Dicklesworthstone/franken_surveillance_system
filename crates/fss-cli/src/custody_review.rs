@@ -25,7 +25,7 @@ use fss_reference::reference_deployment::RELATIVE_PATH_OBJECTS;
 
 use crate::agent_json::{array, object, string, strings};
 
-/// Maximum individually disclosed faults or unexamined direct evidence references.
+/// Maximum individually disclosed faults or direct references outside the audited closure.
 /// Exhaustion refuses the summary rather than hiding a fault or implying complete provenance.
 pub const MAX_CUSTODY_DETAILS: usize = 32;
 /// Admission bound for the counters reported by the subsequent deployment read. The existing
@@ -81,6 +81,7 @@ impl std::error::Error for CustodyReviewError {}
 pub struct CustodyReview {
     anchor: LedgerAnchor,
     audit: LocalCustodyAudit,
+    denied_references: BTreeMap<ContentDigest, ContentDigest>,
     propositions: Vec<EnvelopeProposition>,
     receipt: ExplainReceipt,
     recheck_bytes: u64,
@@ -95,6 +96,12 @@ impl CustodyReview {
     /// Immutable full publication-owner observations, including every discovered fault.
     #[must_use]
     pub const fn audit(&self) -> &LocalCustodyAudit { &self.audit }
+    /// Exact direct references outside the audited manifest closure denied by current authority.
+    /// Values are verified deletion-plan digests. No denied payload was opened by this review.
+    #[must_use]
+    pub fn denied_references(&self) -> &BTreeMap<ContentDigest, ContentDigest> {
+        &self.denied_references
+    }
     /// Counts, every faulty object, and every direct reference outside the audited closure.
     #[must_use]
     pub fn propositions(&self) -> &[EnvelopeProposition] { &self.propositions }
@@ -224,7 +231,8 @@ fn check_with(
     if after.bytes_read > MAX_RECHECK_ACCOUNTED_BYTES || after.files_read > MAX_RECHECK_ACCOUNTED_FILES {
         return Err(CustodyReviewError::ContextBound);
     }
-    let propositions = project(&basis, &audit)?;
+    let denied_references = denied_references(&basis, &audit);
+    let propositions = project(&basis, &audit, &denied_references)?;
     // This is a hash of exact non-durable JSON projection bytes, not a new durable schema.
     // Every fault identity and denial reference participates; physical event state is untouched.
     let projected = array(&propositions.iter().map(|p| object(&[
@@ -236,7 +244,7 @@ fn check_with(
         vec![basis.root, basis.anchor.state_root, ContentDigest::sha256(projected.as_bytes())],
         Vec::new(), 0).map_err(|_| CustodyReviewError::InvalidBinding)?;
     checkpoint(cancelled)?;
-    Ok(CustodyReview { anchor: basis.anchor, audit, propositions, receipt,
+    Ok(CustodyReview { anchor: basis.anchor, audit, denied_references, propositions, receipt,
         recheck_bytes: after.bytes_read, recheck_files: after.files_read })
 }
 
@@ -248,13 +256,28 @@ fn proposition(basis: &Basis, suffix: &str, statement: String, state: KnowledgeS
     }
 }
 
-fn project(basis: &Basis, audit: &LocalCustodyAudit) -> Result<Vec<EnvelopeProposition>, CustodyReviewError> {
+fn direct_references(basis: &Basis) -> BTreeSet<ContentDigest> {
+    basis.event.evidence.iter().flat_map(|edge| {
+        std::iter::once(edge.digest).chain(edge.capsule_digest).chain(edge.identity_digest)
+    }).chain(basis.event.model_receipts.iter().copied()).collect()
+}
+
+// Current deletion authority can deny a named reference without granting a payload read.
+// Restrict this projection to references the event already discloses; unrelated denials stay private.
+fn denied_references(basis: &Basis, audit: &LocalCustodyAudit) -> BTreeMap<ContentDigest, ContentDigest> {
+    let observed: BTreeSet<_> = audit.objects().iter().map(|row| row.digest).collect();
+    direct_references(basis).difference(&observed)
+        .filter_map(|digest| basis.denied.get(digest).map(|plan| (*digest, *plan)))
+        .collect()
+}
+
+fn project(basis: &Basis, audit: &LocalCustodyAudit,
+    denied_references: &BTreeMap<ContentDigest, ContentDigest>,
+) -> Result<Vec<EnvelopeProposition>, CustodyReviewError> {
     if audit.roots() != [basis.root] { return Err(CustodyReviewError::InvalidBinding); }
     let observed: BTreeSet<_> = audit.objects().iter().map(|row| row.digest).collect();
     // These are referenced identities, not permission to read beyond the published closure.
-    let direct: BTreeSet<_> = basis.event.evidence.iter().flat_map(|edge| {
-        std::iter::once(edge.digest).chain(edge.capsule_digest).chain(edge.identity_digest)
-    }).chain(basis.event.model_receipts.iter().copied()).collect();
+    let direct = direct_references(basis);
     let outside: Vec<_> = direct.difference(&observed).copied().collect();
     let faults: Vec<_> = audit.objects().iter()
         .filter(|row| row.state != CustodyObjectState::Verified).collect();
@@ -279,10 +302,22 @@ fn project(basis: &Basis, audit: &LocalCustodyAudit) -> Result<Vec<EnvelopePropo
             else { "This is a byte-availability finding, not evidence of physical absence." },
         ), KnowledgeState::Known, evidence));
     }
-    if !outside.is_empty() {
+    let mut denied_by_plan = BTreeMap::<ContentDigest, Vec<ContentDigest>>::new();
+    for (digest, plan) in denied_references {
+        denied_by_plan.entry(*plan).or_default().push(*digest);
+    }
+    for (plan, references) in denied_by_plan {
+        result.push(proposition(basis, &format!("denied-references:{plan}"), format!(
+            "Current deletion authority denies these {} direct evidence references outside the audited publication closure. The first evidence identity is the deletion-plan proof; every remaining identity is a denied reference. No payload was opened; intact event metadata does not restore source availability.", references.len(),
+        ), KnowledgeState::Known, std::iter::once(plan.to_text())
+            .chain(references.into_iter().map(ContentDigest::to_text)).collect()));
+    }
+    let unexamined: Vec<_> = outside.iter()
+        .filter(|digest| !denied_references.contains_key(*digest)).copied().collect();
+    if !unexamined.is_empty() {
         result.push(proposition(basis, "unexamined-references", format!(
-            "{} direct evidence, capsule, identity or model references are outside the discoverable publication closure. All are listed here; their availability remains unexamined. Historical support roots are not included unless actually reached in this closure.", outside.len(),
-        ), KnowledgeState::Unknown, outside.iter().map(|digest| digest.to_text()).collect()));
+            "{} direct evidence, capsule, identity or model references are outside the discoverable publication closure and have no observed current deletion denial. All are listed here; their availability remains unexamined. Historical support roots are not included unless actually reached in this closure.", unexamined.len(),
+        ), KnowledgeState::Unknown, unexamined.iter().map(|digest| digest.to_text()).collect()));
     }
     Ok(result)
 }

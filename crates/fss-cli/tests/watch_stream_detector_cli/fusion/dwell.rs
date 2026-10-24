@@ -195,6 +195,7 @@ fn dwell_advice_cannot_write_authority_or_bypass_health_and_native_budgets() -> 
     let f = Fixture::mjpeg("dwell-fusion-gates", true)?;
     let base = dwell_args(&f);
     let native = good(run(&base)?)?;
+    assert_eq!(member(&native, "publication_blocked")?, &Value::Bool(false));
     let p = dwell_profile(&native)?;
     let before = f.snapshot()?;
     for flag in ["--approve", "--retain-health", "--retain-coverage"] {

@@ -122,6 +122,10 @@ fn conditioned_support(
             digest: row.digest,
             availability: availability(row.state),
         })
+        .chain(review.denied_references().keys().map(|digest| AvailabilityObservation {
+            digest: *digest,
+            availability: ObjectAvailability::Unavailable,
+        }))
         .collect();
     analyze_current_availability(
         projection,
@@ -205,11 +209,11 @@ pub(super) fn augment(
     for (index, p) in support.propositions.iter().enumerate() {
         let replacement = if p.id.ends_with(":unexpanded-references") {
             Some(
-                "This graph stage did not hydrate these references. The custody section reports only the current publication closure; other references remain unexamined.",
+                "This graph stage did not hydrate these references. The custody section reports current publication-byte observations and current deletion denials; other references remain unexamined.",
             )
         } else if p.id.ends_with(":custody-and-independence") {
             Some(
-                "This graph stage certifies neither custody nor independence. The custody section adds current publication-byte observations, not independent corroboration or complete semantic provenance.",
+                "This graph stage certifies neither custody nor independence. The custody section adds current publication-byte observations and current deletion denials, not independent corroboration or complete semantic provenance.",
             )
         } else {
             None
@@ -219,6 +223,9 @@ pub(super) fn augment(
         }
     }
     let mut warnings = vec![VALIDITY.to_owned()];
+    if !review.denied_references().is_empty() {
+        warnings.push("Current deletion authority denies direct evidence outside the audited publication closure. Verified event metadata does not establish that evidence's availability.".to_owned());
+    }
     if !audit.all_verified() {
         warnings.push("Custody faults are present. This explanation is not an intact-custody success and does not retract or adjudicate the event.".to_owned());
     }

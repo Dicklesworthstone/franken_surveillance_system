@@ -193,3 +193,63 @@ fn historical_custody_rechecks_the_current_head_as_well_as_the_selected_prefix()
         CustodyAuditLimits::default(), &scope, &|| false), Err(CustodyReviewError::RecheckFailed)));
     Ok(())
 }
+
+#[test]
+fn known_deleted_outside_references_are_distinct_from_intact_metadata_and_unknown_sources() -> TestResult {
+    let f = Fixture::new("outside-deletion")?;
+    let snapshot = read(&f)?;
+    let mut basis = binding(&snapshot, &f.event.event_id)?;
+    let review = checked(&f)?;
+    let deleted = ContentDigest::sha256(b"current denied reference");
+    let unknown = ContentDigest::sha256(b"unexamined outside reference");
+    let unrelated = ContentDigest::sha256(b"unrelated private denial");
+    let plan = ContentDigest::sha256(b"verified current deletion plan");
+    for digest in [deleted, unknown] {
+        let mut edge = basis.event.evidence[0].clone();
+        edge.digest = digest;
+        basis.event.evidence.push(edge);
+    }
+    basis.denied.insert(deleted, plan);
+    basis.denied.insert(unrelated, plan);
+    let denied = denied_references(&basis, review.audit());
+    assert_eq!(denied, BTreeMap::from([(deleted, plan)]));
+    let props = project(&basis, review.audit(), &denied)?;
+    let closure = props.iter().find(|p| p.id.ends_with(":publication-closure"))
+        .ok_or("publication closure")?;
+    assert!(closure.statement.contains("all_verified=true"));
+    assert!(closure.statement.starts_with("Current event publication closure:"));
+    let denial = props.iter().find(|p| p.id.ends_with(&format!(":denied-references:{plan}")))
+        .ok_or("current source denial")?;
+    assert_eq!(denial.state, KnowledgeState::Known);
+    assert_eq!(denial.evidence, vec![plan.to_text(), deleted.to_text()]);
+    assert!(denial.statement.contains("No payload was opened"));
+    let outside = props.iter().find(|p| p.id.ends_with(":unexamined-references"))
+        .ok_or("unknown source")?;
+    assert_eq!(outside.state, KnowledgeState::Unknown);
+    assert_eq!(outside.evidence, vec![unknown.to_text()]);
+    assert!(!props.iter().any(|p| p.evidence.contains(&unrelated.to_text())));
+    Ok(())
+}
+
+#[test]
+fn every_known_denied_reference_consumes_the_same_complete_detail_allowance() -> TestResult {
+    let f = Fixture::new("outside-denial-cap")?;
+    let mut basis = binding(&read(&f)?, &f.event.event_id)?;
+    let review = checked(&f)?;
+    let plan = ContentDigest::sha256(b"verified deletion");
+    for index in 0..=MAX_CUSTODY_DETAILS {
+        let digest = ContentDigest::sha256(format!("denied outside reference {index}").as_bytes());
+        let mut edge = basis.event.evidence[0].clone();
+        edge.digest = digest;
+        basis.event.evidence.push(edge);
+        basis.denied.insert(digest, plan);
+        let denied = denied_references(&basis, review.audit());
+        let result = project(&basis, review.audit(), &denied);
+        if index < MAX_CUSTODY_DETAILS {
+            assert!(result.is_ok());
+        } else {
+            assert_eq!(result, Err(CustodyReviewError::ContextBound));
+        }
+    }
+    Ok(())
+}
