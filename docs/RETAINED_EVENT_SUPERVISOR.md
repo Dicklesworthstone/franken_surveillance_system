@@ -387,6 +387,106 @@ binding; a supplied subset is not proof of a complete original inventory.
 authority root. It preserves the finite windows, cameras, model pins, calibration, policy and
 limits, and grants no session or source access by itself.
 
+## Durable polling with an existing session
+
+Session supervision adds restart-safe delivery to discovery. Open a session through the existing
+agent interface, then select a stable session-local subscription label:
+
+```sh
+fss session open --json \
+  --root /absolute/deployment \
+  --principal principal:local-operator \
+  --mission "Review retained native detector evidence" \
+  --objective "Preserve source verification and exact delivery progress" \
+  --view brief --budget-tokens 100000
+
+fss-event supervise \
+  --root /absolute/deployment --site site:home \
+  --discover-plan discover-supervisor.json \
+  --discover-digest sha256:EXACT_FILE_SHA256 \
+  --session session:ID_FROM_SESSION_OPEN \
+  --subscription retained-person-review \
+  --authority-root sha256:CURRENT_AUTHORITY_STATE_ROOT \
+  --max-poll-attempts 16
+```
+
+Keep the exact original discovery file and its digest for every command on that subscription.
+The registration freezes its bytes, camera/model/calibration/policy choices, finite capture
+windows, source-read caps, report bound and lifetime attempt ceiling. The separate
+`--authority-root` explicitly selects the current deployment head for each invocation; it
+does not edit the registered template. A changed interpretation generation requires an explicit
+fresh session. Changing a subscription's configuration or increasing its allowance is refused.
+
+A first poll performs complete current discovery and native supervision. It stores the complete
+report, original authority, exact metadata/native source inventory and delivery receipt in the
+existing session journal before releasing output. The `fss.retained_supervisor_session_report.v1`
+envelope includes the embedded `report`, its exact `payload_digest`, and a `delivery_receipt`.
+
+While a delivery remains pending, another poll revalidates every original source under the
+explicit current authority, then returns the original report bytes and delivery receipt.
+The envelope keeps `report_authority_root` separate from `current_authority_root` and
+`source_validation`. New events are not spliced into that historical report. Metadata-only
+exclusions retain their original verification class; sources previously opened natively,
+including generation exclusions, must pass native privacy, deletion and custody checks again.
+
+Acknowledge the exact receipt in a separate invocation using the same registration arguments:
+
+```sh
+fss-event supervise \
+  --root /absolute/deployment --site site:home \
+  --discover-plan discover-supervisor.json \
+  --discover-digest sha256:EXACT_FILE_SHA256 \
+  --session session:ID_FROM_SESSION_OPEN \
+  --subscription retained-person-review \
+  --authority-root sha256:CURRENT_AUTHORITY_STATE_ROOT \
+  --max-poll-attempts 16 \
+  --acknowledge sha256:EXACT_DELIVERY_RECEIPT
+```
+
+A new ACK first revalidates the pending report's sources, then consumes only that exact delivery.
+Repeating the most recent committed ACK is idempotent and does not consume a newer pending
+report. ACK returns no report and performs no successor evaluation. A subsequent poll recomputes
+the entire fixed scope from unique source observations; previous scores are never added again.
+
+Use `--discard sha256:EXACT_DELIVERY_RECEIPT` instead of `--acknowledge` to abandon an
+unavailable or unwanted pending report explicitly. Discard requires the live owning session and
+current authority but no native source reads. It records `discarded`, never `acknowledged`,
+and releases no old report bytes. An exact last-discard retry also preserves any successor.
+
+### Persistent work accounting and recovery
+
+`--max-poll-attempts` is a finite lifetime ceiling from 1 through 64. Before a fresh native
+evaluation, pending redelivery validation or new ACK validation, the owner durably reserves one
+attempt and the **full** registered `max_read_bytes` and `max_read_attempts` caps. It pins
+that journal change before source work begins. Failed work, cancellation and process crashes do
+not refund the reservation. The envelope exposes cumulative `attempts_reserved`,
+`reserved_bytes` and `reserved_read_attempts`; separate source validation records measured
+read consumption. These counters do not include opening/recovery or filesystem metadata.
+
+An exact already-committed ACK retry and an explicit discard need no new source attempt. Choose
+a ceiling that leaves room to validate and acknowledge delivered reports: with a ceiling of one,
+the initial evaluation can succeed but a new source-validating ACK cannot. Discard remains
+available after that allowance is exhausted, and it does not reset the allowance.
+
+The existing exclusive session writer, crash-classifying journal, root pin and evidence clock
+own this state under `agent/sessions`. No loose cursor file, source publication or effect record
+is created. Register, reserve, publish, release, ACK and discard are canonical bounded commands
+re-executed during recovery. Torn/uncertain appends retain the existing reconciliation behavior;
+a failed response may follow committed progress and must not be interpreted as rollback.
+Older readers refuse the new journal record kind instead of silently dropping delivery progress.
+
+Pending payloads are private historical cognition. Inspection exposes descriptors and counters,
+not a raw-payload accessor; the journal and its backups require the existing protected agent
+storage. Every historical release uses current native source checks, so committed source
+deletion or privacy changes can block it even while its pending descriptor remains durable.
+The complete output stays within the registered report bound and 2 MiB hard ceiling, with
+16 KiB reserved for its session envelope. The same strict output parser admits a fresh report
+before publication and on redelivery; ordinary operator-input parser limits remain unchanged.
+
+Each invocation performs one finite action. This interface has no background timer or automatic
+window advancement. It does not establish persistent statistical exposure accounting, qualified
+calibration, class absence, cross-camera physical identity or effect authorization.
+
 ## Legacy simulation and verification scope
 
 `fss-event supervise --plan FILE` keeps the existing `fss.supervisor_plan.v1` simulation. Its
@@ -404,4 +504,9 @@ evidence, missing camera coverage, source/time/package substitution, resource re
 custody, current masks and actual import deletion. Discovery contracts additionally verify automatic
 catalog-to-plan selection, executable explicit replay, first-enclosing capture windows, missing
 cameras, explicit generation exclusions, shared discovery/supervision budgets and exact cold retries.
-These fixtures make no detector-quality or complete NS-1 qualification claim.
+Durable-session contracts additionally exercise cold redelivery and exact ACK/discard, unrelated
+authority advancement, current deletion of an originally native-verified generation exclusion,
+nonrefillable lifetime attempts, and unchanged canonical source/effect inventories. Journal unit
+contracts inject all four real append crash phases for reservation, publication, release and ACK,
+then reopen and recover exact pending state. These fixtures make no detector-quality or complete
+NS-1 qualification claim.

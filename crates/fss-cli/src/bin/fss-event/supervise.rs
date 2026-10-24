@@ -42,6 +42,18 @@ const HELP: &str = "fss-event supervise --root DIR --site SITE\n\
   windows, and immediately supervises them under one shared read allowance. Its complete\n\
   report includes an executable selected_plan, explicit exclusions and source-read costs.\n\
 \n\
+  Durable discovery uses an existing fss session open identity:\n\
+    --session ID --subscription LABEL --authority-root sha256:CURRENT_ROOT\n\
+    --max-poll-attempts N [--acknowledge DELIVERY_RECEIPT | --discard DELIVERY_RECEIPT]\n\
+  One invocation performs one finite poll, exact ACK or explicit discard. The original\n\
+  discovery file and all read/attempt limits remain immutable for that subscription.\n\
+  Every native evaluation or source revalidation durably reserves its full read caps\n\
+  before work, including failed or interrupted attempts. A complete report is retained\n\
+  before output. Pending retries revalidate all original sources against current authority\n\
+  and preserve the exact historical report bytes and delivery receipt. ACK revalidates\n\
+  sources and consumes only its exact receipt; discard claims no ACK. The next evaluation\n\
+  requires a separate command. No background loop, source publication or effect is started.\n\
+\n\
   --plan selects the legacy fss.supervisor_plan.v1 caller-score simulation. Its\n\
   fss.supervisor_report.v1 explicitly labels unverified source custody and statistical\n\
   assumptions. Its numeric Ville fields do not establish an anytime false-alarm guarantee.\n";
@@ -324,6 +336,12 @@ pub(super) fn main(args: &[OsString]) -> ExitCode {
                 | "--retained-digest"
                 | "--discover-plan"
                 | "--discover-digest"
+                | "--session"
+                | "--subscription"
+                | "--authority-root"
+                | "--max-poll-attempts"
+                | "--acknowledge"
+                | "--discard"
                 | "--report-out"
         ) {
             eprintln!("{ERR_CLI_MALFORMED_VALUE}: unknown supervise option {flag}");
@@ -344,6 +362,12 @@ pub(super) fn main(args: &[OsString]) -> ExitCode {
         || values.contains_key("--retained-digest")
         || values.contains_key("--discover-plan")
         || values.contains_key("--discover-digest")
+        || values.contains_key("--session")
+        || values.contains_key("--subscription")
+        || values.contains_key("--authority-root")
+        || values.contains_key("--max-poll-attempts")
+        || values.contains_key("--acknowledge")
+        || values.contains_key("--discard")
     {
         return retained::main(&values);
     }

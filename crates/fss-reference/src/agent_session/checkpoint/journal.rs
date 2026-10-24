@@ -30,6 +30,9 @@ pub mod workspace;
 /// Durable, session-owned follow delivery and contiguous acknowledgement receipts.
 pub mod follow;
 
+/// Durable retained-supervision reports, lifetime reservations and exact acknowledgement.
+pub mod supervision;
+
 use crate::agent_session::work_claims::{WorkClaimError, WorkClaimLimits};
 use coordination::CoordinationState;
 
@@ -194,6 +197,8 @@ pub struct SessionRecoveryState {
     pub cases: Vec<coordination::investigations::InvestigationRevision>,
     /// Exact subscription progress and unacknowledged deliveries, retained without renewal.
     pub follows: Vec<follow::FollowSubscription>,
+    /// Historical supervision progress; pending descriptors grant no current source access.
+    pub supervisions: Vec<supervision::SupervisionSubscription>,
 }
 
 /// Re-executes the native bounded session, disclosure, workspace, claim and case verifiers
@@ -256,6 +261,7 @@ pub fn inspect_session_bytes(
             .map(|cases| cases.heads().cloned().collect())
             .unwrap_or_default(),
         follows: restored.follows.retained(),
+        supervisions: restored.supervisions.retained(),
     })
 }
 
@@ -730,6 +736,7 @@ struct ReplayedSessionState {
     coordination: Option<CoordinationState>,
     workspaces: Option<workspace::WorkspaceState>,
     follows: follow::FollowState,
+    supervisions: supervision::SupervisionState,
 }
 
 fn replay_all(
@@ -743,6 +750,7 @@ fn replay_all(
     let mut cursor_history = None;
     let mut workspaces = None;
     let mut follows = follow::FollowState::default();
+    let mut supervisions = supervision::SupervisionState::default();
     for record in report.records() {
         match record.kind() {
             SESSION_CHECKPOINT_RECORD_KIND => {
@@ -798,6 +806,10 @@ fn replay_all(
                 let sessions = memory.as_mut().ok_or(DurableSessionError::InvalidHistory)?;
                 follow::replay_command(record.payload(), sessions, &mut follows, limits)?;
             }
+            supervision::SUPERVISION_COMMAND_RECORD_KIND => {
+                let sessions = memory.as_mut().ok_or(DurableSessionError::InvalidHistory)?;
+                supervision::replay_command(record.payload(), sessions, &mut supervisions, limits)?;
+            }
             _ => return Err(DurableSessionError::InvalidHistory),
         }
     }
@@ -806,6 +818,7 @@ fn replay_all(
         coordination,
         workspaces,
         follows,
+        supervisions,
     })
 }
 

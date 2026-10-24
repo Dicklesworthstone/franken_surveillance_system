@@ -43,6 +43,8 @@ jobs:
           cargo +nightly-2026-08-31 test --locked --offline -p fss-object --test effect_journal_contract --test spool_read_budget || activity_exit=1
           cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test recorded_activity_contract || activity_exit=1
           cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --bin fss-infer --test recorded_activity_cli_contract --test evidence_activity_contract || activity_exit=1
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --lib agent_session::checkpoint::journal::supervision:: || activity_exit=1
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --lib json_input:: || activity_exit=1
           cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --lib supervisor::retained:: || activity_exit=1
           cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --lib custody_review:: || activity_exit=1
           cargo +nightly-2026-08-31 test --no-fail-fast --locked --offline -p fss-cli --test supervisor_retained_contract --test supervisor_e2e_contract --test query_surface_contract || activity_exit=1

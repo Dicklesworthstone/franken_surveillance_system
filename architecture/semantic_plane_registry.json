@@ -36,6 +36,7 @@
     "crates/fss-reference/src/alert.rs",
     "crates/fss-reference/src/deployment_backup.rs",
     "crates/fss-reference/src/deployment_session.rs",
+    "crates/fss-reference/src/deployment_session/supervision.rs",
     "crates/fss-reference/src/durable_effect.rs",
     "crates/fss-reference/src/ingest/historical_health.rs",
     "crates/fss-reference/src/policy.rs",
@@ -45,6 +46,16 @@
     "crates/fss-reference/src/situation_sections.rs"
   ],
   "module_declarations": {
+    "crates/fss-cli/src/bin/fss-event/supervise/retained.rs": "support",
+    "crates/fss-cli/src/bin/fss-event/supervise/retained/session.rs": "support",
+    "crates/fss-cli/src/supervisor/retained.rs": "cognition",
+    "crates/fss-cli/src/supervisor/retained/budget.rs": "support",
+    "crates/fss-cli/src/supervisor/retained/clock.rs": "support",
+    "crates/fss-cli/src/supervisor/retained/discovery.rs": "cognition",
+    "crates/fss-cli/src/supervisor/retained/discovery/revalidation.rs": "cognition",
+    "crates/fss-cli/src/supervisor/retained/input.rs": "support",
+    "crates/fss-cli/src/supervisor/retained/render.rs": "cognition",
+    "crates/fss-cli/tests/supervisor_retained_contract/session.rs": "support",
     "crates/fss-codec-h265/src/bits.rs": "support",
     "crates/fss-codec-h265/src/cabac.rs": "support",
     "crates/fss-codec-h265/src/cabac_tables.rs": "support",
@@ -167,6 +178,7 @@
     "crates/fss-graph-algorithms/src/topo.rs": "cognition",
     "crates/fss-graph-algorithms/src/weighted.rs": "cognition",
     "crates/fss-graph-algorithms/src/zset.rs": "cognition",
+    "crates/fss-object/src/spool/read_budget.rs": "support",
     "crates/fss-reference/src/activity.rs": "cognition",
     "crates/fss-reference/src/activity_replay.rs": "cognition",
     "crates/fss-reference/src/activity_replay/belief.rs": "cognition",
@@ -223,6 +235,9 @@
     "crates/fss-reference/src/agent_session/checkpoint/journal/disclosure/workspace.rs": "authority",
     "crates/fss-reference/src/agent_session/checkpoint/journal/follow.rs": "authority",
     "crates/fss-reference/src/agent_session/checkpoint/journal/follow/tests.rs": "support",
+    "crates/fss-reference/src/agent_session/checkpoint/journal/supervision.rs": "cognition",
+    "crates/fss-reference/src/agent_session/checkpoint/journal/supervision/codec.rs": "support",
+    "crates/fss-reference/src/agent_session/checkpoint/journal/supervision/tests.rs": "support",
     "crates/fss-reference/src/agent_session/checkpoint/journal/workspace.rs": "authority",
     "crates/fss-reference/src/agent_session/checkpoint/journal/workspace/rebase.rs": "authority",
     "crates/fss-reference/src/agent_session/checkpoint/journal/workspace/rebase/tests.rs": "support",
@@ -299,6 +314,7 @@
     "crates/fss-reference/src/deployment_session/follow.rs": "cognition",
     "crates/fss-reference/src/deployment_session/investigation.rs": "cognition",
     "crates/fss-reference/src/deployment_session/plan.rs": "cognition",
+    "crates/fss-reference/src/deployment_session/supervision.rs": "cognition",
     "crates/fss-reference/src/deployment_session/tests.rs": "support",
     "crates/fss-reference/src/deployment_session/trauma_guard.rs": "cognition",
     "crates/fss-reference/src/deployment_status.rs": "support",
@@ -412,8 +428,8 @@
     "crates/fss-reference/src/ingest/inference/model.rs": "support",
     "crates/fss-reference/src/ingest/inference/tests.rs": "support",
     "crates/fss-reference/src/ingest/long_dwell.rs": "support",
-    "crates/fss-reference/src/ingest/long_dwell/detector.rs": "cognition",
     "crates/fss-reference/src/ingest/long_dwell/classify.rs": "cognition",
+    "crates/fss-reference/src/ingest/long_dwell/detector.rs": "cognition",
     "crates/fss-reference/src/ingest/long_dwell/fusion.rs": "cognition",
     "crates/fss-reference/src/ingest/long_dwell/health.rs": "support",
     "crates/fss-reference/src/ingest/long_dwell/health_tests.rs": "support",
@@ -421,8 +437,8 @@
     "crates/fss-reference/src/ingest/long_dwell/limits.rs": "support",
     "crates/fss-reference/src/ingest/long_dwell/reader.rs": "support",
     "crates/fss-reference/src/ingest/long_dwell/tests.rs": "support",
-    "crates/fss-reference/src/ingest/long_dwell/tests/detector.rs": "support",
     "crates/fss-reference/src/ingest/long_dwell/tests/classify.rs": "support",
+    "crates/fss-reference/src/ingest/long_dwell/tests/detector.rs": "support",
     "crates/fss-reference/src/ingest/long_dwell/tests/fusion.rs": "support",
     "crates/fss-reference/src/ingest/long_dwell/tests/incremental.rs": "support",
     "crates/fss-reference/src/ingest/long_dwell_replay.rs": "support",
@@ -461,6 +477,7 @@
     "crates/fss-reference/src/ingest/privacy_mask/live/fixture.rs": "support",
     "crates/fss-reference/src/ingest/privacy_mask/live/tests.rs": "support",
     "crates/fss-reference/src/ingest/privacy_mask/tests.rs": "support",
+    "crates/fss-reference/src/ingest/recorded_activity.rs": "cognition",
     "crates/fss-reference/src/ingest/recorded_corroboration.rs": "support",
     "crates/fss-reference/src/ingest/recorded_corroboration/dependencies.rs": "cognition",
     "crates/fss-reference/src/ingest/recorded_corroboration/dependencies/tests.rs": "support",
@@ -473,7 +490,6 @@
     "crates/fss-reference/src/ingest/recorded_coverage.rs": "support",
     "crates/fss-reference/src/ingest/recorded_coverage/currency.rs": "support",
     "crates/fss-reference/src/ingest/recorded_coverage/tests.rs": "support",
-    "crates/fss-reference/src/ingest/recorded_activity.rs": "cognition",
     "crates/fss-reference/src/ingest/recorded_decode.rs": "support",
     "crates/fss-reference/src/ingest/recorded_decode/h264.rs": "support",
     "crates/fss-reference/src/ingest/recorded_decode/h264/tests.rs": "support",
@@ -685,16 +701,7 @@
     "crates/fss-reference/src/source.rs": "authority",
     "crates/fss-reference/src/source/atomic_tests.rs": "support",
     "crates/fss-reference/src/tests.rs": "support",
-    "crates/fss-reference/src/time_tolerance.rs": "authority",
-    "crates/fss-object/src/spool/read_budget.rs": "support",
-    "crates/fss-cli/src/supervisor/retained.rs": "cognition",
-    "crates/fss-cli/src/supervisor/retained/input.rs": "support",
-    "crates/fss-cli/src/supervisor/retained/render.rs": "cognition",
-    "crates/fss-cli/src/supervisor/retained/clock.rs": "support",
-    "crates/fss-cli/src/supervisor/retained/budget.rs": "support",
-    "crates/fss-cli/src/bin/fss-event/supervise/retained.rs": "support",
-    "crates/fss-cli/src/supervisor/retained/discovery.rs": "cognition",
-    "crates/fss-cli/src/supervisor/retained/discovery/revalidation.rs": "cognition"
+    "crates/fss-reference/src/time_tolerance.rs": "authority"
   },
   "types": {
     "AlertEffectRecord": {
@@ -1074,6 +1081,96 @@
       "file": "crates/fss-cli/src/supervisor/retained/discovery/revalidation.rs",
       "plane": "cognition",
       "description": "Current native source revalidation of a historical discovery inventory, with exact authority bracket and charged read costs; not a complete current catalog or effect grant"
+    },
+    "DurableSupervisionError": {
+      "file": "crates/fss-reference/src/agent_session/checkpoint/journal/supervision.rs",
+      "plane": "support",
+      "description": "Typed bounded supervision journal refusal; no report bytes or hidden subscription identity."
+    },
+    "SupervisionRegistration": {
+      "file": "crates/fss-reference/src/agent_session/checkpoint/journal/supervision.rs",
+      "plane": "cognition",
+      "description": "Immutable exact finite configuration and conservative lifetime native-read ceilings owned by an existing authenticated session; no new grant."
+    },
+    "SupervisionSourcePin": {
+      "file": "crates/fss-reference/src/agent_session/checkpoint/journal/supervision.rs",
+      "plane": "cognition",
+      "description": "Historical exact package-event revision and original metadata/native verification class; current access requires independent native checks."
+    },
+    "SupervisionReservation": {
+      "file": "crates/fss-reference/src/agent_session/checkpoint/journal/supervision.rs",
+      "plane": "cognition",
+      "description": "Durably charged one-use read attempt bound to an explicit current anchor; failure or crash never refunds the full allowance."
+    },
+    "PendingSupervisionDelivery": {
+      "file": "crates/fss-reference/src/agent_session/checkpoint/journal/supervision.rs",
+      "plane": "cognition",
+      "description": "Private historical report, complete source inventory and original authority bound to one exact delivery receipt; public inspection exposes descriptors only."
+    },
+    "SupervisionSubscription": {
+      "file": "crates/fss-reference/src/agent_session/checkpoint/journal/supervision.rs",
+      "plane": "cognition",
+      "description": "Recovered finite supervision progress with immutable scope, nonrefillable attempts, private pending delivery and exact ACK/discard identities."
+    },
+    "SupervisionAction": {
+      "file": "crates/fss-reference/src/deployment_session/supervision.rs",
+      "plane": "cognition",
+      "description": "One explicit poll, exact acknowledgement or discard; no implicit successor evaluation or effect execution."
+    },
+    "SupervisionSessionRequest": {
+      "file": "crates/fss-reference/src/deployment_session/supervision.rs",
+      "plane": "cognition",
+      "description": "Immutable registration and caller-supplied current authority root for one finite session operation."
+    },
+    "SupervisionSessionBinding": {
+      "file": "crates/fss-reference/src/deployment_session/supervision.rs",
+      "plane": "support",
+      "description": "Borrowed exact request, principal, deployment namespace and history ceilings presented to explicit operation admission."
+    },
+    "SupervisionSessionBoundary": {
+      "file": "crates/fss-reference/src/deployment_session/supervision.rs",
+      "plane": "support",
+      "description": "Named admission points for history, journal, reservation, native work, current revalidation and complete output."
+    },
+    "SupervisionAdapterError": {
+      "file": "crates/fss-reference/src/deployment_session/supervision.rs",
+      "plane": "support",
+      "description": "Native source-owner or runtime refusal retaining its stable diagnostic without exposing a partial payload."
+    },
+    "SupervisionEvaluation": {
+      "file": "crates/fss-reference/src/deployment_session/supervision.rs",
+      "plane": "cognition",
+      "description": "Complete fresh native computation and complete original source inventory awaiting durable pending publication."
+    },
+    "SupervisionValidation": {
+      "file": "crates/fss-reference/src/deployment_session/supervision.rs",
+      "plane": "cognition",
+      "description": "Separate current native validation of an exact historical inventory with bounded measured source costs; no new complete-catalog or absence claim."
+    },
+    "SupervisionSessionHead": {
+      "file": "crates/fss-reference/src/deployment_session/supervision.rs",
+      "plane": "authority",
+      "description": "Exact observed canonical anchor, ledger/effect journal roots and existing evidence-clock watermark; observation grants no effects."
+    },
+    "SupervisionSessionOutcome": {
+      "file": "crates/fss-reference/src/deployment_session/supervision.rs",
+      "plane": "cognition",
+      "description": "One complete historical report, exact ACK or explicit discard result; original and current source authority remain distinct."
+    },
+    "SupervisionSessionDelivery": {
+      "file": "crates/fss-reference/src/deployment_session/supervision.rs",
+      "plane": "cognition",
+      "description": "Complete admitted outcome with live session, current history, durable subscription state and pinned journal root."
+    },
+    "SupervisionSessionError": {
+      "file": "crates/fss-reference/src/deployment_session/supervision.rs",
+      "plane": "support",
+      "description": "Typed admission, session, CAS, source or authority refusal."
+    },
+    "SupervisionSessionFailure": {
+      "file": "crates/fss-reference/src/deployment_session/supervision.rs",
+      "plane": "support",
+      "description": "Refusal with definitely committed reservations and ACK/discard progress; never claims rollback or emits successful report bytes."
     }
   }
 }

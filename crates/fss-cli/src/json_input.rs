@@ -13,6 +13,8 @@ use std::collections::BTreeMap;
 pub const MAX_INPUT_BYTES: usize = 1024 * 1024;
 const MAX_DEPTH: usize = 32;
 const MAX_NODES: usize = 65_536;
+const MAX_RETAINED_REPORT_BYTES: usize = 2 * 1024 * 1024;
+const MAX_RETAINED_REPORT_NODES: usize = 262_144;
 const MAX_STRING_BYTES: usize = 64 * 1024;
 
 /// One decoded JSON value.
@@ -106,10 +108,33 @@ impl Value {
 
 /// Decodes one complete JSON document.
 pub fn parse(text: &str) -> Result<Value, JsonError> {
-    if text.len() > MAX_INPUT_BYTES {
+    parse_bounded(text, MAX_INPUT_BYTES, MAX_NODES, "document exceeds the input bound")
+}
+
+/// Checks a complete retained-supervisor output before durable publication and redelivery.
+///
+/// Retained output has its own finite 2 MiB / 262,144-node envelope. Ordinary intent parsing
+/// retains its original smaller limits. Duplicate keys, depth, strings and trailing bytes remain
+/// subject to the same strict parser, and this function does not grant source or effect authority.
+pub fn parse_retained_supervisor_report(text: &str) -> Result<Value, JsonError> {
+    parse_bounded(
+        text,
+        MAX_RETAINED_REPORT_BYTES,
+        MAX_RETAINED_REPORT_NODES,
+        "document exceeds the retained report bound",
+    )
+}
+
+fn parse_bounded(
+    text: &str,
+    maximum_bytes: usize,
+    maximum_nodes: usize,
+    oversize_reason: &'static str,
+) -> Result<Value, JsonError> {
+    if text.len() > maximum_bytes {
         return Err(JsonError {
-            at: MAX_INPUT_BYTES,
-            reason: "document exceeds the input bound",
+            at: maximum_bytes,
+            reason: oversize_reason,
         });
     }
     let mut parser = Parser {
@@ -117,6 +142,7 @@ pub fn parse(text: &str) -> Result<Value, JsonError> {
         text,
         at: 0,
         nodes: 0,
+        maximum_nodes,
     };
     let value = parser.value(0)?;
     parser.whitespace();
@@ -131,6 +157,7 @@ struct Parser<'a> {
     text: &'a str,
     at: usize,
     nodes: usize,
+    maximum_nodes: usize,
 }
 
 impl Parser<'_> {
@@ -165,7 +192,7 @@ impl Parser<'_> {
             return self.fail("document nests too deeply");
         }
         self.nodes += 1;
-        if self.nodes > MAX_NODES {
+        if self.nodes > self.maximum_nodes {
             return self.fail("document has too many values");
         }
         self.whitespace();
@@ -433,5 +460,37 @@ mod tests {
         assert_eq!(Value::Text("007".to_owned()).integer(), None);
         assert_eq!(Value::Number("1.5".to_owned()).integer(), None);
         assert_eq!(Value::Text("".to_owned()).integer(), None);
+    }
+
+    #[test]
+    fn retained_report_bounds_do_not_expand_intent_admission() -> Result<(), JsonError> {
+        let item = format!("\"{}\"", "a".repeat(32 * 1024));
+        let large = format!("[{}]", vec![item; 40].join(","));
+        assert!(large.len() > MAX_INPUT_BYTES);
+        assert!(parse(&large).is_err());
+        assert_eq!(
+            parse_retained_supervisor_report(&large)?.array().map(<[Value]>::len),
+            Some(40),
+        );
+
+        let many = format!("[{}]", vec!["0"; MAX_NODES + 1].join(","));
+        assert!(many.len() < MAX_INPUT_BYTES);
+        assert!(parse(&many).is_err());
+        assert_eq!(
+            parse_retained_supervisor_report(&many)?.array().map(<[Value]>::len),
+            Some(MAX_NODES + 1),
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn retained_reports_still_refuse_ambiguity_and_complete_capacity_overflow() {
+        for bad in [r#"{"a":1,"a":2}"#, r#"{"a":1} trailing"#] {
+            assert!(parse_retained_supervisor_report(bad).is_err());
+        }
+        let oversized = " ".repeat(MAX_RETAINED_REPORT_BYTES + 1);
+        assert!(parse_retained_supervisor_report(&oversized).is_err());
+        let too_many = format!("[{}]", vec!["0"; MAX_RETAINED_REPORT_NODES].join(","));
+        assert!(parse_retained_supervisor_report(&too_many).is_err());
     }
 }

@@ -20,6 +20,9 @@ use fss_core::{
 };
 use fss_reference::{ReferenceDeployment, ReplayCx};
 
+#[path = "retained/session.rs"]
+mod session;
+
 #[derive(Clone, Copy)]
 enum Mode {
     Explicit,
@@ -28,14 +31,14 @@ enum Mode {
 
 enum InputPlan {
     Explicit(RetainedSupervisorPlan),
-    Discover(RetainedDiscoveryRequest),
+    Discover { request: RetainedDiscoveryRequest, bytes: Vec<u8> },
 }
 
 impl InputPlan {
     fn template(&self) -> &RetainedSupervisorPlan {
         match self {
             Self::Explicit(plan) => plan,
-            Self::Discover(request) => request.template(),
+            Self::Discover { request, .. } => request.template(),
         }
     }
 }
@@ -48,6 +51,7 @@ struct Options {
     plan: PathBuf,
     digest: ContentDigest,
     report_out: Option<PathBuf>,
+    session: Option<session::SessionOptions>,
 }
 
 struct Failure {
@@ -118,6 +122,10 @@ fn parse(values: &BTreeMap<String, OsString>) -> Result<Options> {
         None => "principal:local-operator",
     };
     PrincipalId::parse(principal).map_err(Failure::malformed)?;
+    let session = session::parse(values)?;
+    if session.is_some() && !discover {
+        return Err(Failure::malformed("session supervision requires --discover-plan and --discover-digest"));
+    }
     Ok(Options {
         mode,
         root: PathBuf::from(root),
@@ -126,6 +134,7 @@ fn parse(values: &BTreeMap<String, OsString>) -> Result<Options> {
         plan: PathBuf::from(plan),
         digest,
         report_out: values.get("--report-out").map(PathBuf::from),
+        session,
     })
 }
 
@@ -149,7 +158,8 @@ fn load_plan(path: &Path, expected: ContentDigest, mode: Mode) -> Result<InputPl
             RetainedSupervisorPlan::from_json(&bytes, expected).map(InputPlan::Explicit)
         }
         Mode::Discover => {
-            RetainedDiscoveryRequest::from_json(&bytes, expected).map(InputPlan::Discover)
+            RetainedDiscoveryRequest::from_json(&bytes, expected)
+                .map(|request| InputPlan::Discover { request, bytes })
         }
     }
     .map_err(Failure::malformed)
@@ -173,7 +183,7 @@ fn run(options: Options) -> Result<()> {
         trace_id: "trace:event-supervise-retained".into(),
         operation_id: OperationId::parse("operation:event-supervise-retained")
             .map_err(Failure::runtime)?,
-        principal: options.principal,
+        principal: options.principal.clone(),
         capabilities: vec!["ADP-REPLAY-001".to_owned()],
         deadline: None,
         priority: 10,
@@ -192,21 +202,28 @@ fn run(options: Options) -> Result<()> {
     let result = (|| {
         cx.checkpoint("retained_supervisor_cli:existing_deployment")
             .map_err(Failure::runtime)?;
-        let mut deployment = ReferenceDeployment::open(&options.root, &options.site, &cx)
-            .map_err(Failure::runtime)?;
-        let rendered = match &plan {
-            InputPlan::Explicit(plan) => run_retained_supervisor(&mut deployment, plan, &cx)
-                .and_then(|report| report.to_json()),
-            InputPlan::Discover(request) => {
-                run_discovered_retained_supervisor(&mut deployment, request, &cx)
-                    .and_then(|report| report.to_json())
+        let rendered = if let Some(session) = &options.session {
+            let InputPlan::Discover { request, bytes } = &plan else {
+                return Err(Failure::malformed("session supervision requires discovery mode"));
+            };
+            session::run(&options, session, request, bytes, &cx)?
+        } else {
+            let mut deployment = ReferenceDeployment::open(&options.root, &options.site, &cx)
+                .map_err(Failure::runtime)?;
+            match &plan {
+                InputPlan::Explicit(plan) => run_retained_supervisor(&mut deployment, plan, &cx)
+                    .and_then(|report| report.to_json()),
+                InputPlan::Discover { request, .. } => {
+                    run_discovered_retained_supervisor(&mut deployment, request, &cx)
+                        .and_then(|report| report.to_json())
+                }
             }
-        }
-        .map_err(|error| Failure {
-            exit: ExitIdentity::RUNTIME_FAILURE.code,
-            identity: error.stable_id(),
-            reason: error.to_string(),
-        })?;
+            .map_err(|error| Failure {
+                exit: ExitIdentity::RUNTIME_FAILURE.code,
+                identity: error.stable_id(),
+                reason: error.to_string(),
+            })?
+        };
         let rendered = format!("{rendered}\n");
         cx.checkpoint("retained_supervisor_cli:output")
             .map_err(Failure::runtime)?;

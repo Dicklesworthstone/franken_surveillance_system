@@ -571,6 +571,8 @@ impl DurableSessionStore {
             .find(|record| {
                 record.kind() != FOLLOW_COMMAND_RECORD_KIND
                     && record.kind() != super::SESSION_CHECKPOINT_RECORD_KIND
+                    // Presentation custody and read reservations do not change the workspace.
+                    && record.kind() != super::supervision::SUPERVISION_COMMAND_RECORD_KIND
             })
             .map_or_else(
                 || ContentDigest::sha256(&[]),

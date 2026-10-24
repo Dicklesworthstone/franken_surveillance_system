@@ -1062,3 +1062,6 @@ fn discovery_digest_and_mode_admission_precede_opening_an_absent_deployment() ->
     assert!(help.contains("--discover-plan") && help.contains("--discover-digest"));
     Ok(())
 }
+
+#[path = "supervisor_retained_contract/session.rs"]
+mod session;
