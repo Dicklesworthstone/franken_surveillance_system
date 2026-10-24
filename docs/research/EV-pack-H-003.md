@@ -396,3 +396,24 @@ The captured `/api.json` call replays again unchanged (`{"result":…}`), so the
 not expired. The changed-action replay re-sent after eight hours returns the same
 **`SING_VALIDATE_FALED`**. The sign key, not the session, remains the only blocker: the key is
 `f(appId, t_s.bmp)` and the iOS BMP (`clientId q95kcu85qnkdwaee9w3j`) is not on this host.
+
+### 2026-10-24 14:20 — 6-combination sign table: flat
+
+`postData` field name × sign handling (raw vs swapped md5-base64), everything else exactly as the
+captured call (sid, `et=0.0.2`, `v=1.0`, clientId q95, q95-patched BMP). Six requests, one minute
+apart in the same session:
+
+| postData field | postData in the canonical | error |
+|---|---|---|
+| `devId` | swapped md5-base64 | `SING_VALIDATE_FALED` |
+| `devId` | raw JSON | `SING_VALIDATE_FALED` |
+| `deviceId` | swapped md5-base64 | `SING_VALIDATE_FALED` |
+| `deviceId` | raw JSON | `SING_VALIDATE_FALED` |
+| `dev_id` | swapped md5-base64 | `SING_VALIDATE_FALED` |
+| `dev_id` | raw JSON | `SING_VALIDATE_FALED` |
+
+Six of six identical. The signal is therefore not in the action's body shape or the postData
+canonicalisation. With the session proven alive and every signed field confirmed by exclusion
+(`et` → `SING_VALIDATE_FALED_4`, `clientId`/`chKey` → `ILLEGAL_CLIENT_ID`, `a` → route error), the
+remaining variable is the key: the iOS `t_s.bmp`. The IPA is the only route; the bead closes
+blocked on it, with this table and the replay evidence.
