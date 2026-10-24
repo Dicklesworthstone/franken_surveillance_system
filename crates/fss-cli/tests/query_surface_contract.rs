@@ -833,7 +833,34 @@ fn historical_reads_keep_current_deletion_denials_and_never_restore_evidence() -
     assert_eq!(explanation.1, ExitIdentity::SUCCESS, "{}", explanation.0);
     assert!(explanation.0.contains("deleted"));
     assert!(explanation.0.contains(&plan));
-    assert!(explanation.0.contains("all_verified=false"));
+    // The event's own metadata closure can remain intact after source deletion. Its
+    // all_verified flag is scoped to that closure; direct denied sources are separate facts.
+    let explained = fss_cli::json_input::parse(&explanation.0)?;
+    let claims = explained.object()
+        .and_then(|o| o.get("payload")).and_then(fss_cli::json_input::Value::object)
+        .and_then(|o| o.get("epistemic")).and_then(fss_cli::json_input::Value::object)
+        .and_then(|o| o.get("propositions")).and_then(fss_cli::json_input::Value::array)
+        .ok_or("explanation propositions")?;
+    let denials: Vec<_> = claims.iter().filter_map(fss_cli::json_input::Value::object)
+        .filter(|claim| claim.get("id").and_then(fss_cli::json_input::Value::text)
+            .is_some_and(|id| id.starts_with("claim:event-custody:") && id.contains(":denied-references:")))
+        .collect();
+    assert!(!denials.is_empty(), "current source denials were hidden: {}", explanation.0);
+    let snapshot = read_deployment(&fixture.root, &OrientLimits::default())?;
+    for denial in denials {
+        assert_eq!(denial.get("state").and_then(fss_cli::json_input::Value::text), Some("known"));
+        let evidence = denial.get("evidence").and_then(fss_cli::json_input::Value::array)
+            .ok_or("denial evidence")?;
+        assert!(evidence.len() > 1);
+        assert_eq!(evidence[0].text(), Some(plan.as_str()));
+        for reference in &evidence[1..] {
+            let digest = ContentDigest::parse(reference.text().ok_or("denied digest")?)?;
+            assert!(snapshot.deletions.entries().iter().any(|entry| {
+                entry.plan_digest.to_text() == plan
+                    && entry.plan.deletable.iter().any(|object| object.digest == digest)
+            }));
+        }
+    }
     assert!(explanation.0.contains("claim:read:historical-scope"));
     conforms(&fixture, &explanation.0)?;
     mcp_tool(
@@ -847,5 +874,114 @@ fn historical_reads_keep_current_deletion_denials_and_never_restore_evidence() -
         &explanation,
     )?;
     assert_eq!(tree(&fixture.root)?, before);
+    Ok(())
+}
+
+#[test]
+fn current_deletion_blocks_support_outside_an_intact_historical_metadata_closure() -> TestResult {
+    let fixture = Fixture::new("deleted-support-path")?;
+    let (recorded, import) = fixture.publish_recording("sensor:deleted-support-path")?;
+    let before = read_deployment(&fixture.root, &OrientLimits::default())?;
+    let recorded = before.event(&EventId::parse(recorded)?).ok_or("recorded event")?;
+    let source = recorded.event.evidence.iter().find_map(|edge| edge.capsule_digest)
+        .ok_or("original source capsule")?;
+    let id = EventId::parse("event:deleted-support-path")?;
+    // A synthetic positive-support edge tests graph availability only. It grants neither
+    // a physical-presence claim nor permission to hydrate an out-of-closure source.
+    let policy = ContentDigest::sha256(b"synthetic deletion support fixture");
+    let event = EventHypothesis {
+        schema: EventHypothesis::SCHEMA.to_owned(),
+        event_id: id.clone(),
+        revision: 1,
+        supersedes: None,
+        state: EventState::Indeterminate,
+        kind: EventKind::UnknownPresence,
+        interval: recorded.event.interval,
+        uncertainty_reason: Some("synthetic support graph; scene truth is not adjudicated".into()),
+        zone_ids: Vec::new(),
+        track_ids: Vec::new(),
+        probability: ProbabilityInterval::new(0.0, 1.0)?,
+        evidence: vec![EventEvidence {
+            digest: source,
+            class: EvidenceClass::Assertion,
+            failure_domain: "synthetic:deletion-support".into(),
+            supports: true,
+            relation: EvidenceEdgeRelation::Supports,
+            capsule_digest: Some(source),
+            identity_digest: None,
+        }],
+        model_receipts: Vec::new(),
+        decision_path: DecisionPath {
+            policy_generation: policy,
+            fingerprint: policy,
+            abstained: true,
+            abstention_reason: Some("test-only graph availability; no event or effect advice".into()),
+        },
+    };
+    let authority = ContextAuthority::new_root(RootAuthoritySpec {
+        trace_id: "trace:deleted-support-path".into(),
+        operation_id: OperationId::parse("operation:deleted-support-path")?,
+        principal: "operator:query-surface".into(),
+        capabilities: vec![ADP_REPLAY_ROW_ID.into()],
+        deadline: None,
+        priority: 10,
+        budgets: BudgetVector::default(),
+        privacy_scope: "privacy:internal".into(),
+        retention_scope: "retention:ephemeral".into(),
+        anchor_universe: ContentDigest::sha256(b"deleted-support-path"),
+        generation: 1,
+    })?;
+    let cx = ReplayCx::new(ReplayIoAuthority::from_context_authority(
+        &authority, fixture.directory.join("deleted-support-cx"),
+    )?);
+    ReferenceDeployment::open(&fixture.root, SITE, &cx)?.publish_event(
+        &ReferencePolicyDecision { event: event.clone(), action: ReferencePolicyAction::Hold },
+        &cx,
+    )?;
+    cx.drain_and_finalize();
+    let at = snapshot_anchor_token(&read_deployment(&fixture.root, &OrientLimits::default())?);
+    let explain = |at: Option<&str>| -> TestResult<(String, ExitIdentity)> {
+        let mut options = vec![
+            "--event-id", id.as_str(), "--view", "forensic",
+            "--budget-tokens", "16000", "--custody", "yes",
+        ];
+        if let Some(at) = at { options.extend(["--at", at]); }
+        native_command(&fixture.root, "explain", &options)
+    };
+    let unchecked = explain(None)?;
+    assert_eq!(unchecked.1, ExitIdentity::SUCCESS, "{}", unchecked.0);
+    assert!(unchecked.0.contains("Declared support availability: unchecked_reference_path."));
+    assert!(unchecked.0.contains("all_verified=true"));
+
+    let planned = Command::new(env!("CARGO_BIN_EXE_fss-event"))
+        .args(["delete", "plan", "--root"]).arg(&fixture.root)
+        .args(["--site", SITE, "--import-id", &import]).output()?;
+    success(&planned);
+    let planned = String::from_utf8(planned.stdout)?;
+    let plan = quoted_field(&planned, "plan_digest")?;
+    let approval = quoted_field(&planned, "approval_digest")?;
+    let deleted = Command::new(env!("CARGO_BIN_EXE_fss-event"))
+        .args(["delete", "commit", "--root"]).arg(&fixture.root)
+        .args(["--site", SITE, "--plan", &plan, "--approve", &approval]).output()?;
+    success(&deleted);
+    let after_delete = tree(&fixture.root)?;
+    for historical in [None, Some(at.as_str())] {
+        let answer = explain(historical)?;
+        assert_eq!(answer.1, ExitIdentity::SUCCESS, "{}", answer.0);
+        assert!(answer.0.contains("Declared support availability: no_unblocked_reference_path."));
+        assert!(answer.0.contains("Current event publication closure:"));
+        assert!(answer.0.contains("all_verified=true"));
+        assert!(answer.0.contains(&format!(":denied-references:{plan}")));
+        assert!(answer.0.contains(&source.to_text()));
+        assert!(answer.0.contains("intact event metadata does not restore source availability"));
+        let arguments = match historical {
+            None => format!(r#"{{"event_id":{},"view":"forensic","budget_tokens":16000,"custody":"yes"}}"#, quote(id.as_str())),
+            Some(at) => format!(r#"{{"at":{},"event_id":{},"view":"forensic","budget_tokens":16000,"custody":"yes"}}"#, quote(at), quote(id.as_str())),
+        };
+        mcp_tool(&fixture.root, "explain", &arguments, &answer)?;
+    }
+    let current = read_deployment(&fixture.root, &OrientLimits::default())?;
+    assert_eq!(&current.event(&id).ok_or("retained event")?.event, &event);
+    assert_eq!(tree(&fixture.root)?, after_delete);
     Ok(())
 }

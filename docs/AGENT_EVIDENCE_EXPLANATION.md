@@ -159,3 +159,32 @@ cargo test -p fss-cli --test orient_cli_contract
 
 Native qualification remains open; no release gate, broad bead or source-custody
 claim is closed by this integration.
+
+### Current deletion authority and historical custody
+
+With `--custody yes`, `all_verified` describes the selected event's declared
+publication closure. An intact event metadata record can remain verified after
+its source has been deleted. That flag does not establish availability of direct
+source references outside the manifest closure.
+
+The custody review intersects those already disclosed references with verified
+current deletion authority, including during `--at` historical reads. A known
+denial is reported as a `known` proposition, grouped by its exact deletion plan.
+The first evidence identity is that plan's proof; every remaining identity is a
+denied direct reference. Unrelated deletion records are not disclosed, and no
+denied payload is opened. References with no denial or custody observation remain
+explicitly unexamined.
+
+Each denied digest also enters the existing availability graph as unavailable.
+An intact metadata closure cannot turn a deleted sole supporting source into an
+unchecked or verified supporting path. The existing complete-detail, graph and
+semantic-context limits still apply; every denied reference consumes a detail
+entry even when several share one displayed plan. All these facts bind the
+existing explanation receipt and survive CLI/MCP projection without changing the
+stored event's state, probability or effect authority.
+
+The query-surface contracts exercise actual import deletion against current and
+historical explanations, including a positive-support reference outside an
+otherwise intact event closure. Custody units cover exact denial proof,
+unrelated-record non-disclosure, unknown references and the complete-detail
+ceiling.

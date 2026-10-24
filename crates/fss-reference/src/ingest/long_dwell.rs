@@ -2067,6 +2067,7 @@ impl LongDwellReport {
                 "\"pixel_samples_processed\":{},\"assignment_work_admitted\":{},\"jpeg_work_units\":{},\"trace_record_bytes\":{},",
                 "\"privacy_binding\":{},\"candidate_count\":{},\"candidates\":[{}],",
                 "\"media_format\":{},\"capture_time_label\":\"operator_assumption\",",
+                "\"publication_blocked\":{publication_blocked},",
                 "\"event_kind\":\"unclassified\",\"event_state\":\"indeterminate\",\"policy_action\":\"hold\",",
                 "\"calibrated\":false,\"corroborated\":false,\"continuous_occupancy_proved\":false,",
                 "\"absence_certifiable\":false,\"alert_authorized\":false,\"model_invoked\":{},",
@@ -2104,7 +2105,8 @@ impl LongDwellReport {
             json(&self.media_format),
             self.detector
                 .as_ref()
-                .is_some_and(|detector| detector.inference_pipeline_attempts != 0)
+                .is_some_and(|detector| detector.inference_pipeline_attempts != 0),
+            publication_blocked = self.publication_blocked(),
         );
         if let Some(summary) = &self.health {
             if text.pop() != Some('}') {
