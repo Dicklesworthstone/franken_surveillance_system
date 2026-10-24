@@ -20,15 +20,25 @@ Start here. Status, not narrative. The scoreboard is `docs/FLEET_LIBERATION_STAT
   escalation survey.
 - `fss-wyze-our-bytes-dlbs2` — `begin_upgrade` returns `code 2 "Device is upgrading now"` for every
   record id and `get_upgrade_firmware` 500s. Nothing device-side; it is a cloud flag.
-- `fss-tapo-460-root-zhhtf` — no local `/bin/main`, so addresses are guesses and the walk is ~17 h.
-  Finish the sstarXZ ramdisk instead: the LZMA2 chunk length is `next + 3` and the block currently
-  decodes to a verbatim copy, so the stored-vs-compressed question is the live one.
+- `fss-tapo-460-root-zhhtf` — the ramdisk is **solved and closed as a route**: the chunks are stored
+  (control `0x01`, 3-byte BE size, per-chunk trailer), carving works, and the result contains a valid
+  `misc` squashfs but the **app region is encrypted** (7.997 bit/B, no squashfs/FIT/uImage). So
+  `/bin/main` is not in the image and the address sweep is the only route. It is running: 1.3 KB
+  payload, `0x500` step, split across both units, progress in `/tmp/pane1/brute.<host>.idx`, ~30 s per
+  guess. Resume by reading the index and continuing; do not restart the region.
 - `fss-aosu-local-key-ddr77` — signer reversed and validated on `/log.json`; login still
   `SING_VALIDATE_FALED`. Replay a captured iotbing `sid` for `thing.m.device.key.get` rather than
   logging in.
 - `fss-yi-ssid-inject-ozmim` — Internet Sharing cannot be raised headlessly: `launchctl kickstart`
   is SIP-refused and the GUI toggle rewrites the SSID. Use a hotspot renamed to the payload and
   change the payload address to the hotspot gateway.
+
+## Firmware is no longer the gap
+
+The image builds from source in a Linux container and is verified: 16 MiB, boot and kernel regions
+byte-identical to the base, env rewritten, `tailscale` + `S99tailscale` present, and the installer
+dry-run writes all six partitions highest-first with uboot last. Capsule armed with it. Two installer
+bugs were found and fixed by that dry run (the `/proc/mtd` header line and an invalid `reboot -f`).
 
 ## Host state left behind
 
