@@ -389,3 +389,10 @@ Device/host state: no flash written; the HomeBase is untouched. `tools/thing-sig
 is the AOSU Android BMP; q95-patched variants are in `/tmp/q95_1.bmp` and `/tmp/tq95_1.bmp`.
 `deliverables/scripts/aosu_tuya_api.py` builds signed, AES-GCM-encrypted calls; `getEncryptoKey`
 needs the warm-up sign (the key constant is set by the sign path).
+
+### 2026-10-24 14:0x — replay re-run after 8 h: the sid is still valid
+
+The captured `/api.json` call replays again unchanged (`{"result":…}`), so the captured `sid` has
+not expired. The changed-action replay re-sent after eight hours returns the same
+**`SING_VALIDATE_FALED`**. The sign key, not the session, remains the only blocker: the key is
+`f(appId, t_s.bmp)` and the iOS BMP (`clientId q95kcu85qnkdwaee9w3j`) is not on this host.
