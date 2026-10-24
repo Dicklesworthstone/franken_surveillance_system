@@ -1,42 +1,67 @@
-import socket, struct, sys, time, threading
-import select
-ADDR=7  # IP_RECVDSTADDR / IP_SENDSRCADDR (macOS)
-import sys
-IF_IP=sys.argv[1] if len(sys.argv)>1 else "192.168.4.160"; GW=sys.argv[2] if len(sys.argv)>2 else "192.168.4.1"
-dst=socket.inet_aton(IF_IP)  # source address for IP_SENDSRCADDR
-NAMES={b"s3-us-west-2.amazonaws.com", b"aws-iot.wyzecam.com",
-       b"d1fk93tz4plczb.cloudfront.net", b"d2h8pzxcxn71bo.cloudfront.net",
-       b"a24rq1e5m4mtei.iot.us-west-2.amazonaws.com", b"wyze-upgrade-service.wyzecam.com",
-       b"api.wyzecam.com"}
-s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
-try: s.setsockopt(socket.IPPROTO_IP,ADDR,1)
-except OSError: ADDR=0
-s.bind(("0.0.0.0",53))
-end=time.time()+3600
-def parse_name(q):
-    labels=[]
-    i=12
-    while q[i]:
-        n=q[i]; labels.append(q[i+1:i+1+n]); i+=n+1
-    return b".".join(labels).lower(), i+1
-while time.time()<end:
-    s.settimeout(1.0)
-    try: data,addr=s.recvfrom(1500)
-    except socket.timeout: continue
+"""Answer the camera's DNS for the OTA/broker names, from the address the camera queried.
+
+The camera asks several resolvers at once (8.8.8.8, 8.8.4.4, 208.67.x, the gateway). The public
+addresses are aliased on the interface, and this script binds one socket per alias with
+SO_REUSEPORT, so a reply leaves with the queried address as its source. A strict resolver discards
+a reply from any other address, which is why IP_SENDSRCADDR alone was not enough.
+
+  wyze_dns_redirect.py [IF_IP]
+"""
+import select, socket, struct, sys, time
+
+IF_IP = sys.argv[1] if len(sys.argv) > 1 else "192.168.4.160"
+SOURCES = [IF_IP, "8.8.8.8", "8.8.4.4", "208.67.220.123", "208.67.222.123"]
+NAMES = {b"s3-us-west-2.amazonaws.com", b"aws-iot.wyzecam.com",
+         b"a24rq1e5m4mtei.iot.us-west-2.amazonaws.com", b"wyze-upgrade-service.wyzecam.com"}
+
+socks = {}
+for src in SOURCES:
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
     try:
-        name,i=parse_name(data); qtype=struct.unpack(">H",data[i:i+2])[0]
-    except Exception: continue
-    if qtype==1 and (name in NAMES or name.endswith(b".iot.us-west-2.amazonaws.com")):
-        hdr=data[:2]+b"\x81\x80"+data[4:6]+b"\x00\x01\x00\x00\x00\x00"
-        ans=b"\xc0\x0c"+struct.pack(">HHIH",1,1,60,4)+socket.inet_aton(IF_IP)
-        out=hdr+data[12:i+4]+ans
+        s.bind((src, 53))
+    except OSError as exc:
+        print("bind", src, "failed:", exc, flush=True)
+        continue
+    socks[s] = src
+end = time.time() + 3600
+
+
+def parse_name(q):
+    labels, i = [], 12
+    while q[i]:
+        n = q[i]
+        labels.append(q[i + 1:i + 1 + n])
+        i += n + 1
+    return b".".join(labels).lower(), i + 1
+
+
+while time.time() < end:
+    ready, _, _ = select.select(list(socks), [], [], 1.0)
+    for s in ready:
         try:
-            if dst: s.sendmsg([out],[(socket.IPPROTO_IP,ADDR,dst)],0,addr)
-            else: s.sendto(out,addr)
-        except OSError: s.sendto(out,addr)
-        print("answered",name.decode(),"->",IF_IP,flush=True)
-    else:
+            data, addr = s.recvfrom(1500)
+        except OSError:
+            continue
         try:
-            u=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); u.settimeout(1.5); u.sendto(data,("1.1.1.1",53))
-            r,_=u.recvfrom(1500); s.sendto(r,addr); u.close()
-        except Exception: pass
+            name, i = parse_name(data)
+            qtype = struct.unpack(">H", data[i:i + 2])[0]
+        except Exception:
+            continue
+        print("rx", addr, "via", socks[s], name.decode(errors="replace"), flush=True)
+        if qtype == 1 and (name in NAMES or name.endswith(b".iot.us-west-2.amazonaws.com")):
+            hdr = data[:2] + b"\x81\x80" + data[4:6] + b"\x00\x01\x00\x00\x00\x00"
+            ans = b"\xc0\x0c" + struct.pack(">HHIH", 1, 1, 60, 4) + socket.inet_aton(IF_IP)
+            s.sendto(hdr + data[12:i + 4] + ans, addr)
+            print("answered", name.decode(), "->", IF_IP, flush=True)
+        else:
+            try:
+                u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                u.settimeout(1.5)
+                u.sendto(data, ("1.1.1.1", 53))
+                r, _ = u.recvfrom(1500)
+                s.sendto(r, addr)
+                u.close()
+            except Exception:
+                pass

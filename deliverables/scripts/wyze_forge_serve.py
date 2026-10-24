@@ -34,7 +34,16 @@ def main() -> int:
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     ctx.load_cert_chain(chain, a.key)
 
-    handler = lambda *x, **kw: http.server.SimpleHTTPRequestHandler(*x, directory=a.dir, **kw)
+    class Handler(http.server.SimpleHTTPRequestHandler):
+        def __init__(self, *x, **kw):
+            super().__init__(*x, directory=a.dir, **kw)
+
+        def log_message(self, fmt, *args):
+            # the device is distinguishable from a local probe only by its own UA
+            print(f"{self.address_string()} ua={self.headers.get('User-Agent', '-')!r} " + (fmt % args),
+                  flush=True)
+
+    handler = Handler
 
     class Server(http.server.HTTPServer):
         allow_reuse_address = True
