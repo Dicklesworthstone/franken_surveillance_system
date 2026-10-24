@@ -55,3 +55,15 @@ bugs were found and fixed by that dry run (the `/proc/mtd` header line and an in
 - `/tmp/binshim` (GNU tool links) and the patched `thingino/board.mk` + `dependencies.sh` are
   required for any firmware build; see `docs/exploit/firmware-build.md` §9.
 - Disk is 93 % full, so `scripts/qualify.sh` refuses at the capacity preflight. Nothing was deleted.
+
+## Gate state (2026-10-24 12:35)
+
+Disk was reclaimed (76 GB → 325 GB free) so the capacity preflight passes again and the policy lane
+runs. It **fails**, on three pre-existing dependency findings that tonight did not touch:
+
+- `thiserror` and `thiserror-impl` declare a `custom-build` / proc-macro target, which violates the
+  pure-Rust `DEP-CLASS-F0` rule;
+- `serde_json` is pending an owner decision (`fss-ndxis`) and is neither admitted nor rejected;
+- `tokio` is reachable from `Cargo.lock`.
+
+Everything else in the lane passes. The receipt is under `qualification-artifacts/local/`.
