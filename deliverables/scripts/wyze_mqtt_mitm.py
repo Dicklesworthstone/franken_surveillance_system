@@ -71,14 +71,20 @@ def _rewrite(d):
     print(f"rewrite: {par['url']} md5={par['md5']}", flush=True)
     return bytes([d[0]]) + enc_len(len(body)) + body
 
-def pipe(a,b,tag):
+def pipe(a,b,tag,state=None):
+    """Pump one direction. The pair is closed only when BOTH directions are done:
+    closing both from whichever side finished first killed live sessions with EBADF."""
     buf=b""
     try:
         while True:
             d=a.recv(65536)
-            if not d: break
+            if not d:
+                print("pipe",tag,"EOF",flush=True); break
             if tag != "S":
-                log(tag,d); b.sendall(d); continue
+                log(tag,d)
+                try: b.sendall(d)
+                except OSError: break
+                continue
             buf += d
             while True:
                 if len(buf) < 2: break
@@ -91,13 +97,26 @@ def pipe(a,b,tag):
                 pkt = buf[:i + n]; buf = buf[i + n:]
                 log("S", pkt)
                 r = _rewrite(pkt)
-                b.sendall(r if r else pkt)
+                try:
+                    with WLOCK: b.sendall(r if r else pkt)
+                except OSError: break
     except Exception as e:
         print("pipe",tag,"end",repr(e),flush=True)
     finally:
-        for s in (a,b):
-            try: s.close()
+        try: a.close()
+        except Exception: pass
+        if state is None:
+            try: b.close()
             except Exception: pass
+        else:
+            with state["lock"]:
+                state["n"] -= 1
+                done = state["n"] == 0
+            print("pair done, closing", tag,flush=True)
+            if done:
+                for s in (a,b):
+                    try: s.close()
+                    except Exception: pass
 def log(direction,d):
     t=d[0]>>4
     if t==3:
@@ -176,15 +195,32 @@ def _pub(sock, topic, payload, qos0=True):
         _PID[0]=(_PID[0]%65535)+1
         body=struct.pack(">H",len(tb))+tb+struct.pack(">H",_PID[0])+payload
         sock.sendall(_pkt(3, body, 0x03 if os.environ.get("OTA_RETAIN") else 0x02))
+def _live():
+    """The current device socket: a reconnect replaces it, so never trust a captured one.
+    A closed socket keeps its object, so check the descriptor too."""
+    c=LIVE.get("c")
+    try:
+        if c is None or c.fileno() < 0: return None
+    except Exception:
+        return None
+    return c
+
 def inject(cli, up=None):
-    time.sleep(6)
+    time.sleep(1)
     if not MD5:
         print("inject: OTA_MD5 unset",flush=True); return
     st={"state":{"desired":{"url":URL,"md5":MD5,"pcUrl":URL,"pcMd5":MD5,"model":MODEL,"sub_mac":THING.upper()},"reported":{}},"version":999}
-    try:
-        _pub(cli, f"$aws/things/{THING}/shadow/name/{os.environ.get('SHADOW','wyze-service')}/update/delta", json.dumps(st).encode())
-        print("inject: delta",flush=True)
-    except Exception as e: print("inject delta fail",repr(e),flush=True); return
+    for _ in range(10):
+        c=_live()
+        if not c: time.sleep(2); continue
+        try:
+            with WLOCK:
+                _pub(c, f"$aws/things/{THING}/shadow/name/{os.environ.get('SHADOW','wyze-service')}/update/delta", json.dumps(st).encode())
+            print("inject: delta",flush=True); break
+        except Exception as e:
+            print("inject delta retry",repr(e),flush=True); time.sleep(2)
+    else:
+        print("inject: delta gave up",flush=True); return
     time.sleep(10)
     models=[m for m in os.environ.get("OTA_MODELS","").split(",") if m] or [MODEL]
     for i in range(20):
@@ -226,14 +262,24 @@ def inject(cli, up=None):
                 pl=pl+b"\0"*(-len(pl)%16)
                 e=Cipher(algorithms.AES(k),modes.ECB()).encryptor()
                 pl=e.update(pl)+e.finalize()
-        try:
-            _pub(up if (up and os.environ.get("OTA_VIA_UPSTREAM")) else cli,
-                 f"hl/devices/{THING}/cmd", pl, qos0=False)
-            print(f"inject: cmd 1234 pid={_PID[0]} model={m} {text}",flush=True)
-        except Exception as e: print("inject cmd fail",repr(e),flush=True); return
+        for _try in range(40):
+            c=_live()
+            if c is None:
+                time.sleep(1); continue
+            try:
+                with WLOCK:
+                    _pub(up if (up and os.environ.get("OTA_VIA_UPSTREAM")) else c,
+                         f"hl/devices/{THING}/cmd", pl, qos0=False)
+                print(f"inject: cmd 1234 pid={_PID[0]} model={m} {text}",flush=True)
+                break
+            except Exception as e:
+                print("inject cmd retry",repr(e),flush=True); time.sleep(1)
+        else:
+            print("inject cmd gave up",flush=True); return
         time.sleep(4)
 
 LIVE={"c":None}
+WLOCK=threading.Lock()  # SSLSocket.sendall is not thread-safe; the S pipe and the injector both write
 def injector():
     """Push the delta into whichever camera connection is live, retrying across reconnects."""
     time.sleep(4)
@@ -244,7 +290,8 @@ def injector():
         c=LIVE.get("c")
         if c:
             try:
-                _pub(c, f"$aws/things/{THING}/shadow/name/{os.environ.get('SHADOW','wyze-service')}/update/delta", json.dumps(st).encode())
+                with WLOCK:
+                    _pub(c, f"$aws/things/{THING}/shadow/name/{os.environ.get('SHADOW','wyze-service')}/update/delta", json.dumps(st).encode())
                 print("inject: delta sent",flush=True); return
             except Exception as e: print("inject retry",repr(e),flush=True)
         time.sleep(3)
@@ -261,16 +308,19 @@ def up_addr():
     return UP
 
 def handle(cli):
+    cli.settimeout(None)  # the 10 s accept timeout would kill an idle session long before the 60 s keepalive
     try:
         u=up_ctx().wrap_socket(socket.create_connection(up_addr(),timeout=10),server_hostname=SNI)
         u.settimeout(None)  # an idle broker must not kill the session; MQTT keepalive is 60 s
         print("UP ok",flush=True)
     except Exception as e: print("upstream fail",repr(e),flush=True); cli.close(); return
-    threading.Thread(target=pipe,args=(cli,u,"C"),daemon=True).start()
+    print("handle cli=%s fd=%s" % (id(cli), cli.fileno()),flush=True)
+    state={"n":2,"lock":threading.Lock()}
+    threading.Thread(target=pipe,args=(cli,u,"C",state),daemon=True).start()
     LIVE["c"]=cli
     if os.environ.get("INJECT"):
         threading.Thread(target=inject,args=(cli,u),daemon=True).start()
-    pipe(u,cli,"S")
+    pipe(u,cli,"S",state)
 def main():
     ctx=srv_ctx(); s=socket.socket(); s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
     s.bind(("0.0.0.0",8883)); s.listen(4); print("proxy on 8883",flush=True)
