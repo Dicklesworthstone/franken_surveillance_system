@@ -89,9 +89,9 @@ def login() -> dict:
             "terminalMeta": "1", "terminalName": "fss", "terminalUUID":
             str(uuid.uuid1()).replace("-", "").upper()}
     res = signed_post(LOGIN_HOST + "/api/v2/account/login", body)
-    if res.get("error_code") != 0:
+    result = res.get("result") or {}
+    if res.get("error_code") != 0 or result.get("errorCode") not in (None, "0", 0):
         sys.exit("login failed: %s" % json.dumps(res)[:300])
-    result = res["result"]
     tok = {"token": result["token"], "appServerUrl": result["appServerUrl"],
            "email": email, "ts": time.time()}
     fd = os.open(TOKEN_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
