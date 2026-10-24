@@ -560,25 +560,35 @@ fn arp_a() -> String {
     // macOS 27 returns an empty table for `arp -a` (reverse-DNS form) while
     // `arp -an` answers immediately; try the numeric form first and keep `-a`
     // only as a fallback for older hosts.
-    for (program, flag) in [
-        ("arp", "-an"),
-        ("/usr/sbin/arp", "-an"),
-        ("/sbin/arp", "-an"),
-        ("arp", "-a"),
-        ("/usr/sbin/arp", "-a"),
-        ("/sbin/arp", "-a"),
+    //
+    // macOS 27 also hands an empty table to a *spawned* process that lacks Local
+    // Network authority, even though the same binary prints the whole table from an
+    // interactive shell (measured: 0 bytes from a child, 426 rows from zsh). The
+    // table itself is readable by root, so a prompt-less `sudo -n` retry recovers it
+    // without needing a raw-socket ARP read (the crate forbids `unsafe_code`).
+    for (program, args) in [
+        ("arp", &["-an"][..]),
+        ("/usr/sbin/arp", &["-an"][..]),
+        ("/sbin/arp", &["-an"][..]),
+        ("arp", &["-a"][..]),
+        ("/usr/sbin/arp", &["-a"][..]),
+        ("/sbin/arp", &["-a"][..]),
+        ("/usr/bin/sudo", &["-n", "/usr/sbin/arp", "-an"][..]),
+        ("/usr/bin/sudo", &["-n", "/sbin/arp", "-an"][..]),
     ] {
-        match std::process::Command::new(program).arg(flag).output() {
+        match std::process::Command::new(program).args(args).output() {
             Ok(o) => {
                 if std::env::var_os("FSS_DISCOVER_DEBUG").is_some() {
                     eprintln!(
-                        "DEBUG arp prog={program} {flag} status={:?} out={} err={:?}",
+                        "DEBUG arp prog={program} args={args:?} status={:?} out={} err={:?}",
                         o.status.code(),
                         o.stdout.len(),
                         String::from_utf8_lossy(&o.stderr)
                     );
                 }
-                if o.status.success() {
+                // An empty table is the macOS 27 failure shape: `arp` exits 0 with no rows,
+                // so an empty success must fall through instead of ending the search.
+                if o.status.success() && !o.stdout.is_empty() {
                     return String::from_utf8_lossy(&o.stdout).into_owned();
                 }
             }
@@ -661,6 +671,22 @@ fn tcp_connect_scan(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// macOS 27 gives a spawned process an empty `arp` table unless it has Local Network
+    /// authority; the capture must still find a source (the `sudo -n` retry) on an operator host.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn arp_capture_reads_the_local_table() {
+        let out = arp_a();
+        assert!(
+            !out.is_empty(),
+            "every ARP source returned an empty table (macOS 27 Local Network denial?)"
+        );
+        assert!(
+            !parse_arp_a(&out).is_empty(),
+            "ARP rows captured but none parsed: {out:.200}"
+        );
+    }
 
     #[test]
     fn netstat_rows_become_neighbors() {

@@ -9,7 +9,7 @@ arp.spoof on
 
 set dns.spoof.address 192.168.4.160
 set dns.spoof.all false
-set dns.spoof.domains app.wyzecam.com, api.wyzecam.com, wyze.com, s3-us-west-2.amazonaws.com, prod-sight-safe-auth.wyze.com, core-cloud-gateway-lb-prod-456177862.us-west-2.elb.amazonaws.com
+set dns.spoof.domains app.wyzecam.com, api.wyzecam.com, wyze.com, s3-us-west-2.amazonaws.com, prod-sight-safe-auth.wyze.com, core-cloud-gateway-lb-prod-456177862.us-west-2.elb.amazonaws.com, a24rq1e5m4mtei.iot.us-west-2.amazonaws.com
 dns.spoof on
 
 set net.sniff.verbose false
