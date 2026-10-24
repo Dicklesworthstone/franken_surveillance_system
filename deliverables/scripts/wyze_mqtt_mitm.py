@@ -38,12 +38,47 @@ def log(direction,d):
             tl=int.from_bytes(d[i:i+2],'big'); topic=d[i+2:i+2+tl].decode(errors='replace')
             qos=(d[0]>>1)&3; j=i+2+tl+(2 if qos else 0)
             payload=d[j:].decode(errors='replace')
-            print(f"{direction} PUBLISH {topic} len={len(d[j:])} {payload[:2000]}",flush=True)
+            print(f"{direction} PUBLISH hdr={d[0]:02x} qos={qos} {topic} len={len(d[j:])} {payload[:2000]}",flush=True)
             if topic.endswith("/cmd") or topic.endswith("/update"):
                 print(f"{direction} CMDHEX {d[j:].hex()}",flush=True)
         except Exception: print(direction,"PUBLISH <unparsed>",flush=True)
     elif t in (8,): print(direction,"SUBSCRIBE",flush=True)
     elif t in (1,): print(direction,"CONNECT",flush=True)
+    elif t in (4,): print(direction,"PUBACK",d[1:3].hex(),flush=True)
+
+def _xxtea(data, key, decrypt=False):
+    import struct as _s
+    n = len(data) // 4
+    if n < 2:
+        return data
+    v = list(_s.unpack("<%dI" % n, data[:n*4]))
+    k = list(_s.unpack("<4I", (key + b"\0"*16)[:16]))
+    delta = 0x9E3779B9
+    rounds = 6 + 52 // n
+    if decrypt:
+        total = (rounds * delta) & 0xFFFFFFFF
+        y = v[0]
+        for _ in range(rounds):
+            e = (total >> 2) & 3
+            for p in range(n - 1, -1, -1):
+                z = v[(p - 1) % n]
+                mx = (((z >> 5) ^ (y << 2)) + ((y >> 3) ^ (z << 4))) ^ ((total ^ y) + (k[(p & 3) ^ e] ^ z))
+                v[p] = (v[p] - mx) & 0xFFFFFFFF
+                y = v[p]
+            total = (total - delta) & 0xFFFFFFFF
+    else:
+        total = 0
+        z = v[n - 1]
+        for _ in range(rounds):
+            total = (total + delta) & 0xFFFFFFFF
+            e = (total >> 2) & 3
+            for p in range(n):
+                y = v[(p + 1) % n]
+                mx = (((z >> 5) ^ (y << 2)) + ((y >> 3) ^ (z << 4))) ^ ((total ^ y) + (k[(p & 3) ^ e] ^ z))
+                v[p] = (v[p] + mx) & 0xFFFFFFFF
+                z = v[p]
+    return _s.pack("<%dI" % n, *v)
+
 MODEL=os.environ.get("OTA_MODEL","HL_CFL")
 URL=os.environ.get("OTA_URL","https://s3-us-west-2.amazonaws.com/wuv2/upgrade/HL_CAM4/firmware/4.52.17.33.tar")
 MD5=os.environ.get("OTA_MD5","")
@@ -54,10 +89,17 @@ def _enc(n):
         if not n: return o
 def _pkt(kind, body, flags=0):
     return bytes([(kind<<4)|flags])+_enc(len(body))+body
+_PID=[0]
 def _pub(sock, topic, payload, qos0=True):
-    tb=topic.encode(); body=struct.pack(">H",len(tb))+tb+payload
-    sock.sendall(_pkt(3, body, 0x00 if qos0 else 0x02))
-def inject(cli):
+    tb=topic.encode()
+    if qos0:
+        body=struct.pack(">H",len(tb))+tb+payload
+        sock.sendall(_pkt(3, body, 0x00))
+    else:
+        _PID[0]=(_PID[0]%65535)+1
+        body=struct.pack(">H",len(tb))+tb+struct.pack(">H",_PID[0])+payload
+        sock.sendall(_pkt(3, body, 0x02))
+def inject(cli, up=None):
     time.sleep(6)
     if not MD5:
         print("inject: OTA_MD5 unset",flush=True); return
@@ -67,11 +109,50 @@ def inject(cli):
         print("inject: delta",flush=True)
     except Exception as e: print("inject delta fail",repr(e),flush=True); return
     time.sleep(10)
+    models=[m for m in os.environ.get("OTA_MODELS","").split(",") if m] or [MODEL]
     for i in range(20):
-        pl=json.dumps({"cmd":1234,"sub_mac":THING.upper(),"url":URL,"md5":MD5,"model":MODEL}).encode()
+        m=models[i % len(models)]
+        # the UDS receiver wants {Action, Params, Guid}. "delDev" reads the descriptor from Params;
+        # "upgradeSub" reads a top-level url only. Sweep both so the shape is measured, not assumed.
+        acts=[a for a in os.environ.get("OTA_ACTIONS","").split(",") if a] or ["delDev"]
+        act=acts[i % len(acts)]
+        ver=URL.rsplit("/",1)[-1].split(".tar")[0]
+        inner={"model":m,"url":URL,"firmware_ver":ver,"md5":MD5}
+        if act == "upgrade":
+            body={"Action":"upgrade","Params":inner,
+                  "Guid":os.urandom(8).hex(),"Ts":int(time.time()*1000)}
+        elif act == "cmd":
+            # iotclient logs "cmd:%d, len:%d, data:%s" and builds the UDS message itself
+            body={"cmd":1234,"data":inner}
+        elif act == "cmdstr":
+            body={"cmd":1234,"data":json.dumps(inner)}
+        elif act == "upgradeSub":
+            body={"Action":act,"Guid":f"{THING}-{i}","url":URL,"md5":MD5,"model":m,
+                  "sub_mac":THING.upper(),"Params":{"url":URL}}
+        else:
+            body={"Action":act,"Guid":f"{THING}-{i}","Params":inner}
+        text=json.dumps(body,separators=(",",":")); pl=text.encode()
+        if os.environ.get("OTA_ENC"):
+            import base64
+            from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+            if os.environ["OTA_ENC"] == "5":
+                pl=bytes.fromhex(os.environ["OTA_RAWHEX"])
+            elif os.environ["OTA_ENC"] in ("3", "4"):
+                pl=_xxtea(pl+b"\0"*(-len(pl)%4), os.environ["OTA_ENR"].encode())
+                if os.environ["OTA_ENC"] == "4":
+                    pl=struct.pack("<III", 0, 1319, len(pl))+pl
+            else:
+                if os.environ["OTA_ENC"] == "2":
+                    k=os.environ["OTA_ENR"].encode()[:16]
+                else:
+                    k=base64.b64decode(os.environ["OTA_ENR"]); k=(k+b"\0"*16)[:16]
+                pl=pl+b"\0"*(-len(pl)%16)
+                e=Cipher(algorithms.AES(k),modes.ECB()).encryptor()
+                pl=e.update(pl)+e.finalize()
         try:
-            _pub(cli, f"hl/devices/{THING}/cmd", pl, qos0=False)
-            print("inject: cmd 1234",flush=True)
+            _pub(up if (up and os.environ.get("OTA_VIA_UPSTREAM")) else cli,
+                 f"hl/devices/{THING}/cmd", pl, qos0=False)
+            print(f"inject: cmd 1234 pid={_PID[0]} model={m} {text}",flush=True)
         except Exception as e: print("inject cmd fail",repr(e),flush=True); return
         time.sleep(4)
 
@@ -111,7 +192,7 @@ def handle(cli):
     threading.Thread(target=pipe,args=(cli,u,"C"),daemon=True).start()
     LIVE["c"]=cli
     if os.environ.get("INJECT"):
-        threading.Thread(target=inject,args=(cli,),daemon=True).start()
+        threading.Thread(target=inject,args=(cli,u),daemon=True).start()
     pipe(u,cli,"S")
 def main():
     ctx=srv_ctx(); s=socket.socket(); s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)

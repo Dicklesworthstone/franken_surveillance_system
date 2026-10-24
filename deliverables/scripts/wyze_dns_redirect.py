@@ -25,7 +25,7 @@ for src in SOURCES:
         print("bind", src, "failed:", exc, flush=True)
         continue
     socks[s] = src
-end = time.time() + 3600
+end = time.time() + 86400
 
 
 def parse_name(q):
