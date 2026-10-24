@@ -92,6 +92,14 @@ def cmd_body(args, model=None):
         return body
     return _xxtea(body + b"\0" * (-len(body) % 4), key)
 
+_PID = [0]
+
+
+def next_pid():
+    _PID[0] = (_PID[0] % 65535) + 1
+    return _PID[0]
+
+
 def handle(conn, addr, args):
     print(f"[{addr}] connect", flush=True)
     kind, body = read_packet(conn)
@@ -123,7 +131,7 @@ def handle(conn, addr, args):
                 args.sub_mac = args.mac.upper()
                 payload = cmd_body(args)
                 topic = f"hl/devices/{args.mac}/cmd".encode()
-                body_out = struct.pack(">H", len(topic)) + topic + struct.pack(">H", 1) + payload
+                body_out = struct.pack(">H", len(topic)) + topic + struct.pack(">H", next_pid()) + payload
 
                 def delta():
                     st = {"state": {"desired": {"url": args.url, "md5": args.md5,
@@ -171,7 +179,7 @@ def handle(conn, addr, args):
                                 args.model = ["HL_CFL", "HL_CAM4"][(i // len(cmds)) % 2]
                             pl = cmd_body(args)
                             tb = topic.encode() if isinstance(topic, str) else topic
-                            bo = struct.pack(">H", len(tb)) + tb + struct.pack(">H", 1) + pl
+                            bo = struct.pack(">H", len(tb)) + tb + struct.pack(">H", next_pid()) + pl
                             conn.sendall(packet(3, bo, flags=0x02))  # QoS1
                             print(f"[{addr}] PUBLISH cmd {c} -> {pl[:40]!r}", flush=True)
                         except OSError:
