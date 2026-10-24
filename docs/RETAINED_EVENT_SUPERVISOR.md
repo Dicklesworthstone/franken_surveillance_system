@@ -363,6 +363,30 @@ If a later privacy revision makes the retained computation inapplicable, the sou
 refuses it. A committed deletion denies access even before every underlying byte has been
 unlinked. Missing or corrupt evidence is never repaired from loose files by this command.
 
+## Revalidating a historical discovery result
+
+The library exposes the complete sorted source inventory of a discovery report through
+`RetainedDiscoveryReport::source_inventory()`. It includes every metadata-read package event:
+selected events, generation-excluded native sources, and sensor/time exclusions that were checked
+only as metadata. Each entry retains its exact event revision and original verification class.
+
+`revalidate_retained_discovery_sources` checks that inventory against an explicitly selected
+current authority root. Metadata-only entries must still have their original verified revision.
+Every originally native-verified entry goes through the native package reader again, including
+sources excluded because their package/model/head did not match the requested generation. Current
+privacy, deletion, missing custody and corruption therefore still apply to historical disclosure.
+
+The validation brackets these reads with fresh bounded ledger/effect history, uses one shared
+nonrefillable stored-object allowance, and returns a receipt with its consumed read costs. Its
+output explicitly says `complete_current_catalog: false`: newly arrived events require a fresh
+discovery. Revalidating old evidence does not add another likelihood increment or turn an old
+report into a new current-state conclusion. The caller must retain the original report-to-inventory
+binding; a supplied subset is not proof of a complete original inventory.
+
+`RetainedDiscoveryRequest::for_authority(root)` changes only the explicitly supplied expected
+authority root. It preserves the finite windows, cameras, model pins, calibration, policy and
+limits, and grants no session or source access by itself.
+
 ## Legacy simulation and verification scope
 
 `fss-event supervise --plan FILE` keeps the existing `fss.supervisor_plan.v1` simulation. Its

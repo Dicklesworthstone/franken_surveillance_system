@@ -129,9 +129,7 @@ fn parse(values: &BTreeMap<String, OsString>) -> Result<Options> {
     })
 }
 
-fn load_plan(path: &Path, expected: ContentDigest, mode: Mode, cx: &ReplayCx) -> Result<InputPlan> {
-    cx.checkpoint("retained_supervisor_cli:plan")
-        .map_err(Failure::runtime)?;
+fn load_plan(path: &Path, expected: ContentDigest, mode: Mode) -> Result<InputPlan> {
     let metadata = fs::symlink_metadata(path).map_err(Failure::malformed)?;
     if !metadata.file_type().is_file() || metadata.len() > MAX_RETAINED_SUPERVISOR_PLAN_BYTES as u64
     {
@@ -146,8 +144,6 @@ fn load_plan(path: &Path, expected: ContentDigest, mode: Mode, cx: &ReplayCx) ->
                 .read_to_end(&mut bytes)
         })
         .map_err(Failure::malformed)?;
-    cx.checkpoint("retained_supervisor_cli:plan_read")
-        .map_err(Failure::runtime)?;
     match mode {
         Mode::Explicit => {
             RetainedSupervisorPlan::from_json(&bytes, expected).map(InputPlan::Explicit)
@@ -160,6 +156,19 @@ fn load_plan(path: &Path, expected: ContentDigest, mode: Mode, cx: &ReplayCx) ->
 }
 
 fn run(options: Options) -> Result<()> {
+    // ReplayCx creates its root. Admit the inert request and existing deployment first.
+    let plan = load_plan(&options.plan, options.digest, options.mode)?;
+    if plan.template().spec().site_lineage != options.site {
+        return Err(Failure::malformed(
+            "retained plan site_lineage does not match --site",
+        ));
+    }
+    let root_exists = fs::symlink_metadata(&options.root).is_ok_and(|m| m.file_type().is_dir());
+    let layout_exists = fs::symlink_metadata(options.root.join("LAYOUT"))
+        .is_ok_and(|m| m.file_type().is_file());
+    if !root_exists || !layout_exists {
+        return Err(Failure::runtime("existing non-symlink deployment required"));
+    }
     let authority = ContextAuthority::new_root(RootAuthoritySpec {
         trace_id: "trace:event-supervise-retained".into(),
         operation_id: OperationId::parse("operation:event-supervise-retained")
@@ -181,20 +190,8 @@ fn run(options: Options) -> Result<()> {
     let cx = ReplayCx::from_context_authority(&authority, options.root.clone())
         .map_err(Failure::runtime)?;
     let result = (|| {
-        let plan = load_plan(&options.plan, options.digest, options.mode, &cx)?;
-        if plan.template().spec().site_lineage != options.site {
-            return Err(Failure::malformed(
-                "retained plan site_lineage does not match --site",
-            ));
-        }
         cx.checkpoint("retained_supervisor_cli:existing_deployment")
             .map_err(Failure::runtime)?;
-        let root_exists = fs::symlink_metadata(&options.root).is_ok_and(|m| m.file_type().is_dir());
-        let layout_exists = fs::symlink_metadata(options.root.join("LAYOUT"))
-            .is_ok_and(|m| m.file_type().is_file());
-        if !root_exists || !layout_exists {
-            return Err(Failure::runtime("existing non-symlink deployment required"));
-        }
         let mut deployment = ReferenceDeployment::open(&options.root, &options.site, &cx)
             .map_err(Failure::runtime)?;
         let rendered = match &plan {

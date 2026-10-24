@@ -10,6 +10,11 @@ use std::process::{Command, Output};
 
 use fss_cli::agent_json::{array, object, string};
 use fss_cli::json_input::{self, Value};
+use fss_cli::supervisor::retained::{
+    RetainedDiscoveryRequest, RetainedDiscoverySource, RetainedDiscoveryValidation,
+    revalidate_retained_discovery_sources, run_discovered_retained_supervisor,
+};
+
 use fss_codec_mjpeg::ComponentInterpretation;
 use fss_core::{
     BudgetVector, ContentDigest, ContextAuthority, EventId, OperationId, RootAuthoritySpec,
@@ -483,6 +488,36 @@ fn discovery_plan(request: &mut Value) -> &mut Value {
     fields(request).get_mut("plan").expect("discovery fixture plan")
 }
 
+
+fn historical_sources(
+    f: &Fixture,
+    request: &Value,
+) -> TestResult<(RetainedDiscoveryRequest, Vec<RetainedDiscoverySource>)> {
+    let bytes = encode(request).into_bytes();
+    let request = RetainedDiscoveryRequest::from_json(&bytes, ContentDigest::sha256(&bytes))?;
+    let cx = context(&f.root)?;
+    let mut deployment = ReferenceDeployment::open(&f.root, SITE, &cx)?;
+    let result = run_discovered_retained_supervisor(&mut deployment, &request, &cx)
+        .and_then(|report| report.source_inventory());
+    drop(deployment);
+    cx.drain_and_finalize();
+    Ok((request, result?))
+}
+
+fn revalidate_sources(
+    f: &Fixture,
+    request: &RetainedDiscoveryRequest,
+    sources: &[RetainedDiscoverySource],
+) -> TestResult<RetainedDiscoveryValidation> {
+    let current = request.for_authority(f.authority)?;
+    let cx = context(&f.root)?;
+    let mut deployment = ReferenceDeployment::open(&f.root, SITE, &cx)?;
+    let result = revalidate_retained_discovery_sources(&mut deployment, &current, sources, &cx);
+    drop(deployment);
+    cx.drain_and_finalize();
+    Ok(result?)
+}
+
 fn assert_unobserved_camera(supervision: &Value, sensor: &str) -> TestResult {
     for window in field(supervision, "windows")?.array().ok_or("windows")? {
         let query = field(window, "query")?;
@@ -506,6 +541,23 @@ fn cold_real_package_events_preserve_exact_scores_and_do_not_multiply_repeated_e
     let plan = f.plan_from_read_inventory(&[0, 1])?;
     let first = f.run(&plan)?;
     success(&first);
+    // Even a fully admitted, exact-byte plan must not initialize an absent deployment.
+    let absent_root = f.directory.0.join("must-stay-absent");
+    let admitted_plan = f.directory.0.join("admitted-plan.json");
+    let admitted_bytes = encode(&plan);
+    fs::write(&admitted_plan, &admitted_bytes)?;
+    let absent = Command::new(env!("CARGO_BIN_EXE_fss-event"))
+        .args(["supervise", "--root"]).arg(&absent_root)
+        .args(["--site", SITE, "--retained-plan"]).arg(&admitted_plan)
+        .args(["--retained-digest", &ContentDigest::sha256(admitted_bytes.as_bytes()).to_text()])
+        .output()?;
+    assert_eq!(
+        absent.status.code(),
+        Some(i32::from(fss_cli::ExitIdentity::RUNTIME_FAILURE.code))
+    );
+    assert!(absent.stdout.is_empty());
+    assert!(std::str::from_utf8(&absent.stderr)?.contains("existing non-symlink deployment required"));
+    assert!(!absent_root.exists());
     let document = report(&first)?;
     assert_eq!(text(&document, "schema")?, "fss.retained_supervisor_report.v1");
     assert_eq!(
@@ -677,6 +729,20 @@ fn current_privacy_and_real_import_deletion_withdraw_cold_supervisor_access() ->
     let mut f = Fixture::new("withdrawal", 2)?;
     success(&f.run(&f.plan(&[0, 1], true)?)?);
     success(&f.run_discovered(&f.discovery(&[0, 1])?)?);
+    // A generation-excluded source still requires native verification on historical delivery.
+    let mut excluded = f.discovery(&[0])?;
+    let camera = &mut rows(
+        fields(discovery_plan(&mut excluded)).get_mut("cameras").ok_or("cameras")?,
+    )[0];
+    fields(camera).insert(
+        "package_digest".into(),
+        Value::Text(ContentDigest::sha256(b"historical other package").to_text()),
+    );
+    let (excluded_request, excluded_sources) = historical_sources(&f, &excluded)?;
+    assert!(excluded_sources.iter().any(|source| {
+        source.event_id == f.cameras[0].event && source.source_verified
+    }));
+    revalidate_sources(&f, &excluded_request, &excluded_sources)?;
     let preview = Command::new(env!("CARGO_BIN_EXE_fss-event"))
         .args(["privacy-mask", "declare", "--root"])
         .arg(&f.root)
@@ -698,6 +764,9 @@ fn current_privacy_and_real_import_deletion_withdraw_cold_supervisor_access() ->
         .output()?;
     success(&declared);
     f.refresh_authority()?;
+    let revoked = revalidate_sources(&f, &excluded_request, &excluded_sources)
+        .expect_err("private generation-excluded source cannot redeliver");
+    assert!(revoked.to_string().contains("ERR-PRIVACY-UNMASKED-ACCESS-REFUSED-001"));
     let private = refused_without_mutation(&f, &f.plan(&[0], true)?)?;
     assert!(std::str::from_utf8(&private.stderr)?.contains("ERR-PRIVACY-UNMASKED-ACCESS-REFUSED-001"));
     let private_discovery = discovered_refusal_without_mutation(&f, &f.discovery(&[0])?)?;
@@ -724,6 +793,8 @@ fn current_privacy_and_real_import_deletion_withdraw_cold_supervisor_access() ->
     // The second sensor is still readable before its actual import deletion is committed.
     success(&f.run(&f.plan(&[1], true)?)?);
     success(&f.run_discovered(&f.discovery(&[1])?)?);
+    let (before_delete, delete_sources) = historical_sources(&f, &f.discovery(&[1])?)?;
+    revalidate_sources(&f, &before_delete, &delete_sources)?;
     let deletion = Command::new(env!("CARGO_BIN_EXE_fss-event"))
         .args(["delete", "plan", "--root"])
         .arg(&f.root)
@@ -743,6 +814,7 @@ fn current_privacy_and_real_import_deletion_withdraw_cold_supervisor_access() ->
     f.refresh_authority()?;
     refused_without_mutation(&f, &f.plan(&[1], true)?)?;
     discovered_refusal_without_mutation(&f, &f.discovery(&[1])?)?;
+    assert!(revalidate_sources(&f, &before_delete, &delete_sources).is_err());
     Ok(())
 }
 
@@ -790,6 +862,25 @@ fn discovery_finds_real_native_rows_and_emits_an_executable_deterministic_plan()
     let f = Fixture::new("discovery", 2)?;
     let before = inventory(&f.root)?;
     let request = f.discovery(&[0, 1])?;
+    // Historical inventory includes every catalog candidate, even metadata-only exclusions.
+    let (subset_request, subset_sources) = historical_sources(&f, &f.discovery(&[0])?)?;
+    assert_eq!(subset_sources.len(), 2);
+    for camera in &f.cameras {
+        let source = subset_sources.iter().find(|source| source.event_id == camera.event)
+            .ok_or("complete historical source inventory")?;
+        assert_eq!(source.event_root, camera.event_root);
+        assert_eq!(source.source_verified, camera.event == f.cameras[0].event);
+    }
+    let validation = revalidate_sources(&f, &subset_request, &subset_sources)?;
+    assert_eq!(validation.basis().state_root, f.authority);
+    assert!(validation.reserved_bytes() > 0 && validation.read_attempts() > 0);
+    let validation_json = json_input::parse(&validation.to_json()?)?;
+    assert_eq!(field(&validation_json, "metadata_sources")?.integer(), Some(2));
+    assert_eq!(field(&validation_json, "native_sources")?.integer(), Some(1));
+    assert_eq!(field(&validation_json, "complete_current_catalog")?.boolean(), Some(false));
+    let mut changed_sources = subset_sources.clone();
+    changed_sources[0].event_root = ContentDigest::sha256(b"wrong historical revision");
+    assert!(revalidate_sources(&f, &subset_request, &changed_sources).is_err());
     let encoded = encode(&request);
     for camera in &f.cameras {
         assert!(!encoded.contains(camera.event.as_str()), "request supplied an event selector");
@@ -831,6 +922,10 @@ fn discovery_finds_real_native_rows_and_emits_an_executable_deterministic_plan()
         assert!(field(window, "observations")?.array().ok_or("selected rows")?.is_empty());
     }
     let discovery = field(&document, "discovery")?;
+    // Sensor-tamper companions remain catalog objects but are not event revisions.
+    assert_eq!(field(discovery, "catalog_events")?.integer(), Some(2));
+    assert_eq!(field(discovery, "package_event_candidates")?.integer(), Some(2));
+    assert_eq!(field(discovery, "metadata_reads")?.integer(), Some(2));
     assert_eq!(field(discovery, "selected_events")?.integer(), Some(2));
     assert_eq!(field(discovery, "selected_observations")?.integer(), Some(2));
     let supervision = field(&document, "supervision")?;

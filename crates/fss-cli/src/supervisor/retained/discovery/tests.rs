@@ -205,3 +205,19 @@ fn complete_exclusion_inventory_never_accepts_a_truncated_prefix() -> TestResult
     );
     Ok(())
 }
+
+#[test]
+fn explicit_authority_rebinding_preserves_every_original_scope_choice() -> TestResult {
+    let original = RetainedDiscoveryRequest::new(template()?, 8)?;
+    let old = original.template().spec().expected_authority_root;
+    let root = ContentDigest::sha256(b"explicit current authority");
+    let current = original.for_authority(root)?;
+    assert_eq!(current.template().spec().expected_authority_root, root);
+    assert_eq!(original.template().spec().expected_authority_root, old);
+    assert_ne!(current.digest(), original.digest());
+    assert_eq!(current.for_authority(old)?.digest(), original.digest());
+    assert!(current.for_authority(ContentDigest::new(
+        fss_core::DigestAlgorithm::Sha256, [0; 32],
+    )).is_err());
+    Ok(())
+}

@@ -21,6 +21,12 @@ use super::{
     RetainedSupervisorReport, checkpoint, finish, package_error, run_retained_supervisor,
 };
 
+mod revalidation;
+
+pub use revalidation::{
+    RetainedDiscoverySource, RetainedDiscoveryValidation, revalidate_retained_discovery_sources,
+};
+
 /// Largest admitted complete current-event catalog. It includes non-package events.
 pub const MAX_RETAINED_DISCOVERY_CATALOG_EVENTS: usize = 4096;
 /// Hard ceiling on the complete current-object catalog, including unrelated object families.
@@ -459,11 +465,20 @@ fn catalog(
     }
     discovery.catalog_objects = objects.len();
     let mut candidates = Vec::new();
-    for object in objects.keys() {
+    for (object, revision) in objects {
         checkpoint(cx)?;
-        let Some(event) = object.as_str().strip_prefix("object:event:") else {
+        // Event publications also have sensor-tamper companions in this namespace.
+        // Only the authoritative event_revision family belongs to the event catalog.
+        if revision.family != "event_revision" {
             continue;
-        };
+        }
+        if revision.plane != fss_core::Plane::Authority {
+            return Err(Error::Selection("discovered event is outside authority"));
+        }
+        let event = object
+            .as_str()
+            .strip_prefix("object:event:")
+            .ok_or(Error::Selection("discovered event object namespace"))?;
         if discovery.catalog_events >= request.maximum_catalog_events {
             return Err(Error::Limit("complete discovery event catalog"));
         }
