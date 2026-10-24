@@ -115,6 +115,8 @@ fn cold_pending_delivery_revalidates_advancing_authority_and_acknowledges_exactl
     let before_session = canonical_inventory(&f)?;
     let session = open_session(&f)?;
     assert_eq!(canonical_inventory(&f)?, before_session);
+    refusal(&poll(&f, &request, &session, "unknown", 16, Some(("--inspect", "yes")))?);
+    assert!(state(&f, "unknown").is_err());
 
     let first = poll(&f, &request, &session, "continuous", 16, None)?;
     success(&first);
@@ -177,6 +179,14 @@ fn cold_pending_delivery_revalidates_advancing_authority_and_acknowledges_exactl
     let repeated_ack = poll(&f, &request, &session, "continuous", 16, Some(("--acknowledge", &receipt)))?;
     success(&repeated_ack);
     assert_eq!(field(&report(&repeated_ack)?, "attempts_reserved")?.integer(), Some(4));
+    let acknowledged_state = state(&f, "continuous")?;
+    let inspected_ack = poll(&f, &request, &session, "continuous", 16, Some(("--inspect", "yes")))?;
+    success(&inspected_ack);
+    let inspected_ack = report(&inspected_ack)?;
+    assert_eq!(text(&inspected_ack, "state")?, "inspected");
+    assert_eq!(text(&inspected_ack, "last_acknowledged")?, receipt);
+    assert_eq!(field(&inspected_ack, "report")?, &Value::Null);
+    assert_eq!(state(&f, "continuous")?, acknowledged_state);
 
     let next = poll(&f, &request, &session, "continuous", 16, None)?;
     success(&next);
@@ -207,7 +217,17 @@ fn cold_pending_delivery_revalidates_advancing_authority_and_acknowledges_exactl
     // A separate explicitly bounded subscription cannot refill after a cold retry or discard.
     let limited = poll(&f, &request, &session, "one-attempt", 1, None)?;
     success(&limited);
-    let limited_receipt = text(&report(&limited)?, "delivery_receipt")?.to_owned();
+    let limited_state = state(&f, "one-attempt")?;
+    // Recover a receipt even if the first stdout was lost and no source attempt remains.
+    let inspection = poll(&f, &request, &session, "one-attempt", 1, Some(("--inspect", "yes")))?;
+    success(&inspection);
+    let inspection = report(&inspection)?;
+    assert_eq!(text(&inspection, "state")?, "inspected");
+    assert_eq!(field(&inspection, "report")?, &Value::Null);
+    assert_eq!(field(&inspection, "source_validation")?, &Value::Null);
+    let limited_receipt = text(&inspection, "pending_receipt")?.to_owned();
+    assert_eq!(text(&report(&limited)?, "delivery_receipt")?, limited_receipt);
+    assert_eq!(state(&f, "one-attempt")?, limited_state);
     refusal(&poll(&f, &request, &session, "one-attempt", 1, None)?);
     refusal(&poll(&f, &request, &session, "one-attempt", 1, Some(("--acknowledge", &limited_receipt)))?);
     success(&poll(&f, &request, &session, "one-attempt", 1, Some(("--discard", &limited_receipt)))?);
@@ -219,6 +239,13 @@ fn cold_pending_delivery_revalidates_advancing_authority_and_acknowledges_exactl
     assert_eq!(exhausted.reserved_read_attempts(), exhausted.registration().max_read_attempts);
     assert!(exhausted.pending().is_none());
     assert_eq!(exhausted.last_acknowledged(), None);
+    let inspected_discard = poll(&f, &request, &session, "one-attempt", 1, Some(("--inspect", "yes")))?;
+    success(&inspected_discard);
+    let inspected_discard = report(&inspected_discard)?;
+    assert_eq!(text(&inspected_discard, "last_discarded")?, limited_receipt);
+    assert_eq!(field(&inspected_discard, "pending_receipt")?, &Value::Null);
+    assert_eq!(field(&inspected_discard, "report")?, &Value::Null);
+    assert_eq!(state(&f, "one-attempt")?, exhausted);
     assert_eq!(canonical_inventory(&f)?, advanced_inventory);
     Ok(())
 }
@@ -268,6 +295,14 @@ fn deleted_generation_excluded_source_blocks_pending_replay_and_ack_but_allows_e
     assert_eq!(blocked.attempts_reserved(), 3);
     assert_eq!(blocked.pending().ok_or("blocked report retained")?.receipt(), original_pending.receipt());
     assert_eq!(blocked.last_acknowledged(), None);
+    let inspection = poll(&f, &request, &session, "excluded-source", 8, Some(("--inspect", "yes")))?;
+    success(&inspection);
+    let inspection = report(&inspection)?;
+    assert_eq!(text(&inspection, "state")?, "inspected");
+    assert_eq!(text(&inspection, "pending_receipt")?, receipt);
+    assert_eq!(field(&inspection, "report")?, &Value::Null);
+    assert_eq!(field(&inspection, "source_validation")?, &Value::Null);
+    assert_eq!(state(&f, "excluded-source")?, blocked);
 
     let discarded = poll(&f, &request, &session, "excluded-source", 8, Some(("--discard", &receipt)))?;
     success(&discarded);

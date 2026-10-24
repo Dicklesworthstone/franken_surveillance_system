@@ -51,12 +51,14 @@ fn digest(values: &BTreeMap<String, OsString>, key: &str) -> Result<ContentDiges
 pub(super) fn parse(values: &BTreeMap<String, OsString>) -> Result<Option<SessionOptions>> {
     if ![
         "--session", "--subscription", "--authority-root", "--max-poll-attempts",
-        "--acknowledge", "--discard",
+        "--acknowledge", "--discard", "--inspect",
     ].iter().any(|flag| values.contains_key(*flag)) {
         return Ok(None);
     }
-    if values.contains_key("--acknowledge") && values.contains_key("--discard") {
-        return Err(Failure::malformed("--acknowledge and --discard are mutually exclusive"));
+    if ["--acknowledge", "--discard", "--inspect"].iter()
+        .filter(|flag| values.contains_key(**flag)).count() > 1
+    {
+        return Err(Failure::malformed("--acknowledge, --discard and --inspect are mutually exclusive"));
     }
     let session = SessionId::parse(super::text(values, "--session")?).map_err(Failure::malformed)?;
     let subscription = super::text(values, "--subscription")?;
@@ -64,7 +66,12 @@ pub(super) fn parse(values: &BTreeMap<String, OsString>) -> Result<Option<Sessio
     let expected_root = digest(values, "--authority-root")?;
     let maximum_attempts = super::text(values, "--max-poll-attempts")?
         .parse::<u32>().map_err(Failure::malformed)?;
-    let action = if values.contains_key("--acknowledge") {
+    let action = if values.contains_key("--inspect") {
+        if super::text(values, "--inspect")? != "yes" {
+            return Err(Failure::malformed("--inspect requires yes"));
+        }
+        SupervisionAction::Inspect
+    } else if values.contains_key("--acknowledge") {
         SupervisionAction::Acknowledge(digest(values, "--acknowledge")?)
     } else if values.contains_key("--discard") {
         SupervisionAction::Discard(digest(values, "--discard")?)
@@ -244,6 +251,16 @@ fn render(
 ) -> std::result::Result<String, SupervisionAdapterError> {
     let (status, payload, delivery_receipt, report_receipt, report_root, payload_digest,
         replayed, validation, acknowledged, discarded) = match &delivery.outcome {
+        SupervisionSessionOutcome::Inspected => {
+            let pending = delivery.subscription.pending();
+            (
+                "inspected", "null".to_owned(), pending.map(PendingSupervisionDelivery::receipt),
+                pending.map(PendingSupervisionDelivery::report_receipt),
+                pending.map(|pending| pending.anchor().state_root),
+                pending.map(PendingSupervisionDelivery::payload_digest),
+                false, None, None, None,
+            )
+        }
         SupervisionSessionOutcome::Report { payload, pending, replayed, validation } => {
             let request = original.for_authority(pending.anchor().state_root).map_err(source_error)?;
             let text = checked_payload(
@@ -287,6 +304,8 @@ fn render(
         ("pending_receipt", optional_digest(state.pending().map(PendingSupervisionDelivery::receipt))),
         ("acknowledged", optional_digest(acknowledged)),
         ("discarded", optional_digest(discarded)),
+        ("last_acknowledged", optional_digest(state.last_acknowledged())),
+        ("last_discarded", optional_digest(state.last_discarded())),
         ("attempts_reserved", state.attempts_reserved().to_string()),
         ("maximum_attempts", state.registration().maximum_attempts.to_string()),
         ("reserved_bytes", state.reserved_bytes().to_string()),

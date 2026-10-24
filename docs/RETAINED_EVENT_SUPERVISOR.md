@@ -443,6 +443,16 @@ fss-event supervise \
   --acknowledge sha256:EXACT_DELIVERY_RECEIPT
 ```
 
+To recover a lost response, repeat the same registration arguments with `--inspect yes`.
+Inspection requires an already registered subscription and the same live session, immutable
+configuration and explicit current authority. Its `state: "inspected"` response exposes
+`pending_receipt`, `last_acknowledged`, `last_discarded`, historical report digests and cumulative
+budget counters, with `report: null` and no current source-validation assertion. It performs no
+native source-object reads and consumes no new attempt, so it works after source deletion or
+attempt exhaustion. An unknown subscription is refused without registration. Existing bounded
+journal recovery and live session-clock admission still apply; inspection is not a way to
+retrieve old payloads or bypass current source checks.
+
 A new ACK first revalidates the pending report's sources, then consumes only that exact delivery.
 Repeating the most recent committed ACK is idempotent and does not consume a newer pending
 report. ACK returns no report and performs no successor evaluation. A subsequent poll recomputes
@@ -463,7 +473,7 @@ not refund the reservation. The envelope exposes cumulative `attempts_reserved`,
 `reserved_bytes` and `reserved_read_attempts`; separate source validation records measured
 read consumption. These counters do not include opening/recovery or filesystem metadata.
 
-An exact already-committed ACK retry and an explicit discard need no new source attempt. Choose
+Inspection, an exact already-committed ACK retry and an explicit discard need no new source attempt. Choose
 a ceiling that leaves room to validate and acknowledge delivered reports: with a ceiling of one,
 the initial evaluation can succeed but a new source-validating ACK cannot. Discard remains
 available after that allowance is exhausted, and it does not reset the allowance.
@@ -483,7 +493,7 @@ The complete output stays within the registered report bound and 2 MiB hard ceil
 16 KiB reserved for its session envelope. The same strict output parser admits a fresh report
 before publication and on redelivery; ordinary operator-input parser limits remain unchanged.
 
-Each invocation performs one finite action. This interface has no background timer or automatic
+Each invocation performs one finite inspection, poll, ACK or discard. This interface has no background timer or automatic
 window advancement. It does not establish persistent statistical exposure accounting, qualified
 calibration, class absence, cross-camera physical identity or effect authorization.
 
@@ -506,7 +516,8 @@ catalog-to-plan selection, executable explicit replay, first-enclosing capture w
 cameras, explicit generation exclusions, shared discovery/supervision budgets and exact cold retries.
 Durable-session contracts additionally exercise cold redelivery and exact ACK/discard, unrelated
 authority advancement, current deletion of an originally native-verified generation exclusion,
-nonrefillable lifetime attempts, and unchanged canonical source/effect inventories. Journal unit
+nonrefillable lifetime attempts, receipt recovery without source reads after exhaustion/deletion,
+and unchanged canonical source/effect inventories. Journal unit
 contracts inject all four real append crash phases for reservation, publication, release and ACK,
 then reopen and recover exact pending state. These fixtures make no detector-quality or complete
 NS-1 qualification claim.

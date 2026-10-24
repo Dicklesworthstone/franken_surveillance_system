@@ -44,15 +44,17 @@ const HELP: &str = "fss-event supervise --root DIR --site SITE\n\
 \n\
   Durable discovery uses an existing fss session open identity:\n\
     --session ID --subscription LABEL --authority-root sha256:CURRENT_ROOT\n\
-    --max-poll-attempts N [--acknowledge DELIVERY_RECEIPT | --discard DELIVERY_RECEIPT]\n\
-  One invocation performs one finite poll, exact ACK or explicit discard. The original\n\
+    --max-poll-attempts N [--inspect yes | --acknowledge RECEIPT | --discard RECEIPT]\n\
+  One invocation performs one finite inspect, poll, exact ACK or explicit discard. The original\n\
   discovery file and all read/attempt limits remain immutable for that subscription.\n\
   Every native evaluation or source revalidation durably reserves its full read caps\n\
   before work, including failed or interrupted attempts. A complete report is retained\n\
   before output. Pending retries revalidate all original sources against current authority\n\
   and preserve the exact historical report bytes and delivery receipt. ACK revalidates\n\
   sources and consumes only its exact receipt; discard claims no ACK. The next evaluation\n\
-  requires a separate command. No background loop, source publication or effect is started.\n\
+  requires a separate command. --inspect yes recovers existing pending receipts and budget\n\
+  counters without source reads, private report output or another charged attempt; unknown\n\
+  subscriptions are refused. No background loop, source publication or effect is started.\n\
 \n\
   --plan selects the legacy fss.supervisor_plan.v1 caller-score simulation. Its\n\
   fss.supervisor_report.v1 explicitly labels unverified source custody and statistical\n\
@@ -342,6 +344,7 @@ pub(super) fn main(args: &[OsString]) -> ExitCode {
                 | "--max-poll-attempts"
                 | "--acknowledge"
                 | "--discard"
+                | "--inspect"
                 | "--report-out"
         ) {
             eprintln!("{ERR_CLI_MALFORMED_VALUE}: unknown supervise option {flag}");
@@ -368,6 +371,7 @@ pub(super) fn main(args: &[OsString]) -> ExitCode {
         || values.contains_key("--max-poll-attempts")
         || values.contains_key("--acknowledge")
         || values.contains_key("--discard")
+        || values.contains_key("--inspect")
     {
         return retained::main(&values);
     }

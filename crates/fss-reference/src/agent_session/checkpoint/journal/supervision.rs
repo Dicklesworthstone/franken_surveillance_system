@@ -321,6 +321,8 @@ impl SupervisionState {
 #[derive(Clone, Debug)]
 enum Command {
     Register(SupervisionRegistration),
+    // Admitted state inspection has no transition and is never encoded as a journal record.
+    Inspect(SupervisionRegistration),
     Reserve { subscription: String, expected: ContentDigest, anchor: LedgerAnchor },
     Publish {
         subscription: String, expected: ContentDigest, reservation: ContentDigest,
@@ -338,6 +340,7 @@ impl Command {
     fn subscription(&self) -> &str {
         match self {
             Self::Register(r) => &r.subscription_id,
+            Self::Inspect(r) => &r.subscription_id,
             Self::Reserve { subscription, .. } | Self::Publish { subscription, .. }
             | Self::Release { subscription, .. } | Self::Acknowledge { subscription, .. }
             | Self::Discard { subscription, .. } => subscription,
@@ -435,8 +438,15 @@ fn apply(
     }
     let current = state.subscriptions.get(&key).ok_or(DurableSupervisionError::Conflict)?;
     if current.authority_digest != authority_digest { return Err(DurableSupervisionError::StaleScope); }
+    if let Command::Inspect(registration) = command {
+        registration.validate()?;
+        if registration.session_id != *session || current.registration != *registration {
+            return Err(DurableSupervisionError::Conflict);
+        }
+        return Ok(current.clone());
+    }
     let expected = match command {
-        Command::Register(_) => return Err(DurableSupervisionError::InvalidRequest),
+        Command::Register(_) | Command::Inspect(_) => return Err(DurableSupervisionError::InvalidRequest),
         Command::Reserve { expected, .. } | Command::Publish { expected, .. }
         | Command::Release { expected, .. } | Command::Acknowledge { expected, .. }
         | Command::Discard { expected, .. } => *expected,
@@ -444,7 +454,7 @@ fn apply(
     if current.digest() != expected { return Err(DurableSupervisionError::Conflict); }
     let mut next = current.clone();
     match command {
-        Command::Register(_) => return Err(DurableSupervisionError::InvalidRequest),
+        Command::Register(_) | Command::Inspect(_) => return Err(DurableSupervisionError::InvalidRequest),
         Command::Reserve { anchor, .. } => {
             if !same_generations(&live_anchor, anchor) || !sha(anchor.state_root) {
                 return Err(DurableSupervisionError::StaleScope);
@@ -529,6 +539,19 @@ fn apply(
 }
 
 impl DurableSessionStore {
+    /// Inspect one existing subscription under live session authority without native reads,
+    /// registration, publication, acknowledgement, discard or a new attempt reservation.
+    /// The result exposes historical descriptors only, never private report bytes.
+    pub fn inspect_supervision(
+        &mut self, principal: &PrincipalId, registration: &SupervisionRegistration,
+        now: TimestampNs,
+    ) -> Result<SupervisionSubscription> {
+        registration.validate()?;
+        self.supervision_command(
+            principal, &registration.session_id, Command::Inspect(registration.clone()), now,
+        )
+    }
+
     /// Register immutable supervision once; exact retry never resets progress, lease or charges.
     pub fn register_supervision(
         &mut self, principal: &PrincipalId, registration: SupervisionRegistration, now: TimestampNs,

@@ -1115,7 +1115,7 @@
     "SupervisionAction": {
       "file": "crates/fss-reference/src/deployment_session/supervision.rs",
       "plane": "cognition",
-      "description": "One explicit poll, exact acknowledgement or discard; no implicit successor evaluation or effect execution."
+      "description": "One explicit inspection, poll, exact acknowledgement or discard; no implicit successor evaluation or effect execution."
     },
     "SupervisionSessionRequest": {
       "file": "crates/fss-reference/src/deployment_session/supervision.rs",
@@ -1155,7 +1155,7 @@
     "SupervisionSessionOutcome": {
       "file": "crates/fss-reference/src/deployment_session/supervision.rs",
       "plane": "cognition",
-      "description": "One complete historical report, exact ACK or explicit discard result; original and current source authority remain distinct."
+      "description": "One historical descriptor inspection, complete report, exact ACK or explicit discard result; original and current source authority remain distinct."
     },
     "SupervisionSessionDelivery": {
       "file": "crates/fss-reference/src/deployment_session/supervision.rs",

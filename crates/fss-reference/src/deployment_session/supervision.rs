@@ -17,9 +17,11 @@ use crate::agent_session::checkpoint::journal::supervision::{
     SupervisionSourcePin, SupervisionSubscription,
 };
 
-/// Exactly one action is committed by a command. ACK never evaluates a successor implicitly.
+/// Exactly one action is performed by a command. ACK never evaluates a successor implicitly.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SupervisionAction {
+    /// Inspect existing historical delivery descriptors without source reads or a new attempt.
+    Inspect,
     /// Produce a fresh pending report, or revalidate and redeliver the existing one.
     Poll,
     /// Acknowledge the exact pending receipt, or retry the most recent committed ACK.
@@ -35,7 +37,7 @@ pub struct SupervisionSessionRequest {
     pub registration: SupervisionRegistration,
     /// Current root supplied for this invocation; never inferred by silently rebasing a request.
     pub expected_authority_root: ContentDigest,
-    /// Poll, exact ACK, or exact discard.
+    /// Inspect, poll, exact ACK, or exact discard.
     pub action: SupervisionAction,
 }
 
@@ -170,9 +172,11 @@ pub struct SupervisionSessionHead {
     pub observed_at: TimestampNs,
 }
 
-/// One complete result. Acknowledgement and discard commands never also return a successor.
+/// One complete result. Inspection, acknowledgement and discard never return a successor.
 #[derive(Debug)]
 pub enum SupervisionSessionOutcome {
+    /// Existing subscription descriptors only; no historical report bytes or source assertion.
+    Inspected,
     /// Historical pending bytes released only after admitted native verification.
     Report {
         /// Exact historical report bytes.
@@ -325,7 +329,7 @@ fn revalidate_history(
     Ok(())
 }
 
-/// Executes one finite poll/ACK/discard. All source work has a prior durable full-cap reservation.
+/// Executes one finite inspect/poll/ACK/discard. All source work has a prior durable full-cap reservation.
 pub fn supervise_session(
     root: &Path,
     principal: &PrincipalId,
@@ -398,13 +402,20 @@ fn execute(
     if !same_generations(&session.current_anchor, &head.anchor) {
         return Err(SupervisionSessionError::StaleAuthority);
     }
-    let mut state = journal.store
-        .register_supervision(principal, request.registration.clone(), head.observed_at)
-        .map_err(SupervisionSessionError::Store)?;
+    let mut state = if request.action == SupervisionAction::Inspect {
+        journal.store.inspect_supervision(
+            principal, &request.registration, head.observed_at,
+        ).map_err(SupervisionSessionError::Store)?
+    } else {
+        journal.store
+            .register_supervision(principal, request.registration.clone(), head.observed_at)
+            .map_err(SupervisionSessionError::Store)?
+    };
     journal.commit_pin().map_err(SupervisionSessionError::Session)?;
     progress.attempts_reserved = state.attempts_reserved();
 
     let outcome = match request.action {
+        SupervisionAction::Inspect => SupervisionSessionOutcome::Inspected,
         SupervisionAction::Discard(receipt) => {
             revalidate_history(&binding, &head, &session, control, progress)?;
             admit(control, &binding, SupervisionSessionBoundary::Discard)?;
