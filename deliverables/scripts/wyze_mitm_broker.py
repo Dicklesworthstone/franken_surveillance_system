@@ -179,7 +179,7 @@ def handle(conn, addr, args):
                                 args.model = ["HL_CFL", "HL_CAM4"][(i // len(cmds)) % 2]
                             pl = cmd_body(args)
                             tb = topic.encode() if isinstance(topic, str) else topic
-                            bo = struct.pack(">H", len(tb)) + tb + struct.pack(">H", next_pid()) + pl
+                            bo = struct.pack(">H", len(tb)) + tb + struct.pack(">H", 1) + pl
                             conn.sendall(packet(3, bo, flags=0x02))  # QoS1
                             print(f"[{addr}] PUBLISH cmd {c} -> {pl[:40]!r}", flush=True)
                         except OSError:
