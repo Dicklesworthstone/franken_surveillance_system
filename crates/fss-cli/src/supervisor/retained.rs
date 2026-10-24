@@ -27,11 +27,19 @@ use crate::event_fusion::{EventFusionError, calibrated_score};
 
 mod budget;
 mod clock;
+mod discovery;
 mod input;
 mod render;
 
 use budget::package_error;
 use clock::SourceClocks;
+
+pub use discovery::{
+    MAX_RETAINED_DISCOVERY_CATALOG_EVENTS, MAX_RETAINED_DISCOVERY_CATALOG_OBJECTS,
+    MAX_RETAINED_DISCOVERY_EXCLUSIONS, MAX_RETAINED_DISCOVERY_HISTORY_SCAN_UNITS,
+    RETAINED_DISCOVERY_REPORT_SCHEMA, RETAINED_DISCOVERY_REQUEST_SCHEMA,
+    RetainedDiscoveryReport, RetainedDiscoveryRequest, run_discovered_retained_supervisor,
+};
 
 /// Complete digest-pinned plan byte ceiling, before JSON parsing.
 pub const MAX_RETAINED_SUPERVISOR_PLAN_BYTES: usize = 256 * 1024;

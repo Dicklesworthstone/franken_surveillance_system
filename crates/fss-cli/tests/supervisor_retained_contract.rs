@@ -353,6 +353,38 @@ impl Fixture {
         Ok(plan)
     }
 
+    fn discovery(&self, selected: &[usize]) -> TestResult<Value> {
+        let mut plan = self.plan(selected, true)?;
+        fields(&mut plan).insert("events".into(), Value::Array(Vec::new()));
+        for window in rows(fields(&mut plan).get_mut("windows").ok_or("windows")?) {
+            fields(window).insert("observations".into(), Value::Array(Vec::new()));
+        }
+        Ok(Value::Object(BTreeMap::from([
+            (
+                "schema".into(),
+                Value::Text("fss.retained_supervisor_discovery.v1".into()),
+            ),
+            ("maximum_catalog_events".into(), numeric(64)),
+            ("plan".into(), plan),
+        ])))
+    }
+
+    fn run_discovered(&self, request: &Value) -> TestResult<Output> {
+        let bytes = encode(request);
+        let path = self.directory.0.join("discovery-plan.json");
+        fs::write(&path, &bytes)?;
+        Ok(Command::new(env!("CARGO_BIN_EXE_fss-event"))
+            .args(["supervise", "--root"])
+            .arg(&self.root)
+            .args(["--site", SITE, "--discover-plan"])
+            .arg(&path)
+            .args([
+                "--discover-digest",
+                &ContentDigest::sha256(bytes.as_bytes()).to_text(),
+            ])
+            .output()?)
+    }
+
     fn run(&self, plan: &Value) -> TestResult<Output> {
         let bytes = encode(plan);
         let path = self.directory.0.join("retained-plan.json");
@@ -436,6 +468,34 @@ fn refused_without_mutation(f: &Fixture, plan: &Value) -> TestResult<Output> {
     assert!(output.stdout.is_empty(), "partial advice escaped a refusal");
     assert_eq!(inventory(&f.root)?, before, "refusal changed retained state");
     Ok(output)
+}
+
+fn discovered_refusal_without_mutation(f: &Fixture, request: &Value) -> TestResult<Output> {
+    let before = inventory(&f.root)?;
+    let output = f.run_discovered(request)?;
+    assert!(!output.status.success(), "discovery unexpectedly succeeded");
+    assert!(output.stdout.is_empty(), "partial discovered advice escaped a refusal");
+    assert_eq!(inventory(&f.root)?, before, "discovery refusal changed retained state");
+    Ok(output)
+}
+
+fn discovery_plan(request: &mut Value) -> &mut Value {
+    fields(request).get_mut("plan").expect("discovery fixture plan")
+}
+
+fn assert_unobserved_camera(supervision: &Value, sensor: &str) -> TestResult {
+    for window in field(supervision, "windows")?.array().ok_or("windows")? {
+        let query = field(window, "query")?;
+        assert_eq!(text(field(query, "coverage")?, "state")?, "gap");
+        let evidence = field(query, "evidence")?.array().ok_or("evidence")?;
+        let camera = evidence
+            .iter()
+            .find(|item| text(item, "sensor").is_ok_and(|value| value == sensor))
+            .ok_or("unobserved configured camera")?;
+        assert!(field(field(camera, "observability")?, "not_observable")?.text().is_some());
+        assert!(field(field(camera, "calibration")?, "uncalibrated")?.text().is_some());
+    }
+    Ok(())
 }
 
 #[test]
@@ -607,6 +667,7 @@ fn retained_scope_and_resource_refusals_cannot_be_replaced_with_caller_values() 
     *corrupt.last_mut().ok_or("retained capsule bytes")? ^= 1;
     fs::write(&capsule_path, corrupt)?;
     refused_without_mutation(&f, &base)?;
+    discovered_refusal_without_mutation(&f, &f.discovery(&[0])?)?;
     fs::write(capsule_path, original)?;
     Ok(())
 }
@@ -615,6 +676,7 @@ fn retained_scope_and_resource_refusals_cannot_be_replaced_with_caller_values() 
 fn current_privacy_and_real_import_deletion_withdraw_cold_supervisor_access() -> TestResult {
     let mut f = Fixture::new("withdrawal", 2)?;
     success(&f.run(&f.plan(&[0, 1], true)?)?);
+    success(&f.run_discovered(&f.discovery(&[0, 1])?)?);
     let preview = Command::new(env!("CARGO_BIN_EXE_fss-event"))
         .args(["privacy-mask", "declare", "--root"])
         .arg(&f.root)
@@ -638,9 +700,30 @@ fn current_privacy_and_real_import_deletion_withdraw_cold_supervisor_access() ->
     f.refresh_authority()?;
     let private = refused_without_mutation(&f, &f.plan(&[0], true)?)?;
     assert!(std::str::from_utf8(&private.stderr)?.contains("ERR-PRIVACY-UNMASKED-ACCESS-REFUSED-001"));
+    let private_discovery = discovered_refusal_without_mutation(&f, &f.discovery(&[0])?)?;
+    assert!(
+        std::str::from_utf8(&private_discovery.stderr)?
+            .contains("ERR-PRIVACY-UNMASKED-ACCESS-REFUSED-001")
+    );
+    // A configured sensor's private event must still fail if its requested package pin differs.
+    // Discovery may not hide the refusal by applying a generation filter before source checks.
+    let mut private_mismatch = f.discovery(&[0])?;
+    let camera = &mut rows(
+        fields(discovery_plan(&mut private_mismatch)).get_mut("cameras").ok_or("cameras")?,
+    )[0];
+    fields(camera).insert(
+        "package_digest".into(),
+        Value::Text(ContentDigest::sha256(b"other package").to_text()),
+    );
+    let private_mismatch = discovered_refusal_without_mutation(&f, &private_mismatch)?;
+    assert!(
+        std::str::from_utf8(&private_mismatch.stderr)?
+            .contains("ERR-PRIVACY-UNMASKED-ACCESS-REFUSED-001")
+    );
 
     // The second sensor is still readable before its actual import deletion is committed.
     success(&f.run(&f.plan(&[1], true)?)?);
+    success(&f.run_discovered(&f.discovery(&[1])?)?);
     let deletion = Command::new(env!("CARGO_BIN_EXE_fss-event"))
         .args(["delete", "plan", "--root"])
         .arg(&f.root)
@@ -659,6 +742,7 @@ fn current_privacy_and_real_import_deletion_withdraw_cold_supervisor_access() ->
     success(&committed);
     f.refresh_authority()?;
     refused_without_mutation(&f, &f.plan(&[1], true)?)?;
+    discovered_refusal_without_mutation(&f, &f.discovery(&[1])?)?;
     Ok(())
 }
 
@@ -698,5 +782,188 @@ fn mode_and_exact_plan_digest_are_admitted_before_an_absent_deployment_is_touche
     success(&help);
     let help = std::str::from_utf8(&help.stdout)?;
     assert!(help.contains("--retained-plan") && help.contains("caller-score simulation"));
+    Ok(())
+}
+
+#[test]
+fn discovery_finds_real_native_rows_and_emits_an_executable_deterministic_plan() -> TestResult {
+    let f = Fixture::new("discovery", 2)?;
+    let before = inventory(&f.root)?;
+    let request = f.discovery(&[0, 1])?;
+    let encoded = encode(&request);
+    for camera in &f.cameras {
+        assert!(!encoded.contains(camera.event.as_str()), "request supplied an event selector");
+        assert!(!encoded.contains(&camera.capsule.to_text()), "request supplied a source row");
+    }
+    let first = f.run_discovered(&request)?;
+    success(&first);
+    let document = report(&first)?;
+    assert_eq!(
+        text(&document, "schema")?,
+        "fss.retained_supervisor_discovery_report.v1"
+    );
+    assert_eq!(field(&document, "effects_authorized")?.boolean(), Some(false));
+    assert_eq!(field(&document, "supports_absence_claim")?.boolean(), Some(false));
+    let selected = field(&document, "selected_plan")?;
+    assert_eq!(text(selected, "schema")?, "fss.retained_supervisor_plan.v1");
+    assert_eq!(text(selected, "expected_authority_root")?, f.authority.to_text());
+    let events = field(selected, "events")?.array().ok_or("selected events")?;
+    assert_eq!(events.len(), 2);
+    for camera in &f.cameras {
+        let event = events.iter()
+            .find(|event| text(event, "event_id").is_ok_and(|id| id == camera.event.as_str()))
+            .ok_or("discovered native event")?;
+        assert_eq!(text(event, "camera_id")?, camera.alias);
+        assert_eq!(text(event, "expected_event_root")?, camera.event_root.to_text());
+    }
+    let selected_windows = field(selected, "windows")?.array().ok_or("selected windows")?;
+    let first_rows = field(&selected_windows[0], "observations")?.array().ok_or("selected rows")?;
+    assert_eq!(first_rows.len(), 2);
+    for camera in &f.cameras {
+        let row = first_rows.iter()
+            .find(|row| text(row, "event_id").is_ok_and(|id| id == camera.event.as_str()))
+            .ok_or("discovered assigned native row")?;
+        assert_eq!(text(row, "capsule_digest")?, camera.capsule.to_text());
+        assert_eq!(field(row, "segment")?.integer(), Some(i128::from(camera.segment)));
+        assert_eq!(field(row, "detection_row")?.integer(), Some(i128::from(camera.row)));
+    }
+    for window in &selected_windows[1..] {
+        assert!(field(window, "observations")?.array().ok_or("selected rows")?.is_empty());
+    }
+    let discovery = field(&document, "discovery")?;
+    assert_eq!(field(discovery, "selected_events")?.integer(), Some(2));
+    assert_eq!(field(discovery, "selected_observations")?.integer(), Some(2));
+    let supervision = field(&document, "supervision")?;
+    let ordinary = f.run(selected)?;
+    success(&ordinary);
+    let ordinary = report(&ordinary)?;
+    for key in ["plan_digest", "observations", "windows", "authority_state_root"] {
+        assert_eq!(
+            field(supervision, key)?,
+            field(&ordinary, key)?,
+            "discovered and explicit supervision differ at {key}"
+        );
+    }
+    let usage = field(&document, "read_usage")?;
+    for (total, discovery_key, supervision_key) in [
+        ("reserved_bytes", "discovery_reserved_bytes", "supervision_reserved_bytes"),
+        ("read_attempts", "discovery_read_attempts", "supervision_read_attempts"),
+    ] {
+        let discovered = field(usage, discovery_key)?.integer().ok_or("discovery usage")?;
+        let supervised = field(usage, supervision_key)?.integer().ok_or("supervision usage")?;
+        assert!(discovered > 0 && supervised > 0);
+        assert_eq!(field(usage, total)?.integer(), Some(discovered + supervised));
+    }
+    let second = f.run_discovered(&request)?;
+    success(&second);
+    assert_eq!(second.stdout, first.stdout, "discovery retry changed the complete result");
+
+    // A conservative [0, receive] interval cannot enter the first too-short window. It is
+    // placed at the first later window that contains the entire original interval.
+    let mut delayed = request.clone();
+    let windows = rows(fields(discovery_plan(&mut delayed)).get_mut("windows").ok_or("windows")?);
+    fields(&mut windows[0]).insert("end_ns".into(), numeric(500_000_000));
+    let delayed = f.run_discovered(&delayed)?;
+    success(&delayed);
+    let delayed = report(&delayed)?;
+    let windows = field(field(&delayed, "selected_plan")?, "windows")?.array().ok_or("windows")?;
+    assert!(field(&windows[0], "observations")?.array().ok_or("rows")?.is_empty());
+    assert_eq!(field(&windows[1], "observations")?.array().ok_or("rows")?.len(), 2);
+    let windows = field(field(&delayed, "supervision")?, "windows")?.array().ok_or("windows")?;
+    assert_eq!(field(&windows[0], "unique_observations")?.integer(), Some(0));
+    assert_eq!(field(&windows[1], "unique_observations")?.integer(), Some(2));
+
+    let mut missing = request.clone();
+    let cameras = rows(fields(discovery_plan(&mut missing)).get_mut("cameras").ok_or("cameras")?);
+    let mut camera = cameras[0].clone();
+    fields(&mut camera).insert("camera_id".into(), Value::Text("missing-camera".into()));
+    fields(&mut camera).insert("sensor_id".into(), Value::Text("sensor:missing-camera".into()));
+    cameras.push(camera);
+    let missing = f.run_discovered(&missing)?;
+    success(&missing);
+    let missing = report(&missing)?;
+    assert_unobserved_camera(field(&missing, "supervision")?, "sensor:missing-camera")?;
+
+    // Reusing a configured sensor with another native package cannot silently turn its event
+    // into an empty catalog. Every excluded event remains named with its exact root.
+    for key in ["package_digest", "model_digest", "contract_digest"] {
+        let mut mismatch = request.clone();
+        let camera = &mut rows(
+            fields(discovery_plan(&mut mismatch)).get_mut("cameras").ok_or("cameras")?,
+        )[0];
+        fields(camera).insert(
+            key.into(),
+            Value::Text(ContentDigest::sha256(b"foreign native generation").to_text()),
+        );
+        let output = f.run_discovered(&mismatch)?;
+        success(&output);
+        let output = report(&output)?;
+        let exclusions = field(field(&output, "discovery")?, "exclusions")?
+            .array().ok_or("exclusions")?;
+        let exclusion = exclusions.iter()
+            .find(|entry| text(entry, "event_id").is_ok_and(|id| id == f.cameras[0].event.as_str()))
+            .ok_or("mismatched configured source must be explicit")?;
+        assert_eq!(text(exclusion, "event_root")?, f.cameras[0].event_root.to_text());
+        assert_eq!(text(exclusion, "reason")?, format!("{key}_mismatch"));
+        assert_eq!(field(exclusion, "source_verified")?.boolean(), Some(true));
+        assert_unobserved_camera(field(&output, "supervision")?, &f.cameras[0].sensor)?;
+    }
+
+    let mut catalog_bound = request.clone();
+    fields(&mut catalog_bound).insert("maximum_catalog_events".into(), numeric(1));
+    discovered_refusal_without_mutation(&f, &catalog_bound)?;
+    for key in ["max_read_bytes", "max_read_attempts", "max_report_bytes"] {
+        let mut bounded = request.clone();
+        let limits = fields(discovery_plan(&mut bounded)).get_mut("limits").ok_or("limits")?;
+        fields(limits).insert(key.into(), numeric(1));
+        discovered_refusal_without_mutation(&f, &bounded)?;
+    }
+    assert_eq!(inventory(&f.root)?, before, "discovery or explicit replay changed authority");
+    Ok(())
+}
+
+#[test]
+fn discovery_digest_and_mode_admission_precede_opening_an_absent_deployment() -> TestResult {
+    let directory = Directory::new("discovery-admission")?;
+    let root = directory.0.join("must-not-exist");
+    let plan = directory.0.join("not-a-discovery-plan.json");
+    fs::write(&plan, b"not JSON")?;
+    let command = || {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_fss-event"));
+        command.args(["supervise", "--root"]).arg(&root)
+            .args(["--site", SITE, "--discover-plan"]).arg(&plan);
+        command
+    };
+    let missing = command().output()?;
+    assert_eq!(
+        missing.status.code(),
+        Some(i32::from(fss_cli::ExitIdentity::MALFORMED_VALUE.code))
+    );
+    assert!(missing.stdout.is_empty());
+    let wrong = command()
+        .args(["--discover-digest", &ContentDigest::sha256(b"wrong").to_text()])
+        .output()?;
+    assert_eq!(
+        wrong.status.code(),
+        Some(i32::from(fss_cli::ExitIdentity::MALFORMED_VALUE.code))
+    );
+    assert!(std::str::from_utf8(&wrong.stderr)?.contains("discovery request byte digest"));
+    for flag in ["--plan", "--retained-plan", "--retained-digest"] {
+        let mixed = command()
+            .args([
+                "--discover-digest", &ContentDigest::sha256(b"not JSON").to_text(),
+                flag, "other",
+            ])
+            .output()?;
+        assert!(!mixed.status.success());
+        assert!(mixed.stdout.is_empty());
+        assert!(std::str::from_utf8(&mixed.stderr)?.contains("mutually exclusive"));
+    }
+    assert!(!root.exists());
+    let help = Command::new(env!("CARGO_BIN_EXE_fss-event"))
+        .args(["supervise", "--help"]).output()?;
+    success(&help);
+    let help = std::str::from_utf8(&help.stdout)?;
+    assert!(help.contains("--discover-plan") && help.contains("--discover-digest"));
     Ok(())
 }

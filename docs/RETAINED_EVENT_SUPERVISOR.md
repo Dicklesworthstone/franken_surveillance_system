@@ -62,6 +62,129 @@ supervisor checks the complete assignment again, even when the detector report c
 Current operator revisions outside the package-event policy are refused; the command cannot
 silently substitute the event's earlier unresolved state.
 
+## Discover and supervise published events automatically
+
+Use `--discover-plan` when the deployment already contains published package events and you want
+the system to find their exact native rows. Configure the cameras, source generations, class,
+capture windows, calibration, policy and limits once. Discovery reads the bounded current event
+catalog, verifies relevant package events, builds the exact selection plan and immediately runs
+the same retained supervisor.
+
+The request is a strict wrapper around the existing plan schema:
+
+```json
+{
+  "schema": "fss.retained_supervisor_discovery.v1",
+  "maximum_catalog_events": 256,
+  "plan": {
+    "schema": "fss.retained_supervisor_plan.v1",
+    "site_lineage": "site:home",
+    "hypothesis_id": "hyp:class:person",
+    "expected_authority_root": "sha256:CURRENT_AUTHORITY_STATE_ROOT",
+    "label": "person",
+    "start_ns": "0",
+    "cameras": [
+      {
+        "camera_id": "east",
+        "sensor_id": "sensor:east",
+        "package_digest": "sha256:EXACT_PACKAGE_ARCHIVE",
+        "model_digest": "sha256:EXACT_NATIVE_MODEL",
+        "contract_digest": "sha256:EXACT_DETECTION_HEAD_CONTRACT",
+        "class_index": 0,
+        "failure_domains": ["power:east-supply"],
+        "calibration": null
+      }
+    ],
+    "events": [],
+    "windows": [
+      {"window_index": 0, "end_ns": "2000000000", "observations": []},
+      {"window_index": 1, "end_ns": "3000000000", "observations": []}
+    ],
+    "prior": [0, 0],
+    "policy": {
+      "generation": "policy:class-review:v1",
+      "alert_threshold": 1800,
+      "retain_threshold": 0,
+      "reject_threshold": -1000,
+      "min_independent_support": 2,
+      "urgent_single_domain_threshold": null,
+      "max_wait_ns": 0,
+      "look_penalty_per_doubling": 0,
+      "operator_confirmation_available": false
+    },
+    "severity": {
+      "expected_harm": 10000,
+      "false_alert_cost": 500,
+      "delay_cost_per_second": 100,
+      "reversible": false
+    },
+    "limits": {
+      "max_read_bytes": 134217728,
+      "max_read_attempts": 8192,
+      "max_journal_bytes": 16777216,
+      "max_report_bytes": 2097152
+    }
+  }
+}
+```
+
+Replace the identity placeholders using the pinned package and current deployment inventory, as
+for an explicit retained plan. The request contains no event IDs, capsule IDs, detection rows or
+supplied scores: `plan.events` and every window's `observations` must be empty. All ordinary plan
+fields remain required and use the same parser and validation. The complete wrapper, including
+whitespace, is capped at 256 KiB and pinned before parsing.
+
+```sh
+sha256sum discover-supervisor.json
+
+fss-event supervise \
+  --root /absolute/deployment \
+  --site site:home \
+  --discover-plan discover-supervisor.json \
+  --discover-digest sha256:EXACT_FILE_SHA256 \
+  --report-out /absolute/exports/discovered-supervisor-report.json
+```
+
+Discovery and explicit selection are mutually exclusive modes. The command requires an existing
+deployment and the exact requested authority head. It neither imports media, runs the detector,
+publishes new events nor activates an alert.
+
+Discovery assigns each verified detection to the first window containing its complete conservative
+capture interval. Later windows retain cumulative evidence without selecting the same row again.
+A configured camera with no selected detection remains explicitly unobservable. An empty selection
+does not establish class absence, healthy acquisition or complete coverage.
+
+The `fss.retained_supervisor_discovery_report.v1` output contains:
+
+- `selected_plan`: a complete executable `fss.retained_supervisor_plan.v1`, including verified
+  event roots and exact source-row selectors;
+- `supervision`: the ordinary retained supervisor report with original scores, clocks, full
+  fusion queries/outcomes and shared-cause accounting;
+- `discovery`: bounded catalog, metadata, source-opening and selection counts, plus explicit
+  exclusions carrying the affected event/root and source-verification status;
+- `read_usage`: discovery and supervision costs under the same nonrefillable object allowance;
+- a receipt binding the complete result, including exclusions and selected plan.
+
+For a configured sensor in the requested interval, source custody and current privacy/deletion
+restrictions are checked before package, model, head-contract, class or label mismatch exclusions.
+A mismatched generation remains explicitly excluded; it cannot hide a private, deleted or corrupt
+targeted source. Metadata-only exclusions outside the requested sensor/time scope are labeled
+`source_verified: false`.
+
+`maximum_catalog_events` admits 1 through 4096 current events. A separate 65536-object hard ceiling
+bounds catalog enumeration. Exceeding a catalog, source-read, selection, exclusion or complete-output
+bound refuses the whole operation; discovery never silently truncates the event set. Its output
+ceiling applies to the entire wrapper, including the executable selected plan. Opening/recovery and
+filesystem metadata retain their existing separate accounting; the report names the three fresh
+journal observations used by discovery and supervision together. Metadata authority-history scans
+also have a separate conservative work ceiling exposed in the discovery accounting.
+
+An exported `selected_plan` can be pinned and run through `--retained-plan` while its authority
+head remains current. It reproduces the native evidence and window answers. Its read-accounting
+receipt differs because an explicit run does not repeat catalog discovery. A cold retry of the
+same discovery request at the same unchanged deployment produces the same complete result.
+This is bounded discovery over already published evidence, not a persistent live subscription.
+
 ## Run an explicit retained plan
 
 ```sh
@@ -254,5 +377,7 @@ shared spool read-budget tests, and the existing package-event reader contracts.
 process cases exercise real native package retention/publication, CLI inventory-to-plan binding,
 exact original score bits and clock labels, cold deterministic retries, shared causes, repeated
 evidence, missing camera coverage, source/time/package substitution, resource refusals, corrupt
-custody, current masks and actual import deletion. These fixtures make no detector-quality or
-complete NS-1 qualification claim.
+custody, current masks and actual import deletion. Discovery contracts additionally verify automatic
+catalog-to-plan selection, executable explicit replay, first-enclosing capture windows, missing
+cameras, explicit generation exclusions, shared discovery/supervision budgets and exact cold retries.
+These fixtures make no detector-quality or complete NS-1 qualification claim.

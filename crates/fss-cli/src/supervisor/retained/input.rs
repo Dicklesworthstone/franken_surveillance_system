@@ -10,7 +10,7 @@ use crate::event_fusion::parse_score_calibration;
 use crate::json_input::{Value, parse};
 
 use super::{
-    MAX_RETAINED_SUPERVISOR_PLAN_BYTES, RetainedCameraSpec, RetainedEventPin,
+    MAX_RETAINED_SUPERVISOR_PLAN_BYTES, RetainedCameraSpec, RetainedDiscoveryRequest, RetainedEventPin,
     RetainedObservationSelector, RetainedSupervisorError as Error, RetainedSupervisorLimits,
     RetainedSupervisorPlan, RetainedSupervisorSpec, RetainedSupervisorWindow,
 };
@@ -33,8 +33,14 @@ impl RetainedSupervisorPlan {
         }
         let text = std::str::from_utf8(bytes).map_err(|_| Error::Plan("plan UTF-8"))?;
         let document = parse(text).map_err(|_| Error::Plan("plan JSON"))?;
+        Self::from_value(&document)
+    }
+
+    // Discovery carries the same complete plan dialect, without serializing caller JSON
+    // again or introducing another authority/calibration parser.
+    fn from_value(document: &Value) -> Result<Self> {
         let top = object(
-            &document,
+            document,
             &[
                 "schema",
                 "site_lineage",
@@ -209,6 +215,29 @@ impl RetainedSupervisorPlan {
     }
 }
 
+impl RetainedDiscoveryRequest {
+    /// Verify the exact wrapper bytes before parsing. The nested plan uses the ordinary
+    /// retained schema and must contain no caller-selected event or detection row.
+    pub fn from_json(bytes: &[u8], expected: ContentDigest) -> Result<Self> {
+        if bytes.is_empty() || bytes.len() > MAX_RETAINED_SUPERVISOR_PLAN_BYTES {
+            return Err(Error::Limit("discovery request bytes"));
+        }
+        if expected.algorithm() != DigestAlgorithm::Sha256
+            || ContentDigest::sha256(bytes) != expected
+        {
+            return Err(Error::Plan("discovery request byte digest"));
+        }
+        let text = std::str::from_utf8(bytes).map_err(|_| Error::Plan("discovery request UTF-8"))?;
+        let document = parse(text).map_err(|_| Error::Plan("discovery request JSON"))?;
+        let top = object(&document, &["schema", "maximum_catalog_events", "plan"])?;
+        if text_field(top, "schema")? != "fss.retained_supervisor_discovery.v1" {
+            return Err(Error::Plan("discovery request schema"));
+        }
+        let template = RetainedSupervisorPlan::from_value(field(top, "plan")?)?;
+        Self::new(template, number(field(top, "maximum_catalog_events")?)?)
+    }
+}
+
 fn object<'a>(value: &'a Value, allowed: &[&str]) -> Result<&'a Object> {
     let object = value.object().ok_or(Error::Plan("JSON object"))?;
     if object.keys().any(|key| !allowed.contains(&key.as_str())) {
@@ -373,5 +402,66 @@ mod tests {
     fn whole_plan_byte_ceiling_is_enforced_even_when_the_digest_matches() {
         let bytes = vec![b' '; MAX_RETAINED_SUPERVISOR_PLAN_BYTES + 1];
         assert!(RetainedSupervisorPlan::from_json(&bytes, ContentDigest::sha256(&bytes)).is_err());
+    }
+
+    fn discovery_document() -> String {
+        let selected = document();
+        let events = selected.find("\"events\":").expect("fixture events");
+        let prior = selected.find("\"prior\":").expect("fixture prior");
+        let template = format!(
+            "{}\"events\":[],\"windows\":[{{\"window_index\":0,\"end_ns\":1000,\"observations\":[]}}],{}",
+            &selected[..events],
+            &selected[prior..],
+        );
+        format!(
+            r#"{{"schema":"fss.retained_supervisor_discovery.v1","maximum_catalog_events":64,"plan":{template}}}"#
+        )
+    }
+
+    fn discover(json: &str) -> Result<RetainedDiscoveryRequest> {
+        RetainedDiscoveryRequest::from_json(json.as_bytes(), ContentDigest::sha256(json.as_bytes()))
+    }
+
+    #[test]
+    fn discovery_byte_pin_and_complete_existing_plan_are_admitted_before_io() {
+        let json = discovery_document();
+        let request = discover(&json).expect("valid discovery request");
+        assert_eq!(request.maximum_catalog_events(), 64);
+        assert_eq!(request.template().spec().cameras.len(), 1);
+        assert!(request.template().spec().events.is_empty());
+        assert!(request.template().spec().windows[0].observations.is_empty());
+        assert!(matches!(
+            RetainedDiscoveryRequest::from_json(b"not JSON", ContentDigest::sha256(b"other")),
+            Err(Error::Plan("discovery request byte digest"))
+        ));
+        for altered in [
+            json.replacen("\"maximum_catalog_events\":64", "\"maximum_catalog_events\":0", 1),
+            json.replacen("\"maximum_catalog_events\":64", "\"maximum_catalog_events\":4097", 1),
+            json.replacen("\"maximum_catalog_events\":64", "\"maximum_catalog_events\":1.0", 1),
+            json.replacen(
+                "\"maximum_catalog_events\":64",
+                "\"maximum_catalog_events\":64,\"maximum_catalog_events\":64",
+                1,
+            ),
+            json.replacen(
+                "\"maximum_catalog_events\":64",
+                "\"maximum_catalog_events\":64,\"skip_privacy\":true",
+                1,
+            ),
+            json.replacen("\"class_index\":27", "\"class_index\":27,\"score_ppm\":999999", 1),
+            json.replacen("\"min_independent_support\":2", "\"min_independent_support\":1", 1),
+            format!(
+                r#"{{"schema":"fss.retained_supervisor_discovery.v1","maximum_catalog_events":64,"plan":{}}}"#,
+                document(),
+            ),
+        ] {
+            assert_ne!(altered, json);
+            assert!(
+                discover(&altered).is_err(),
+                "discovery accepted a malformed or selected input"
+            );
+        }
+        let bytes = vec![b' '; MAX_RETAINED_SUPERVISOR_PLAN_BYTES + 1];
+        assert!(RetainedDiscoveryRequest::from_json(&bytes, ContentDigest::sha256(&bytes)).is_err());
     }
 }
