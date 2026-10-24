@@ -14,13 +14,75 @@ def srv_ctx():
     def sni(sock,name,ctx): print("SNI",name,flush=True)
     c.sni_callback=sni
     return c
+
+def _rewrite(d):
+    """Rewrite url/md5/firmware_ver inside a cloud command PUBLISH, in place.
+
+    The cloud's own command is the only one the device acts on, so the descriptor is edited on the
+    way through instead of being published by us. Returns the new packet or None.
+    """
+    if not os.environ.get("REWRITE"):
+        return None
+    t = d[0] >> 4
+    if t != 3:
+        return None
+    n, i = 0, 1
+    while True:
+        b = d[i]; i += 1; n = (n << 7) | (b & 0x7F)
+        if not b & 0x80:
+            break
+    tl = int.from_bytes(d[i:i + 2], "big")
+    topic = d[i + 2:i + 2 + tl].decode(errors="replace")
+    if not topic.endswith("/cmd"):
+        return None
+    qos = (d[0] >> 1) & 3
+    j = i + 2 + tl + (2 if qos else 0)
+    ct = d[j:]
+    if len(ct) < 8 or len(ct) % 4:
+        return None
+    pt = _xxtea(ct, os.environ["OTA_ENR"].encode(), True)
+    try:
+        doc = json.loads(pt.split(b"\0")[0])
+    except Exception:
+        print("rewrite: not json", flush=True)
+        return None
+    par = doc.get("Params") or {}
+    par["url"] = os.environ["OTA_URL"]
+    par["md5"] = os.environ["OTA_MD5"]
+    par["firmware_ver"] = os.environ["OTA_URL"].rsplit("/", 1)[-1].split(".tar")[0]
+    doc["Params"] = par
+    new = json.dumps(doc, separators=(",", ":")).encode()
+    new = _xxtea(new + b"\0" * (-len(new) % 4), os.environ["OTA_ENR"].encode())
+    # rebuild: same header byte, same topic (+packet id), new payload, fresh remaining length
+    varint = 1
+    while d[varint] & 0x80:
+        varint += 1
+    varint += 1
+    body = d[varint:j] + new
+    print(f"rewrite: {par['url']} md5={par['md5']}", flush=True)
+    return bytes([d[0]]) + enc_len(len(body)) + body
+
 def pipe(a,b,tag):
+    buf=b""
     try:
         while True:
             d=a.recv(65536)
             if not d: break
-            log(tag,d)
-            b.sendall(d)
+            if tag != "S":
+                log(tag,d); b.sendall(d); continue
+            buf += d
+            while True:
+                if len(buf) < 2: break
+                n, i, shift = 0, 1, 0
+                while True:
+                    if i >= len(buf): break
+                    c = buf[i]; i += 1; n |= (c & 0x7F) << shift; shift += 7
+                    if not c & 0x80: break
+                if i > 4 or len(buf) < i + n: break
+                pkt = buf[:i + n]; buf = buf[i + n:]
+                log("S", pkt)
+                r = _rewrite(pkt)
+                b.sendall(r if r else pkt)
     except Exception as e:
         print("pipe",tag,"end",repr(e),flush=True)
     finally:
@@ -42,7 +104,13 @@ def log(direction,d):
             if topic.endswith("/cmd") or topic.endswith("/update"):
                 print(f"{direction} CMDHEX {d[j:].hex()}",flush=True)
         except Exception: print(direction,"PUBLISH <unparsed>",flush=True)
-    elif t in (8,): print(direction,"SUBSCRIBE",flush=True)
+    elif t in (8,):
+        try:
+            i=2; out=[]
+            while i < len(d):
+                ln=int.from_bytes(d[i:i+2],"big"); out.append(d[i+2:i+2+ln].decode(errors="replace")); i+=2+ln+1
+            print(direction,"SUBSCRIBE",out,flush=True)
+        except Exception: print(direction,"SUBSCRIBE",flush=True)
     elif t in (1,): print(direction,"CONNECT",flush=True)
     elif t in (4,): print(direction,"PUBACK",d[1:3].hex(),flush=True)
 
@@ -98,7 +166,7 @@ def _pub(sock, topic, payload, qos0=True):
     else:
         _PID[0]=(_PID[0]%65535)+1
         body=struct.pack(">H",len(tb))+tb+struct.pack(">H",_PID[0])+payload
-        sock.sendall(_pkt(3, body, 0x02))
+        sock.sendall(_pkt(3, body, 0x03 if os.environ.get("OTA_RETAIN") else 0x02))
 def inject(cli, up=None):
     time.sleep(6)
     if not MD5:
