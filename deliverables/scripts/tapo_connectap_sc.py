@@ -105,11 +105,11 @@ def req(host, sess, inner, timeout=8):
 
 
 def connect_params(b64: str, ssid: str, bssid: str) -> dict:
-    """The only shape that reaches the decode: nested onboarding.connect.
+    """The only shape that reaches the decode: the connect object directly.
 
-    A flat {ssid,password,encrypt_type} is accepted and harmless. `unique_key`
-    must be an Integer and the model also carries rssi/band (WifiUniqueKey in
-    libtapocameranetwork); a 16-char string takes an error path.
+    `params.onboarding.connect` is rejected with -40209 on 1.2.2/1.1.7; the
+    connect object must be `params` itself. `pwd_encrypted` is what selects the
+    decode, `unique_key` must be an Integer, and rssi/band are part of the model.
     """
     return {"onboarding": {"connect": {
         "ssid": ssid, "bssid": bssid, "auth": 1, "encryption": 3, "rssi": -50,
