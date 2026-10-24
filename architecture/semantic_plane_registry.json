@@ -692,7 +692,8 @@
   "crates/fss-cli/src/supervisor/retained/render.rs": "cognition",
   "crates/fss-cli/src/supervisor/retained/clock.rs": "support",
   "crates/fss-cli/src/supervisor/retained/budget.rs": "support",
-  "crates/fss-cli/src/bin/fss-event/supervise/retained.rs": "support"
+  "crates/fss-cli/src/bin/fss-event/supervise/retained.rs": "support",
+  "crates/fss-cli/src/supervisor/retained/discovery.rs": "cognition"
  },
  "types": {
   "AlertEffectRecord": {
@@ -1052,6 +1053,16 @@
    "file": "crates/fss-object/src/spool/read_budget.rs",
    "plane": "support",
    "description": "Measured admitted stored-object read attempts and envelope reservations; no coverage, custody lease or effect authority"
+  },
+  "RetainedDiscoveryRequest": {
+   "file": "crates/fss-cli/src/supervisor/retained/discovery.rs",
+   "plane": "cognition",
+   "description": "Validated empty-selection native-supervisor template and bounded current-event discovery request; no source truth or effect authority"
+  },
+  "RetainedDiscoveryReport": {
+   "file": "crates/fss-cli/src/supervisor/retained/discovery.rs",
+   "plane": "cognition",
+   "description": "Complete current-source discovery, executable explicit plan, original supervisor result and shared nonrefillable read accounting"
   }
  }
 }

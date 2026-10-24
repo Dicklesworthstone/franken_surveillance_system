@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! Explicit retained native class advice and legacy caller-score simulation.
+//! Explicit or discovered retained native class advice and legacy caller-score simulation.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
@@ -22,7 +22,8 @@ use fss_reference::{ReferenceDeployment, ReplayCx};
 mod retained;
 
 const HELP: &str = "fss-event supervise --root DIR --site SITE\n\
-  (--retained-plan FILE --retained-digest sha256:HEX | --plan FILE)\n\
+  (--retained-plan FILE --retained-digest sha256:HEX |\n\
+   --discover-plan FILE --discover-digest sha256:HEX | --plan FILE)\n\
   [--principal ID] [--report-out FILE]\n\
 \n\
   Retained mode reads a digest-pinned fss.retained_supervisor_plan.v1 from a regular file\n\
@@ -34,6 +35,12 @@ const HELP: &str = "fss-event supervise --root DIR --site SITE\n\
   Advice preserves shared failure domains and uncertainty. It establishes no coverage,\n\
   class absence, physical identity, zone entry, anytime false-alarm guarantee or effect\n\
   authorization. Retained mode never accepts caller-supplied detector scores.\n\
+\n\
+  Discovery mode reads fss.retained_supervisor_discovery.v1: an explicit catalog event\n\
+  bound and the same retained plan with empty events and window observations. It verifies\n\
+  published package events, selects matching native detections into their first enclosing\n\
+  windows, and immediately supervises them under one shared read allowance. Its complete\n\
+  report includes an executable selected_plan, explicit exclusions and source-read costs.\n\
 \n\
   --plan selects the legacy fss.supervisor_plan.v1 caller-score simulation. Its\n\
   fss.supervisor_report.v1 explicitly labels unverified source custody and statistical\n\
@@ -315,6 +322,8 @@ pub(super) fn main(args: &[OsString]) -> ExitCode {
                 | "--plan"
                 | "--retained-plan"
                 | "--retained-digest"
+                | "--discover-plan"
+                | "--discover-digest"
                 | "--report-out"
         ) {
             eprintln!("{ERR_CLI_MALFORMED_VALUE}: unknown supervise option {flag}");
@@ -331,7 +340,11 @@ pub(super) fn main(args: &[OsString]) -> ExitCode {
         i += 2;
     }
 
-    if values.contains_key("--retained-plan") || values.contains_key("--retained-digest") {
+    if values.contains_key("--retained-plan")
+        || values.contains_key("--retained-digest")
+        || values.contains_key("--discover-plan")
+        || values.contains_key("--discover-digest")
+    {
         return retained::main(&values);
     }
 

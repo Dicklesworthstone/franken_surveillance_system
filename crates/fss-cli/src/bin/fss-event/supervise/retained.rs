@@ -10,7 +10,8 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use fss_cli::supervisor::retained::{
-    MAX_RETAINED_SUPERVISOR_PLAN_BYTES, RetainedSupervisorPlan, run_retained_supervisor,
+    MAX_RETAINED_SUPERVISOR_PLAN_BYTES, RetainedDiscoveryRequest, RetainedSupervisorPlan,
+    run_discovered_retained_supervisor, run_retained_supervisor,
 };
 use fss_cli::{ERR_CLI_MALFORMED_VALUE, ERR_CLI_RUNTIME_FAILURE, ExitIdentity};
 use fss_core::{
@@ -19,7 +20,28 @@ use fss_core::{
 };
 use fss_reference::{ReferenceDeployment, ReplayCx};
 
+#[derive(Clone, Copy)]
+enum Mode {
+    Explicit,
+    Discover,
+}
+
+enum InputPlan {
+    Explicit(RetainedSupervisorPlan),
+    Discover(RetainedDiscoveryRequest),
+}
+
+impl InputPlan {
+    fn template(&self) -> &RetainedSupervisorPlan {
+        match self {
+            Self::Explicit(plan) => plan,
+            Self::Discover(request) => request.template(),
+        }
+    }
+}
+
 struct Options {
+    mode: Mode,
     root: PathBuf,
     site: String,
     principal: String,
@@ -59,23 +81,31 @@ fn text<'a>(values: &'a BTreeMap<String, OsString>, key: &str) -> Result<&'a str
 }
 
 fn parse(values: &BTreeMap<String, OsString>) -> Result<Options> {
-    if values.contains_key("--plan") {
+    let explicit =
+        values.contains_key("--retained-plan") || values.contains_key("--retained-digest");
+    let discover =
+        values.contains_key("--discover-plan") || values.contains_key("--discover-digest");
+    if values.contains_key("--plan") || (explicit && discover) {
         return Err(Failure::malformed(
-            "--plan and --retained-plan are mutually exclusive",
+            "--plan, --retained-plan and --discover-plan are mutually exclusive modes",
         ));
     }
+    let (mode, plan_flag, digest_flag) = if discover {
+        (Mode::Discover, "--discover-plan", "--discover-digest")
+    } else {
+        (Mode::Explicit, "--retained-plan", "--retained-digest")
+    };
     let root = values
         .get("--root")
         .ok_or_else(|| Failure::malformed("required --root"))?;
     let plan = values
-        .get("--retained-plan")
-        .ok_or_else(|| Failure::malformed("required --retained-plan"))?;
-    let digest =
-        ContentDigest::parse(text(values, "--retained-digest")?).map_err(Failure::malformed)?;
+        .get(plan_flag)
+        .ok_or_else(|| Failure::malformed(format!("required {plan_flag}")))?;
+    let digest = ContentDigest::parse(text(values, digest_flag)?).map_err(Failure::malformed)?;
     if digest.algorithm() != DigestAlgorithm::Sha256 || digest.bytes() == [0; 32] {
-        return Err(Failure::malformed(
-            "--retained-digest must be a nonzero SHA-256 digest",
-        ));
+        return Err(Failure::malformed(format!(
+            "{digest_flag} must be a nonzero SHA-256 digest",
+        )));
     }
     let site = text(values, "--site")?;
     if site.is_empty() || site.len() > 256 || site.chars().any(char::is_control) {
@@ -89,6 +119,7 @@ fn parse(values: &BTreeMap<String, OsString>) -> Result<Options> {
     };
     PrincipalId::parse(principal).map_err(Failure::malformed)?;
     Ok(Options {
+        mode,
         root: PathBuf::from(root),
         site: site.to_owned(),
         principal: principal.to_owned(),
@@ -98,11 +129,7 @@ fn parse(values: &BTreeMap<String, OsString>) -> Result<Options> {
     })
 }
 
-fn load_plan(
-    path: &Path,
-    expected: ContentDigest,
-    cx: &ReplayCx,
-) -> Result<RetainedSupervisorPlan> {
+fn load_plan(path: &Path, expected: ContentDigest, mode: Mode, cx: &ReplayCx) -> Result<InputPlan> {
     cx.checkpoint("retained_supervisor_cli:plan")
         .map_err(Failure::runtime)?;
     let metadata = fs::symlink_metadata(path).map_err(Failure::malformed)?;
@@ -121,7 +148,15 @@ fn load_plan(
         .map_err(Failure::malformed)?;
     cx.checkpoint("retained_supervisor_cli:plan_read")
         .map_err(Failure::runtime)?;
-    RetainedSupervisorPlan::from_json(&bytes, expected).map_err(Failure::malformed)
+    match mode {
+        Mode::Explicit => {
+            RetainedSupervisorPlan::from_json(&bytes, expected).map(InputPlan::Explicit)
+        }
+        Mode::Discover => {
+            RetainedDiscoveryRequest::from_json(&bytes, expected).map(InputPlan::Discover)
+        }
+    }
+    .map_err(Failure::malformed)
 }
 
 fn run(options: Options) -> Result<()> {
@@ -146,8 +181,8 @@ fn run(options: Options) -> Result<()> {
     let cx = ReplayCx::from_context_authority(&authority, options.root.clone())
         .map_err(Failure::runtime)?;
     let result = (|| {
-        let plan = load_plan(&options.plan, options.digest, &cx)?;
-        if plan.spec().site_lineage != options.site {
+        let plan = load_plan(&options.plan, options.digest, options.mode, &cx)?;
+        if plan.template().spec().site_lineage != options.site {
             return Err(Failure::malformed(
                 "retained plan site_lineage does not match --site",
             ));
@@ -162,20 +197,20 @@ fn run(options: Options) -> Result<()> {
         }
         let mut deployment = ReferenceDeployment::open(&options.root, &options.site, &cx)
             .map_err(Failure::runtime)?;
-        let report =
-            run_retained_supervisor(&mut deployment, &plan, &cx).map_err(|error| Failure {
-                exit: ExitIdentity::RUNTIME_FAILURE.code,
-                identity: error.stable_id(),
-                reason: error.to_string(),
-            })?;
-        let rendered = format!(
-            "{}\n",
-            report.to_json().map_err(|error| Failure {
-                exit: ExitIdentity::RUNTIME_FAILURE.code,
-                identity: error.stable_id(),
-                reason: error.to_string(),
-            })?
-        );
+        let rendered = match &plan {
+            InputPlan::Explicit(plan) => run_retained_supervisor(&mut deployment, plan, &cx)
+                .and_then(|report| report.to_json()),
+            InputPlan::Discover(request) => {
+                run_discovered_retained_supervisor(&mut deployment, request, &cx)
+                    .and_then(|report| report.to_json())
+            }
+        }
+        .map_err(|error| Failure {
+            exit: ExitIdentity::RUNTIME_FAILURE.code,
+            identity: error.stable_id(),
+            reason: error.to_string(),
+        })?;
+        let rendered = format!("{rendered}\n");
         cx.checkpoint("retained_supervisor_cli:output")
             .map_err(Failure::runtime)?;
         if let Some(path) = &options.report_out {
