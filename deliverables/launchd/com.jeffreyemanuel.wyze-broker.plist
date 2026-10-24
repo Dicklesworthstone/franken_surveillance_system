@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.jeffreyemanuel.wyze-broker</string>
+  <key>ProgramArguments</key><array>
+    <string>/bin/bash</string>
+    <string>/Users/jemanuel/projects/franken_surveillance_system/deliverables/scripts/wyze_ota_arm.sh</string>
+  </array>
+  <key>EnvironmentVariables</key><dict>
+    <key>CAM</key><string>192.168.4.23</string>
+    <key>MAC</key><string>80482c525905</string>
+    <key>UP</key><string>192.168.4.160</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/tmp/ota/broker.log</string>
+  <key>StandardErrorPath</key><string>/tmp/ota/broker.log</string>
+</dict></plist>
