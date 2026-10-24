@@ -15,6 +15,15 @@ def srv_ctx():
     c.sni_callback=sni
     return c
 
+def enc_len(n):
+    out = b""
+    while True:
+        b, n = n % 128, n // 128
+        out += bytes([b | (0x80 if n else 0)])
+        if not n:
+            return out
+
+
 def _rewrite(d):
     """Rewrite url/md5/firmware_ver inside a cloud command PUBLISH, in place.
 
