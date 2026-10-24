@@ -38,6 +38,18 @@ def main() -> int:
         def __init__(self, *x, **kw):
             super().__init__(*x, directory=a.dir, **kw)
 
+        def do_POST(self):
+            n = int(self.headers.get("Content-Length") or 0)
+            body = self.rfile.read(n) if n else b""
+            print(f"{self.address_string()} ua={self.headers.get('User-Agent','-')!r} "
+                  f"POST {self.path} {body[:200]!r}", flush=True)
+            out = b'{"code":1,"message":"Success"}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(out)))
+            self.end_headers()
+            self.wfile.write(out)
+
         def log_message(self, fmt, *args):
             # the device is distinguishable from a local probe only by its own UA
             print(f"{self.address_string()} ua={self.headers.get('User-Agent', '-')!r} " + (fmt % args),

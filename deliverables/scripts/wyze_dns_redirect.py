@@ -14,7 +14,8 @@ SOURCES = [IF_IP, "8.8.8.8", "8.8.4.4", "208.67.220.123", "208.67.222.123"]
 # wyze-upgrade-service is NOT intercepted: the device uploads upgrade status there and our forge
 # only serves files, so a spoofed answer breaks the status report and the cloud job never clears.
 NAMES = {b"s3-us-west-2.amazonaws.com", b"aws-iot.wyzecam.com",
-         b"a24rq1e5m4mtei.iot.us-west-2.amazonaws.com"}
+         b"a24rq1e5m4mtei.iot.us-west-2.amazonaws.com",
+         b"wyze-upgrade-service.wyzecam.com"}
 
 socks = {}
 for src in SOURCES:
