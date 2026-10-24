@@ -1,0 +1,17 @@
+FROM --platform=linux/arm64 eclipse-temurin:21-jdk-alpine
+RUN apk add -q --no-cache gcc musl-dev gdb
+WORKDIR /w
+COPY libs/ /w/libs/
+COPY stub.c /w/
+COPY src/ /w/src/
+COPY assets/ /w/assets/
+RUN gcc -shared -fPIC -o /w/libs/libandroid.so /w/stub.c -Wl,-soname,libandroid.so \
+ && cp /w/libs/libandroid.so /w/libs/liblog.so \
+ && javac -d /w/out /w/src/android/content/Context.java /w/src/android/content/res/AssetManager.java /w/src/android/content/pm/PackageManager.java /w/src/android/content/pm/PackageInfo.java /w/src/android/content/pm/Signature.java /w/src/com/thingclips/smart/security/jni/SecureNativeApi.java /w/src/com/thingclips/smart/security/jni/JNICLibrary.java /w/src/Run.java
+COPY in.txt /data/in.txt
+COPY seed.txt /data/seed.txt
+COPY appid.txt /data/appid.txt
+COPY cert.der /data/cert.der
+ENV LD_LIBRARY_PATH=/w/libs
+ENV LD_PRELOAD=/w/libs/libandroid.so
+CMD ["java","-cp","/w/out","Run"]

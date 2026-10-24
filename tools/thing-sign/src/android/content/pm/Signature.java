@@ -1,7 +1,7 @@
 package android.content.pm;
 public class Signature {
     public byte[] toByteArray() {
-        try { return java.nio.file.Files.readAllBytes(java.nio.file.Path.of("/data/cert.der")); }
-        catch (Exception e) { return new byte[0]; }
+        try { byte[] b = java.nio.file.Files.readAllBytes(java.nio.file.Path.of("/data/cert.der")); System.err.println("[sig] toByteArray " + b.length); return b; }
+        catch (Exception e) { System.err.println("[sig] fail " + e); return new byte[0]; }
     }
 }

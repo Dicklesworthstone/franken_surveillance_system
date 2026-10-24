@@ -290,3 +290,60 @@ All created in this repo, `-t task`, slug as listed:
 | `bb-aosu-ota-endpoint-8f8` | `/v1/ota/getNewByApp` returns the cloud descriptor (`sign`+`verify`) |
 
 Deliverables in `deliverables/scripts/`: `ev-pack-h-003-send-ota-start.py` (the `0x1A` probe; `--selftest` and `--dry` verified). Scratch probes: `/tmp/p2.py`, `/tmp/p3.py`, `/tmp/scan.py`, `/tmp/disc.py`, `/tmp/hdrtest.py`, `/tmp/crctest.py`; APK + jadx output in `/tmp/aosu.apk` and `/tmp/jout`.
+
+---
+
+## 2026-10-24 — the Tuya signer, reconstructed (and where it still stops)
+
+The `api.json` sign is now **reproducible offline**, and the "missing asset" blocker is closed by
+construction rather than by a mirror.
+
+### What the signer actually is
+
+`libthing_security.so` cmd 1 is a KDF, not a plain hash:
+
+1. `checkStatus` reads `assets/t_s.bmp`, hashes it with a **custom 128-bit hash** (not SHA-256;
+   IV `0123456789abcdef fedcba9876543210`), and uses the first 16 bytes as an AES-128-CBC key.
+2. `read_keys_from_content` hashes the **appId** (Java `hashCode`-style, `31*h+c`), takes
+   `((h % pixel_len) / 2) % pixel_len` as an index into the BMP pixel data, and reads a
+   bit-packed selector there: byte 0 must be 0..2, then a 1..5 count and a key length, then
+   `count × len` bytes assembled from the LSB of 8 consecutive pixels each.
+3. The derived bytes go through a bignum rational chain and a hash with a constant that is set
+   from the **certificate digest**; the canonical string is the HMAC data.
+4. `assets/tecrkcehc_ext` is only the anti-tamper blob: `"<len>\n" + base64(AES-128-CBC(json))`
+   with key = hash(`t_s.bmp`)[:16], IV `7178265647164836`. The plaintext is
+   `{"securityOpen":true,"data":["<SHA-256 of the signing cert, colon-hex>"]}`. The cert hash is
+   checked against the APK signature; `securityOpen:false` skips the check.
+
+So the blob is **app-specific but forgeable**: encrypt the JSON with the app's own BMP-derived
+key. `tools/thing-sign` now does exactly that (the committed `tecrkcehc_ext` is the crafted one
+for `com.glazero.android`), and cmd 1 returns a 64-hex signature.
+
+### The BMP is per-app, not per-version
+
+`assets/t_s.bmp` is identical in 5.5.20 and 5.10.12 (`e03676aa…`) but differs from Tuya Smart's
+(`1100d708…`). The index is derived from the appId, so a BMP from another app cannot be patched
+into place: the bignum chain stalls. The Android appId is the manifest `THING_SMART_APPKEY`
+(`7hvgpakg784c3pj5qe3e`); the iOS build uses a different appId (`q95kcu85qnkdwaee9w3j`) and its
+own BMP, which is **not** in the Android APK.
+
+### Validation and the remaining gap
+
+- `POST /log.json` with a re-signed body is accepted (`DECODE_ERROR` = sign valid, postData
+  ciphertext from the other platform). The signer, the canonical string, the `chKey` and the
+  Android key are therefore all correct.
+- `POST /api.json` with the same canonical and the **login** action still answers
+  `SING_VALIDATE_FALED`. Excluding any single signed field changes the error
+  (`SING_VALIDATE_FALED_4` for `et`, `ILLEGAL_CLIENT_ID` for `clientId`/`chKey`), so the field
+  set is right; the failure is in the value of the login-specific fields (`a`, `v`, `postData`).
+- `deliverables/scripts/aosu_tuya_api.py` builds the signed, AES-GCM-encrypted request
+  (`getEncryptoKey` needs a warm-up sign first — the key constant is set by the sign path), and
+  `--` the login is the only missing hop.
+
+### Reproduce
+
+```sh
+# assets: t_s.bmp + the crafted tecrkcehc_ext + cert.der from the APK v2 block
+docker build --platform linux/arm64 -f Dockerfile.jvm -t fss-jvm .
+docker run --rm --platform linux/arm64 -v /tmp/sig:/data fss-jvm   # RESULT=<64 hex>
+```
