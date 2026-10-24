@@ -347,3 +347,45 @@ own BMP, which is **not** in the Android APK.
 docker build --platform linux/arm64 -f Dockerfile.jvm -t fss-jvm .
 docker run --rm --platform linux/arm64 -v /tmp/sig:/data fss-jvm   # RESULT=<64 hex>
 ```
+
+### 2026-10-24 05:0x — captured-sid replay (no login) and the exact stop
+
+The captured `/api.json` call **replays successfully with its own sign**, so the captured `sid` is
+**valid, not expired**. Re-sending it with only `a=thing.m.device.key.get` and
+`postData={"gwId":"eb28f4fa8cd86eb3669izf"}` changed, re-signed, answers **`SING_VALIDATE_FALED`**
+with both candidate keys (the AOSU Android BMP and the Tuya BMP). The gateway resolves the action
+before validating the signature, so the failure is the key, not the credentials or the body.
+
+Correction to the earlier note: `/log.json` does **not** validate the sign — a `000…` sign still
+returns `DECODE_ERROR`. Only `/api.json` validates it, so the Android key was never proven.
+
+Why the key is wrong: the captured call is the **iOS** build (`clientId=q95kcu85qnkdwaee9w3j`,
+`bundleId=com.glazero.ios`). The sign key is `f(appId, t_s.bmp)` and that BMP is not in the Android
+APK. Patching the Android BMP's selector bytes at the q95 index makes the derivation run (`r=0` with
+`count=1, len=1`) but yields the wrong key.
+
+### IPA hunt, negative
+
+No free mirror carries Aosu: decrypt.day (full search, bundle id, App Store link), ipa.cypwn.xyz,
+iOSGods store API (7517 apps, no `glazero`/`1577324124`), tweakdoor, appdb, ipafiles (down),
+ipa.wtf (502), iosninja/ipaom/ipas.wtf (NXDOMAIN). armconverter has a decrypted store but gates it
+behind an iOSGods login (hCaptcha); its download endpoint 404s for `1577324124/com.glazero.ios`.
+The remaining route is an iOSGods account (hCaptcha blocks headless registration) or a free Apple ID.
+
+### Handoff — exact next command
+
+1. Obtain the IPA (iOSGods account or Apple ID), then:
+   `unzip -o Aosu.ipa 'Payload/*.app/assets/t_s.bmp'` and confirm it differs from
+   `e03676aa…` (the Android BMP).
+2. Put it at `tools/thing-sign/assets/t_s.bmp`, rebuild `fss-jvm`, and sign with
+   `CLIENT_ID=q95kcu85qnkdwaee9w3j` (the script's `CLIENT_ID` env) — the derivation must return
+   `r=0` for that appId before anything else.
+3. Replay the captured `/api.json` body with `a=thing.m.device.key.get` and
+   `postData={"gwId":"eb28f4fa8cd86eb3669izf"}`, signed. A `DECODE_ERROR` means the sign passed
+   (the captured postData is the iOS ciphertext); a `localKey` means the chain closes.
+4. Then `0x1A/0x1B/0x1C` over the authenticated 6668 session per the LAN OTA section.
+
+Device/host state: no flash written; the HomeBase is untouched. `tools/thing-sign/assets/t_s.bmp`
+is the AOSU Android BMP; q95-patched variants are in `/tmp/q95_1.bmp` and `/tmp/tq95_1.bmp`.
+`deliverables/scripts/aosu_tuya_api.py` builds signed, AES-GCM-encrypted calls; `getEncryptoKey`
+needs the warm-up sign (the key constant is set by the sign path).
