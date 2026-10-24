@@ -79,9 +79,10 @@ def cmd_body(args, model=None):
     """The cloud's own command shape, XXTEA-encrypted with the ENR string."""
     import os, time
     ver = args.url.rsplit("/", 1)[-1].split(".tar")[0]
+    par = json.loads(args.params) if getattr(args, "params", "") else {
+        "model": model or args.model, "url": args.url, "firmware_ver": ver, "md5": args.md5}
     body = json.dumps({"Action": getattr(args, "action", "upgrade"),
-                       "Params": {"model": model or args.model, "url": args.url,
-                                  "firmware_ver": ver, "md5": args.md5},
+                       "Params": par,
                        "Guid": os.urandom(8).hex(), "Ts": int(time.time() * 1000)},
                       separators=(",", ":")).encode()
     if getattr(args, "rawhex", ""):
@@ -232,6 +233,7 @@ def main():
     ap.add_argument("--enr", default=os.environ.get("OTA_ENR", ""), help="device ENR string (XXTEA key)")
     ap.add_argument("--rawhex", default="", help="publish this exact ciphertext instead of building one")
     ap.add_argument("--action", default="upgrade", help="Action name")
+    ap.add_argument("--params", default="", help="raw JSON Params object")
     a = ap.parse_args()
 
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
