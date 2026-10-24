@@ -1,0 +1,51 @@
+#!/bin/sh
+# Tailnet membership for the camera. Userspace networking: the 4.4.94 kernel has no tun.
+# Enrolment is opt-in by dropping /data/tailscale.authkey; the key is read from the file only.
+
+DAEMON=/usr/sbin/tailscaled
+CLI=/usr/sbin/tailscale
+STATEDIR=/data/tailscale
+SOCK=$STATEDIR/tailscaled.sock
+LOG=/var/log/tailscaled.log
+AUTHKEY=/data/tailscale.authkey
+
+start() {
+	printf 'Starting tailscaled: '
+	mkdir -p "$STATEDIR"
+	chmod 700 "$STATEDIR"
+	"$DAEMON" --tun=userspace-networking --statedir="$STATEDIR" \
+		--socket="$SOCK" --port=41641 --no-logs-no-support \
+		>>"$LOG" 2>&1 &
+	i=0
+	while [ $i -lt 30 ]; do
+		[ -S "$SOCK" ] && break
+		i=$((i + 1))
+		sleep 1
+	done
+	if [ ! -S "$SOCK" ]; then
+		echo "FAILED (no LocalAPI socket)"
+		return 1
+	fi
+	echo "ok"
+	if [ -s "$AUTHKEY" ]; then
+		"$CLI" --socket="$SOCK" up --auth-key="file:$AUTHKEY" --hostname="$(cat /etc/hostname 2>/dev/null || echo cam)" >>"$LOG" 2>&1
+	fi
+	# Publish the local RTSP and HTTP servers on the tailnet only.
+	"$CLI" --socket="$SOCK" serve --bg --yes --tcp 554 tcp://127.0.0.1:554 >>"$LOG" 2>&1
+	"$CLI" --socket="$SOCK" serve --bg --yes --http 80 http://127.0.0.1:80 >>"$LOG" 2>&1
+	return 0
+}
+
+stop() {
+	printf 'Stopping tailscaled: '
+	"$CLI" --socket="$SOCK" down >/dev/null 2>&1
+	killall tailscaled >/dev/null 2>&1
+	echo "ok"
+}
+
+case "$1" in
+	start) start ;;
+	stop) stop ;;
+	restart) stop; sleep 1; start ;;
+	*) echo "usage: $0 {start|stop|restart}"; exit 1 ;;
+esac
