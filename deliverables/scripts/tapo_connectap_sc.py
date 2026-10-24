@@ -160,7 +160,7 @@ def main():
         base = a.addr
         if base is None:
             raise SystemExit("--addr required")
-        sess = login(a.host)
+        sess = login(a.host, tries=600)
         idx = "/tmp/pane1/brute.%s.idx" % a.host
         done = 0
         if a.mode == "brute" and os.path.exists(idx):
