@@ -39,6 +39,8 @@ def main() -> int:
             continue
         blob = open(path, "rb").read()
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        if a.bind != "0.0.0.0":
+            sock.bind((a.bind, 0))   # data must come from the address the camera knows
         sock.settimeout(3)
         block = 1
         off = 0

