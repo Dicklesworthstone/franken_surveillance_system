@@ -24,8 +24,14 @@ Start here. Status, not narrative. The scoreboard is `docs/FLEET_LIBERATION_STAT
   (control `0x01`, 3-byte BE size, per-chunk trailer), carving works, and the result contains a valid
   `misc` squashfs but the **app region is encrypted** (7.997 bit/B, no squashfs/FIT/uImage). So
   `/bin/main` is not in the image and the address sweep is the only route. It is running: 1.3 KB
-  payload, `0x500` step, split across both units, progress in `/tmp/pane1/brute.<host>.idx`, ~30 s per
-  guess. Resume by reading the index and continuing; do not restart the region.
+  payload, `0x500` step, progress in `/tmp/pane1/brute.<host>.idx`, ~30 s per guess. Resume by reading
+  the index and continuing; do not restart the region.
+
+  **New and reusable:** `Tapo_C520WSv1_1.0.11` is a *full-image* SSC30X sibling. Its `/bin/main`
+  (extracted at `/tmp/pane1/c520root/bin/main`) has the sink at `0x424` = 1060, independently
+  confirming the frame, plus a reference chain (`pop 0x2030c`, `system 0x19cac`, pivot `0x103720`,
+  command at offset+44). That chain does **not** transfer to the C460, but the binary is the right
+  oracle for pattern work — use it instead of the C320 (different SoC).
 - `fss-aosu-local-key-ddr77` — signer reversed and validated on `/log.json`; login still
   `SING_VALIDATE_FALED`. Replay a captured iotbing `sid` for `thing.m.device.key.get` rather than
   logging in.
