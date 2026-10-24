@@ -32,6 +32,7 @@ expect="uboot boot system back cfg provisioning"
 got=""
 total=0
 while read -r dev size erase name; do
+    case "$dev" in dev:*) continue ;; esac
     n=${name#\"}; n=${n%\"}
     got="$got $n"
     total=$((total + 0x$size))
@@ -43,6 +44,7 @@ log "geometry ok: $(echo $got)"
 # ---- 2. backups to the operator, then verify -------------------------------
 slot=0
 while read -r dev size erase name; do
+    case "$dev" in dev:*) continue ;; esac
     n=${name#\"}; n=${n%\"}
     sz=$((0x$size))
     log "backup mtd$slot ($n, $sz bytes)"
@@ -63,6 +65,7 @@ sync
 off=0
 plan=""
 while read -r dev size erase name; do
+    case "$dev" in dev:*) continue ;; esac
     n=${name#\"}; n=${n%\"}
     plan="$off:$((0x$size)):$n $plan"   # prepend: highest partition ends up first
     off=$((off + 0x$size))
@@ -85,4 +88,5 @@ sync
 log "image written (sensor $SENSOR); rebooting"
 
 # assis also reboots on our return, but do not rely on it.
-"$BB" reboot -f || true
+# this busybox has no -f; plain reboot is the only accepted form
+"$BB" reboot || true
