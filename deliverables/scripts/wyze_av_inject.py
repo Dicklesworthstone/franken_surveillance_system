@@ -77,9 +77,13 @@ def main() -> int:
         print("no template packet")
         return 1
 
-    hdr = bytearray(tmpl[:28])
+    # fixed header (rootcmd's proven shape); the template only supplies the channel
+    hdr = bytearray(28)
+    hdr[0] = a.channel
+    hdr[1] = 0x01
+    struct.pack_into("<H", hdr, 2, 0)
     n = int(time.time()) & 0x7FFFFFFF
-    struct.pack_into("<H", hdr, 4, struct.unpack_from("<H", hdr, 4)[0] + 1)
+    struct.pack_into("<H", hdr, 8, 1)
     struct.pack_into("<H", hdr, 12, 1)          # frag count
     struct.pack_into("<H", hdr, 14, 0)          # header skip
     struct.pack_into("<H", hdr, 16, a.declared)
