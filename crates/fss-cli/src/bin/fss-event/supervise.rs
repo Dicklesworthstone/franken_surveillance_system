@@ -56,6 +56,12 @@ const HELP: &str = "fss-event supervise --root DIR --site SITE\n\
   counters without source reads, private report output or another charged attempt; unknown\n\
   subscriptions are refused. No background loop, source publication or effect is started.\n\
 \n\
+  --resume yes recovers an existing subscription's exact native configuration and lifetime\n\
+  ceilings from its admitted session journal, so the original plan file is not needed. Supply\n\
+  --session, --subscription and the explicit current --authority-root. Do not supply any plan\n\
+  flags, --max-poll-attempts or --schedule. Poll, inspect, ACK, discard and advancement retain\n\
+  their normal source checks and charges; resume cannot create a missing subscription.\n\
+\n\
   Before the first attempt, --schedule yes atomically enables the exact configured window\n\
   schedule with only window 0 active. Normal polls then recompute its full active cumulative\n\
   prefix from original native evidence. After an exact ACK or explicit discard, use\n\
@@ -358,6 +364,7 @@ pub(super) fn main(args: &[OsString]) -> ExitCode {
                 | "--schedule"
                 | "--advance-window"
                 | "--after-receipt"
+                | "--resume"
                 | "--report-out"
         ) {
             eprintln!("{ERR_CLI_MALFORMED_VALUE}: unknown supervise option {flag}");
@@ -388,6 +395,7 @@ pub(super) fn main(args: &[OsString]) -> ExitCode {
         || values.contains_key("--schedule")
         || values.contains_key("--advance-window")
         || values.contains_key("--after-receipt")
+        || values.contains_key("--resume")
     {
         return retained::main(&values);
     }

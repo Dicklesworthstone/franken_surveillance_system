@@ -22,10 +22,12 @@ use fss_reference::deployment_session::supervision::{
     SupervisionSessionBinding, SupervisionSessionBoundary, SupervisionSessionControl,
     SupervisionSessionDelivery, SupervisionSessionError, SupervisionSessionOutcome,
     SupervisionSessionRequest, SupervisionValidation, supervise_session,
+    SupervisionRecoveryBinding, SupervisionRecoveryBoundary, SupervisionRecoveryControl,
+    SupervisionRecoveryRequest, recover_supervision_registration, supervise_existing_session,
 };
 use fss_reference::{ReferenceDeployment, ReplayCx};
 
-use super::{Failure, Options, Result};
+use super::{Failure, InputPlan, Options, Result};
 
 const SCHEMA: &str = "fss.retained_supervisor_session_report.v1";
 const RECEIPT_DOMAIN: &str = "fss.retained_supervisor_session_receipt.v1";
@@ -36,9 +38,10 @@ pub(super) struct SessionOptions {
     session: SessionId,
     subscription: String,
     expected_root: ContentDigest,
-    maximum_attempts: u32,
+    maximum_attempts: Option<u32>,
     action: SupervisionAction,
     configure_schedule: bool,
+    resume: bool,
 }
 
 fn digest(values: &BTreeMap<String, OsString>, key: &str) -> Result<ContentDigest> {
@@ -53,6 +56,7 @@ pub(super) fn parse(values: &BTreeMap<String, OsString>) -> Result<Option<Sessio
     if ![
         "--session", "--subscription", "--authority-root", "--max-poll-attempts",
         "--acknowledge", "--discard", "--inspect", "--schedule", "--advance-window", "--after-receipt",
+        "--resume",
     ].iter().any(|flag| values.contains_key(*flag)) {
         return Ok(None);
     }
@@ -67,6 +71,14 @@ pub(super) fn parse(values: &BTreeMap<String, OsString>) -> Result<Option<Sessio
         ));
     }
     let configure_schedule = values.contains_key("--schedule");
+    let resume = values.contains_key("--resume");
+    if resume && (super::text(values, "--resume")? != "yes"
+        || configure_schedule || values.contains_key("--max-poll-attempts"))
+    {
+        return Err(Failure::malformed(
+            "--resume requires yes and the stored configuration and lifetime ceiling; --schedule and --max-poll-attempts cannot be supplied",
+        ));
+    }
     if configure_schedule && super::text(values, "--schedule")? != "yes" {
         return Err(Failure::malformed("--schedule requires yes"));
     }
@@ -74,8 +86,9 @@ pub(super) fn parse(values: &BTreeMap<String, OsString>) -> Result<Option<Sessio
     let subscription = super::text(values, "--subscription")?;
     fss_core::validate_id(subscription).map_err(Failure::malformed)?;
     let expected_root = digest(values, "--authority-root")?;
-    let maximum_attempts = super::text(values, "--max-poll-attempts")?
-        .parse::<u32>().map_err(Failure::malformed)?;
+    let maximum_attempts = if resume { None } else {
+        Some(super::text(values, "--max-poll-attempts")?.parse::<u32>().map_err(Failure::malformed)?)
+    };
     let action = if values.contains_key("--inspect") {
         if super::text(values, "--inspect")? != "yes" {
             return Err(Failure::malformed("--inspect requires yes"));
@@ -100,7 +113,7 @@ pub(super) fn parse(values: &BTreeMap<String, OsString>) -> Result<Option<Sessio
     };
     Ok(Some(SessionOptions {
         session, subscription: subscription.to_owned(), expected_root, maximum_attempts, action,
-        configure_schedule,
+        configure_schedule, resume,
     }))
 }
 
@@ -110,6 +123,69 @@ fn runtime_error(error: impl std::fmt::Display) -> SupervisionAdapterError {
 
 fn source_error(error: RetainedSupervisorError) -> SupervisionAdapterError {
     SupervisionAdapterError { identity: error.stable_id(), reason: error.to_string() }
+}
+
+struct RecoveryControl<'a> {
+    root: &'a Path,
+    principal: &'a PrincipalId,
+    request: &'a SupervisionRecoveryRequest,
+    limits: OrientLimits,
+    cx: &'a ReplayCx,
+    boundaries: u32,
+}
+
+impl SupervisionRecoveryControl for RecoveryControl<'_> {
+    fn admit_recovery(
+        &mut self, binding: &SupervisionRecoveryBinding<'_>, _: SupervisionRecoveryBoundary,
+    ) -> std::result::Result<(), SupervisionAdapterError> {
+        if binding.root() != self.root || binding.principal() != self.principal
+            || binding.request() != self.request || binding.limits() != &self.limits
+            || self.cx.root_dir() != self.root
+        {
+            return Err(runtime_error("supervision recovery binding differs"));
+        }
+        self.boundaries = self.boundaries.checked_add(1)
+            .ok_or_else(|| runtime_error("supervision recovery boundary budget exhausted"))?;
+        if self.boundaries > 16 {
+            return Err(runtime_error("supervision recovery boundary budget exhausted"));
+        }
+        self.cx.checkpoint("retained_supervisor_session:recover").map_err(runtime_error)
+    }
+}
+
+/// Recover the original native request through the live session owner. This never exposes a
+/// pending payload and never reserves source work; the separate existing-only action does that.
+pub(super) fn recover(options: &Options, session: &SessionOptions, cx: &ReplayCx) -> Result<InputPlan> {
+    if !session.resume || session.maximum_attempts.is_some() || session.configure_schedule {
+        return Err(Failure::malformed("stored supervision recovery requires --resume yes"));
+    }
+    let principal = PrincipalId::parse(&options.principal).map_err(Failure::malformed)?;
+    let request = SupervisionRecoveryRequest {
+        session_id: session.session.clone(), subscription_id: session.subscription.clone(),
+        expected_authority_root: session.expected_root,
+    };
+    let limits = OrientLimits { max_journal_bytes: 32 * 1024 * 1024, ..OrientLimits::default() };
+    let mut control = RecoveryControl {
+        root: &options.root, principal: &principal, request: &request, limits, cx, boundaries: 0,
+    };
+    let registration = recover_supervision_registration(
+        &options.root, &principal, &request, &limits, &mut control,
+    ).map_err(|error| Failure {
+        exit: ExitIdentity::RUNTIME_FAILURE.code,
+        identity: match &error {
+            SupervisionSessionError::Denied(error) | SupervisionSessionError::Evaluation(error) => error.identity,
+            SupervisionSessionError::ChangedAuthority | SupervisionSessionError::StaleAuthority =>
+                RetainedSupervisorError::Authority.stable_id(),
+            _ => ERR_CLI_RUNTIME_FAILURE,
+        },
+        reason: format!("{error}; journal_may_have_changed=true; no_native_attempt_reserved_by_recovery=true"),
+    })?;
+    let discovery = RetainedDiscoveryRequest::from_json(
+        &registration.configuration, registration.configuration_digest,
+    ).map_err(Failure::malformed)?;
+    Ok(InputPlan::Discover {
+        request: discovery, bytes: registration.configuration.clone(), registration: Some(registration),
+    })
 }
 
 fn scoped_request(
@@ -416,18 +492,36 @@ pub(super) fn run(
     session: &SessionOptions,
     discovery: &RetainedDiscoveryRequest,
     bytes: &[u8],
+    recovered: Option<&SupervisionRegistration>,
     cx: &ReplayCx,
 ) -> Result<String> {
     let limits = discovery.template().spec().limits;
-    let registration = SupervisionRegistration {
-        session_id: session.session.clone(),
-        subscription_id: session.subscription.clone(),
-        configuration: bytes.to_vec(),
-        configuration_digest: ContentDigest::sha256(bytes),
-        max_read_bytes: limits.max_read_bytes,
-        max_read_attempts: limits.max_read_attempts,
-        maximum_attempts: session.maximum_attempts,
-        max_report_bytes: limits.max_report_bytes,
+    let registration = match (session.resume, recovered) {
+        (true, Some(registration)) => {
+            if registration.session_id != session.session
+                || registration.subscription_id != session.subscription
+                || registration.configuration.as_slice() != bytes
+                || registration.configuration_digest != ContentDigest::sha256(bytes)
+                || registration.max_read_bytes != limits.max_read_bytes
+                || registration.max_read_attempts != limits.max_read_attempts
+                || registration.max_report_bytes != limits.max_report_bytes
+            {
+                return Err(Failure::malformed("stored supervision registration differs from its native configuration"));
+            }
+            registration.clone()
+        }
+        (false, None) => SupervisionRegistration {
+            session_id: session.session.clone(),
+            subscription_id: session.subscription.clone(),
+            configuration: bytes.to_vec(),
+            configuration_digest: ContentDigest::sha256(bytes),
+            max_read_bytes: limits.max_read_bytes,
+            max_read_attempts: limits.max_read_attempts,
+            maximum_attempts: session.maximum_attempts
+                .ok_or_else(|| Failure::malformed("required lifetime attempt ceiling"))?,
+            max_report_bytes: limits.max_report_bytes,
+        },
+        _ => return Err(Failure::malformed("supervision input mode differs from its stored registration")),
     };
     registration.validate().map_err(Failure::malformed)?;
     let action = if session.configure_schedule {
@@ -450,7 +544,12 @@ pub(super) fn run(
         root: &options.root, site: &options.site, principal: &principal,
         command: &command, request: discovery, limits: orient_limits, cx, boundaries: 0,
     };
-    match supervise_session(&options.root, &principal, &command, &orient_limits, &mut control) {
+    let delivery = if session.resume {
+        supervise_existing_session(&options.root, &principal, &command, &orient_limits, &mut control)
+    } else {
+        supervise_session(&options.root, &principal, &command, &orient_limits, &mut control)
+    };
+    match delivery {
         Ok(delivery) => render(&delivery, discovery).map_err(|error| Failure {
             exit: ExitIdentity::RUNTIME_FAILURE.code,
             identity: error.identity,

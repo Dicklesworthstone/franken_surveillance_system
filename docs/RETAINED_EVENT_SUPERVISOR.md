@@ -464,6 +464,41 @@ unavailable or unwanted pending report explicitly. Discard requires the live own
 current authority but no native source reads. It records `discarded`, never `acknowledged`,
 and releases no old report bytes. An exact last-discard retry also preserves any successor.
 
+### Resume without the original plan file
+
+An existing subscription retains the exact discovery configuration bytes and their SHA-256,
+source/report ceilings and lifetime attempt allowance in its session journal. Use those stored
+values when the external plan file is unavailable:
+
+```sh
+fss-event supervise \
+  --root /absolute/deployment --site site:home \
+  --principal principal:local-operator \
+  --session session:ID_FROM_SESSION_OPEN \
+  --subscription retained-person-review \
+  --authority-root sha256:CURRENT_AUTHORITY_STATE_ROOT \
+  --resume yes
+```
+
+Without an action flag, this polls the existing subscription. Add `--inspect yes` to recover its
+pending receipt and counters without releasing report bytes or spending another native attempt.
+The same mode accepts an exact `--acknowledge` or `--discard`, or a scheduled
+`--advance-window INDEX --after-receipt RECEIPT` operation.
+
+Do not supply `--discover-plan`, `--discover-digest`, retained/legacy plan flags,
+`--max-poll-attempts` or `--schedule` with `--resume`. These combinations are refused. Recovery
+uses the original bytes and allowance; it does not rewrite the configuration, recreate a missing
+subscription, activate a schedule, refresh a lease or reset consumed work. The session, subscription
+and explicit current authority root remain required.
+
+Configuration recovery goes through the live admitted session owner, its exclusive journal and
+root pin, and current history checks. The actual action opens the owner again and requires that
+the exact registration still exists. Recovery itself performs no native source-object reads and
+does not expose the stored pending payload. A resumed pending poll or new ACK still revalidates
+the original source inventory under current privacy, deletion and custody restrictions. Inspection
+and explicit discard remain available after native attempt exhaustion, subject to the same live
+session authority.
+
 ### Advance through an immutable cumulative schedule
 
 Before its first source attempt, opt a new subscription into its exact predeclared schedule:
@@ -584,5 +619,8 @@ contracts inject all four real append crash phases for reservation, publication,
 then reopen and recover exact pending state. Schedule contracts exercise atomic configuration
 and advancement at all four crash phases, exact terminal-receipt retries, preserved successor
 reports, cumulative native prefixes and exhausted lifetime allowances after cold recovery.
-Frozen legacy command and state vectors check unscheduled compatibility. These fixtures make
+Recovery contracts delete the external configuration file, recover the original pending report
+and schedule in fresh processes, preserve exhausted allowances, refuse foreign or replacement
+scope, and recheck actual source deletion before resumed delivery or ACK. Frozen legacy command
+and state vectors check unscheduled compatibility. These fixtures make
 no detector-quality or complete NS-1 qualification claim.

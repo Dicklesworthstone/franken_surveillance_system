@@ -19,6 +19,7 @@ use fss_core::{
     RootAuthoritySpec,
 };
 use fss_reference::{ReferenceDeployment, ReplayCx};
+use fss_reference::agent_session::checkpoint::journal::supervision::SupervisionRegistration;
 
 #[path = "retained/session.rs"]
 mod session;
@@ -31,7 +32,11 @@ enum Mode {
 
 enum InputPlan {
     Explicit(RetainedSupervisorPlan),
-    Discover { request: RetainedDiscoveryRequest, bytes: Vec<u8> },
+    Discover {
+        request: RetainedDiscoveryRequest,
+        bytes: Vec<u8>,
+        registration: Option<SupervisionRegistration>,
+    },
 }
 
 impl InputPlan {
@@ -43,13 +48,16 @@ impl InputPlan {
     }
 }
 
+enum PlanSource {
+    File { mode: Mode, path: PathBuf, digest: ContentDigest },
+    Registered,
+}
+
 struct Options {
-    mode: Mode,
+    source: PlanSource,
     root: PathBuf,
     site: String,
     principal: String,
-    plan: PathBuf,
-    digest: ContentDigest,
     report_out: Option<PathBuf>,
     session: Option<session::SessionOptions>,
 }
@@ -89,28 +97,34 @@ fn parse(values: &BTreeMap<String, OsString>) -> Result<Options> {
         values.contains_key("--retained-plan") || values.contains_key("--retained-digest");
     let discover =
         values.contains_key("--discover-plan") || values.contains_key("--discover-digest");
-    if values.contains_key("--plan") || (explicit && discover) {
+    let resume = values.contains_key("--resume");
+    if values.contains_key("--plan") || (explicit && discover) || (resume && (explicit || discover)) {
         return Err(Failure::malformed(
-            "--plan, --retained-plan and --discover-plan are mutually exclusive modes",
+            "--plan, --retained-plan, --discover-plan and --resume are mutually exclusive modes",
         ));
     }
-    let (mode, plan_flag, digest_flag) = if discover {
-        (Mode::Discover, "--discover-plan", "--discover-digest")
-    } else {
-        (Mode::Explicit, "--retained-plan", "--retained-digest")
-    };
     let root = values
         .get("--root")
         .ok_or_else(|| Failure::malformed("required --root"))?;
-    let plan = values
-        .get(plan_flag)
-        .ok_or_else(|| Failure::malformed(format!("required {plan_flag}")))?;
-    let digest = ContentDigest::parse(text(values, digest_flag)?).map_err(Failure::malformed)?;
-    if digest.algorithm() != DigestAlgorithm::Sha256 || digest.bytes() == [0; 32] {
-        return Err(Failure::malformed(format!(
-            "{digest_flag} must be a nonzero SHA-256 digest",
-        )));
-    }
+    let source = if resume {
+        if text(values, "--resume")? != "yes" {
+            return Err(Failure::malformed("--resume requires yes"));
+        }
+        PlanSource::Registered
+    } else {
+        let (mode, plan_flag, digest_flag) = if discover {
+            (Mode::Discover, "--discover-plan", "--discover-digest")
+        } else {
+            (Mode::Explicit, "--retained-plan", "--retained-digest")
+        };
+        let path = values.get(plan_flag)
+            .ok_or_else(|| Failure::malformed(format!("required {plan_flag}")))?;
+        let digest = ContentDigest::parse(text(values, digest_flag)?).map_err(Failure::malformed)?;
+        if digest.algorithm() != DigestAlgorithm::Sha256 || digest.bytes() == [0; 32] {
+            return Err(Failure::malformed(format!("{digest_flag} must be a nonzero SHA-256 digest")));
+        }
+        PlanSource::File { mode, path: PathBuf::from(path), digest }
+    };
     let site = text(values, "--site")?;
     if site.is_empty() || site.len() > 256 || site.chars().any(char::is_control) {
         return Err(Failure::malformed("invalid --site"));
@@ -123,16 +137,14 @@ fn parse(values: &BTreeMap<String, OsString>) -> Result<Options> {
     };
     PrincipalId::parse(principal).map_err(Failure::malformed)?;
     let session = session::parse(values)?;
-    if session.is_some() && !discover {
-        return Err(Failure::malformed("session supervision requires --discover-plan and --discover-digest"));
+    if session.is_some() && !discover && !resume {
+        return Err(Failure::malformed("session supervision requires a discovery plan or --resume yes"));
     }
     Ok(Options {
-        mode,
+        source,
         root: PathBuf::from(root),
         site: site.to_owned(),
         principal: principal.to_owned(),
-        plan: PathBuf::from(plan),
-        digest,
         report_out: values.get("--report-out").map(PathBuf::from),
         session,
     })
@@ -159,7 +171,7 @@ fn load_plan(path: &Path, expected: ContentDigest, mode: Mode) -> Result<InputPl
         }
         Mode::Discover => {
             RetainedDiscoveryRequest::from_json(&bytes, expected)
-                .map(|request| InputPlan::Discover { request, bytes })
+                .map(|request| InputPlan::Discover { request, bytes, registration: None })
         }
     }
     .map_err(Failure::malformed)
@@ -167,8 +179,11 @@ fn load_plan(path: &Path, expected: ContentDigest, mode: Mode) -> Result<InputPl
 
 fn run(options: Options) -> Result<()> {
     // ReplayCx creates its root. Admit the inert request and existing deployment first.
-    let plan = load_plan(&options.plan, options.digest, options.mode)?;
-    if plan.template().spec().site_lineage != options.site {
+    let plan = match &options.source {
+        PlanSource::File { path, digest, mode } => Some(load_plan(path, *digest, *mode)?),
+        PlanSource::Registered => None,
+    };
+    if plan.as_ref().is_some_and(|plan| plan.template().spec().site_lineage != options.site) {
         return Err(Failure::malformed(
             "retained plan site_lineage does not match --site",
         ));
@@ -202,11 +217,22 @@ fn run(options: Options) -> Result<()> {
     let result = (|| {
         cx.checkpoint("retained_supervisor_cli:existing_deployment")
             .map_err(Failure::runtime)?;
+        let plan = match plan {
+            Some(plan) => plan,
+            None => session::recover(
+                &options,
+                options.session.as_ref().ok_or_else(|| Failure::malformed("--resume requires a session"))?,
+                &cx,
+            )?,
+        };
+        if plan.template().spec().site_lineage != options.site {
+            return Err(Failure::malformed("stored retained plan site_lineage does not match --site"));
+        }
         let rendered = if let Some(session) = &options.session {
-            let InputPlan::Discover { request, bytes } = &plan else {
+            let InputPlan::Discover { request, bytes, registration } = &plan else {
                 return Err(Failure::malformed("session supervision requires discovery mode"));
             };
-            session::run(&options, session, request, bytes, &cx)?
+            session::run(&options, session, request, bytes, registration.as_ref(), &cx)?
         } else {
             let mut deployment = ReferenceDeployment::open(&options.root, &options.site, &cx)
                 .map_err(Failure::runtime)?;

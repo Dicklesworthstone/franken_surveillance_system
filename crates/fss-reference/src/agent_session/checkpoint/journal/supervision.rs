@@ -411,6 +411,8 @@ enum Command {
     Register(SupervisionRegistration),
     // Admitted state inspection has no transition and is never encoded as a journal record.
     Inspect(SupervisionRegistration),
+    // Recover only an existing owner's exact registration; never create or expose report bytes.
+    Lookup(String),
     Reserve { subscription: String, expected: ContentDigest, anchor: LedgerAnchor },
     Publish {
         subscription: String, expected: ContentDigest, reservation: ContentDigest,
@@ -432,6 +434,7 @@ impl Command {
         match self {
             Self::Register(r) => &r.subscription_id,
             Self::Inspect(r) => &r.subscription_id,
+            Self::Lookup(subscription) => subscription,
             Self::ConfigureSchedule { registration, .. } => &registration.subscription_id,
             Self::Reserve { subscription, .. } | Self::Publish { subscription, .. }
             | Self::Release { subscription, .. } | Self::Acknowledge { subscription, .. }
@@ -557,6 +560,9 @@ fn apply(
     }
     let current = state.subscriptions.get(&key).ok_or(DurableSupervisionError::Conflict)?;
     if current.authority_digest != authority_digest { return Err(DurableSupervisionError::StaleScope); }
+    if matches!(command, Command::Lookup(_)) {
+        return Ok(current.clone());
+    }
     if let Command::Inspect(registration) = command {
         registration.validate()?;
         if registration.session_id != *session || current.registration != *registration {
@@ -565,7 +571,8 @@ fn apply(
         return Ok(current.clone());
     }
     let expected = match command {
-        Command::Register(_) | Command::Inspect(_) | Command::ConfigureSchedule { .. }
+        Command::Register(_) | Command::Inspect(_) | Command::Lookup(_)
+        | Command::ConfigureSchedule { .. }
             => return Err(DurableSupervisionError::InvalidRequest),
         Command::Reserve { expected, .. } | Command::Publish { expected, .. }
         | Command::Release { expected, .. } | Command::Acknowledge { expected, .. }
@@ -574,7 +581,8 @@ fn apply(
     if current.digest() != expected { return Err(DurableSupervisionError::Conflict); }
     let mut next = current.clone();
     match command {
-        Command::Register(_) | Command::Inspect(_) | Command::ConfigureSchedule { .. }
+        Command::Register(_) | Command::Inspect(_) | Command::Lookup(_)
+        | Command::ConfigureSchedule { .. }
             => return Err(DurableSupervisionError::InvalidRequest),
         Command::Reserve { anchor, .. } => {
             if !same_generations(&live_anchor, anchor) || !sha(anchor.state_root) {
@@ -731,6 +739,22 @@ impl DurableSessionStore {
         self.supervision_command(
             principal, &registration.session_id, Command::Inspect(registration.clone()), now,
         )
+    }
+
+    /// Recover the exact immutable registration through the live owning session and verified
+    /// journal. This performs no source work, creates no subscription, and changes no supervision
+    /// state or lifetime allowance. Session clock/expiry observations retain their existing
+    /// durable semantics. Pending report bytes are never returned by this operation.
+    pub fn recover_supervision_registration(
+        &mut self,
+        principal: &PrincipalId,
+        session: &SessionId,
+        subscription: &str,
+        now: TimestampNs,
+    ) -> Result<SupervisionRegistration> {
+        if !label(subscription) { return Err(DurableSupervisionError::InvalidRequest); }
+        self.supervision_command(principal, session, Command::Lookup(subscription.to_owned()), now)
+            .map(|state| state.registration)
     }
 
     /// Register immutable supervision once; exact retry never resets progress, lease or charges.
@@ -915,3 +939,6 @@ mod schedule_tests;
 
 #[cfg(test)]
 mod compatibility_tests;
+
+#[cfg(test)]
+mod recovery_tests;

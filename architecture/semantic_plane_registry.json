@@ -56,6 +56,7 @@
     "crates/fss-cli/src/supervisor/retained/input.rs": "support",
     "crates/fss-cli/src/supervisor/retained/render.rs": "cognition",
     "crates/fss-cli/tests/supervisor_retained_contract/session.rs": "support",
+    "crates/fss-cli/tests/supervisor_retained_contract/session/resume.rs": "support",
     "crates/fss-cli/tests/supervisor_retained_contract/session/schedule.rs": "support",
     "crates/fss-codec-h265/src/bits.rs": "support",
     "crates/fss-codec-h265/src/cabac.rs": "support",
@@ -239,6 +240,7 @@
     "crates/fss-reference/src/agent_session/checkpoint/journal/supervision.rs": "cognition",
     "crates/fss-reference/src/agent_session/checkpoint/journal/supervision/codec.rs": "support",
     "crates/fss-reference/src/agent_session/checkpoint/journal/supervision/compatibility_tests.rs": "support",
+    "crates/fss-reference/src/agent_session/checkpoint/journal/supervision/recovery_tests.rs": "support",
     "crates/fss-reference/src/agent_session/checkpoint/journal/supervision/schedule_tests.rs": "support",
     "crates/fss-reference/src/agent_session/checkpoint/journal/supervision/tests.rs": "support",
     "crates/fss-reference/src/agent_session/checkpoint/journal/workspace.rs": "authority",
@@ -318,6 +320,7 @@
     "crates/fss-reference/src/deployment_session/investigation.rs": "cognition",
     "crates/fss-reference/src/deployment_session/plan.rs": "cognition",
     "crates/fss-reference/src/deployment_session/supervision.rs": "cognition",
+    "crates/fss-reference/src/deployment_session/supervision/recovery.rs": "cognition",
     "crates/fss-reference/src/deployment_session/tests.rs": "support",
     "crates/fss-reference/src/deployment_session/trauma_guard.rs": "cognition",
     "crates/fss-reference/src/deployment_status.rs": "support",
@@ -1134,6 +1137,21 @@
       "file": "crates/fss-reference/src/deployment_session/supervision.rs",
       "plane": "cognition",
       "description": "Immutable registration and caller-supplied current authority root for one finite session operation."
+    },
+    "SupervisionRecoveryRequest": {
+      "file": "crates/fss-reference/src/deployment_session/supervision/recovery.rs",
+      "plane": "cognition",
+      "description": "Existing session and subscription selected under explicit current authority to recover exact immutable configuration and lifetime ceilings; no source or effect authority."
+    },
+    "SupervisionRecoveryBinding": {
+      "file": "crates/fss-reference/src/deployment_session/supervision/recovery.rs",
+      "plane": "support",
+      "description": "Exact borrowed recovery request, authenticated principal, deployment namespace and bounded history limits presented to caller-owned admission at each boundary."
+    },
+    "SupervisionRecoveryBoundary": {
+      "file": "crates/fss-reference/src/deployment_session/supervision/recovery.rs",
+      "plane": "support",
+      "description": "Explicit admission points for history, journal, live registration lookup, current-history revalidation and exact configuration delivery; no native attempt or pending payload release."
     },
     "SupervisionSessionBinding": {
       "file": "crates/fss-reference/src/deployment_session/supervision.rs",

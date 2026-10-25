@@ -66,6 +66,9 @@ fn poll_with_flags(
 #[path = "session/schedule.rs"]
 mod schedule;
 
+#[path = "session/resume.rs"]
+mod resume;
+
 fn state(f: &Fixture, subscription: &str) -> TestResult<SupervisionSubscription> {
     inspect_session_bytes(
         &fs::read(f.root.join("agent/sessions/journal.fssj"))?,

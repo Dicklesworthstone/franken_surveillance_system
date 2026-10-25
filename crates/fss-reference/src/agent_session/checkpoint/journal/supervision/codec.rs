@@ -47,8 +47,8 @@ pub(super) fn encode_record(record: &Record) -> Result<Vec<u8>> {
     e.digest(record.before_state);
     e.digest(record.after_state);
     match &record.command {
-        // Inspection cannot change state and must never appear in committed replay history.
-        Command::Inspect(_) => return Err(DurableSessionError::InvalidHistory),
+        // Inspection and recovery cannot change state or appear in committed replay history.
+        Command::Inspect(_) | Command::Lookup(_) => return Err(DurableSessionError::InvalidHistory),
         Command::Register(registration) => {
             e.tag(0);
             registration.encode(&mut e);

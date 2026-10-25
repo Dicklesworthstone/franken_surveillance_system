@@ -17,6 +17,12 @@ use crate::agent_session::checkpoint::journal::supervision::{
     SupervisionSourcePin, SupervisionSubscription,
 };
 
+mod recovery;
+pub use recovery::{
+    SupervisionRecoveryBinding, SupervisionRecoveryBoundary, SupervisionRecoveryControl,
+    SupervisionRecoveryRequest, recover_supervision_registration,
+};
+
 /// Exactly one action is performed by a command. ACK never evaluates a successor implicitly.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SupervisionAction {
@@ -328,6 +334,17 @@ fn same_generations(left: &LedgerAnchor, right: &LedgerAnchor) -> bool {
         && left.privacy_epoch == right.privacy_epoch
 }
 
+fn valid_history_limits(limits: &OrientLimits) -> bool {
+    let defaults = OrientLimits::default();
+    limits.max_journal_bytes != 0 && limits.max_journal_bytes <= 32 * 1024 * 1024
+        && [
+            (limits.max_layout_bytes, defaults.max_layout_bytes),
+            (limits.max_object_bytes, defaults.max_object_bytes),
+            (limits.max_events, defaults.max_events),
+            (limits.max_revisions_per_event, defaults.max_revisions_per_event),
+        ].into_iter().all(|(value, ceiling)| value != 0 && value <= ceiling)
+}
+
 fn admit(
     control: &mut impl SupervisionEvaluator,
     binding: &SupervisionSessionBinding<'_>,
@@ -364,6 +381,30 @@ pub fn supervise_session(
     limits: &OrientLimits,
     control: &mut impl SupervisionEvaluator,
 ) -> Result<SupervisionSessionDelivery, Box<SupervisionSessionFailure>> {
+    supervise(root, principal, request, limits, control, false)
+}
+
+/// Execute one operation only if the exact registration still exists in the admitted journal.
+/// This is the second admission after configuration recovery: it cannot recreate missing state,
+/// reset a lifetime allowance or configure a new schedule between recovery and native execution.
+pub fn supervise_existing_session(
+    root: &Path,
+    principal: &PrincipalId,
+    request: &SupervisionSessionRequest,
+    limits: &OrientLimits,
+    control: &mut impl SupervisionEvaluator,
+) -> Result<SupervisionSessionDelivery, Box<SupervisionSessionFailure>> {
+    supervise(root, principal, request, limits, control, true)
+}
+
+fn supervise(
+    root: &Path,
+    principal: &PrincipalId,
+    request: &SupervisionSessionRequest,
+    limits: &OrientLimits,
+    control: &mut impl SupervisionEvaluator,
+    require_existing: bool,
+) -> Result<SupervisionSessionDelivery, Box<SupervisionSessionFailure>> {
     let mut progress = SupervisionSessionFailure {
         error: SupervisionSessionError::InvalidRequest,
         head: None,
@@ -374,7 +415,7 @@ pub fn supervise_session(
         advanced: None,
         journal_may_have_changed: false,
     };
-    match execute(root, principal, request, limits, control, &mut progress) {
+    match execute(root, principal, request, limits, control, &mut progress, require_existing) {
         Ok(delivery) => Ok(delivery),
         Err(error) => {
             progress.error = error;
@@ -390,9 +431,9 @@ fn execute(
     limits: &OrientLimits,
     control: &mut impl SupervisionEvaluator,
     progress: &mut SupervisionSessionFailure,
+    require_existing: bool,
 ) -> Result<SupervisionSessionDelivery, SupervisionSessionError> {
     request.registration.validate().map_err(SupervisionSessionError::Store)?;
-    let defaults = OrientLimits::default();
     if root.as_os_str().is_empty()
         || request.expected_authority_root.algorithm() != DigestAlgorithm::Sha256
         || request.expected_authority_root.bytes() == [0; 32]
@@ -413,14 +454,8 @@ fn execute(
                     || after_receipt.algorithm() != DigestAlgorithm::Sha256
                     || after_receipt.bytes() == [0; 32]
         )
-        || limits.max_journal_bytes == 0
-        || limits.max_journal_bytes > 32 * 1024 * 1024
-        || [
-            (limits.max_layout_bytes, defaults.max_layout_bytes),
-            (limits.max_object_bytes, defaults.max_object_bytes),
-            (limits.max_events, defaults.max_events),
-            (limits.max_revisions_per_event, defaults.max_revisions_per_event),
-        ].into_iter().any(|(value, ceiling)| value == 0 || value > ceiling)
+        || (require_existing && matches!(request.action, SupervisionAction::ConfigureSchedule { .. }))
+        || !valid_history_limits(limits)
     {
         return Err(SupervisionSessionError::InvalidRequest);
     }
@@ -462,6 +497,9 @@ fn execute(
                 principal, &request.registration, head.observed_at,
             ).map_err(SupervisionSessionError::Store)?
         }
+        _ if require_existing => journal.store.inspect_supervision(
+            principal, &request.registration, head.observed_at,
+        ).map_err(SupervisionSessionError::Store)?,
         _ => journal.store
             .register_supervision(principal, request.registration.clone(), head.observed_at)
             .map_err(SupervisionSessionError::Store)?,
