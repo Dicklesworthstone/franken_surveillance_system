@@ -53,5 +53,5 @@ echo "armed: $URL md5=$MD5 cam=$CAM mac=$MAC" >>/tmp/ota/arm.log
 # 4. proxy in the foreground so launchd supervises it; the forge is reaped by the trap
 trap 'kill $FORGE 2>/dev/null' EXIT
 export THING="$MAC" D="/Users/jemanuel/.config/fss-lab/wyze_iot/$(echo "$MAC" | tr a-f A-F)"
-export CHAIN=/tmp/ota/chain.pem INJECT=1 OTA_URL="$URL" OTA_MD5="$MD5"
+export CHAIN=/tmp/ota/chain.pem INJECT=1 OTA_TOPIC= OTA_URL="$URL" OTA_MD5="$MD5"
 exec "$PY" "$HERE/wyze_mqtt_mitm.py"

