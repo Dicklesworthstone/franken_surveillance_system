@@ -135,6 +135,8 @@ def log(direction,d):
         except Exception: print(direction,"PUBLISH <unparsed>",flush=True)
     elif t in (14,):
         print(f"{direction} DISCONNECT",flush=True)
+    elif t==2:
+        print(f"{direction} CONNACK {d[1:].hex()}",flush=True)
     elif t==9:
         print(f"{direction} SUBACK {d[1:].hex()}",flush=True)
     elif t in (8,):
