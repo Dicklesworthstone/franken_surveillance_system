@@ -1,4 +1,5 @@
 import socket, ssl, os, threading, time, json, struct
+import time as _t
 HERE=os.path.dirname(os.path.abspath(__file__))
 # /tmp is wiped by the sbh daemon; keep the forged chain in the repo.
 CHAIN=os.environ.get("CHAIN",os.path.join(HERE,"..","certs","emudhra","serve.pem"))
@@ -79,7 +80,7 @@ def pipe(a,b,tag,state=None):
         while True:
             d=a.recv(65536)
             if not d:
-                print("pipe",tag,"EOF",flush=True); break
+                print("pipe",tag,"EOF",_t.strftime("%H:%M:%S"),flush=True); break
             if tag != "S":
                 log(tag,d)
                 try:
@@ -202,7 +203,7 @@ def _pub(sock, topic, payload, qos0=True):
         _PID[0]=(_PID[0]%65535)+1
         body=struct.pack(">H",len(tb))+tb+struct.pack(">H",_PID[0])+payload
         pkt=_pkt(3, body, 0x03 if os.environ.get("OTA_RETAIN") else 0x02)
-        print("PUBHEX", pkt[:40].hex(), "len", len(pkt),flush=True)
+        print("PUBHEX", _t.strftime("%H:%M:%S"), pkt[:40].hex(), "len", len(pkt),flush=True)
         sock.sendall(pkt)
 def _live():
     """The current device socket: a reconnect replaces it, so never trust a captured one.
@@ -277,8 +278,11 @@ def inject(cli, up=None):
                 time.sleep(1); continue
             try:
                 with WLOCK:
-                    _pub(up if (up and os.environ.get("OTA_VIA_UPSTREAM")) else c,
-                         os.environ.get("OTA_TOPIC") or f"hl/devices/{THING}/cmd", pl, qos0=False)
+                    if os.environ.get("OTA_EMPTY"):
+                        _pub(c, f"hl/devices/{THING}/cmd", b"", qos0=False)
+                    else:
+                        _pub(up if (up and os.environ.get("OTA_VIA_UPSTREAM")) else c,
+                             os.environ.get("OTA_TOPIC") or f"hl/devices/{THING}/cmd", pl, qos0=False)
                 print(f"inject: cmd 1234 pid={_PID[0]} model={m} {text}",flush=True)
                 break
             except Exception as e:
