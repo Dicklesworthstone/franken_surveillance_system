@@ -15,7 +15,7 @@ use fss_cli::{ERR_CLI_RUNTIME_FAILURE, ExitIdentity};
 use fss_core::{CanonicalEncoder, ContentDigest, DigestAlgorithm, LedgerAnchor, PrincipalId, SessionId};
 use fss_reference::agent_orient::OrientLimits;
 use fss_reference::agent_session::checkpoint::journal::supervision::{
-    PendingSupervisionDelivery, SupervisionRegistration, SupervisionSourcePin,
+    MAX_SUPERVISION_WINDOWS, PendingSupervisionDelivery, SupervisionRegistration, SupervisionSourcePin,
 };
 use fss_reference::deployment_session::supervision::{
     SupervisionAction, SupervisionAdapterError, SupervisionEvaluation, SupervisionEvaluator,
@@ -38,6 +38,7 @@ pub(super) struct SessionOptions {
     expected_root: ContentDigest,
     maximum_attempts: u32,
     action: SupervisionAction,
+    configure_schedule: bool,
 }
 
 fn digest(values: &BTreeMap<String, OsString>, key: &str) -> Result<ContentDigest> {
@@ -51,14 +52,23 @@ fn digest(values: &BTreeMap<String, OsString>, key: &str) -> Result<ContentDiges
 pub(super) fn parse(values: &BTreeMap<String, OsString>) -> Result<Option<SessionOptions>> {
     if ![
         "--session", "--subscription", "--authority-root", "--max-poll-attempts",
-        "--acknowledge", "--discard", "--inspect",
+        "--acknowledge", "--discard", "--inspect", "--schedule", "--advance-window", "--after-receipt",
     ].iter().any(|flag| values.contains_key(*flag)) {
         return Ok(None);
     }
-    if ["--acknowledge", "--discard", "--inspect"].iter()
+    if values.contains_key("--advance-window") != values.contains_key("--after-receipt") {
+        return Err(Failure::malformed("--advance-window and --after-receipt are required together"));
+    }
+    if ["--acknowledge", "--discard", "--inspect", "--schedule", "--advance-window"].iter()
         .filter(|flag| values.contains_key(**flag)).count() > 1
     {
-        return Err(Failure::malformed("--acknowledge, --discard and --inspect are mutually exclusive"));
+        return Err(Failure::malformed(
+            "--acknowledge, --discard, --inspect, --schedule and --advance-window are mutually exclusive",
+        ));
+    }
+    let configure_schedule = values.contains_key("--schedule");
+    if configure_schedule && super::text(values, "--schedule")? != "yes" {
+        return Err(Failure::malformed("--schedule requires yes"));
     }
     let session = SessionId::parse(super::text(values, "--session")?).map_err(Failure::malformed)?;
     let subscription = super::text(values, "--subscription")?;
@@ -71,6 +81,16 @@ pub(super) fn parse(values: &BTreeMap<String, OsString>) -> Result<Option<Sessio
             return Err(Failure::malformed("--inspect requires yes"));
         }
         SupervisionAction::Inspect
+    } else if values.contains_key("--advance-window") {
+        let index = super::text(values, "--advance-window")?
+            .parse::<u32>().map_err(Failure::malformed)?;
+        if !(1..MAX_SUPERVISION_WINDOWS).contains(&index) {
+            return Err(Failure::malformed("--advance-window requires a next zero-based index from 1 through 31"));
+        }
+        SupervisionAction::Advance {
+            target_count: index + 1,
+            after_receipt: digest(values, "--after-receipt")?,
+        }
     } else if values.contains_key("--acknowledge") {
         SupervisionAction::Acknowledge(digest(values, "--acknowledge")?)
     } else if values.contains_key("--discard") {
@@ -80,6 +100,7 @@ pub(super) fn parse(values: &BTreeMap<String, OsString>) -> Result<Option<Sessio
     };
     Ok(Some(SessionOptions {
         session, subscription: subscription.to_owned(), expected_root, maximum_attempts, action,
+        configure_schedule,
     }))
 }
 
@@ -89,6 +110,18 @@ fn runtime_error(error: impl std::fmt::Display) -> SupervisionAdapterError {
 
 fn source_error(error: RetainedSupervisorError) -> SupervisionAdapterError {
     SupervisionAdapterError { identity: error.stable_id(), reason: error.to_string() }
+}
+
+fn scoped_request(
+    original: &RetainedDiscoveryRequest,
+    authority: ContentDigest,
+    count: Option<u32>,
+) -> std::result::Result<RetainedDiscoveryRequest, SupervisionAdapterError> {
+    let request = match count {
+        Some(count) => original.for_window_prefix(count as usize).map_err(source_error)?,
+        None => original.clone(),
+    };
+    request.for_authority(authority).map_err(source_error)
 }
 
 /// Admit the exact complete report before publication, then repeat the same check on release.
@@ -138,6 +171,11 @@ impl NativeEvaluator<'_> {
             || binding.request() != self.command
             || binding.limits() != &self.limits
             || self.cx.root_dir() != self.root
+            || binding.active_window_count().is_some_and(|count|
+                count == 0 || count as usize > self.request.template().spec().windows.len())
+            || matches!(self.command.action,
+                SupervisionAction::ConfigureSchedule { total_windows }
+                    if total_windows as usize != self.request.template().spec().windows.len())
         {
             return Err(runtime_error("supervision operation binding differs"));
         }
@@ -167,7 +205,7 @@ impl SupervisionEvaluator for NativeEvaluator<'_> {
         anchor: &LedgerAnchor,
     ) -> std::result::Result<SupervisionEvaluation, SupervisionAdapterError> {
         self.admit_scope(binding)?;
-        let request = self.request.for_authority(anchor.state_root).map_err(source_error)?;
+        let request = scoped_request(self.request, anchor.state_root, binding.active_window_count())?;
         // The deployment owner has already committed and pinned the full-cap reservation.
         let mut deployment = ReferenceDeployment::open(self.root, self.site, self.cx)
             .map_err(runtime_error)?;
@@ -209,7 +247,7 @@ impl SupervisionEvaluator for NativeEvaluator<'_> {
         {
             return Err(source_error(RetainedSupervisorError::Limit("complete session report bytes")));
         }
-        let request = self.request.for_authority(anchor.state_root).map_err(source_error)?;
+        let request = scoped_request(self.request, anchor.state_root, pending.active_window_count())?;
         let sources: Vec<_> = pending.source_inventory().iter().map(|source| RetainedDiscoverySource {
             event_id: source.event_id.clone(),
             event_root: source.event_root,
@@ -245,12 +283,29 @@ fn validation_json(validation: Option<&SupervisionValidation>) -> String {
     ]))
 }
 
+fn envelope_receipt(unsigned: &str) -> std::result::Result<ContentDigest, SupervisionAdapterError> {
+    let mut encoder = CanonicalEncoder::new();
+    encoder.text(RECEIPT_DOMAIN);
+    // A complete bounded report can exceed the canonical text-field limit. Bytes have
+    // the identical length-prefixed encoding without imposing that unrelated string cap.
+    encoder.bytes(unsigned.as_bytes());
+    Ok(ContentDigest::sha256(&encoder.finish_checked().map_err(runtime_error)?))
+}
+
 fn render(
     delivery: &SupervisionSessionDelivery,
     original: &RetainedDiscoveryRequest,
 ) -> std::result::Result<String, SupervisionAdapterError> {
     let (status, payload, delivery_receipt, report_receipt, report_root, payload_digest,
         replayed, validation, acknowledged, discarded) = match &delivery.outcome {
+        SupervisionSessionOutcome::ScheduleConfigured => (
+            "scheduled", "null".to_owned(), None, None, None, None,
+            false, None, None, None,
+        ),
+        SupervisionSessionOutcome::WindowAdvanced => (
+            "advanced", "null".to_owned(), None, None, None, None,
+            false, None, None, None,
+        ),
         SupervisionSessionOutcome::Inspected => {
             let pending = delivery.subscription.pending();
             (
@@ -262,7 +317,7 @@ fn render(
             )
         }
         SupervisionSessionOutcome::Report { payload, pending, replayed, validation } => {
-            let request = original.for_authority(pending.anchor().state_root).map_err(source_error)?;
+            let request = scoped_request(original, pending.anchor().state_root, pending.active_window_count())?;
             let text = checked_payload(
                 payload, pending.anchor().state_root, request.digest(),
                 pending.report_receipt(), pending.payload_digest(),
@@ -314,13 +369,40 @@ fn render(
         ("open_recovery_and_filesystem_metadata_included", "false".to_owned()),
         ("effects_authorized", "false".to_owned()),
         ("supports_absence_claim", "false".to_owned()),
-        ("report", payload),
     ];
+    if let Some(schedule) = state.schedule() {
+        let count = schedule.active_window_count();
+        let declared = &original.template().spec().windows;
+        if count == 0 || count > schedule.total_windows()
+            || schedule.total_windows() as usize != declared.len()
+        {
+            return Err(runtime_error("stored schedule differs from the immutable native windows"));
+        }
+        let advance = schedule.last_advance().map_or_else(|| "null".to_owned(), |advance| object(&[
+            ("target_window_index", (advance.target_count() - 1).to_string()),
+            ("target_window_count", advance.target_count().to_string()),
+            ("after_receipt", string(&advance.after_receipt().to_text())),
+            ("receipt_digest", string(&advance.receipt().to_text())),
+        ]));
+        fields.extend([
+            ("scheduled", "true".to_owned()),
+            ("active_window_index", (count - 1).to_string()),
+            ("active_window_count", count.to_string()),
+            ("total_windows", schedule.total_windows().to_string()),
+            ("active_end_ns", string(&declared[count as usize - 1].end_ns.to_string())),
+            ("all_windows_active", (count == schedule.total_windows()).to_string()),
+            ("report_window_count", state.pending()
+                .and_then(PendingSupervisionDelivery::active_window_count)
+                .map_or_else(|| "null".to_owned(), |value| value.to_string())),
+            ("last_terminal_receipt", optional_digest(schedule.resolved_receipt())),
+            ("last_terminal_acknowledged", schedule.resolved_acknowledged()
+                .map_or_else(|| "null".to_owned(), |value| value.to_string())),
+            ("last_advance", advance),
+        ]);
+    }
+    fields.push(("report", payload));
     let unsigned = object(&fields);
-    let mut encoder = CanonicalEncoder::new();
-    encoder.text(RECEIPT_DOMAIN);
-    encoder.text(&unsigned);
-    let receipt = ContentDigest::sha256(&encoder.finish_checked().map_err(runtime_error)?);
+    let receipt = envelope_receipt(&unsigned)?;
     fields.push(("receipt_digest", string(&receipt.to_text())));
     let rendered = object(&fields);
     if rendered.len() > state.registration().max_report_bytes {
@@ -348,8 +430,16 @@ pub(super) fn run(
         max_report_bytes: limits.max_report_bytes,
     };
     registration.validate().map_err(Failure::malformed)?;
+    let action = if session.configure_schedule {
+        SupervisionAction::ConfigureSchedule {
+            total_windows: u32::try_from(discovery.template().spec().windows.len())
+                .map_err(Failure::malformed)?,
+        }
+    } else {
+        session.action
+    };
     let command = SupervisionSessionRequest {
-        registration, expected_authority_root: session.expected_root, action: session.action,
+        registration, expected_authority_root: session.expected_root, action,
     };
     let principal = PrincipalId::parse(&options.principal).map_err(Failure::malformed)?;
     let orient_limits = OrientLimits {
@@ -379,12 +469,50 @@ pub(super) fn run(
                 exit: ExitIdentity::RUNTIME_FAILURE.code,
                 identity,
                 reason: format!(
-                    "{}; journal_may_have_changed={}; attempts_reserved={}; acknowledged={}; discarded={}",
+                    "{}; journal_may_have_changed={}; attempts_reserved={}; acknowledged={}; discarded={}; configured_windows={}; advanced={}",
                     failure.error, failure.journal_may_have_changed, failure.attempts_reserved,
                     failure.acknowledged.map_or_else(|| "none".to_owned(), |value| value.to_text()),
                     failure.discarded.map_or_else(|| "none".to_owned(), |value| value.to_text()),
+                    failure.configured_windows.map_or_else(|| "none".to_owned(), |value| value.to_string()),
+                    failure.advanced.map_or_else(|| "none".to_owned(), |value| value.to_text()),
                 ),
             })
         }
+    }
+}
+
+#[cfg(test)]
+mod receipt_tests {
+    use super::*;
+
+    #[test]
+    fn report_envelope_receipt_preserves_legacy_small_encoding()
+        -> std::result::Result<(), Box<dyn std::error::Error>>
+    {
+        let unsigned = object(&[("state", string("pending")), ("report", "null".to_owned())]);
+        let mut legacy = CanonicalEncoder::new();
+        legacy.text(RECEIPT_DOMAIN);
+        legacy.text(&unsigned);
+        let expected = ContentDigest::sha256(&legacy.finish_checked()?);
+        assert_eq!(envelope_receipt(&unsigned)?, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn report_envelope_receipt_accepts_bounded_payload_above_text_field_limit()
+        -> std::result::Result<(), Box<dyn std::error::Error>>
+    {
+        let rows = vec!["0"; 40_000].join(",");
+        let unsigned = object(&[("state", string("pending")), ("report", format!("[{rows}]"))]);
+        assert!(unsigned.len() > 65_536 && unsigned.len() < 2 * 1024 * 1024);
+        assert!(json_input::parse_retained_supervisor_report(&unsigned).is_ok());
+        let mut legacy = CanonicalEncoder::new();
+        legacy.text(RECEIPT_DOMAIN);
+        legacy.text(&unsigned);
+        assert!(legacy.finish_checked().is_err());
+        let receipt = envelope_receipt(&unsigned)?;
+        assert_eq!(receipt.algorithm(), DigestAlgorithm::Sha256);
+        assert_eq!(receipt, envelope_receipt(&unsigned)?);
+        Ok(())
     }
 }

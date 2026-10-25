@@ -100,6 +100,20 @@ impl RetainedDiscoveryRequest {
     pub const fn digest(&self) -> ContentDigest {
         self.digest
     }
+
+    /// Select an exact nonempty cumulative prefix of the already declared window schedule.
+    ///
+    /// All source generations, camera bindings, calibration, policy, starting time and work
+    /// limits remain unchanged. This creates an inert native request; the session journal
+    /// independently owns monotonic advancement, delivery acknowledgement and lifetime work.
+    pub fn for_window_prefix(&self, window_count: usize) -> Result<Self> {
+        if window_count == 0 || window_count > self.template.spec().windows.len() {
+            return Err(Error::Plan("window prefix is outside the declared schedule"));
+        }
+        let mut spec = self.template.spec().clone();
+        spec.windows.truncate(window_count);
+        Self::new(RetainedSupervisorPlan::new(spec)?, self.maximum_catalog_events)
+    }
 }
 
 #[derive(Debug)]

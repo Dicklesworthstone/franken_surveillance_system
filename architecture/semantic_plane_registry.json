@@ -56,6 +56,7 @@
     "crates/fss-cli/src/supervisor/retained/input.rs": "support",
     "crates/fss-cli/src/supervisor/retained/render.rs": "cognition",
     "crates/fss-cli/tests/supervisor_retained_contract/session.rs": "support",
+    "crates/fss-cli/tests/supervisor_retained_contract/session/schedule.rs": "support",
     "crates/fss-codec-h265/src/bits.rs": "support",
     "crates/fss-codec-h265/src/cabac.rs": "support",
     "crates/fss-codec-h265/src/cabac_tables.rs": "support",
@@ -237,6 +238,8 @@
     "crates/fss-reference/src/agent_session/checkpoint/journal/follow/tests.rs": "support",
     "crates/fss-reference/src/agent_session/checkpoint/journal/supervision.rs": "cognition",
     "crates/fss-reference/src/agent_session/checkpoint/journal/supervision/codec.rs": "support",
+    "crates/fss-reference/src/agent_session/checkpoint/journal/supervision/compatibility_tests.rs": "support",
+    "crates/fss-reference/src/agent_session/checkpoint/journal/supervision/schedule_tests.rs": "support",
     "crates/fss-reference/src/agent_session/checkpoint/journal/supervision/tests.rs": "support",
     "crates/fss-reference/src/agent_session/checkpoint/journal/workspace.rs": "authority",
     "crates/fss-reference/src/agent_session/checkpoint/journal/workspace/rebase.rs": "authority",
@@ -1102,20 +1105,30 @@
       "plane": "cognition",
       "description": "Durably charged one-use read attempt bound to an explicit current anchor; failure or crash never refunds the full allowance."
     },
+    "SupervisionSchedule": {
+      "file": "crates/fss-reference/src/agent_session/checkpoint/journal/supervision.rs",
+      "plane": "cognition",
+      "description": "Immutable predeclared window count and durable cumulative active prefix, with exact terminal delivery disposition and latest advance; no clock, coverage or effect authority."
+    },
+    "SupervisionAdvance": {
+      "file": "crates/fss-reference/src/agent_session/checkpoint/journal/supervision.rs",
+      "plane": "cognition",
+      "description": "Exact next-prefix transition bound to the prior scheduled state, ACKed or discarded delivery and current anchor; idempotent latest retry preserves a successor without refunding charged work."
+    },
     "PendingSupervisionDelivery": {
       "file": "crates/fss-reference/src/agent_session/checkpoint/journal/supervision.rs",
       "plane": "cognition",
-      "description": "Private historical report, complete source inventory and original authority bound to one exact delivery receipt; public inspection exposes descriptors only."
+      "description": "Private historical report, complete source inventory, original authority and original optional window prefix bound to one exact delivery receipt; public inspection exposes descriptors only."
     },
     "SupervisionSubscription": {
       "file": "crates/fss-reference/src/agent_session/checkpoint/journal/supervision.rs",
       "plane": "cognition",
-      "description": "Recovered finite supervision progress with immutable scope, nonrefillable attempts, private pending delivery and exact ACK/discard identities."
+      "description": "Recovered finite supervision progress with immutable scope, optional cumulative schedule, nonrefillable attempts, private pending delivery and exact ACK/discard identities."
     },
     "SupervisionAction": {
       "file": "crates/fss-reference/src/deployment_session/supervision.rs",
       "plane": "cognition",
-      "description": "One explicit inspection, poll, exact acknowledgement or discard; no implicit successor evaluation or effect execution."
+      "description": "One explicit inspection, schedule configuration, next-window advance, poll, exact acknowledgement or discard; no implicit successor evaluation or effect execution."
     },
     "SupervisionSessionRequest": {
       "file": "crates/fss-reference/src/deployment_session/supervision.rs",
@@ -1125,7 +1138,7 @@
     "SupervisionSessionBinding": {
       "file": "crates/fss-reference/src/deployment_session/supervision.rs",
       "plane": "support",
-      "description": "Borrowed exact request, principal, deployment namespace and history ceilings presented to explicit operation admission."
+      "description": "Borrowed exact request, principal, deployment namespace, durable active prefix and history ceilings presented to explicit operation admission."
     },
     "SupervisionSessionBoundary": {
       "file": "crates/fss-reference/src/deployment_session/supervision.rs",
@@ -1155,7 +1168,7 @@
     "SupervisionSessionOutcome": {
       "file": "crates/fss-reference/src/deployment_session/supervision.rs",
       "plane": "cognition",
-      "description": "One historical descriptor inspection, complete report, exact ACK or explicit discard result; original and current source authority remain distinct."
+      "description": "One historical descriptor inspection, schedule configuration, explicit advance, complete report, exact ACK or discard result; original and current source authority remain distinct."
     },
     "SupervisionSessionDelivery": {
       "file": "crates/fss-reference/src/deployment_session/supervision.rs",
@@ -1170,7 +1183,7 @@
     "SupervisionSessionFailure": {
       "file": "crates/fss-reference/src/deployment_session/supervision.rs",
       "plane": "support",
-      "description": "Refusal with definitely committed reservations and ACK/discard progress; never claims rollback or emits successful report bytes."
+      "description": "Refusal with definitely committed schedule, reservation, advancement and ACK/discard progress; never claims rollback or emits successful report bytes."
     }
   }
 }

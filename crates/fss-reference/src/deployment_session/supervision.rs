@@ -13,7 +13,7 @@ use fss_core::{AgentSession, ContentDigest, DigestAlgorithm, LedgerAnchor, Princ
 use super::{DeploymentSessionError, SessionJournal};
 use crate::agent_orient::{DeploymentHistory, OrientLimits};
 use crate::agent_session::checkpoint::journal::supervision::{
-    DurableSupervisionError, PendingSupervisionDelivery, SupervisionRegistration,
+    DurableSupervisionError, MAX_SUPERVISION_WINDOWS, PendingSupervisionDelivery, SupervisionRegistration,
     SupervisionSourcePin, SupervisionSubscription,
 };
 
@@ -22,6 +22,18 @@ use crate::agent_session::checkpoint::journal::supervision::{
 pub enum SupervisionAction {
     /// Inspect existing historical delivery descriptors without source reads or a new attempt.
     Inspect,
+    /// Atomically register or opt an unused subscription into the exact configured schedule.
+    ConfigureSchedule {
+        /// Number of cumulative windows in the immutable native configuration.
+        total_windows: u32,
+    },
+    /// Activate exactly the next configured window after an explicit terminal delivery.
+    Advance {
+        /// One-based cumulative prefix count, not a caller-supplied source timestamp.
+        target_count: u32,
+        /// Exact ACKed or discarded delivery that permits this transition.
+        after_receipt: ContentDigest,
+    },
     /// Produce a fresh pending report, or revalidate and redeliver the existing one.
     Poll,
     /// Acknowledge the exact pending receipt, or retry the most recent committed ACK.
@@ -37,7 +49,7 @@ pub struct SupervisionSessionRequest {
     pub registration: SupervisionRegistration,
     /// Current root supplied for this invocation; never inferred by silently rebasing a request.
     pub expected_authority_root: ContentDigest,
-    /// Inspect, poll, exact ACK, or exact discard.
+    /// Inspect, configure, advance, poll, exact ACK, or exact discard.
     pub action: SupervisionAction,
 }
 
@@ -47,6 +59,7 @@ pub struct SupervisionSessionBinding<'a> {
     principal: &'a PrincipalId,
     request: &'a SupervisionSessionRequest,
     limits: &'a OrientLimits,
+    active_window_count: Option<u32>,
 }
 
 impl<'a> SupervisionSessionBinding<'a> {
@@ -58,6 +71,8 @@ impl<'a> SupervisionSessionBinding<'a> {
     pub const fn request(&self) -> &'a SupervisionSessionRequest { self.request }
     /// Bounded history observations.
     pub const fn limits(&self) -> &'a OrientLimits { self.limits }
+    /// Durable active cumulative prefix; absent preserves the original all-window mode.
+    pub const fn active_window_count(&self) -> Option<u32> { self.active_window_count }
 }
 
 /// No owner work, lock, source evaluation or response is admitted implicitly.
@@ -69,6 +84,10 @@ pub enum SupervisionSessionBoundary {
     OpenJournal,
     /// Before admitting the live session and immutable registration.
     ReadSubscription,
+    /// Before atomic registration/configuration of the immutable cumulative schedule.
+    ConfigureSchedule,
+    /// Before advancing one configured window after its exact terminal delivery.
+    AdvanceWindow,
     /// Before durably reserving the complete native read ceilings.
     ReserveRead,
     /// Before fresh native discovery and supervision.
@@ -177,6 +196,10 @@ pub struct SupervisionSessionHead {
 pub enum SupervisionSessionOutcome {
     /// Existing subscription descriptors only; no historical report bytes or source assertion.
     Inspected,
+    /// Schedule admission only; no source report, clock-completion claim or new read attempt.
+    ScheduleConfigured,
+    /// One explicit cumulative-prefix transition; no successor is evaluated implicitly.
+    WindowAdvanced,
     /// Historical pending bytes released only after admitted native verification.
     Report {
         /// Exact historical report bytes.
@@ -264,6 +287,10 @@ pub struct SupervisionSessionFailure {
     pub acknowledged: Option<ContentDigest>,
     /// Exact discard definitely committed before a later failure.
     pub discarded: Option<ContentDigest>,
+    /// Exact schedule size definitely configured before a later failure.
+    pub configured_windows: Option<u32>,
+    /// Exact advancement receipt definitely committed before a later failure.
+    pub advanced: Option<ContentDigest>,
     /// Session clock, registration, reservation or delivery may already have changed durably.
     pub journal_may_have_changed: bool,
 }
@@ -329,7 +356,7 @@ fn revalidate_history(
     Ok(())
 }
 
-/// Executes one finite inspect/poll/ACK/discard. All source work has a prior durable full-cap reservation.
+/// Executes one finite operation. All source work has a prior durable full-cap reservation.
 pub fn supervise_session(
     root: &Path,
     principal: &PrincipalId,
@@ -343,6 +370,8 @@ pub fn supervise_session(
         attempts_reserved: 0,
         acknowledged: None,
         discarded: None,
+        configured_windows: None,
+        advanced: None,
         journal_may_have_changed: false,
     };
     match execute(root, principal, request, limits, control, &mut progress) {
@@ -372,6 +401,18 @@ fn execute(
             SupervisionAction::Acknowledge(digest) | SupervisionAction::Discard(digest)
                 if digest.algorithm() != DigestAlgorithm::Sha256 || digest.bytes() == [0; 32]
         )
+        || matches!(
+            request.action,
+            SupervisionAction::ConfigureSchedule { total_windows }
+                if !(1..=MAX_SUPERVISION_WINDOWS).contains(&total_windows)
+        )
+        || matches!(
+            request.action,
+            SupervisionAction::Advance { target_count, after_receipt }
+                if !(2..=MAX_SUPERVISION_WINDOWS).contains(&target_count)
+                    || after_receipt.algorithm() != DigestAlgorithm::Sha256
+                    || after_receipt.bytes() == [0; 32]
+        )
         || limits.max_journal_bytes == 0
         || limits.max_journal_bytes > 32 * 1024 * 1024
         || [
@@ -383,7 +424,9 @@ fn execute(
     {
         return Err(SupervisionSessionError::InvalidRequest);
     }
-    let binding = SupervisionSessionBinding { root, principal, request, limits };
+    let mut binding = SupervisionSessionBinding {
+        root, principal, request, limits, active_window_count: None,
+    };
     admit(control, &binding, SupervisionSessionBoundary::ReadHistory)?;
     let history = DeploymentHistory::read(root, limits)
         .map_err(|error| SupervisionSessionError::Session(error.into()))?;
@@ -402,20 +445,46 @@ fn execute(
     if !same_generations(&session.current_anchor, &head.anchor) {
         return Err(SupervisionSessionError::StaleAuthority);
     }
-    let mut state = if request.action == SupervisionAction::Inspect {
-        journal.store.inspect_supervision(
-            principal, &request.registration, head.observed_at,
-        ).map_err(SupervisionSessionError::Store)?
-    } else {
-        journal.store
+    let mut state = match request.action {
+        SupervisionAction::ConfigureSchedule { total_windows } => {
+            revalidate_history(&binding, &head, &session, control, progress)?;
+            admit(control, &binding, SupervisionSessionBoundary::ConfigureSchedule)?;
+            // Registration and schedule admission are one durable command. A crash must never
+            // leave an unscheduled subscription that a subsequent poll could interpret fully.
+            let state = journal.store.configure_supervision_schedule(
+                principal, &request.registration, total_windows, head.observed_at,
+            ).map_err(SupervisionSessionError::Store)?;
+            progress.configured_windows = Some(total_windows);
+            state
+        }
+        SupervisionAction::Inspect | SupervisionAction::Advance { .. } => {
+            journal.store.inspect_supervision(
+                principal, &request.registration, head.observed_at,
+            ).map_err(SupervisionSessionError::Store)?
+        }
+        _ => journal.store
             .register_supervision(principal, request.registration.clone(), head.observed_at)
-            .map_err(SupervisionSessionError::Store)?
+            .map_err(SupervisionSessionError::Store)?,
     };
     journal.commit_pin().map_err(SupervisionSessionError::Session)?;
     progress.attempts_reserved = state.attempts_reserved();
+    binding.active_window_count = state.active_window_count();
 
     let outcome = match request.action {
         SupervisionAction::Inspect => SupervisionSessionOutcome::Inspected,
+        SupervisionAction::ConfigureSchedule { .. } => SupervisionSessionOutcome::ScheduleConfigured,
+        SupervisionAction::Advance { target_count, after_receipt } => {
+            revalidate_history(&binding, &head, &session, control, progress)?;
+            admit(control, &binding, SupervisionSessionBoundary::AdvanceWindow)?;
+            state = journal.store.advance_supervision_window(
+                principal, &state, target_count, after_receipt, &head.anchor, head.observed_at,
+            ).map_err(SupervisionSessionError::Store)?;
+            progress.advanced = state.schedule()
+                .and_then(|schedule| schedule.last_advance())
+                .map(|advance| advance.receipt());
+            journal.commit_pin().map_err(SupervisionSessionError::Session)?;
+            SupervisionSessionOutcome::WindowAdvanced
+        }
         SupervisionAction::Discard(receipt) => {
             revalidate_history(&binding, &head, &session, control, progress)?;
             admit(control, &binding, SupervisionSessionBoundary::Discard)?;
@@ -440,6 +509,11 @@ fn execute(
         }
         action => {
             let pending = state.pending().cloned();
+            if pending.as_ref().is_some_and(|pending|
+                pending.active_window_count() != binding.active_window_count)
+            {
+                return Err(SupervisionSessionError::ChangedAuthority);
+            }
             if let SupervisionAction::Acknowledge(receipt) = action {
                 if pending.as_ref().is_none_or(|pending| pending.receipt() != receipt) {
                     return Err(SupervisionSessionError::InvalidRequest);
@@ -507,6 +581,7 @@ fn execute(
             }
         }
     };
+    binding.active_window_count = state.active_window_count();
     revalidate_history(&binding, &head, &session, control, progress)?;
     admit(control, &binding, SupervisionSessionBoundary::Deliver)?;
     Ok(SupervisionSessionDelivery {

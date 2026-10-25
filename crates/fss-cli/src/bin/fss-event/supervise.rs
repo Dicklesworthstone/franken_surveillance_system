@@ -56,6 +56,16 @@ const HELP: &str = "fss-event supervise --root DIR --site SITE\n\
   counters without source reads, private report output or another charged attempt; unknown\n\
   subscriptions are refused. No background loop, source publication or effect is started.\n\
 \n\
+  Before the first attempt, --schedule yes atomically enables the exact configured window\n\
+  schedule with only window 0 active. Normal polls then recompute its full active cumulative\n\
+  prefix from original native evidence. After an exact ACK or explicit discard, use\n\
+  --advance-window NEXT_ZERO_BASED_INDEX --after-receipt EXACT_TERMINAL_RECEIPT to activate\n\
+  exactly the next window. Scheduling and advancement return status only; a poll is separate.\n\
+  Pending reports block advancement; retries preserve their original window prefix and bytes.\n\
+  No attempt allowance is refunded or reset. Advancing a requested capture bound establishes\n\
+  no completed acquisition, synchronized clock, class absence or anytime guarantee. Without\n\
+  --schedule yes the existing all-window behavior remains unchanged.\n\
+\n\
   --plan selects the legacy fss.supervisor_plan.v1 caller-score simulation. Its\n\
   fss.supervisor_report.v1 explicitly labels unverified source custody and statistical\n\
   assumptions. Its numeric Ville fields do not establish an anytime false-alarm guarantee.\n";
@@ -345,6 +355,9 @@ pub(super) fn main(args: &[OsString]) -> ExitCode {
                 | "--acknowledge"
                 | "--discard"
                 | "--inspect"
+                | "--schedule"
+                | "--advance-window"
+                | "--after-receipt"
                 | "--report-out"
         ) {
             eprintln!("{ERR_CLI_MALFORMED_VALUE}: unknown supervise option {flag}");
@@ -372,6 +385,9 @@ pub(super) fn main(args: &[OsString]) -> ExitCode {
         || values.contains_key("--acknowledge")
         || values.contains_key("--discard")
         || values.contains_key("--inspect")
+        || values.contains_key("--schedule")
+        || values.contains_key("--advance-window")
+        || values.contains_key("--after-receipt")
     {
         return retained::main(&values);
     }

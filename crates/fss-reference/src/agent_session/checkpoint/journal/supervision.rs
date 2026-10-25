@@ -32,6 +32,8 @@ pub const MAX_SUPERVISION_RECORD_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_SUPERVISION_SOURCES: usize = 4096;
 /// Finite lifetime work attempts, including failed evaluations and pending-report revalidation.
 pub const MAX_SUPERVISION_ATTEMPTS: u32 = 64;
+/// Maximum predeclared cumulative windows in one optional immutable schedule.
+pub const MAX_SUPERVISION_WINDOWS: u32 = 32;
 /// Retained subscriptions across all sessions, including historical closed owners.
 pub const MAX_SUPERVISION_SUBSCRIPTIONS: usize = 64;
 /// One session cannot monopolize the retained subscription inventory.
@@ -44,6 +46,8 @@ const STATE_DOMAIN: &str = "fss.reference_supervision_state.v1";
 const AUTHORITY_DOMAIN: &str = "fss.reference_supervision_authority.v1";
 const RESERVATION_DOMAIN: &str = "fss.reference_supervision_reservation.v1";
 const DELIVERY_DOMAIN: &str = "fss.reference_supervision_delivery.v1";
+const SCHEDULED_STATE_DOMAIN: &str = "fss.reference_supervision_scheduled_state.v1";
+const ADVANCE_DOMAIN: &str = "fss.reference_supervision_window_advance.v1";
 
 /// Refusals never include private report bytes or a hidden subscription's identity.
 #[derive(Debug)]
@@ -198,6 +202,71 @@ impl SupervisionReservation {
     }
 }
 
+/// The most recent explicit progression, retained for safe lost-response retries.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SupervisionAdvance {
+    target_count: u32,
+    after_receipt: ContentDigest,
+    receipt: ContentDigest,
+}
+
+impl SupervisionAdvance {
+    /// One-based size of the cumulative prefix activated by this transition.
+    pub const fn target_count(&self) -> u32 { self.target_count }
+    /// Exact prior delivery explicitly acknowledged or discarded before progression.
+    pub const fn after_receipt(&self) -> ContentDigest { self.after_receipt }
+    /// Receipt binding prior state, terminal delivery and admitted current authority.
+    pub const fn receipt(&self) -> ContentDigest { self.receipt }
+    fn encode(&self, e: &mut CanonicalEncoder) {
+        e.u32(self.target_count);
+        e.digest(self.after_receipt);
+        e.digest(self.receipt);
+    }
+}
+
+/// Durable progress through the cumulative windows in the exact original configuration.
+///
+/// Configuration bytes already bind every endpoint and policy choice. The native adapter
+/// checks this count against that plan; the journal cannot reinterpret opaque configuration.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SupervisionSchedule {
+    total_windows: u32,
+    active_window_count: u32,
+    resolved_receipt: Option<ContentDigest>,
+    resolved_acknowledged: Option<bool>,
+    last_advance: Option<SupervisionAdvance>,
+}
+
+impl SupervisionSchedule {
+    fn new(total_windows: u32) -> Self {
+        Self { total_windows, active_window_count: 1, resolved_receipt: None,
+            resolved_acknowledged: None, last_advance: None }
+    }
+    /// Complete immutable number of predeclared windows.
+    pub const fn total_windows(&self) -> u32 { self.total_windows }
+    /// Current cumulative prefix; earlier windows are never removed or renumbered.
+    pub const fn active_window_count(&self) -> u32 { self.active_window_count }
+    /// Current-prefix terminal delivery, cleared when another report is published.
+    pub const fn resolved_receipt(&self) -> Option<ContentDigest> { self.resolved_receipt }
+    /// True means ACK; false means explicit discard. Rendering creates neither.
+    pub const fn resolved_acknowledged(&self) -> Option<bool> { self.resolved_acknowledged }
+    /// Most recent exact progression, even when its successor report is already pending.
+    pub const fn last_advance(&self) -> Option<&SupervisionAdvance> { self.last_advance.as_ref() }
+    fn encode(&self, e: &mut CanonicalEncoder) {
+        e.u32(self.total_windows);
+        e.u32(self.active_window_count);
+        optional_digest(e, self.resolved_receipt);
+        e.bool(self.resolved_acknowledged.is_some());
+        if let Some(acknowledged) = self.resolved_acknowledged { e.bool(acknowledged); }
+        e.bool(self.last_advance.is_some());
+        if let Some(advance) = &self.last_advance { advance.encode(e); }
+    }
+    fn resolve(&mut self, receipt: ContentDigest, acknowledged: bool) {
+        self.resolved_receipt = Some(receipt);
+        self.resolved_acknowledged = Some(acknowledged);
+    }
+}
+
 /// Descriptor of retained historical cognition. There is deliberately no private payload getter.
 #[derive(Clone, Eq, PartialEq)]
 pub struct PendingSupervisionDelivery {
@@ -207,6 +276,8 @@ pub struct PendingSupervisionDelivery {
     payload_digest: ContentDigest,
     report_receipt: ContentDigest,
     receipt: ContentDigest,
+    // Derived at Publish; its current-state digest already seals this original prefix.
+    active_window_count: Option<u32>,
 }
 
 impl fmt::Debug for PendingSupervisionDelivery {
@@ -218,6 +289,7 @@ impl fmt::Debug for PendingSupervisionDelivery {
             .field("payload_digest", &self.payload_digest)
             .field("report_receipt", &self.report_receipt)
             .field("receipt", &self.receipt)
+            .field("active_window_count", &self.active_window_count)
             .finish()
     }
 }
@@ -235,6 +307,8 @@ impl PendingSupervisionDelivery {
     pub const fn payload_digest(&self) -> ContentDigest { self.payload_digest }
     /// Complete private report byte count.
     pub fn payload_len(&self) -> usize { self.payload.len() }
+    /// Original cumulative prefix used for this historical report; None is legacy mode.
+    pub const fn active_window_count(&self) -> Option<u32> { self.active_window_count }
     fn encode_descriptor(&self, e: &mut CanonicalEncoder) {
         self.anchor.encode_canonical(e);
         e.u64(self.sources.len() as u64);
@@ -258,6 +332,7 @@ pub struct SupervisionSubscription {
     pending: Option<PendingSupervisionDelivery>,
     last_acknowledged: Option<ContentDigest>,
     last_discarded: Option<ContentDigest>,
+    schedule: Option<SupervisionSchedule>,
 }
 
 impl SupervisionSubscription {
@@ -277,9 +352,16 @@ impl SupervisionSubscription {
     pub const fn last_acknowledged(&self) -> Option<ContentDigest> { self.last_acknowledged }
     /// Most recent exact invalidation, never treated as acknowledgement.
     pub const fn last_discarded(&self) -> Option<ContentDigest> { self.last_discarded }
+    /// Optional immutable schedule and its durable active prefix.
+    pub const fn schedule(&self) -> Option<&SupervisionSchedule> { self.schedule.as_ref() }
+    /// Prefix for native evaluation; None executes the complete legacy plan.
+    pub fn active_window_count(&self) -> Option<u32> {
+        self.schedule.as_ref().map(SupervisionSchedule::active_window_count)
+    }
     /// CAS identity over immutable scope, lifetime charges and every retained progress field.
     pub fn digest(&self) -> ContentDigest {
-        hash(STATE_DOMAIN, |e| {
+        // Preserve every legacy byte and digest when no explicit schedule was configured.
+        let legacy = hash(STATE_DOMAIN, |e| {
             e.text("subscription");
             self.registration.encode_identity(e);
             e.digest(self.authority_digest);
@@ -296,6 +378,12 @@ impl SupervisionSubscription {
             }
             optional_digest(e, self.last_acknowledged);
             optional_digest(e, self.last_discarded);
+        });
+        self.schedule.as_ref().map_or(legacy, |schedule| {
+            hash(SCHEDULED_STATE_DOMAIN, |e| {
+                e.digest(legacy);
+                schedule.encode(e);
+            })
         })
     }
 }
@@ -334,6 +422,9 @@ enum Command {
         receipt: ContentDigest, anchor: LedgerAnchor,
     },
     Discard { subscription: String, expected: ContentDigest, receipt: ContentDigest, anchor: LedgerAnchor },
+    ConfigureSchedule { registration: SupervisionRegistration, total_windows: u32 },
+    Advance { subscription: String, expected: ContentDigest, target_count: u32,
+        after_receipt: ContentDigest, anchor: LedgerAnchor },
 }
 
 impl Command {
@@ -341,9 +432,10 @@ impl Command {
         match self {
             Self::Register(r) => &r.subscription_id,
             Self::Inspect(r) => &r.subscription_id,
+            Self::ConfigureSchedule { registration, .. } => &registration.subscription_id,
             Self::Reserve { subscription, .. } | Self::Publish { subscription, .. }
             | Self::Release { subscription, .. } | Self::Acknowledge { subscription, .. }
-            | Self::Discard { subscription, .. } => subscription,
+            | Self::Discard { subscription, .. } | Self::Advance { subscription, .. } => subscription,
         }
     }
 }
@@ -414,13 +506,39 @@ fn apply(
 ) -> Result<SupervisionSubscription> {
     let (authority_digest, live_anchor) = authority(memory, principal, session, now)?;
     let key = (session.clone(), command.subscription().to_owned());
-    if let Command::Register(registration) = command {
+    let initialization = match command {
+        Command::Register(registration) => Some((registration, None)),
+        Command::ConfigureSchedule { registration, total_windows } => {
+            if !(1..=MAX_SUPERVISION_WINDOWS).contains(total_windows) {
+                return Err(DurableSupervisionError::InvalidRequest);
+            }
+            Some((registration, Some(*total_windows)))
+        }
+        _ => None,
+    };
+    if let Some((registration, schedule_count)) = initialization {
         registration.validate()?;
         if registration.session_id != *session { return Err(DurableSupervisionError::InvalidRequest); }
         if let Some(existing) = state.subscriptions.get(&key) {
             if existing.authority_digest != authority_digest { return Err(DurableSupervisionError::StaleScope); }
-            return if existing.registration == *registration { Ok(existing.clone()) }
-                else { Err(DurableSupervisionError::Conflict) };
+            if existing.registration != *registration { return Err(DurableSupervisionError::Conflict); }
+            let Some(total_windows) = schedule_count else { return Ok(existing.clone()); };
+            if let Some(schedule) = &existing.schedule {
+                return if schedule.total_windows == total_windows { Ok(existing.clone()) }
+                    else { Err(DurableSupervisionError::Conflict) };
+            }
+            if existing.attempts_reserved != 0 || existing.pending.is_some()
+                || existing.reservation.is_some() || existing.last_acknowledged.is_some()
+                || existing.last_discarded.is_some()
+            {
+                return Err(DurableSupervisionError::Conflict);
+            }
+            let mut configured = existing.clone();
+            configured.schedule = Some(SupervisionSchedule::new(total_windows));
+            configured.revision = existing.revision.checked_add(1)
+                .ok_or(DurableSupervisionError::CapacityExceeded)?;
+            state.subscriptions.insert(key, configured.clone());
+            return Ok(configured);
         }
         if state.subscriptions.len() >= MAX_SUPERVISION_SUBSCRIPTIONS
             || state.subscriptions.keys().filter(|(id, _)| id == session).count()
@@ -432,6 +550,7 @@ fn apply(
             registration: registration.clone(), authority_digest, revision: 0,
             attempts_reserved: 0, reserved_bytes: 0, reserved_read_attempts: 0,
             reservation: None, pending: None, last_acknowledged: None, last_discarded: None,
+            schedule: schedule_count.map(SupervisionSchedule::new),
         };
         state.subscriptions.insert(key, result.clone());
         return Ok(result);
@@ -446,15 +565,17 @@ fn apply(
         return Ok(current.clone());
     }
     let expected = match command {
-        Command::Register(_) | Command::Inspect(_) => return Err(DurableSupervisionError::InvalidRequest),
+        Command::Register(_) | Command::Inspect(_) | Command::ConfigureSchedule { .. }
+            => return Err(DurableSupervisionError::InvalidRequest),
         Command::Reserve { expected, .. } | Command::Publish { expected, .. }
         | Command::Release { expected, .. } | Command::Acknowledge { expected, .. }
-        | Command::Discard { expected, .. } => *expected,
+        | Command::Discard { expected, .. } | Command::Advance { expected, .. } => *expected,
     };
     if current.digest() != expected { return Err(DurableSupervisionError::Conflict); }
     let mut next = current.clone();
     match command {
-        Command::Register(_) | Command::Inspect(_) => return Err(DurableSupervisionError::InvalidRequest),
+        Command::Register(_) | Command::Inspect(_) | Command::ConfigureSchedule { .. }
+            => return Err(DurableSupervisionError::InvalidRequest),
         Command::Reserve { anchor, .. } => {
             if !same_generations(&live_anchor, anchor) || !sha(anchor.state_root) {
                 return Err(DurableSupervisionError::StaleScope);
@@ -490,6 +611,7 @@ fn apply(
                 anchor: reserved.anchor.clone(), sources: sources.clone(), payload: payload.clone(),
                 payload_digest: ContentDigest::sha256(payload), report_receipt: *report_receipt,
                 receipt: ContentDigest::sha256(b"unsealed supervision delivery"),
+                active_window_count: current.active_window_count(),
             };
             pending.receipt = hash(DELIVERY_DOMAIN, |e| {
                 e.digest(current.digest());
@@ -498,6 +620,10 @@ fn apply(
             });
             next.pending = Some(pending);
             next.reservation = None;
+            if let Some(schedule) = &mut next.schedule {
+                schedule.resolved_receipt = None;
+                schedule.resolved_acknowledged = None;
+            }
         }
         Command::Release { reservation, receipt, .. } => {
             checked_reservation(current, *reservation, &live_anchor)?;
@@ -519,6 +645,7 @@ fn apply(
             next.pending = None;
             next.reservation = None;
             next.last_acknowledged = Some(*receipt);
+            if let Some(schedule) = &mut next.schedule { schedule.resolve(*receipt, true); }
         }
         Command::Discard { receipt, anchor, .. } => {
             if !same_generations(&live_anchor, anchor) || !sha(anchor.state_root) {
@@ -531,6 +658,43 @@ fn apply(
             next.pending = None;
             next.reservation = None;
             next.last_discarded = Some(*receipt);
+            if let Some(schedule) = &mut next.schedule { schedule.resolve(*receipt, false); }
+        }
+        Command::Advance { target_count, after_receipt, anchor, .. } => {
+            if !same_generations(&live_anchor, anchor) || !sha(anchor.state_root) {
+                return Err(DurableSupervisionError::StaleScope);
+            }
+            let schedule = current.schedule.as_ref().ok_or(DurableSupervisionError::Conflict)?;
+            if schedule.last_advance.as_ref().is_some_and(|advance|
+                advance.target_count == *target_count && advance.after_receipt == *after_receipt)
+            {
+                // A lost response may be retried after its successor is already pending.
+                return Ok(current.clone());
+            }
+            if current.pending.is_some() || !sha(*after_receipt)
+                || schedule.active_window_count.checked_add(1) != Some(*target_count)
+                || *target_count > schedule.total_windows
+                || schedule.resolved_receipt != Some(*after_receipt)
+                || schedule.resolved_acknowledged.is_none()
+            {
+                return Err(DurableSupervisionError::Conflict);
+            }
+            let receipt = hash(ADVANCE_DOMAIN, |e| {
+                e.digest(current.digest());
+                e.u32(*target_count);
+                e.digest(*after_receipt);
+                anchor.encode_canonical(e);
+            });
+            let schedule = next.schedule.as_mut().ok_or(DurableSupervisionError::Conflict)?;
+            schedule.active_window_count = *target_count;
+            schedule.resolved_receipt = None;
+            schedule.resolved_acknowledged = None;
+            schedule.last_advance = Some(SupervisionAdvance {
+                target_count: *target_count, after_receipt: *after_receipt, receipt,
+            });
+            // An interrupted repeat after a terminal delivery may leave charged work. Explicit
+            // progression abandons that attempt but never refunds its lifetime reservation.
+            next.reservation = None;
         }
     }
     next.revision = current.revision.checked_add(1).ok_or(DurableSupervisionError::CapacityExceeded)?;
@@ -539,6 +703,23 @@ fn apply(
 }
 
 impl DurableSessionStore {
+    /// Atomically create a scheduled subscription, or configure an exact unused registration.
+    ///
+    /// Initial configuration and prefix one share a single journal command. A failed creation
+    /// cannot leave an unscheduled registration that evaluates the entire future schedule.
+    /// Exact configured retries preserve pending reports, terminal receipts and all charges.
+    pub fn configure_supervision_schedule(
+        &mut self, principal: &PrincipalId, registration: &SupervisionRegistration,
+        total_windows: u32, now: TimestampNs,
+    ) -> Result<SupervisionSubscription> {
+        registration.validate()?;
+        if !(1..=MAX_SUPERVISION_WINDOWS).contains(&total_windows) {
+            return Err(DurableSupervisionError::InvalidRequest);
+        }
+        self.supervision_command(principal, &registration.session_id,
+            Command::ConfigureSchedule { registration: registration.clone(), total_windows }, now)
+    }
+
     /// Inspect one existing subscription under live session authority without native reads,
     /// registration, publication, acknowledgement, discard or a new attempt reservation.
     /// The result exposes historical descriptors only, never private report bytes.
@@ -633,6 +814,23 @@ impl DurableSessionStore {
         }, now)
     }
 
+    /// Activate exactly the next cumulative prefix after its current report was ACKed or
+    /// explicitly discarded. Pending reports block progression; exact latest retries preserve
+    /// any successor. An abandoned attempt remains charged and creates no source or effect claim.
+    pub fn advance_supervision_window(
+        &mut self, principal: &PrincipalId, state: &SupervisionSubscription,
+        target_count: u32, after_receipt: ContentDigest, current_anchor: &LedgerAnchor,
+        now: TimestampNs,
+    ) -> Result<SupervisionSubscription> {
+        if !(2..=MAX_SUPERVISION_WINDOWS).contains(&target_count) || !sha(after_receipt) {
+            return Err(DurableSupervisionError::InvalidRequest);
+        }
+        self.supervision_command(principal, &state.registration.session_id, Command::Advance {
+            subscription: state.registration.subscription_id.clone(), expected: state.digest(),
+            target_count, after_receipt, anchor: current_anchor.clone(),
+        }, now)
+    }
+
     fn supervision_command(
         &mut self, principal: &PrincipalId, session: &SessionId, command: Command, now: TimestampNs,
     ) -> Result<SupervisionSubscription> {
@@ -711,3 +909,9 @@ pub(super) fn replay_command(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod schedule_tests;
+
+#[cfg(test)]
+mod compatibility_tests;

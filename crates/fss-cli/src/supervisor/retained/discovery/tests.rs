@@ -221,3 +221,28 @@ fn explicit_authority_rebinding_preserves_every_original_scope_choice() -> TestR
     )).is_err());
     Ok(())
 }
+
+#[test]
+fn scheduled_prefix_is_exact_bounded_and_preserves_the_full_configuration() -> TestResult {
+    let original = RetainedDiscoveryRequest::new(template()?, 8)?;
+    let first = original.for_window_prefix(1)?;
+    assert_eq!(first.template().spec().windows.len(), 1);
+    assert_eq!(first.template().spec().windows[0].window_index, 0);
+    assert_eq!(first.template().spec().windows[0].end_ns, 20);
+    assert_eq!(first.maximum_catalog_events(), original.maximum_catalog_events());
+    assert_ne!(first.digest(), original.digest());
+    assert_eq!(original.for_window_prefix(2)?.digest(), original.digest());
+    assert_eq!(original.template().spec().windows.len(), 2);
+    for count in [0, 3, usize::MAX] {
+        assert!(matches!(original.for_window_prefix(count), Err(Error::Plan(_))));
+    }
+    let root = ContentDigest::sha256(b"explicit scheduled authority");
+    assert_eq!(
+        original.for_authority(root)?.for_window_prefix(1)?.digest(),
+        first.for_authority(root)?.digest(),
+    );
+    let mut restored = first.template().spec().clone();
+    restored.windows = original.template().spec().windows.clone();
+    assert_eq!(RetainedSupervisorPlan::new(restored)?.digest(), original.template().digest());
+    Ok(())
+}

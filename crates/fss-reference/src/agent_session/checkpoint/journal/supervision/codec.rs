@@ -86,6 +86,18 @@ pub(super) fn encode_record(record: &Record) -> Result<Vec<u8>> {
             e.digest(*receipt);
             fss_core::CanonicalEncode::encode_canonical(anchor, &mut e);
         }
+        Command::ConfigureSchedule { registration, total_windows } => {
+            e.tag(6);
+            registration.encode(&mut e);
+            e.u32(*total_windows);
+        }
+        Command::Advance { subscription, expected, target_count, after_receipt, anchor } => {
+            e.tag(7);
+            identity(&mut e, subscription, *expected);
+            e.u32(*target_count);
+            e.digest(*after_receipt);
+            fss_core::CanonicalEncode::encode_canonical(anchor, &mut e);
+        }
     }
     let bytes = e.finish_checked()?;
     if bytes.len() > MAX_SUPERVISION_RECORD_BYTES { return Err(DurableSessionError::CapacityExceeded); }
@@ -147,6 +159,23 @@ pub(super) fn decode_record(encoded: &[u8]) -> Result<Record> {
         5 => Command::Discard {
             subscription: text(&mut d, MAX_SUBSCRIPTION_BYTES)?, expected: d.digest()?,
             receipt: d.digest()?, anchor: anchor(&mut d)?,
+        },
+        6 => Command::ConfigureSchedule {
+            registration: SupervisionRegistration {
+                session_id: SessionId::parse(&text(&mut d, 512)?)?,
+                subscription_id: text(&mut d, MAX_SUBSCRIPTION_BYTES)?,
+                configuration: bytes(&mut d, MAX_SUPERVISION_CONFIGURATION_BYTES)?,
+                configuration_digest: d.digest()?,
+                max_read_bytes: d.u64()?,
+                max_read_attempts: d.u64()?,
+                maximum_attempts: d.u32()?,
+                max_report_bytes: count(&mut d, MAX_SUPERVISION_REPORT_BYTES)?,
+            },
+            total_windows: d.u32()?,
+        },
+        7 => Command::Advance {
+            subscription: text(&mut d, MAX_SUBSCRIPTION_BYTES)?, expected: d.digest()?,
+            target_count: d.u32()?, after_receipt: d.digest()?, anchor: anchor(&mut d)?,
         },
         _ => return Err(DurableSessionError::InvalidHistory),
     };

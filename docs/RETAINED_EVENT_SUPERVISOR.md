@@ -456,12 +456,70 @@ retrieve old payloads or bypass current source checks.
 A new ACK first revalidates the pending report's sources, then consumes only that exact delivery.
 Repeating the most recent committed ACK is idempotent and does not consume a newer pending
 report. ACK returns no report and performs no successor evaluation. A subsequent poll recomputes
-the entire fixed scope from unique source observations; previous scores are never added again.
+the entire active scope from unique source observations; previous scores are never added again.
+Without explicit scheduling, the active scope remains all configured windows.
 
 Use `--discard sha256:EXACT_DELIVERY_RECEIPT` instead of `--acknowledge` to abandon an
 unavailable or unwanted pending report explicitly. Discard requires the live owning session and
 current authority but no native source reads. It records `discarded`, never `acknowledged`,
 and releases no old report bytes. An exact last-discard retry also preserves any successor.
+
+### Advance through an immutable cumulative schedule
+
+Before its first source attempt, opt a new subscription into its exact predeclared schedule:
+
+```sh
+fss-event supervise \
+  --root /absolute/deployment --site site:home \
+  --discover-plan discover-supervisor.json \
+  --discover-digest sha256:EXACT_FILE_SHA256 \
+  --session session:ID_FROM_SESSION_OPEN \
+  --subscription retained-person-schedule \
+  --authority-root sha256:CURRENT_AUTHORITY_STATE_ROOT \
+  --max-poll-attempts 16 \
+  --schedule yes
+```
+
+The original file declares 1 through 32 cumulative windows. Registration and schedule admission
+commit atomically, with only window index `0` active (`active_window_count: 1`). Configuration
+returns status only; run a separate ordinary poll with the same arguments and no action flag.
+An existing exact registration can opt in only before its first attempt. Repeating an already
+configured schedule preserves its current prefix, pending report and lifetime charges.
+
+After that prefix's report is acknowledged or explicitly discarded, activate the next window:
+
+```sh
+fss-event supervise \
+  --root /absolute/deployment --site site:home \
+  --discover-plan discover-supervisor.json \
+  --discover-digest sha256:EXACT_FILE_SHA256 \
+  --session session:ID_FROM_SESSION_OPEN \
+  --subscription retained-person-schedule \
+  --authority-root sha256:CURRENT_AUTHORITY_STATE_ROOT \
+  --max-poll-attempts 16 \
+  --advance-window 1 \
+  --after-receipt sha256:EXACT_ACKNOWLEDGED_OR_DISCARDED_DELIVERY_RECEIPT
+```
+
+`--advance-window` uses the next **zero-based** index. It requires the exact terminal delivery
+receipt for the current prefix. Pending reports block advancement; skipping, rewinding and
+changing the original endpoints or policy are refused. A new publication clears the previous
+terminal permission until that new delivery is ACKed or discarded. Retrying the latest exact
+advance preserves any successor pending report; an older advance cannot rewind later progress.
+Advancement returns status only, and the next ordinary poll is separate.
+
+Each poll reconstructs all windows in the active prefix from original native observations,
+preserving the starting time, window indices, prior, calibration and unique-source accounting.
+Historical pending reports retain their original prefix and bytes during current source
+revalidation. The session envelope and `--inspect yes` expose `active_window_index`,
+`active_window_count`, `total_windows`, `active_end_ns`, `report_window_count`, the current
+terminal receipt and the latest advance receipt. `all_windows_active` identifies schedule
+progress only; it establishes no acquisition completion or coverage.
+
+Schedule changes never reset attempts or read charges. If a failed repeat after a terminal
+delivery leaves a reserved attempt, an explicit valid advance may abandon that attempt without
+refund. Discard remains an explicit invalidation, never an ACK. No clock chooses a new endpoint,
+and advancing a requested capture bound creates no absence, synchronized-time or effect claim.
 
 ### Persistent work accounting and recovery
 
@@ -473,17 +531,20 @@ not refund the reservation. The envelope exposes cumulative `attempts_reserved`,
 `reserved_bytes` and `reserved_read_attempts`; separate source validation records measured
 read consumption. These counters do not include opening/recovery or filesystem metadata.
 
-Inspection, an exact already-committed ACK retry and an explicit discard need no new source attempt. Choose
-a ceiling that leaves room to validate and acknowledge delivered reports: with a ceiling of one,
+Inspection, schedule configuration/advancement, an exact already-committed ACK retry and an
+explicit discard need no new source attempt. Choose a ceiling that leaves room to validate and
+acknowledge delivered reports: with a ceiling of one,
 the initial evaluation can succeed but a new source-validating ACK cannot. Discard remains
 available after that allowance is exhausted, and it does not reset the allowance.
 
 The existing exclusive session writer, crash-classifying journal, root pin and evidence clock
 own this state under `agent/sessions`. No loose cursor file, source publication or effect record
-is created. Register, reserve, publish, release, ACK and discard are canonical bounded commands
-re-executed during recovery. Torn/uncertain appends retain the existing reconciliation behavior;
+is created. Register, configure schedule, advance, reserve, publish, release, ACK and discard are
+canonical bounded commands re-executed during recovery. Torn/uncertain appends retain the existing reconciliation behavior;
 a failed response may follow committed progress and must not be interpreted as rollback.
 Older readers refuse the new journal record kind instead of silently dropping delivery progress.
+Schedule commands add distinct tags within that record kind; older readers also refuse unknown
+tags. Existing unscheduled command bytes, state digests and delivery receipts remain unchanged.
 
 Pending payloads are private historical cognition. Inspection exposes descriptors and counters,
 not a raw-payload accessor; the journal and its backups require the existing protected agent
@@ -493,8 +554,9 @@ The complete output stays within the registered report bound and 2 MiB hard ceil
 16 KiB reserved for its session envelope. The same strict output parser admits a fresh report
 before publication and on redelivery; ordinary operator-input parser limits remain unchanged.
 
-Each invocation performs one finite inspection, poll, ACK or discard. This interface has no background timer or automatic
-window advancement. It does not establish persistent statistical exposure accounting, qualified
+Each invocation performs one finite inspection, schedule configuration, advance, poll, ACK or
+discard. This interface has no background timer or automatic window advancement. It does not
+establish persistent statistical exposure accounting, qualified
 calibration, class absence, cross-camera physical identity or effect authorization.
 
 ## Legacy simulation and verification scope
@@ -519,5 +581,8 @@ authority advancement, current deletion of an originally native-verified generat
 nonrefillable lifetime attempts, receipt recovery without source reads after exhaustion/deletion,
 and unchanged canonical source/effect inventories. Journal unit
 contracts inject all four real append crash phases for reservation, publication, release and ACK,
-then reopen and recover exact pending state. These fixtures make no detector-quality or complete
-NS-1 qualification claim.
+then reopen and recover exact pending state. Schedule contracts exercise atomic configuration
+and advancement at all four crash phases, exact terminal-receipt retries, preserved successor
+reports, cumulative native prefixes and exhausted lifetime allowances after cold recovery.
+Frozen legacy command and state vectors check unscheduled compatibility. These fixtures make
+no detector-quality or complete NS-1 qualification claim.

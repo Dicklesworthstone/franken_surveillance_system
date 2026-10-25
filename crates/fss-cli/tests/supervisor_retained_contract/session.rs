@@ -34,6 +34,18 @@ fn poll(
     maximum_attempts: u32,
     action: Option<(&str, &str)>,
 ) -> TestResult<Output> {
+    let flags: Vec<_> = action.into_iter().collect();
+    poll_with_flags(f, request, session, subscription, maximum_attempts, &flags)
+}
+
+fn poll_with_flags(
+    f: &Fixture,
+    request: &Value,
+    session: &str,
+    subscription: &str,
+    maximum_attempts: u32,
+    flags: &[(&str, &str)],
+) -> TestResult<Output> {
     let bytes = encode(request);
     let file = f.directory.0.join("session-discovery.json");
     fs::write(&file, &bytes)?;
@@ -47,9 +59,12 @@ fn poll(
             "--authority-root", &f.authority.to_text(),
             "--max-poll-attempts", &maximum_attempts.to_string(),
         ]);
-    if let Some((flag, value)) = action { command.args([flag, value]); }
+    for &(flag, value) in flags { command.args([flag, value]); }
     Ok(command.output()?)
 }
+
+#[path = "session/schedule.rs"]
+mod schedule;
 
 fn state(f: &Fixture, subscription: &str) -> TestResult<SupervisionSubscription> {
     inspect_session_bytes(
