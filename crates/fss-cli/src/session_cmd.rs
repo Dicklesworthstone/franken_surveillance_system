@@ -622,7 +622,8 @@ fn handoff_payload(
             "preparedOperations",
             agent_json::strings(&record.prepared_operations),
         ),
-        ("tasks", "[]".to_owned()),
+        ("tasks", agent_json::strings(orientation.supervision_inventory.iter()
+            .map(|entry| format!("supervision:{}", entry.subscription_id)))),
         ("leases", agent_json::strings(&orientation.active_claims)),
         ("obligations", agent_json::strings(&record.obligations)),
         (
@@ -841,12 +842,20 @@ fn resume_response(resumed: &ResumedSession) -> Result<String, Box<dyn std::erro
     let capsule = result.capsule();
     let publication = &result.publication;
     let handoff = &resumed.handoff;
-    let delta_json = meaningful_delta_json(
-        &resumed.delta,
-        &resumed.items,
-        &resumed.delta.continuation,
-        result,
-    );
+    // The registered payload can carry either a complete meaningful delta or null. When the
+    // sealed handoff differs from its reconstructed basis, the engine's evidence-axis delta
+    // does not cover the intervening agent state. Do not present its no-change certificate as
+    // a comparison against the sealed handoff, or mutate it into an invalid/fabricated delta.
+    let delta_json = if resumed.handoff_situation_changed {
+        None
+    } else {
+        Some(meaningful_delta_json(
+            &resumed.delta,
+            &resumed.items,
+            &resumed.delta.continuation,
+            result,
+        ))
+    };
     let extra_debt: Vec<String> = if resumed.anchor_moved {
         resumed
             .handed_off
@@ -873,7 +882,9 @@ fn resume_response(resumed: &ResumedSession) -> Result<String, Box<dyn std::erro
         .collect();
     proof_pointers.push(publication.publication_digest.to_text());
     proof_pointers.push(result.projection.projection_digest().to_text());
-    proof_pointers.push(resumed.delta.selection_witness.to_text());
+    if delta_json.is_some() {
+        proof_pointers.push(resumed.delta.selection_witness.to_text());
+    }
     proof_pointers.push(handoff.capsule.handoff_root.to_text());
     proof_pointers.push(resumed.handoff_publication_root.to_text());
     proof_pointers.push(resumed.revision.digest().to_text());
@@ -899,11 +910,29 @@ fn resume_response(resumed: &ResumedSession) -> Result<String, Box<dyn std::erro
             resumed.invalidated.len()
         ));
     }
+    if resumed.handoff_situation_changed {
+        warnings.push(format!(
+            "The situation sealed in handoff {} no longer matches its reconstruction with \
+             current session state at the original evidence anchor {}. Review the current \
+             situation and re-derive next actions before acting; the handoff's action advice \
+             is not current authorization.",
+            handoff.capsule.handoff_id.as_str(),
+            handoff.anchor_token,
+        ));
+    }
     let mut degradation = result.degradation.clone();
-    if !resumed.anchor_moved {
+    if resumed.handoff_situation_changed {
         degradation.push(
-            "Nothing was committed since the handoff anchor: no assumption is invalidated; the \
-             engine still reports every persisting protected class."
+            "Historical agent state is not reconstructed from the handoff fingerprint. The \
+             complete meaningful delta and any silence certificate for that handoff are \
+             withheld (meaningfulDelta is null); the returned situation reflects current \
+             session state. Evidence-anchor invalidations are still listed separately."
+                .to_owned(),
+        );
+    } else if !resumed.anchor_moved {
+        degradation.push(
+            "The evidence position is unchanged since the handoff; the engine still reports \
+             every persisting protected class. Workspace progress is reported separately."
                 .to_owned(),
         );
     }
@@ -918,7 +947,14 @@ fn resume_response(resumed: &ResumedSession) -> Result<String, Box<dyn std::erro
     let completed = if resumed.revision.digest() == handoff.workspace_digest {
         format!(
             "Accepted handoff {id}; session {session} holds the handed-off workspace revision \
-             {revision} at commit {commit}, so nothing needed a rebase."
+             {revision} at commit {commit}, with the current situation revalidated."
+        )
+    } else if !resumed.anchor_moved
+        && resumed.revision.parent_digest() == Some(handoff.workspace_digest)
+    {
+        format!(
+            "Accepted handoff {id}; session {session} records the current situation in workspace \
+             revision {revision} at the unchanged evidence commit {commit}."
         )
     } else if resumed.revision.parent_digest() == Some(handoff.workspace_digest) {
         format!(
@@ -952,7 +988,7 @@ fn resume_response(resumed: &ResumedSession) -> Result<String, Box<dyn std::erro
             result,
             &CapsuleOverrides {
                 previous_anchor: Some(&handoff.capsule.anchor),
-                meaningful_delta: Some(delta_json),
+                meaningful_delta: delta_json,
                 extra_debt,
                 symbol_table_generation: resumed.session.symbol_table_generation,
             },

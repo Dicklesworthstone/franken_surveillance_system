@@ -464,6 +464,43 @@ unavailable or unwanted pending report explicitly. Discard requires the live own
 current authority but no native source reads. It records `discarded`, never `acknowledged`,
 and releases no old report bytes. An exact last-discard retry also preserves any successor.
 
+### Discover work after losing the conversation or recipe
+
+An existing live session can discover all its subscriptions without knowing a label or retaining
+the discovery file:
+
+```bash
+fss-event supervise --root /path/to/deployment --site site:example \
+  --principal principal:local-operator --session session:EXISTING \
+  --authority-root sha256:CURRENT_DEPLOYMENT_ROOT --list yes
+```
+
+The complete `fss.retained_supervisor_inventory.v1` response lists subscriptions in label order.
+It includes pending delivery and report receipts, original report anchors, unfinished charged
+reservations, schedule progress and terminal receipts, immutable limits, and every lifetime
+charge. `attempts_remaining` is the original ceiling minus reserved attempts; failed or interrupted
+work is never refunded. The report can be exported with `--report-out FILE`. Other plan, subscription
+and action flags cannot be mixed with `--list`.
+
+Listing verifies the current deployment root, the live session owner and the existing supervision
+capability/privacy gates, then replays the complete pinned session journal. It reserves no native
+attempt and exposes no configuration bytes, report bytes, source identities or source inventory.
+It remains useful when native sources have disappeared or the lifetime attempt budget is exhausted.
+Historical authority and generation mismatches are explicit metadata, not permission to reuse the
+old report. Session clock/expiry observations and root-pin recovery retain their existing durable
+semantics. Use a returned label with `--resume yes` for a separately admitted operation.
+
+Session open retries, handoff and resume also discover this work. Their situations retain protected
+summaries of pending receipts, schedule position, unfinished reservations and spent budgets; a view
+that cannot hold protected context refuses rather than silently dropping it. Handoff task identities
+name the subscriptions, and their recovery affordance expands the complete current metadata. The
+sealed situation fingerprint binds the exact retained state without copying private report bytes.
+Current supervision state changes the situation fingerprint even when the evidence anchor has not
+moved. Resume publishes one workspace advance when that fingerprint changes; an identical retry
+reuses it. A changed sealed handoff is explicitly distinguished from the evidence-only delta, so it
+cannot produce a false unchanged/silence claim. Listing or handing off work does not acknowledge it,
+advance its schedule, validate its sources or authorize an effect.
+
 ### Resume without the original plan file
 
 An existing subscription retains the exact discovery configuration bytes and their SHA-256,

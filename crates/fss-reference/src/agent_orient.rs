@@ -74,6 +74,8 @@ use crate::{MockModelResult, ReferenceError};
 pub mod coverage;
 pub mod historical_health;
 pub mod liveness;
+mod supervision;
+use crate::agent_session::checkpoint::journal::supervision::SupervisionInventoryEntry;
 use crate::situation::EffectCellKind;
 use crate::situation::{
     physical_knowledge_state, physical_statement, policy_hypothesis, reconciliation_basis_for,
@@ -1465,6 +1467,13 @@ pub struct DeploymentOrientation {
     pub active_claims: Vec<String>,
     /// Active (neither superseded nor withdrawn) findings of the bound mission.
     pub active_findings: Vec<String>,
+    /// Complete authorized recovery metadata, without configuration, reports or source pins.
+    /// Its protected summary participates in the capsule and decision fingerprint.
+    /// Generation comparisons are relative to this capsule's anchor; the native inventory
+    /// accessor instead compares them with the persisted live session's interpretation basis.
+    pub supervision_inventory: Vec<SupervisionInventoryEntry>,
+    /// False means inventory was unavailable to this projection, never observed empty.
+    pub supervision_inventory_available: bool,
 }
 
 impl DeploymentOrientation {
@@ -1976,11 +1985,12 @@ struct CompiledSituation {
 fn compile_capsule(
     snapshot: &DeploymentSnapshot,
     request: &OrientRequest,
-    cases: &[OrientCaseBrief],
-    plans: &[OrientPlanBrief],
-    claims: &[OrientClaimBrief],
-    findings: &[OrientFindingBrief],
+    session: Option<&OrientSessionBinding>,
 ) -> Result<CompiledSituation, OrientError> {
+    let cases = session.map_or(&[][..], |binding| binding.cases.as_slice());
+    let plans = session.map_or(&[][..], |binding| binding.plans.as_slice());
+    let claims = session.map_or(&[][..], |binding| binding.claims.as_slice());
+    let findings = session.map_or(&[][..], |binding| binding.findings.as_slice());
     let heartbeat = request.view == AgentView::Pulse;
     let anchor = snapshot.anchor.clone();
     let site = snapshot.site_lineage.as_str();
@@ -2126,6 +2136,12 @@ fn compile_capsule(
     proof_roots.extend(sensor_liveness.proof_roots);
     unknown.extend(sensor_liveness.unknown);
     at_risk.extend(sensor_liveness.at_risk);
+    let supervision = supervision::project(snapshot, request, session)?;
+    cells.extend(supervision.cells);
+    proof_roots.extend(supervision.proof_roots);
+    unknown.extend(supervision.unknown);
+    at_risk.extend(supervision.at_risk);
+    warnings.extend(supervision.warnings);
     let mut nominal = BTreeSet::from([
         CLAIM_LEDGER_HEAD.to_owned(),
         CLAIM_IMPORTS.to_owned(),
@@ -2403,11 +2419,11 @@ fn compile_capsule(
         .build(),
     ];
     if heartbeat {
-        degradation.push(
-            "The pulse view lists only the re-orient heartbeat affordance; `--view brief` lists \
-             the complete affordance frontier."
-                .to_owned(),
-        );
+        degradation.push(if supervision.affordances.is_empty() {
+            "The pulse view lists only the re-orient heartbeat affordance; `--view brief` lists the complete affordance frontier."
+        } else {
+            "The pulse view preserves the re-orient heartbeat and durable-work recovery; `--view brief` lists the complete affordance frontier."
+        }.to_owned());
     } else {
         for (rank, event) in planned.iter().enumerate() {
             if !event.inline && rank > 0 {
@@ -2500,6 +2516,7 @@ fn compile_capsule(
             .build(),
         );
     }
+    affordances.extend(supervision.affordances);
     affordances.sort_by(|left, right| left.affordance_id.cmp(&right.affordance_id));
     let next: Vec<String> = affordances
         .iter()
@@ -3639,6 +3656,9 @@ pub struct OrientSessionBinding {
     pub claims: Vec<OrientClaimBrief>,
     /// Active findings of the mission, in identity order.
     pub findings: Vec<OrientFindingBrief>,
+    /// Authenticated current session metadata. `Some([])` is an observed empty inventory;
+    /// `None` means it was not admitted or loaded and cannot support an absence claim.
+    pub supervisions: Option<Vec<SupervisionInventoryEntry>>,
 }
 
 /// One active finding as a session-bound orientation lists it.
@@ -3697,7 +3717,7 @@ pub fn orient_deployment_for(
     let plans = session.map_or(&[][..], |binding| binding.plans.as_slice());
     let claims = session.map_or(&[][..], |binding| binding.claims.as_slice());
     let findings = session.map_or(&[][..], |binding| binding.findings.as_slice());
-    let mut compiled = compile_capsule(snapshot, request, cases, plans, claims, findings)?;
+    let mut compiled = compile_capsule(snapshot, request, session)?;
     if let Some(binding) = session {
         compiled.capsule.mission_id = binding.mission_id.clone();
         compiled.capsule.session_id = binding.session_id.clone();
@@ -3840,6 +3860,10 @@ pub fn orient_deployment_for(
             .iter()
             .map(|finding| finding.finding_id.clone())
             .collect(),
+        supervision_inventory: session.and_then(|binding| binding.supervisions.as_deref())
+            .map(|entries| supervision::inventory_at(entries, &snapshot.anchor))
+            .unwrap_or_default(),
+        supervision_inventory_available: session.is_some_and(|binding| binding.supervisions.is_some()),
         publication,
     })
 }

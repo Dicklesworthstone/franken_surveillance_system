@@ -1349,6 +1349,7 @@ fn orient_bound(
         cases: briefs.cases,
         claims: briefs.claims,
         findings: briefs.findings,
+        supervisions: briefs.supervisions,
         plans: match plans {
             Some((root, head)) => plan::plan_briefs(root, head, mission_id, principal)?,
             None => Vec::new(),
@@ -1364,11 +1365,18 @@ fn orient_bound(
 
 /// The session's own agent-plane state its situation lists: open cases, non-terminal claims,
 /// and active findings.
-#[derive(Default)]
 struct SessionBriefs {
     cases: Vec<OrientCaseBrief>,
     claims: Vec<OrientClaimBrief>,
     findings: Vec<OrientFindingBrief>,
+    supervisions: Option<Vec<crate::agent_session::checkpoint::journal::supervision::SupervisionInventoryEntry>>,
+}
+
+impl Default for SessionBriefs {
+    fn default() -> Self {
+        // Used only for the opening orientation, before this new identity can own work.
+        Self { cases: Vec::new(), claims: Vec::new(), findings: Vec::new(), supervisions: Some(Vec::new()) }
+    }
 }
 
 /// The cases (as of `anchor`), work claims (live state, at `now`), and active findings
@@ -1380,10 +1388,22 @@ fn session_briefs(
     anchor: &LedgerAnchor,
     now: TimestampNs,
 ) -> Result<SessionBriefs, DeploymentSessionError> {
+    let admitted = [
+        "CAP-AGENT-SESSION-READ-001", "CAP-AGENT-SESSION-WRITE-001",
+        "CAP-AGENT-SITUATION-READ-001", "CAP-AGENT-INVESTIGATE-001",
+    ].iter().all(|capability| session.capabilities.contains(*capability))
+        && session.privacy_scope.contains("private:property");
+    let supervisions = if admitted {
+        // Never turn corruption, stale supplied authority, or a clock failure into an empty
+        // successful inventory. Unavailability is determined only by the live owner's grants.
+        Some(store.supervision_inventory(session, now)
+            .map_err(|error| DeploymentSessionError::StoreInvalid(error.to_string()))?)
+    } else { None };
     Ok(SessionBriefs {
         cases: investigation::case_briefs(store, session, anchor),
         claims: claims::claim_briefs(store, session, now),
         findings: findings::finding_briefs(root, session)?,
+        supervisions,
     })
 }
 
@@ -1767,6 +1787,13 @@ pub fn open_session(
             now,
         )?
         .result;
+    // An exact open retry may find a session with work created since its original workspace.
+    // Keep that immutable opening revision, but return the current authorized work inventory.
+    let orientation = orient_bound(
+        Some((root, &snapshot)), &snapshot, request.view, &request.principal,
+        &session.mission_id, &session.session_id, &limits,
+        session_briefs(root, &journal.store, &session, &snapshot.anchor, now)?,
+    )?;
     journal.commit_pin()?;
     Ok(OpenedSession {
         session,
@@ -2048,11 +2075,18 @@ pub struct ResumedSession {
     pub revision: WorkspaceRevision,
     /// Whether this resume committed a new workspace revision.
     pub committed: bool,
-    /// Situation as of the handoff anchor, bound to the session.
+    /// Situation at the handoff's evidence anchor, reconstructed with current live agent state.
+    /// This is not a historical snapshot of the agent state sealed by the handoff.
     pub basis: DeploymentOrientation,
     /// Situation at the head, bound to the session.
     pub result: DeploymentOrientation,
-    /// The reference engine's delta from the handoff anchor to the head.
+    /// Whether the sealed handoff fingerprint differs from the reconstructed `basis`.
+    /// When true, `delta` cannot certify the complete change since that handoff: historical
+    /// agent state is not reconstructed, and current action advice must be re-derived.
+    pub handoff_situation_changed: bool,
+    /// Evidence-axis comparison from the handoff anchor to the head, using current live agent
+    /// state on both sides. Any silence certificate applies only to these reconstructed frames,
+    /// never to the sealed handoff when `handoff_situation_changed` is true.
     pub delta: MeaningfulDelta,
     /// Every item of the delta, protected items first.
     pub items: Vec<FollowItem>,
@@ -2145,7 +2179,11 @@ fn invalidations(
 /// (foreign). When the committed position moved, the situation as of the handoff anchor is
 /// compared with the head through the reference delta engine, every invalidated assumption and
 /// anchor-bound fact is listed, and the session and workspace are rebased onto the head in one
-/// atomic journal command. Resuming the same handoff again rebases nothing new.
+/// atomic journal command. Both comparison frames use current live agent state; a separate
+/// `handoff_situation_changed` guard reports when the reconstructed basis no longer matches the
+/// sealed handoff. A changed current situation also advances the workspace at an unchanged
+/// evidence position. Repeating a resume when both position and situation are current publishes
+/// no further workspace revision.
 pub fn resume_session(
     root: &Path,
     request: &ResumeRequest,
@@ -2239,6 +2277,13 @@ pub fn resume_session(
         &limits,
         session_briefs(root, &journal.store, &session, &head.anchor, now)?,
     )?;
+    // A historical evidence anchor does not restore the old agent-plane state. Comparing two
+    // freshly compiled frames alone would hide same-anchor case, plan or supervision changes.
+    // Keep that mismatch separate from the valid evidence-axis delta rather than inventing a
+    // delta class, reconstructing missing history, or stripping a required silence certificate.
+    let handoff_situation_changed =
+        handoff.situation_fingerprint != basis.capsule().decision_fingerprint()?;
+    let result_fingerprint = result.capsule().decision_fingerprint()?;
     let delta = classify_reference_meaningful_delta(&basis.publication, &result.publication)?;
     let items = follow_items(&delta);
     let anchor_moved = position != head.position;
@@ -2256,7 +2301,9 @@ pub fn resume_session(
     let old = current.capsule().clone();
     let head_anchor = result.capsule().anchor.clone();
     let mut committed = false;
-    let revision = if capsule_anchor_token(&old) == Some(result.anchor_token.as_str()) {
+    let revision = if capsule_anchor_token(&old) == Some(result.anchor_token.as_str())
+        && old.situation_capsule_digest == result_fingerprint.to_text()
+    {
         current
     } else {
         let next = old
@@ -2336,6 +2383,7 @@ pub fn resume_session(
         committed,
         basis,
         result,
+        handoff_situation_changed,
         delta,
         items,
         invalidated,

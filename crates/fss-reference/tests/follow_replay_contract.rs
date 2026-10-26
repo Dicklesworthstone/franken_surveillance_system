@@ -550,6 +550,7 @@ fn session_binding() -> TestResult<OrientSessionBinding> {
         plans: Vec::new(),
         claims: Vec::new(),
         findings: Vec::new(),
+        supervisions: None,
     })
 }
 
