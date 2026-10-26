@@ -787,10 +787,12 @@ fn feedback_cold_retries_require_every_original_custody_object() -> TestResult {
             "refused",
             "{part} {remove}"
         );
+        // Current orientation verifies operational-memory custody before retrying the
+        // feedback publication. Every damaged feedback object is a session-store refusal.
         assert_eq!(
             text(&refused.value, &["errorId"])?,
-            "ERR-AGENT-HANDOFF-INVALID-001",
-            "{}",
+            "ERR-AGENT-SESSION-STORE-INVALID-001",
+            "{part} {remove}: {}",
             refused.body
         );
         assert_eq!(field(&refused.value, &["payload"])?, &Value::Null);

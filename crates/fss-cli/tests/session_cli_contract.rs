@@ -853,6 +853,12 @@ fn resume_after_a_watch_event_lists_the_change_and_every_invalidated_assumption(
     let directory = OwnedDirectory::new("watch")?;
     let root = empty_deployment(&directory, SITE)?;
     let scratch = directory.0.clone();
+    let before_doctor = fss_reference::doctor::inspect_deployment(&root);
+    assert_eq!(
+        before_doctor.verdict,
+        fss_reference::doctor::DoctorVerdict::Healthy,
+        "{before_doctor:?}"
+    );
     let (_, opened) = open(&root, &scratch)?;
     let session = opened.get("sessionId")?.text()?.to_owned();
     let (_, handed) = handoff(&root, &session, &scratch)?;
@@ -860,6 +866,12 @@ fn resume_after_a_watch_event_lists_the_change_and_every_invalidated_assumption(
 
     let import_id = import(&directory, "sensor:east", false)?;
     let event_id = publish_watch_candidate(&root, &import_id)?;
+    let after_doctor = fss_reference::doctor::inspect_deployment(&root);
+    assert_eq!(
+        after_doctor.verdict,
+        fss_reference::doctor::DoctorVerdict::AttentionRequired,
+        "{after_doctor:?}"
+    );
     let authority = authority_tree(&root)?;
 
     let (stdout, resumed) = session_ok(&root, "resume", &["--handoff", &handoff_id], &scratch)?;
@@ -899,8 +911,44 @@ fn resume_after_a_watch_event_lists_the_change_and_every_invalidated_assumption(
         0
     );
     assert!(situation.path(&["anchor", "capsuleSequence"])?.number()? > 0);
-    let delta = situation.get("meaningfulDelta")?;
-    assert!(!delta.get("changedCells")?.items()?.is_empty());
+    // Historical evidence reconstruction still observes the current filesystem doctor.
+    // Publishing this event leaves ledger-only witnesses outside the publication closure,
+    // so the new protected doctor warning changes the reconstructed handoff fingerprint.
+    // Explicit evidence invalidations above remain available; a complete historical delta
+    // would falsely claim to reconstruct the formerly healthy situation.
+    assert_eq!(situation.get("meaningfulDelta")?, &Json::Null, "{stdout}");
+    assert!(
+        situation
+            .path(&["contextPack", "items"])?
+            .items()?
+            .iter()
+            .any(|item| {
+                item.get("kind")
+                    .and_then(Json::text)
+                    .is_ok_and(|kind| kind == "at_risk")
+                    && item
+                        .get("content")
+                        .and_then(Json::text)
+                        .is_ok_and(|content| content.contains("fss doctor: attention_required."))
+            }),
+        "the current doctor warning remains protected context: {stdout}"
+    );
+    assert!(
+        resumed
+            .get("warnings")?
+            .texts()?
+            .iter()
+            .any(|warning| warning.contains("no longer matches its reconstruction")),
+        "the handoff mismatch must be explicit: {stdout}"
+    );
+    assert!(
+        resumed
+            .get("degradation")?
+            .texts()?
+            .iter()
+            .any(|reason| reason.contains("withheld (meaningfulDelta is null)")),
+        "withholding the complete delta must be explicit: {stdout}"
+    );
     assert!(situation.get("epistemicDebt")?.items()?.iter().any(|item| {
         item.get("debtId")
             .and_then(Json::text)
