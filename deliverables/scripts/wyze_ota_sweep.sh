@@ -11,7 +11,7 @@ set -u
 PLIST=/Library/LaunchDaemons/com.jeffreyemanuel.wyze-broker.plist
 FORGE=/tmp/ota/forge.log
 CAP=wuv2/upgrade/HL_CAM4/firmware/4.52.17.33.tar
-CAM=192.168.4.23
+CAM=${CAM:-192.168.4.24}
 
 # top-level extra | Params extra
 SHAPES=(
@@ -32,7 +32,10 @@ d = plistlib.load(open(p, "rb"))
 e = d["EnvironmentVariables"]
 e["OTA_ACTIONS"] = "upgrade"
 e["OTA_ENC"] = "3"
+e["OTA_ENR"] = "O7y73ZL+K47xvSPY"
 e["CAP_PATH"] = "wuv2/upgrade/HL_CAM4/firmware/4.52.17.33.tar"
+e["CAM"] = "192.168.4.24"
+e["MAC"] = "80482c4bcf0b"
 e.pop("OTA_RAWHEX", None)
 top, par = sys.argv[1], sys.argv[2]
 if top != "{}":
