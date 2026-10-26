@@ -3535,8 +3535,12 @@ fn orientation_objective(
             ],
             stop_conditions: vec!["The committed ledger prefix has been read once.".to_owned()],
             hard_constraints: vec![
-                "Read-only: nothing under the root is created, written, locked, or repaired."
-                    .to_owned(),
+                if session.is_some() {
+                    "Situation compilation does not create, write, or repair deployment files. The enclosing session operation may hold a temporary journal lock."
+                } else {
+                    "Read-only: nothing under the root is created, written, locked, or repaired."
+                }
+                .to_owned(),
                 "No listed affordance is executed.".to_owned(),
             ],
             soft_preferences: Vec::new(),
