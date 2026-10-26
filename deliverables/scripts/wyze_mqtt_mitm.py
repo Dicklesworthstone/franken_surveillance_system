@@ -183,7 +183,7 @@ def _xxtea(data, key, decrypt=False):
                 z = v[p]
     return _s.pack("<%dI" % n, *v)
 
-MODEL=os.environ.get("OTA_MODEL","HL_CFL")
+MODEL=os.environ.get("OTA_MODEL","HL_CAM4")
 URL=os.environ.get("OTA_URL","https://s3-us-west-2.amazonaws.com/wuv2/upgrade/HL_CAM4/firmware/4.52.17.33.tar")
 MD5=os.environ.get("OTA_MD5","")
 def _enc(n):
@@ -237,7 +237,7 @@ def inject(cli, up=None):
         m=models[i % len(models)]
         # the UDS receiver wants {Action, Params, Guid}. "delDev" reads the descriptor from Params;
         # "upgradeSub" reads a top-level url only. Sweep both so the shape is measured, not assumed.
-        acts=[a for a in os.environ.get("OTA_ACTIONS","").split(",") if a] or ["delDev"]
+        acts=[a for a in os.environ.get("OTA_ACTIONS","").split(",") if a] or ["upgrade"]
         act=acts[i % len(acts)]
         ver=URL.rsplit("/",1)[-1].split(".tar")[0]
         inner={"model":m,"url":URL,"firmware_ver":ver,"md5":MD5}
@@ -254,8 +254,16 @@ def inject(cli, up=None):
                   "sub_mac":THING.upper(),"Params":{"url":URL}}
         else:
             body={"Action":act,"Guid":f"{THING}-{i}","Params":inner}
+        # sweep hooks: extra fields the cloud body may carry and ours does not
+        for spec, dst in ((os.environ.get("OTA_EXTRA"), body),
+                          (os.environ.get("OTA_PARAMS_EXTRA"), body.get("Params") or {})):
+            if spec:
+                try:
+                    dst.update(json.loads(spec))
+                except Exception as e:
+                    print("inject: bad extra", spec, e, flush=True)
         text=json.dumps(body,separators=(",",":")); pl=text.encode()
-        if os.environ.get("OTA_ENC"):
+        if os.environ.get("OTA_ENC","3"):
             import base64
             from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
             if os.environ["OTA_ENC"] == "5":
@@ -283,7 +291,7 @@ def inject(cli, up=None):
                     else:
                         _pub(up if (up and os.environ.get("OTA_VIA_UPSTREAM")) else c,
                              os.environ.get("OTA_TOPIC") or f"hl/devices/{THING}/cmd", pl, qos0=False)
-                print(f"inject: cmd 1234 pid={_PID[0]} model={m} {text}",flush=True)
+                print(f"inject: {act} pid={_PID[0]} model={m} {text}",flush=True)
                 break
             except Exception as e:
                 print("inject cmd retry",repr(e),flush=True); time.sleep(2)
