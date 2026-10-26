@@ -46,7 +46,7 @@ def _rewrite(d):
     topic = d[i + 2:i + 2 + tl].decode(errors="replace")
     qos = (d[0] >> 1) & 3
     j = i + 2 + tl + (2 if qos else 0)
-    if topic.endswith("/update/delta"):
+    if topic.endswith("/update/delta") and "/wyze-service/" in topic:
         # the cloud's own shadow delta is plain JSON; point it at our capsule so the
         # device acts on the delivery it already trusts
         try:
