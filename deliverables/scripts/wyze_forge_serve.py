@@ -10,7 +10,7 @@ that already resolves here.
 
   wyze_forge_serve.py --dir /tmp/fwserve --port 443 --sni s3-us-west-2.amazonaws.com
 """
-import argparse, http.server, os, ssl, sys
+import argparse, http.server, json, os, ssl, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CERTDIR = os.path.join(HERE, "..", "certs", "emudhra")
@@ -43,7 +43,40 @@ def main() -> int:
             body = self.rfile.read(n) if n else b""
             print(f"{self.address_string()} ua={self.headers.get('User-Agent','-')!r} "
                   f"POST {self.path} {body[:200]!r}", flush=True)
-            out = b'{"code":1,"message":"Success"}'
+            if "get_iot_certificate" in self.path:
+                # The stock client wants URLs, not inline PEM (EV-pack-H-002 §9.2). Each retry gets
+                # the next envelope variant so the device itself walks the candidate list; the
+                # accepted one is the variant after which it fetches the three URLs.
+                base = "https://s3-us-west-2.amazonaws.com/fss"
+                q = ("?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIA%2F20261025%2Fus-west-2"
+                     "%2Fs3%2Faws4_request&X-Amz-Date=20261025T000000Z&X-Amz-Expires=3600"
+                     "&X-Amz-Signature=deadbeef")
+                urls = {"ca_cert_url": base + "/rootCA.crt", "client_cert_url": base + "/cert.pem",
+                        "client_private_key_url": base + "/privkey.pem"}
+                pres = {k: v + q for k, v in urls.items()}
+                ident = {"client_id": "80482c525905", "thing_name": "80482c525905", "keep_alive": 300}
+                variants = [
+                    ("int-code-msg", {"code": 1, "msg": "SUCCESS", "data": urls}),
+                    ("str-code-msg", {"code": "1", "msg": "SUCCESS", "data": urls}),
+                    ("int-code-message", {"code": 1, "message": "Success", "data": urls}),
+                    ("int-code-msg-presigned", {"code": 1, "msg": "SUCCESS", "data": pres}),
+                    ("int-code-msg-ident", {"code": 1, "msg": "SUCCESS", "data": {**urls, **ident}}),
+                    ("root-cert-url", {"code": 1, "msg": "SUCCESS", "data": {
+                        "root_cert_url": urls["ca_cert_url"], "client_cert_url": urls["client_cert_url"],
+                        "client_private_key_url": urls["client_private_key_url"]}}),
+                    ("bare-data", urls),
+                    ("code-data-only", {"code": 1, "data": urls}),
+                ]
+                try:
+                    i = int(open("/tmp/ota/cand_idx").read().strip())
+                except Exception:
+                    i = 0
+                label, obj = variants[i % len(variants)]
+                open("/tmp/ota/cand_idx", "w").write(str(i + 1))
+                print(f"  -> variant[{i}] {label}", flush=True)
+                out = json.dumps(obj).encode()
+            else:
+                out = b'{"code":1,"message":"Success"}'
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(out)))

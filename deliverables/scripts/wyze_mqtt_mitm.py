@@ -336,6 +336,7 @@ def handle(cli):
     pipe(u,cli,"S",state)
 def main():
     ctx=srv_ctx(); s=socket.socket(); s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     s.bind(("0.0.0.0",8883)); s.listen(4); print("proxy on 8883",flush=True)
     while True:
         c,_=s.accept()
