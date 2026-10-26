@@ -11,6 +11,7 @@ The proxy injects into `hl/devices/<THING>/cmd` for its own THING, so the cmd to
 subscribed as well when it differs.
 """
 import argparse
+import json
 import os
 import socket
 import ssl
@@ -61,14 +62,67 @@ def read_pkt(sock):
     return head[0], body
 
 
+
+def xxtea_decrypt(data: bytes, key: bytes) -> bytes:
+    n = len(data) // 4
+    if n < 2:
+        return data
+    v = list(struct.unpack("<%dI" % n, data[:n * 4]))
+    k = list(struct.unpack("<4I", (key + b"\0" * 16)[:16]))
+    delta, rounds = 0x9E3779B9, 6 + 52 // n
+    total, y = (rounds * delta) & 0xFFFFFFFF, v[0]
+    for _ in range(rounds):
+        e = (total >> 2) & 3
+        for p in range(n - 1, -1, -1):
+            z = v[(p - 1) % n]
+            mx = (((z >> 5) ^ (y << 2)) + ((y >> 3) ^ (z << 4))) ^ ((total ^ y) + (k[(p & 3) ^ e] ^ z))
+            v[p] = (v[p] - mx) & 0xFFFFFFFF
+            y = v[p]
+        total = (total - delta) & 0xFFFFFFFF
+    return struct.pack("<%dI" % n, *v)
+
+
+def assert_cmd(payload: bytes, enr: str) -> bool:
+    """The oracle: a command body must decrypt to JSON with Action and a Params object."""
+    if not enr:
+        print("ASSERT SKIP: no --enr given, cannot decrypt", flush=True)
+        return True
+    if len(payload) < 8 or len(payload) % 4:
+        print(f"ASSERT FAIL: body len {len(payload)} is not a whole number of XXTEA words", flush=True)
+        return False
+    try:
+        pt = xxtea_decrypt(payload, enr.encode()).split(b"\0")[0]
+    except Exception as exc:
+        print(f"ASSERT FAIL: decrypt raised {exc!r}", flush=True)
+        return False
+    try:
+        doc = json.loads(pt)
+    except Exception:
+        print(f"ASSERT FAIL: plaintext is not JSON: {pt[:160]!r}", flush=True)
+        return False
+    if not isinstance(doc, dict) or "Action" not in doc:
+        print(f"ASSERT FAIL: no Action key: {doc!r}", flush=True)
+        return False
+    par = doc.get("Params")
+    if not isinstance(par, dict):
+        print(f"ASSERT FAIL: Params is not an object: {doc!r}", flush=True)
+        return False
+    missing = [k for k in ("url", "md5", "model") if not isinstance(par.get(k), str)]
+    if missing:
+        print(f"ASSERT FAIL: Params missing string keys {missing}: {par!r}", flush=True)
+        return False
+    print(f"ASSERT OK: Action={doc['Action']} url={par['url']} md5={par['md5']} model={par['model']}", flush=True)
+    return True
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--thing", default="80482c4bcf0b")
     ap.add_argument("--client-id", default="", help="defaults to --thing; AWS rejects a duplicate id")
-    ap.add_argument("--inject-thing", default=os.environ.get("THING", "80482c525905"))
+    ap.add_argument("--inject-thing", default="")
     ap.add_argument("--cert-dir", default=os.path.join(IOT_DIR, "80482C4BCF0B"))
     ap.add_argument("--port", type=int, default=8883)
     ap.add_argument("--secs", type=float, default=30.0)
+    ap.add_argument("--enr", default="O7y73ZL+K47xvSPY", help="device ENR (XXTEA key) for the body oracle")
     ap.add_argument("--cafile", default="/Users/jemanuel/fss-exploit/fw/root_system/local/cacert.pem",
                     help="trust anchor for the local proxy (the device's own bundle)")
     a = ap.parse_args()
@@ -86,7 +140,7 @@ def main() -> int:
 
     # clean_session = 0, keepalive 60, client id = thing name
     cid = a.client_id or a.thing
-    sock.sendall(pkt(1, s("MQTT") + bytes([4, 0x00]) + b"\x00\x3c" + s(cid)))
+    sock.sendall(pkt(1, s("MQTT") + bytes([4, 0x02]) + b"\x00\x3c" + s(cid)))
     # a persistent session can deliver queued messages before the CONNACK; skip past them
     while True:
         try:
@@ -117,6 +171,7 @@ def main() -> int:
     except (socket.timeout, TimeoutError):
         print(f"no suback; subscribed to {len(topics)} topics anyway", flush=True)
 
+    rc = 0
     end = time.time() + a.secs
     sock.settimeout(1.0)
     while time.time() < end:
@@ -142,12 +197,15 @@ def main() -> int:
             print(f"  hex={payload[:400].hex()}", flush=True)
             if qos == 1:
                 sock.sendall(pkt(4, body[2 + tl:4 + tl]))
+            if topic.endswith("/cmd"):
+                if not assert_cmd(payload, a.enr):
+                    rc = 2
         elif t == 12:
             sock.sendall(pkt(13, b""))
         else:
             print(f"type {t} {body[:40].hex()}", flush=True)
     sock.close()
-    return 0
+    return rc
 
 
 if __name__ == "__main__":
