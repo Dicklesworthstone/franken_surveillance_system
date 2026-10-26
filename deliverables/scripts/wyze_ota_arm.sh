@@ -31,16 +31,25 @@ if [ ! -s "$CAP_DIR/$CAP_PATH" ]; then
 fi
 # the device's own IoT material, served from the same forged host so the cloud API can hand out
 # URLs that resolve here (get_iot_certificate -> /fss/{rootCA.crt,cert.pem,privkey.pem})
-CERTDIR="/Users/jemanuel/.config/fss-lab/wyze_iot/$(echo "$MAC" | tr a-f A-F)"
-if [ ! -s "$CERTDIR/cert.pem" ]; then
-  # the proxy presents this cert upstream; without it every session dies with FileNotFoundError
-  # and the device just loops on registration, which looks like a device fault.
-  echo "FATAL: no device cert at $CERTDIR (restore from /tmp/fwserve/fss or the cloud)" >&2
+# The device's own IoT material. The repo copy is authoritative: ~/.config is not versioned and
+# vanished once, which cost an hour of registration loops and silent upstream failures.
+MAC_U=$(echo "$MAC" | tr a-f A-F)
+REPO_CERTS="$HERE/../certs/iot/$MAC_U"
+HOME_CERTS="/Users/jemanuel/.config/fss-lab/wyze_iot/$MAC_U"
+if [ -s "$REPO_CERTS/cert.pem" ] && [ -s "$REPO_CERTS/privkey.pem" ] && [ -s "$REPO_CERTS/rootCA.crt" ]; then
+  CERTDIR="$REPO_CERTS"
+elif [ -s "$HOME_CERTS/cert.pem" ] && [ -s "$HOME_CERTS/privkey.pem" ] && [ -s "$HOME_CERTS/rootCA.crt" ]; then
+  CERTDIR="$HOME_CERTS"
+  echo "warn: using $HOME_CERTS; copy it to $REPO_CERTS so it survives" >&2
+else
+  # without this the proxy dies with FileNotFoundError on every session and the device just loops
+  # on registration, which looks exactly like a device fault
+  echo "FATAL: no complete device cert set for $MAC_U in $REPO_CERTS or $HOME_CERTS" >&2
+  exit 1
 fi
 mkdir -p "$CAP_DIR/fss"
 for f in rootCA.crt cert.pem privkey.pem; do
-  src="/Users/jemanuel/.config/fss-lab/wyze_iot/$(echo "$MAC" | tr a-f A-F)/$f"
-  [ -s "$src" ] && cp "$src" "$CAP_DIR/fss/$f"
+  cp "$CERTDIR/$f" "$CAP_DIR/fss/$f"
 done
 MD5=$(md5 -q "$CAP_DIR/$CAP_PATH")
 URL="https://s3-us-west-2.amazonaws.com/$CAP_PATH"
@@ -76,6 +85,6 @@ echo "armed: $URL md5=$MD5 cam=$CAM mac=$MAC" >>/tmp/ota/arm.log
 
 # 4. proxy in the foreground so launchd supervises it; the forge is reaped by the trap
 trap 'kill $FORGE 2>/dev/null' EXIT
-export THING="$MAC" D="/Users/jemanuel/.config/fss-lab/wyze_iot/$(echo "$MAC" | tr a-f A-F)"
+export THING="$MAC" D="$CERTDIR"
 export CHAIN=/tmp/ota/chain.pem INJECT=1 OTA_URL="$URL" OTA_MD5="$MD5"
 exec "$PY" "$HERE/wyze_mqtt_mitm.py"
