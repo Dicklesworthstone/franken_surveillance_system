@@ -8,7 +8,7 @@
 //!    key, operation and terminal-proof obligation recorded) and reports the dispatch digest, which
 //!    binds the prepared record, the relay route, the principal and the explicit deadline.
 //! 3. `--approve PLAN --dispatch DISPATCH` commits the prepared operation durably BEFORE any network
-//!    I/O and sends one request through `WebhookAttempt` under [`CliWebhookOwner`], a restrictive
+//!    I/O and sends one request through `WebhookAttempt` under the shared runtime-owned
 //!    `WebhookAuthority`, then records the local observation. A complete 2xx head is recorded as
 //!    `adapter_accepted`: relay acceptance only, never human delivery. A lost acknowledgement,
 //!    timeout, refusal or malformed response is recorded as `indeterminate` and exits nonzero.
@@ -23,8 +23,9 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 use fss_cli::alert_effect::{
-    AlertIdentities, alert_identities, dispatch_approval_digest, dispatch_prepared_alert,
-    not_eligible, obligation_state, outcome_text, plan_approval_digest, wall_ns,
+    AlertIdentities, AlertRuntimeSummary, alert_identities, dispatch_approval_digest,
+    dispatch_prepared_alert, not_eligible, obligation_state, outcome_text, plan_approval_digest,
+    wall_ns,
 };
 use fss_core::region::ContextAuthority;
 use fss_core::{
@@ -73,7 +74,7 @@ pub(super) struct AlertAction {
     relay: SocketAddr,
     path: String,
     plaintext_approval: ContentDigest,
-    deadline_ms: u64,
+    pub(super) deadline_ms: u64,
     approve: Option<ContentDigest>,
     pub(super) dispatch: Option<ContentDigest>,
     report_out: Option<PathBuf>,
@@ -168,6 +169,7 @@ struct Report<'a> {
     operation: Option<&'a OperationReceipt>,
     obligation: Option<ObligationState>,
     evidence: Option<&'a WebhookEvidence>,
+    runtime: Option<&'a AlertRuntimeSummary>,
     next: Option<String>,
 }
 
@@ -263,7 +265,7 @@ impl Report<'_> {
                 "\"operation_id\":\"{}\",\"idempotency_key\":\"{}\",\"obligation_id\":\"{}\",",
                 "\"plan_digest\":{},\"dispatch_digest\":{},\"effect_state\":{},",
                 "\"obligation_state\":{},\"result_digest\":{},\"delivery_claim\":\"{}\",",
-                "\"deadline_ms\":{},\"retries\":0,\"resend\":false,\"evidence\":{},",
+                "\"deadline_ms\":{},\"retries\":0,\"resend\":false,\"evidence\":{},\"runtime\":{},",
                 "\"next_command\":{}}}"
             ),
             self.stage,
@@ -286,6 +288,8 @@ impl Report<'_> {
             delivery,
             self.action.deadline_ms,
             evidence,
+            self.runtime
+                .map_or_else(|| "null".to_owned(), fss_cli::alert_effect::report::json),
             self.next
                 .as_deref()
                 .map_or_else(|| "null".to_owned(), json_string),
@@ -295,10 +299,18 @@ impl Report<'_> {
 
 fn emit(report: &Report<'_>, root: &Path, cx: &ReplayCx, out: &mut impl Write) -> RunResult<()> {
     let json = format!("{}\n", report.json());
+    if report.stage == "dispatched" {
+        // The durable effect and its observation already exist. Optional report export must
+        // not hide that result when its path collides, storage fails or I/O authority expires.
+        out.write_all(json.as_bytes())?;
+        out.flush()?;
+    }
     if let Some(path) = &report.action.report_out {
         export(path, json.as_bytes(), root, cx)?;
     }
-    out.write_all(json.as_bytes())?;
+    if report.stage != "dispatched" {
+        out.write_all(json.as_bytes())?;
+    }
     Ok(())
 }
 
@@ -334,6 +346,7 @@ pub(super) fn run(
         operation: None,
         obligation: None,
         evidence: None,
+        runtime: None,
         next: None,
     };
     let existing = deployment.effects().operation(&ids.operation).cloned();
@@ -465,11 +478,13 @@ pub(super) fn run(
         &operation,
         authority.has_capability(CAP_ALERT_COMMIT) && authority.principal == action.principal,
         action.deadline_ms,
+        authority,
         cx,
     )?;
     let outcome = dispatched.outcome;
     let recorded = dispatched.recorded;
     let evidence = dispatched.evidence;
+    let runtime = dispatched.runtime;
     report.stage = "dispatched";
     report.operation = Some(&recorded);
     report.obligation = deployment
@@ -477,9 +492,12 @@ pub(super) fn run(
         .obligation(&ids.obligation)
         .map(|o| o.state);
     report.evidence = Some(&evidence);
+    report.runtime = Some(&runtime);
     emit(&report, root, cx, out)?;
     match outcome {
-        WebhookOutcome::ReceiverAccepted(_) if recorded.state == EffectState::AdapterAccepted => {
+        WebhookOutcome::ReceiverAccepted(_)
+            if recorded.state == EffectState::AdapterAccepted && !runtime.recovery_required =>
+        {
             Ok(())
         }
         _ => Err(AlertCliError::Indeterminate.into()),

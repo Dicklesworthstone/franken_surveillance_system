@@ -814,6 +814,24 @@ fn plan_prepare_commit_sends_exactly_once_and_shares_the_alert_identity() -> Tes
     assert_eq!(text(&committed, &["outcome"])?, "ok");
     assert_eq!(text(&committed, &["payload", "state"])?, "adapter_accepted");
     assert_eq!(text(&committed, &["payload", "operationId"])?, operation);
+    let runtime = texts(&committed, &["executionBoundary", "completed"])?
+        .into_iter()
+        .find(|line| line.starts_with("Owned alert runtime:"))
+        .ok_or("commit must carry its owned runtime accounting")?;
+    assert!(runtime.contains("quiescence sha256:"));
+    assert!(runtime.contains("recovery_required=false"));
+    assert!(
+        field(&committed, &["budgets", "consumed", "networkBytes"])?
+            .integer()
+            .ok_or("commit network accounting")?
+            > 0
+    );
+    assert!(
+        field(&committed, &["budgets", "consumed", "storageOperations"])?
+            .integer()
+            .ok_or("commit storage accounting")?
+            > 0
+    );
     assert_eq!(relay.requests()?, 1);
 
     // Never resent: not by a second commit, nor by the other surface sharing the identity.
@@ -873,6 +891,12 @@ fn a_lost_acknowledgement_is_indeterminate_and_never_resent() -> TestResult {
     );
     assert_eq!(text(&committed, &["payload", "state"])?, "indeterminate");
     assert!(
+        texts(&committed, &["executionBoundary", "completed"])?
+            .iter()
+            .any(|line| line.starts_with("Owned alert runtime:")),
+        "lost acknowledgements must retain runtime accounting"
+    );
+    assert!(
         !texts(&committed, &["executionBoundary", "possiblyOccurred"])?.is_empty(),
         "a lost acknowledgement must say what may have happened"
     );
@@ -881,6 +905,96 @@ fn a_lost_acknowledgement_is_indeterminate_and_never_resent() -> TestResult {
     assert_eq!(code, Some(1));
     assert_eq!(text(&again, &["payload", "state"])?, "indeterminate");
     assert_eq!(relay.connections(), 1);
+    Ok(())
+}
+
+#[test]
+fn post_dispatch_snapshot_failure_preserves_the_receipt_and_owned_runtime() -> TestResult {
+    let (directory, event_id) = corroborated_event("dispatch-snapshot-loss")?;
+    let agent = Agent::open(&directory)?;
+    let relay = Relay::spawn_with_gate(
+        Some(b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\n\r\n"),
+        true,
+    )?;
+    let (code, planned) = agent.plan_with_deadline(&event_id, relay.address, "30000", &[])?;
+    assert_eq!(code, Some(0), "{planned:?}");
+    let (plan_id, approval, _) = approvals(&planned)?;
+    let (code, prepared) =
+        agent.plan_with_deadline(&event_id, relay.address, "30000", &["--approve", &approval])?;
+    assert_eq!(code, Some(0), "{prepared:?}");
+    let (_, _, dispatch_approval) = approvals(&prepared)?;
+    let operation = operation_of(&prepared)?;
+    let mut dispatch = RunningFss::spawn(&agent.args(
+        "commit",
+        &["--plan", &plan_id, "--approve", &dispatch_approval],
+    ))?;
+    let arrival_deadline = Instant::now() + Duration::from_secs(10);
+    while relay.requests()? == 0 {
+        assert!(
+            dispatch.running()?,
+            "commit exited before the request arrived"
+        );
+        assert!(
+            Instant::now() < arrival_deadline,
+            "loopback request did not arrive"
+        );
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    // Source validation and the send have completed. Temporarily remove only this fixture's
+    // layout so the post-effect refresh fails, while the open journal can record acceptance.
+    let layout = agent.root.join("LAYOUT");
+    let retained_layout = directory.0.join("retained-layout");
+    fs::rename(&layout, &retained_layout)?;
+    relay.release();
+    let finished = dispatch.finish();
+    fs::rename(&retained_layout, &layout)?;
+    let output = finished?;
+    let (code, committed) =
+        agent.answer(output.status.code(), std::str::from_utf8(&output.stdout)?)?;
+    assert_eq!(code, Some(1), "{committed:?}");
+    assert_eq!(text(&committed, &["outcome"])?, "indeterminate");
+    assert_eq!(
+        text(&committed, &["errorId"])?,
+        "ERR-EFFECT-INDETERMINATE-001"
+    );
+    assert_eq!(
+        text(&committed, &["recoveryClass"])?,
+        "reconciliation_required"
+    );
+    assert_eq!(text(&committed, &["safeRetry"])?, "no");
+    assert_eq!(text(&committed, &["payload", "state"])?, "adapter_accepted");
+    assert_eq!(text(&committed, &["payload", "operationId"])?, operation);
+    assert!(texts(&committed, &["degradation"])?.iter().any(|line| {
+        line.contains("Post-dispatch snapshot unavailable") && line.contains("pre-dispatch anchor")
+    }));
+    let completed = texts(&committed, &["executionBoundary", "completed"])?;
+    assert!(
+        completed
+            .iter()
+            .any(|line| line.contains("receiver_accepted_202"))
+    );
+    assert!(completed.iter().any(|line| {
+        line.starts_with("Owned alert runtime:") && line.contains("quiescence sha256:")
+    }));
+    assert!(
+        field(&committed, &["budgets", "consumed", "networkBytes"])?
+            .integer()
+            .ok_or("retained dispatch network charge")?
+            > 0
+    );
+    assert!(
+        texts(&committed, &["executionBoundary", "possiblyOccurred"])?
+            .iter()
+            .any(|line| line.contains("retained operation state is adapter_accepted"))
+    );
+    assert_eq!(relay.requests()?, 1);
+    let (code, again) = agent.run(
+        "commit",
+        &["--plan", &plan_id, "--approve", &dispatch_approval],
+    )?;
+    assert_eq!(code, Some(0), "{again:?}");
+    assert_eq!(text(&again, &["payload", "state"])?, "adapter_accepted");
+    assert_eq!(relay.connections(), 1, "recovery must never resend");
     Ok(())
 }
 

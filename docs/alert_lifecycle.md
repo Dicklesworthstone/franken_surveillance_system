@@ -4,6 +4,51 @@
 `fss-event alert` dispatch arguments. It provides **read-only status** and **exact-approved
 cancellation before commitment**, not provider reconciliation, redelivery, or a delivery claim.
 
+## Runtime-owned dispatch
+
+Both `fss-event alert` and the canonical `fss commit` path execute their single approved webhook
+attempt through the same `fss-runtime` task owner. The owner retains the caller's principal,
+original deadline and finite resource limits, then scopes the alert and network grants to the
+exact approved operation, route and durable journal. The original effect authority recorded at
+preparation is preserved; it is distinct from the approving CLI principal.
+
+The owned path checks admission around source validation, clocks, waits, socket operations and
+durable observation recording. Source-read allowances are finite and cumulative. Every admitted
+socket call reserves its maximum byte allowance before I/O, including failed or blocked calls.
+A timeout or cancellation cannot replenish the allowance or admit another network attempt.
+Network work stops at the earlier of the approved dispatch deadline and the original authority
+deadline, including the native connection timeout. A separate finite cleanup allowance is
+reserved before commitment for recording the result, intersected with any earlier original
+authority deadline; it never extends network authority or overrides revoked I/O authority.
+
+The native dispatched report includes `runtime` metadata: the task receipt, subtree quiescence
+proof when available, consumed and remaining budgets, network admissions, source-read
+reservations and attempts, and any local recording or retirement error. The canonical commit
+envelope includes the dispatch's budget consumption and runtime accounting in its execution
+boundary. Source byte and latency amounts are conservative reservations; storage counts source
+read admissions and prepaid journal transitions, not filesystem syscalls. Deployment opening,
+CPU, allocation peaks and journal serialization bytes are outside these meters. These fields
+do not claim whole-process resource accounting.
+
+If the operation committed but recording or runtime retirement fails, the command preserves the
+original operation receipt and observed network evidence, reports recovery as required, and
+exits nonzero. A cold retry reads the durable operation and never resends it. A missing receipt
+or quiescence proof is explicit; neither is fabricated from an HTTP response. Runtime closure
+only proves that the local attempt retired. Relay acceptance still leaves the independent
+delivery obligation pending, and an unacknowledged send remains indeterminate.
+
+A post-dispatch deployment refresh failure also returns the retained receipt and accounting,
+using the explicitly marked pre-dispatch anchor and an overall indeterminate result that requires
+recovery. A valid local runtime proof does not resolve that later snapshot failure. For native
+dispatch, the result is written and flushed to stdout before optional report export; an export
+collision or storage failure still exits nonzero, while preserving the available dispatch report.
+
+```sh
+cargo test -p fss-cli --lib alert_effect --locked --offline
+cargo test -p fss-cli --test agent_effect_cli_contract --locked --offline
+cargo test -p fss-cli --test corroborate_cli_contract --locked --offline
+```
+
 ## Inspect before acting
 
 ```sh

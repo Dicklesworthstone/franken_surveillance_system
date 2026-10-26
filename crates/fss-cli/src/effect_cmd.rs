@@ -627,7 +627,7 @@ pub(crate) fn hold_deployment(
     principal: &PrincipalId,
 ) -> Result<ReferenceDeployment, Failure> {
     let site = snapshot(root)?.site_lineage;
-    Ok(open_deployment(root, &site, principal, &[])?.0)
+    Ok(open_deployment(root, &site, principal, &[], None)?.0)
 }
 
 /// Opens the deployment under a root authority holding exactly `capabilities`.
@@ -636,7 +636,17 @@ fn open_deployment(
     site: &str,
     principal: &PrincipalId,
     capabilities: &[&str],
+    dispatch_deadline_ms: Option<u64>,
 ) -> Result<(ReferenceDeployment, ContextAuthority, ReplayCx), Failure> {
+    // Network work is admitted only for an explicit dispatch; prepare/reconcile/cancel stay local.
+    let (network_bytes, latency_ms) = match dispatch_deadline_ms {
+        Some(deadline_ms) if (1..=MAX_DEADLINE_MS).contains(&deadline_ms) => (
+            crate::alert_effect::MAX_DISPATCH_NETWORK_BYTES,
+            deadline_ms + crate::alert_effect::DISPATCH_CLEANUP_MS,
+        ),
+        Some(_) => return Err(Failure::Internal),
+        None => (0, 0),
+    };
     let authority = ContextAuthority::new_root(RootAuthoritySpec {
         trace_id: "trace:agent-effect".into(),
         operation_id: OperationId::parse("operation:agent-effect")
@@ -651,6 +661,8 @@ fn open_deployment(
         budgets: BudgetVector::builder()
             .bytes(64 * 1024 * 1024)
             .storage_operations(8192)
+            .network_bytes(network_bytes)
+            .latency_ms(latency_ms)
             .build()
             .map_err(|_| Failure::Internal)?,
         privacy_scope: "privacy:local-authorized-files".into(),
@@ -720,6 +732,7 @@ struct ReceiptAnswer<'a> {
     safe_retry: ResponseSafeRetry,
     boundary: ExecutionBoundary,
     idempotency_key: Option<String>,
+    budgets: Option<(&'a BudgetVector, &'a BudgetVector)>,
 }
 
 fn receipt_response(answer: ReceiptAnswer<'_>) -> Result<String, Box<dyn std::error::Error>> {
@@ -758,7 +771,10 @@ fn receipt_response(answer: ReceiptAnswer<'_>) -> Result<String, Box<dyn std::er
         warnings: Vec::new(),
         contradictions: Vec::new(),
         degradation,
-        budgets_json: agent_json::budget_summary(&BudgetVector::ZERO, &BudgetVector::ZERO),
+        budgets_json: answer.budgets.map_or_else(
+            || agent_json::budget_summary(&BudgetVector::ZERO, &BudgetVector::ZERO),
+            |(requested, consumed)| agent_json::budget_summary(requested, consumed),
+        ),
         proof_pointers: answer.proof_pointers,
         affordances: Vec::new(),
         affordance_objects: Vec::new(),
@@ -1177,6 +1193,7 @@ fn plan_answer(args: &PlanArgs) -> Result<Result<String, Box<dyn std::error::Err
         &context.site_lineage,
         &args.principal,
         &[CAP_ALERT_PREPARE],
+        None,
     )?;
     let result = (|| -> Result<Result<String, Box<dyn std::error::Error>>, Failure> {
         let endpoint = WebhookEndpoint::new(args.relay, &args.path, args.plaintext_approval)
@@ -1514,6 +1531,7 @@ fn commit_answer(args: &CommitArgs) -> Result<Answered, Failure> {
         &context.site_lineage,
         &args.principal,
         &[CAP_ALERT_PREPARE, CAP_ALERT_COMMIT],
+        Some(record.route.deadline_ms),
     )?;
     let result = (|| {
         let endpoint =
@@ -1601,6 +1619,7 @@ fn commit_answer(args: &CommitArgs) -> Result<Answered, Failure> {
                     vec!["Nothing was written.".to_owned()],
                 ),
                 idempotency_key: Some(operation.intent.idempotency_key.as_str().to_owned()),
+                budgets: None,
             });
             return Ok((
                 rendered_answer,
@@ -1676,6 +1695,7 @@ fn commit_answer(args: &CommitArgs) -> Result<Answered, Failure> {
             authority.has_capability(CAP_ALERT_COMMIT)
                 && authority.principal == args.principal.as_str(),
             record.route.deadline_ms,
+            &authority,
             &cx,
         )
         .map_err(|error| alert_refusal(&error))?;
@@ -1684,7 +1704,6 @@ fn commit_answer(args: &CommitArgs) -> Result<Answered, Failure> {
             .obligation(&ids.obligation)
             .map(|obligation| obligation_state(obligation.state))
             .unwrap_or("absent");
-        let accepted = dispatched.accepted();
         let evidence = &dispatched.evidence;
         let observation = format!(
             "Outcome {}: request {} ({} bytes, {} sent, {} I/O calls), commitment root {}.",
@@ -1698,7 +1717,43 @@ fn commit_answer(args: &CommitArgs) -> Result<Answered, Failure> {
             evidence.io_calls(),
             evidence.commitment_root()
         );
-        let snapshot_after = snapshot(&args.root)?;
+        // Consequential work is already complete. A failed refresh must not replace the
+        // retained receipt, wire observation and runtime accounting with a generic refusal.
+        let (snapshot_after, snapshot_failure) =
+            match read_deployment(&args.root, &OrientLimits::default()) {
+                Ok(current) => (current, None),
+                Err(error) => (
+                    snapshot_now,
+                    Some(format!(
+                        "Post-dispatch snapshot unavailable: {error}. The response retains its \
+                         admitted pre-dispatch anchor; the operation receipt and wire observation \
+                         below are newer retained results. Local runtime closure does not \
+                         resolve this snapshot recovery requirement. Recover and inspect the \
+                         deployment before reconciliation; never resend."
+                    )),
+                ),
+            };
+        let accepted = dispatched.accepted()
+            && !dispatched.runtime.recovery_required
+            && snapshot_failure.is_none();
+        let mut degradation = vec![format!(
+            "Obligation {} is {obligation}: a webhook 2xx proves relay acceptance only; the \
+             obligation is discharged only by independent reconciliation.",
+            ids.obligation
+        )];
+        degradation.extend(snapshot_failure);
+        if let Some(error) = &dispatched.runtime.recording_error {
+            degradation.push(format!(
+                "Local outcome recording failed: {error}. The retained operation receipt is \
+                 {}; no later journal transition is claimed.",
+                dispatched.recorded.state.as_str()
+            ));
+        }
+        if let Some(error) = &dispatched.runtime.runtime_error {
+            degradation.push(format!(
+                "Local runtime retirement requires recovery: {error}."
+            ));
+        }
         let rendered_answer = receipt_response(ReceiptAnswer {
             operation: "commit",
             capability: CAPABILITY_PLAN_COMMIT,
@@ -1706,17 +1761,14 @@ fn commit_answer(args: &CommitArgs) -> Result<Answered, Failure> {
             session: Some((&record.session_id, &record.mission_id)),
             snapshot: &snapshot_after,
             receipt: &dispatched.recorded,
+            budgets: Some((&authority.budgets, &dispatched.runtime.consumed)),
             outcome: if accepted {
                 ResponseOutcome::Ok
             } else {
                 ResponseOutcome::Indeterminate
             },
             error_id: (!accepted).then_some(ERR_EFFECT_INDETERMINATE),
-            degradation: vec![format!(
-                "Obligation {} is {obligation}: a webhook 2xx proves relay acceptance only; the \
-                 obligation is discharged only by independent reconciliation.",
-                ids.obligation
-            )],
+            degradation,
             proof_pointers: vec![
                 plan_root.to_text(),
                 dispatched.recorded.receipt_digest().to_text(),
@@ -1736,16 +1788,18 @@ fn commit_answer(args: &CommitArgs) -> Result<Answered, Failure> {
                         ids.operation
                     ),
                     observation,
+                    crate::alert_effect::report::audit_statement(&dispatched.runtime),
                 ],
                 vec!["Any retry or resend.".to_owned()],
                 if accepted {
                     Vec::new()
                 } else {
-                    vec![
-                        "The relay may have received and forwarded the alert: the outcome is \
-                         recorded as indeterminate and must be reconciled, never resent."
-                            .to_owned(),
-                    ]
+                    vec![format!(
+                        "The relay may have received and forwarded the alert. The retained \
+                         operation state is {}; this command requires recovery and independent \
+                         reconciliation, never a resend.",
+                        dispatched.recorded.state.as_str()
+                    )]
                 },
                 vec![format!(
                     "Delivery claim {}: no human delivery is inferred.",
@@ -1815,8 +1869,13 @@ fn reconcile_answer(
 ) -> Result<Result<String, Box<dyn std::error::Error>>, Failure> {
     let before = snapshot(&args.root)?;
     let site = before.site_lineage.clone();
-    let (mut deployment, authority, cx) =
-        open_deployment(&args.root, &site, &args.principal, &[CAP_ALERT_RECONCILE])?;
+    let (mut deployment, authority, cx) = open_deployment(
+        &args.root,
+        &site,
+        &args.principal,
+        &[CAP_ALERT_RECONCILE],
+        None,
+    )?;
     let result = (|| {
         let (plan, outcome) = match args.approve {
             None => (
@@ -1932,6 +1991,7 @@ fn reconcile_answer(
                 ],
             ),
             idempotency_key: Some(receipt.intent.idempotency_key.as_str().to_owned()),
+            budgets: None,
         }))
     })();
     cx.drain_and_finalize();
@@ -2042,6 +2102,7 @@ fn wait_answer(args: &WaitArgs) -> Result<Result<String, Box<dyn std::error::Err
             vec!["Nothing was written or locked.".to_owned()],
         ),
         idempotency_key: None,
+        budgets: None,
     }))
 }
 
@@ -2069,8 +2130,13 @@ fn execute_wait(args: &WaitArgs) -> (String, ExitIdentity) {
 fn cancel_answer(args: &CancelArgs) -> Result<Result<String, Box<dyn std::error::Error>>, Failure> {
     let before = snapshot(&args.root)?;
     let site = before.site_lineage.clone();
-    let (mut deployment, authority, cx) =
-        open_deployment(&args.root, &site, &args.principal, &[CAPABILITY_CANCEL])?;
+    let (mut deployment, authority, cx) = open_deployment(
+        &args.root,
+        &site,
+        &args.principal,
+        &[CAPABILITY_CANCEL],
+        None,
+    )?;
     let result = (|| {
         let (plan, outcome) = match args.approve {
             None => (
@@ -2153,6 +2219,7 @@ fn cancel_answer(args: &CancelArgs) -> Result<Result<String, Box<dyn std::error:
                 vec!["No network I/O; nothing was ever sent for this operation.".to_owned()],
             ),
             idempotency_key: Some(receipt.intent.idempotency_key.as_str().to_owned()),
+            budgets: None,
         }))
     })();
     cx.drain_and_finalize();

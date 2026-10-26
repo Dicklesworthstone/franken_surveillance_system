@@ -801,6 +801,10 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
             capabilities.push(delete::CAP_DELETE_COMMIT.to_owned());
         }
     }
+    let dispatch_deadline_ms = match &options.action {
+        Action::Alert(request) if request.dispatch.is_some() => Some(request.deadline_ms),
+        _ => None,
+    };
     let authority = ContextAuthority::new_root(RootAuthoritySpec {
         trace_id: "trace:event-cli".into(),
         operation_id: OperationId::parse("operation:event-cli")?,
@@ -810,6 +814,15 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
         priority: 10,
         budgets: BudgetVector::builder()
             .bytes(options.limits.maximum_report_bytes as u64)
+            .network_bytes(dispatch_deadline_ms.map_or(0, |_| {
+                fss_cli::alert_effect::MAX_DISPATCH_NETWORK_BYTES
+            }))
+            .latency_ms(dispatch_deadline_ms.map_or(0, |deadline| {
+                deadline + fss_cli::alert_effect::DISPATCH_CLEANUP_MS
+            }))
+            .storage_operations(dispatch_deadline_ms.map_or(0, |_| {
+                fss_cli::alert_effect::MAX_DISPATCH_STORAGE_OPERATIONS
+            }))
             .build()?,
         privacy_scope: "privacy:local-authorized-files".into(),
         retention_scope: "retention:existing-deployment-policy".into(),

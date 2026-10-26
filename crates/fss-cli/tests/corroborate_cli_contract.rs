@@ -876,6 +876,67 @@ fn alert(root: &Path, id: &str, relay: SocketAddr, extra: &[&str]) -> TestResult
     event(root, "alert", &args)
 }
 
+fn assert_owned_alert_runtime(output: &Output) -> TestResult {
+    use fss_cli::json_input::{Value, parse};
+    fn get<'a>(value: &'a Value, path: &[&str]) -> TestResult<&'a Value> {
+        let mut current = value;
+        for key in path {
+            current = current
+                .object()
+                .and_then(|fields| fields.get(*key))
+                .ok_or_else(|| format!("missing runtime field {key}"))?;
+        }
+        Ok(current)
+    }
+    let value = parse(std::str::from_utf8(&output.stdout)?)?;
+    let runtime = get(&value, &["runtime"])?;
+    let admissions = get(runtime, &["network_admissions"])?
+        .integer()
+        .ok_or("network admissions")?;
+    assert!(admissions > 0);
+    let spent = get(runtime, &["consumed", "networkBytes"])?
+        .integer()
+        .ok_or("spent network bytes")?;
+    let remaining = get(runtime, &["remaining", "networkBytes"])?
+        .integer()
+        .ok_or("remaining network bytes")?;
+    assert!(spent > 0);
+    assert_eq!(
+        spent + remaining,
+        i128::from(fss_cli::alert_effect::MAX_DISPATCH_NETWORK_BYTES)
+    );
+    assert!(
+        get(runtime, &["consumed", "storageOperations"])?
+            .integer()
+            .ok_or("storage charge")?
+            > 0
+    );
+    assert!(
+        get(runtime, &["source_read_attempts"])?
+            .integer()
+            .ok_or("source reads")?
+            > 0
+    );
+    assert!(
+        get(runtime, &["source_read_reserved_bytes"])?
+            .integer()
+            .ok_or("source bytes")?
+            > 0
+    );
+    assert!(get(runtime, &["task_receipt", "task_id"])?.text().is_some());
+    let proof = get(runtime, &["quiescence", "proof_digest"])?
+        .text()
+        .ok_or("quiescence digest")?;
+    ContentDigest::parse(proof)?;
+    assert_eq!(
+        get(runtime, &["quiescence", "total_tasks"])?.integer(),
+        Some(1)
+    );
+    assert_eq!(get(runtime, &["recording_error"])?, &Value::Null);
+    assert_eq!(get(runtime, &["runtime_error"])?, &Value::Null);
+    Ok(())
+}
+
 #[test]
 fn alert_prepares_on_approval_then_dispatches_exactly_one_request_and_never_resends() -> TestResult
 {
@@ -929,6 +990,8 @@ fn alert_prepares_on_approval_then_dispatches_exactly_one_request_and_never_rese
     assert_eq!(json_field(&sent, "outcome")?, "receiver_accepted_200");
     assert_eq!(json_field(&sent, "obligation_state")?, "pending");
     assert_eq!(json_field(&sent, "retries")?, "0");
+    assert_owned_alert_runtime(&sent)?;
+    assert_eq!(json_field(&sent, "recovery_required")?, "false");
     let requests = relay.requests()?;
     assert_eq!(requests.len(), 1);
     assert_eq!(relay.connections(), 1);
@@ -965,6 +1028,53 @@ fn alert_prepares_on_approval_then_dispatches_exactly_one_request_and_never_rese
 }
 
 #[test]
+fn post_dispatch_export_collision_preserves_stdout_and_never_resends() -> TestResult {
+    let (directory, id, _) = published_event("alert-export-collision")?;
+    let root = directory.root();
+    let relay = Relay::spawn(Some(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"))?;
+    let proposed = alert(&root, &id, relay.address, &[])?;
+    success(&proposed);
+    let plan = json_field(&proposed, "plan_digest")?;
+    let prepared = alert(&root, &id, relay.address, &["--approve", &plan])?;
+    success(&prepared);
+    let dispatch = json_field(&prepared, "dispatch_digest")?;
+    let export_path = directory.0.join("already-existing-alert-report.json");
+    let original = b"an existing report must not be overwritten";
+    fs::write(&export_path, original)?;
+    let sent = alert(
+        &root,
+        &id,
+        relay.address,
+        &[
+            "--approve",
+            &plan,
+            "--dispatch",
+            &dispatch,
+            "--report-out",
+            export_path.to_str().ok_or("export path is not UTF-8")?,
+        ],
+    )?;
+    assert!(!sent.status.success(), "export collision remains a refusal");
+    assert_eq!(fs::read(&export_path)?, original.as_slice());
+    assert_eq!(json_field(&sent, "stage")?, "dispatched");
+    assert_eq!(json_field(&sent, "effect_state")?, "adapter_accepted");
+    assert_eq!(json_field(&sent, "outcome")?, "receiver_accepted_200");
+    assert_owned_alert_runtime(&sent)?;
+    assert_eq!(relay.requests()?.len(), 1);
+    let again = alert(
+        &root,
+        &id,
+        relay.address,
+        &["--approve", &plan, "--dispatch", &dispatch],
+    )?;
+    success(&again);
+    assert_eq!(json_field(&again, "stage")?, "already_dispatched");
+    assert_eq!(json_field(&again, "effect_state")?, "adapter_accepted");
+    assert_eq!(relay.connections(), 1);
+    Ok(())
+}
+
+#[test]
 fn a_relay_that_closes_without_acknowledgement_leaves_the_alert_indeterminate() -> TestResult {
     let (directory, id, _) = published_event("alert-lost-ack")?;
     let root = directory.root();
@@ -989,6 +1099,7 @@ fn a_relay_that_closes_without_acknowledgement_leaves_the_alert_indeterminate() 
     assert_eq!(json_field(&lost, "delivery_claim")?, "indeterminate");
     assert_eq!(json_field(&lost, "obligation_state")?, "indeterminate");
     assert_eq!(json_field(&lost, "outcome")?, "interrupted_disconnected");
+    assert_owned_alert_runtime(&lost)?;
     assert_eq!(relay.requests()?.len(), 1);
 
     let rerun = alert(
