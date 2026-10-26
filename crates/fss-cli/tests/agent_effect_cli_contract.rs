@@ -19,6 +19,9 @@
 //!    a dispatch retains its exact case/session witness through the bounded network attempt,
 //!    then releases ownership while cold receipt recovery never resends after witness changes.
 
+#[path = "agent_effect_cli_contract/historical_health.rs"]
+mod historical_health;
+
 use std::error::Error;
 use std::ffi::OsString;
 use std::fs;

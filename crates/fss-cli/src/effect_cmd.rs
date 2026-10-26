@@ -53,8 +53,8 @@ use fss_reference::{
 use crate::agent_json;
 use crate::alert_effect::{
     AlertEffectError, CAP_ALERT_COMMIT, CAP_ALERT_PREPARE, MAX_DEADLINE_MS, alert_identities,
-    dispatch_approval_digest, dispatch_prepared_alert, not_eligible, obligation_state,
-    outcome_text, plan_approval_digest, wall_ns,
+    check_alert_source_health, dispatch_approval_digest, dispatch_prepared_alert, not_eligible,
+    obligation_state, outcome_text, plan_approval_digest, wall_ns,
 };
 use crate::error::{CliError, ExitIdentity};
 use crate::orient_cmd::{
@@ -541,8 +541,9 @@ fn alert_refusal(error: &AlertEffectError) -> Failure {
             ExitIdentity::AGENT_REFUSED,
         ),
         AlertEffectError::NotEligible(_) => (
-            "Policy, corroboration, or sensor-integrity gates refuse an alert for this event; \
-             investigate instead.",
+            "Policy, corroboration, sensor-integrity, or retained source-health gates refuse \
+             an alert for this event. Inspect the retained diagnostic evidence and investigate; \
+             refreshing an approval alone cannot restore withdrawn support.",
             "never_unchanged",
             ResponseSafeRetry::No,
             ExitIdentity::AGENT_REFUSED,
@@ -879,7 +880,10 @@ fn compile_alert_plan(facts: &PlanFacts<'_>) -> Result<ControlPlan, Box<dyn std:
         "step:observe-event",
         ControlStepKind::Observe,
         "fss-event",
-        format!("Read event {event}'s current revision, tamper witnesses, and policy action."),
+        format!(
+            "Read event {event}'s current revision, tamper witnesses and policy action; verify \
+             applicable retained source-health diagnostics against the exact supporting sources."
+        ),
     );
     observe.read_witnesses = vec![
         facts.plan.event_revision_digest.to_text(),
@@ -897,7 +901,8 @@ fn compile_alert_plan(facts: &PlanFacts<'_>) -> Result<ControlPlan, Box<dyn std:
         "fss-policy",
         format!(
             "Admit the alert only while the committed policy action is prepare_alert (event state \
-             {}, independently corroborated, no sensor-integrity risk).",
+             {}, independently corroborated, no sensor-integrity risk or applicable retained \
+             diagnostic withholding). Unknown diagnostic coverage is not proof of healthy footage.",
             facts.event_state
         ),
     );
@@ -946,6 +951,7 @@ fn compile_alert_plan(facts: &PlanFacts<'_>) -> Result<ControlPlan, Box<dyn std:
     commit.preconditions = vec![
         "The operation is still prepared (no second commit).".to_owned(),
         "The event revision and policy action are unchanged (revalidated at commit).".to_owned(),
+        "Applicable source-health diagnostics still verify and do not withhold the exact supporting sources (revalidated before dispatch).".to_owned(),
         "Operator approval of the exact dispatch (prepared record, route, deadline, principal)."
             .to_owned(),
     ];
@@ -1209,6 +1215,15 @@ fn plan_answer(args: &PlanArgs) -> Result<Result<String, Box<dyn std::error::Err
         let ids = alert_identities(receipt.event_revision_digest, endpoint.digest())
             .map_err(|_| Failure::Internal)?;
         let existing = deployment.effects().operation(&ids.operation).cloned();
+        // New proposals and still-prepared work require current source-health admission.
+        // Historical committed/indeterminate receipts remain inspectable without reusing them.
+        if existing
+            .as_ref()
+            .is_none_or(|operation| operation.state == EffectState::Prepared)
+        {
+            check_alert_source_health(&deployment, &event, &cx)
+                .map_err(|error| alert_refusal(&error))?;
+        }
         let now = TimestampNs(i128::from(
             wall_ns().map_err(|error| alert_refusal(&error))?,
         ));
@@ -1308,6 +1323,9 @@ fn plan_answer(args: &PlanArgs) -> Result<Result<String, Box<dyn std::error::Err
                         ),
                     ));
                 }
+                // Recheck immediately before the durable effect boundary after exact approval.
+                check_alert_source_health(&deployment, &event, &cx)
+                    .map_err(|error| alert_refusal(&error))?;
                 let (journal, ledger) = deployment.effects_and_ledger();
                 let prepared = journal
                     .prepare_alert(PrepareAlertParams {

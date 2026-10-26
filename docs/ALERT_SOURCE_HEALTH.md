@@ -1,7 +1,8 @@
-# Retained source-health findings at alert dispatch
+# Retained source-health findings at alert preparation and dispatch
 
-Native alerts now recheck retained historical-health diagnostics at the shared effect boundary.
-A previously corroborated event cannot dispatch using matching source support that a retained
+Native alerts check retained historical-health diagnostics before proposing or preparing an
+alert and recheck them at the shared effect boundary. A previously corroborated event cannot
+dispatch using matching source support that a retained
 diagnostic has identified as degraded or incompletely screened. The event and its original
 evidence remain immutable; the check changes current eligibility to dispatch that event.
 
@@ -42,6 +43,28 @@ exhausted limits refuse the check. Deleted diagnostic metadata is not reopened. 
 made its original scope unverifiable, the guard refuses native dispatch rather than silently
 dropping a potentially adverse finding. Verified unrelated diagnostics do not withdraw support.
 
+## Preparation and operator-facing behavior
+
+Both `fss-event alert` and the canonical `fss plan --intent alert` path check source-health
+eligibility before returning a new proposal or preparing a durable intent. Exact plan approval
+does not bypass this check: the owner rechecks immediately before durable preparation. The MCP
+plan and commit tools delegate to the same agent command implementation and inherit these gates.
+
+An existing `Prepared` operation also passes the health check before a fresh plan or dispatch
+approval is presented. A retained adverse finding therefore blocks both a newly requested alert
+and an already prepared alert that has not reached commitment. Refusal does not publish a usable
+proposal, prepare another operation or connect to the relay.
+
+Already committed, indeterminate or otherwise non-prepared operations retain their report-only
+inspection path without a new health preflight. Reporting those durable receipts does not reuse
+old authority or send the alert again. Preparation admission is not a lasting health grant; the
+shared dispatch owner revalidates current source-health eligibility before commitment.
+
+Agent refusals use `ERR-ALERT-NOT-ELIGIBLE-001`, with `never_unchanged` recovery and no safe retry.
+The guidance calls for inspecting retained diagnostic evidence and investigating withdrawn
+support. Control-plan preconditions describe revalidation of applicable exact-source diagnostics;
+unknown coverage is not presented as a health certificate or an invented proof witness.
+
 ## Effect-state behavior
 
 The shared gate runs during dispatch revalidation and before the webhook connects or writes.
@@ -79,6 +102,18 @@ Focused owner regression command:
 ```sh
 cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --lib alert::source_health::
 ```
+
+Focused native CLI integration command:
+
+```sh
+cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --test agent_effect_cli_contract historical_health::
+```
+
+The native fixtures use retained JPEG decoding, tracking and two-camera corroboration. They
+exercise frozen and incompletely screened support at preview, approved preparation and prepared
+dispatch; retained operation inspection and explicit cancellation; unrelated imports and disjoint
+scan ranges; later clear screens; corrupt or missing metadata; and carried-forward support after
+a privacy-generation change. Eligible unrelated support reaches actual loopback relay acceptance.
 
 Source review and pinned formatting checks do not establish runtime qualification. Test execution
 and the repository's controlled native qualification remain separate proof obligations.

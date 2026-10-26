@@ -739,7 +739,8 @@
     "crates/fss-reference/src/agent_session/checkpoint/journal/supervision/detection_tests.rs": "support",
     "crates/fss-cli/tests/supervisor_retained_contract/detection/session.rs": "support",
     "crates/fss-reference/src/alert/source_health.rs": "effect",
-    "crates/fss-reference/src/alert/source_health/tests.rs": "support"
+    "crates/fss-reference/src/alert/source_health/tests.rs": "support",
+    "crates/fss-cli/tests/agent_effect_cli_contract/historical_health.rs": "support"
   },
   "types": {
     "AlertEffectRecord": {

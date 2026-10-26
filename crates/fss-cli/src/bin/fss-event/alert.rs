@@ -23,9 +23,9 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 use fss_cli::alert_effect::{
-    AlertIdentities, AlertRuntimeSummary, alert_identities, dispatch_approval_digest,
-    dispatch_prepared_alert, not_eligible, obligation_state, outcome_text, plan_approval_digest,
-    wall_ns,
+    AlertIdentities, AlertRuntimeSummary, alert_identities, check_alert_source_health,
+    dispatch_approval_digest, dispatch_prepared_alert, not_eligible, obligation_state,
+    outcome_text, plan_approval_digest, wall_ns,
 };
 use fss_core::region::ContextAuthority;
 use fss_core::{
@@ -355,6 +355,7 @@ pub(super) fn run(
         if !authority.has_capability(CAP_ALERT_PREPARE) {
             return Err(AlertCliError::Dispatch("missing CAP-ALERT-PREPARE-001".to_owned()).into());
         }
+        check_alert_source_health(deployment, &event, cx)?;
         let now = TimestampNs(i128::from(wall_ns()?));
         let plan = prepare_reference_alert(
             PrepareAlertParams {
@@ -386,6 +387,8 @@ pub(super) fn run(
             }
             Some(_) => {}
         }
+        // Approval cannot substitute for current source-health eligibility at preparation.
+        check_alert_source_health(deployment, &event, cx)?;
         let (journal, ledger) = deployment.effects_and_ledger();
         let prepared = journal
             .prepare_alert(PrepareAlertParams {
@@ -435,6 +438,9 @@ pub(super) fn run(
             _ => Ok(()),
         };
     }
+    // Report-only handling above keeps already-dispatched or indeterminate receipts available.
+    // Still-prepared work must pass the same source gate before proposing a dispatch approval.
+    check_alert_source_health(deployment, &event, cx)?;
     let plan = rehydrate_reference_alert_plan(
         &operation,
         ids.obligation.clone(),
