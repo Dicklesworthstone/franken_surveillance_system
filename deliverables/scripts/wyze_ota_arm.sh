@@ -51,6 +51,15 @@ mkdir -p "$CAP_DIR/fss"
 for f in rootCA.crt cert.pem privkey.pem; do
   cp "$CERTDIR/$f" "$CAP_DIR/fss/$f"
 done
+# The handler advertises PROC_VER and builds the download path from it, so the mirrored bytes must
+# exist under that version too or every download 404s (81 of them, once).
+SRC="$CAP_DIR/wyzeedgeai_cam_v4_test_protocol/14.9.50039.r"
+DST="$CAP_DIR/wyzeedgeai_cam_v4_test_protocol/${PROC_VER:-14.9.50040.r}"
+if [ -d "$SRC" ] && [ "$SRC" != "$DST" ]; then
+  mkdir -p "$DST"
+  for f in "$SRC"/*; do [ -e "$DST/$(basename "$f")" ] || cp "$f" "$DST/"; done
+fi
+
 MD5=$(md5 -q "$CAP_DIR/$CAP_PATH")
 URL="https://s3-us-west-2.amazonaws.com/$CAP_PATH"
 
