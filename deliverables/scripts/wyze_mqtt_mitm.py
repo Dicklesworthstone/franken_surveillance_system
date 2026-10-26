@@ -334,6 +334,14 @@ def up_addr():
 
 def handle(cli):
     cli.settimeout(None)  # the 10 s accept timeout would kill an idle session long before the 60 s keepalive
+    if os.environ.get("NO_UPSTREAM"):
+        # oracle mode: answer locally, no AWS. The injector publishes on the client socket.
+        print("handle (local) fd=%s" % cli.fileno(), flush=True)
+        LIVE["c"] = cli
+        if os.environ.get("INJECT"):
+            threading.Thread(target=inject, args=(cli, None), daemon=True).start()
+        local_loop(cli)
+        return
     try:
         u=up_ctx().wrap_socket(socket.create_connection(up_addr(),timeout=10),server_hostname=SNI)
         u.settimeout(None)  # an idle broker must not kill the session; MQTT keepalive is 60 s
@@ -346,6 +354,51 @@ def handle(cli):
     if os.environ.get("INJECT"):
         threading.Thread(target=inject,args=(cli,u),daemon=True).start()
     pipe(u,cli,"S",state)
+def local_loop(cli):
+    """Minimal server side for oracle runs: CONNACK, SUBACK, PINGRESP, PUBACK."""
+    while True:
+        kind, body = _read(cli)
+        if kind is None:
+            print("local: closed", flush=True); return
+        t = kind >> 4
+        if t == 1:
+            cli.sendall(_pkt(2, b"\x00\x00")); print("local: CONNACK", flush=True)
+        elif t == 8:
+            pid = body[:2]
+            n = 0; i = 2
+            while i < len(body):
+                ln = struct.unpack(">H", body[i:i + 2])[0]; i += 2 + ln + 1; n += 1
+            cli.sendall(_pkt(9, pid + b"\x01" * n)); print(f"local: SUBACK x{n}", flush=True)
+        elif t == 3:
+            qos = (kind >> 1) & 3
+            if qos:
+                ln = struct.unpack(">H", body[:2])[0]
+                cli.sendall(_pkt(4, body[2 + ln:4 + ln]))
+        elif t == 12:
+            cli.sendall(_pkt(13, b""))
+        elif t == 14:
+            print("local: DISCONNECT", flush=True); return
+
+def _read(sock):
+    head = sock.recv(1)
+    if not head:
+        return None, b""
+    mult, n = 1, 0
+    while True:
+        b = sock.recv(1)
+        if not b:
+            return None, b""
+        n += (b[0] & 0x7F) * mult; mult *= 128
+        if not b[0] & 0x80:
+            break
+    body = b""
+    while len(body) < n:
+        c = sock.recv(n - len(body))
+        if not c:
+            return None, b""
+        body += c
+    return head[0], body
+
 def main():
     ctx=srv_ctx(); s=socket.socket(); s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
     s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)

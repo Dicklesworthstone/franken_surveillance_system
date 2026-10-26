@@ -64,6 +64,7 @@ def read_pkt(sock):
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--thing", default="80482c4bcf0b")
+    ap.add_argument("--client-id", default="", help="defaults to --thing; AWS rejects a duplicate id")
     ap.add_argument("--inject-thing", default=os.environ.get("THING", "80482c525905"))
     ap.add_argument("--cert-dir", default=os.path.join(IOT_DIR, "80482C4BCF0B"))
     ap.add_argument("--port", type=int, default=8883)
@@ -84,7 +85,8 @@ def main() -> int:
     sock.settimeout(20.0)
 
     # clean_session = 0, keepalive 60, client id = thing name
-    sock.sendall(pkt(1, s("MQTT") + bytes([4, 0x00]) + b"\x00\x3c" + s(a.thing)))
+    cid = a.client_id or a.thing
+    sock.sendall(pkt(1, s("MQTT") + bytes([4, 0x00]) + b"\x00\x3c" + s(cid)))
     # a persistent session can deliver queued messages before the CONNACK; skip past them
     while True:
         try:
@@ -109,8 +111,11 @@ def main() -> int:
         topics.append(f"hl/devices/{a.inject_thing}/cmd")
     sub = struct.pack(">H", 1) + b"".join(s(t) + b"\x01" for t in topics)
     sock.sendall(pkt(8, sub))
-    kind, body = read_pkt(sock)
-    print(f"suback {body.hex()} for {len(topics)} topics", flush=True)
+    try:
+        kind, body = read_pkt(sock)
+        print(f"suback {body.hex()} for {len(topics)} topics", flush=True)
+    except (socket.timeout, TimeoutError):
+        print(f"no suback; subscribed to {len(topics)} topics anyway", flush=True)
 
     end = time.time() + a.secs
     sock.settimeout(1.0)
