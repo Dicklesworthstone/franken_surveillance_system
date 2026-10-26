@@ -43,7 +43,8 @@
     "crates/fss-reference/src/reference_deployment.rs",
     "crates/fss-reference/src/situation.rs",
     "crates/fss-reference/src/situation_guard.rs",
-    "crates/fss-reference/src/situation_sections.rs"
+    "crates/fss-reference/src/situation_sections.rs",
+    "crates/fss-reference/src/ingest/historical_health/exposure.rs"
   ],
   "module_declarations": {
     "crates/fss-cli/src/bin/fss-event/supervise/retained.rs": "support",
@@ -723,7 +724,9 @@
     "crates/fss-reference/src/tests.rs": "support",
     "crates/fss-reference/src/time_tolerance.rs": "authority",
     "crates/fss-reference/tests/deployment_mission_lifecycle_contract.rs": "support",
-    "crates/fss-reference/tests/deployment_mission_objective_contract.rs": "support"
+    "crates/fss-reference/tests/deployment_mission_objective_contract.rs": "support",
+    "crates/fss-reference/src/ingest/historical_health/exposure.rs": "cognition",
+    "crates/fss-reference/src/ingest/historical_health/exposure/tests.rs": "support"
   },
   "types": {
     "AlertEffectRecord": {
@@ -1218,6 +1221,46 @@
       "file": "crates/fss-reference/src/deployment_session/supervision.rs",
       "plane": "support",
       "description": "Refusal with definitely committed schedule, reservation, advancement and ACK/discard progress; never claims rollback or emits successful report bytes."
+    },
+    "HealthExposureLimits": {
+      "file": "crates/fss-reference/src/ingest/historical_health/exposure.rs",
+      "plane": "support",
+      "description": "Whole-catalog metadata, history, assessment and finding bounds shared across native source assessments."
+    },
+    "HealthExposureSource": {
+      "file": "crates/fss-reference/src/ingest/historical_health/exposure.rs",
+      "plane": "cognition",
+      "description": "Exact downstream import, source root, sensor, segment and privacy coordinates; construction supplies no custody authority."
+    },
+    "HealthDiagnosticPin": {
+      "file": "crates/fss-reference/src/ingest/historical_health/exposure.rs",
+      "plane": "cognition",
+      "description": "Exact retained diagnostic header, provenance, trace and historical publication anchor; not native replay or current health."
+    },
+    "HealthExposureState": {
+      "file": "crates/fss-reference/src/ingest/historical_health/exposure.rs",
+      "plane": "cognition",
+      "description": "Historical finite screening distinguishes unknown, no findings, incomplete screening and retained findings."
+    },
+    "HealthExposureFinding": {
+      "file": "crates/fss-reference/src/ingest/historical_health/exposure.rs",
+      "plane": "cognition",
+      "description": "Retained heuristic finding with exact threshold interval and conservative finite source withholding scope."
+    },
+    "HealthExposure": {
+      "file": "crates/fss-reference/src/ingest/historical_health/exposure.rs",
+      "plane": "cognition",
+      "description": "Verified source-bound historical diagnostic projection preserving all matching findings and independent uncertainty."
+    },
+    "HealthExposureUsage": {
+      "file": "crates/fss-reference/src/ingest/historical_health/exposure.rs",
+      "plane": "support",
+      "description": "Aggregate admitted metadata and comparison work plus finding counts; no replenishment between observations."
+    },
+    "HealthExposureCatalog": {
+      "file": "crates/fss-reference/src/ingest/historical_health/exposure.rs",
+      "plane": "cognition",
+      "description": "Bounded current diagnostic metadata snapshot under existing custody, deletion and explicit context authority."
     }
   }
 }

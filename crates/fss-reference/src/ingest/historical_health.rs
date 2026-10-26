@@ -31,6 +31,9 @@ use crate::{ReferenceDeployment, ReferenceError, ReplayCx};
 
 mod wire;
 
+/// Source-bound historical diagnostic exposure for native downstream evidence.
+pub mod exposure;
+
 /// Guarded authority family for literal retained historical screening reports.
 pub const FAMILY_HISTORICAL_HEALTH: &str = "historical_sensor_health";
 /// Generic ledger append may not create or shadow this namespace under any family.
@@ -813,11 +816,23 @@ fn inspect(
     let deletions = crate::deletion::DeletionIndex::from_batches(batches, |digest| {
         reader.read(digest, crate::deletion::MAX_DELETION_RECORD_BYTES)
     })?;
+    inspect_with_deletions(deployment, digest, &deletions, |digest, bound| {
+        reader.read(digest, bound)
+    })
+}
+
+fn inspect_with_deletions(
+    deployment: &ReferenceDeployment,
+    digest: ContentDigest,
+    deletions: &crate::deletion::DeletionIndex,
+    mut read: impl FnMut(ContentDigest, usize) -> Result<Vec<u8>>,
+) -> Result<HistoricalHealthReadReport> {
+    let batches = deployment.ledger().batches();
     let report = read_retained_at(batches, digest, |digest, bound| {
         if deletions.object(digest).is_some() {
             return Err(HistoricalHealthError::Unavailable);
         }
-        reader.read(digest, bound)
+        read(digest, bound)
     })?;
     if report.record.site != deployment.site_lineage()
         || deletions.import(report.record.import_identity()).is_some()

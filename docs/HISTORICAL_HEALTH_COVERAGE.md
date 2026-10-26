@@ -75,3 +75,36 @@ privacy generations. The CLI case uses actual orient/follow processes and checks
 JSON coverage, contradiction, delta and silence fields.
 
 These focused tests do not replace the repository's native qualification lanes.
+
+## Source-level diagnostic assessment
+
+`ingest::historical_health::exposure::HealthExposureCatalog` supplies the same conservative
+source binding to native consumers that already verified an original observation. Its one
+bounded read admits the current diagnostic catalog, exact retained metadata and deletion
+authority. Repeated `assess` calls share the original comparison and output allowances.
+
+`HealthExposureSource` names the exact import identity and root, sensor, source segment,
+privacy policy digest and privacy generation. A matching finding withholds support throughout
+the diagnostic's finite requested scan, including threshold latency. The returned exposure keeps
+every matching diagnostic, original publication anchor, provenance root, trace identity, finding
+interval and withholding interval. A later clear diagnostic cannot erase an earlier finding.
+
+The four states are `no_matching_diagnostic`, `screened_without_findings`,
+`screening_incomplete` and `findings`. The first is unknown health. A completed screen without
+findings records only that finite heuristic result. Findings and incomplete screening withhold
+support conservatively; none of these states establishes the camera's present physical health,
+an outage duration, a recovery, continuous coverage or absence.
+
+The catalog verifies retained metadata and provenance. It does not read or replay the complete
+native trace or media; the downstream native source owner retains that responsibility. Corrupt
+or missing nondeleted metadata, authority drift and exhausted bounds refuse the operation.
+Explicitly deleted diagnostic metadata remains accounted for as a deletion exclusion.
+
+The source-exposure regressions use actual retained native JPEG screens, including cold reopen,
+exact-frame repetition, threshold latency, incomplete decode, unrelated source/privacy bindings,
+multiple diagnostics, cancellation, cumulative work, corruption and current deletion:
+
+```sh
+cargo test --locked --offline -p fss-reference --lib ingest::historical_health::exposure::
+```
+
