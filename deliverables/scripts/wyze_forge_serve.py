@@ -136,14 +136,24 @@ def main() -> int:
                 # Real schema, captured from the cloud: one process per request, keyed by the
                 # processname the device sends, and the payload is a launch.sh. Answering with a
                 # higher version makes the device fetch and run ours.
+                # An empty processname means "what should I update"; the cloud answers with the
+                # first process (the AI model). Echo a real name back, never a placeholder.
                 try:
-                    name = json.loads(body).get("processname") or "fss"
+                    name = json.loads(body).get("processname") or ""
                 except Exception:
-                    name = "fss"
+                    name = ""
+                if not name:
+                    name = "wyzeedgeai_cam_v4_test_protocol"
+                path = ("/proc/launch.sh" if name.startswith("kvs")
+                        else "/wyzeedgeai_cam_v4_test_protocol/14.9.50039.r/" + name)
                 out = json.dumps({"code": "1", "ts": int(time.time() * 1000), "msg": "SUCCESS",
                                   "data": {"version": os.environ.get("PROC_VER", "99.0.0"),
                                            "url": "https://sinker-t-usw2.s3.us-west-2.amazonaws.com"
-                                                  "/proc/launch.sh?processname=" + name}}).encode()
+                                                  + path + "?X-Amz-Algorithm=AWS4-HMAC-SHA256"
+                                                  "&X-Amz-Date=20261026T000000Z&X-Amz-SignedHeaders=host"
+                                                  "&X-Amz-Credential=AKIAYS2NUP7ICBQQ77UQ%2F20261026%2Fus-west-2"
+                                                  "%2Fs3%2Faws4_request&X-Amz-Expires=300"
+                                                  "&X-Amz-Signature=" + "0" * 64}}).encode()
             elif os.environ.get("PASSTHROUGH"):
                 out = passthrough(self.path, body, self.headers)
             else:
