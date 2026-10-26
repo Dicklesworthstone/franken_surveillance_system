@@ -13,7 +13,7 @@ use super::json::Value;
 
 type Refusal = (i32, &'static str);
 
-pub(super) const PLAN_TOOL: &str = r#"{"name":"plan","description":"AOP-007: publish a witnessed native alert ControlPlan in the fixed deployment. intent=alert without approve publishes cognition only; the exact returned plan approval durably prepares that same alert and still sends nothing. intent=close records the native immutable execution episode or withdraws a never-prepared plan; unresolved effects cannot be silently closed. Plans and recommendations grant no effect authority.","inputSchema":{"type":"object","oneOf":[{"type":"object","properties":{"intent":{"const":"alert"},"session":{"type":"string","minLength":1,"maxLength":128},"event_id":{"type":"string","minLength":1,"maxLength":128},"relay":{"type":"string","minLength":1,"maxLength":128,"description":"Exact literal IP:PORT; no DNS or URL."},"path":{"type":"string","minLength":1,"maxLength":4096,"description":"Literal absolute webhook path."},"plaintext_approval":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71},"deadline_ms":{"type":"integer","minimum":1,"maximum":60000},"case":{"type":"string","minLength":1,"maxLength":128},"approve":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71}},"required":["intent","session","event_id","relay","path","plaintext_approval","deadline_ms"],"additionalProperties":false},{"type":"object","properties":{"intent":{"const":"close"},"session":{"type":"string","minLength":1,"maxLength":128},"plan":{"type":"string","minLength":1,"maxLength":128}},"required":["intent","session","plan"],"additionalProperties":false}]},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":false,"openWorldHint":false}}"#;
+pub(super) const PLAN_TOOL: &str = r#"{"name":"plan","description":"AOP-007: publish a witnessed native alert ControlPlan in the fixed deployment. intent=alert without approve publishes cognition only; the exact returned plan approval durably prepares that same alert and still sends nothing. intent=close records the native immutable execution episode or withdraws a never-prepared plan; unresolved effects cannot be silently closed. Plans and recommendations grant no effect authority. intent=mission-bind explicitly enrolls one owned plan-outcome objective and evidence-clock deadline; intent=mission-assess records proof-derived lifecycle under an exact retained mission revision. These intents write cognition only and do not establish physical-event truth.","inputSchema":{"type":"object","oneOf":[{"type":"object","properties":{"intent":{"const":"alert"},"session":{"type":"string","minLength":1,"maxLength":128},"event_id":{"type":"string","minLength":1,"maxLength":128},"relay":{"type":"string","minLength":1,"maxLength":128,"description":"Exact literal IP:PORT; no DNS or URL."},"path":{"type":"string","minLength":1,"maxLength":4096,"description":"Literal absolute webhook path."},"plaintext_approval":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71},"deadline_ms":{"type":"integer","minimum":1,"maximum":60000},"case":{"type":"string","minLength":1,"maxLength":128},"approve":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71}},"required":["intent","session","event_id","relay","path","plaintext_approval","deadline_ms"],"additionalProperties":false},{"type":"object","properties":{"intent":{"const":"close"},"session":{"type":"string","minLength":1,"maxLength":128},"plan":{"type":"string","minLength":1,"maxLength":128}},"required":["intent","session","plan"],"additionalProperties":false},{"type":"object","properties":{"intent":{"const":"mission-bind"},"session":{"type":"string","minLength":1,"maxLength":128},"plan":{"type":"string","minLength":1,"maxLength":128},"decision_deadline_ns":{"oneOf":[{"type":"integer","minimum":1},{"type":"string","pattern":"^[1-9][0-9]*$"}],"description":"Exact signed 128-bit evidence-clock nanoseconds; use a decimal string when a client cannot preserve integer precision."}},"required":["intent","session","plan","decision_deadline_ns"],"additionalProperties":false},{"type":"object","properties":{"intent":{"const":"mission-assess"},"session":{"type":"string","minLength":1,"maxLength":128},"plan":{"type":"string","minLength":1,"maxLength":128},"expected_mission":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71}},"required":["intent","session","plan","expected_mission"],"additionalProperties":false}]},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":false,"openWorldHint":false}}"#;
 
 pub(super) const COMMIT_TOOL: &str = r#"{"name":"commit","description":"AOP-008: dispatch or reconcile through the existing durable native alert owner. intent=dispatch requires a retained plan and its exact prepared dispatch approval; it revalidates before durably committing and makes at most one bounded relay attempt. An already-dispatched operation is never resent. Relay acceptance is not human delivery. intent=reconcile previews or records an exactly approved owner attestation with explicit operator_asserted provenance and no network I/O. After response loss inspect with wait and reconcile indeterminacy; never invent an approval or blindly resend.","inputSchema":{"type":"object","oneOf":[{"type":"object","properties":{"intent":{"const":"dispatch"},"plan":{"type":"string","minLength":1,"maxLength":128},"approve":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71}},"required":["intent","plan","approve"],"additionalProperties":false},{"type":"object","properties":{"intent":{"const":"reconcile"},"operation_id":{"type":"string","minLength":1,"maxLength":128},"outcome":{"type":"string","enum":["delivered","not_delivered"]},"evidence":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71},"statement":{"type":"string","minLength":1,"maxLength":1024,"description":"Literal owner attestation, at most 1024 UTF-8 bytes; never a file path to read."},"approve":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71}},"required":["intent","operation_id","outcome","evidence","statement"],"additionalProperties":false}]},"annotations":{"readOnlyHint":false,"destructiveHint":true,"idempotentHint":false,"openWorldHint":true}}"#;
 
@@ -77,6 +77,26 @@ fn deadline(args: &BTreeMap<String, Value>) -> Result<u64, Refusal> {
         .ok_or((-32602, "Dispatch deadline_ms must be in 1..60000"))
 }
 
+fn mission_deadline(args: &BTreeMap<String, Value>) -> Result<String, Refusal> {
+    let value = args
+        .get("decision_deadline_ns")
+        .ok_or((-32602, "Expected an explicit mission decision_deadline_ns"))?;
+    let raw = match value {
+        Value::Number(raw) => raw.as_str(),
+        value => value
+            .text()
+            .ok_or((-32602, "Expected exact signed decimal nanoseconds"))?,
+    };
+    raw.parse::<i128>()
+        .ok()
+        .filter(|value| *value > 0 && value.to_string() == raw)
+        .map(|value| value.to_string())
+        .ok_or((
+            -32602,
+            "Expected canonical positive signed 128-bit decision_deadline_ns",
+        ))
+}
+
 /// Convert one admitted control tool into the existing typed CLI command. The caller alone
 /// invokes the native owner after its ordinary JSON-RPC initialization/notification checks.
 pub(super) fn command(
@@ -130,6 +150,24 @@ pub(super) fn command(
                 put(&mut argv, args, "session", "--session", 128)?;
                 put(&mut argv, args, "plan", "--close", 128)?;
             }
+            "mission-bind" => {
+                only(args, &["intent", "session", "plan", "decision_deadline_ns"])?;
+                put(&mut argv, args, "session", "--session", 128)?;
+                put(&mut argv, args, "plan", "--mission-bind", 128)?;
+                argv.push(format!("--mission-deadline-ns={}", mission_deadline(args)?).into());
+            }
+            "mission-assess" => {
+                only(args, &["intent", "session", "plan", "expected_mission"])?;
+                put(&mut argv, args, "session", "--session", 128)?;
+                put(&mut argv, args, "plan", "--mission-assess", 128)?;
+                put(
+                    &mut argv,
+                    args,
+                    "expected_mission",
+                    "--expected-mission",
+                    71,
+                )?;
+            }
             _ => return Err((-32602, "Unsupported plan intent")),
         },
         "commit" => match text(args, "intent", 32)? {
@@ -180,12 +218,13 @@ pub(super) fn command(
     let admitted = match &command {
         FssCommand::Effect(effect) => matches!(
             (name, effect.as_ref()),
-            ("plan", EffectCommand::Plan(_) | EffectCommand::Close(_))
-                | (
-                    "commit",
-                    EffectCommand::Commit(_) | EffectCommand::Reconcile(_)
-                )
-                | ("cancel", EffectCommand::Cancel(_))
+            (
+                "plan",
+                EffectCommand::Plan(_) | EffectCommand::Close(_) | EffectCommand::Mission(_)
+            ) | (
+                "commit",
+                EffectCommand::Commit(_) | EffectCommand::Reconcile(_)
+            ) | ("cancel", EffectCommand::Cancel(_))
         ),
         _ => false,
     };
@@ -218,6 +257,68 @@ mod tests {
             FssCommand::Effect(effect) => Ok(*effect),
             _ => Err("not a native effect command"),
         }
+    }
+
+    #[test]
+    fn mission_mapping_preserves_exact_deadlines_and_refuses_scope_or_state_overrides()
+    -> Result<(), &'static str> {
+        use fss_reference::deployment_session::mission::MissionAction;
+        for deadline in [
+            "170141183460469231731687303715884105727",
+            "\"170141183460469231731687303715884105727\"",
+        ] {
+            let raw = format!(
+                r#"{{"intent":"mission-bind","session":"session:one","plan":"plan:one","decision_deadline_ns":{deadline}}}"#
+            );
+            let EffectCommand::Mission(mission) = mapped("plan", &raw)? else {
+                return Err("not a mission enrollment");
+            };
+            assert_eq!(mission.root, std::path::Path::new(ROOT));
+            assert_eq!(mission.principal.as_str(), PRINCIPAL);
+            assert!(matches!(
+                mission.action,
+                MissionAction::Adopt {
+                    decision_deadline: fss_core::TimestampNs(i128::MAX),
+                    ..
+                }
+            ));
+        }
+        let raw = format!(
+            r#"{{"intent":"mission-assess","session":"session:one","plan":"plan:one","expected_mission":"{DIGEST}"}}"#
+        );
+        let EffectCommand::Mission(mission) = mapped("plan", &raw)? else {
+            return Err("not a mission assessment");
+        };
+        assert!(
+            matches!(mission.action, MissionAction::Assess { expected, .. }
+            if expected.to_text() == DIGEST)
+        );
+        for forbidden in [
+            "root",
+            "principal",
+            "state",
+            "approve",
+            "decision_deadline_ns",
+        ] {
+            let mut candidate = args(&raw)?;
+            candidate.insert(forbidden.to_owned(), Value::Text("ignored".to_owned()));
+            assert!(command("plan", OsStr::new(ROOT), PRINCIPAL, &candidate).is_err());
+        }
+        for deadline in [
+            "1e9",
+            "1.0",
+            "\"+12\"",
+            "\"01\"",
+            "true",
+            "null",
+            "170141183460469231731687303715884105728",
+        ] {
+            let raw = format!(
+                r#"{{"intent":"mission-bind","session":"session:one","plan":"plan:one","decision_deadline_ns":{deadline}}}"#
+            );
+            assert!(mapped("plan", &raw).is_err());
+        }
+        Ok(())
     }
 
     #[test]

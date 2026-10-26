@@ -104,7 +104,7 @@ pub(super) fn resume_if_present(
         &session.mission_id,
         &session.session_id,
         limits,
-        session_briefs(root, &journal.store, &session, &snapshot.anchor, now)?,
+        session_briefs(root, &journal.store, &session, snapshot, now)?,
         &mission,
     )?;
     if revision.contract_basis() != &orientation.capsule().contract_basis {

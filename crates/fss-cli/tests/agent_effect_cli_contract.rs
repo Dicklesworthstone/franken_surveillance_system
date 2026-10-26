@@ -1490,3 +1490,291 @@ fn dispatch_holds_its_case_and_session_witnesses_until_the_receipt_is_durable() 
     assert_eq!(relay.requests()?, 1);
     Ok(())
 }
+
+#[test]
+fn enrolled_mission_requires_terminal_episode_and_retains_handoff_proof() -> TestResult {
+    let (directory, event_id) = corroborated_event("mission-cancelled")?;
+    let agent = Agent::open(&directory)?;
+    let open_args = [
+        "session".into(),
+        "open".into(),
+        "--json".into(),
+        "--root".into(),
+        agent.root.as_os_str().to_owned(),
+        "--mission".into(),
+        "Protect the door.".into(),
+        "--objective".into(),
+        "Alert the owner on a corroborated entry.".into(),
+    ];
+    let (code, legacy_stdout) = run_fss(&open_args)?;
+    let (code, legacy) = agent.answer(code, &legacy_stdout)?;
+    assert_eq!(code, Some(0), "{legacy_stdout}");
+    assert_eq!(text(&legacy, &["sessionId"])?, agent.session);
+    assert_eq!(
+        field(&legacy, &["payload", "missionRevision"])?,
+        &Value::Number("0".to_owned())
+    );
+    assert_eq!(
+        field(&legacy, &["payload", "decisionDeadlineNs"])?,
+        &Value::Null
+    );
+    // No dispatch is made: a refused loopback endpoint still provides a concrete plan route.
+    let relay: SocketAddr = "127.0.0.1:9".parse()?;
+    let ledger_path = agent.root.join("ledger/journal.fssj");
+    let effects_path = agent.root.join("effects/journal.fssj");
+    let sessions_path = agent.root.join("agent/sessions/journal.fssj");
+    let session_pin = agent.root.join("agent/sessions/ROOT");
+    let evidence_before = fs::read(&ledger_path)?;
+    let effects_before = fs::read(&effects_path)?;
+
+    let (code, planned) = agent.plan(&event_id, relay, &[])?;
+    assert_eq!(code, Some(0), "{planned:?}");
+    let (plan_id, plan_approval, _) = approvals(&planned)?;
+    let operation = operation_of(&planned)?;
+    assert_eq!(fs::read(&effects_path)?, effects_before);
+    // Exercise the complete canonical signed-128-bit deadline, without narrowing to u64,
+    // floating point, or the current wall clock in the command or its handoff rendering.
+    let deadline = i128::MAX.to_string();
+    let bind_args = agent.args(
+        "plan",
+        &[
+            "--session",
+            &agent.session,
+            "--mission-bind",
+            &plan_id,
+            "--mission-deadline-ns",
+            &deadline,
+        ],
+    );
+    let (code, bound_stdout) = run_fss(&bind_args)?;
+    let (code, bound) = agent.answer(code, &bound_stdout)?;
+    assert_eq!(code, Some(0), "{bound_stdout}");
+    assert_eq!(
+        text(&bound, &["payloadSchema"])?,
+        "fss.agent_control_plan.v1"
+    );
+    assert_eq!(field(&bound, &["payload"])?, field(&planned, &["payload"])?);
+    assert!(
+        texts(&bound, &["degradation"])?
+            .iter()
+            .any(|line| line.contains(" is awaiting_evidence at ")),
+        "{bound:?}"
+    );
+    let initial_head = texts(&bound, &["proofPointers"])?[0].clone();
+    ContentDigest::parse(&initial_head)?;
+    let bound_journal = fs::read(&sessions_path)?;
+    let bound_pin = fs::read(&session_pin)?;
+    let (code, retry_stdout) = run_fss(&bind_args)?;
+    assert_eq!(code, Some(0), "{retry_stdout}");
+    assert_eq!(
+        retry_stdout, bound_stdout,
+        "a cold exact bind retry is stable"
+    );
+    assert_eq!(fs::read(&sessions_path)?, bound_journal);
+    assert_eq!(fs::read(&session_pin)?, bound_pin);
+    assert_eq!(fs::read(&ledger_path)?, evidence_before);
+    assert_eq!(fs::read(&effects_path)?, effects_before);
+
+    // At this unchanged opening token, a fresh exact open retry returns the same admitted
+    // session and immutable workspace, with the now-enrolled public mission metadata.
+    let (code, oriented_stdout) = run_fss(&open_args)?;
+    let (code, oriented) = agent.answer(code, &oriented_stdout)?;
+    assert_eq!(code, Some(0), "{oriented_stdout}");
+    assert_eq!(text(&oriented, &["sessionId"])?, agent.session);
+    assert_eq!(
+        field(&oriented, &["workspaceRevision"])?,
+        field(&legacy, &["workspaceRevision"])?
+    );
+    assert_eq!(
+        field(&oriented, &["payload", "missionRevision"])?,
+        &Value::Number("0".to_owned())
+    );
+    assert_eq!(
+        field(&oriented, &["payload", "decisionDeadlineNs"])?,
+        &Value::Number(deadline.clone())
+    );
+    let summary = field(&oriented, &["payload", "contextPack", "items"])?
+        .array()
+        .ok_or("bound context items")?
+        .iter()
+        .find(|item| text(item, &["itemId"]).is_ok_and(|id| id == "context:frame:summary"))
+        .ok_or("protected mission summary")?;
+    assert!(text(summary, &["content"])?.contains(&format!(
+        "Retained mission revision 0: awaiting_evidence at {initial_head}; current assessment"
+    )));
+    assert_eq!(fs::read(&sessions_path)?, bound_journal);
+    assert_eq!(fs::read(&session_pin)?, bound_pin);
+
+    // Enrollment is cognition, so it must preserve the exact already-approved plan witness.
+    // Prepare after binding rather than binding an already-prepared operation.
+    let (code, prepared) = agent.plan(&event_id, relay, &["--approve", &plan_approval])?;
+    assert_eq!(code, Some(0), "{prepared:?}");
+    assert_eq!(text(&prepared, &["payload", "planId"])?, plan_id);
+    assert_eq!(operation_of(&prepared)?, operation);
+    assert_ne!(fs::read(&effects_path)?, effects_before);
+    let (code, preview) = agent.run("cancel", &["--operation", &operation])?;
+    assert_eq!(code, Some(0), "{preview:?}");
+    assert_eq!(text(&preview, &["payload", "state"])?, "prepared");
+    let cancel_approval = texts(&preview, &["proofPointers"])?[0].clone();
+    let (code, cancelled) = agent.run(
+        "cancel",
+        &["--operation", &operation, "--approve", &cancel_approval],
+    )?;
+    assert_eq!(code, Some(0), "{cancelled:?}");
+    assert_eq!(text(&cancelled, &["payload", "state"])?, "cancelled");
+    let evidence_after_cancel = fs::read(&ledger_path)?;
+    let effects_after_cancel = fs::read(&effects_path)?;
+
+    // A cancellation receipt alone is insufficient: the enrolled plan's immutable execution
+    // episode must agree before its lifecycle can become terminal.
+    let (code, pending) = agent.run(
+        "plan",
+        &[
+            "--session",
+            &agent.session,
+            "--mission-assess",
+            &plan_id,
+            "--expected-mission",
+            &initial_head,
+        ],
+    )?;
+    assert_eq!(code, Some(0), "{pending:?}");
+    assert!(
+        texts(&pending, &["degradation"])?
+            .iter()
+            .any(|line| line.contains(" is awaiting_evidence at ")),
+        "{pending:?}"
+    );
+    let pending_head = texts(&pending, &["proofPointers"])?[0].clone();
+    assert_ne!(pending_head, initial_head);
+    assert_eq!(fs::read(&ledger_path)?, evidence_after_cancel);
+    assert_eq!(fs::read(&effects_path)?, effects_after_cancel);
+
+    let (code, closed, episode) = agent.close(&plan_id)?;
+    assert_eq!(code, Some(0), "{closed:?}");
+    let (episode, _) = episode.ok_or("cancelled execution episode missing")?;
+    assert_eq!(text(&episode, &["outcome", "state"])?, "cancelled");
+    let assess_args = agent.args(
+        "plan",
+        &[
+            "--session",
+            &agent.session,
+            "--mission-assess",
+            &plan_id,
+            "--expected-mission",
+            &pending_head,
+        ],
+    );
+    let (code, terminal_stdout) = run_fss(&assess_args)?;
+    let (code, terminal) = agent.answer(code, &terminal_stdout)?;
+    assert_eq!(code, Some(0), "{terminal_stdout}");
+    assert_eq!(
+        text(&terminal, &["payloadSchema"])?,
+        "fss.agent_control_plan.v1"
+    );
+    assert_eq!(
+        field(&terminal, &["payload"])?,
+        field(&planned, &["payload"])?
+    );
+    assert!(
+        texts(&terminal, &["degradation"])?
+            .iter()
+            .any(|line| line.contains(" is cancelled at ")),
+        "{terminal:?}"
+    );
+    let terminal_head = texts(&terminal, &["proofPointers"])?[0].clone();
+    assert_ne!(terminal_head, pending_head);
+    let terminal_journal = fs::read(&sessions_path)?;
+    let terminal_pin = fs::read(&session_pin)?;
+    let (code, retry_stdout) = run_fss(&assess_args)?;
+    assert_eq!(code, Some(0), "{retry_stdout}");
+    assert_eq!(
+        retry_stdout, terminal_stdout,
+        "the exact predecessor request must recover its already-retained terminal result"
+    );
+    assert_eq!(fs::read(&sessions_path)?, terminal_journal);
+    assert_eq!(fs::read(&session_pin)?, terminal_pin);
+    assert_eq!(fs::read(&ledger_path)?, evidence_after_cancel);
+    assert_eq!(fs::read(&effects_path)?, effects_after_cancel);
+
+    let (code, handed) = agent.run("handoff", &["--session", &agent.session])?;
+    assert_eq!(code, Some(0), "{handed:?}");
+    for family in ["success", "failure", "stop"] {
+        assert!(
+            !texts(&handed, &["payload", "criteria", family])?.is_empty(),
+            "the explicitly enrolled {family} criteria must survive handoff"
+        );
+    }
+    assert!(
+        texts(&handed, &["payload", "criteria", "stop"])?
+            .iter()
+            .any(|line| line.contains(&deadline)),
+        "the exact i128 evidence-clock deadline must survive the public contract"
+    );
+    assert!(text(&handed, &["payload", "objective"])?.contains(&plan_id));
+    assert!(
+        texts(&handed, &["payload", "proofPointers"])?
+            .iter()
+            .any(|pointer| pointer.starts_with("fss://proof/sha256:")),
+        "the executable criteria must retain their typed proof pointers"
+    );
+    assert!(
+        texts(&handed, &["degradation"])?
+            .iter()
+            .all(|line| !line.contains("The handoff carries no success, failure, or stop criteria")),
+        "an enrolled profile must not emit the legacy missing-criteria warning"
+    );
+
+    // The mission revision is a verified child of the actual root-last handoff graph, not
+    // merely a digest printed in a response. It retains the exact terminal head assessed above.
+    let pointers = texts(&handed, &["proofPointers"])?;
+    assert!(pointers.contains(&terminal_head));
+    let publication_dir = agent.root.join("agent/publications");
+    let manifest =
+        fss_object::ObjectManifest::from_canonical_bytes(&fss_publication::read_verified(
+            &publication_dir,
+            ContentDigest::parse(&pointers[1])?,
+            1 << 20,
+        )?)?;
+    let revision_digest = ContentDigest::parse(&terminal_head)?;
+    assert!(manifest.children().contains(&revision_digest));
+    let retained_revision =
+        fss_publication::read_verified(&publication_dir, revision_digest, 64 * 1024)?;
+    assert_eq!(ContentDigest::sha256(&retained_revision), revision_digest);
+
+    // Effects changed the opening token, so explicitly resume this same session instead of
+    // opening a new identity. Its SituationCapsule exposes the retained assessed revision and
+    // exact numeric deadline; lifecycle state and freshness remain protected context.
+    let (code, resumed_stdout) = run_fss(&[
+        "session".into(),
+        "resume".into(),
+        "--json".into(),
+        "--root".into(),
+        agent.root.as_os_str().to_owned(),
+        "--handoff".into(),
+        text(&handed, &["payload", "handoffId"])?.into(),
+    ])?;
+    let (code, resumed) = agent.answer(code, &resumed_stdout)?;
+    assert_eq!(code, Some(0), "{resumed_stdout}");
+    assert_eq!(text(&resumed, &["sessionId"])?, agent.session);
+    assert_eq!(
+        field(&resumed, &["payload", "missionRevision"])?,
+        &Value::Number("2".to_owned())
+    );
+    assert_eq!(
+        field(&resumed, &["payload", "decisionDeadlineNs"])?,
+        &Value::Number(deadline)
+    );
+    let summary = field(&resumed, &["payload", "contextPack", "items"])?
+        .array()
+        .ok_or("resumed context items")?
+        .iter()
+        .find(|item| text(item, &["itemId"]).is_ok_and(|id| id == "context:frame:summary"))
+        .ok_or("resumed protected mission summary")?;
+    assert!(text(summary, &["content"])?.contains(&format!(
+        "Retained mission revision 2: cancelled at {terminal_head}; current assessment"
+    )));
+    assert_eq!(fs::read(&ledger_path)?, evidence_after_cancel);
+    assert_eq!(fs::read(&effects_path)?, effects_after_cancel);
+    Ok(())
+}

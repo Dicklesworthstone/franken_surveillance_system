@@ -488,6 +488,7 @@ fn execute_admitted(
                 effect.as_ref(),
                 fss_cli::effect_cmd::EffectCommand::Plan(_)
                     | fss_cli::effect_cmd::EffectCommand::Close(_)
+                    | fss_cli::effect_cmd::EffectCommand::Mission(_)
                     | fss_cli::effect_cmd::EffectCommand::Commit(_)
                     | fss_cli::effect_cmd::EffectCommand::Reconcile(_)
                     | fss_cli::effect_cmd::EffectCommand::Cancel(_)
@@ -1464,6 +1465,7 @@ mod tests {
                 let (actual, root, principal) = match effect.as_ref() {
                     EffectCommand::Plan(args) => ("plan", &args.root, &args.principal),
                     EffectCommand::Close(args) => ("close", &args.root, &args.principal),
+                    EffectCommand::Mission(args) => ("mission", &args.root, &args.principal),
                     EffectCommand::Commit(args) => ("commit", &args.root, &args.principal),
                     EffectCommand::Reconcile(args) => ("reconcile", &args.root, &args.principal),
                     EffectCommand::Cancel(args) => ("cancel", &args.root, &args.principal),

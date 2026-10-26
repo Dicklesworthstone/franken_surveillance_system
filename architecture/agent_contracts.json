@@ -530,6 +530,14 @@
       "reconciledValue": "fss plan --close (the AOP-007 close intent family) answers fss.agent_control_plan.v1: the closed plan exactly as published. The immutable episode is identified by proofPointers (episode root, the digest of its fss.agent_execution_episode.v1 rendering, and its canonical digest); its outcome predicates and every residual-uncertainty statement are stated in degradation; the rendering is the episode root's only other child and is hydrated from the agent publication store (crates/fss-cli/tests/agent_effect_cli_contract.rs validates it against schemas/agent_execution_episode.v1.json). No ExperienceCapsule is emitted, because its required cost, confidence, and decay fields would have to be invented for an unmetered single episode.",
       "reason": "The frozen public registry is followed rather than widened silently; the owner must decide whether a later registry generation adds an episode response payload or resource, or whether episodes surface only through ExperienceCapsule (ARES-014) once cost metering and a calibrated experience confidence exist.",
       "status": "open"
+    },
+    {
+      "target": "FSS-202 / INV-087 explicit PlanOutcomeV1 lifecycle versus the frozen AOP-007 response schemas",
+      "field": "responsePayloadSchemas",
+      "originalValue": "A durable mission needs executable criteria and immutable evidence-backed lifecycle revisions, but AOP-007 answers only fss.agent_control_plan.v1 and the native prose mission record is not a complete fss.agent_mission.v1 contract.",
+      "reconciledValue": "AOP-007 mission-bind and mission-assess retain one explicitly selected own-session plan-outcome criterion and proof-derived lifecycle in the existing session journal. The original ControlPlan remains the response payload; exact mission revision, state, deadline, and proof pointers are carried in the envelope and protected session context. Handoffs retain criteria and canonical revision custody. No raw state write, prose-goal completion claim, or effect authority is introduced.",
+      "reason": "This bounded execution profile implements proof-backed plan outcomes. General objective negotiation, arbitrary evidence predicates, and a public MissionContract payload require a separately versioned complete contract and registry decision. See docs/agent_mission_lifecycle.md; FSS-202 and INV-087 remain broader than this implementation.",
+      "status": "open"
     }
   ],
   "meaningfulDeltaComparison": {

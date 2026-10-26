@@ -167,6 +167,8 @@ pub struct CancelArgs {
 /// One effect-grammar command.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum EffectCommand {
+    /// AOP-007: enroll or assess an explicitly selected plan-outcome mission contract.
+    Mission(crate::mission_cmd::MissionArgs),
     /// AOP-007 `plan`.
     Plan(PlanArgs),
     /// AOP-008 `commit` of a published plan.
@@ -2184,5 +2186,6 @@ pub fn execute_effect(command: &EffectCommand) -> (String, ExitIdentity) {
         EffectCommand::Wait(args) => execute_wait(args),
         EffectCommand::Cancel(args) => execute_cancel(args),
         EffectCommand::Close(args) => crate::episode_cmd::execute_close(args),
+        EffectCommand::Mission(args) => crate::mission_cmd::execute_mission(args),
     }
 }

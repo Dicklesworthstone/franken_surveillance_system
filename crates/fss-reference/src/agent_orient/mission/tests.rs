@@ -69,6 +69,7 @@ fn binding() -> TestResult<OrientSessionBinding> {
             objective: "Determine whether the east door opened; do not infer an answer.".to_owned(),
             record_digest: ContentDigest::sha256(b"synthetic authenticated mission record"),
         }),
+        mission_progress: None,
         cases: Vec::new(),
         plans: Vec::new(),
         claims: Vec::new(),

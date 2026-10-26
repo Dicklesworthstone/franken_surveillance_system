@@ -37,6 +37,8 @@ pub mod investigate_cmd;
 /// Bounded strict JSON reading for intent files.
 pub mod json_input;
 pub mod lab_cmd;
+/// Explicit, proof-backed plan-outcome mission contracts under AOP-007.
+pub mod mission_cmd;
 pub mod negative_evidence_cmd;
 /// Read-only `orient` (AOP-003) and `explain` (AOP-011) over a deployment root.
 pub mod orient_cmd;

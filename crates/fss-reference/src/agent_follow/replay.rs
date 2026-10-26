@@ -335,7 +335,8 @@ pub fn follow_replay_step_for<C: ReplayControl + ?Sized>(
         return Err(ReplayError::InvalidBounds);
     }
     if session.is_some_and(|binding| {
-        !binding.cases.is_empty()
+        binding.mission_progress.is_some()
+            || !binding.cases.is_empty()
             || !binding.plans.is_empty()
             || !binding.claims.is_empty()
             || !binding.findings.is_empty()

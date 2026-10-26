@@ -631,7 +631,7 @@ pub fn investigate(
         &session.mission_id,
         &session.session_id,
         &limits,
-        super::session_briefs(root, &journal.store, &session, &session.current_anchor, now)?,
+        super::session_briefs(root, &journal.store, &session, &snapshot, now)?,
         &super::mission_for_workspace(root, &session, &workspace)?,
     )?;
     Ok(CaseAnswer {

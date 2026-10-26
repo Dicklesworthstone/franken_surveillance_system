@@ -821,6 +821,7 @@ pub(crate) fn situation_capsule_payload(
         .collect();
     debt.extend(overrides.extra_debt.iter().cloned());
     let validity = &orientation.validity;
+    let mission_progress = orientation.mission_progress.as_ref();
     Ok(agent_json::object(&[
         ("schema", agent_json::string("fss.situation_capsule.v1")),
         (
@@ -830,9 +831,15 @@ pub(crate) fn situation_capsule_payload(
         ("capsuleId", agent_json::string(&capsule.capsule_id)),
         ("revision", capsule.revision.to_string()),
         ("missionId", agent_json::string(capsule.mission_id.as_str())),
-        // Missions are never revised: an orientation's read-only mission has no revisions, and a
-        // durable session's mission record is published once, at `fss session open`.
-        ("missionRevision", "0".to_owned()),
+        // An explicitly enrolled execution objective has its own retained revisions; the
+        // original prose-only MissionRecord remains immutable. Historical revisions keep
+        // their identity here while protected context explains assessment freshness.
+        (
+            "missionRevision",
+            mission_progress
+                .map_or(0, |progress| progress.revision.revision())
+                .to_string(),
+        ),
         ("sessionId", agent_json::string(capsule.session_id.as_str())),
         (
             "principalId",
@@ -854,7 +861,20 @@ pub(crate) fn situation_capsule_payload(
             "privacyProjection",
             privacy_projection(&capsule.anchor).capsule_json(),
         ),
-        ("decisionDeadlineNs", "null".to_owned()),
+        (
+            "decisionDeadlineNs",
+            mission_progress.map_or_else(
+                || "null".to_owned(),
+                |progress| {
+                    progress
+                        .revision
+                        .criterion()
+                        .decision_deadline
+                        .0
+                        .to_string()
+                },
+            ),
+        ),
         ("situationFrame", situation_frame(orientation)?),
         // Without a previous anchor no change is claimed.
         (

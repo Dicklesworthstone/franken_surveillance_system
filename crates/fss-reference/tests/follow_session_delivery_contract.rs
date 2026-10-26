@@ -9,18 +9,22 @@ use std::path::{Path, PathBuf};
 
 use fss_core::{
     AgentView, BatchId, BudgetVector, CaptureInterval, ContentDigest, ContextAuthority,
-    EffectIntent, EffectState, EvidenceDelta, IdempotencyKey, MeaningfulDeltaClass, ObjectId,
-    ObligationId, OperationId, Plane, PrincipalId, RootAuthoritySpec, TimestampNs,
+    EffectIntent, EffectState, EventId, EvidenceDelta, IdempotencyKey, MeaningfulDeltaClass,
+    ObjectId, ObligationId, OperationId, Plane, PrincipalId, RootAuthoritySpec, TimestampNs,
 };
 use fss_reference::agent_follow::replay::{
-    ReplayBinding, ReplayBoundary, ReplayControl, ReplayDenial, ReplayError,
+    ReplayBinding, ReplayBoundary, ReplayControl, ReplayDenial, ReplayError, follow_replay_step_for,
 };
-use fss_reference::agent_follow::{AnchorToken, history_anchor_token};
-use fss_reference::agent_orient::{DeploymentHistory, OrientLimits};
+use fss_reference::agent_follow::{AnchorToken, FollowRequest, history_anchor_token};
+use fss_reference::agent_orient::{
+    DeploymentHistory, OrientLimits, OrientMissionBrief, OrientMissionProgress,
+    OrientSessionBinding,
+};
 use fss_reference::agent_session::checkpoint::journal::follow::DurableFollowError;
 use fss_reference::agent_session::checkpoint::journal::{
     DurableSessionLimits, DurableSessionStore, SessionRecoveryState, inspect_session_bytes,
 };
+use fss_reference::agent_session::mission::MissionPlanCriterion;
 use fss_reference::agent_session::work_claims::WorkClaimLimits;
 use fss_reference::agent_session::workspace::{WorkspaceWrite, WorkspaceWriteMode};
 use fss_reference::deployment_session::follow::{
@@ -793,5 +797,147 @@ fn ambiguous_journals_and_nonreplayable_workspace_semantics_require_explicit_res
         history_anchor_token(&history, history.head()),
         Some(delivered.result_anchor)
     );
+    Ok(())
+}
+
+#[test]
+fn retained_mission_progress_refuses_replay_before_ack_or_new_subscription() -> TestResult {
+    let mut fixture = Fixture::new("mission-progress")?;
+    fixture.append()?;
+    let mut request = fixture.request(64)?;
+    let delivered = fixture.follow(&request)?;
+    let mut store = DurableSessionStore::open_existing_with_coordination(
+        fixture.root.join("agent/sessions/journal.fssj"),
+        delivered.journal_root,
+        DurableSessionLimits::default(),
+        WorkClaimLimits::default(),
+    )?;
+    // Explicit synthetic owner metadata isolates the agent-journal axis. It is not an actual
+    // retained native plan or evidence that an operation occurred. Follow must refuse even
+    // though there is no plan publication for its pre-existing publication scan to detect.
+    let revision = store.register_mission_plan(
+        &fixture.opened.session.principal_id,
+        MissionPlanCriterion {
+            session_id: fixture.opened.session.session_id.clone(),
+            mission_id: fixture.opened.session.mission_id.clone(),
+            principal: fixture.opened.session.principal_id.clone(),
+            mission_record_digest: fixture.opened.mission.digest(),
+            plan_id: "plan:follow:synthetic-mission".to_owned(),
+            plan_record_digest: ContentDigest::sha256(b"synthetic mission plan metadata"),
+            plan_root: ContentDigest::sha256(b"synthetic mission plan publication"),
+            control_plan_digest: ContentDigest::sha256(b"synthetic mission plan rendering"),
+            operation_id: OperationId::parse("operation:follow:synthetic-mission")?,
+            obligation_id: ObligationId::parse("obligation:follow:synthetic-mission")?,
+            event_id: EventId::parse("event:follow:synthetic-mission")?,
+            event_revision: ContentDigest::sha256(b"synthetic mission event revision"),
+            contract_basis: fixture.opened.orientation.capsule().contract_basis.clone(),
+            baseline_anchor: fixture.opened.session.current_anchor.clone(),
+            decision_deadline: TimestampNs(10_001),
+        },
+        TimestampNs(10_000),
+    )?;
+    fs::write(
+        fixture.root.join("agent/sessions/ROOT"),
+        format!("{}\n", store.committed_root().to_text()),
+    )?;
+    drop(store);
+
+    // A supplied current or historical mission head cannot be applied to both evidence
+    // endpoints by the pure replay API. Refusal precedes even its first snapshot admission.
+    struct NoReplay;
+    impl ReplayControl for NoReplay {
+        fn admit(&mut self, _: &ReplayBinding, _: ReplayBoundary) -> Result<(), ReplayDenial> {
+            Err(ReplayDenial::Unavailable)
+        }
+    }
+    let history = DeploymentHistory::read(&fixture.root, &OrientLimits::default())?;
+    for current in [false, true] {
+        let binding = OrientSessionBinding {
+            session_id: fixture.opened.session.session_id.clone(),
+            mission_id: fixture.opened.session.mission_id.clone(),
+            mission: Some(OrientMissionBrief {
+                mission_id: fixture.opened.session.mission_id.clone(),
+                session_id: fixture.opened.session.session_id.clone(),
+                principal: fixture.opened.session.principal_id.clone(),
+                site_lineage: SITE.to_owned(),
+                mission: fixture.opened.mission.mission.clone(),
+                objective: fixture.opened.mission.objective.clone(),
+                record_digest: fixture.opened.mission.digest(),
+            }),
+            mission_progress: Some(OrientMissionProgress {
+                revision: revision.clone(),
+                current,
+            }),
+            cases: Vec::new(),
+            plans: Vec::new(),
+            claims: Vec::new(),
+            findings: Vec::new(),
+            supervisions: None,
+            trauma_warnings: None,
+        };
+        let refusal = follow_replay_step_for(
+            &history,
+            &request.since,
+            &delivered.result_anchor,
+            &FollowRequest {
+                view: request.view,
+                principal: fixture.opened.session.principal_id.clone(),
+                max_entries: request.max_entries,
+                continuation: None,
+            },
+            Some(&binding),
+            &mut NoReplay,
+        );
+        assert!(matches!(
+            refusal,
+            Err(ReplayError::UnsupportedSessionFacets)
+        ));
+    }
+
+    let retained = fixture.inspect()?;
+    let conserved_paths = [
+        "agent/sessions/journal.fssj",
+        "agent/sessions/ROOT",
+        "ledger/journal.fssj",
+        "effects/journal.fssj",
+    ];
+    let before = conserved_paths
+        .iter()
+        .map(|path| fs::read(fixture.root.join(path)))
+        .collect::<Result<Vec<_>, _>>()?;
+    request.acknowledge = Some(delivered.delivery_receipt);
+    for retry in 0..3 {
+        if retry == 2 {
+            request.subscription_id = "new-after-mission-enrollment".to_owned();
+            request.acknowledge = None;
+        }
+        let mut control = Control::new(&fixture.root, &request, &fixture.opened);
+        let failure = follow_session(
+            &fixture.root,
+            &fixture.opened.session.principal_id,
+            &request,
+            &OrientLimits::default(),
+            &mut control,
+        )
+        .err()
+        .ok_or("retained mission history must require explicit resnapshot")?;
+        assert!(matches!(
+            failure.error,
+            FollowSessionError::Replay(ReplayError::UnsupportedSessionFacets)
+        ));
+        assert!(failure.acknowledged.is_none());
+        assert_eq!(
+            control.boundaries,
+            [
+                FollowSessionBoundary::ReadHistory,
+                FollowSessionBoundary::OpenJournal,
+                FollowSessionBoundary::ReadSubscription,
+            ],
+        );
+        assert_eq!(fixture.inspect()?, retained);
+        for (path, expected) in conserved_paths.iter().zip(&before) {
+            assert_eq!(&fs::read(fixture.root.join(path))?, expected);
+        }
+    }
     Ok(())
 }

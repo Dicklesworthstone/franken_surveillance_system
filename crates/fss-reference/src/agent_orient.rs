@@ -101,7 +101,7 @@ pub use historical_health::{
     MAX_HISTORICAL_HEALTH_METADATA_BYTES, MAX_HISTORICAL_HEALTH_READS_PER_RECORD,
     MAX_HISTORICAL_HEALTH_RECORDS, RetainedHistoricalHealth, SOURCE_CLASS_HISTORICAL_HEALTH_DETAIL,
 };
-pub use mission::OrientMissionBrief;
+pub use mission::{OrientMissionBrief, OrientMissionProgress};
 
 /// Capability registry row that admits a situation read (AOP-003, AOP-004, AOP-009).
 pub const CAPABILITY_SITUATION_READ: &str = "CAP-AGENT-SITUATION-READ-001";
@@ -1412,6 +1412,9 @@ impl std::error::Error for OrientError {}
 /// One compiled, verified, read-only orientation.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DeploymentOrientation {
+    /// Exact admitted lifecycle metadata for existing mission revision/deadline wire fields.
+    /// The protected context always distinguishes current from historical assessments.
+    pub mission_progress: Option<OrientMissionProgress>,
     /// View the orientation was compiled for.
     pub view: AgentView,
     /// Verified reference publication: capsule, resource state, control envelope, context pack,
@@ -2658,7 +2661,7 @@ fn compile_capsule(
             Completeness::Partial
         },
         created_at: snapshot.latest_evidence_time,
-        mission_state: None,
+        mission_state: mission_context.state,
     };
     capsule.validate()?;
     for cell in &capsule.frame.knowledge_cells {
@@ -3500,6 +3503,10 @@ fn orientation_objective(
         if let Some(mission) = session.and_then(|binding| binding.mission.as_ref()) {
             encoder.digest(mission.record_digest);
         }
+        if let Some(progress) = session.and_then(|binding| binding.mission_progress.as_ref()) {
+            encoder.digest(progress.revision.digest());
+            encoder.bool(progress.current);
+        }
     });
     mission::objective(
         ObjectiveContractParams {
@@ -3684,6 +3691,9 @@ pub struct OrientSessionBinding {
     /// Exact immutable requested mission admitted from this session's retained record.
     /// `None` leaves mission completion explicitly unassessed.
     pub mission: Option<OrientMissionBrief>,
+    /// Exact retained execution-objective revision, with freshness verified by its native owner.
+    /// Historical revisions remain visible but cannot assert a current terminal mission state.
+    pub mission_progress: Option<OrientMissionProgress>,
     /// Open investigation cases of the mission visible to the session, in identity order.
     pub cases: Vec<OrientCaseBrief>,
     /// Active (non-terminal) plans of the mission, in identity order.
@@ -3900,6 +3910,7 @@ fn orient_deployment_for_with_advisories(
         session,
     )?;
     Ok(DeploymentOrientation {
+        mission_progress: session.and_then(|binding| binding.mission_progress.clone()),
         view: request.view,
         projection,
         target_tokens,

@@ -341,8 +341,9 @@ pub fn hold_planning_context(
         validate_case_basis(case, &session)?;
     }
     // A plan binds the world situation and immutable requested goal at the session's anchor.
-    // No mutable case or plan briefs enter that frame, so recording a case or a plan cannot
-    // change the identity of the plans compiled at that anchor.
+    // No mutable case, plan or mission-assessment briefs enter that frame: enrolling this
+    // exact plan as a mission criterion must not change its bytes when approval is retried.
+    // Current lifecycle assessments are projected by the mission and session surfaces.
     let orientation = orient_bound(
         None,
         &position.snapshot,

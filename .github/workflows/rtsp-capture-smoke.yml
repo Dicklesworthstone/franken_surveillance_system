@@ -111,6 +111,9 @@ jobs:
           cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --bin fss-mcp || fss_mcp_status=1
           cargo +nightly-2026-08-31 test --no-fail-fast --locked --offline -p fss-cli --test session_cli_contract --test mcp_cli_contract --test mcp_session_lifecycle_contract --test investigate_cli_contract --test mcp_investigation_contract --test mcp_coordination_contract --test work_claim_cli_contract --test finding_cli_contract --test mcp_control_contract --test agent_effect_cli_contract --test mcp_feedback_contract || fss_mcp_status=1
           cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --lib deployment_session::findings::tests || fss_mcp_status=1
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --lib mission:: || fss_mcp_status=1
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test deployment_mission_lifecycle_contract || fss_mcp_status=1
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test follow_session_delivery_contract --test follow_replay_contract || fss_mcp_status=1
           exit "$fss_mcp_status"
   capture:
     runs-on: ubuntu-24.04

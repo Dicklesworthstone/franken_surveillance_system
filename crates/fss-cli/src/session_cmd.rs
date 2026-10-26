@@ -569,6 +569,14 @@ fn handoff_payload(
         .tokens(record.token_budget)
         .build()
         .unwrap_or(BudgetVector::ZERO);
+    let mut proof_pointers = vec![
+        record.publication_digest.to_text(),
+        record.mission_digest.to_text(),
+        workspace_digest.to_text(),
+        record.session_digest.to_text(),
+        record.anchor_token.clone(),
+    ];
+    proof_pointers.extend(orientation.objective.terminal_proof.iter().cloned());
     agent_json::object(&[
         ("schema", agent_json::string(schema)),
         ("handoffId", agent_json::string(capsule.handoff_id.as_str())),
@@ -590,9 +598,18 @@ fn handoff_payload(
         (
             "criteria",
             agent_json::object(&[
-                ("success", "[]".to_owned()),
-                ("failure", "[]".to_owned()),
-                ("stop", "[]".to_owned()),
+                (
+                    "success",
+                    agent_json::strings(&orientation.objective.success_predicates),
+                ),
+                (
+                    "failure",
+                    agent_json::strings(&orientation.objective.failure_predicates),
+                ),
+                (
+                    "stop",
+                    agent_json::strings(&orientation.objective.stop_conditions),
+                ),
             ]),
         ),
         ("budgets", agent_json::budget(&budgets)),
@@ -641,16 +658,7 @@ fn handoff_payload(
             "recommendedAffordances",
             agent_json::strings(&record.recommended_affordances),
         ),
-        (
-            "proofPointers",
-            agent_json::strings([
-                record.publication_digest.to_text(),
-                record.mission_digest.to_text(),
-                workspace_digest.to_text(),
-                record.session_digest.to_text(),
-                record.anchor_token.clone(),
-            ]),
-        ),
+        ("proofPointers", agent_json::strings(&proof_pointers)),
         (
             "requiredCapabilityProjection",
             agent_json::strings([CAPABILITY_SESSION_READ]),
@@ -738,11 +746,11 @@ fn handoff_payload(
     ])
 }
 
-/// The public projections published beside the handoff record: the session and the workspace
-/// revision handed off.
+/// The public session/workspace projections and any exact mission revision protected by the
+/// handoff. The native publisher deduplicates that canonical revision child.
 fn handoff_children(prepared: &PreparedHandoff) -> Vec<Vec<u8>> {
     let basis = &prepared.record.capsule.contract_basis;
-    vec![
+    let mut children = vec![
         agent_json::agent_session(&prepared.session, basis).into_bytes(),
         agent_json::session_capsule(
             prepared.workspace.capsule(),
@@ -750,7 +758,11 @@ fn handoff_children(prepared: &PreparedHandoff) -> Vec<Vec<u8>> {
             prepared.workspace.invalidated_actions(),
         )
         .into_bytes(),
-    ]
+    ];
+    if let Some(progress) = &prepared.mission_progress {
+        children.push(progress.as_bytes().to_vec());
+    }
+    children
 }
 
 fn handoff_response(
@@ -773,6 +785,7 @@ fn handoff_response(
         journal_root.to_text(),
         record.anchor_token.clone(),
     ];
+    proof_pointers.extend(orientation.objective.terminal_proof.iter().cloned());
     proof_pointers.extend(
         children
             .iter()
@@ -786,11 +799,16 @@ fn handoff_response(
     )
     .ok_or(RenderError("recommended affordance objects"))?;
     let mut degradation = orientation.degradation.clone();
-    degradation.push(
-        "The handoff carries no success, failure, or stop criteria: none were supplied at \
-         session open."
-            .to_owned(),
-    );
+    if orientation.objective.success_predicates.is_empty()
+        && orientation.objective.failure_predicates.is_empty()
+        && orientation.objective.stop_conditions.is_empty()
+    {
+        degradation.push(
+            "The handoff carries no success, failure, or stop criteria: none were supplied at \
+             session open."
+                .to_owned(),
+        );
+    }
     build_response(ResponseParts {
         operation: "handoff",
         request_digest,
@@ -1554,7 +1572,7 @@ fn execute_handoff(args: &SessionHandoffArgs) -> (String, ExitIdentity) {
     };
     let children = handoff_children(&prepared);
     let orientation = prepared.orientation.clone();
-    let objective = prepared.mission.objective.clone();
+    let objective = prepared.orientation.objective.desired_outcome.clone();
     let journal_root = prepared.journal_root;
     let request_digest = prepared.request_digest;
     match prepared.publish(&children) {

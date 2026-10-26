@@ -160,6 +160,10 @@ pub fn parse_fss_tokens(tokens: &[ArgToken]) -> Result<FssCommand, CliError> {
         "investigate" => {
             parse_investigate_args(tokens).map(|args| FssCommand::Investigate(Box::new(args)))
         }
+        "plan" if crate::mission_cmd::selects_mission(tokens) => {
+            crate::mission_cmd::parse_mission_args(tokens)
+                .map(|args| FssCommand::Effect(Box::new(EffectCommand::Mission(args))))
+        }
         "plan" if crate::episode_cmd::selects_close(tokens) => {
             crate::episode_cmd::parse_close_args(tokens)
                 .map(|args| FssCommand::Effect(Box::new(EffectCommand::Close(args))))

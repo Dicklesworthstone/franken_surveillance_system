@@ -87,6 +87,8 @@ use crate::situation_sections::{
     ReferenceSituationPublication, seal_reference_publication_handoff,
 };
 
+/// Explicit plan-outcome mission enrollment and evidence-derived lifecycle assessments.
+pub mod mission;
 mod opening_retry;
 #[cfg(test)]
 mod tests;
@@ -344,7 +346,7 @@ fn digest_of(domain: &str, parts: impl FnOnce(&mut CanonicalEncoder)) -> Content
 }
 
 /// The evidence-clock time of a snapshot (never negative).
-fn evidence_now(snapshot: &DeploymentSnapshot) -> TimestampNs {
+pub(crate) fn evidence_now(snapshot: &DeploymentSnapshot) -> TimestampNs {
     TimestampNs(snapshot.latest_evidence_time.0.max(0))
 }
 
@@ -1395,6 +1397,7 @@ fn orient_bound(
         mission_id: mission_id.clone(),
         session_id: session_id.clone(),
         mission: Some(mission.orientation_brief()),
+        mission_progress: briefs.mission_progress,
         cases: briefs.cases,
         claims: briefs.claims,
         findings: briefs.findings,
@@ -1425,6 +1428,7 @@ fn orient_bound(
 /// The session's own agent-plane state its situation lists: open cases, non-terminal claims,
 /// and active findings.
 struct SessionBriefs {
+    mission_progress: Option<crate::agent_orient::OrientMissionProgress>,
     cases: Vec<OrientCaseBrief>,
     claims: Vec<OrientClaimBrief>,
     findings: Vec<OrientFindingBrief>,
@@ -1438,6 +1442,7 @@ impl Default for SessionBriefs {
     fn default() -> Self {
         // Used only for the opening orientation, before this new identity can own work.
         Self {
+            mission_progress: None,
             cases: Vec::new(),
             claims: Vec::new(),
             findings: Vec::new(),
@@ -1453,9 +1458,10 @@ fn session_briefs(
     root: &Path,
     store: &DurableSessionStore,
     session: &AgentSession,
-    anchor: &LedgerAnchor,
+    snapshot: &DeploymentSnapshot,
     now: TimestampNs,
 ) -> Result<SessionBriefs, DeploymentSessionError> {
+    let anchor = &snapshot.anchor;
     let admitted = [
         "CAP-AGENT-SESSION-READ-001",
         "CAP-AGENT-SESSION-WRITE-001",
@@ -1476,7 +1482,29 @@ fn session_briefs(
     } else {
         None
     };
+    let mission_admitted = admitted
+        && [
+            "CAP-AGENT-PLAN-PREPARE-001",
+            "CAP-AGENT-CASE-WRITE-001",
+            "CAP-AGENT-WORK-CLAIM-001",
+        ]
+        .iter()
+        .all(|capability| session.capabilities.contains(*capability));
+    let mission_progress = if mission_admitted {
+        store
+            .mission_head_for_projection(session, now)
+            .map_err(|error| DeploymentSessionError::StoreInvalid(error.to_string()))?
+            .map(|revision| {
+                mission::projection_current(root, snapshot, store, session, &revision, now)
+                    .map(|current| crate::agent_orient::OrientMissionProgress { revision, current })
+                    .map_err(|error| DeploymentSessionError::StoreInvalid(error.to_string()))
+            })
+            .transpose()?
+    } else {
+        None
+    };
     Ok(SessionBriefs {
+        mission_progress,
         cases: investigation::case_briefs(store, session, anchor),
         claims: claims::claim_briefs(store, session, now),
         findings: findings::finding_briefs(root, session)?,
@@ -1491,6 +1519,12 @@ fn session_briefs(
 /// The effect facts of one plan's operation and obligation at the head, projected at this
 /// registered boundary so cognition modules (plans, episodes) never hold effect-plane types.
 struct OperationFacts {
+    operation_id: String,
+    effect_class: String,
+    idempotency_key: String,
+    request_digest: ContentDigest,
+    precondition_digest: ContentDigest,
+    authority_principal: String,
     /// Registered effect-state spelling.
     state: &'static str,
     /// Whether the operation was ever committed (dispatched).
@@ -1510,6 +1544,7 @@ struct OperationFacts {
 /// One obligation's identity, registered state spelling, and terminal proof.
 struct ObligationFacts {
     obligation_id: String,
+    operation_id: String,
     state: &'static str,
     proof_digest: Option<ContentDigest>,
 }
@@ -1530,6 +1565,7 @@ fn operation_facts(
         .find(|obligation| obligation.obligation_id.as_str() == obligation_id)
         .map(|obligation| ObligationFacts {
             obligation_id: obligation.obligation_id.as_str().to_owned(),
+            operation_id: obligation.operation_id.as_str().to_owned(),
             state: match obligation.state {
                 ObligationState::Pending => "pending",
                 ObligationState::Verified => "verified",
@@ -1540,6 +1576,12 @@ fn operation_facts(
             proof_digest: obligation.proof_digest,
         });
     Some(OperationFacts {
+        operation_id: receipt.intent.operation_id.as_str().to_owned(),
+        effect_class: receipt.intent.effect_class.clone(),
+        idempotency_key: receipt.intent.idempotency_key.as_str().to_owned(),
+        request_digest: receipt.intent.request_digest,
+        precondition_digest: receipt.intent.precondition_digest,
+        authority_principal: receipt.authority.principal.clone(),
         state: receipt.state.as_str(),
         dispatched: receipt.committed_at.is_some(),
         receipt_digest: receipt.receipt_digest(),
@@ -1904,7 +1946,7 @@ pub fn open_session(
         &session.mission_id,
         &session.session_id,
         &limits,
-        session_briefs(root, &journal.store, &session, &snapshot.anchor, now)?,
+        session_briefs(root, &journal.store, &session, &snapshot, now)?,
         &mission,
     )?;
     journal.commit_pin()?;
@@ -1948,6 +1990,8 @@ pub struct PreparedHandoff {
     pub workspace: WorkspaceRevision,
     /// The mission record.
     pub mission: MissionRecord,
+    /// Exact lifecycle revision protected by the sealed orientation, when explicitly enrolled.
+    pub mission_progress: Option<crate::agent_session::mission::MissionRevision>,
     /// The sealed situation publication as of the session's anchor.
     pub publication: ReferenceSituationPublication,
     /// The orientation the publication was sealed from.
@@ -2017,7 +2061,11 @@ pub fn prepare_handoff(
             "the workspace anchor token and the session anchor disagree".to_owned(),
         ));
     }
-    let briefs = session_briefs(root, &journal.store, &session, &session.current_anchor, now)?;
+    let briefs = session_briefs(root, &journal.store, &session, &snapshot, now)?;
+    let mission_progress = briefs
+        .mission_progress
+        .as_ref()
+        .map(|progress| progress.revision.clone());
     let orientation = orient_bound(
         Some((root, &head)),
         &snapshot,
@@ -2122,6 +2170,7 @@ pub fn prepare_handoff(
         session,
         workspace,
         mission,
+        mission_progress,
         publication,
         orientation,
         journal_root,
@@ -2143,12 +2192,19 @@ impl PreparedHandoff {
         crash: Option<PublishCutPoint>,
     ) -> Result<PublishedHandoff, DeploymentSessionError> {
         let bytes = self.record.to_bytes()?;
+        let mut retained_children = children.to_vec();
+        if let Some(progress) = &self.mission_progress {
+            let child = progress.as_bytes().to_vec();
+            if !retained_children.contains(&child) {
+                retained_children.push(child);
+            }
+        }
         let receipt = publish_record(
             &self.root,
             &HandoffRecord::slot(&self.record.capsule.handoff_id)?,
             "agent-handoff",
             &bytes,
-            children,
+            &retained_children,
             crash,
         )?;
         drop(self.journal);
@@ -2384,7 +2440,7 @@ pub fn resume_session(
         &session.mission_id,
         session_id,
         &limits,
-        session_briefs(root, &journal.store, &session, &basis_snapshot.anchor, now)?,
+        session_briefs(root, &journal.store, &session, &basis_snapshot, now)?,
         &mission,
     )?;
     let result = orient_bound(
@@ -2395,7 +2451,7 @@ pub fn resume_session(
         &session.mission_id,
         session_id,
         &limits,
-        session_briefs(root, &journal.store, &session, &head.anchor, now)?,
+        session_briefs(root, &journal.store, &session, &head, now)?,
         &mission,
     )?;
     // A historical evidence anchor does not restore the old agent-plane state. Comparing two

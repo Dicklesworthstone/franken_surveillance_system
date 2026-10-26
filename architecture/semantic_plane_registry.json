@@ -48,6 +48,7 @@
   "module_declarations": {
     "crates/fss-cli/src/bin/fss-event/supervise/retained.rs": "support",
     "crates/fss-cli/src/bin/fss-event/supervise/retained/session.rs": "support",
+    "crates/fss-cli/src/mission_cmd.rs": "cognition",
     "crates/fss-cli/src/supervisor/retained.rs": "cognition",
     "crates/fss-cli/src/supervisor/retained/budget.rs": "support",
     "crates/fss-cli/src/supervisor/retained/clock.rs": "support",
@@ -327,6 +328,7 @@
     "crates/fss-reference/src/deployment_session/findings.rs": "cognition",
     "crates/fss-reference/src/deployment_session/follow.rs": "cognition",
     "crates/fss-reference/src/deployment_session/investigation.rs": "cognition",
+    "crates/fss-reference/src/deployment_session/mission.rs": "cognition",
     "crates/fss-reference/src/deployment_session/opening_retry.rs": "cognition",
     "crates/fss-reference/src/deployment_session/plan.rs": "cognition",
     "crates/fss-reference/src/deployment_session/supervision.rs": "cognition",
@@ -720,6 +722,7 @@
     "crates/fss-reference/src/source/atomic_tests.rs": "support",
     "crates/fss-reference/src/tests.rs": "support",
     "crates/fss-reference/src/time_tolerance.rs": "authority",
+    "crates/fss-reference/tests/deployment_mission_lifecycle_contract.rs": "support",
     "crates/fss-reference/tests/deployment_mission_objective_contract.rs": "support"
   },
   "types": {

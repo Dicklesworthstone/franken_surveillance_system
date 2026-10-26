@@ -280,6 +280,7 @@ fn reconstruct(
         mission_id: session.mission_id.clone(),
         session_id: session.session_id.clone(),
         mission: Some(mission.orientation_brief()),
+        mission_progress: None,
         cases: Vec::new(),
         claims: Vec::new(),
         findings: Vec::new(),
@@ -317,6 +318,21 @@ fn semantic_history(
     now: TimestampNs,
 ) -> Result<ContentDigest, FollowSessionError> {
     let unsupported = || FollowSessionError::Replay(ReplayError::UnsupportedSessionFacets);
+    // Mission revisions have their own journal timeline. Applying their current head to both
+    // evidence snapshots would fabricate historical completion and can erase a transition.
+    // The live admission clock is intentionally independent of either historical snapshot.
+    if journal
+        .store
+        .mission_head_for_projection(session, now)
+        .map_err(|_| {
+            FollowSessionError::Session(DeploymentSessionError::StoreInvalid(
+                "retained mission history is unavailable for follow replay".to_owned(),
+            ))
+        })?
+        .is_some()
+    {
+        return Err(unsupported());
+    }
     // This profile cannot replay case/claim or workspace semantics. Retained heads include
     // terminal revisions, so create-and-close between polls cannot masquerade as empty history.
     if !journal.store.work_claim_heads().is_empty()
