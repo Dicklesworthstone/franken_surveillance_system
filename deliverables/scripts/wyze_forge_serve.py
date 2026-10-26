@@ -149,7 +149,9 @@ def main() -> int:
                 # the version we mirrored, because the bytes are the real 50039 ones.
                 model_ver = os.environ.get("MODEL_VER", "14.9.50040.r")
                 model_path_ver = "14.9.50039.r"
-                kvs_ver = os.environ.get("PROC_VER", "2.1.2.573")
+                # the kvs process keeps its REAL version: 2.1.2.573 does not exist on the cloud, so
+                # bumping it only produces NoSuchKey for webrtc.tar.gz.
+                kvs_ver = os.environ.get("KVS_VER", "2.1.2.571")
                 model_path = f"/wyzeedgeai_cam_v4_test_protocol/{model_path_ver}/wyzeedgeai_cam_v4_test_protocol"
                 kvs_path = f"/kvsWebrtcClientMaster_t41/{kvs_ver}/launch.sh"
 
