@@ -19,11 +19,11 @@ CERTDIR = os.path.join(HERE, "..", "certs", "emudhra")
 UP_HOST = "device-api.wyzecam.com"
 
 
-def _up_ip():
+def _up_ip(host=UP_HOST):
     """Resolve the real device API past our own DNS redirect."""
     import subprocess
     try:
-        out = subprocess.run(["dig", "+short", "+time=2", "@1.1.1.1", UP_HOST],
+        out = subprocess.run(["dig", "+short", "+time=2", "@1.1.1.1", host],
                              capture_output=True, text=True).stdout.split()
         for c in out:
             if c and c[0].isdigit():
@@ -39,14 +39,15 @@ def passthrough(path, body, headers):
     The point is the *response schema*: the device asks for things we do not know how to answer
     (get_processes and friends), and the real answer is the specification.
     """
-    ip = _up_ip()
+    host = (headers.get("Host") or UP_HOST).split(":")[0]
+    ip = _up_ip(host)
     if not ip:
         return b'{"code":1,"message":"Success"}'
     try:
         raw = socket.create_connection((ip, 443), timeout=8)
         ctx = ssl.create_default_context()
-        c = ctx.wrap_socket(raw, server_hostname=UP_HOST)
-        hdr = [f"POST {path} HTTP/1.1", f"Host: {UP_HOST}",
+        c = ctx.wrap_socket(raw, server_hostname=host)
+        hdr = [f"POST {path} HTTP/1.1", f"Host: {host}",
                f"Content-Length: {len(body)}",
                "Content-Type: " + (headers.get("Content-Type") or "application/json"),
                "Connection: close"]
@@ -96,6 +97,8 @@ def main() -> int:
             body = self.rfile.read(n) if n else b""
             print(f"{self.address_string()} ua={self.headers.get('User-Agent','-')!r} "
                   f"POST {self.path} {body[:800]!r}", flush=True)
+            if "get_processes" in self.path:
+                print("  hdrs " + repr(dict(self.headers)), flush=True)
             if "get_iot_certificate" in self.path:
                 # The stock client wants URLs, not inline PEM (EV-pack-H-002 §9.2). Each retry gets
                 # the next envelope variant so the device itself walks the candidate list; the
@@ -128,6 +131,15 @@ def main() -> int:
                 open("/tmp/ota/cand_idx", "w").write(str(i + 1))
                 print(f"  -> variant[{i}] {label}", flush=True)
                 out = json.dumps(obj).encode()
+            elif "get_processes" in self.path and os.environ.get("PROC_ANSWER"):
+                # The device asks which processes are out of date ("version":"latest"). Answering
+                # with our own capsule is a second install path that does not need the cmd channel.
+                cap = os.environ.get("CAP_PATH", "")
+                md5 = os.environ.get("CAP_MD5", "")
+                ver = cap.rsplit("/", 1)[-1].split(".tar")[0]
+                out = json.dumps({"code": 1, "msg": "SUCCESS", "data": {"processes": [
+                    {"name": "assis", "version": ver, "url":
+                     "https://s3-us-west-2.amazonaws.com/" + cap, "md5": md5}]}}).encode()
             elif os.environ.get("PASSTHROUGH"):
                 out = passthrough(self.path, body, self.headers)
             else:
