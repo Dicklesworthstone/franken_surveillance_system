@@ -60,6 +60,9 @@ mkdir -p /tmp/ota
 "$PY" "$HERE/wyze_dns_redirect.py" "$UP" "${GW:-192.168.4.1}" >>/tmp/dns.log 2>&1 &
 "$PY" "$HERE/wyze_forge_serve.py" --dir "$CAP_DIR" --port 443 \
   --sni s3-us-west-2.amazonaws.com >>/tmp/ota/forge.log 2>&1 &
+# the capsule streams every partition back before it writes; without a receiver it dies at step 2
+"$PY" "$HERE/wyze_backup_recv.py" --base-port "${PORT:-8446}" --dir /tmp/fwbackup \
+  >>/tmp/ota/backup.log 2>&1 &
 FORGE=$!
 sleep 1
 
