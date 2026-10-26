@@ -10,7 +10,7 @@ that already resolves here.
 
   wyze_forge_serve.py --dir /tmp/fwserve --port 443 --sni s3-us-west-2.amazonaws.com
 """
-import argparse, http.server, json, os, socket, ssl, sys
+import argparse, http.server, json, os, socket, ssl, sys, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CERTDIR = os.path.join(HERE, "..", "certs", "emudhra")
@@ -132,14 +132,17 @@ def main() -> int:
                 print(f"  -> variant[{i}] {label}", flush=True)
                 out = json.dumps(obj).encode()
             elif "get_processes" in self.path and os.environ.get("PROC_ANSWER"):
-                # The device asks which processes are out of date ("version":"latest"). Answering
-                # with our own capsule is a second install path that does not need the cmd channel.
-                cap = os.environ.get("CAP_PATH", "")
-                md5 = os.environ.get("CAP_MD5", "")
-                ver = cap.rsplit("/", 1)[-1].split(".tar")[0]
-                out = json.dumps({"code": 1, "msg": "SUCCESS", "data": {"processes": [
-                    {"name": "assis", "version": ver, "url":
-                     "https://s3-us-west-2.amazonaws.com/" + cap, "md5": md5}]}}).encode()
+                # Real schema, captured from the cloud: one process per request, keyed by the
+                # processname the device sends, and the payload is a launch.sh. Answering with a
+                # higher version makes the device fetch and run ours.
+                try:
+                    name = json.loads(body).get("processname") or "fss"
+                except Exception:
+                    name = "fss"
+                out = json.dumps({"code": "1", "ts": int(time.time() * 1000), "msg": "SUCCESS",
+                                  "data": {"version": os.environ.get("PROC_VER", "99.0.0"),
+                                           "url": "https://sinker-t-usw2.s3.us-west-2.amazonaws.com"
+                                                  "/proc/launch.sh?processname=" + name}}).encode()
             elif os.environ.get("PASSTHROUGH"):
                 out = passthrough(self.path, body, self.headers)
             else:

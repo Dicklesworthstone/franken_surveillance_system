@@ -16,7 +16,8 @@ SOURCES = [IF_IP, "8.8.8.8", "8.8.4.4", "208.67.220.123", "208.67.222.123"]
 NAMES = {b"s3-us-west-2.amazonaws.com", b"aws-iot.wyzecam.com",
          b"a24rq1e5m4mtei.iot.us-west-2.amazonaws.com",
          b"api.wyzecam.com", b"device-api.wyzecam.com", b"app.wyzecam.com",
-         b"core-cloud-gateway-lb-prod-456177862.us-west-2.elb.amazonaws.com"}
+         b"core-cloud-gateway-lb-prod-456177862.us-west-2.elb.amazonaws.com",
+         b"sinker-t-usw2.s3.us-west-2.amazonaws.com"}
 
 socks = {}
 for src in SOURCES:
