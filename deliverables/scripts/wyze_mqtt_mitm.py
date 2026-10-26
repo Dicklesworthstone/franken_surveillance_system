@@ -266,7 +266,7 @@ def inject(cli, up=None):
         inner={"model":m,"url":URL,"firmware_ver":ver,"md5":MD5,"sub_mac":THING.upper()}
         if act == "upgrade":
             body={"Action":"upgrade","Params":inner,"sub_mac":THING.upper(),
-                  "Guid":os.urandom(8).hex(),"Ts":int(time.time()*1000)}
+                  "Guid":os.urandom(8).hex()}
         elif act == "cmd":
             # iotclient logs "cmd:%d, len:%d, data:%s" and builds the UDS message itself
             body={"cmd":1234,"sub_mac":THING.upper(),"data":inner}
@@ -276,7 +276,7 @@ def inject(cli, up=None):
             body={"Action":act,"Guid":f"{THING}-{i}","url":URL,"md5":MD5,"model":m,
                   "sub_mac":THING.upper(),"Params":{"url":URL}}
         else:
-            body={"Action":act,"Guid":f"{THING}-{i}","Params":inner}
+            body={"Action":act,"Guid":f"{THING}-{i}","Params":inner}  # no Ts: the captured cloud body has none
         # sweep hooks: extra fields the cloud body may carry and ours does not.
         # OTA_SHAPES is a JSON array of {"top":{…},"params":{…}} cycled per iteration so one
         # connection covers every shape; OTA_EXTRA/OTA_PARAMS_EXTRA are the single-shape form.
