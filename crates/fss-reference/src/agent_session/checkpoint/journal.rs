@@ -30,6 +30,8 @@ pub mod workspace;
 /// Durable, session-owned follow delivery and contiguous acknowledgement receipts.
 pub mod follow;
 
+/// Immutable explicit mission criteria and assessed lifecycle history.
+pub mod mission;
 /// Durable retained-supervision reports, lifetime reservations and exact acknowledgement.
 pub mod supervision;
 
@@ -199,6 +201,8 @@ pub struct SessionRecoveryState {
     pub follows: Vec<follow::FollowSubscription>,
     /// Historical supervision progress; pending descriptors grant no current source access.
     pub supervisions: Vec<supervision::SupervisionSubscription>,
+    /// Every immutable enrolled mission revision; inspection restores no current authority.
+    pub missions: Vec<crate::agent_session::mission::MissionRevision>,
 }
 
 /// Re-executes the native bounded session, disclosure, workspace, claim and case verifiers
@@ -262,6 +266,7 @@ pub fn inspect_session_bytes(
             .unwrap_or_default(),
         follows: restored.follows.retained(),
         supervisions: restored.supervisions.retained(),
+        missions: restored.missions.retained(),
     })
 }
 
@@ -737,6 +742,7 @@ struct ReplayedSessionState {
     workspaces: Option<workspace::WorkspaceState>,
     follows: follow::FollowState,
     supervisions: supervision::SupervisionState,
+    missions: crate::agent_session::mission::ReferenceMissionStore,
 }
 
 fn replay_all(
@@ -751,6 +757,7 @@ fn replay_all(
     let mut workspaces = None;
     let mut follows = follow::FollowState::default();
     let mut supervisions = supervision::SupervisionState::default();
+    let mut missions = crate::agent_session::mission::ReferenceMissionStore::default();
     for record in report.records() {
         match record.kind() {
             SESSION_CHECKPOINT_RECORD_KIND => {
@@ -810,6 +817,16 @@ fn replay_all(
                 let sessions = memory.as_mut().ok_or(DurableSessionError::InvalidHistory)?;
                 supervision::replay_command(record.payload(), sessions, &mut supervisions, limits)?;
             }
+            mission::MISSION_COMMAND_RECORD_KIND => {
+                let sessions = memory.as_mut().ok_or(DurableSessionError::InvalidHistory)?;
+                mission::replay_command(
+                    record.payload(),
+                    sessions,
+                    &mut missions,
+                    workspaces.as_ref(),
+                    limits,
+                )?;
+            }
             _ => return Err(DurableSessionError::InvalidHistory),
         }
     }
@@ -819,6 +836,7 @@ fn replay_all(
         workspaces,
         follows,
         supervisions,
+        missions,
     })
 }
 

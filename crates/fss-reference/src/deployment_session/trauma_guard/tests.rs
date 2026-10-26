@@ -7,8 +7,9 @@ use std::fs;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use fss_core::{
-    AgentFeedbackProposal, CanonicalEncode, EpisodeOutcome, ExecutionEpisode, LedgerAnchor,
-    MissionId, RequestedDisposition, SessionId, TimestampNs,
+    AgentFeedbackProposal, BudgetVector, CanonicalEncode, ContextAuthority, EpisodeOutcome,
+    ExecutionEpisode, LedgerAnchor, MissionId, OperationId, RequestedDisposition,
+    RootAuthoritySpec, SessionId, TimestampNs,
 };
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
@@ -24,6 +25,27 @@ impl Fixture {
             NEXT_ROOT.fetch_add(1, Ordering::SeqCst),
         ));
         fs::create_dir_all(&path)?;
+        // Publication uses the real agent writer admission, which requires a valid deployment
+        // layout and clean authority journal even when no session has been opened.
+        let authority = ContextAuthority::new_root(RootAuthoritySpec {
+            trace_id: "trace:trauma-memory-fixture".to_owned(),
+            operation_id: OperationId::parse("operation:trauma-memory-fixture")?,
+            principal: "operator:trauma-memory-fixture".to_owned(),
+            capabilities: vec![crate::ADP_REPLAY_ROW_ID.to_owned()],
+            deadline: None,
+            priority: 10,
+            budgets: BudgetVector::default(),
+            privacy_scope: "privacy:internal".to_owned(),
+            retention_scope: "retention:ephemeral".to_owned(),
+            anchor_universe: ContentDigest::sha256(b"trauma-memory-tests"),
+            generation: 1,
+        })?;
+        let cx = crate::ReplayCx::from_context_authority(&authority, path.join("context"))?;
+        drop(crate::ReferenceDeployment::open(
+            &path,
+            "site:memory-tests",
+            &cx,
+        )?);
         Ok(Self(path))
     }
 }

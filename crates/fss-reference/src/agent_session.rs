@@ -29,6 +29,8 @@ pub mod context_hydration;
 /// Bounded, fenced coordination of exact multi-agent work scopes.
 pub mod work_claims;
 
+/// Explicit immutable mission criteria and evidence-bound lifecycle evaluation.
+pub mod mission;
 /// Immutable, session-authorized workspace history and explicit rebase.
 pub mod workspace;
 

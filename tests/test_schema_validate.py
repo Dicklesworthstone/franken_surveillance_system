@@ -908,7 +908,8 @@ class TestSchemaConstitution(unittest.TestCase):
         # Complete current registry, including retained discovery source validation and two
         # durable cumulative supervision schedule/advance domains, plus supervision inventory
         # output, receipt and protected orientation metadata domains.
-        self.assertEqual(result["digestDomainCount"], 478)
+        # Four explicit mission criterion/revision/history/command domains.
+        self.assertEqual(result["digestDomainCount"], 482)
 
         # Continuation cursor is verified implemented
         implemented_names = {s["name"] for s in result["schemas"] if s["status"] == "implemented"}
@@ -1465,7 +1466,8 @@ class TestSchemaConstitutionCrossReviewRegressions(unittest.TestCase):
         # Complete current registry, including retained discovery source validation and two
         # durable cumulative supervision schedule/advance domains, plus supervision inventory
         # output, receipt and protected orientation metadata domains.
-        self.assertEqual(result["digestDomainCount"], 478)
+        # Four explicit mission criterion/revision/history/command domains.
+        self.assertEqual(result["digestDomainCount"], 482)
         # 36 = 28 + fss.sensor_tamper_status.v1 (owner SensorTamperStatus, fss-2uftm)
         # + fss.agent_operations.v1 / fss.agent_views.v1 / fss.agent_request_envelope.v1
         #   (owners AgentOperation / AgentView / AgentRequestEnvelope, fss-x4a.30.83.17-40)
