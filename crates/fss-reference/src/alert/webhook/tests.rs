@@ -562,6 +562,98 @@ fn refusal_before_commit_never_opens_socket_or_changes_prepared_operation() -> T
     assert!(matches!(relay.listener.accept(), Err(e) if e.kind() == io::ErrorKind::WouldBlock));
     Ok(())
 }
+
+#[test]
+fn revoked_source_read_cannot_append_an_automatic_precommit_cancellation() -> Test {
+    let relay = Relay::new(b"")?;
+    let endpoint = endpoint(relay.peer()?)?;
+    let mut f = fixture("revoked-cancellation", &endpoint)?;
+    let owner = Owner::new(&endpoint, f.journal.path());
+    let root = f.journal.last_root();
+    let before = fs::read(f.journal.path())?;
+    let result = WebhookAttempt::begin(
+        &f.plan,
+        &endpoint,
+        &f.ledger,
+        &mut f.journal,
+        limits(4096),
+        101,
+        DEADLINE,
+        &owner,
+        |_| -> Result<Vec<u8>, ReferenceError> {
+            owner.denied.set(Some(WebhookBoundary::Commit));
+            Err(ReferenceError::InvalidSpec("source_read_owner_revoked"))
+        },
+    );
+    assert!(matches!(
+        result,
+        Err(WebhookError::Denied(WebhookDenial::Revoked))
+    ));
+    drop(result);
+    assert_eq!(f.journal.last_root(), root);
+    assert_eq!(fs::read(f.journal.path())?, before);
+    assert_eq!(
+        f.journal
+            .operation(&f.plan.intent.operation_id)
+            .ok_or("operation")?
+            .state,
+        EffectState::Prepared
+    );
+    assert_eq!(
+        f.journal
+            .obligation(&f.plan.obligation_id)
+            .ok_or("obligation")?
+            .state,
+        ObligationState::Pending
+    );
+    assert!(
+        matches!(relay.listener.accept(), Err(error) if error.kind() == io::ErrorKind::WouldBlock)
+    );
+    Ok(())
+}
+
+#[test]
+fn live_owner_still_admits_automatic_cancellation_after_a_source_refusal() -> Test {
+    let relay = Relay::new(b"")?;
+    let endpoint = endpoint(relay.peer()?)?;
+    let mut f = fixture("admitted-cancellation", &endpoint)?;
+    let owner = Owner::new(&endpoint, f.journal.path());
+    let root = f.journal.last_root();
+    let result = WebhookAttempt::begin(
+        &f.plan,
+        &endpoint,
+        &f.ledger,
+        &mut f.journal,
+        limits(4096),
+        101,
+        DEADLINE,
+        &owner,
+        |_| -> Result<Vec<u8>, ReferenceError> {
+            Err(ReferenceError::InvalidSpec("source_custody_missing"))
+        },
+    );
+    assert!(matches!(result, Err(WebhookError::Authority(_))));
+    drop(result);
+    assert_ne!(f.journal.last_root(), root);
+    assert_eq!(
+        f.journal
+            .operation(&f.plan.intent.operation_id)
+            .ok_or("operation")?
+            .state,
+        EffectState::Cancelled
+    );
+    assert_eq!(
+        f.journal
+            .obligation(&f.plan.obligation_id)
+            .ok_or("obligation")?
+            .state,
+        ObligationState::Cancelled
+    );
+    assert!(
+        matches!(relay.listener.accept(), Err(error) if error.kind() == io::ErrorKind::WouldBlock)
+    );
+    Ok(())
+}
 #[test]
 fn post_write_revocation_retains_sent_prefix_and_requires_local_cleanup_authority() -> Test {
     let mut relay = Relay::new(b"HTTP/1.1 200 OK\r\n\r\n")?;

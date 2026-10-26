@@ -1027,6 +1027,32 @@ where
     J: AlertEffectTransitioner,
     E: Into<ReferenceError>,
 {
+    revalidate_alert_event_authority_guarded(
+        plan,
+        authority,
+        read_payload,
+        requested_at,
+        journal,
+        |_| Ok(()),
+    )
+}
+
+/// Revalidate under a live owner that must separately admit the automatic local cancellation.
+/// Source reads may have exhausted or revoked that owner after the initial admission. A refused
+/// guard leaves the prepared operation untouched; neither source failure nor timeout grants
+/// authority to append a cancellation record.
+pub(crate) fn revalidate_alert_event_authority_guarded<J, E>(
+    plan: &ReferenceAlertPlan,
+    authority: &DurableReferenceLedger,
+    read_payload: impl FnMut(ContentDigest) -> Result<Vec<u8>, E>,
+    requested_at: TimestampNs,
+    journal: &mut J,
+    cancellation_guard: impl FnOnce(&OperationReceipt) -> Result<(), ReferenceError>,
+) -> Result<(), ReferenceError>
+where
+    J: AlertEffectTransitioner,
+    E: Into<ReferenceError>,
+{
     // This refusal precedes the ordinary stale-plan cancellation path. A restore is not proof
     // that the original operation was cancelled or that its provider never received a request.
     refuse_restored_effect_authority(authority)?;
@@ -1065,6 +1091,11 @@ where
         &plan.authority_anchor,
         &authority.current().anchor,
     );
+    cancellation_guard(
+        journal
+            .operation(operation_id)
+            .ok_or(fss_core::ContractError::NotFound)?,
+    )?;
     journal.transition_cancelled(
         operation_id,
         cancel_at,

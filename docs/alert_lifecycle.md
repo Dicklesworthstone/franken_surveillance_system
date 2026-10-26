@@ -69,6 +69,20 @@ Use `status` for a strictly read-only inspection.
 
 ## Retained cause, terminal proof, and exact retry
 
+Native webhook preparation revalidates retained source authority before commitment. If that
+validation fails, an automatic local cancellation needs a fresh admission from the same webhook
+owner immediately before the journal transition. A cancelled, expired or exhausted source-read
+owner cannot authorize that write merely because source validation failed. The operation remains
+`prepared`, the effect journal is unchanged, and no socket is contacted. A still-authorized owner
+retains the existing durable cancellation behavior for stale source evidence. Later recovery or
+explicit cancellation must obtain its own live authority; failure never silently grants it.
+
+The native webhook tests exercise both paths:
+
+```sh
+cargo test -p fss-reference --lib alert::webhook:: --locked --offline -- --test-threads=1
+```
+
 A cancellation request is published root-last with ledgered custody before the terminal
 transition. Its evidence binds the site, cancelling principal and **whole** prepared-record
 digest. The existing v3 journal then atomically records the cancellation and discharges its

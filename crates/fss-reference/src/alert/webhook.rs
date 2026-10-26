@@ -6,7 +6,9 @@
 //! Commitment is durable before any network I/O. There is no automatic resend,
 //! redirect, credential acquisition, DNS lookup, worker, or terminal-proof shortcut.
 
-use super::{ReferenceAlertPlan, check_alert_dispatch_authority, revalidate_alert_event_authority};
+use super::{
+    ReferenceAlertPlan, check_alert_dispatch_authority, revalidate_alert_event_authority_guarded,
+};
 use crate::{DurableEffectError, DurableEffectJournal, ReferenceError};
 use fss_core::{
     CanonicalEncode, CanonicalEncoder, ContentDigest, EffectIntent, EffectState, OperationReceipt,
@@ -437,13 +439,37 @@ impl<'a> WebhookAttempt<'a> {
             last_admission_ns: now_ns,
             outcome: None,
         };
-        revalidate_alert_event_authority(
+        let journal_path = journal.path().to_path_buf();
+        let mut cancellation_denial = None;
+        let validation = revalidate_alert_event_authority_guarded(
             plan,
             ledger,
             read_payload,
             TimestampNs(i128::from(now_ns)),
             journal,
-        )?;
+            |operation| {
+                owner
+                    .checkpoint(
+                        WebhookScope {
+                            endpoint,
+                            operation,
+                            effect_journal: &journal_path,
+                        },
+                        WebhookBoundary::Commit,
+                        now_ns,
+                        deadline_ns,
+                    )
+                    .map_err(|reason| {
+                        cancellation_denial = Some(reason);
+                        ReferenceError::InvalidSpec("webhook_cancellation_authority_refused")
+                    })
+            },
+        );
+        if let Err(error) = validation {
+            return Err(
+                cancellation_denial.map_or(WebhookError::Authority(error), WebhookError::Denied)
+            );
+        }
         let operation = journal
             .operation(&plan.intent.operation_id)
             .ok_or(WebhookError::EffectMismatch)?;
