@@ -239,7 +239,8 @@ def inject(cli, up=None):
         m=models[i % len(models)]
         # the UDS receiver wants {Action, Params, Guid}. "delDev" reads the descriptor from Params;
         # "upgradeSub" reads a top-level url only. Sweep both so the shape is measured, not assumed.
-        acts=[a for a in os.environ.get("OTA_ACTIONS","").split(",") if a] or ["upgrade"]
+        acts=[a for a in os.environ.get("OTA_ACTIONS","").split(",") if a] or \
+             ["powerOff","upgrade","cmd","cmdstr","upgradeSub","delDev"]
         act=acts[i % len(acts)]
         ver=URL.rsplit("/",1)[-1].split(".tar")[0]
         # sub_mac is mandatory: the handler at iCamera:0x476e98 dereferences it after starting
