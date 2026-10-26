@@ -228,6 +228,7 @@ def inject(cli, up=None):
                 _pub(c, f"$aws/things/{THING}/shadow/name/{os.environ.get('SHADOW','wyze-service')}/update/delta", json.dumps(st).encode())
             print("inject: delta",flush=True); break
         except Exception as e:
+            LIVE["c"]=None
             print("inject delta retry",repr(e),flush=True); time.sleep(2)
     else:
         print("inject: delta gave up",flush=True); return
@@ -294,6 +295,8 @@ def inject(cli, up=None):
                 print(f"inject: {act} pid={_PID[0]} model={m} {text}",flush=True)
                 break
             except Exception as e:
+                # the pair closed under us: drop the stale object so _live() waits for a real one
+                LIVE["c"]=None
                 print("inject cmd retry",repr(e),flush=True); time.sleep(2)
         else:
             print("inject cmd gave up",flush=True); return
