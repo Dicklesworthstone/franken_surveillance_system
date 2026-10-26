@@ -44,6 +44,9 @@ mod hevc;
 #[path = "capture_rtsp_cli/reordered.rs"]
 mod reordered;
 
+#[path = "capture_rtsp_cli/live_sentinel.rs"]
+mod live_sentinel;
+
 type Test<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 const SENSOR: &str = "sensor:rtsp-capture-cli";

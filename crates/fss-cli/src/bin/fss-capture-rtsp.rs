@@ -16,6 +16,8 @@ mod from_onvif;
 mod plan;
 #[path = "fss-capture-rtsp/reconnect.rs"]
 mod reconnect;
+#[path = "fss-capture-rtsp/sentinel.rs"]
+mod sentinel;
 #[path = "fss-capture-rtsp/single.rs"]
 mod single;
 #[path = "fss-capture-rtsp/source_mode.rs"]
@@ -26,8 +28,11 @@ mod timing;
 fn main() -> ExitCode {
     let args: Vec<_> = std::env::args_os()
         .skip(1)
-        .take(from_onvif::MAX_ARGUMENTS + 2)
+        .take(from_onvif::MAX_ARGUMENTS.max(sentinel::MAX_ARGUMENTS) + 2)
         .collect();
+    if args.first().and_then(|arg| arg.to_str()) == Some("sentinel") {
+        return sentinel_main(&args[1..]);
+    }
     if args.first().and_then(|arg| arg.to_str()) == Some("retain-source") {
         return source_main(&args[1..]);
     }
@@ -43,7 +48,7 @@ fn main() -> ExitCode {
     if args.len() == 1 && matches!(args[0].to_str(), Some("help" | "--help" | "-h")) {
         return match write_bounded(plan::HELP.as_bytes()).and_then(|()| {
             write_bounded(single::HELP.as_bytes()).and_then(|()| {
-                write_bounded(b"\nBounded reconnects: fss-capture-rtsp reconnect --help\nSource-first retention: fss-capture-rtsp retain-source --help\nPrivate ONVIF handoff: fss-capture-rtsp from-onvif --help\n")
+                write_bounded(b"\nBounded reconnects: fss-capture-rtsp reconnect --help\nSource-first retention: fss-capture-rtsp retain-source --help\nPrivate ONVIF handoff: fss-capture-rtsp from-onvif --help\nLive trained detection: fss-capture-rtsp sentinel --help\n")
             })
         }) {
             Ok(()) => ExitCode::SUCCESS,
@@ -65,6 +70,26 @@ fn main() -> ExitCode {
             .and_then(|preview| write_bounded((preview + "\n").as_bytes()))
     };
     finish(result)
+}
+
+fn sentinel_main(args: &[std::ffi::OsString]) -> ExitCode {
+    if args.len() == 1 && matches!(args[0].to_str(), Some("help" | "--help" | "-h")) {
+        return finish(write_bounded(sentinel::HELP.as_bytes()));
+    }
+    let mut options = match sentinel::Options::parse(args) {
+        Ok(options) => options,
+        Err(reason) => {
+            eprintln!("ERR-CAPTURE-RTSP-ARGUMENT-001: {reason}; use sentinel --help");
+            return ExitCode::from(ExitIdentity::MALFORMED_VALUE.code);
+        }
+    };
+    finish(if options.approved() {
+        sentinel::execute(&mut options)
+    } else {
+        options
+            .preview()
+            .and_then(|preview| write_bounded((preview + "\n").as_bytes()))
+    })
 }
 
 fn campaign_inspect_main(args: &[std::ffi::OsString]) -> ExitCode {

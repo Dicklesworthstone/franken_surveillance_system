@@ -7,6 +7,10 @@ mapping, initialization segment and media fragment. A separate pin journal synch
 recovery references before publication barriers. Only a `window_durable` slot/root
 names a recording usable by `fss-import-rtsp`.
 
+For one approved capture followed by trained detection and retained offline replay,
+use [`fss-capture-rtsp sentinel`](LIVE_RTSP_SENTINEL.md). Its outer approval also
+binds the destination, package, sampling and analysis bounds.
+
 This bounded reference command supports one owner-approved plaintext RTSP-over-TCP
 session, one selected video track and an explicitly declared fixed cadence. Authentication
 challenges are refused by default. Linux operators can explicitly authorize scoped

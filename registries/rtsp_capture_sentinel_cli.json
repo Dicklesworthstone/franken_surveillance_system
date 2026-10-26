@@ -1,0 +1,93 @@
+{
+  "schema": "fss.rtsp_capture_sentinel_cli_contract.v1",
+  "status": "implemented_not_qualified",
+  "owner": "crates/fss-cli/src/bin/fss-capture-rtsp/sentinel.rs",
+  "command": "fss-capture-rtsp sentinel",
+  "presentation": "explicit_local_operator_not_universal_agent_protocol",
+  "report_schema": "fss.rtsp_capture_sentinel_cli.v1",
+  "approval_domain": "fss.rtsp_capture_sentinel_cli_plan.v1",
+  "inherits_capture_contract": "registries/rtsp_capture_cli.json",
+  "semantic_owners": [
+    "crates/fss-cli/src/bin/fss-capture-rtsp/driver.rs",
+    "crates/fss-reference/src/ingest/rtsp_import/pages.rs",
+    "crates/fss-reference/src/ingest/long_sentinel.rs",
+    "crates/fss-reference/src/ingest/long_sentinel/retained.rs"
+  ],
+  "approval_binds": [
+    "complete_native_capture_digest",
+    "distinct_archive_pins_deployment_model_and_optional_credential_paths",
+    "site_and_principal",
+    "explicit_receive_and_capture_coordinates_with_uncertainty",
+    "pinned_local_FMPK_digest",
+    "sampling_period_burst_and_inference_ceiling",
+    "native_codec_and_inference_limits",
+    "kernel_backend_thread_count_and_optional_score_override",
+    "finite_bridge_work_archive_bytes_storage_operations_model_compile_and_report_limits",
+    "cooperative_analysis_deadline_including_capture_elapsed_time",
+    "fixed_no_reacquisition_no_event_no_alert_policy"
+  ],
+  "required_acknowledgements": [
+    "owner_authorized",
+    "plaintext",
+    "retain_originals",
+    "read_originals",
+    "read_model",
+    "execute_perception",
+    "retain_analysis"
+  ],
+  "preview": "pure_no_filesystem_clock_model_or_network_access",
+  "model_preflight": "load_exact_digest_pinned_local_package_before_camera_contact_no_download",
+  "success_requires": [
+    "one_native_capture_attempt",
+    "returned_and_observed_SettledSuccess_without_recovery_or_pending_remote_control",
+    "exact_nonzero_requested_durable_picture_count",
+    "complete_native_snapshot_journal_and_ordered_catalog_page_pins",
+    "exact_actual_catalog_import_with_matching_frame_count",
+    "whole_range_decode_and_admitted_motion_independent_inference",
+    "native_child_and_aggregate_retention_with_matching_digests",
+    "complete_success_output_and_successful_process_exit"
+  ],
+  "timing": "explicit_native_import_coordinates_capture_time_labelled_operator_assumption_no_clock_calibration",
+  "privacy": "current_destination_native_privacy_masking",
+  "deadline": "cooperative_IO_and_native_phase_checkpoints_no_preemption_of_in_progress_decode_inference_or_retention_capture_keeps_native_runtime_and_drain",
+  "recovery": [
+    "emit_exact_approved_native_import_argv_from_actual_catalogs_before_import",
+    "emit_exact_native_package_detect_argv_after_import",
+    "emit_exact_native_sentinel_replay_argv_after_retention",
+    "preserve_originals_imports_and_possible_child_retention_on_failure",
+    "existing_capture_or_pin_roots_refuse_before_camera_contact",
+    "never_automatically_reacquire_or_roll_back_durable_native_progress"
+  ],
+  "retained_supervision": "ordinary_native_detector_children_are_available_to_existing_retained_supervisor",
+  "cold_replay": "retained_model_and_source_closure_no_camera_external_archive_or_loose_model_file",
+  "bounds": {
+    "max_arguments": 224,
+    "argument_bytes": 4096,
+    "max_bridge_row_bytes": 262144,
+    "max_analysis_timeout_ms": 600000,
+    "archive_storage_operations": 1000000,
+    "package_compile_macs": 68719476736
+  },
+  "errors": [
+    "ERR-CAPTURE-SENTINEL-AUTHORITY-001",
+    "ERR-CAPTURE-SENTINEL-DEADLINE-001",
+    "ERR-CAPTURE-SENTINEL-LIMIT-001",
+    "ERR-CAPTURE-SENTINEL-PATH-001",
+    "ERR-CAPTURE-SENTINEL-SOURCE-001"
+  ],
+  "nested_errors": "native_capture_import_decode_model_and_retention_identities_preserved",
+  "tests": [
+    "crates/fss-cli/tests/capture_rtsp_cli/live_sentinel.rs"
+  ],
+  "native_tests_executed": false,
+  "out_of_scope": [
+    "resident_camera_daemon",
+    "automatic_reconnect_or_recapture",
+    "automatic_event_publication_or_alert_dispatch",
+    "single_camera_corroboration",
+    "coverage_or_absence_certification",
+    "hard_realtime_preemption",
+    "whole_process_destination_IO_meter",
+    "release_qualification"
+  ]
+}

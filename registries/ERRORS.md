@@ -625,3 +625,16 @@ Canonical machine error codes returned by `ContractError::code()` (AGT-LAYER-002
 | ID | Meaning | Retry policy |
 |---|---|---|
 | `ERR-DISCOVER-LIVENESS-001` | Retaining an explicitly enrolled discovery sweep failed scope, immutable binding, bounded inventory, chronology, custody or publication admission | Inspect the existing deployment and committed prefix. Preserve exact enrollment and sweep window/evidence for an interrupted retry; do not rebind an address, restage a conflicting visible root, repair corruption implicitly or claim media continuity from network return. |
+
+## Live capture into retained native detection
+
+| ID | Meaning | Retry policy |
+|---|---|---|
+| `ERR-CAPTURE-SENTINEL-AUTHORITY-001` | Exact parent approval, native capability, original/model access, retention authority or cooperative cancellation admission failed | Review the complete outer plan and restore explicit authority. Preserve any durable native progress; never infer permission to reacquire footage. |
+| `ERR-CAPTURE-SENTINEL-DEADLINE-001` | The analysis timer expired at a cooperative I/O or native phase boundary; elapsed capture time is included | Inspect complete progress rows and use the exact offline continuation. In-progress native calls are not forcibly preempted and earlier retained work is not rolled back. |
+| `ERR-CAPTURE-SENTINEL-LIMIT-001` | A finite bridge work, archive-read, arithmetic or complete-output bound was exhausted | Review supported limits for an explicit continuation. Never replenish a consumed account, truncate a success report or recapture automatically. |
+| `ERR-CAPTURE-SENTINEL-PATH-001` | Capture/pin paths already exist, a required parent/model file is unavailable, or resolved resources overlap or violate the admitted path shape | Select separate resources with existing parents and a regular pinned package. After acquisition, preserve the existing archive/pins and resume offline analysis. |
+| `ERR-CAPTURE-SENTINEL-SOURCE-001` | The returned native attempt or typed observation is not a complete settled capture with exact requested pictures and verified catalog/snapshot/journal pins, or import/retention identities disagree | Preserve native recovery evidence and inspect custody. No detector success, automatic capture retry, event publication or alert dispatch is authorized. |
+
+Nested native capture, import, model, decode and retention errors keep their existing
+stable identities and recovery contracts.
