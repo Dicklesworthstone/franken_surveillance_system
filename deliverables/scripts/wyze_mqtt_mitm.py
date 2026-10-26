@@ -44,10 +44,28 @@ def _rewrite(d):
             break
     tl = int.from_bytes(d[i:i + 2], "big")
     topic = d[i + 2:i + 2 + tl].decode(errors="replace")
-    if not topic.endswith("/cmd"):
-        return None
     qos = (d[0] >> 1) & 3
     j = i + 2 + tl + (2 if qos else 0)
+    if topic.endswith("/update/delta"):
+        # the cloud's own shadow delta is plain JSON; point it at our capsule so the
+        # device acts on the delivery it already trusts
+        try:
+            doc = json.loads(d[j:])
+            des = doc.setdefault("state", {}).setdefault("desired", {})
+            des["url"] = os.environ["OTA_URL"]
+            des["md5"] = os.environ["OTA_MD5"]
+            # the cloud re-pushes the same version every ~18 s and the device ignores a
+            # delta that is not newer, so lift it out of the cloud's range
+            doc["version"] = int(doc.get("version", 0)) + 1000000
+            new = json.dumps(doc, separators=(",", ":")).encode()
+        except Exception as e:
+            print("rewrite delta:", e, flush=True)
+            return None
+        body = d[i:j] + new
+        print(f"rewrite delta: v{doc['version']} {des['url']} md5={des['md5']}", flush=True)
+        return bytes([d[0]]) + enc_len(len(body)) + body
+    if not topic.endswith("/cmd"):
+        return None
     ct = d[j:]
     if len(ct) < 8 or len(ct) % 4:
         return None
