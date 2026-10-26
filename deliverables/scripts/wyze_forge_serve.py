@@ -144,11 +144,14 @@ def main() -> int:
                     name = ""
                 if not name:
                     name = "wyzeedgeai_cam_v4_test_protocol"
-                ver = os.environ.get("PROC_VER", "2.1.2.572")
+                # versions are per process and not interchangeable: the model uses a dotted
+                # string with a letter suffix, the webrtc client a four-part numeric one.
+                ver = (os.environ.get("PROC_VER", "2.1.2.573") if name.startswith("kvs")
+                       else "14.9.50039.r")
                 path = (f"/{name}/{ver}/launch.sh" if name.startswith("kvs")
                         else "/wyzeedgeai_cam_v4_test_protocol/14.9.50039.r/" + name)
                 out = json.dumps({"code": "1", "ts": int(time.time() * 1000), "msg": "SUCCESS",
-                                  "data": {"version": os.environ.get("PROC_VER", "99.0.0"),
+                                  "data": {"version": ver,
                                            "url": "https://s3-us-west-2.amazonaws.com"
                                                   + path + "?X-Amz-Algorithm=AWS4-HMAC-SHA256"
                                                   "&X-Amz-Date=" + time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
