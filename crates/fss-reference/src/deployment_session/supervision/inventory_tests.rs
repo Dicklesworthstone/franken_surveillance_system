@@ -23,6 +23,14 @@ const PRIVATE_CONFIG: &[u8] = b"private native inventory configuration";
 const PRIVATE_REPORT: &[u8] = b"private native inventory presentation";
 const PRIVATE_EVENT: &str = "event:package:private-native-inventory-source";
 
+// Supervision admits 32 MiB journals; the general orientation default allows 64 MiB.
+fn inventory_limits() -> OrientLimits {
+    OrientLimits {
+        max_journal_bytes: 32 * 1024 * 1024,
+        ..OrientLimits::default()
+    }
+}
+
 struct Fixture {
     root: PathBuf,
     scratch: PathBuf,
@@ -58,7 +66,7 @@ impl Fixture {
             principal: PrincipalId::parse("principal:inventory-boundary")?,
             view: AgentView::Brief, token_budget: 100_000,
         })?;
-        let history = DeploymentHistory::read(&root, &OrientLimits::default())?;
+        let history = DeploymentHistory::read(&root, &inventory_limits())?;
         let head = observe_head(&history)?;
         let mut journal = SessionJournal::open(&root)?;
         let session = journal.store.session(&opened.session.principal_id,
@@ -147,7 +155,7 @@ impl SupervisionInventoryControl for Control<'_> {
     {
         assert_eq!(binding.root(), self.fixture.root);
         assert_eq!(binding.request().expected_authority_root, self.fixture.head.anchor.state_root);
-        assert_eq!(binding.limits().max_events, OrientLimits::default().max_events);
+        assert_eq!(binding.limits(), &inventory_limits());
         self.boundaries.push(boundary);
         let occurrence = self.boundaries.iter().filter(|seen| **seen == boundary).count();
         if self.deny == Some((boundary, occurrence)) {
@@ -172,7 +180,7 @@ fn list_recovers_complete_metadata_at_exhaustion_without_native_sources_or_ackno
     let request = fixture.request();
     let mut control = Control::new(&fixture);
     let listed = list_supervision(&fixture.root, &fixture.session.principal_id,
-        &request, &OrientLimits::default(), &mut control)?;
+        &request, &inventory_limits(), &mut control)?;
     assert_eq!(listed.session, fixture.session);
     assert_eq!(listed.head, fixture.head);
     assert_eq!(listed.subscriptions.len(), 1);
@@ -217,12 +225,12 @@ fn cancellation_at_every_inventory_boundary_withholds_output_and_preserves_work(
         let mut control = Control::new(&fixture);
         control.deny = Some(denied);
         assert!(matches!(list_supervision(&fixture.root, &fixture.session.principal_id,
-            &fixture.request(), &OrientLimits::default(), &mut control),
+            &fixture.request(), &inventory_limits(), &mut control),
             Err(SupervisionSessionError::Denied(error))
                 if error.identity == "fixture:inventory-cancelled"));
         assert_eq!(fixture.journal_bytes()?, before);
         let listed = list_supervision(&fixture.root, &fixture.session.principal_id,
-            &fixture.request(), &OrientLimits::default(), &mut Control::new(&fixture))?;
+            &fixture.request(), &inventory_limits(), &mut Control::new(&fixture))?;
         assert_eq!(listed.subscriptions[0].state_digest, fixture.state.digest());
     }
     Ok(())
@@ -237,11 +245,11 @@ fn authority_changes_during_read_or_final_delivery_withhold_the_inventory() -> T
         let mut control = Control::new(&fixture);
         control.mutate = Some(mutation);
         assert!(matches!(list_supervision(&fixture.root, &fixture.session.principal_id,
-            &fixture.request(), &OrientLimits::default(), &mut control),
+            &fixture.request(), &inventory_limits(), &mut control),
             Err(SupervisionSessionError::ChangedAuthority)));
         assert!(control.mutate.is_none(), "the concrete mutation boundary was reached");
         assert_eq!(fixture.journal_bytes()?, before);
-        let changed = observe_head(&DeploymentHistory::read(&fixture.root, &OrientLimits::default())?)?;
+        let changed = observe_head(&DeploymentHistory::read(&fixture.root, &inventory_limits())?)?;
         assert_ne!(changed, fixture.head);
     }
     Ok(())
@@ -253,12 +261,12 @@ fn listing_rejects_foreign_owner_unknown_session_missing_grants_and_wrong_author
     let before = fixture.journal_bytes()?;
     let wrong_principal = PrincipalId::parse("principal:foreign-inventory-owner")?;
     assert!(matches!(list_supervision(&fixture.root, &wrong_principal,
-        &fixture.request(), &OrientLimits::default(), &mut Control::new(&fixture)),
+        &fixture.request(), &inventory_limits(), &mut Control::new(&fixture)),
         Err(SupervisionSessionError::Session(_))));
     let mut unknown = fixture.request();
     unknown.session_id = SessionId::parse("session:missing-inventory-owner")?;
     assert!(matches!(list_supervision(&fixture.root, &fixture.session.principal_id,
-        &unknown, &OrientLimits::default(), &mut Control::new(&fixture)),
+        &unknown, &inventory_limits(), &mut Control::new(&fixture)),
         Err(SupervisionSessionError::Session(_))));
     let mut wrong_root = fixture.request();
     wrong_root.expected_authority_root = ContentDigest::sha256(b"wrong current inventory authority");
@@ -273,7 +281,7 @@ fn listing_rejects_foreign_owner_unknown_session_missing_grants_and_wrong_author
         }
     }
     assert!(matches!(list_supervision(&fixture.root, &fixture.session.principal_id,
-        &wrong_root, &OrientLimits::default(), &mut AdmitOnlyHistory),
+        &wrong_root, &inventory_limits(), &mut AdmitOnlyHistory),
         Err(SupervisionSessionError::ChangedAuthority)));
     assert_eq!(fixture.journal_bytes()?, before);
     let mut journal = SessionJournal::open(&fixture.root)?;
@@ -288,8 +296,38 @@ fn listing_rejects_foreign_owner_unknown_session_missing_grants_and_wrong_author
     drop(journal);
     let before = fixture.journal_bytes()?;
     assert!(matches!(list_supervision(&fixture.root, &fixture.session.principal_id,
-        &fixture.request(), &OrientLimits::default(), &mut Control::new(&fixture)),
+        &fixture.request(), &inventory_limits(), &mut Control::new(&fixture)),
         Err(SupervisionSessionError::Store(DurableSupervisionError::StaleScope))));
     assert_eq!(fixture.journal_bytes()?, before);
+    Ok(())
+}
+
+#[test]
+fn inventory_rejects_unadmitted_history_limits_before_any_boundary() -> TestResult {
+    let fixture = Fixture::new()?;
+    let before = fixture.journal_bytes()?;
+    for max_journal_bytes in [
+        0,
+        32 * 1024 * 1024 + 1,
+        OrientLimits::default().max_journal_bytes,
+    ] {
+        let limits = OrientLimits {
+            max_journal_bytes,
+            ..inventory_limits()
+        };
+        let mut control = Control::new(&fixture);
+        assert!(matches!(
+            list_supervision(
+                &fixture.root,
+                &fixture.session.principal_id,
+                &fixture.request(),
+                &limits,
+                &mut control,
+            ),
+            Err(SupervisionSessionError::InvalidRequest)
+        ));
+        assert!(control.boundaries.is_empty(), "invalid limits reached an I/O boundary");
+        assert_eq!(fixture.journal_bytes()?, before);
+    }
     Ok(())
 }
