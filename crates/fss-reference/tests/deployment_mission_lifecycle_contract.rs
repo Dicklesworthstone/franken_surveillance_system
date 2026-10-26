@@ -1023,3 +1023,198 @@ fn retained_effect_prefix_refuses_truncation_and_equal_or_larger_divergent_histo
     }
     Ok(())
 }
+
+fn read_only_orient_request(
+    f: &Fixture,
+) -> fss_reference::deployment_session::orient::OrientSessionRequest {
+    fss_reference::deployment_session::orient::OrientSessionRequest {
+        session_id: f.opened.session.session_id.clone(),
+        principal: f.opened.session.principal_id.clone(),
+        view: AgentView::EpistemicMap,
+        budget_tokens: None,
+    }
+}
+
+#[test]
+fn read_only_session_orientation_recovers_enrollment_without_repairing_a_lagging_pin() -> TestResult
+{
+    use fss_reference::deployment_session::orient::orient_session;
+    let (f, mut dep) = Fixture::new("orient-enrolled")?;
+    let plan = f.plan(&mut dep, "selected")?;
+    f.publish(&plan)?;
+    let enrolled = f.adopt(&plan)?;
+    let journal_path = f.root.join("agent/sessions/journal.fssj");
+    let pin_path = f.root.join("agent/sessions/ROOT");
+    // Model a crash after the verified append but before ROOT was advanced.
+    fs::write(&pin_path, format!("{}\n", f.opened.journal_root))?;
+    let before = (
+        fs::read(&journal_path)?,
+        fs::read(&pin_path)?,
+        authority_bytes(&mut dep)?,
+    );
+    let answer = orient_session(&f.root, &read_only_orient_request(&f))?;
+    assert_eq!(answer.session, f.opened.session);
+    assert_eq!(answer.revision, f.opened.revision);
+    assert_eq!(answer.journal_root, enrolled.journal_root);
+    assert!(!answer.anchor_moved);
+    assert!(answer.invalidated.is_empty());
+    let progress = answer
+        .orientation
+        .mission_progress
+        .as_ref()
+        .ok_or("mission progress")?;
+    assert_eq!(progress.revision, enrolled.revision);
+    assert!(progress.current);
+    let context = answer
+        .orientation
+        .publication
+        .context_pack
+        .items
+        .iter()
+        .map(|item| item.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(context.contains(&f.opened.mission.mission));
+    assert!(context.contains(&f.opened.mission.objective));
+    assert!(context.contains(&enrolled.revision.criterion().digest().to_text()));
+    assert!(
+        answer
+            .orientation
+            .degradation
+            .iter()
+            .any(|s| s.contains("did not repair"))
+    );
+    let retry = orient_session(&f.root, &read_only_orient_request(&f))?;
+    assert_eq!(answer, retry);
+    assert_eq!(
+        before,
+        (
+            fs::read(&journal_path)?,
+            fs::read(&pin_path)?,
+            authority_bytes(&mut dep)?
+        )
+    );
+    Ok(())
+}
+
+#[test]
+fn current_session_orientation_protects_stale_workspace_without_rebase_or_clock_write() -> TestResult
+{
+    use fss_reference::deployment_session::orient::orient_session;
+    let (f, mut dep) = Fixture::new("orient-current")?;
+    f.advance_evidence_clock(&mut dep)?;
+    let journal_path = f.root.join("agent/sessions/journal.fssj");
+    let pin_path = f.root.join("agent/sessions/ROOT");
+    let before = (
+        fs::read(&journal_path)?,
+        fs::read(&pin_path)?,
+        authority_bytes(&mut dep)?,
+    );
+    let answer = orient_session(&f.root, &read_only_orient_request(&f))?;
+    assert!(answer.anchor_moved);
+    assert_eq!(answer.orientation.capsule().anchor, *dep.current_anchor());
+    assert_eq!(answer.session, f.opened.session);
+    assert_eq!(answer.revision, f.opened.revision);
+    assert_eq!(
+        answer.workspace_anchor_token,
+        f.opened.orientation.anchor_token
+    );
+    assert!(!answer.invalidated.is_empty());
+    let context = answer
+        .orientation
+        .publication
+        .context_pack
+        .items
+        .iter()
+        .map(|item| item.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    for warning in &answer.invalidated {
+        assert!(
+            context.contains(warning),
+            "lost protected workspace warning: {warning}"
+        );
+    }
+    assert!(
+        answer
+            .orientation
+            .publication
+            .compression_receipt
+            .critical_preservation
+            .is_lossless()
+    );
+    assert_eq!(
+        before,
+        (
+            fs::read(&journal_path)?,
+            fs::read(&pin_path)?,
+            authority_bytes(&mut dep)?
+        )
+    );
+    Ok(())
+}
+
+#[test]
+fn read_only_session_orientation_refuses_expiry_without_persisting_a_tombstone() -> TestResult {
+    use fss_reference::deployment_session::{DeploymentSessionError, orient::orient_session};
+    let (f, mut dep) = Fixture::new("orient-expired")?;
+    let payload = dep.stage_payload(b"explicit synthetic evidence clock beyond session expiry")?;
+    dep.append_batch(
+        BatchId::parse("batch:orient-expiry")?,
+        vec![EvidenceDelta {
+            delta_id: "delta:orient-expiry".to_owned(),
+            family: "decode_receipt".to_owned(),
+            object_id: ObjectId::parse("object:orient-expiry")?,
+            prior_generation: None,
+            new_generation: 1,
+            validity: CaptureInterval::new(
+                TimestampNs(0),
+                TimestampNs(f.opened.session.expires_at_ns + 1),
+            )?,
+            plane: Plane::Cognition,
+            payload_digest: payload,
+            witness_digest: None,
+            operation_id: None,
+        }],
+        vec![payload],
+        &f.cx,
+    )?;
+    let journal_path = f.root.join("agent/sessions/journal.fssj");
+    let pin_path = f.root.join("agent/sessions/ROOT");
+    let before = (fs::read(&journal_path)?, fs::read(&pin_path)?);
+    assert!(matches!(
+        orient_session(&f.root, &read_only_orient_request(&f)),
+        Err(DeploymentSessionError::SessionUnknown)
+    ));
+    assert_eq!(before, (fs::read(&journal_path)?, fs::read(&pin_path)?));
+    Ok(())
+}
+
+#[test]
+fn read_only_session_orientation_refuses_torn_or_corrupt_history_without_repair() -> TestResult {
+    use fss_reference::deployment_session::{DeploymentSessionError, orient::orient_session};
+    for torn in [true, false] {
+        let (f, _dep) = Fixture::new(if torn {
+            "orient-torn"
+        } else {
+            "orient-corrupt"
+        })?;
+        let journal_path = f.root.join("agent/sessions/journal.fssj");
+        let pin_path = f.root.join("agent/sessions/ROOT");
+        let mut bytes = fs::read(&journal_path)?;
+        if torn {
+            bytes.push(0);
+        } else {
+            bytes[90] ^= 1;
+        }
+        fs::write(&journal_path, &bytes)?;
+        let pin = fs::read(&pin_path)?;
+        assert!(matches!(
+            orient_session(&f.root, &read_only_orient_request(&f)),
+            Err(DeploymentSessionError::StoreInvalid(_))
+        ));
+        assert_eq!(bytes, fs::read(&journal_path)?);
+        assert_eq!(pin, fs::read(&pin_path)?);
+    }
+    Ok(())
+}

@@ -40,7 +40,8 @@ impl Fixture {
             anchor_universe: ContentDigest::sha256(b"trauma-memory-tests"),
             generation: 1,
         })?;
-        let cx = crate::ReplayCx::from_context_authority(&authority, path.join("context"))?;
+        // Scope authority to the deployment root so initialization sees an empty root.
+        let cx = crate::ReplayCx::from_context_authority(&authority, &path)?;
         drop(crate::ReferenceDeployment::open(
             &path,
             "site:memory-tests",

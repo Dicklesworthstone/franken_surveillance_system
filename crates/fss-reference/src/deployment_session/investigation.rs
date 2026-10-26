@@ -20,6 +20,8 @@
 //! **Refusals.** A refused command can still advance session or case clock watermarks; the
 //! journal commits (and the root pin is replaced) before the refusal is returned.
 
+use crate::agent_session::checkpoint::journal::projection::SessionProjection;
+
 use fss_core::{
     AgentSession, CaseDiscriminator, CaseHypothesis, ContentDigest, HypothesisDisposition,
     InvestigationLifecycle, InvestigationState, InvestigationStateParams, KnownStatement,
@@ -30,7 +32,6 @@ use super::{
     DeploymentHistory, DeploymentOrientation, DeploymentSessionError, OrientCaseBrief,
     OrientLimits, SESSION_PRIVACY_SCOPE, SessionJournal, digest_of, evidence_now, orient_bound,
 };
-use crate::agent_session::checkpoint::journal::DurableSessionStore;
 use crate::agent_session::checkpoint::journal::coordination::investigations::evolution::{
     InvestigationCitation, InvestigationEvolution, InvestigationEvolutionRequest,
 };
@@ -212,7 +213,7 @@ pub const fn is_open_state(state: InvestigationLifecycle) -> bool {
 
 /// Heads visible to `session`: same principal, same mission, and an admitted privacy domain.
 pub(super) fn visible_cases(
-    store: &DurableSessionStore,
+    store: &dyn SessionProjection,
     session: &AgentSession,
 ) -> Vec<InvestigationRevision> {
     store
@@ -228,7 +229,7 @@ pub(super) fn visible_cases(
 
 /// The open cases visible to `session`, as a session-bound orientation at `anchor` lists them.
 pub(super) fn case_briefs(
-    store: &DurableSessionStore,
+    store: &dyn SessionProjection,
     session: &AgentSession,
     anchor: &LedgerAnchor,
 ) -> Vec<OrientCaseBrief> {

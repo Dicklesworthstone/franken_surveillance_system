@@ -86,6 +86,16 @@ pub(super) struct WorkspaceState {
 }
 
 impl WorkspaceState {
+    pub(super) fn head_for_projection(
+        &self,
+        sessions: &mut ReferenceSessionStore,
+        principal: &PrincipalId,
+        session: &SessionId,
+        now: TimestampNs,
+    ) -> Result<WorkspaceResume, WorkspaceError> {
+        self.store.head(sessions, principal, session, now)
+    }
+
     pub(super) fn retained_revisions(&self) -> Vec<WorkspaceRevision> {
         self.store.retained_revisions()
     }

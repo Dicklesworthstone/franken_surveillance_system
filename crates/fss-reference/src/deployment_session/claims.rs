@@ -17,6 +17,8 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
+use crate::agent_session::checkpoint::journal::projection::SessionProjection;
+
 use fss_core::{
     AgentSession, CanonicalEncode, CaseId, ContentDigest, PrincipalId, SessionId, TimestampNs,
     WorkClaimState,
@@ -198,7 +200,7 @@ pub struct ClaimAnswer {
 
 /// Claims of the session's mission visible to it (principal, mission, privacy), by identity.
 pub(super) fn visible_claims(
-    store: &DurableSessionStore,
+    store: &dyn SessionProjection,
     session: &AgentSession,
 ) -> Vec<WorkClaimRevision> {
     let mut claims: Vec<WorkClaimRevision> = store
@@ -224,7 +226,7 @@ fn is_open(state: WorkClaimState) -> bool {
 
 /// The non-terminal claims `session` sees, as its situation lists them at `now`.
 pub(super) fn claim_briefs(
-    store: &DurableSessionStore,
+    store: &dyn SessionProjection,
     session: &AgentSession,
     now: TimestampNs,
 ) -> Vec<OrientClaimBrief> {

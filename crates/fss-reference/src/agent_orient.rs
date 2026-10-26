@@ -1994,6 +1994,7 @@ fn compile_capsule(
     request: &OrientRequest,
     session: Option<&OrientSessionBinding>,
     advisory_warnings: Option<&[AntiPatternWarning]>,
+    workspace_invalidations: &[String],
 ) -> Result<CompiledSituation, OrientError> {
     let cases = session.map_or(&[][..], |binding| binding.cases.as_slice());
     let plans = session.map_or(&[][..], |binding| binding.plans.as_slice());
@@ -2027,6 +2028,8 @@ fn compile_capsule(
     let mut proof_roots = BTreeSet::from([anchor.state_root, snapshot.effect_journal_digest]);
     proof_roots.extend(mission_context.proof_roots);
     unknown.extend(mission_context.unknown);
+    // Workspace drift is protected uncertainty, not an optional presentation warning.
+    unknown.extend(workspace_invalidations.iter().cloned());
     let ledger_evidence = if snapshot.batch_count == 0 {
         anchor.state_root
     } else {
@@ -3756,6 +3759,7 @@ pub fn orient_deployment_for(
         limits,
         session,
         session.and_then(|binding| binding.trauma_warnings.as_deref()),
+        &[],
     )
 }
 
@@ -3770,7 +3774,25 @@ pub fn orient_deployment_with_advisories(
     limits: &OrientLimits,
     advisory_warnings: Option<&[AntiPatternWarning]>,
 ) -> Result<DeploymentOrientation, OrientError> {
-    orient_deployment_for_with_advisories(snapshot, request, limits, None, advisory_warnings)
+    orient_deployment_for_with_advisories(snapshot, request, limits, None, advisory_warnings, &[])
+}
+
+/// Native admitted session snapshots preserve rebase warnings in mandatory context.
+pub(crate) fn orient_deployment_for_workspace(
+    snapshot: &DeploymentSnapshot,
+    request: &OrientRequest,
+    limits: &OrientLimits,
+    session: &OrientSessionBinding,
+    workspace_invalidations: &[String],
+) -> Result<DeploymentOrientation, OrientError> {
+    orient_deployment_for_with_advisories(
+        snapshot,
+        request,
+        limits,
+        Some(session),
+        session.trauma_warnings.as_deref(),
+        workspace_invalidations,
+    )
 }
 
 fn orient_deployment_for_with_advisories(
@@ -3779,6 +3801,7 @@ fn orient_deployment_for_with_advisories(
     limits: &OrientLimits,
     session: Option<&OrientSessionBinding>,
     advisory_warnings: Option<&[AntiPatternWarning]>,
+    workspace_invalidations: &[String],
 ) -> Result<DeploymentOrientation, OrientError> {
     if !matches!(
         request.view,
@@ -3796,7 +3819,13 @@ fn orient_deployment_for_with_advisories(
     let plans = session.map_or(&[][..], |binding| binding.plans.as_slice());
     let claims = session.map_or(&[][..], |binding| binding.claims.as_slice());
     let findings = session.map_or(&[][..], |binding| binding.findings.as_slice());
-    let mut compiled = compile_capsule(snapshot, request, session, advisory_warnings)?;
+    let mut compiled = compile_capsule(
+        snapshot,
+        request,
+        session,
+        advisory_warnings,
+        workspace_invalidations,
+    )?;
     if let Some(binding) = session {
         compiled.capsule.mission_id = binding.mission_id.clone();
         compiled.capsule.session_id = binding.session_id.clone();

@@ -32,6 +32,8 @@ pub mod follow;
 
 /// Immutable explicit mission criteria and assessed lifecycle history.
 pub mod mission;
+/// Read-only admitted projections of a fully replayed captured journal.
+pub(crate) mod projection;
 /// Durable retained-supervision reports, lifetime reservations and exact acknowledgement.
 pub mod supervision;
 

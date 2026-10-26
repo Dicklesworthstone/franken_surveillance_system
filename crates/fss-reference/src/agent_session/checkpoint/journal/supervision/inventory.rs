@@ -176,15 +176,24 @@ impl DurableSessionStore {
         {
             return Err(DurableSessionError::InvalidHistory.into());
         }
-        let (authority_digest, live_anchor) = live_authority(&restored.memory, session, now)?;
-        let mut entries = Vec::new();
-        for ((owner, _), state) in &restored.supervisions.subscriptions {
-            if owner != &session.session_id { continue; }
-            if entries.len() >= MAX_SESSION_SUPERVISION_SUBSCRIPTIONS {
-                return Err(DurableSupervisionError::CapacityExceeded);
-            }
-            entries.push(SupervisionInventoryEntry::from_state(state, authority_digest, &live_anchor));
-        }
-        Ok(entries)
+        project_inventory(&restored, session, now)
     }
+}
+
+
+pub(crate) fn project_inventory(
+    restored: &super::super::ReplayedSessionState,
+    session: &AgentSession,
+    now: TimestampNs,
+) -> Result<Vec<SupervisionInventoryEntry>> {
+    let (authority_digest, live_anchor) = live_authority(&restored.memory, session, now)?;
+    let mut entries = Vec::new();
+    for ((owner, _), state) in &restored.supervisions.subscriptions {
+        if owner != &session.session_id { continue; }
+        if entries.len() >= MAX_SESSION_SUPERVISION_SUBSCRIPTIONS {
+            return Err(DurableSupervisionError::CapacityExceeded);
+        }
+        entries.push(SupervisionInventoryEntry::from_state(state, authority_digest, &live_anchor));
+    }
+    Ok(entries)
 }

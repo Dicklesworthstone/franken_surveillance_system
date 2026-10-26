@@ -115,41 +115,7 @@ impl DurableSessionStore {
         {
             return Err(DurableSessionError::InvalidHistory.into());
         }
-        check_projection_session(&restored.memory, session, now)?;
-        // Legacy readers need no mutation grants or workspace just to establish that their
-        // authenticated session has never enrolled an executable profile.
-        if !restored.missions.retained().iter().any(|revision| {
-            revision.criterion().session_id == session.session_id
-                && revision.criterion().principal == session.principal_id
-        }) {
-            return Ok(None);
-        }
-        let revisions = restored
-            .workspaces
-            .as_ref()
-            .ok_or(MissionError::ScopeMismatch)?
-            .retained_revisions();
-        let current = revisions
-            .iter()
-            .filter(|revision| revision.capsule().session_id == session.session_id)
-            .max_by_key(|revision| revision.capsule().revision)
-            .ok_or(MissionError::ScopeMismatch)?;
-        let mission_record_digest = ContentDigest::parse(&current.capsule().objective_digest)
-            .map_err(|_| MissionError::ScopeMismatch)?;
-        require_workspace(
-            restored.workspaces.as_ref(),
-            &session.principal_id,
-            &session.session_id,
-            mission_record_digest,
-        )?;
-        let mut memory = restored.memory;
-        Ok(restored.missions.head(
-            &mut memory,
-            &session.principal_id,
-            &session.session_id,
-            mission_record_digest,
-            now,
-        )?)
+        project_mission_head(&restored, session, now)
     }
 
     /// Enroll an explicit immutable PlanOutcomeV1 profile. An exact retry returns its current
@@ -309,6 +275,48 @@ impl DurableSessionStore {
         }
         Ok(restored)
     }
+}
+
+pub(super) fn project_mission_head(
+    restored: &super::ReplayedSessionState,
+    session: &AgentSession,
+    now: TimestampNs,
+) -> Result<Option<MissionRevision>> {
+    check_projection_session(&restored.memory, session, now)?;
+    // Legacy readers need no mutation grants or workspace just to establish that their
+    // authenticated session has never enrolled an executable profile.
+    if !restored.missions.retained().iter().any(|revision| {
+        revision.criterion().session_id == session.session_id
+            && revision.criterion().principal == session.principal_id
+    }) {
+        return Ok(None);
+    }
+    let revisions = restored
+        .workspaces
+        .as_ref()
+        .ok_or(MissionError::ScopeMismatch)?
+        .retained_revisions();
+    let current = revisions
+        .iter()
+        .filter(|revision| revision.capsule().session_id == session.session_id)
+        .max_by_key(|revision| revision.capsule().revision)
+        .ok_or(MissionError::ScopeMismatch)?;
+    let mission_record_digest = ContentDigest::parse(&current.capsule().objective_digest)
+        .map_err(|_| MissionError::ScopeMismatch)?;
+    require_workspace(
+        restored.workspaces.as_ref(),
+        &session.principal_id,
+        &session.session_id,
+        mission_record_digest,
+    )?;
+    let mut memory = restored.memory.clone();
+    Ok(restored.missions.head(
+        &mut memory,
+        &session.principal_id,
+        &session.session_id,
+        mission_record_digest,
+        now,
+    )?)
 }
 
 fn check_projection_session(

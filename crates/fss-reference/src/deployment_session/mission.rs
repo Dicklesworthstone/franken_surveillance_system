@@ -15,6 +15,8 @@ use std::fmt;
 use std::net::SocketAddr;
 use std::path::Path;
 
+use crate::agent_session::checkpoint::journal::projection::SessionProjection;
+
 use fss_core::{
     AgentSession, CanonicalEncode, CanonicalEncoder, ContentDigest, ContractError, DigestAlgorithm,
     EventId, ObligationId, OperationId, PrincipalId, SessionId, TimestampNs, WorkClaimState,
@@ -27,8 +29,8 @@ use crate::agent_orient::{
     OrientLimits,
 };
 use crate::agent_session::ReferenceSessionError;
+use crate::agent_session::checkpoint::journal::DurableSessionError;
 use crate::agent_session::checkpoint::journal::mission::DurableMissionError;
-use crate::agent_session::checkpoint::journal::{DurableSessionError, DurableSessionStore};
 pub use crate::agent_session::mission::MissionRevision;
 use crate::agent_session::mission::{
     MissionAssessmentFacts, MissionClosureFacts, MissionEpisodeFacts, MissionEpisodeOutcome,
@@ -597,7 +599,7 @@ fn bounded_count(value: usize) -> Result<u32, MissionError> {
 fn closure(
     root: &Path,
     snapshot: &DeploymentSnapshot,
-    store: &DurableSessionStore,
+    store: &dyn SessionProjection,
     session: &AgentSession,
     selected_plan_id: &str,
     now: TimestampNs,
@@ -767,7 +769,7 @@ fn closure(
 fn assess_facts(
     root: &Path,
     snapshot: &DeploymentSnapshot,
-    store: &DurableSessionStore,
+    store: &dyn SessionProjection,
     session: &AgentSession,
     selected: &SelectedPlan,
     original_event_root: ContentDigest,
@@ -811,7 +813,7 @@ fn assess_facts(
 pub(super) fn projection_current(
     root: &Path,
     snapshot: &DeploymentSnapshot,
-    store: &DurableSessionStore,
+    store: &dyn SessionProjection,
     session: &AgentSession,
     revision: &MissionRevision,
     now: TimestampNs,

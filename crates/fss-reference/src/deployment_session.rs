@@ -90,6 +90,8 @@ use crate::situation_sections::{
 /// Explicit plan-outcome mission enrollment and evidence-derived lifecycle assessments.
 pub mod mission;
 mod opening_retry;
+/// Read-only current orientation of an existing admitted session.
+pub mod orient;
 #[cfg(test)]
 mod tests;
 
@@ -1456,7 +1458,7 @@ impl Default for SessionBriefs {
 /// `session` sees.
 fn session_briefs(
     root: &Path,
-    store: &DurableSessionStore,
+    store: &dyn crate::agent_session::checkpoint::journal::projection::SessionProjection,
     session: &AgentSession,
     snapshot: &DeploymentSnapshot,
     now: TimestampNs,
