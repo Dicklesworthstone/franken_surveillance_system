@@ -456,7 +456,7 @@ mod tests {
             "session:one",
         ];
         args.extend_from_slice(extra);
-        match parse_fss_args(args) {
+        match parse_fss_args(args.into_iter().map(std::ffi::OsString::from)) {
             Ok(FssCommand::Effect(command)) => match *command {
                 crate::effect_cmd::EffectCommand::Mission(args) => Ok(args),
                 _ => Err("wrong native plan intent".into()),
