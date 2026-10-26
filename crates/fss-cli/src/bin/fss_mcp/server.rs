@@ -24,7 +24,7 @@ const MAX_WAIT_MS: u64 = 10_000;
 const CORE_TOOLS: &str = r#"{"name":"session_open","description":"AOP-001: open a durable mission-scoped session and its initial workspace in the fixed deployment. Mission and objective are literal text; no mission file is read. Returns the unchanged native fss/1 envelope with session, mission and anchor identities. A retry at the same full head returns the existing session; an advanced head can create a new session. budget_tokens is a cumulative session budget, separate from response view limits.","inputSchema":{"type":"object","properties":{"mission":{"type":"string","minLength":1,"maxLength":8192,"description":"Literal mission statement; at most 8192 UTF-8 bytes, never a file path to read."},"objective":{"type":"string","minLength":1,"maxLength":4096},"view":{"type":"string","enum":["pulse","brief","epistemic_map"]},"budget_tokens":{"type":"integer","minimum":1,"maximum":1000000,"description":"Cumulative session budget; defaults to the selected view's registered maximum."}},"required":["mission","objective"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":false,"openWorldHint":false}},
 {"name":"session_resume","description":"AOP-002: verify and resume an existing handoff for the fixed principal. Returns the unchanged native fss/1 envelope and explicitly reports assumptions invalidated by world drift before rebasing the workspace. Native lease, authority, closure and budget checks remain in force. Resuming does not implicitly acknowledge or transfer a follow subscription.","inputSchema":{"type":"object","properties":{"handoff":{"type":"string","minLength":1,"maxLength":128}},"required":["handoff"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":false,"openWorldHint":false}},
 {"name":"handoff","description":"AOP-012: publish a root-last native handoff of one existing session in the fixed deployment. Preserves mission, workspace, uncertainty, obligations and native proof handles. Repeated requests at the same full head and semantic state retain their identity; changed state can produce a new handoff. Writes agent continuity state only and grants no effect authority.","inputSchema":{"type":"object","properties":{"session":{"type":"string","minLength":1,"maxLength":128},"note":{"type":"string","minLength":1,"maxLength":4096,"description":"Optional literal handoff note, at most 4096 UTF-8 bytes."}},"required":["session"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":false,"openWorldHint":false}},
-{"name":"session_orient","description":"Read-only AOP-003: inspect an existing deployment through its anchor-pinned SituationCapsule. Returns the existing fss/1 AgentResponseEnvelope unchanged, including coverage gaps, uncertainty, obligations and affordances. No affordance is executed.","inputSchema":{"type":"object","properties":{"view":{"type":"string","enum":["pulse","brief","epistemic_map"]},"budget_tokens":{"type":"integer","minimum":1,"maximum":4096}},"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
+{"name":"session_orient","description":"Read-only AOP-003: inspect an existing deployment through its anchor-pinned SituationCapsule. Returns the existing fss/1 AgentResponseEnvelope unchanged, including coverage gaps, uncertainty, obligations and affordances. Optional session reads the current situation for that owned durable session, preserving its mission and workspace without rebasing or writing a journal. No affordance is executed.","inputSchema":{"type":"object","properties":{"session":{"type":"string","minLength":1,"maxLength":128,"description":"Optional existing session owned by the fixed principal; omitted for deployment-only orientation."},"view":{"type":"string","enum":["pulse","brief","epistemic_map"]},"budget_tokens":{"type":"integer","minimum":1,"maximum":4096}},"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
 {"name":"explain","description":"Read-only AOP-011: explain one published event, including provenance, contradictions and evidence that would change the conclusion. Returns the existing fss/1 AgentResponseEnvelope unchanged.","inputSchema":{"type":"object","properties":{"event_id":{"type":"string","minLength":1,"maxLength":128},"view":{"type":"string","enum":["decision_diff","forensic"]},"budget_tokens":{"type":"integer","minimum":1,"maximum":16000},"at":{"type":"string","minLength":1,"maxLength":256,"description":"Optional exact retained authority/effect-history anchor. Reads historical metadata with current deletion restrictions; no past permissions are restored."},"custody":{"type":"string","enum":["yes","no"]}},"required":["event_id"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
 {"name":"session_follow","description":"AOP-004: return one exact page of meaningful changes in the unchanged fss/1 envelope. Ordinary follow is read-only; wait_ms bounds synchronous waiting on certified quiet. With session and subscription, retain pending adjacent-history delivery in the agent journal and advance only with its exact acknowledge receipt. Unacknowledged pages survive disconnect and restart. Both journals advancing without retained interleaving requires resnapshot; no transition order is invented.","inputSchema":{"type":"object","properties":{"since":{"type":"string","minLength":1,"maxLength":256},"view":{"type":"string","enum":["pulse","brief"]},"max_entries":{"type":"integer","minimum":1,"maximum":4096},"continuation":{"type":"string","minLength":1,"maxLength":256},"wait_ms":{"type":"integer","minimum":1,"maximum":10000},"session":{"type":"string","minLength":1,"maxLength":128},"subscription":{"type":"string","minLength":1,"maxLength":128},"acknowledge":{"type":"string","minLength":71,"maxLength":71}},"required":["since"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
 {"name":"query","description":"Read-only AOP-005: exact conjunctive query of verified committed event records at the current head or explicit historical at token. Returns the unchanged CLI AgentResponseEnvelope with protected context. Empty matches never certify physical absence. Nanosecond endpoints are canonical decimal strings to preserve signed 128-bit precision. Continuations require unchanged filters, principal, page size and selected authority/effect-history prefix.","inputSchema":{"type":"object","properties":{"event_id":{"type":"string","minLength":1,"maxLength":128},"kind":{"type":"string","enum":["perimeter_breach","covert_approach","sensor_tamper","unknown_presence","benign_routine","unclassified"]},"state":{"type":"string","enum":["hypothesized","witnessed","corroborated","adjudicated","alert_delivered","resolved","indeterminate","rejected"]},"zone":{"type":"string","minLength":1,"maxLength":64},"from_ns":{"type":"string","pattern":"^(0|-?[1-9][0-9]*)$","maxLength":40},"through_ns":{"type":"string","pattern":"^(0|-?[1-9][0-9]*)$","maxLength":40},"max_entries":{"type":"integer","minimum":1,"maximum":32},"at":{"type":"string","minLength":1,"maxLength":256,"description":"Optional exact retained historical anchor; mutually exclusive with the current-head anchor precondition. Current deletion restrictions apply."},"anchor":{"type":"string","minLength":1,"maxLength":256},"continuation":{"type":"string","minLength":1,"maxLength":256}},"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
@@ -254,10 +254,14 @@ impl Server {
                 argv
             }
             "session_orient" => {
-                if !only(args, &["view", "budget_tokens"]) {
+                if !only(args, &["session", "view", "budget_tokens"]) {
                     return Err((-32602, "Unexpected orientation argument"));
                 }
                 let mut argv = self.base_args("orient");
+                if let Some(value) = args.get("session") {
+                    let session = bounded_text(Some(value), 128)?;
+                    argv.push(format!("--session={session}").into());
+                }
                 if let Some(view) = args.get("view") {
                     let view = view.text().ok_or((-32602, "Expected view string"))?;
                     if !matches!(view, "pulse" | "brief" | "epistemic_map") {
@@ -1557,6 +1561,7 @@ mod tests {
                 assert!(matches!(&command, FssCommand::Orient(_)));
                 if let FssCommand::Orient(args) = command {
                     assert_eq!(args.root, std::path::PathBuf::from("/owner/deployment"));
+                    assert!(args.session.is_none());
                 }
                 (envelope.to_owned(), ExitIdentity::SUCCESS)
             },
@@ -1565,6 +1570,28 @@ mod tests {
             response
                 .is_some_and(|r| r.contains(&quote(envelope)) && r.contains("\"isError\":false"))
         );
+    }
+
+    #[test]
+    fn session_orientation_uses_native_scope_and_keeps_fixed_authority() {
+        let mut server = ready();
+        let mut calls = 0;
+        let response = server.handle_with(
+            r#"{"jsonrpc":"2.0","id":"bound-read","method":"tools/call","params":{"name":"session_orient","arguments":{"session":"session:owned","view":"brief","budget_tokens":1200}}}"#,
+            |command| {
+                calls += 1;
+                let FssCommand::Orient(args) = command else {
+                    unreachable!("session orientation must use the canonical native command");
+                };
+                assert_eq!(args.session.as_ref().map(|id| id.as_str()), Some("session:owned"));
+                assert_eq!(args.root, std::path::PathBuf::from("/owner/deployment"));
+                assert_eq!(args.principal.as_str(), "principal:local-operator");
+                assert_eq!(args.budget_tokens, Some(1200));
+                ("{}".to_owned(), ExitIdentity::SUCCESS)
+            },
+        );
+        assert_eq!(calls, 1);
+        assert!(response.is_some_and(|r| r.contains("\"isError\":false")));
     }
 
     #[test]
@@ -1605,6 +1632,13 @@ mod tests {
             r#"{"budget_tokens":1e2}"#,
             r#"{"budget_tokens":"128"}"#,
             r#"{"view":"--root=/other"}"#,
+            r#"{"session":""}"#,
+            r#"{"session":null}"#,
+            r#"{"session":12}"#,
+            r#"{"session":"--root=/other"}"#,
+            r#"{"session":"session:owned","root":"/other"}"#,
+            r#"{"session":"session:owned","principal":"principal:other"}"#,
+            r#"{"session":"session:owned","at":"anchor:unowned"}"#,
         ] {
             let text = format!(
                 r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"session_orient","arguments":{args}}}}}"#

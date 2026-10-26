@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
-//! Native session lifecycle through fresh MCP processes, including durable follow delivery.
+//! Native session lifecycle through fresh MCP processes, including durable follow delivery
+//! and read-only mission-bound orientation at the current head.
 //! Every opening, handoff and resume goes through MCP. Only the explicitly synthetic authority
 //! fixtures use native deployment APIs; no device, provider, remote service or affordance runs.
 
@@ -120,6 +121,7 @@ impl Reply {
         let (schema, capability) = match operation {
             "AOP-001" => ("situation_capsule.v1", "CAP-AGENT-SESSION-OPEN-001"),
             "AOP-002" => ("situation_capsule.v1", "CAP-AGENT-SESSION-READ-001"),
+            "AOP-003" => ("situation_capsule.v1", "CAP-AGENT-SITUATION-READ-001"),
             "AOP-004" => ("agent_meaningful_delta.v1", "CAP-AGENT-SITUATION-READ-001"),
             "AOP-012" => ("agent_handoff_capsule.v1", "CAP-AGENT-HANDOFF-WRITE-001"),
             _ => return Err("unexpected lifecycle operation".into()),
@@ -622,7 +624,7 @@ fn mcp_open_follow_ack_handoff_and_cold_resume_preserve_durable_identity() -> Te
 }
 
 #[test]
-fn mcp_cannot_handoff_follow_or_resume_another_principals_session() -> TestResult {
+fn mcp_cannot_orient_handoff_follow_or_resume_another_principals_session() -> TestResult {
     let fixture = Fixture::new("principal")?;
     let opened = fixture.open(MISSION, Some(100_000))?;
     let session = text(&opened.value, "sessionId")?.to_owned();
@@ -638,6 +640,12 @@ fn mcp_cannot_handoff_follow_or_resume_another_principals_session() -> TestResul
     let before = fixture.journal()?;
     let authority = authority_tree(&fixture.root)?;
     for (tool, arguments, operation, expected) in [
+        (
+            "session_orient",
+            format!("{{\"session\":{}}}", quote(&session)),
+            "AOP-003",
+            "ERR-AGENT-SESSION-NOT-FOUND-001",
+        ),
         (
             "session_follow",
             follow_args(&since, &session, None),
@@ -754,5 +762,176 @@ fn mcp_open_identity_binds_effect_history_and_exact_retries() -> TestResult {
     assert_eq!(fixture.open(MISSION, Some(100_000))?.body, next.body);
     assert_eq!(fixture.journal()?, current_journal);
     assert_eq!(authority_tree(&fixture.root)?, authority);
+    Ok(())
+}
+
+/// All committed files, including agent pins and publications, not merely authority planes.
+fn retained_tree(root: &Path) -> TestResult<BTreeMap<PathBuf, ContentDigest>> {
+    let mut pending = vec![root.to_path_buf()];
+    let mut result = BTreeMap::new();
+    while let Some(path) = pending.pop() {
+        if path.is_dir() {
+            for entry in fs::read_dir(&path)? {
+                pending.push(entry?.path());
+            }
+        } else {
+            result.insert(
+                path.strip_prefix(root)?.to_path_buf(),
+                ContentDigest::sha256(&fs::read(&path)?),
+            );
+        }
+    }
+    Ok(result)
+}
+
+#[test]
+fn mcp_bound_orientation_reads_current_head_without_rebase_or_durable_writes() -> TestResult {
+    let mut fixture = Fixture::new("bound-orient")?;
+    let opened = fixture.open(MISSION, Some(100_000))?;
+    let session = text(&opened.value, "sessionId")?.to_owned();
+    let mission = text(&opened.value, "missionId")?.to_owned();
+    let original = fixture.inspect()?;
+    let opening_anchor = field(opened.payload()?, "anchor")?.clone();
+    let source = field(field(opened.payload()?, "objectiveContract")?, "source")?.clone();
+    let args = format!("{{\"session\":{}}}", quote(&session));
+    let before = retained_tree(&fixture.root)?;
+    let first = fixture.call(PRINCIPAL, "session_orient", &args, "AOP-003", false)?;
+    first.success(&session, &mission)?;
+    assert_eq!(integer(&first.value, "workspaceRevision")?, 0);
+    assert_eq!(field(&first.value, "idempotencyKey")?, &Value::Null);
+    assert_eq!(field(first.payload()?, "anchor")?, &opening_anchor);
+    assert_eq!(field(first.payload()?, "meaningfulDelta")?, &Value::Null);
+    let objective = field(first.payload()?, "objectiveContract")?;
+    assert_eq!(text(objective, "desiredOutcome")?, OBJECTIVE);
+    assert_eq!(field(objective, "source")?, &source);
+    assert!(
+        array(field(first.payload()?, "contextPack")?, "items")?
+            .iter()
+            .any(|item| text(item, "content")
+                .is_ok_and(|content| content.contains(MISSION) && content.contains(OBJECTIVE)))
+    );
+    let repeated = fixture.call(PRINCIPAL, "session_orient", &args, "AOP-003", false)?;
+    assert_eq!(
+        repeated.body, first.body,
+        "fresh processes recover the same bound projection"
+    );
+    assert_eq!(fixture.inspect()?, original);
+    assert_eq!(retained_tree(&fixture.root)?, before);
+
+    fixture.append()?;
+    fixture.append()?;
+    fixture.prepare()?;
+    let before = retained_tree(&fixture.root)?;
+    let args = format!(
+        "{{\"session\":{},\"view\":\"epistemic_map\",\"budget_tokens\":4096}}",
+        quote(&session)
+    );
+    let current = fixture.call(PRINCIPAL, "session_orient", &args, "AOP-003", false)?;
+    current.success(&session, &mission)?;
+    assert_eq!(current.sequence("anchor")?, 2);
+    assert_eq!(
+        field(current.payload()?, "previousAnchor")?,
+        &opening_anchor
+    );
+    assert_eq!(field(current.payload()?, "meaningfulDelta")?, &Value::Null);
+    assert_eq!(integer(&current.value, "workspaceRevision")?, 0);
+    assert!(
+        array(current.payload()?, "obligations")?
+            .iter()
+            .any(|value| value.text() == Some("obligation:mcp-session:synthetic"))
+    );
+    assert!(
+        array(field(&current.value, "executionBoundary")?, "invalidated")?
+            .iter()
+            .filter_map(Value::text)
+            .any(|line| line.contains("assumption:anchor-current") && line.contains("revalidation"))
+    );
+    assert_eq!(
+        fixture.inspect()?,
+        original,
+        "orient does not rebase, renew, charge or rewrite retained state"
+    );
+    assert_eq!(retained_tree(&fixture.root)?, before);
+    let repeated = fixture.call(PRINCIPAL, "session_orient", &args, "AOP-003", false)?;
+    assert_eq!(repeated.body, current.body);
+    assert_eq!(retained_tree(&fixture.root)?, before);
+
+    // No selected session means the existing stateless read. It must not acquire this private
+    // mission merely because a durable session is present under the server's deployment root.
+    let stateless = fixture.call(
+        PRINCIPAL,
+        "session_orient",
+        r#"{"view":"epistemic_map","budget_tokens":4096}"#,
+        "AOP-003",
+        false,
+    )?;
+    assert_ne!(text(&stateless.value, "sessionId")?, session);
+    assert_ne!(text(&stateless.value, "missionId")?, mission);
+    assert_eq!(field(&stateless.value, "workspaceRevision")?, &Value::Null);
+    assert!(!stateless.body.contains(MISSION));
+    assert_eq!(retained_tree(&fixture.root)?, before);
+    Ok(())
+}
+
+#[test]
+fn mcp_bound_orientation_rejects_unknown_sessions_and_scope_overrides_read_only() -> TestResult {
+    let fixture = Fixture::new("bound-orient-refusals")?;
+    let before = retained_tree(&fixture.root)?;
+    let unknown = fixture.call(
+        PRINCIPAL,
+        "session_orient",
+        r#"{"session":"session:unknown"}"#,
+        "AOP-003",
+        true,
+    )?;
+    unknown.refused("ERR-AGENT-SESSION-NOT-FOUND-001")?;
+    assert_eq!(retained_tree(&fixture.root)?, before);
+    assert!(!fixture.root.join("agent").exists());
+
+    let opened = fixture.open(MISSION, Some(100_000))?;
+    let session = text(&opened.value, "sessionId")?.to_owned();
+    let before = retained_tree(&fixture.root)?;
+    let constrained = fixture.call(
+        PRINCIPAL,
+        "session_orient",
+        &format!("{{\"session\":{},\"budget_tokens\":1}}", quote(&session)),
+        "AOP-003",
+        true,
+    )?;
+    assert_eq!(
+        text(&constrained.value, "errorId")?,
+        "ERR-AGENT-CONTEXT-INCOMPLETE-001"
+    );
+    assert_eq!(constrained.payload()?, &Value::Null);
+    assert_eq!(retained_tree(&fixture.root)?, before);
+    for extra in [
+        format!(
+            "\"root\":{}",
+            quote(fixture.directory.0.to_str().ok_or("fixture root UTF-8")?)
+        ),
+        format!("\"principal\":{}", quote(STRANGER)),
+        "\"since\":\"anchor:unavailable\"".to_owned(),
+        "\"at\":\"anchor:unavailable\"".to_owned(),
+        "\"handoff\":\"handoff:unavailable\"".to_owned(),
+        "\"mission\":\"replace the retained mission\"".to_owned(),
+        "\"mission_bind\":\"plan:unavailable\"".to_owned(),
+    ] {
+        let wire = fixture.exchange(
+            PRINCIPAL,
+            "session_orient",
+            &format!("{{\"session\":{},{extra}}}", quote(&session)),
+        )?;
+        assert_eq!(integer(field(&wire, "error")?, "code")?, -32602);
+        assert_eq!(retained_tree(&fixture.root)?, before);
+    }
+    for invalid in ["null", "false", "17", "[]", "\"\""] {
+        let wire = fixture.exchange(
+            PRINCIPAL,
+            "session_orient",
+            &format!("{{\"session\":{invalid}}}"),
+        )?;
+        assert_eq!(integer(field(&wire, "error")?, "code")?, -32602);
+        assert_eq!(retained_tree(&fixture.root)?, before);
+    }
     Ok(())
 }

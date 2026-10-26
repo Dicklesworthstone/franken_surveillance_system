@@ -12,7 +12,9 @@
 //! 5. every answer and refusal validates against its registered schemas
 //!    (`scripts/json_instance_validate.py`): the envelope, the situation capsule, the handoff
 //!    capsule, and the session and workspace revision published beside the handoff;
-//! 6. the authority ledger, the effect journal, and the deployment spool are byte-identical before
+//! 6. bound AOP-003 orientation reads mission/case context at the current head without rebasing
+//!    the session, rewriting its journal, or changing any deployment file;
+//! 7. the authority ledger, the effect journal, and the deployment spool are byte-identical before
 //!    and after every session command: only agent-plane state under `agent/` is written.
 //!
 //! Crash safety of the root-last handoff publication at every cut point is proven by the
@@ -685,6 +687,28 @@ fn session_refused(
     Ok(envelope)
 }
 
+/// AOP-003 reads existing session state without the idempotency identity of a mutation.
+fn orient_ok(root: &Path, extra: &[&str], scratch: &Path) -> TestResult<(String, Json)> {
+    let (code, stdout, stderr) = run_fss(&session_args(root, "orient", extra))?;
+    assert_eq!(code, Some(0), "stdout: {stdout} stderr: {stderr}");
+    let envelope = assert_session_envelope(
+        &stdout,
+        "AOP-003",
+        "fss.situation_capsule.v1",
+        "CAP-AGENT-SITUATION-READ-001",
+    )?;
+    assert_eq!(envelope.get("outcome")?.text()?, "ok");
+    assert_eq!(envelope.get("errorId")?, &Json::Null);
+    assert_eq!(envelope.get("idempotencyKey")?, &Json::Null);
+    assert_answer_conforms(
+        &stdout,
+        "situation_capsule.v1.json",
+        scratch,
+        "session-bound orientation",
+    )?;
+    Ok((stdout, envelope))
+}
+
 fn open(root: &Path, scratch: &Path) -> TestResult<(String, Json)> {
     session_ok(
         root,
@@ -1113,5 +1137,255 @@ fn identical_open_and_handoff_are_byte_identical_exact_retries() -> TestResult {
     let (handed, _) = handoff(&root, &session, &scratch)?;
     let (again, _) = handoff(&root, &session, &scratch)?;
     assert_eq!(again, handed, "an identical handoff republishes nothing");
+    Ok(())
+}
+
+#[test]
+fn bound_orientation_preserves_mission_and_cases_without_rebasing_or_writing() -> TestResult {
+    let directory = OwnedDirectory::new("bound-orient")?;
+    let root = empty_deployment(&directory, SITE)?;
+    let (_, opened) = session_ok(
+        &root,
+        "open",
+        &[
+            "--mission-text",
+            MISSION,
+            "--objective",
+            OBJECTIVE,
+            "--budget-tokens",
+            "100000",
+        ],
+        &directory.0,
+    )?;
+    let session = opened.get("sessionId")?.text()?.to_owned();
+    let mission = opened.get("missionId")?.text()?.to_owned();
+    let opening_anchor = payload(&opened)?.get("anchor")?.clone();
+    let source = payload(&opened)?
+        .path(&["objectiveContract", "source"])?
+        .clone();
+    let before = tree_digest(&root)?;
+    let (_, first) = orient_ok(&root, &["--session", &session], &directory.0)?;
+    assert_eq!(
+        tree_digest(&root)?,
+        before,
+        "orientation writes no lock, pin, journal, or object"
+    );
+    assert_eq!(first.get("sessionId")?.text()?, session);
+    assert_eq!(first.get("missionId")?.text()?, mission);
+    assert_eq!(first.get("workspaceRevision")?.number()?, 0);
+    let situation = payload(&first)?;
+    assert_eq!(situation.get("sessionId")?.text()?, session);
+    assert_eq!(situation.get("missionId")?.text()?, mission);
+    assert_eq!(situation.get("anchor")?, &opening_anchor);
+    assert_eq!(
+        situation
+            .path(&["objectiveContract", "desiredOutcome"])?
+            .text()?,
+        OBJECTIVE
+    );
+    assert_eq!(situation.path(&["objectiveContract", "source"])?, &source);
+    assert!(
+        situation
+            .path(&["contextPack", "items"])?
+            .items()?
+            .iter()
+            .any(|item| {
+                item.get("content")
+                    .and_then(Json::text)
+                    .is_ok_and(|content| content.contains(MISSION) && content.contains(OBJECTIVE))
+            })
+    );
+
+    // A real AOP-006 mutation changes the agent situation at the SAME evidence anchor.
+    // The next read must include it, rather than returning a synthetic stateless session.
+    const CASE: &str = "case:session-orient:door";
+    let case_file = directory.0.join("orientation-case.json");
+    fs::write(
+        &case_file,
+        format!(
+            r#"{{"caseId":"{CASE}","question":"Did a person enter through the east door?","decisionInformed":"Whether an alert needs preparation","hypotheses":[{{"hypothesisId":"h:entry","description":"A person entered","predictions":["a hallway observation"]}},{{"hypothesisId":"h:passerby","description":"A person passed outside","predictions":["the track leaves outside"]}}],"knowns":[],"unknowns":[{{"statementId":"u:entry","text":"Entry remains unassessed"}}],"discriminators":[{{"discriminatorId":"d:hallway","description":"Inspect hallway evidence","separates":["h:entry","h:passerby"],"expectedOutcomes":["entry supported","entry unresolved"]}}],"probes":["probe:hallway"],"stopRules":["independent entry evidence is assessed"],"decisionWindowNs":3600000000000}}"#
+        ),
+    )?;
+    let case_output = Command::new(env!("CARGO_BIN_EXE_fss"))
+        .args(["investigate", "--json", "--root"])
+        .arg(&root)
+        .args(["--session", &session, "--transition", "open", "--case-file"])
+        .arg(&case_file)
+        .output()?;
+    success(&case_output);
+    let case_reply = Json::parse(std::str::from_utf8(&case_output.stdout)?)?;
+    assert_eq!(
+        case_reply.path(&["payload", "investigationId"])?.text()?,
+        CASE
+    );
+    let bound_args = [
+        "--session",
+        &session,
+        "--view",
+        "epistemic_map",
+        "--budget-tokens",
+        "4096",
+    ];
+    let before = tree_digest(&root)?;
+    let (case_body, with_case) = orient_ok(&root, &bound_args, &directory.0)?;
+    assert_eq!(payload(&with_case)?.get("anchor")?, &opening_anchor);
+    assert!(
+        payload(&with_case)?
+            .get("activeInvestigations")?
+            .texts()?
+            .contains(&CASE)
+    );
+    assert_ne!(
+        with_case.get("decisionFingerprint")?,
+        first.get("decisionFingerprint")?
+    );
+    let (again, _) = orient_ok(&root, &bound_args, &directory.0)?;
+    assert_eq!(
+        again, case_body,
+        "a cold repeat recovers the same exact situation"
+    );
+    assert_eq!(tree_digest(&root)?, before);
+
+    // Committing new evidence changes the observed head, not the durable session's anchor.
+    let import_id = import(&directory, "sensor:orientation-east", false)?;
+    let event_id = publish_watch_candidate(&root, &import_id)?;
+    let before = tree_digest(&root)?;
+    let (body, current) = orient_ok(&root, &bound_args, &directory.0)?;
+    let situation = payload(&current)?;
+    assert!(body.contains(&event_id));
+    assert!(situation.path(&["anchor", "capsuleSequence"])?.number()? > 0);
+    assert_eq!(situation.get("previousAnchor")?, &opening_anchor);
+    assert_eq!(situation.get("meaningfulDelta")?, &Json::Null);
+    assert_eq!(current.get("workspaceRevision")?.number()?, 0);
+    assert_eq!(current.get("sessionId")?.text()?, session);
+    assert_eq!(current.get("missionId")?.text()?, mission);
+    assert!(
+        current
+            .path(&["executionBoundary", "invalidated"])?
+            .texts()?
+            .iter()
+            .any(|line| line.contains("assumption:anchor-current") && line.contains("revalidation"))
+    );
+    assert!(
+        situation
+            .get("activeInvestigations")?
+            .texts()?
+            .contains(&CASE)
+    );
+    assert_eq!(
+        tree_digest(&root)?,
+        before,
+        "reading the head cannot rebase or rewrite the workspace"
+    );
+    assert_eq!(orient_ok(&root, &bound_args, &directory.0)?.0, body);
+    assert_eq!(tree_digest(&root)?, before);
+
+    // The legacy stateless mode remains distinct and cannot inherit the private mission.
+    let (_, stateless) = orient_ok(&root, &[], &directory.0)?;
+    assert_ne!(stateless.get("sessionId")?.text()?, session);
+    assert_ne!(stateless.get("missionId")?.text()?, mission);
+    assert_eq!(stateless.get("workspaceRevision")?, &Json::Null);
+    assert!(
+        !payload(&stateless)?
+            .get("activeInvestigations")?
+            .texts()?
+            .contains(&CASE)
+    );
+    assert_eq!(tree_digest(&root)?, before);
+    Ok(())
+}
+
+#[test]
+fn bound_orientation_refuses_missing_foreign_and_mixed_requests_without_writes() -> TestResult {
+    let directory = OwnedDirectory::new("bound-orient-refusals")?;
+    let root = empty_deployment(&directory, SITE)?;
+    let before = tree_digest(&root)?;
+    let missing = ["--session", "session:unknown"];
+    let (code, stdout, stderr) = run_fss(&session_args(&root, "orient", &missing))?;
+    assert_eq!(code, Some(5), "{stdout} {stderr}");
+    let answer = assert_session_envelope(
+        &stdout,
+        "AOP-003",
+        "fss.situation_capsule.v1",
+        "CAP-AGENT-SITUATION-READ-001",
+    )?;
+    assert_eq!(
+        answer.get("errorId")?.text()?,
+        "ERR-AGENT-SESSION-NOT-FOUND-001"
+    );
+    assert_eq!(answer.get("payload")?, &Json::Null);
+    assert_eq!(
+        tree_digest(&root)?,
+        before,
+        "a missing session does not initialize agent state"
+    );
+    assert!(!root.join("agent").exists());
+
+    let (_, opened) = session_ok(
+        &root,
+        "open",
+        &[
+            "--mission-text",
+            MISSION,
+            "--objective",
+            OBJECTIVE,
+            "--budget-tokens",
+            "100000",
+        ],
+        &directory.0,
+    )?;
+    let session = opened.get("sessionId")?.text()?.to_owned();
+    let before = tree_digest(&root)?;
+    for (extra, error) in [
+        (
+            vec!["--session", "session:unknown"],
+            "ERR-AGENT-SESSION-NOT-FOUND-001",
+        ),
+        (
+            vec![
+                "--session",
+                &session,
+                "--principal",
+                "principal:orientation-stranger",
+            ],
+            "ERR-AGENT-SESSION-NOT-FOUND-001",
+        ),
+        (
+            vec!["--session", &session, "--budget-tokens", "1"],
+            "ERR-AGENT-CONTEXT-INCOMPLETE-001",
+        ),
+    ] {
+        let (code, stdout, stderr) = run_fss(&session_args(&root, "orient", &extra))?;
+        assert_eq!(code, Some(5), "{stdout} {stderr}");
+        let answer = assert_session_envelope(
+            &stdout,
+            "AOP-003",
+            "fss.situation_capsule.v1",
+            "CAP-AGENT-SITUATION-READ-001",
+        )?;
+        assert_eq!(answer.get("outcome")?.text()?, "refused");
+        assert_eq!(answer.get("errorId")?.text()?, error);
+        assert_eq!(answer.get("payload")?, &Json::Null);
+        assert!(
+            !stdout.contains(MISSION),
+            "refusal must not disclose retained private text"
+        );
+        assert_answer_conforms(&stdout, "situation_capsule.v1.json", &directory.0, error)?;
+        assert_eq!(tree_digest(&root)?, before);
+    }
+    for extra in [
+        vec!["--session", &session, "--since", "anchor:unavailable"],
+        vec!["--session", &session, "--at", "anchor:unavailable"],
+        vec!["--session", &session, "--mission-bind", "plan:unavailable"],
+        vec!["--session", &session, "--session", &session],
+    ] {
+        let (code, stdout, stderr) = run_fss(&session_args(&root, "orient", &extra))?;
+        assert_eq!(code, Some(2), "{stdout} {stderr}");
+        assert_eq!(
+            tree_digest(&root)?,
+            before,
+            "parser refusal cannot perform session work"
+        );
+    }
     Ok(())
 }

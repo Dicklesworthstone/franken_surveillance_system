@@ -432,7 +432,7 @@ fn failure_response(args: &FollowArgs, failure: &FollowSessionFailure) -> (Strin
         warnings: Vec::new(), contradictions: Vec::new(),
         degradation: vec![
             failure.error.to_string(),
-            "No page is returned and no unobserved interval is certified. For a resnapshot refusal, obtain a fresh session orientation and register a new subscription explicitly; never splice the gap into the old stream. Other failures may safely repeat the exact ACK only when safeRetry admits it.".to_owned(),
+            "No page is returned and no unobserved interval is certified. For a resnapshot refusal, read the owned session with `fss session orient --json --root DEPLOYMENT --session SESSION`. This read neither acknowledges the old stream nor repairs missing historical session ordering. Register a new subscription only when native history admission permits it; never splice the gap into the old stream. Other failures may safely repeat the exact ACK only when safeRetry admits it.".to_owned(),
             "Completed failed-call I/O and any preceding page reconstruction are not fully metered; zero budget placeholders are not a claim of zero work.".to_owned(),
         ],
         budgets_json: crate::agent_json::budget_summary(&BudgetVector::ZERO, &BudgetVector::ZERO),

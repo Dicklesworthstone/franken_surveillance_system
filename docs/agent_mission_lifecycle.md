@@ -98,6 +98,40 @@ session streams with retained mission lifecycle state and requests resnapshottin
 inserting today's assessment into historical evidence frames. Ordinary fresh orientation and
 handoff remain available.
 
+## Read the current situation for an existing session
+
+An existing session can be inspected directly without creating a handoff or resuming it:
+
+```sh
+fss session orient --json --root DEPLOYMENT --session SESSION --view brief
+```
+
+The existing `fss orient` alias accepts the same selector. MCP `session_orient` accepts an
+optional `session` string under the server's fixed principal and deployment. Omit the selector
+for the existing deployment-only orientation.
+
+The native reader authenticates the existing session journal and mission publication, admits
+the principal and workspace, and compiles the current deployment situation with the session's
+mission, execution criteria, progress, cases, plans, claims, findings and supervision metadata.
+It does not create or repair a store, append a record, renew a lease, charge the durable session
+budget, or rebase the workspace. Explicit view limits still apply; protected context that does
+not fit is refused instead of truncated.
+
+The response's anchor names the current projection. Its workspace revision and `previousAnchor`
+identify the retained workspace. If the deployment has advanced, old assumptions are marked
+invalid and next actions must be re-derived; the retained workspace remains unchanged. The
+complete historical session comparison is unavailable, so `meaningfulDelta` remains null.
+Current mission assessment freshness is rechecked under the same proof and scoped-closure
+rules used by lifecycle commands. A historical terminal revision is preserved without being
+presented as current completion.
+
+Control-generation, capability and privacy changes must still admit the current read; it never
+restores permission from an older workspace. Unknown, foreign, closed, expired, corrupted or
+unauthorized session state is refused. A
+failed read cannot initialize missing continuity files or silently fall back to an unrelated
+deployment-only session. To change the retained workspace basis, use the existing explicit
+handoff/resume operations after reviewing the current situation.
+
 ## Compatibility and bounds
 
 This is an explicit bounded execution profile, not a complete serializer for

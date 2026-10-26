@@ -2,7 +2,8 @@
 //! `fss orient` (AOP-003 `session.orient`) and `fss explain` (AOP-011 `explain`): read-only agent
 //! reads of an existing deployment root, answered as the registered `AgentResponseEnvelope`.
 //!
-//! Both commands open no file for writing. The situation is compiled by
+//! Both commands open no file for writing. Session-bound orientation may hold a read-only
+//! journal lock while it authenticates a coherent snapshot. The situation is compiled by
 //! [`fss_reference::agent_orient`]; this module only decodes arguments, binds the compiled typed
 //! values into [`AgentResponseEnvelope`] (and, for explain, [`AgentCognitiveEnvelope`]) through
 //! their validated constructors, and renders them with [`crate::agent_json`]. Affordances are
@@ -26,7 +27,7 @@ use fss_core::{
     CanonicalEncode, CanonicalEncoder, CognitiveAnswerClass, Completeness, ContentDigest,
     ContractBasisError, EnvelopeBudget, EnvelopeContinuity, EnvelopeCoverage, EnvelopeEpistemic,
     EnvelopeProposition, EventId, EventState, ExecutionBoundary, KnowledgeState, LedgerAnchor,
-    PrincipalId, ResponseOutcome, ResponseSafeRetry, ResponseTaskState,
+    PrincipalId, ResponseOutcome, ResponseSafeRetry, ResponseTaskState, SessionId,
 };
 use fss_reference::agent_follow::AnchorToken;
 use fss_reference::agent_orient::{
@@ -56,6 +57,8 @@ pub const ORIENT_VIEWS: [&str; 3] = ["pulse", "brief", "epistemic_map"];
 pub struct OrientArgs {
     /// Existing deployment root, read-only.
     pub root: PathBuf,
+    /// Optional existing durable session, admitted under the requesting principal.
+    pub session: Option<SessionId>,
     /// Registered view (default `brief`).
     pub view: AgentView,
     /// Requesting principal label.
@@ -217,12 +220,18 @@ pub(crate) fn principal(
     }
 }
 
-/// Parses `orient --json --root <dir> [--view <name>] [--principal <id>] [--budget-tokens <n>]`.
+/// Parses a read-only deployment orientation, optionally bound to an existing `--session`.
 pub fn parse_orient_args(tokens: &[ArgToken]) -> Result<OrientArgs, CliError> {
     let values = collect_options(
         "orient",
         tokens,
-        &["--root", "--view", "--principal", "--budget-tokens"],
+        &[
+            "--root",
+            "--session",
+            "--view",
+            "--principal",
+            "--budget-tokens",
+        ],
     )?;
     let root = required_root("orient", &values)?;
     let view = match take(&values, "--view") {
@@ -267,8 +276,20 @@ pub fn parse_orient_args(tokens: &[ArgToken]) -> Result<OrientArgs, CliError> {
             }
         }
     };
+    let session = take(&values, "--session")
+        .map(|(_, value, index)| {
+            SessionId::parse(value.clone()).map_err(|_| CliError::MalformedValue {
+                option: "--session".to_owned(),
+                value: value.clone(),
+                reason: "session must be a registered identifier of 1..128 characters".to_owned(),
+                command: Some("orient".to_owned()),
+                index: *index,
+            })
+        })
+        .transpose()?;
     Ok(OrientArgs {
         root,
+        session,
         view,
         principal: principal("orient", &values)?,
         budget_tokens,
@@ -956,6 +977,7 @@ pub(crate) fn situation_capsule_payload(
 
 fn orient_response(
     orientation: &DeploymentOrientation,
+    session: Option<&fss_reference::deployment_session::orient::OrientedSession>,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let capsule = orientation.capsule();
     let publication = &orientation.publication;
@@ -977,13 +999,77 @@ fn orient_response(
     )
     .ok_or(RenderError("next affordance objects"))?;
     let mut degradation = orientation.degradation.clone();
-    degradation.push(
-        "No previous anchor was supplied: meaningfulDelta is null and no change is claimed."
-            .to_owned(),
-    );
+    let mut warnings = orientation.warnings.clone();
+    let (payload_json, boundary) = if let Some(read) = session {
+        proof_pointers.push(read.revision.digest().to_text());
+        proof_pointers.push(read.journal_root.to_text());
+        let workspace = read.revision.capsule();
+        let extra_debt = if read.anchor_moved {
+            workspace.assumptions.iter().map(|entry| {
+                agent_json::workspace_debt_item(entry, &format!(
+                    "The retained workspace remains at {}; the read-only situation is at {}. Explicit rebase is required before reusing anchor-bound assumptions or actions.",
+                    read.workspace_anchor_token, orientation.anchor_token,
+                ))
+            }).collect()
+        } else {
+            Vec::new()
+        };
+        if read.anchor_moved {
+            warnings.push(format!(
+                "The deployment position moved beyond the retained workspace ({} -> {}); {} assumption(s) are invalidated. This read did not rebase the workspace, renew its lease, or authorize any action.",
+                read.workspace_anchor_token, orientation.anchor_token, read.invalidated.len(),
+            ));
+        }
+        degradation.push(format!(
+            "Read-only session snapshot: workspace revision {} and its original anchor remain unchanged. previousAnchor identifies that retained workspace; meaningfulDelta is null because historical session state was not reconstructed.",
+            workspace.revision,
+        ));
+        degradation.push(format!(
+            "The session lease expires at evidence time {} ns; this read does not extend it or consume its durable token budget.",
+            read.session.expires_at_ns,
+        ));
+        let payload = situation_capsule_payload(
+            orientation,
+            &CapsuleOverrides {
+                previous_anchor: Some(&workspace.current_anchor),
+                meaningful_delta: None,
+                extra_debt,
+                symbol_table_generation: read.session.symbol_table_generation,
+            },
+        )?;
+        let boundary = ExecutionBoundary {
+            completed: vec![format!(
+                "Read session {} and authenticated workspace revision {} at session journal root {}; compiled the current {} situation at commit {}.",
+                read.session.session_id.as_str(), workspace.revision, read.journal_root,
+                orientation.view.name(), capsule.anchor.commit_sequence,
+            )],
+            not_started: vec![
+                "Every listed affordance, effect, workspace rebase, lease renewal, and durable budget mutation.".to_owned(),
+            ],
+            possibly_occurred: Vec::new(),
+            preserved_truth: vec![
+                "Existing deployment and session files were read under a temporary journal lock; no file was created, written, or repaired.".to_owned(),
+            ],
+            invalidated: read.invalidated.clone(),
+        };
+        (payload, boundary)
+    } else {
+        degradation.push(
+            "No previous anchor was supplied: meaningfulDelta is null and no change is claimed."
+                .to_owned(),
+        );
+        (
+            orient_payload(orientation)?,
+            read_only_boundary(format!(
+                "Compiled the {} situation at commit {}.",
+                orientation.view.name(),
+                capsule.anchor.commit_sequence,
+            )),
+        )
+    };
     build_response(ResponseParts {
         operation: "session.orient",
-        request_digest: orientation.request_digest,
+        request_digest: session.map_or(orientation.request_digest, |read| read.request_digest),
         principal: capsule.principal_id.clone(),
         session_id: Some(capsule.session_id.as_str().to_owned()),
         mission_id: Some(capsule.mission_id.as_str().to_owned()),
@@ -993,10 +1079,10 @@ fn orient_response(
         outcome: ResponseOutcome::Ok,
         error_id: None,
         payload_schema: "fss.situation_capsule.v1",
-        payload_json: orient_payload(orientation)?,
+        payload_json,
         epistemic_state: orientation.epistemic_state,
         completeness: capsule.completeness,
-        warnings: orientation.warnings.clone(),
+        warnings,
         contradictions: orientation.contradictions.clone(),
         degradation,
         budgets_json: agent_json::budget_summary(&orientation.requested, &orientation.consumed),
@@ -1008,13 +1094,9 @@ fn orient_response(
         continuation: publication.context_pack.continuation.clone(),
         recovery_class: "safe_read_retry",
         safe_retry: ResponseSafeRetry::YesSameRequest,
-        boundary: read_only_boundary(format!(
-            "Compiled the {} situation at commit {}.",
-            orientation.view.name(),
-            capsule.anchor.commit_sequence
-        )),
+        boundary,
         created_at_ns: capsule.created_at.0,
-        workspace_revision: None,
+        workspace_revision: session.map(|read| read.revision.capsule().revision),
         idempotency_key: None,
     })
 }
@@ -1088,6 +1170,9 @@ pub(crate) fn rendered(
 /// Executes `orient`, returning the rendered response and its exit identity.
 #[must_use]
 pub fn execute_orient(args: &OrientArgs) -> (String, ExitIdentity) {
+    if let Some(session_id) = &args.session {
+        return execute_session_orient(args, session_id);
+    }
     let limits = OrientLimits::default();
     let snapshot = match read_deployment(&args.root, &limits) {
         Ok(snapshot) => snapshot,
@@ -1124,7 +1209,7 @@ pub fn execute_orient(args: &OrientArgs) -> (String, ExitIdentity) {
         };
     match orient_deployment_with_advisories(&snapshot, &request, &limits, Some(&trauma_warnings)) {
         Ok(orientation) => rendered(
-            orient_response(&orientation),
+            orient_response(&orientation, None),
             ExitIdentity::SUCCESS,
             "orient",
             &args.root,
@@ -1159,6 +1244,137 @@ pub fn execute_orient(args: &OrientArgs) -> (String, ExitIdentity) {
         Err(OrientError::UnsupportedView(_) | OrientError::Contract(_)) => {
             internal_failure("orient", &args.root)
         }
+    }
+}
+
+/// Refuse a complete bound-session projection that cannot fit its registered wire fields.
+/// Context selection has already preserved the native critical context; these additive
+/// workspace fields must also fit without truncating old assumptions or invalidations.
+fn session_orient_wire_refusal(
+    read: &fss_reference::deployment_session::orient::OrientedSession,
+) -> Option<String> {
+    // schemas/situation_capsule.v1.json: epistemicDebt.maxItems = 1024.
+    let assumptions = &read.revision.capsule().assumptions;
+    let additional_debt = if read.anchor_moved {
+        assumptions.len()
+    } else {
+        0
+    };
+    let combined_debt = read
+        .orientation
+        .epistemic_debt
+        .len()
+        .saturating_add(additional_debt);
+    if combined_debt > 1024 {
+        return Some(format!(
+            "The complete session orientation requires {combined_debt} epistemic-debt items; \
+             the registered situation capsule admits at most 1024. Retained assumptions \
+             cannot be silently omitted."
+        ));
+    }
+    // Match workspace_debt_item's exact ID extraction. The registered debtId is nonempty
+    // and at most 256 Unicode characters. Its assumption/deferredReason fields have no
+    // schema length ceiling, so do not invent one here. Rust chars match JSON code points.
+    if read.anchor_moved
+        && assumptions.iter().any(|entry| {
+            let (debt_id, _) = entry.split_once(": ").unwrap_or((entry, entry));
+            debt_id.is_empty() || debt_id.chars().count() > 256
+        })
+    {
+        return Some(
+            "A retained assumption cannot be represented by the registered epistemic-debt \
+             identity limit of 1..256 characters. Its identity cannot be truncated."
+                .to_owned(),
+        );
+    }
+    // schemas/agent_response_envelope.v1.json: executionBoundary.invalidated admits at
+    // most 256 nonempty strings, each at most 1024 Unicode characters.
+    if read.invalidated.len() > 256 {
+        return Some(format!(
+            "The complete session orientation requires {} invalidation entries; the \
+             registered execution boundary admits at most 256. Invalidations cannot \
+             be silently omitted.",
+            read.invalidated.len(),
+        ));
+    }
+    if read
+        .invalidated
+        .iter()
+        .any(|entry| entry.is_empty() || entry.chars().count() > 1024)
+    {
+        return Some(
+            "An invalidation cannot fit the registered execution boundary's nonempty \
+             1024-character entry limit. Its statement cannot be truncated."
+                .to_owned(),
+        );
+    }
+    None
+}
+
+fn session_orient_operation(
+    args: &OrientArgs,
+    session_id: &SessionId,
+) -> crate::session_cmd::Operation {
+    let mut request_bytes = CanonicalEncoder::new();
+    session_id.encode_canonical(&mut request_bytes);
+    request_bytes.text(args.view.name());
+    request_bytes.bool(args.budget_tokens.is_some());
+    if let Some(tokens) = args.budget_tokens {
+        request_bytes.u64(tokens);
+    }
+    crate::session_cmd::Operation {
+        command: "orient",
+        name: "session.orient",
+        capability: CAPABILITY_SITUATION_READ,
+        payload_schema: "fss.situation_capsule.v1",
+        view: args.view,
+        root: args.root.clone(),
+        principal: args.principal.clone(),
+        request: request_bytes.finish(),
+    }
+}
+
+/// A current situation for one authenticated durable session, without opening a writer.
+fn execute_session_orient(args: &OrientArgs, session_id: &SessionId) -> (String, ExitIdentity) {
+    use fss_reference::deployment_session::orient::{OrientSessionRequest, orient_session};
+
+    let request = OrientSessionRequest {
+        session_id: session_id.clone(),
+        principal: args.principal.clone(),
+        view: args.view,
+        budget_tokens: args.budget_tokens,
+    };
+    let operation = session_orient_operation(args, session_id);
+    match orient_session(&args.root, &request) {
+        Ok(read) => {
+            if let Some(reason) = session_orient_wire_refusal(&read) {
+                return crate::session_cmd::refuse_typed_with_boundary(
+                    &operation,
+                    crate::session_cmd::Refusal {
+                        error_id: ERR_AGENT_CONTEXT_INCOMPLETE,
+                        reason,
+                        guidance: "The complete view exceeds a registered continuity bound. Preserve the original workspace and explicitly create a bounded successor before retrying; this read neither truncates context nor rewrites the workspace.",
+                        recovery_class: "never_unchanged",
+                        safe_retry: ResponseSafeRetry::No,
+                    },
+                    ExitIdentity::AGENT_REFUSED,
+                    Some(ExecutionBoundary {
+                        completed: vec!["Authenticated the current session snapshot; its complete response exceeds registered wire bounds.".to_owned()],
+                        not_started: vec!["Situation response delivery and every listed action.".to_owned()],
+                        possibly_occurred: Vec::new(),
+                        preserved_truth: vec!["No deployment or session file was created, written or repaired; workspace, lease and durable budget remain unchanged.".to_owned()],
+                        invalidated: Vec::new(),
+                    }),
+                );
+            }
+            rendered(
+                orient_response(&read.orientation, Some(&read)),
+                ExitIdentity::SUCCESS,
+                "orient",
+                &args.root,
+            )
+        }
+        Err(error) => crate::session_cmd::refuse(&operation, error),
     }
 }
 
