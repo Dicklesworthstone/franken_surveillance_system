@@ -13,4 +13,5 @@
 pub mod authentication;
 pub mod client;
 pub mod http;
+pub mod snapshot;
 pub mod wire;

@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! Bounded native HTTP ownership for the three read-only ONVIF SOAP operations.
+//! Bounded native HTTP ownership for read-only ONVIF SOAP and snapshot requests.
 //!
 //! The caller pins the peer, HTTP authority, generation and plaintext approval,
 //! supplies a live authority and admission clock, and owns every wait. This owner
@@ -26,6 +26,7 @@ pub struct HttpRoute {
     generation: u64,
     plaintext_approval: ContentDigest,
     digest: ContentDigest,
+    snapshot: bool,
 }
 
 impl HttpRoute {
@@ -76,12 +77,16 @@ impl HttpRoute {
             generation,
             plaintext_approval,
             digest,
+            snapshot: false,
         })
     }
 
     /// Change only the target after the higher owner has admitted a same-origin
     /// service address. Every subsequent boundary still checks the new exact route.
     pub fn with_target(&self, target: &str) -> Result<Self, HttpError> {
+        if self.snapshot {
+            return Err(HttpError::Configuration);
+        }
         Self::new(
             self.peer,
             &self.authority,
@@ -89,6 +94,41 @@ impl HttpRoute {
             self.generation,
             self.plaintext_approval,
         )
+    }
+
+    /// Admit one camera-returned snapshot target without broadening the approved
+    /// origin or changing the pinned peer. Query tokens are sent only to that peer.
+    /// A snapshot route cannot be used for SOAP or credential signing.
+    pub fn snapshot(&self, uri: &str) -> Result<Self, HttpError> {
+        if self.snapshot {
+            return Err(HttpError::Configuration);
+        }
+        let rest = uri
+            .strip_prefix("http://")
+            .ok_or(HttpError::Configuration)?;
+        let slash = rest.find('/').ok_or(HttpError::Configuration)?;
+        let (authority, target) = rest.split_at(slash);
+        if authority != self.authority || !valid_snapshot_target(target) {
+            return Err(HttpError::Configuration);
+        }
+        let mut encoder = CanonicalEncoder::new();
+        encoder.text("fss.onvif.snapshot-route.v1:explicit-plaintext:read-only");
+        encoder.digest(self.digest);
+        encoder.text(target);
+        let digest = ContentDigest::sha256(
+            &encoder
+                .finish_checked()
+                .map_err(|_| HttpError::Configuration)?,
+        );
+        Ok(Self {
+            peer: self.peer,
+            authority: self.authority.clone(),
+            target: target.to_owned(),
+            generation: self.generation,
+            plaintext_approval: self.plaintext_approval,
+            digest,
+            snapshot: true,
+        })
     }
 
     /// Frozen network destination; no DNS or redirect may alter it.
@@ -115,6 +155,39 @@ impl HttpRoute {
     pub fn digest(&self) -> ContentDigest {
         self.digest
     }
+}
+
+fn valid_snapshot_target(target: &str) -> bool {
+    if !target.starts_with('/')
+        || target.starts_with("//")
+        || target.len() > 4096
+        || !target
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-._~!$&'()*+,;=:@/?%".contains(&b))
+    {
+        return false;
+    }
+    let bytes = target.as_bytes();
+    for (index, byte) in bytes.iter().enumerate() {
+        if *byte == b'%'
+            && !bytes
+                .get(index + 1..index + 3)
+                .is_some_and(|escape| escape.iter().all(u8::is_ascii_hexdigit))
+        {
+            return false;
+        }
+    }
+    !target
+        .split('?')
+        .next()
+        .unwrap_or("")
+        .split('/')
+        .any(|part| {
+            matches!(
+                part.replace("%2e", ".").replace("%2E", ".").as_str(),
+                "." | ".."
+            )
+        })
 }
 
 impl fmt::Debug for HttpRoute {
@@ -242,9 +315,9 @@ pub struct HttpLimits {
     pub request_bytes: usize,
     /// All response heads combined and one trailer block, each 4..=32768 bytes.
     pub header_bytes: usize,
-    /// Complete transfer-decoded response, 1..=1 MiB.
+    /// Complete transfer-decoded response: SOAP <=1 MiB, snapshot <=64 MiB.
     pub body_bytes: usize,
-    /// Entire response with framing, 4..=2 MiB.
+    /// Entire response with framing: SOAP <=2 MiB, snapshot <=128 MiB.
     pub wire_bytes: usize,
     /// Maximum bytes offered to a single read/write, 1..=16384.
     pub io_bytes: usize,
@@ -270,10 +343,14 @@ impl Default for HttpLimits {
 
 impl HttpLimits {
     fn validate(self) -> Result<(), HttpError> {
+        self.validate_profile(false)
+    }
+
+    fn validate_profile(self, snapshot: bool) -> Result<(), HttpError> {
         if !(1..=65536).contains(&self.request_bytes)
             || !(4..=32768).contains(&self.header_bytes)
-            || !(1..=1_048_576).contains(&self.body_bytes)
-            || !(4..=2_097_152).contains(&self.wire_bytes)
+            || !(1..=if snapshot { 67_108_864 } else { 1_048_576 }).contains(&self.body_bytes)
+            || !(4..=if snapshot { 134_217_728 } else { 2_097_152 }).contains(&self.wire_bytes)
             || !(1..=16384).contains(&self.io_bytes)
             || !(1..=1_000_000).contains(&self.io_calls)
             || !(1..=5_000_000_000).contains(&self.connect_timeout_ns)
@@ -381,6 +458,10 @@ impl HttpResponse {
     pub fn body(&self) -> &[u8] {
         &self.body
     }
+    /// Transfer source bytes without an additional whole-response copy.
+    pub fn into_body(mut self) -> Vec<u8> {
+        std::mem::take(&mut self.body)
+    }
     /// At most one bounded Digest challenge; the authentication owner must validate
     /// its pinned realm, algorithm, nonce and qop before any credential use.
     pub fn digest_challenge(&self) -> Option<&str> {
@@ -407,7 +488,7 @@ impl Drop for HttpResponse {
 trait HttpSocket: Read + Write + Send {}
 impl HttpSocket for TcpStream {}
 
-/// A single read-only POST and response, with no automatic authentication/retry.
+/// A single read-only request and response, with no automatic authentication/retry.
 /// Dropping closes its sole socket; cleanup needs no renewed network authority.
 pub struct HttpExchange {
     route: HttpRoute,
@@ -451,10 +532,44 @@ impl HttpExchange {
         authority: &dyn HttpAuthority,
     ) -> Result<Self, HttpError> {
         limits.validate()?;
-        if now_ns >= deadline_ns {
+        if route.snapshot || now_ns >= deadline_ns {
             return Err(HttpError::Configuration);
         }
         let request = make_request(&route, request, authorization, limits.request_bytes)?;
+        Self::connect_request(route, request, limits, now_ns, deadline_ns, authority)
+    }
+
+    /// Fetch one already scoped snapshot. No credentials, redirects, DNS, retry,
+    /// or authentication callbacks can be supplied through this GET-only lane.
+    pub fn connect_snapshot(
+        route: HttpRoute,
+        limits: HttpLimits,
+        now_ns: u64,
+        deadline_ns: u64,
+        authority: &dyn HttpAuthority,
+    ) -> Result<Self, HttpError> {
+        limits.validate_profile(true)?;
+        if !route.snapshot || now_ns >= deadline_ns {
+            return Err(HttpError::Configuration);
+        }
+        let request = format!(
+            "GET {} HTTP/1.1\r\nHost: {}\r\nAccept: image/jpeg\r\nAccept-Encoding: identity\r\nConnection: close\r\n\r\n",
+            route.target, route.authority,
+        ).into_bytes();
+        if request.len() > limits.request_bytes {
+            return Err(HttpError::Limit);
+        }
+        Self::connect_request(route, request, limits, now_ns, deadline_ns, authority)
+    }
+
+    fn connect_request(
+        route: HttpRoute,
+        request: Vec<u8>,
+        limits: HttpLimits,
+        now_ns: u64,
+        deadline_ns: u64,
+        authority: &dyn HttpAuthority,
+    ) -> Result<Self, HttpError> {
         let mut owner = Self {
             route,
             limits,
@@ -747,16 +862,19 @@ fn make_request(
     limit: usize,
 ) -> Result<Vec<u8>, HttpError> {
     let action = request.action();
-    if !matches!(
-        action,
-        "http://www.onvif.org/ver10/device/wsdl/GetSystemDateAndTime"
-            | "http://www.onvif.org/ver10/device/wsdl/GetCapabilities"
-            | "http://www.onvif.org/ver10/media/wsdl/GetProfiles"
-            | "http://www.onvif.org/ver10/media/wsdl/GetStreamUri"
-            | "http://www.onvif.org/ver10/device/wsdl/GetServices"
-            | "http://www.onvif.org/ver20/media/wsdl/GetProfiles"
-            | "http://www.onvif.org/ver20/media/wsdl/GetStreamUri"
-    ) || request.body().len() > limit
+    if route.snapshot
+        || !matches!(
+            action,
+            "http://www.onvif.org/ver10/device/wsdl/GetSystemDateAndTime"
+                | "http://www.onvif.org/ver10/device/wsdl/GetCapabilities"
+                | "http://www.onvif.org/ver10/media/wsdl/GetProfiles"
+                | "http://www.onvif.org/ver10/media/wsdl/GetStreamUri"
+                | "http://www.onvif.org/ver10/media/wsdl/GetSnapshotUri"
+                | "http://www.onvif.org/ver10/device/wsdl/GetServices"
+                | "http://www.onvif.org/ver20/media/wsdl/GetProfiles"
+                | "http://www.onvif.org/ver20/media/wsdl/GetStreamUri"
+        )
+        || request.body().len() > limit
         || (authorization.is_some() && request.has_username_token())
     {
         return Err(HttpError::Configuration);

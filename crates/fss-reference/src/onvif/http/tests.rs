@@ -10,6 +10,73 @@ use std::sync::{Arc, Mutex};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
+#[test]
+fn snapshot_routes_preserve_the_approved_origin_and_hide_tokens() -> TestResult {
+    let media = route()?;
+    let snapshot = media.snapshot("http://camera.invalid:8080/private.jpg?token=PRIVATE-TOKEN")?;
+    assert_eq!(snapshot.peer(), media.peer());
+    assert_eq!(snapshot.authority(), media.authority());
+    assert_eq!(snapshot.generation(), media.generation());
+    assert_eq!(snapshot.plaintext_approval(), media.plaintext_approval());
+    assert_ne!(snapshot.digest(), media.digest());
+    assert!(!format!("{snapshot:?}").contains("PRIVATE"));
+    assert_eq!(
+        snapshot.with_target("/onvif/media").err(),
+        Some(HttpError::Configuration)
+    );
+    assert!(
+        snapshot
+            .snapshot("http://camera.invalid:8080/another.jpg")
+            .is_err()
+    );
+    for uri in [
+        "http://other.invalid:8080/image.jpg",
+        "http://127.0.0.1:8080/image.jpg",
+        "http://camera.invalid:80/image.jpg",
+        "https://camera.invalid:8080/image.jpg",
+        "http://user@camera.invalid:8080/image.jpg",
+        "http://camera.invalid:8080//other.invalid/image.jpg",
+        "http://camera.invalid:8080/a/../image.jpg",
+        "http://camera.invalid:8080/a/%2E%2e/image.jpg",
+        "http://camera.invalid:8080/image.jpg?token=%GG",
+        "http://camera.invalid:8080/image.jpg#fragment",
+        "http://camera.invalid:8080/image.jpg?token=a b",
+        "http://camera.invalid:8080/image.jpg\r\nAuthorization: forged",
+        "http://camera.invalid:8080/a\\image.jpg",
+    ] {
+        assert_eq!(media.snapshot(uri).err(), Some(HttpError::Configuration));
+    }
+    let limits = HttpLimits {
+        body_bytes: 4 * 1024 * 1024,
+        wire_bytes: 8 * 1024 * 1024,
+        ..HttpLimits::default()
+    };
+    assert_eq!(limits.validate(), Err(HttpError::Configuration));
+    assert_eq!(limits.validate_profile(true), Ok(()));
+    assert_eq!(
+        make_request(&snapshot, &get_capabilities_request(), None, 32768).err(),
+        Some(HttpError::Configuration),
+    );
+    assert_eq!(
+        HttpExchange::connect(
+            snapshot,
+            &get_capabilities_request(),
+            None,
+            HttpLimits::default(),
+            0,
+            100,
+            &Permit
+        )
+        .err(),
+        Some(HttpError::Configuration),
+    );
+    assert_eq!(
+        HttpExchange::connect_snapshot(media, limits, 0, 100, &Permit).err(),
+        Some(HttpError::Configuration),
+    );
+    Ok(())
+}
+
 fn route() -> Result<HttpRoute, HttpError> {
     HttpRoute::new(
         SocketAddr::from(([127, 0, 0, 1], 8080)),
