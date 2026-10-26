@@ -17,7 +17,10 @@ use fss_reference::webhook::{
     WebhookAttempt, WebhookAuthority, WebhookBoundary, WebhookDenial, WebhookEndpoint,
     WebhookError, WebhookEvidence, WebhookLimits, WebhookOutcome, WebhookProgress, WebhookScope,
 };
-use fss_reference::{ReferenceAlertPlan, ReferenceDeployment, ReferenceError, ReplayCx};
+use fss_reference::{
+    MAX_ALERT_HEALTH_OBJECT_BYTES, ReferenceAlertPlan, ReferenceDeployment, ReferenceError,
+    ReplayCx,
+};
 use fss_runtime::authority::AuthorityCx;
 use fss_runtime::execution::{ExecutionError, TaskCompletion, TaskCx, TaskSpec, run_owned};
 use fss_runtime::obligation::{ObligationTerminal, new_obligation};
@@ -588,10 +591,14 @@ fn execute<C: DispatchClock>(
         };
         let read = |digest: ContentDigest| -> Result<Vec<u8>, ReferenceError> {
             owner.source_read()?;
+            cx.checkpoint("alert:dispatch:read").map_err(|_| {
+                ReferenceError::CancellationRequested {
+                    stage: "alert:dispatch:read",
+                }
+            })?;
             let result = publisher
                 .spool()
-                .read(digest)
-                .map(|bytes| bytes.to_vec())
+                .read_bounded(digest, MAX_ALERT_HEALTH_OBJECT_BYTES)
                 .map_err(|error| ReferenceError::from(LocalPublicationError::Spool(error)));
             owner.after_source_read()?;
             result

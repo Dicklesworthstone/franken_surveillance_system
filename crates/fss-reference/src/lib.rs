@@ -65,10 +65,10 @@ mod error;
 pub mod evaluation;
 /// Exact-approval operator lifecycle reviews of retained events.
 pub mod event_review;
-/// Approval-gated, redacted P5 event evidence export roots.
-pub mod evidence_export;
 /// Certified EvidenceClaimGraph projection over verified deployment event heads.
 pub mod evidence_claim_graph;
+/// Approval-gated, redacted P5 event evidence export roots.
+pub mod evidence_export;
 /// Executor-backed activity observations over decoded pixels (fss-2h5zq.51); cognition only.
 pub mod executor_activity;
 /// First-party activity model as an immutable, verified FMPK package (fss-2h5zq.49).
@@ -211,9 +211,10 @@ pub use agent_session::{
 };
 pub use alert::{
     ALERT_COOPERATIVE_CANCEL_REASON, ALERT_COOPERATIVE_CANCEL_STAGES, AlertDispatchTimes,
-    PrepareAlertParams, ProviderDispatch, ProviderFailureReceipt, ProviderObservationReceipt,
-    REFERENCE_ALERT_TERMINAL_PREDICATE, ReferenceAlertPlan, ReferenceAlertProvider,
-    ReferenceProviderBehavior, alert_cancel_proof, alert_cooperative_cancel_proof,
+    MAX_ALERT_HEALTH_OBJECT_BYTES, PrepareAlertParams, ProviderDispatch, ProviderFailureReceipt,
+    ProviderObservationReceipt, REFERENCE_ALERT_TERMINAL_PREDICATE, ReferenceAlertPlan,
+    ReferenceAlertProvider, ReferenceProviderBehavior, alert_cancel_proof,
+    alert_cooperative_cancel_proof, check_alert_historical_health,
     committed_reference_policy_action, dispatch_reference_alert, observe_reference_alert,
     prepare_reference_alert, reconcile_failed_reference_alert, reconcile_reference_alert,
     rehydrate_reference_alert_plan, verify_reference_alert,

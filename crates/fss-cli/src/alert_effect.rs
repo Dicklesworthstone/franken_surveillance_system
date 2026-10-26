@@ -15,12 +15,16 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use fss_core::{
     CanonicalEncode, CanonicalEncoder, ContentDigest, ContextAuthority, ContractError, EffectState,
-    IdempotencyKey, ObligationId, ObligationState, OperationId, OperationReceipt,
+    EventHypothesis, IdempotencyKey, ObligationId, ObligationState, OperationId, OperationReceipt,
 };
+use fss_publication::LocalPublicationError;
 use fss_reference::webhook::{
     WebhookEndpoint, WebhookEvidence, WebhookInterruption, WebhookOutcome,
 };
-use fss_reference::{ReferenceAlertPlan, ReferenceDeployment, ReferenceError, ReplayCx};
+use fss_reference::{
+    MAX_ALERT_HEALTH_OBJECT_BYTES, ReferenceAlertPlan, ReferenceDeployment, ReferenceError,
+    ReplayCx, check_alert_historical_health,
+};
 
 /// Metadata-only runtime presentation for both CLI surfaces.
 pub mod report;
@@ -50,7 +54,7 @@ pub enum AlertEffectError {
     Route,
     /// The event is absent, or its authority could not be read and verified.
     Authority(ReferenceError),
-    /// Policy, corroboration or sensor-integrity gates refuse an alert for this event.
+    /// Policy, corroboration, sensor-integrity or retained source-health gates refuse the alert.
     NotEligible(ReferenceError),
     /// An approval digest does not match the current plan or prepared operation.
     StaleApproval(ContentDigest),
@@ -94,17 +98,52 @@ impl std::fmt::Display for AlertEffectError {
 
 impl std::error::Error for AlertEffectError {}
 
-/// Maps a preparation refusal: policy/integrity gates are `NotEligible`, anything else is an
+/// Maps a preparation refusal: policy/integrity/source-health gates are `NotEligible`; other errors are an
 /// authority refusal.
 #[must_use]
 pub fn not_eligible(error: ReferenceError) -> AlertEffectError {
     match error {
         ReferenceError::InvalidSpec("alert_not_eligible")
-        | ReferenceError::Contract(ContractError::SensorIntegrityRisk) => {
-            AlertEffectError::NotEligible(error)
-        }
+        | ReferenceError::Contract(ContractError::SensorIntegrityRisk)
+        | ReferenceError::AlertSourceHealth(_) => AlertEffectError::NotEligible(error),
         other => AlertEffectError::Authority(other),
     }
+}
+
+/// Checks retained diagnostic eligibility before proposing or durably preparing an alert.
+///
+/// Reads are bounded before allocation and pass the caller's explicit context checkpoint. The
+/// reference owner shares aggregate metadata and matching bounds across the complete check.
+/// Absence of a matching diagnostic remains unknown health and supplies no health certificate.
+/// An existing non-prepared operation is inspected through its own historical receipt instead.
+pub fn check_alert_source_health(
+    deployment: &ReferenceDeployment,
+    event: &EventHypothesis,
+    cx: &ReplayCx,
+) -> Result<(), AlertEffectError> {
+    if cx.root_dir() != deployment.root() {
+        return Err(AlertEffectError::Authority(ReferenceError::InvalidSpec(
+            "alert_source_health_context",
+        )));
+    }
+    cx.checkpoint("alert:source_health").map_err(|_| {
+        AlertEffectError::Authority(ReferenceError::CancellationRequested {
+            stage: "alert:source_health",
+        })
+    })?;
+    check_alert_historical_health(deployment.ledger(), event, |digest| {
+        cx.checkpoint("alert:source_health:read").map_err(|_| {
+            ReferenceError::CancellationRequested {
+                stage: "alert:source_health:read",
+            }
+        })?;
+        deployment
+            .publisher()
+            .spool()
+            .read_bounded(digest, MAX_ALERT_HEALTH_OBJECT_BYTES)
+            .map_err(|error| ReferenceError::from(LocalPublicationError::Spool(error)))
+    })
+    .map_err(not_eligible)
 }
 
 fn hex(digest: ContentDigest) -> String {

@@ -3,6 +3,9 @@
 /// Native, explicit-authority HTTP relay delivery over the durable alert gates.
 pub mod webhook;
 
+mod source_health;
+pub use source_health::{MAX_ALERT_HEALTH_OBJECT_BYTES, check_alert_historical_health};
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use fss_core::{
@@ -917,7 +920,7 @@ pub(crate) fn refuse_restored_effect_authority(
 fn check_alert_dispatch_authority<E>(
     plan: &ReferenceAlertPlan,
     authority: &DurableReferenceLedger,
-    read_payload: impl FnMut(ContentDigest) -> Result<Vec<u8>, E>,
+    mut read_payload: impl FnMut(ContentDigest) -> Result<Vec<u8>, E>,
     prepared_intent: &EffectIntent,
     obligation: Option<&Obligation>,
 ) -> Result<(), ReferenceError>
@@ -962,7 +965,11 @@ where
     // under a different event of the same failure domain never touches this event's lineage, so
     // the lineage check above cannot see it. Refuse while an unretired tamper record cites a
     // domain this event's evidence cites; an evidenced restoration re-enables dispatch.
-    refuse_on_open_domain_tamper(authority, read_payload, &event)?;
+    // Retained native source diagnostics are a separate historical gate. They do not
+    // supersede the event or authorize a physical-health or absence claim. Check before the
+    // domain-wide reread so unavailable native lineage remains a source-health refusal.
+    check_alert_historical_health(authority, &event, &mut read_payload)?;
+    refuse_on_open_domain_tamper(authority, &mut read_payload, &event)?;
     // 8. The prepare-time head lies in this ledger's history, at or after the publishing batch: a
     // ledger with a different history is refused, an unrelated later batch is not (P6).
     let head_in_history = usize::try_from(plan.prepared_head_sequence)
@@ -1002,12 +1009,16 @@ where
 /// 3. The durable authority ledger is readable and not moved under this handle (bounded check).
 /// 4. The plan's revision is the event's current revision in the ledger, under the planned anchor.
 /// 5. That current revision is alert-eligible, re-derived with [`verify_event_alert_eligibility`].
-/// 6. The ledger-wide failure-domain tamper state holds no unretired tamper for the event's
+/// 6. Retained historical health does not withhold exact capsule-linked native source support;
+///    original per-edge privacy remains bound through review and supersession.
+/// 7. The ledger-wide failure-domain tamper state holds no unretired tamper for the event's
 ///    domains (fss-ct73p), decoded through `objects`.
-/// 7. The prepare-time ledger head is in the ledger's history and bound by the recorded intent.
+/// 8. The prepare-time ledger head is in the ledger's history and bound by the recorded intent.
 ///
 /// A restored-deployment fence refuses without changing the operation or its obligation, since
-/// the snapshot cannot establish whether delivery occurred after capture. Other refusals after
+/// the snapshot cannot establish whether delivery occurred after capture. A source-health
+/// refusal also leaves the operation Prepared: a diagnostic is not evidence of event-revision
+/// displacement, so the owner may inspect or explicitly cancel it. Other refusals after
 /// step 1 transition the operation and its obligation to
 /// [`EffectState::Cancelled`] before the error is returned. The cancel-request evidence is
 /// [`alert_cancel_proof`] over the plan's prepared anchor and the ledger's current anchor, and the
@@ -1081,6 +1092,12 @@ where
     let Err(refusal) = verdict else {
         return Ok(());
     };
+    // A diagnostic or unavailable health dependency is not an event-revision displacement.
+    // Preserve the still-prepared operation for explicit owner cancellation/inspection;
+    // manufacturing the ordinary stale-event proof here would be unverifiable.
+    if matches!(refusal, ReferenceError::AlertSourceHealth(_)) {
+        return Err(refusal);
+    }
     let cancel_at = if requested_at > updated_at {
         requested_at
     } else {

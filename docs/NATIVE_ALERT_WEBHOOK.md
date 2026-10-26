@@ -64,7 +64,11 @@ A failed/uncertain append is not permission to bypass journal reconciliation.
 Only the resulting opaque attempt can poll the network. Before connecting and
 before **every** write, it also invokes the existing full dispatch-authority check,
 including current revision, committed policy, event lineage and cross-event
-failure-domain tamper state. Missing/unreadable authority refuses; the module does
+failure-domain tamper state. Capsule-linked native support also passes the
+[retained source-health gate](ALERT_SOURCE_HEALTH.md), including diagnostics
+published after the alert was prepared. A health refusal before commitment keeps
+the operation Prepared for inspection or explicit cancellation; it does not create
+an event-displacement cancellation proof. Missing/unreadable authority refuses; the module does
 not pretend to know that the event changed merely because validation failed.
 
 Dropping an attempt before or after any network progress leaves the operation

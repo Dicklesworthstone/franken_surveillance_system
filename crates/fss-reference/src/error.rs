@@ -121,6 +121,9 @@ pub enum ReferenceError {
     },
     /// Event authority in the ledger is stale or has moved since the alert plan was prepared.
     StaleEventAuthority,
+    /// Native source health findings or unavailable diagnostic metadata refuse an alert.
+    /// This does not supersede the event or automatically cancel a prepared operation.
+    AlertSourceHealth(&'static str),
     /// A restored snapshot cannot establish whether an external effect occurred after capture.
     /// Alert preparation and dispatch remain fenced without changing unresolved operations.
     RestoredDeploymentEffectsFenced {
@@ -359,6 +362,10 @@ impl fmt::Display for ReferenceError {
                     "invalid clock estimator configuration: {parameter} = {value} ({requirement})"
                 )
             }
+            Self::AlertSourceHealth(reason) => write!(
+                formatter,
+                "alert source historical-health admission refused: {reason}"
+            ),
             Self::StaleEventAuthority => {
                 formatter.write_str("event authority in the ledger is stale or has moved")
             }
@@ -565,6 +572,7 @@ impl Error for ReferenceError {
             | Self::ClockRecalibrationRequired { .. }
             | Self::InvalidEstimatorConfig { .. }
             | Self::StaleEventAuthority
+            | Self::AlertSourceHealth(_)
             | Self::RestoredDeploymentEffectsFenced { .. }
             | Self::UnverifiableCancellationEvidence { .. }
             | Self::DeploymentLocked { .. }
