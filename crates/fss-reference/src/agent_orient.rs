@@ -87,8 +87,9 @@ use crate::situation_sections::{
     project_reference_situation_with_source_omissions,
 };
 pub use coverage::{
-    CoverageAssessment, MAX_COVERAGE_CAPSULE_READS, RECORDED_COVERAGE_PROVENANCE, RetainedCoverage,
-    RetainedSourceCoverage, SOURCE_COVERAGE_PROVENANCE, ZoneAssessment, ZoneCoverageState,
+    CoverageAssessment, CoverageHealthConflict, MAX_COVERAGE_CAPSULE_READS,
+    RECORDED_COVERAGE_PROVENANCE, RetainedCoverage, RetainedSourceCoverage,
+    SOURCE_COVERAGE_PROVENANCE, ZoneAssessment, ZoneCoverageState,
 };
 pub use historical_health::{
     CLAIM_HISTORICAL_HEALTH_PREFIX, HistoricalHealthDeletion, HistoricalHealthMetadata,
@@ -1015,6 +1016,7 @@ impl DeploymentHistory {
 
         let mut coverage = Vec::with_capacity(coverage_deltas.len());
         let mut source_records = Vec::new();
+        let mut coverage_privacy_checks = 0;
         for (digest, committed_sequence) in coverage_deltas {
             if deletions.object(digest).is_some() {
                 continue;
@@ -1029,10 +1031,17 @@ impl DeploymentHistory {
             }
             let record = CoverageRecord::from_bytes(&bytes, digest)
                 .map_err(|error| corrupt(format!("coverage record {digest}: {error}")))?;
+            let privacy =
+                coverage::privacy_at_basis(&record, batches, &mut coverage_privacy_checks)
+                    .map_err(|error| {
+                        corrupt(format!("coverage record {digest} privacy basis: {error}"))
+                    })?;
             coverage.push(RetainedCoverage {
                 record,
                 payload_digest: digest,
                 committed_sequence,
+                privacy_policy_digest: privacy.map(|(digest, _)| digest),
+                privacy_generation: privacy.map(|(_, generation)| generation),
             });
         }
         // The hydrated results of each rejected event's model receipts (fss-f8jls): the shared
@@ -2012,7 +2021,7 @@ fn compile_capsule(
 
     let planned = planned_events(snapshot, request.view)?;
     let headline = planned.first();
-    let coverage = assess_coverage(snapshot);
+    let coverage = assess_coverage(snapshot)?;
 
     // Deployment-state cells: exactly what the committed bytes establish.
     let families = if snapshot.family_counts.is_empty() {
@@ -2675,7 +2684,9 @@ fn compile_capsule(
 }
 
 /// The coverage assessment of `snapshot`'s retained records, if any.
-fn assess_coverage(snapshot: &DeploymentSnapshot) -> Option<CoverageAssessment> {
+fn assess_coverage(
+    snapshot: &DeploymentSnapshot,
+) -> Result<Option<CoverageAssessment>, ContractError> {
     let event_zones: BTreeSet<String> = snapshot
         .events
         .iter()
@@ -2693,6 +2704,7 @@ fn assess_coverage(snapshot: &DeploymentSnapshot) -> Option<CoverageAssessment> 
         snapshot.coverage_evidence_unattributed,
         &event_zones,
         &published,
+        &snapshot.historical_health,
     )
 }
 
@@ -2756,7 +2768,7 @@ fn site_coverage_cell(
         provenance: ProvenanceClass::Derived,
         hypothesis: None,
         evidence: assessment.witness_digests(),
-        contradictions: Vec::new(),
+        contradictions: assessment.health_contradictions(),
         valid_until: None,
         state_basis: None,
     })
@@ -2812,6 +2824,21 @@ fn zone_coverage_cell(
             zone.gaps.join(" ")
         ),
     };
+    let statement = if zone.state == ZoneCoverageState::Covered && !zone.health_conflicts.is_empty()
+    {
+        format!(
+            "{statement} {} source-exact health conflict(s) withheld other witnesses; the \
+             declared window rests only on the independent unaffected witnesses listed here. {}",
+            zone.health_conflicts.len(),
+            zone.health_conflicts
+                .iter()
+                .map(|conflict| conflict.describe(&zone.label()))
+                .collect::<Vec<_>>()
+                .join(" ")
+        )
+    } else {
+        statement
+    };
     // Only a posed zone names its pose source, so other statements keep their exact text.
     let statement = format!("{statement}{}", zone.pose_clause().unwrap_or_default());
     cell(KnowledgeCellParams {
@@ -2821,7 +2848,16 @@ fn zone_coverage_cell(
         provenance: ProvenanceClass::Derived,
         hypothesis: None,
         evidence: zone.witnesses.clone(),
-        contradictions: Vec::new(),
+        contradictions: if zone.state == ZoneCoverageState::Covered {
+            Vec::new()
+        } else {
+            zone.health_conflicts
+                .iter()
+                .map(|conflict| conflict.diagnostic)
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect()
+        },
         valid_until: None,
         state_basis,
     })

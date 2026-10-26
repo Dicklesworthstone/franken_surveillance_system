@@ -14,7 +14,8 @@ use fss_core::{BudgetVector, ContentDigest, OperationId, SensorId, StreamId, Tim
 use fss_reference::ingest::long_watch::{LongWatchLimits, LongWatchReport};
 use fss_reference::ingest::recorded_decode::ComponentInterpretation;
 use fss_reference::ingest::recorded_watch::{
-    WatchDetectorConfig, WatchOptions, WatchPlan, WatchTrackerConfig, WatchZone,
+    WatchDetectorConfig, WatchLimits, WatchOptions, WatchPlan, WatchReport, WatchTrackerConfig,
+    WatchZone,
 };
 use fss_reference::ingest::{
     CaptureHint, FileIngestAdapter, FileIngestLimits, FileIngestRequest, RetainedFileImport,
@@ -406,6 +407,141 @@ fn frozen_recording_without_an_entry_is_retained_and_replayed_after_cold_restart
         }
     }
     assert_eq!(f.journals()?, after);
+    Ok(())
+}
+
+#[test]
+fn later_retained_health_withdraws_prior_coverage_and_certified_silence_through_real_cli() -> Test {
+    let f = Fixture::new("coverage-withdrawal", None)?;
+    let cx = context(&f.root)?;
+    let mut deployment = ReferenceDeployment::reopen(&f.root, SITE, &cx)?;
+    // An older unscreened analysis treated the frozen source as a quiet recorded window.
+    // Retaining a later screened diagnostic must change read-side decisions without rewriting it.
+    let plan = WatchPlan {
+        import_identity: f.import,
+        interpretation: ComponentInterpretation::Grayscale,
+        first_segment: FRAMES - 32,
+        segment_count: 32,
+        zones: vec![WatchZone {
+            zone_id: "porch".into(),
+            x: 0,
+            y: 0,
+            width: 48,
+            height: 32,
+        }],
+        detector: WatchDetectorConfig::default(),
+        tracker: WatchTrackerConfig::default(),
+    };
+    let mut report = WatchReport::analyze(&deployment, &plan, &WatchLimits::default(), &cx)?;
+    assert!(report.candidates().is_empty());
+    assert!(report.coverage().witnesses().next().is_some());
+    report.retain_coverage(&mut deployment, report.coverage_approval(), &cx)?;
+    drop(deployment);
+    cx.drain_and_finalize();
+
+    let agent = |verb: &str, extra: &[&str]| -> Test<Value> {
+        good(
+            Command::new(env!("CARGO_BIN_EXE_fss"))
+                .args([verb, "--json", "--root"])
+                .arg(&f.root)
+                .args(["--view", "brief"])
+                .args(extra)
+                .output()?,
+        )
+    };
+    let before = f.journals()?;
+    let orientation = agent("orient", &[])?;
+    let frame = member(member(&orientation, "payload")?, "situationFrame")?;
+    let coverage = member(frame, "coverage")?;
+    assert_eq!(
+        member(coverage, "absenceClaimsCertified")?,
+        &Value::Bool(true)
+    );
+    assert_eq!(field(coverage, "status")?, "complete_for_declared_domain");
+    let since = member(&orientation, "proofPointers")?
+        .array()
+        .ok_or("proof pointers")?
+        .iter()
+        .filter_map(Value::text)
+        .find(|value| value.starts_with("anchor:"))
+        .ok_or("orientation anchor")?
+        .to_owned();
+    let quiet = agent("follow", &["--since", &since])?;
+    assert_ne!(
+        member(member(&quiet, "payload")?, "silenceCertificate")?,
+        &Value::Null
+    );
+    assert_eq!(
+        f.journals()?,
+        before,
+        "orientation and follow must be read-only"
+    );
+
+    let retained = f.retain()?;
+    let diagnostic = field(member(&retained, "historical_health")?, "record_digest")?;
+    let after_retention = f.journals()?;
+    assert_ne!(before.0, after_retention.0);
+    assert_eq!(
+        before.1, after_retention.1,
+        "diagnostics cannot dispatch effects"
+    );
+
+    let orientation = agent("orient", &[])?;
+    let frame = member(member(&orientation, "payload")?, "situationFrame")?;
+    let coverage = member(frame, "coverage")?;
+    assert_eq!(field(coverage, "status")?, "not_observable");
+    assert_eq!(
+        member(coverage, "absenceClaimsCertified")?,
+        &Value::Bool(false)
+    );
+    assert!(
+        member(coverage, "witnessIds")?
+            .array()
+            .ok_or("witness ids")?
+            .is_empty()
+    );
+    assert_ne!(field(&orientation, "completeness")?, "complete");
+    let zone = member(frame, "knowledgeCells")?
+        .array()
+        .ok_or("knowledge cells")?
+        .iter()
+        .find(|cell| {
+            field(cell, "cellId")
+                .is_ok_and(|id| id.starts_with("claim:coverage:") && id.ends_with(":zone:porch"))
+        })
+        .ok_or("porch coverage cell")?;
+    assert!(
+        member(zone, "contradictingEvidence")?
+            .array()
+            .ok_or("contradicting evidence")?
+            .iter()
+            .any(|value| value.text() == Some(diagnostic.as_str()))
+    );
+
+    let changed = agent("follow", &["--since", &since])?;
+    let payload = member(&changed, "payload")?;
+    assert_eq!(member(payload, "silenceCertificate")?, &Value::Null);
+    let classes = member(payload, "classes")?.array().ok_or("delta classes")?;
+    assert!(
+        classes
+            .iter()
+            .any(|value| value.text() == Some("coverage_loss"))
+    );
+    assert!(
+        classes
+            .iter()
+            .any(|value| value.text() == Some("sensor_health"))
+    );
+    assert_eq!(
+        f.journals()?,
+        after_retention,
+        "cold reads must preserve retained history"
+    );
+    assert_eq!(
+        agent("orient", &[])?,
+        orientation,
+        "identical evidence must render deterministically"
+    );
     Ok(())
 }
 

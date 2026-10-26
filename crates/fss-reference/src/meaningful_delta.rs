@@ -312,8 +312,9 @@ fn classify(
         classes.insert(MeaningfulDeltaClass::MaterialState);
     }
     // These claims report immutable historical heuristic outputs or their explicit custody
-    // boundary. They do not change current coverage or assert sensor recovery: even a later
-    // no-findings receipt is a separate diagnostic, never a replacement for earlier findings.
+    // boundary. Matching adverse findings can withhold historical absence witnesses, but do
+    // not assert present health or recovery: a later no-findings receipt is a separate
+    // diagnostic, never a replacement for earlier findings.
     if changed_cells.iter().any(|cell| {
         crate::agent_orient::historical_health::is_historical_health_claim(cell.claim_id())
     }) || removed_claim_ids

@@ -48,6 +48,13 @@
 //! `stale` against the witness basis when a coverage-relevant commit or epoch change followed the
 //! basis, and `not_observable` otherwise (a domain that did not deliver continuously, a gapped or
 //! partial witness, or any other refusal, named).
+//!
+//! Independently retained visual-health findings withhold only witnesses over the exact same
+//! import, custody root, sensor and historical privacy binding. The whole finite diagnostic
+//! scan range is conservative: threshold latency and decoder reordering prevent its compact
+//! header from identifying every suspect predecessor. This is not a physical outage interval.
+//! Unaffected independent witnesses still participate in the interval union; no-findings never
+//! cancels an older finding. Historical-prefix reads see only diagnostics committed by that prefix.
 /// Provenance every orientation coverage claim states (fss-dt3qf owner decision): retained
 /// coverage is certified over a recorded file's capture interval and says nothing about live
 /// continuity of the source.
@@ -59,7 +66,7 @@ pub const SOURCE_COVERAGE_PROVENANCE: &str =
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use fss_core::{CaptureInterval, ContentDigest, LedgerAnchor, TimestampNs};
+use fss_core::{CaptureInterval, ContentDigest, ContractError, LedgerAnchor, TimestampNs};
 
 use crate::ingest::ground_visibility::PoseRobustness;
 use crate::ingest::ground_visibility::{CameraModel, ZoneVisibility};
@@ -69,6 +76,10 @@ use crate::ingest::recorded_coverage::{
 use crate::ingest::source_coverage::{
     RetainedAbsence, RetainedCoverageRefusal, SourceCoverageRecord,
 };
+
+mod health;
+pub use health::CoverageHealthConflict;
+pub(super) use health::privacy_at_basis;
 
 /// Sensor-capsule payloads read to attribute the newest evidence of each covered sensor; more is
 /// reported as unattributed (every zone stale), never skipped.
@@ -83,6 +94,13 @@ pub struct RetainedCoverage {
     pub payload_digest: ContentDigest,
     /// Commit sequence that retained it.
     pub committed_sequence: u64,
+    /// Sensor's privacy policy at the record's exact analysis anchor, reconstructed from the
+    /// committed policy history. `None` is the explicit no-policy generation, never the latest
+    /// policy at orientation time. This is read metadata, not a new durable coverage format.
+    pub privacy_policy_digest: Option<ContentDigest>,
+    /// Exact ledger generation of that historical policy. Reissuing identical mask geometry
+    /// after another policy does not make the generations interchangeable.
+    pub privacy_generation: Option<u64>,
 }
 
 /// One committed source coverage record read back from the spool, with its verdict.
@@ -138,6 +156,9 @@ pub struct ZoneAssessment {
     pub pipeline_generation: Option<ContentDigest>,
     /// Witness digests the window rests on (covered zones only), in window order.
     pub witnesses: Vec<ContentDigest>,
+    /// Source-exact witnesses withheld by independently retained heuristic diagnostics.
+    /// Remaining independent witnesses can still establish the declared coverage window.
+    pub health_conflicts: Vec<CoverageHealthConflict>,
     /// Basis anchor of the zone's most recent record (the stale basis).
     pub basis: Option<LedgerAnchor>,
     /// Named gaps and exclusions.
@@ -263,6 +284,23 @@ impl CoverageAssessment {
             .flat_map(|zone| zone.witnesses.iter().copied())
             .collect();
         set.into_iter().collect()
+    }
+
+    /// Exact historical diagnostic roots that prevent the currently requested absence claim.
+    /// A separate independent witness can preserve coverage without inheriting this conflict.
+    #[must_use]
+    pub fn health_contradictions(&self) -> Vec<ContentDigest> {
+        self.zones
+            .iter()
+            .filter(|zone| zone.state != ZoneCoverageState::Covered)
+            .flat_map(|zone| {
+                zone.health_conflicts
+                    .iter()
+                    .map(|conflict| conflict.diagnostic)
+            })
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
     }
 
     /// Declared domains of the covered zones (`sensor scope [a, b] ns`).
@@ -394,10 +432,12 @@ pub(super) fn assess(
     evidence_unattributed: bool,
     event_zones: &BTreeSet<String>,
     published: &BTreeSet<String>,
-) -> Option<CoverageAssessment> {
+    historical_health: &[super::RetainedHistoricalHealth],
+) -> Result<Option<CoverageAssessment>, ContractError> {
     if records.is_empty() && source_records.is_empty() {
-        return None;
+        return Ok(None);
     }
+    let mut health = health::HealthGuard::new(historical_health)?;
     // (sensor, scope) -> indices of records naming it, in commit order.
     let mut scopes: BTreeMap<(String, String), Vec<usize>> = BTreeMap::new();
     for (index, retained) in records.iter().enumerate() {
@@ -461,6 +501,7 @@ pub(super) fn assess(
             window: None,
             pipeline_generation: Some(generation),
             witnesses: Vec::new(),
+            health_conflicts: Vec::new(),
             basis,
             gaps,
             visibility: latest_zone.visibility.clone(),
@@ -511,7 +552,17 @@ pub(super) fn assess(
         let mut witnesses: Vec<(usize, &ZoneCoverage, &ZoneWitness)> = Vec::new();
         for index in &current {
             if let Some(zone) = zone_of(*index, &scope) {
-                witnesses.extend(zone.witnesses.iter().map(|witness| (*index, zone, witness)));
+                for witness in &zone.witnesses {
+                    let conflicts = health.conflicts(&records[*index], witness)?;
+                    if conflicts.is_empty() {
+                        witnesses.push((*index, zone, witness));
+                    } else {
+                        for conflict in &conflicts {
+                            assessment.gaps.push(conflict.describe(&label));
+                        }
+                        assessment.health_conflicts.extend(conflicts);
+                    }
+                }
             }
         }
         witnesses.sort_by_key(|(index, _, witness)| {
@@ -586,6 +637,7 @@ pub(super) fn assess(
             window: None,
             pipeline_generation: None,
             witnesses: Vec::new(),
+            health_conflicts: Vec::new(),
             basis: None,
             gaps: vec![format!(
                 "event-zone:{zone_id}: not observable: a published event names this zone but no \
@@ -597,10 +649,10 @@ pub(super) fn assess(
             pose_robustness: None,
         });
     }
-    Some(CoverageAssessment {
+    Ok(Some(CoverageAssessment {
         zones,
         record_count: records.len() + source_records.len(),
-    })
+    }))
 }
 
 /// One zone per authorized failure domain of the retained source records, each from the most
@@ -634,6 +686,7 @@ fn assess_source_domains(source_records: &[RetainedSourceCoverage]) -> Vec<ZoneA
                 window: None,
                 pipeline_generation: None,
                 witnesses: Vec::new(),
+                health_conflicts: Vec::new(),
                 basis: Some(witness.anchor.clone()),
                 gaps: Vec::new(),
                 visibility: None,

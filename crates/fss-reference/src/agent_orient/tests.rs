@@ -391,7 +391,8 @@ fn source_domains_are_covered_stale_or_not_observable_with_exact_operator_text()
         false,
         &BTreeSet::from(["zone:garage".to_owned()]),
         &BTreeSet::new(),
-    )
+        &[],
+    )?
     .ok_or("source records assessed to nothing")?;
     assert_eq!(assessment.record_count, 3);
     assert!(!assessment.complete());
