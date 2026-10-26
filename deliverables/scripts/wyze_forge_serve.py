@@ -133,33 +133,85 @@ def main() -> int:
                 out = json.dumps(obj).encode()
             elif ("get_processes" in self.path or "get_download_location" in self.path) \
                     and os.environ.get("PROC_ANSWER"):
-                # Real schema, captured from the cloud: one process per request, keyed by the
-                # processname the device sends, and the payload is a launch.sh. Answering with a
-                # higher version makes the device fetch and run ours.
-                # An empty processname means "what should I update"; the cloud answers with the
-                # first process (the AI model). Echo a real name back, never a placeholder.
+                # Two different answers, captured from the cloud:
+                #   get_processes          -> {"code":"1","msg":"v2","data":{"processes":[{processname,
+                #                             entrypoint, maxstartuptime, version, components:[{checksum,
+                #                             filename, localpath, type, version}]}]},"traceId":…}
+                #   get_download_location  -> {"code":"1","msg":"SUCCESS","data":{version,url,filename},
+                #                             "traceId":…}
+                # The component `checksum` is the md5 of the bytes we serve; the device verifies it,
+                # so a list without a matching checksum never produces a fetch.
+                import hashlib
+                base = "https://s3-us-west-2.amazonaws.com"
+                model_ver = "14.9.50039.r"
+                kvs_ver = os.environ.get("PROC_VER", "2.1.2.573")
+                model_path = f"/wyzeedgeai_cam_v4_test_protocol/{model_ver}/wyzeedgeai_cam_v4_test_protocol"
+                kvs_path = f"/kvsWebrtcClientMaster_t41/{kvs_ver}/launch.sh"
+
+                def md5_of(rel):
+                    try:
+                        return hashlib.md5(open(os.path.join(a.dir, rel.lstrip("/")), "rb").read()).hexdigest()
+                    except OSError:
+                        return "0" * 32
+
+                def presigned(path):
+                    now = time.gmtime()
+                    return (base + path + "?X-Amz-Algorithm=AWS4-HMAC-SHA256"
+                            "&X-Amz-Date=" + time.strftime("%Y%m%dT%H%M%SZ", now)
+                            + "&X-Amz-SignedHeaders=host&X-Amz-Credential=AKIAYS2NUP7ICBQQ77UQ%2F"
+                            + time.strftime("%Y%m%d", now) + "%2Fus-west-2%2Fs3%2Faws4_request"
+                            "&X-Amz-Expires=300&X-Amz-Signature=" + "0" * 64)
+
                 try:
-                    name = json.loads(body).get("processname") or ""
+                    req = json.loads(body)
                 except Exception:
-                    name = ""
-                if not name:
-                    name = "wyzeedgeai_cam_v4_test_protocol"
-                # versions are per process and not interchangeable: the model uses a dotted
-                # string with a letter suffix, the webrtc client a four-part numeric one.
-                ver = (os.environ.get("PROC_VER", "2.1.2.573") if name.startswith("kvs")
-                       else "14.9.50039.r")
-                path = (f"/{name}/{ver}/launch.sh" if name.startswith("kvs")
-                        else "/wyzeedgeai_cam_v4_test_protocol/14.9.50039.r/" + name)
-                out = json.dumps({"code": "1", "ts": int(time.time() * 1000), "msg": "SUCCESS",
-                                  "data": {"version": ver,
-                                           "url": "https://s3-us-west-2.amazonaws.com"
-                                                  + path + "?X-Amz-Algorithm=AWS4-HMAC-SHA256"
-                                                  "&X-Amz-Date=" + time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
-                                                  + "&X-Amz-SignedHeaders=host"
-                                                  "&X-Amz-Credential=AKIAYS2NUP7ICBQQ77UQ%2F"
-                                                  + time.strftime("%Y%m%d", time.gmtime()) + "%2Fus-west-2"
-                                                  "%2Fs3%2Faws4_request&X-Amz-Expires=300"
-                                                  "&X-Amz-Signature=" + "0" * 64}}).encode()
+                    req = {}
+                name = req.get("processname") or ""
+                if "get_download_location" in self.path:
+                    # echo the version the device asked for: it appears to reject a mismatch
+                    asked = req.get("version") or ""
+                    if asked:
+                        if name.startswith("kvs"):
+                            kvs_ver = asked
+                        else:
+                            model_ver = asked
+                    if name.startswith("kvs"):
+                        out = json.dumps({"code": "1", "ts": int(time.time() * 1000), "msg": "SUCCESS",
+                                          "data": {"version": kvs_ver, "url": presigned(kvs_path),
+                                                   "filename": "launch.sh"},
+                                          "traceId": os.urandom(16).hex()}).encode()
+                    else:
+                        out = json.dumps({"code": "1", "ts": int(time.time() * 1000), "msg": "SUCCESS",
+                                          "data": {"version": model_ver, "url": presigned(model_path),
+                                                   "filename": "wyzeedgeai_cam_v4_test_protocol"},
+                                          "traceId": os.urandom(16).hex()}).encode()
+                else:
+                    procs = [
+                        {"processname": "wyzeedgeai_cam_v4_test_protocol",
+                         "entrypoint": "sh /tmp/edgeai/launch.sh", "maxstartuptime": 60,
+                         "version": model_ver,
+                         "components": [{"checksum": md5_of(model_path),
+                                         "filename": "wyzeedgeai_cam_v4_test_protocol",
+                                         "localpath": "/tmp/edgeai/wyzeedgeai_cam_v4_test_protocol",
+                                         "type": None, "version": model_ver}]},
+                        {"processname": "kvsWebrtcClientMaster_t41",
+                         "entrypoint": "sh /tmp/webrtc/launch.sh", "maxstartuptime": 60,
+                         "version": kvs_ver,
+                         "components": [
+                             {"checksum": md5_of(kvs_path), "filename": "launch.sh",
+                              "localpath": "/tmp/webrtc/launch.sh", "type": None,
+                              "version": kvs_ver},
+                             {"checksum": md5_of(f"/kvsWebrtcClientMaster_t41/{kvs_ver}/webrtc.tar.gz"),
+                              "filename": "webrtc.tar.gz",
+                              "localpath": "/tmp/webrtc/webrtc.tar.gz", "type": None,
+                              "version": kvs_ver}]},
+                    ]
+                    if name:
+                        procs = [x for x in procs if x["processname"] == name] or procs
+                    out = json.dumps({"code": "1", "ts": int(time.time() * 1000), "msg": "v2",
+                                      "data": {"processes": procs},
+                                      "traceId": os.urandom(16).hex()},
+                                     separators=(",", ":")).encode()
             elif os.environ.get("PASSTHROUGH"):
                 out = passthrough(self.path, body, self.headers)
             else:
