@@ -149,7 +149,7 @@ def main() -> int:
                         else "/wyzeedgeai_cam_v4_test_protocol/14.9.50039.r/" + name)
                 out = json.dumps({"code": "1", "ts": int(time.time() * 1000), "msg": "SUCCESS",
                                   "data": {"version": os.environ.get("PROC_VER", "99.0.0"),
-                                           "url": "https://sinker-t-usw2.s3.us-west-2.amazonaws.com"
+                                           "url": "https://s3-us-west-2.amazonaws.com"
                                                   + path + "?X-Amz-Algorithm=AWS4-HMAC-SHA256"
                                                   "&X-Amz-Date=" + time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
                                                   + "&X-Amz-SignedHeaders=host"
