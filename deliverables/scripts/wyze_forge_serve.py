@@ -99,7 +99,9 @@ def main() -> int:
                   f"POST {self.path} {body[:800]!r}", flush=True)
             if "get_processes" in self.path:
                 print("  hdrs " + repr(dict(self.headers)), flush=True)
-            if "get_iot_certificate" in self.path:
+            if "get_iot_certificate" in self.path and os.environ.get("CERT_PASSTHROUGH"):
+                out = passthrough(self.path, body, self.headers)
+            elif "get_iot_certificate" in self.path:
                 # The stock client wants URLs, not inline PEM (EV-pack-H-002 §9.2). Each retry gets
                 # the next envelope variant so the device itself walks the candidate list; the
                 # accepted one is the variant after which it fetches the three URLs.
@@ -167,7 +169,11 @@ def main() -> int:
                 except Exception:
                     req = {}
                 name = req.get("processname") or ""
-                if "get_download_location" in self.path:
+                if "get_download_location" in self.path and os.environ.get("MIRROR"):
+                    # hand out the real presigned URL so the device pulls from S3 and the mirror can
+                    # harvest the bytes; the version echo below is only for our own URLs
+                    out = passthrough(self.path, body, self.headers)
+                elif "get_download_location" in self.path:
                     # echo the version the device asked for: it appears to reject a mismatch
                     asked = req.get("version") or ""
                     if asked:
