@@ -186,14 +186,32 @@ def main() -> int:
                                                    "filename": "wyzeedgeai_cam_v4_test_protocol"},
                                           "traceId": os.urandom(16).hex()}).encode()
                 else:
+                    # The real answer lists every component with the checksum the device verifies;
+                    # a short list never completes an install. Checksums are the cloud's own.
+                    COMP = [
+                        ("wyzeedgeai_cam_v4_test_protocol", "673cd0393426d370798b57affecca17a"),
+                        ("aiparams.ini", "06f0d93ba5a0d8b6be9ac5fcdd91ec3b"),
+                        ("model_params.ini", "0c4ad6d6dea852ccba25ad8cc0d159c8"),
+                        ("libaip.so", "aaaeab3235092ff23fee9534969983de"),
+                        ("libdrivers.so", "bc008dc48b165261f78cb660c1354c21"),
+                        ("libvenus.so", "83614e5b5ffcc8d414f67cc876f77788"),
+                        ("libwyzeAiTxx.so.1.0.1", "531e4fd3066d07ad4d18d0d4013539b5"),
+                        ("wave_weights.txt", "37b2ad5643de574e7d6254adc7477437"),
+                        ("sound_model_params.ini", "a93ca2e1c547bde83d41bc6714f306f7"),
+                        ("libwyze_sound_mips.so", "570875b567638dfc5b60b31206433d51"),
+                        ("res_monitor.sh", "a4fa1325f392742a11313da13426db36"),
+                        ("mem_data_upload", "0370e40df04334401fd4ae7045b131ed"),
+                        ("VERSION", "ddc95b0d133d926ea4ce9f014a75d250"),
+                        ("launch.sh", "6256ef43418f621986ee974c556cea4b"),
+                    ]
                     procs = [
                         {"processname": "wyzeedgeai_cam_v4_test_protocol",
                          "entrypoint": "sh /tmp/edgeai/launch.sh", "maxstartuptime": 60,
                          "version": model_ver,
-                         "components": [{"checksum": md5_of(model_path),
-                                         "filename": "wyzeedgeai_cam_v4_test_protocol",
-                                         "localpath": "/tmp/edgeai/wyzeedgeai_cam_v4_test_protocol",
-                                         "type": None, "version": model_ver}]},
+                         "components": [{"checksum": c,
+                                         "filename": f,
+                                         "localpath": "/tmp/edgeai/" + f,
+                                         "type": None, "version": model_ver} for f, c in COMP]},
                         {"processname": "kvsWebrtcClientMaster_t41",
                          "entrypoint": "sh /tmp/webrtc/launch.sh", "maxstartuptime": 60,
                          "version": kvs_ver,
