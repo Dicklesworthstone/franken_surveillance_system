@@ -499,7 +499,7 @@ fn protected_objective(
     assert!(
         summary
             .content
-            .contains("does not establish physical-event truth")
+            .contains("Physical truth and prose completion remain unassessed.")
     );
     assert!(oriented.publication.context_pack.items.iter().any(|item|
         item.kind == "unknown" && item.content.contains("completion is unassessed")));
@@ -660,6 +660,13 @@ fn uncertain_dispatched_effect_stays_reconciling_after_explicit_decision_deadlin
     f.advance_evidence_clock(&mut dep)?;
     let before = authority_bytes(&mut dep)?;
     let assessed = f.assess(&plan, enrolled.revision.digest())?;
+    protected_objective(&f, &assessed, Some(MissionLifecycleState::Reconciling))?;
+    assert_eq!(assessed.orientation.view, AgentView::Brief);
+    assert!(assessed.orientation.target_tokens <= u64::from(AgentView::Brief.maximum_tokens()));
+    assert!(
+        assessed.orientation.publication.context_pack.token_count
+            <= assessed.orientation.target_tokens
+    );
     assert_eq!(
         assessed.revision.state(),
         MissionLifecycleState::Reconciling

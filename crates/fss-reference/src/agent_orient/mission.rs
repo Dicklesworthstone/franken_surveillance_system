@@ -132,7 +132,7 @@ pub(super) fn project(
         )),
     };
     if let Some(progress) = &binding.mission_progress {
-        projection.unknown = vec!["The original prose-only mission record supplies no executable success, failure, stop, or terminal-proof predicates; completion is unassessed for that prose objective.".to_owned()];
+        projection.unknown = vec!["The original prose request has no executable success/failure/stop/proof predicates; completion is unassessed.".to_owned()];
         let revision = &progress.revision;
         let criterion = revision.criterion();
         if criterion.mission_id != binding.mission_id
@@ -185,11 +185,11 @@ pub(super) fn project(
             state_basis: None,
         })?);
         projection.protected_summary = Some(format!(
-            "Requested mission: {}\nRequested objective: {}\nExplicit {} execution objective: {}\nCriterion: {}; plan root: {}; event: {} at {}; operation: {}; obligation: {}.\nDecision deadline: {} evidence-clock ns (passage is not proof of failure or cancellation).\nRetained mission revision {}: {} at {}; {}. Success requires matching verified operation, obligation and execution episode, current event revision and generations, and clear scoped closure inventory. Failure or cancellation requires matching terminal proofs under the same checks. This profile does not establish physical-event truth or completion of the original prose objective.",
+            "Mission: {}\nObjective: {}\n{}: {}\ncriterion={},planRoot={},event={}@{},op={},obligation={}\nEvidence-clock deadline {}ns is not terminal proof.\nRetained mission revision {}: {} at {}; {}. Terminal: agreed operation/obligation/episode proofs, current event revision/control generations, complete clear scoped closure. Physical truth and prose completion remain unassessed.",
             mission.mission,
             mission.objective,
             MissionPlanCriterion::PROFILE,
-            execution_outcome(criterion),
+            criterion.plan_id,
             criterion_digest,
             criterion.plan_root,
             criterion.event_id.as_str(),
