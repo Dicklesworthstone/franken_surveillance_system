@@ -108,3 +108,5 @@ multiple diagnostics, cancellation, cumulative work, corruption and current dele
 cargo test --locked --offline -p fss-reference --lib ingest::historical_health::exposure::
 ```
 
+The [direct detector supervisor](RETAINED_DETECTION_SUPERVISION.md) uses this owner to preserve
+raw detector observations while withholding class support affected by matching diagnostics.

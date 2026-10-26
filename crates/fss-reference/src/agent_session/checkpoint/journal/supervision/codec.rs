@@ -1,12 +1,16 @@
 #![forbid(unsafe_code)]
 //! Canonical bounded supervision command framing. Replay re-executes the state machine.
 
-use fss_core::{CanonicalDecode, CanonicalDecoder, CanonicalEncoder, EventId, LedgerAnchor, PrincipalId, SessionId, TimestampNs};
+use fss_core::{
+    CanonicalDecode, CanonicalDecoder, CanonicalEncoder, EventId, LedgerAnchor, PrincipalId,
+    SessionId, TimestampNs,
+};
 
 use super::{
     Command, DurableSessionError, MAX_EVENT_ID_BYTES, MAX_SUBSCRIPTION_BYTES,
-    MAX_SUPERVISION_CONFIGURATION_BYTES, MAX_SUPERVISION_RECORD_BYTES, MAX_SUPERVISION_REPORT_BYTES,
-    MAX_SUPERVISION_SOURCES, Record, SupervisionRegistration, SupervisionSourcePin, optional_digest,
+    MAX_SUPERVISION_CONFIGURATION_BYTES, MAX_SUPERVISION_RECORD_BYTES,
+    MAX_SUPERVISION_REPORT_BYTES, MAX_SUPERVISION_SOURCES, Record, SupervisionDetectionSourcePin,
+    SupervisionRegistration, SupervisionSourcePin, optional_digest, validate_source_inventories,
 };
 
 const RECORD_DOMAIN: &str = "fss.reference_supervision_command.v1";
@@ -14,22 +18,30 @@ type Result<T> = std::result::Result<T, DurableSessionError>;
 
 fn text(d: &mut CanonicalDecoder<'_>, maximum: usize) -> Result<String> {
     let value = d.text()?;
-    if value.len() > maximum { return Err(DurableSessionError::CapacityExceeded); }
+    if value.len() > maximum {
+        return Err(DurableSessionError::CapacityExceeded);
+    }
     Ok(value.to_owned())
 }
 fn bytes(d: &mut CanonicalDecoder<'_>, maximum: usize) -> Result<Vec<u8>> {
     let value = d.bytes()?;
-    if value.len() > maximum { return Err(DurableSessionError::CapacityExceeded); }
+    if value.len() > maximum {
+        return Err(DurableSessionError::CapacityExceeded);
+    }
     Ok(value.to_vec())
 }
 fn count(d: &mut CanonicalDecoder<'_>, maximum: usize) -> Result<usize> {
     let value = usize::try_from(d.u64()?).map_err(|_| DurableSessionError::CapacityExceeded)?;
-    if value > maximum { return Err(DurableSessionError::CapacityExceeded); }
+    if value > maximum {
+        return Err(DurableSessionError::CapacityExceeded);
+    }
     Ok(value)
 }
 fn anchor(d: &mut CanonicalDecoder<'_>) -> Result<LedgerAnchor> {
     let value = LedgerAnchor::decode_canonical(d)?;
-    if value.site_lineage.len() > 512 { return Err(DurableSessionError::CapacityExceeded); }
+    if value.site_lineage.len() > 512 {
+        return Err(DurableSessionError::CapacityExceeded);
+    }
     Ok(value)
 }
 fn identity(e: &mut CanonicalEncoder, subscription: &str, expected: fss_core::ContentDigest) {
@@ -48,50 +60,97 @@ pub(super) fn encode_record(record: &Record) -> Result<Vec<u8>> {
     e.digest(record.after_state);
     match &record.command {
         // Inspection and recovery cannot change state or appear in committed replay history.
-        Command::Inspect(_) | Command::Lookup(_) => return Err(DurableSessionError::InvalidHistory),
+        Command::Inspect(_) | Command::Lookup(_) => {
+            return Err(DurableSessionError::InvalidHistory);
+        }
         Command::Register(registration) => {
             e.tag(0);
             registration.encode(&mut e);
         }
-        Command::Reserve { subscription, expected, anchor } => {
+        Command::Reserve {
+            subscription,
+            expected,
+            anchor,
+        } => {
             e.tag(1);
             identity(&mut e, subscription, *expected);
             fss_core::CanonicalEncode::encode_canonical(anchor, &mut e);
         }
-        Command::Publish { subscription, expected, reservation, payload, sources, report_receipt } => {
-            e.tag(2);
+        Command::Publish {
+            subscription,
+            expected,
+            reservation,
+            payload,
+            sources,
+            detection_sources,
+            report_receipt,
+        } => {
+            e.tag(if detection_sources.is_empty() { 2 } else { 8 });
             identity(&mut e, subscription, *expected);
             e.digest(*reservation);
             e.bytes(payload);
             e.u64(sources.len() as u64);
-            for source in sources { source.encode(&mut e); }
+            for source in sources {
+                source.encode(&mut e);
+            }
             e.digest(*report_receipt);
+            if !detection_sources.is_empty() {
+                e.u64(detection_sources.len() as u64);
+                for source in detection_sources {
+                    source.encode(&mut e);
+                }
+            }
         }
-        Command::Release { subscription, expected, reservation, receipt } => {
+        Command::Release {
+            subscription,
+            expected,
+            reservation,
+            receipt,
+        } => {
             e.tag(3);
             identity(&mut e, subscription, *expected);
             e.digest(*reservation);
             e.digest(*receipt);
         }
-        Command::Acknowledge { subscription, expected, reservation, receipt, anchor } => {
+        Command::Acknowledge {
+            subscription,
+            expected,
+            reservation,
+            receipt,
+            anchor,
+        } => {
             e.tag(4);
             identity(&mut e, subscription, *expected);
             optional_digest(&mut e, *reservation);
             e.digest(*receipt);
             fss_core::CanonicalEncode::encode_canonical(anchor, &mut e);
         }
-        Command::Discard { subscription, expected, receipt, anchor } => {
+        Command::Discard {
+            subscription,
+            expected,
+            receipt,
+            anchor,
+        } => {
             e.tag(5);
             identity(&mut e, subscription, *expected);
             e.digest(*receipt);
             fss_core::CanonicalEncode::encode_canonical(anchor, &mut e);
         }
-        Command::ConfigureSchedule { registration, total_windows } => {
+        Command::ConfigureSchedule {
+            registration,
+            total_windows,
+        } => {
             e.tag(6);
             registration.encode(&mut e);
             e.u32(*total_windows);
         }
-        Command::Advance { subscription, expected, target_count, after_receipt, anchor } => {
+        Command::Advance {
+            subscription,
+            expected,
+            target_count,
+            after_receipt,
+            anchor,
+        } => {
             e.tag(7);
             identity(&mut e, subscription, *expected);
             e.u32(*target_count);
@@ -100,14 +159,20 @@ pub(super) fn encode_record(record: &Record) -> Result<Vec<u8>> {
         }
     }
     let bytes = e.finish_checked()?;
-    if bytes.len() > MAX_SUPERVISION_RECORD_BYTES { return Err(DurableSessionError::CapacityExceeded); }
+    if bytes.len() > MAX_SUPERVISION_RECORD_BYTES {
+        return Err(DurableSessionError::CapacityExceeded);
+    }
     Ok(bytes)
 }
 
 pub(super) fn decode_record(encoded: &[u8]) -> Result<Record> {
-    if encoded.len() > MAX_SUPERVISION_RECORD_BYTES { return Err(DurableSessionError::CapacityExceeded); }
+    if encoded.len() > MAX_SUPERVISION_RECORD_BYTES {
+        return Err(DurableSessionError::CapacityExceeded);
+    }
     let mut d = CanonicalDecoder::new(encoded);
-    if d.text()? != RECORD_DOMAIN { return Err(DurableSessionError::InvalidHistory); }
+    if d.text()? != RECORD_DOMAIN {
+        return Err(DurableSessionError::InvalidHistory);
+    }
     let principal = PrincipalId::parse(&text(&mut d, 512)?)?;
     let session = SessionId::parse(&text(&mut d, 512)?)?;
     let now = TimestampNs(d.i128()?);
@@ -126,10 +191,11 @@ pub(super) fn decode_record(encoded: &[u8]) -> Result<Record> {
             max_report_bytes: count(&mut d, MAX_SUPERVISION_REPORT_BYTES)?,
         }),
         1 => Command::Reserve {
-            subscription: text(&mut d, MAX_SUBSCRIPTION_BYTES)?, expected: d.digest()?,
+            subscription: text(&mut d, MAX_SUBSCRIPTION_BYTES)?,
+            expected: d.digest()?,
             anchor: anchor(&mut d)?,
         },
-        2 => {
+        tag @ (2 | 8) => {
             let subscription = text(&mut d, MAX_SUBSCRIPTION_BYTES)?;
             let expected = d.digest()?;
             let reservation = d.digest()?;
@@ -143,22 +209,51 @@ pub(super) fn decode_record(encoded: &[u8]) -> Result<Record> {
                     source_verified: d.bool()?,
                 });
             }
+            let report_receipt = d.digest()?;
+            let mut detection_sources = Vec::new();
+            if tag == 8 {
+                let detection_count = count(&mut d, MAX_SUPERVISION_SOURCES - source_count)?;
+                detection_sources.reserve(detection_count);
+                for _ in 0..detection_count {
+                    detection_sources.push(SupervisionDetectionSourcePin {
+                        report_digest: d.digest()?,
+                        record_digest: d.digest()?,
+                        detection_root: d.digest()?,
+                        source_verified: d.bool()?,
+                        health_digest: if d.bool()? { Some(d.digest()?) } else { None },
+                    });
+                }
+                validate_source_inventories(&sources, &detection_sources)
+                    .map_err(|_| DurableSessionError::InvalidHistory)?;
+            }
             Command::Publish {
-                subscription, expected, reservation, payload, sources, report_receipt: d.digest()?,
+                subscription,
+                expected,
+                reservation,
+                payload,
+                sources,
+                detection_sources,
+                report_receipt,
             }
         }
         3 => Command::Release {
-            subscription: text(&mut d, MAX_SUBSCRIPTION_BYTES)?, expected: d.digest()?,
-            reservation: d.digest()?, receipt: d.digest()?,
+            subscription: text(&mut d, MAX_SUBSCRIPTION_BYTES)?,
+            expected: d.digest()?,
+            reservation: d.digest()?,
+            receipt: d.digest()?,
         },
         4 => Command::Acknowledge {
-            subscription: text(&mut d, MAX_SUBSCRIPTION_BYTES)?, expected: d.digest()?,
+            subscription: text(&mut d, MAX_SUBSCRIPTION_BYTES)?,
+            expected: d.digest()?,
             reservation: if d.bool()? { Some(d.digest()?) } else { None },
-            receipt: d.digest()?, anchor: anchor(&mut d)?,
+            receipt: d.digest()?,
+            anchor: anchor(&mut d)?,
         },
         5 => Command::Discard {
-            subscription: text(&mut d, MAX_SUBSCRIPTION_BYTES)?, expected: d.digest()?,
-            receipt: d.digest()?, anchor: anchor(&mut d)?,
+            subscription: text(&mut d, MAX_SUBSCRIPTION_BYTES)?,
+            expected: d.digest()?,
+            receipt: d.digest()?,
+            anchor: anchor(&mut d)?,
         },
         6 => Command::ConfigureSchedule {
             registration: SupervisionRegistration {
@@ -174,13 +269,26 @@ pub(super) fn decode_record(encoded: &[u8]) -> Result<Record> {
             total_windows: d.u32()?,
         },
         7 => Command::Advance {
-            subscription: text(&mut d, MAX_SUBSCRIPTION_BYTES)?, expected: d.digest()?,
-            target_count: d.u32()?, after_receipt: d.digest()?, anchor: anchor(&mut d)?,
+            subscription: text(&mut d, MAX_SUBSCRIPTION_BYTES)?,
+            expected: d.digest()?,
+            target_count: d.u32()?,
+            after_receipt: d.digest()?,
+            anchor: anchor(&mut d)?,
         },
         _ => return Err(DurableSessionError::InvalidHistory),
     };
     d.ensure_finished()?;
-    let record = Record { principal, session, now, session_digest, before_state, after_state, command };
-    if encode_record(&record)? != encoded { return Err(DurableSessionError::InvalidHistory); }
+    let record = Record {
+        principal,
+        session,
+        now,
+        session_digest,
+        before_state,
+        after_state,
+        command,
+    };
+    if encode_record(&record)? != encoded {
+        return Err(DurableSessionError::InvalidHistory);
+    }
     Ok(record)
 }

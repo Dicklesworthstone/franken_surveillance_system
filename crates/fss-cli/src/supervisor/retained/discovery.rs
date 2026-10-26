@@ -53,10 +53,7 @@ impl RetainedDiscoveryRequest {
     ///
     /// The template must contain no supplied event pins or observation selectors. Its existing
     /// validation still owns camera uniqueness, calibration, policy, windows and read limits.
-    pub fn new(
-        template: RetainedSupervisorPlan,
-        maximum_catalog_events: usize,
-    ) -> Result<Self> {
+    pub fn new(template: RetainedSupervisorPlan, maximum_catalog_events: usize) -> Result<Self> {
         if !(1..=MAX_RETAINED_DISCOVERY_CATALOG_EVENTS).contains(&maximum_catalog_events) {
             return Err(Error::Limit("discovery catalog events"));
         }
@@ -108,11 +105,16 @@ impl RetainedDiscoveryRequest {
     /// independently owns monotonic advancement, delivery acknowledgement and lifetime work.
     pub fn for_window_prefix(&self, window_count: usize) -> Result<Self> {
         if window_count == 0 || window_count > self.template.spec().windows.len() {
-            return Err(Error::Plan("window prefix is outside the declared schedule"));
+            return Err(Error::Plan(
+                "window prefix is outside the declared schedule",
+            ));
         }
         let mut spec = self.template.spec().clone();
         spec.windows.truncate(window_count);
-        Self::new(RetainedSupervisorPlan::new(spec)?, self.maximum_catalog_events)
+        Self::new(
+            RetainedSupervisorPlan::new(spec)?,
+            self.maximum_catalog_events,
+        )
     }
 }
 
@@ -234,8 +236,8 @@ pub fn run_discovered_retained_supervisor(
         max_journal_bytes: template.limits.max_journal_bytes,
         ..OrientLimits::default()
     };
-    let initial = DeploymentHistory::read(deployment.root(), &limits)
-        .map_err(|_| Error::History)?;
+    let initial =
+        DeploymentHistory::read(deployment.root(), &limits).map_err(|_| Error::History)?;
     checkpoint(cx)?;
     let roots = initial.roots_at(initial.head()).ok_or(Error::History)?;
     if roots.0 != *deployment.current_anchor()
@@ -292,13 +294,7 @@ pub fn run_discovered_retained_supervisor(
                 .any(|evidence| evidence.identity_digest == Some(sensor))
         });
         if !camera_in_scope {
-            discovery.exclude(
-                &event_id,
-                root,
-                "sensor_outside_requested_set",
-                false,
-                None,
-            )?;
+            discovery.exclude(&event_id, root, "sensor_outside_requested_set", false, None)?;
             continue;
         }
         if metadata.interval.latest.0 < i128::from(selected.start_ns)
@@ -342,7 +338,10 @@ pub fn run_discovered_retained_supervisor(
         } else if event.report().class_index() != camera.class_index {
             Some("class_index_mismatch")
         } else if event.report().label() != selected.label
-            || native.labels.get(camera.class_index as usize).map(String::as_str)
+            || native
+                .labels
+                .get(camera.class_index as usize)
+                .map(String::as_str)
                 != Some(selected.label.as_str())
         {
             Some("label_mismatch")
@@ -420,13 +419,7 @@ pub fn run_discovered_retained_supervisor(
             discovery.selected_observations += 1;
         }
         if assigned == 0 {
-            discovery.exclude(
-                &event_id,
-                root,
-                "no_assigned_native_detection",
-                true,
-                None,
-            )?;
+            discovery.exclude(&event_id, root, "no_assigned_native_detection", true, None)?;
         }
     }
     checkpoint(cx)?;
@@ -538,7 +531,7 @@ fn history_scan_units(
         .ok_or(Error::Limit("discovery metadata history work"))
 }
 
-fn enclosing_window(
+pub(super) fn enclosing_window(
     start: u64,
     windows: &[super::RetainedSupervisorWindow],
     earliest: i128,
@@ -706,10 +699,7 @@ fn plan_to_json(plan: &RetainedSupervisorPlan) -> String {
                     "max_journal_bytes",
                     spec.limits.max_journal_bytes.to_string(),
                 ),
-                (
-                    "max_report_bytes",
-                    spec.limits.max_report_bytes.to_string(),
-                ),
+                ("max_report_bytes", spec.limits.max_report_bytes.to_string()),
             ]),
         ),
     ])
@@ -800,10 +790,7 @@ fn report_fields(report: &RetainedDiscoveryReport) -> Result<Vec<(&'static str, 
                             ("event_id", string(exclusion.event_id.as_str())),
                             ("event_root", digest_json(exclusion.event_root)),
                             ("reason", string(exclusion.reason)),
-                            (
-                                "source_verified",
-                                exclusion.source_verified.to_string(),
-                            ),
+                            ("source_verified", exclusion.source_verified.to_string()),
                             (
                                 "selector",
                                 exclusion
@@ -826,8 +813,7 @@ fn report_fields(report: &RetainedDiscoveryReport) -> Result<Vec<(&'static str, 
                 ),
                 (
                     "discovery_reserved_bytes",
-                    (report.read_discovered.used_bytes - report.read_before.used_bytes)
-                        .to_string(),
+                    (report.read_discovered.used_bytes - report.read_before.used_bytes).to_string(),
                 ),
                 (
                     "discovery_read_attempts",
@@ -837,8 +823,7 @@ fn report_fields(report: &RetainedDiscoveryReport) -> Result<Vec<(&'static str, 
                 ),
                 (
                     "supervision_reserved_bytes",
-                    (report.read_after.used_bytes - report.read_discovered.used_bytes)
-                        .to_string(),
+                    (report.read_after.used_bytes - report.read_discovered.used_bytes).to_string(),
                 ),
                 (
                     "supervision_read_attempts",

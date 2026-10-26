@@ -8,17 +8,20 @@
 use std::fmt;
 use std::path::Path;
 
-use fss_core::{AgentSession, ContentDigest, DigestAlgorithm, LedgerAnchor, PrincipalId, TimestampNs};
+use fss_core::{
+    AgentSession, ContentDigest, DigestAlgorithm, LedgerAnchor, PrincipalId, TimestampNs,
+};
 
 use super::{DeploymentSessionError, SessionJournal};
 use crate::agent_orient::{DeploymentHistory, OrientLimits};
 use crate::agent_session::checkpoint::journal::supervision::{
-    DurableSupervisionError, MAX_SUPERVISION_WINDOWS, PendingSupervisionDelivery, SupervisionRegistration,
-    SupervisionSourcePin, SupervisionSubscription,
+    DurableSupervisionError, MAX_SUPERVISION_WINDOWS, PendingSupervisionDelivery,
+    SupervisionDetectionSourcePin, SupervisionRegistration, SupervisionSourcePin,
+    SupervisionSubscription,
 };
 
-mod recovery;
 mod inventory;
+mod recovery;
 pub use inventory::{
     SupervisionInventoryBinding, SupervisionInventoryBoundary, SupervisionInventoryControl,
     SupervisionInventoryDelivery, SupervisionInventoryRequest, list_supervision,
@@ -78,15 +81,25 @@ pub struct SupervisionSessionBinding<'a> {
 
 impl<'a> SupervisionSessionBinding<'a> {
     /// Deployment namespace.
-    pub const fn root(&self) -> &'a Path { self.root }
+    pub const fn root(&self) -> &'a Path {
+        self.root
+    }
     /// Authenticated caller.
-    pub const fn principal(&self) -> &'a PrincipalId { self.principal }
+    pub const fn principal(&self) -> &'a PrincipalId {
+        self.principal
+    }
     /// Exact original command.
-    pub const fn request(&self) -> &'a SupervisionSessionRequest { self.request }
+    pub const fn request(&self) -> &'a SupervisionSessionRequest {
+        self.request
+    }
     /// Bounded history observations.
-    pub const fn limits(&self) -> &'a OrientLimits { self.limits }
+    pub const fn limits(&self) -> &'a OrientLimits {
+        self.limits
+    }
     /// Durable active cumulative prefix; absent preserves the original all-window mode.
-    pub const fn active_window_count(&self) -> Option<u32> { self.active_window_count }
+    pub const fn active_window_count(&self) -> Option<u32> {
+        self.active_window_count
+    }
 }
 
 /// No owner work, lock, source evaluation or response is admitted implicitly.
@@ -159,6 +172,9 @@ pub struct SupervisionEvaluation {
     pub report_receipt: ContentDigest,
     /// Every metadata candidate, distinguishing sources that were verified natively.
     pub sources: Vec<SupervisionSourcePin>,
+    /// Every native detector metadata candidate and its exact source/health interpretation.
+    /// Nonempty native and package-event inventories cannot be published together.
+    pub detection_sources: Vec<SupervisionDetectionSourcePin>,
 }
 
 /// Current verification of a historical report's complete source inventory.
@@ -309,11 +325,15 @@ pub struct SupervisionSessionFailure {
     pub journal_may_have_changed: bool,
 }
 impl fmt::Display for SupervisionSessionFailure {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { self.error.fmt(f) }
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.error.fmt(f)
+    }
 }
 impl std::error::Error for SupervisionSessionFailure {}
 
-fn observe_head(history: &DeploymentHistory) -> Result<SupervisionSessionHead, SupervisionSessionError> {
+fn observe_head(
+    history: &DeploymentHistory,
+) -> Result<SupervisionSessionHead, SupervisionSessionError> {
     let (anchor, ledger_root, effect_root) = history
         .roots_at(history.head())
         .ok_or(SupervisionSessionError::ChangedAuthority)?;
@@ -344,13 +364,19 @@ fn same_generations(left: &LedgerAnchor, right: &LedgerAnchor) -> bool {
 
 fn valid_history_limits(limits: &OrientLimits) -> bool {
     let defaults = OrientLimits::default();
-    limits.max_journal_bytes != 0 && limits.max_journal_bytes <= 32 * 1024 * 1024
+    limits.max_journal_bytes != 0
+        && limits.max_journal_bytes <= 32 * 1024 * 1024
         && [
             (limits.max_layout_bytes, defaults.max_layout_bytes),
             (limits.max_object_bytes, defaults.max_object_bytes),
             (limits.max_events, defaults.max_events),
-            (limits.max_revisions_per_event, defaults.max_revisions_per_event),
-        ].into_iter().all(|(value, ceiling)| value != 0 && value <= ceiling)
+            (
+                limits.max_revisions_per_event,
+                defaults.max_revisions_per_event,
+            ),
+        ]
+        .into_iter()
+        .all(|(value, ceiling)| value != 0 && value <= ceiling)
 }
 
 fn admit(
@@ -370,7 +396,11 @@ fn revalidate_history(
     control: &mut impl SupervisionEvaluator,
     progress: &mut SupervisionSessionFailure,
 ) -> Result<(), SupervisionSessionError> {
-    admit(control, binding, SupervisionSessionBoundary::RevalidateHistory)?;
+    admit(
+        control,
+        binding,
+        SupervisionSessionBoundary::RevalidateHistory,
+    )?;
     let history = DeploymentHistory::read(binding.root, binding.limits)
         .map_err(|error| SupervisionSessionError::Session(error.into()))?;
     let current = observe_head(&history)?;
@@ -423,7 +453,15 @@ fn supervise(
         advanced: None,
         journal_may_have_changed: false,
     };
-    match execute(root, principal, request, limits, control, &mut progress, require_existing) {
+    match execute(
+        root,
+        principal,
+        request,
+        limits,
+        control,
+        &mut progress,
+        require_existing,
+    ) {
         Ok(delivery) => Ok(delivery),
         Err(error) => {
             progress.error = error;
@@ -441,7 +479,10 @@ fn execute(
     progress: &mut SupervisionSessionFailure,
     require_existing: bool,
 ) -> Result<SupervisionSessionDelivery, SupervisionSessionError> {
-    request.registration.validate().map_err(SupervisionSessionError::Store)?;
+    request
+        .registration
+        .validate()
+        .map_err(SupervisionSessionError::Store)?;
     if root.as_os_str().is_empty()
         || request.expected_authority_root.algorithm() != DigestAlgorithm::Sha256
         || request.expected_authority_root.bytes() == [0; 32]
@@ -462,13 +503,18 @@ fn execute(
                     || after_receipt.algorithm() != DigestAlgorithm::Sha256
                     || after_receipt.bytes() == [0; 32]
         )
-        || (require_existing && matches!(request.action, SupervisionAction::ConfigureSchedule { .. }))
+        || (require_existing
+            && matches!(request.action, SupervisionAction::ConfigureSchedule { .. }))
         || !valid_history_limits(limits)
     {
         return Err(SupervisionSessionError::InvalidRequest);
     }
     let mut binding = SupervisionSessionBinding {
-        root, principal, request, limits, active_window_count: None,
+        root,
+        principal,
+        request,
+        limits,
+        active_window_count: None,
     };
     admit(control, &binding, SupervisionSessionBoundary::ReadHistory)?;
     let history = DeploymentHistory::read(root, limits)
@@ -481,9 +527,18 @@ fn execute(
     admit(control, &binding, SupervisionSessionBoundary::OpenJournal)?;
     progress.journal_may_have_changed = true;
     let mut journal = SessionJournal::open(root).map_err(SupervisionSessionError::Session)?;
-    admit(control, &binding, SupervisionSessionBoundary::ReadSubscription)?;
-    let session = journal.store
-        .session(principal, &request.registration.session_id, head.observed_at)
+    admit(
+        control,
+        &binding,
+        SupervisionSessionBoundary::ReadSubscription,
+    )?;
+    let session = journal
+        .store
+        .session(
+            principal,
+            &request.registration.session_id,
+            head.observed_at,
+        )
         .map_err(|error| SupervisionSessionError::Session(error.into()))?;
     if !same_generations(&session.current_anchor, &head.anchor) {
         return Err(SupervisionSessionError::StaleAuthority);
@@ -491,91 +546,148 @@ fn execute(
     let mut state = match request.action {
         SupervisionAction::ConfigureSchedule { total_windows } => {
             revalidate_history(&binding, &head, &session, control, progress)?;
-            admit(control, &binding, SupervisionSessionBoundary::ConfigureSchedule)?;
+            admit(
+                control,
+                &binding,
+                SupervisionSessionBoundary::ConfigureSchedule,
+            )?;
             // Registration and schedule admission are one durable command. A crash must never
             // leave an unscheduled subscription that a subsequent poll could interpret fully.
-            let state = journal.store.configure_supervision_schedule(
-                principal, &request.registration, total_windows, head.observed_at,
-            ).map_err(SupervisionSessionError::Store)?;
+            let state = journal
+                .store
+                .configure_supervision_schedule(
+                    principal,
+                    &request.registration,
+                    total_windows,
+                    head.observed_at,
+                )
+                .map_err(SupervisionSessionError::Store)?;
             progress.configured_windows = Some(total_windows);
             state
         }
-        SupervisionAction::Inspect | SupervisionAction::Advance { .. } => {
-            journal.store.inspect_supervision(
-                principal, &request.registration, head.observed_at,
-            ).map_err(SupervisionSessionError::Store)?
-        }
-        _ if require_existing => journal.store.inspect_supervision(
-            principal, &request.registration, head.observed_at,
-        ).map_err(SupervisionSessionError::Store)?,
-        _ => journal.store
+        SupervisionAction::Inspect | SupervisionAction::Advance { .. } => journal
+            .store
+            .inspect_supervision(principal, &request.registration, head.observed_at)
+            .map_err(SupervisionSessionError::Store)?,
+        _ if require_existing => journal
+            .store
+            .inspect_supervision(principal, &request.registration, head.observed_at)
+            .map_err(SupervisionSessionError::Store)?,
+        _ => journal
+            .store
             .register_supervision(principal, request.registration.clone(), head.observed_at)
             .map_err(SupervisionSessionError::Store)?,
     };
-    journal.commit_pin().map_err(SupervisionSessionError::Session)?;
+    journal
+        .commit_pin()
+        .map_err(SupervisionSessionError::Session)?;
     progress.attempts_reserved = state.attempts_reserved();
     binding.active_window_count = state.active_window_count();
 
     let outcome = match request.action {
         SupervisionAction::Inspect => SupervisionSessionOutcome::Inspected,
-        SupervisionAction::ConfigureSchedule { .. } => SupervisionSessionOutcome::ScheduleConfigured,
-        SupervisionAction::Advance { target_count, after_receipt } => {
+        SupervisionAction::ConfigureSchedule { .. } => {
+            SupervisionSessionOutcome::ScheduleConfigured
+        }
+        SupervisionAction::Advance {
+            target_count,
+            after_receipt,
+        } => {
             revalidate_history(&binding, &head, &session, control, progress)?;
             admit(control, &binding, SupervisionSessionBoundary::AdvanceWindow)?;
-            state = journal.store.advance_supervision_window(
-                principal, &state, target_count, after_receipt, &head.anchor, head.observed_at,
-            ).map_err(SupervisionSessionError::Store)?;
-            progress.advanced = state.schedule()
+            state = journal
+                .store
+                .advance_supervision_window(
+                    principal,
+                    &state,
+                    target_count,
+                    after_receipt,
+                    &head.anchor,
+                    head.observed_at,
+                )
+                .map_err(SupervisionSessionError::Store)?;
+            progress.advanced = state
+                .schedule()
                 .and_then(|schedule| schedule.last_advance())
                 .map(|advance| advance.receipt());
-            journal.commit_pin().map_err(SupervisionSessionError::Session)?;
+            journal
+                .commit_pin()
+                .map_err(SupervisionSessionError::Session)?;
             SupervisionSessionOutcome::WindowAdvanced
         }
         SupervisionAction::Discard(receipt) => {
             revalidate_history(&binding, &head, &session, control, progress)?;
             admit(control, &binding, SupervisionSessionBoundary::Discard)?;
-            state = journal.store.discard_supervision(
-                principal, &state, receipt, &head.anchor, head.observed_at,
-            ).map_err(SupervisionSessionError::Store)?;
+            state = journal
+                .store
+                .discard_supervision(principal, &state, receipt, &head.anchor, head.observed_at)
+                .map_err(SupervisionSessionError::Store)?;
             progress.discarded = Some(receipt);
-            journal.commit_pin().map_err(SupervisionSessionError::Session)?;
+            journal
+                .commit_pin()
+                .map_err(SupervisionSessionError::Session)?;
             SupervisionSessionOutcome::Discarded(receipt)
         }
-        SupervisionAction::Acknowledge(receipt)
-            if state.last_acknowledged() == Some(receipt) =>
-        {
+        SupervisionAction::Acknowledge(receipt) if state.last_acknowledged() == Some(receipt) => {
             revalidate_history(&binding, &head, &session, control, progress)?;
             admit(control, &binding, SupervisionSessionBoundary::Acknowledge)?;
-            state = journal.store.acknowledge_supervision(
-                principal, &state, None, receipt, &head.anchor, head.observed_at,
-            ).map_err(SupervisionSessionError::Store)?;
+            state = journal
+                .store
+                .acknowledge_supervision(
+                    principal,
+                    &state,
+                    None,
+                    receipt,
+                    &head.anchor,
+                    head.observed_at,
+                )
+                .map_err(SupervisionSessionError::Store)?;
             progress.acknowledged = Some(receipt);
-            journal.commit_pin().map_err(SupervisionSessionError::Session)?;
-            SupervisionSessionOutcome::Acknowledged { receipt, validation: None }
+            journal
+                .commit_pin()
+                .map_err(SupervisionSessionError::Session)?;
+            SupervisionSessionOutcome::Acknowledged {
+                receipt,
+                validation: None,
+            }
         }
         action => {
             let pending = state.pending().cloned();
-            if pending.as_ref().is_some_and(|pending|
-                pending.active_window_count() != binding.active_window_count)
+            if pending
+                .as_ref()
+                .is_some_and(|pending| pending.active_window_count() != binding.active_window_count)
             {
                 return Err(SupervisionSessionError::ChangedAuthority);
             }
             if let SupervisionAction::Acknowledge(receipt) = action {
-                if pending.as_ref().is_none_or(|pending| pending.receipt() != receipt) {
+                if pending
+                    .as_ref()
+                    .is_none_or(|pending| pending.receipt() != receipt)
+                {
                     return Err(SupervisionSessionError::InvalidRequest);
                 }
             }
             admit(control, &binding, SupervisionSessionBoundary::ReserveRead)?;
-            state = journal.store.reserve_supervision(
-                principal, &state, &head.anchor, head.observed_at,
-            ).map_err(SupervisionSessionError::Store)?;
+            state = journal
+                .store
+                .reserve_supervision(principal, &state, &head.anchor, head.observed_at)
+                .map_err(SupervisionSessionError::Store)?;
             progress.attempts_reserved = state.attempts_reserved();
-            journal.commit_pin().map_err(SupervisionSessionError::Session)?;
-            let reservation = state.reservation().cloned()
+            journal
+                .commit_pin()
+                .map_err(SupervisionSessionError::Session)?;
+            let reservation = state
+                .reservation()
+                .cloned()
                 .ok_or(SupervisionSessionError::InvalidRequest)?;
             if let Some(pending) = pending {
-                admit(control, &binding, SupervisionSessionBoundary::RevalidateSources)?;
-                let validation = control.revalidate(&binding, &head.anchor, &pending)
+                admit(
+                    control,
+                    &binding,
+                    SupervisionSessionBoundary::RevalidateSources,
+                )?;
+                let validation = control
+                    .revalidate(&binding, &head.anchor, &pending)
                     .map_err(SupervisionSessionError::Evaluation)?;
                 if validation.basis != head.anchor
                     || validation.receipt.algorithm() != DigestAlgorithm::Sha256
@@ -588,41 +700,91 @@ fn execute(
                 revalidate_history(&binding, &head, &session, control, progress)?;
                 if let SupervisionAction::Acknowledge(receipt) = action {
                     admit(control, &binding, SupervisionSessionBoundary::Acknowledge)?;
-                    state = journal.store.acknowledge_supervision(
-                        principal, &state, Some(&reservation), receipt, &head.anchor, head.observed_at,
-                    ).map_err(SupervisionSessionError::Store)?;
+                    state = journal
+                        .store
+                        .acknowledge_supervision(
+                            principal,
+                            &state,
+                            Some(&reservation),
+                            receipt,
+                            &head.anchor,
+                            head.observed_at,
+                        )
+                        .map_err(SupervisionSessionError::Store)?;
                     progress.acknowledged = Some(receipt);
-                    journal.commit_pin().map_err(SupervisionSessionError::Session)?;
-                    SupervisionSessionOutcome::Acknowledged { receipt, validation: Some(validation) }
+                    journal
+                        .commit_pin()
+                        .map_err(SupervisionSessionError::Session)?;
+                    SupervisionSessionOutcome::Acknowledged {
+                        receipt,
+                        validation: Some(validation),
+                    }
                 } else {
-                    admit(control, &binding, SupervisionSessionBoundary::ReleasePayload)?;
-                    let (updated, payload) = journal.store.release_supervision_payload(
-                        principal, &state, &reservation, pending.receipt(), head.observed_at,
-                    ).map_err(SupervisionSessionError::Store)?;
+                    admit(
+                        control,
+                        &binding,
+                        SupervisionSessionBoundary::ReleasePayload,
+                    )?;
+                    let (updated, payload) = journal
+                        .store
+                        .release_supervision_payload(
+                            principal,
+                            &state,
+                            &reservation,
+                            pending.receipt(),
+                            head.observed_at,
+                        )
+                        .map_err(SupervisionSessionError::Store)?;
                     state = updated;
-                    journal.commit_pin().map_err(SupervisionSessionError::Session)?;
+                    journal
+                        .commit_pin()
+                        .map_err(SupervisionSessionError::Session)?;
                     SupervisionSessionOutcome::Report {
-                        payload, pending, replayed: true, validation: Some(validation),
+                        payload,
+                        pending,
+                        replayed: true,
+                        validation: Some(validation),
                     }
                 }
             } else {
                 admit(control, &binding, SupervisionSessionBoundary::Evaluate)?;
-                let evaluation = control.evaluate(&binding, &head.anchor)
+                let evaluation = control
+                    .evaluate(&binding, &head.anchor)
                     .map_err(SupervisionSessionError::Evaluation)?;
                 if evaluation.basis != head.anchor {
                     return Err(SupervisionSessionError::ChangedAuthority);
                 }
                 revalidate_history(&binding, &head, &session, control, progress)?;
-                admit(control, &binding, SupervisionSessionBoundary::PublishDelivery)?;
-                state = journal.store.publish_supervision(
-                    principal, &state, &reservation, evaluation.payload.clone(),
-                    evaluation.sources, evaluation.report_receipt, head.observed_at,
-                ).map_err(SupervisionSessionError::Store)?;
-                journal.commit_pin().map_err(SupervisionSessionError::Session)?;
-                let pending = state.pending().cloned()
+                admit(
+                    control,
+                    &binding,
+                    SupervisionSessionBoundary::PublishDelivery,
+                )?;
+                state = journal
+                    .store
+                    .publish_supervision_with_detections(
+                        principal,
+                        &state,
+                        &reservation,
+                        evaluation.payload.clone(),
+                        evaluation.sources,
+                        evaluation.detection_sources,
+                        evaluation.report_receipt,
+                        head.observed_at,
+                    )
+                    .map_err(SupervisionSessionError::Store)?;
+                journal
+                    .commit_pin()
+                    .map_err(SupervisionSessionError::Session)?;
+                let pending = state
+                    .pending()
+                    .cloned()
                     .ok_or(SupervisionSessionError::InvalidRequest)?;
                 SupervisionSessionOutcome::Report {
-                    payload: evaluation.payload, pending, replayed: false, validation: None,
+                    payload: evaluation.payload,
+                    pending,
+                    replayed: false,
+                    validation: None,
                 }
             }
         }
@@ -631,6 +793,10 @@ fn execute(
     revalidate_history(&binding, &head, &session, control, progress)?;
     admit(control, &binding, SupervisionSessionBoundary::Deliver)?;
     Ok(SupervisionSessionDelivery {
-        session, head, subscription: state, journal_root: journal.store.committed_root(), outcome,
+        session,
+        head,
+        subscription: state,
+        journal_root: journal.store.committed_root(),
+        outcome,
     })
 }

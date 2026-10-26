@@ -253,6 +253,7 @@ impl SupervisionEvaluator for SyntheticEvaluator<'_> {
             report_receipt: ContentDigest::sha256(&payload),
             payload,
             sources: self.sources()?,
+            detection_sources: Vec::new(),
         })
     }
 

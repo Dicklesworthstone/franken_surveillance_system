@@ -10,7 +10,10 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use fss_cli::supervisor::retained::{
-    MAX_RETAINED_SUPERVISOR_PLAN_BYTES, RetainedDiscoveryRequest, RetainedSupervisorPlan,
+    MAX_RETAINED_SUPERVISOR_PLAN_BYTES, RETAINED_DETECTION_REPORT_SCHEMA,
+    RETAINED_DETECTION_REQUEST_SCHEMA, RETAINED_DISCOVERY_REPORT_SCHEMA,
+    RETAINED_DISCOVERY_REQUEST_SCHEMA, RetainedDetectionRequest, RetainedDiscoveryRequest,
+    RetainedSupervisorError, RetainedSupervisorPlan, run_discovered_detection_supervisor,
     run_discovered_retained_supervisor, run_retained_supervisor,
 };
 use fss_cli::{ERR_CLI_MALFORMED_VALUE, ERR_CLI_RUNTIME_FAILURE, ExitIdentity};
@@ -18,8 +21,8 @@ use fss_core::{
     BudgetVector, ContentDigest, ContextAuthority, DigestAlgorithm, OperationId, PrincipalId,
     RootAuthoritySpec,
 };
-use fss_reference::{ReferenceDeployment, ReplayCx};
 use fss_reference::agent_session::checkpoint::journal::supervision::SupervisionRegistration;
+use fss_reference::{ReferenceDeployment, ReplayCx};
 
 #[path = "retained/session.rs"]
 mod session;
@@ -31,12 +34,110 @@ mod inventory;
 enum Mode {
     Explicit,
     Discover,
+    Detection,
+}
+
+/// The immutable registered configuration selects its native owner; source identities never
+/// cross between event discovery and direct detector discovery.
+#[derive(Clone, Debug)]
+enum NativeRequest {
+    Event(RetainedDiscoveryRequest),
+    Detection(RetainedDetectionRequest),
+}
+
+impl NativeRequest {
+    fn template(&self) -> &RetainedSupervisorPlan {
+        match self {
+            Self::Event(request) => request.template(),
+            Self::Detection(request) => request.template(),
+        }
+    }
+
+    fn digest(&self) -> ContentDigest {
+        match self {
+            Self::Event(request) => request.digest(),
+            Self::Detection(request) => request.digest(),
+        }
+    }
+
+    fn for_authority(
+        &self,
+        authority: ContentDigest,
+    ) -> std::result::Result<Self, RetainedSupervisorError> {
+        match self {
+            Self::Event(request) => request.for_authority(authority).map(Self::Event),
+            Self::Detection(request) => request.for_authority(authority).map(Self::Detection),
+        }
+    }
+
+    fn for_window_prefix(
+        &self,
+        count: usize,
+    ) -> std::result::Result<Self, RetainedSupervisorError> {
+        match self {
+            Self::Event(request) => request.for_window_prefix(count).map(Self::Event),
+            Self::Detection(request) => request.for_window_prefix(count).map(Self::Detection),
+        }
+    }
+
+    const fn report_schema(&self) -> &'static str {
+        match self {
+            Self::Event(_) => RETAINED_DISCOVERY_REPORT_SCHEMA,
+            Self::Detection(_) => RETAINED_DETECTION_REPORT_SCHEMA,
+        }
+    }
+
+    const fn report_authority_field(&self) -> &'static str {
+        match self {
+            Self::Event(_) => "expected_authority_root",
+            Self::Detection(_) => "authority_state_root",
+        }
+    }
+
+    /// Select only a known native dialect after checking the complete stored configuration.
+    /// Each existing strict owner then validates its full schema and all immutable limits.
+    fn from_configuration(
+        bytes: &[u8],
+        expected: ContentDigest,
+    ) -> std::result::Result<Self, RetainedSupervisorError> {
+        if bytes.is_empty() || bytes.len() > MAX_RETAINED_SUPERVISOR_PLAN_BYTES {
+            return Err(RetainedSupervisorError::Limit(
+                "stored native configuration bytes",
+            ));
+        }
+        if expected.algorithm() != DigestAlgorithm::Sha256
+            || ContentDigest::sha256(bytes) != expected
+        {
+            return Err(RetainedSupervisorError::Plan(
+                "stored native configuration byte digest",
+            ));
+        }
+        let text = std::str::from_utf8(bytes)
+            .map_err(|_| RetainedSupervisorError::Plan("stored native configuration UTF-8"))?;
+        let document = fss_cli::json_input::parse(text)
+            .map_err(|_| RetainedSupervisorError::Plan("stored native configuration JSON"))?;
+        let schema = document
+            .object()
+            .and_then(|fields| fields.get("schema"))
+            .and_then(fss_cli::json_input::Value::text);
+        match schema {
+            Some(RETAINED_DISCOVERY_REQUEST_SCHEMA) => {
+                RetainedDiscoveryRequest::from_json(bytes, expected).map(Self::Event)
+            }
+            Some(RETAINED_DETECTION_REQUEST_SCHEMA) => {
+                RetainedDetectionRequest::from_json(bytes, expected).map(Self::Detection)
+            }
+            _ => Err(RetainedSupervisorError::Plan(
+                "stored native configuration schema",
+            )),
+        }
+    }
 }
 
 enum InputPlan {
     Explicit(RetainedSupervisorPlan),
     Discover {
-        request: RetainedDiscoveryRequest,
+        request: NativeRequest,
         bytes: Vec<u8>,
         registration: Option<SupervisionRegistration>,
     },
@@ -52,7 +153,11 @@ impl InputPlan {
 }
 
 enum PlanSource {
-    File { mode: Mode, path: PathBuf, digest: ContentDigest },
+    File {
+        mode: Mode,
+        path: PathBuf,
+        digest: ContentDigest,
+    },
     Registered,
 }
 
@@ -100,10 +205,18 @@ fn parse(values: &BTreeMap<String, OsString>) -> Result<Options> {
         values.contains_key("--retained-plan") || values.contains_key("--retained-digest");
     let discover =
         values.contains_key("--discover-plan") || values.contains_key("--discover-digest");
+    let detection =
+        values.contains_key("--detection-plan") || values.contains_key("--detection-digest");
     let resume = values.contains_key("--resume");
-    if values.contains_key("--plan") || (explicit && discover) || (resume && (explicit || discover)) {
+    if values.contains_key("--plan")
+        || [explicit, discover, detection, resume]
+            .into_iter()
+            .filter(|mode| *mode)
+            .count()
+            > 1
+    {
         return Err(Failure::malformed(
-            "--plan, --retained-plan, --discover-plan and --resume are mutually exclusive modes",
+            "--plan, --retained-plan, --discover-plan, --detection-plan and --resume are mutually exclusive modes",
         ));
     }
     let root = values
@@ -117,16 +230,26 @@ fn parse(values: &BTreeMap<String, OsString>) -> Result<Options> {
     } else {
         let (mode, plan_flag, digest_flag) = if discover {
             (Mode::Discover, "--discover-plan", "--discover-digest")
+        } else if detection {
+            (Mode::Detection, "--detection-plan", "--detection-digest")
         } else {
             (Mode::Explicit, "--retained-plan", "--retained-digest")
         };
-        let path = values.get(plan_flag)
+        let path = values
+            .get(plan_flag)
             .ok_or_else(|| Failure::malformed(format!("required {plan_flag}")))?;
-        let digest = ContentDigest::parse(text(values, digest_flag)?).map_err(Failure::malformed)?;
+        let digest =
+            ContentDigest::parse(text(values, digest_flag)?).map_err(Failure::malformed)?;
         if digest.algorithm() != DigestAlgorithm::Sha256 || digest.bytes() == [0; 32] {
-            return Err(Failure::malformed(format!("{digest_flag} must be a nonzero SHA-256 digest")));
+            return Err(Failure::malformed(format!(
+                "{digest_flag} must be a nonzero SHA-256 digest"
+            )));
         }
-        PlanSource::File { mode, path: PathBuf::from(path), digest }
+        PlanSource::File {
+            mode,
+            path: PathBuf::from(path),
+            digest,
+        }
     };
     let site = text(values, "--site")?;
     if site.is_empty() || site.len() > 256 || site.chars().any(char::is_control) {
@@ -140,8 +263,10 @@ fn parse(values: &BTreeMap<String, OsString>) -> Result<Options> {
     };
     PrincipalId::parse(principal).map_err(Failure::malformed)?;
     let session = session::parse(values)?;
-    if session.is_some() && !discover && !resume {
-        return Err(Failure::malformed("session supervision requires a discovery plan or --resume yes"));
+    if session.is_some() && !discover && !detection && !resume {
+        return Err(Failure::malformed(
+            "session supervision requires a discovery plan or --resume yes",
+        ));
     }
     Ok(Options {
         source,
@@ -172,10 +297,20 @@ fn load_plan(path: &Path, expected: ContentDigest, mode: Mode) -> Result<InputPl
         Mode::Explicit => {
             RetainedSupervisorPlan::from_json(&bytes, expected).map(InputPlan::Explicit)
         }
-        Mode::Discover => {
-            RetainedDiscoveryRequest::from_json(&bytes, expected)
-                .map(|request| InputPlan::Discover { request, bytes, registration: None })
-        }
+        Mode::Discover => RetainedDiscoveryRequest::from_json(&bytes, expected).map(|request| {
+            InputPlan::Discover {
+                request: NativeRequest::Event(request),
+                bytes,
+                registration: None,
+            }
+        }),
+        Mode::Detection => RetainedDetectionRequest::from_json(&bytes, expected).map(|request| {
+            InputPlan::Discover {
+                request: NativeRequest::Detection(request),
+                bytes,
+                registration: None,
+            }
+        }),
     }
     .map_err(Failure::malformed)
 }
@@ -186,14 +321,17 @@ fn run(options: Options) -> Result<()> {
         PlanSource::File { path, digest, mode } => Some(load_plan(path, *digest, *mode)?),
         PlanSource::Registered => None,
     };
-    if plan.as_ref().is_some_and(|plan| plan.template().spec().site_lineage != options.site) {
+    if plan
+        .as_ref()
+        .is_some_and(|plan| plan.template().spec().site_lineage != options.site)
+    {
         return Err(Failure::malformed(
             "retained plan site_lineage does not match --site",
         ));
     }
     let root_exists = fs::symlink_metadata(&options.root).is_ok_and(|m| m.file_type().is_dir());
-    let layout_exists = fs::symlink_metadata(options.root.join("LAYOUT"))
-        .is_ok_and(|m| m.file_type().is_file());
+    let layout_exists =
+        fs::symlink_metadata(options.root.join("LAYOUT")).is_ok_and(|m| m.file_type().is_file());
     if !root_exists || !layout_exists {
         return Err(Failure::runtime("existing non-symlink deployment required"));
     }
@@ -224,28 +362,53 @@ fn run(options: Options) -> Result<()> {
             Some(plan) => plan,
             None => session::recover(
                 &options,
-                options.session.as_ref().ok_or_else(|| Failure::malformed("--resume requires a session"))?,
+                options
+                    .session
+                    .as_ref()
+                    .ok_or_else(|| Failure::malformed("--resume requires a session"))?,
                 &cx,
             )?,
         };
         if plan.template().spec().site_lineage != options.site {
-            return Err(Failure::malformed("stored retained plan site_lineage does not match --site"));
+            return Err(Failure::malformed(
+                "stored retained plan site_lineage does not match --site",
+            ));
         }
         let rendered = if let Some(session) = &options.session {
-            let InputPlan::Discover { request, bytes, registration } = &plan else {
-                return Err(Failure::malformed("session supervision requires discovery mode"));
+            let InputPlan::Discover {
+                request,
+                bytes,
+                registration,
+            } = &plan
+            else {
+                return Err(Failure::malformed(
+                    "session supervision requires discovery mode",
+                ));
             };
-            session::run(&options, session, request, bytes, registration.as_ref(), &cx)?
+            session::run(
+                &options,
+                session,
+                request,
+                bytes,
+                registration.as_ref(),
+                &cx,
+            )?
         } else {
             let mut deployment = ReferenceDeployment::open(&options.root, &options.site, &cx)
                 .map_err(Failure::runtime)?;
             match &plan {
                 InputPlan::Explicit(plan) => run_retained_supervisor(&mut deployment, plan, &cx)
                     .and_then(|report| report.to_json()),
-                InputPlan::Discover { request, .. } => {
-                    run_discovered_retained_supervisor(&mut deployment, request, &cx)
-                        .and_then(|report| report.to_json())
-                }
+                InputPlan::Discover {
+                    request: NativeRequest::Event(request),
+                    ..
+                } => run_discovered_retained_supervisor(&mut deployment, request, &cx)
+                    .and_then(|report| report.to_json()),
+                InputPlan::Discover {
+                    request: NativeRequest::Detection(request),
+                    ..
+                } => run_discovered_detection_supervisor(&mut deployment, request, &cx)
+                    .and_then(|report| report.to_json()),
             }
             .map_err(|error| Failure {
                 exit: ExitIdentity::RUNTIME_FAILURE.code,

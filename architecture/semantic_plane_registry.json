@@ -726,7 +726,15 @@
     "crates/fss-reference/tests/deployment_mission_lifecycle_contract.rs": "support",
     "crates/fss-reference/tests/deployment_mission_objective_contract.rs": "support",
     "crates/fss-reference/src/ingest/historical_health/exposure.rs": "cognition",
-    "crates/fss-reference/src/ingest/historical_health/exposure/tests.rs": "support"
+    "crates/fss-reference/src/ingest/historical_health/exposure/tests.rs": "support",
+    "crates/fss-cli/src/supervisor/retained/detection.rs": "cognition",
+    "crates/fss-cli/src/supervisor/retained/detection/input.rs": "support",
+    "crates/fss-cli/src/supervisor/retained/detection/render.rs": "cognition",
+    "crates/fss-cli/src/supervisor/retained/detection/revalidation.rs": "cognition",
+    "crates/fss-cli/src/supervisor/retained/health.rs": "cognition",
+    "crates/fss-cli/tests/supervisor_retained_contract/detection.rs": "support",
+    "crates/fss-reference/src/agent_session/checkpoint/journal/supervision/detection_tests.rs": "support",
+    "crates/fss-cli/tests/supervisor_retained_contract/detection/session.rs": "support"
   },
   "types": {
     "AlertEffectRecord": {
@@ -1261,6 +1269,36 @@
       "file": "crates/fss-reference/src/ingest/historical_health/exposure.rs",
       "plane": "cognition",
       "description": "Bounded current diagnostic metadata snapshot under existing custody, deletion and explicit context authority."
+    },
+    "RetainedDetectionRequest": {
+      "file": "crates/fss-cli/src/supervisor/retained/detection.rs",
+      "plane": "cognition",
+      "description": "Validated direct native detector discovery scope with immutable camera, class, calibration, windows and resource ceilings."
+    },
+    "RetainedDetectionSource": {
+      "file": "crates/fss-cli/src/supervisor/retained/detection.rs",
+      "plane": "cognition",
+      "description": "Exact detector report, record, root and verification class with selected-source historical health context; no event or actor identity."
+    },
+    "RetainedDetectionWindow": {
+      "file": "crates/fss-cli/src/supervisor/retained/detection.rs",
+      "plane": "cognition",
+      "description": "Cumulative deduplicated native detector rows and conservative class fusion with explicit missing observations."
+    },
+    "RetainedDetectionReport": {
+      "file": "crates/fss-cli/src/supervisor/retained/detection.rs",
+      "plane": "cognition",
+      "description": "Complete bounded direct detector class advice with original custody, exclusions, diagnostic context and current authority bracket."
+    },
+    "RetainedDetectionValidation": {
+      "file": "crates/fss-cli/src/supervisor/retained/detection/revalidation.rs",
+      "plane": "cognition",
+      "description": "Current validation of exact historical detector sources and their health interpretations; no fresh class result or effect authority."
+    },
+    "SupervisionDetectionSourcePin": {
+      "file": "crates/fss-reference/src/agent_session/checkpoint/journal/supervision.rs",
+      "plane": "cognition",
+      "description": "Exact retained detector report, native record and source root with verification class and optional historical-health interpretation, durably bound into an additive pending delivery."
     }
   }
 }

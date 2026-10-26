@@ -23,7 +23,8 @@ mod retained;
 
 const HELP: &str = "fss-event supervise --root DIR --site SITE\n\
   (--retained-plan FILE --retained-digest sha256:HEX |\n\
-   --discover-plan FILE --discover-digest sha256:HEX | --plan FILE)\n\
+   --discover-plan FILE --discover-digest sha256:HEX |\n\
+   --detection-plan FILE --detection-digest sha256:HEX | --plan FILE)\n\
   [--principal ID] [--report-out FILE]\n\
 \n\
   Retained mode reads a digest-pinned fss.retained_supervisor_plan.v1 from a regular file\n\
@@ -42,7 +43,15 @@ const HELP: &str = "fss-event supervise --root DIR --site SITE\n\
   windows, and immediately supervises them under one shared read allowance. Its complete\n\
   report includes an executable selected_plan, explicit exclusions and source-read costs.\n\
 \n\
-  Durable discovery uses an existing fss session open identity:\n\
+  Direct detection mode reads fss.retained_detection_discovery.v1 with an explicit\n\
+  maximum_catalog_reports and the same empty-selection plan. It opens native retained\n\
+  detector records, including stationary sentinel bursts, without a track or event.\n\
+  Repeated source rows add no evidence. Matching historical visual-health findings or\n\
+  incomplete screening withhold class support while preserving exact native observations.\n\
+  Empty or unsampled frames remain unknown; no tracking, coverage or effect is invented.\n\
+\n\
+  Both --discover-plan and --detection-plan support durable discovery through an existing\n\
+  fss session open identity:\n\
     --session ID --subscription LABEL --authority-root sha256:CURRENT_ROOT\n\
     --max-poll-attempts N [--inspect yes | --acknowledge RECEIPT | --discard RECEIPT]\n\
   One invocation performs one finite inspect, poll, exact ACK or explicit discard. The original\n\
@@ -51,13 +60,16 @@ const HELP: &str = "fss-event supervise --root DIR --site SITE\n\
   before work, including failed or interrupted attempts. A complete report is retained\n\
   before output. Pending retries revalidate all original sources against current authority\n\
   and preserve the exact historical report bytes and delivery receipt. ACK revalidates\n\
-  sources and consumes only its exact receipt; discard claims no ACK. The next evaluation\n\
+  the same sources. Direct detection also pins the selected rows' historical health context;\n\
+  a new matching diagnostic blocks stale report release and ACK until explicit discard.\n\
+  ACK consumes only its exact receipt; discard claims no ACK. The next evaluation\n\
   requires a separate command. --inspect yes recovers existing pending receipts and budget\n\
   counters without source reads, private report output or another charged attempt; unknown\n\
   subscriptions are refused. No background loop, source publication or effect is started.\n\
 \n\
   --resume yes recovers an existing subscription's exact native configuration and lifetime\n\
-  ceilings from its admitted session journal, so the original plan file is not needed. Supply\n\
+  ceilings, including its event or direct detection mode, from its admitted session journal,\n\
+  so the original plan file is not needed. Supply\n\
   --session, --subscription and the explicit current --authority-root. Do not supply any plan\n\
   flags, --max-poll-attempts or --schedule. Poll, inspect, ACK, discard and advancement retain\n\
   their normal source checks and charges; resume cannot create a missing subscription.\n\
@@ -118,7 +130,10 @@ fn parse_calibration(cal_obj: &BTreeMap<String, Value>) -> Result<ScoreCalibrati
     if cal_obj.get("schema").and_then(Value::text) != Some("fss.score_calibration.v1") {
         return Err("score_calibration schema must be fss.score_calibration.v1".to_owned());
     }
-    let generation = text(field(cal_obj, "generation")?, "score_calibration.generation")?;
+    let generation = text(
+        field(cal_obj, "generation")?,
+        "score_calibration.generation",
+    )?;
     let bins_arr = field(cal_obj, "bins")?
         .array()
         .ok_or_else(|| "score_calibration.bins must be an array".to_owned())?;
@@ -143,7 +158,9 @@ fn parse_calibration(cal_obj: &BTreeMap<String, Value>) -> Result<ScoreCalibrati
     Ok(calibration)
 }
 
-fn parse_observation(obs_obj: &BTreeMap<String, Value>) -> Result<SupervisorWindowObservation, String> {
+fn parse_observation(
+    obs_obj: &BTreeMap<String, Value>,
+) -> Result<SupervisorWindowObservation, String> {
     let kind = text(field(obs_obj, "kind")?, "observation.kind")?;
     match kind {
         "calibrated_detection" => {
@@ -360,6 +377,8 @@ pub(super) fn main(args: &[OsString]) -> ExitCode {
                 | "--retained-digest"
                 | "--discover-plan"
                 | "--discover-digest"
+                | "--detection-plan"
+                | "--detection-digest"
                 | "--session"
                 | "--subscription"
                 | "--authority-root"
@@ -381,7 +400,10 @@ pub(super) fn main(args: &[OsString]) -> ExitCode {
             eprintln!("{ERR_CLI_MALFORMED_VALUE}: missing value for {flag}");
             return ExitCode::from(ExitIdentity::MALFORMED_VALUE.code);
         }
-        if values.insert(flag.to_owned(), args[i + 1].clone()).is_some() {
+        if values
+            .insert(flag.to_owned(), args[i + 1].clone())
+            .is_some()
+        {
             eprintln!("{ERR_CLI_MALFORMED_VALUE}: duplicate option {flag}");
             return ExitCode::from(ExitIdentity::MALFORMED_VALUE.code);
         }
@@ -392,6 +414,8 @@ pub(super) fn main(args: &[OsString]) -> ExitCode {
         || values.contains_key("--retained-digest")
         || values.contains_key("--discover-plan")
         || values.contains_key("--discover-digest")
+        || values.contains_key("--detection-plan")
+        || values.contains_key("--detection-digest")
         || values.contains_key("--session")
         || values.contains_key("--subscription")
         || values.contains_key("--authority-root")

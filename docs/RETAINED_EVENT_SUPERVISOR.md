@@ -1,5 +1,9 @@
 # Supervise retained native detector evidence
 
+For retained detector or sentinel results that have no confirmed track or published event,
+use [direct detector-record supervision](RETAINED_DETECTION_SUPERVISION.md). That source path
+also applies exact retained visual-health diagnostic constraints before class fusion.
+
 `fss-event supervise --retained-plan` evaluates a bounded sequence of cumulative evidence windows
 over current, published package events. It reopens the exact native detections assigned to those
 events' local tracks, verifies retained source custody and current privacy/deletion restrictions,

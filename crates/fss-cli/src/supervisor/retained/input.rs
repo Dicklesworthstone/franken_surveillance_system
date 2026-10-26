@@ -10,9 +10,10 @@ use crate::event_fusion::parse_score_calibration;
 use crate::json_input::{Value, parse};
 
 use super::{
-    MAX_RETAINED_SUPERVISOR_PLAN_BYTES, RetainedCameraSpec, RetainedDiscoveryRequest, RetainedEventPin,
-    RetainedObservationSelector, RetainedSupervisorError as Error, RetainedSupervisorLimits,
-    RetainedSupervisorPlan, RetainedSupervisorSpec, RetainedSupervisorWindow,
+    MAX_RETAINED_SUPERVISOR_PLAN_BYTES, RetainedCameraSpec, RetainedDiscoveryRequest,
+    RetainedEventPin, RetainedObservationSelector, RetainedSupervisorError as Error,
+    RetainedSupervisorLimits, RetainedSupervisorPlan, RetainedSupervisorSpec,
+    RetainedSupervisorWindow,
 };
 
 type Result<T> = std::result::Result<T, Error>;
@@ -38,7 +39,7 @@ impl RetainedSupervisorPlan {
 
     // Discovery carries the same complete plan dialect, without serializing caller JSON
     // again or introducing another authority/calibration parser.
-    fn from_value(document: &Value) -> Result<Self> {
+    pub(super) fn from_value(document: &Value) -> Result<Self> {
         let top = object(
             document,
             &[
@@ -227,7 +228,8 @@ impl RetainedDiscoveryRequest {
         {
             return Err(Error::Plan("discovery request byte digest"));
         }
-        let text = std::str::from_utf8(bytes).map_err(|_| Error::Plan("discovery request UTF-8"))?;
+        let text =
+            std::str::from_utf8(bytes).map_err(|_| Error::Plan("discovery request UTF-8"))?;
         let document = parse(text).map_err(|_| Error::Plan("discovery request JSON"))?;
         let top = object(&document, &["schema", "maximum_catalog_events", "plan"])?;
         if text_field(top, "schema")? != "fss.retained_supervisor_discovery.v1" {
@@ -435,9 +437,21 @@ mod tests {
             Err(Error::Plan("discovery request byte digest"))
         ));
         for altered in [
-            json.replacen("\"maximum_catalog_events\":64", "\"maximum_catalog_events\":0", 1),
-            json.replacen("\"maximum_catalog_events\":64", "\"maximum_catalog_events\":4097", 1),
-            json.replacen("\"maximum_catalog_events\":64", "\"maximum_catalog_events\":1.0", 1),
+            json.replacen(
+                "\"maximum_catalog_events\":64",
+                "\"maximum_catalog_events\":0",
+                1,
+            ),
+            json.replacen(
+                "\"maximum_catalog_events\":64",
+                "\"maximum_catalog_events\":4097",
+                1,
+            ),
+            json.replacen(
+                "\"maximum_catalog_events\":64",
+                "\"maximum_catalog_events\":1.0",
+                1,
+            ),
             json.replacen(
                 "\"maximum_catalog_events\":64",
                 "\"maximum_catalog_events\":64,\"maximum_catalog_events\":64",
@@ -448,8 +462,16 @@ mod tests {
                 "\"maximum_catalog_events\":64,\"skip_privacy\":true",
                 1,
             ),
-            json.replacen("\"class_index\":27", "\"class_index\":27,\"score_ppm\":999999", 1),
-            json.replacen("\"min_independent_support\":2", "\"min_independent_support\":1", 1),
+            json.replacen(
+                "\"class_index\":27",
+                "\"class_index\":27,\"score_ppm\":999999",
+                1,
+            ),
+            json.replacen(
+                "\"min_independent_support\":2",
+                "\"min_independent_support\":1",
+                1,
+            ),
             format!(
                 r#"{{"schema":"fss.retained_supervisor_discovery.v1","maximum_catalog_events":64,"plan":{}}}"#,
                 document(),
@@ -462,6 +484,8 @@ mod tests {
             );
         }
         let bytes = vec![b' '; MAX_RETAINED_SUPERVISOR_PLAN_BYTES + 1];
-        assert!(RetainedDiscoveryRequest::from_json(&bytes, ContentDigest::sha256(&bytes)).is_err());
+        assert!(
+            RetainedDiscoveryRequest::from_json(&bytes, ContentDigest::sha256(&bytes)).is_err()
+        );
     }
 }
