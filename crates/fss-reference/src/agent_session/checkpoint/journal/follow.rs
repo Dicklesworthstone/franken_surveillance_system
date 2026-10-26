@@ -550,11 +550,13 @@ fn apply(
 }
 
 impl DurableSessionStore {
-    /// Last retained agent-semantic command, excluding follow progress and ordinary session
-    /// checkpoints. It changes even when a case/claim/workspace later returns to its old state.
-    pub(crate) fn follow_semantic_journal_root(
+    /// Last retained agent-semantic commands, excluding follow progress and ordinary session
+    /// checkpoints. The first root preserves the original empty-facet profile's identity; the
+    /// second also includes every supervision command for a populated, pinned baseline.
+    /// Both detect a case/claim/workspace that later returns to its old visible state.
+    pub(crate) fn follow_semantic_journal_roots(
         &mut self,
-    ) -> Result<ContentDigest, DurableSessionError> {
+    ) -> Result<(ContentDigest, ContentDigest), DurableSessionError> {
         self.preflight()?;
         let report = super::read_report(self.path(), self.limits)?;
         if report.last_root() != self.committed_root()
@@ -564,20 +566,53 @@ impl DurableSessionStore {
             self.fenced = true;
             return Err(DurableSessionError::RootMismatch);
         }
-        Ok(report
+        let semantic = report
             .records()
             .iter()
             .rev()
             .find(|record| {
                 record.kind() != FOLLOW_COMMAND_RECORD_KIND
                     && record.kind() != super::SESSION_CHECKPOINT_RECORD_KIND
-                    // Presentation custody and read reservations do not change the workspace.
+            })
+            .map_or_else(
+                || ContentDigest::sha256(&[]),
+                fss_ledger::JournalRecord::root,
+            );
+        let legacy = report
+            .records()
+            .iter()
+            .rev()
+            .find(|record| {
+                record.kind() != FOLLOW_COMMAND_RECORD_KIND
+                    && record.kind() != super::SESSION_CHECKPOINT_RECORD_KIND
                     && record.kind() != super::supervision::SUPERVISION_COMMAND_RECORD_KIND
             })
             .map_or_else(
                 || ContentDigest::sha256(&[]),
                 fss_ledger::JournalRecord::root,
-            ))
+            );
+        Ok((legacy, semantic))
+    }
+
+    /// Authenticate an existing subscription without registering or acknowledging anything.
+    /// The adapter uses this to distinguish a retry from a new pinned baseline before writes.
+    pub(crate) fn follow_subscription(
+        &mut self,
+        principal: &PrincipalId,
+        session: &SessionId,
+        subscription: &str,
+        now: TimestampNs,
+    ) -> Result<Option<FollowSubscription>, DurableFollowError> {
+        self.session(principal, session, now)?;
+        let state = self.read_follow_state()?;
+        let authority = authority_digest(&mut self.memory.clone(), principal, session, now)?;
+        let retained = state
+            .subscriptions
+            .get(&(session.clone(), subscription.to_owned()));
+        if retained.is_some_and(|state| state.authority_digest != authority) {
+            return Err(DurableFollowError::StaleScope);
+        }
+        Ok(retained.cloned())
     }
 
     /// The already authenticated session's exact interpretation basis, for native page sealing.
@@ -653,28 +688,7 @@ impl DurableSessionStore {
         }
         // Error-side clock and expiry observations use the existing committed checkpoint path.
         self.session(principal, session, now)?;
-        self.preflight()?;
-        let report = super::read_report(self.path(), self.limits)?;
-        if report.last_root() != self.committed_root()
-            || report.committed_len() != self.journal.committed_len()
-            || report.incomplete_tail().is_some()
-        {
-            self.fenced = true;
-            return Err(DurableSessionError::RootMismatch.into());
-        }
-        let ceilings = self.coordination.as_ref().map(|state| state.limits);
-        let restored = super::replay_all(&report, self.limits, ceilings)?;
-        if restored
-            .memory
-            .checkpoint(self.limits.max_checkpoint_bytes)
-            .map_err(DurableSessionError::from)?
-            .digest()
-            != self.checkpoint_digest
-        {
-            self.fenced = true;
-            return Err(DurableSessionError::InvalidHistory.into());
-        }
-        let mut state = restored.follows;
+        let mut state = self.read_follow_state()?;
         let before_state = state.digest();
         let mut memory = self.memory.clone();
         let result = apply(&mut memory, &mut state, principal, session, &command, now)?;
@@ -704,6 +718,31 @@ impl DurableSessionStore {
             record: Some((FOLLOW_COMMAND_RECORD_KIND, payload)),
         })?;
         Ok(result)
+    }
+
+    fn read_follow_state(&mut self) -> Result<FollowState, DurableFollowError> {
+        self.preflight()?;
+        let report = super::read_report(self.path(), self.limits)?;
+        if report.last_root() != self.committed_root()
+            || report.committed_len() != self.journal.committed_len()
+            || report.incomplete_tail().is_some()
+        {
+            self.fenced = true;
+            return Err(DurableSessionError::RootMismatch.into());
+        }
+        let ceilings = self.coordination.as_ref().map(|state| state.limits);
+        let restored = super::replay_all(&report, self.limits, ceilings)?;
+        if restored
+            .memory
+            .checkpoint(self.limits.max_checkpoint_bytes)
+            .map_err(DurableSessionError::from)?
+            .digest()
+            != self.checkpoint_digest
+        {
+            self.fenced = true;
+            return Err(DurableSessionError::InvalidHistory.into());
+        }
+        Ok(restored.follows)
     }
 }
 

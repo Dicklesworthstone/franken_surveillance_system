@@ -365,9 +365,11 @@ fn original_workspace_record_and_current_authority_gate_every_read_or_write() ->
 fn later_supervision_and_workspace_reads_preserve_mission_family() -> TestResult {
     use super::super::supervision::SupervisionRegistration;
     let (mut store, session, c) = opened()?;
-    let before = store.follow_semantic_journal_root()?;
+    let before = store.follow_semantic_journal_roots()?;
     let first = store.register_mission_plan(&session.principal_id, c.clone(), TimestampNs(10))?;
-    assert_ne!(store.follow_semantic_journal_root()?, before);
+    let enrolled_roots = store.follow_semantic_journal_roots()?;
+    assert_ne!(enrolled_roots.0, before.0);
+    assert_ne!(enrolled_roots.1, before.1);
     let configuration = b"synthetic supervision configuration".to_vec();
     store.register_supervision(
         &session.principal_id,
@@ -383,6 +385,9 @@ fn later_supervision_and_workspace_reads_preserve_mission_family() -> TestResult
         },
         TimestampNs(10),
     )?;
+    let supervised_roots = store.follow_semantic_journal_roots()?;
+    assert_eq!(supervised_roots.0, enrolled_roots.0);
+    assert_ne!(supervised_roots.1, enrolled_roots.1);
     let workspace =
         store.workspace_head(&session.principal_id, &session.session_id, TimestampNs(10))?;
     assert_eq!(

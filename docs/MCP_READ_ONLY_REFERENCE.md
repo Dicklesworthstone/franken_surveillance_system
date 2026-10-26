@@ -224,9 +224,10 @@ a conclusion never executes a probe, dispatches an alert or verifies physical tr
 Cases and their immutable history survive MCP process shutdown. After an
 interrupted call, inspect the case/revision and follow native retry guidance;
 the tool does not promise unconditional idempotency. Handoff and resume retain
-the native case references and expose stale applicability. Investigation history
-also invalidates the currently limited durable-follow profile: it cannot be
-silently omitted from a subscription.
+the native case references and expose stale applicability. An established case can
+be included in a new durable-follow baseline at the current deployment head. A
+later case mutation invalidates that subscription and requires explicit resnapshot;
+it cannot be silently omitted from delivery or an acknowledgment.
 
 ## Follow delivery and acknowledgment
 
@@ -247,12 +248,29 @@ Durable mode excludes manual continuations and bounded waits. It preserves a
 frozen replay horizon and refuses a missing total order when both native journals
 advanced. It also refuses changed authority, custody or pinned session semantics.
 Handoff publication or workspace rebasing can invalidate an older subscription;
-resume does not implicitly acknowledge or migrate its pending delivery. This
-reference durable-follow profile supports only initial workspaces without retained
-case/claim history. A rebased workspace is refused even with a new subscription
-label. Ordinary orientation and follow remain available to establish a fresh
-observation basis; durable replay of richer or rebased workspace semantics is
-still unimplemented.
+resume does not implicitly acknowledge or migrate its pending delivery.
+
+Established missions, cases, work claims, plans, findings, captured learning,
+advisory context and supervision can now form a **pinned semantic baseline**. Open that subscription
+using the exact current head from an explicit orientation and a new label. A
+historical `since` is refused for a new populated baseline: current agent metadata
+does not prove when it existed in earlier authority/effect history. Rebased
+workspaces are supported under the same current-head rule.
+
+Evidence-only advancement uses the unchanged pinned metadata and projects each
+exact adjacent snapshot independently, preserving case applicability, claim expiry,
+mission progress, plan freshness and effect uncertainty. Pending deliveries remain
+identical across process restart and CLI/MCP retries even after the evidence clock
+advances. Live authentication uses the current admitted clock; historical projection
+does not move the session clock backwards.
+
+Any retained semantic command or publication drift, including supervision changes
+or a case created and closed between polls, requires `ERR-AGENT-RESNAPSHOT-001`
+before consuming a pending acknowledgment. Re-orient explicitly, then use a fresh
+subscription label and current head. The older pending delivery remains intact.
+This profile does not synthesize a total history of agent-semantic mutations.
+Existing empty-facet subscriptions keep their original sealed bytes and receipt
+identity; no cursor or registration wire format changes.
 
 Optional ordinary `wait_ms`: 1..10000 enables the
 [bounded synchronous wait](AGENT_FOLLOW_WAIT.md) on a validated certified-quiet

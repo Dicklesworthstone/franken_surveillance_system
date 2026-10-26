@@ -1036,6 +1036,212 @@ fn read_only_orient_request(
 }
 
 #[test]
+fn pinned_mission_follow_preserves_objective_and_replays_effect_progress_before_resnapshot()
+-> TestResult {
+    use fss_reference::agent_follow::AnchorToken;
+    use fss_reference::agent_follow::replay::{
+        ReplayBinding, ReplayBoundary, ReplayControl, ReplayDenial,
+    };
+    use fss_reference::agent_orient::OrientLimits;
+    use fss_reference::agent_session::checkpoint::journal::{
+        DurableSessionLimits, inspect_session_bytes,
+    };
+    use fss_reference::agent_session::work_claims::WorkClaimLimits;
+    use fss_reference::deployment_session::follow::{
+        FollowSessionBinding, FollowSessionBoundary, FollowSessionControl, FollowSessionError,
+        FollowSessionRequest, follow_session,
+    };
+
+    struct Control<'a>(&'a Fixture);
+    impl ReplayControl for Control<'_> {
+        fn admit(
+            &mut self,
+            binding: &ReplayBinding,
+            _: ReplayBoundary,
+        ) -> Result<(), ReplayDenial> {
+            if !binding.objects_root().starts_with(&self.0.root)
+                || binding.request().principal != self.0.opened.session.principal_id
+                || binding.session().is_none_or(|session| {
+                    session.session_id != self.0.opened.session.session_id
+                        || session.mission_id != self.0.opened.session.mission_id
+                })
+            {
+                return Err(ReplayDenial::Unauthorized);
+            }
+            Ok(())
+        }
+    }
+    impl FollowSessionControl for Control<'_> {
+        fn admit_session(
+            &mut self,
+            binding: &FollowSessionBinding<'_>,
+            _: FollowSessionBoundary,
+        ) -> Result<(), ReplayDenial> {
+            if binding.root() != self.0.root
+                || binding.principal() != &self.0.opened.session.principal_id
+                || binding.request().session_id != self.0.opened.session.session_id
+            {
+                return Err(ReplayDenial::Unauthorized);
+            }
+            Ok(())
+        }
+    }
+
+    let (f, mut dep) = Fixture::new("pinned-follow")?;
+    let plan = f.plan(&mut dep, "selected")?;
+    f.publish(&plan)?;
+    let enrolled = f.adopt(&plan)?;
+    let assessed = f.assess(&plan, enrolled.revision.digest())?;
+    let mut request = FollowSessionRequest {
+        session_id: f.opened.session.session_id.clone(),
+        subscription_id: "mission-effect-watch".to_owned(),
+        since: AnchorToken::parse(&assessed.orientation.anchor_token).ok_or("mission baseline")?,
+        view: AgentView::Brief,
+        max_entries: 64,
+        acknowledge: None,
+    };
+    let follow = |request: &FollowSessionRequest| {
+        follow_session(
+            &f.root,
+            &f.opened.session.principal_id,
+            request,
+            &OrientLimits::default(),
+            &mut Control(&f),
+        )
+    };
+    let baseline = follow(&request)?;
+    assert_eq!(baseline.since_anchor, baseline.result_anchor);
+    assert_eq!(baseline.follow.result.active_plans, [plan.plan_id.clone()]);
+    assert_eq!(
+        baseline.follow.result.objective,
+        assessed.orientation.objective
+    );
+    assert!(
+        baseline
+            .follow
+            .result
+            .mission_progress
+            .as_ref()
+            .ok_or("retained mission")?
+            .current
+    );
+
+    // The effect journal advances beyond the baseline. The durable owner must reconstruct the
+    // original page byte-for-byte before ACK, then expose each exact intermediate effect state.
+    f.indeterminate(&mut dep, &plan)?;
+    let evidence = authority_bytes(&mut dep)?;
+    let retry = follow(&request)?;
+    assert!(retry.replayed);
+    assert_eq!(retry.follow, baseline.follow);
+    assert_eq!(retry.delivery_receipt, baseline.delivery_receipt);
+    request.acknowledge = Some(baseline.delivery_receipt);
+
+    let mut previous = baseline.follow.result.capsule().decision_fingerprint()?;
+    let mut rationales = Vec::new();
+    let mut last = None;
+    for _ in 0..16 {
+        let delivered = follow(&request)?;
+        assert_eq!(
+            delivered.follow.basis.capsule().decision_fingerprint()?,
+            previous
+        );
+        assert!(
+            delivered.follow.page.next_cursor.is_none(),
+            "small fixture fits one page"
+        );
+        assert_eq!(delivered.follow.result.active_plans, [plan.plan_id.clone()]);
+        assert_eq!(
+            delivered.follow.result.objective.source_request_digest,
+            assessed.orientation.objective.source_request_digest
+        );
+        assert_eq!(
+            delivered.follow.result.objective.success_predicates,
+            assessed.orientation.objective.success_predicates
+        );
+        let progress = delivered
+            .follow
+            .result
+            .mission_progress
+            .as_ref()
+            .ok_or("mission retained")?;
+        assert_eq!(progress.revision, assessed.revision);
+        assert!(
+            !progress.current,
+            "changed effect prefix must stale the retained assessment"
+        );
+        let affordance = delivered
+            .follow
+            .result
+            .capsule()
+            .affordances
+            .iter()
+            .find(|affordance| affordance.target == format!("fss://plan/{}", plan.plan_id))
+            .ok_or("retained plan affordance")?;
+        rationales.push(affordance.rationale.clone());
+        previous = delivered.follow.result.capsule().decision_fingerprint()?;
+        request.acknowledge = Some(delivered.delivery_receipt);
+        if delivered.horizon_reached {
+            last = Some(delivered);
+            break;
+        }
+    }
+    let last = last.ok_or("bounded replay reaches its frozen horizon")?;
+    for state in ["prepared", "committed", "adapter_accepted", "indeterminate"] {
+        assert!(
+            rationales.iter().any(|rationale| rationale.contains(state)),
+            "missing exact plan progress {state}: {rationales:?}"
+        );
+    }
+    assert!(
+        last.follow
+            .result
+            .indeterminate_effects
+            .iter()
+            .any(|operation| operation.as_str() == plan.operation_id)
+    );
+    assert_eq!(authority_bytes(&mut dep)?, evidence);
+
+    // A real assessment is a new agent-semantic command. It cannot consume the already pending
+    // evidence page or appear as if it existed at that page's earlier basis.
+    let before = inspect_session_bytes(
+        &fs::read(f.root.join("agent/sessions/journal.fssj"))?,
+        DurableSessionLimits::default(),
+        WorkClaimLimits::default(),
+    )?
+    .follows;
+    let current = f.assess(&plan, assessed.revision.digest())?;
+    assert_eq!(current.revision.state(), MissionLifecycleState::Reconciling);
+    let failure = follow(&request)
+        .err()
+        .ok_or("assessment requires an explicit resnapshot")?;
+    assert!(matches!(failure.error, FollowSessionError::ChangedDelivery));
+    assert!(failure.acknowledged.is_none());
+    assert_eq!(
+        inspect_session_bytes(
+            &fs::read(f.root.join("agent/sessions/journal.fssj"))?,
+            DurableSessionLimits::default(),
+            WorkClaimLimits::default(),
+        )?
+        .follows,
+        before
+    );
+    request.subscription_id = "mission-after-resnapshot".to_owned();
+    request.since = last.result_anchor;
+    request.acknowledge = None;
+    let resnapshot = follow(&request)?;
+    let progress = resnapshot
+        .follow
+        .result
+        .mission_progress
+        .as_ref()
+        .ok_or("current mission")?;
+    assert_eq!(progress.revision, current.revision);
+    assert!(progress.current);
+    assert_eq!(authority_bytes(&mut dep)?, evidence);
+    Ok(())
+}
+
+#[test]
 fn read_only_session_orientation_recovers_enrollment_without_repairing_a_lagging_pin() -> TestResult
 {
     use fss_reference::deployment_session::orient::orient_session;

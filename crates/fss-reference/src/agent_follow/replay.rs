@@ -28,7 +28,9 @@ use super::{
     AnchorToken, DeploymentFollow, FollowError, FollowRequest, MAX_FOLLOW_ENTRIES,
     follow_snapshots_for, resolve_anchor, snapshot_anchor_token,
 };
-use crate::agent_orient::{DeploymentHistory, HistoryPosition, OrientLimits, OrientSessionBinding};
+use crate::agent_orient::{
+    DeploymentHistory, DeploymentSnapshot, HistoryPosition, OrientLimits, OrientSessionBinding,
+};
 
 /// Private delivery identity; existing follow and continuation domains are unchanged.
 pub const REPLAY_PAGE_DOMAIN: &str = "fss.agent_follow_replay_page.v1";
@@ -348,8 +350,44 @@ pub fn follow_replay_step_for<C: ReplayControl + ?Sized>(
                 .captured_learning
                 .as_ref()
                 .is_some_and(|captures| !captures.is_empty())
+            || binding
+                .supervisions
+                .as_ref()
+                .is_some_and(|entries| !entries.is_empty())
     }) {
         return Err(ReplayError::UnsupportedSessionFacets);
+    }
+    follow_replay_step_projected(history, since, horizon, request, session, control, |_| {
+        Ok(session.cloned())
+    })
+}
+
+/// Owner-only replay of an unchanged semantic baseline admitted at the exact deployment head.
+///
+/// The durable owner must bind its complete semantic history before the first snapshot, prove
+/// that `since` is no earlier than the retained registration baseline, and revalidate the same
+/// history before accepting an ACK or releasing a page. Its projection authenticates retained
+/// metadata at the live admission clock, then derives freshness separately for each exact
+/// evidence snapshot. This does not admit or order intervening agent-semantic commands.
+///
+/// Keeping this entry point crate-private preserves the public raw-binding guard: possession
+/// of current mission facets alone cannot establish their presence in a historical interval.
+pub(crate) fn follow_replay_step_projected<C, F, E>(
+    history: &DeploymentHistory,
+    since: &AnchorToken,
+    horizon: &AnchorToken,
+    request: &FollowRequest,
+    session: Option<&OrientSessionBinding>,
+    control: &mut C,
+    mut project: F,
+) -> Result<ReplayStep, E>
+where
+    C: ReplayControl + ?Sized,
+    F: FnMut(&DeploymentSnapshot) -> Result<Option<OrientSessionBinding>, E>,
+    E: From<ReplayError>,
+{
+    if !admitted_bounds(history, request) {
+        return Err(ReplayError::InvalidBounds.into());
     }
     let basis_position = resolve_anchor(history, since)
         .map_err(|error| ReplayError::Follow(FollowError::Anchor(error)))?;
@@ -381,8 +419,26 @@ pub fn follow_replay_step_for<C: ReplayControl + ?Sized>(
     control
         .admit(&binding, ReplayBoundary::Project)
         .map_err(ReplayError::Denied)?;
-    let follow = follow_snapshots_for(history, &basis, &result, request, session)
-        .map_err(ReplayError::Follow)?;
+    let basis_session = project(&basis)?;
+    let result_session = project(&result)?;
+    for projected in [&basis_session, &result_session] {
+        if projected
+            .as_ref()
+            .map(|binding| (&binding.session_id, &binding.mission_id))
+            != session.map(|binding| (&binding.session_id, &binding.mission_id))
+        {
+            return Err(ReplayError::UnsupportedSessionFacets.into());
+        }
+    }
+    let follow = follow_snapshots_for(
+        history,
+        &basis,
+        &result,
+        request,
+        basis_session.as_ref(),
+        result_session.as_ref(),
+    )
+    .map_err(ReplayError::Follow)?;
     control
         .admit(&binding, ReplayBoundary::Deliver)
         .map_err(ReplayError::Denied)?;

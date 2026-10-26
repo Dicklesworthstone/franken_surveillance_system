@@ -9,6 +9,12 @@
 //! at most the pending page being ACKed and its successor. Journal capacity is finite; history
 //! loss, changed custody, authority drift and ambiguous cross-journal order require explicit
 //! recovery/resnapshot and never silently skip a protected transition.
+//!
+//! A populated mission may start a subscription at the exact current deployment head. Its
+//! complete semantic journal/publication scope is pinned there; subsequent evidence or effect
+//! prefixes derive their own case freshness, lease validity and operation state. Any change to
+//! that semantic scope requires an explicit new subscription at a newly admitted head. This
+//! profile never claims to reconstruct the relative order of agent and deployment journals.
 
 use std::fmt;
 use std::path::Path;
@@ -21,14 +27,25 @@ use fss_core::{
 use super::{DeploymentSessionError, PUBLICATIONS_RELPATH, SessionJournal, publication_limits};
 use crate::agent_follow::replay::{
     ReplayControl, ReplayDenial, ReplayError, ReplayStep, follow_replay_step_for,
+    follow_replay_step_projected,
 };
 use crate::agent_follow::{
     AnchorToken, DeploymentFollow, FollowError, FollowRequest, history_anchor_token, resolve_anchor,
 };
-use crate::agent_orient::{DeploymentHistory, OrientLimits, OrientSessionBinding};
+use crate::agent_orient::{
+    DeploymentHistory, DeploymentSnapshot, OrientLimits, OrientSessionBinding,
+};
+use crate::agent_session::checkpoint::journal::coordination::investigations::InvestigationRevision;
 use crate::agent_session::checkpoint::journal::follow::{
     DurableFollowError, FollowRegistration, FollowSubscription, PendingFollowDelivery,
 };
+use crate::agent_session::checkpoint::journal::mission::{DurableMissionError, MissionRevision};
+use crate::agent_session::checkpoint::journal::projection::SessionProjection;
+use crate::agent_session::checkpoint::journal::supervision::{
+    DurableSupervisionError, SupervisionInventoryEntry,
+};
+use crate::agent_session::checkpoint::journal::{DurableSessionError, SessionRecoveryState};
+use crate::agent_session::work_claims::WorkClaimRevision;
 
 /// All request fields are explicit; the registration's original anchor remains its retry identity.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -197,6 +214,12 @@ impl fmt::Display for FollowSessionError {
 
 impl std::error::Error for FollowSessionError {}
 
+impl From<ReplayError> for FollowSessionError {
+    fn from(value: ReplayError) -> Self {
+        Self::Replay(value)
+    }
+}
+
 /// Failure also states which durable actions may have completed. Rendering failure is not rollback.
 #[derive(Debug)]
 pub struct FollowSessionFailure {
@@ -265,21 +288,112 @@ fn native_request(
     }
 }
 
+/// A journal admitted at the current live clock, whose unchanged semantic history was pinned
+/// when this subscription began at the exact deployment head. Historical snapshot time is
+/// used only to derive freshness, expiry and effect progress; it never authenticates a session
+/// backwards in time or rewrites the journal's monotonic clock.
+struct SessionReplayScope<'a> {
+    root: &'a Path,
+    store: &'a dyn SessionProjection,
+    session: &'a AgentSession,
+    mission: &'a super::MissionRecord,
+    admission_now: TimestampNs,
+    populated: bool,
+}
+
+impl SessionProjection for SessionReplayScope<'_> {
+    fn mission_head_for_projection(
+        &self,
+        session: &AgentSession,
+        _now: TimestampNs,
+    ) -> Result<Option<MissionRevision>, DurableMissionError> {
+        self.store
+            .mission_head_for_projection(session, self.admission_now)
+    }
+
+    fn supervision_inventory(
+        &self,
+        session: &AgentSession,
+        _now: TimestampNs,
+    ) -> Result<Vec<SupervisionInventoryEntry>, DurableSupervisionError> {
+        self.store
+            .supervision_inventory(session, self.admission_now)
+    }
+
+    fn recovery_state_for_projection(
+        &self,
+        session: &AgentSession,
+        _now: TimestampNs,
+    ) -> Result<SessionRecoveryState, DurableSessionError> {
+        self.store
+            .recovery_state_for_projection(session, self.admission_now)
+    }
+
+    fn investigation_heads(&self) -> Vec<InvestigationRevision> {
+        self.store.investigation_heads()
+    }
+
+    fn work_claim_heads(&self) -> Vec<WorkClaimRevision> {
+        self.store.work_claim_heads()
+    }
+}
+
+impl SessionReplayScope<'_> {
+    fn project(
+        &self,
+        snapshot: &DeploymentSnapshot,
+    ) -> Result<OrientSessionBinding, FollowSessionError> {
+        let now = super::evidence_now(snapshot);
+        let briefs = super::session_briefs(self.root, self, self.session, snapshot, now)
+            .map_err(FollowSessionError::Session)?;
+        Ok(OrientSessionBinding {
+            mission_id: self.session.mission_id.clone(),
+            session_id: self.session.session_id.clone(),
+            mission: Some(self.mission.orientation_brief()),
+            mission_progress: briefs.mission_progress,
+            cases: briefs.cases,
+            claims: briefs.claims,
+            findings: briefs.findings,
+            captured_learning: briefs.captured_learning.map(|inventory| inventory.briefs),
+            plans: super::plan::plan_briefs(
+                self.root,
+                snapshot,
+                &self.session.mission_id,
+                &self.session.principal_id,
+            )
+            .map_err(FollowSessionError::Session)?,
+            supervisions: briefs.supervisions,
+            trauma_warnings: if briefs.advisory_memory_allowed {
+                Some(
+                    super::trauma_guard::derive_trauma_guard_warnings(
+                        self.root,
+                        &self.session.principal_id,
+                        now.0,
+                    )
+                    .map_err(FollowSessionError::Session)?,
+                )
+            } else {
+                None
+            },
+        })
+    }
+}
+
 fn reconstruct(
     history: &DeploymentHistory,
     state: &FollowSubscription,
-    session: &AgentSession,
-    mission: &super::MissionRecord,
+    scope: &SessionReplayScope<'_>,
     horizon: &AnchorToken,
     input: Option<&str>,
     control: &mut impl FollowSessionControl,
 ) -> Result<ReplayStep, FollowSessionError> {
+    let session = scope.session;
     let since = AnchorToken::parse(state.acknowledged_anchor())
         .ok_or(FollowSessionError::ChangedDelivery)?;
     let binding = OrientSessionBinding {
         mission_id: session.mission_id.clone(),
         session_id: session.session_id.clone(),
-        mission: Some(mission.orientation_brief()),
+        mission: Some(scope.mission.orientation_brief()),
         mission_progress: None,
         cases: Vec::new(),
         claims: Vec::new(),
@@ -289,15 +403,22 @@ fn reconstruct(
         trauma_warnings: None,
         captured_learning: None,
     };
-    let step = follow_replay_step_for(
-        history,
-        &since,
-        horizon,
-        &native_request(state, &session.principal_id, input),
-        Some(&binding),
-        control,
-    )
-    .map_err(FollowSessionError::Replay)?;
+    let request = native_request(state, &session.principal_id, input);
+    let step = if scope.populated {
+        follow_replay_step_projected(
+            history,
+            &since,
+            horizon,
+            &request,
+            Some(&binding),
+            control,
+            |snapshot| scope.project(snapshot).map(Some),
+        )?
+    } else {
+        // Preserve the exact sealed publications and pending receipts of existing empty-facet
+        // subscriptions, including their explicit lack of supervision/advisory metadata.
+        follow_replay_step_for(history, &since, horizon, &request, Some(&binding), control)?
+    };
     if let Some(acknowledged) = state.acknowledged_fingerprint() {
         let basis = step
             .follow
@@ -312,17 +433,20 @@ fn reconstruct(
     Ok(step)
 }
 
+struct SemanticHistory {
+    digest: ContentDigest,
+    populated: bool,
+}
+
 fn semantic_history(
     root: &Path,
     journal: &mut SessionJournal,
     session: &AgentSession,
     now: TimestampNs,
-) -> Result<ContentDigest, FollowSessionError> {
-    let unsupported = || FollowSessionError::Replay(ReplayError::UnsupportedSessionFacets);
-    // Mission revisions have their own journal timeline. Applying their current head to both
-    // evidence snapshots would fabricate historical completion and can erase a transition.
-    // The live admission clock is intentionally independent of either historical snapshot.
-    if journal
+) -> Result<SemanticHistory, FollowSessionError> {
+    // Presence alone is now supported at a newly pinned current-head baseline. Every subsequent
+    // mutation still invalidates that baseline; no agent-journal transition is backprojected.
+    let mut populated = journal
         .store
         .mission_head_for_projection(session, now)
         .map_err(|_| {
@@ -331,22 +455,21 @@ fn semantic_history(
             ))
         })?
         .is_some()
-    {
-        return Err(unsupported());
-    }
-    // This profile cannot replay case/claim or workspace semantics. Retained heads include
-    // terminal revisions, so create-and-close between polls cannot masquerade as empty history.
-    if !journal.store.work_claim_heads().is_empty()
-        || !journal.store.investigation_heads().is_empty()
-    {
-        return Err(unsupported());
-    }
+        || !journal.store.work_claim_heads().is_empty()
+        || !journal.store.investigation_heads().is_empty();
     let workspace = journal
         .store
         .workspace_head(&session.principal_id, &session.session_id, now)
         .map_err(|error| FollowSessionError::Session(error.into()))?;
-    if workspace.result.revision.capsule().revision != 0 {
-        return Err(unsupported());
+    populated |= workspace.result.revision.capsule().revision != 0;
+    if session.capabilities.contains("CAP-AGENT-INVESTIGATE-001") {
+        populated |= !journal
+            .store
+            .supervision_inventory(session, now)
+            .map_err(|error| {
+                FollowSessionError::Session(DeploymentSessionError::StoreInvalid(error.to_string()))
+            })?
+            .is_empty();
     }
     let mut limits = publication_limits();
     limits.max_roots = 128;
@@ -356,27 +479,26 @@ fn semantic_history(
     if !inspection.is_clean() {
         return Err(FollowSessionError::ChangedDelivery);
     }
+    populated |= inspection.visible_roots().any(|visible| {
+        !visible.slot.as_str().starts_with("mission-")
+            && !visible.slot.as_str().starts_with("handoff-")
+    });
+    let (legacy_root, semantic_root) = journal
+        .store
+        .follow_semantic_journal_roots()
+        .map_err(|error| FollowSessionError::Session(error.into()))?;
     let mut e = CanonicalEncoder::new();
     e.text("fss.reference_follow_session_registration.v1");
-    e.text("semantic_history");
-    e.digest(
-        journal
-            .store
-            .follow_semantic_journal_root()
-            .map_err(|error| FollowSessionError::Session(error.into()))?,
-    );
+    if populated {
+        e.text("pinned_semantic_snapshot.v1");
+        e.digest(session.session_digest());
+        e.digest(semantic_root);
+    } else {
+        e.text("semantic_history");
+        e.digest(legacy_root);
+    }
     e.u64(inspection.report.roots.len() as u64);
     for visible in inspection.visible_roots() {
-        // Captured learning is current retained cognition with no certified semantic timeline
-        // on this two-axis cursor. Never import today's capture inventory into past frames.
-        if visible.slot.as_str().starts_with("learning-") {
-            return Err(unsupported());
-        }
-        if !visible.slot.as_str().starts_with("mission-")
-            && !visible.slot.as_str().starts_with("handoff-")
-        {
-            return Err(unsupported());
-        }
         e.text(visible.slot.as_str());
         e.digest(visible.root);
         e.digest(visible.record_digest);
@@ -385,7 +507,10 @@ fn semantic_history(
     for tombstone in &inspection.report.tombstones {
         e.digest(*tombstone);
     }
-    Ok(ContentDigest::sha256(&e.finish()))
+    Ok(SemanticHistory {
+        digest: ContentDigest::sha256(&e.finish()),
+        populated,
+    })
 }
 
 fn revalidate(
@@ -406,7 +531,7 @@ fn revalidate(
     progress.head = Some(current_head.clone());
     if current_head.token != head.token
         || !same_generations(&session.current_anchor, &current_head.anchor)
-        || semantic_history(binding.root, journal, session, head.observed_at)?
+        || semantic_history(binding.root, journal, session, head.observed_at)?.digest
             != state.registration().semantic_history
     {
         return Err(FollowSessionError::ChangedDelivery);
@@ -419,6 +544,8 @@ fn revalidate(
 /// An explicit ACK is committed before obtaining the next page; a later failure reports that
 /// progress and an exact retry remains safe. Without ACK, a pending page is reconstructed and
 /// compared against its original digest. No requested continuation may skip stored progress.
+/// Populated semantic state is admitted only at a new current-head baseline; semantic drift
+/// refuses before an ACK is consumed and requires an explicit new baseline/subscription.
 pub fn follow_session(
     root: &Path,
     principal: &PrincipalId,
@@ -502,11 +629,28 @@ fn execute(
     if !same_generations(&session.current_anchor, &head.anchor) {
         return Err(FollowSessionError::StaleAuthority);
     }
-    registration.semantic_history =
-        semantic_history(root, &mut journal, &session, head.observed_at)?;
-    // The immutable request is valid on both evidence axes. The existing semantic-history
-    // admission and revalidation bind its root-last publication; mutable session facets remain
-    // unsupported by this replay profile.
+    let retained = journal
+        .store
+        .follow_subscription(
+            principal,
+            &request.session_id,
+            &request.subscription_id,
+            head.observed_at,
+        )
+        .map_err(FollowSessionError::Store)?;
+    let semantics = semantic_history(root, &mut journal, &session, head.observed_at)?;
+    registration.semantic_history = semantics.digest;
+    if let Some(retained) = &retained {
+        progress.since_anchor = AnchorToken::parse(retained.acknowledged_anchor());
+        progress.horizon_anchor = retained.horizon().and_then(AnchorToken::parse);
+        if retained.registration().semantic_history != semantics.digest {
+            return Err(FollowSessionError::ChangedDelivery);
+        }
+    } else if semantics.populated && request.since != head.token {
+        // The current agent journal has no cross-journal chronology. A new populated baseline
+        // can begin only now; its current heads prove nothing about an earlier evidence prefix.
+        return Err(ReplayError::UnsupportedSessionFacets.into());
+    }
     let workspace = journal
         .store
         .workspace_head(principal, &session.session_id, head.observed_at)
@@ -537,8 +681,14 @@ fn execute(
             let prior = reconstruct(
                 &history,
                 &state,
-                &session,
-                &mission,
+                &SessionReplayScope {
+                    root,
+                    store: &journal.store,
+                    session: &session,
+                    mission: &mission,
+                    admission_now: head.observed_at,
+                    populated: semantics.populated,
+                },
                 &horizon,
                 pending.input_continuation(),
                 control,
@@ -592,7 +742,19 @@ fn execute(
         .and_then(PendingFollowDelivery::input_continuation)
         .or_else(|| state.next_continuation());
     let step = reconstruct(
-        &history, &state, &session, &mission, &horizon, input, control,
+        &history,
+        &state,
+        &SessionReplayScope {
+            root,
+            store: &journal.store,
+            session: &session,
+            mission: &mission,
+            admission_now: head.observed_at,
+            populated: semantics.populated,
+        },
+        &horizon,
+        input,
+        control,
     )?;
     let expected_basis = journal
         .store

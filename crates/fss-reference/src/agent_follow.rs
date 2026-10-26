@@ -535,7 +535,14 @@ fn follow_snapshots(
     result_snapshot: &DeploymentSnapshot,
     request: &FollowRequest,
 ) -> Result<DeploymentFollow, FollowError> {
-    follow_snapshots_for(history, basis_snapshot, result_snapshot, request, None)
+    follow_snapshots_for(
+        history,
+        basis_snapshot,
+        result_snapshot,
+        request,
+        None,
+        None,
+    )
 }
 
 // A durable replay owner binds the session before native compilation, effect-cell sealing and
@@ -545,21 +552,22 @@ fn follow_snapshots_for(
     basis_snapshot: &DeploymentSnapshot,
     result_snapshot: &DeploymentSnapshot,
     request: &FollowRequest,
-    session: Option<&OrientSessionBinding>,
+    basis_session: Option<&OrientSessionBinding>,
+    result_session: Option<&OrientSessionBinding>,
 ) -> Result<DeploymentFollow, FollowError> {
     let orient_request = OrientRequest {
         view: request.view,
         principal: request.principal.clone(),
         budget_tokens: None,
     };
-    let orient = |snapshot| match session {
+    let orient = |snapshot, session| match session {
         None => orient_deployment(snapshot, &orient_request, history.limits()),
         Some(binding) => {
             orient_deployment_for(snapshot, &orient_request, history.limits(), Some(binding))
         }
     };
-    let basis = orient(basis_snapshot).map_err(FollowError::Orient)?;
-    let result = orient(result_snapshot).map_err(FollowError::Orient)?;
+    let basis = orient(basis_snapshot, basis_session).map_err(FollowError::Orient)?;
+    let result = orient(result_snapshot, result_session).map_err(FollowError::Orient)?;
     let delta = classify_reference_meaningful_delta(&basis.publication, &result.publication)
         .map_err(FollowError::Contract)?;
 

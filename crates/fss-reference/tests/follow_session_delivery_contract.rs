@@ -21,6 +21,7 @@ use fss_reference::agent_orient::{
     OrientSessionBinding,
 };
 use fss_reference::agent_session::checkpoint::journal::follow::DurableFollowError;
+use fss_reference::agent_session::checkpoint::journal::supervision::SupervisionRegistration;
 use fss_reference::agent_session::checkpoint::journal::{
     DurableSessionLimits, DurableSessionStore, SessionRecoveryState, inspect_session_bytes,
 };
@@ -90,6 +91,10 @@ impl Fixture {
     }
 
     fn append(&mut self) -> TestResult {
+        self.append_at(TimestampNs(10_000))
+    }
+
+    fn append_at(&mut self, until: TimestampNs) -> TestResult {
         self.commits += 1;
         let index = self.commits;
         let mut deployment = ReferenceDeployment::open(&self.root, SITE, &self.cx)?;
@@ -102,7 +107,7 @@ impl Fixture {
                 object_id: ObjectId::parse(format!("object:follow-session:{index}"))?,
                 prior_generation: None,
                 new_generation: 1,
-                validity: CaptureInterval::new(TimestampNs(0), TimestampNs(10_000))?,
+                validity: CaptureInterval::new(TimestampNs(0), until)?,
                 plane: Plane::Cognition,
                 payload_digest: payload,
                 witness_digest: None,
@@ -717,8 +722,7 @@ fn torn_authority_ledger_refuses_before_reconfirming_an_already_committed_ack() 
 }
 
 #[test]
-fn ambiguous_journals_and_nonreplayable_workspace_semantics_require_explicit_resnapshot()
--> TestResult {
+fn ambiguous_journals_and_changed_workspace_semantics_require_explicit_resnapshot() -> TestResult {
     let mut ambiguous = Fixture::new("ambiguous")?;
     let request = ambiguous.request(64)?;
     ambiguous.append()?;
@@ -786,10 +790,7 @@ fn ambiguous_journals_and_nonreplayable_workspace_semantics_require_explicit_res
     )
     .err()
     .ok_or("unreplayed mission history")?;
-    assert!(matches!(
-        failure.error,
-        FollowSessionError::Replay(ReplayError::UnsupportedSessionFacets)
-    ));
+    assert!(matches!(failure.error, FollowSessionError::ChangedDelivery));
     assert!(failure.acknowledged.is_none());
     assert_eq!(fixture.inspect()?.follows, before);
     let history = DeploymentHistory::read(&fixture.root, &OrientLimits::default())?;
@@ -801,7 +802,8 @@ fn ambiguous_journals_and_nonreplayable_workspace_semantics_require_explicit_res
 }
 
 #[test]
-fn retained_mission_progress_refuses_replay_before_ack_or_new_subscription() -> TestResult {
+fn changed_mission_progress_refuses_ack_and_new_subscriptions_cannot_backproject_it() -> TestResult
+{
     let mut fixture = Fixture::new("mission-progress")?;
     fixture.append()?;
     let mut request = fixture.request(64)?;
@@ -922,10 +924,14 @@ fn retained_mission_progress_refuses_replay_before_ack_or_new_subscription() -> 
         )
         .err()
         .ok_or("retained mission history must require explicit resnapshot")?;
-        assert!(matches!(
-            failure.error,
-            FollowSessionError::Replay(ReplayError::UnsupportedSessionFacets)
-        ));
+        if retry == 2 {
+            assert!(matches!(
+                failure.error,
+                FollowSessionError::Replay(ReplayError::UnsupportedSessionFacets)
+            ));
+        } else {
+            assert!(matches!(failure.error, FollowSessionError::ChangedDelivery));
+        }
         assert!(failure.acknowledged.is_none());
         assert_eq!(
             control.boundaries,
@@ -940,5 +946,215 @@ fn retained_mission_progress_refuses_replay_before_ack_or_new_subscription() -> 
             assert_eq!(&fs::read(fixture.root.join(path))?, expected);
         }
     }
+    Ok(())
+}
+
+#[test]
+fn populated_supervision_baseline_replays_exactly_and_semantic_drift_requires_resnapshot()
+-> TestResult {
+    let mut fixture = Fixture::new("populated-supervision")?;
+    fixture.append()?;
+    let configuration = b"private supervision configuration is never a follow payload".to_vec();
+    let mut store = DurableSessionStore::open_existing_with_coordination(
+        fixture.root.join("agent/sessions/journal.fssj"),
+        fixture.inspect()?.inspection.root,
+        DurableSessionLimits::default(),
+        WorkClaimLimits::default(),
+    )?;
+    let supervised = store.register_supervision(
+        &fixture.opened.session.principal_id,
+        SupervisionRegistration {
+            session_id: fixture.opened.session.session_id.clone(),
+            subscription_id: "retained-watch".to_owned(),
+            configuration_digest: ContentDigest::sha256(&configuration),
+            configuration: configuration.clone(),
+            max_read_bytes: 4096,
+            max_read_attempts: 4,
+            maximum_attempts: 8,
+            max_report_bytes: 4096,
+        },
+        TimestampNs(10_000),
+    )?;
+    fs::write(
+        fixture.root.join("agent/sessions/ROOT"),
+        format!("{}\n", store.committed_root()),
+    )?;
+    drop(store);
+
+    let mut request = fixture.request(64)?;
+    let mut control = Control::new(&fixture.root, &request, &fixture.opened);
+    let old_start = follow_session(
+        &fixture.root,
+        &fixture.opened.session.principal_id,
+        &request,
+        &OrientLimits::default(),
+        &mut control,
+    )
+    .err()
+    .ok_or("new populated subscription must start at the exact head")?;
+    assert!(matches!(
+        old_start.error,
+        FollowSessionError::Replay(ReplayError::UnsupportedSessionFacets)
+    ));
+    assert!(fixture.inspect()?.follows.is_empty());
+
+    let history = DeploymentHistory::read(&fixture.root, &OrientLimits::default())?;
+    request.since = history_anchor_token(&history, history.head()).ok_or("current anchor")?;
+    let baseline = fixture.follow(&request)?;
+    assert_eq!(baseline.since_anchor, baseline.result_anchor);
+    assert!(baseline.follow.result.supervision_inventory_available);
+    let inventory = &baseline.follow.result.supervision_inventory;
+    assert_eq!(inventory.len(), 1);
+    assert_eq!(inventory[0].state_digest, supervised.digest());
+    assert_eq!(inventory[0].attempts_reserved, 0);
+    let context = baseline
+        .follow
+        .result
+        .publication
+        .context_pack
+        .items
+        .iter()
+        .map(|item| item.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(context.contains("retained-watch"));
+    assert!(!context.contains(std::str::from_utf8(&configuration)?));
+
+    fixture.append()?;
+    let repeated = fixture.follow(&request)?;
+    assert!(repeated.replayed);
+    assert_eq!(repeated.follow, baseline.follow);
+    assert_eq!(repeated.delivery_receipt, baseline.delivery_receipt);
+    request.acknowledge = Some(baseline.delivery_receipt);
+    let advanced = fixture.follow(&request)?;
+    assert_eq!(advanced.since_anchor, baseline.result_anchor);
+    assert_eq!(advanced.result_anchor.position().commit_sequence, 2);
+    assert_eq!(advanced.follow.result.supervision_inventory, *inventory);
+
+    let before = fixture.inspect()?.follows;
+    let mut store = DurableSessionStore::open_existing_with_coordination(
+        fixture.root.join("agent/sessions/journal.fssj"),
+        advanced.journal_root,
+        DurableSessionLimits::default(),
+        WorkClaimLimits::default(),
+    )?;
+    let charged = store.reserve_supervision(
+        &fixture.opened.session.principal_id,
+        &supervised,
+        &advanced.follow.result.capsule().anchor,
+        TimestampNs(10_000),
+    )?;
+    fs::write(
+        fixture.root.join("agent/sessions/ROOT"),
+        format!("{}\n", store.committed_root()),
+    )?;
+    drop(store);
+    request.acknowledge = Some(advanced.delivery_receipt);
+    let mut control = Control::new(&fixture.root, &request, &fixture.opened);
+    let refused = follow_session(
+        &fixture.root,
+        &fixture.opened.session.principal_id,
+        &request,
+        &OrientLimits::default(),
+        &mut control,
+    )
+    .err()
+    .ok_or("supervision reservation changes the pinned semantic history")?;
+    assert!(matches!(refused.error, FollowSessionError::ChangedDelivery));
+    assert!(refused.acknowledged.is_none());
+    assert_eq!(fixture.inspect()?.follows, before);
+    assert!(
+        !control
+            .boundaries
+            .contains(&FollowSessionBoundary::Acknowledge)
+    );
+
+    request.subscription_id = "after-explicit-resnapshot".to_owned();
+    request.since = advanced.result_anchor;
+    request.acknowledge = None;
+    let resnapshot = fixture.follow(&request)?;
+    assert_eq!(resnapshot.since_anchor, resnapshot.result_anchor);
+    let current = &resnapshot.follow.result.supervision_inventory[0];
+    assert_eq!(current.state_digest, charged.digest());
+    assert_eq!(current.attempts_reserved, 1);
+    assert!(current.reservation.is_some());
+    assert_eq!(fixture.inspect()?.follows.len(), 2);
+    Ok(())
+}
+
+#[test]
+fn pinned_claim_expiry_is_derived_at_each_evidence_snapshot_without_expiring_the_claim()
+-> TestResult {
+    use fss_core::CaseId;
+    use fss_reference::agent_session::checkpoint::journal::coordination::CoordinationCommand;
+    use fss_reference::agent_session::work_claims::WorkClaimRequest;
+
+    let mut fixture = Fixture::new("pinned-claim-expiry")?;
+    fixture.append()?;
+    let mut store = DurableSessionStore::open_existing_with_coordination(
+        fixture.root.join("agent/sessions/journal.fssj"),
+        fixture.inspect()?.inspection.root,
+        DurableSessionLimits::default(),
+        WorkClaimLimits::default(),
+    )?;
+    // Explicit owner-authorized synthetic work isolates lease-clock projection. No claim
+    // action here asserts that an investigation ran or that a physical observation occurred.
+    let claim = store.coordinate(
+        &fixture.opened.session.principal_id,
+        &fixture.opened.session.session_id,
+        CoordinationCommand::Acquire(WorkClaimRequest {
+            claim_id: "claim:follow:clock".to_owned(),
+            case_id: CaseId::parse("case:follow:synthetic-lease")?,
+            work_root: ContentDigest::sha256(b"explicit synthetic follow lease work"),
+            privacy_class: "private:property".to_owned(),
+            expires_at: TimestampNs(15_000),
+            dependencies: Default::default(),
+        }),
+        TimestampNs(10_000),
+    )?;
+    fs::write(
+        fixture.root.join("agent/sessions/ROOT"),
+        format!("{}\n", store.committed_root()),
+    )?;
+    drop(store);
+    let history = DeploymentHistory::read(&fixture.root, &OrientLimits::default())?;
+    let mut request = fixture.request(64)?;
+    request.since = history_anchor_token(&history, history.head()).ok_or("claim baseline")?;
+    let baseline = fixture.follow(&request)?;
+    let claim_affordance = format!("affordance:claim:{}", claim.claim().claim_id);
+    let rationale = |delivery: &fss_reference::agent_orient::DeploymentOrientation| {
+        delivery
+            .capsule()
+            .affordances
+            .iter()
+            .find(|affordance| affordance.affordance_id == claim_affordance)
+            .map(|affordance| affordance.rationale.clone())
+            .ok_or("claim affordance")
+    };
+    assert!(rationale(&baseline.follow.result)?.contains("This session holds claim"));
+    fixture.append_at(TimestampNs(20_000))?;
+    let repeated = fixture.follow(&request)?;
+    assert_eq!(repeated.follow, baseline.follow);
+    assert_eq!(repeated.delivery_receipt, baseline.delivery_receipt);
+    request.acknowledge = Some(baseline.delivery_receipt);
+    let advanced = fixture.follow(&request)?;
+    assert_eq!(advanced.since_anchor, baseline.result_anchor);
+    assert!(rationale(&advanced.follow.basis)?.contains("This session holds claim"));
+    assert!(rationale(&advanced.follow.result)?.contains("lapsed at 15000 ns"));
+    assert!(
+        advanced
+            .follow
+            .delta
+            .classes
+            .contains(&MeaningfulDeltaClass::MaterialState)
+    );
+    assert_eq!(
+        advanced.follow.result.active_claims,
+        [claim.claim().claim_id.clone()]
+    );
+    assert_eq!(fixture.inspect()?.claims, [claim]);
+    let repeated = fixture.follow(&request)?;
+    assert_eq!(repeated.follow, advanced.follow);
+    assert_eq!(repeated.delivery_receipt, advanced.delivery_receipt);
     Ok(())
 }

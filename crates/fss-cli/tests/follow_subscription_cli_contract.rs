@@ -27,6 +27,7 @@ use fss_reference::{ADP_REPLAY_ROW_ID, ReferenceDeployment, ReplayCx, ReplayIoAu
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 const SITE: &str = "site:follow-subscription-cli";
 const PRINCIPAL: &str = "principal:follow-subscription-cli";
+const CASE: &str = "case:follow-subscription:door";
 const RECEIPT_PREFIX: &str = "continuation:follow-ack:";
 const ITEM_FIELDS: [&str; 6] = [
     "changedCells",
@@ -302,6 +303,82 @@ impl Fixture {
             TimestampNs(100),
         )?;
         Ok(())
+    }
+
+    fn open_case(&self) -> TestResult<Reply> {
+        let path = self.directory.0.join("follow-case.json");
+        fs::write(
+            &path,
+            format!(
+                r#"{{"caseId":"{CASE}","question":"Did a person enter?",
+"decisionInformed":"Whether an owner alert needs preparation",
+"hypotheses":[{{"hypothesisId":"h:entry","description":"Entered","predictions":["Hallway track"]}},
+{{"hypothesisId":"h:passerby","description":"Passed","predictions":["Exterior only"]}}],
+"stopRules":["An independent observation distinguishes the alternatives"],
+"decisionWindowNs":3600000000000}}"#
+            ),
+        )?;
+        let mut args = vec![OsString::from("investigate")];
+        args.extend(common_args(&self.root));
+        args.extend(
+            [
+                "--session",
+                &self.session,
+                "--transition",
+                "open",
+                "--case-file",
+            ]
+            .map(OsString::from),
+        );
+        args.push(path.into_os_string());
+        Reply::parse(
+            run_fss(&args, 0)?,
+            &self.directory.0,
+            "AOP-006",
+            "investigation_state.v1.json",
+        )
+    }
+
+    fn cancel_case(&self, revision: &str) -> TestResult<Reply> {
+        let reason =
+            ContentDigest::sha256(b"explicitly withdraw the fixture investigation").to_text();
+        let mut args = vec![OsString::from("investigate")];
+        args.extend(common_args(&self.root));
+        args.extend(
+            [
+                "--session",
+                &self.session,
+                "--transition",
+                "set-state",
+                "--case",
+                CASE,
+                "--expected",
+                revision,
+                "--state",
+                "cancelled",
+                "--reason",
+                &reason,
+            ]
+            .map(OsString::from),
+        );
+        Reply::parse(
+            run_fss(&args, 0)?,
+            &self.directory.0,
+            "AOP-006",
+            "investigation_state.v1.json",
+        )
+    }
+
+    fn orient(&self) -> TestResult<Reply> {
+        let mut args = vec![OsString::from("orient")];
+        args.extend(common_args(&self.root));
+        args.extend(["--session", &self.session, "--view", "brief"].map(OsString::from));
+        Reply::parse(
+            run_fss(&args, 0)?,
+            &self.directory.0,
+            "AOP-003",
+            "situation_capsule.v1.json",
+        )
     }
 
     fn args(&self, label: &str, size: u32, ack: Option<ContentDigest>) -> Vec<OsString> {
@@ -676,6 +753,206 @@ fn mixed_journal_order_returns_schema_valid_resnapshot_without_delivery_or_ack()
     assert_eq!(recovered.follows[0].acknowledged_anchor(), fixture.since);
     assert!(recovered.follows[0].pending().is_none());
     assert_eq!(recovered.follows[0].last_acknowledged(), None);
+    assert_eq!(authority_tree(&fixture.root)?, authority);
+    Ok(())
+}
+
+fn case_purpose(reply: &Reply) -> TestResult<&str> {
+    let id = format!("affordance:investigate:{CASE}");
+    let affordance = array(&reply.value, "affordances")?
+        .iter()
+        .find(|value| text(value, "affordanceId").is_ok_and(|value| value == id.as_str()))
+        .ok_or("the bound case must remain an explicit next affordance")?;
+    text(affordance, "purpose")
+}
+
+fn assert_resnapshot_without_ack(reply: &Reply) -> TestResult {
+    assert_eq!(text(&reply.value, "errorId")?, "ERR-AGENT-RESNAPSHOT-001");
+    assert_eq!(text(&reply.value, "outcome")?, "partial");
+    assert_eq!(
+        field(&reply.value, "resnapshotRequired")?,
+        &Value::Bool(true)
+    );
+    assert_eq!(field(&reply.value, "payload")?, &Value::Null);
+    assert_eq!(field(&reply.value, "continuation")?, &Value::Null);
+    assert!(
+        array(&reply.value, "proofPointers")?
+            .iter()
+            .filter_map(Value::text)
+            .all(|value| !value.starts_with("follow-acknowledged:")),
+        "a semantic refusal must not claim the pending page was acknowledged"
+    );
+    Ok(())
+}
+
+#[test]
+fn populated_case_follow_redelivers_across_transports_and_classifies_evidence_advance() -> TestResult
+{
+    let mut fixture = Fixture::new("populated-replay")?;
+    let opened = fixture.open_case()?;
+    assert_eq!(
+        text(field(&opened.value, "payload")?, "investigationId")?,
+        CASE
+    );
+    let orientation = fixture.orient()?;
+    assert_eq!(text(&orientation.value, "missionId")?, fixture.mission);
+    assert!(
+        array(
+            field(&orientation.value, "payload")?,
+            "activeInvestigations"
+        )?
+        .iter()
+        .filter_map(Value::text)
+        .any(|value| value == CASE)
+    );
+    let authority = authority_tree(&fixture.root)?;
+    let first = fixture.follow("populated", 64, None)?;
+    assert_eq!(commit(&first.value, "basisAnchor")?, 0);
+    assert_eq!(commit(&first.value, "resultAnchor")?, 0);
+    assert_eq!(
+        text(field(&first.value, "payload")?, "resultFrameId")?,
+        text(
+            field(field(&orientation.value, "payload")?, "situationFrame")?,
+            "frameId"
+        )?,
+        "follow retains the real mission/case situation instead of projecting empty facets"
+    );
+    assert!(case_purpose(&first)?.contains("still discriminates"));
+    let pending = first.receipt()?;
+    let journal = fixture.journal()?;
+    let cli_retry = fixture.follow("populated", 64, None)?;
+    let mcp_retry = fixture.mcp("populated", 64, None, false)?;
+    mcp_retry.assert_bound(&fixture)?;
+    for retry in [&cli_retry, &mcp_retry] {
+        assert_eq!(retry.receipt()?, pending);
+        assert_eq!(raw_payload(&retry.body)?, raw_payload(&first.body)?);
+        assert_eq!(case_purpose(retry)?, case_purpose(&first)?);
+    }
+    assert_eq!(fixture.journal()?, journal);
+    assert_eq!(authority_tree(&fixture.root)?, authority);
+
+    // Evidence advances independently of the retained case revision. The successor must
+    // explain that the case needs rebasing without rewriting its original basis.
+    fixture.append()?;
+    let authority = authority_tree(&fixture.root)?;
+    let advanced = fixture.mcp("populated", 64, Some(pending), false)?;
+    advanced.assert_bound(&fixture)?;
+    assert_eq!(commit(&advanced.value, "basisAnchor")?, 0);
+    assert_eq!(commit(&advanced.value, "resultAnchor")?, 1);
+    assert_eq!(
+        text(field(&advanced.value, "payload")?, "basisFrameId")?,
+        text(field(&first.value, "payload")?, "resultFrameId")?,
+        "a later case rebase warning cannot be copied into the earlier evidence snapshot"
+    );
+    assert!(case_purpose(&advanced)?.contains("rebase it before any change"));
+    assert!(
+        array(field(&advanced.value, "payload")?, "classes")?
+            .iter()
+            .filter_map(Value::text)
+            .any(|class| class == "material_state")
+    );
+    let journal = fixture.journal()?;
+    let lost_ack_reply = fixture.follow("populated", 64, Some(pending))?;
+    assert_eq!(lost_ack_reply.receipt()?, advanced.receipt()?);
+    assert_eq!(
+        raw_payload(&lost_ack_reply.body)?,
+        raw_payload(&advanced.body)?
+    );
+    assert_eq!(fixture.journal()?, journal);
+    assert_eq!(authority_tree(&fixture.root)?, authority);
+    Ok(())
+}
+
+#[test]
+fn populated_case_follow_requires_current_head_for_a_new_subscription() -> TestResult {
+    let mut fixture = Fixture::new("populated-start")?;
+    fixture.open_case()?;
+    fixture.append()?;
+    let refused = fixture.command(&fixture.args("historical", 64, None), 5)?;
+    // Live admission can persist the newer evidence clock even on refusal. Once admitted,
+    // another transport must neither add a subscription nor acknowledge any delivery.
+    let before = fixture.journal()?;
+    let mcp_refused = fixture.mcp("historical", 64, None, true)?;
+    assert_resnapshot_without_ack(&refused)?;
+    assert_resnapshot_without_ack(&mcp_refused)?;
+    assert_eq!(fixture.journal()?, before);
+    assert!(fixture.inspect()?.follows.is_empty());
+
+    // Resnapshot is an explicit read; the fresh subscription starts at that exact head.
+    let orientation = fixture.orient()?;
+    fixture.since = format!("anchor:{}", pointer(&orientation.value, "anchor:")?);
+    let fresh = fixture.mcp("current", 64, None, false)?;
+    fresh.assert_bound(&fixture)?;
+    assert_eq!(commit(&fresh.value, "basisAnchor")?, 1);
+    assert_eq!(commit(&fresh.value, "resultAnchor")?, 1);
+    assert!(case_purpose(&fresh)?.contains("rebase it before any change"));
+    let repeated = fixture.follow("current", 64, None)?;
+    assert_eq!(repeated.receipt()?, fresh.receipt()?);
+    assert_eq!(raw_payload(&repeated.body)?, raw_payload(&fresh.body)?);
+    Ok(())
+}
+
+#[test]
+fn populated_case_mutation_requires_resnapshot_without_consuming_pending_ack() -> TestResult {
+    let mut fixture = Fixture::new("populated-mutation")?;
+    let opened = fixture.open_case()?;
+    let pending = fixture.follow("before-mutation", 64, None)?.receipt()?;
+    let cancelled =
+        fixture.cancel_case(text(field(&opened.value, "payload")?, "revisionDigest")?)?;
+    assert_eq!(
+        text(field(&cancelled.value, "payload")?, "state")?,
+        "cancelled"
+    );
+    let authority = authority_tree(&fixture.root)?;
+    let before = fixture.journal()?;
+    let refused = fixture.command(&fixture.args("before-mutation", 64, Some(pending)), 5)?;
+    let mcp_refused = fixture.mcp("before-mutation", 64, Some(pending), true)?;
+    assert_resnapshot_without_ack(&refused)?;
+    assert_resnapshot_without_ack(&mcp_refused)?;
+    assert_eq!(fixture.journal()?, before);
+    let inspection = fixture.inspect()?;
+    let old = inspection
+        .follows
+        .iter()
+        .find(|entry| entry.registration().subscription_id == "before-mutation")
+        .ok_or("original subscription survives refusal")?;
+    assert_eq!(
+        old.pending().ok_or("pending delivery survives")?.receipt(),
+        pending
+    );
+    assert_eq!(old.acknowledged_anchor(), fixture.since);
+    assert_eq!(old.last_acknowledged(), None);
+
+    // Even a terminal case revision is retained semantic history. A fresh current-head
+    // subscription is permitted after an explicit resnapshot, never by consuming the old ACK.
+    let orientation = fixture.orient()?;
+    assert!(
+        array(
+            field(&orientation.value, "payload")?,
+            "activeInvestigations"
+        )?
+        .is_empty()
+    );
+    fixture.since = format!("anchor:{}", pointer(&orientation.value, "anchor:")?);
+    let fresh = fixture.mcp("after-resnapshot", 64, None, false)?;
+    fresh.assert_bound(&fixture)?;
+    assert_eq!(commit(&fresh.value, "basisAnchor")?, 0);
+    assert_eq!(commit(&fresh.value, "resultAnchor")?, 0);
+    assert!(
+        case_purpose(&fresh).is_err(),
+        "cancelled case is not listed as active"
+    );
+    let recovered = fixture.inspect()?;
+    let old = recovered
+        .follows
+        .iter()
+        .find(|entry| entry.registration().subscription_id == "before-mutation")
+        .ok_or("original subscription remains retained")?;
+    assert_eq!(
+        old.pending().ok_or("old pending page remains")?.receipt(),
+        pending
+    );
+    assert_eq!(old.last_acknowledged(), None);
     assert_eq!(authority_tree(&fixture.root)?, authority);
     Ok(())
 }
