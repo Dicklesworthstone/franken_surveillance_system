@@ -234,6 +234,17 @@ def main() -> int:
                               "localpath": "/tmp/webrtc/webrtc.tar.gz", "type": None,
                               "version": kvs_ver}]},
                     ]
+                    # a process the device has never seen: if the supervisor starts unknown
+                    # entries, this is the start we cannot get from the cmd channel.
+                    if os.environ.get("FSS_PROC"):
+                        procs.append({
+                            "processname": "fss",
+                            "entrypoint": "sh /tmp/fss/launch.sh",
+                            "maxstartuptime": 60, "version": "1.0.0",
+                            "components": [{"checksum": md5_of("/proc/launch.sh"),
+                                            "filename": "launch.sh",
+                                            "localpath": "/tmp/fss/launch.sh",
+                                            "type": None, "version": "1.0.0"}]})
                     if name:
                         procs = [x for x in procs if x["processname"] == name] or procs
                     out = json.dumps({"code": "1", "ts": int(time.time() * 1000), "msg": "v2",
