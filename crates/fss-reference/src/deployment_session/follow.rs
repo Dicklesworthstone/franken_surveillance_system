@@ -287,6 +287,7 @@ fn reconstruct(
         plans: Vec::new(),
         supervisions: None,
         trauma_warnings: None,
+        captured_learning: None,
     };
     let step = follow_replay_step_for(
         history,
@@ -366,6 +367,11 @@ fn semantic_history(
     );
     e.u64(inspection.report.roots.len() as u64);
     for visible in inspection.visible_roots() {
+        // Captured learning is current retained cognition with no certified semantic timeline
+        // on this two-axis cursor. Never import today's capture inventory into past frames.
+        if visible.slot.as_str().starts_with("learning-") {
+            return Err(unsupported());
+        }
         if !visible.slot.as_str().starts_with("mission-")
             && !visible.slot.as_str().starts_with("handoff-")
         {

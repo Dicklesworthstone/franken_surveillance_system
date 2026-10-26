@@ -4,8 +4,12 @@
 use std::collections::BTreeSet;
 
 use fss_core::{
-    AgentView, CaseDiscriminator, CaseHypothesis, KnowledgeState, KnownStatement, PrincipalId,
+    AgentView, CanonicalDecoder, CanonicalEncode, CanonicalEncoder, CaseDiscriminator,
+    CaseHypothesis, FeedbackProposalKind, KnowledgeState, KnownStatement, PrincipalId,
+    PromotionState, RequestedDisposition,
 };
+use fss_object::ObjectManifest;
+use fss_publication::{LocalRootPublisher, SlotName};
 use fss_reference::agent_session::checkpoint::journal::coordination::investigations::InvestigationChange;
 use fss_reference::agent_session::checkpoint::journal::{
     DurableSessionLimits, DurableSessionStore,
@@ -17,13 +21,18 @@ use fss_reference::agent_session::workspace::{
 use fss_reference::deployment_session::claims::{
     ClaimAction, ClaimChange, ClaimRequest, ClaimWork, work_claim,
 };
+use fss_reference::deployment_session::episode::{CloseRequest, TerminalOutcome, close_plan};
+use fss_reference::deployment_session::feedback::{
+    FeedbackRequest, FeedbackTarget, publish_feedback,
+};
 use fss_reference::deployment_session::investigation::{
     CaseAction, CaseDeadline, CaseDraft, InvestigateRequest, investigate,
 };
+use fss_reference::deployment_session::learning::PublishedLearning;
 use fss_reference::deployment_session::plan::{PlanRecord, publish_plan, read_control_plan};
 use fss_reference::deployment_session::{
     AgentRecoveryRecord, DeploymentSessionError, HandoffRequest, OpenSessionRequest, OpenedSession,
-    ResumeRequest, open_session, prepare_handoff, resume_session,
+    ResumeRequest, open_session, prepare_handoff, publication_limits, resume_session,
 };
 
 use super::*;
@@ -649,6 +658,461 @@ fn populated_agent_writers_refuse_linked_ancestors_and_hardlinked_history_aliase
             before,
             "aliased writer changed restored history: {alias}"
         );
+    }
+    Ok(())
+}
+
+struct CapturedLearningFixture {
+    opened: OpenedSession,
+    request: FeedbackRequest,
+    learning: PublishedLearning,
+}
+
+fn capture_learning(f: &Fixture) -> Test<CapturedLearningFixture> {
+    let mut opening = request()?;
+    opening.view = AgentView::EpistemicMap;
+    let opened = open_session(&f.source, &opening)?;
+    let plan = retained_plan(&opened);
+    publish_plan(&f.source, &plan, b"exact-native-plan-child")?;
+    // Exercise the ordinary native terminal close and feedback owners. A withdrawn plan
+    // needs no network peer and must preserve the uncertainty of the physical event.
+    let owner = f.open()?;
+    let closed = close_plan(
+        &f.source,
+        &CloseRequest {
+            session_id: opened.session.session_id.clone(),
+            principal: opened.session.principal_id.clone(),
+            plan_id: plan.plan_id.clone(),
+        },
+        &|episode| {
+            format!(
+                "synthetic episode custody rendering: {}",
+                episode.episode_id
+            )
+        },
+    )?;
+    drop(owner);
+    assert_eq!(
+        closed.episode.record.terminal_state,
+        TerminalOutcome::Withdrawn
+    );
+    let request = FeedbackRequest {
+        session_id: opened.session.session_id.clone(),
+        principal: opened.session.principal_id.clone(),
+        target: FeedbackTarget::Plan(plan.plan_id),
+        kind: FeedbackProposalKind::RunbookCandidate,
+        statement: "Review the withdrawn alert procedure without inferring effectiveness.".into(),
+        supporting: vec![closed.episode.root],
+        contradicting: Vec::new(),
+        disposition: RequestedDisposition::CreateLearningProposal,
+    };
+    let published = publish_feedback(&f.source, &request)?;
+    assert!(
+        published.learning_refusal.is_none(),
+        "{:?}",
+        published.learning_refusal
+    );
+    let learning = published.learning.ok_or("learning capture missing")?;
+    assert!(learning.committed);
+    assert_eq!(learning.proposal.promotion_state, PromotionState::Captured);
+    assert_eq!(learning.proposal.confidence_numerator, 0);
+    assert_eq!(learning.proposal.helpful_outcomes, 0);
+    assert_eq!(learning.proposal.harmful_outcomes, 0);
+    Ok(CapturedLearningFixture {
+        opened,
+        request,
+        learning,
+    })
+}
+
+fn learning_slot(learning: &PublishedLearning) -> Test<SlotName> {
+    let digest = ContentDigest::sha256(learning.experience.experience_id.as_bytes()).to_text();
+    Ok(SlotName::parse(&format!(
+        "learning-{}",
+        digest
+            .strip_prefix("sha256:")
+            .ok_or("learning slot digest")?,
+    ))?)
+}
+
+fn publication_object(directory: &Path, digest: ContentDigest) -> Test<PathBuf> {
+    let text = digest.to_text();
+    Ok(directory.join("spool/objects").join(
+        text.strip_prefix("sha256:")
+            .ok_or("publication object digest")?,
+    ))
+}
+
+fn learning_binding(
+    directory: &Path,
+    learning: &PublishedLearning,
+) -> Test<(ObjectManifest, ContentDigest, Vec<u8>)> {
+    let manifest = ObjectManifest::from_canonical_bytes(&fss_publication::read_verified(
+        directory,
+        learning.root,
+        1024 * 1024,
+    )?)?;
+    let mut found = None;
+    for digest in manifest.children() {
+        let bytes = fss_publication::read_verified(directory, *digest, 1024 * 1024)?;
+        if CanonicalDecoder::new(&bytes)
+            .text()
+            .is_ok_and(|domain| domain == "fss.reference_agent_learning_capture.v1")
+        {
+            assert!(
+                found.is_none(),
+                "a capture has exactly one canonical source binding"
+            );
+            found = Some((*digest, bytes));
+        }
+    }
+    let (digest, bytes) = found.ok_or("learning source binding missing")?;
+    Ok((manifest, digest, bytes))
+}
+
+#[test]
+fn captured_learning_backup_roundtrip_keeps_original_binding_and_exact_retry() -> Test {
+    let f = Fixture::new("learning-roundtrip")?;
+    let captured = capture_learning(&f)?;
+    // Later workspace cognition must not replace the originally captured workspace binding.
+    let mut current = captured.opened.clone();
+    current.journal_root =
+        ContentDigest::parse(fs::read_to_string(f.source.join("agent/sessions/ROOT"))?.trim_end())?;
+    let advanced = advance_fixture_workspace(&f, &current)?;
+    let state = inspect_agent_state(
+        &f.source,
+        f.limits,
+        BackupLimits::default(),
+        &Grant,
+        &f.cx()?,
+    )?;
+    assert!(
+        state
+            .sessions
+            .workspace_revisions
+            .contains(&captured.opened.revision)
+    );
+    assert!(state.sessions.workspace_revisions.contains(&advanced));
+    let publication = state
+        .publications
+        .iter()
+        .find(|item| item.root == captured.learning.root)
+        .ok_or("captured learning absent from native recovery report")?;
+    assert!(matches!(
+        &publication.record,
+        AgentRecoveryRecord::Learning(experience) if **experience == captured.learning.experience
+    ));
+    for digest in [
+        captured.learning.experience_digest,
+        captured.learning.proposal_digest,
+        captured.learning.feedback_root,
+        captured.learning.plan_root,
+        captured.learning.episode_root,
+    ] {
+        assert!(
+            publication.children.contains(&digest),
+            "missing copied source {digest}"
+        );
+    }
+    let directory = f.source.join("agent/publications");
+    let (_, binding_digest, binding_bytes) = learning_binding(&directory, &captured.learning)?;
+    assert!(publication.children.contains(&binding_digest));
+    assert_eq!(
+        fss_publication::read_verified(&directory, captured.learning.proposal_digest, 1024 * 1024)?,
+        captured.learning.proposal.try_canonical_bytes()?,
+    );
+    let source_before = bytes_under(&f.source)?;
+    let manifest = f.plan()?;
+    let bundle = f.bundle("learning-bundle", &manifest)?;
+    assert_eq!(manifest.profile(), AGENT_BACKUP_PROFILE);
+    assert_eq!(manifest.agent_state(), Some(&state.summary));
+    assert_eq!(bytes_under(&f.source)?, source_before);
+
+    let offline = f.directory.0.join("learning-source-offline");
+    fs::rename(&f.source, &offline)?;
+    let restored = f.directory.0.join("learning-restored");
+    let receipt = restore_backup(
+        &bundle,
+        &restored,
+        manifest.digest(),
+        BackupLimits::default(),
+        &Grant,
+        &f.cx()?,
+    )?;
+    let fence = RestoreFence::from_bytes(
+        &fss_publication::read_verified(restored.join("objects"), receipt.fence_digest(), 4096)?,
+        receipt.fence_digest(),
+    )?;
+    assert!(fence.agent_state_read_only());
+    let recovered = inspect_agent_state(
+        &restored,
+        f.limits,
+        BackupLimits::default(),
+        &Grant,
+        &f.cx()?,
+    )?;
+    assert!(recovered.restored);
+    assert_eq!(recovered.summary, state.summary);
+    assert_eq!(recovered.sessions, state.sessions);
+    assert_eq!(recovered.publications, state.publications);
+    for (path, bytes) in source_before
+        .iter()
+        .filter(|(path, _)| path.starts_with("agent"))
+    {
+        assert_eq!(
+            &fs::read(restored.join(path))?,
+            bytes,
+            "changed recovered bytes {path:?}"
+        );
+    }
+    let restored_publications = restored.join("agent/publications");
+    let (_, restored_binding, restored_binding_bytes) =
+        learning_binding(&restored_publications, &captured.learning)?;
+    assert_eq!(restored_binding, binding_digest);
+    assert_eq!(restored_binding_bytes, binding_bytes);
+    assert_eq!(
+        fss_publication::read_verified(
+            &restored_publications,
+            captured.learning.proposal_digest,
+            1024 * 1024,
+        )?,
+        captured.learning.proposal.try_canonical_bytes()?,
+    );
+    let restored_before = bytes_under(&restored)?;
+    // The exact original request is not authority to resume writing to a historical restore.
+    assert!(matches!(
+        publish_feedback(&restored, &captured.request),
+        Err(DeploymentSessionError::StoreInvalid(_))
+    ));
+    assert_eq!(
+        inspect_agent_state(
+            &restored,
+            f.limits,
+            BackupLimits::default(),
+            &Grant,
+            &f.cx()?
+        )?,
+        recovered,
+    );
+    assert_eq!(bytes_under(&restored)?, restored_before);
+
+    // Restore completion does not make an exact retry on the original live source a new
+    // capture, renew its review/expiry, or bind it to the later same-anchor workspace.
+    fs::rename(&offline, &f.source)?;
+    let original_before = bytes_under(&f.source)?;
+    let retry = publish_feedback(&f.source, &captured.request)?;
+    assert!(
+        retry.learning_refusal.is_none(),
+        "{:?}",
+        retry.learning_refusal
+    );
+    let retry = retry.learning.ok_or("exact learning retry missing")?;
+    assert!(!retry.committed);
+    assert_eq!(retry.root, captured.learning.root);
+    assert_eq!(retry.experience, captured.learning.experience);
+    assert_eq!(retry.proposal, captured.learning.proposal);
+    assert_eq!(retry.experience_digest, captured.learning.experience_digest);
+    assert_eq!(retry.proposal_digest, captured.learning.proposal_digest);
+    assert_eq!(retry.evidence, captured.learning.evidence);
+    assert_eq!(retry.missing_evidence, captured.learning.missing_evidence);
+    assert_eq!(bytes_under(&f.source)?, original_before);
+    assert_eq!(bytes_under(&restored)?, restored_before);
+    Ok(())
+}
+
+fn replace_capture_digest(bytes: &mut [u8], field: usize, replacement: ContentDigest) -> Test {
+    let (start, end) = {
+        let mut d = CanonicalDecoder::new(bytes);
+        assert_eq!(d.text()?, "fss.reference_agent_learning_capture.v1");
+        d.bytes()?; // captured ContractBasis
+        d.text()?; // session
+        d.text()?; // mission
+        d.text()?; // principal
+        for _ in 0..field {
+            d.digest()?;
+        }
+        let start = bytes.len() - d.remaining();
+        d.digest()?;
+        (start, bytes.len() - d.remaining())
+    };
+    let mut encoded = CanonicalEncoder::new();
+    encoded.digest(replacement);
+    let encoded = encoded.finish();
+    assert_eq!(end - start, encoded.len());
+    bytes[start..end].copy_from_slice(&encoded);
+    Ok(())
+}
+
+fn rehash_learning_corruption(
+    f: &Fixture,
+    learning: &PublishedLearning,
+    corruption: &str,
+) -> Test<ContentDigest> {
+    let directory = f.source.join("agent/publications");
+    let (manifest, old_binding, mut binding_bytes) = learning_binding(&directory, learning)?;
+    let mut children: Vec<_> = manifest
+        .children()
+        .iter()
+        .copied()
+        .filter(|digest| *digest != learning.experience_digest && *digest != old_binding)
+        .collect();
+    let slot = learning_slot(learning)?;
+    // Model an out-of-contract replacement while retaining the original root record for
+    // inspection. Production publication still refuses to replace an occupied immutable slot.
+    fs::rename(
+        directory
+            .join("roots")
+            .join(format!("{}.root", slot.as_str())),
+        f.directory.0.join("original-learning.root"),
+    )?;
+    let mut publisher = LocalRootPublisher::open(&directory, publication_limits())?;
+    match corruption {
+        "proposal" => {
+            let mut proposal = learning.proposal.clone();
+            proposal.promotion_state = PromotionState::Promoted;
+            let changed = publisher.stage_object(&proposal.try_canonical_bytes()?)?;
+            children.retain(|digest| *digest != learning.proposal_digest);
+            children.push(changed);
+            // Rehash the binding too, so this is a semantically false promoted candidate
+            // with valid object hashes, not merely a missing old child.
+            replace_capture_digest(&mut binding_bytes, 6, changed)?;
+        }
+        "binding" => {
+            replace_capture_digest(
+                &mut binding_bytes,
+                0,
+                ContentDigest::sha256(b"workspace revision never retained by this session"),
+            )?;
+        }
+        _ => return Err("unknown learning corruption".into()),
+    }
+    children.push(publisher.stage_object(&binding_bytes)?);
+    let replacement =
+        ObjectManifest::new("agent-learning", children, Some(learning.experience_digest))?;
+    let root = publisher.publish(&slot, &replacement)?.root;
+    drop(publisher);
+    assert_ne!(root, learning.root);
+    let inspection = fss_publication::inspect(&directory, publication_limits())?;
+    assert!(
+        !inspection.is_broken_slot(&slot),
+        "all replacement object hashes are valid"
+    );
+    assert_eq!(
+        inspection
+            .root(&slot)
+            .ok_or("replacement root missing")?
+            .root,
+        root
+    );
+    Ok(root)
+}
+
+#[test]
+fn captured_learning_backup_refuses_rehashed_candidate_and_binding_without_repair() -> Test {
+    for corruption in ["proposal", "binding"] {
+        let f = Fixture::new(&format!("learning-rehashed-{corruption}"))?;
+        let captured = capture_learning(&f)?;
+        let approved = f.plan()?.digest();
+        let replacement = rehash_learning_corruption(&f, &captured.learning, corruption)?;
+        let before = bytes_under(&f.source)?;
+        assert!(
+            matches!(
+                inspect_agent_state(
+                    &f.source,
+                    f.limits,
+                    BackupLimits::default(),
+                    &Grant,
+                    &f.cx()?
+                ),
+                Err(BackupError::Corrupt("agent_learning_closure"))
+            ),
+            "semantic recovery admitted {corruption}"
+        );
+        assert!(f.plan().is_err());
+        let forbidden = f.directory.0.join("must-not-back-up");
+        assert!(
+            create_backup(
+                &f.source,
+                &forbidden,
+                approved,
+                f.limits,
+                BackupLimits::default(),
+                &Grant,
+                &f.cx()?,
+            )
+            .is_err()
+        );
+        assert!(!forbidden.exists());
+        assert_eq!(
+            bytes_under(&f.source)?,
+            before,
+            "recovery repaired {corruption}"
+        );
+
+        // An identical feedback retry must not bless or overwrite the substituted graph.
+        match publish_feedback(&f.source, &captured.request) {
+            Err(_) => {}
+            Ok(answer) => {
+                assert!(answer.learning.is_none());
+                assert!(answer.learning_refusal.is_some());
+            }
+        }
+        let inspection =
+            fss_publication::inspect(f.source.join("agent/publications"), publication_limits())?;
+        assert_eq!(
+            inspection
+                .root(&learning_slot(&captured.learning)?)
+                .ok_or("replacement lost")?
+                .root,
+            replacement,
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn captured_learning_restore_refuses_damaged_proposal_or_binding_payload_before_creation() -> Test {
+    for corruption in ["proposal", "binding"] {
+        let f = Fixture::new(&format!("learning-bundle-{corruption}"))?;
+        let captured = capture_learning(&f)?;
+        let manifest = f.plan()?;
+        let bundle = f.bundle("learning-bundle", &manifest)?;
+        let (_, binding, _) =
+            learning_binding(&f.source.join("agent/publications"), &captured.learning)?;
+        let selected = if corruption == "proposal" {
+            captured.learning.proposal_digest
+        } else {
+            binding
+        };
+        let path = publication_object(&bundle.join("payload/agent/publications"), selected)?;
+        let mut bytes = fs::read(&path)?;
+        bytes.push(0);
+        fs::write(path, bytes)?;
+        let source_before = bytes_under(&f.source)?;
+        assert!(
+            inspect_backup(
+                &bundle,
+                manifest.digest(),
+                BackupLimits::default(),
+                &Grant,
+                &f.cx()?,
+            )
+            .is_err()
+        );
+        let destination = f.directory.0.join("must-not-restore");
+        assert!(
+            restore_backup(
+                &bundle,
+                &destination,
+                manifest.digest(),
+                BackupLimits::default(),
+                &Grant,
+                &f.cx()?,
+            )
+            .is_err()
+        );
+        assert!(!destination.exists());
+        assert_eq!(bytes_under(&f.source)?, source_before);
     }
     Ok(())
 }

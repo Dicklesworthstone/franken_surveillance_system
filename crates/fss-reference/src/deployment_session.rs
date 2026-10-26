@@ -1412,6 +1412,7 @@ fn orient_bound(
         claims: briefs.claims,
         findings: briefs.findings,
         supervisions: briefs.supervisions,
+        captured_learning: briefs.captured_learning.map(|inventory| inventory.briefs),
         trauma_warnings: match plans {
             Some((root, _)) if briefs.advisory_memory_allowed => {
                 Some(trauma_guard::derive_trauma_guard_warnings(
@@ -1446,6 +1447,7 @@ struct SessionBriefs {
         Vec<crate::agent_session::checkpoint::journal::supervision::SupervisionInventoryEntry>,
     >,
     advisory_memory_allowed: bool,
+    captured_learning: Option<learning::CapturedLearningInventory>,
 }
 
 impl Default for SessionBriefs {
@@ -1458,6 +1460,7 @@ impl Default for SessionBriefs {
             findings: Vec::new(),
             supervisions: Some(Vec::new()),
             advisory_memory_allowed: true,
+            captured_learning: Some(learning::CapturedLearningInventory::default()),
         }
     }
 }
@@ -1527,8 +1530,14 @@ fn session_briefs(
     } else {
         None
     };
+    let captured_learning = if mission_read_admitted {
+        Some(learning::captured_inventory(root, store, session, now)?)
+    } else {
+        None
+    };
     Ok(SessionBriefs {
         mission_progress,
+        captured_learning,
         cases: investigation::case_briefs(store, session, anchor),
         claims: claims::claim_briefs(store, session, now),
         findings: findings::finding_briefs(root, session)?,
@@ -2016,6 +2025,8 @@ pub struct PreparedHandoff {
     pub mission: MissionRecord,
     /// Exact lifecycle revision protected by the sealed orientation, when explicitly enrolled.
     pub mission_progress: Option<crate::agent_session::mission::MissionRevision>,
+    /// Complete verified captured-learning graphs protected by the sealed orientation.
+    learning_children: std::collections::BTreeMap<ContentDigest, Vec<u8>>,
     /// The sealed situation publication as of the session's anchor.
     pub publication: ReferenceSituationPublication,
     /// The orientation the publication was sealed from.
@@ -2085,7 +2096,12 @@ pub fn prepare_handoff(
             "the workspace anchor token and the session anchor disagree".to_owned(),
         ));
     }
-    let briefs = session_briefs(root, &journal.store, &session, &snapshot, now)?;
+    let mut briefs = session_briefs(root, &journal.store, &session, &snapshot, now)?;
+    let learning_children = briefs
+        .captured_learning
+        .as_mut()
+        .map(|inventory| std::mem::take(&mut inventory.objects))
+        .unwrap_or_default();
     let mission_progress = briefs
         .mission_progress
         .as_ref()
@@ -2195,6 +2211,7 @@ pub fn prepare_handoff(
         workspace,
         mission,
         mission_progress,
+        learning_children,
         publication,
         orientation,
         journal_root,
@@ -2216,13 +2233,21 @@ impl PreparedHandoff {
         crash: Option<PublishCutPoint>,
     ) -> Result<PublishedHandoff, DeploymentSessionError> {
         let bytes = self.record.to_bytes()?;
-        let mut retained_children = children.to_vec();
+        let mut retained = self.learning_children;
+        for child in children {
+            retained.insert(ContentDigest::sha256(child), child.clone());
+        }
         if let Some(progress) = &self.mission_progress {
             let child = progress.as_bytes().to_vec();
-            if !retained_children.contains(&child) {
-                retained_children.push(child);
-            }
+            retained.insert(ContentDigest::sha256(&child), child);
         }
+        retained.remove(&ContentDigest::sha256(&bytes));
+        if retained.len().saturating_add(1) > publication_limits().max_children {
+            return Err(DeploymentSessionError::StoreInvalid(
+                "the complete handoff and captured-learning custody graph exceeds its child bound; no historical capture was omitted".to_owned(),
+            ));
+        }
+        let retained_children: Vec<_> = retained.into_values().collect();
         let receipt = publish_record(
             &self.root,
             &HandoffRecord::slot(&self.record.capsule.handoff_id)?,

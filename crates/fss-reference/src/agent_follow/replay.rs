@@ -317,7 +317,7 @@ pub fn follow_replay_step<C: ReplayControl + ?Sized>(
 ///
 /// The session owner authenticates and pins the supplied identity and proves that unsupported
 /// mission facets have not changed across this subscription's interval. Populated facets refuse
-/// this limited profile: neither current case/plan/claim/finding snapshots nor empty substitutes
+/// this limited profile: neither current case/plan/claim/finding/learning snapshots nor empty substitutes
 /// establish their intermediate history. The owner must also detect a facet that appeared and
 /// resolved between calls, using its retained semantic revision history, and require resnapshot.
 ///
@@ -344,6 +344,10 @@ pub fn follow_replay_step_for<C: ReplayControl + ?Sized>(
                 .trauma_warnings
                 .as_ref()
                 .is_some_and(|warnings| !warnings.is_empty())
+            || binding
+                .captured_learning
+                .as_ref()
+                .is_some_and(|captures| !captures.is_empty())
     }) {
         return Err(ReplayError::UnsupportedSessionFacets);
     }

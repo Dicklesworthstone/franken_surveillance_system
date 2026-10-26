@@ -73,6 +73,7 @@ use crate::{MockModelResult, ReferenceError};
 
 pub mod coverage;
 pub mod historical_health;
+mod learning;
 pub mod liveness;
 mod mission;
 mod supervision;
@@ -101,6 +102,7 @@ pub use historical_health::{
     MAX_HISTORICAL_HEALTH_METADATA_BYTES, MAX_HISTORICAL_HEALTH_READS_PER_RECORD,
     MAX_HISTORICAL_HEALTH_RECORDS, RetainedHistoricalHealth, SOURCE_CLASS_HISTORICAL_HEALTH_DETAIL,
 };
+pub use learning::OrientLearningBrief;
 pub use mission::{OrientMissionBrief, OrientMissionProgress};
 
 /// Capability registry row that admits a situation read (AOP-003, AOP-004, AOP-009).
@@ -2160,6 +2162,11 @@ fn compile_capsule(
     unknown.extend(supervision.unknown);
     at_risk.extend(supervision.at_risk);
     warnings.extend(supervision.warnings);
+    let learning = learning::project(session)?;
+    cells.extend(learning.cells);
+    proof_roots.extend(learning.proof_roots);
+    unknown.extend(learning.unknown);
+    at_risk.extend(learning.at_risk);
     let memory = trauma_guard::project(advisory_warnings)?;
     cells.extend(memory.cells);
     proof_roots.extend(memory.proof_roots);
@@ -3715,6 +3722,9 @@ pub struct OrientSessionBinding {
     /// Verified advisory history visible to this principal. `None` is unavailable, not empty.
     /// These records cannot authorize effects or establish present physical facts.
     pub trauma_warnings: Option<Vec<AntiPatternWarning>>,
+    /// Complete admitted captured-learning metadata for this exact session and mission.
+    /// None is unavailable; Some(empty) alone is a successfully observed empty inventory.
+    pub captured_learning: Option<Vec<OrientLearningBrief>>,
 }
 
 /// One active finding as a session-bound orientation lists it.

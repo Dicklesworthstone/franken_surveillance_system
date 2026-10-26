@@ -874,6 +874,7 @@ fn retained_mission_progress_refuses_replay_before_ack_or_new_subscription() -> 
             findings: Vec::new(),
             supervisions: None,
             trauma_warnings: None,
+            captured_learning: None,
         };
         let refusal = follow_replay_step_for(
             &history,

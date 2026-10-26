@@ -76,6 +76,7 @@ fn binding() -> TestResult<OrientSessionBinding> {
         findings: Vec::new(),
         supervisions: Some(Vec::new()),
         trauma_warnings: Some(Vec::new()),
+        captured_learning: None,
     })
 }
 

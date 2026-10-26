@@ -67,6 +67,7 @@ fn binding(entries: Option<Vec<SupervisionInventoryEntry>>) -> TestResult<Orient
         findings: Vec::new(),
         supervisions: entries,
         trauma_warnings: None,
+        captured_learning: None,
     })
 }
 

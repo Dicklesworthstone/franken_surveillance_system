@@ -223,13 +223,33 @@ pub fn inspect_session_bytes(
         return Err(DurableSessionError::CapacityExceeded);
     }
     let restored = replay_all(&report, limits, Some(claim_ceilings))?;
+    recovery_state_from_replayed(
+        &restored,
+        limits,
+        report.last_root(),
+        report.records().len(),
+        report.committed_len(),
+        report.incomplete_tail(),
+    )
+}
+
+/// Assemble historical custody from one already verified replay. The live projection owner
+/// separately admits the current reader; this helper never grants or changes session authority.
+fn recovery_state_from_replayed(
+    restored: &ReplayedSessionState,
+    limits: DurableSessionLimits,
+    root: ContentDigest,
+    records: usize,
+    committed_bytes: u64,
+    incomplete_tail: Option<u64>,
+) -> Result<SessionRecoveryState, DurableSessionError> {
     let checkpoint = restored.memory.checkpoint(limits.max_checkpoint_bytes)?;
     let inspection = SessionJournalInspection {
-        root: report.last_root(),
+        root,
         checkpoint_digest: checkpoint.digest(),
-        records: report.records().len(),
-        committed_bytes: report.committed_len(),
-        incomplete_tail: report.incomplete_tail(),
+        records,
+        committed_bytes,
+        incomplete_tail,
     };
     Ok(SessionRecoveryState {
         inspection,

@@ -554,6 +554,7 @@ fn session_binding() -> TestResult<OrientSessionBinding> {
         findings: Vec::new(),
         supervisions: None,
         trauma_warnings: None,
+        captured_learning: None,
     })
 }
 
@@ -613,7 +614,7 @@ fn unsupported_mission_facets_refuse_instead_of_disappearing_from_replay() -> Te
     let fixture = Fixture::new("session-facets")?;
     let token = fixture.token()?;
     let history = fixture.history()?;
-    for kind in 0..5 {
+    for kind in 0..6 {
         let mut binding = session_binding()?;
         match kind {
             0 => binding.cases.push(OrientCaseBrief {
@@ -642,7 +643,7 @@ fn unsupported_mission_facets_refuse_instead_of_disappearing_from_replay() -> Te
                 case_id: "case:replay:active".to_owned(),
                 disputed_by: vec!["finding:replay:contradicting".to_owned()],
             }),
-            _ => {
+            4 => {
                 // Current advisory state has no historical session replay witness. Refuse
                 // before reading either snapshot, rather than applying it to both endpoints.
                 binding.trauma_warnings = Some(vec![
@@ -661,6 +662,29 @@ fn unsupported_mission_facets_refuse_instead_of_disappearing_from_replay() -> Te
                         active_policy_mutation: false,
                     },
                 ]);
+            }
+            _ => {
+                // Captures may arrive without an evidence/effect advance. The two-axis cursor
+                // cannot prove when they existed, even when its evidence endpoints are equal.
+                let root = ContentDigest::sha256(b"retained learning");
+                binding.captured_learning =
+                    Some(vec![fss_reference::agent_orient::OrientLearningBrief {
+                        experience_id: "experience:replay:current".to_owned(),
+                        proposal_id: "learning:replay:current".to_owned(),
+                        source_episode_id: "episode:replay:terminal".to_owned(),
+                        class: fss_core::LearningClass::PolicyReviewCandidate,
+                        publication_root: root,
+                        experience_digest: root,
+                        proposal_digest: root,
+                        episode_root: root,
+                        feedback_root: root,
+                        plan_root: root,
+                        review_after: TimestampNs(10),
+                        expires_at: TimestampNs(20),
+                        review_due: false,
+                        expired: false,
+                        missing_evidence: vec!["Efficacy remains unvalidated.".to_owned()],
+                    }]);
             }
         }
         let mut control = Control::default();

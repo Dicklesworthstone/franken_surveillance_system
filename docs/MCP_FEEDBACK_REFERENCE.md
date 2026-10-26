@@ -102,6 +102,8 @@ intent, principal isolation, all three custody objects under missing/corrupt fau
 or notification non-mutation. Mapping unit tests cover every native target family, kind and
 disposition, including the combined evidence bound and literal statements.
 
+Captured experience is also discoverable through the existing session-bound `orient` tool. Its protected context carries exact learning identities, review/expiry status and residual uncertainty. `session.handoff` retains the complete verified capture graph. The first successful feedback response refreshes that inventory so an immediate exact retry has the same context; any downstream projection failure preserves the known publication roots in a typed partial response. See [the captured experience reference](AGENT_EXPERIENCE_REFERENCE.md#discover-captured-learning-and-carry-it-forward) for admission, custody and bounded replay behavior.
+
 This is a bounded reference proposal and episode-capture path. It does not implement adjudication
 review, automatic learning promotion, policy activation or a new effect owner, and does not by
 itself close the broader FSS-230/231/232 qualification work.

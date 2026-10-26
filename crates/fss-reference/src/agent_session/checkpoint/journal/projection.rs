@@ -9,7 +9,8 @@ use super::supervision::{DurableSupervisionError, SupervisionInventoryEntry};
 use super::workspace::DurableWorkspaceError;
 use super::{
     DurableSessionError, DurableSessionLimits, DurableSessionStore, MAX_SESSION_JOURNAL_BYTES,
-    ReplayedSessionState, replay_all,
+    ReplayedSessionState, SessionRecoveryState, read_report, recovery_state_from_replayed,
+    replay_all,
 };
 use crate::agent_session::ReferenceSessionError;
 use crate::agent_session::work_claims::{WorkClaimLimits, WorkClaimRevision};
@@ -28,6 +29,13 @@ pub(crate) trait SessionProjection {
         session: &AgentSession,
         now: TimestampNs,
     ) -> Result<Vec<SupervisionInventoryEntry>, DurableSupervisionError>;
+    /// Exact historical custody for authenticating retained private advisory publications.
+    /// Returning these bytes does not make past grants or workspaces current authority.
+    fn recovery_state_for_projection(
+        &self,
+        session: &AgentSession,
+        now: TimestampNs,
+    ) -> Result<SessionRecoveryState, DurableSessionError>;
     fn investigation_heads(&self) -> Vec<InvestigationRevision>;
     fn work_claim_heads(&self) -> Vec<WorkClaimRevision>;
 }
@@ -47,6 +55,39 @@ impl SessionProjection for DurableSessionStore {
     ) -> Result<Vec<SupervisionInventoryEntry>, DurableSupervisionError> {
         DurableSessionStore::supervision_inventory(self, session, now)
     }
+    fn recovery_state_for_projection(
+        &self,
+        session: &AgentSession,
+        now: TimestampNs,
+    ) -> Result<SessionRecoveryState, DurableSessionError> {
+        if self.fenced {
+            return Err(DurableSessionError::ReconciliationRequired);
+        }
+        admit_recovery(&self.memory, session, now)?;
+        let report = read_report(self.path(), self.limits)?;
+        if report.last_root() != self.committed_root()
+            || report.committed_len() != self.journal.committed_len()
+            || report.records().len() != self.records
+            || report.incomplete_tail().is_some()
+        {
+            return Err(DurableSessionError::RootMismatch);
+        }
+        let ceilings = self.coordination.as_ref().map(|state| state.limits);
+        let restored = replay_all(&report, self.limits, ceilings)?;
+        let recovery = recovery_state_from_replayed(
+            &restored,
+            self.limits,
+            report.last_root(),
+            report.records().len(),
+            report.committed_len(),
+            None,
+        )?;
+        if recovery.inspection.checkpoint_digest != self.checkpoint_digest {
+            return Err(DurableSessionError::InvalidHistory);
+        }
+        admit_recovery(&restored.memory, session, now)?;
+        Ok(recovery)
+    }
     fn investigation_heads(&self) -> Vec<InvestigationRevision> {
         DurableSessionStore::investigation_heads(self)
     }
@@ -60,6 +101,9 @@ impl SessionProjection for DurableSessionStore {
 pub(crate) struct SessionProjectionSnapshot {
     restored: ReplayedSessionState,
     root: ContentDigest,
+    records: usize,
+    committed_bytes: u64,
+    limits: DurableSessionLimits,
 }
 
 impl SessionProjectionSnapshot {
@@ -90,6 +134,9 @@ impl SessionProjectionSnapshot {
         Ok(Self {
             restored: replay_all(&report, limits, Some(claims))?,
             root: report.last_root(),
+            records: report.records().len(),
+            committed_bytes: report.committed_len(),
+            limits,
         })
     }
 
@@ -145,6 +192,21 @@ impl SessionProjection for SessionProjectionSnapshot {
     ) -> Result<Vec<SupervisionInventoryEntry>, DurableSupervisionError> {
         super::supervision::project_inventory(&self.restored, session, now)
     }
+    fn recovery_state_for_projection(
+        &self,
+        session: &AgentSession,
+        now: TimestampNs,
+    ) -> Result<SessionRecoveryState, DurableSessionError> {
+        admit_recovery(&self.restored.memory, session, now)?;
+        recovery_state_from_replayed(
+            &self.restored,
+            self.limits,
+            self.root,
+            self.records,
+            self.committed_bytes,
+            None,
+        )
+    }
     fn investigation_heads(&self) -> Vec<InvestigationRevision> {
         self.restored
             .coordination
@@ -160,4 +222,39 @@ impl SessionProjection for SessionProjectionSnapshot {
             .map(|state| state.claims.heads().cloned().collect())
             .unwrap_or_default()
     }
+}
+
+/// Authenticate the exact live owner and read/privacy grants on an isolated session store.
+/// This read neither advances persisted clocks nor uses historical grants as current access.
+fn admit_recovery(
+    memory: &crate::agent_session::ReferenceSessionStore,
+    session: &AgentSession,
+    now: TimestampNs,
+) -> Result<(), DurableSessionError> {
+    let entry = memory
+        .sessions
+        .get(&session.session_id)
+        .filter(|entry| entry.session == *session && !entry.closed)
+        .ok_or(DurableSessionError::Session(
+            ReferenceSessionError::Unavailable,
+        ))?;
+    if entry.basis != fss_core::reference_contract_basis() {
+        return Err(DurableSessionError::Session(
+            ReferenceSessionError::StaleBasis,
+        ));
+    }
+    if !["CAP-AGENT-SESSION-READ-001", "CAP-AGENT-SITUATION-READ-001"]
+        .iter()
+        .all(|capability| session.capabilities.contains(*capability))
+        || !session.privacy_scope.contains("private:property")
+    {
+        return Err(DurableSessionError::Session(
+            ReferenceSessionError::GrantEscalation,
+        ));
+    }
+    memory
+        .clone()
+        .session(&session.principal_id, &session.session_id, now)
+        .map_err(DurableSessionError::Session)?;
+    Ok(())
 }

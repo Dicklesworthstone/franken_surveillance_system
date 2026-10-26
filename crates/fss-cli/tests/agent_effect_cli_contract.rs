@@ -2085,6 +2085,15 @@ fn learning_args(agent: &Agent, plan: &str, supporting: &str, statement: &str) -
 }
 
 fn learning_mcp_wire(agent: &Agent, principal: &str, arguments: &str) -> TestResult<Value> {
+    learning_mcp_tool_wire(agent, principal, "feedback", arguments)
+}
+
+fn learning_mcp_tool_wire(
+    agent: &Agent,
+    principal: &str,
+    tool: &str,
+    arguments: &str,
+) -> TestResult<Value> {
     let mut child = Command::new(env!("CARGO_BIN_EXE_fss-mcp"))
         .arg("--root")
         .arg(&agent.root)
@@ -2105,7 +2114,8 @@ fn learning_mcp_wire(agent: &Agent, principal: &str, arguments: &str) -> TestRes
     )?;
     writeln!(
         input,
-        r#"{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"feedback","arguments":{arguments}}}}}"#
+        r#"{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":{},"arguments":{arguments}}}}}"#,
+        learning_quote(tool)
     )?;
     drop(input);
     let output = child.wait_with_output()?;
@@ -2258,6 +2268,74 @@ fn retained_learning_candidate(
     Ok(candidate)
 }
 
+/// Captured learning is protected advisory context with original custody and unknown cost;
+/// discovering a record never upgrades its claim or grants effect authority.
+fn assert_learning_discovery(
+    envelope: &Value,
+    proposal: &fss_core::LearningProposal,
+    experience_id: &str,
+    pointers: &[String],
+) -> TestResult {
+    let items = field(envelope, &["payload", "contextPack", "items"])?
+        .array()
+        .ok_or("protected captured-learning context")?;
+    let prefix = format!("Captured learning {}", proposal.proposal_id);
+    let risk = items
+        .iter()
+        .find(|item| {
+            text(item, &["kind"]).is_ok_and(|kind| kind == "at_risk")
+                && text(item, &["content"]).is_ok_and(|content| content.starts_with(&prefix))
+        })
+        .ok_or("captured learning missing from protected risk context")?;
+    let content = text(risk, &["content"])?;
+    for required in [
+        proposal.proposal_id.as_str(),
+        proposal.source_episode_id.as_str(),
+        proposal.class.as_str(),
+        experience_id,
+        "state=captured",
+        "evidence=single_episode",
+        "confidence=0/1000000",
+        "helpful=0",
+        "harmful=0",
+        "review=pending",
+        "expiry=unexpired",
+        "Advisory history only; no policy or effect authority.",
+    ] {
+        assert!(content.contains(required), "lost {required}: {content}");
+    }
+    assert!(content.contains(&format!(
+        "review_after_ns={}",
+        proposal.review_after_ns.ok_or("retained learning review deadline")?
+    )));
+    assert!(content.contains(&format!(
+        "expiry_ns={}",
+        proposal.expiry_ns.ok_or("retained learning expiry deadline")?
+    )));
+    let proofs = texts(envelope, &["proofPointers"])?;
+    for pointer in pointers.iter().take(6) {
+        assert!(
+            proofs.contains(pointer),
+            "discovery lost source proof {pointer}"
+        );
+    }
+    for phrase in [
+        "zero lower bounds do not mean zero actual cost",
+        "do not establish causal effectiveness",
+        "full custody-verification cost remain unknown",
+    ] {
+        assert!(
+            items.iter().any(|item| {
+                text(item, &["kind"]).is_ok_and(|kind| kind == "unknown")
+                    && text(item, &["epistemicState"]).is_ok_and(|state| state == "unknown")
+                    && text(item, &["content"]).is_ok_and(|content| content.contains(phrase))
+            }),
+            "discovery lost protected uncertainty: {phrase}"
+        );
+    }
+    Ok(())
+}
+
 #[test]
 fn closed_episode_feedback_publishes_captured_learning_with_cold_cli_mcp_recovery() -> TestResult {
     let (directory, event_id) = corroborated_event("episode-learning")?;
@@ -2346,7 +2424,48 @@ fn closed_episode_feedback_publishes_captured_learning_with_cold_cli_mcp_recover
     };
     assert_eq!(confidence.parse::<f64>()?, 0.0);
     assert!(texts(&first, &["payload", "operations"])?.contains(&operation));
-    assert!(!texts(&first, &["payload", "missingEvidence"])?.is_empty());
+    assert_eq!(text(&first, &["epistemicState"])?, "unknown");
+    assert_eq!(text(&first, &["completeness"])?, "partial");
+    let uncertainty = texts(&first, &["payload", "missingEvidence"])?;
+    assert!(
+        uncertainty
+            .iter()
+            .any(|item| item.contains("zero lower bounds do not mean zero actual cost"))
+    );
+    assert!(
+        uncertainty
+            .iter()
+            .any(|item| item.contains("do not establish causal effectiveness"))
+    );
+    let initial = field(&first, &["payload", "initialEpistemicMap"])?
+        .array()
+        .ok_or("experience initial epistemic map")?;
+    for identity in ["unknown:learning-cost", "unknown:learning-efficacy"] {
+        let statement = initial
+            .iter()
+            .find(|entry| text(entry, &["statementId"]).is_ok_and(|id| id == identity))
+            .ok_or("mandatory canonical experience uncertainty")?;
+        assert_eq!(text(statement, &["epistemicState"])?, "unknown");
+        assert!(!texts(statement, &["basis"])?.is_empty());
+    }
+    for dimension in [
+        "latencyMs",
+        "tokens",
+        "bytes",
+        "modelCalls",
+        "cpuMillis",
+        "acceleratorMillis",
+        "energyMilliJoules",
+        "networkBytes",
+        "storageOperations",
+        "privacyExposure",
+        "operatorAttentionSeconds",
+    ] {
+        let Value::Number(lower_bound) = field(&first, &["payload", "cost", dimension])? else {
+            return Err("experience cost dimension is not a number".into());
+        };
+        assert_eq!(lower_bound.parse::<f64>()?, 0.0);
+    }
     assert!(
         field(&first, &["payload", "candidateTemplates"])?
             .array()
@@ -2380,6 +2499,26 @@ fn closed_episode_feedback_publishes_captured_learning_with_cold_cli_mcp_recover
         &fss_publication::read_verified(&publication, episode_root, 1 << 20)?,
     )?;
     assert!(source.children().contains(&episode_rendering));
+    let source_episode_bytes = fss_publication::read_verified(
+        &publication,
+        source
+            .metadata_digest()
+            .ok_or("retained episode metadata")?,
+        1 << 20,
+    )?;
+    let source_episode = fss_reference::deployment_session::episode::EpisodeRecord::from_bytes(
+        &source_episode_bytes,
+    )?;
+    assert_eq!(
+        &parse(&source_episode.episode.resource_use_json)?,
+        field(&episode, &["resourceUse"])?,
+        "the exact source measurements remain retained while the experience discloses lower bounds"
+    );
+    assert!(
+        manifest
+            .children()
+            .contains(&ContentDigest::sha256(&source_episode_bytes))
+    );
     for pointer in &pointers[4..6] {
         fss_object::ObjectManifest::from_canonical_bytes(&fss_publication::read_verified(
             &publication,
@@ -2425,13 +2564,75 @@ fn closed_episode_feedback_publishes_captured_learning_with_cold_cli_mcp_recover
     // Captured artifacts bind the original admitted workspace. A benign explicit resume
     // can advance that workspace at the same evidence anchor; recovery must authenticate
     // the retained source revision instead of compiling a different binding from today's head.
+    let before_inventory = learning_tree(&agent.root, &[""])?;
     let (code, before_resume) = agent.run("orient", &["--session", &agent.session])?;
     assert_eq!(code, Some(0), "{before_resume:?}");
+    assert_learning_discovery(
+        &before_resume,
+        &candidate,
+        text(&first, &["payload", "experienceId"])?,
+        &pointers,
+    )?;
+    assert_eq!(
+        learning_tree(&agent.root, &[""])?,
+        before_inventory,
+        "captured-learning discovery must not mutate the deployment or session journal"
+    );
+    let (code, repeated_inventory) = agent.run("orient", &["--session", &agent.session])?;
+    assert_eq!(code, Some(0), "{repeated_inventory:?}");
+    assert_eq!(repeated_inventory, before_resume);
+    assert_eq!(learning_tree(&agent.root, &[""])?, before_inventory);
+    let inventory_mcp = learning_mcp_tool_wire(
+        &agent,
+        principal,
+        "orient",
+        &format!(r#"{{"session":{}}}"#, learning_quote(&agent.session)),
+    )?;
+    assert_eq!(
+        field(&inventory_mcp, &["result", "isError"])?,
+        &Value::Bool(false)
+    );
+    let inventory_content = field(&inventory_mcp, &["result", "content"])?
+        .array()
+        .ok_or("MCP captured-learning inventory")?;
+    assert_eq!(inventory_content.len(), 1);
+    let (_, mcp_inventory) = agent.answer(None, text(&inventory_content[0], &["text"])?)?;
+    assert_eq!(
+        mcp_inventory, before_resume,
+        "CLI and MCP share the admitted learning inventory"
+    );
+    assert_eq!(learning_tree(&agent.root, &[""])?, before_inventory);
+    let (code, too_small) = agent.run(
+        "orient",
+        &["--session", &agent.session, "--budget-tokens", "1"],
+    )?;
+    assert_eq!(code, Some(5), "{too_small:?}");
+    assert_eq!(text(&too_small, &["outcome"])?, "refused");
+    assert_eq!(
+        learning_tree(&agent.root, &[""])?,
+        before_inventory,
+        "protected learning context must refuse an insufficient budget without mutation or truncation"
+    );
     let prior_workspace = field(&before_resume, &["workspaceRevision"])?
         .integer()
         .ok_or("workspace revision before learning recovery")?;
     let (code, handed) = agent.run("handoff", &["--session", &agent.session])?;
     assert_eq!(code, Some(0), "{handed:?}");
+    let handed_pointers = texts(&handed, &["proofPointers"])?;
+    let handoff_manifest =
+        fss_object::ObjectManifest::from_canonical_bytes(&fss_publication::read_verified(
+            &publication,
+            ContentDigest::parse(&handed_pointers[1])?,
+            1 << 20,
+        )?)?;
+    assert!(handoff_manifest.children().contains(&learning_root));
+    for digest in manifest.children() {
+        assert!(
+            handoff_manifest.children().contains(digest),
+            "handoff omitted a member of the captured learning closure: {digest}"
+        );
+        fss_publication::read_verified(&publication, *digest, 1 << 20)?;
+    }
     let (code, resumed_stdout) = run_fss(&[
         "session".into(),
         "resume".into(),
@@ -2444,6 +2645,12 @@ fn closed_episode_feedback_publishes_captured_learning_with_cold_cli_mcp_recover
     let (code, resumed) = agent.answer(code, &resumed_stdout)?;
     assert_eq!(code, Some(0), "{resumed_stdout}");
     assert_eq!(text(&resumed, &["sessionId"])?, agent.session);
+    assert_learning_discovery(
+        &resumed,
+        &candidate,
+        text(&first, &["payload", "experienceId"])?,
+        &pointers,
+    )?;
     assert_eq!(
         field(&resumed, &["missionId"])?,
         field(&first, &["missionId"])?
@@ -2500,6 +2707,22 @@ fn closed_episode_feedback_publishes_captured_learning_with_cold_cli_mcp_recover
             fs::write(&path, damaged)?;
         }
         let damaged = learning_tree(&agent.root, &["agent/publications"])?;
+        let before_failed_read = learning_tree(&agent.root, &[""])?;
+        let (code, unreadable) = agent.run("orient", &["--session", &agent.session])?;
+        assert_eq!(code, Some(5), "{unreadable:?}");
+        assert_ne!(text(&unreadable, &["outcome"])?, "ok");
+        assert_eq!(
+            learning_tree(&agent.root, &[""])?,
+            before_failed_read,
+            "failed discovery must neither repair nor mutate a damaged captured source"
+        );
+        let (code, unhandoffable) = agent.run("handoff", &["--session", &agent.session])?;
+        assert_eq!(code, Some(5), "{unhandoffable:?}");
+        assert_ne!(text(&unhandoffable, &["outcome"])?, "ok");
+        assert_eq!(
+            learning_tree(&agent.root, &["agent/publications"])?,
+            damaged
+        );
         let (code, refused_stdout) = run_fss(&args)?;
         let (code, refused) = agent.answer(code, &refused_stdout)?;
         assert_eq!(code, Some(5), "{refused_stdout}");
@@ -2543,6 +2766,15 @@ fn learning_feedback_cannot_borrow_another_sessions_episode_or_request_activatio
     assert_eq!(code, Some(0), "{closed:?}");
     assert!(episode.is_some());
     let supporting = texts(&closed, &["proofPointers"])?[1].clone();
+    let owner_statement = "Review this retained episode under its original private session.";
+    let owner_args = learning_args(&agent, &plan_id, &supporting, owner_statement);
+    let (code, owned_stdout) = run_fss(&owner_args)?;
+    let (code, owned) = agent.answer(code, &owned_stdout)?;
+    assert_eq!(code, Some(0), "{owned_stdout}");
+    let owned_pointers = texts(&owned, &["proofPointers"])?;
+    let owned_experience = text(&owned, &["payload", "experienceId"])?;
+    let owned_candidate =
+        retained_learning_candidate(&agent, ContentDigest::parse(&owned_pointers[2])?)?;
 
     let (code, opened_stdout) = run_fss(&[
         "session".into(),
@@ -2564,6 +2796,36 @@ fn learning_feedback_cannot_borrow_another_sessions_episode_or_request_activatio
     };
     assert_ne!(other.session, agent.session);
     assert_eq!(text(&opened, &["principalId"])?, principal);
+    let before_foreign_read = learning_tree(&agent.root, &[""])?;
+    let (code, foreign_inventory) = other.run("orient", &["--session", &other.session])?;
+    assert_eq!(code, Some(0), "{foreign_inventory:?}");
+    let foreign_items = field(&foreign_inventory, &["payload", "contextPack", "items"])?
+        .array()
+        .ok_or("foreign-session protected context")?;
+    for private in [
+        owned_experience,
+        owned_candidate.proposal_id.as_str(),
+        owner_statement,
+    ] {
+        assert!(
+            foreign_items.iter().all(|item| {
+                text(item, &["content"]).is_ok_and(|content| !content.contains(private))
+            }),
+            "another session exposed private captured-learning context: {private}"
+        );
+    }
+    let foreign_proofs = texts(&foreign_inventory, &["proofPointers"])?;
+    for pointer in owned_pointers.iter().take(3) {
+        assert!(
+            !foreign_proofs.contains(pointer),
+            "another session borrowed learning custody"
+        );
+    }
+    assert_eq!(
+        learning_tree(&agent.root, &[""])?,
+        before_foreign_read,
+        "private scope filtering is read-only"
+    );
     let statement = "Propose a policy review from the other session's cancelled alert.";
     let args = learning_args(&other, &plan_id, &supporting, statement);
     let arguments = learning_arguments(&other.session, &plan_id, &supporting, statement);

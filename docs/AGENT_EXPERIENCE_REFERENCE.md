@@ -97,6 +97,56 @@ boundary says which publication completed and whether further publication progre
 After resolving the failed precondition, retry the same request. Never delete retained feedback
 to hide uncertain publication progress.
 
+## Discover captured learning and carry it forward
+
+An admitted session can rediscover its captures through the existing orientation operation:
+
+```sh
+fss orient --json --root DEPLOYMENT --session SESSION --view epistemic_map
+```
+
+CLI and MCP share the same native projection. Protected `at_risk` items in
+`payload.contextPack.items` identify the experience, proposal, source episode, class and immutable
+publication digests. They report the captured state, single-episode evidence strength, zero
+calibrated confidence, zero verified helpful/harmful counts, and the original review/expiry
+deadlines. The deployment evidence clock determines whether review is due or expiry has elapsed.
+An expired capture remains visible historical evidence; neither a read nor a retry renews it.
+
+Protected `unknown` items retain every distinct uncertainty from the captured source graph,
+including unmetered cost, unproven efficacy and unvalidated current applicability. The full
+candidate statement stays in the retained proposal graph. The compact inventory does not turn
+that statement into a current-world fact or invent an unsupported detail/hydration operation.
+
+Discovery admits current session-read, situation-read and private-property scope, verifies the
+complete immutable graph and its original workspace membership, then selects this exact session,
+mission and principal. Historical grants do not restore access. An unavailable projection reports
+uncertainty rather than claiming that no proposals exist. Damaged or incomplete custody refuses
+the operation instead of returning a successful empty inventory.
+
+The profile admits at most sixteen captured proposals, with bounded total source-object and byte
+reads. The native capture guard refuses a new learning publication once that inventory is full;
+feedback already retained remains intact, and exact retries of existing captures remain eligible
+for recovery. Public context admission can refuse a request earlier, before feedback publication. Protected context must also fit the requested view budget. A small Pulse may be unable to
+hold even one capture's required uncertainty; request `--view brief` or `--view epistemic_map`
+explicitly for the same session. This read changes only the response view, not the stored session.
+Overbound complete inventories refuse rather than silently omit older or expired captures.
+
+A session handoff copies the complete deduplicated capture graphs into its own publication
+closure, alongside its existing continuation records. The handoff retains the exact proposal,
+experience, binding and original plan/episode/feedback/mission objects. If the complete handoff
+cannot fit its publication bounds, publication refuses without truncating captured history.
+Backup/restore retains these bytes and checks their semantic source bindings. A restored
+historical copy remains fenced from new agent or effect writes.
+
+After a successful capture, feedback refreshes this read-only session projection before returning
+its result. An immediate exact retry therefore sees the same newly retained inventory. If that
+refresh fails, the partial response preserves both known feedback and learning publication roots.
+The session workspace is not advanced by this projection.
+
+Historical `follow` replay cannot yet certify learning-publication changes alongside its existing
+journal axes. Sessions with captured learning therefore retain an explicit replay refusal; current
+orientation and handoff remain the supported discovery paths.
+
 ## Cost and evidence limits
 
 The source episode's exact resource measurements remain bound by the publication graph.

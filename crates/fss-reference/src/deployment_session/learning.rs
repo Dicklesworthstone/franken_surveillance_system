@@ -602,6 +602,16 @@ pub(super) fn capture(
     ))
     .map_err(|_| invalid("the learning publication slot is invalid"))?;
     let existing = read_published(root, &slot)?;
+    if existing.is_none()
+        && captured_inventory(root, store, session, super::evidence_now(head))?
+            .briefs
+            .len()
+            >= MAX_CAPTURED_LEARNING
+    {
+        return Err(refused(
+            "the admitted captured-learning inventory is full; feedback remains retained and no new learning publication was started",
+        ));
+    }
     let workspace_digest = if let Some(existing) = &existing {
         // A benign workspace advance must not rewrite the original source binding. Recover
         // its exact historical workspace through the native owner under current admission.
@@ -724,6 +734,10 @@ pub(super) fn capture(
         original_resource_use_json: episode.record.episode.resource_use_json.clone(),
     })
 }
+
+mod inventory;
+pub use inventory::MAX_CAPTURED_LEARNING;
+pub(super) use inventory::{CapturedLearningInventory, captured_inventory};
 
 mod recovery;
 pub(crate) use recovery::{decode_experience, verify_recovery_closure};

@@ -186,6 +186,7 @@ pub fn orient_session(
         claims: briefs.claims,
         findings: briefs.findings,
         supervisions: briefs.supervisions,
+        captured_learning: briefs.captured_learning.map(|inventory| inventory.briefs),
         trauma_warnings: if briefs.advisory_memory_allowed {
             Some(trauma_guard::derive_trauma_guard_warnings(
                 &root,

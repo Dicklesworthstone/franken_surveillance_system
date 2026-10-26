@@ -424,7 +424,43 @@ pub fn publish_feedback(
             &head,
             &mut journal.store,
         ) {
-            Ok(learning) => published.learning = Some(learning),
+            Ok(learning) => {
+                published.learning = Some(learning);
+                // The new capture is now retained advisory context. Project it over the exact
+                // admitted position before responding, so the first result and a cold exact
+                // retry carry the same context without advancing or rebasing the workspace.
+                let refreshed = super::session_briefs(
+                    root,
+                    &journal.store,
+                    &published.session,
+                    &position.snapshot,
+                    now,
+                )
+                .and_then(|briefs| {
+                    let mission = super::mission_for_workspace(
+                        root,
+                        &published.session,
+                        &position.workspace,
+                    )?;
+                    orient_bound(
+                        Some((root, &head)),
+                        &position.snapshot,
+                        published.session.view,
+                        &published.session.principal_id,
+                        &published.session.mission_id,
+                        &published.session.session_id,
+                        &limits,
+                        briefs,
+                        &mission,
+                    )
+                });
+                match refreshed {
+                    Ok(orientation) => published.orientation = orientation,
+                    // Keep both immutable publication identities if downstream context
+                    // projection fails; the response can report this exact partial boundary.
+                    Err(error) => published.learning_refusal = Some(error),
+                }
+            }
             Err(error) => published.learning_refusal = Some(error),
         }
     }
