@@ -202,7 +202,8 @@ def main() -> int:
                         ("res_monitor.sh", "a4fa1325f392742a11313da13426db36"),
                         ("mem_data_upload", "0370e40df04334401fd4ae7045b131ed"),
                         ("VERSION", "ddc95b0d133d926ea4ce9f014a75d250"),
-                        ("launch.sh", "6256ef43418f621986ee974c556cea4b"),
+                        # our replacement, so the checksum is of the bytes we serve, not the cloud's
+                        ("launch.sh", md5_of("/wyzeedgeai_cam_v4_test_protocol/14.9.50039.r/launch.sh")),
                     ]
                     procs = [
                         {"processname": "wyzeedgeai_cam_v4_test_protocol",
