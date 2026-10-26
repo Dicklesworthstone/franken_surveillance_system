@@ -103,6 +103,8 @@ pub mod plan;
 
 /// Advisory, evidence-linked feedback proposals (AOP-013); never a policy mutation.
 pub mod feedback;
+/// Outcome-attributed advisory learning captures from immutable closed plans.
+pub mod learning;
 
 /// Bounded work-claim leases over mission cases (FSS-226); coordination only, never authority.
 pub mod claims;
@@ -1118,6 +1120,8 @@ pub enum AgentRecoveryRecord {
     Finding(Box<findings::FindingRecord>),
     /// Advisory proposal, never active policy.
     Feedback(Box<fss_core::AgentFeedbackProposal>),
+    /// Captured single-episode learning, preserved without promotion or live authority.
+    Learning(Box<fss_core::ExperienceCapsule>),
 }
 
 impl AgentRecoveryRecord {
@@ -1130,6 +1134,7 @@ impl AgentRecoveryRecord {
             Self::Episode(record) => &record.episode.episode_id,
             Self::Finding(record) => &record.finding_id,
             Self::Feedback(record) => &record.feedback_id,
+            Self::Learning(record) => &record.experience_id,
         }
     }
 }
@@ -1157,6 +1162,9 @@ pub(crate) fn decode_recovery_record(
         }
         "agent-feedback" => {
             AgentRecoveryRecord::Feedback(Box::new(feedback::decode_proposal(bytes)?))
+        }
+        "agent-learning" => {
+            AgentRecoveryRecord::Learning(Box::new(learning::decode_experience(bytes)?))
         }
         _ => return Err(ContractError::DigestMismatch),
     };

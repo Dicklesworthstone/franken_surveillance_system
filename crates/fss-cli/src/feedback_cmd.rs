@@ -5,7 +5,10 @@
 //! [`fss_reference::deployment_session::feedback`] owns the durable effect: the proposal is
 //! published root-last under `<root>/agent/publications/`. Recording a proposal never changes
 //! evidence, authority, policy, thresholds, models, retention, privacy, or effects
-//! (`activePolicyMutation` is the constant `false`).
+//! (`activePolicyMutation` is the constant `false`). For an own-session plan with a retained
+//! terminal episode, `create_learning_proposal` additionally captures an immutable experience
+//! and learning candidate; the registered response is `fss.experience_capsule.v1`. Other
+//! targets/dispositions retain the ordinary feedback response.
 //!
 //! ```text
 //! fss feedback --json --root DIR --session ID --target event|case|operation|plan:ID
@@ -19,6 +22,8 @@
 
 use std::path::PathBuf;
 
+mod learning;
+
 use fss_core::{
     AgentFeedbackProposal, AgentView, CanonicalEncode, ContentDigest, FeedbackProposalKind,
     RequestedDisposition, ResponseOutcome, ResponseSafeRetry, SessionId,
@@ -26,6 +31,7 @@ use fss_core::{
 use fss_reference::deployment_session::feedback::{
     CAPABILITY_FEEDBACK, FeedbackRequest, FeedbackTarget, PublishedFeedback, publish_feedback,
 };
+use fss_reference::deployment_session::learning::MAX_LEARNING_STATEMENT_BYTES;
 
 use crate::agent_json;
 use crate::error::{CliError, ExitIdentity};
@@ -197,6 +203,17 @@ pub fn parse_feedback_args(tokens: &[ArgToken]) -> Result<FeedbackArgs, CliError
             )
         })?,
     };
+    if matches!(&target, FeedbackTarget::Plan(_))
+        && disposition == RequestedDisposition::CreateLearningProposal
+        && statement.len() > MAX_LEARNING_STATEMENT_BYTES
+    {
+        return Err(malformed(
+            "--statement",
+            statement,
+            "an episode learning candidate must be at most 8192 UTF-8 bytes",
+            *index,
+        ));
+    }
     Ok(FeedbackArgs {
         root,
         request: FeedbackRequest {
@@ -259,6 +276,9 @@ pub fn feedback_json(proposal: &AgentFeedbackProposal) -> String {
 }
 
 fn response(published: &PublishedFeedback) -> Result<String, Box<dyn std::error::Error>> {
+    if let Some(captured) = &published.learning {
+        return learning::response(published, captured);
+    }
     let orientation = &published.orientation;
     let capsule = orientation.capsule();
     let proposal = &published.proposal;
@@ -338,12 +358,25 @@ fn response(published: &PublishedFeedback) -> Result<String, Box<dyn std::error:
 #[must_use]
 pub fn execute_feedback(args: &FeedbackArgs) -> (String, ExitIdentity) {
     match publish_feedback(&args.root, &args.request) {
-        Ok(published) => rendered(
-            response(&published),
-            ExitIdentity::SUCCESS,
-            COMMAND,
-            &args.root,
-        ),
+        Ok(mut published) => {
+            if let Some(error) = published.learning_refusal.take() {
+                return rendered(
+                    learning::capture_refusal(&published, error),
+                    ExitIdentity::AGENT_REFUSED,
+                    COMMAND,
+                    &args.root,
+                );
+            }
+            match response(&published) {
+                Ok(json) => (json, ExitIdentity::SUCCESS),
+                Err(_) => rendered(
+                    learning::render_failure(&published),
+                    ExitIdentity::AGENT_REFUSED,
+                    COMMAND,
+                    &args.root,
+                ),
+            }
+        }
         Err(error) => refuse(
             &Operation {
                 command: COMMAND,

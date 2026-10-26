@@ -526,7 +526,7 @@ fn episode_custody(
     };
     Ok(Some((projected, published)))
 }
-fn checked_episode(
+pub(super) fn checked_episode(
     root: &Path,
     plan: &PlanRecord,
     facts: Option<&OperationFacts>,

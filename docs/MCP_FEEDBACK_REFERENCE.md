@@ -1,4 +1,4 @@
-# MCP advisory feedback reference
+# MCP advisory feedback and experience reference
 
 The `feedback` tool projects the existing native AOP-013 command. It records an immutable,
 evidence-linked proposal so a client can preserve a correction, adjudication, outcome signal or
@@ -50,9 +50,15 @@ Kinds are `correction`, `adjudication`, `helpful`, `harmful`, `missing_evidence`
 `hard_negative_candidate`, `policy_candidate` and `model_candidate`.
 
 Dispositions are `record_only`, `create_learning_proposal`, `open_case`, `requalify`,
-`deprecate` and `operator_review`. Every disposition is recorded as a request. Recording feedback
-does not perform the disposition or activate a policy, model, threshold, retention rule, privacy
-change, identity decision or effect.
+`deprecate` and `operator_review`. For an own-session `plan:` target with a retained terminal
+execution episode, `create_learning_proposal` captures an immutable experience and learning
+candidate. Its statement bound is 8,192 UTF-8 bytes. Other target/disposition combinations record
+the request without performing it. No disposition activates a policy, model, threshold,
+retention rule, privacy change, identity decision or effect.
+
+See [the episode experience reference](AGENT_EXPERIENCE_REFERENCE.md) for the complete capture,
+proof-pointer and partial-failure contract. The ordinary feedback response described below remains
+the result for all requests outside that bounded capture profile.
 
 The native owner checks target grounding: an event at the session anchor, a case visible to the
 session, an operation in the committed effect journal or a published plan. This projection adds no
@@ -96,6 +102,6 @@ intent, principal isolation, all three custody objects under missing/corrupt fau
 or notification non-mutation. Mapping unit tests cover every native target family, kind and
 disposition, including the combined evidence bound and literal statements.
 
-This is the existing bounded reference proposal path. It does not implement adjudication review,
-automatic learning promotion, policy activation or a new effect owner, and does not by itself close
-the broader FSS-231 qualification work.
+This is a bounded reference proposal and episode-capture path. It does not implement adjudication
+review, automatic learning promotion, policy activation or a new effect owner, and does not by
+itself close the broader FSS-230/231/232 qualification work.

@@ -94,7 +94,7 @@ pub struct FeedbackRequest {
 }
 
 /// A published proposal.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Debug)]
 pub struct PublishedFeedback {
     /// The schema-faithful proposal.
     pub proposal: AgentFeedbackProposal,
@@ -108,6 +108,11 @@ pub struct PublishedFeedback {
     pub request_digest: ContentDigest,
     /// True when the deployment head lies past the session's anchor.
     pub head_moved: bool,
+    /// Captured experience for an explicit own-plan learning disposition.
+    pub learning: Option<super::learning::PublishedLearning>,
+    /// Learning failed after this exact feedback publication was retained. A transport must
+    /// report partial/refused completion and preserve the feedback identity and root.
+    pub learning_refusal: Option<DeploymentSessionError>,
 }
 
 fn slot(feedback_id: &str) -> Result<SlotName, DeploymentSessionError> {
@@ -254,6 +259,14 @@ pub fn publish_feedback(
     root: &Path,
     request: &FeedbackRequest,
 ) -> Result<PublishedFeedback, DeploymentSessionError> {
+    if request.disposition == RequestedDisposition::CreateLearningProposal
+        && matches!(&request.target, FeedbackTarget::Plan(_))
+        && request.statement.len() > super::learning::MAX_LEARNING_STATEMENT_BYTES
+    {
+        return Err(DeploymentSessionError::FeedbackRefused(
+            "learning statements must be at most 8192 bytes; no feedback was published".to_owned(),
+        ));
+    }
     let total = request.supporting.len() + request.contradicting.len();
     if total == 0 || total > MAX_FEEDBACK_EVIDENCE {
         return Err(DeploymentSessionError::FeedbackRefused(format!(
@@ -277,7 +290,7 @@ pub fn publish_feedback(
         &request.session_id,
         now,
     )?;
-    let session = position.session;
+    let session = position.session.clone();
     if !session.capabilities.contains(CAPABILITY_FEEDBACK) {
         journal.commit_pin()?;
         return Err(DeploymentSessionError::FeedbackDenied);
@@ -323,7 +336,7 @@ pub fn publish_feedback(
         &super::mission_for_workspace(root, &session, &position.workspace)?,
     )?;
     journal.commit_pin()?;
-    drop(journal);
+    // Hold the admitted session lock through source validation and any advisory capture.
     let supporting = handles(&request.supporting);
     let contradicting = handles(&request.contradicting);
     let target = target_json(&request.target);
@@ -389,14 +402,34 @@ pub fn publish_feedback(
         encoder.text(&feedback_id);
         head.anchor.encode_canonical(encoder);
     });
-    Ok(PublishedFeedback {
+    let mut published = PublishedFeedback {
         proposal,
         root: published_root,
         session,
         orientation,
         request_digest,
         head_moved: position.head_moved,
-    })
+        learning: None,
+        learning_refusal: None,
+    };
+    if request.disposition == RequestedDisposition::CreateLearningProposal
+        && matches!(&request.target, FeedbackTarget::Plan(_))
+    {
+        match super::learning::capture(
+            root,
+            request,
+            &published,
+            &position,
+            &history,
+            &head,
+            &mut journal.store,
+        ) {
+            Ok(learning) => published.learning = Some(learning),
+            Err(error) => published.learning_refusal = Some(error),
+        }
+    }
+    drop(journal);
+    Ok(published)
 }
 
 /// The public `fss.agent_feedback_proposal.v1` rendering (published beside the record). The

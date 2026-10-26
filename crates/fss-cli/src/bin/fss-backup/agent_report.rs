@@ -2,8 +2,8 @@
 //! Bounded historical recovery rendering. These records are not live admission responses.
 
 use fss_cli::agent_json::{
-    agent_session, array, contract_basis, digests, evidence_anchor, object, optional_string,
-    session_capsule, string, strings,
+    agent_session, array, budget, contract_basis, digests, evidence_anchor, object,
+    optional_string, session_capsule, string, strings,
 };
 use fss_core::ContractError;
 use fss_reference::deployment_backup::{AgentPublicationState, AgentRecoveryState};
@@ -178,6 +178,57 @@ fn publication(value: &AgentPublicationState) -> Result<String, ContractError> {
         ]),
         AgentRecoveryRecord::Finding(record) => fss_cli::finding_cmd::finding_json(record)?,
         AgentRecoveryRecord::Feedback(record) => fss_cli::feedback_cmd::feedback_json(record),
+        AgentRecoveryRecord::Learning(record) => object(&[
+            ("experience_id", string(&record.experience_id)),
+            ("mission_id", string(record.mission_id.as_str())),
+            ("deployment_scope", strings(&record.deployment_scope)),
+            ("basis_anchor", evidence_anchor(&record.basis_anchor)),
+            (
+                "situation_signature",
+                record.situation_signature_json.clone(),
+            ),
+            ("objective", string(&record.objective)),
+            (
+                "initial_epistemic_map",
+                array(
+                    &record
+                        .initial_epistemic_map
+                        .iter()
+                        .map(|statement| {
+                            object(&[
+                                ("statement_id", string(&statement.statement_id)),
+                                ("text", string(&statement.text)),
+                                (
+                                    "epistemic_state",
+                                    string(statement.epistemic_state.as_str()),
+                                ),
+                                ("basis", strings(&statement.basis)),
+                            ])
+                        })
+                        .collect::<Vec<_>>(),
+                ),
+            ),
+            ("operations", strings(&record.operations)),
+            ("outcome", string(&record.outcome)),
+            ("predictive_signals", strings(&record.predictive_signals)),
+            ("misleading_signals", strings(&record.misleading_signals)),
+            ("failed_assumptions", strings(&record.failed_assumptions)),
+            ("cost", budget(&record.cost)),
+            ("applicability", strings(&record.applicability)),
+            (
+                "evidence_strength",
+                string(record.evidence_strength.as_str()),
+            ),
+            ("confidence", "0".to_owned()),
+            (
+                "decay_half_life_days",
+                record.decay_half_life_days.to_string(),
+            ),
+            ("privacy_class", string(&record.privacy_class)),
+            ("created_at_ns", record.created_at_ns.to_string()),
+            ("promotion_state", string("captured")),
+            ("authority_granted", "false".to_owned()),
+        ]),
     };
     Ok(object(&[
         ("slot", string(&value.slot)),

@@ -2046,3 +2046,554 @@ fn enrolled_mission_requires_terminal_episode_and_retains_handoff_proof() -> Tes
     assert_eq!(fs::read(&effects_path)?, effects_after_cancel);
     Ok(())
 }
+
+fn learning_quote(value: &str) -> String {
+    format!("\"{}\"", fss_cli::escape_json_str(value))
+}
+
+fn learning_arguments(session: &str, plan: &str, supporting: &str, statement: &str) -> String {
+    format!(
+        r#"{{"session":{},"target":{},"kind":"policy_candidate","statement":{},"supporting":[{}],"disposition":"create_learning_proposal"}}"#,
+        learning_quote(session),
+        learning_quote(&format!("plan:{plan}")),
+        learning_quote(statement),
+        learning_quote(supporting),
+    )
+}
+
+fn learning_args(agent: &Agent, plan: &str, supporting: &str, statement: &str) -> Vec<OsString> {
+    agent.args(
+        "feedback",
+        &[
+            "--session",
+            &agent.session,
+            "--target",
+            &format!("plan:{plan}"),
+            "--kind",
+            "policy_candidate",
+            "--statement",
+            statement,
+            "--supporting",
+            supporting,
+            "--disposition",
+            "create_learning_proposal",
+        ],
+    )
+}
+
+fn learning_mcp_wire(agent: &Agent, principal: &str, arguments: &str) -> TestResult<Value> {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_fss-mcp"))
+        .arg("--root")
+        .arg(&agent.root)
+        .arg("--principal")
+        .arg(principal)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let mut input = child.stdin.take().ok_or("learning MCP stdin")?;
+    writeln!(
+        input,
+        r#"{{"jsonrpc":"2.0","id":1,"method":"initialize","params":{{"protocolVersion":"2025-06-18","capabilities":{{}},"clientInfo":{{"name":"episode-learning-contract","version":"1"}}}}}}"#
+    )?;
+    writeln!(
+        input,
+        r#"{{"jsonrpc":"2.0","method":"notifications/initialized"}}"#
+    )?;
+    writeln!(
+        input,
+        r#"{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"feedback","arguments":{arguments}}}}}"#
+    )?;
+    drop(input);
+    let output = child.wait_with_output()?;
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stderr.is_empty(), "{output:?}");
+    let mut replies = String::from_utf8(output.stdout)?
+        .lines()
+        .map(|line| parse(line).map_err(Into::into))
+        .collect::<TestResult<Vec<Value>>>()?;
+    assert_eq!(replies.len(), 2);
+    assert_eq!(
+        text(&replies[0], &["result", "protocolVersion"])?,
+        "2025-06-18"
+    );
+    let reply = replies.pop().ok_or("learning MCP reply")?;
+    assert_eq!(field(&reply, &["id"])?.integer(), Some(2));
+    Ok(reply)
+}
+
+fn learning_mcp(
+    agent: &Agent,
+    principal: &str,
+    arguments: &str,
+    failed: bool,
+) -> TestResult<String> {
+    let wire = learning_mcp_wire(agent, principal, arguments)?;
+    assert_eq!(field(&wire, &["result", "isError"])?, &Value::Bool(failed));
+    let content = field(&wire, &["result", "content"])?
+        .array()
+        .ok_or("learning MCP content")?;
+    assert_eq!(content.len(), 1);
+    assert_eq!(text(&content[0], &["type"])?, "text");
+    let body = text(&content[0], &["text"])?.to_owned();
+    let (_, response) = agent.answer(None, &body)?;
+    assert_eq!(text(&response, &["operationId"])?, "AOP-013");
+    Ok(body)
+}
+
+fn learning_tree(
+    root: &Path,
+    prefixes: &[&str],
+) -> TestResult<std::collections::BTreeMap<PathBuf, ContentDigest>> {
+    let mut pending: Vec<PathBuf> = prefixes.iter().map(|prefix| root.join(prefix)).collect();
+    let mut files = std::collections::BTreeMap::new();
+    while let Some(path) = pending.pop() {
+        if !path.exists() {
+            continue;
+        }
+        if path.is_dir() {
+            for entry in fs::read_dir(path)? {
+                pending.push(entry?.path());
+            }
+        } else {
+            files.insert(
+                path.strip_prefix(root)?.to_path_buf(),
+                ContentDigest::sha256(&fs::read(path)?),
+            );
+        }
+    }
+    Ok(files)
+}
+
+fn learning_experiences(root: &Path) -> TestResult<Vec<ContentDigest>> {
+    let directory = root.join("agent/publications");
+    let objects = directory.join("spool/objects");
+    let mut found = Vec::new();
+    if !objects.exists() {
+        return Ok(found);
+    }
+    for entry in fs::read_dir(objects)? {
+        let name = entry?.file_name().to_string_lossy().into_owned();
+        if name.len() != 64 || !name.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            continue;
+        }
+        let digest = ContentDigest::parse(&format!("sha256:{name}"))?;
+        let bytes = fss_publication::read_verified(&directory, digest, 1 << 20)?;
+        let mut decoder = fss_core::CanonicalDecoder::new(&bytes);
+        if decoder
+            .text()
+            .is_ok_and(|schema| schema == fss_core::ExperienceCapsule::SCHEMA)
+        {
+            found.push(digest);
+        }
+    }
+    found.sort();
+    Ok(found)
+}
+
+fn learning_strings(decoder: &mut fss_core::CanonicalDecoder<'_>) -> TestResult<Vec<String>> {
+    let count = decoder.u32()?;
+    assert!(count <= 4096);
+    (0..count).map(|_| Ok(decoder.text()?.to_owned())).collect()
+}
+
+fn retained_learning_candidate(
+    agent: &Agent,
+    digest: ContentDigest,
+) -> TestResult<fss_core::LearningProposal> {
+    use fss_core::{CanonicalEncode, LearningClass, LearningProposal};
+
+    let bytes =
+        fss_publication::read_verified(agent.root.join("agent/publications"), digest, 1 << 20)?;
+    let mut decoder = fss_core::CanonicalDecoder::new(&bytes);
+    assert_eq!(decoder.text()?, LearningProposal::SCHEMA);
+    let id = decoder.text()?.to_owned();
+    assert_eq!(decoder.text()?, "policy_review_candidate");
+    let episode = decoder.text()?.to_owned();
+    let statement = decoder.text()?.to_owned();
+    let applicability = decoder.text()?.to_owned();
+    let supporting = learning_strings(&mut decoder)?;
+    let contradicting = learning_strings(&mut decoder)?;
+    let counterexamples = learning_strings(&mut decoder)?;
+    let confidence = decoder.u32()?;
+    let helpful = i64::try_from(decoder.i128()?)?;
+    let harmful = i64::try_from(decoder.i128()?)?;
+    let validation = learning_strings(&mut decoder)?;
+    assert_eq!(decoder.text()?, "captured");
+    let review = if decoder.bool()? {
+        Some(decoder.i128()?)
+    } else {
+        None
+    };
+    let expiry = if decoder.bool()? {
+        Some(decoder.i128()?)
+    } else {
+        None
+    };
+    let revival = learning_strings(&mut decoder)?;
+    let decision = decoder.text()?.to_owned();
+    decoder.ensure_finished()?;
+    let candidate = LearningProposal::record(
+        id,
+        LearningClass::PolicyReviewCandidate,
+        episode,
+        statement,
+        applicability,
+        supporting,
+        contradicting,
+        counterexamples,
+        confidence,
+        helpful,
+        harmful,
+        validation,
+        review,
+        expiry,
+        revival,
+        decision,
+    )?;
+    assert_eq!(candidate.try_canonical_bytes()?, bytes);
+    Ok(candidate)
+}
+
+#[test]
+fn closed_episode_feedback_publishes_captured_learning_with_cold_cli_mcp_recovery() -> TestResult {
+    let (directory, event_id) = corroborated_event("episode-learning")?;
+    let agent = Agent::open(&directory)?;
+    let relay = Relay::spawn(None)?;
+    let (code, planned) = agent.plan(&event_id, relay.address, &[])?;
+    assert_eq!(code, Some(0), "{planned:?}");
+    let (plan_id, approval, _) = approvals(&planned)?;
+    let operation = operation_of(&planned)?;
+    let principal = text(&planned, &["principalId"])?;
+    let supporting = texts(&planned, &["proofPointers"])?[0].clone();
+    let statement = "@/outside/policy.json --principal=principal:other\nReview the \"cancel before dispatch\" procedure; this statement cannot activate policy.";
+    let args = learning_args(&agent, &plan_id, &supporting, statement);
+    let arguments = learning_arguments(&agent.session, &plan_id, &supporting, statement);
+    let authority_paths = [
+        "ledger", "effects", "objects", "LAYOUT", "policy", "models", "config",
+    ];
+    let before = learning_tree(&agent.root, &authority_paths)?;
+    let experiences_before = learning_experiences(&agent.root)?;
+
+    // A proposal can be retained before its requested learning materialization is possible.
+    // The response must disclose that partial progress and must not manufacture an episode.
+    let (code, premature_stdout) = run_fss(&args)?;
+    let (code, premature) = agent.answer(code, &premature_stdout)?;
+    assert_eq!(code, Some(5), "{premature_stdout}");
+    assert_eq!(text(&premature, &["outcome"])?, "partial");
+    assert_eq!(text(&premature, &["operationId"])?, "AOP-013");
+    assert_eq!(
+        text(&premature, &["payloadSchema"])?,
+        "fss.agent_feedback_proposal.v1"
+    );
+    assert_eq!(
+        field(&premature, &["payload", "activePolicyMutation"])?,
+        &Value::Bool(false)
+    );
+    let feedback_root = texts(&premature, &["proofPointers"])?[0].clone();
+    let feedback_id = text(&premature, &["payload", "feedbackId"])?;
+    assert!(
+        texts(&premature, &["executionBoundary", "completed"])?
+            .iter()
+            .any(|line| line.contains(feedback_id))
+    );
+    assert_eq!(learning_experiences(&agent.root)?, experiences_before);
+    assert_eq!(learning_tree(&agent.root, &authority_paths)?, before);
+    let premature_mcp = learning_mcp(&agent, principal, &arguments, true)?;
+    let premature_mcp = parse(&premature_mcp)?;
+    assert_eq!(text(&premature_mcp, &["outcome"])?, "partial");
+    assert_eq!(texts(&premature_mcp, &["proofPointers"])?[0], feedback_root);
+
+    let (code, prepared) = agent.plan(&event_id, relay.address, &["--approve", &approval])?;
+    assert_eq!(code, Some(0), "{prepared:?}");
+    let (code, preview) = agent.run("cancel", &["--operation", &operation])?;
+    assert_eq!(code, Some(0), "{preview:?}");
+    let cancel = texts(&preview, &["proofPointers"])?[0].clone();
+    let (code, cancelled) =
+        agent.run("cancel", &["--operation", &operation, "--approve", &cancel])?;
+    assert_eq!(code, Some(0), "{cancelled:?}");
+    let (code, closed, episode) = agent.close(&plan_id)?;
+    assert_eq!(code, Some(0), "{closed:?}");
+    let (episode, _) = episode.ok_or("learning source episode")?;
+    assert_eq!(text(&episode, &["outcome", "state"])?, "cancelled");
+    let episode_rendering = ContentDigest::parse(&texts(&closed, &["proofPointers"])?[1])?;
+    let authority = learning_tree(&agent.root, &authority_paths)?;
+
+    let (code, first_stdout) = run_fss(&args)?;
+    let (code, first) = agent.answer(code, &first_stdout)?;
+    assert_eq!(code, Some(0), "{first_stdout}");
+    assert_eq!(text(&first, &["outcome"])?, "ok");
+    assert_eq!(text(&first, &["operationId"])?, "AOP-013");
+    assert_eq!(
+        text(&first, &["payloadSchema"])?,
+        "fss.experience_capsule.v1"
+    );
+    assert_eq!(text(&first, &["sessionId"])?, agent.session);
+    assert_eq!(
+        field(&first, &["payload", "missionId"])?,
+        field(&planned, &["missionId"])?
+    );
+    assert_eq!(
+        text(&first, &["payload", "evidenceStrength"])?,
+        "single_episode"
+    );
+    assert!(text(&first, &["payload", "outcome"])?.contains("cancelled"));
+    let Value::Number(confidence) = field(&first, &["payload", "confidence"])? else {
+        return Err("experience confidence is not a number".into());
+    };
+    assert_eq!(confidence.parse::<f64>()?, 0.0);
+    assert!(texts(&first, &["payload", "operations"])?.contains(&operation));
+    assert!(!texts(&first, &["payload", "missingEvidence"])?.is_empty());
+    assert!(
+        field(&first, &["payload", "candidateTemplates"])?
+            .array()
+            .ok_or("experience candidates")?
+            .iter()
+            .any(|candidate| {
+                text(candidate, &["kind"]).is_ok_and(|kind| kind == "policy_proposal")
+                    && text(candidate, &["content"]).is_ok_and(|content| content == statement)
+            })
+    );
+
+    let pointers = texts(&first, &["proofPointers"])?;
+    assert!(pointers.len() >= 7);
+    let learning_root = ContentDigest::parse(&pointers[0])?;
+    let experience_digest = ContentDigest::parse(&pointers[1])?;
+    let proposal_digest = ContentDigest::parse(&pointers[2])?;
+    let episode_root = ContentDigest::parse(&pointers[3])?;
+    assert_eq!(pointers[4], feedback_root);
+    assert_eq!(pointers[5], supporting);
+    let publication = agent.root.join("agent/publications");
+    let manifest = fss_object::ObjectManifest::from_canonical_bytes(
+        &fss_publication::read_verified(&publication, learning_root, 1 << 20)?,
+    )?;
+    assert_eq!(manifest.metadata_digest(), Some(experience_digest));
+    assert!(manifest.children().contains(&proposal_digest));
+    let experience = fss_publication::read_verified(&publication, experience_digest, 1 << 20)?;
+    let mut decoder = fss_core::CanonicalDecoder::new(&experience);
+    assert_eq!(decoder.text()?, fss_core::ExperienceCapsule::SCHEMA);
+    assert_eq!(decoder.text()?, text(&first, &["payload", "experienceId"])?);
+    let source = fss_object::ObjectManifest::from_canonical_bytes(
+        &fss_publication::read_verified(&publication, episode_root, 1 << 20)?,
+    )?;
+    assert!(source.children().contains(&episode_rendering));
+    for pointer in &pointers[4..6] {
+        fss_object::ObjectManifest::from_canonical_bytes(&fss_publication::read_verified(
+            &publication,
+            ContentDigest::parse(pointer)?,
+            1 << 20,
+        )?)?;
+    }
+    let candidate = retained_learning_candidate(&agent, proposal_digest)?;
+    assert_eq!(candidate.source_episode_id, text(&episode, &["episodeId"])?);
+    assert_eq!(candidate.statement, statement);
+    assert!(candidate.supporting_evidence.contains(&supporting));
+    assert_eq!(candidate.confidence_numerator, 0);
+    assert_eq!(candidate.helpful_outcomes, 0);
+    assert_eq!(candidate.harmful_outcomes, 0);
+    assert!(!candidate.required_validation.is_empty());
+    assert!(!candidate.applicability_json.is_empty());
+    assert_eq!(
+        candidate.promotion_state,
+        fss_core::PromotionState::Captured
+    );
+    assert_eq!(learning_tree(&agent.root, &authority_paths)?, authority);
+    assert_eq!(relay.connections(), 0);
+
+    let retained = learning_tree(&agent.root, &["agent/publications"])?;
+    let (code, retry_stdout) = run_fss(&args)?;
+    assert_eq!(code, Some(0), "{retry_stdout}");
+    assert_eq!(
+        retry_stdout, first_stdout,
+        "cold CLI retry must recover the exact result"
+    );
+    let mcp = learning_mcp(&agent, principal, &arguments, false)?;
+    assert_eq!(
+        mcp,
+        first_stdout.trim_end(),
+        "MCP and CLI share the native result"
+    );
+    assert_eq!(
+        learning_tree(&agent.root, &["agent/publications"])?,
+        retained
+    );
+    assert_eq!(learning_tree(&agent.root, &authority_paths)?, authority);
+
+    // Captured artifacts bind the original admitted workspace. A benign explicit resume
+    // can advance that workspace at the same evidence anchor; recovery must authenticate
+    // the retained source revision instead of compiling a different binding from today's head.
+    let (code, before_resume) = agent.run("orient", &["--session", &agent.session])?;
+    assert_eq!(code, Some(0), "{before_resume:?}");
+    let prior_workspace = field(&before_resume, &["workspaceRevision"])?
+        .integer()
+        .ok_or("workspace revision before learning recovery")?;
+    let (code, handed) = agent.run("handoff", &["--session", &agent.session])?;
+    assert_eq!(code, Some(0), "{handed:?}");
+    let (code, resumed_stdout) = run_fss(&[
+        "session".into(),
+        "resume".into(),
+        "--json".into(),
+        "--root".into(),
+        agent.root.as_os_str().to_owned(),
+        "--handoff".into(),
+        text(&handed, &["payload", "handoffId"])?.into(),
+    ])?;
+    let (code, resumed) = agent.answer(code, &resumed_stdout)?;
+    assert_eq!(code, Some(0), "{resumed_stdout}");
+    assert_eq!(text(&resumed, &["sessionId"])?, agent.session);
+    assert_eq!(
+        field(&resumed, &["missionId"])?,
+        field(&first, &["missionId"])?
+    );
+    assert_eq!(
+        field(&resumed, &["payload", "anchor"])?,
+        field(&resumed, &["payload", "previousAnchor"])?,
+        "this recovery fixture advances workspace state without moving the evidence anchor"
+    );
+    assert!(
+        field(&resumed, &["workspaceRevision"])?
+            .integer()
+            .ok_or("workspace revision after learning recovery")?
+            > prior_workspace,
+        "the fixture must actually advance the workspace"
+    );
+    assert_eq!(learning_tree(&agent.root, &authority_paths)?, authority);
+    let after_handoff = learning_tree(&agent.root, &["agent/publications"])?;
+    let (code, recovered_stdout) = run_fss(&args)?;
+    let (code, recovered) = agent.answer(code, &recovered_stdout)?;
+    assert_eq!(code, Some(0), "{recovered_stdout}");
+    assert_eq!(
+        &texts(&recovered, &["proofPointers"])?[..6],
+        &pointers[..6],
+        "workspace evolution cannot replace the original learning or its source roots"
+    );
+    assert_eq!(
+        raw_payload(&recovered_stdout)?,
+        raw_payload(&first_stdout)?,
+        "the captured experience and candidate meaning remain immutable"
+    );
+    let recovered_mcp = learning_mcp(&agent, principal, &arguments, false)?;
+    assert_eq!(recovered_mcp, recovered_stdout.trim_end());
+    assert_eq!(
+        learning_tree(&agent.root, &["agent/publications"])?,
+        after_handoff
+    );
+    assert_eq!(learning_tree(&agent.root, &authority_paths)?, authority);
+    assert_eq!(relay.connections(), 0);
+
+    // Retained learning never licenses a retry to recreate a lost source episode or ignore
+    // corruption in its canonical candidate. Every call is a fresh process.
+    for (digest, remove) in [(episode_rendering, true), (proposal_digest, false)] {
+        let name = digest.to_text();
+        let path = publication
+            .join("spool/objects")
+            .join(name.strip_prefix("sha256:").ok_or("SHA-256 custody")?);
+        let original = fs::read(&path)?;
+        if remove {
+            fs::remove_file(&path)?;
+        } else {
+            let mut damaged = original.clone();
+            *damaged.last_mut().ok_or("empty learning custody object")? ^= 1;
+            fs::write(&path, damaged)?;
+        }
+        let damaged = learning_tree(&agent.root, &["agent/publications"])?;
+        let (code, refused_stdout) = run_fss(&args)?;
+        let (code, refused) = agent.answer(code, &refused_stdout)?;
+        assert_eq!(code, Some(5), "{refused_stdout}");
+        assert_ne!(text(&refused, &["outcome"])?, "ok");
+        assert_ne!(
+            text(&refused, &["payloadSchema"])?,
+            "fss.experience_capsule.v1"
+        );
+        let refused_mcp = learning_mcp(&agent, principal, &arguments, true)?;
+        assert_ne!(text(&parse(&refused_mcp)?, &["outcome"])?, "ok");
+        assert_eq!(
+            learning_tree(&agent.root, &["agent/publications"])?,
+            damaged
+        );
+        assert_eq!(learning_tree(&agent.root, &authority_paths)?, authority);
+        assert_eq!(relay.connections(), 0);
+        fs::write(&path, original)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn learning_feedback_cannot_borrow_another_sessions_episode_or_request_activation() -> TestResult {
+    let (directory, event_id) = corroborated_event("episode-learning-scope")?;
+    let agent = Agent::open(&directory)?;
+    let relay = Relay::spawn(None)?;
+    let (code, planned) = agent.plan(&event_id, relay.address, &[])?;
+    assert_eq!(code, Some(0), "{planned:?}");
+    let (plan_id, approval, _) = approvals(&planned)?;
+    let operation = operation_of(&planned)?;
+    let principal = text(&planned, &["principalId"])?;
+    let (code, prepared) = agent.plan(&event_id, relay.address, &["--approve", &approval])?;
+    assert_eq!(code, Some(0), "{prepared:?}");
+    let (code, preview) = agent.run("cancel", &["--operation", &operation])?;
+    assert_eq!(code, Some(0), "{preview:?}");
+    let cancel = texts(&preview, &["proofPointers"])?[0].clone();
+    let (code, cancelled) =
+        agent.run("cancel", &["--operation", &operation, "--approve", &cancel])?;
+    assert_eq!(code, Some(0), "{cancelled:?}");
+    let (code, closed, episode) = agent.close(&plan_id)?;
+    assert_eq!(code, Some(0), "{closed:?}");
+    assert!(episode.is_some());
+    let supporting = texts(&closed, &["proofPointers"])?[1].clone();
+
+    let (code, opened_stdout) = run_fss(&[
+        "session".into(),
+        "open".into(),
+        "--json".into(),
+        "--root".into(),
+        agent.root.as_os_str().to_owned(),
+        "--mission".into(),
+        "Review a different mission.".into(),
+        "--objective".into(),
+        "Keep another session's episode outside this mission.".into(),
+    ])?;
+    let (code, opened) = agent.answer(code, &opened_stdout)?;
+    assert_eq!(code, Some(0), "{opened_stdout}");
+    let other = Agent {
+        root: agent.root.clone(),
+        scratch: agent.scratch.clone(),
+        session: text(&opened, &["sessionId"])?.to_owned(),
+    };
+    assert_ne!(other.session, agent.session);
+    assert_eq!(text(&opened, &["principalId"])?, principal);
+    let statement = "Propose a policy review from the other session's cancelled alert.";
+    let args = learning_args(&other, &plan_id, &supporting, statement);
+    let arguments = learning_arguments(&other.session, &plan_id, &supporting, statement);
+    let authority_paths = [
+        "ledger", "effects", "objects", "LAYOUT", "policy", "models", "config",
+    ];
+    let authority = learning_tree(&agent.root, &authority_paths)?;
+    let experiences = learning_experiences(&agent.root)?;
+    let (code, refused_stdout) = run_fss(&args)?;
+    let (code, refused) = other.answer(code, &refused_stdout)?;
+    assert_eq!(code, Some(5), "{refused_stdout}");
+    assert_ne!(text(&refused, &["outcome"])?, "ok");
+    assert_ne!(
+        text(&refused, &["payloadSchema"])?,
+        "fss.experience_capsule.v1"
+    );
+    let refused_mcp = learning_mcp(&other, principal, &arguments, true)?;
+    assert_ne!(text(&parse(&refused_mcp)?, &["outcome"])?, "ok");
+    assert_eq!(learning_experiences(&agent.root)?, experiences);
+    assert_eq!(learning_tree(&agent.root, &authority_paths)?, authority);
+
+    let before = learning_tree(&agent.root, &[""])?;
+    let malformed = format!(
+        r#"{}, "promotionState":"promoted"}}"#,
+        arguments.strip_suffix('}').ok_or("learning arguments")?
+    );
+    let wire = learning_mcp_wire(&other, principal, &malformed)?;
+    assert_eq!(field(&wire, &["error", "code"])?.integer(), Some(-32602));
+    assert_eq!(learning_tree(&agent.root, &[""])?, before);
+    let foreign = learning_mcp(&other, "principal:learning-foreign", &arguments, true)?;
+    assert_eq!(text(&parse(&foreign)?, &["outcome"])?, "refused");
+    assert_eq!(learning_experiences(&agent.root)?, experiences);
+    assert_eq!(learning_tree(&agent.root, &authority_paths)?, authority);
+    assert_eq!(relay.connections(), 0);
+    Ok(())
+}

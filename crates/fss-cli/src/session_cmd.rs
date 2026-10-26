@@ -1071,7 +1071,7 @@ pub(crate) struct Refusal {
     pub(crate) safe_retry: ResponseSafeRetry,
 }
 
-fn classify(error: DeploymentSessionError) -> Result<Refusal, DeploymentSessionError> {
+pub(crate) fn classify(error: DeploymentSessionError) -> Result<Refusal, DeploymentSessionError> {
     Ok(match error {
         DeploymentSessionError::SessionUnknown => Refusal {
             error_id: ERR_AGENT_SESSION_NOT_FOUND,

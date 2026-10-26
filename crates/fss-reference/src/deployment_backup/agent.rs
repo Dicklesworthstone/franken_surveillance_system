@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 //! Exact custody of the native agent journal and publications, without reviving authority.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use fss_core::{CanonicalDecoder, CanonicalEncoder, ContentDigest, LedgerAnchor};
@@ -59,7 +59,7 @@ pub struct AgentBackupSummary {
     pub claim_count: u64,
     /// Historical investigation heads.
     pub case_count: u64,
-    /// Verified mission, handoff, plan, episode, finding and feedback roots.
+    /// Verified mission, handoff, plan, episode, finding, feedback and captured learning roots.
     pub publication_count: u64,
     /// Commitment to every ordered publication slot, root and metadata digest.
     pub publication_digest: ContentDigest,
@@ -243,6 +243,33 @@ pub(super) fn inspect(
             &read(metadata_digest)?,
         )
         .map_err(|_| BackupError::Corrupt("agent_record"))?;
+        if let AgentRecoveryRecord::Learning(experience) = &record {
+            if manifest.children().len() > crate::deployment_session::learning::MAX_CAPTURE_OBJECTS
+            {
+                return Err(BackupError::Limit("agent_learning_closure"));
+            }
+            let mut objects = BTreeMap::new();
+            let mut bytes_used = 0_usize;
+            for digest in manifest.children() {
+                let bytes = read(*digest)?;
+                bytes_used = bytes_used
+                    .checked_add(bytes.len())
+                    .ok_or(BackupError::Limit("agent_learning_closure"))?;
+                if bytes_used > 4 * 1024 * 1024 {
+                    return Err(BackupError::Limit("agent_learning_closure"));
+                }
+                if objects.insert(*digest, bytes).is_some() {
+                    return Err(BackupError::Corrupt("agent_learning_closure"));
+                }
+            }
+            crate::deployment_session::learning::verify_recovery_closure(
+                experience,
+                metadata_digest,
+                &objects,
+                &sessions,
+            )
+            .map_err(|_| BackupError::Corrupt("agent_learning_closure"))?;
+        }
         if let AgentRecoveryRecord::Plan(plan) = &record
             && !manifest.children().contains(&plan.control_plan_digest)
         {
