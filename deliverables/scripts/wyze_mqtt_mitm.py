@@ -12,6 +12,7 @@ def srv_ctx():
     c=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER); c.load_cert_chain(CHAIN)
     c.minimum_version=ssl.TLSVersion.TLSv1_2; c.maximum_version=ssl.TLSVersion.TLSv1_2
     c.set_ciphers("ECDHE+AESGCM:ECDHE+CHACHA20:ECDHE+AES")
+    c.set_alpn_protocols(["x-amzn-mqtt-ca"])
     def sni(sock,name,ctx): print("SNI",name,flush=True)
     c.sni_callback=sni
     return c
