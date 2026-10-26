@@ -42,7 +42,7 @@ def main() -> int:
             n = int(self.headers.get("Content-Length") or 0)
             body = self.rfile.read(n) if n else b""
             print(f"{self.address_string()} ua={self.headers.get('User-Agent','-')!r} "
-                  f"POST {self.path} {body[:200]!r}", flush=True)
+                  f"POST {self.path} {body[:800]!r}", flush=True)
             if "get_iot_certificate" in self.path:
                 # The stock client wants URLs, not inline PEM (EV-pack-H-002 §9.2). Each retry gets
                 # the next envelope variant so the device itself walks the candidate list; the
