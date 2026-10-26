@@ -19,6 +19,8 @@ mod explain_options;
 mod fusion;
 #[path = "orient_cmd/history.rs"]
 pub(crate) mod history;
+#[path = "orient_cmd/learning_explain.rs"]
+mod learning_explain;
 
 use std::path::PathBuf;
 
@@ -67,15 +69,29 @@ pub struct OrientArgs {
     pub budget_tokens: Option<u64>,
 }
 
-/// Options for the `explain` command.
+/// One exact target for the existing explanation operation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ExplainTarget {
+    /// A committed event, optionally at an explicitly selected historical anchor.
+    Event(EventId),
+    /// One immutable captured-learning graph under current session authority.
+    Learning {
+        /// Session whose retained capture is being inspected.
+        session: SessionId,
+        /// Exact visible learning publication, never a replacement or latest alias.
+        publication_root: ContentDigest,
+    },
+}
+
+/// Options for the existing explanation operation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExplainArgs {
     /// Existing deployment root, read-only.
     pub root: PathBuf,
     /// Explicit historical metadata prefix; current deletion restrictions still apply.
     pub at: Option<AnchorToken>,
-    /// Published event to explain.
-    pub event_id: EventId,
+    /// Exact event or session-owned learning publication to explain.
+    pub target: ExplainTarget,
     /// Requesting principal label.
     pub principal: PrincipalId,
     /// Registered explanation view: `decision_diff` by default, or explicit `forensic`.
@@ -304,6 +320,8 @@ pub fn parse_explain_args(tokens: &[ArgToken]) -> Result<ExplainArgs, CliError> 
         &[
             "--root",
             "--event-id",
+            "--session",
+            "--learning-root",
             "--at",
             "--principal",
             "--custody",
@@ -314,24 +332,87 @@ pub fn parse_explain_args(tokens: &[ArgToken]) -> Result<ExplainArgs, CliError> 
         ],
     )?;
     let (view, budget_tokens) = explain_options::parse(&values)?;
-    let (score_calibration, fusion_policy) = fusion::parse(&values)?;
     let root = required_root("explain", &values)?;
-    let (_, raw, index) = take(&values, "--event-id").ok_or_else(|| CliError::MissingValue {
-        option: "--event-id".to_owned(),
-        command: Some("explain".to_owned()),
-        expected: "a published event identity for `--event-id`".to_owned(),
-    })?;
-    let event_id = EventId::parse(raw.clone()).map_err(|_| CliError::MalformedValue {
-        option: "--event-id".to_owned(),
-        value: raw.clone(),
-        reason: "event identity must be 1..128 characters of [A-Za-z0-9._:-]".to_owned(),
-        command: Some("explain".to_owned()),
-        index: *index,
-    })?;
+    let malformed =
+        |option: &str, raw: &str, index: usize, reason: &str| CliError::MalformedValue {
+            option: option.to_owned(),
+            value: raw.to_owned(),
+            reason: reason.to_owned(),
+            command: Some("explain".to_owned()),
+            index,
+        };
+    let target = if let Some((_, raw, index)) = take(&values, "--learning-root") {
+        for option in [
+            "--event-id",
+            "--at",
+            "--custody",
+            "--score-calibration",
+            "--fusion-policy",
+        ] {
+            if let Some((_, value, at)) = take(&values, option) {
+                return Err(malformed(
+                    option,
+                    value,
+                    *at,
+                    "learning inspection requires its complete retained custody and cannot use event-only options",
+                ));
+            }
+        }
+        let publication_root = ContentDigest::parse(raw).map_err(|_| {
+            malformed(
+                "--learning-root",
+                raw,
+                *index,
+                "expected the exact sha256:<64 hex> learning publication root",
+            )
+        })?;
+        let (_, raw, index) = take(&values, "--session").ok_or_else(|| CliError::MissingValue {
+            option: "--session".to_owned(),
+            command: Some("explain".to_owned()),
+            expected: "the existing session that owns this learning publication".to_owned(),
+        })?;
+        let session = SessionId::parse(raw.clone()).map_err(|_| {
+            malformed(
+                "--session",
+                raw,
+                *index,
+                "session identity must be 1..128 characters of [A-Za-z0-9._:-]",
+            )
+        })?;
+        ExplainTarget::Learning {
+            session,
+            publication_root,
+        }
+    } else {
+        if let Some((_, raw, index)) = take(&values, "--session") {
+            return Err(malformed(
+                "--session",
+                raw,
+                *index,
+                "--session requires --learning-root",
+            ));
+        }
+        let (_, raw, index) =
+            take(&values, "--event-id").ok_or_else(|| CliError::MissingValue {
+                option: "--event-id".to_owned(),
+                command: Some("explain".to_owned()),
+                expected: "a published event, or --learning-root with --session".to_owned(),
+            })?;
+        let event = EventId::parse(raw.clone()).map_err(|_| {
+            malformed(
+                "--event-id",
+                raw,
+                *index,
+                "event identity must be 1..128 characters of [A-Za-z0-9._:-]",
+            )
+        })?;
+        ExplainTarget::Event(event)
+    };
+    let (score_calibration, fusion_policy) = fusion::parse(&values)?;
     Ok(ExplainArgs {
         root,
         at: history::parse("explain", &values)?,
-        event_id,
+        target,
         principal: principal("explain", &values)?,
         view,
         budget_tokens,
@@ -1838,6 +1919,15 @@ fn unknown_event_response(
 /// Executes `explain`, returning the rendered response and its exit identity.
 #[must_use]
 pub fn execute_explain(args: &ExplainArgs) -> (String, ExitIdentity) {
+    let event_id = match &args.target {
+        ExplainTarget::Learning {
+            session,
+            publication_root,
+        } => {
+            return learning_explain::execute(args, session, *publication_root);
+        }
+        ExplainTarget::Event(event_id) => event_id,
+    };
     let Some(token_limit) = explain_options::limit(args.view, args.budget_tokens) else {
         return internal_failure("explain", &args.root);
     };
@@ -1851,7 +1941,7 @@ pub fn execute_explain(args: &ExplainArgs) -> (String, ExitIdentity) {
             Err(refusal) => return refusal,
         };
     let request_digest = request_identity("fss.cli.explain.request.v1", |encoder| {
-        encoder.text(args.event_id.as_str());
+        encoder.text(event_id.as_str());
         args.principal.encode_canonical(encoder);
         snapshot.anchor.encode_canonical(encoder);
         if let Some(scope) = &historical {
@@ -1910,7 +2000,7 @@ pub fn execute_explain(args: &ExplainArgs) -> (String, ExitIdentity) {
             return internal_failure("explain", &args.root);
         }
     };
-    match explain_event(&snapshot, &orientation, &args.event_id) {
+    match explain_event(&snapshot, &orientation, event_id) {
         Ok(Some(explanation)) => {
             let mut support = match evidence::compile(
                 &snapshot,
@@ -1942,7 +2032,7 @@ pub fn execute_explain(args: &ExplainArgs) -> (String, ExitIdentity) {
                     Some(scope) => crate::custody_review::check_event_at(
                         &args.root,
                         &snapshot,
-                        &args.event_id,
+                        event_id,
                         audit_limits,
                         scope,
                         &cancelled,
@@ -1950,7 +2040,7 @@ pub fn execute_explain(args: &ExplainArgs) -> (String, ExitIdentity) {
                     None => crate::custody_review::check_event(
                         &args.root,
                         &snapshot,
-                        &args.event_id,
+                        event_id,
                         audit_limits,
                         &cancelled,
                     ),
@@ -2061,7 +2151,7 @@ pub fn execute_explain(args: &ExplainArgs) -> (String, ExitIdentity) {
             unknown_event_response(
                 &snapshot,
                 &orientation,
-                &args.event_id,
+                event_id,
                 request_digest,
                 args.view,
                 token_limit,

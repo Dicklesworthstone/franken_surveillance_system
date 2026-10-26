@@ -735,6 +735,9 @@ pub(super) fn capture(
     })
 }
 
+mod inspect;
+pub use inspect::{InspectLearningRequest, LearningInspection, inspect_learning};
+
 mod inventory;
 pub use inventory::MAX_CAPTURED_LEARNING;
 pub(super) use inventory::{CapturedLearningInventory, captured_inventory};

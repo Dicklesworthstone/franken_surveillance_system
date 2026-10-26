@@ -50,7 +50,7 @@ Typical client configuration:
 | `commit` (AOP-008) | `fss commit` | `intent: dispatch` requires the exact prepared approval; `intent: reconcile` previews or records an approved owner attestation |
 | `cancel` (AOP-010) | `fss cancel` | Required `operation_id`; exact approval records cancellation while still prepared |
 | `wait` (AOP-009) | `fss wait` | Required `operation_id` and `deadline_ms`: 1..10000; reads existing effect state |
-| `explain` (AOP-011) | `fss explain` | Required `event_id` |
+| `explain` (AOP-011) | `fss explain` | Either `event_id`, or exact `session` + `learning_root`; optional `view` and `budget_tokens` |
 | `handoff` (AOP-012) | `fss handoff` | Required `session` ID; optional literal `note` |
 | `feedback` (AOP-013) | `fss feedback` | Required `session`, literal native `target`, `kind`, `statement` and 1..256 supporting/contradicting evidence handles; optional advisory `disposition` |
 | `doctor` (AOP-014) | `fss doctor --root` | No arguments |
@@ -357,3 +357,58 @@ receipts.
 
 Protocol reference: `modelcontextprotocol/modelcontextprotocol`, specification
 `2025-06-18`, `basic/lifecycle`, `basic/transports`, and `server/tools`.
+
+
+## Read one captured learning proposal
+
+After feedback captures an experience, its learning publication root is also retained in
+session orientation and handoff. Recover the complete selected candidate with its owning
+session and root; the original feedback statement and request are unnecessary:
+
+```sh
+fss explain --json --root DEPLOYMENT --session SESSION \
+  --learning-root sha256:PUBLICATION_HEX --view forensic --budget-tokens 8000
+```
+
+MCP uses the same native operation and returns the same response bytes:
+
+```json
+{
+  "name": "explain",
+  "arguments": {
+    "session": "SESSION",
+    "learning_root": "sha256:PUBLICATION_HEX",
+    "view": "forensic",
+    "budget_tokens": 8000
+  }
+}
+```
+
+The exact proposal statement, applicability JSON, supporting and contradicting citations,
+counterexamples, validation and revival requirements, original review/expiry times, experience
+fields, and original episode resource-use metadata are carried in the registered cognitive
+envelope. Historical assertions remain attributed and uncertain. Review and expiry flags use
+the current deployment evidence clock; reading never resets a deadline or promotes a candidate.
+The response anchor is current authority, while the cognitive basis anchor identifies the
+original experience.
+
+Only the selected publication and its retained source closure are hydrated. The reader does
+not render or enumerate the full learning inventory, so an inventory that exceeds orientation's
+context allowance does not prevent an adequately budgeted selected read. Every required field
+must fit the complete response budget; otherwise the entire answer is refused without silently
+dropping conditions or uncertainty. The explicit allowance must fit the selected view and the
+session's remaining token grant. Forensic defaults to 8000 tokens and permits up to 16000;
+the reference estimate counts the complete wire response at four UTF-8 bytes per token.
+
+Current session ownership, private scope, workspace/journal pins, and the registered explain
+grant must all admit the read. Newly opened sessions negotiate that read grant. Existing grants
+are never widened implicitly; older sessions lacking it are refused. A stored hash is not
+permission. Missing, foreign, corrupt, deleted, indeterminate, or orphaned selected custody
+fails closed, even if some immutable bytes remain on disk.
+
+Proposal and experience metadata are returned at H2; source manifest handles remain H0.
+No source media is disclosed. Existing locks protect the read; it appends no journal record,
+repairs no pin, changes no workspace or lease, and charges or replenishes no durable session
+budget. The learning selector cannot be combined with event-only `event_id`, `at`, or `custody`;
+the CLI also refuses event score-calibration and fusion-policy options. The MCP launcher still
+fixes the deployment and principal.

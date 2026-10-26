@@ -146,9 +146,11 @@ pub const HANDOFF_LIFETIME_NS: i128 = 7 * 24 * 3_600 * 1_000_000_000;
 /// `CAP-AGENT-PLAN-PREPARE-001` compiles and publishes plans; preparing or committing an effect
 /// additionally needs the operator's exact approval of that plan, never a session grant;
 /// `CAP-AGENT-FEEDBACK-001` appends advisory proposals that never mutate policy;
+/// `CAP-AGENT-EXPLAIN-001` admits exact read-only learning inspection for newly opened sessions;
 /// `CAP-AGENT-WORK-CLAIM-001` reserves bounded work leases that coordinate cognition only.
-pub const SESSION_CAPABILITIES: [&str; 10] = [
+pub const SESSION_CAPABILITIES: [&str; 11] = [
     "CAP-AGENT-CASE-WRITE-001",
+    "CAP-AGENT-EXPLAIN-001",
     "CAP-AGENT-FEEDBACK-001",
     "CAP-AGENT-HANDOFF-READ-001",
     "CAP-AGENT-HANDOFF-WRITE-001",

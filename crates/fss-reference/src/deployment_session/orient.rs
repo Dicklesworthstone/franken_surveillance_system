@@ -67,6 +67,125 @@ pub fn orient_session(
         .into());
     }
 
+    let (oriented, _, _) = with_admitted_session_read(
+        root,
+        &request.principal,
+        &request.session_id,
+        |read| {
+            let root = read.root;
+            let store = read.store;
+            let session = read.session;
+            let revision = read.revision;
+            let head = read.head;
+            let now = evidence_now(head);
+            let workspace_anchor_token = read.workspace_anchor_token;
+            let invalidated = read.invalidated;
+            let remaining_tokens = read.remaining_tokens;
+            let limits = OrientLimits::default();
+            let mission = mission_for_workspace(root, session, revision)?;
+            let briefs = session_briefs(root, store, session, head, now)?;
+            let binding = OrientSessionBinding {
+                mission_id: session.mission_id.clone(),
+                session_id: session.session_id.clone(),
+                mission: Some(mission.orientation_brief()),
+                mission_progress: briefs.mission_progress,
+                cases: briefs.cases,
+                claims: briefs.claims,
+                findings: briefs.findings,
+                supervisions: briefs.supervisions,
+                captured_learning: briefs.captured_learning.map(|inventory| inventory.briefs),
+                trauma_warnings: if briefs.advisory_memory_allowed {
+                    Some(trauma_guard::derive_trauma_guard_warnings(
+                        root,
+                        &request.principal,
+                        now.0,
+                    )?)
+                } else {
+                    None
+                },
+                plans: plan::plan_briefs(root, head, &session.mission_id, &session.principal_id)?,
+            };
+            let allowance = request.budget_tokens.unwrap_or(maximum);
+            if remaining_tokens == 0 || request.budget_tokens.is_some_and(|n| n > remaining_tokens)
+            {
+                return Err(
+                    DurableSessionError::Session(ReferenceSessionError::BudgetExceeded).into(),
+                );
+            }
+            let oriented_request = OrientRequest {
+                view: request.view,
+                principal: request.principal.clone(),
+                budget_tokens: Some(allowance.min(remaining_tokens)),
+            };
+            let mut orientation = orient_deployment_for_workspace(
+                head,
+                &oriented_request,
+                &limits,
+                &binding,
+                invalidated,
+            )?;
+            let journal_root = store.root();
+            let request_digest = digest_of("fss.reference_session_orient_request.v1", |encoder| {
+                request.principal.encode_canonical(encoder);
+                request.session_id.encode_canonical(encoder);
+                encoder.text(request.view.id());
+                encoder.u64(request.budget_tokens.unwrap_or(0));
+                encoder.text(&orientation.anchor_token);
+                encoder.digest(revision.digest());
+                encoder.digest(journal_root);
+            });
+            orientation.request_digest = request_digest;
+            orientation.degradation.push(
+        "Current read-only session projection; retained workspace, assumptions, grants, clocks and budgets are unchanged. No rebase or historical semantic delta is claimed.".to_owned()
+    );
+            orientation.degradation.push(
+        "Response budgets meter the deployment snapshot and compiled context. Session-journal replay, root-pin and publication-custody checks, and repeat verification reads are additional bounded work that is not fully metered or claimed to be free.".to_owned()
+    );
+            if read.pinned_root != journal_root {
+                orientation.degradation.push(
+            "The session journal extends its retained ROOT pin; this read verified the extension and did not repair the pin.".to_owned()
+        );
+            }
+
+            Ok(OrientedSession {
+                session: session.clone(),
+                revision: revision.clone(),
+                orientation,
+                journal_root,
+                request_digest,
+                workspace_anchor_token: workspace_anchor_token.to_owned(),
+                anchor_moved: read.anchor_moved,
+                invalidated: invalidated.to_vec(),
+            })
+        },
+    )?;
+    Ok(oriented)
+}
+
+/// Common immutable admission for a current session read. The borrowed projection and selected
+/// files may only be used while the caller owns the existing session lock.
+pub(super) struct AdmittedSessionRead<'a> {
+    pub root: &'a Path,
+    pub store: &'a SessionProjectionSnapshot,
+    pub head: &'a DeploymentSnapshot,
+    pub session: &'a AgentSession,
+    pub revision: &'a WorkspaceRevision,
+    pub workspace_anchor_token: &'a str,
+    pub anchor_moved: bool,
+    pub invalidated: &'a [String],
+    pub remaining_tokens: u64,
+    pub pinned_root: ContentDigest,
+}
+
+/// Hold the existing lock across admission, a bounded read, and final prefix verification.
+/// The two counters report the actual session-journal and root-pin bytes/files read here.
+/// Deployment/fence reads and the caller's selected objects are accounted separately.
+pub(super) fn with_admitted_session_read<T>(
+    root: &Path,
+    principal: &PrincipalId,
+    session_id: &SessionId,
+    read: impl FnOnce(&AdmittedSessionRead<'_>) -> Result<T, DeploymentSessionError>,
+) -> Result<(T, u64, u64), DeploymentSessionError> {
     // These existing layout/restore-fence checks perform reads only. In particular a restored
     // historical checkpoint cannot regain live session authority through this read operation.
     let root = ensure_agent_writable(root)?;
@@ -118,7 +237,7 @@ pub fn orient_session(
     let head = history.snapshot_at(history.head())?;
     let now = evidence_now(&head);
     let (session, revision, remaining_tokens) =
-        store.session_workspace(&request.principal, &request.session_id, now)?;
+        store.session_workspace(principal, session_id, now)?;
     if !["CAP-AGENT-SESSION-READ-001", "CAP-AGENT-SITUATION-READ-001"]
         .iter()
         .all(|capability| session.capabilities.contains(*capability))
@@ -155,7 +274,6 @@ pub fn orient_session(
             "the retained workspace and session anchors disagree".to_owned(),
         ));
     }
-    let mission = mission_for_workspace(&root, &session, &revision)?;
     let anchor_moved = position != head.position;
     let mut invalidated = Vec::new();
     if anchor_moved {
@@ -176,85 +294,35 @@ pub fn orient_session(
             ));
         }
     }
-    let briefs = session_briefs(&root, &store, &session, &head, now)?;
-    let binding = OrientSessionBinding {
-        mission_id: session.mission_id.clone(),
-        session_id: session.session_id.clone(),
-        mission: Some(mission.orientation_brief()),
-        mission_progress: briefs.mission_progress,
-        cases: briefs.cases,
-        claims: briefs.claims,
-        findings: briefs.findings,
-        supervisions: briefs.supervisions,
-        captured_learning: briefs.captured_learning.map(|inventory| inventory.briefs),
-        trauma_warnings: if briefs.advisory_memory_allowed {
-            Some(trauma_guard::derive_trauma_guard_warnings(
-                &root,
-                &request.principal,
-                now.0,
-            )?)
-        } else {
-            None
-        },
-        plans: plan::plan_briefs(&root, &head, &session.mission_id, &session.principal_id)?,
-    };
-    let allowance = request.budget_tokens.unwrap_or(maximum);
-    if remaining_tokens == 0 || request.budget_tokens.is_some_and(|n| n > remaining_tokens) {
-        return Err(DurableSessionError::Session(ReferenceSessionError::BudgetExceeded).into());
-    }
-    let oriented_request = OrientRequest {
-        view: request.view,
-        principal: request.principal.clone(),
-        budget_tokens: Some(allowance.min(remaining_tokens)),
-    };
-    let mut orientation =
-        orient_deployment_for_workspace(&head, &oriented_request, &limits, &binding, &invalidated)?;
-    let journal_root = store.root();
-    let request_digest = digest_of("fss.reference_session_orient_request.v1", |encoder| {
-        request.principal.encode_canonical(encoder);
-        request.session_id.encode_canonical(encoder);
-        encoder.text(request.view.id());
-        encoder.u64(request.budget_tokens.unwrap_or(0));
-        encoder.text(&orientation.anchor_token);
-        encoder.digest(revision.digest());
-        encoder.digest(journal_root);
-    });
-    orientation.request_digest = request_digest;
-    orientation.degradation.push(
-        "Current read-only session projection; retained workspace, assumptions, grants, clocks and budgets are unchanged. No rebase or historical semantic delta is claimed.".to_owned()
-    );
-    orientation.degradation.push(
-        "Response budgets meter the deployment snapshot and compiled context. Session-journal replay, root-pin and publication-custody checks, and repeat verification reads are additional bounded work that is not fully metered or claimed to be free.".to_owned()
-    );
-    if pin != journal_root {
-        orientation.degradation.push(
-            "The session journal extends its retained ROOT pin; this read verified the extension and did not repair the pin.".to_owned()
-        );
-    }
+
+    let result = read(&AdmittedSessionRead {
+        root: &root,
+        store: &store,
+        head: &head,
+        session: &session,
+        revision: &revision,
+        workspace_anchor_token: &workspace_anchor_token,
+        anchor_moved,
+        invalidated: &invalidated,
+        remaining_tokens,
+        pinned_root: pin,
+    })?;
 
     // A cooperating writer is excluded by the existing lock. Out-of-contract drift observed
     // during metadata/custody reads must still withhold the answer rather than mix prefixes.
     ensure_agent_writable(&root)?;
-    if read_bounded(&journal_path, MAX_SESSION_JOURNAL_BYTES)
-        .map_err(|error| io_failure("session journal verification", &error))?
-        != Some(bytes)
-        || read_bounded(&pin_path, MAX_PIN_BYTES)
-            .map_err(|error| io_failure("session root pin verification", &error))?
-            != Some(pin_bytes)
+    let verified_journal = read_bounded(&journal_path, MAX_SESSION_JOURNAL_BYTES)
+        .map_err(|error| io_failure("session journal verification", &error))?;
+    let verified_pin = read_bounded(&pin_path, MAX_PIN_BYTES)
+        .map_err(|error| io_failure("session root pin verification", &error))?;
+    if verified_journal.as_deref() != Some(bytes.as_slice())
+        || verified_pin.as_deref() != Some(pin_bytes.as_slice())
     {
         return Err(DeploymentSessionError::StoreInvalid(
             "session history changed during read-only projection; retry from a stable prefix"
                 .to_owned(),
         ));
     }
-    Ok(OrientedSession {
-        session,
-        revision,
-        orientation,
-        journal_root,
-        request_digest,
-        workspace_anchor_token,
-        anchor_moved,
-        invalidated,
-    })
+    let bytes_read = (bytes.len() as u64 + pin_bytes.len() as u64) * 2;
+    Ok((result, bytes_read, 4))
 }
