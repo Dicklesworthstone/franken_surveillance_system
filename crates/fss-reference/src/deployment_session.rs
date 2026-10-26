@@ -87,6 +87,7 @@ use crate::situation_sections::{
     ReferenceSituationPublication, seal_reference_publication_handoff,
 };
 
+mod opening_retry;
 #[cfg(test)]
 mod tests;
 
@@ -1350,6 +1351,16 @@ fn orient_bound(
         claims: briefs.claims,
         findings: briefs.findings,
         supervisions: briefs.supervisions,
+        trauma_warnings: match plans {
+            Some((root, _)) if briefs.advisory_memory_allowed => {
+                Some(trauma_guard::derive_trauma_guard_warnings(
+                    root,
+                    principal,
+                    evidence_now(snapshot).0,
+                )?)
+            }
+            _ => None,
+        },
         plans: match plans {
             Some((root, head)) => plan::plan_briefs(root, head, mission_id, principal)?,
             None => Vec::new(),
@@ -1369,13 +1380,22 @@ struct SessionBriefs {
     cases: Vec<OrientCaseBrief>,
     claims: Vec<OrientClaimBrief>,
     findings: Vec<OrientFindingBrief>,
-    supervisions: Option<Vec<crate::agent_session::checkpoint::journal::supervision::SupervisionInventoryEntry>>,
+    supervisions: Option<
+        Vec<crate::agent_session::checkpoint::journal::supervision::SupervisionInventoryEntry>,
+    >,
+    advisory_memory_allowed: bool,
 }
 
 impl Default for SessionBriefs {
     fn default() -> Self {
         // Used only for the opening orientation, before this new identity can own work.
-        Self { cases: Vec::new(), claims: Vec::new(), findings: Vec::new(), supervisions: Some(Vec::new()) }
+        Self {
+            cases: Vec::new(),
+            claims: Vec::new(),
+            findings: Vec::new(),
+            supervisions: Some(Vec::new()),
+            advisory_memory_allowed: true,
+        }
     }
 }
 
@@ -1389,21 +1409,34 @@ fn session_briefs(
     now: TimestampNs,
 ) -> Result<SessionBriefs, DeploymentSessionError> {
     let admitted = [
-        "CAP-AGENT-SESSION-READ-001", "CAP-AGENT-SESSION-WRITE-001",
-        "CAP-AGENT-SITUATION-READ-001", "CAP-AGENT-INVESTIGATE-001",
-    ].iter().all(|capability| session.capabilities.contains(*capability))
+        "CAP-AGENT-SESSION-READ-001",
+        "CAP-AGENT-SESSION-WRITE-001",
+        "CAP-AGENT-SITUATION-READ-001",
+        "CAP-AGENT-INVESTIGATE-001",
+    ]
+    .iter()
+    .all(|capability| session.capabilities.contains(*capability))
         && session.privacy_scope.contains("private:property");
     let supervisions = if admitted {
         // Never turn corruption, stale supplied authority, or a clock failure into an empty
         // successful inventory. Unavailability is determined only by the live owner's grants.
-        Some(store.supervision_inventory(session, now)
-            .map_err(|error| DeploymentSessionError::StoreInvalid(error.to_string()))?)
-    } else { None };
+        Some(
+            store
+                .supervision_inventory(session, now)
+                .map_err(|error| DeploymentSessionError::StoreInvalid(error.to_string()))?,
+        )
+    } else {
+        None
+    };
     Ok(SessionBriefs {
         cases: investigation::case_briefs(store, session, anchor),
         claims: claims::claim_briefs(store, session, now),
         findings: findings::finding_briefs(root, session)?,
         supervisions,
+        advisory_memory_allowed: session
+            .capabilities
+            .contains("CAP-AGENT-SITUATION-READ-001")
+            && session.privacy_scope.contains(SESSION_PRIVACY_SCOPE),
     })
 }
 
@@ -1711,16 +1744,6 @@ pub fn open_session(
     let token = snapshot_anchor_token(&snapshot);
     let (mission_id, session_id, request_digest) =
         open_identities(&snapshot.site_lineage, request, &token)?;
-    let orientation = orient_bound(
-        Some((root, &snapshot)),
-        &snapshot,
-        request.view,
-        &request.principal,
-        &mission_id,
-        &session_id,
-        &limits,
-        SessionBriefs::default(),
-    )?;
     let now = evidence_now(&snapshot);
     let mission = MissionRecord {
         mission_id: mission_id.clone(),
@@ -1735,7 +1758,42 @@ pub fn open_session(
         created_at: now,
     };
     let mission_digest = mission.digest();
-    let mut journal = SessionJournal::open(root)?;
+    // Existing identities need live authorization before private memory is recomposed. Keep
+    // the journal locked after lookup. A fresh root still admits its initial context before
+    // creating any session files, preserving the existing failed-open boundary.
+    let mut existing_journal =
+        match fs::symlink_metadata(root.join(SESSIONS_RELPATH).join(SESSION_JOURNAL_FILE)) {
+            Ok(_) => Some(SessionJournal::open(root)?),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+            Err(error) => return Err(io_failure("session journal lookup", &error)),
+        };
+    if let Some(journal) = existing_journal.as_mut() {
+        if let Some(opened) = opening_retry::resume_if_present(
+            root,
+            journal,
+            &snapshot,
+            request,
+            &mission,
+            request_digest,
+            &limits,
+        )? {
+            return Ok(opened);
+        }
+    }
+    let orientation = orient_bound(
+        Some((root, &snapshot)),
+        &snapshot,
+        request.view,
+        &request.principal,
+        &mission_id,
+        &session_id,
+        &limits,
+        SessionBriefs::default(),
+    )?;
+    let mut journal = match existing_journal {
+        Some(journal) => journal,
+        None => SessionJournal::open(root)?,
+    };
     let receipt = publish_record(
         root,
         &MissionRecord::slot(mission_digest)?,
@@ -1790,8 +1848,13 @@ pub fn open_session(
     // An exact open retry may find a session with work created since its original workspace.
     // Keep that immutable opening revision, but return the current authorized work inventory.
     let orientation = orient_bound(
-        Some((root, &snapshot)), &snapshot, request.view, &request.principal,
-        &session.mission_id, &session.session_id, &limits,
+        Some((root, &snapshot)),
+        &snapshot,
+        request.view,
+        &request.principal,
+        &session.mission_id,
+        &session.session_id,
+        &limits,
         session_briefs(root, &journal.store, &session, &snapshot.anchor, now)?,
     )?;
     journal.commit_pin()?;

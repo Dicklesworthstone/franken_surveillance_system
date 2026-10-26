@@ -622,8 +622,15 @@ fn handoff_payload(
             "preparedOperations",
             agent_json::strings(&record.prepared_operations),
         ),
-        ("tasks", agent_json::strings(orientation.supervision_inventory.iter()
-            .map(|entry| format!("supervision:{}", entry.subscription_id)))),
+        (
+            "tasks",
+            agent_json::strings(
+                orientation
+                    .supervision_inventory
+                    .iter()
+                    .map(|entry| format!("supervision:{}", entry.subscription_id)),
+            ),
+        ),
         ("leases", agent_json::strings(&orientation.active_claims)),
         ("obligations", agent_json::strings(&record.obligations)),
         (

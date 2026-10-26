@@ -551,6 +551,7 @@ fn session_binding() -> TestResult<OrientSessionBinding> {
         claims: Vec::new(),
         findings: Vec::new(),
         supervisions: None,
+        trauma_warnings: None,
     })
 }
 
@@ -610,7 +611,7 @@ fn unsupported_mission_facets_refuse_instead_of_disappearing_from_replay() -> Te
     let fixture = Fixture::new("session-facets")?;
     let token = fixture.token()?;
     let history = fixture.history()?;
-    for kind in 0..4 {
+    for kind in 0..5 {
         let mut binding = session_binding()?;
         match kind {
             0 => binding.cases.push(OrientCaseBrief {
@@ -634,11 +635,31 @@ fn unsupported_mission_facets_refuse_instead_of_disappearing_from_replay() -> Te
                 lease_live: true,
                 held_here: true,
             }),
-            _ => binding.findings.push(OrientFindingBrief {
+            3 => binding.findings.push(OrientFindingBrief {
                 finding_id: "finding:replay:active".to_owned(),
                 case_id: "case:replay:active".to_owned(),
                 disputed_by: vec!["finding:replay:contradicting".to_owned()],
             }),
+            _ => {
+                // Current advisory state has no historical session replay witness. Refuse
+                // before reading either snapshot, rather than applying it to both endpoints.
+                binding.trauma_warnings = Some(vec![
+                    fss_reference::deployment_session::trauma_guard::AntiPatternWarning {
+                        warning_id: "trauma-guard:replay:current".to_owned(),
+                        target_json: "{\"id\":\"event:replay\",\"kind\":\"event\"}".to_owned(),
+                        cause_class: fss_core::AttributionCauseClass::Execution,
+                        negative_count: 2,
+                        half_life_ns: 86_400_000_000_000,
+                        decay_weight_ppm: 2_000_000,
+                        cited_record_ids: vec![
+                            "feedback:one".to_owned(),
+                            "feedback:two".to_owned(),
+                        ],
+                        cited_evidence_digests: vec![ContentDigest::sha256(b"historical feedback")],
+                        active_policy_mutation: false,
+                    },
+                ]);
+            }
         }
         let mut control = Control::default();
         assert!(matches!(

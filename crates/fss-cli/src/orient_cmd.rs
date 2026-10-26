@@ -33,7 +33,7 @@ use fss_reference::agent_orient::{
     AFFORDANCE_REORIENT, CAPABILITY_EXPLAIN, CAPABILITY_SITUATION_READ, DeploymentOrientation,
     DeploymentReadError, DeploymentSnapshot, EventExplanation, ORIENT_DATA_CLASSES, OrientError,
     OrientLimits, OrientRequest, ZoneCoverageState, explain_event, orient_deployment,
-    read_deployment,
+    orient_deployment_with_advisories, read_deployment,
 };
 
 use crate::agent_json;
@@ -1079,28 +1079,36 @@ pub fn execute_orient(args: &OrientArgs) -> (String, ExitIdentity) {
         budget_tokens: args.budget_tokens,
     };
     let request_digest = request.digest_at(&snapshot.anchor);
-    match orient_deployment(&snapshot, &request, &limits) {
-        Ok(mut orientation) => {
-            if let Ok(trauma_warnings) =
-                fss_reference::deployment_session::trauma_guard::derive_trauma_guard_warnings(
-                    &args.root,
-                    orientation.capsule().created_at.0.max(0),
-                )
-            {
-                for warning in trauma_warnings {
-                    let line = warning.summary();
-                    if !orientation.warnings.contains(&line) {
-                        orientation.warnings.push(line);
-                    }
-                }
+    let trauma_warnings =
+        match fss_reference::deployment_session::trauma_guard::derive_trauma_guard_warnings(
+            &args.root,
+            &args.principal,
+            snapshot.latest_evidence_time.0.max(0),
+        ) {
+            Ok(warnings) => warnings,
+            Err(error) => {
+                return crate::session_cmd::refuse(
+                    &crate::session_cmd::Operation {
+                        command: "orient",
+                        name: "session.orient",
+                        capability: CAPABILITY_SITUATION_READ,
+                        payload_schema: "fss.situation_capsule.v1",
+                        view: args.view,
+                        root: args.root.clone(),
+                        principal: args.principal.clone(),
+                        request: request_digest.to_text().into_bytes(),
+                    },
+                    error,
+                );
             }
-            rendered(
-                orient_response(&orientation),
-                ExitIdentity::SUCCESS,
-                "orient",
-                &args.root,
-            )
-        }
+        };
+    match orient_deployment_with_advisories(&snapshot, &request, &limits, Some(&trauma_warnings)) {
+        Ok(orientation) => rendered(
+            orient_response(&orientation),
+            ExitIdentity::SUCCESS,
+            "orient",
+            &args.root,
+        ),
         Err(error @ OrientError::ContextBudgetExceeded { budget_tokens, .. }) => rendered(
             budget_refusal(
                 &snapshot,

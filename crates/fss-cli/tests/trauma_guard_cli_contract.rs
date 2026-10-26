@@ -222,6 +222,35 @@ fn orient(root: &Path) -> TestResult<Value> {
     Ok(parse(stdout.trim_end())?)
 }
 
+fn assert_protected_advisory(document: &Value, citations: &[&str]) -> TestResult {
+    let items = field(document, &["payload", "contextPack", "items"])?
+        .array()
+        .ok_or("selected context items")?;
+    let risk = items
+        .iter()
+        .find(|item| {
+            text(item, &["kind"]).is_ok_and(|kind| kind == "at_risk")
+                && text(item, &["content"])
+                    .is_ok_and(|content| content.contains("trauma_guard_warning["))
+        })
+        .ok_or("historical advisory missing from protected at_risk context")?;
+    let content = text(risk, &["content"])?;
+    for &citation in citations {
+        assert!(
+            content.contains(citation),
+            "protected context lost {citation}"
+        );
+    }
+    assert_eq!(
+        text(
+            document,
+            &["payload", "contextPack", "situationFingerprint"]
+        )?,
+        text(document, &["payload", "decisionFingerprint"])?
+    );
+    Ok(())
+}
+
 #[test]
 fn repeated_hard_negative_feedback_derives_trauma_guard_warning_without_policy_mutation()
 -> TestResult {
@@ -350,6 +379,157 @@ fn repeated_hard_negative_feedback_derives_trauma_guard_warning_without_policy_m
     emit_log(
         "orient_trauma_guard_derived",
         "two_hard_negative_records",
+        "ok",
+    );
+
+    // Advisory history changes the canonical decision and survives protected compression.
+    let citations = [
+        fb1_id.as_str(),
+        fb2_id.as_str(),
+        ev_digest_1.as_str(),
+        ev_digest_2.as_str(),
+    ];
+    assert_ne!(
+        text(&orient_1, &["payload", "decisionFingerprint"])?,
+        text(&orient_2, &["payload", "decisionFingerprint"])?
+    );
+    assert_protected_advisory(&orient_2, &citations)?;
+
+    // An exact opening retry keeps its immutable opening revision and all spent session
+    // state while returning current memory. It must not republish revision zero or refill quota.
+    let journal_path = root.join("agent/sessions/journal.fssj");
+    let journal_before_retry = fs::read(&journal_path)?;
+    let (code, retry_stdout) = run_fss(&open_args)?;
+    assert_eq!(code, Some(0), "{retry_stdout}");
+    let retry = parse(retry_stdout.trim_end())?;
+    assert_eq!(text(&retry, &["sessionId"])?, session_id);
+    assert_eq!(
+        field(&retry, &["workspaceRevision"])?,
+        field(&open_doc, &["workspaceRevision"])?
+    );
+    assert_protected_advisory(&retry, &citations)?;
+    assert!(
+        texts(&retry, &["warnings"])?
+            .iter()
+            .any(|warning| warning == trauma_line)
+    );
+    assert_eq!(fs::read(&journal_path)?, journal_before_retry);
+    let (code, repeated_stdout) = run_fss(&open_args)?;
+    assert_eq!(code, Some(0), "{repeated_stdout}");
+    let repeated = parse(repeated_stdout.trim_end())?;
+    assert_eq!(
+        field(&repeated, &["workspaceRevision"])?,
+        field(&retry, &["workspaceRevision"])?
+    );
+    assert_eq!(
+        text(&repeated, &["payload", "decisionFingerprint"])?,
+        text(&retry, &["payload", "decisionFingerprint"])?
+    );
+    assert_eq!(fs::read(&journal_path)?, journal_before_retry);
+
+    let handoff_args: Vec<OsString> = vec![
+        "session".into(),
+        "handoff".into(),
+        "--json".into(),
+        "--root".into(),
+        root.as_os_str().to_owned(),
+        "--session".into(),
+        session_id.clone().into(),
+        "--note".into(),
+        "Preserve cited harmful history for the next operator".into(),
+    ];
+    let (code, handoff_stdout) = run_fss(&handoff_args)?;
+    assert_eq!(code, Some(0), "{handoff_stdout}");
+    let handed = parse(handoff_stdout.trim_end())?;
+    assert!(
+        texts(&handed, &["warnings"])?
+            .iter()
+            .any(|warning| warning == trauma_line)
+    );
+    let handoff_id = text(&handed, &["payload", "handoffId"])?.to_owned();
+    let resume_args: Vec<OsString> = vec![
+        "session".into(),
+        "resume".into(),
+        "--json".into(),
+        "--root".into(),
+        root.as_os_str().to_owned(),
+        "--handoff".into(),
+        handoff_id.into(),
+    ];
+    let (code, resume_stdout) = run_fss(&resume_args)?;
+    assert_eq!(code, Some(0), "{resume_stdout}");
+    let resumed = parse(resume_stdout.trim_end())?;
+    assert_protected_advisory(&resumed, &citations)?;
+    assert!(
+        texts(&resumed, &["warnings"])?
+            .iter()
+            .any(|warning| warning == trauma_line)
+    );
+    let (code, repeated_resume_stdout) = run_fss(&resume_args)?;
+    assert_eq!(code, Some(0), "{repeated_resume_stdout}");
+    let repeated_resume = parse(repeated_resume_stdout.trim_end())?;
+    assert_eq!(
+        field(&repeated_resume, &["workspaceRevision"])?,
+        field(&resumed, &["workspaceRevision"])?
+    );
+    assert_eq!(
+        text(&repeated_resume, &["payload", "decisionFingerprint"])?,
+        text(&resumed, &["payload", "decisionFingerprint"])?
+    );
+
+    // Another principal can orient to the shared deployment without receiving private memory.
+    let foreign_args: Vec<OsString> = vec![
+        "orient".into(),
+        "--json".into(),
+        "--root".into(),
+        root.as_os_str().to_owned(),
+        "--principal".into(),
+        "principal:unrelated-trauma-operator".into(),
+    ];
+    let (code, foreign_stdout) = run_fss(&foreign_args)?;
+    assert_eq!(code, Some(0), "{foreign_stdout}");
+    for citation in citations {
+        assert!(
+            !foreign_stdout.contains(citation),
+            "foreign principal received {citation}"
+        );
+    }
+    assert!(!foreign_stdout.contains("trauma_guard_warning["));
+
+    // Corrupt only this fixture's published feedback manifest. The command must explicitly
+    // refuse the damaged history instead of emitting a successful warning-free situation.
+    let feedback_root = texts(&fb2_doc, &["proofPointers"])?
+        .into_iter()
+        .next()
+        .ok_or("feedback publication root")?;
+    let feedback_hex = feedback_root
+        .strip_prefix("sha256:")
+        .ok_or("sha256 feedback root")?;
+    let feedback_object = root
+        .join("agent/publications/spool/objects")
+        .join(feedback_hex);
+    let retained_manifest = fs::read(&feedback_object)?;
+    fs::write(&feedback_object, b"corrupt fixture feedback manifest")?;
+    let orient_args: Vec<OsString> = vec![
+        "orient".into(),
+        "--json".into(),
+        "--root".into(),
+        root.as_os_str().to_owned(),
+    ];
+    let damaged = run_fss(&orient_args);
+    fs::write(&feedback_object, retained_manifest)?;
+    let (code, refusal_stdout) = damaged?;
+    assert_ne!(code, Some(0));
+    let refused = parse(refusal_stdout.trim_end())?;
+    assert_eq!(
+        text(&refused, &["errorId"])?,
+        "ERR-AGENT-SESSION-STORE-INVALID-001"
+    );
+    assert_eq!(field(&refused, &["payload"])?, &Value::Null);
+    assert!(!refusal_stdout.contains("trauma_guard_warning["));
+    emit_log(
+        "recover_protected_memory",
+        "retry_handoff_resume_private_scope_and_corruption",
         "ok",
     );
 

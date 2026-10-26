@@ -75,7 +75,9 @@ pub mod coverage;
 pub mod historical_health;
 pub mod liveness;
 mod supervision;
+mod trauma_guard;
 use crate::agent_session::checkpoint::journal::supervision::SupervisionInventoryEntry;
+use crate::deployment_session::trauma_guard::AntiPatternWarning;
 use crate::situation::EffectCellKind;
 use crate::situation::{
     physical_knowledge_state, physical_statement, policy_hypothesis, reconciliation_basis_for,
@@ -1986,6 +1988,7 @@ fn compile_capsule(
     snapshot: &DeploymentSnapshot,
     request: &OrientRequest,
     session: Option<&OrientSessionBinding>,
+    advisory_warnings: Option<&[AntiPatternWarning]>,
 ) -> Result<CompiledSituation, OrientError> {
     let cases = session.map_or(&[][..], |binding| binding.cases.as_slice());
     let plans = session.map_or(&[][..], |binding| binding.plans.as_slice());
@@ -2142,6 +2145,12 @@ fn compile_capsule(
     unknown.extend(supervision.unknown);
     at_risk.extend(supervision.at_risk);
     warnings.extend(supervision.warnings);
+    let memory = trauma_guard::project(advisory_warnings)?;
+    cells.extend(memory.cells);
+    proof_roots.extend(memory.proof_roots);
+    unknown.extend(memory.unknown);
+    at_risk.extend(memory.at_risk);
+    warnings.extend(memory.warnings);
     let mut nominal = BTreeSet::from([
         CLAIM_LEDGER_HEAD.to_owned(),
         CLAIM_IMPORTS.to_owned(),
@@ -3659,6 +3668,9 @@ pub struct OrientSessionBinding {
     /// Authenticated current session metadata. `Some([])` is an observed empty inventory;
     /// `None` means it was not admitted or loaded and cannot support an absence claim.
     pub supervisions: Option<Vec<SupervisionInventoryEntry>>,
+    /// Verified advisory history visible to this principal. `None` is unavailable, not empty.
+    /// These records cannot authorize effects or establish present physical facts.
+    pub trauma_warnings: Option<Vec<AntiPatternWarning>>,
 }
 
 /// One active finding as a session-bound orientation lists it.
@@ -3701,6 +3713,36 @@ pub fn orient_deployment_for(
     limits: &OrientLimits,
     session: Option<&OrientSessionBinding>,
 ) -> Result<DeploymentOrientation, OrientError> {
+    orient_deployment_for_with_advisories(
+        snapshot,
+        request,
+        limits,
+        session,
+        session.and_then(|binding| binding.trauma_warnings.as_deref()),
+    )
+}
+
+/// Compiles a stateless orientation with already verified, principal-projected advisory history.
+///
+/// The caller admits the publication reads and projects them to `request.principal` before this
+/// pure compiler is invoked. Advisory warnings enter the canonical capsule, protected context,
+/// fingerprint and compression receipt before sealing. `None` explicitly means unavailable.
+pub fn orient_deployment_with_advisories(
+    snapshot: &DeploymentSnapshot,
+    request: &OrientRequest,
+    limits: &OrientLimits,
+    advisory_warnings: Option<&[AntiPatternWarning]>,
+) -> Result<DeploymentOrientation, OrientError> {
+    orient_deployment_for_with_advisories(snapshot, request, limits, None, advisory_warnings)
+}
+
+fn orient_deployment_for_with_advisories(
+    snapshot: &DeploymentSnapshot,
+    request: &OrientRequest,
+    limits: &OrientLimits,
+    session: Option<&OrientSessionBinding>,
+    advisory_warnings: Option<&[AntiPatternWarning]>,
+) -> Result<DeploymentOrientation, OrientError> {
     if !matches!(
         request.view,
         AgentView::Pulse | AgentView::Brief | AgentView::EpistemicMap
@@ -3717,7 +3759,7 @@ pub fn orient_deployment_for(
     let plans = session.map_or(&[][..], |binding| binding.plans.as_slice());
     let claims = session.map_or(&[][..], |binding| binding.claims.as_slice());
     let findings = session.map_or(&[][..], |binding| binding.findings.as_slice());
-    let mut compiled = compile_capsule(snapshot, request, session)?;
+    let mut compiled = compile_capsule(snapshot, request, session, advisory_warnings)?;
     if let Some(binding) = session {
         compiled.capsule.mission_id = binding.mission_id.clone();
         compiled.capsule.session_id = binding.session_id.clone();
@@ -3860,10 +3902,12 @@ pub fn orient_deployment_for(
             .iter()
             .map(|finding| finding.finding_id.clone())
             .collect(),
-        supervision_inventory: session.and_then(|binding| binding.supervisions.as_deref())
+        supervision_inventory: session
+            .and_then(|binding| binding.supervisions.as_deref())
             .map(|entries| supervision::inventory_at(entries, &snapshot.anchor))
             .unwrap_or_default(),
-        supervision_inventory_available: session.is_some_and(|binding| binding.supervisions.is_some()),
+        supervision_inventory_available: session
+            .is_some_and(|binding| binding.supervisions.is_some()),
         publication,
     })
 }

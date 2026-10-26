@@ -339,6 +339,10 @@ pub fn follow_replay_step_for<C: ReplayControl + ?Sized>(
             || !binding.plans.is_empty()
             || !binding.claims.is_empty()
             || !binding.findings.is_empty()
+            || binding
+                .trauma_warnings
+                .as_ref()
+                .is_some_and(|warnings| !warnings.is_empty())
     }) {
         return Err(ReplayError::UnsupportedSessionFacets);
     }

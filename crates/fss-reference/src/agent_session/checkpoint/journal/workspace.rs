@@ -225,6 +225,61 @@ impl DurableSessionStore {
         self.finish_workspace_read(memory, checkpoint, state.digest, result)
     }
 
+    /// Recovers an admitted opening revision for the native exact-open retry path.
+    ///
+    /// Only a never-recorded identity returns `None`. Existing closed, expired, foreign or
+    /// narrowed sessions take the ordinary admission failure path, including persisted clock
+    /// and expiry changes. For completed opens, both the opening revision and current head must
+    /// still be visible. An authenticated live identity with entirely empty workspace history
+    /// returns an inner None so the native owner can attempt the original digest-checked open
+    /// again. Nonempty history missing revision zero is corruption, not a fresh opening.
+    /// This never reopens a session, replaces its opening digest, rewrites a workspace or resets
+    /// any symbol, lease or disclosure budget. It is crate-private because distinguishing true
+    /// absence is needed only while the native owner validates its own exact opening request.
+    pub(crate) fn opening_workspace_for_retry(
+        &mut self,
+        principal: &PrincipalId,
+        session_id: &SessionId,
+        now: TimestampNs,
+    ) -> Result<
+        Option<JournaledWorkspace<(fss_core::AgentSession, Option<WorkspaceRevision>)>>,
+        DurableWorkspaceError,
+    > {
+        let state = self
+            .read_workspace_state()?
+            .ok_or(DurableWorkspaceError::NotInitialized)?;
+        if !self.memory.sessions.contains_key(session_id) {
+            return Ok(None);
+        }
+        let mut memory = self.memory.clone();
+        let result = (|| -> Result<_, WorkspaceError> {
+            let session = memory.session(principal, session_id, now)?;
+            let history: Vec<_> = state
+                .retained_revisions()
+                .into_iter()
+                .filter(|revision| &revision.capsule().session_id == session_id)
+                .collect();
+            if history.is_empty() {
+                // An admitted live open may have crashed before its first workspace append.
+                // The native owner must still replay the original open request through open(),
+                // whose persisted opening digest rejects changed context and authority.
+                return Ok((session, None));
+            }
+            let opening = history
+                .into_iter()
+                .find(|revision| revision.capsule().revision == 0)
+                .ok_or(WorkspaceError::Unavailable)?;
+            let admitted =
+                state
+                    .store
+                    .resume(&mut memory, principal, session_id, opening.digest(), now)?;
+            Ok((session, Some(admitted.revision)))
+        })();
+        let checkpoint = self.workspace_session_checkpoint(&memory)?;
+        self.finish_workspace_read(memory, checkpoint, state.digest, result)
+            .map(Some)
+    }
+
     fn workspace_result<T>(
         &self,
         result: T,
@@ -484,3 +539,6 @@ pub(super) fn replay_write(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod opening_retry_tests;

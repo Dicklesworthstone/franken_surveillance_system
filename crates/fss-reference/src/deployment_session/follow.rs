@@ -283,6 +283,7 @@ fn reconstruct(
         findings: Vec::new(),
         plans: Vec::new(),
         supervisions: None,
+        trauma_warnings: None,
     };
     let step = follow_replay_step_for(
         history,
