@@ -144,7 +144,8 @@ def main() -> int:
                     name = ""
                 if not name:
                     name = "wyzeedgeai_cam_v4_test_protocol"
-                path = ("/proc/launch.sh" if name.startswith("kvs")
+                ver = os.environ.get("PROC_VER", "2.1.2.572")
+                path = (f"/{name}/{ver}/launch.sh" if name.startswith("kvs")
                         else "/wyzeedgeai_cam_v4_test_protocol/14.9.50039.r/" + name)
                 out = json.dumps({"code": "1", "ts": int(time.time() * 1000), "msg": "SUCCESS",
                                   "data": {"version": os.environ.get("PROC_VER", "99.0.0"),
