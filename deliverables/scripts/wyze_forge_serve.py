@@ -10,10 +10,63 @@ that already resolves here.
 
   wyze_forge_serve.py --dir /tmp/fwserve --port 443 --sni s3-us-west-2.amazonaws.com
 """
-import argparse, http.server, json, os, ssl, sys
+import argparse, http.server, json, os, socket, ssl, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CERTDIR = os.path.join(HERE, "..", "certs", "emudhra")
+
+
+UP_HOST = "device-api.wyzecam.com"
+
+
+def _up_ip():
+    """Resolve the real device API past our own DNS redirect."""
+    import subprocess
+    try:
+        out = subprocess.run(["dig", "+short", "+time=2", "@1.1.1.1", UP_HOST],
+                             capture_output=True, text=True).stdout.split()
+        for c in out:
+            if c and c[0].isdigit():
+                return c
+    except Exception:
+        pass
+    return None
+
+
+def passthrough(path, body, headers):
+    """Forward an unimplemented call to the real cloud and return its bytes verbatim.
+
+    The point is the *response schema*: the device asks for things we do not know how to answer
+    (get_processes and friends), and the real answer is the specification.
+    """
+    ip = _up_ip()
+    if not ip:
+        return b'{"code":1,"message":"Success"}'
+    try:
+        raw = socket.create_connection((ip, 443), timeout=8)
+        ctx = ssl.create_default_context()
+        c = ctx.wrap_socket(raw, server_hostname=UP_HOST)
+        hdr = [f"POST {path} HTTP/1.1", f"Host: {UP_HOST}",
+               f"Content-Length: {len(body)}",
+               "Content-Type: " + (headers.get("Content-Type") or "application/json"),
+               "Connection: close"]
+        for extra in ("X-Request-Id", "User-Agent", "Accept"):
+            if headers.get(extra):
+                hdr.append(f"{extra}: {headers.get(extra)}")
+        c.sendall(("\r\n".join(hdr) + "\r\n\r\n").encode() + body)
+        buf = b""
+        while True:
+            d = c.recv(65536)
+            if not d:
+                break
+            buf += d
+        c.close()
+        head, _, payload = buf.partition(b"\r\n\r\n")
+        print(f"  <- passthrough {len(payload)}B {payload[:800]!r}", flush=True)
+        return payload
+    except Exception as e:
+        print(f"  <- passthrough failed {e!r}", flush=True)
+        return b'{"code":1,"message":"Success"}'
 
 
 def main() -> int:
@@ -75,6 +128,8 @@ def main() -> int:
                 open("/tmp/ota/cand_idx", "w").write(str(i + 1))
                 print(f"  -> variant[{i}] {label}", flush=True)
                 out = json.dumps(obj).encode()
+            elif os.environ.get("PASSTHROUGH"):
+                out = passthrough(self.path, body, self.headers)
             else:
                 out = b'{"code":1,"message":"Success"}'
             self.send_response(200)

