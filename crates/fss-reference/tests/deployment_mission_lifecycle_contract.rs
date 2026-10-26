@@ -89,7 +89,7 @@ impl Fixture {
             anchor_universe: ContentDigest::sha256(SITE.as_bytes()),
             generation: 1,
         })?;
-        let cx = ReplayCx::from_context_authority(&authority, directory.join("context"))?;
+        let cx = ReplayCx::from_context_authority(&authority, &root)?;
         let mut dep = ReferenceDeployment::open(&root, SITE, &cx)?;
         let mut objects = InMemoryObjectStore::new(ObjectLimits::new(512, 8 * 1024 * 1024));
         let mut captures = DurableReferenceLedger::open(
