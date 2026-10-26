@@ -23,6 +23,15 @@ json.dump(d, open(out, "w"))
 PY
 chmod 600 "$CFG"
 
+echo "== wait for the P2P listener (a sleeping camera answers nothing)"
+i=0
+while [ $i -lt 12 ]; do
+  if "$BIN/fss-discover" --subnet "$IP/32" --owner-authorized --json 2>/dev/null \
+       | grep -q '"adapter": *"Tutk"'; then echo "  listener up"; break; fi
+  i=$((i + 1)); sleep 5
+done
+[ $i -lt 12 ] || echo "  listener never answered; capture will seal nothing"
+
 echo "== capture $IP for ${SECS}s"
 "$BIN/fss-capture-tutk" --root "$ROOT" --cfg "$CFG" --secs "$SECS" --owner-authorized > /tmp/e2e-capture.json
 cat /tmp/e2e-capture.json
