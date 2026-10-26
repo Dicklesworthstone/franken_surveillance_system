@@ -68,8 +68,9 @@ head. Terminal revisions cannot be rewritten or revived by a later observation.
 The command response identifies whether its retained revision is current or historical, even
 though its payload remains the original control plan. If response generation fails after a
 revision is retained, a refusal must preserve that possibility; it is not proof that enrollment
-or assessment never happened. Inspect the authorized retained head before choosing an exact
-retry. A context-capacity refusal does not mean the journal is corrupt.
+or assessment never happened. Read the authorized retained head with the session orientation
+command below before choosing an exact retry. A context-capacity refusal does not mean the
+journal is corrupt.
 
 ## Orientation, handoff, and recovery
 
@@ -109,6 +110,16 @@ fss session orient --json --root DEPLOYMENT --session SESSION --view brief
 The existing `fss orient` alias accepts the same selector. MCP `session_orient` accepts an
 optional `session` string under the server's fixed principal and deployment. Omit the selector
 for the existing deployment-only orientation.
+
+For an enrolled mission, the first response `proofPointers` entry is the exact retained mission
+revision digest, matching the convention used by `mission-bind` and `mission-assess`. It is
+available from enrollment revision zero onward, even when the assessment has become historical.
+After a lost command response, read this digest and pass it as `--expected-mission` to assess
+the original plan. The payload's `missionRevision` is the retained revision number; freshness
+remains a separate protected statement and typed mission-state decision. A historical digest
+does not claim current completion or authorize another effect. An unchanged terminal retry
+returns the retained result without appending another revision. Sessions without enrollment
+retain their ordinary proof-pointer ordering.
 
 The native reader authenticates the existing session journal and mission publication, admits
 the principal and workspace, and compiles the current deployment situation with the session's

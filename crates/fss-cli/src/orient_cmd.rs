@@ -1001,6 +1001,13 @@ fn orient_response(
     let mut degradation = orientation.degradation.clone();
     let mut warnings = orientation.warnings.clone();
     let (payload_json, boundary) = if let Some(read) = session {
+        if let Some(progress) = &orientation.mission_progress {
+            // Match mission-bind/mission-assess: callers can recover an exact retained
+            // predecessor even when it is historical or still at enrollment revision zero.
+            let mission_head = progress.revision.digest().to_text();
+            proof_pointers.retain(|pointer| pointer != &mission_head);
+            proof_pointers.insert(0, mission_head);
+        }
         proof_pointers.push(read.revision.digest().to_text());
         proof_pointers.push(read.journal_root.to_text());
         let workspace = read.revision.capsule();

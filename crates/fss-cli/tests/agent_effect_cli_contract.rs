@@ -1605,6 +1605,74 @@ fn enrolled_mission_requires_terminal_episode_and_retains_handoff_proof() -> Tes
     assert_eq!(fs::read(&sessions_path)?, bound_journal);
     assert_eq!(fs::read(&session_pin)?, bound_pin);
 
+    // Recover an exact immutable mission head after a lost command response using only a
+    // read. The public revision number alone cannot supply the next assessment's CAS digest.
+    let recover_head = |expected: &str, revision: u64, freshness: &str| -> TestResult<String> {
+        let before = [
+            fs::read(&sessions_path)?,
+            fs::read(&session_pin)?,
+            fs::read(&ledger_path)?,
+            fs::read(&effects_path)?,
+        ];
+        let (code, recovered) = agent.run("orient", &["--session", &agent.session])?;
+        assert_eq!(code, Some(0), "{recovered:?}");
+        assert_eq!(text(&recovered, &["operationId"])?, "AOP-003");
+        assert_eq!(text(&recovered, &["sessionId"])?, agent.session);
+        assert_eq!(field(&recovered, &["idempotencyKey"])?, &Value::Null);
+        let head = texts(&recovered, &["proofPointers"])?[0].clone();
+        assert_eq!(
+            head, expected,
+            "the first proof is the retained mission revision"
+        );
+        ContentDigest::parse(&head)?;
+        assert_eq!(
+            field(&recovered, &["payload", "missionRevision"])?,
+            &Value::Number(revision.to_string())
+        );
+        assert_eq!(
+            field(&recovered, &["payload", "decisionDeadlineNs"])?,
+            field(&oriented, &["payload", "decisionDeadlineNs"])?
+        );
+        for key in [
+            "objectiveId",
+            "source",
+            "desiredOutcome",
+            "successPredicates",
+            "failurePredicates",
+            "stopConditions",
+            "terminalProof",
+        ] {
+            assert_eq!(
+                field(&recovered, &["payload", "objectiveContract", key])?,
+                field(&oriented, &["payload", "objectiveContract", key])?,
+                "recovering the current head must preserve the enrolled {key}"
+            );
+        }
+        let summary = field(&recovered, &["payload", "contextPack", "items"])?
+            .array()
+            .ok_or("recovered mission context")?
+            .iter()
+            .find(|item| text(item, &["itemId"]).is_ok_and(|id| id == "context:frame:summary"))
+            .ok_or("recovered protected mission summary")?;
+        let summary = text(summary, &["content"])?;
+        assert!(summary.contains("Protect the door."));
+        assert!(summary.contains("Alert the owner on a corroborated entry."));
+        assert!(summary.contains(expected));
+        assert!(summary.contains(freshness), "{summary}");
+        assert_eq!(
+            [
+                fs::read(&sessions_path)?,
+                fs::read(&session_pin)?,
+                fs::read(&ledger_path)?,
+                fs::read(&effects_path)?,
+            ],
+            before,
+            "recovering a mission head cannot write or repair agent/effect/evidence history"
+        );
+        Ok(head)
+    };
+    let recovered_initial_head = recover_head(&initial_head, 0, "current assessment")?;
+
     // Enrollment is cognition, so it must preserve the exact already-approved plan witness.
     // Prepare after binding rather than binding an already-prepared operation.
     let (code, prepared) = agent.plan(&event_id, relay, &["--approve", &plan_approval])?;
@@ -1635,7 +1703,7 @@ fn enrolled_mission_requires_terminal_episode_and_retains_handoff_proof() -> Tes
             "--mission-assess",
             &plan_id,
             "--expected-mission",
-            &initial_head,
+            &recovered_initial_head,
         ],
     )?;
     assert_eq!(code, Some(0), "{pending:?}");
@@ -1697,6 +1765,32 @@ fn enrolled_mission_requires_terminal_episode_and_retains_handoff_proof() -> Tes
     assert_eq!(
         retry_stdout, terminal_stdout,
         "the exact predecessor request must recover its already-retained terminal result"
+    );
+    assert_eq!(fs::read(&sessions_path)?, terminal_journal);
+    assert_eq!(fs::read(&session_pin)?, terminal_pin);
+    assert_eq!(fs::read(&ledger_path)?, evidence_after_cancel);
+    assert_eq!(fs::read(&effects_path)?, effects_after_cancel);
+
+    let recovered_terminal_head = recover_head(&terminal_head, 2, "current assessment")?;
+    let (code, recovered_retry) = agent.run(
+        "plan",
+        &[
+            "--session",
+            &agent.session,
+            "--mission-assess",
+            &plan_id,
+            "--expected-mission",
+            &recovered_terminal_head,
+        ],
+    )?;
+    assert_eq!(code, Some(0), "{recovered_retry:?}");
+    assert_eq!(
+        texts(&recovered_retry, &["proofPointers"])?[0],
+        terminal_head
+    );
+    assert_eq!(
+        field(&recovered_retry, &["payload"])?,
+        field(&terminal, &["payload"])?
     );
     assert_eq!(fs::read(&sessions_path)?, terminal_journal);
     assert_eq!(fs::read(&session_pin)?, terminal_pin);
@@ -1789,6 +1883,11 @@ fn enrolled_mission_requires_terminal_episode_and_retains_handoff_proof() -> Tes
     agent.open_case()?;
     let journal_with_case = fs::read(&sessions_path)?;
     let pin_with_case = fs::read(&session_pin)?;
+    let recovered_historical_head = recover_head(
+        &terminal_head,
+        2,
+        "historical assessment; current lifecycle is unassessed",
+    )?;
     let historical_args = agent.args(
         "plan",
         &[
@@ -1797,7 +1896,7 @@ fn enrolled_mission_requires_terminal_episode_and_retains_handoff_proof() -> Tes
             "--mission-assess",
             &plan_id,
             "--expected-mission",
-            &terminal_head,
+            &recovered_historical_head,
         ],
     );
     let (code, historical_stdout) = run_fss(&historical_args)?;

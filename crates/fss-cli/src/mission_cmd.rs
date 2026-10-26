@@ -305,7 +305,7 @@ fn mission_refusal(error: &MissionError) -> Refusal {
     let id = error.stable_id();
     let (guidance, recovery_class, safe_retry) = match id {
         ERR_AGENT_CONTEXT_INCOMPLETE => (
-            "Critical context exceeds the admitted session view and is never truncated. A mission revision may already be retained; preserve that history and its exact plan binding. Use a sufficiently large registered view before enrolling a new session; retrying this unchanged request cannot enlarge its view.",
+            "Critical context exceeds the admitted session view and is never truncated. A mission revision may already be retained. Inspect it with fss session orient --json --root DEPLOYMENT --session SESSION and an adequate registered --view; for an enrolled mission, proofPointers[0] is its exact retained revision digest. Preserve the original enrollment. This read cannot enlarge the stored command view; retrying this unchanged command cannot enlarge it either.",
             "never_unchanged",
             ResponseSafeRetry::No,
         ),
@@ -320,7 +320,7 @@ fn mission_refusal(error: &MissionError) -> Refusal {
             ResponseSafeRetry::No,
         ),
         _ => (
-            "Read the current authorized session and exact mission head; preserve the original enrollment, reconcile unresolved effects, and retry only against the retained revision. No effect is dispatched by this command.",
+            "Read the authorized retained head with fss session orient --json --root DEPLOYMENT --session SESSION. For an enrolled mission, proofPointers[0] is its exact revision digest; use it as --expected-mission for assessment. Preserve the original enrollment and reconcile unresolved effects. The read does not rebase the workspace or authorize an effect.",
             "refresh_and_retry",
             ResponseSafeRetry::YesAfterRefresh,
         ),
@@ -424,7 +424,7 @@ pub fn execute_mission(args: &MissionArgs) -> (String, ExitIdentity) {
                     Refusal {
                         error_id: ERR_CLI_RUNTIME_FAILURE,
                         reason: "The mission revision was retained, but its public response could not be rendered.".to_owned(),
-                        guidance: "Preserve the retained revision and recover the same request's response; a rendering failure never permits a new mission binding or an external effect.",
+                        guidance: "Recover the retained head with fss session orient --json --root DEPLOYMENT --session SESSION. For an enrolled mission, proofPointers[0] supplies the exact --expected-mission digest for an assessment retry. Preserve the original binding; a rendering failure never permits an external effect.",
                         recovery_class: "safe_read_retry",
                         safe_retry: ResponseSafeRetry::YesSameRequest,
                     },
