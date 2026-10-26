@@ -16,9 +16,12 @@ use fss_core::{
 };
 
 use super::{DurableSessionError, DurableSessionLimits, DurableSessionStore, PendingSession};
-use crate::agent_session::ReferenceSessionStore;
+use crate::agent_session::{ReferenceSessionStore, SessionEntry};
 
 mod codec;
+mod inventory;
+
+pub use inventory::{PendingSupervisionInventory, SupervisionInventoryEntry};
 
 /// Additive session journal kind. Older readers refuse instead of dropping supervision progress.
 pub const SUPERVISION_COMMAND_RECORD_KIND: u16 = 0x5356;
@@ -453,6 +456,10 @@ fn authority(
     now: TimestampNs,
 ) -> Result<(ContentDigest, LedgerAnchor)> {
     let entry = memory.live_entry(principal, session, now).map_err(DurableSessionError::Session)?;
+    authority_projection(entry)
+}
+
+fn authority_projection(entry: &SessionEntry) -> Result<(ContentDigest, LedgerAnchor)> {
     if ![
         "CAP-AGENT-SESSION-READ-001", "CAP-AGENT-SESSION-WRITE-001",
         "CAP-AGENT-SITUATION-READ-001", "CAP-AGENT-INVESTIGATE-001",
@@ -462,8 +469,8 @@ fn authority(
         return Err(DurableSupervisionError::StaleScope);
     }
     let digest = hash(AUTHORITY_DOMAIN, |e| {
-        e.text(principal.as_str());
-        e.text(session.as_str());
+        e.text(entry.session.principal_id.as_str());
+        e.text(entry.session.session_id.as_str());
         e.text(entry.session.mission_id.as_str());
         entry.basis.encode_canonical(e);
         e.i128(entry.session.created_at_ns);
@@ -942,3 +949,6 @@ mod compatibility_tests;
 
 #[cfg(test)]
 mod recovery_tests;
+
+#[cfg(test)]
+mod inventory_tests;

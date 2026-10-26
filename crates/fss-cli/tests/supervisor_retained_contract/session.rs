@@ -69,6 +69,9 @@ mod schedule;
 #[path = "session/resume.rs"]
 mod resume;
 
+#[path = "session/inventory.rs"]
+mod inventory;
+
 fn state(f: &Fixture, subscription: &str) -> TestResult<SupervisionSubscription> {
     inspect_session_bytes(
         &fs::read(f.root.join("agent/sessions/journal.fssj"))?,

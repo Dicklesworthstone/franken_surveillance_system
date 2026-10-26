@@ -72,6 +72,12 @@ const HELP: &str = "fss-event supervise --root DIR --site SITE\n\
   no completed acquisition, synchronized clock, class absence or anytime guarantee. Without\n\
   --schedule yes the existing all-window behavior remains unchanged.\n\
 \n\
+  --list yes --session ID --authority-root sha256:CURRENT_ROOT discovers every subscription\n\
+  owned by that live session without a subscription name or plan file. It returns complete\n\
+  metadata: pending receipts, schedules, authority status and lifetime reserved budgets.\n\
+  Listing consumes no native attempt and releases no report, configuration or source list.\n\
+  Supply --root, --site and the session's --principal; other action/plan flags are refused.\n\
+\n\
   --plan selects the legacy fss.supervisor_plan.v1 caller-score simulation. Its\n\
   fss.supervisor_report.v1 explicitly labels unverified source custody and statistical\n\
   assumptions. Its numeric Ville fields do not establish an anytime false-alarm guarantee.\n";
@@ -365,6 +371,7 @@ pub(super) fn main(args: &[OsString]) -> ExitCode {
                 | "--advance-window"
                 | "--after-receipt"
                 | "--resume"
+                | "--list"
                 | "--report-out"
         ) {
             eprintln!("{ERR_CLI_MALFORMED_VALUE}: unknown supervise option {flag}");
@@ -396,6 +403,7 @@ pub(super) fn main(args: &[OsString]) -> ExitCode {
         || values.contains_key("--advance-window")
         || values.contains_key("--after-receipt")
         || values.contains_key("--resume")
+        || values.contains_key("--list")
     {
         return retained::main(&values);
     }

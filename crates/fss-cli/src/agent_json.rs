@@ -29,6 +29,9 @@ use fss_core::{
 
 use crate::diagnostic::escape_json_str;
 
+mod supervision;
+pub use supervision::supervision_inventory_entry;
+
 /// A JSON string literal.
 #[must_use]
 pub fn string(value: &str) -> String {

@@ -24,6 +24,9 @@ use fss_reference::agent_session::checkpoint::journal::supervision::SupervisionR
 #[path = "retained/session.rs"]
 mod session;
 
+#[path = "retained/inventory.rs"]
+mod inventory;
+
 #[derive(Clone, Copy)]
 enum Mode {
     Explicit,
@@ -268,7 +271,12 @@ fn run(options: Options) -> Result<()> {
 }
 
 pub(super) fn main(values: &BTreeMap<String, OsString>) -> ExitCode {
-    match parse(values).and_then(run) {
+    let result = if values.contains_key("--list") {
+        inventory::run(values)
+    } else {
+        parse(values).and_then(run)
+    };
+    match result {
         Ok(()) => ExitCode::from(ExitIdentity::SUCCESS.code),
         Err(error) => {
             eprintln!("{}: {}", error.identity, error.reason);

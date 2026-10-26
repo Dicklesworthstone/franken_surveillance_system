@@ -18,10 +18,18 @@ use crate::agent_session::checkpoint::journal::supervision::{
 };
 
 mod recovery;
+mod inventory;
+pub use inventory::{
+    SupervisionInventoryBinding, SupervisionInventoryBoundary, SupervisionInventoryControl,
+    SupervisionInventoryDelivery, SupervisionInventoryRequest, list_supervision,
+};
 pub use recovery::{
     SupervisionRecoveryBinding, SupervisionRecoveryBoundary, SupervisionRecoveryControl,
     SupervisionRecoveryRequest, recover_supervision_registration,
 };
+
+#[cfg(test)]
+mod inventory_tests;
 
 /// Exactly one action is performed by a command. ACK never evaluates a successor implicitly.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
