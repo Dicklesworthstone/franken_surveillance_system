@@ -66,3 +66,23 @@ resume/rebase path.
 A session interrupted before its first workspace can complete only through the original
 request-digest check, with its exact retained mission and original grants still present. Nonempty
 workspace history without its opening revision, or a missing or corrupt mission, is refused.
+
+## The mission survives context changes
+
+A durable session's orientation now includes the literal mission and requested objective from its
+immutable mission record. The workspace pins the record digest; native callers verify that digest,
+canonical record bytes, principal, session, mission and deployment before using the text. The same
+binding is carried through session-scoped operations, planning, durable follow, handoff and resume.
+
+The complete requested mission and objective occupy mandatory frame-summary context. A view that
+cannot retain that text refuses its context budget. The retained record also binds the objective
+identity, objective source request and decision digest, so a different mission cannot silently
+inherit the generic orientation objective. Stateless orientations keep their existing read-only
+objective; a session projection without an admitted mission states that the objective is unavailable.
+
+Retention of a request is a derived fact about that record. User-authored mission prose is not an
+observation of the physical world, evidence of success, or permission to execute an effect. The
+current prose-only mission format has no negotiated success predicates, failure predicates, stop
+conditions or terminal proof. Its objective contract therefore leaves those collections empty and
+carries an explicit completion-unassessed unknown. A successful orientation, plan rendering or
+context compression does not complete the mission.

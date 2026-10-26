@@ -74,6 +74,7 @@ use crate::{MockModelResult, ReferenceError};
 pub mod coverage;
 pub mod historical_health;
 pub mod liveness;
+mod mission;
 mod supervision;
 mod trauma_guard;
 use crate::agent_session::checkpoint::journal::supervision::SupervisionInventoryEntry;
@@ -100,6 +101,7 @@ pub use historical_health::{
     MAX_HISTORICAL_HEALTH_METADATA_BYTES, MAX_HISTORICAL_HEALTH_READS_PER_RECORD,
     MAX_HISTORICAL_HEALTH_RECORDS, RetainedHistoricalHealth, SOURCE_CLASS_HISTORICAL_HEALTH_DETAIL,
 };
+pub use mission::OrientMissionBrief;
 
 /// Capability registry row that admits a situation read (AOP-003, AOP-004, AOP-009).
 pub const CAPABILITY_SITUATION_READ: &str = "CAP-AGENT-SITUATION-READ-001";
@@ -1998,7 +2000,11 @@ fn compile_capsule(
     let anchor = snapshot.anchor.clone();
     let site = snapshot.site_lineage.as_str();
     let site_digest = ContentDigest::sha256(site.as_bytes());
-    let objective_id = format!("objective:orient:{site_digest}");
+    let mission_context = mission::project(snapshot, request, session)?;
+    let objective_id = mission_context
+        .objective_id
+        .clone()
+        .unwrap_or_else(|| format!("objective:orient:{site_digest}"));
     let mission_id = MissionId::parse(format!("mission:orient:{site_digest}"))?;
     let session_id = SessionId::parse(format!(
         "session:orient:{}",
@@ -2016,6 +2022,8 @@ fn compile_capsule(
     let mut at_risk = Vec::new();
     let mut why = Vec::new();
     let mut proof_roots = BTreeSet::from([anchor.state_root, snapshot.effect_journal_digest]);
+    proof_roots.extend(mission_context.proof_roots);
+    unknown.extend(mission_context.unknown);
     let ledger_evidence = if snapshot.batch_count == 0 {
         anchor.state_root
     } else {
@@ -2116,6 +2124,7 @@ fn compile_capsule(
         )?,
         site_coverage_cell(coverage.as_ref())?,
     ];
+    cells.extend(mission_context.cells);
     if let Some(assessment) = &coverage {
         for zone in &assessment.zones {
             cells.push(zone_coverage_cell(zone, &anchor)?);
@@ -2545,7 +2554,7 @@ fn compile_capsule(
     obligation_ids.sort();
     obligation_ids.dedup();
 
-    let now = vec![match headline {
+    let headline_summary = match headline {
         Some(top) => format!(
             "{} ({}), {corroborated} corroborated, {} open; top: {}.",
             plural(planned.len(), "event", "events"),
@@ -2558,6 +2567,12 @@ fn compile_capsule(
             plural(snapshot.completed_imports.len(), "import", "imports"),
             plural(obligation_ids.len(), "obligation", "obligations"),
         ),
+    };
+    // The first frame item is mandatory in every ContextPack. Keep the full requested
+    // mission and objective here; a smaller budget must refuse instead of forgetting the goal.
+    let now = vec![match mission_context.protected_summary {
+        Some(mission) => format!("{mission}\n{headline_summary}"),
+        None => headline_summary,
     }];
     why.push(format!(
         "Compiled read-only from the committed ledger prefix (root {}) and effect journal.",
@@ -3455,7 +3470,7 @@ impl ListedAffordance<'_> {
     }
 }
 
-/// The read-only objective every orientation answers.
+/// The admitted mission outcome, or the read-only query objective for an unbound request.
 fn orientation_objective(
     snapshot: &DeploymentSnapshot,
     request: &OrientRequest,
@@ -3463,6 +3478,7 @@ fn orientation_objective(
     request_digest: ContentDigest,
     requested: BudgetVector,
     coverage: Option<&CoverageAssessment>,
+    session: Option<&OrientSessionBinding>,
 ) -> Result<ObjectiveContract, ContractError> {
     let anchor = &capsule.anchor;
     let mut zones: Vec<String> = snapshot
@@ -3481,50 +3497,58 @@ fn orientation_objective(
         encoder.digest(request_digest);
         anchor.encode_canonical(encoder);
         encoder.text(request.view.id());
+        if let Some(mission) = session.and_then(|binding| binding.mission.as_ref()) {
+            encoder.digest(mission.record_digest);
+        }
     });
-    ObjectiveContract::new(ObjectiveContractParams {
-        objective_id: capsule.frame.objective_id.clone(),
-        source_principal: request.principal.as_str().to_owned(),
-        source_request_digest: request_digest.to_text(),
-        desired_outcome: format!(
-            "A read-only {} orientation of deployment {} pinned to commit {}.",
-            request.view.name(),
-            snapshot.site_lineage,
-            anchor.commit_sequence
-        ),
-        success_predicates: vec![
-            "Every protected world is inline or hydratable through a receipted handle.".to_owned(),
-            "The context pack is admitted within the view's registered token budget.".to_owned(),
-        ],
-        failure_predicates: vec![
-            "The critical context does not fit the admitted budget \
+    mission::objective(
+        ObjectiveContractParams {
+            objective_id: capsule.frame.objective_id.clone(),
+            source_principal: request.principal.as_str().to_owned(),
+            source_request_digest: request_digest.to_text(),
+            desired_outcome: format!(
+                "A read-only {} orientation of deployment {} pinned to commit {}.",
+                request.view.name(),
+                snapshot.site_lineage,
+                anchor.commit_sequence
+            ),
+            success_predicates: vec![
+                "Every protected world is inline or hydratable through a receipted handle."
+                    .to_owned(),
+                "The context pack is admitted within the view's registered token budget."
+                    .to_owned(),
+            ],
+            failure_predicates: vec![
+                "The critical context does not fit the admitted budget \
              (ERR-AGENT-CONTEXT-INCOMPLETE-001)."
-                .to_owned(),
-        ],
-        stop_conditions: vec!["The committed ledger prefix has been read once.".to_owned()],
-        hard_constraints: vec![
-            "Read-only: nothing under the root is created, written, locked, or repaired."
-                .to_owned(),
-            "No listed affordance is executed.".to_owned(),
-        ],
-        soft_preferences: Vec::new(),
-        scope: ObjectiveScope {
-            deployments: vec![snapshot.site_lineage.clone()],
-            zones,
-            subjects: Vec::new(),
-            devices: Vec::new(),
-            time_intervals: Vec::new(),
-            data_classes: ORIENT_DATA_CLASSES
-                .iter()
-                .map(|&class| class.to_owned())
-                .collect(),
+                    .to_owned(),
+            ],
+            stop_conditions: vec!["The committed ledger prefix has been read once.".to_owned()],
+            hard_constraints: vec![
+                "Read-only: nothing under the root is created, written, locked, or repaired."
+                    .to_owned(),
+                "No listed affordance is executed.".to_owned(),
+            ],
+            soft_preferences: Vec::new(),
+            scope: ObjectiveScope {
+                deployments: vec![snapshot.site_lineage.clone()],
+                zones,
+                subjects: Vec::new(),
+                devices: Vec::new(),
+                time_intervals: Vec::new(),
+                data_classes: ORIENT_DATA_CLASSES
+                    .iter()
+                    .map(|&class| class.to_owned())
+                    .collect(),
+            },
+            budgets: requested,
+            allowed_actions: vec!["session.orient".to_owned()],
+            required_approvals: Vec::new(),
+            terminal_proof: vec![format!("fss://proof/{}", snapshot.ledger_root)],
+            decision_digest: decision.to_text(),
         },
-        budgets: requested,
-        allowed_actions: vec!["session.orient".to_owned()],
-        required_approvals: Vec::new(),
-        terminal_proof: vec![format!("fss://proof/{}", snapshot.ledger_root)],
-        decision_digest: decision.to_text(),
-    })
+        session,
+    )
 }
 
 /// Data classes an orientation reads (every other class is outside its projection).
@@ -3657,6 +3681,9 @@ pub struct OrientSessionBinding {
     pub mission_id: MissionId,
     /// Durable session identity.
     pub session_id: SessionId,
+    /// Exact immutable requested mission admitted from this session's retained record.
+    /// `None` leaves mission completion explicitly unassessed.
+    pub mission: Option<OrientMissionBrief>,
     /// Open investigation cases of the mission visible to the session, in identity order.
     pub cases: Vec<OrientCaseBrief>,
     /// Active (non-terminal) plans of the mission, in identity order.
@@ -3870,6 +3897,7 @@ fn orient_deployment_for_with_advisories(
         request_digest,
         requested,
         compiled.coverage.as_ref(),
+        session,
     )?;
     Ok(DeploymentOrientation {
         view: request.view,

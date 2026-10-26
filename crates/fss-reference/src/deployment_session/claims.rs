@@ -507,6 +507,7 @@ pub fn work_claim(
         &session.session_id,
         &limits,
         super::session_briefs(root, &journal.store, &session, &session.current_anchor, now)?,
+        &super::mission_for_workspace(root, &session, &position.workspace)?,
     )?;
     Ok(ClaimAnswer {
         session,

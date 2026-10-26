@@ -320,6 +320,7 @@ pub fn publish_feedback(
         &session.session_id,
         &limits,
         super::session_briefs(root, &journal.store, &session, &session.current_anchor, now)?,
+        &super::mission_for_workspace(root, &session, &position.workspace)?,
     )?;
     journal.commit_pin()?;
     drop(journal);

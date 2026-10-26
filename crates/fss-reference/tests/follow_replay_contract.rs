@@ -546,6 +546,7 @@ fn session_binding() -> TestResult<OrientSessionBinding> {
     Ok(OrientSessionBinding {
         session_id: SessionId::parse("session:follow-replay:durable")?,
         mission_id: MissionId::parse("mission:follow-replay:durable")?,
+        mission: None,
         cases: Vec::new(),
         plans: Vec::new(),
         claims: Vec::new(),

@@ -269,6 +269,7 @@ fn reconstruct(
     history: &DeploymentHistory,
     state: &FollowSubscription,
     session: &AgentSession,
+    mission: &super::MissionRecord,
     horizon: &AnchorToken,
     input: Option<&str>,
     control: &mut impl FollowSessionControl,
@@ -278,6 +279,7 @@ fn reconstruct(
     let binding = OrientSessionBinding {
         mission_id: session.mission_id.clone(),
         session_id: session.session_id.clone(),
+        mission: Some(mission.orientation_brief()),
         cases: Vec::new(),
         claims: Vec::new(),
         findings: Vec::new(),
@@ -480,6 +482,17 @@ fn execute(
     }
     registration.semantic_history =
         semantic_history(root, &mut journal, &session, head.observed_at)?;
+    // The immutable request is valid on both evidence axes. The existing semantic-history
+    // admission and revalidation bind its root-last publication; mutable session facets remain
+    // unsupported by this replay profile.
+    let workspace = journal
+        .store
+        .workspace_head(principal, &session.session_id, head.observed_at)
+        .map_err(|error| FollowSessionError::Session(error.into()))?
+        .result
+        .revision;
+    let mission = super::mission_for_workspace(root, &session, &workspace)
+        .map_err(FollowSessionError::Session)?;
     let mut state = journal
         .store
         .register_follow(principal, registration, head.observed_at)
@@ -503,6 +516,7 @@ fn execute(
                 &history,
                 &state,
                 &session,
+                &mission,
                 &horizon,
                 pending.input_continuation(),
                 control,
@@ -555,7 +569,9 @@ fn execute(
         .pending()
         .and_then(PendingFollowDelivery::input_continuation)
         .or_else(|| state.next_continuation());
-    let step = reconstruct(&history, &state, &session, &horizon, input, control)?;
+    let step = reconstruct(
+        &history, &state, &session, &mission, &horizon, input, control,
+    )?;
     let expected_basis = journal
         .store
         .follow_contract_basis(&request.session_id)

@@ -697,6 +697,7 @@ pub fn finding(
         &session.session_id,
         &limits,
         super::session_briefs(root, &journal.store, &session, &session.current_anchor, now)?,
+        &super::mission_for_workspace(root, &session, &position.workspace)?,
     )?;
     journal.commit_pin()?;
     let request_digest = digest_of(FINDING_REQUEST_DOMAIN, |encoder| {

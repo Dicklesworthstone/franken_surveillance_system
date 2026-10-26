@@ -1,6 +1,8 @@
 #![forbid(unsafe_code)]
 //! Unit tests for durable sessions and root-last handoffs over real on-disk deployments.
 
+mod opening_retry;
+
 use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};

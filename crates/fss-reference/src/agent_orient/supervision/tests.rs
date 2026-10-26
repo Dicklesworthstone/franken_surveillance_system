@@ -59,6 +59,7 @@ fn binding(entries: Option<Vec<SupervisionInventoryEntry>>) -> TestResult<Orient
     Ok(OrientSessionBinding {
         session_id: SessionId::parse("session:supervision-projection")?,
         mission_id: MissionId::parse("mission:supervision-projection")?,
+        mission: None,
         cases: Vec::new(),
         plans: Vec::new(),
         claims: Vec::new(),

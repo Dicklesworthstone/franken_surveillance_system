@@ -340,8 +340,8 @@ pub fn hold_planning_context(
     if let Some(case) = &case {
         validate_case_basis(case, &session)?;
     }
-    // A plan binds the world situation at the session's anchor, never the agent's own cognition:
-    // no case or plan briefs enter the frame it binds, so recording a case or a plan cannot
+    // A plan binds the world situation and immutable requested goal at the session's anchor.
+    // No mutable case or plan briefs enter that frame, so recording a case or a plan cannot
     // change the identity of the plans compiled at that anchor.
     let orientation = orient_bound(
         None,
@@ -352,6 +352,7 @@ pub fn hold_planning_context(
         &session.session_id,
         &limits,
         super::SessionBriefs::default(),
+        &super::mission_for_workspace(root, &session, &position.workspace)?,
     )?;
     let context = PlanningContext {
         site_lineage: position.snapshot.site_lineage.clone(),

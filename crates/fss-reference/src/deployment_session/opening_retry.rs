@@ -105,6 +105,7 @@ pub(super) fn resume_if_present(
         &session.session_id,
         limits,
         session_briefs(root, &journal.store, &session, &snapshot.anchor, now)?,
+        &mission,
     )?;
     if revision.contract_basis() != &orientation.capsule().contract_basis {
         return Err(DeploymentSessionError::SessionStale(

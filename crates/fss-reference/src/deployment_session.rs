@@ -66,7 +66,7 @@ use crate::agent_follow::{
 use crate::agent_orient::{
     DeploymentHistory, DeploymentOrientation, DeploymentReadError, DeploymentSnapshot,
     OrientCaseBrief, OrientClaimBrief, OrientError, OrientFindingBrief, OrientLimits,
-    OrientRequest, OrientSessionBinding, orient_deployment_for,
+    OrientMissionBrief, OrientRequest, OrientSessionBinding, orient_deployment_for,
 };
 use crate::agent_session::checkpoint::journal::coordination::investigations::{
     DurableInvestigationError, InvestigationError, InvestigationLimits,
@@ -508,6 +508,19 @@ impl MissionRecord {
     #[must_use]
     pub fn digest(&self) -> ContentDigest {
         ContentDigest::sha256(&self.to_bytes())
+    }
+
+    /// Exact mission request for a scope-checked canonical orientation.
+    fn orientation_brief(&self) -> OrientMissionBrief {
+        OrientMissionBrief {
+            mission_id: self.mission_id.clone(),
+            session_id: self.session_id.clone(),
+            principal: self.principal.clone(),
+            site_lineage: self.site_lineage.clone(),
+            mission: self.mission.clone(),
+            objective: self.objective.clone(),
+            record_digest: self.digest(),
+        }
     }
 
     /// Decodes exactly canonical record bytes.
@@ -1321,6 +1334,30 @@ fn read_mission(
         .map_err(|_| DeploymentSessionError::StoreInvalid("malformed mission record".to_owned()))
 }
 
+/// Reads the exact record named by an already admitted workspace, preserving its original
+/// bytes across projection changes. No caller may replace a missing or foreign goal with a
+/// generic orientation objective.
+fn mission_for_workspace(
+    root: &Path,
+    session: &AgentSession,
+    workspace: &WorkspaceRevision,
+) -> Result<MissionRecord, DeploymentSessionError> {
+    let mission = read_mission(
+        root,
+        ContentDigest::parse(&workspace.capsule().objective_digest)?,
+    )?;
+    if mission.mission_id != session.mission_id
+        || mission.session_id != session.session_id
+        || mission.principal != session.principal_id
+        || mission.site_lineage != session.current_anchor.site_lineage
+    {
+        return Err(DeploymentSessionError::StoreInvalid(
+            "the retained mission record does not belong to this admitted session".to_owned(),
+        ));
+    }
+    Ok(mission)
+}
+
 // ---------------------------------------------------------------------------------------------
 // Situations.
 // ---------------------------------------------------------------------------------------------
@@ -1338,7 +1375,17 @@ fn orient_bound(
     session_id: &SessionId,
     limits: &OrientLimits,
     briefs: SessionBriefs,
+    mission: &MissionRecord,
 ) -> Result<DeploymentOrientation, DeploymentSessionError> {
+    if &mission.mission_id != mission_id
+        || &mission.session_id != session_id
+        || &mission.principal != principal
+        || mission.site_lineage != snapshot.site_lineage
+    {
+        return Err(DeploymentSessionError::StoreInvalid(
+            "the retained mission does not belong to this orientation scope".to_owned(),
+        ));
+    }
     let request = OrientRequest {
         view,
         principal: principal.clone(),
@@ -1347,6 +1394,7 @@ fn orient_bound(
     let binding = OrientSessionBinding {
         mission_id: mission_id.clone(),
         session_id: session_id.clone(),
+        mission: Some(mission.orientation_brief()),
         cases: briefs.cases,
         claims: briefs.claims,
         findings: briefs.findings,
@@ -1789,6 +1837,7 @@ pub fn open_session(
         &session_id,
         &limits,
         SessionBriefs::default(),
+        &mission,
     )?;
     let mut journal = match existing_journal {
         Some(journal) => journal,
@@ -1856,6 +1905,7 @@ pub fn open_session(
         &session.session_id,
         &limits,
         session_briefs(root, &journal.store, &session, &snapshot.anchor, now)?,
+        &mission,
     )?;
     journal.commit_pin()?;
     Ok(OpenedSession {
@@ -1946,7 +1996,7 @@ pub fn prepare_handoff(
         .workspace_head(&request.principal, &request.session_id, now)?;
     let workspace = head_workspace.revision;
     let capsule = workspace.capsule().clone();
-    let mission = read_mission(root, ContentDigest::parse(&capsule.objective_digest)?)?;
+    let mission = mission_for_workspace(root, &session, &workspace)?;
     let token_text = capsule_anchor_token(&capsule).ok_or_else(|| {
         DeploymentSessionError::StoreInvalid(
             "the workspace names no anchor-bound position".to_owned(),
@@ -1977,6 +2027,7 @@ pub fn prepare_handoff(
         &session.session_id,
         &limits,
         briefs,
+        &mission,
     )?;
     let publication = sealed_publication(orientation.publication.clone())?;
     let situation = orientation.capsule();
@@ -2319,7 +2370,12 @@ pub fn resume_session(
         })?
         .result
         .revision;
-    let mission = read_mission(root, handoff.mission_digest)?;
+    let mission = mission_for_workspace(root, &session, &handed_off)?;
+    if mission.digest() != handoff.mission_digest {
+        return Err(DeploymentSessionError::HandoffInvalid(
+            "the handoff mission record differs from its admitted workspace".to_owned(),
+        ));
+    }
     let basis = orient_bound(
         Some((root, &head)),
         &basis_snapshot,
@@ -2329,6 +2385,7 @@ pub fn resume_session(
         session_id,
         &limits,
         session_briefs(root, &journal.store, &session, &basis_snapshot.anchor, now)?,
+        &mission,
     )?;
     let result = orient_bound(
         Some((root, &head)),
@@ -2339,6 +2396,7 @@ pub fn resume_session(
         session_id,
         &limits,
         session_briefs(root, &journal.store, &session, &head.anchor, now)?,
+        &mission,
     )?;
     // A historical evidence anchor does not restore the old agent-plane state. Comparing two
     // freshly compiled frames alone would hide same-anchor case, plan or supervision changes.

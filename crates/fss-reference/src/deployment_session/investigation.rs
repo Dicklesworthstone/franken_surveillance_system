@@ -632,6 +632,7 @@ pub fn investigate(
         &session.session_id,
         &limits,
         super::session_briefs(root, &journal.store, &session, &session.current_anchor, now)?,
+        &super::mission_for_workspace(root, &session, &workspace)?,
     )?;
     Ok(CaseAnswer {
         claims: super::claims::visible_claims(&journal.store, &session),
