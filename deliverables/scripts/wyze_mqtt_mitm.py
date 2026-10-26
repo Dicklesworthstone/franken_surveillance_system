@@ -256,9 +256,20 @@ def inject(cli, up=None):
                   "sub_mac":THING.upper(),"Params":{"url":URL}}
         else:
             body={"Action":act,"Guid":f"{THING}-{i}","Params":inner}
-        # sweep hooks: extra fields the cloud body may carry and ours does not
-        for spec, dst in ((os.environ.get("OTA_EXTRA"), body),
-                          (os.environ.get("OTA_PARAMS_EXTRA"), body.get("Params") or {})):
+        # sweep hooks: extra fields the cloud body may carry and ours does not.
+        # OTA_SHAPES is a JSON array of {"top":{…},"params":{…}} cycled per iteration so one
+        # connection covers every shape; OTA_EXTRA/OTA_PARAMS_EXTRA are the single-shape form.
+        top_spec, par_spec = os.environ.get("OTA_EXTRA"), os.environ.get("OTA_PARAMS_EXTRA")
+        shapes = os.environ.get("OTA_SHAPES")
+        if shapes:
+            try:
+                sh = json.loads(shapes)[i % len(json.loads(shapes))]
+                top_spec = json.dumps(sh.get("top") or {})
+                par_spec = json.dumps(sh.get("params") or {})
+                print(f"inject: shape {i % len(json.loads(shapes))}", flush=True)
+            except Exception as e:
+                print("inject: bad OTA_SHAPES", e, flush=True)
+        for spec, dst in ((top_spec, body), (par_spec, body.get("Params") or {})):
             if spec:
                 try:
                     dst.update(json.loads(spec))
@@ -362,20 +373,22 @@ def local_loop(cli):
             print("local: closed", flush=True); return
         t = kind >> 4
         if t == 1:
-            cli.sendall(_pkt(2, b"\x00\x00")); print("local: CONNACK", flush=True)
+            with WLOCK: cli.sendall(_pkt(2, b"\x00\x00"))
+            print("local: CONNACK", flush=True)
         elif t == 8:
             pid = body[:2]
             n = 0; i = 2
             while i < len(body):
                 ln = struct.unpack(">H", body[i:i + 2])[0]; i += 2 + ln + 1; n += 1
-            cli.sendall(_pkt(9, pid + b"\x01" * n)); print(f"local: SUBACK x{n}", flush=True)
+            with WLOCK: cli.sendall(_pkt(9, pid + b"\x01" * n))
+            print(f"local: SUBACK x{n}", flush=True)
         elif t == 3:
             qos = (kind >> 1) & 3
             if qos:
                 ln = struct.unpack(">H", body[:2])[0]
-                cli.sendall(_pkt(4, body[2 + ln:4 + ln]))
+                with WLOCK: cli.sendall(_pkt(4, body[2 + ln:4 + ln]))
         elif t == 12:
-            cli.sendall(_pkt(13, b""))
+            with WLOCK: cli.sendall(_pkt(13, b""))
         elif t == 14:
             print("local: DISCONNECT", flush=True); return
 
