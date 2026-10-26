@@ -7,8 +7,10 @@
 //! evidence, authority, policy, thresholds, models, retention, privacy, or effects
 //! (`activePolicyMutation` is the constant `false`). For an own-session plan with a retained
 //! terminal episode, `create_learning_proposal` additionally captures an immutable experience
-//! and learning candidate; the registered response is `fss.experience_capsule.v1`. Other
-//! targets/dispositions retain the ordinary feedback response.
+//! and learning candidate; the registered response is `fss.experience_capsule.v1`. Explicit
+//! `open_case` also asks the native investigation owner for a deterministic review draft while
+//! retaining the complete feedback payload; case identities and receipts are proof pointers.
+//! Both paths preserve feedback when a downstream stage refuses. Other dispositions are recorded.
 //!
 //! ```text
 //! fss feedback --json --root DIR --session ID --target event|case|operation|plan:ID
@@ -22,6 +24,7 @@
 
 use std::path::PathBuf;
 
+mod case;
 mod learning;
 
 use fss_core::{
@@ -279,6 +282,9 @@ fn response(published: &PublishedFeedback) -> Result<String, Box<dyn std::error:
     if let Some(captured) = &published.learning {
         return learning::response(published, captured);
     }
+    if let Some(opened) = &published.case {
+        return case::response(published, opened);
+    }
     let orientation = &published.orientation;
     let capsule = orientation.capsule();
     let proposal = &published.proposal;
@@ -359,6 +365,14 @@ fn response(published: &PublishedFeedback) -> Result<String, Box<dyn std::error:
 pub fn execute_feedback(args: &FeedbackArgs) -> (String, ExitIdentity) {
     match publish_feedback(&args.root, &args.request) {
         Ok(mut published) => {
+            if let Some(error) = published.case_refusal.take() {
+                return rendered(
+                    case::capture_refusal(&published, error),
+                    ExitIdentity::AGENT_REFUSED,
+                    COMMAND,
+                    &args.root,
+                );
+            }
             if let Some(error) = published.learning_refusal.take() {
                 return rendered(
                     learning::capture_refusal(&published, error),
@@ -370,7 +384,11 @@ pub fn execute_feedback(args: &FeedbackArgs) -> (String, ExitIdentity) {
             match response(&published) {
                 Ok(json) => (json, ExitIdentity::SUCCESS),
                 Err(_) => rendered(
-                    learning::render_failure(&published),
+                    if published.proposal.requested_disposition == RequestedDisposition::OpenCase {
+                        case::render_failure(&published)
+                    } else {
+                        learning::render_failure(&published)
+                    },
                     ExitIdentity::AGENT_REFUSED,
                     COMMAND,
                     &args.root,

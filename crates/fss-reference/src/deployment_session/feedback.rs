@@ -16,6 +16,13 @@
 //! `<root>/agent/publications/` in a `feedback-<digest>` slot with the rendered public JSON as the
 //! only child. The identity is derived from the exact content and anchor, so an identical
 //! proposal is an exact retry.
+//!
+//! An explicit `open_case` disposition also asks the existing investigation owner to retain
+//! one evidence-linked draft. This creates review state, not a corrected fact or an active policy.
+//! The feedback publication survives a downstream case refusal or ambiguous durability boundary.
+
+/// Deterministic feedback-grounded drafts admitted by the native investigation owner.
+pub mod case;
 
 use std::path::Path;
 
@@ -89,7 +96,8 @@ pub struct FeedbackRequest {
     pub supporting: Vec<ContentDigest>,
     /// Evidence contradicting it.
     pub contradicting: Vec<ContentDigest>,
-    /// What the proposer asks to happen next (never performed by recording).
+    /// What the proposer asks to happen next. Explicit native advisory capture/review is
+    /// attempted separately after retaining the immutable proposal; activation is never implied.
     pub disposition: RequestedDisposition,
 }
 
@@ -113,6 +121,11 @@ pub struct PublishedFeedback {
     /// Learning failed after this exact feedback publication was retained. A transport must
     /// report partial/refused completion and preserve the feedback identity and root.
     pub learning_refusal: Option<DeploymentSessionError>,
+    /// Original draft, current native case revision and journal proof for explicit `open_case`.
+    pub case: Option<case::OpenedFeedbackCase>,
+    /// Case admission, durability/pinning or context projection failed after retaining feedback.
+    /// A returned case remains valid evidence of the known completed boundary even when set.
+    pub case_refusal: Option<DeploymentSessionError>,
 }
 
 fn slot(feedback_id: &str) -> Result<SlotName, DeploymentSessionError> {
@@ -411,6 +424,8 @@ pub fn publish_feedback(
         head_moved: position.head_moved,
         learning: None,
         learning_refusal: None,
+        case: None,
+        case_refusal: None,
     };
     if request.disposition == RequestedDisposition::CreateLearningProposal
         && matches!(&request.target, FeedbackTarget::Plan(_))
@@ -462,6 +477,57 @@ pub fn publish_feedback(
                 }
             }
             Err(error) => published.learning_refusal = Some(error),
+        }
+    }
+    if request.disposition == RequestedDisposition::OpenCase {
+        match case::open(root, request, &published, &position, &mut journal, now) {
+            Ok(opened) => {
+                // Native command completion is already known. Preserve its exact revision and
+                // journal receipt even if pinning or the following projection cannot complete.
+                published.case = Some(opened);
+                let refreshed = journal.commit_pin().and_then(|()| {
+                    super::session_briefs(
+                        root,
+                        &journal.store,
+                        &published.session,
+                        &position.snapshot,
+                        now,
+                    )
+                    .and_then(|briefs| {
+                        let mission = super::mission_for_workspace(
+                            root,
+                            &published.session,
+                            &position.workspace,
+                        )?;
+                        orient_bound(
+                            Some((root, &head)),
+                            &position.snapshot,
+                            published.session.view,
+                            &published.session.principal_id,
+                            &published.session.mission_id,
+                            &published.session.session_id,
+                            &limits,
+                            briefs,
+                            &mission,
+                        )
+                    })
+                });
+                match refreshed {
+                    Ok(orientation) => published.orientation = orientation,
+                    Err(error) => published.case_refusal = Some(error),
+                }
+            }
+            Err(error @ DeploymentSessionError::CaseRefused(_)) => {
+                // A typed case refusal can still commit session-clock observations. Seal that
+                // known journal boundary; a pin failure takes precedence over the typed refusal.
+                published.case_refusal = Some(match journal.commit_pin() {
+                    Ok(()) => error,
+                    Err(pin_error) => pin_error,
+                });
+            }
+            // A durability failure can fence the journal after an ambiguous append. Do not try
+            // to pin it as if the command were known to have failed without changing the store.
+            Err(error) => published.case_refusal = Some(error),
         }
     }
     drop(journal);

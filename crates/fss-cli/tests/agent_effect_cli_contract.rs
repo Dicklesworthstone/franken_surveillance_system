@@ -19,6 +19,8 @@
 //!    a dispatch retains its exact case/session witness through the bounded network attempt,
 //!    then releases ownership while cold receipt recovery never resends after witness changes.
 
+#[path = "agent_effect_cli_contract/feedback_case.rs"]
+mod feedback_case;
 #[path = "agent_effect_cli_contract/learning_explain.rs"]
 mod learning_explain;
 

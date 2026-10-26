@@ -446,3 +446,188 @@ fn verify_source_slots(
     let mission_slot = MissionRecord::slot(binding.mission_digest).map_err(|_| unavailable())?;
     reader.slot_record(&mission_slot, &mission_manifest, false)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    use fss_core::{
+        AgentSessionParams, BudgetVector, ContextAuthority, OperationId, RootAuthoritySpec,
+    };
+
+    use crate::agent_orient::{DeploymentHistory, OrientLimits};
+    use crate::agent_session::workspace::{WorkspaceWrite, WorkspaceWriteMode};
+    use crate::deployment_session::{
+        CapsuleInput, SESSION_CAPABILITIES, SESSION_JOURNAL_FILE, SESSION_LEASE_NS,
+        SESSION_PRIVACY_SCOPE, SESSION_ROOT_PIN_FILE, SESSIONS_RELPATH, SessionBriefs,
+        SessionJournal, orient_bound, publish_record, workspace_capsule,
+    };
+    use crate::{ADP_REPLAY_ROW_ID, ReferenceDeployment, ReplayCx, ReplayIoAuthority};
+
+    type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
+
+    struct OwnedRoot(PathBuf);
+
+    impl Drop for OwnedRoot {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn retained_session_without_explain_grant_refuses_before_selected_custody() -> TestResult {
+        let root = std::env::temp_dir().join(format!(
+            "fss-learning-inspect-legacy-grant-{}",
+            std::process::id()
+        ));
+        // Only a newly created test-owned directory may be removed by the guard.
+        fs::create_dir(&root)?;
+        let owned = OwnedRoot(root);
+        let deployment_root = owned.0.join("deployment");
+        let authority = ContextAuthority::new_root(RootAuthoritySpec {
+            trace_id: "trace:learning-inspect-legacy".to_owned(),
+            operation_id: OperationId::parse("operation:learning-inspect-legacy")?,
+            principal: "operator:learning-inspect-legacy".to_owned(),
+            capabilities: vec![ADP_REPLAY_ROW_ID.to_owned()],
+            deadline: None,
+            priority: 10,
+            budgets: BudgetVector::default(),
+            privacy_scope: "privacy:internal".to_owned(),
+            retention_scope: "retention:ephemeral".to_owned(),
+            anchor_universe: ContentDigest::sha256(b"learning-inspect-legacy"),
+            generation: 1,
+        })?;
+        let cx = ReplayCx::new(ReplayIoAuthority::from_context_authority(
+            &authority,
+            owned.0.join("replay-scratch"),
+        )?);
+        drop(ReferenceDeployment::open(
+            &deployment_root,
+            "site:learning-inspect-legacy",
+            &cx,
+        )?);
+        let history = DeploymentHistory::read(&deployment_root, &OrientLimits::default())?;
+        let head = history.snapshot_at(history.head())?;
+        let now = evidence_now(&head);
+        let mission = MissionRecord {
+            mission_id: fss_core::MissionId::parse("mission:learning-inspect-legacy")?,
+            session_id: SessionId::parse("session:learning-inspect-legacy")?,
+            principal: PrincipalId::parse("principal:learning-inspect-legacy")?,
+            site_lineage: head.site_lineage.clone(),
+            mission: "Review retained advisory learning under its existing read grants.".to_owned(),
+            objective: "Require explicit explanation authority.".to_owned(),
+            opening_anchor_token: snapshot_anchor_token(&head),
+            view: AgentView::EpistemicMap,
+            token_budget: 16_000,
+            created_at: now,
+        };
+        let orientation = orient_bound(
+            Some((&deployment_root, &head)),
+            &head,
+            mission.view,
+            &mission.principal,
+            &mission.mission_id,
+            &mission.session_id,
+            &OrientLimits::default(),
+            SessionBriefs::default(),
+            &mission,
+        )?;
+        let mut journal = SessionJournal::open(&deployment_root)?;
+        let old_grants = SESSION_CAPABILITIES
+            .iter()
+            .filter(|grant| **grant != "CAP-AGENT-EXPLAIN-001")
+            .map(|grant| (*grant).to_owned())
+            .collect::<BTreeSet<_>>();
+        let session = journal.store.open(
+            AgentSessionParams {
+                session_id: mission.session_id.clone(),
+                mission_id: mission.mission_id.clone(),
+                principal_id: mission.principal.clone(),
+                capabilities: old_grants.clone(),
+                privacy_scope: BTreeSet::from([SESSION_PRIVACY_SCOPE.to_owned()]),
+                current_anchor: head.anchor.clone(),
+                view_id: mission.view.id().to_owned(),
+                token_budget: mission.token_budget,
+                symbol_table_generation: 0,
+                last_acknowledged_situation_fingerprint: None,
+                created_at_ns: now.0,
+                expires_at_ns: now.0 + SESSION_LEASE_NS,
+            },
+            orientation.capsule().contract_basis.clone(),
+            now,
+        )?;
+        let capsule = workspace_capsule(&CapsuleInput {
+            session: &session,
+            revision: 0,
+            objective_digest: &mission.digest().to_text(),
+            base_anchor: &head.anchor,
+            orientation: &orientation,
+            previous: None,
+            mode: WorkspaceWriteMode::Advance,
+        })?;
+        journal.store.publish_workspace(
+            &mission.principal,
+            WorkspaceWrite {
+                expected_head: None,
+                capsule,
+                mode: WorkspaceWriteMode::Advance,
+            },
+            now,
+        )?;
+        publish_record(
+            &deployment_root,
+            &MissionRecord::slot(mission.digest())?,
+            "agent-mission",
+            &mission.to_bytes(),
+            &[],
+            None,
+        )?;
+        journal.commit_pin()?;
+        drop(journal);
+
+        let directory = deployment_root.join(SESSIONS_RELPATH);
+        let journal_before = fs::read(directory.join(SESSION_JOURNAL_FILE))?;
+        let pin_before = fs::read(directory.join(SESSION_ROOT_PIN_FILE))?;
+        let request = InspectLearningRequest {
+            session_id: mission.session_id.clone(),
+            principal: mission.principal.clone(),
+            publication_root: ContentDigest::sha256(b"unavailable selected learning"),
+            view: AgentView::Forensic,
+            budget_tokens: Some(8_000),
+        };
+        // Shared immutable admission succeeds: the fixture is readable under its old grants.
+        let (admitted_grants, _, _) = with_admitted_session_read(
+            &deployment_root,
+            &request.principal,
+            &request.session_id,
+            |read| Ok(read.session.capabilities.clone()),
+        )?;
+        assert_eq!(admitted_grants, old_grants);
+        for _ in 0..2 {
+            let result = inspect_learning(&deployment_root, &request);
+            assert!(
+                matches!(
+                    result,
+                    Err(DeploymentSessionError::SessionStale(ref reason))
+                        if reason == &ReferenceSessionError::GrantEscalation.to_string()
+                ),
+                "missing grant must refuse before selected-object lookup: {result:?}"
+            );
+        }
+        assert_eq!(
+            fs::read(directory.join(SESSION_JOURNAL_FILE))?,
+            journal_before
+        );
+        assert_eq!(fs::read(directory.join(SESSION_ROOT_PIN_FILE))?, pin_before);
+        let (after, _, _) = with_admitted_session_read(
+            &deployment_root,
+            &request.principal,
+            &request.session_id,
+            |read| Ok((read.session.clone(), read.remaining_tokens)),
+        )?;
+        assert_eq!(after.0, session);
+        assert_eq!(after.1, mission.token_budget);
+        Ok(())
+    }
+}
