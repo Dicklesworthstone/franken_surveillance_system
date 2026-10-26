@@ -63,7 +63,7 @@ def passthrough(path, body, headers):
             buf += d
         c.close()
         head, _, payload = buf.partition(b"\r\n\r\n")
-        print(f"  <- passthrough {len(payload)}B {payload[:800]!r}", flush=True)
+        print(f"  <- passthrough {len(payload)}B {payload[:4000]!r}", flush=True)
         return payload
     except Exception as e:
         print(f"  <- passthrough failed {e!r}", flush=True)
