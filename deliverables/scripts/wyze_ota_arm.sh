@@ -31,6 +31,12 @@ if [ ! -s "$CAP_DIR/$CAP_PATH" ]; then
 fi
 # the device's own IoT material, served from the same forged host so the cloud API can hand out
 # URLs that resolve here (get_iot_certificate -> /fss/{rootCA.crt,cert.pem,privkey.pem})
+CERTDIR="/Users/jemanuel/.config/fss-lab/wyze_iot/$(echo "$MAC" | tr a-f A-F)"
+if [ ! -s "$CERTDIR/cert.pem" ]; then
+  # the proxy presents this cert upstream; without it every session dies with FileNotFoundError
+  # and the device just loops on registration, which looks like a device fault.
+  echo "FATAL: no device cert at $CERTDIR (restore from /tmp/fwserve/fss or the cloud)" >&2
+fi
 mkdir -p "$CAP_DIR/fss"
 for f in rootCA.crt cert.pem privkey.pem; do
   src="/Users/jemanuel/.config/fss-lab/wyze_iot/$(echo "$MAC" | tr a-f A-F)/$f"
