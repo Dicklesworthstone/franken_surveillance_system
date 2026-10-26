@@ -60,6 +60,14 @@ if [ -d "$SRC" ] && [ "$SRC" != "$DST" ]; then
   for f in "$SRC"/*; do [ -e "$DST/$(basename "$f")" ] || cp "$f" "$DST/"; done
 fi
 
+# the kvs process is advertised with the same version string, so its dir needs the same treatment
+KSRC="$CAP_DIR/kvsWebrtcClientMaster_t41/2.1.2.573"
+KDST="$CAP_DIR/kvsWebrtcClientMaster_t41/${PROC_VER:-14.9.50040.r}"
+if [ -d "$KSRC" ] && [ "$KSRC" != "$KDST" ]; then
+  mkdir -p "$KDST"
+  for f in "$KSRC"/*; do [ -e "$KDST/$(basename "$f")" ] || cp "$f" "$KDST/"; done
+fi
+
 MD5=$(md5 -q "$CAP_DIR/$CAP_PATH")
 URL="https://s3-us-west-2.amazonaws.com/$CAP_PATH"
 
