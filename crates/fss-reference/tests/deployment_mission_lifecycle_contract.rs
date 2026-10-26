@@ -827,7 +827,7 @@ fn terminal_receipt_stays_immutable_but_new_owned_work_invalidates_current_proje
     same_objective_criteria(&terminal, &stale);
     assert!(!stale.committed);
     assert_eq!(stale.revision, terminal.revision);
-    assert_eq!(stale.orientation.anchor, same_anchor);
+    assert_eq!(stale.orientation.capsule().anchor, same_anchor);
     assert_eq!(stale.orientation.capsule().mission_state, None);
     assert_eq!(before, authority_bytes(&mut dep)?);
     Ok(())
