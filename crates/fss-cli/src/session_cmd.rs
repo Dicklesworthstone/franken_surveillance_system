@@ -1419,11 +1419,13 @@ fn claim_refusal(
     }
 }
 
-fn refusal_response(
+/// Render a typed refusal, optionally preserving a caller's known or possible durable progress.
+pub(crate) fn refusal_response(
     operation: &Operation,
     anchor: &LedgerAnchor,
     created_at_ns: i128,
     refusal: Refusal,
+    boundary: Option<fss_core::ExecutionBoundary>,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let request_digest = crate::orient_cmd::request_identity(operation.name, |encoder| {
         encoder.bytes(&operation.request);
@@ -1457,7 +1459,7 @@ fn refusal_response(
         continuation: None,
         recovery_class: refusal.recovery_class,
         safe_retry: refusal.safe_retry,
-        boundary: fss_core::ExecutionBoundary {
+        boundary: boundary.unwrap_or_else(|| fss_core::ExecutionBoundary {
             completed: vec![format!(
                 "Read the deployment at commit {}; the request was refused.",
                 anchor.commit_sequence
@@ -1470,7 +1472,7 @@ fn refusal_response(
                     .to_owned(),
             ],
             invalidated: Vec::new(),
-        },
+        }),
         created_at_ns,
         workspace_revision: None,
         idempotency_key: None,
@@ -1499,6 +1501,16 @@ pub(crate) fn refuse_typed(
     refusal: Refusal,
     exit: ExitIdentity,
 ) -> (String, ExitIdentity) {
+    refuse_typed_with_boundary(operation, refusal, exit, None)
+}
+
+/// Preserve native progress when a refusal occurs after the request began execution.
+pub(crate) fn refuse_typed_with_boundary(
+    operation: &Operation,
+    refusal: Refusal,
+    exit: ExitIdentity,
+    boundary: Option<fss_core::ExecutionBoundary>,
+) -> (String, ExitIdentity) {
     let snapshot = match read_deployment(&operation.root, &OrientLimits::default()) {
         Ok(snapshot) => snapshot,
         Err(error @ DeploymentReadError::NotADeployment { .. }) => {
@@ -1512,6 +1524,7 @@ pub(crate) fn refuse_typed(
             &snapshot.anchor,
             snapshot.latest_evidence_time.0,
             refusal,
+            boundary,
         ),
         exit,
         operation.command,

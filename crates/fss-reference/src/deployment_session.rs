@@ -1482,7 +1482,11 @@ fn session_briefs(
     } else {
         None
     };
-    let mission_admitted = admitted
+    let mission_read_admitted = ["CAP-AGENT-SESSION-READ-001", "CAP-AGENT-SITUATION-READ-001"]
+        .iter()
+        .all(|capability| session.capabilities.contains(*capability))
+        && session.privacy_scope.contains(SESSION_PRIVACY_SCOPE);
+    let mission_current_admitted = admitted
         && [
             "CAP-AGENT-PLAN-PREPARE-001",
             "CAP-AGENT-CASE-WRITE-001",
@@ -1490,14 +1494,24 @@ fn session_briefs(
         ]
         .iter()
         .all(|capability| session.capabilities.contains(*capability));
-    let mission_progress = if mission_admitted {
+    let mission_progress = if mission_read_admitted {
         store
             .mission_head_for_projection(session, now)
             .map_err(|error| DeploymentSessionError::StoreInvalid(error.to_string()))?
             .map(|revision| {
-                mission::projection_current(root, snapshot, store, session, &revision, now)
-                    .map(|current| crate::agent_orient::OrientMissionProgress { revision, current })
-                    .map_err(|error| DeploymentSessionError::StoreInvalid(error.to_string()))
+                // The authenticated journal proves this enrollment and retained assessment.
+                // Narrower read grants must not turn it into an absent legacy profile, but
+                // they do not admit current plan, episode or complete closure validation.
+                let current = if mission_current_admitted {
+                    mission::projection_current(root, snapshot, store, session, &revision, now)
+                        .map_err(|error| DeploymentSessionError::StoreInvalid(error.to_string()))?
+                } else {
+                    false
+                };
+                Ok::<_, DeploymentSessionError>(crate::agent_orient::OrientMissionProgress {
+                    revision,
+                    current,
+                })
             })
             .transpose()?
     } else {
@@ -2568,4 +2582,168 @@ pub fn resume_session(
         journal_root: journal.store.committed_root(),
         request_digest,
     })
+}
+
+// The fixture seeds synthetic owner facts only to exercise metadata admission. It asserts no
+// real plan outcome, and deliberately supplies no plan publication that could be revalidated.
+#[cfg(test)]
+#[test]
+fn narrowed_read_scope_retains_mission_metadata_without_claiming_current_custody()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::agent_session::checkpoint::journal::mission::DurableMissionError;
+    use crate::agent_session::mission::MissionError as OwnerMissionError;
+    use crate::agent_session::mission::tests::{criterion, facts};
+    use fss_core::{ContextAuthority, OperationId, RootAuthoritySpec};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let directory = std::env::temp_dir().join(format!(
+        "fss-mission-read-projection-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed),
+    ));
+    fs::create_dir(&directory)?;
+    let root = directory.join("deployment");
+    let authority = ContextAuthority::new_root(RootAuthoritySpec {
+        trace_id: "trace:mission-read-projection".to_owned(),
+        operation_id: OperationId::parse("operation:mission-read-projection")?,
+        principal: "operator:mission-read-projection".to_owned(),
+        capabilities: vec![crate::ADP_REPLAY_ROW_ID.to_owned()],
+        deadline: None,
+        priority: 10,
+        budgets: BudgetVector::ZERO,
+        privacy_scope: "privacy:internal".to_owned(),
+        retention_scope: "retention:ephemeral".to_owned(),
+        anchor_universe: ContentDigest::sha256(b"synthetic read-only mission fixture"),
+        generation: 1,
+    })?;
+    let cx = crate::ReplayCx::from_context_authority(&authority, directory.join("context"))?;
+    let deployment = crate::ReferenceDeployment::open(&root, "site:mission-read-projection", &cx)?;
+    let opened = open_session(
+        &root,
+        &OpenSessionRequest {
+            mission: "Retain this explicitly synthetic owner history.".to_owned(),
+            objective: "Preserve the profile when mutation grants are removed.".to_owned(),
+            principal: PrincipalId::parse("principal:mission-read-projection")?,
+            view: AgentView::Brief,
+            token_budget: 100_000,
+        },
+    )?;
+    let history = DeploymentHistory::read(&root, &OrientLimits::default())?;
+    let snapshot = history.snapshot_at(history.head())?;
+    let now = evidence_now(&snapshot);
+    let mut journal = SessionJournal::open(&root)?;
+    let mut selected = criterion(&opened.session)?;
+    selected.contract_basis = opened.orientation.capsule().contract_basis.clone();
+    selected.mission_record_digest = opened.mission.digest();
+    selected.decision_deadline = TimestampNs(now.0 + 100);
+    let enrolled =
+        journal
+            .store
+            .register_mission_plan(&opened.session.principal_id, selected.clone(), now)?;
+    let mut synthetic = facts(&selected);
+    synthetic.evidence_time = now;
+    let assessed = journal.store.assess_mission_plan(
+        &opened.session.principal_id,
+        &opened.session.session_id,
+        opened.mission.digest(),
+        enrolled.digest(),
+        synthetic.clone(),
+        now,
+    )?;
+    assert_eq!(assessed.revision(), 1);
+    let read_grants = BTreeSet::from([
+        "CAP-AGENT-SESSION-READ-001".to_owned(),
+        "CAP-AGENT-SITUATION-READ-001".to_owned(),
+    ]);
+    let narrowed = journal.store.refresh(
+        &opened.session.principal_id,
+        &opened.session.session_id,
+        SessionRefresh {
+            expected_session_digest: opened.session.session_digest(),
+            current_anchor: opened.session.current_anchor.clone(),
+            capabilities: read_grants,
+            privacy_scope: opened.session.privacy_scope.clone(),
+        },
+        now,
+    )?;
+    journal.commit_pin()?;
+    let before = fs::read(journal.store.path())?;
+    let before_pin = fs::read(root.join(SESSIONS_RELPATH).join(SESSION_ROOT_PIN_FILE))?;
+    let briefs = session_briefs(&root, &journal.store, &narrowed, &snapshot, now)?;
+    let progress = briefs
+        .mission_progress
+        .as_ref()
+        .ok_or("retained mission lost")?;
+    assert_eq!(progress.revision, assessed);
+    assert!(!progress.current);
+    assert!(briefs.supervisions.is_none());
+    let oriented = orient_bound(
+        None,
+        &snapshot,
+        narrowed.view,
+        &narrowed.principal_id,
+        &narrowed.mission_id,
+        &narrowed.session_id,
+        &OrientLimits::default(),
+        briefs,
+        &opened.mission,
+    )?;
+    assert_eq!(
+        oriented
+            .mission_progress
+            .as_ref()
+            .ok_or("projected mission lost")?
+            .revision,
+        assessed
+    );
+    assert_eq!(
+        oriented.objective.source_request_digest,
+        selected.digest().to_text()
+    );
+    assert!(!oriented.objective.success_predicates.is_empty());
+    assert!(!oriented.objective.failure_predicates.is_empty());
+    assert!(!oriented.objective.stop_conditions.is_empty());
+    assert!(oriented.capsule().mission_state.is_none());
+    assert_eq!(fs::read(journal.store.path())?, before);
+    assert_eq!(
+        fs::read(root.join(SESSIONS_RELPATH).join(SESSION_ROOT_PIN_FILE))?,
+        before_pin
+    );
+    assert!(matches!(
+        journal.store.assess_mission_plan(
+            &narrowed.principal_id,
+            &narrowed.session_id,
+            opened.mission.digest(),
+            assessed.digest(),
+            synthetic,
+            now,
+        ),
+        Err(DurableMissionError::Refused(
+            OwnerMissionError::Unauthorized
+        )),
+    ));
+    assert_eq!(fs::read(journal.store.path())?, before);
+    // Narrowing still cannot reopen an immutable wider workspace. This metadata read does not
+    // change that separate boundary or invent an implicit authority-refresh operation.
+    assert!(
+        journal
+            .store
+            .workspace_head(&narrowed.principal_id, &narrowed.session_id, now)
+            .is_err()
+    );
+    assert_eq!(fs::read(journal.store.path())?, before);
+    // Corrupt authenticated history must remain an error, not a successfully empty profile.
+    OpenOptions::new()
+        .append(true)
+        .open(journal.store.path())?
+        .write_all(b"broken-tail")?;
+    assert!(matches!(
+        session_briefs(&root, &journal.store, &narrowed, &snapshot, now),
+        Err(DeploymentSessionError::StoreInvalid(_)),
+    ));
+    drop(journal);
+    drop(deployment);
+    fs::remove_dir_all(directory)?;
+    Ok(())
 }

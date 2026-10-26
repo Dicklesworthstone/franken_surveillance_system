@@ -23,7 +23,8 @@ use fss_publication::SlotName;
 
 use crate::agent_follow::{AnchorToken, resolve_anchor};
 use crate::agent_orient::{
-    DeploymentHistory, DeploymentOrientation, DeploymentSnapshot, HistoryPosition, OrientLimits,
+    DeploymentHistory, DeploymentOrientation, DeploymentSnapshot, HistoryPosition, OrientError,
+    OrientLimits,
 };
 use crate::agent_session::ReferenceSessionError;
 use crate::agent_session::checkpoint::journal::mission::DurableMissionError;
@@ -191,6 +192,9 @@ impl MissionError {
             Self::Session(DeploymentSessionError::StoreLocked) => {
                 "ERR-AGENT-SESSION-STORE-LOCKED-001"
             }
+            Self::Session(DeploymentSessionError::Orient(
+                OrientError::ContextBudgetExceeded { .. } | OrientError::TooManyEvents { .. },
+            )) => "ERR-AGENT-CONTEXT-INCOMPLETE-001",
             Self::Session(_) => "ERR-AGENT-SESSION-STORE-INVALID-001",
             Self::Store(DurableMissionError::Refused(error)) => match error {
                 OwnerMissionError::Session(ReferenceSessionError::Unavailable) => {

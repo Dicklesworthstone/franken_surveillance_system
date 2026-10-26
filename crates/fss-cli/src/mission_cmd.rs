@@ -8,21 +8,26 @@
 use std::path::PathBuf;
 
 use fss_core::{
-    AgentView, ContentDigest, PrincipalId, ResponseOutcome, ResponseSafeRetry, SessionId,
-    TimestampNs,
+    AgentView, ContentDigest, ExecutionBoundary, PrincipalId, ResponseOutcome, ResponseSafeRetry,
+    SessionId, TimestampNs,
 };
-use fss_reference::deployment_session::mission::{MissionAction, MissionAnswer, MissionRequest};
+use fss_reference::agent_orient::OrientError;
+use fss_reference::deployment_session::DeploymentSessionError;
+use fss_reference::deployment_session::mission::{
+    MissionAction, MissionAnswer, MissionError, MissionRequest,
+};
 
 use crate::agent_json;
-use crate::effect_cmd::{
-    CAPABILITY_PLAN_PREPARE, CONTROL_PLAN_SCHEMA, Failure, finish, hold_deployment,
-};
-use crate::error::{CliError, ExitIdentity};
+use crate::effect_cmd::{CAPABILITY_PLAN_PREPARE, CONTROL_PLAN_SCHEMA, finish, hold_deployment};
+use crate::error::{CliError, ERR_CLI_RUNTIME_FAILURE, ExitIdentity};
 use crate::orient_cmd::{
-    RenderError, ResponseParts, build_response, collect_options, contexts, principal,
-    required_root, take,
+    ERR_AGENT_CONTEXT_INCOMPLETE, RenderError, ResponseParts, build_response, collect_options,
+    contexts, principal, rendered, required_root, take,
 };
-use crate::session_cmd::{Operation, Refusal, agent_plane_boundary, idempotency_key};
+use crate::session_cmd::{
+    Operation, Refusal, agent_plane_boundary, idempotency_key, refusal_response,
+    refuse_typed_with_boundary,
+};
 use crate::token::ArgToken;
 
 const COMMAND: &str = "plan";
@@ -210,6 +215,20 @@ fn response(answer: &MissionAnswer) -> Result<String, Box<dyn std::error::Error>
         "PlanOutcomeV1 mission revision {} is {} at {}. This explicitly enrolled execution objective concerns plan {}; it does not establish that the underlying surveillance event was real. The payload is the original ControlPlan; the mission revision and its evidence are named by proof pointers.",
         revision.revision(), revision.state().as_str(), revision.digest(), criterion.plan_id,
     ));
+    let current = orientation
+        .mission_progress
+        .as_ref()
+        .is_some_and(|progress| {
+            progress.current && progress.revision.digest() == revision.digest()
+        });
+    degradation.push(
+        if current {
+            "This retained mission revision is current for this projection."
+        } else {
+            "This is a historical retained mission revision. The current mission lifecycle is unassessed; the state above is an immutable as-of result, not a fresh completion claim."
+        }
+        .to_owned(),
+    );
     if answer.head_moved {
         degradation.push(
             "The deployment has moved beyond the session anchor. This assessment uses compatible current generations; resume explicitly to advance the session workspace."
@@ -282,6 +301,67 @@ fn response(answer: &MissionAnswer) -> Result<String, Box<dyn std::error::Error>
     })
 }
 
+fn mission_refusal(error: &MissionError) -> Refusal {
+    let id = error.stable_id();
+    let (guidance, recovery_class, safe_retry) = match id {
+        ERR_AGENT_CONTEXT_INCOMPLETE => (
+            "Critical context exceeds the admitted session view and is never truncated. A mission revision may already be retained; preserve that history and its exact plan binding. Use a sufficiently large registered view before enrolling a new session; retrying this unchanged request cannot enlarge its view.",
+            "never_unchanged",
+            ResponseSafeRetry::No,
+        ),
+        "ERR-AGENT-SESSION-STORE-LOCKED-001" => (
+            "Retry after the other session command finishes; preserve any existing mission revision.",
+            "backoff",
+            ResponseSafeRetry::YesSameRequest,
+        ),
+        "ERR-AGENT-SESSION-STORE-INVALID-001" => (
+            "Inspect the existing agent session journal and its pinned root. A mission revision may already be retained; never erase history or recreate the binding to hide an uncertain append.",
+            "operator_action_required",
+            ResponseSafeRetry::No,
+        ),
+        _ => (
+            "Read the current authorized session and exact mission head; preserve the original enrollment, reconcile unresolved effects, and retry only against the retained revision. No effect is dispatched by this command.",
+            "refresh_and_retry",
+            ResponseSafeRetry::YesAfterRefresh,
+        ),
+    };
+    let reason = match error {
+        MissionError::Session(DeploymentSessionError::Orient(
+            orient
+            @ (OrientError::ContextBudgetExceeded { .. } | OrientError::TooManyEvents { .. }),
+        )) => orient.to_string(),
+        _ => error.to_string(),
+    };
+    Refusal {
+        error_id: id,
+        reason,
+        guidance,
+        recovery_class,
+        safe_retry,
+    }
+}
+
+fn mission_failure_boundary(retained: Option<(u64, ContentDigest)>) -> ExecutionBoundary {
+    let mut boundary = agent_plane_boundary(
+        match retained {
+            Some((revision, digest)) => format!(
+                "Mission revision {revision} ({digest}) is durably retained; public response rendering failed."
+            ),
+            None => {
+                "The native mission request returned without a complete public answer.".to_owned()
+            }
+        },
+        Vec::new(),
+    );
+    if retained.is_none() {
+        boundary.possibly_occurred.push(
+            "Session admission and a mission revision may already be retained in agent/sessions; inspect the existing durable history before recovery."
+                .to_owned(),
+        );
+    }
+    boundary
+}
+
 /// Execute with the same deployment lock used by plan closure, without effect authority.
 #[must_use]
 pub fn execute_mission(args: &MissionArgs) -> (String, ExitIdentity) {
@@ -319,29 +399,46 @@ pub fn execute_mission(args: &MissionArgs) -> (String, ExitIdentity) {
         principal: args.principal.clone(),
         request: request_bytes,
     };
-    let result = (|| -> Result<Result<String, Box<dyn std::error::Error>>, Failure> {
-        let _lock = hold_deployment(&args.root, &args.principal)?;
-        let answer = fss_reference::deployment_session::mission::execute(&args.root, &request)
-            .map_err(|error| {
-                let id = error.stable_id();
-                let (recovery_class, safe_retry) = match id {
-                    "ERR-AGENT-SESSION-STORE-LOCKED-001" =>
-                        ("backoff", ResponseSafeRetry::YesSameRequest),
-                    "ERR-AGENT-SESSION-STORE-INVALID-001" =>
-                        ("operator_action_required", ResponseSafeRetry::No),
-                    _ => ("refresh_and_retry", ResponseSafeRetry::YesAfterRefresh),
-                };
-                Failure::Typed(Refusal {
-                    error_id: id,
-                    reason: error.to_string(),
-                    guidance: "Read the current authorized session and exact mission head; preserve the original enrollment, reconcile unresolved effects, and retry only against the retained revision. No effect is dispatched by this command.",
-                    recovery_class,
-                    safe_retry,
-                }, ExitIdentity::AGENT_REFUSED)
-            })?;
-        Ok(response(&answer))
-    })();
-    finish(result, ExitIdentity::SUCCESS, &operation)
+    let deployment = match hold_deployment(&args.root, &args.principal) {
+        Ok(deployment) => deployment,
+        Err(failure) => return finish(Err(failure), ExitIdentity::SUCCESS, &operation),
+    };
+    let result = fss_reference::deployment_session::mission::execute(&args.root, &request);
+    // Refusal rendering may reread the deployment. Release only this command's lock after the
+    // native owner has pinned its result, before that independent read.
+    drop(deployment);
+    match result {
+        Err(error) => refuse_typed_with_boundary(
+            &operation,
+            mission_refusal(&error),
+            ExitIdentity::AGENT_REFUSED,
+            Some(mission_failure_boundary(None)),
+        ),
+        Ok(answer) => match response(&answer) {
+            Ok(json) => (json, ExitIdentity::SUCCESS),
+            Err(_) => rendered(
+                refusal_response(
+                    &operation,
+                    &answer.orientation.capsule().anchor,
+                    answer.orientation.capsule().created_at.0,
+                    Refusal {
+                        error_id: ERR_CLI_RUNTIME_FAILURE,
+                        reason: "The mission revision was retained, but its public response could not be rendered.".to_owned(),
+                        guidance: "Preserve the retained revision and recover the same request's response; a rendering failure never permits a new mission binding or an external effect.",
+                        recovery_class: "safe_read_retry",
+                        safe_retry: ResponseSafeRetry::YesSameRequest,
+                    },
+                    Some(mission_failure_boundary(Some((
+                        answer.revision.revision(),
+                        answer.revision.digest(),
+                    )))),
+                ),
+                ExitIdentity::RUNTIME_FAILURE,
+                operation.command,
+                &operation.root,
+            ),
+        },
+    }
 }
 
 #[cfg(test)]
@@ -367,6 +464,96 @@ mod tests {
             Ok(_) => Err("wrong command".into()),
             Err(error) => Err(error.into()),
         }
+    }
+
+    #[test]
+    fn context_refusals_preserve_identity_and_possible_durable_progress()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::json_input::{Value, parse};
+
+        let operation = Operation {
+            command: COMMAND,
+            name: COMMAND,
+            capability: CAPABILITY_PLAN_PREPARE,
+            payload_schema: CONTROL_PLAN_SCHEMA,
+            view: AgentView::DecisionDiff,
+            root: PathBuf::from("/unused-pure-envelope-fixture"),
+            principal: PrincipalId::parse("principal:mission-refusal-test")?,
+            request: b"synthetic mission refusal contract".to_vec(),
+        };
+        let anchor = fss_core::LedgerAnchor::genesis("site:mission-refusal-test");
+        for orient in [
+            OrientError::ContextBudgetExceeded {
+                view: AgentView::Pulse,
+                budget_tokens: 256,
+            },
+            OrientError::TooManyEvents {
+                published: 65,
+                maximum: 64,
+            },
+        ] {
+            let error = MissionError::Session(DeploymentSessionError::Orient(orient));
+            assert_eq!(error.stable_id(), ERR_AGENT_CONTEXT_INCOMPLETE);
+            let refusal = mission_refusal(&error);
+            assert_eq!(refusal.error_id, ERR_AGENT_CONTEXT_INCOMPLETE);
+            assert_eq!(refusal.recovery_class, "never_unchanged");
+            assert_eq!(refusal.safe_retry, ResponseSafeRetry::No);
+            let response = parse(&refusal_response(
+                &operation,
+                &anchor,
+                0,
+                refusal,
+                Some(mission_failure_boundary(None)),
+            )?)?;
+            let fields = response.object().ok_or("response object")?;
+            assert_eq!(
+                fields.get("errorId"),
+                Some(&Value::Text(ERR_AGENT_CONTEXT_INCOMPLETE.to_owned()))
+            );
+            let boundary = fields
+                .get("executionBoundary")
+                .and_then(Value::object)
+                .ok_or("execution boundary")?;
+            let possible = boundary
+                .get("possiblyOccurred")
+                .and_then(Value::array)
+                .ok_or("possible progress")?;
+            assert!(possible.iter().any(|entry| {
+                entry
+                    .text()
+                    .is_some_and(|text| text.contains("mission revision may already be retained"))
+            }));
+            let not_started = boundary
+                .get("notStarted")
+                .and_then(Value::array)
+                .ok_or("not-started boundary")?;
+            assert!(not_started.iter().all(|entry| {
+                entry
+                    .text()
+                    .is_some_and(|text| !text.contains("requested session command"))
+            }));
+        }
+        let digest = ContentDigest::sha256(b"synthetic confirmed retained mission revision");
+        let confirmed = mission_failure_boundary(Some((2, digest)));
+        assert!(
+            confirmed.completed.iter().any(|line| {
+                line.contains(&digest.to_text()) && line.contains("durably retained")
+            })
+        );
+        assert!(confirmed.possibly_occurred.is_empty());
+        assert!(
+            confirmed
+                .not_started
+                .iter()
+                .all(|line| { !line.contains("requested session command") })
+        );
+        let corrupt = MissionError::Session(DeploymentSessionError::StoreInvalid(
+            "synthetic invalid journal".to_owned(),
+        ));
+        let refusal = mission_refusal(&corrupt);
+        assert_eq!(refusal.error_id, "ERR-AGENT-SESSION-STORE-INVALID-001");
+        assert_eq!(refusal.recovery_class, "operator_action_required");
+        Ok(())
     }
 
     #[test]

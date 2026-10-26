@@ -65,6 +65,12 @@ Every assessment uses an exact expected predecessor. An exact recovered retry pr
 immutable result rather than appending a duplicate. A stale competing write cannot replace the
 head. Terminal revisions cannot be rewritten or revived by a later observation.
 
+The command response identifies whether its retained revision is current or historical, even
+though its payload remains the original control plan. If response generation fails after a
+revision is retained, a refusal must preserve that possibility; it is not proof that enrollment
+or assessment never happened. Inspect the authorized retained head before choosing an exact
+retry. A context-capacity refusal does not mean the journal is corrupt.
+
 ## Orientation, handoff, and recovery
 
 Session orientation protects the original prose, explicit execution objective, criterion,
@@ -74,6 +80,13 @@ Only a current assessment supplies the capsule's typed mission state. Changes to
 effect history, or the scoped closure inventory make a retained assessment historical, including
 when new work appears after a terminal result. Historical terminal proof remains inspectable;
 it does not assert current completion.
+
+A session that retains mission read access after its capabilities are narrowed still sees its
+authenticated revision, criterion, deadline, and retained proof roots. If its grants no longer
+permit complete closure validation, the projection marks that assessment historical and leaves
+the current mission state unassessed. It does not erase the enrollment or recover mutation
+authority from the retained record. Existing workspace operations still refuse when narrowed
+grants cannot admit the wider workspace; the read path does not bypass that check.
 
 Handoffs carry nonempty success/failure/stop criteria for enrolled objectives, their proof
 pointers, and the canonical lifecycle revision as a root-last publication child. The workspace's

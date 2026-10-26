@@ -1682,6 +1682,12 @@ fn enrolled_mission_requires_terminal_episode_and_retains_handoff_proof() -> Tes
             .any(|line| line.contains(" is cancelled at ")),
         "{terminal:?}"
     );
+    assert!(
+        texts(&terminal, &["degradation"])?
+            .iter()
+            .any(|line| line == "This retained mission revision is current for this projection."),
+        "{terminal:?}"
+    );
     let terminal_head = texts(&terminal, &["proofPointers"])?[0].clone();
     assert_ne!(terminal_head, pending_head);
     let terminal_journal = fs::read(&sessions_path)?;
@@ -1774,6 +1780,55 @@ fn enrolled_mission_requires_terminal_episode_and_retains_handoff_proof() -> Tes
     assert!(text(summary, &["content"])?.contains(&format!(
         "Retained mission revision 2: cancelled at {terminal_head}; current assessment"
     )));
+    assert_eq!(fs::read(&ledger_path)?, evidence_after_cancel);
+    assert_eq!(fs::read(&effects_path)?, effects_after_cancel);
+
+    // New unsettled agent work changes closure without moving evidence or effect history.
+    // The terminal revision remains immutable, but a ControlPlan-only response must explicitly
+    // disclose that its terminal result is historical instead of implying current completion.
+    agent.open_case()?;
+    let journal_with_case = fs::read(&sessions_path)?;
+    let pin_with_case = fs::read(&session_pin)?;
+    let historical_args = agent.args(
+        "plan",
+        &[
+            "--session",
+            &agent.session,
+            "--mission-assess",
+            &plan_id,
+            "--expected-mission",
+            &terminal_head,
+        ],
+    );
+    let (code, historical_stdout) = run_fss(&historical_args)?;
+    let (code, historical) = agent.answer(code, &historical_stdout)?;
+    assert_eq!(code, Some(0), "{historical_stdout}");
+    assert_eq!(texts(&historical, &["proofPointers"])?[0], terminal_head);
+    assert_eq!(
+        field(&historical, &["payload"])?,
+        field(&planned, &["payload"])?
+    );
+    let degradation = texts(&historical, &["degradation"])?;
+    assert!(
+        degradation.iter().any(|line| {
+            line.contains("historical retained mission revision")
+                && line.contains("current mission lifecycle is unassessed")
+        }),
+        "{historical:?}"
+    );
+    assert!(degradation.iter().all(|line| {
+        line != "This retained mission revision is current for this projection."
+            && !line.contains("The deployment has moved beyond the session anchor.")
+    }));
+    assert_eq!(
+        field(&historical, &["inputAnchor"])?,
+        field(&resumed, &["inputAnchor"])?
+    );
+    let (code, retry_stdout) = run_fss(&historical_args)?;
+    assert_eq!(code, Some(0), "{retry_stdout}");
+    assert_eq!(retry_stdout, historical_stdout);
+    assert_eq!(fs::read(&sessions_path)?, journal_with_case);
+    assert_eq!(fs::read(&session_pin)?, pin_with_case);
     assert_eq!(fs::read(&ledger_path)?, evidence_after_cancel);
     assert_eq!(fs::read(&effects_path)?, effects_after_cancel);
     Ok(())
