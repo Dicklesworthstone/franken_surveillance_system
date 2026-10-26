@@ -150,8 +150,10 @@ def main() -> int:
                                   "data": {"version": os.environ.get("PROC_VER", "99.0.0"),
                                            "url": "https://sinker-t-usw2.s3.us-west-2.amazonaws.com"
                                                   + path + "?X-Amz-Algorithm=AWS4-HMAC-SHA256"
-                                                  "&X-Amz-Date=20261026T000000Z&X-Amz-SignedHeaders=host"
-                                                  "&X-Amz-Credential=AKIAYS2NUP7ICBQQ77UQ%2F20261026%2Fus-west-2"
+                                                  "&X-Amz-Date=" + time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+                                                  + "&X-Amz-SignedHeaders=host"
+                                                  "&X-Amz-Credential=AKIAYS2NUP7ICBQQ77UQ%2F"
+                                                  + time.strftime("%Y%m%d", time.gmtime()) + "%2Fus-west-2"
                                                   "%2Fs3%2Faws4_request&X-Amz-Expires=300"
                                                   "&X-Amz-Signature=" + "0" * 64}}).encode()
             elif os.environ.get("PASSTHROUGH"):
