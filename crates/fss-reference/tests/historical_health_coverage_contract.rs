@@ -138,18 +138,19 @@ fn orient(fixture: &Fixture) -> TestResult<DeploymentOrientation> {
     Ok(orient_deployment(&snapshot, &request()?, &limits)?)
 }
 
-fn assert_covered(orientation: &DeploymentOrientation) {
-    let coverage = orientation.coverage.as_ref().expect("retained coverage");
+fn assert_covered(orientation: &DeploymentOrientation) -> TestResult {
+    let coverage = orientation.coverage.as_ref().ok_or("retained coverage")?;
     assert_eq!(coverage.zones.len(), 1);
     assert!(coverage.complete());
     assert_eq!(coverage.zones[0].state, ZoneCoverageState::Covered);
     assert!(coverage.zones[0].window.is_some());
     assert!(!coverage.zones[0].witnesses.is_empty());
     assert_eq!(orientation.capsule().completeness, Completeness::Complete);
+    Ok(())
 }
 
-fn assert_health_veto(orientation: &DeploymentOrientation) {
-    let coverage = orientation.coverage.as_ref().expect("retained coverage");
+fn assert_health_veto(orientation: &DeploymentOrientation) -> TestResult {
+    let coverage = orientation.coverage.as_ref().ok_or("retained coverage")?;
     assert_eq!(coverage.zones.len(), 1);
     assert!(!coverage.complete());
     let zone = &coverage.zones[0];
@@ -158,6 +159,7 @@ fn assert_health_veto(orientation: &DeploymentOrientation) {
     assert!(zone.witnesses.is_empty());
     assert!(zone.gaps.iter().any(|gap| gap.contains("health")));
     assert_ne!(orientation.capsule().completeness, Completeness::Complete);
+    Ok(())
 }
 
 fn assert_diagnostic_handle(orientation: &DeploymentOrientation, record: &HistoricalHealthRecord) {
@@ -179,7 +181,7 @@ fn retained_frozen_diagnostic_revokes_cold_coverage_and_protects_follow_without_
     let original = retain_coverage(&mut fixture, &plan)?;
     let limits = OrientLimits::default();
     let before = read_deployment(fixture.deployment.root(), &limits)?;
-    assert_covered(&orient_deployment(&before, &request()?, &limits)?);
+    assert_covered(&orient_deployment(&before, &request()?, &limits)?)?;
     let token = AnchorToken::parse(&snapshot_anchor_token(&before)).ok_or("anchor token")?;
 
     let diagnostic = retain_diagnostic(&mut fixture, &plan)?;
@@ -187,12 +189,12 @@ fn retained_frozen_diagnostic_revokes_cold_coverage_and_protects_follow_without_
     let history = DeploymentHistory::read(fixture.deployment.root(), &limits)?;
     let historical = history.snapshot_at(before.position)?;
     assert!(historical.historical_health.is_empty());
-    assert_covered(&orient_deployment(&historical, &request()?, &limits)?);
+    assert_covered(&orient_deployment(&historical, &request()?, &limits)?)?;
     let current = history.snapshot_at(history.head())?;
     assert_eq!(current.coverage.len(), 1);
     assert_eq!(current.coverage[0].record.to_bytes(), original);
     let current = orient_deployment(&current, &request()?, &limits)?;
-    assert_health_veto(&current);
+    assert_health_veto(&current)?;
     assert_diagnostic_handle(&current, &diagnostic);
 
     let follow = follow_deployment(
@@ -233,7 +235,7 @@ fn same_source_findings_outside_a_witness_do_not_revoke_the_disjoint_window() ->
     let identity = import(&mut fixture, true)?;
     retain_coverage(&mut fixture, &plan(identity, 16, 16))?;
     let before = orient(&fixture)?;
-    assert_covered(&before);
+    assert_covered(&before)?;
     let diagnostic = retain_diagnostic(&mut fixture, &plan(identity, 0, 16))?;
     assert_eq!(diagnostic.status(), "suspected_degradation");
     assert!(
@@ -244,7 +246,7 @@ fn same_source_findings_outside_a_witness_do_not_revoke_the_disjoint_window() ->
             .all(|finding| finding.last_segment < 16)
     );
     let after = orient(&fixture)?;
-    assert_covered(&after);
+    assert_covered(&after)?;
     assert_eq!(before.coverage, after.coverage);
     Ok(())
 }
@@ -257,11 +259,11 @@ fn equal_sensor_and_capture_times_do_not_cross_contaminate_different_imports() -
     assert_ne!(frozen, changing);
     retain_coverage(&mut fixture, &plan(changing, 0, FRAMES))?;
     let before = orient(&fixture)?;
-    assert_covered(&before);
+    assert_covered(&before)?;
     let diagnostic = retain_diagnostic(&mut fixture, &plan(frozen, 0, FRAMES))?;
     assert_eq!(diagnostic.status(), "suspected_degradation");
     let after = orient(&fixture)?;
-    assert_covered(&after);
+    assert_covered(&after)?;
     assert_eq!(before.coverage, after.coverage);
     Ok(())
 }
@@ -288,14 +290,14 @@ fn unaffected_overlapping_import_keeps_coverage_when_a_conflicting_witness_is_wi
         .collect();
     assert_eq!(unaffected.len(), 1);
     let before = orient_deployment(&before, &request()?, &limits)?;
-    assert_covered(&before);
-    let before_zone = &before.coverage.as_ref().expect("coverage").zones[0];
+    assert_covered(&before)?;
+    let before_zone = &before.coverage.as_ref().ok_or("coverage")?.zones[0];
     assert_eq!(before_zone.witnesses.len(), 2);
 
     let diagnostic = retain_diagnostic(&mut fixture, &plan(frozen, 0, FRAMES))?;
     let after = orient(&fixture)?;
-    assert_covered(&after);
-    let zone = &after.coverage.as_ref().expect("coverage").zones[0];
+    assert_covered(&after)?;
+    let zone = &after.coverage.as_ref().ok_or("coverage")?.zones[0];
     assert_eq!(zone.window, before_zone.window);
     assert_eq!(zone.witnesses, unaffected);
     assert!(!zone.health_conflicts.is_empty());
@@ -315,12 +317,12 @@ fn later_no_findings_on_the_same_source_cannot_clear_an_earlier_degradation() ->
     let identity = import(&mut fixture, true)?;
     retain_coverage(&mut fixture, &plan(identity, 0, FRAMES))?;
     let degraded = retain_diagnostic(&mut fixture, &plan(identity, 0, FRAMES))?;
-    assert_health_veto(&orient(&fixture)?);
+    assert_health_veto(&orient(&fixture)?)?;
     let shorter = retain_diagnostic(&mut fixture, &plan(identity, 0, 6))?;
     assert_eq!(shorter.status(), "no_findings");
     assert_ne!(degraded.digest(), shorter.digest());
     let after = orient(&fixture)?;
-    assert_health_veto(&after);
+    assert_health_veto(&after)?;
     assert_diagnostic_handle(&after, &degraded);
     assert_diagnostic_handle(&after, &shorter);
     Ok(())
@@ -348,7 +350,7 @@ fn threshold_reached_after_the_coverage_window_still_revokes_its_implicated_pref
             .iter()
             .all(|finding| finding.first_segment == 31)
     );
-    assert_health_veto(&orient(&fixture)?);
+    assert_health_veto(&orient(&fixture)?)?;
     Ok(())
 }
 
@@ -359,7 +361,7 @@ fn damaged_retained_health_metadata_refuses_orientation_instead_of_restoring_cov
     let identity = import(&mut fixture, true)?;
     retain_coverage(&mut fixture, &plan(identity, 0, FRAMES))?;
     let diagnostic = retain_diagnostic(&mut fixture, &plan(identity, 0, FRAMES))?;
-    assert_health_veto(&orient(&fixture)?);
+    assert_health_veto(&orient(&fixture)?)?;
     let path = fixture
         .deployment
         .publisher()
@@ -399,7 +401,7 @@ fn coverage_health_binding_uses_original_mask_generation_even_when_policy_bytes_
         plan.zones[0].x = 8;
         plan.zones[0].width = WIDTH as u32 - 8;
         retain_coverage(&mut fixture, &plan)?;
-        assert_covered(&orient(&fixture)?);
+        assert_covered(&orient(&fixture)?)?;
 
         if repeat_policy {
             for policy in [&second, &first] {
@@ -418,14 +420,14 @@ fn coverage_health_binding_uses_original_mask_generation_even_when_policy_bytes_
         assert_eq!(snapshot.coverage[0].privacy_generation, Some(1));
         let orientation = orient_deployment(&snapshot, &request()?, &OrientLimits::default())?;
         if repeat_policy {
-            assert_covered(&orientation);
+            assert_covered(&orientation)?;
             assert!(
-                orientation.coverage.as_ref().expect("coverage").zones[0]
+                orientation.coverage.as_ref().ok_or("coverage")?.zones[0]
                     .health_conflicts
                     .is_empty()
             );
         } else {
-            assert_health_veto(&orientation);
+            assert_health_veto(&orientation)?;
         }
     }
     Ok(())
