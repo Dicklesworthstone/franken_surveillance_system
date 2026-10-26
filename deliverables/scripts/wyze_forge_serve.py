@@ -131,7 +131,8 @@ def main() -> int:
                 open("/tmp/ota/cand_idx", "w").write(str(i + 1))
                 print(f"  -> variant[{i}] {label}", flush=True)
                 out = json.dumps(obj).encode()
-            elif "get_processes" in self.path and os.environ.get("PROC_ANSWER"):
+            elif ("get_processes" in self.path or "get_download_location" in self.path) \
+                    and os.environ.get("PROC_ANSWER"):
                 # Real schema, captured from the cloud: one process per request, keyed by the
                 # processname the device sends, and the payload is a launch.sh. Answering with a
                 # higher version makes the device fetch and run ours.
