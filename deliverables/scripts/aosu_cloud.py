@@ -10,13 +10,19 @@ Everything here was read out of the app, not guessed:
     (`AccountCenter.OooOooO` -> `AccountWebService.OooO0oO`).
   * `password` is `base64(AES-128-CBC(PKCS7(password)))` with
     **key = iv = "PZR1ryiUhJloWoRd"** — a constant at `libglazero-security.so:0x18bc4`
-    consumed by `SecurityCore.nativeEncryptP` (Java_..._nativeEncryptP calls
-    `SecurityCore::aes_encrypt_pkcs7` with the same buffer as key and iv).
+    consumed by `SecurityCore.nativeEncryptP` (disasm: `x4 = x2` — the iv pointer
+    IS the key pointer — then `SecurityCore::aes_encrypt_pkcs7`).
   * Every request carries `uuid` and `t` query params (`CommonInterceptor`), and
     `Gz-Sign = md5("uuid:<uuid>:t:<t>:&sM&GGlUCSXjZqQNxmkdU^scUs**0R@C")` lowercased
     (`SignInterceptor`).
   * The server 404s without the app User-Agent and answers `104 pid参数错误`
     without `Gz-Pid`, so both are mandatory.
+  * Verified live 2026-10-26: `pwType=1` with the PLAINTEXT password also works
+    (`errno 503 密码错误` comes from a wrong pwType/value pair, `100 参数错误`
+    from a thin header set — the full `Gz-*` block below is what fixed it).
+    `nativeEncryptP` (pwType=2 path) is AES-128-**ECB**-PKCS7 with the same
+    constant as both key and iv (disasm `Java_..._nativeEncryptP` →
+    `SecurityCore::aes_encrypt_pkcs7` with `adr x2, 0x18bc4`).
 
 Usage:
   aosu_cloud.py login                 # prints sid/uid, caches them 0600

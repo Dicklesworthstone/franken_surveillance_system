@@ -43,8 +43,16 @@ public class Run {
         System.err.println("[run] init cmd0");
         Object r0 = SecureNativeApi.doCommandNative(ctx, 0, seed.getBytes("UTF-8"), new String(java.nio.file.Files.readAllBytes(java.nio.file.Path.of("/data/appid.txt")),"UTF-8").trim().getBytes("UTF-8"), false);
         System.err.println("INIT=" + (r0 == null ? "null" : r0.toString()));
+        if ("1".equals(System.getenv().getOrDefault("SIGN_EPDATA","0"))) {
+            byte[] ep = SecureNativeApi.encryptPostData(System.getenv().getOrDefault("EPDATA","{}"), java.nio.file.Files.readAllBytes(java.nio.file.Path.of("/data/appid.txt")));
+            System.err.println("EP=" + (ep==null?"null":java.util.Base64.getEncoder().encodeToString(ep)));
+        }
+        if ("1".equals(System.getenv().getOrDefault("SIGN_WARMUP","0"))) {
+            SecureNativeApi.doCommandNative(new android.content.Context(), 1, "warmup".getBytes("UTF-8"), null, false);
+        }
         System.err.println("[run] calling doCommandNative");
-        Object r = SecureNativeApi.doCommandNative(new android.content.Context(), 1, canon.getBytes("UTF-8"), null, false);
+        boolean md = "1".equals(System.getenv().getOrDefault("SIGN_MD","0"));
+        Object r = SecureNativeApi.doCommandNative(new android.content.Context(), 1, canon.getBytes("UTF-8"), null, md);
         System.err.println("RESULT=" + (r == null ? "null" : r.toString()));
     }
 }
