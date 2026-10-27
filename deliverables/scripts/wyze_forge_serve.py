@@ -68,6 +68,76 @@ def firmware_detail_response(target_version, capsule_url, capsule_md5, trace_id=
     }
 
 
+# ---------------------------------------------------------------------------
+# /device/system/get_iot_certificate responder (fss-79b89; ota-path.md §18, §9.2)
+#
+# Device-side consumer is iCamera fcn.005e0d64 (iot_certificate.c, str table at
+# 0x477164). Exact contract, every field verified in the disassembly:
+#
+#   cloud_check_comm_resp (fcn.005e1948, called at 0x5e0e94): parses the envelope,
+#   reads "code" (0x89bff8) and strcmp's it against the literal "1" at 0x868790
+#   (strcmp at 0x5e1978, "code error:%s" on mismatch). So code MUST be the string
+#   "1", not the integer 1.
+#
+#   iotCertBodyParse then requires, in order (missing => "response error[no …]"
+#   and the parse fails):
+#     data            object  (0x5e0ea8; "response has no data")
+#     client_username string  (0x5e0ec0, type 0x10 checked at 0x5e0ed4;
+#                              missing => logs and CONTINUES — tolerant)
+#     client_password string  (0x5e0f28, type 0x10; same tolerant branch 0x5e1434)
+#     client_id       string  (0x5e0f90; missing => FAIL 0x5e146c)
+#     keep_alive      number  (0x5e0ff8, cJSON type 8 checked at 0x5e1010;
+#                              missing => FAIL 0x5e149c)
+#     thing_name      string  (0x5e107c; missing => FAIL 0x5e14cc)
+#     client_cert_url         string (0x5e10d8; missing => FAIL 0x5e14fc)
+#     client_private_key_url  string (0x5e1180)
+#     root_cert_url           string (0x5e121c)
+#
+#   Each URL is fetched by iotDownloadKeyFile (fcn.005e0a7c, retry loop bounded by
+#   state+0x14) to /tmp/aws_iot/{cert.pem,privkey.pem,rootCA.crt} (strings
+#   0x477200-0x477230). /rootCAok marker at 0x47725c.
+#
+#   client_username/client_password are empty in the real answer (EV-pack-H-002d §2,
+#   "mutual TLS only") but MUST be present as JSON strings.
+# ---------------------------------------------------------------------------
+
+
+def iot_certificate_response(cert_dir, mac, broker_host="a24rq1e5m4mtei.iot.us-west-2.amazonaws.com",
+                             url_base=None, keep_alive=300, trace_id=None):
+    """Build the get_iot_certificate body in the app's real shape.
+
+    cert_dir is the owner store (deliverables/certs/iot/<MAC>/) holding cert.pem,
+    privkey.pem and rootCA.crt; the URLs point at the forge's own static tree so
+    iotDownloadKeyFile fetches them over the forged chain (fss/ subdir per §18).
+    No secret material is embedded here — everything is read from cert_dir at
+    request time and the URLs are paths, not inline PEM.
+    """
+    base = url_base or "https://s3-us-west-2.amazonaws.com/fss"
+    names = ("rootCA.crt", "cert.pem", "privkey.pem")
+    present = {n: os.path.exists(os.path.join(cert_dir, n)) for n in names}
+    missing = [n for n, ok in present.items() if not ok]
+    if missing:
+        print(f"  ! iot-cert store missing {missing} in {cert_dir} — serving URLs anyway "
+              f"(device will retry; do not let it loop 66x like 2026-10-24)", flush=True)
+    lower_mac = (mac or "").lower()
+    return {
+        "code": "1",  # string: strcmp'd against "1" at iCamera 0x5e1978
+        "msg": "SUCCESS",
+        "data": {
+            "client_id": lower_mac,
+            "thing_name": lower_mac,
+            "keep_alive": keep_alive,           # number: cJSON type 8 checked
+            "client_username": "",              # required-present, empty per real app
+            "client_password": "",
+            "client_cert_url": f"{base}/cert.pem",
+            "client_private_key_url": f"{base}/privkey.pem",
+            "root_cert_url": f"{base}/rootCA.crt",
+        },
+        "traceId": trace_id or os.urandom(16).hex(),
+    }
+
+
+
 def passthrough(path, body, headers):
     """Forward an unimplemented call to the real cloud and return its bytes verbatim.
 
@@ -125,6 +195,14 @@ def main() -> int:
     ap.add_argument("--capsule-md5", default=os.environ.get("FIRMWARE_MD5",
                                                             "c642a2ca9f80b03c7ee5e05795f5822b"),
                     help="md5 of the capsule bytes; assis verifies it before exec (§22.2)")
+    ap.add_argument("--iot-cert", action="store_true", default=bool(os.environ.get("IOT_CERT")),
+                    help="answer /device/system/get_iot_certificate with the §18 schema")
+    ap.add_argument("--iot-cert-dir", default=os.environ.get(
+        "IOT_CERT_DIR", os.path.join(CERTDIR, "..", "iot")),
+        help="owner store holding <MAC>/{cert.pem,privkey.pem,rootCA.crt}")
+    ap.add_argument("--iot-cert-variants", action="store_true",
+                    default=bool(os.environ.get("IOT_CERT_VARIANTS")),
+                    help="legacy: cycle the 8 envelope variants on every retry (§18)")
     a = ap.parse_args()
 
     chain = os.path.join(CERTDIR, "serve.pem")
@@ -155,6 +233,30 @@ def main() -> int:
                 self.end_headers()
                 self.wfile.write(out)
                 return
+            if self.path.startswith("/fss/") and a.iot_cert:
+                # iotDownloadKeyFile fetches these three paths (§18). Serve them from the
+                # owner store instead of a staged copy so the store is the single source.
+                name = os.path.basename(self.path.split("?")[0])
+                if name in ("rootCA.crt", "cert.pem", "privkey.pem"):
+                    store = a.iot_cert_dir if os.path.isdir(
+                        os.path.join(a.iot_cert_dir, "cert.pem")) else None
+                    cand = [p for p in [store] if p]
+                    for mac_dir in sorted(os.listdir(a.iot_cert_dir)):
+                        sub = os.path.join(a.iot_cert_dir, mac_dir)
+                        if os.path.isdir(sub) and os.path.exists(os.path.join(sub, name)):
+                            cand.append(sub)
+                    if cand:
+                        src = os.path.join(cand[0], name)
+                        data = open(src, "rb").read()
+                        print(f"{self.address_string()} ua={self.headers.get('User-Agent','-')!r} "
+                              f"GET {self.path} -> {src} ({len(data)} B)", flush=True)
+                        self.send_response(200)
+                        self.send_header("Content-Type",
+                                         "application/x-pem-file" if name.endswith(".pem") else "application/x-x509-ca-cert")
+                        self.send_header("Content-Length", str(len(data)))
+                        self.end_headers()
+                        self.wfile.write(data)
+                        return
             super().do_GET()
 
         def do_POST(self):
@@ -180,10 +282,41 @@ def main() -> int:
                 print(f"  -> fw-detail v={a.target_version} url={a.capsule_url} md5={a.capsule_md5}",
                       flush=True)
                 out = json.dumps(obj, separators=(",", ":")).encode()
-            elif "get_iot_certificate" in self.path:
-                # The stock client wants URLs, not inline PEM (EV-pack-H-002 §9.2). Each retry gets
-                # the next envelope variant so the device itself walks the candidate list; the
-                # accepted one is the variant after which it fetches the three URLs.
+            elif "get_iot_certificate" in self.path and a.iot_cert:
+                # Real schema (fss-79b89, ota-path.md §18): iCamera's iotCertBodyParse
+                # (fcn.005e0d64) requires code=="1" (string), data with client_id (str),
+                # keep_alive (number), thing_name (str) and the three URLs; tolerant of
+                # missing client_username/password. Log every request field so the
+                # shape can be iterated against what the device actually sends.
+                try:
+                    req = json.loads(body)
+                except Exception:
+                    req = {}
+                if isinstance(req, dict):
+                    print(f"  -> iot-cert req mac={req.get('mac')!r} fw={req.get('firmware_ver')!r} "
+                          f"keys={sorted(req)}", flush=True)
+                mac = (req.get("mac") if isinstance(req, dict) else None) or ""
+                cert_dir = os.path.join(a.iot_cert_dir, mac.upper()) if mac else a.iot_cert_dir
+                if not os.path.isdir(cert_dir):
+                    cert_dir = a.iot_cert_dir
+                obj = iot_certificate_response(cert_dir, mac)
+                if not obj["data"]["client_id"]:
+                    # the reduced {mac}-only retry or an unparsable body still needs a
+                    # client_id: default to the first MAC dir in the owner store
+                    for entry in sorted(os.listdir(a.iot_cert_dir)):
+                        if os.path.isdir(os.path.join(a.iot_cert_dir, entry)):
+                            lower = entry.lower()
+                            obj["data"]["client_id"] = lower
+                            obj["data"]["thing_name"] = lower
+                            print(f"  -> iot-cert mac absent from request; defaulting "
+                                  f"client_id to {lower}", flush=True)
+                            break
+                print(f"  -> iot-cert client_id={obj['data']['client_id']} "
+                      f"keep_alive={obj['data']['keep_alive']} urls base=fss/", flush=True)
+                out = json.dumps(obj, separators=(",", ":")).encode()
+            elif "get_iot_certificate" in self.path and a.iot_cert_variants:
+                # Legacy: cycle the 8 envelope variants on every retry (§18); the
+                # accepted one is the variant after which the device fetches the URLs.
                 base = "https://s3-us-west-2.amazonaws.com/fss"
                 q = ("?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIA%2F20261025%2Fus-west-2"
                      "%2Fs3%2Faws4_request&X-Amz-Date=20261025T000000Z&X-Amz-Expires=3600"
