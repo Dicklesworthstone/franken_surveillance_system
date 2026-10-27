@@ -461,3 +461,28 @@ fn unknown_attributes_remain_explicit_instead_of_disappearing() {
     );
     assert_eq!(parse(&bytes).notifications[0].unsupported_extensions, 1);
 }
+
+#[test]
+fn pull_response_clock_attributes_and_optional_soap_headers_are_explicit() {
+    let bytes = pull("");
+    for (from, to) in [
+        (
+            "<e:CurrentTime>",
+            r#"<e:CurrentTime xmlns:v="urn:vendor" v:ClockStatus="Unsynchronized">"#,
+        ),
+        (
+            "<e:TerminationTime>",
+            r#"<e:TerminationTime vendor="unknown">"#,
+        ),
+        ("<s:Body>", r#"<s:Body vendor="unknown">"#),
+        ("<s:Envelope ", r#"<s:Envelope vendor="unknown" "#),
+        (
+            "<s:Body>",
+            r#"<s:Header><v:ClockStatus xmlns:v="urn:vendor">Unsynchronized</v:ClockStatus></s:Header><s:Body>"#,
+        ),
+    ] {
+        let result = parse(&replace(&bytes, from, to));
+        assert!(result.has_unsupported_content(), "{to}");
+        assert_eq!(result.unsupported_sections, 1);
+    }
+}

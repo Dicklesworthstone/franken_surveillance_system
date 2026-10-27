@@ -137,7 +137,7 @@ pub(crate) fn decode_experience(bytes: &[u8]) -> Result<ExperienceCapsule, Contr
     let predictive = texts(&mut d, 256, 1024, false)?;
     let misleading = texts(&mut d, 256, 1024, false)?;
     let failed = texts(&mut d, 256, 256, true)?;
-    let cost = BudgetVector::decode_canonical(&mut d)?;
+    let cost = <BudgetVector as CanonicalDecode>::decode_canonical(&mut d)?;
     let applicability = texts(&mut d, MAX_PROFILE_ITEMS, 1024, false)?;
     if d.text()? != EvidenceStrength::SingleEpisode.as_str() {
         return Err(invalid());

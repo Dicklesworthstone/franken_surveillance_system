@@ -182,8 +182,10 @@ pub fn parse_event_document(bytes: &[u8]) -> Result<EventDocument, WireError> {
     if doc.named(root, SOAP_NS, "Envelope") {
         drop(doc);
         let (doc, root) = response(bytes, EVENTS_NS, "PullMessagesResponse")?;
-        let current = scalar(&doc, required(&doc, root, EVENTS_NS, "CurrentTime")?)?;
-        let termination = scalar(&doc, required(&doc, root, EVENTS_NS, "TerminationTime")?)?;
+        let current_id = required(&doc, root, EVENTS_NS, "CurrentTime")?;
+        let termination_id = required(&doc, root, EVENTS_NS, "TerminationTime")?;
+        let current = scalar(&doc, current_id)?;
+        let termination = scalar(&doc, termination_id)?;
         timestamp(current)?;
         timestamp(termination)?;
         let mut result = EventDocument {
@@ -191,7 +193,10 @@ pub fn parse_event_document(bytes: &[u8]) -> Result<EventDocument, WireError> {
             current_time: Some(current.to_owned()),
             termination_time: Some(termination.to_owned()),
             notifications: Vec::new(),
-            unsupported_sections: doc.attribute_count(root),
+            unsupported_sections: soap_extensions(&doc)
+                + doc.attribute_count(root)
+                + doc.attribute_count(current_id)
+                + doc.attribute_count(termination_id),
         };
         for child in doc.child_ids(root) {
             if doc.named(child, NOTIFICATION_NS, "NotificationMessage") {
@@ -234,6 +239,19 @@ pub fn parse_event_document(bytes: &[u8]) -> Result<EventDocument, WireError> {
         }
     }
     Ok(result)
+}
+
+fn soap_extensions(doc: &xml::Document) -> usize {
+    let mut unsupported = doc.attribute_count(doc.root());
+    for child in doc.child_ids(doc.root()) {
+        unsupported += doc.attribute_count(child);
+        if doc.named(child, SOAP_NS, "Header") {
+            // Accepted optional headers remain source material. Their content
+            // has not been interpreted as event, clock, or transport truth.
+            unsupported += doc.child_ids(child).count();
+        }
+    }
+    unsupported
 }
 
 fn push_notification(

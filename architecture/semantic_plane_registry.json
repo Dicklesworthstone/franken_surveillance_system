@@ -44,7 +44,8 @@
     "crates/fss-reference/src/situation.rs",
     "crates/fss-reference/src/situation_guard.rs",
     "crates/fss-reference/src/situation_sections.rs",
-    "crates/fss-reference/src/ingest/historical_health/exposure.rs"
+    "crates/fss-reference/src/ingest/historical_health/exposure.rs",
+    "crates/fss-reference/src/onvif/metadata.rs"
   ],
   "module_declarations": {
     "crates/fss-cli/src/alert_effect/report.rs": "support",
@@ -748,7 +749,10 @@
     "crates/fss-reference/src/alert/source_health/tests.rs": "support",
     "crates/fss-cli/tests/agent_effect_cli_contract/historical_health.rs": "support",
     "crates/fss-reference/src/onvif/wire/events.rs": "cognition",
-    "crates/fss-reference/src/rtsp/client/authenticated/offers.rs": "support"
+    "crates/fss-reference/src/rtsp/client/authenticated/offers.rs": "support",
+    "crates/fss-reference/src/onvif/metadata.rs": "ambiguous",
+    "crates/fss-reference/src/onvif/metadata/record.rs": "cognition",
+    "crates/fss-cli/src/bin/fss-onvif-metadata.rs": "support"
   },
   "types": {
     "AlertEffectRecord": {
@@ -1313,6 +1317,21 @@
       "file": "crates/fss-reference/src/agent_session/checkpoint/journal/supervision.rs",
       "plane": "cognition",
       "description": "Exact retained detector report, native record and source root with verification class and optional historical-health interpretation, durably bound into an additive pending delivery."
+    },
+    "RetainedMetadata": {
+      "file": "crates/fss-reference/src/onvif/metadata.rs",
+      "plane": "cognition",
+      "description": "Vendor-claimed event projection with exact source custody; the retained anchor authenticates storage only and grants no truth, coverage or effects."
+    },
+    "SourceBinding": {
+      "file": "crates/fss-reference/src/onvif/metadata.rs",
+      "plane": "support",
+      "description": "Explicit owner-declared sensor, device/profile generations and receive interval; no authenticated camera origin."
+    },
+    "MetadataError": {
+      "file": "crates/fss-reference/src/onvif/metadata.rs",
+      "plane": "support",
+      "description": "Payload-free metadata import refusal code with typed internal cause."
     }
   }
 }

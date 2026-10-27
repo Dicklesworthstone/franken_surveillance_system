@@ -638,3 +638,19 @@ Canonical machine error codes returned by `ContractError::code()` (AGT-LAYER-002
 
 Nested native capture, import, model, decode and retention errors keep their existing
 stable identities and recovery contracts.
+
+## Retained ONVIF vendor metadata
+
+| Error code | Meaning | Recovery |
+|---|---|---|
+| `ERR-ONVIF-METADATA-ARGUMENT-001` | Missing, duplicate, unknown or malformed local options | Use --help and supply separate generation pins and an explicit ordered receive interval. |
+| `ERR-ONVIF-METADATA-INPUT-001` | The selected input/deployment path is unavailable or not the supported regular file/directory kind | Use the explicit regular source file and correct deployment root; do not infer an empty successful import. |
+| `ERR-ONVIF-METADATA-BINDING-001` | Owner attribution or a canonical contract is invalid | Correct the bounded site/sensor/profile identifiers, SHA-256 generation pins and receive interval. |
+| `ERR-ONVIF-METADATA-AUTHORITY-001` | The replay I/O authority is invalid or belongs to another deployment | Acquire an explicit valid context for this deployment; do not reuse revoked or differently scoped contexts. |
+| `ERR-ONVIF-METADATA-LIMIT-001` | A source, projection, report or custody-history bound is exceeded | Reduce the explicitly selected input/work; do not truncate a success report or replenish consumed scope. |
+| `ERR-ONVIF-METADATA-WIRE-001` | The source is outside the bounded supported ONVIF XML subset | Preserve the original source and inspect the unsupported structure; never translate refusal into no events. |
+| `ERR-ONVIF-METADATA-UNAVAILABLE-001` | The exact immutable import or ledgered publication is absent | Check the import identity and retained root; an unledgered durable root may resume only with its original verified bytes. |
+| `ERR-ONVIF-METADATA-CUSTODY-001` | Source, canonical projection, root record, expected pin or durable ledger disagree | Preserve the damaged custody for explicit investigation. Exact retry must not recreate previously published missing evidence. |
+| `ERR-ONVIF-METADATA-CANCELLED-001` | Cancellation occurred before the import committed | Inspect retained state and retry only the exact intended input and binding with a new valid context. |
+| `ERR-ONVIF-METADATA-PUBLICATION-001` | The deployment rejected publication or reported an indeterminate outcome | Reopen and inspect the exact root and ledger before retry; never assume no durable progress. |
+| `ERR-ONVIF-METADATA-OUTPUT-001` | The local report could not be written to stdout | Publication may already be durable; inspect the exact import identity before retrying. |

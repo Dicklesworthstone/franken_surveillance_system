@@ -507,3 +507,12 @@ Registry of canonical-digest domain tags used for domain separation in determini
 | `SCHEMA-DOMAIN-CLI-LEARNING-EXPLAIN-REQUEST-001` | `fss.cli.learning_explain.request.v1` | Selected learning read | derived/cognition | Exact selected publication, principal/session, requested view and allowance, current admitted anchor/workspace/journal and evidence time; no historical handle substitutes for current read authority. |
 | `SCHEMA-DOMAIN-CLI-LEARNING-EXPLAIN-DECISION-001` | `fss.cli.learning_explain.decision.v1` | Selected learning explanation | derived/cognition | Complete verified candidate and experience identities, original resource measurements and mandatory uncertainty under the current admitted read; no activation, promotion or causal inference. |
 | `SCHEMA-DOMAIN-FEEDBACK-CASE-RESPONSE-001` | `fss.feedback_case_response.v1` | Feedback investigation result | derived/cognition | Exact feedback publication and original proposal, immutable case opening and current native case revision bind the review result. Retry journal receipts remain proof pointers without changing the decision identity; no truth adjudication or corrective activation. |
+
+## Retained ONVIF vendor event imports (FSS-046 subset)
+
+| Registry ID | Domain | Owner | Plane | Bound meaning |
+|---|---|---|---|---|
+| `SCHEMA-DOMAIN-ONVIF-VENDOR-IMPORT-001` | `fss.onvif_vendor_event_import.v1` | onvif::metadata | custody | Site, sensor, independent device/profile generation pins, profile token, explicit receive interval, exact XML digest/length, projection digest and parser generation. Original bytes remain immutable. |
+| `SCHEMA-DOMAIN-ONVIF-VENDOR-PROJECTION-001` | `fss.onvif_vendor_event_projection.v1` | onvif::metadata | cognition | Ordered vendor notifications, lifecycle, missing groups, concrete topics, values and unsupported-content accounting. Always vendor-claimed with untrusted camera time. |
+| `SCHEMA-DOMAIN-ONVIF-VENDOR-NOTIFICATION-001` | `fss.onvif_vendor_notification_identity.v1` | onvif::metadata | cognition | Generation-scoped notification comparison excludes receive time; opaque content additionally binds original source and occurrence index. Never coalesces retained occurrences. |
+| `SCHEMA-DOMAIN-ONVIF-METADATA-REQUEST-001` | `fss.onvif_metadata_local_request.v1` | fss-onvif-metadata | support | Exact local argument bytes bind the explicit bounded native request. No network, camera authentication or effects. |

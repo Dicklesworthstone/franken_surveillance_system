@@ -1482,7 +1482,7 @@ impl LocalRootPublisher {
 
     /// Proves the root in `slot` is `Durable` and its on-disk record still has the digest this
     /// instance observed. Any divergence is [`LocalPublicationError::BrokenSlot`].
-    pub(crate) fn require_durable_record(
+    pub fn require_durable_record(
         &self,
         slot: &SlotName,
     ) -> Result<(), LocalPublicationError> {

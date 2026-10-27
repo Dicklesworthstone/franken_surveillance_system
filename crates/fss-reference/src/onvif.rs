@@ -8,10 +8,13 @@
 //!
 //! These read-only Media1/Media2 lanes do not establish Profile T or device conformance. The
 //! explicit UsernameToken lane uses camera UTC only for authentication freshness. HTTPS,
-//! imaging changes, events, PTZ, and device provisioning are not implemented here.
+//! imaging changes, live event subscriptions, PTZ, and device provisioning are not implemented here.
+//! Owner-supplied event XML can be retained and verified through the metadata module.
 
 pub mod authentication;
 pub mod client;
 pub mod http;
+/// Immutable owner-attributed vendor-event imports and independent retained-source verification.
+pub mod metadata;
 pub mod snapshot;
 pub mod wire;

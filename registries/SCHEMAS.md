@@ -158,3 +158,10 @@ AVC recipes and native AVC/HEVC recording formats are unchanged.
 | Format ID | Domain | Authority | Encoding and compatibility |
 |---|---|---|---|
 | `FMT-014` | `fss.multipart_journal_record.v2` | upload custody and local ownership | Owner: fss-object::upload_journal. CanonicalEncoder text domain, physical namespace digest, one-based u64 sequence, optional exact predecessor digest and length-framed canonical multipart checkpoint. Whole consumption and byte-identical reencoding required; record envelopes and torn staging count toward explicit byte/record limits. Complete contiguous semantic replay checks immutable intent, monotone spend, restrictions and settlement against an independently retained minimum. Existing v1 bytes remain unchanged and readable; mutation requires explicit original-authority legacy adoption into one inspected namespace, preserving the v1 prefix. A later unbound record refuses. No checkpoint is a live capability or proof of provider retrievability. |
+
+## Retained ONVIF vendor event imports
+
+| Schema/domain | Owner | Encoding and compatibility |
+|---|---|---|
+| `fss.onvif_vendor_event_import.v1` | `onvif::metadata` | CanonicalEncoder recipe, bounded to 4096 bytes; parser generation `gen:fss1:onvif-vendor-events-v1`, source mode `owner_supplied_file`, site, sensor, separate device/profile generation digests, profile token, explicit i128 receive endpoints, original XML digest/length and projection digest. Whole decode and byte-identical re-encoding are required. Identity is SHA-256 of canonical recipe. |
+| `fss.onvif_vendor_event_projection.v1` | `onvif::metadata` | Canonical cognition projection bounded to 1 MiB. Ordered notifications retain concrete namespace-resolved topics, untrusted UTC strings, optional lifecycle/source/key/data, named scalar values and explicit opaque-content counts. Source, recipe and projection share an immutable root. Original XML is bounded to 256 KiB and is rehashed/reparsed on cold verification. Semantic changes require a new parser generation. Empty/false/deleted claims confer no coverage, absence, identity or effect authority. |
