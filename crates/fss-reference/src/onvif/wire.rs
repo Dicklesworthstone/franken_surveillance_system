@@ -10,6 +10,8 @@
 
 use std::fmt;
 
+#[path = "wire/events.rs"]
+mod events;
 #[path = "wire/media2.rs"]
 mod media2;
 #[path = "wire/time.rs"]
@@ -17,6 +19,11 @@ mod time;
 #[path = "wire/xml.rs"]
 mod xml;
 
+pub use events::{
+    EventDocument, EventDocumentFormat, EventItems, EventNotification, EventTopic, MAX_EVENT_ITEMS,
+    MAX_EVENT_NOTIFICATIONS, MAX_EVENT_VALUE_BYTES, PropertyOperation, SimpleItem,
+    parse_event_document,
+};
 pub use media2::{
     MAX_ONVIF_SERVICES, Media2Service, Media2StreamUri, ServiceVersion,
     get_media2_profiles_request, get_media2_stream_uri_request, get_services_request,
@@ -364,6 +371,12 @@ pub enum WireError {
     ProfileLimitExceeded,
     /// More advertised services were supplied than can be checked completely.
     ServiceLimitExceeded,
+    /// More event notifications were supplied than can be represented completely.
+    EventLimitExceeded,
+    /// More Source, Key, or Data items were supplied than this subset permits.
+    ItemLimitExceeded,
+    /// Event topic dialect or namespace use is outside the explicit subset.
+    UnsupportedEventContent,
     /// A required header or SOAP encoding lies outside this wire subset.
     UnsupportedHeader,
     /// Typed SOAP fault, without reason text, detail, URLs, or credentials.
@@ -387,6 +400,9 @@ impl fmt::Display for WireError {
             Self::InvalidField => f.write_str("invalid ONVIF response field"),
             Self::ProfileLimitExceeded => f.write_str("ONVIF profile count exceeds limit"),
             Self::ServiceLimitExceeded => f.write_str("ONVIF service count exceeds limit"),
+            Self::EventLimitExceeded => f.write_str("ONVIF event count exceeds limit"),
+            Self::ItemLimitExceeded => f.write_str("ONVIF event item count exceeds limit"),
+            Self::UnsupportedEventContent => f.write_str("unsupported ONVIF event content"),
             Self::UnsupportedHeader => {
                 f.write_str("unsupported required ONVIF SOAP header or encoding")
             }

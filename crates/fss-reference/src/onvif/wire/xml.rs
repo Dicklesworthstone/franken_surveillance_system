@@ -94,6 +94,10 @@ impl Document {
             .map(|attribute| attribute.value.as_str())
     }
 
+    pub(super) fn attribute_count(&self, id: usize) -> usize {
+        self.nodes[id].attributes.len()
+    }
+
     pub(super) fn only_whitespace(&self, id: usize) -> bool {
         self.nodes[id].text.chars().all(whitespace)
     }
