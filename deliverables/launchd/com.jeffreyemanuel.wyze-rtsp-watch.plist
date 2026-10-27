@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.jeffreyemanuel.wyze-rtsp-watch</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/opt/homebrew/bin/python3</string>
+		<string>/Users/jemanuel/projects/franken_surveillance_system/deliverables/scripts/wyze_rtsp_one_shot.py</string>
+		<string>--uid</string>
+		<string>S3X2PBBR14M8Y2J6111A</string>
+		<string>--enr</string>
+		<string>O7y73ZL+K47xvSPY</string>
+		<string>--mac</string>
+		<string>80482C4BCF0B</string>
+		<string>--loop-watch</string>
+	</array>
+	<key>StartInterval</key>
+	<integer>60</integer>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>StandardOutPath</key>
+	<string>/tmp/wyze_rtsp_watch.log</string>
+	<key>StandardErrorPath</key>
+	<string>/tmp/wyze_rtsp_watch.log</string>
+	<key>WorkingDirectory</key>
+	<string>/Users/jemanuel/projects/franken_surveillance_system</string>
+</dict>
+</plist>
