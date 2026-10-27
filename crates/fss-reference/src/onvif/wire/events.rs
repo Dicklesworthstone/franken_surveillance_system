@@ -9,7 +9,10 @@
 
 use std::fmt;
 
-use super::{SCHEMA_NS, SOAP_NS, UtcDateTime, WireError, required, response, scalar, unique, xml};
+use super::{
+    AnalyticsFrame, SCHEMA_NS, SOAP_NS, UtcDateTime, WireError, analytics, required, response,
+    scalar, unique, xml,
+};
 
 const EVENTS_NS: &str = "http://www.onvif.org/ver10/events/wsdl";
 const NOTIFICATION_NS: &str = "http://docs.oasis-open.org/wsn/b-2";
@@ -105,6 +108,8 @@ pub struct EventDocument {
     pub termination_time: Option<String>,
     /// All accepted notifications, without deduplication or reordering.
     pub notifications: Vec<EventNotification>,
+    /// Vendor analytics frames, in source order. Always empty in the frozen v1 event parser.
+    pub analytics_frames: Vec<AnalyticsFrame>,
     /// Stream sections and response extension fields/attributes not interpreted here.
     pub unsupported_sections: usize,
 }
@@ -115,6 +120,10 @@ impl EventDocument {
     #[must_use]
     pub fn has_unsupported_content(&self) -> bool {
         self.unsupported_sections != 0
+            || self
+                .analytics_frames
+                .iter()
+                .any(AnalyticsFrame::has_unsupported_content)
             || self.notifications.iter().any(|notification| {
                 notification.unsupported_extensions != 0
                     || [
@@ -165,6 +174,7 @@ impl fmt::Debug for EventDocument {
         f.debug_struct("EventDocument")
             .field("format", &self.format)
             .field("notifications", &self.notifications.len())
+            .field("analytics_frames", &self.analytics_frames.len())
             .field("unsupported_content", &self.has_unsupported_content())
             .finish_non_exhaustive()
     }
@@ -177,6 +187,20 @@ impl fmt::Debug for EventDocument {
 /// (1970–9999, up to nine fractional digits) and concrete topics. It does not
 /// flatten missing groups, unknown property operations, or complex item values.
 pub fn parse_event_document(bytes: &[u8]) -> Result<EventDocument, WireError> {
+    parse_document(bytes, false)
+}
+
+/// Parse the v2 bounded vendor-event and VideoAnalytics metadata projection.
+///
+/// Frame times, labels, coordinates and object IDs remain unverified vendor claims.
+/// Coordinates are not transformed or calibrated, and empty frames do not certify absence.
+/// Sensitive appearance extensions remain opaque in the retained source. The separate
+/// [`parse_event_document`] entry point retains v1 semantics for old publication roots.
+pub fn parse_metadata_document(bytes: &[u8]) -> Result<EventDocument, WireError> {
+    parse_document(bytes, true)
+}
+
+fn parse_document(bytes: &[u8], include_analytics: bool) -> Result<EventDocument, WireError> {
     let doc = xml::Document::parse(bytes)?;
     let root = doc.root();
     if doc.named(root, SOAP_NS, "Envelope") {
@@ -193,6 +217,7 @@ pub fn parse_event_document(bytes: &[u8]) -> Result<EventDocument, WireError> {
             current_time: Some(current.to_owned()),
             termination_time: Some(termination.to_owned()),
             notifications: Vec::new(),
+            analytics_frames: Vec::new(),
             unsupported_sections: soap_extensions(&doc)
                 + doc.attribute_count(root)
                 + doc.attribute_count(current_id)
@@ -217,8 +242,10 @@ pub fn parse_event_document(bytes: &[u8]) -> Result<EventDocument, WireError> {
         current_time: None,
         termination_time: None,
         notifications: Vec::new(),
+        analytics_frames: Vec::new(),
         unsupported_sections: doc.attribute_count(root),
     };
+    let mut object_count = 0;
     for section in doc.child_ids(root) {
         if doc.named(section, SCHEMA_NS, "Event") {
             result.unsupported_sections += doc.attribute_count(section);
@@ -232,6 +259,8 @@ pub fn parse_event_document(bytes: &[u8]) -> Result<EventDocument, WireError> {
                     result.unsupported_sections += 1;
                 }
             }
+        } else if include_analytics && doc.named(section, SCHEMA_NS, "VideoAnalytics") {
+            analytics::parse_section(&doc, section, &mut result, &mut object_count)?;
         } else {
             // VideoAnalytics, PTZ, extensions, and vendor additions retain their
             // bytes but cannot masquerade as interpreted event observations.
@@ -395,7 +424,7 @@ fn group(doc: &xml::Document, message: usize, name: &str) -> Result<Option<Event
     Ok(Some(result))
 }
 
-fn unknown_attributes(doc: &xml::Document, id: usize, known: &[&str]) -> usize {
+pub(super) fn unknown_attributes(doc: &xml::Document, id: usize, known: &[&str]) -> usize {
     doc.attribute_count(id)
         - known
             .iter()
@@ -410,7 +439,7 @@ fn bounded_text(value: &str, max: usize, empty: bool) -> Result<(), WireError> {
     Ok(())
 }
 
-fn timestamp(value: &str) -> Result<(), WireError> {
+pub(super) fn timestamp(value: &str) -> Result<(), WireError> {
     let bytes = value.as_bytes();
     if !(20..=30).contains(&bytes.len())
         || bytes.get(4) != Some(&b'-')

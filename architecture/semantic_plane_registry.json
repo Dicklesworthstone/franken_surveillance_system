@@ -749,6 +749,7 @@
     "crates/fss-reference/src/alert/source_health/tests.rs": "support",
     "crates/fss-cli/tests/agent_effect_cli_contract/historical_health.rs": "support",
     "crates/fss-reference/src/onvif/wire/events.rs": "cognition",
+    "crates/fss-reference/src/onvif/wire/analytics.rs": "cognition",
     "crates/fss-reference/src/rtsp/client/authenticated/offers.rs": "support",
     "crates/fss-reference/src/onvif/metadata.rs": "ambiguous",
     "crates/fss-reference/src/onvif/metadata/record.rs": "cognition",

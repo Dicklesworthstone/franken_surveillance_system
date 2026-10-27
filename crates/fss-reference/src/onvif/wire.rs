@@ -10,6 +10,8 @@
 
 use std::fmt;
 
+#[path = "wire/analytics.rs"]
+mod analytics;
 #[path = "wire/events.rs"]
 mod events;
 #[path = "wire/media2.rs"]
@@ -19,10 +21,17 @@ mod time;
 #[path = "wire/xml.rs"]
 mod xml;
 
+pub use analytics::{
+    AnalyticsAppearance, AnalyticsBoundingBox, AnalyticsClass, AnalyticsClassCandidate,
+    AnalyticsClassFormat, AnalyticsFrame, AnalyticsNumber, AnalyticsObject, AnalyticsShape,
+    AnalyticsTransformation, AnalyticsVector, MAX_ANALYTICS_CLASSES, MAX_ANALYTICS_COORDINATE,
+    MAX_ANALYTICS_FRAMES, MAX_ANALYTICS_NUMBER_BYTES, MAX_ANALYTICS_OBJECTS,
+    MAX_ANALYTICS_OBJECTS_PER_FRAME,
+};
 pub use events::{
     EventDocument, EventDocumentFormat, EventItems, EventNotification, EventTopic, MAX_EVENT_ITEMS,
     MAX_EVENT_NOTIFICATIONS, MAX_EVENT_VALUE_BYTES, PropertyOperation, SimpleItem,
-    parse_event_document,
+    parse_event_document, parse_metadata_document,
 };
 pub use media2::{
     MAX_ONVIF_SERVICES, Media2Service, Media2StreamUri, ServiceVersion,
@@ -375,6 +384,8 @@ pub enum WireError {
     EventLimitExceeded,
     /// More Source, Key, or Data items were supplied than this subset permits.
     ItemLimitExceeded,
+    /// More analytics frames, objects, or class candidates than this subset permits.
+    AnalyticsLimitExceeded,
     /// Event topic dialect or namespace use is outside the explicit subset.
     UnsupportedEventContent,
     /// A required header or SOAP encoding lies outside this wire subset.
@@ -402,6 +413,7 @@ impl fmt::Display for WireError {
             Self::ServiceLimitExceeded => f.write_str("ONVIF service count exceeds limit"),
             Self::EventLimitExceeded => f.write_str("ONVIF event count exceeds limit"),
             Self::ItemLimitExceeded => f.write_str("ONVIF event item count exceeds limit"),
+            Self::AnalyticsLimitExceeded => f.write_str("ONVIF analytics count exceeds limit"),
             Self::UnsupportedEventContent => f.write_str("unsupported ONVIF event content"),
             Self::UnsupportedHeader => {
                 f.write_str("unsupported required ONVIF SOAP header or encoding")
