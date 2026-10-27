@@ -7,6 +7,8 @@
 #      60s-quiet window (the fss-kemuu precondition) — never fire on top of active relay
 #      traffic
 # Logs: /tmp/owlet_relay_watch.log (watcher), /tmp/owlet_oracle/ (ring + decode).
+PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+export PATH
 CAM=192.168.4.163
 HERE=/Users/jemanuel/projects/franken_surveillance_system/deliverables/scripts
 ORACLE=/tmp/owlet_oracle
