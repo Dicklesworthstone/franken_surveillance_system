@@ -267,11 +267,13 @@ def cfg_for(ip: str) -> tuple[str, str, str] | None:
 
 
 def ping(ip: str) -> bool:
-    return subprocess.run(  # nosec - returncode IS the check
+    r = subprocess.run(
         ["ping", "-c", "1", "-t", "2", ip],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-    ).returncode == 0
+        check=False,
+    )
+    return r.returncode == 0
 
 
 def fire(ip: str, uid: str, enr: str, mac: str, a: argparse.Namespace,
