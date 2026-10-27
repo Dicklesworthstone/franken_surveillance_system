@@ -44,6 +44,8 @@ CAM_IP = "192.168.4.163"
 CAM_MAC = "38:01:46:AB:83:8A"
 GW = "192.168.4.1"
 GW_MAC = "48:dd:0c:c9:ec:0d"
+MY_IP = "192.168.4.160"          # this host on en1
+IFACE = "en1"
 LAN_SEARCH_PORT = 63616          # the app's own 0xF880, not the 32761 default
 RELAY_PEERS = ("14.1.31.34", "64.74.160.146", "66.23.205.210")
 CUBO_DIR = os.path.expanduser("~/fw-lab/owlet/cubo")
@@ -237,20 +239,50 @@ def mint():
 
 # ── the ACK sequence ─────────────────────────────────────────────────────────
 def fire_sequence(cred, wait_grant=3.0):
-    """probe → nO → ACK on 63616; returns dict describing what happened."""
+    """probe → nO → ACK on 63616; returns dict describing what happened.
+
+    Sends at L2 (scapy) when the kernel refuses the unicast sendto with EHOSTUNREACH
+    (the camera's ARP entry is gone; a power-saving unit answers ARP only on its own
+    schedule). The RX socket stays a normal UDP socket — the camera replies to our
+    source port, and the L2 destination MAC does not change that.
+    """
     import cuboai_pure_owlet as cp
     import socket
     out = {"stage": "start", "grant": False}
     uid = cred["tutkid"].encode() if isinstance(cred.get("tutkid"), str) else cred["tutkid"]
     authkey = cred.get("authKey", "").encode()
     password = cred.get("password", "").encode()
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    s.settimeout(2.5)
-    R = cp.gen_R()
-    probe = cp.build_probe(uid, R)
-    ack = cp.build_ack(uid, R)
-    s.sendto(probe, (CAM_IP, LAN_SEARCH_PORT))
-    s.sendto(probe, (CAM_IP, LAN_SEARCH_PORT))
+
+    def sender():
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(2.5)
+        return s, lambda pkt: s.sendto(pkt, (CAM_IP, LAN_SEARCH_PORT))
+
+    try:
+        s, sendfn = sender()
+        R = cp.gen_R()
+        probe = cp.build_probe(uid, R)
+        ack = cp.build_ack(uid, R)
+        sendfn(probe); sendfn(probe)
+    except OSError as e:
+        if e.errno != 65:  # EHOSTUNREACH only
+            raise
+        # L2 path: scapy sendp, kernel RX on a bound port
+        from scapy.all import Ether, IP, UDP, sendp
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(2.5)
+        s.bind((MY_IP, 0))
+        sport = s.getsockname()[1]
+        out["l2"] = True
+
+        def sendfn(pkt):
+            sendp(Ether(dst=CAM_MAC) / IP(src=MY_IP, dst=CAM_IP)
+                  / UDP(sport=sport, dport=LAN_SEARCH_PORT) / pkt,
+                  iface=IFACE, verbose=0)
+        R = cp.gen_R()
+        probe = cp.build_probe(uid, R)
+        ack = cp.build_ack(uid, R)
+        sendfn(probe); sendfn(probe)
     try:
         raw, addr = s.recvfrom(2048)
     except socket.timeout:
@@ -266,7 +298,7 @@ def fire_sequence(cred, wait_grant=3.0):
         out["stage"] = "R-mismatch"
         s.close()
         return out
-    s.sendto(ack, addr)
+    sendfn(ack)
     out["stage"] = "ack-sent"
     # the 0x2041 grant, or any reply at all
     got = None
@@ -298,7 +330,7 @@ def fire_sequence(cred, wait_grant=3.0):
         sess.session_hdr = bytes(got[1][16:32])
         tok = __import__("struct").pack("<I", 1)
         avc = cp.build_av_connect(None, got[1], 0, authkey, password, token=tok, R=R)
-        s.sendto(avc, got[2])
+        sendfn(avc)
         out["av0_sent"] = True
         try:
             raw3, addr3 = s.recvfrom(2048)
@@ -313,16 +345,23 @@ def fire_sequence(cred, wait_grant=3.0):
     return out
 
 
-def cmd_fire(window, max_wait):
+def cmd_fire(window, max_wait, force=False):
     cred = load_creds()
     if cred is None:
         log("no fresh credentials — minting")
         cred = mint()
         if cred is None:
             return 1
+    if force:
+        # registration is continuous by design (STUN refresh x3 peers /10 s), so a
+        # zero-window never occurs while the unit is registered; fire on demand and
+        # let the reply (or its absence) be the measurement.
+        res = fire_sequence(cred)
+        log(f"fire(force): {json.dumps(res)}")
+        return 0 if res.get("grant") else 1
     while time.time() < time.time() + max_wait:
         if not liveness(6):
-            log("ARP unstable; sleeping 30 s")
+            log("camera unreachable; sleeping 30 s")
             time.sleep(30)
             continue
         if not wait_idle(window=window, max_wait=max_wait):
@@ -346,12 +385,15 @@ def main():
     ap.add_argument("--window", type=int, default=60)
     ap.add_argument("--max-wait", type=int, default=900)
     ap.add_argument("--attempts", type=int, default=6)
+    ap.add_argument("--force", action="store_true",
+                    help="fire immediately without waiting for an idle window "
+                         "(the relay registration is continuous by design)")
     a = ap.parse_args()
     if a.mode == "mint":
         c = mint()
         return 0 if c else 1
     if a.mode == "fire":
-        return cmd_fire(a.window, a.max_wait)
+        return cmd_fire(a.window, a.max_wait, force=a.force)
     # watch: bounded captures + summary, no injection
     for i in range(a.attempts):
         if not liveness(6):
