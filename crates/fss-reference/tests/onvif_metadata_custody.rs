@@ -436,3 +436,49 @@ fn published_missing_root_and_source_are_never_recreated_after_restart() -> Test
     }
     Ok(())
 }
+
+#[test]
+fn retry_refuses_a_root_previously_ledgered_with_a_different_receive_interval() -> Test {
+    let template = Directory::new("wrong-validity-template")?;
+    let template_cx = template.cx()?;
+    let mut original = ReferenceDeployment::open(&template.0, SITE, &template_cx)?;
+    let xml = source(&notification("Changed", ""));
+    let retained = retain(&mut original, binding()?, &xml, &template_cx)?;
+    let recipe = original.publisher().spool().read_bounded(
+        retained.identity(),
+        fss_reference::onvif::metadata::MAX_RECIPE_BYTES,
+    )?;
+    let projection = original.publisher().spool().read_bounded(
+        retained.projection_digest(),
+        fss_reference::onvif::metadata::MAX_PROJECTION_BYTES,
+    )?;
+    let slot = fss_publication::SlotName::parse(&format!(
+        "onvif-metadata-{}",
+        &retained.identity().to_text()[7..]
+    ))?;
+    let directory = Directory::new("wrong-validity")?;
+    let cx = directory.cx()?;
+    let mut deployment = ReferenceDeployment::open(&directory.0, SITE, &cx)?;
+    let staged = deployment.stage_and_publish(
+        &slot,
+        &[recipe.as_slice(), xml.as_slice(), projection.as_slice()],
+        &cx,
+    )?;
+    assert_eq!(staged.manifest.root(), retained.publication_root());
+    deployment.publish_and_commit(
+        &slot,
+        &staged.manifest,
+        CaptureInterval::new(TimestampNs(900), TimestampNs(910))?,
+        &cx,
+    )?;
+    assert!(matches!(
+        RetainedMetadata::open(&deployment, retained.identity(), None, &cx),
+        Err(MetadataError::Custody)
+    ));
+    assert!(matches!(
+        retain(&mut deployment, binding()?, &xml, &cx),
+        Err(MetadataError::Custody)
+    ));
+    assert_eq!(deployment.ledger().batches().len(), 1);
+    Ok(())
+}

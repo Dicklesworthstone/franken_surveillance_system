@@ -380,6 +380,12 @@ pub fn retain(
                 return Err(MetadataError::Custody);
             }
         }
+        // An already ledgered root must satisfy the same exact custody contract
+        // as a cold open. A durable root awaiting its first ledger link can resume.
+        match check_publication(deployment, &slot, &manifest, &recipe.binding, cx) {
+            Ok(_) | Err(MetadataError::Unavailable) => {}
+            Err(error) => return Err(error),
+        }
     } else {
         let object = format!("object:local-root:{}", slot.as_str());
         if deployment.ledger().batches().iter().any(|batch| {
