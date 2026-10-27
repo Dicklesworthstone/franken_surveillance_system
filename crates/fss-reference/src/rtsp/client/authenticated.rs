@@ -1,10 +1,13 @@
 #![forbid(unsafe_code)]
 //! Opt-in Digest lifecycle on the existing scoped RTSP session.
 
+mod offers;
+
+use offers::ChallengeOffers;
+
 use super::*;
 use crate::rtsp::authentication::{
     AuthenticationError, DigestChallenge, DigestCredentials, DigestPolicy, MAX_AUTHORIZATION_BYTES,
-    MAX_CHALLENGE_BYTES,
 };
 use crate::rtsp::{RtspEvent, RtspLimits, RtspParser};
 use std::fmt::Write as _;
@@ -109,7 +112,7 @@ impl DigestState {
         now: u64,
     ) -> Result<ClientRequest> {
         let pending = session.pending.ok_or(ClientError::State)?;
-        let (response, challenge_value) = challenge_response(wire)?;
+        let (response, challenges) = challenge_response(wire)?;
         bounded_response(&response)?;
         let cseq = decimal(singleton(&response.headers, "CSeq")?.ok_or(ClientError::Response)?)?;
         if cseq != u64::from(pending.cseq) {
@@ -128,7 +131,7 @@ impl DigestState {
                 return Err(ClientError::Session.into());
             }
         }
-        let challenge = DigestChallenge::parse(challenge_value, &self.realm, self.policy)?;
+        let challenge = challenges.select(&self.realm, self.policy)?;
         if self.attempts != 0 {
             let previous = self.challenge.as_ref().ok_or(AuthenticationError::State)?;
             if !challenge.stale()
@@ -259,7 +262,13 @@ impl RtspClientSession {
     }
 }
 
-fn challenge_response(wire: &[u8]) -> Result<(RtspResponse, &str)> {
+/// Inspect every bounded original offer before asking the credential owner.
+/// Public response metadata intentionally retains only one redacted scheme marker.
+pub(crate) fn offers_digest(wire: &[u8]) -> bool {
+    challenge_response(wire).is_ok_and(|(_, offers)| offers.contains_digest())
+}
+
+fn challenge_response(wire: &[u8]) -> Result<(RtspResponse, ChallengeOffers<'_>)> {
     // Bounded complete response only. Parser owns framing and body length; this
     // adapter reads just the original header that the public parser redacts.
     if wire.len() > 135_168 {
@@ -270,15 +279,14 @@ fn challenge_response(wire: &[u8]) -> Result<(RtspResponse, &str)> {
         .position(|s| s == b"\r\n\r\n")
         .ok_or(AuthenticationError::Response)?;
     let header = std::str::from_utf8(&wire[..end]).map_err(|_| AuthenticationError::Response)?;
-    let mut challenge = None;
+    let mut challenges = ChallengeOffers::new();
+    let mut offered = false;
     let mut length = None;
     for line in header.split("\r\n").skip(1) {
         let (name, value) = line.split_once(':').ok_or(AuthenticationError::Response)?;
         if name.eq_ignore_ascii_case("WWW-Authenticate") {
-            if challenge.is_some() || value.trim().len() > MAX_CHALLENGE_BYTES {
-                return Err(AuthenticationError::Response.into());
-            }
-            challenge = Some(value.trim());
+            challenges.push_header(value.trim())?;
+            offered = true;
         }
         if name.eq_ignore_ascii_case("Content-Length") {
             if length.is_some() {
@@ -318,5 +326,8 @@ fn challenge_response(wire: &[u8]) -> Result<(RtspResponse, &str)> {
         }
         _ => return Err(AuthenticationError::Response.into()),
     };
-    Ok((response, challenge.ok_or(AuthenticationError::Response)?))
+    if !offered {
+        return Err(AuthenticationError::Response.into());
+    }
+    Ok((response, challenges))
 }

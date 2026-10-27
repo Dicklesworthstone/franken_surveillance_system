@@ -11,9 +11,8 @@ mod selection;
 
 use super::*;
 use crate::rtsp::{
-    AuthScheme,
     authentication::{AuthenticationError, DigestCredentials, DigestPolicy},
-    client::authenticated::DigestClientError,
+    client::authenticated::{DigestClientError, offers_digest},
     framed::{
         MAX_WIRE_BUFFER, MAX_WIRE_CHUNK, RetainedRtspWire, RtspWireFrame, RtspWireIntake,
         WireIntakeError,
@@ -337,8 +336,8 @@ impl DigestAvcClient {
                         .cseq()
                         .is_some_and(|c| c.ok() == self.pending_cseq)
                         && self.pending_cseq.is_some();
-                    let supported = response.status_code == 401
-                        && response.auth_challenge == Some(AuthScheme::Digest);
+                    let supported =
+                        response.status_code == 401 && offers_digest(frame.expose_wire());
                     self.challenge = Some(frame);
                     self.challenge_deadline_ns = frame_deadline;
                     if !matching {

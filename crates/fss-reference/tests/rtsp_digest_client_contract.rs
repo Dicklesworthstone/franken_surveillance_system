@@ -133,7 +133,7 @@ fn wrong_realm_basic_proxy_and_duplicate_challenges_are_refused() -> TestResult 
         valid.replace("401 Unauthorized", "407 Proxy Authentication Required"),
         valid.replace(
             "Content-Length: 0",
-            "WWW-Authenticate: Basic realm=\"camera\"\r\nContent-Length: 0",
+            "WWW-Authenticate: Digest realm=\"camera\", nonce=\"other\", algorithm=SHA-256, qop=\"auth\"\r\nContent-Length: 0",
         ),
     ] {
         assert!(

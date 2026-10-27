@@ -14,6 +14,7 @@ use fss_packet::{
     RtcpMode, StreamKey,
 };
 
+use super::RtspEvent;
 use super::authentication::{AuthenticationError, DigestCredentials, DigestPolicy};
 use super::client::authenticated::DigestClientError;
 use super::client::hevc::HevcClientMedia;
@@ -25,7 +26,6 @@ use super::framed::{
     MAX_WIRE_BUFFER, MAX_WIRE_CHUNK, RetainedRtspWire, RtspWireFrame, RtspWireIntake,
     WireIntakeError,
 };
-use super::{AuthScheme, RtspEvent};
 
 /// Payload-free refusal categories. No URL, token, challenge or media is printed.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -538,7 +538,7 @@ impl RtspHevcClient {
                             .cseq()
                             .is_some_and(|c| c.ok() == self.pending_cseq);
                     let supported = response.status_code == 401
-                        && response.auth_challenge == Some(AuthScheme::Digest);
+                        && super::client::authenticated::offers_digest(held.frame.expose_wire());
                     self.challenge = Some(held);
                     if !matching {
                         return self
