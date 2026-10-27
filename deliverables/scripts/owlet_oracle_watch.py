@@ -20,7 +20,8 @@ which is only correct for zero plaintext) -> plaintext type at [8:10].
 """
 
 import subprocess, time, os, glob, datetime, sys
-LOG=os.path.join(DIR, "watch.log"); DIR=os.environ.get("OWLET_ORACLE_DIR", "/tmp/owlet_oracle")
+DIR = os.environ.get("OWLET_ORACLE_DIR", "/tmp/owlet_oracle")
+LOG = os.path.join(DIR, "watch.log")
 def log(m):
     line=f"{datetime.datetime.now().isoformat(timespec='seconds')} {m}"
     print(line,flush=True); open(LOG,"a").write(line+"\n")
