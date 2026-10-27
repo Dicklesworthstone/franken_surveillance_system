@@ -9,6 +9,8 @@ The app delivers it by sound (`libpcmjni.so` `genPcmData`), so this file also ca
 reimplementation of that encoder — the app is not required to run the test.
 
   yi_u1.py serve [host]        listener on 4444, logs to /tmp/yi_listener.log, sends `id` on connect
+  yi_u1.py armed               one command: reachability check + listener + the operator step.
+                               The re-provision itself stays OPERATOR-GATED (bead fss-o7t21).
   yi_u1.py wav BINDKEY SSID PWD OUT.wav
   yi_u1.py decode IN.wav       verify a WAV (header, payload, RS parity)
   yi_u1.py payloads            print the payloads and their octet counts
@@ -27,6 +29,7 @@ Protocol (recovered from libpcmjni.so, armeabi-v7a):
   unscaled inverse FFT -> 2*A per bin, truncated to int16
 """
 import math
+import os
 import socket
 import struct
 import sys
@@ -170,7 +173,13 @@ def decode(path):
 
 
 def serve(host: str = HOST, port: int = PORT) -> None:
-    logf = open(LOG, "a", buffering=1)
+    try:
+        logf = open(LOG, "a", buffering=1)
+    except PermissionError:
+        # a previous root-owned run left the log; fall back next to it
+        alt = LOG + f".{os.getuid()}"
+        logf = open(alt, "a", buffering=1)
+        print(f"(cannot append {LOG}; logging to {alt})", flush=True)
 
     def log(msg):
         print(msg, flush=True)
@@ -205,12 +214,44 @@ def serve(host: str = HOST, port: int = PORT) -> None:
         log("shell closed")
 
 
+def armed() -> int:
+    """One command: verify reachability, start the listener, print the operator step.
+
+    The re-provision (broadcast the payload SSID, re-add the camera in the Yi app,
+    power-cycle) is OPERATOR-GATED per bead fss-o7t21 — this prepares everything and
+    fires nothing. Exits after printing; the listener keeps running in the foreground.
+    """
+    import subprocess
+    # reachability: the camera must be ARP-visible from this host
+    r = subprocess.run(["ping", "-c", "2", "-t", "3", "192.168.6.156"],
+                       capture_output=True, text=True)
+    up = "0% packet loss" in r.stdout or "1 packets received" in r.stdout
+    print(f"camera 192.168.6.156 ICMP: {'up' if up else 'DOWN'}")
+    print(f"listener: {HOST}:{PORT}  log: {LOG}")
+    print("payloads:")
+    for name, p in (("primary", PRIMARY), ("fallback", FALLBACK)):
+        print(f"  {name}: {len(p)} octets  {p!r}  fits={len(p) <= 32}")
+    print()
+    print("OPERATOR STEP (not fired by this tool):")
+    print("  1. broadcast an AP whose SSID is exactly the primary payload above")
+    print("     (verbatim, including $ ( | — some routers mangle them)")
+    print("  2. in the Yi Home app, re-provision the camera onto that SSID")
+    print("     (ordinary Wi-Fi password unchanged)")
+    print("  3. power-cycle the camera")
+    print("Success line in the log: shell from ('192.168.6.156', ...)")
+    print()
+    serve(HOST, PORT)
+    return 0
+
+
 def main() -> int:
     cmd = sys.argv[1] if len(sys.argv) > 1 else ""
     if cmd == "payloads":
         for name, p in (("primary", PRIMARY), ("fallback", FALLBACK)):
             print(f"{name}: {len(p)} octets  {p!r}  fits={len(p) <= 32}")
         return 0
+    if cmd == "armed":
+        return armed()
     if cmd == "serve":
         serve(*(sys.argv[2:4]))
         return 0
