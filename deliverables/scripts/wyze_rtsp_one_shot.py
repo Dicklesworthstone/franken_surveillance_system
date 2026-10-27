@@ -372,15 +372,16 @@ def loop_watch(a: argparse.Namespace, cmd: bytes) -> int:
     fired: dict[str, tuple[bool, int | None]] = {}
     print(f"watch: fleet={pending} interval={FLEET_INTERVAL}s grace={BOOT_GRACE}s")
     while pending:
-        for ip in list(pending):
-            if not ping(ip):
-                continue
+        polled = [ip for ip in pending if ping(ip)]
+        print(f"poll {time.strftime('%H:%M:%S')} swept={len(pending)} "
+              f"up={polled if polled else 'none'}", flush=True)
+        for ip in list(polled):
             print(f"{ip}: ICMP up at {time.strftime('%H:%M:%S')}, "
-                  f"waiting {BOOT_GRACE}s for userspace")
+                  f"waiting {BOOT_GRACE}s for userspace", flush=True)
             time.sleep(BOOT_GRACE)
             cfg = cfg_for(ip)
             if cfg is None:
-                print(f"{ip}: no cfg in {CFG_DIR}, cannot fire")
+                print(f"{ip}: no cfg in {CFG_DIR}, cannot fire", flush=True)
             else:
                 fired[ip] = fire(ip, *cfg, a, cmd)
             pending.remove(ip)
