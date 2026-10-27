@@ -35,10 +35,8 @@ import hashlib
 import os
 import socket
 import struct
-import subprocess
 import sys
 import time
-import urllib.parse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import wyze_ioctl_client as W  # noqa: E402
