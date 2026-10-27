@@ -147,7 +147,7 @@ def digest_describe(ip: str, user: str, pwd: str, realm_hint: str | None,
                 chunks.append(d.decode("utf-8", "replace"))
                 if "\r\n\r\n" in chunks[-1] or len(chunks) > 8:
                     break
-        except socket.timeout:
+        except TimeoutError:  # socket.timeout is an alias of this on py3.10+
             pass
         s.close()
         return "".join(chunks)
