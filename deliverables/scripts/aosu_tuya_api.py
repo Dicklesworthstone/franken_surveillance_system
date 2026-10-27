@@ -44,6 +44,10 @@ def swap(s: str) -> str:
 
 
 def canonical(params: dict) -> str:
+    # VERIFIED against the real app (emulator Frida capture, 2026-10-27):
+    # postData digest = SWAPPED MD5-HEX, not swap(md5-base64):
+    #   hex = md5(postData).hexdigest(); swap = hex[8:16]+hex[0:8]+hex[24:32]+hex[16:24]
+    # Proof pair: evidence/aosu_sign_ground_truth.json (harness == app, exact match).
     out = []
     excl = set(filter(None, os.environ.get("SIGN_EXCLUDE", "").split(",")))
     for k in sorted(params):
@@ -51,7 +55,8 @@ def canonical(params: dict) -> str:
             continue
         v = params[k]
         if k == "postData":
-            v = swap(md5b64(v))
+            hx = hashlib.md5(v.encode()).hexdigest()
+            v = hx[8:16] + hx[0:8] + hx[24:32] + hx[16:24]
         if os.environ.get("SIGN_ENCODED") == "1":
             v = urllib.parse.quote(v, safe="")
         out.append(f"{k}={v}")
