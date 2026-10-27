@@ -85,28 +85,61 @@ def arp_present():
     return None
 
 
-def camera_on_wire(seconds=6):
+def camera_on_wire(seconds=6, wake=True):
     """See the camera's MAC sourcing frames on en1 — the ground-truth liveness check.
 
     The kernel ARP cache entry for a power-saving camera expires within seconds and
     only repopulates on our own outbound traffic, which the passive-watching rule
-    forbids; a short BPF sniff of `ether src <MAC>` needs none of that.
+    forbids. tcpdump runs under an external timeout so a silent camera cannot hang
+    the watcher. The BPF attaches FIRST and the wake probe fires second — the
+    camera's reply comes ~0.7 s after the probe, faster than a post-wake tcpdump
+    startup, so the reply is only catchable if the sniff is already listening.
     """
     cmd = ["sudo", "-n", "tcpdump", "-n", "-c", "1", "-i", "en1",
            "-e", f"ether src {CAM_MAC}"]
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=seconds + 5)
-    except (subprocess.TimeoutExpired, FileNotFoundError):
+        p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                             text=True)
+    except FileNotFoundError:
         return None
-    for line in (r.stdout or "").splitlines():
+    time.sleep(1.5)  # BPF attach
+    if wake:
+        try:
+            sys.path.insert(0, os.path.expanduser("~/fw-lab/owlet/cubo"))
+            import cuboai_pure_owlet as _cp
+            import socket as _s
+            pkt = _cp.build_probe(b"TDEWNKCZVSYLVLT7111A", 0x2ac2)
+            s = _s.socket(_s.AF_INET, _s.SOCK_DGRAM)
+            try:
+                s.sendto(pkt, (CAM_IP, LAN_SEARCH_PORT))
+            except OSError:
+                pass
+            finally:
+                s.close()
+            try:
+                from scapy.all import Ether, IP, UDP, sendp
+                sendp(Ether(dst=CAM_MAC) / IP(src=MY_IP, dst=CAM_IP)
+                      / UDP(sport=0, dport=LAN_SEARCH_PORT) / pkt,
+                      iface=IFACE, verbose=0)
+            except Exception:
+                pass
+        except Exception:
+            pass
+    try:
+        out, _ = p.communicate(timeout=seconds)
+    except subprocess.TimeoutExpired:
+        p.kill()
+        return None
+    for line in (out or "").splitlines():
         if CAM_MAC.lower()[:8] in line.lower() and "IP" in line:
             return line.strip()
     return None
 
 
-def liveness(timeout=6):
-    """Camera is alive: seen sourcing frames on en1 (see camera_on_wire)."""
-    return camera_on_wire(timeout) is not None
+def liveness(timeout=12):
+    """Camera is alive: sniff-then-wake via camera_on_wire (wake probe is harmless —
+    it wakes the LAN-search responder without opening a session)."""
+    return camera_on_wire(timeout, wake=True) is not None
 
 
 # ── passive 3478 capture ─────────────────────────────────────────────────────
@@ -156,7 +189,7 @@ def wait_idle(window=60, max_wait=900, quiet_gap=30):
     """Poll until one full `window` passes with zero relay packets (or max_wait)."""
     t0 = time.time()
     while time.time() - t0 < max_wait:
-        if not liveness(6):
+        if not liveness(12):
             log("ARP unstable — camera unreachable; waiting")
             time.sleep(quiet_gap)
             continue
@@ -360,7 +393,7 @@ def cmd_fire(window, max_wait, force=False):
         log(f"fire(force): {json.dumps(res)}")
         return 0 if res.get("grant") else 1
     while time.time() < time.time() + max_wait:
-        if not liveness(6):
+        if not liveness(12):
             log("camera unreachable; sleeping 30 s")
             time.sleep(30)
             continue
@@ -396,7 +429,7 @@ def main():
         return cmd_fire(a.window, a.max_wait, force=a.force)
     # watch: bounded captures + summary, no injection
     for i in range(a.attempts):
-        if not liveness(6):
+        if not liveness(12):
             log(f"[{i + 1}/{a.attempts}] ARP unstable — camera asleep?")
             time.sleep(a.window)
             continue
