@@ -238,112 +238,155 @@ fn read_input(path: &Path, scope: &runtime::Scope<'_, '_>) -> Result<Vec<u8>, &'
     Ok(bytes)
 }
 fn run(options: Options) -> Result<String, &'static str> {
-    runtime::run(
-        runtime::Request {
-            approval: options.approval,
-            principal: options.principal.clone(),
-            timeout_ns: 30_000_000_000,
-            bytes: 4 * 1024 * 1024,
-            network_bytes: 0,
-            storage_operations: 256,
-            network: false,
-            // Existing deployment opens take its owner lock and may finalize its own recovery.
-            write: true,
-            secrets: false,
-        },
-        |scope| {
-            let input = if let Action::Import {
-                input,
-                expected_source,
-                ..
-            } = &options.action
-            {
-                let bytes = read_input(input, scope)?;
-                if expected_source.is_some_and(|expected| expected != ContentDigest::sha256(&bytes))
-                {
-                    return Err(CUSTODY_ERROR);
-                }
-                // Fail malformed input before creating or opening any destination.
-                parse_event_document(&bytes).map_err(|_| "ERR-ONVIF-METADATA-WIRE-001")?;
-                Some(bytes)
-            } else {
-                None
-            };
+    let request = runtime::Request {
+        approval: options.approval,
+        principal: options.principal.clone(),
+        timeout_ns: 30_000_000_000,
+        bytes: 4 * 1024 * 1024,
+        network_bytes: 0,
+        storage_operations: 256,
+        network: false,
+        // Existing deployment opens take its owner lock and may finalize its own recovery.
+        write: true,
+        secrets: false,
+    };
+    let work = |scope: &runtime::Scope<'_, '_>| {
+        let input = if let Action::Import {
+            input,
+            expected_source,
+            ..
+        } = &options.action
+        {
+            let bytes = read_input(input, scope)?;
+            if expected_source.is_some_and(|expected| expected != ContentDigest::sha256(&bytes)) {
+                return Err(CUSTODY_ERROR);
+            }
+            // Fail malformed input before creating or opening any destination.
+            parse_event_document(&bytes).map_err(|_| "ERR-ONVIF-METADATA-WIRE-001")?;
+            Some(bytes)
+        } else {
+            None
+        };
+        scope.input()?;
+        match fs::symlink_metadata(&options.root) {
+            Ok(metadata) if !metadata.file_type().is_dir() => return Err(INPUT_ERROR),
+            Ok(_) => {}
+            Err(error)
+                if error.kind() == std::io::ErrorKind::NotFound
+                    && matches!(&options.action, Action::Import { .. }) => {}
+            Err(_) => return Err(INPUT_ERROR),
+        }
+        if matches!(&options.action, Action::Inspect { .. }) {
             scope.input()?;
-            match fs::symlink_metadata(&options.root) {
-                Ok(metadata) if !metadata.file_type().is_dir() => return Err(INPUT_ERROR),
-                Ok(_) => {}
-                Err(error)
-                    if error.kind() == std::io::ErrorKind::NotFound
-                        && matches!(&options.action, Action::Import { .. }) => {}
-                Err(_) => return Err(INPUT_ERROR),
+            if !fs::symlink_metadata(options.root.join("LAYOUT"))
+                .map_err(|_| INPUT_ERROR)?
+                .file_type()
+                .is_file()
+            {
+                return Err(INPUT_ERROR);
             }
-            if matches!(&options.action, Action::Inspect { .. }) {
-                scope.input()?;
-                if !fs::symlink_metadata(options.root.join("LAYOUT"))
-                    .map_err(|_| INPUT_ERROR)?
-                    .file_type()
-                    .is_file()
-                {
-                    return Err(INPUT_ERROR);
+        }
+        let authority = ContextAuthority::new_root(RootAuthoritySpec {
+            trace_id: "trace:onvif-metadata".into(),
+            operation_id: OperationId::parse("operation:onvif-metadata")
+                .map_err(|_| ARGUMENT_ERROR)?,
+            principal: options.principal.clone(),
+            capabilities: vec![fss_reference::ADP_REPLAY_ROW_ID.to_owned()],
+            deadline: None,
+            priority: 10,
+            budgets: BudgetVector::builder()
+                .bytes(4 * 1024 * 1024)
+                .storage_operations(256)
+                .build()
+                .map_err(|_| LIMIT_ERROR)?,
+            privacy_scope: "privacy:owner-private-vendor-metadata".into(),
+            retention_scope: "retention:explicit-metadata-import".into(),
+            anchor_universe: ContentDigest::sha256(options.site.as_bytes()),
+            generation: 1,
+        })
+        .map_err(|_| ARGUMENT_ERROR)?;
+        // This constructor performs no ambient filesystem work.
+        let cx = ReplayCx::from_context_authority_read_only(&authority, options.root.clone())
+            .map_err(|_| ARGUMENT_ERROR)?;
+        let result = (|| {
+            scope.output()?;
+            let mut deployment = ReferenceDeployment::open(&options.root, &options.site, &cx)
+                .map_err(|_| "ERR-ONVIF-METADATA-PUBLICATION-001")?;
+            match &options.action {
+                Action::Import { binding, .. } => {
+                    scope.output()?;
+                    let source = input.as_deref().ok_or(INPUT_ERROR)?;
+                    retain(&mut deployment, binding.clone(), source, &cx)
+                        .map_err(|error| error.code())
+                }
+                Action::Inspect {
+                    identity,
+                    expected_root,
+                    ..
+                } => {
+                    scope.input()?;
+                    RetainedMetadata::open(&deployment, *identity, *expected_root, &cx)
+                        .map_err(|error| error.code())
                 }
             }
-            let authority = ContextAuthority::new_root(RootAuthoritySpec {
-                trace_id: "trace:onvif-metadata".into(),
-                operation_id: OperationId::parse("operation:onvif-metadata")
-                    .map_err(|_| ARGUMENT_ERROR)?,
-                principal: options.principal.clone(),
-                capabilities: vec![fss_reference::ADP_REPLAY_ROW_ID.to_owned()],
-                deadline: None,
-                priority: 10,
-                budgets: BudgetVector::builder()
-                    .bytes(4 * 1024 * 1024)
-                    .storage_operations(256)
-                    .build()
-                    .map_err(|_| LIMIT_ERROR)?,
-                privacy_scope: "privacy:owner-private-vendor-metadata".into(),
-                retention_scope: "retention:explicit-metadata-import".into(),
-                anchor_universe: ContentDigest::sha256(options.site.as_bytes()),
-                generation: 1,
-            })
-            .map_err(|_| ARGUMENT_ERROR)?;
-            // This constructor performs no ambient filesystem work.
-            let cx = ReplayCx::from_context_authority_read_only(&authority, options.root.clone())
-                .map_err(|_| ARGUMENT_ERROR)?;
-            let result = (|| {
-                scope.output()?;
-                let mut deployment = ReferenceDeployment::open(&options.root, &options.site, &cx)
-                    .map_err(|_| "ERR-ONVIF-METADATA-PUBLICATION-001")?;
-                let (retained, operation) = match &options.action {
-                    Action::Import { binding, .. } => {
-                        scope.output()?;
-                        let source = input.as_deref().ok_or(INPUT_ERROR)?;
-                        (
-                            retain(&mut deployment, binding.clone(), source, &cx)
-                                .map_err(|error| error.code())?,
-                            "import",
-                        )
-                    }
-                    Action::Inspect {
-                        identity,
-                        expected_root,
-                        verify,
-                    } => {
-                        scope.input()?;
-                        (
-                            RetainedMetadata::open(&deployment, *identity, *expected_root, &cx)
-                                .map_err(|error| error.code())?,
-                            if *verify { "verify" } else { "inspect" },
-                        )
-                    }
-                };
-                scope.now()?;
-                report(&retained, operation, options.include_values)
-            })();
-            cx.drain_and_finalize();
-            result
-        },
-    )
+        })();
+        cx.drain_and_finalize();
+        result
+    };
+    if matches!(&options.action, Action::Import { .. }) {
+        let completed = runtime::run_committing(request, |scope| {
+            // Only the durable library receipt can cross this success boundary.
+            // Rendering is pure and happens after runtime drain, with a minimal
+            // custody receipt fallback if optional detail exceeds its bound.
+            work(scope).map(runtime::Committed::new)
+        })?;
+        Ok(committed_report(
+            &completed.value,
+            options.include_values,
+            completed.post_commit_error,
+            completed.finalization_error,
+        ))
+    } else {
+        let retained = runtime::run(request, work)?;
+        let operation = match options.action {
+            Action::Inspect { verify: true, .. } => "verify",
+            _ => "inspect",
+        };
+        report(&retained, operation, options.include_values)
+    }
+}
+
+fn committed_report(
+    retained: &RetainedMetadata,
+    include_values: bool,
+    post_commit_error: Option<&'static str>,
+    finalization_error: Option<&'static str>,
+) -> String {
+    let minimal = || {
+        format!(
+            "operation=import\nimport_identity={}\npublication_root={}\nsource_sha256={}\nvalues_disclosed=false\n",
+            retained.identity(),
+            retained.publication_root(),
+            retained.source_digest()
+        )
+    };
+    // A durable acknowledgment survives revocation; optional private values do not.
+    let mut out = if post_commit_error.is_some() || finalization_error.is_some() {
+        minimal()
+    } else {
+        report(retained, "import", include_values).unwrap_or_else(|error| {
+            // A presentation failure must not erase the already committed root.
+            format!("{}report_error={error}\n", minimal())
+        })
+    };
+    out.push_str("durable_publication=true\nsafe_next=verify_exact_import\n");
+    if let Some(error) = post_commit_error {
+        out.push_str(&format!("post_commit_error={error}\n"));
+    }
+    if let Some(error) = finalization_error {
+        out.push_str(&format!("finalization_error={error}\n"));
+    }
+    out
 }
 
 fn report(
@@ -514,5 +557,165 @@ fn main() -> ExitCode {
             eprintln!("{error}");
             ExitCode::from(if error == ARGUMENT_ERROR { 2 } else { 1 })
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    type Test = Result<(), Box<dyn std::error::Error>>;
+
+    struct Directory(PathBuf);
+    impl Directory {
+        fn new(label: &str) -> Result<Self, std::io::Error> {
+            for attempt in 0..64 {
+                let path = std::env::temp_dir().join(format!(
+                    "fss-onvif-metadata-cli-{label}-{}-{attempt}",
+                    std::process::id()
+                ));
+                match fs::create_dir(&path) {
+                    Ok(()) => return Ok(Self(path)),
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                    Err(error) => return Err(error),
+                }
+            }
+            Err(std::io::Error::other(
+                "fixture directory attempts exhausted",
+            ))
+        }
+    }
+    impl Drop for Directory {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn args(root: &Path, input: &Path) -> Vec<OsString> {
+        vec![
+            "import".into(),
+            "--root".into(),
+            root.into(),
+            "--site".into(),
+            "site:metadata-cli-test".into(),
+            "--input".into(),
+            input.into(),
+            "--sensor".into(),
+            "sensor:front".into(),
+            "--device-generation".into(),
+            ContentDigest::sha256(b"device").to_text().into(),
+            "--profile-generation".into(),
+            ContentDigest::sha256(b"profile").to_text().into(),
+            "--profile".into(),
+            "main".into(),
+            "--received-start-ns".into(),
+            "100".into(),
+            "--received-end-ns".into(),
+            "110".into(),
+        ]
+    }
+
+    fn field<'a>(report: &'a str, name: &str) -> Result<&'a str, &'static str> {
+        report
+            .lines()
+            .find_map(|line| line.strip_prefix(name))
+            .ok_or("missing report field")
+    }
+
+    #[test]
+    fn native_command_round_trip_reopens_without_input() -> Test {
+        let directory = Directory::new("roundtrip")?;
+        let input = directory.0.join("source.xml");
+        let root = directory.0.join("deployment");
+        fs::write(&input, br#"<t:MetadataStream xmlns:t="http://www.onvif.org/ver10/schema"><t:Event/></t:MetadataStream>"#)?;
+        let imported = run(parse(&args(&root, &input))?.ok_or("options")?)?;
+        assert!(imported.contains("durable_publication=true\n"));
+        assert!(imported.contains("coverage_claimed=false\n"));
+        let identity = field(&imported, "import_identity=")?.to_owned();
+        let publication_root = field(&imported, "publication_root=")?.to_owned();
+        fs::remove_file(&input)?;
+        let verify = vec![
+            "verify".into(),
+            "--root".into(),
+            root.into(),
+            "--site".into(),
+            "site:metadata-cli-test".into(),
+            "--import-id".into(),
+            identity.clone().into(),
+            "--expected-root".into(),
+            publication_root.clone().into(),
+        ];
+        let verified = run(parse(&verify)?.ok_or("verify options")?)?;
+        assert_eq!(field(&verified, "import_identity=")?, identity);
+        assert_eq!(field(&verified, "publication_root=")?, publication_root);
+        assert_eq!(field(&verified, "operation=")?, "verify");
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_source_refuses_before_creating_destination() -> Test {
+        let directory = Directory::new("malformed")?;
+        let input = directory.0.join("source.xml");
+        let root = directory.0.join("deployment");
+        fs::write(&input, b"<!DOCTYPE x><x/>")?;
+        assert_eq!(
+            run(parse(&args(&root, &input))?.ok_or("options")?).err(),
+            Some("ERR-ONVIF-METADATA-WIRE-001")
+        );
+        assert!(!root.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn committed_acknowledgment_keeps_handles_but_withholds_private_values_after_revocation() -> Test
+    {
+        let directory = Directory::new("receipt")?;
+        let authority = ContextAuthority::new_root(RootAuthoritySpec {
+            trace_id: "trace:metadata-cli-test".into(),
+            operation_id: OperationId::parse("operation:metadata-cli-test")?,
+            principal: "operator:metadata-cli-test".into(),
+            capabilities: vec![fss_reference::ADP_REPLAY_ROW_ID.to_owned()],
+            deadline: None,
+            priority: 10,
+            budgets: BudgetVector::builder()
+                .bytes(4 * 1024 * 1024)
+                .storage_operations(256)
+                .build()?,
+            privacy_scope: "privacy:test".into(),
+            retention_scope: "retention:test".into(),
+            anchor_universe: ContentDigest::sha256(b"test"),
+            generation: 1,
+        })?;
+        let cx = ReplayCx::from_context_authority_read_only(&authority, directory.0.clone())?;
+        let mut deployment =
+            ReferenceDeployment::open(&directory.0, "site:metadata-cli-test", &cx)?;
+        let binding = SourceBinding {
+            sensor_id: SensorId::parse("sensor:front")?,
+            device_generation: ContentDigest::sha256(b"device"),
+            profile_generation: ContentDigest::sha256(b"profile"),
+            profile_token: "private-profile-canary".into(),
+            receive_interval: CaptureInterval::new(TimestampNs(100), TimestampNs(110))?,
+        };
+        let retained = retain(&mut deployment, binding,
+            br#"<t:MetadataStream xmlns:t="http://www.onvif.org/ver10/schema"><t:Event/></t:MetadataStream>"#, &cx)?;
+        cx.drain_and_finalize();
+        let output = committed_report(
+            &retained,
+            true,
+            Some("ERR-CANCELLED-TEST"),
+            Some("ERR-DRAIN-TEST"),
+        );
+        assert!(output.contains(&format!("import_identity={}\n", retained.identity())));
+        assert!(output.contains(&format!(
+            "publication_root={}\n",
+            retained.publication_root()
+        )));
+        assert!(output.contains("durable_publication=true\n"));
+        assert!(output.contains("values_disclosed=false\n"));
+        assert!(output.contains("post_commit_error=ERR-CANCELLED-TEST\n"));
+        assert!(output.contains("finalization_error=ERR-DRAIN-TEST\n"));
+        assert!(!output.contains("private-profile-canary"));
+        assert!(!output.contains("notification_count="));
+        Ok(())
     }
 }
