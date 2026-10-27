@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! Source-retained ONVIF vendor event imports (a bounded FSS-046 subset).
+//! Source-retained ONVIF vendor event and analytics imports (a bounded FSS-046 subset).
 //!
 //! A local operator supplies complete PullMessages or MetadataStream XML and exact
 //! device/profile generation pins. Raw source, the deterministic vendor-cognition
@@ -18,15 +18,61 @@ use fss_core::{
 use fss_object::ObjectManifest;
 use fss_publication::{LocalPublicationState, SlotName};
 
-use super::wire::{EventDocument, WireError, parse_event_document};
+use super::wire::{EventDocument, WireError, parse_event_document, parse_metadata_document};
 use crate::{ReferenceDeployment, ReplayCx};
 
-/// Canonical import recipe compatibility domain.
-pub const RECIPE_DOMAIN: &str = "fss.onvif_vendor_event_import.v1";
-/// Canonical retained vendor-cognition projection compatibility domain.
-pub const PROJECTION_DOMAIN: &str = "fss.onvif_vendor_event_projection.v1";
-/// Immutable interpretation generation; changing semantics requires a new generation.
-pub const PARSER_GENERATION: &str = "gen:fss1:onvif-vendor-events-v1";
+/// Original event-only recipe compatibility domain; never reinterpreted as analytics.
+pub const RECIPE_DOMAIN_V1: &str = "fss.onvif_vendor_event_import.v1";
+/// Original event-only projection compatibility domain.
+pub const PROJECTION_DOMAIN_V1: &str = "fss.onvif_vendor_event_projection.v1";
+/// Frozen event-only interpretation, including opaque VideoAnalytics sections.
+pub const PARSER_GENERATION_V1: &str = "gen:fss1:onvif-vendor-events-v1";
+/// Current recipe compatibility domain, binding events and vendor analytics.
+pub const RECIPE_DOMAIN: &str = "fss.onvif_vendor_event_import.v2";
+/// Current retained vendor-cognition projection compatibility domain.
+pub const PROJECTION_DOMAIN: &str = "fss.onvif_vendor_event_projection.v2";
+/// Current immutable interpretation; old imports always retain their original generation.
+pub const PARSER_GENERATION: &str = "gen:fss1:onvif-vendor-analytics-v2";
+
+/// Exact interpretation selected before parsing and permanently bound into custody.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Interpretation {
+    /// Frozen event-only projection. VideoAnalytics remains explicitly opaque.
+    EventsV1,
+    /// Events plus bounded vendor frame, object, shape and class claims.
+    AnalyticsV2,
+}
+
+impl Interpretation {
+    /// Immutable parser generation recorded by this interpretation.
+    pub const fn parser_generation(self) -> &'static str {
+        match self {
+            Self::EventsV1 => PARSER_GENERATION_V1,
+            Self::AnalyticsV2 => PARSER_GENERATION,
+        }
+    }
+    /// Canonical recipe domain for this interpretation.
+    pub const fn recipe_domain(self) -> &'static str {
+        match self {
+            Self::EventsV1 => RECIPE_DOMAIN_V1,
+            Self::AnalyticsV2 => RECIPE_DOMAIN,
+        }
+    }
+    /// Canonical vendor-cognition projection domain for this interpretation.
+    pub const fn projection_domain(self) -> &'static str {
+        match self {
+            Self::EventsV1 => PROJECTION_DOMAIN_V1,
+            Self::AnalyticsV2 => PROJECTION_DOMAIN,
+        }
+    }
+    /// Parse with the exact frozen rules. V1 never validates opaque analytics as V2.
+    pub fn parse(self, source: &[u8]) -> Result<EventDocument, WireError> {
+        match self {
+            Self::EventsV1 => parse_event_document(source),
+            Self::AnalyticsV2 => parse_metadata_document(source),
+        }
+    }
+}
 /// Complete source XML byte ceiling, shared with the ONVIF wire parser.
 pub const MAX_SOURCE_BYTES: usize = super::wire::MAX_SOAP_BYTES;
 /// Hard canonical recipe allocation ceiling.
@@ -167,6 +213,11 @@ impl fmt::Debug for RetainedMetadata {
             .field("root", &self.root)
             .field("source_digest", &self.recipe.source)
             .field("notification_count", &self.document.notifications.len())
+            .field(
+                "analytics_frame_count",
+                &self.document.analytics_frames.len(),
+            )
+            .field("interpretation", &self.recipe.interpretation)
             .finish()
     }
 }
@@ -222,8 +273,8 @@ impl RetainedMetadata {
             return Err(MetadataError::Custody);
         }
         checkpoint(cx, "onvif_metadata:parse_retained")?;
-        let document = parse_event_document(&source)?;
-        let projection = record::projection(&document)?;
+        let document = recipe.interpretation.parse(&source)?;
+        let projection = record::projection(&document, recipe.interpretation)?;
         if ContentDigest::sha256(&projection) != recipe.projection
             || read(deployment, recipe.projection, MAX_PROJECTION_BYTES, cx)? != projection
         {
@@ -268,6 +319,14 @@ impl RetainedMetadata {
     pub const fn projection_digest(&self) -> ContentDigest {
         self.recipe.projection
     }
+    /// The retained interpretation, never the process's current default parser.
+    pub const fn interpretation(&self) -> Interpretation {
+        self.recipe.interpretation
+    }
+    /// Exact generation used to reconstruct this import, including legacy v1 imports.
+    pub const fn parser_generation(&self) -> &'static str {
+        self.recipe.interpretation.parser_generation()
+    }
     /// Explicit operator attribution and receive interval.
     pub fn binding(&self) -> &SourceBinding {
         &self.recipe.binding
@@ -305,12 +364,28 @@ impl RetainedMetadata {
             &self.recipe,
             notification,
             index,
-            self.document.unsupported_sections != 0,
+            match self.recipe.interpretation {
+                Interpretation::EventsV1 => self.document.unsupported_sections != 0,
+                Interpretation::AnalyticsV2 => self.document.has_unsupported_content(),
+            },
         )
+    }
+
+    /// Source- and occurrence-bound analytics frame identity.
+    ///
+    /// Repeated vendor object IDs or timestamps never assert track/person continuity.
+    /// Each retained frame remains addressable even when its typed claims are identical.
+    pub fn analytics_frame_digest(&self, index: usize) -> Result<ContentDigest, MetadataError> {
+        let frame = self
+            .document
+            .analytics_frames
+            .get(index)
+            .ok_or(MetadataError::InvalidBinding)?;
+        record::analytics_frame_identity(&self.recipe, frame, index)
     }
 }
 
-/// Parse and retain one complete owner-attributed vendor event document.
+/// Parse and retain one complete owner-attributed document with analytics v2 semantics.
 ///
 /// Parsing and canonical encoding finish before staging. Exact retries revalidate existing
 /// custody, resume the existing root-to-ledger commit if needed, and never repair corrupted
@@ -319,6 +394,20 @@ pub fn retain(
     deployment: &mut ReferenceDeployment,
     binding: SourceBinding,
     source: &[u8],
+    cx: &ReplayCx,
+) -> Result<RetainedMetadata, MetadataError> {
+    retain_with_interpretation(deployment, binding, source, Interpretation::AnalyticsV2, cx)
+}
+
+/// Retain with an explicit interpretation, including exact retry of pre-v2 imports.
+///
+/// Reinterpreting an existing source as v2 produces a separate immutable import; it
+/// never replaces v1 evidence, changes a prior digest, or upgrades its claims.
+pub fn retain_with_interpretation(
+    deployment: &mut ReferenceDeployment,
+    binding: SourceBinding,
+    source: &[u8],
+    interpretation: Interpretation,
     cx: &ReplayCx,
 ) -> Result<RetainedMetadata, MetadataError> {
     admit(deployment, cx, "onvif_metadata:admit")?;
@@ -340,9 +429,10 @@ pub fn retain(
     if source.is_empty() || source.len() > MAX_SOURCE_BYTES {
         return Err(MetadataError::Limit);
     }
-    let document = parse_event_document(source)?;
-    let projection = record::projection(&document)?;
+    let document = interpretation.parse(source)?;
+    let projection = record::projection(&document, interpretation)?;
     let recipe = record::Recipe {
+        interpretation,
         site: deployment.site_lineage().to_owned(),
         binding,
         source: ContentDigest::sha256(source),

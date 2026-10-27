@@ -1,0 +1,74 @@
+{
+  "legacy_analytics": {
+    "identity": "9fe0e220b7cd98d0e3550b8773b67ddcc40c3ea4ce36f599fd27bad448b4e0b6",
+    "publication_root": "be036ca5f079efcc8366899e593c1a9ce022580622356f1e1665397f3e3de39a",
+    "source": "546235d441a940aebf49d171832017a544170d055e84dbf648c43af63b13adc7",
+    "projection": "72cbcc587675d80c11226e0b01c337114f9c9a2d84b973e0592002f868c5a4cb",
+    "site": "site:onvif-metadata-test",
+    "sensor": "sensor:front",
+    "device_generation": "82b9756379379441e12891b7ce1cadb39ab57ce1c4f6ba56d5b426264484ce6a",
+    "profile_generation": "7c686856e66b112e51a86f87f8c1c45a1c2f1d75fec175e1e524c1f3df155781",
+    "profile_token": "main",
+    "receive_start_ns": 100,
+    "receive_end_ns": 110,
+    "bytes": {
+      "source.xml": 402,
+      "projection.bin": 172,
+      "recipe.bin": 342,
+      "manifest.bin": 225
+    },
+    "expected_v1": {
+      "format": "metadata_stream",
+      "notifications": 0,
+      "unsupported_sections": 1
+    }
+  },
+  "legacy_opaque_invalid_time": {
+    "identity": "abdaa3a034b8dc78924d73e459dc297e135f5db8bfe3dd4895a8d1c46c61b086",
+    "publication_root": "7afd2bd1ffec2d2f74a0990fe651b96635e011552495e816625396727da6fdbe",
+    "source": "cae17b1fd0cab60c8dca431559bcf0e40a3f050fd295039b015ee5764de34523",
+    "projection": "72cbcc587675d80c11226e0b01c337114f9c9a2d84b973e0592002f868c5a4cb",
+    "site": "site:onvif-metadata-test",
+    "sensor": "sensor:front",
+    "device_generation": "82b9756379379441e12891b7ce1cadb39ab57ce1c4f6ba56d5b426264484ce6a",
+    "profile_generation": "7c686856e66b112e51a86f87f8c1c45a1c2f1d75fec175e1e524c1f3df155781",
+    "profile_token": "main",
+    "receive_start_ns": 100,
+    "receive_end_ns": 110,
+    "bytes": {
+      "source.xml": 405,
+      "projection.bin": 172,
+      "recipe.bin": 342,
+      "manifest.bin": 225
+    },
+    "expected_v1": {
+      "format": "metadata_stream",
+      "notifications": 0,
+      "unsupported_sections": 1
+    }
+  },
+  "legacy_supported_analytics": {
+    "identity": "ec73678b94d180d3c84dad93179d3f8d83307b6981dc7def602bb7cf6aecac03",
+    "publication_root": "5b11a9108d25d5a995d0200ddc483dac8a72ed6ba71ee46dbedef8d7c9013305",
+    "source": "c9ed70601060d2248d4e0b09f9dfb13a440e1fa41fddaf1f6493cd3d3e104f83",
+    "projection": "72cbcc587675d80c11226e0b01c337114f9c9a2d84b973e0592002f868c5a4cb",
+    "site": "site:onvif-metadata-test",
+    "sensor": "sensor:front",
+    "device_generation": "82b9756379379441e12891b7ce1cadb39ab57ce1c4f6ba56d5b426264484ce6a",
+    "profile_generation": "7c686856e66b112e51a86f87f8c1c45a1c2f1d75fec175e1e524c1f3df155781",
+    "profile_token": "main",
+    "receive_start_ns": 100,
+    "receive_end_ns": 110,
+    "bytes": {
+      "source.xml": 428,
+      "projection.bin": 172,
+      "recipe.bin": 342,
+      "manifest.bin": 225
+    },
+    "expected_v1": {
+      "format": "metadata_stream",
+      "notifications": 0,
+      "unsupported_sections": 1
+    }
+  }
+}

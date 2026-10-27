@@ -1179,3 +1179,33 @@ No task should be closed solely because a neighboring type, schema, shared helpe
 - Repository integrity manifests must be regenerated whenever tracked source or documentation changes; a stale manifest is a repository-policy failure, not an ignorable cosmetic difference.
 - Hosted workflow results are supplementary and may be queued or cancelled by concurrency. They are not substitutes for local retained receipts.
 - The large bead graph encodes complete program acceptance. This document summarizes implementation state and does not override bead dependencies, registries, schemas, ADRs, or qualification gates.
+
+## Retained ONVIF analytics v2 — scoped implementation (2026-10-27)
+
+The FSS-046 local metadata-import subset now includes bounded VideoAnalytics frames,
+object occurrences, coarse shape, vendor class candidates and explicit optional
+transformations alongside events. `retain` and CLI imports default to
+`gen:fss1:onvif-vendor-analytics-v2`. Explicit `events-v1` imports support old retries;
+cold inspect/verify dispatch from the stored recipe and preserve frozen v1 bytes,
+roots and opaque analytics semantics. V2 uses separate recipe/projection/notification
+domains and source-bound frame identities. Unknown or mixed generation tuples refuse.
+
+CLI output withholds supported private values unless `--include-values yes` is
+requested. Biometric/identity extensions remain opaque, coordinates/classes remain
+uncalibrated, and no tracking, coverage, absence or effect authority is created.
+Successful durable import receipts survive late cancellation/deadline/finalization
+errors with `post_commit_error`/`finalization_error` and suppressed optional values.
+Stdout write/flush failures return nonzero and emit only the mandatory custody
+receipt on stderr; ordinary reads never fabricate a durable-import receipt.
+Independent v1 canonical fixtures and parser, custody, privacy and late-failure
+regressions accompany the implementation; see `docs/onvif-metadata.md` for scope and
+reproducible test commands.
+
+On the pinned toolchain, direct exact-source suites passed: analytics 24/24,
+events 21/21, wire 32/32 and output-failure handling 5/5. Integrated Cargo test
+and check attempts were killed while compiling Asupersync. A narrower custody
+build compiled its real dependencies but exhausted disk before producing its
+runner; none of its 20 custody cases executed. Native custody/CLI execution and
+integrated compilation remain unverified. This is not full FSS-046 qualification. Live subscriptions,
+RTP metadata ingestion, physical-device/Profile M interoperability, calibrated
+interpretation and aggregate release evidence remain outside this slice.

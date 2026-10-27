@@ -1,11 +1,11 @@
 #![forbid(unsafe_code)]
-//! Local, source-retained ONVIF vendor-event imports and independent cold verification.
+//! Local, source-retained ONVIF vendor events/analytics and independent cold verification.
 
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
 use std::fmt::Write as _;
 use std::fs::{self, File};
-use std::io::{Read, Write as _};
+use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
 
@@ -14,10 +14,11 @@ use fss_core::{
     RootAuthoritySpec, SensorId, TimestampNs,
 };
 use fss_reference::onvif::metadata::{
-    MAX_SOURCE_BYTES, PARSER_GENERATION, RetainedMetadata, SourceBinding, retain,
+    Interpretation, MAX_SOURCE_BYTES, RetainedMetadata, SourceBinding, retain_with_interpretation,
 };
 use fss_reference::onvif::wire::{
-    EventDocumentFormat, EventItems, PropertyOperation, parse_event_document,
+    AnalyticsClassFormat, AnalyticsFrame, AnalyticsTransformation, AnalyticsVector,
+    EventDocumentFormat, EventItems, PropertyOperation,
 };
 use fss_reference::{ReferenceDeployment, ReplayCx};
 
@@ -31,13 +32,17 @@ const HELP: &str = "fss-onvif-metadata <import|inspect|verify> [options]
           --profile-generation sha256:HEX --profile TOKEN
           --received-start-ns N --received-end-ns N
           [--source-sha256 sha256:HEX]
+          [--interpretation analytics-v2|events-v1]
   inspect/verify: --import-id sha256:HEX [--expected-root sha256:HEX]
 
 Imports one complete ONVIF PullMessages SOAP response or MetadataStream XML document.
 The source file is bounded to 256 KiB and retained exactly with immutable owner pins.
 Receive times use the operator's declared clock; camera UtcTime remains an unverified claim.
 inspect and verify both reopen, hash and reparse only retained bytes, without the input file.
-SimpleItem values are withheld by default. --include-values yes explicitly reveals private
+New imports use analytics-v2; events-v1 supports exact retries of older imports.
+Cold reads always use the retained generation and never reinterpret an existing import.
+SimpleItem values, object IDs, classes and geometry are withheld by default.
+--include-values yes explicitly reveals private
 vendor values to this local command's stdout; it enables no sensitive analysis or effects.
 Notification order, duplicates, initialization and deletion operations are preserved.
 No live subscription, camera authentication, coverage, physical absence or control is claimed.
@@ -48,11 +53,13 @@ const INPUT_ERROR: &str = "ERR-ONVIF-METADATA-INPUT-001";
 const LIMIT_ERROR: &str = "ERR-ONVIF-METADATA-LIMIT-001";
 const CUSTODY_ERROR: &str = "ERR-ONVIF-METADATA-CUSTODY-001";
 const REPORT_LIMIT: usize = 2 * 1024 * 1024;
+const COMMITTED_GUIDANCE: &str = "durable_publication=true\nsafe_next=verify_exact_import\n";
 
 enum Action {
     Import {
         input: PathBuf,
         binding: SourceBinding,
+        interpretation: Interpretation,
         expected_source: Option<ContentDigest>,
     },
     Inspect {
@@ -131,6 +138,7 @@ fn parse(args: &[OsString]) -> Result<Option<Options>, &'static str> {
                     | "--received-start-ns"
                     | "--received-end-ns"
                     | "--source-sha256"
+                    | "--interpretation"
             )
         } else {
             matches!(key, "--import-id" | "--expected-root")
@@ -185,9 +193,16 @@ fn parse(args: &[OsString]) -> Result<Option<Options>, &'static str> {
             .map_err(|_| ARGUMENT_ERROR)?,
         };
         binding.validate().map_err(|_| ARGUMENT_ERROR)?;
+        let interpretation = match values.get("--interpretation").map(OsString::as_os_str) {
+            None => Interpretation::AnalyticsV2,
+            Some(value) if value == OsStr::new("analytics-v2") => Interpretation::AnalyticsV2,
+            Some(value) if value == OsStr::new("events-v1") => Interpretation::EventsV1,
+            _ => return Err(ARGUMENT_ERROR),
+        };
         Action::Import {
             input: PathBuf::from(values.get("--input").ok_or(ARGUMENT_ERROR)?),
             binding,
+            interpretation,
             expected_source: optional_digest(&values, "--source-sha256")?,
         }
     } else {
@@ -237,7 +252,7 @@ fn read_input(path: &Path, scope: &runtime::Scope<'_, '_>) -> Result<Vec<u8>, &'
     }
     Ok(bytes)
 }
-fn run(options: Options) -> Result<String, &'static str> {
+fn run(options: Options) -> Result<CommandOutput, &'static str> {
     let request = runtime::Request {
         approval: options.approval,
         principal: options.principal.clone(),
@@ -254,6 +269,7 @@ fn run(options: Options) -> Result<String, &'static str> {
         let input = if let Action::Import {
             input,
             expected_source,
+            interpretation,
             ..
         } = &options.action
         {
@@ -262,7 +278,9 @@ fn run(options: Options) -> Result<String, &'static str> {
                 return Err(CUSTODY_ERROR);
             }
             // Fail malformed input before creating or opening any destination.
-            parse_event_document(&bytes).map_err(|_| "ERR-ONVIF-METADATA-WIRE-001")?;
+            interpretation
+                .parse(&bytes)
+                .map_err(|_| "ERR-ONVIF-METADATA-WIRE-001")?;
             Some(bytes)
         } else {
             None
@@ -313,11 +331,21 @@ fn run(options: Options) -> Result<String, &'static str> {
             let mut deployment = ReferenceDeployment::open(&options.root, &options.site, &cx)
                 .map_err(|_| "ERR-ONVIF-METADATA-PUBLICATION-001")?;
             match &options.action {
-                Action::Import { binding, .. } => {
+                Action::Import {
+                    binding,
+                    interpretation,
+                    ..
+                } => {
                     scope.output()?;
                     let source = input.as_deref().ok_or(INPUT_ERROR)?;
-                    retain(&mut deployment, binding.clone(), source, &cx)
-                        .map_err(|error| error.code())
+                    retain_with_interpretation(
+                        &mut deployment,
+                        binding.clone(),
+                        source,
+                        *interpretation,
+                        &cx,
+                    )
+                    .map_err(|error| error.code())
                 }
                 Action::Inspect {
                     identity,
@@ -340,20 +368,37 @@ fn run(options: Options) -> Result<String, &'static str> {
             // custody receipt fallback if optional detail exceeds its bound.
             work(scope).map(runtime::Committed::new)
         })?;
-        Ok(committed_report(
-            &completed.value,
-            options.include_values,
-            completed.post_commit_error,
-            completed.finalization_error,
-        ))
+        let mut custody_receipt = custody_header(&completed.value);
+        custody_receipt.push_str(COMMITTED_GUIDANCE);
+        Ok(CommandOutput {
+            report: committed_report(
+                &completed.value,
+                options.include_values,
+                completed.post_commit_error,
+                completed.finalization_error,
+            ),
+            custody_receipt: Some(custody_receipt),
+        })
     } else {
         let retained = runtime::run(request, work)?;
         let operation = match options.action {
             Action::Inspect { verify: true, .. } => "verify",
             _ => "inspect",
         };
-        report(&retained, operation, options.include_values)
+        report(&retained, operation, options.include_values).map(|report| CommandOutput {
+            report,
+            custody_receipt: None,
+        })
     }
+}
+
+fn custody_header(retained: &RetainedMetadata) -> String {
+    format!(
+        "operation=import\nimport_identity={}\npublication_root={}\nsource_sha256={}\n",
+        retained.identity(),
+        retained.publication_root(),
+        retained.source_digest()
+    )
 }
 
 fn committed_report(
@@ -362,14 +407,7 @@ fn committed_report(
     post_commit_error: Option<&'static str>,
     finalization_error: Option<&'static str>,
 ) -> String {
-    let minimal = || {
-        format!(
-            "operation=import\nimport_identity={}\npublication_root={}\nsource_sha256={}\nvalues_disclosed=false\n",
-            retained.identity(),
-            retained.publication_root(),
-            retained.source_digest()
-        )
-    };
+    let minimal = || format!("{}values_disclosed=false\n", custody_header(retained));
     // A durable acknowledgment survives revocation; optional private values do not.
     let mut out = if post_commit_error.is_some() || finalization_error.is_some() {
         minimal()
@@ -379,7 +417,7 @@ fn committed_report(
             format!("{}report_error={error}\n", minimal())
         })
     };
-    out.push_str("durable_publication=true\nsafe_next=verify_exact_import\n");
+    out.push_str(COMMITTED_GUIDANCE);
     if let Some(error) = post_commit_error {
         out.push_str(&format!("post_commit_error={error}\n"));
     }
@@ -410,7 +448,11 @@ fn report(
         "authority_sequence={}",
         retained.authority_anchor().commit_sequence
     );
-    line!("parser_generation={PARSER_GENERATION}");
+    line!("parser_generation={}", retained.parser_generation());
+    line!(
+        "projection_schema={}",
+        retained.interpretation().projection_domain()
+    );
     line!("plane={}", retained.plane().as_str());
     line!("provenance={}", retained.provenance().as_str());
     line!("source_mode=owner_supplied_file");
@@ -420,6 +462,9 @@ fn report(
     line!("absence_claimed=false");
     line!("effects_authorized=false");
     line!("sensitive_features_enabled=false");
+    line!("coordinates_calibrated=false");
+    line!("classes_calibrated=false");
+    line!("identity_claimed=false");
     line!("values_disclosed={include_values}");
     line!("sensor={:?}", binding.sensor_id.as_str());
     line!("device_generation={}", binding.device_generation);
@@ -436,6 +481,19 @@ fn report(
     );
     line!("notification_count={}", document.notifications.len());
     line!("unsupported_sections={}", document.unsupported_sections);
+    line!(
+        "has_unsupported_content={}",
+        document.has_unsupported_content()
+    );
+    line!("analytics_frame_count={}", document.analytics_frames.len());
+    line!(
+        "analytics_object_count={}",
+        document
+            .analytics_frames
+            .iter()
+            .map(|frame| frame.objects.len())
+            .sum::<usize>()
+    );
     if let Some(time) = &document.current_time {
         line!("vendor_current_time={time:?}");
     }
@@ -485,11 +543,217 @@ fn report(
             return Err(LIMIT_ERROR);
         }
     }
+    for (index, frame) in document.analytics_frames.iter().enumerate() {
+        line!(
+            "analytics.{index}.digest={}",
+            retained
+                .analytics_frame_digest(index)
+                .map_err(|error| error.code())?
+        );
+        report_analytics(&mut out, index, frame, include_values)?;
+        if out.len() > REPORT_LIMIT {
+            return Err(LIMIT_ERROR);
+        }
+    }
     if out.len() > REPORT_LIMIT {
         return Err(LIMIT_ERROR);
     }
     Ok(out)
 }
+fn report_claim(
+    out: &mut String,
+    key: &str,
+    value: &str,
+    include_values: bool,
+) -> Result<(), &'static str> {
+    if include_values {
+        // Preserve lexical numbers and escape all vendor-controlled strings.
+        writeln!(out, "{key}={value:?}").map_err(|_| LIMIT_ERROR)
+    } else {
+        writeln!(out, "{key}=withheld").map_err(|_| LIMIT_ERROR)
+    }
+}
+
+fn report_vector(
+    out: &mut String,
+    key: &str,
+    value: Option<&AnalyticsVector>,
+    include_values: bool,
+) -> Result<(), &'static str> {
+    writeln!(out, "{key}.present={}", value.is_some()).map_err(|_| LIMIT_ERROR)?;
+    if let Some(value) = value {
+        report_claim(out, &format!("{key}.x"), value.x.as_str(), include_values)?;
+        report_claim(out, &format!("{key}.y"), value.y.as_str(), include_values)?;
+        writeln!(
+            out,
+            "{key}.unsupported_extensions={}",
+            value.unsupported_extensions
+        )
+        .map_err(|_| LIMIT_ERROR)?;
+    }
+    Ok(())
+}
+
+fn report_transformation(
+    out: &mut String,
+    key: &str,
+    value: Option<&AnalyticsTransformation>,
+    include_values: bool,
+) -> Result<(), &'static str> {
+    writeln!(out, "{key}.present={}", value.is_some()).map_err(|_| LIMIT_ERROR)?;
+    if let Some(value) = value {
+        report_vector(
+            out,
+            &format!("{key}.translate"),
+            value.translate.as_ref(),
+            include_values,
+        )?;
+        report_vector(
+            out,
+            &format!("{key}.scale"),
+            value.scale.as_ref(),
+            include_values,
+        )?;
+        writeln!(
+            out,
+            "{key}.unsupported_extensions={}",
+            value.unsupported_extensions
+        )
+        .map_err(|_| LIMIT_ERROR)?;
+    }
+    Ok(())
+}
+
+fn report_analytics(
+    out: &mut String,
+    index: usize,
+    frame: &AnalyticsFrame,
+    include_values: bool,
+) -> Result<(), &'static str> {
+    macro_rules! line {
+        ($($arg:tt)*) => { writeln!(out, $($arg)*).map_err(|_| LIMIT_ERROR)? };
+    }
+    let key = format!("analytics.{index}");
+    line!("{key}.vendor_utc_time={:?}", frame.utc_time);
+    line!("{key}.source.present={}", frame.source.is_some());
+    if let Some(source) = &frame.source {
+        report_claim(out, &format!("{key}.source.value"), source, include_values)?;
+    }
+    report_transformation(
+        out,
+        &format!("{key}.transformation"),
+        frame.transformation.as_ref(),
+        include_values,
+    )?;
+    line!("{key}.object_count={}", frame.objects.len());
+    line!(
+        "{key}.unsupported_extensions={}",
+        frame.unsupported_extensions
+    );
+    for (object_index, object) in frame.objects.iter().enumerate() {
+        let key = format!("{key}.object.{object_index}");
+        report_claim(
+            out,
+            &format!("{key}.object_id"),
+            &object.object_id,
+            include_values,
+        )?;
+        line!(
+            "{key}.unsupported_extensions={}",
+            object.unsupported_extensions
+        );
+        line!("{key}.appearance.present={}", object.appearance.is_some());
+        let Some(appearance) = &object.appearance else {
+            continue;
+        };
+        report_transformation(
+            out,
+            &format!("{key}.appearance.transformation"),
+            appearance.transformation.as_ref(),
+            include_values,
+        )?;
+        line!(
+            "{key}.appearance.unsupported_extensions={}",
+            appearance.unsupported_extensions
+        );
+        line!("{key}.shape.present={}", appearance.shape.is_some());
+        if let Some(shape) = &appearance.shape {
+            let bounds = &shape.bounding_box;
+            for (name, value) in [
+                ("left", &bounds.left),
+                ("top", &bounds.top),
+                ("right", &bounds.right),
+                ("bottom", &bounds.bottom),
+            ] {
+                report_claim(
+                    out,
+                    &format!("{key}.shape.bounding_box.{name}"),
+                    value.as_str(),
+                    include_values,
+                )?;
+            }
+            line!(
+                "{key}.shape.bounding_box.unsupported_extensions={}",
+                bounds.unsupported_extensions
+            );
+            report_vector(
+                out,
+                &format!("{key}.shape.center_of_gravity"),
+                Some(&shape.center_of_gravity),
+                include_values,
+            )?;
+            line!(
+                "{key}.shape.unsupported_extensions={}",
+                shape.unsupported_extensions
+            );
+        }
+        line!("{key}.class.present={}", appearance.class.is_some());
+        if let Some(class) = &appearance.class {
+            line!("{key}.class.candidate_count={}", class.candidates.len());
+            line!(
+                "{key}.class.unsupported_extensions={}",
+                class.unsupported_extensions
+            );
+            for (candidate_index, candidate) in class.candidates.iter().enumerate() {
+                let key = format!("{key}.class.{candidate_index}");
+                line!(
+                    "{key}.format={}",
+                    match candidate.format {
+                        AnalyticsClassFormat::LegacyCandidate => "legacy_candidate",
+                        AnalyticsClassFormat::Type => "type",
+                    }
+                );
+                report_claim(
+                    out,
+                    &format!("{key}.label"),
+                    &candidate.label,
+                    include_values,
+                )?;
+                line!(
+                    "{key}.likelihood.present={}",
+                    candidate.likelihood.is_some()
+                );
+                if let Some(likelihood) = &candidate.likelihood {
+                    report_claim(
+                        out,
+                        &format!("{key}.likelihood.value"),
+                        likelihood.as_str(),
+                        include_values,
+                    )?;
+                }
+                line!(
+                    "{key}.unsupported_extensions={}",
+                    candidate.unsupported_extensions
+                );
+            }
+        }
+        if out.len() > REPORT_LIMIT {
+            return Err(LIMIT_ERROR);
+        }
+    }
+    Ok(())
+}
+
 fn report_items(
     out: &mut String,
     index: usize,
@@ -535,6 +799,35 @@ fn report_items(
     }
     Ok(())
 }
+// Keep the durable acknowledgment separate from optional rendered values. Only
+// successful imports construct a receipt; output text never grants that status.
+struct CommandOutput {
+    report: String,
+    custody_receipt: Option<String>,
+}
+
+fn write_output(
+    output: &CommandOutput,
+    stdout: &mut impl std::io::Write,
+    stderr: &mut impl std::io::Write,
+) -> ExitCode {
+    if stdout
+        .write_all(output.report.as_bytes())
+        .and_then(|()| stdout.flush())
+        .is_ok()
+    {
+        return ExitCode::SUCCESS;
+    }
+    let _ = stderr.write_all(b"ERR-ONVIF-METADATA-OUTPUT-001\n");
+    if let Some(receipt) = &output.custody_receipt {
+        // This independent, bounded receipt contains hashes and retry guidance,
+        // never the optional report, even after a partially successful write.
+        let _ = stderr.write_all(receipt.as_bytes());
+    }
+    let _ = stderr.flush();
+    ExitCode::from(1)
+}
+
 fn main() -> ExitCode {
     let args: Vec<_> = std::env::args_os().skip(1).take(41).collect();
     let result = match parse(&args) {
@@ -546,13 +839,11 @@ fn main() -> ExitCode {
         Err(error) => Err(error),
     };
     match result {
-        Ok(report) => match std::io::stdout().lock().write_all(report.as_bytes()) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(_) => {
-                eprintln!("ERR-ONVIF-METADATA-OUTPUT-001");
-                ExitCode::from(1)
-            }
-        },
+        Ok(output) => write_output(
+            &output,
+            &mut std::io::stdout().lock(),
+            &mut std::io::stderr().lock(),
+        ),
         Err(error) => {
             eprintln!("{error}");
             ExitCode::from(if error == ARGUMENT_ERROR { 2 } else { 1 })
@@ -561,8 +852,150 @@ fn main() -> ExitCode {
 }
 
 #[cfg(test)]
+mod output_tests {
+    use super::{CommandOutput, write_output};
+    use std::io::{self, Write};
+    use std::process::ExitCode;
+
+    struct FailingWriter {
+        accepted: Vec<u8>,
+        remaining: usize,
+        fail_flush: bool,
+    }
+
+    impl Write for FailingWriter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            if self.remaining == 0 {
+                return Err(io::Error::new(io::ErrorKind::BrokenPipe, "closed output"));
+            }
+            let count = bytes.len().min(self.remaining);
+            self.accepted.extend_from_slice(&bytes[..count]);
+            self.remaining -= count;
+            Ok(count)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            if self.fail_flush {
+                Err(io::Error::other("flush failed"))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    fn imported_output() -> CommandOutput {
+        CommandOutput {
+            report: "operation=import\nprivate-vendor-canary=secret\n".into(),
+            custody_receipt: Some(format!(
+                "operation=import\nimport_identity=sha256:{}\npublication_root=sha256:{}\nsource_sha256=sha256:{}\ndurable_publication=true\nsafe_next=verify_exact_import\n",
+                "11".repeat(32),
+                "22".repeat(32),
+                "33".repeat(32),
+            )),
+        }
+    }
+
+    #[test]
+    fn failed_import_output_recovers_only_custody_receipt_on_stderr() {
+        let output = imported_output();
+        for remaining in [0, 5] {
+            let mut stdout = FailingWriter {
+                accepted: Vec::new(),
+                remaining,
+                fail_flush: false,
+            };
+            let mut stderr = Vec::new();
+            assert_eq!(
+                write_output(&output, &mut stdout, &mut stderr),
+                ExitCode::from(1)
+            );
+            let receipt = output.custody_receipt.as_deref().unwrap_or("");
+            assert_eq!(
+                stderr,
+                format!("ERR-ONVIF-METADATA-OUTPUT-001\n{receipt}").as_bytes()
+            );
+            assert!(!String::from_utf8_lossy(&stderr).contains("private-vendor-canary"));
+            assert_eq!(stdout.accepted, output.report.as_bytes()[..remaining]);
+        }
+    }
+
+    #[test]
+    fn failed_flush_also_preserves_import_receipt_and_failure_exit() {
+        let output = imported_output();
+        let mut stdout = FailingWriter {
+            accepted: Vec::new(),
+            remaining: usize::MAX,
+            fail_flush: true,
+        };
+        let mut stderr = Vec::new();
+        assert_eq!(
+            write_output(&output, &mut stdout, &mut stderr),
+            ExitCode::from(1)
+        );
+        assert_eq!(stdout.accepted, output.report.as_bytes());
+        let receipt = output.custody_receipt.as_deref().unwrap_or("");
+        assert_eq!(
+            stderr,
+            format!("ERR-ONVIF-METADATA-OUTPUT-001\n{receipt}").as_bytes()
+        );
+    }
+
+    #[test]
+    fn ordinary_output_failure_does_not_infer_a_receipt_from_report_text() {
+        let output = CommandOutput {
+            report: "operation=inspect\nimport_identity=sha256:not-a-receipt\n".into(),
+            custody_receipt: None,
+        };
+        let mut stdout = FailingWriter {
+            accepted: Vec::new(),
+            remaining: 0,
+            fail_flush: false,
+        };
+        let mut stderr = Vec::new();
+        assert_eq!(
+            write_output(&output, &mut stdout, &mut stderr),
+            ExitCode::from(1)
+        );
+        assert_eq!(stderr, b"ERR-ONVIF-METADATA-OUTPUT-001\n");
+    }
+
+    #[test]
+    fn successful_output_does_not_duplicate_receipt_on_stderr() {
+        let output = imported_output();
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        assert_eq!(
+            write_output(&output, &mut stdout, &mut stderr),
+            ExitCode::SUCCESS
+        );
+        assert_eq!(stdout, output.report.as_bytes());
+        assert!(stderr.is_empty());
+    }
+
+    #[test]
+    fn unavailable_stderr_still_returns_failure_without_panicking() {
+        let output = imported_output();
+        let mut stdout = FailingWriter {
+            accepted: Vec::new(),
+            remaining: 0,
+            fail_flush: false,
+        };
+        let mut stderr = FailingWriter {
+            accepted: Vec::new(),
+            remaining: 0,
+            fail_flush: false,
+        };
+        assert_eq!(
+            write_output(&output, &mut stdout, &mut stderr),
+            ExitCode::from(1)
+        );
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+    use fss_reference::onvif::metadata::retain;
 
     type Test = Result<(), Box<dyn std::error::Error>>;
 
@@ -622,13 +1055,145 @@ mod tests {
             .ok_or("missing report field")
     }
 
+    fn analytics_source() -> &'static str {
+        r#"<t:MetadataStream xmlns:t="http://www.onvif.org/ver10/schema"><t:VideoAnalytics><t:Frame UtcTime="2026-10-27T12:34:56Z" Source="private-module-canary"><t:Transformation><t:Translate x="-0.37591" y="0.75"/><t:Scale x="0.25" y="-0.5"/></t:Transformation><t:Object ObjectId="732103"><t:Appearance><t:Shape><t:BoundingBox left="-0.12591" top="0.87391" right="0.5" bottom="-0.2"/><t:CenterOfGravity x="0.1" y="0.2"/></t:Shape><t:Class><t:Type Likelihood="0.75">private&quot;class\canary</t:Type><t:Type>Unknown</t:Type></t:Class><t:Face><t:Identity>opaque-biometric-canary</t:Identity></t:Face></t:Appearance></t:Object></t:Frame></t:VideoAnalytics></t:MetadataStream>"#
+    }
+
+    #[test]
+    fn analytics_disclosure_is_explicit_escaped_and_retains_uncertainty() -> Test {
+        let directory = Directory::new("analytics")?;
+        let input = directory.0.join("source.xml");
+        let root = directory.0.join("deployment");
+        fs::write(&input, analytics_source())?;
+        let mut import_args = args(&root, &input);
+        let hidden = run(parse(&import_args)?.ok_or("options")?)?.report;
+        assert_eq!(
+            field(&hidden, "parser_generation=")?,
+            Interpretation::AnalyticsV2.parser_generation()
+        );
+        assert_eq!(field(&hidden, "analytics_frame_count=")?, "1");
+        assert_eq!(field(&hidden, "analytics_object_count=")?, "1");
+        assert_eq!(
+            field(&hidden, "analytics.0.object.0.object_id=")?,
+            "withheld"
+        );
+        assert_eq!(
+            field(&hidden, "analytics.0.object.0.class.1.likelihood.present=")?,
+            "false"
+        );
+        assert!(!hidden.contains("private-module-canary"));
+        assert!(!hidden.contains("-0.37591"));
+        assert!(!hidden.contains("-0.12591"));
+        assert!(!hidden.contains("private\\\"class"));
+        assert_eq!(field(&hidden, "has_unsupported_content=")?, "true");
+        import_args.extend(["--include-values".into(), "yes".into()]);
+        let disclosed = run(parse(&import_args)?.ok_or("disclosure options")?)?.report;
+        assert_eq!(
+            field(&disclosed, "import_identity=")?,
+            field(&hidden, "import_identity=")?
+        );
+        assert_eq!(
+            field(&disclosed, "authority_sequence=")?,
+            field(&hidden, "authority_sequence=")?
+        );
+        assert_eq!(
+            field(&disclosed, "analytics.0.object.0.object_id=")?,
+            "\"732103\""
+        );
+        assert!(disclosed.contains(&format!("label={:?}", "private\"class\\canary")));
+        assert!(disclosed.contains("source.value=\"private-module-canary\""));
+        assert!(!disclosed.contains("opaque-biometric-canary"));
+        for flag in [
+            "coordinates_calibrated",
+            "classes_calibrated",
+            "identity_claimed",
+            "camera_authenticated",
+            "coverage_claimed",
+            "absence_claimed",
+            "effects_authorized",
+            "sensitive_features_enabled",
+        ] {
+            assert_eq!(field(&disclosed, &format!("{flag}="))?, "false");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_import_and_cold_verify_use_the_retained_parser_generation() -> Test {
+        let directory = Directory::new("legacy")?;
+        let input = directory.0.join("source.xml");
+        let root = directory.0.join("deployment");
+        fs::write(
+            &input,
+            analytics_source().replace("2026-10-27T12:34:56Z", "opaque-old-time"),
+        )?;
+        let mut import_args = args(&root, &input);
+        assert_eq!(
+            run(parse(&import_args)?.ok_or("options")?).err(),
+            Some("ERR-ONVIF-METADATA-WIRE-001")
+        );
+        assert!(!root.exists());
+        import_args.extend(["--interpretation".into(), "events-v1".into()]);
+        let imported = run(parse(&import_args)?.ok_or("legacy options")?)?.report;
+        assert_eq!(field(&imported, "analytics_frame_count=")?, "0");
+        assert_eq!(field(&imported, "unsupported_sections=")?, "1");
+        assert_eq!(
+            field(&imported, "parser_generation=")?,
+            Interpretation::EventsV1.parser_generation()
+        );
+        fs::remove_file(&input)?;
+        let verify = vec![
+            "verify".into(),
+            "--root".into(),
+            root.into(),
+            "--site".into(),
+            "site:metadata-cli-test".into(),
+            "--import-id".into(),
+            field(&imported, "import_identity=")?.into(),
+        ];
+        let verified = run(parse(&verify)?.ok_or("verify options")?)?.report;
+        assert_eq!(
+            field(&verified, "parser_generation=")?,
+            Interpretation::EventsV1.parser_generation()
+        );
+        assert_eq!(
+            field(&verified, "projection_sha256=")?,
+            field(&imported, "projection_sha256=")?
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn interpretation_selection_is_strict_and_disallowed_for_cold_reads() -> Test {
+        let directory = Directory::new("args")?;
+        let mut import_args = args(
+            &directory.0.join("deployment"),
+            &directory.0.join("source.xml"),
+        );
+        import_args.extend(["--interpretation".into(), "auto".into()]);
+        assert!(parse(&import_args).is_err());
+        let inspect_args = vec![
+            "inspect".into(),
+            "--root".into(),
+            directory.0.clone().into(),
+            "--site".into(),
+            "site:metadata-cli-test".into(),
+            "--import-id".into(),
+            ContentDigest::sha256(b"fake").to_text().into(),
+            "--interpretation".into(),
+            "events-v1".into(),
+        ];
+        assert!(parse(&inspect_args).is_err());
+        Ok(())
+    }
+
     #[test]
     fn native_command_round_trip_reopens_without_input() -> Test {
         let directory = Directory::new("roundtrip")?;
         let input = directory.0.join("source.xml");
         let root = directory.0.join("deployment");
         fs::write(&input, br#"<t:MetadataStream xmlns:t="http://www.onvif.org/ver10/schema"><t:Event/></t:MetadataStream>"#)?;
-        let imported = run(parse(&args(&root, &input))?.ok_or("options")?)?;
+        let imported = run(parse(&args(&root, &input))?.ok_or("options")?)?.report;
         assert!(imported.contains("durable_publication=true\n"));
         assert!(imported.contains("coverage_claimed=false\n"));
         let identity = field(&imported, "import_identity=")?.to_owned();
@@ -645,7 +1210,7 @@ mod tests {
             "--expected-root".into(),
             publication_root.clone().into(),
         ];
-        let verified = run(parse(&verify)?.ok_or("verify options")?)?;
+        let verified = run(parse(&verify)?.ok_or("verify options")?)?.report;
         assert_eq!(field(&verified, "import_identity=")?, identity);
         assert_eq!(field(&verified, "publication_root=")?, publication_root);
         assert_eq!(field(&verified, "operation=")?, "verify");

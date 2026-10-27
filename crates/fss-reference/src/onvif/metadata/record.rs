@@ -7,15 +7,18 @@ use fss_core::{
 };
 
 use super::{
-    MAX_PROJECTION_BYTES, MAX_RECIPE_BYTES, MAX_SOURCE_BYTES, MetadataError, PARSER_GENERATION,
-    PROJECTION_DOMAIN, RECIPE_DOMAIN, SourceBinding,
+    Interpretation, MAX_PROJECTION_BYTES, MAX_RECIPE_BYTES, MAX_SOURCE_BYTES, MetadataError,
+    RECIPE_DOMAIN, RECIPE_DOMAIN_V1, SourceBinding,
 };
 use crate::onvif::wire::{
-    EventDocument, EventDocumentFormat, EventItems, EventNotification, PropertyOperation,
+    AnalyticsAppearance, AnalyticsClassFormat, AnalyticsFrame, AnalyticsTransformation,
+    AnalyticsVector, EventDocument, EventDocumentFormat, EventItems, EventNotification,
+    PropertyOperation,
 };
 
 #[derive(Clone, Eq, PartialEq)]
 pub(super) struct Recipe {
+    pub(super) interpretation: Interpretation,
     pub(super) site: String,
     pub(super) binding: SourceBinding,
     pub(super) source: ContentDigest,
@@ -41,8 +44,8 @@ pub(super) fn encode(recipe: &Recipe) -> Result<Vec<u8>, MetadataError> {
         return Err(MetadataError::InvalidBinding);
     }
     let mut e = CanonicalEncoder::new();
-    e.text(RECIPE_DOMAIN);
-    e.text(PARSER_GENERATION);
+    e.text(recipe.interpretation.recipe_domain());
+    e.text(recipe.interpretation.parser_generation());
     e.text("owner_supplied_file");
     e.text(&recipe.site);
     source_binding(&mut e, &recipe.binding);
@@ -63,10 +66,12 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Recipe, MetadataError> {
         return Err(MetadataError::Limit);
     }
     let mut d = CanonicalDecoder::new(bytes);
-    if d.text()? != RECIPE_DOMAIN
-        || d.text()? != PARSER_GENERATION
-        || d.text()? != "owner_supplied_file"
-    {
+    let interpretation = match d.text()? {
+        RECIPE_DOMAIN_V1 => Interpretation::EventsV1,
+        RECIPE_DOMAIN => Interpretation::AnalyticsV2,
+        _ => return Err(MetadataError::Custody),
+    };
+    if d.text()? != interpretation.parser_generation() || d.text()? != "owner_supplied_file" {
         return Err(MetadataError::Custody);
     }
     let site = d.text()?.to_owned();
@@ -80,6 +85,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Recipe, MetadataError> {
     let projection = d.digest()?;
     d.ensure_finished()?;
     let recipe = Recipe {
+        interpretation,
         site,
         binding: SourceBinding {
             sensor_id,
@@ -144,10 +150,13 @@ fn notification(e: &mut CanonicalEncoder, value: &EventNotification) {
     e.u64(value.unsupported_extensions as u64);
 }
 
-pub(super) fn projection(document: &EventDocument) -> Result<Vec<u8>, MetadataError> {
+pub(super) fn projection(
+    document: &EventDocument,
+    interpretation: Interpretation,
+) -> Result<Vec<u8>, MetadataError> {
     let mut e = CanonicalEncoder::new();
-    e.text(PROJECTION_DOMAIN);
-    e.text(PARSER_GENERATION);
+    e.text(interpretation.projection_domain());
+    e.text(interpretation.parser_generation());
     e.text("cognition");
     e.text("vendor_claimed");
     e.text("vendor_clock_unverified");
@@ -162,6 +171,14 @@ pub(super) fn projection(document: &EventDocument) -> Result<Vec<u8>, MetadataEr
         notification(&mut e, value);
     }
     e.u64(document.unsupported_sections as u64);
+    if interpretation == Interpretation::AnalyticsV2 {
+        e.u64(document.analytics_frames.len() as u64);
+        for frame in &document.analytics_frames {
+            analytics_frame(&mut e, frame);
+        }
+    } else if !document.analytics_frames.is_empty() {
+        return Err(MetadataError::Custody);
+    }
     let bytes = e.finish_checked()?;
     if bytes.len() > MAX_PROJECTION_BYTES {
         return Err(MetadataError::Limit);
@@ -176,8 +193,11 @@ pub(super) fn notification_identity(
     document_has_opaque_content: bool,
 ) -> Result<ContentDigest, MetadataError> {
     let mut e = CanonicalEncoder::new();
-    e.text("fss.onvif_vendor_notification_identity.v1");
-    e.text(PARSER_GENERATION);
+    e.text(match recipe.interpretation {
+        Interpretation::EventsV1 => "fss.onvif_vendor_notification_identity.v1",
+        Interpretation::AnalyticsV2 => "fss.onvif_vendor_notification_identity.v2",
+    });
+    e.text(recipe.interpretation.parser_generation());
     e.text(&recipe.site);
     source_binding(&mut e, &recipe.binding);
     notification(&mut e, value);
@@ -196,5 +216,89 @@ pub(super) fn notification_identity(
         e.digest(recipe.source);
         e.u64(index as u64);
     }
+    Ok(ContentDigest::sha256(&e.finish_checked()?))
+}
+
+fn vector(e: &mut CanonicalEncoder, value: &AnalyticsVector) {
+    e.text(value.x.as_str());
+    e.text(value.y.as_str());
+    e.u64(value.unsupported_extensions as u64);
+}
+
+fn transformation(e: &mut CanonicalEncoder, value: Option<&AnalyticsTransformation>) {
+    e.bool(value.is_some());
+    if let Some(value) = value {
+        for component in [value.translate.as_ref(), value.scale.as_ref()] {
+            e.bool(component.is_some());
+            if let Some(component) = component {
+                vector(e, component);
+            }
+        }
+        e.u64(value.unsupported_extensions as u64);
+    }
+}
+
+fn appearance(e: &mut CanonicalEncoder, value: Option<&AnalyticsAppearance>) {
+    e.bool(value.is_some());
+    if let Some(value) = value {
+        transformation(e, value.transformation.as_ref());
+        e.bool(value.shape.is_some());
+        if let Some(shape) = &value.shape {
+            let bounds = &shape.bounding_box;
+            e.text(bounds.left.as_str());
+            e.text(bounds.top.as_str());
+            e.text(bounds.right.as_str());
+            e.text(bounds.bottom.as_str());
+            e.u64(bounds.unsupported_extensions as u64);
+            vector(e, &shape.center_of_gravity);
+            e.u64(shape.unsupported_extensions as u64);
+        }
+        e.bool(value.class.is_some());
+        if let Some(class) = &value.class {
+            e.u64(class.candidates.len() as u64);
+            for candidate in &class.candidates {
+                e.u8(match candidate.format {
+                    AnalyticsClassFormat::LegacyCandidate => 1,
+                    AnalyticsClassFormat::Type => 2,
+                });
+                e.text(&candidate.label);
+                optional_text(e, candidate.likelihood.as_ref().map(|value| value.as_str()));
+                e.u64(candidate.unsupported_extensions as u64);
+            }
+            e.u64(class.unsupported_extensions as u64);
+        }
+        e.u64(value.unsupported_extensions as u64);
+    }
+}
+
+fn analytics_frame(e: &mut CanonicalEncoder, frame: &AnalyticsFrame) {
+    e.text(&frame.utc_time);
+    optional_text(e, frame.source.as_deref());
+    transformation(e, frame.transformation.as_ref());
+    e.u64(frame.objects.len() as u64);
+    for object in &frame.objects {
+        e.text(&object.object_id);
+        appearance(e, object.appearance.as_ref());
+        e.u64(object.unsupported_extensions as u64);
+    }
+    e.u64(frame.unsupported_extensions as u64);
+}
+
+pub(super) fn analytics_frame_identity(
+    recipe: &Recipe,
+    frame: &AnalyticsFrame,
+    index: usize,
+) -> Result<ContentDigest, MetadataError> {
+    if recipe.interpretation != Interpretation::AnalyticsV2 {
+        return Err(MetadataError::Custody);
+    }
+    let mut e = CanonicalEncoder::new();
+    e.text("fss.onvif_vendor_analytics_frame_identity.v2");
+    e.text(recipe.interpretation.parser_generation());
+    e.text(&recipe.site);
+    source_binding(&mut e, &recipe.binding);
+    e.digest(recipe.source);
+    e.u64(index as u64);
+    analytics_frame(&mut e, frame);
     Ok(ContentDigest::sha256(&e.finish_checked()?))
 }
