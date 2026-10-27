@@ -49,15 +49,21 @@ class RC:
         return r
 
     def direct(self, n):
+        # fixed-probability bits: `code` in the LOWER half of the range is bit 0.
+        # The xz reference (rc.direct_bits / RangeCoder) shifts range by 1, then
+        # `code -= range; if code < 0: code += range; bit = 0 else bit = 1` —
+        # negative means the value sits below the midpoint, i.e. bit 0. The old
+        # code emitted 1 there, inverting every direct bit and desyncing the
+        # distance decode at slots >= 14 (the "slot 40 vs 9" symptom).
         r = 0
         for _ in range(n):
             self.range >>= 1
             self.code -= self.range
             if self.code < 0:
                 self.code = (self.code + self.range) & 0xFFFFFFFF
-                r = (r << 1) | 1
-            else:
                 r <<= 1
+            else:
+                r = (r << 1) | 1
             self._norm()
         return r
 
@@ -128,15 +134,25 @@ class LZMA:
         nd = (slot >> 1) - 1
         dist = (2 | (slot & 1)) << nd
         if slot < 14:
+            # spec: BitTreeReverseDecode(PosDecoders + dist - posSlot, nd)
+            # — REVERSE bit order, prob table indexed at (dist - slot) + m
             m = 1
-            for _ in range(nd):
-                m = (m << 1) | rc.bit(self.pos_spec, m)
-            return dist + (m - (1 << nd))
+            sym = 0
+            base = dist - slot
+            for i in range(nd):
+                b = rc.bit(self.pos_spec, base + m)
+                m = (m << 1) | b
+                sym |= b << i
+            return dist + sym
         dist += rc.direct(nd - 4) << 4
+        # spec: AlignDecoder.ReverseDecode — REVERSE bit order
         m = 1
-        for _ in range(4):
-            m = (m << 1) | rc.bit(self.align, m)
-        return dist + (m - 16)
+        sym = 0
+        for i in range(4):
+            b = rc.bit(self.align, m)
+            m = (m << 1) | b
+            sym |= b << i
+        return dist + sym
 
     def decode(self, data, out_size, out):
         rc = RC(data)
@@ -202,22 +218,26 @@ def lzma2(data, out_size):
             continue
         if ctrl < 0x80:
             raise ValueError("bad control %#x" % ctrl)
+        # LZMA2 chunk header order is control | usize-1 (2B BE) | csize-1 (2B BE)
+        # | props (1B) — props comes AFTER the compressed size (doc tapo.md C3
+        # correction); reading it earlier shifts every later field.
         usize = ((ctrl & 0x1F) << 16) + int.from_bytes(data[i:i + 2], "big") + 1
+        i += 2
+        csize = int.from_bytes(data[i:i + 2], "big") + 1
         i += 2
         props = data[i]
         i += 1
         lc = props % 9
         lp = (props // 9) % 5
         pb = props // 45
-        csize = int.from_bytes(data[i:i + 2], "big") + 1
-        i += 2
         if dec is None:
             dec = LZMA(lc, lp, pb, 1 << 24)
         if ctrl >= 0xC0:
             dec.state = 0
             dec.rep = [0, 0, 0, 0]
-        chunk = dec.decode(data[i:i + csize], usize, out)
-        out += chunk
+        # dec.decode appends into `out` and returns the appended slice; do NOT
+        # `out +=` that return again — every chunk was being doubled.
+        dec.decode(data[i:i + csize], usize, out)
         i += csize
     return bytes(out)
 
