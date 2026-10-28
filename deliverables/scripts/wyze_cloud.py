@@ -24,6 +24,18 @@ PHONE = "d39515e3-5b94-4b29-b63f-1b3456cc270a"
 IOT = ("aws-iot.wyzecam.com", 8883)
 IOT_SNI = "a24rq1e5m4mtei.iot.us-west-2.amazonaws.com"  # the wildcard cert needs the CNAME target
 IOT_DIR = os.path.expanduser("~/.config/fss-lab/wyze_iot")
+# The repo copy is authoritative: ~/.config is not versioned and vanished once, which cost an hour
+# of registration loops and silent upstream failures (ota-path.md §18, emudhra-ca.md).
+REPO_IOT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "certs", "iot")
+
+
+def store(mac: str) -> str:
+    """Directory holding this device's cert.pem/privkey.pem/rootCA.crt, repo copy first."""
+    for base in (REPO_IOT_DIR, IOT_DIR):
+        d = os.path.join(base, mac.upper())
+        if all(os.path.exists(os.path.join(d, f)) for f in ("cert.pem", "privkey.pem", "rootCA.crt")):
+            return d
+    sys.exit(f"no complete device cert set for {mac.upper()} in {REPO_IOT_DIR} or {IOT_DIR}")
 
 
 def token() -> str:
@@ -65,7 +77,7 @@ def cert(mac: str, enr: str) -> None:
 
 
 def _iot(thing: str, mac: str, connect_s: float = 12.0):
-    d = os.path.join(IOT_DIR, mac)
+    d = store(mac)
     ctx = ssl.create_default_context(cafile=os.path.join(d, "rootCA.crt"))
     ctx.load_cert_chain(os.path.join(d, "cert.pem"), os.path.join(d, "privkey.pem"))
     s = ctx.wrap_socket(socket.create_connection(IOT, timeout=10), server_hostname=IOT_SNI)
@@ -92,22 +104,30 @@ def _pkt(t: int, flags: int, payload: bytes) -> bytes:
     return bytes([(t << 4) | flags]) + out + payload
 
 
-def presence(thing: str, mac: str) -> None:
-    """A connect that outlives ~1 s means no camera client holds the id: the camera is absent."""
+def presence(thing: str, mac: str, window: float = 12.0) -> None:
+    """Is the camera holding the broker session?
+
+    The client id IS the thing name, so a second connect kicks the first: if the camera is
+    connected it reconnects within ~1 s and kicks us back, so our session dies fast. A session
+    that outlives ~1 s therefore means no camera client holds the id — the camera is ABSENT.
+    (The old code printed the verdict inverted: it said "present" exactly when we survived.)
+    """
+    t0 = time.time()
     s = _iot(thing, mac)
-    end, alive = time.time() + 12, 0.0
+    end, last_pong = t0 + window, None
     while time.time() < end:
         try:
             s.sendall(_pkt(12, 0, b"\xc0\x00"))
             if not s.recv(2):
                 break
-            alive = time.time()
-        except (socket.timeout, ssl.SSLError):
-            break
-        except OSError:
+            last_pong = time.time()
+        except (socket.timeout, ssl.SSLError, OSError):
             break
         time.sleep(1.2)
-    print("present" if alive and time.time() - alive > 1.0 else "ABSENT (camera not on broker)")
+    lived = (last_pong or time.time()) - t0
+    verdict = "ABSENT" if lived > 1.0 else "present"
+    print(f"{verdict} (session lived {lived:.1f}s; >1s = no camera client holds {thing})")
+    print(json.dumps({"verdict": verdict.lower(), "thing": thing, "session_s": round(lived, 2)}))
 
 
 SHADOW = os.environ.get("SHADOW", "wyze-service")
@@ -120,7 +140,7 @@ def push(thing: str, mac: str, url: str, md5: str) -> None:
     often dies unacked. Retrying the same packet until a PUBACK lands is what makes this
     reliable; only then is the connection dropped (a held id starves the camera).
     """
-    d = os.path.join(IOT_DIR, mac)
+    d = store(mac)
     ctx = ssl.create_default_context(cafile=os.path.join(d, "rootCA.crt"))
     ctx.load_cert_chain(os.path.join(d, "cert.pem"), os.path.join(d, "privkey.pem"))
     # both key sets: `pcUrl`/`pcMd5` are what iCamera's OTA parser reads, `url`/`md5` are what the
