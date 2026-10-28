@@ -17,6 +17,7 @@ IP=${1:?camera ip}
 USER=${2:?rtsp user}
 PASS=${3:?rtsp password}
 PICS=${4:-300}
+WAIT=${WAIT:-5}
 ROOT=${ROOT:-/tmp/fss-e2e-rtsp}
 SITE=${SITE:-e2e}
 BIN=${BIN:-$(cd "$(dirname "$0")/../../target/debug" && pwd)}
@@ -36,7 +37,7 @@ JOURNAL=sha256:$(digest fss-e2e-rtsp-journal)
 [ -x "$BIN/fss-capture-rtsp" ] || { echo "missing $BIN/fss-capture-rtsp (cargo build -p fss-cli)"; exit 1; }
 
 echo "== prove the account (presence + authenticated DESCRIBE)"
-"$HERE/tapo_post.py" "$IP" --rtsp-verify --rtsp-user "$USER" --rtsp-pass "$PASS" --wait 5
+"$HERE/tapo_post.py" "$IP" --rtsp-verify --rtsp-user "$USER" --rtsp-pass "$PASS" --wait "$WAIT"
 
 REALM=$("$HERE/tapo_post.py" "$IP" --rtsp-realm) || { echo "no Digest realm"; exit 1; }
 echo "  realm: $REALM"
@@ -124,4 +125,4 @@ for ID in $IMPORTS; do
 done
 
 echo "== orient"
-"$BIN/fss" session orient --root "$ROOT/deployment" --site "$SITE" --json 2>&1 | head -30
+"$BIN/fss" session orient --root "$ROOT/deployment" --json 2>&1 | head -30

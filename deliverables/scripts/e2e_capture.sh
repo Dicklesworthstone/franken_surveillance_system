@@ -45,4 +45,4 @@ echo "== motion watch"
 tail -3 /tmp/e2e-watch.log
 
 echo "== orient"
-"$BIN/fss" session orient --root "$ROOT" --site e2e --json 2>&1 | head -30
+"$BIN/fss" session orient --root "$ROOT" --json 2>&1 | head -30
