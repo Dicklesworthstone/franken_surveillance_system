@@ -11,8 +11,10 @@ use fss_core::{
 };
 use fss_publication::{LedgerCutPoint, SlotName};
 use fss_reference::onvif::control::{
-    CreateIntentBinding, MAX_CONTROL_RECORD_BYTES, RetainedCreateIntent, RetainedSubscription,
-    STAGE_CREATE_INTENT_PUBLISH, STAGE_CREATED_PUBLISH, prepare_create, retain_created,
+    CreateIntentBinding, MAX_CONTROL_RECORD_BYTES, RenewIntentBinding, RenewOutcomeBinding,
+    RetainedCreateIntent, RetainedRenewIntent, RetainedRenewal, RetainedSubscription,
+    STAGE_CREATE_INTENT_PUBLISH, STAGE_CREATED_PUBLISH, STAGE_RENEW_INTENT_PUBLISH, prepare_create,
+    prepare_renew, retain_created, retain_renewal,
 };
 use fss_reference::onvif::http::HttpRoute;
 use fss_reference::onvif::metadata::{MetadataError, SourceBinding};
@@ -110,6 +112,187 @@ fn intent_slot(identity: ContentDigest) -> Test<SlotName> {
         "onvif-create-intent-{}",
         &identity.to_text()[7..]
     ))?)
+}
+
+fn renewal_binding(created: &RetainedSubscription) -> Test<RenewIntentBinding> {
+    Ok(RenewIntentBinding {
+        route: created.binding().events.event_subscription(
+            created.subscription().endpoint(),
+            &created.binding().service_root,
+        )?,
+        message_id: "urn:fss:onvif:renew-1".into(),
+        started_ns: 2_000,
+        receive_time: TimestampNs(11_000),
+        lifetime_seconds: 60,
+        renewal_index: 0,
+    })
+}
+fn renewal_source(relates_to: &str) -> Vec<u8> {
+    format!(r#"<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:w="http://www.w3.org/2005/08/addressing" xmlns:n="http://docs.oasis-open.org/wsn/b-2"><s:Header><w:RelatesTo>{relates_to}</w:RelatesTo></s:Header><s:Body><n:RenewResponse><n:CurrentTime>2026-10-27T00:00:00Z</n:CurrentTime><n:TerminationTime>2026-10-27T00:00:30Z</n:TerminationTime></n:RenewResponse></s:Body></s:Envelope>"#).into_bytes()
+}
+fn renewal_outcome() -> RenewOutcomeBinding {
+    RenewOutcomeBinding {
+        completed_ns: Some(2_100),
+        client_authenticated: false,
+        http_status: 200,
+        soap_content_type: true,
+    }
+}
+
+#[test]
+fn renewal_intent_and_response_cold_verify_exact_parent_source_and_no_redispatch() -> Test {
+    let dir = Directory::new("renew-cold")?;
+    let cx = dir.cx()?;
+    let (intent_id, intent_root, outcome_id, outcome_root) = {
+        let mut deployment = ReferenceDeployment::open(&dir.0, SITE, &cx)?;
+        let create = prepare_create(&mut deployment, binding()?, &cx)?;
+        let created = retain_created(&mut deployment, &create, 1_100, false, &source(), &cx)?;
+        let binding = renewal_binding(&created)?;
+        let intent = prepare_renew(&mut deployment, &created, binding.clone(), &cx)?;
+        assert!(intent.newly_prepared());
+        let retry = prepare_renew(&mut deployment, &created, binding, &cx)?;
+        assert!(!retry.newly_prepared());
+        assert_eq!(retry.identity(), intent.identity());
+        let body = renewal_source(&intent.binding().message_id);
+        let renewed = retain_renewal(&mut deployment, &intent, renewal_outcome(), &body, &cx)?;
+        assert_eq!(
+            renewed.lease().ok_or("validated lease")?.lease_seconds(),
+            30
+        );
+        assert_eq!(renewed.source(), body);
+        assert_eq!(
+            renewed.receive_interval(),
+            CaptureInterval::new(TimestampNs(11_000), TimestampNs(11_100))?
+        );
+        let retry = retain_renewal(&mut deployment, &intent, renewal_outcome(), &body, &cx)?;
+        assert_eq!(retry.identity(), renewed.identity());
+        assert_eq!(deployment.ledger().batches().len(), 4);
+        (
+            intent.identity(),
+            intent.publication_root(),
+            renewed.identity(),
+            renewed.publication_root(),
+        )
+    };
+    let deployment = ReferenceDeployment::reopen(&dir.0, SITE, &cx)?;
+    let intent = RetainedRenewIntent::open(&deployment, intent_id, Some(intent_root), &cx)?;
+    assert!(!intent.newly_prepared());
+    let renewed = RetainedRenewal::open(&deployment, outcome_id, Some(outcome_root), &cx)?;
+    assert_eq!(renewed.intent().identity(), intent_id);
+    assert_eq!(renewed.intent().subscription().source(), source());
+    assert_eq!(
+        renewed.source(),
+        renewal_source(&intent.binding().message_id)
+    );
+    assert_eq!(renewed.lease().ok_or("cold lease")?.lease_seconds(), 30);
+    assert!(RetainedRenewal::open(&deployment, outcome_id, Some(intent_root), &cx).is_err());
+    Ok(())
+}
+
+#[test]
+fn rejected_and_clock_uncertain_renewal_bodies_remain_exact_but_never_grant_a_lease() -> Test {
+    let dir = Directory::new("renew-rejected")?;
+    let cx = dir.cx()?;
+    let mut deployment = ReferenceDeployment::open(&dir.0, SITE, &cx)?;
+    let create = prepare_create(&mut deployment, binding()?, &cx)?;
+    let created = retain_created(&mut deployment, &create, 1_100, false, &source(), &cx)?;
+    let intent = prepare_renew(&mut deployment, &created, renewal_binding(&created)?, &cx)?;
+    let valid = renewal_source(&intent.binding().message_id);
+    let cases = [
+        (b"private-malformed-renew-body".to_vec(), renewal_outcome()),
+        (Vec::new(), renewal_outcome()),
+        (renewal_source("urn:wrong:request"), renewal_outcome()),
+        (
+            valid.clone(),
+            RenewOutcomeBinding {
+                http_status: 500,
+                ..renewal_outcome()
+            },
+        ),
+        (
+            valid.clone(),
+            RenewOutcomeBinding {
+                soap_content_type: false,
+                ..renewal_outcome()
+            },
+        ),
+        (
+            valid,
+            RenewOutcomeBinding {
+                completed_ns: None,
+                ..renewal_outcome()
+            },
+        ),
+    ];
+    let mut receipts = Vec::new();
+    for (source, observation) in cases {
+        let retained = retain_renewal(&mut deployment, &intent, observation, &source, &cx)?;
+        assert!(retained.lease().is_none());
+        assert_eq!(retained.source(), source);
+        receipts.push((retained.identity(), retained.publication_root(), source));
+    }
+    drop(deployment);
+    let deployment = ReferenceDeployment::reopen(&dir.0, SITE, &cx)?;
+    for (identity, root, source) in receipts {
+        let retained = RetainedRenewal::open(&deployment, identity, Some(root), &cx)?;
+        assert!(retained.lease().is_none());
+        assert_eq!(retained.source(), source);
+    }
+    Ok(())
+}
+
+#[test]
+fn renewal_intent_publication_cut_cannot_regain_dispatch_permission_by_retry() -> Test {
+    let dir = Directory::new("renew-cut")?;
+    let cx = dir.cx()?;
+    let (created_id, created_root, request) = {
+        let mut deployment = ReferenceDeployment::open(&dir.0, SITE, &cx)?;
+        let create = prepare_create(&mut deployment, binding()?, &cx)?;
+        let created = retain_created(&mut deployment, &create, 1_100, false, &source(), &cx)?;
+        let request = renewal_binding(&created)?;
+        deployment.inject_ledger_crash_at(LedgerCutPoint::AfterRootDurable);
+        assert!(prepare_renew(&mut deployment, &created, request.clone(), &cx).is_err());
+        assert_eq!(deployment.ledger().batches().len(), 2);
+        (created.identity(), created.publication_root(), request)
+    };
+    let mut deployment = ReferenceDeployment::reopen(&dir.0, SITE, &cx)?;
+    let created = RetainedSubscription::open(&deployment, created_id, Some(created_root), &cx)?;
+    let reconciled = prepare_renew(&mut deployment, &created, request, &cx)?;
+    assert!(
+        !reconciled.newly_prepared(),
+        "finishing storage linkage must never dispatch an ambiguous intent"
+    );
+    assert_eq!(deployment.ledger().batches().len(), 3);
+    Ok(())
+}
+
+#[test]
+fn renewal_scope_and_cancellation_refuse_before_a_dispatchable_receipt() -> Test {
+    let dir = Directory::new("renew-scope")?;
+    let cx = dir.cx()?;
+    let mut deployment = ReferenceDeployment::open(&dir.0, SITE, &cx)?;
+    let create = prepare_create(&mut deployment, binding()?, &cx)?;
+    let created = retain_created(&mut deployment, &create, 1_100, false, &source(), &cx)?;
+    let mut wrong = renewal_binding(&created)?;
+    wrong.renewal_index = 4;
+    assert!(prepare_renew(&mut deployment, &created, wrong, &cx).is_err());
+    let mut wrong = renewal_binding(&created)?;
+    wrong.lifetime_seconds = 121;
+    assert!(prepare_renew(&mut deployment, &created, wrong, &cx).is_err());
+    let mut wrong = renewal_binding(&created)?;
+    wrong.message_id = created.binding().message_id.clone();
+    assert!(prepare_renew(&mut deployment, &created, wrong, &cx).is_err());
+    let mut wrong = renewal_binding(&created)?;
+    wrong.receive_time.0 += 1;
+    assert!(prepare_renew(&mut deployment, &created, wrong, &cx).is_err());
+    let mut wrong = renewal_binding(&created)?;
+    wrong.started_ns = created.binding().started_ns + 60_000_000_001;
+    wrong.receive_time.0 = created.binding().source.receive_interval.earliest.0 + 60_000_000_001;
+    assert!(prepare_renew(&mut deployment, &created, wrong, &cx).is_err());
+    cx.set_cancel_at_checkpoint(STAGE_RENEW_INTENT_PUBLISH);
+    assert!(prepare_renew(&mut deployment, &created, renewal_binding(&created)?, &cx).is_err());
+    assert_eq!(deployment.ledger().batches().len(), 2);
+    Ok(())
 }
 
 #[test]

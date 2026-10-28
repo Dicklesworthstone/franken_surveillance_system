@@ -253,6 +253,7 @@ fn config(peer: SocketAddr) -> PullPointConfig {
         deadline_ns: 7_000_000_000,
         max_steps: 10000,
         max_pulls: 2,
+        max_renewals: 0,
         pull_timeout_seconds: 1,
         message_limit: 16,
         lifetime_seconds: 120,
@@ -686,6 +687,16 @@ fn configuration_refuses_before_network_or_source_custody() {
     cfg.limits.body_bytes = 262144;
     cfg.max_steps = 1024;
     assert!(validate_config(&cfg).is_err());
+    cfg.max_steps = 10000;
+    cfg.max_renewals = 5;
+    assert!(validate_config(&cfg).is_err());
+    cfg.max_renewals = 1;
+    assert!(matches!(
+        capture(&cfg, &Context::new(peer), |_| panic!("no source"))
+            .unwrap_err()
+            .error,
+        PullPointError::Configuration
+    ));
 }
 
 #[test]
@@ -719,6 +730,9 @@ fn durable_control_callbacks_precede_create_dispatch_and_first_poll() {
         &cfg,
         &cx,
         |event| match event {
+            PullPointControl::RenewIntent { .. } | PullPointControl::Renewed { .. } => {
+                panic!("renewal disabled in this fixture")
+            }
             PullPointControl::CreateIntent {
                 events,
                 service_root,
@@ -793,6 +807,9 @@ fn failed_create_intent_custody_refuses_before_any_connection_or_dispatch() {
         &config(server.peer),
         &cx,
         |event| match event {
+            PullPointControl::RenewIntent { .. } | PullPointControl::Renewed { .. } => {
+                panic!("renewal disabled in this fixture")
+            }
             PullPointControl::CreateIntent { .. } => Err(MetadataError::Custody),
             PullPointControl::Created { .. } | PullPointControl::Unsubscribed { .. } => {
                 panic!("Create was never admitted")
@@ -824,6 +841,9 @@ fn failed_created_custody_prevents_poll_but_preserves_intent_and_attempts_cleanu
         &config(server.peer),
         &cx,
         |event| match event {
+            PullPointControl::RenewIntent { .. } | PullPointControl::Renewed { .. } => {
+                panic!("renewal disabled in this fixture")
+            }
             PullPointControl::CreateIntent { .. } => Ok(intent_receipt),
             PullPointControl::Created { .. } => Err(MetadataError::Custody),
             PullPointControl::Unsubscribed { source, .. } => Ok(receipt(source)),
@@ -864,6 +884,9 @@ fn zero_poll_lease_failure_retains_both_control_receipts_for_cold_recovery() {
         &config(server.peer),
         &Context::new(server.peer),
         |event| match event {
+            PullPointControl::RenewIntent { .. } | PullPointControl::Renewed { .. } => {
+                panic!("renewal disabled in this fixture")
+            }
             PullPointControl::CreateIntent { .. } => Ok(intent_receipt),
             PullPointControl::Created { source, .. }
             | PullPointControl::Unsubscribed { source, .. } => Ok(receipt(source)),
@@ -902,6 +925,9 @@ fn cancellation_after_control_receipt_preserves_every_acknowledged_handle() {
             &config(server.peer),
             &cx,
             |event| match event {
+                PullPointControl::RenewIntent { .. } | PullPointControl::Renewed { .. } => {
+                    panic!("renewal disabled in this fixture")
+                }
                 PullPointControl::CreateIntent { .. } => {
                     if !after_created {
                         cx.cancelled.store(true, Ordering::SeqCst);
@@ -944,10 +970,404 @@ fn cancellation_after_control_receipt_preserves_every_acknowledged_handle() {
 
 fn acknowledged_control(event: PullPointControl<'_>) -> Result<RetainedProgress, MetadataError> {
     Ok(match event {
+        PullPointControl::RenewIntent { .. } | PullPointControl::Renewed { .. } => {
+            panic!("renewal disabled in this fixture")
+        }
         PullPointControl::CreateIntent { .. } => receipt(b"fixture:create-intent").into(),
         PullPointControl::Created { source, .. }
         | PullPointControl::Unsubscribed { source, .. } => receipt(source).into(),
     })
+}
+
+fn renewable_created(peer: SocketAddr) -> String {
+    created_uri(
+        &format!("http://{peer}{SUBSCRIPTION}"),
+        "2026-10-27T00:00:04Z",
+    )
+}
+fn renewed(seconds: u32) -> String {
+    soap(
+        &format!(
+            "<wsnt:RenewResponse><wsnt:CurrentTime>2026-10-27T00:00:00Z</wsnt:CurrentTime><wsnt:TerminationTime>2026-10-27T00:00:{seconds:02}Z</wsnt:TerminationTime></wsnt:RenewResponse>"
+        ),
+        "REQUEST_ID",
+    )
+}
+fn renewable_control(event: PullPointControl<'_>) -> Result<RetainedProgress, MetadataError> {
+    Ok(match event {
+        PullPointControl::CreateIntent { message_id, .. }
+        | PullPointControl::RenewIntent { message_id, .. } => receipt(message_id.as_bytes()).into(),
+        PullPointControl::Created { source, .. }
+        | PullPointControl::Renewed { source, .. }
+        | PullPointControl::Unsubscribed { source, .. } => receipt(source).into(),
+    })
+}
+
+#[test]
+fn bounded_renewal_retains_intent_before_dispatch_and_preserves_original_batch_create() {
+    let server = Server::start(|peer| {
+        vec![
+            renewable_created(peer),
+            pulled(1),
+            renewed(30),
+            pulled(0),
+            unsubscribed(),
+        ]
+    });
+    let cx = Context::new(server.peer);
+    let mut cfg = config(server.peer);
+    cfg.max_renewals = 1;
+    let create_digest = std::cell::Cell::new(None);
+    let report = capture_with_progress(
+        &cfg,
+        &cx,
+        |event| {
+            match &event {
+                PullPointControl::Created { source, .. } => {
+                    create_digest.set(Some(ContentDigest::sha256(source)))
+                }
+                PullPointControl::RenewIntent {
+                    route,
+                    renewal_index,
+                    lifetime_seconds,
+                    ..
+                } => {
+                    assert_eq!(
+                        server.requests().len(),
+                        2,
+                        "intent must precede the Renew socket"
+                    );
+                    assert_eq!(*renewal_index, 0);
+                    assert_eq!(*lifetime_seconds, cfg.lifetime_seconds);
+                    assert_eq!(route.target(), SUBSCRIPTION);
+                }
+                PullPointControl::Renewed {
+                    completed_ns,
+                    http_status,
+                    soap_content_type,
+                    ..
+                } => {
+                    assert_eq!(
+                        server.requests().len(),
+                        3,
+                        "response custody must precede the next poll"
+                    );
+                    assert!(completed_ns.is_some());
+                    assert_eq!(*http_status, 200);
+                    assert!(*soap_content_type);
+                }
+                _ => {}
+            }
+            renewable_control(event)
+        },
+        |batch| {
+            assert_eq!(
+                Some(ContentDigest::sha256(batch.subscription_response)),
+                create_digest.get()
+            );
+            if batch.pull_index == 0 {
+                cx.offset_ns.fetch_add(600_000_000, Ordering::SeqCst);
+            }
+            Ok(receipt(batch.source).into())
+        },
+    )
+    .unwrap();
+    assert_eq!(report.renewals, 1);
+    assert_eq!(report.renewal_intents.len(), 1);
+    assert_eq!(report.renewal_outcomes.len(), 1);
+    assert_eq!(report.pulls, 2);
+    assert_eq!(report.exchanges, 5);
+    assert_eq!(report.stop, CaptureStop::PullLimit);
+    assert_eq!(report.subscription_state, SubscriptionState::Unsubscribed);
+    let requests = server.requests();
+    assert_eq!(requests.len(), 5);
+    assert!(requests[2].contains("<wsnt:Renew>"));
+    assert!(requests[2].contains("exact-opaque"));
+    assert!(requests[2].contains("PT120S"));
+    let ids: std::collections::BTreeSet<_> =
+        requests.iter().map(|request| message_id(request)).collect();
+    assert_eq!(
+        ids.len(),
+        5,
+        "every logical operation needs a fresh identity"
+    );
+}
+
+#[test]
+fn renewal_count_ceiling_stops_before_another_attempt_and_preserves_cleanup_reserve() {
+    let server = Server::start(|peer| {
+        vec![
+            renewable_created(peer),
+            pulled(0),
+            renewed(4),
+            pulled(0),
+            unsubscribed(),
+        ]
+    });
+    let cx = Context::new(server.peer);
+    let mut cfg = config(server.peer);
+    cfg.max_pulls = 3;
+    cfg.max_renewals = 1;
+    let report = capture_with_progress(&cfg, &cx, renewable_control, |batch| {
+        cx.offset_ns.fetch_add(600_000_000, Ordering::SeqCst);
+        Ok(receipt(batch.source).into())
+    })
+    .unwrap();
+    assert_eq!(report.renewals, 1);
+    assert_eq!(report.pulls, 2);
+    assert_eq!(report.stop, CaptureStop::LeaseReserve);
+    assert_eq!(report.subscription_state, SubscriptionState::Unsubscribed);
+    assert_eq!(server.requests().len(), 5);
+}
+
+#[test]
+fn renewed_remote_lease_never_extends_the_original_whole_session_deadline() {
+    let server = Server::start(|peer| {
+        vec![
+            renewable_created(peer),
+            pulled(0),
+            renewed(30),
+            pulled(0),
+            unsubscribed(),
+        ]
+    });
+    let cx = Context::new(server.peer);
+    let mut cfg = config(server.peer);
+    cfg.max_pulls = 3;
+    cfg.max_renewals = 4;
+    let report = capture_with_progress(&cfg, &cx, renewable_control, |batch| {
+        cx.offset_ns.fetch_add(
+            if batch.pull_index == 0 {
+                600_000_000
+            } else {
+                5_000_000_000
+            },
+            Ordering::SeqCst,
+        );
+        Ok(receipt(batch.source).into())
+    })
+    .unwrap();
+    assert_eq!(report.renewals, 1);
+    assert_eq!(report.pulls, 2);
+    assert_eq!(report.stop, CaptureStop::DeadlineReserve);
+    assert_eq!(report.subscription_state, SubscriptionState::Unsubscribed);
+    assert_eq!(server.requests().len(), 5);
+}
+
+#[test]
+fn rejected_renewal_bodies_are_retained_before_failure_and_never_admit_another_poll() {
+    let malformed = soap(
+        "<wsnt:RenewResponse><private>secret-malformed-reply</private></wsnt:RenewResponse>",
+        "REQUEST_ID",
+    );
+    let mismatch = renewed(30).replace("REQUEST_ID", "urn:wrong:renewal");
+    let unsupported = "HTTP/1.1 503 Unavailable\r\nContent-Type: text/plain\r\nContent-Length: 17\r\nConnection: close\r\n\r\nprivate-http-body".to_owned();
+    for reply in [malformed, mismatch, unsupported, challenge(REALM)] {
+        let server =
+            Server::start(|peer| vec![renewable_created(peer), pulled(0), reply, unsubscribed()]);
+        let cx = Context::new(server.peer);
+        let mut cfg = config(server.peer);
+        cfg.max_renewals = 1;
+        let observed = std::cell::Cell::new(false);
+        let failure = capture_with_progress(
+            &cfg,
+            &cx,
+            |event| {
+                if let PullPointControl::Renewed { .. } = &event {
+                    observed.set(true);
+                }
+                renewable_control(event)
+            },
+            |batch| {
+                assert_eq!(
+                    batch.pull_index, 0,
+                    "rejected Renew cannot permit another poll"
+                );
+                cx.offset_ns.fetch_add(600_000_000, Ordering::SeqCst);
+                Ok(receipt(batch.source).into())
+            },
+        )
+        .unwrap_err();
+        assert!(
+            observed.get(),
+            "a complete rejected HTTP body remains observable"
+        );
+        assert_eq!(failure.report.renewals, 0);
+        assert_eq!(failure.report.renewal_intents.len(), 1);
+        assert_eq!(failure.report.renewal_outcomes.len(), 1);
+        assert_eq!(failure.report.retained.len(), 1);
+        assert_eq!(
+            failure.report.subscription_state,
+            SubscriptionState::Unsubscribed
+        );
+        assert_eq!(server.requests().len(), 4);
+    }
+}
+
+#[test]
+fn lost_renewal_reply_leaves_pending_intent_without_retry_or_recreation() {
+    let server = Server::start(|peer| {
+        vec![
+            renewable_created(peer),
+            pulled(0),
+            String::new(),
+            unsubscribed(),
+        ]
+    });
+    let cx = Context::new(server.peer);
+    let mut cfg = config(server.peer);
+    cfg.max_renewals = 4;
+    let failure = capture_with_progress(&cfg, &cx, renewable_control, |batch| {
+        cx.offset_ns.fetch_add(600_000_000, Ordering::SeqCst);
+        Ok(receipt(batch.source).into())
+    })
+    .unwrap_err();
+    assert_eq!(failure.report.renewal_intents.len(), 1);
+    assert!(failure.report.renewal_outcomes.is_empty());
+    assert_eq!(failure.report.renewals, 0);
+    assert_eq!(failure.report.pulls, 1);
+    assert_eq!(
+        failure.report.subscription_state,
+        SubscriptionState::Unsubscribed
+    );
+    assert_eq!(server.requests().len(), 4);
+}
+
+#[test]
+fn renewal_custody_refusal_blocks_dispatch_or_next_poll_but_allows_live_cleanup() {
+    for fail_intent in [true, false] {
+        let server = Server::start(|peer| {
+            let mut replies = vec![renewable_created(peer), pulled(0)];
+            if !fail_intent {
+                replies.push(renewed(30));
+            }
+            replies.push(unsubscribed());
+            replies
+        });
+        let cx = Context::new(server.peer);
+        let mut cfg = config(server.peer);
+        cfg.max_renewals = 1;
+        let failure = capture_with_progress(
+            &cfg,
+            &cx,
+            |event| {
+                if matches!(event, PullPointControl::RenewIntent { .. }) && fail_intent
+                    || matches!(event, PullPointControl::Renewed { .. }) && !fail_intent
+                {
+                    Err(MetadataError::Custody)
+                } else {
+                    renewable_control(event)
+                }
+            },
+            |batch| {
+                cx.offset_ns.fetch_add(600_000_000, Ordering::SeqCst);
+                Ok(receipt(batch.source).into())
+            },
+        )
+        .unwrap_err();
+        assert_eq!(failure.code(), "ERR-ONVIF-METADATA-CUSTODY-001");
+        assert_eq!(failure.report.pulls, 1);
+        assert_eq!(failure.report.renewals, 0);
+        assert!(failure.report.renewal_outcomes.is_empty());
+        assert_eq!(
+            failure.report.subscription_state,
+            SubscriptionState::Unsubscribed
+        );
+        assert_eq!(server.requests().len(), if fail_intent { 3 } else { 4 });
+    }
+}
+
+#[test]
+fn late_renewal_custody_refusal_preserves_the_successful_receipt_and_count_without_polling() {
+    let server = Server::start(|peer| {
+        vec![
+            renewable_created(peer),
+            pulled(0),
+            renewed(30),
+            unsubscribed(),
+        ]
+    });
+    let cx = Context::new(server.peer);
+    let mut cfg = config(server.peer);
+    cfg.max_renewals = 1;
+    let failure = capture_with_progress(
+        &cfg,
+        &cx,
+        |event| {
+            let is_renewed = matches!(event, PullPointControl::Renewed { .. });
+            let mut progress = renewable_control(event)?;
+            if is_renewed {
+                progress.stop = Some(PullPointError::Client(ClientError::Budget));
+            }
+            Ok(progress)
+        },
+        |batch| {
+            cx.offset_ns.fetch_add(600_000_000, Ordering::SeqCst);
+            Ok(receipt(batch.source).into())
+        },
+    )
+    .unwrap_err();
+    assert_eq!(failure.code(), "ERR-ONVIF-BUDGET-001");
+    assert_eq!(failure.report.renewals, 1);
+    assert_eq!(failure.report.renewal_outcomes.len(), 1);
+    assert_eq!(failure.report.pulls, 1);
+    assert_eq!(
+        failure.report.subscription_state,
+        SubscriptionState::Unsubscribed
+    );
+    assert_eq!(server.requests().len(), 4);
+}
+
+#[test]
+fn renewal_intent_custody_cannot_extend_expired_lease_or_override_revocation() {
+    for refusal in ["expired", "revoked", "cancelled"] {
+        let server = Server::start(|peer| {
+            let mut replies = vec![renewable_created(peer), pulled(0)];
+            if refusal == "expired" {
+                replies.push(unsubscribed());
+            }
+            replies
+        });
+        let cx = Context::new(server.peer);
+        let mut cfg = config(server.peer);
+        cfg.max_renewals = 1;
+        let failure = capture_with_progress(
+            &cfg,
+            &cx,
+            |event| {
+                if matches!(event, PullPointControl::RenewIntent { .. }) {
+                    if refusal == "revoked" {
+                        cx.revoked.store(true, Ordering::SeqCst);
+                    } else if refusal == "cancelled" {
+                        cx.cancelled.store(true, Ordering::SeqCst);
+                    } else {
+                        cx.offset_ns.fetch_add(2_000_000_000, Ordering::SeqCst);
+                    }
+                }
+                renewable_control(event)
+            },
+            |batch| {
+                cx.offset_ns.fetch_add(600_000_000, Ordering::SeqCst);
+                Ok(receipt(batch.source).into())
+            },
+        )
+        .unwrap_err();
+        assert_eq!(failure.report.renewal_intents.len(), 1);
+        assert!(failure.report.renewal_outcomes.is_empty());
+        assert_eq!(failure.report.renewals, 0);
+        assert_eq!(
+            server.requests().len(),
+            if refusal == "expired" { 3 } else { 2 }
+        );
+        assert_eq!(
+            failure.report.subscription_state,
+            if refusal == "expired" {
+                SubscriptionState::Unsubscribed
+            } else {
+                SubscriptionState::Active
+            }
+        );
+    }
 }
 
 #[test]
@@ -999,6 +1419,9 @@ fn late_intent_storage_refusal_keeps_receipt_without_admitting_create() {
         &config(server.peer),
         &cx,
         |event| match event {
+            PullPointControl::RenewIntent { .. } | PullPointControl::Renewed { .. } => {
+                panic!("renewal disabled in this fixture")
+            }
             PullPointControl::CreateIntent { .. } => Ok(RetainedProgress {
                 receipt: intent_receipt,
                 stop: Some(PullPointError::Client(ClientError::Budget)),
@@ -1038,6 +1461,9 @@ fn cleanup_only_uses_retained_epr_and_fresh_id_without_create_or_poll() {
         &subscription,
         create_id,
         |event| match event {
+            PullPointControl::RenewIntent { .. } | PullPointControl::Renewed { .. } => {
+                panic!("renewal disabled in this fixture")
+            }
             PullPointControl::Unsubscribed {
                 route,
                 source,
@@ -1105,6 +1531,9 @@ fn terminal_custody_refusal_preserves_observed_cleanup_and_all_earlier_receipts(
         &cfg,
         &Context::new(server.peer),
         |event| match event {
+            PullPointControl::RenewIntent { .. } | PullPointControl::Renewed { .. } => {
+                panic!("renewal disabled in this fixture")
+            }
             PullPointControl::CreateIntent { .. } => Ok(receipt(b"fixture:create-intent")),
             PullPointControl::Created { source, .. } => Ok(receipt(source)),
             PullPointControl::Unsubscribed { .. } => Err(MetadataError::Custody),
@@ -1145,6 +1574,9 @@ fn cleanup_without_explicit_correlation_cannot_claim_remote_success_or_terminal_
         &cfg,
         &Context::new(server.peer),
         |event| match event {
+            PullPointControl::RenewIntent { .. } | PullPointControl::Renewed { .. } => {
+                panic!("renewal disabled in this fixture")
+            }
             PullPointControl::CreateIntent { .. } => Ok(receipt(b"fixture:create-intent")),
             PullPointControl::Created { source, .. } => Ok(receipt(source)),
             PullPointControl::Unsubscribed { .. } => {
@@ -1174,6 +1606,9 @@ fn create_without_explicit_correlation_keeps_intent_without_following_an_unbound
         &config(server.peer),
         &Context::new(server.peer),
         |event| match event {
+            PullPointControl::RenewIntent { .. } | PullPointControl::Renewed { .. } => {
+                panic!("renewal disabled in this fixture")
+            }
             PullPointControl::CreateIntent { .. } => Ok(intent_receipt),
             PullPointControl::Created { .. } | PullPointControl::Unsubscribed { .. } => {
                 panic!("an uncorrelated Create response cannot admit EPR custody or cleanup")

@@ -19,8 +19,10 @@ use fss_reference::deletion::{
     commit_deletion, plan_deletion, plan_scope_deletion,
 };
 use fss_reference::onvif::control::{
-    CreateIntentBinding, RetainedCreateIntent, RetainedSubscription, RetainedUnsubscribe,
-    UnsubscribeBinding, list_control, prepare_create, retain_created, retain_unsubscribed,
+    ControlKind, CreateIntentBinding, RenewIntentBinding, RenewOutcomeBinding,
+    RetainedCreateIntent, RetainedRenewIntent, RetainedRenewal, RetainedSubscription,
+    RetainedUnsubscribe, UnsubscribeBinding, list_control, prepare_create, prepare_renew,
+    retain_created, retain_renewal, retain_unsubscribed,
 };
 use fss_reference::onvif::http::HttpRoute;
 use fss_reference::onvif::metadata::{MetadataError, SourceBinding};
@@ -31,6 +33,7 @@ const SITE: &str = "site:onvif-control-lifecycle";
 const PRINCIPAL: &str = "principal:onvif-control-lifecycle";
 const CREATE: &[u8] = br#"<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:e="http://www.onvif.org/ver10/events/wsdl" xmlns:w="http://www.w3.org/2005/08/addressing" xmlns:n="http://docs.oasis-open.org/wsn/b-2"><s:Header><w:RelatesTo>urn:fss:onvif:create-1</w:RelatesTo></s:Header><s:Body><e:CreatePullPointSubscriptionResponse><e:SubscriptionReference><w:Address>http://192.0.2.4/onvif/subscription?Idx=7</w:Address></e:SubscriptionReference><n:CurrentTime>2026-10-27T00:00:00Z</n:CurrentTime><n:TerminationTime>2026-10-27T00:02:00Z</n:TerminationTime></e:CreatePullPointSubscriptionResponse></s:Body></s:Envelope>"#;
 const CLEANUP: &[u8] = br#"<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:w="http://www.w3.org/2005/08/addressing" xmlns:n="http://docs.oasis-open.org/wsn/b-2"><s:Header><w:RelatesTo>urn:fss:onvif:cleanup-1</w:RelatesTo></s:Header><s:Body><n:UnsubscribeResponse/></s:Body></s:Envelope>"#;
+const REFUSED_RENEWAL: &[u8] = b"private-vendor-renewal-refusal-canary";
 
 struct Directory(PathBuf);
 impl Directory {
@@ -108,6 +111,28 @@ impl Fixture {
         let ended = retain_unsubscribed(&mut self.dep, &created, cleanup, CLEANUP, &self.cx)?;
         Ok((intent, created, ended))
     }
+
+    fn renewal(
+        &mut self,
+    ) -> Test<(
+        RetainedCreateIntent,
+        RetainedSubscription,
+        RetainedRenewIntent,
+        RetainedRenewal,
+    )> {
+        let intent = prepare_create(&mut self.dep, binding("north")?, &self.cx)?;
+        let created = retain_created(&mut self.dep, &intent, 1_010, false, CREATE, &self.cx)?;
+        let renew = prepare_renew(&mut self.dep, &created, renew_binding(0)?, &self.cx)?;
+        let outcome = retain_renewal(
+            &mut self.dep,
+            &renew,
+            renew_outcome(0),
+            REFUSED_RENEWAL,
+            &self.cx,
+        )?;
+        assert!(outcome.lease().is_none());
+        Ok((intent, created, renew, outcome))
+    }
 }
 
 fn binding(sensor: &str) -> Test<CreateIntentBinding> {
@@ -147,6 +172,26 @@ fn cleanup_binding() -> Test<UnsubscribeBinding> {
         receive_interval: CaptureInterval::new(TimestampNs(20_000), TimestampNs(20_010))?,
         client_authenticated: false,
     })
+}
+fn renew_binding(index: u32) -> Test<RenewIntentBinding> {
+    Ok(RenewIntentBinding {
+        route: binding("north")?
+            .events
+            .event_subscription("http://192.0.2.4/onvif/subscription?Idx=7", "/onvif")?,
+        message_id: format!("urn:fss:onvif:renew-{index}"),
+        started_ns: 2_000 + u64::from(index) * 1_000,
+        receive_time: TimestampNs(11_000 + i128::from(index) * 1_000),
+        lifetime_seconds: 120,
+        renewal_index: index,
+    })
+}
+fn renew_outcome(index: u32) -> RenewOutcomeBinding {
+    RenewOutcomeBinding {
+        completed_ns: Some(2_010 + u64::from(index) * 1_000),
+        client_authenticated: false,
+        http_status: 500,
+        soap_content_type: false,
+    }
 }
 fn hold(identity: ContentDigest, state: HoldState) -> HoldRequest {
     HoldRequest {
@@ -460,5 +505,182 @@ fn a_named_control_root_cannot_invent_verified_lifecycle_membership() -> Test {
     );
     assert!(list_control(&f.dep, 128, &f.cx).is_err());
     assert_eq!(f.dep.current_anchor(), &before);
+    Ok(())
+}
+
+#[test]
+fn renewal_catalog_links_attempts_and_sensor_deletion_honors_both_holds() -> Test {
+    for hold_intent in [true, false] {
+        let mut f = Fixture::new("renew-holds")?;
+        let (created_intent, created, renewal_intent, outcome) = f.renewal()?;
+        let catalog = list_control(&f.dep, 4, &f.cx)?;
+        assert_eq!(catalog.len(), 4);
+        assert_eq!(catalog[2].kind, ControlKind::RenewIntent);
+        assert_eq!(catalog[3].kind, ControlKind::Renewed);
+        for descriptor in &catalog[2..] {
+            assert_eq!(descriptor.intent_identity, created_intent.identity());
+            assert_eq!(descriptor.subscription_identity, Some(created.identity()));
+            assert_eq!(
+                descriptor.renewal_intent_identity,
+                Some(renewal_intent.identity())
+            );
+        }
+        let held = if hold_intent {
+            renewal_intent.identity()
+        } else {
+            outcome.identity()
+        };
+        let request = hold(held, HoldState::Held);
+        let preview = preview_hold(&f.dep, &request, &f.authority, &f.cx)?;
+        commit_hold(
+            &mut f.dep,
+            &request,
+            preview.record.approval(),
+            &f.authority,
+            &f.cx,
+        )?;
+        let scope = DeletionScope::Sensor(SensorId::parse("sensor:north")?);
+        let blocked = plan_scope_deletion(&f.dep, &scope, &f.cx)?;
+        assert!(
+            blocked
+                .blockers
+                .iter()
+                .any(|finding| finding.kind == "evidence_hold")
+        );
+        let released = hold(held, HoldState::Released);
+        let preview = preview_hold(&f.dep, &released, &f.authority, &f.cx)?;
+        commit_hold(
+            &mut f.dep,
+            &released,
+            preview.record.approval(),
+            &f.authority,
+            &f.cx,
+        )?;
+        let plan = plan_scope_deletion(&f.dep, &scope, &f.cx)?;
+        let mut identities = vec![
+            created_intent.identity(),
+            created.identity(),
+            renewal_intent.identity(),
+            outcome.identity(),
+        ];
+        identities.sort_unstable();
+        assert_eq!(plan.imports, identities);
+        assert!(plan.blockers.is_empty(), "{:?}", plan.blockers);
+        assert!(
+            plan.deleted_set()
+                .contains(&ContentDigest::sha256(REFUSED_RENEWAL))
+        );
+        let digest = plan.digest()?;
+        commit_deletion(
+            &mut f.dep,
+            digest,
+            plan.approval_digest(PRINCIPAL)?,
+            PRINCIPAL,
+            &f.cx,
+        )?;
+        let Fixture {
+            dep, cx, _dir: dir, ..
+        } = f;
+        let root = dep.root().to_path_buf();
+        drop(dep);
+        let dep = ReferenceDeployment::reopen(&root, SITE, &cx)?;
+        assert!(list_control(&dep, 4, &cx)?.is_empty());
+        deleted(
+            RetainedRenewIntent::open(&dep, renewal_intent.identity(), None, &cx),
+            digest,
+        )?;
+        deleted(
+            RetainedRenewal::open(&dep, outcome.identity(), None, &cx),
+            digest,
+        )?;
+        drop(dep);
+        drop(dir);
+    }
+    Ok(())
+}
+
+#[test]
+fn renewal_tombstone_blocks_private_response_reuse_before_unlink_and_after_reopen() -> Test {
+    let mut f = Fixture::new("renew-interrupted")?;
+    let (_, created, renewal_intent, outcome) = f.renewal()?;
+    let separate = prepare_renew(&mut f.dep, &created, renew_binding(1)?, &f.cx)?;
+    let plan = plan_deletion(&f.dep, renewal_intent.identity(), &f.cx)?;
+    assert!(plan.blockers.is_empty(), "{:?}", plan.blockers);
+    assert!(plan.deleted_set().contains(&outcome.identity()));
+    assert!(
+        plan.deleted_set()
+            .contains(&ContentDigest::sha256(REFUSED_RENEWAL))
+    );
+    assert!(!plan.deleted_set().contains(&created.identity()));
+    assert!(!plan.deleted_set().contains(&separate.identity()));
+    let digest = plan.digest()?;
+    let approval = plan.approval_digest(PRINCIPAL)?;
+    let stop = ReplayCx::from_context_authority(&f.authority, f.dep.root())?;
+    stop.set_cancel_at_checkpoint(STAGE_DELETION_RECORD_APPENDED);
+    assert!(matches!(
+        commit_deletion(&mut f.dep, digest, approval, PRINCIPAL, &stop),
+        Err(DeletionError::Cancelled {
+            stage: STAGE_DELETION_RECORD_APPENDED
+        })
+    ));
+    assert!(plan.deletable.iter().all(|object| {
+        f.dep
+            .publisher()
+            .spool()
+            .object_path(object.digest)
+            .exists()
+    }));
+    let head = f.dep.current_anchor().clone();
+    let objects = f.dep.publisher().spool().object_count();
+    deleted(
+        RetainedRenewIntent::open(&f.dep, renewal_intent.identity(), None, &f.cx),
+        digest,
+    )?;
+    deleted(
+        RetainedRenewal::open(&f.dep, outcome.identity(), None, &f.cx),
+        digest,
+    )?;
+    deleted(
+        prepare_renew(&mut f.dep, &created, renew_binding(0)?, &f.cx),
+        digest,
+    )?;
+    for (intent, index) in [(&renewal_intent, 0), (&separate, 1)] {
+        deleted(
+            retain_renewal(
+                &mut f.dep,
+                intent,
+                renew_outcome(index),
+                REFUSED_RENEWAL,
+                &f.cx,
+            ),
+            digest,
+        )?;
+    }
+    assert_eq!(f.dep.current_anchor(), &head);
+    assert_eq!(f.dep.publisher().spool().object_count(), objects);
+    let Fixture {
+        dep, cx, _dir: dir, ..
+    } = f;
+    let root = dep.root().to_path_buf();
+    drop(dep);
+    let mut dep = ReferenceDeployment::reopen(&root, SITE, &cx)?;
+    assert_eq!(
+        commit_deletion(&mut dep, digest, approval, PRINCIPAL, &cx)?.outcome,
+        CommitOutcome::Resumed
+    );
+    let catalog = list_control(&dep, 3, &cx)?;
+    assert_eq!(catalog.len(), 3);
+    assert_eq!(catalog[2].identity, separate.identity());
+    assert_eq!(
+        catalog[2].renewal_intent_identity,
+        Some(separate.identity())
+    );
+    deleted(
+        retain_renewal(&mut dep, &separate, renew_outcome(1), REFUSED_RENEWAL, &cx),
+        digest,
+    )?;
+    RetainedSubscription::open(&dep, created.identity(), None, &cx)?;
+    drop(dep);
+    drop(dir);
     Ok(())
 }

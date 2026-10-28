@@ -20,8 +20,9 @@ use super::http::{
 use super::metadata::MetadataError;
 use super::wire::{
     self, PullPointSubscription, SoapRequest, WireError, create_pull_point_request,
-    parse_pull_messages_response, parse_pull_point_subscription, parse_unsubscribe_response,
-    pull_messages_request, unsubscribe_pull_point_request, validate_relates_to,
+    parse_pull_messages_response, parse_pull_point_subscription, parse_renew_response,
+    parse_unsubscribe_response, pull_messages_request, renew_pull_point_request,
+    unsubscribe_pull_point_request, validate_relates_to,
 };
 use crate::rtsp::authentication::{DigestAuthorization, DigestChallenge};
 
@@ -33,6 +34,8 @@ pub const CLEANUP_RESERVE_STEPS: u32 = 1024;
 pub const MAX_SESSION_NS: u64 = 60_000_000_000;
 /// Maximum complete source responses retained by one session.
 pub const MAX_PULLS: u32 = 64;
+/// Maximum explicitly approved finite renewals within one unchanged live session deadline.
+pub const MAX_RENEWALS: u32 = 4;
 const MAX_STEPS: u32 = 100_000;
 const RESPONSE_MARGIN_NS: u64 = 500_000_000;
 
@@ -53,6 +56,8 @@ pub struct PullPointConfig {
     pub max_steps: u32,
     /// Maximum retained PullMessages responses, 1..=64; empty responses count.
     pub max_pulls: u32,
+    /// Explicit finite renewal ceiling, 0..=4. Zero preserves capture without renewal.
+    pub max_renewals: u32,
     /// Maximum remote long-poll duration, 1..=30 seconds; shortened near a bound.
     pub pull_timeout_seconds: u32,
     /// Maximum notifications accepted in each response, 1..=128.
@@ -65,6 +70,7 @@ impl fmt::Debug for PullPointConfig {
         f.debug_struct("PullPointConfig")
             .field("deadline_ns", &self.deadline_ns)
             .field("max_pulls", &self.max_pulls)
+            .field("max_renewals", &self.max_renewals)
             .field("message_limit", &self.message_limit)
             .field("authenticated_lane", &self.auth.is_some())
             .finish_non_exhaustive()
@@ -164,6 +170,34 @@ pub enum PullPointControl<'a> {
         /// Whether this response followed a client Digest proof.
         authenticated: bool,
     },
+    /// Persist the finite same-endpoint request before any Renew dispatch.
+    RenewIntent {
+        /// Original independently approved subscription route.
+        route: &'a HttpRoute,
+        /// Fresh logical request identity, reused only after explicit HTTP401.
+        message_id: &'a str,
+        /// Original monotonic admission before intent custody.
+        started_ns: u64,
+        /// Finite requested lease, bounded by the original capture approval.
+        lifetime_seconds: u32,
+        /// Zero-based bounded renewal attempt within this invocation.
+        renewal_index: u32,
+    },
+    /// Persist a complete renewal response, including replies that cannot extend the lease.
+    Renewed {
+        /// Complete transfer-decoded body, potentially malformed or private.
+        source: &'a [u8],
+        /// Exact logical request identity belonging to the prior durable intent.
+        message_id: &'a str,
+        /// Complete response observation time, absent when the live clock refused.
+        completed_ns: Option<u64>,
+        /// Whether this response followed a client Digest proof.
+        authenticated: bool,
+        /// Complete final HTTP status, independent of SOAP parsing.
+        http_status: u16,
+        /// Whether the response declared application/soap+xml.
+        soap_content_type: bool,
+    },
     /// Persist the exact validated cleanup response as a terminal historical receipt.
     Unsubscribed {
         /// Independently current subscription route actually used.
@@ -186,6 +220,11 @@ impl fmt::Debug for PullPointControl<'_> {
             Self::CreateIntent { .. } => f.write_str("PullPointControl::CreateIntent([redacted])"),
             Self::Created { source, .. } => f
                 .debug_struct("PullPointControl::Created")
+                .field("source_bytes", &source.len())
+                .finish_non_exhaustive(),
+            Self::RenewIntent { .. } => f.write_str("PullPointControl::RenewIntent([redacted])"),
+            Self::Renewed { source, .. } => f
+                .debug_struct("PullPointControl::Renewed")
                 .field("source_bytes", &source.len())
                 .finish_non_exhaustive(),
             Self::Unsubscribed { source, .. } => f
@@ -237,6 +276,12 @@ pub struct CaptureReport {
     pub created_subscription: Option<RetainedBatch>,
     /// Definitely durable terminal Unsubscribe observation, if its sink succeeded.
     pub unsubscribe_receipt: Option<RetainedBatch>,
+    /// Durable pre-dispatch renewal obligations, including attempts with unknown outcomes.
+    pub renewal_intents: Vec<RetainedBatch>,
+    /// Durable complete renewal responses, including rejected/malformed bodies.
+    pub renewal_outcomes: Vec<RetainedBatch>,
+    /// Validated and durably observed successful renewal responses in this invocation.
+    pub renewals: u32,
     /// Actual HTTP attempts, including authentication retries and cleanup.
     pub exchanges: u32,
     /// Complete responses successfully handed to durable custody.
@@ -261,6 +306,9 @@ impl Default for CaptureReport {
             create_intent: None,
             created_subscription: None,
             unsubscribe_receipt: None,
+            renewal_intents: Vec::new(),
+            renewal_outcomes: Vec::new(),
+            renewals: 0,
             exchanges: 0,
             pulls: 0,
             notifications: 0,
@@ -304,6 +352,9 @@ impl fmt::Debug for CaptureReport {
             .field("create_intent", &self.create_intent)
             .field("created_subscription", &self.created_subscription)
             .field("unsubscribe_receipt", &self.unsubscribe_receipt)
+            .field("renewal_intents", &self.renewal_intents)
+            .field("renewal_outcomes", &self.renewal_outcomes)
+            .field("renewals", &self.renewals)
             .field("exchanges", &self.exchanges)
             .field("pulls", &self.pulls)
             .field("notifications", &self.notifications)
@@ -409,6 +460,13 @@ pub fn capture(
     cx: &impl OnvifContext,
     mut sink: impl FnMut(PullBatch<'_>) -> Result<RetainedBatch, MetadataError>,
 ) -> Result<CaptureReport, CaptureFailure> {
+    // Renewal has mandatory pre-dispatch custody. The legacy batch-only API cannot provide it.
+    if config.max_renewals != 0 {
+        return Err(CaptureFailure {
+            report: CaptureReport::default(),
+            error: PullPointError::Configuration,
+        });
+    }
     capture_inner(
         config,
         cx,
@@ -475,7 +533,15 @@ fn capture_inner(
                         return Err(error);
                     }
                 }
-                poll(config, cx, &mut budget, &active, &mut report, &mut sink)
+                poll(
+                    config,
+                    cx,
+                    &mut budget,
+                    &active,
+                    &mut report,
+                    &mut control,
+                    &mut sink,
+                )
             });
             let cleaned = finish_cleanup(
                 config,
@@ -610,19 +676,23 @@ fn begin(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn poll(
     config: &PullPointConfig,
     cx: &impl OnvifContext,
     budget: &mut Budget,
     active: &Active,
     report: &mut CaptureReport,
+    control: &mut impl FnMut(PullPointControl<'_>) -> Result<Option<RetainedProgress>, MetadataError>,
     sink: &mut impl FnMut(PullBatch<'_>) -> Result<RetainedProgress, MetadataError>,
 ) -> Result<(), PullPointError> {
-    let lease_work_deadline = active.lease_deadline_ns.saturating_sub(CLEANUP_RESERVE_NS);
+    let mut lease_deadline_ns = active.lease_deadline_ns;
+    let lease_work_deadline = lease_deadline_ns.saturating_sub(CLEANUP_RESERVE_NS);
     if lease_work_deadline
         <= active
             .completed_ns
             .saturating_add(1_000_000_000 + RESPONSE_MARGIN_NS)
+        && config.max_renewals == 0
     {
         return Err(PullPointError::Lease);
     }
@@ -631,7 +701,29 @@ fn poll(
             report.stop = CaptureStop::StepReserve;
             return Ok(());
         }
-        let started_ns = budget.now(config.deadline_ns, work_steps(config), cx)?;
+        let mut started_ns = budget.now(config.deadline_ns, work_steps(config), cx)?;
+        let mut lease_work_deadline = lease_deadline_ns.saturating_sub(CLEANUP_RESERVE_NS);
+        let wanted = u64::from(config.pull_timeout_seconds) * 1_000_000_000 + RESPONSE_MARGIN_NS;
+        // Renew only when the lease would constrain the next requested poll and the unchanged
+        // session has enough remaining work time. Never use the cleanup reservation for Renew.
+        if report.renewals < config.max_renewals
+            && lease_work_deadline < work_deadline(config)
+            && lease_work_deadline.saturating_sub(started_ns) < wanted
+            && work_deadline(config).saturating_sub(started_ns) > wanted + RESPONSE_MARGIN_NS
+            && lease_work_deadline.saturating_sub(started_ns) > RESPONSE_MARGIN_NS
+        {
+            lease_deadline_ns = renew(
+                config,
+                cx,
+                budget,
+                active,
+                report,
+                control,
+                lease_work_deadline,
+            )?;
+            started_ns = budget.now(config.deadline_ns, work_steps(config), cx)?;
+            lease_work_deadline = lease_deadline_ns.saturating_sub(CLEANUP_RESERVE_NS);
+        }
         let deadline = work_deadline(config).min(lease_work_deadline);
         let available_ns = deadline.saturating_sub(started_ns);
         let available_seconds = available_ns.saturating_sub(RESPONSE_MARGIN_NS) / 1_000_000_000;
@@ -693,6 +785,136 @@ fn poll(
     }
     report.stop = CaptureStop::PullLimit;
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn renew(
+    config: &PullPointConfig,
+    cx: &impl OnvifContext,
+    budget: &mut Budget,
+    active: &Active,
+    report: &mut CaptureReport,
+    control: &mut impl FnMut(PullPointControl<'_>) -> Result<Option<RetainedProgress>, MetadataError>,
+    old_work_deadline: u64,
+) -> Result<u64, PullPointError> {
+    let deadline = old_work_deadline.min(work_deadline(config));
+    let started_ns = budget.now(deadline, work_steps(config), cx)?;
+    let message_id = next_request_id(&active.route, deadline, work_steps(config), cx, budget)?;
+    let request = renew_pull_point_request(&active.subscription, config.lifetime_seconds)?
+        .with_message_id(&message_id)?;
+    let progress = control(PullPointControl::RenewIntent {
+        route: &active.route,
+        message_id: &message_id,
+        started_ns,
+        lifetime_seconds: config.lifetime_seconds,
+        renewal_index: report.renewals,
+    })?
+    .ok_or(MetadataError::Authority)?;
+    report.renewal_intents.push(progress.receipt);
+    if let Some(error) = progress.stop {
+        return Err(error);
+    }
+    let (response, authenticated, response_error) =
+        renew_exchange(config, &active.route, &request, deadline, cx, budget)?;
+    let completed = budget.now(deadline, work_steps(config), cx);
+    let completed_ns = completed.as_ref().ok().copied();
+    let parsed = completed.and_then(|now| {
+        if let Some(error) = response_error {
+            return Err(error);
+        }
+        let source = soap_body(&response)?;
+        wire::require_relates_to(source, &message_id)?;
+        let lease = parse_renew_response(source)?;
+        cx.checkpoint(&active.route, HttpOperation::Release, now, deadline)
+            .map_err(denial)?;
+        Ok(lease)
+    });
+    // A complete rejected/malformed response is still retained. No further poll can occur
+    // until this callback succeeds and the independently validated result is usable.
+    let progress = control(PullPointControl::Renewed {
+        source: response.body(),
+        message_id: &message_id,
+        completed_ns,
+        authenticated,
+        http_status: response.status(),
+        soap_content_type: is_soap_response(&response),
+    })?
+    .ok_or(MetadataError::Authority)?;
+    report.renewal_outcomes.push(progress.receipt);
+    if parsed.is_ok() {
+        report.renewals += 1;
+    }
+    if let Some(error) = progress.stop {
+        return Err(error);
+    }
+    let lease = parsed?;
+    let lease_ns = u64::from(lease.lease_seconds().min(config.lifetime_seconds)) * 1_000_000_000;
+    let renewed_deadline = started_ns
+        .checked_add(lease_ns)
+        .ok_or(PullPointError::Lease)?;
+    if renewed_deadline.saturating_sub(CLEANUP_RESERVE_NS)
+        <= completed_ns
+            .ok_or(PullPointError::Lease)?
+            .saturating_add(1_000_000_000 + RESPONSE_MARGIN_NS)
+    {
+        return Err(PullPointError::Lease);
+    }
+    Ok(renewed_deadline)
+}
+
+/// Preserve complete authentication refusals as renewal outcomes. A lost transport result
+/// still has no complete body to retain and leaves the pre-dispatch intent unresolved.
+fn renew_exchange(
+    config: &PullPointConfig,
+    route: &HttpRoute,
+    request: &SoapRequest,
+    deadline: u64,
+    cx: &impl OnvifContext,
+    budget: &mut Budget,
+) -> Result<(HttpResponse, bool, Option<ClientError>), ClientError> {
+    let first = send(
+        config,
+        route,
+        request,
+        None,
+        deadline,
+        work_steps(config),
+        cx,
+        budget,
+    )?;
+    if first.status() != 401 {
+        return Ok((first, false, None));
+    }
+    let authorization = (|| {
+        let auth = config
+            .auth
+            .as_ref()
+            .ok_or(ClientError::AuthenticationRequired)?;
+        let header = first
+            .digest_challenge()
+            .ok_or(ClientError::AuthenticationRefused)?;
+        let challenge = DigestChallenge::parse(header, &auth.expected_realm, auth.policy)?;
+        let now = budget.now(deadline, work_steps(config), cx)?;
+        cx.checkpoint(route, HttpOperation::Write, now, deadline)
+            .map_err(denial)?;
+        cx.authorize(route, &challenge)
+    })();
+    let authorization = match authorization {
+        Ok(value) => value,
+        Err(error) => return Ok((first, false, Some(error))),
+    };
+    let response = send(
+        config,
+        route,
+        request,
+        Some(&authorization),
+        deadline,
+        work_steps(config),
+        cx,
+        budget,
+    )?;
+    let error = (response.status() == 401).then_some(ClientError::AuthenticationRefused);
+    Ok((response, true, error))
 }
 
 struct CleanupSource {
@@ -840,6 +1062,7 @@ pub fn validate_config(config: &PullPointConfig) -> Result<(), PullPointError> {
         || config.max_steps <= CLEANUP_RESERVE_STEPS
         || config.max_steps > MAX_STEPS
         || !(1..=MAX_PULLS).contains(&config.max_pulls)
+        || config.max_renewals > MAX_RENEWALS
         || !(1..=30).contains(&config.pull_timeout_seconds)
         || !(1..=128).contains(&config.message_limit)
         || !(1..=3600).contains(&config.lifetime_seconds)
@@ -910,7 +1133,10 @@ fn next_request_id(
     cx.checkpoint(route, HttpOperation::Write, now, deadline)
         .map_err(denial)?;
     let nonce = cx.event_request_id()?;
-    if nonce == [0; 16] || budget.used_ids.contains(&nonce) || budget.used_ids.len() >= 66 {
+    if nonce == [0; 16]
+        || budget.used_ids.contains(&nonce)
+        || budget.used_ids.len() >= (MAX_PULLS + MAX_RENEWALS + 2) as usize
+    {
         return Err(ClientError::Entropy);
     }
     budget.used_ids.push(nonce);
@@ -993,7 +1219,11 @@ fn send(
     budget: &mut Budget,
 ) -> Result<HttpResponse, ClientError> {
     budget.exchanges = budget.exchanges.checked_add(1).ok_or(ClientError::Budget)?;
-    let maximum_exchanges = config.max_pulls.saturating_add(2).saturating_mul(2);
+    let maximum_exchanges = config
+        .max_pulls
+        .saturating_add(config.max_renewals)
+        .saturating_add(2)
+        .saturating_mul(2);
     if budget.exchanges > maximum_exchanges {
         return Err(ClientError::Budget);
     }
@@ -1021,12 +1251,7 @@ fn send(
 }
 
 fn soap_body(response: &HttpResponse) -> Result<&[u8], ClientError> {
-    let is_soap = response.content_type().is_some_and(|value| {
-        value
-            .split(';')
-            .next()
-            .is_some_and(|mime| mime.trim().eq_ignore_ascii_case("application/soap+xml"))
-    });
+    let is_soap = is_soap_response(response);
     if response.status() != 200 {
         if is_soap && matches!(response.status(), 400 | 500) {
             return Err(match wire::parse_soap_fault(response.body()) {
@@ -1041,4 +1266,13 @@ fn soap_body(response: &HttpResponse) -> Result<&[u8], ClientError> {
         return Err(ClientError::Unsupported);
     }
     Ok(response.body())
+}
+
+fn is_soap_response(response: &HttpResponse) -> bool {
+    response.content_type().is_some_and(|value| {
+        value
+            .split(';')
+            .next()
+            .is_some_and(|mime| mime.trim().eq_ignore_ascii_case("application/soap+xml"))
+    })
 }

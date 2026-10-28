@@ -49,6 +49,7 @@
     "crates/fss-reference/src/onvif/pullpoint.rs",
     "crates/fss-reference/src/onvif/control.rs",
     "crates/fss-reference/src/onvif/control/lifecycle.rs",
+    "crates/fss-reference/src/onvif/control/renewal.rs",
     "crates/fss-reference/src/onvif/control/termination.rs"
   ],
   "module_declarations": {
@@ -771,6 +772,8 @@
     "crates/fss-reference/src/onvif/control/codec.rs": "support",
     "crates/fss-reference/src/onvif/control/catalog.rs": "cognition",
     "crates/fss-reference/src/onvif/control/lifecycle.rs": "ambiguous",
+    "crates/fss-reference/src/onvif/control/renewal.rs": "ambiguous",
+    "crates/fss-reference/src/onvif/control/renewal/codec.rs": "support",
     "crates/fss-reference/src/onvif/control/termination.rs": "ambiguous",
     "crates/fss-cli/src/bin/fss-onvif-metadata/control.rs": "support"
   },
@@ -1366,7 +1369,7 @@
     "PullPointConfig": {
       "file": "crates/fss-reference/src/onvif/pullpoint.rs",
       "plane": "support",
-      "description": "Explicit finite native subscription plan with independently approved event route, exact subtree and nonrefillable lifecycle limits."
+      "description": "Explicit finite native subscription plan with independently approved event route, exact subtree, at most four opt-in renewals and nonrefillable lifecycle limits."
     },
     "PullBatch": {
       "file": "crates/fss-reference/src/onvif/pullpoint.rs",
@@ -1441,7 +1444,7 @@
     "ControlKind": {
       "file": "crates/fss-reference/src/onvif/control/catalog.rs",
       "plane": "cognition",
-      "description": "Historical intent, Create-response or Unsubscribe-response receipt classification; never an assertion of current remote subscription state."
+      "description": "Historical Create/Renew intent or complete response classification, including unusable Renew replies and successful Unsubscribe responses; never an assertion of current remote subscription state."
     },
     "ControlDescriptor": {
       "file": "crates/fss-reference/src/onvif/control/catalog.rs",
@@ -1458,6 +1461,26 @@
       "plane": "cognition",
       "description": "Historical successful cleanup response linked to exact Create custody; require_relates_to enforces explicit reply correlation without guaranteeing future device behavior or granting effects."
     },
+    "RenewIntentBinding": {
+      "file": "crates/fss-reference/src/onvif/control/renewal.rs",
+      "plane": "support",
+      "description": "Original scoped route, approval, fresh request identity, admission time, finite lifetime and bounded attempt index for a Renew request; retained provenance cannot grant fresh dispatch authority."
+    },
+    "RenewOutcomeBinding": {
+      "file": "crates/fss-reference/src/onvif/control/renewal.rs",
+      "plane": "support",
+      "description": "Complete HTTP-response observations with explicit optional monotonic completion, client-Digest status and SOAP content type; no implied successful lease extension."
+    },
+    "RetainedRenewIntent": {
+      "file": "crates/fss-reference/src/onvif/control/renewal.rs",
+      "plane": "cognition",
+      "description": "Verified pre-dispatch Renew intent with exact original Create closure; dispatch and result remain unknown without a response, and cold opens or exact storage retries never authorize redispatch."
+    },
+    "RetainedRenewal": {
+      "file": "crates/fss-reference/src/onvif/control/renewal.rs",
+      "plane": "cognition",
+      "description": "Complete historical Renew response custody, including unusable replies, with optional strictly correlated lease interpretation; does not authenticate the camera, prove current state or grant renewal authority."
+    },
     "RetainedProgress": {
       "file": "crates/fss-reference/src/onvif/pullpoint.rs",
       "plane": "support",
@@ -1466,7 +1489,7 @@
     "PullPointControl": {
       "file": "crates/fss-reference/src/onvif/pullpoint.rs",
       "plane": "ambiguous",
-      "description": "Audited retention boundary for owner-declared Create intents and private Create/Unsubscribe observations; callbacks must establish custody before progress, and payloads grant no I/O authority."
+      "description": "Audited retention boundary for owner-declared Create/Renew intents and private Create/Renew/Unsubscribe observations; callbacks must establish custody before progress, and payloads grant no I/O authority."
     }
   }
 }

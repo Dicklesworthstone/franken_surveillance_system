@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use fss_core::{CanonicalEncoder, ContentDigest, DigestAlgorithm, SensorId};
 use fss_reference::onvif::client::DigestConfig;
 use fss_reference::onvif::http::{HttpLimits, HttpRoute};
-use fss_reference::onvif::pullpoint::{PullPointConfig, route_in_service_root};
+use fss_reference::onvif::pullpoint::{MAX_RENEWALS, PullPointConfig, route_in_service_root};
 
 use super::super::authentication::AuthPlan;
 use super::super::{ARGUMENT_ERROR, clean_absolute, digest, text};
@@ -22,12 +22,15 @@ pub(super) const HELP: &str = "fss-onvif-metadata capture [options]
   --receive-origin-ns N
   [--principal ID] [--generation 1] [--max-pulls 4] [--poll-seconds 5]
   [--message-limit 128] [--lifetime-seconds 120] [--timeout-ms 30000]
-  [--max-steps 100000]
+  [--max-steps 100000] [--max-renewals 0]
   [--credential-file /PRIVATE_FILE --auth-realm EXACT_REALM]
   [--legacy-md5 yes] [--legacy-no-qop yes]
 
 Creates one finite device-event PullPoint subscription, retains complete event responses,
 then attempts Unsubscribe within the original deadline. No automatic reconnect.
+Renewal is opt-in: --max-renewals 1..4 allows bounded extensions using --lifetime-seconds.
+Each renewal preserves the original session deadline, poll limit and cleanup reserve.
+Its intent is durably recorded before dispatch; an uncertain response never causes retry.
 The peer is a literal IP; authority and service subtree remain independently pinned.
 Only explicit plaintext HTTP with optional HTTP Digest is supported in this lane.
 Native capture requires Linux entropy, including anonymous capture. Credentials use a
@@ -145,6 +148,7 @@ impl Plan {
                         | "--poll-seconds"
                         | "--message-limit"
                         | "--lifetime-seconds"
+                        | "--max-renewals"
                 )
             };
             if !(common || action) || values.insert(key.to_owned(), pair[1].clone()).is_some() {
@@ -221,6 +225,11 @@ impl Plan {
                     unsigned(&values, "--lifetime-seconds", 120, 5, 3600)? as u32,
                 )
             };
+        let max_renewals = if cleanup.is_some() {
+            0
+        } else {
+            unsigned(&values, "--max-renewals", 0, 0, u64::from(MAX_RENEWALS))? as u32
+        };
         let max_steps = unsigned(&values, "--max-steps", 100000, 2048, 100000)? as u32;
         let generation = unsigned(&values, "--generation", 1, 1, u64::MAX)?;
         let peer = text(&values, "--peer")?
@@ -278,6 +287,13 @@ impl Plan {
             e.u64(value);
         }
         e.text(&principal);
+        // Keep pre-renewal approvals byte-for-byte stable when renewal is disabled.
+        // Explicit arguments are already bound above; enabled renewal also binds
+        // its effective cap and distinct effect scope.
+        if max_renewals > 0 {
+            e.text("fss.onvif_metadata_capture_bounded_renewal.v1");
+            e.u64(u64::from(max_renewals));
+        }
         let approval = ContentDigest::sha256(&e.finish_checked().map_err(|_| ARGUMENT_ERROR)?);
         let events = HttpRoute::event_service(peer, authority, target, generation, approval)
             .map_err(|_| ARGUMENT_ERROR)?;
@@ -296,6 +312,7 @@ impl Plan {
             deadline_ns: timeout_ns,
             max_steps,
             max_pulls,
+            max_renewals,
             pull_timeout_seconds,
             message_limit,
             lifetime_seconds,
@@ -366,11 +383,47 @@ mod tests {
             "sha256:93d9d1a10faf1ef6c4831e3b610e7af769a5903425c5cba4f9e210eebfb03882"
         );
         assert_eq!(plan.config.max_pulls, 4);
+        assert_eq!(plan.config.max_renewals, 0);
         assert_eq!(plan.config.pull_timeout_seconds, 5);
         assert_eq!(plan.config.message_limit, 128);
         assert_eq!(plan.config.lifetime_seconds, 120);
         assert_eq!(plan.config.deadline_ns, 30_000_000_000);
         assert_eq!(plan.config.max_steps, 100000);
+        Ok(())
+    }
+
+    #[test]
+    fn renewal_is_explicit_bounded_and_part_of_the_owner_approval() -> Test {
+        let args = arguments("--subscribe");
+        let baseline = Plan::parse(&args)?;
+        for maximum in 0..=MAX_RENEWALS {
+            let mut enabled = args.clone();
+            enabled.extend([
+                OsString::from("--max-renewals"),
+                OsString::from(maximum.to_string()),
+            ]);
+            let plan = Plan::parse(&enabled)?;
+            assert_eq!(plan.config.max_renewals, maximum);
+            assert_eq!(plan.config.deadline_ns, baseline.config.deadline_ns);
+            assert_eq!(plan.config.max_pulls, baseline.config.max_pulls);
+            assert_ne!(plan.approval, baseline.approval);
+            assert_eq!(plan.config.events.plaintext_approval(), plan.approval);
+            let reordered: Vec<_> = enabled.chunks_exact(2).rev().flatten().cloned().collect();
+            assert_eq!(Plan::parse(&reordered)?.approval, plan.approval);
+        }
+        for maximum in ["5", "-1", "18446744073709551616", "unbounded"] {
+            let mut invalid = args.clone();
+            invalid.extend([OsString::from("--max-renewals"), OsString::from(maximum)]);
+            assert!(Plan::parse(&invalid).is_err());
+        }
+        let mut duplicate = args;
+        duplicate.extend([
+            OsString::from("--max-renewals"),
+            OsString::from("1"),
+            OsString::from("--max-renewals"),
+            OsString::from("2"),
+        ]);
+        assert!(Plan::parse(&duplicate).is_err());
         Ok(())
     }
 
@@ -399,6 +452,7 @@ mod tests {
             ("--poll-seconds", "1"),
             ("--message-limit", "1"),
             ("--lifetime-seconds", "5"),
+            ("--max-renewals", "1"),
         ] {
             let mut args = arguments("--unsubscribe");
             args.extend([OsString::from(key), OsString::from(value)]);

@@ -1308,3 +1308,40 @@ Catalog storage allowance now includes the complete three-root ancestry of every
 Validation: seven pure cleanup/capture plan tests passed against the complete production Plan/AuthPlan and actual CLI validation helpers with genuine core/reference protocol dependencies. They cover explicit fresh approvals, action isolation, selected identity/root binding, exact/default canonical arguments, authentication parsing, invalid handles and unchanged legacy capture approval. Independent source reviews found no concrete API/borrow or receipt-preservation defect in capture/control integration. Rustfmt parsed the changed CLI sources. These results do not replace a full CLI runtime or deployment-custody run: Asupersync compilation was SIGKILLed before project diagnostics, and the 29 new deployment custody/deletion contracts plus three bridge/deployment contracts remain unexecuted.
 
 Follow the executable recovery examples and failure semantics in `docs/onvif-metadata.md`. Automatic renewal/reconnect, HTTPS/UsernameToken in this capture lane, RTP metadata and physical-device/Profile M qualification remain open; no full FSS-046 completion or release qualification is claimed.
+
+## Bounded PullPoint renewal with durable custody (2026-10-28)
+
+Native capture now supports explicitly approved `--max-renewals 1..4`; omission
+keeps renewal disabled and preserves the existing capture approval bytes. Renewal
+uses the original subscription route and requested lifetime, reserves cleanup
+time/steps, and cannot extend the original session deadline or poll count. It
+requires a new logical request identity and a durable intent before dispatch.
+The batch-only library API refuses renewal because it cannot acknowledge control
+custody. No renewal failure triggers a new subscription or an automatic retry of
+an ambiguous request; one explicitly challenged HTTP Digest retry remains bounded.
+
+Successful and unusable complete renewal responses have immutable, independently
+inspectable receipts. HTTP refusal, wrong content type, malformed or uncorrelated
+SOAP, and missing completion-clock observations retain their complete private body
+without activating a lease. Transport loss leaves the prior intent unresolved.
+Progress preserves known durable handles and successful observations across a
+late refusal, while stopping further polling. Metadata batches remain linked to
+the original Create source and request identity.
+
+`control list` and `control inspect --kind renew-intent|renewed` cold-verify the
+exact renewal-attempt parent, original Create ancestry, source, root and ledger.
+These records participate in existing sensor/import deletion, holds and
+tombstone-first recovery, including unusable response bodies. Reports disclose
+hashes and historical observations; current remote state remains unknown.
+
+Eight new native TCP regressions, four durable-custody regressions, two lifecycle
+regressions and two CLI admission regressions cover the new contract. Twenty-four
+existing exact-source PullPoint wire tests passed on the pinned toolchain.
+Rustfmt and scoped whitespace/registry checks passed. The full locked, offline
+Cargo check of `fss-onvif-metadata` was killed with SIGKILL while compiling genuine
+Asupersync metadata, before reaching project diagnostics; the new native runtime
+and deployment suites therefore remain unexecuted at this checkpoint. No full
+workspace, device interoperability or release qualification is claimed. Continuous
+capture/reconnect, durable pre-dispatch cleanup attempts, stable owner operation
+IDs for ambiguous Create recovery, HTTPS/UsernameToken and RTP metadata remain
+open. FSS-046 / fss-x4a.11.4 remains open.

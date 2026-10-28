@@ -11,8 +11,8 @@ use std::collections::BTreeMap;
 use fss_core::{CanonicalDecoder, ContentDigest};
 
 use super::{
-    CREATED_DOMAIN, RetainedCreateIntent, RetainedSubscription, RetainedUnsubscribe,
-    UNSUBSCRIBED_DOMAIN, read_record,
+    CREATED_DOMAIN, RENEW_INTENT_DOMAIN, RENEWED_DOMAIN, RetainedCreateIntent, RetainedRenewIntent,
+    RetainedRenewal, RetainedSubscription, RetainedUnsubscribe, UNSUBSCRIBED_DOMAIN, read_record,
 };
 use crate::adapter_replay::ReplayAdmission;
 use crate::deletion::DeletionIndex;
@@ -31,6 +31,11 @@ pub enum ControlKind {
     Created,
     /// A complete correlated Unsubscribe success was retained.
     Unsubscribed,
+    /// A Renew request was durably prepared; dispatch/result may remain unknown.
+    RenewIntent,
+    /// A complete Renew response was retained, including refused or malformed responses.
+    /// This kind alone does not establish that a lease was granted.
+    Renewed,
 }
 
 /// Bounded hash-only discovery record. No endpoint, reference parameter or raw source is exposed.
@@ -44,8 +49,10 @@ pub struct ControlDescriptor {
     pub root: ContentDigest,
     /// Original pre-dispatch intent identity.
     pub intent_identity: ContentDigest,
-    /// The Create receipt identity for Created/Unsubscribed records.
+    /// The original Create receipt identity for subsequent subscription records.
     pub subscription_identity: Option<ContentDigest>,
+    /// Exact pre-dispatch Renew intent, preserving independent attempt/outcome linkage.
+    pub renewal_intent_identity: Option<ContentDigest>,
     /// Original ledger commit sequence, preserving multiple observations separately.
     pub authority_sequence: u64,
 }
@@ -135,6 +142,7 @@ fn describe<G: ReplayAdmission>(
             root,
             intent_identity: identity,
             subscription_identity: None,
+            renewal_intent_identity: None,
             authority_sequence: intent.authority_anchor().commit_sequence,
         }
     } else {
@@ -149,6 +157,7 @@ fn describe<G: ReplayAdmission>(
                     root,
                     intent_identity: created.intent_identity(),
                     subscription_identity: Some(identity),
+                    renewal_intent_identity: None,
                     authority_sequence: created.authority_anchor().commit_sequence,
                 }
             }
@@ -160,7 +169,32 @@ fn describe<G: ReplayAdmission>(
                     root,
                     intent_identity: ended.subscription().intent_identity(),
                     subscription_identity: Some(ended.subscription_identity()),
+                    renewal_intent_identity: None,
                     authority_sequence: ended.authority_anchor().commit_sequence,
+                }
+            }
+            RENEW_INTENT_DOMAIN => {
+                let intent = RetainedRenewIntent::open(deployment, identity, Some(root), cx)?;
+                ControlDescriptor {
+                    kind: ControlKind::RenewIntent,
+                    identity,
+                    root,
+                    intent_identity: intent.subscription().intent_identity(),
+                    subscription_identity: Some(intent.subscription().identity()),
+                    renewal_intent_identity: Some(identity),
+                    authority_sequence: intent.authority_anchor().commit_sequence,
+                }
+            }
+            RENEWED_DOMAIN => {
+                let renewed = RetainedRenewal::open(deployment, identity, Some(root), cx)?;
+                ControlDescriptor {
+                    kind: ControlKind::Renewed,
+                    identity,
+                    root,
+                    intent_identity: renewed.intent().subscription().intent_identity(),
+                    subscription_identity: Some(renewed.intent().subscription().identity()),
+                    renewal_intent_identity: Some(renewed.intent().identity()),
+                    authority_sequence: renewed.authority_anchor().commit_sequence,
                 }
             }
             _ => return Err(MetadataError::Custody),

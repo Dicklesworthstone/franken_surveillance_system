@@ -12,8 +12,8 @@ use fss_core::{
     BudgetVector, CanonicalEncoder, ContentDigest, ContextAuthority, OperationId, RootAuthoritySpec,
 };
 use fss_reference::onvif::control::{
-    ControlKind, MAX_CATALOG_RECORDS, RetainedCreateIntent, RetainedSubscription,
-    RetainedUnsubscribe, list_control,
+    ControlKind, MAX_CATALOG_RECORDS, RetainedCreateIntent, RetainedRenewIntent, RetainedRenewal,
+    RetainedSubscription, RetainedUnsubscribe, list_control,
 };
 use fss_reference::onvif::pullpoint::{self, CaptureReport, SubscriptionState};
 use fss_reference::{ReferenceDeployment, ReplayCx};
@@ -28,7 +28,7 @@ use super::{
 const HELP: &str = "fss-onvif-metadata control <list|inspect|unsubscribe> [options]
   list: --root ABSOLUTE_DIR --site SITE [--principal ID] [--max-records 64]
   inspect: --root ABSOLUTE_DIR --site SITE [--principal ID]
-           --kind intent|created|unsubscribed --control-id sha256:HEX
+           --kind intent|created|unsubscribed|renew-intent|renewed --control-id sha256:HEX
            [--expected-root sha256:HEX]
   unsubscribe: --root ABSOLUTE_DIR --site SITE [--principal ID]
            --subscription-id sha256:HEX --expected-root sha256:HEX
@@ -45,7 +45,8 @@ list and inspect cold-verify exact local custody and disclose hashes only.
 list either returns every admitted record or refuses; its ceiling is 1024 records.
 Verified native deletions are omitted. Empty output proves no remote absence.
 An intent alone leaves dispatch and result unknown; it never authorizes Create retry.
-A retained Create or Unsubscribe response is a historical observation, not current state.
+A renewal intent alone also leaves its remote result unknown; it never authorizes retry.
+Retained responses are historical observations, not current remote state.
 unsubscribe requires a fresh, explicit owner request with the original independent pins.
 It performs only Unsubscribe against the retained scoped endpoint; it never creates or polls.
 The expected root is mandatory for cleanup. The current receive origin must follow the
@@ -133,6 +134,8 @@ fn parse_cold(args: &[OsString]) -> Result<ColdOptions, &'static str> {
             "intent" => ControlKind::CreateIntent,
             "created" => ControlKind::Created,
             "unsubscribed" => ControlKind::Unsubscribed,
+            "renew-intent" => ControlKind::RenewIntent,
+            "renewed" => ControlKind::Renewed,
             _ => return Err(ARGUMENT_ERROR),
         };
         ColdAction::Inspect {
@@ -242,6 +245,9 @@ fn cold(options: ColdOptions) -> Result<String, &'static str> {
                         if let Some(identity) = record.subscription_identity {
                             line!("record.{index}.subscription_identity={identity}");
                         }
+                        if let Some(identity) = record.renewal_intent_identity {
+                            line!("record.{index}.renewal_intent_identity={identity}");
+                        }
                     }
                 }
                 ColdAction::Inspect {
@@ -306,6 +312,50 @@ fn cold(options: ColdOptions) -> Result<String, &'static str> {
                             );
                             line!("historical_observation=unsubscribe_success_retained");
                         }
+                        ControlKind::RenewIntent => {
+                            let value = RetainedRenewIntent::open(
+                                &deployment,
+                                *identity,
+                                *expected_root,
+                                &cx,
+                            )
+                            .map_err(|e| e.code())?;
+                            line!("publication_root={}", value.publication_root());
+                            line!("renewal_index={}", value.binding().renewal_index);
+                            line!("subscription_identity={}", value.subscription().identity());
+                            line!(
+                                "authority_sequence={}",
+                                value.authority_anchor().commit_sequence
+                            );
+                            line!("historical_observation=renew_intent_prepared");
+                            line!("remote_dispatch=unknown");
+                            line!("automatic_renew_retry_safe=false");
+                        }
+                        ControlKind::Renewed => {
+                            let value =
+                                RetainedRenewal::open(&deployment, *identity, *expected_root, &cx)
+                                    .map_err(|e| e.code())?;
+                            line!("publication_root={}", value.publication_root());
+                            line!("renewal_intent_identity={}", value.intent().identity());
+                            line!(
+                                "subscription_identity={}",
+                                value.intent().subscription().identity()
+                            );
+                            line!("source_sha256={}", value.source_digest());
+                            line!("source_bytes={}", value.source_bytes());
+                            line!(
+                                "authority_sequence={}",
+                                value.authority_anchor().commit_sequence
+                            );
+                            line!("historical_observation=renew_response_retained");
+                            line!("lease_confirmed={}", value.lease().is_some());
+                            line!("http_status={}", value.binding().http_status);
+                            line!(
+                                "completion_time_observed={}",
+                                value.binding().completed_ns.is_some()
+                            );
+                            line!("automatic_renew_retry_safe=false");
+                        }
                     }
                     line!("custody_verified=true");
                 }
@@ -326,6 +376,8 @@ fn kind_name(kind: ControlKind) -> &'static str {
         ControlKind::CreateIntent => "intent",
         ControlKind::Created => "created",
         ControlKind::Unsubscribed => "unsubscribed",
+        ControlKind::RenewIntent => "renew-intent",
+        ControlKind::Renewed => "renewed",
     }
 }
 
@@ -596,5 +648,32 @@ mod tests {
             ]))
             .is_err()
         );
+    }
+
+    #[test]
+    fn cold_renewal_kinds_are_exact_and_do_not_grant_network_authority() {
+        let identity = ContentDigest::sha256(b"renewal-receipt").to_string();
+        for (name, expected) in [
+            ("renew-intent", ControlKind::RenewIntent),
+            ("renewed", ControlKind::Renewed),
+        ] {
+            let mut values = args(&[
+                "inspect",
+                "--root",
+                "/owner",
+                "--site",
+                "site:test",
+                "--kind",
+                name,
+                "--control-id",
+                &identity,
+            ]);
+            assert!(matches!(
+                parse_cold(&values).map(|options| options.action),
+                Ok(ColdAction::Inspect { kind, .. }) if kind == expected
+            ));
+            values.extend(args(&["--max-renewals", "1"]));
+            assert!(parse_cold(&values).is_err());
+        }
     }
 }

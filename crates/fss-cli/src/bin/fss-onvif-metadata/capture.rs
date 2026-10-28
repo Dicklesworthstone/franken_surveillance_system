@@ -14,8 +14,10 @@ use fss_core::{
 };
 use fss_reference::onvif::client::{ClientError, OnvifContext};
 use fss_reference::onvif::control::{
-    CreateIntentBinding, RetainedCreateIntent, RetainedSubscription, RetainedUnsubscribe,
-    UnsubscribeBinding, prepare_create, retain_created, retain_unsubscribed,
+    CreateIntentBinding, RenewIntentBinding, RenewOutcomeBinding, RetainedCreateIntent,
+    RetainedRenewIntent, RetainedRenewal, RetainedSubscription, RetainedUnsubscribe,
+    UnsubscribeBinding, prepare_create, prepare_renew, retain_created, retain_renewal,
+    retain_unsubscribed,
 };
 use fss_reference::onvif::http::{HttpAuthority, HttpDenial, HttpOperation, HttpRoute};
 use fss_reference::onvif::metadata::{
@@ -191,6 +193,8 @@ pub(super) struct ControlReceipts {
     pub(super) intent: Option<RetainedCreateIntent>,
     pub(super) created: Option<RetainedSubscription>,
     pub(super) unsubscribed: Option<RetainedUnsubscribe>,
+    pub(super) renewal_intents: Vec<RetainedRenewIntent>,
+    pub(super) renewal_outcomes: Vec<RetainedRenewal>,
 }
 
 impl ControlReceipts {
@@ -219,6 +223,18 @@ impl ControlReceipts {
             if let Some((identity, root)) = receipt {
                 out.push_str(&format!("{name}.identity={identity}\n{name}.publication_root={root}\n{name}.durable_publication=true\n"));
             }
+        }
+        for (index, value) in self.renewal_intents.iter().enumerate() {
+            out.push_str(&format!(
+                "renewal_intent.{index}.identity={}\nrenewal_intent.{index}.publication_root={}\nrenewal_intent.{index}.durable_publication=true\n",
+                value.identity(), value.publication_root()
+            ));
+        }
+        for (index, value) in self.renewal_outcomes.iter().enumerate() {
+            out.push_str(&format!(
+                "renewal_outcome.{index}.identity={}\nrenewal_outcome.{index}.publication_root={}\nrenewal_outcome.{index}.intent_identity={}\nrenewal_outcome.{index}.durable_publication=true\nrenewal_outcome.{index}.lease_confirmed={}\n",
+                value.identity(), value.publication_root(), value.intent().identity(), value.lease().is_some()
+            ));
         }
         out
     }
@@ -352,6 +368,68 @@ pub(super) fn retain_control<G: ReplayAdmission>(
             receipts.unsubscribed = Some(value);
             (receipt, true)
         }
+        PullPointControl::RenewIntent {
+            route,
+            message_id,
+            started_ns,
+            lifetime_seconds,
+            renewal_index,
+        } => {
+            let value = prepare_renew(
+                &mut deployment,
+                receipts.created.as_ref().ok_or(MetadataError::Custody)?,
+                RenewIntentBinding {
+                    route: route.clone(),
+                    message_id: message_id.to_owned(),
+                    started_ns,
+                    receive_time: interval(plan, started_ns, started_ns)?.earliest,
+                    lifetime_seconds,
+                    renewal_index,
+                },
+                cx,
+            )?;
+            let receipt = RetainedBatch {
+                identity: value.identity(),
+                root: value.publication_root(),
+            };
+            let dispatch_allowed = value.newly_prepared();
+            receipts.renewal_intents.push(value);
+            (receipt, dispatch_allowed)
+        }
+        PullPointControl::Renewed {
+            source,
+            message_id,
+            completed_ns,
+            authenticated,
+            http_status,
+            soap_content_type,
+        } => {
+            let intent = receipts
+                .renewal_intents
+                .last()
+                .ok_or(MetadataError::Custody)?;
+            if intent.binding().message_id != message_id {
+                return Err(MetadataError::Custody);
+            }
+            let value = retain_renewal(
+                &mut deployment,
+                intent,
+                RenewOutcomeBinding {
+                    completed_ns,
+                    client_authenticated: authenticated,
+                    http_status,
+                    soap_content_type,
+                },
+                source,
+                cx,
+            )?;
+            let receipt = RetainedBatch {
+                identity: value.identity(),
+                root: value.publication_root(),
+            };
+            receipts.renewal_outcomes.push(value);
+            (receipt, true)
+        }
     };
     let mut result = progress(cx, receipt);
     // Existing storage proves an old intent; it never grants a new remote dispatch.
@@ -396,10 +474,11 @@ pub(super) fn run_args(args: &[OsString]) -> Result<(String, bool), &'static str
         return Ok((plan::HELP.to_owned(), true));
     }
     let plan = Plan::parse(args)?;
-    let exchanges = 2 * (u64::from(plan.config.max_pulls) + 2);
+    let exchanges =
+        2 * (u64::from(plan.config.max_pulls) + u64::from(plan.config.max_renewals) + 2);
     let network =
         exchanges * (plan.config.limits.request_bytes + plan.config.limits.wire_bytes) as u64;
-    let operations = u64::from(plan.config.max_pulls) + 3;
+    let operations = u64::from(plan.config.max_pulls) + 2 * u64::from(plan.config.max_renewals) + 3;
     let retained_allowance = operations * 4 * 1024 * 1024;
     let mut retained = Vec::<RetainedMetadata>::new();
     let mut controls = ControlReceipts::default();
@@ -565,11 +644,21 @@ fn render(
     line!("absence_claimed=false");
     line!("current_remote_state=unknown");
     line!("automatic_create_retry_safe=false");
+    line!("automatic_renew_retry_safe=false");
     line!("sensitive_features_enabled=false");
     line!("values_disclosed=false");
     out.push_str(&controls.report());
     line!("retained_batches={}", retained.len());
     line!("maximum_pulls={}", plan.config.max_pulls);
+    line!("maximum_renewals={}", plan.config.max_renewals);
+    line!(
+        "retained_renewal_intents={}",
+        controls.renewal_intents.len()
+    );
+    line!(
+        "retained_renewal_outcomes={}",
+        controls.renewal_outcomes.len()
+    );
     line!("error={}", error.unwrap_or("none"));
     line!("cleanup_error={}", cleanup_error.unwrap_or("none"));
     if let Some(report) = report {
@@ -577,6 +666,7 @@ fn render(
         line!("stop={:?}", report.stop);
         line!("http_exchanges={}", report.exchanges);
         line!("completed_pulls={}", report.pulls);
+        line!("completed_renewals={}", report.renewals);
         line!("vendor_notifications={}", report.notifications);
         line!(
             "subscription_source_received={}",

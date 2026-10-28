@@ -9,10 +9,16 @@
 mod catalog;
 mod codec;
 mod lifecycle;
+mod renewal;
 mod termination;
 
 pub use catalog::{ControlDescriptor, ControlKind, MAX_CATALOG_RECORDS, list_control};
 pub(crate) use lifecycle::lifecycle_sensor;
+pub use renewal::{
+    RENEW_INTENT_DOMAIN, RENEWED_DOMAIN, RenewIntentBinding, RenewOutcomeBinding,
+    RetainedRenewIntent, RetainedRenewal, STAGE_RENEW_INTENT_PUBLISH, STAGE_RENEWED_PUBLISH,
+    prepare_renew, retain_renewal,
+};
 pub use termination::{
     RetainedUnsubscribe, STAGE_UNSUBSCRIBED_PUBLISH, UNSUBSCRIBED_DOMAIN, UnsubscribeBinding,
     retain_unsubscribed,
