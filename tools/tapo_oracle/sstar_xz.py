@@ -21,11 +21,22 @@ the walker reports it but does not resolve it — see `--pointers`.
 
   python3 sstar_xz.py <image.dec> --scan            # locate + parse every container
   python3 sstar_xz.py <image.dec> --pointers        # dump the kernel-container pointer table
+  python3 sstar_xz.py <image.dec> --decode N        # decode block N of the first container
+  python3 sstar_xz.py <image.dec> --bulk-scan N     # search for block N's real bulk offset
   python3 sstar_xz.py <image.dec> --json            # machine-readable
+
+Decoding: each block header is followed by a 12-byte LZMA2 chunk preamble whose
+first six bytes are a real chunk header and whose next six are the first data
+bytes (they decode to the uImage magic `27 05 31 4b`). The rest of the block's
+data is *not* at `bulk_offset` — the byte there is never a valid chunk control
+(props `0x3e`/`0x81`/`0xac`, all `lc+lp > 4`). `--bulk-scan` reports the best
+offset found so the gap stays visible instead of being papered over.
 """
 import argparse
 import json
+import lzma
 import struct
+import subprocess
 import sys
 import zlib
 
@@ -152,6 +163,52 @@ def pointer_table(data: bytes) -> dict | None:
     return out
 
 
+def block_stream(data: bytes, c: dict, block: int, bulk: int | None = None) -> bytes:
+    """The LZMA2 stream for one block: the 12-byte chunk preamble + the bulk tail.
+
+    The preamble is `header_offset + 20`; its first six bytes are the chunk header
+    and the next six are the chunk's first data bytes. `bulk` overrides the
+    container's `bulk_offset` so `--bulk-scan` can try candidates.
+    """
+    h = c["headers"][block]["offset"] + 20
+    pre = data[h:h + 12]
+    start = c["bulk_offset"] if bulk is None else bulk
+    size = c["blocks"][block]["compressed"] - 6
+    return pre + data[start:start + size]
+
+
+def decode_block(data: bytes, c: dict, block: int, bulk: int | None = None,
+                 dict_size: int = 6144) -> dict:
+    """Decode one block with liblzma. Returns the bytes produced before any error."""
+    stream = block_stream(data, c, block, bulk)
+    # `xz` writes everything it produced before the corrupt byte; liblzma's
+    # Python binding discards the whole call's output when it raises.
+    r = subprocess.run(["xz", "--format=raw", "--lzma2=dict=%d" % dict_size, "-dc"],
+                       input=stream, capture_output=True)
+    out = r.stdout
+    return {
+        "block": block,
+        "bulk_offset": c["bulk_offset"] if bulk is None else bulk,
+        "declared_compressed": c["blocks"][block]["compressed"],
+        "declared_uncompressed": c["blocks"][block]["uncompressed"],
+        "decoded": len(out),
+        "complete": len(out) == c["blocks"][block]["uncompressed"],
+        "head": out[:16].hex(),
+        "bytes": out,
+    }
+
+
+def bulk_scan(data: bytes, c: dict, block: int, span: int = 0x10000,
+              step: int = 1) -> list[tuple[int, int]]:
+    """Offsets near `bulk_offset` ranked by how much they decode, best first."""
+    scored = []
+    start = c["bulk_offset"]
+    for off in range(start, min(start + span, len(data) - 16), step):
+        scored.append((decode_block(data, c, block, bulk=off)["decoded"], off))
+    scored.sort(key=lambda t: (-t[0], t[1]))
+    return scored
+
+
 def scan(data: bytes) -> list[dict]:
     found = []
     start = 0
@@ -173,6 +230,12 @@ def main() -> int:
     ap.add_argument("--pointers", action="store_true",
                     help="dump the backward-pointer table of the first container's "
                          "preamble region")
+    ap.add_argument("--decode", type=int, metavar="BLOCK",
+                    help="decode block N of the first container and report the result")
+    ap.add_argument("--bulk-scan", type=int, metavar="BLOCK",
+                    help="rank bulk offsets for block N by decoded length")
+    ap.add_argument("--span", type=lambda v: int(v, 0), default=0x10000,
+                    help="bytes to search in --bulk-scan (default 0x10000)")
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args()
     data = open(a.image, "rb").read()
@@ -183,6 +246,34 @@ def main() -> int:
             containers[0]["pointer_table"] = pt
         else:
             containers[0]["pointer_table"] = None
+    if a.decode is not None or a.bulk_scan is not None:
+        if not containers:
+            sys.exit("no sstarXZ container in %s" % a.image)
+        c = containers[0]
+        if not c.get("valid"):
+            sys.exit("container at 0x%x is not valid: %s"
+                     % (c["magic_offset"], c.get("error")))
+        block = a.decode if a.decode is not None else a.bulk_scan
+        if not 0 <= block < c["block_count"]:
+            sys.exit("block %d out of range (container has %d)"
+                     % (block, c["block_count"]))
+        if a.bulk_scan is not None:
+            ranked = bulk_scan(data, c, block, span=a.span)
+            for n, off in ranked[:10]:
+                print("0x%x -> %d bytes" % (off, n))
+            return 0
+        r = decode_block(data, c, block)
+        if a.json:
+            r = dict(r)
+            r.pop("bytes")
+            print(json.dumps(r, indent=2))
+        else:
+            print("block %d: decoded %d of %d declared bytes (compressed %d), "
+                  "bulk@0x%x, head=%s%s"
+                  % (block, r["decoded"], r["declared_uncompressed"],
+                     r["declared_compressed"], r["bulk_offset"], r["head"],
+                     "" if r["complete"] else "  INCOMPLETE"))
+        return 0 if r["complete"] else 1
     if a.json:
         print(json.dumps({"image": a.image, "containers": containers}, indent=2,
                          default=str))

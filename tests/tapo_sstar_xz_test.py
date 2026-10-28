@@ -121,6 +121,28 @@ def main() -> int:
         check("c660: LZO first-block marker (doc: 27483 B first block)",
               d6[0x700210:0x700210 + 2] not in (b"", None))
 
+    # ---- decode ---------------------------------------------------------------
+    # Every container's first block decodes to the uImage magic from its 12-byte
+    # chunk preamble; the bulk tail is still unresolved, so the count is pinned
+    # as a regression marker rather than asserted complete.
+    if os.path.exists(C460):
+        for c in cs:
+            r = sstar_xz.decode_block(data, c, 0)
+            name = (c.get("uimage") or {}).get("name", "?")[:12]
+            check("c460: %s block0 decodes the uImage magic" % name,
+                  r["head"].startswith("2705314b"), r["head"])
+            check("c460: %s block0 decoded > 0" % name, r["decoded"] > 0,
+                  str(r["decoded"]))
+            check("c460: %s block0 incomplete (bulk unresolved)" % name,
+                  not r["complete"], str(r["decoded"]))
+        k = sstar_xz.decode_block(data, cs[0], 0)
+        check("c460: kernel block0 decoded count pinned", k["decoded"] == 200,
+              str(k["decoded"]))
+        ranked = sstar_xz.bulk_scan(data, cs[0], 0, span=0x400)
+        check("c460: bulk_scan ranks offsets", len(ranked) == 0x400)
+        check("c460: bulk_scan is best-first",
+              all(ranked[i][0] >= ranked[i + 1][0] for i in range(len(ranked) - 1)))
+
     # ---- CLI surface ----------------------------------------------------------
     if os.path.exists(C460):
         r = run([C460, "--scan"])
@@ -130,6 +152,12 @@ def main() -> int:
         j = json.loads(r.stdout)
         pt = j["containers"][0].get("pointer_table")
         check("cli: json pointer table", bool(pt) and pt["all_backward"])
+        r = run([C460, "--decode", "0"])
+        check("cli: decode rc=1 while incomplete", r.returncode == 1)
+        check("cli: decode reports the magic", "2705314b" in r.stdout)
+        r = run([C460, "--decode", "0", "--json"])
+        j = json.loads(r.stdout)
+        check("cli: decode json", j["block"] == 0 and j["decoded"] > 0)
         r = run([C660, "--scan"]) if os.path.exists(C660) else None
         if r is not None:
             check("cli: c660 scan rc=0 (empty)", r.returncode == 0)
