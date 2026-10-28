@@ -33,7 +33,11 @@ while true; do
     sudo -n python3 "$HERE/owlet_oracle_watch.py" --minutes 1 >/dev/null 2>&1
   fi
 
-  # 3. fire only into a quiet window
+  # 3. root attempt whenever the camera is present (own liveness gate; silent exit if
+  #    absent) — this is the priority chain: mint->probe->ACK->0x06E3->avClientStart
+  sudo -n "$HERE/owlet_root_attempt.sh" >> /tmp/owlet_relay_watch.log 2>&1
+
+  # 4. the RELAY IDLE gated fire (idle-window precondition lane) unchanged
   if [ "$FIRE" = "1" ]; then
     sudo -n python3 "$HERE/owlet_relay_watch.py" fire --force >> /tmp/owlet_relay_watch.log 2>&1
   fi
