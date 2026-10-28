@@ -255,6 +255,49 @@ def test_onvif():
     check("closed -> False", post.onvif_probe("127.0.0.1", port, timeout=1) is False)
 
 
+def test_presence():
+    print("presence needs ICMP AND a resolved ARP entry:")
+    real = post.subprocess.run
+
+    class R:
+        def __init__(self, rc=0, out=""):
+            self.returncode = rc
+            self.stdout = out
+
+    def install(icmp, arp_line):
+        def fake(cmd, **kw):
+            if cmd[0] == "ping":
+                return R(0 if icmp else 1)
+            return R(0, arp_line)
+        post.subprocess.run = fake
+
+    try:
+        install(True, "? (192.0.2.1) at aa:bb on en0")
+        check("both signals -> True", post.present("192.0.2.1") is True)
+        install(False, "? (192.0.2.1) at aa:bb on en0")
+        check("ARP only (asleep) -> False", post.present("192.0.2.1") is False)
+        install(True, "? (192.0.2.1) at (incomplete) on en0")
+        check("ICMP + incomplete -> False", post.present("192.0.2.1") is False)
+        install(True, "? (192.0.2.9) at aa:bb on en0")
+        check("ICMP + other host -> False", post.present("192.0.2.1") is False)
+    finally:
+        post.subprocess.run = real
+
+    seq = iter([False, False, True])
+    real_present = post.present
+    post.present = lambda host: next(seq)
+    try:
+        check("wait returns on the first PRESENT", post.wait_present("192.0.2.1", 1, poll=0) is True)
+    finally:
+        post.present = real_present
+
+    post.present = lambda host: False
+    try:
+        check("wait gives up at the deadline", post.wait_present("192.0.2.1", 0.001, poll=0) is False)
+    finally:
+        post.present = real_present
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory() as tmp:
         test_shapes(tmp)
@@ -262,6 +305,7 @@ def main() -> int:
     test_find_public_key()
     test_probe()
     test_onvif()
+    test_presence()
     if FAILURES:
         print("\n%d failure(s): %s" % (len(FAILURES), FAILURES))
         return 1
