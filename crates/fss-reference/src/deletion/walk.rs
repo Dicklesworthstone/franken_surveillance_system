@@ -117,6 +117,7 @@ fn unit_kind(id: &str) -> &'static str {
         ("batch:rtp:", "import_custody"),
         ("slot:rtp-", "import_custody"),
         ("slot:onvif-metadata-", "import_custody"),
+        ("slot:onvif-rtp-metadata-", "import_custody"),
         ("slot:onvif-create-intent-", "import_custody"),
         ("slot:onvif-subscription-", "import_custody"),
         ("batch:recorded-decode:", "decoded_frames"),

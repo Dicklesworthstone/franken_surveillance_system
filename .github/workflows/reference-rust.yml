@@ -36,6 +36,14 @@ jobs:
         run: bash scripts/bootstrap_toolchain.sh
       - name: Verify owned runtime and recoverable effect transitions
         run: cargo +nightly-2026-08-31 test --no-fail-fast --locked --offline -p fss-runtime --all-targets --all-features
+      - name: Verify retained ONVIF RTP metadata and operator commands
+        if: success() || failure()
+        run: |
+          metadata_exit=0
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-packet --test onvif_metadata_receiver_contract || metadata_exit=1
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test onvif_rtp_metadata_custody || metadata_exit=1
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --bin fss-onvif-metadata --test onvif_rtp_metadata_cli || metadata_exit=1
+          exit "$metadata_exit"
       - name: Verify custody budgets, cold effects and retained native supervision
         if: success() || failure()
         run: |

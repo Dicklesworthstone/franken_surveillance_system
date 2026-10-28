@@ -14,6 +14,7 @@ use crate::{ReferenceDeployment, ReplayCx};
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum OnvifKind {
     Metadata,
+    RtpMetadata,
     CreateIntent,
     Subscription,
 }
@@ -21,6 +22,7 @@ impl OnvifKind {
     fn prefix(self) -> &'static str {
         match self {
             Self::Metadata => "onvif-metadata-",
+            Self::RtpMetadata => "onvif-rtp-metadata-",
             Self::CreateIntent => "onvif-create-intent-",
             Self::Subscription => "onvif-subscription-",
         }
@@ -45,6 +47,7 @@ pub(super) fn identity(batch: &str) -> Option<(OnvifKind, ContentDigest)> {
     let slot = batch.strip_prefix("batch:local-root:")?;
     let kind = [
         OnvifKind::Metadata,
+        OnvifKind::RtpMetadata,
         OnvifKind::CreateIntent,
         OnvifKind::Subscription,
     ]
@@ -91,6 +94,7 @@ pub(super) fn inspect(
     }
     let sensor = match kind {
         OnvifKind::Metadata => metadata::lifecycle_sensor(deployment, import, cx),
+        OnvifKind::RtpMetadata => metadata::rtp::lifecycle_sensor(deployment, import, cx),
         OnvifKind::CreateIntent => control::lifecycle_sensor(deployment, import, true, cx),
         OnvifKind::Subscription => control::lifecycle_sensor(deployment, import, false, cx),
     }

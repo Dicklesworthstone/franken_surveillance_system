@@ -10,6 +10,30 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## ONVIF RTP metadata reconstruction and custody (2026-10-28, reference)
+
+The production packet owner now reconstructs uncompressed ONVIF metadata from
+bounded, reordered RTP packets, using marker boundaries rather than timestamp
+changes. It preserves original packet spans and preceding boundary witnesses,
+and explicitly retires incomplete state after loss, deadlines, malformed or
+conflicting source, truncation, cancellation and stream restart.
+
+`fss-onvif-metadata import-rtp` retains one original `#!rtpplay1.0` file, a frozen
+owner/configuration recipe, complete replay report, completed XML candidates and
+accepted vendor-event/analytics projections in one immutable ledgered root.
+Rejected XML and unprocessed source remain retained even when no usable document
+survives. `inspect-rtp` and `verify-rtp` reconstruct the original packet source
+and compare every derivative, source map, publication and ledger link without
+the input file. Whole-import hold/deletion closure refuses deleted-source
+rebinding. Default output withholds raw private values; selected document
+inspection can expose its exact packet map and explicitly opted-in vendor values.
+
+This advances the packet transport and retained replay portion of FSS-046.
+Live RTSP metadata-track negotiation/acquisition, continuous recovery, cross-frame
+tracking and physical-device/Profile M qualification remain open. Existing XML
+and PullPoint generations remain unchanged. See the
+[recorded RTP operator workflow](docs/onvif-metadata.md#import-recorded-rtp-metadata).
+
 ## Source-retained reconnect recovery (2026-10-19, reference)
 
 `fss-capture-rtsp reconnect --recover yes` and `--recover index` now accept the

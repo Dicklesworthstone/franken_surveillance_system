@@ -1,8 +1,8 @@
 # Retained ONVIF vendor metadata
 
-`fss-onvif-metadata` captures a finite live ONVIF PullPoint event session or imports one complete owner-supplied PullMessages SOAP response or MetadataStream XML document. It retains the exact source, a deterministic vendor-event/analytics projection and the explicit source binding in an immutable, ledgered publication. New imports interpret the supported `VideoAnalytics` frame, object, coarse shape, classification and transformation fields alongside event notifications.
+`fss-onvif-metadata` captures a finite live ONVIF PullPoint event session, imports one complete owner-supplied PullMessages SOAP response or MetadataStream XML document, or reconstructs metadata from an owner-supplied RTP packet file. It retains the exact source, a deterministic vendor-event/analytics projection and the explicit source binding in an immutable, ledgered publication. New imports interpret the supported `VideoAnalytics` frame, object, coarse shape, classification and transformation fields alongside event notifications.
 
-This implements bounded native PullPoint acquisition with opt-in finite renewal, stable owner-operation fencing, durable control recovery and the local import/replay subset of FSS-046. Continuous reconnect, RTP metadata transport, cross-frame tracking, calibrated scene interpretation and physical-device/Profile M qualification remain separate work.
+This implements bounded native PullPoint acquisition with opt-in finite renewal, stable owner-operation fencing, durable control recovery and the local XML/RTP import/replay subset of FSS-046. Continuous reconnect, live RTSP negotiation/acquisition of metadata tracks, cross-frame tracking, calibrated scene interpretation and physical-device/Profile M qualification remain separate work.
 
 ## Capture live PullPoint events
 
@@ -160,6 +160,67 @@ The source is bounded to 256 KiB. Optional `--source-sha256 sha256:HEX` checks a
 To retry a pre-v2 import exactly, add `--interpretation events-v1` to the original import command and retain its exact source and owner bindings, including receive endpoints. In the Rust API, `retain` defaults to `Interpretation::AnalyticsV2`; `retain_with_interpretation` accepts `Interpretation::EventsV1` for an explicit legacy retry.
 
 Importing the same source under v2 creates a separate identity and publication; it does not change the v1 root. This also applies to event-only documents because the parser generation and digest domains are part of custody. Cold readers select the parser from the retained recipe. Unknown or mixed domain/generation combinations are refused, and a failed v2 interpretation never falls back to v1 automatically. The independent bytes and pins in `fixtures/onvif-metadata-v1/` exercise this compatibility boundary.
+
+## Import recorded RTP metadata
+
+`import-rtp` accepts one original `#!rtpplay1.0` packet file. Its source hash covers the complete file, including recorder framing, RTP headers/extensions/padding, duplicate or rejected packets, RTCP and any malformed or unprocessed suffix. The command uses the production RTP parser, sequence tracker and reorder receiver; it does not extract XML through a byte search or the video decoder.
+
+Supply the independently selected RTP stream configuration and owner attribution:
+
+```sh
+target/debug/fss-onvif-metadata import-rtp \
+  --root /srv/fss/site --site site:home --input metadata.rtpdump \
+  --sensor sensor:front --device-generation "$DEVICE_GENERATION" \
+  --profile-generation "$PROFILE_GENERATION" --profile main \
+  --received-start-ns "$RECEIVED_START_NS" \
+  --received-end-ns "$RECEIVED_END_NS" \
+  --ingress 1 --stream-generation 1 --ssrc "$METADATA_SSRC" \
+  --payload-type "$METADATA_PAYLOAD_TYPE"
+```
+
+`--ingress` is a nonzero owner-selected stream handle, independently assigned from SSRC. `--stream-generation` is a nonzero owner epoch; recycled sequences after a confirmed restart cannot be associated with the prior epoch. SSRC accepts an unsigned 32-bit value, and the selected dynamic payload type must be in `96..127`. Only uncompressed `vnd.onvif.metadata` is supported; the optional `--encoding` and `--clock-rate` pins accept that exact name and `90000`. Gzip/EXI and automatic SDP discovery are outside this lane. An optional `--source-sha256` checks the complete input before destination work.
+
+The RTP marker closes one document. Timestamp changes within a document are accepted and preserved per fragment. Sequence probation and discard through the first delivered marker establish a known start boundary; an initial unknown partial document is never presented as complete. Every later complete document records the preceding marker packet and the exact original arrival record, payload byte range, reconstructed XML range, extended sequence, timestamp and recorded receipt offset for every fragment. Duplicate document occurrences remain separate even when their XML hashes match.
+
+Recorder offsets are untrusted observations used only as a frozen deterministic replay clock. Equal offsets are permitted; a regression stops further interpretation and retains the remaining source. Timers run before the next arrival, so a long recorded pause expires an incomplete document. Neither recorder offsets nor RTP timestamps replace the separate owner-declared receive interval. Completed XML is accepted only as `MetadataStream`; a marker-complete SOAP response or malformed XML remains retained with a refusal and no typed projection.
+
+### Bounds and incomplete results
+
+| Resource | Default | Maximum |
+|---|---:|---:|
+| Original packet file | 8 MiB | 8 MiB |
+| Examined records | 16,384 | 16,384 |
+| Marker-complete documents, including rejected XML | 64 | 64 |
+| One reconstructed XML document | 256 KiB | 256 KiB |
+| Fragments in one document, including empty payloads | 4,096 | 4,096 |
+| Fixed document lifetime from first ordered delivery | 2 seconds | 60 seconds |
+| Reorder delay | 100 milliseconds | 60 seconds |
+| Operator request timeout | 30 seconds | 60 seconds |
+
+The corresponding options are `--max-input-bytes`, `--max-records`, `--max-documents`, `--max-document-bytes`, `--max-fragments`, `--document-timeout-ms`, `--reorder-delay-ms` and `--timeout-ms`. Limits may be lowered. The canonical replay report and aggregate projections are independently bounded to 8 MiB each. The command reserves 512 MiB of cumulative storage-read/write allowance, not a 512 MiB memory allocation, and grants no network or credential access.
+
+One root contains the original file, frozen recipe/configuration, complete canonical replay report, every retained complete XML candidate and its accepted projection. Gaps, wrong-source/payload refusals, truncated captures, deadlines, count/byte limits, invalid XML and missing closing markers remain explicit. A malformed or empty source can therefore produce a durable root with no usable documents. `processing_complete=true` requires clean EOF, at least one usable document, no rejected documents, no reported damage and no unprocessed suffix. It applies only after the initial synchronization boundary and does not claim physical continuity, scene coverage or complete interpretation of unsupported XML extensions.
+
+An incomplete import exits nonzero **after retaining its source** and still reports `import_identity`, `publication_root` and `source_sha256`. An input exceeding its admitted file bound, failed independent input hash, cancelled pre-publication request or custody failure refuses publication instead. Known committed identities survive later owner/finalization refusal and the existing stdout-error receipt path; optional private values are suppressed on such failures. Save the returned identity and root even when the import exits nonzero.
+
+### Verify a packet import after restart
+
+```sh
+target/debug/fss-onvif-metadata verify-rtp \
+  --root /srv/fss/site --site site:home \
+  --import-id "$IMPORT_ID" --expected-root "$PUBLICATION_ROOT"
+
+target/debug/fss-onvif-metadata inspect-rtp \
+  --root /srv/fss/site --site site:home \
+  --import-id "$IMPORT_ID" --expected-root "$PUBLICATION_ROOT" \
+  --document-index 0 --include-values yes
+```
+
+Both commands reassemble the retained original packet file under its stored configuration, reparse every complete XML candidate, and compare the entire canonical replay report, fragment maps, XML/projection bytes, manifest, physical publication record and ledger link. They need neither the input file nor a camera connection. They accept no replacement stream pins or interpretation generation. Missing or altered objects refuse; inspection never repairs evidence implicitly.
+
+A successful cold command means custody verified. It can exit zero while reporting `processing_complete=false` for an intact import of damaged source. `--document-index` limits displayed document details and includes that document's full fragment map; all documents and the full root are still verified. Default output shows all document summaries, aggregate record/issue reason counts and the canonical report hash. It withholds raw sensor/profile labels, notification values, vendor times and analytics values. Explicit `--include-values yes` reveals parsed values with terminal-safe escaping. It does not disclose opaque XML extensions. A report that exceeds the output bound refuses rather than silently truncating; select one document to narrow the detail.
+
+The new `fss.onvif_metadata_rtpdump_import.v1` recipe and `gen:fss1:onvif-metadata-rtpdump-v1` replay generation have their own `onvif-rtp-metadata-` publication family. Existing XML and PullPoint recipe bytes and readers remain unchanged. Cold-verified source membership integrates the entire packet import into the existing hold/deletion owner. A committed deletion prevents reopening or re-importing the deleted source under changed attribution or stream pins.
 
 ## Supported analytics projection
 

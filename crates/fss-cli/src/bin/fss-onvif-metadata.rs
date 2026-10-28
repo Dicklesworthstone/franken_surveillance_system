@@ -30,10 +30,13 @@ mod authentication;
 mod capture;
 #[path = "fss-onvif-metadata/control.rs"]
 mod control;
+#[path = "fss-onvif-metadata/rtp.rs"]
+mod rtp;
 #[path = "fss-onvif/runtime.rs"]
 mod runtime;
 
-const HELP: &str = "fss-onvif-metadata <capture|control|import|inspect|verify> [options]
+const HELP: &str = "fss-onvif-metadata <capture|control|import|inspect|verify|import-rtp|inspect-rtp|verify-rtp> [options]
+  RTP metadata: import-rtp/inspect-rtp/verify-rtp --help
   capture: see fss-onvif-metadata capture --help for explicit live subscription options.
   control: see fss-onvif-metadata control --help for cold discovery, operation inspection and explicit cleanup.
   All commands: --root ABSOLUTE_DIR --site SITE [--principal ID]
@@ -915,6 +918,13 @@ fn main() -> ExitCode {
             };
             (output, complete)
         })
+    } else if args.first().is_some_and(|arg| {
+        matches!(
+            arg.to_str(),
+            Some("import-rtp" | "inspect-rtp" | "verify-rtp")
+        )
+    }) {
+        rtp::run_args(&args)
     } else {
         match parse(&args) {
             Ok(None) => Ok((

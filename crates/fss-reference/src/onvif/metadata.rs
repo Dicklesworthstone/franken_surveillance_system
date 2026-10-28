@@ -1,13 +1,15 @@
 #![forbid(unsafe_code)]
 //! Source-retained ONVIF vendor event and analytics imports (a bounded FSS-046 subset).
 //!
-//! An owner supplies complete XML or authorizes native PullPoint acquisition, with exact
+//! An owner supplies complete XML, a recorded RTP file, or authorizes native PullPoint acquisition, with exact
 //! device/profile generation pins. Raw source, the deterministic vendor-cognition
 //! projection, and its owner binding share one immutable root. Only custody enters
 //! authority: camera timestamps, labels, false values and empty responses establish
 //! neither physical truth nor coverage, absence, identity or effect permission.
 
 mod record;
+/// Original-packet custody and deterministic replay of bounded ONVIF metadata RTP dumps.
+pub mod rtp;
 mod source;
 
 pub use source::PullPointAcquisition;

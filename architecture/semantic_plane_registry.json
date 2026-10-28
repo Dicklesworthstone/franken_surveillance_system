@@ -53,7 +53,8 @@
     "crates/fss-reference/src/onvif/control/termination.rs",
     "crates/fss-reference/src/ingest/calibration_monitor.rs",
     "crates/fss-reference/src/onvif/control/termination/attempt.rs",
-    "crates/fss-reference/src/onvif/capture_operation.rs"
+    "crates/fss-reference/src/onvif/capture_operation.rs",
+    "crates/fss-reference/src/onvif/metadata/rtp.rs"
   ],
   "module_declarations": {
     "crates/fss-cli/src/alert_effect/report.rs": "support",
@@ -784,7 +785,13 @@
     "crates/fss-cli/src/bin/fss-event/calibration/monitor.rs": "support",
     "crates/fss-reference/src/onvif/control/termination/attempt.rs": "ambiguous",
     "crates/fss-reference/src/onvif/control/termination/attempt/codec.rs": "support",
-    "crates/fss-reference/src/onvif/capture_operation.rs": "effect"
+    "crates/fss-reference/src/onvif/capture_operation.rs": "effect",
+    "crates/fss-reference/src/onvif/metadata/rtp.rs": "ambiguous",
+    "crates/fss-reference/src/onvif/metadata/rtp/record.rs": "cognition",
+    "crates/fss-reference/src/onvif/metadata/rtp/replay.rs": "cognition",
+    "crates/fss-cli/src/bin/fss-onvif-metadata/rtp.rs": "support",
+    "crates/fss-packet/src/onvif_metadata.rs": "support",
+    "crates/fss-packet/src/onvif_metadata/receiver.rs": "support"
   },
   "types": {
     "AlertEffectRecord": {
@@ -1519,6 +1526,31 @@
       "file": "crates/fss-reference/src/onvif/capture_operation.rs",
       "plane": "support",
       "description": "Payload-free bounded owner-operation admission, custody, history and conflict outcomes."
+    },
+    "RetainedRtpMetadata": {
+      "file": "crates/fss-reference/src/onvif/metadata/rtp.rs",
+      "plane": "cognition",
+      "description": "Original packet-source custody with frozen replay and vendor-derived XML projections; storage integrity grants no coverage, camera authenticity or effects."
+    },
+    "RtpMetadataDocument": {
+      "file": "crates/fss-reference/src/onvif/metadata/rtp.rs",
+      "plane": "cognition",
+      "description": "One marker-complete XML occurrence with exact original packet provenance and explicit parser refusal; duplicate occurrences remain separate."
+    },
+    "RtpMetadataReport": {
+      "file": "crates/fss-reference/src/onvif/metadata/rtp.rs",
+      "plane": "cognition",
+      "description": "Complete bounded source replay outcomes, gaps, refusals and terminal suffix; processing completeness applies only after a witnessed marker and grants no absence or coverage."
+    },
+    "RtpMetadataConfig": {
+      "file": "crates/fss-reference/src/onvif/metadata/rtp.rs",
+      "plane": "support",
+      "description": "Owner-pinned ingress, stream epoch, SSRC/PT and independent finite source, queue and document bounds; recorded offsets remain untrusted replay time."
+    },
+    "RtpDocumentProvenance": {
+      "file": "crates/fss-reference/src/onvif/metadata/rtp.rs",
+      "plane": "support",
+      "description": "Observed preceding marker and exact original arrival records and packet/payload/XML spans in reconstruction order, with uninterpreted timestamps."
     }
   }
 }
