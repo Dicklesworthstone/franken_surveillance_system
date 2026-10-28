@@ -771,7 +771,8 @@
     "crates/fss-reference/src/onvif/control/codec.rs": "support",
     "crates/fss-reference/src/onvif/control/catalog.rs": "cognition",
     "crates/fss-reference/src/onvif/control/lifecycle.rs": "ambiguous",
-    "crates/fss-reference/src/onvif/control/termination.rs": "ambiguous"
+    "crates/fss-reference/src/onvif/control/termination.rs": "ambiguous",
+    "crates/fss-cli/src/bin/fss-onvif-metadata/control.rs": "support"
   },
   "types": {
     "AlertEffectRecord": {

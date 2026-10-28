@@ -6,7 +6,7 @@ use std::ffi::OsString;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-use fss_core::{CanonicalEncoder, ContentDigest, SensorId};
+use fss_core::{CanonicalEncoder, ContentDigest, DigestAlgorithm, SensorId};
 use fss_reference::onvif::client::DigestConfig;
 use fss_reference::onvif::http::{HttpLimits, HttpRoute};
 use fss_reference::onvif::pullpoint::{PullPointConfig, route_in_service_root};
@@ -35,14 +35,15 @@ private-file lease: username newline password newline.
 --receive-origin-ns is the operator-declared epoch at monotonic request start.
 Camera timestamps remain unverified vendor claims. Empty polls establish no coverage.
 Profile pins are owner attribution; this subscription does not request a profile filter.
-The deadline bounds network and batch admission; an admitted synchronous publication
-can finish after expiry, and its known durable handles are still reported.
-Output lists each definitely retained import/root and the final cleanup state.
+The deadline bounds network and cooperative storage checkpoints. An in-flight filesystem
+call can finish after expiry; known durable handles are still reported.
+Durable intent, Create and cleanup receipts support restart inspection and separately
+approved cleanup. Output lists retained metadata/control handles and the cleanup state.
 Inspect an import separately to reveal its private values. Incomplete/indeterminate
 capture or cleanup returns a nonzero exit code while preserving known durable handles.
 ";
 
-pub(super) struct Plan {
+pub(crate) struct Plan {
     pub root: PathBuf,
     pub site: String,
     pub principal: String,
@@ -78,6 +79,29 @@ fn unsigned(
 
 impl Plan {
     pub fn parse(args: &[OsString]) -> Result<Self, &'static str> {
+        Self::parse_inner(args, None)
+    }
+
+    /// Fresh approval for exactly one retained subscription cleanup. This mode
+    /// never authorizes Create or PullMessages, including through capture flags.
+    pub fn parse_cleanup(
+        args: &[OsString],
+        subscription_id: ContentDigest,
+        expected_root: ContentDigest,
+    ) -> Result<Self, &'static str> {
+        if [subscription_id, expected_root]
+            .iter()
+            .any(|value| value.algorithm() != DigestAlgorithm::Sha256 || value.bytes() == [0; 32])
+        {
+            return Err(ARGUMENT_ERROR);
+        }
+        Self::parse_inner(args, Some((subscription_id, expected_root)))
+    }
+
+    fn parse_inner(
+        args: &[OsString],
+        cleanup: Option<(ContentDigest, ContentDigest)>,
+    ) -> Result<Self, &'static str> {
         if args.len() > 64
             || args.len() % 2 != 0
             || args.iter().any(|arg| arg.as_encoded_bytes().len() > 4096)
@@ -87,7 +111,7 @@ impl Plan {
         let mut values = BTreeMap::new();
         for pair in args.chunks_exact(2) {
             let key = pair[0].to_str().ok_or(ARGUMENT_ERROR)?;
-            if !matches!(
+            let common = matches!(
                 key,
                 "--root"
                     | "--site"
@@ -102,25 +126,37 @@ impl Plan {
                     | "--service-root"
                     | "--owner-authorized"
                     | "--plaintext"
-                    | "--subscribe"
                     | "--receive-origin-ns"
                     | "--generation"
-                    | "--max-pulls"
-                    | "--poll-seconds"
-                    | "--message-limit"
-                    | "--lifetime-seconds"
                     | "--timeout-ms"
                     | "--max-steps"
                     | "--credential-file"
                     | "--auth-realm"
                     | "--legacy-md5"
                     | "--legacy-no-qop"
-            ) || values.insert(key.to_owned(), pair[1].clone()).is_some()
-            {
+            );
+            let action = if cleanup.is_some() {
+                key == "--unsubscribe"
+            } else {
+                matches!(
+                    key,
+                    "--subscribe"
+                        | "--max-pulls"
+                        | "--poll-seconds"
+                        | "--message-limit"
+                        | "--lifetime-seconds"
+                )
+            };
+            if !(common || action) || values.insert(key.to_owned(), pair[1].clone()).is_some() {
                 return Err(ARGUMENT_ERROR);
             }
         }
-        for key in ["--owner-authorized", "--plaintext", "--subscribe"] {
+        let action_approval = if cleanup.is_some() {
+            "--unsubscribe"
+        } else {
+            "--subscribe"
+        };
+        for key in ["--owner-authorized", "--plaintext", action_approval] {
             if text(&values, key)? != "yes" {
                 return Err(ARGUMENT_ERROR);
             }
@@ -172,10 +208,19 @@ impl Plan {
         {
             return Err(ARGUMENT_ERROR);
         }
-        let max_pulls = unsigned(&values, "--max-pulls", 4, 1, 32)? as u32;
-        let pull_timeout_seconds = unsigned(&values, "--poll-seconds", 5, 1, 30)? as u32;
-        let message_limit = unsigned(&values, "--message-limit", 128, 1, 128)? as u16;
-        let lifetime_seconds = unsigned(&values, "--lifetime-seconds", 120, 5, 3600)? as u32;
+        // Cleanup reuses only the pinned route/auth/network limits from this
+        // config. Its finite placeholder poll bounds never authorize polling.
+        let (max_pulls, pull_timeout_seconds, message_limit, lifetime_seconds) =
+            if cleanup.is_some() {
+                (1, 1, 1, 5)
+            } else {
+                (
+                    unsigned(&values, "--max-pulls", 4, 1, 32)? as u32,
+                    unsigned(&values, "--poll-seconds", 5, 1, 30)? as u32,
+                    unsigned(&values, "--message-limit", 128, 1, 128)? as u16,
+                    unsigned(&values, "--lifetime-seconds", 120, 5, 3600)? as u32,
+                )
+            };
         let max_steps = unsigned(&values, "--max-steps", 100000, 2048, 100000)? as u32;
         let generation = unsigned(&values, "--generation", 1, 1, u64::MAX)?;
         let peer = text(&values, "--peer")?
@@ -207,8 +252,16 @@ impl Plan {
         // Bind defaults as well as exact user arguments, including the finite
         // subscription lifecycle. No credential values enter this identity.
         let mut e = CanonicalEncoder::new();
-        e.text("fss.onvif_metadata_capture_request.v1");
-        e.text("one-pullpoint:create:bounded-pull:unsubscribe:no-automatic-reconnect");
+        if let Some((subscription_id, expected_root)) = cleanup {
+            e.text("fss.onvif_metadata_unsubscribe_request.v1");
+            e.text("unsubscribe-existing-only:no-create:no-pull");
+            e.digest(subscription_id);
+            e.digest(expected_root);
+        } else {
+            // Preserve the existing capture approval domain and encoding.
+            e.text("fss.onvif_metadata_capture_request.v1");
+            e.text("one-pullpoint:create:bounded-pull:unsubscribe:no-automatic-reconnect");
+        }
         for (key, value) in &values {
             e.text(key);
             e.bytes(value.as_encoded_bytes());
@@ -261,5 +314,181 @@ impl Plan {
             credentials,
             config,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    type Test = Result<(), Box<dyn std::error::Error>>;
+
+    fn arguments(action: &str) -> Vec<OsString> {
+        let mut args: Vec<_> = [
+            ("--root", "/var/lib/fss"),
+            ("--site", "site:control-fixture"),
+            ("--sensor", "sensor:front"),
+            ("--profile", "main"),
+            ("--peer", "127.0.0.1:8080"),
+            ("--authority", "camera.local:8080"),
+            ("--events-path", "/onvif/events"),
+            ("--service-root", "/onvif"),
+            ("--owner-authorized", "yes"),
+            ("--plaintext", "yes"),
+            (action, "yes"),
+            ("--receive-origin-ns", "100"),
+        ]
+        .into_iter()
+        .flat_map(|(key, value)| [OsString::from(key), OsString::from(value)])
+        .collect();
+        for (key, value) in [
+            ("--device-generation", ContentDigest::sha256(b"device-v1")),
+            ("--profile-generation", ContentDigest::sha256(b"profile-v1")),
+        ] {
+            args.extend([OsString::from(key), OsString::from(value.to_text())]);
+        }
+        args
+    }
+
+    fn cleanup(args: &[OsString]) -> Result<Plan, &'static str> {
+        Plan::parse_cleanup(
+            args,
+            ContentDigest::sha256(b"created-receipt"),
+            ContentDigest::sha256(b"created-root"),
+        )
+    }
+
+    #[test]
+    fn ordinary_capture_preserves_its_existing_approval_and_defaults() -> Test {
+        let plan = Plan::parse(&arguments("--subscribe"))?;
+        assert_eq!(
+            plan.approval.to_text(),
+            "sha256:93d9d1a10faf1ef6c4831e3b610e7af769a5903425c5cba4f9e210eebfb03882"
+        );
+        assert_eq!(plan.config.max_pulls, 4);
+        assert_eq!(plan.config.pull_timeout_seconds, 5);
+        assert_eq!(plan.config.message_limit, 128);
+        assert_eq!(plan.config.lifetime_seconds, 120);
+        assert_eq!(plan.config.deadline_ns, 30_000_000_000);
+        assert_eq!(plan.config.max_steps, 100000);
+        Ok(())
+    }
+
+    #[test]
+    fn cleanup_requires_owner_plaintext_and_unsubscribe_approval_now() -> Test {
+        for key in ["--owner-authorized", "--plaintext", "--unsubscribe"] {
+            let mut args = arguments("--unsubscribe");
+            let index = args
+                .chunks_exact(2)
+                .position(|pair| pair[0] == key)
+                .ok_or("approval argument absent from fixture")?
+                * 2;
+            args[index + 1] = OsString::from("no");
+            assert!(cleanup(&args).is_err(), "accepted refused approval {key}");
+            drop(args.drain(index..index + 2));
+            assert!(cleanup(&args).is_err(), "accepted missing approval {key}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn cleanup_and_capture_reject_each_others_effect_arguments() -> Test {
+        for (key, value) in [
+            ("--subscribe", "yes"),
+            ("--max-pulls", "1"),
+            ("--poll-seconds", "1"),
+            ("--message-limit", "1"),
+            ("--lifetime-seconds", "5"),
+        ] {
+            let mut args = arguments("--unsubscribe");
+            args.extend([OsString::from(key), OsString::from(value)]);
+            assert!(
+                cleanup(&args).is_err(),
+                "cleanup accepted capture flag {key}"
+            );
+        }
+        let mut capture = arguments("--subscribe");
+        capture.extend([OsString::from("--unsubscribe"), OsString::from("yes")]);
+        assert!(Plan::parse(&capture).is_err());
+        assert!(Plan::parse(&arguments("--unsubscribe")).is_err());
+        assert!(cleanup(&arguments("--subscribe")).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn cleanup_approval_binds_both_selected_handles_and_its_distinct_action() -> Test {
+        let args = arguments("--unsubscribe");
+        let baseline = cleanup(&args)?.approval;
+        let changed_identity = Plan::parse_cleanup(
+            &args,
+            ContentDigest::sha256(b"different-created-receipt"),
+            ContentDigest::sha256(b"created-root"),
+        )?;
+        let changed_root = Plan::parse_cleanup(
+            &args,
+            ContentDigest::sha256(b"created-receipt"),
+            ContentDigest::sha256(b"different-created-root"),
+        )?;
+        assert_ne!(baseline, changed_identity.approval);
+        assert_ne!(baseline, changed_root.approval);
+        assert_ne!(baseline, Plan::parse(&arguments("--subscribe"))?.approval);
+        Ok(())
+    }
+
+    #[test]
+    fn cleanup_binds_exact_arguments_and_finite_defaults_canonically() -> Test {
+        let args = arguments("--unsubscribe");
+        let plan = cleanup(&args)?;
+        assert_eq!(plan.config.max_pulls, 1);
+        assert_eq!(plan.config.pull_timeout_seconds, 1);
+        assert_eq!(plan.config.message_limit, 1);
+        assert_eq!(plan.config.lifetime_seconds, 5);
+        assert_eq!(plan.config.events.plaintext_approval(), plan.approval);
+        let reordered: Vec<_> = args.chunks_exact(2).rev().flatten().cloned().collect();
+        assert_eq!(cleanup(&reordered)?.approval, plan.approval);
+        let mut explicit_default = args;
+        explicit_default.extend([OsString::from("--timeout-ms"), OsString::from("30000")]);
+        assert_ne!(cleanup(&explicit_default)?.approval, plan.approval);
+        Ok(())
+    }
+
+    #[test]
+    fn cleanup_reuses_pure_auth_validation_and_rejects_duplicates() -> Test {
+        let mut args = arguments("--unsubscribe");
+        args.extend([
+            OsString::from("--credential-file"),
+            OsString::from("/owner/private/cleanup-credentials"),
+            OsString::from("--auth-realm"),
+            OsString::from("camera-fixture"),
+        ]);
+        let plan = cleanup(&args)?;
+        assert_eq!(
+            plan.credentials,
+            Some(PathBuf::from("/owner/private/cleanup-credentials"))
+        );
+        assert_eq!(
+            plan.config
+                .auth
+                .as_ref()
+                .map(|auth| auth.expected_realm.as_str()),
+            Some("camera-fixture")
+        );
+        args.extend([OsString::from("--unsubscribe"), OsString::from("yes")]);
+        assert!(cleanup(&args).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn cleanup_target_handles_must_be_nonzero_sha256() -> Test {
+        let args = arguments("--unsubscribe");
+        let valid = ContentDigest::sha256(b"selected");
+        for invalid in [
+            ContentDigest::new(DigestAlgorithm::Sha256, [0; 32]),
+            ContentDigest::new(DigestAlgorithm::Blake3, [1; 32]),
+        ] {
+            assert!(Plan::parse_cleanup(&args, invalid, valid).is_err());
+            assert!(Plan::parse_cleanup(&args, valid, invalid).is_err());
+        }
+        Ok(())
     }
 }

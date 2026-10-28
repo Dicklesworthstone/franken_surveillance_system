@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 //! Request-owned native PullPoint acquisition and durable per-response custody.
 
-mod plan;
+pub(super) mod plan;
 
 use std::cell::RefCell;
 use std::ffi::OsString;
@@ -13,26 +13,33 @@ use fss_core::{
     RuntimeGrant, TimestampNs,
 };
 use fss_reference::onvif::client::{ClientError, OnvifContext};
+use fss_reference::onvif::control::{
+    CreateIntentBinding, RetainedCreateIntent, RetainedSubscription, RetainedUnsubscribe,
+    UnsubscribeBinding, prepare_create, retain_created, retain_unsubscribed,
+};
 use fss_reference::onvif::http::{HttpAuthority, HttpDenial, HttpOperation, HttpRoute};
 use fss_reference::onvif::metadata::{
     MetadataError, PullPointAcquisition, RetainedMetadata, SourceBinding, retain_pullpoint,
 };
-use fss_reference::onvif::pullpoint::{self, CaptureReport, RetainedBatch, route_in_service_root};
+use fss_reference::onvif::pullpoint::{
+    self, CaptureReport, PullPointControl, PullPointError, RetainedBatch, RetainedProgress,
+    route_in_service_root,
+};
 use fss_reference::rtsp::authentication::{DigestAuthorization, DigestChallenge};
-use fss_reference::{ReferenceDeployment, ReplayCx};
+use fss_reference::{ReferenceDeployment, ReplayAdmission, ReplayCx};
 
 use super::authentication::{CredentialLease, Entropy, MAX_CREDENTIAL_BYTES, SecretError};
-use super::{ARGUMENT_ERROR, INPUT_ERROR, LIMIT_ERROR, runtime};
+use super::{ARGUMENT_ERROR, INPUT_ERROR, LIMIT_ERROR, admission, runtime};
 use plan::Plan;
 
-struct Owner<'a, 'scope, 'task> {
-    scope: &'a runtime::Scope<'scope, 'task>,
-    plan: &'a Plan,
-    credentials: Option<&'a CredentialLease>,
-    entropy: RefCell<Option<Entropy>>,
+pub(super) struct Owner<'a, 'scope, 'task> {
+    pub(super) scope: &'a runtime::Scope<'scope, 'task>,
+    pub(super) plan: &'a Plan,
+    pub(super) credentials: Option<&'a CredentialLease>,
+    pub(super) entropy: RefCell<Option<Entropy>>,
 }
 
-fn context_error(code: &'static str) -> ClientError {
+pub(super) fn context_error(code: &'static str) -> ClientError {
     match code {
         "ERR-ONVIF-CANCELLED-001" => ClientError::Cancelled,
         "ERR-ONVIF-DEADLINE-001" => ClientError::Deadline,
@@ -56,7 +63,7 @@ fn denied(error: HttpDenial) -> ClientError {
         HttpDenial::Unauthorized | HttpDenial::Revoked => ClientError::Authority,
     }
 }
-fn secret_error(error: SecretError) -> ClientError {
+pub(super) fn secret_error(error: SecretError) -> ClientError {
     match error {
         SecretError::Credentials => ClientError::Credentials,
         SecretError::Entropy => ClientError::Entropy,
@@ -64,7 +71,7 @@ fn secret_error(error: SecretError) -> ClientError {
         SecretError::Authority | SecretError::Revoked => ClientError::Authority,
     }
 }
-fn secret_check(scope: &runtime::Scope<'_, '_>) -> Result<(), SecretError> {
+pub(super) fn secret_check(scope: &runtime::Scope<'_, '_>) -> Result<(), SecretError> {
     scope
         .admit(RuntimeGrant::AdapterAuth, true)
         .map(|_| ())
@@ -178,6 +185,212 @@ impl OnvifContext for Owner<'_, '_, '_> {
     }
 }
 
+/// These owned handles outlive request retirement and output failures.
+#[derive(Default)]
+pub(super) struct ControlReceipts {
+    pub(super) intent: Option<RetainedCreateIntent>,
+    pub(super) created: Option<RetainedSubscription>,
+    pub(super) unsubscribed: Option<RetainedUnsubscribe>,
+}
+
+impl ControlReceipts {
+    pub(super) fn report(&self) -> String {
+        let mut out = String::new();
+        for (name, receipt) in [
+            (
+                "create_intent",
+                self.intent
+                    .as_ref()
+                    .map(|r| (r.identity(), r.publication_root())),
+            ),
+            (
+                "created_subscription",
+                self.created
+                    .as_ref()
+                    .map(|r| (r.identity(), r.publication_root())),
+            ),
+            (
+                "unsubscribe",
+                self.unsubscribed
+                    .as_ref()
+                    .map(|r| (r.identity(), r.publication_root())),
+            ),
+        ] {
+            if let Some((identity, root)) = receipt {
+                out.push_str(&format!("{name}.identity={identity}\n{name}.publication_root={root}\n{name}.durable_publication=true\n"));
+            }
+        }
+        out
+    }
+}
+
+pub(super) fn interval(
+    plan: &Plan,
+    started_ns: u64,
+    completed_ns: u64,
+) -> Result<CaptureInterval, MetadataError> {
+    if completed_ns < started_ns {
+        return Err(MetadataError::InvalidBinding);
+    }
+    Ok(CaptureInterval::new(
+        TimestampNs(
+            plan.receive_origin_ns
+                .checked_add(i128::from(started_ns))
+                .ok_or(MetadataError::InvalidBinding)?,
+        ),
+        TimestampNs(
+            plan.receive_origin_ns
+                .checked_add(i128::from(completed_ns))
+                .ok_or(MetadataError::InvalidBinding)?,
+        ),
+    )?)
+}
+
+pub(super) fn progress<G: ReplayAdmission>(
+    cx: &ReplayCx<G>,
+    receipt: RetainedBatch,
+) -> RetainedProgress {
+    RetainedProgress {
+        receipt,
+        stop: cx
+            .admission_refusal()
+            .map(|error| PullPointError::Client(context_error(admission::code(error)))),
+    }
+}
+
+pub(super) fn retain_control<G: ReplayAdmission>(
+    deployment: &RefCell<ReferenceDeployment>,
+    plan: &Plan,
+    receipts: &mut ControlReceipts,
+    observation: PullPointControl<'_>,
+    cx: &ReplayCx<G>,
+) -> Result<RetainedProgress, MetadataError> {
+    let mut deployment = deployment
+        .try_borrow_mut()
+        .map_err(|_| MetadataError::Authority)?;
+    let (receipt, dispatch_allowed) = match observation {
+        PullPointControl::CreateIntent {
+            events,
+            service_root,
+            message_id,
+            started_ns,
+            lifetime_seconds,
+        } => {
+            let value = prepare_create(
+                &mut deployment,
+                CreateIntentBinding {
+                    source: SourceBinding {
+                        sensor_id: plan.sensor.clone(),
+                        device_generation: plan.device_generation,
+                        profile_generation: plan.profile_generation,
+                        profile_token: plan.profile.clone(),
+                        receive_interval: interval(plan, started_ns, started_ns)?,
+                    },
+                    events: events.clone(),
+                    service_root: service_root.to_owned(),
+                    message_id: message_id.to_owned(),
+                    started_ns,
+                    lifetime_seconds,
+                },
+                cx,
+            )?;
+            let receipt = RetainedBatch {
+                identity: value.identity(),
+                root: value.publication_root(),
+            };
+            let dispatch_allowed = value.newly_prepared();
+            receipts.intent = Some(value);
+            (receipt, dispatch_allowed)
+        }
+        PullPointControl::Created {
+            source,
+            completed_ns,
+            authenticated,
+            ..
+        } => {
+            let value = retain_created(
+                &mut deployment,
+                receipts.intent.as_ref().ok_or(MetadataError::Custody)?,
+                completed_ns,
+                authenticated,
+                source,
+                cx,
+            )?;
+            let receipt = RetainedBatch {
+                identity: value.identity(),
+                root: value.publication_root(),
+            };
+            receipts.created = Some(value);
+            (receipt, true)
+        }
+        PullPointControl::Unsubscribed {
+            route,
+            source,
+            message_id,
+            started_ns,
+            completed_ns,
+            authenticated,
+        } => {
+            let value = retain_unsubscribed(
+                &mut deployment,
+                receipts.created.as_ref().ok_or(MetadataError::Custody)?,
+                UnsubscribeBinding {
+                    route: route.clone(),
+                    message_id: message_id.to_owned(),
+                    started_ns,
+                    completed_ns,
+                    receive_interval: interval(plan, started_ns, completed_ns)?,
+                    client_authenticated: authenticated,
+                },
+                source,
+                cx,
+            )?;
+            let receipt = RetainedBatch {
+                identity: value.identity(),
+                root: value.publication_root(),
+            };
+            receipts.unsubscribed = Some(value);
+            (receipt, true)
+        }
+    };
+    let mut result = progress(cx, receipt);
+    // Existing storage proves an old intent; it never grants a new remote dispatch.
+    if !dispatch_allowed && result.stop.is_none() {
+        result.stop = Some(PullPointError::Retention(MetadataError::Authority));
+    }
+    Ok(result)
+}
+
+pub(super) fn storage_allowance(operations: u64) -> u64 {
+    operations * super::STORAGE_CHECKPOINT_ALLOWANCE
+}
+
+pub(super) fn storage_authority(
+    plan: &Plan,
+    bytes: u64,
+    operations: u64,
+) -> Result<ContextAuthority, &'static str> {
+    ContextAuthority::new_root(RootAuthoritySpec {
+        trace_id: "trace:onvif-metadata-control".into(),
+        operation_id: OperationId::parse("operation:onvif-metadata-control")
+            .map_err(|_| ARGUMENT_ERROR)?,
+        principal: plan.principal.clone(),
+        capabilities: vec![fss_reference::ADP_REPLAY_ROW_ID.to_owned()],
+        deadline: None,
+        priority: 10,
+        budgets: BudgetVector::builder()
+            .bytes(bytes)
+            .storage_operations(storage_allowance(operations))
+            .build()
+            .map_err(|_| LIMIT_ERROR)?,
+        privacy_scope: "privacy:owner-private-vendor-metadata".into(),
+        retention_scope: "retention:explicit-metadata-control".into(),
+        anchor_universe: ContentDigest::sha256(plan.site.as_bytes()),
+        generation: 1,
+    })
+    .map_err(|_| ARGUMENT_ERROR)
+}
+
 pub(super) fn run_args(args: &[OsString]) -> Result<(String, bool), &'static str> {
     if args.len() == 1 && matches!(args[0].to_str(), Some("--help" | "-h" | "help")) {
         return Ok((plan::HELP.to_owned(), true));
@@ -186,8 +399,10 @@ pub(super) fn run_args(args: &[OsString]) -> Result<(String, bool), &'static str
     let exchanges = 2 * (u64::from(plan.config.max_pulls) + 2);
     let network =
         exchanges * (plan.config.limits.request_bytes + plan.config.limits.wire_bytes) as u64;
-    let retained_allowance = (u64::from(plan.config.max_pulls) + 1) * 4 * 1024 * 1024;
+    let operations = u64::from(plan.config.max_pulls) + 3;
+    let retained_allowance = operations * 4 * 1024 * 1024;
     let mut retained = Vec::<RetainedMetadata>::new();
+    let mut controls = ControlReceipts::default();
     let mut capture_report = None::<CaptureReport>;
     let mut capture_error = None;
     let mut subscription_attempted = false;
@@ -197,10 +412,9 @@ pub(super) fn run_args(args: &[OsString]) -> Result<(String, bool), &'static str
         timeout_ns: plan.config.deadline_ns,
         bytes: network + retained_allowance + MAX_CREDENTIAL_BYTES as u64 + 65536,
         network_bytes: network,
-        storage_operations: u64::from(plan.config.max_steps) * 64 + 8192,
+        storage_operations: storage_allowance(operations) + u64::from(plan.config.max_steps) * 64,
         network: true,
         write: true,
-        // Every event operation needs a fresh WS-Addressing identity, even without credentials.
         secrets: true,
     };
     let result = runtime::run(request, |scope| {
@@ -225,85 +439,67 @@ pub(super) fn run_args(args: &[OsString]) -> Result<(String, bool), &'static str
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(_) => return Err(INPUT_ERROR),
         }
-        let authority = ContextAuthority::new_root(RootAuthoritySpec {
-            trace_id: "trace:onvif-metadata-capture".into(),
-            operation_id: OperationId::parse("operation:onvif-metadata-capture")
-                .map_err(|_| ARGUMENT_ERROR)?,
-            principal: plan.principal.clone(),
-            capabilities: vec![fss_reference::ADP_REPLAY_ROW_ID.to_owned()],
-            deadline: None,
-            priority: 10,
-            budgets: BudgetVector::builder()
-                .bytes(retained_allowance)
-                .storage_operations(8192 + u64::from(plan.config.max_pulls) * 512)
-                .build()
-                .map_err(|_| LIMIT_ERROR)?,
-            privacy_scope: "privacy:owner-private-vendor-metadata".into(),
-            retention_scope: "retention:explicit-metadata-capture".into(),
-            anchor_universe: ContentDigest::sha256(plan.site.as_bytes()),
-            generation: 1,
-        })
-        .map_err(|_| ARGUMENT_ERROR)?;
+        let authority = storage_authority(&plan, retained_allowance, operations)?;
         let cx = ReplayCx::from_context_authority_read_only(&authority, plan.root.clone())
-            .map_err(|_| ARGUMENT_ERROR)?;
+            .map_err(|_| ARGUMENT_ERROR)?
+            .with_admission(|_| admission::check(scope));
         let result = (|| {
             scope.output()?;
-            let mut deployment = ReferenceDeployment::open(&plan.root, &plan.site, &cx)
-                .map_err(|_| "ERR-ONVIF-METADATA-PUBLICATION-001")?;
+            let deployment = RefCell::new(
+                ReferenceDeployment::open(&plan.root, &plan.site, &cx)
+                    .map_err(|_| "ERR-ONVIF-METADATA-PUBLICATION-001")?,
+            );
             subscription_attempted = true;
-            let captured = pullpoint::capture(&plan.config, &owner, |batch| {
-                scope.output().map_err(|_| MetadataError::Authority)?;
-                let interval = CaptureInterval::new(
-                    TimestampNs(
-                        plan.receive_origin_ns
-                            .checked_add(i128::from(batch.started_ns))
-                            .ok_or(MetadataError::InvalidBinding)?,
-                    ),
-                    TimestampNs(
-                        plan.receive_origin_ns
-                            .checked_add(i128::from(batch.completed_ns))
-                            .ok_or(MetadataError::InvalidBinding)?,
-                    ),
-                )?;
-                let acquisition = PullPointAcquisition {
-                    approval: plan.approval,
-                    event_route: plan.config.events.digest(),
-                    subscription_route: batch.route.digest(),
-                    pull_index: batch.pull_index,
-                    started_ns: batch.started_ns,
-                    completed_ns: batch.completed_ns,
-                    client_authenticated: batch.authenticated,
-                    subscription_source: ContentDigest::sha256(batch.subscription_response),
-                    subscription_source_bytes: batch.subscription_response.len(),
-                    subscription_started_ns: batch.subscription_started_ns,
-                    subscription_completed_ns: batch.subscription_completed_ns,
-                    message_id: batch.message_id.to_owned(),
-                    subscription_message_id: batch.subscription_message_id.to_owned(),
-                };
-                let value = retain_pullpoint(
-                    &mut deployment,
-                    SourceBinding {
-                        sensor_id: plan.sensor.clone(),
-                        device_generation: plan.device_generation,
-                        profile_generation: plan.profile_generation,
-                        profile_token: plan.profile.clone(),
-                        receive_interval: interval,
-                    },
-                    batch.source,
-                    acquisition,
-                    batch.subscription_response,
-                    &cx,
-                )?;
-                let receipt = RetainedBatch {
-                    identity: value.identity(),
-                    root: value.publication_root(),
-                };
-                // This independently owned progress survives a later deadline, failed
-                // cleanup or owner finalization refusal. Only definitely committed roots
-                // appear here; an indeterminate publication is never reported as absent.
-                retained.push(value);
-                Ok(receipt)
-            });
+            let captured = pullpoint::capture_with_progress(
+                &plan.config,
+                &owner,
+                |observation| retain_control(&deployment, &plan, &mut controls, observation, &cx),
+                |batch| {
+                    scope.output().map_err(|_| MetadataError::Authority)?;
+                    let acquisition = PullPointAcquisition {
+                        approval: plan.approval,
+                        event_route: plan.config.events.digest(),
+                        subscription_route: batch.route.digest(),
+                        pull_index: batch.pull_index,
+                        started_ns: batch.started_ns,
+                        completed_ns: batch.completed_ns,
+                        client_authenticated: batch.authenticated,
+                        subscription_source: ContentDigest::sha256(batch.subscription_response),
+                        subscription_source_bytes: batch.subscription_response.len(),
+                        subscription_started_ns: batch.subscription_started_ns,
+                        subscription_completed_ns: batch.subscription_completed_ns,
+                        message_id: batch.message_id.to_owned(),
+                        subscription_message_id: batch.subscription_message_id.to_owned(),
+                    };
+                    let mut owner_deployment = deployment
+                        .try_borrow_mut()
+                        .map_err(|_| MetadataError::Authority)?;
+                    let value = retain_pullpoint(
+                        &mut owner_deployment,
+                        SourceBinding {
+                            sensor_id: plan.sensor.clone(),
+                            device_generation: plan.device_generation,
+                            profile_generation: plan.profile_generation,
+                            profile_token: plan.profile.clone(),
+                            receive_interval: interval(
+                                &plan,
+                                batch.started_ns,
+                                batch.completed_ns,
+                            )?,
+                        },
+                        batch.source,
+                        acquisition,
+                        batch.subscription_response,
+                        &cx,
+                    )?;
+                    let receipt = RetainedBatch {
+                        identity: value.identity(),
+                        root: value.publication_root(),
+                    };
+                    retained.push(value);
+                    Ok(progress(&cx, receipt))
+                },
+            );
             match captured {
                 Ok(report) => capture_report = Some(report),
                 Err(failure) => {
@@ -313,8 +509,9 @@ pub(super) fn run_args(args: &[OsString]) -> Result<(String, bool), &'static str
             }
             Ok(())
         })();
+        let owner_error = cx.admission_refusal().map(admission::code);
         cx.drain_and_finalize();
-        result
+        owner_error.map_or(result, Err)
     });
     if let Err(code) = result {
         capture_error = Some(code);
@@ -322,6 +519,7 @@ pub(super) fn run_args(args: &[OsString]) -> Result<(String, bool), &'static str
     render(
         &plan,
         &retained,
+        &controls,
         capture_report.as_ref(),
         capture_error,
         subscription_attempted,
@@ -331,6 +529,7 @@ pub(super) fn run_args(args: &[OsString]) -> Result<(String, bool), &'static str
 fn render(
     plan: &Plan,
     retained: &[RetainedMetadata],
+    controls: &ControlReceipts,
     report: Option<&CaptureReport>,
     error: Option<&'static str>,
     attempted: bool,
@@ -340,7 +539,8 @@ fn render(
         ($($arg:tt)*) => { writeln!(&mut out, $($arg)*).map_err(|_| LIMIT_ERROR)? };
     }
     let cleanup_error = report.and_then(|report| report.cleanup_error);
-    let complete = error.is_none()
+    let complete = controls.unsubscribed.is_some()
+        && error.is_none()
         && cleanup_error.is_none()
         && report.is_some_and(|report| {
             matches!(
@@ -357,14 +557,17 @@ fn render(
     line!("source_mode=onvif_pullpoint");
     line!("subscription_scope=device_events");
     line!("profile_attribution_verified=false");
-    line!("deadline_scope=network_and_batch_admission");
+    line!("deadline_scope=network_and_cooperative_storage_checkpoints");
     line!("server_identity_verified=false");
     line!("transport_encrypted=false");
     line!("vendor_clock_trusted=false");
     line!("coverage_claimed=false");
     line!("absence_claimed=false");
+    line!("current_remote_state=unknown");
+    line!("automatic_create_retry_safe=false");
     line!("sensitive_features_enabled=false");
     line!("values_disclosed=false");
+    out.push_str(&controls.report());
     line!("retained_batches={}", retained.len());
     line!("maximum_pulls={}", plan.config.max_pulls);
     line!("error={}", error.unwrap_or("none"));
@@ -379,7 +582,10 @@ fn render(
             "subscription_source_received={}",
             report.subscription_response().is_some()
         );
-        line!("subscription_source_retained={}", !retained.is_empty());
+        line!(
+            "subscription_source_retained={}",
+            controls.created.is_some() || !retained.is_empty()
+        );
         if let Some(source) = report.subscription_response() {
             line!(
                 "subscription_source_sha256={}",
@@ -434,7 +640,7 @@ fn render(
         );
     }
     if !retained.is_empty() {
-        line!("safe_next=verify_each_exact_import");
+        line!("safe_next=verify_each_exact_import_and_inspect_control_receipts");
     }
     let cleanup_unconfirmed = report.map_or(attempted, |report| {
         matches!(
@@ -444,7 +650,7 @@ fn render(
     });
     if !complete && cleanup_unconfirmed {
         line!("subscription_reconciliation_required=true");
-        line!("automatic_create_retry_safe=false");
+        line!("safe_next=control_list_then_inspect_then_explicit_unsubscribe");
     }
     if out.len() > 65536 {
         return Err(LIMIT_ERROR);

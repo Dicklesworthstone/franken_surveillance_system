@@ -2,7 +2,7 @@
 
 `fss-onvif-metadata` captures a finite live ONVIF PullPoint event session or imports one complete owner-supplied PullMessages SOAP response or MetadataStream XML document. It retains the exact source, a deterministic vendor-event/analytics projection and the explicit source binding in an immutable, ledgered publication. New imports interpret the supported `VideoAnalytics` frame, object, coarse shape, classification and transformation fields alongside event notifications.
 
-This implements bounded native PullPoint acquisition plus the local import and replay subset of FSS-046. Continuous subscription recovery, RTP metadata transport, cross-frame tracking, calibrated scene interpretation and physical-device/Profile M qualification remain separate work.
+This implements bounded native PullPoint acquisition, durable control recovery and the local import/replay subset of FSS-046. Automatic renewal and continuous reconnect, RTP metadata transport, cross-frame tracking, calibrated scene interpretation and physical-device/Profile M qualification remain separate work.
 
 ## Capture live PullPoint events
 
@@ -29,15 +29,56 @@ target/debug/fss-onvif-metadata capture \
 
 The example address is a documentation address; replace it with the explicitly authorized camera. Omit credential options only for an endpoint that permits unauthenticated event access. A Linux credential file must be a private regular file with one username line and one password line, including a final newline. Passwords are never command-line arguments, evidence fields or output. Rotation or replacement of the credential file revokes the current lease. Legacy MD5 or no-qop Digest requires separate explicit flags.
 
-Capture defaults to at most four pulls of five seconds each, 128 notifications per response and a 30-second network/admission deadline (at most 60 seconds). The maximum is 32 pulls; SOAP bodies remain bounded to 256 KiB. The coordinator reserves time, steps and exchanges for cleanup and stops polling before the reserve or the camera-reported lease would be exceeded. A lease duration is only an unverified server claim anchored conservatively to local request start; it is never a trusted camera clock. Each logical operation receives a fresh entropy-derived WS-Addressing MessageID; its single optional HTTP 401 retry retains that same ID. An explicit mismatching RelatesTo is refused. Endpoint reference parameters support a bounded scalar subset; unsupported complex references are refused explicitly.
+Capture defaults to at most four pulls of five seconds each, 128 notifications per response and a 30-second network/admission deadline (at most 60 seconds). The maximum is 32 pulls; SOAP bodies remain bounded to 256 KiB. The coordinator reserves time, steps and exchanges for cleanup and stops polling before the reserve or the camera-reported lease would be exceeded. A lease duration is only an unverified server claim anchored conservatively to local request start; it is never a trusted camera clock. Each logical operation receives a fresh entropy-derived WS-Addressing MessageID; its single optional HTTP 401 retry retains that same ID. Durable Create and Unsubscribe control receipts require an explicit namespace-correct matching RelatesTo. An omitted, spoofed, duplicated or mismatching relationship refuses control custody; missing correlation is never silently upgraded into an exact reply. The older optional live-wire parser remains available for its existing compatibility callers. Endpoint reference parameters support a bounded scalar subset; unsupported complex references are refused explicitly.
 
-The result reports every definitely retained `batch.N.import_identity` and `batch.N.publication_root`, the stop reason and subscription cleanup state. Each live batch also retains the exact CreatePullPointSubscription SOAP response that supplied its endpoint reference. Follow the inspect/verify commands below to reopen a batch after restart. A later poll, storage or cleanup failure preserves already committed batch handles and returns a nonzero exit code. An indeterminate subscription must be reconciled with the owner/device; do not infer that a failed request created no remote resource or automatically retry Create.
+The result reports every definitely retained `batch.N.import_identity` and `batch.N.publication_root`, the stop reason and observed cleanup state. It also reports separate `create_intent`, `created_subscription` and `unsubscribe` identities/roots when those publications commit. Before any Create connection admission, the command commits the intent; before the first poll, it commits the exact Create response, scoped endpoint reference and original intent closure. A complete successful Unsubscribe response receives its own terminal receipt. Each live metadata batch retains its original Create source as before, so existing recipe bytes stay compatible.
 
-The command reports `subscription_source_received` and `subscription_source_retained` separately. The Create response becomes durable with the first successfully retained batch. If capture stops before that point, the library report preserves the complete response only in memory; the CLI emits its digest and length, but does not persist the raw EPR or reference parameters. A standalone durable control receipt for this zero-batch case remains unfinished. Preserve the failure receipt and reconcile an Active/Indeterminate subscription through the owner/device; the command cannot reconstruct that EPR after exit.
+The command reports `subscription_source_received` and `subscription_source_retained` separately. A Create response can now be durable even when no polls succeed. A storage refusal after a commit preserves the receipt and stops additional polling; independently authorized network cleanup may still run. A genuine successful cleanup response remains an observation even if terminal storage later refuses, and the command reports incomplete custody with a nonzero exit. Missing cleanup correlation prevents a successful-cleanup observation. Late cancellation, deadline, request retirement and stdout failure preserve known hash-only handles.
 
-Import and inspection attach a borrowed live-owner admission gate to their replay I/O context. Cancellation, deadline, capability and budget refusals are checked at cooperative replay and publication boundaries, including direct I/O-authority validation. The first refusal is sticky; no later successful callback revives the context. A known durable receipt survives a post-commit refusal, while optional private values are suppressed. This does not preempt an operating-system syscall already in progress or add a check inside every internal filesystem call.
+Capture, import, inspection and control commands attach a borrowed live-owner admission gate to their replay I/O context. Cancellation, deadline, capability and budget refusals are checked at cooperative replay and publication boundaries, including direct I/O-authority validation. The first refusal is sticky; no later successful callback revives the context. Known durable receipts survive post-commit refusal, while optional private values are suppressed. This does not preempt an operating-system syscall already in progress or add a check inside every internal filesystem call.
 
 An empty complete poll is retained, but proves no event coverage or physical absence. Device-wide notifications remain attributed to the independently selected sensor/device/profile pins; they are not proof that the camera filtered events to that profile. Vendor values are withheld from capture output and can be disclosed separately through explicit inspect.
+
+
+## Recover after process, output or cleanup failure
+
+The control catalog recovers identities even if the original process exited before stdout delivered them:
+
+```sh
+target/debug/fss-onvif-metadata control list \
+  --root /srv/fss/site --site site:home --max-records 64
+
+target/debug/fss-onvif-metadata control inspect \
+  --root /srv/fss/site --site site:home \
+  --kind created --control-id "$SUBSCRIPTION_ID" --expected-root "$SUBSCRIPTION_ROOT"
+```
+
+Select the `created` record's exact identity/root from the list, or use the original capture receipt. The catalog checks both visible roots and canonical ledger references, verifies complete custody, and preserves multiple observations separately. It returns the whole admitted catalog or refuses; increase the explicit bound up to 1024 if needed. Missing/corrupt/unledgered evidence never silently disappears. Records whose deletion is established by the native deletion owner are omitted; an empty catalog proves no absence of remote subscriptions.
+
+| Retained record | What is known | Recovery meaning |
+|---|---|---|
+| `intent` | The original request was durably prepared before dispatch admission. | Dispatch and result can remain unknown after a crash. Never automatically replay Create from this record. |
+| `created` | The exact scoped Create response and parent intent are in verified custody. | The subscription may have expired or been removed. Explicit cleanup can use its retained endpoint under fresh authority. |
+| `unsubscribed` | A complete explicitly correlated Unsubscribe success and exact parent closure were retained. | This proves a historical response, not current device state or future absence. |
+
+To perform cleanup, supply a new explicit owner request with the independently known original pins and a fresh receive-clock origin:
+
+```sh
+target/debug/fss-onvif-metadata control unsubscribe \
+  --root /srv/fss/site --site site:home \
+  --subscription-id "$SUBSCRIPTION_ID" --expected-root "$SUBSCRIPTION_ROOT" \
+  --sensor sensor:front --device-generation "$DEVICE_GENERATION" \
+  --profile-generation "$PROFILE_GENERATION" --profile main \
+  --peer 192.0.2.10:80 --authority 192.0.2.10 \
+  --events-path /onvif/events_service --service-root /onvif --generation 1 \
+  --owner-authorized yes --plaintext yes --unsubscribe yes \
+  --receive-origin-ns "$CURRENT_RECEIVE_ORIGIN_NS" --timeout-ms 30000 \
+  --credential-file /srv/fss/private/camera-credentials --auth-realm "$EXACT_REALM"
+```
+
+This command sends only Unsubscribe. It refuses Create/Pull options, checks every sensor/device/profile/peer/origin/event-path/subtree/generation pin before loading credentials or making network requests, and binds the selected identity/root into the fresh cleanup approval. The new receive origin must follow the retained Create interval. The stored approval is historical evidence and cannot grant another operation. Credential lease rotation, current cancellation/deadline and current network authority remain effective.
+
+The response keeps `remote_unsubscribe_success_observed` separate from the durable terminal receipt. Any refused or incomplete cleanup exits nonzero while retaining known hashes for another cold inspection. A failed response never authorizes automatic Create. If only an unresolved intent exists, no safe endpoint can be reconstructed for cleanup; reconcile that uncertainty with the owner/device instead of dispatching again.
 
 ## Import
 
@@ -114,9 +155,9 @@ Known notification digests permit conservative comparisons within the exact site
 
 ### Holds and evidence deletion
 
-Retained metadata participates in the existing evidence-hold and deletion lifecycle. Use the
-receipt's `import_identity` as the import target. Sensor-scoped deletion includes both file
-metadata and native PullPoint imports under their verified owner sensor binding. A ledger name
+Retained metadata and control receipts participate in the existing evidence-hold and deletion lifecycle. Use the
+metadata receipt's `import_identity` or the control receipt's `identity` as the import target. Sensor-scoped deletion includes both file
+metadata, native PullPoint imports and control receipts under their verified owner sensor binding. A ledger name
 alone is insufficient: the metadata owner must verify the source, versioned interpretation,
 projection, manifest and exact publication before admitting an import to a hold or deletion
 closure. Damaged custody blocks planning instead of silently omitting the import.
@@ -137,12 +178,14 @@ response. Metadata deleted as another import's derivative is likewise denied and
 rediscovered from its old publication batch. Deletion completion remains crash-resumable through
 the existing owner.
 
-This uses local filesystem unlink and the existing deletion-plan scope. Original input files,
+The parent intent/Created/Unsubscribe closure follows the existing derivative rules: selecting an intent reaches its dependent observations; selecting a later observation does not absorb its ancestors. Active holds and shared custody remain authoritative, and a different owner binding cannot resurrect tombstoned control bytes.
+
+This uses local filesystem unlink and the existing deletion-plan scope; it does not send Unsubscribe or erase device-side subscriptions. Original input files,
 external exports, device storage and unrecorded remote copies remain outside that scope.
 
 ### Versioned metadata custody
 
-Live captures use the separate `fss.onvif_vendor_event_pullpoint.v1` custody domain and the frozen event-only projection; the analytics-v2 file-import default is unchanged. The live recipe additionally binds the capture approval, event/subscription route digests, poll occurrence, both request IDs and ordered monotonic Create/poll intervals. Cold verification checks both explicit reply correlations and the fourth source object's exact digest. Existing v1/v2 file recipes receive no new bytes.
+Live captures use the separate `fss.onvif_vendor_event_pullpoint.v1` custody domain and the frozen event-only projection; the analytics-v2 file-import default is unchanged. The live recipe additionally binds the capture approval, event/subscription route digests, poll occurrence, both request IDs and ordered monotonic Create/poll intervals. Cold verification validates reply correlations when present and the fourth source object's exact digest. The new standalone control receipts require explicit Create/Unsubscribe correlations. Existing v1/v2 file recipes receive no new bytes.
 
 Camera labels and timestamps always remain vendor-claimed cognition. Retention proves which bytes were supplied under the operator's attribution; it does not authenticate the camera or establish physical truth, coverage, absence, identity or permission to send alerts or move a camera.
 
@@ -165,7 +208,11 @@ cargo test --locked -p fss-reference \
   --test onvif_analytics_metadata_contract \
   --test onvif_pullpoint_wire_contract \
   --test onvif_pullpoint_capture_contract \
-  --test onvif_metadata_custody
+  --test onvif_metadata_custody \
+  --test onvif_control_custody \
+  --test onvif_control_termination \
+  --test onvif_control_deletion \
+  --test replay_admission_contract
 cargo test --locked -p fss-cli --bin fss-onvif-metadata
 ```
 
