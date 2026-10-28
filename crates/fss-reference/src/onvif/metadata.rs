@@ -212,6 +212,21 @@ impl From<fss_object::SpoolError> for MetadataError {
     }
 }
 
+/// Custody-only projection for the deletion/hold owner. Full source, publication and deletion
+/// verification stays inside this audited boundary; no vendor event or analytics value crosses
+/// into lifecycle effects. The returned sensor is the retained owner's binding, never a camera
+/// claim. It establishes scope membership only; existing lifecycle approval still gates effects.
+pub(crate) fn lifecycle_sensor(
+    deployment: &ReferenceDeployment,
+    identity: ContentDigest,
+    cx: &ReplayCx,
+) -> Result<SensorId, MetadataError> {
+    Ok(RetainedMetadata::open(deployment, identity, None, cx)?
+        .binding()
+        .sensor_id
+        .clone())
+}
+
 /// A source-retained vendor-cognition document with verified custody.
 #[derive(Clone)]
 pub struct RetainedMetadata {

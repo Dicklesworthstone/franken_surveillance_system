@@ -120,6 +120,9 @@ metadata and native PullPoint imports under their verified owner sensor binding.
 alone is insufficient: the metadata owner must verify the source, versioned interpretation,
 projection, manifest and exact publication before admitting an import to a hold or deletion
 closure. Damaged custody blocks planning instead of silently omitting the import.
+The custody boundary returns only the verified owner sensor to the lifecycle owner;
+vendor `Source` labels, topics and analytics claims cannot select a deletion scope or
+grant approval.
 
 Existing exact approval, active-hold, shared-object and recovery rules apply. A hold on metadata
 also protects its derivative closure when another import's deletion would touch it. Shared

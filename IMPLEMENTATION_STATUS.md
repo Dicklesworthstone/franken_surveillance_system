@@ -1273,9 +1273,11 @@ a deleted recipe/source/projection/root. Native PullPoint imports additionally
 fence their retained Create/subscription response. File v1/v2 and native recipe
 bytes remain unchanged.
 
-Six new contracts cover holds/release, restart, wrong approval, tombstone crash
+Seven new contracts cover holds/release, restart, wrong approval, tombstone crash
 cuts, cross-binding resurrection, mixed scopes/shared bytes, counterfeit custody,
-derivative deletion and native subscription-source reuse. They are formatted and
+derivative deletion, native subscription-source reuse and vendor-claim scope isolation.
+The lifecycle boundary returns only a verified owner-bound sensor; deletion and hold
+effects cannot inspect vendor cognition or derive approval from it. The contracts are formatted and
 reviewed but remain unexecuted because full-reference dependencies cannot be built
 within the current environment. This closes the retained metadata lifecycle gap;
 it does not add remote/device erasure or continuous subscription recovery.

@@ -416,6 +416,52 @@ fn sensor_scope_includes_metadata_and_file_imports_without_deleting_shared_other
 }
 
 #[test]
+fn vendor_source_claim_cannot_select_a_deletion_sensor_scope() -> TestResult {
+    let mut f = Fixture::new("onvif-vendor-scope-isolation")?;
+    let source = std::str::from_utf8(SOURCE)?.replace(
+        "<tt:Frame UtcTime=",
+        "<tt:Frame Source=\"sensor:vendor-claimed\" UtcTime=",
+    );
+    let retained = retain(
+        &mut f.dep,
+        binding("owner-bound")?,
+        source.as_bytes(),
+        &f.cx,
+    )?;
+    assert_eq!(
+        retained.document().analytics_frames[0].source.as_deref(),
+        Some("sensor:vendor-claimed")
+    );
+    let before = f.dep.current_anchor().clone();
+    let vendor_scope = DeletionScope::Sensor(SensorId::parse("sensor:vendor-claimed")?);
+    assert!(matches!(
+        plan_scope_deletion(&f.dep, &vendor_scope, &f.cx),
+        Err(DeletionError::ScopeEmpty(_))
+    ));
+    assert_eq!(f.dep.current_anchor(), &before);
+
+    let owner_scope = DeletionScope::Sensor(SensorId::parse("sensor:owner-bound")?);
+    let plan = plan_scope_deletion(&f.dep, &owner_scope, &f.cx)?;
+    assert_eq!(plan.imports, vec![retained.identity()]);
+    assert!(plan.blockers.is_empty(), "{:?}", plan.blockers);
+    // Membership is not approval: even the correct owner scope cannot consume a vendor claim
+    // or any unrelated digest as effect authority.
+    assert!(matches!(
+        commit_deletion(
+            &mut f.dep,
+            plan.digest()?,
+            ContentDigest::sha256(b"sensor:vendor-claimed"),
+            PRINCIPAL,
+            &f.cx,
+        ),
+        Err(DeletionError::ApprovalMismatch(_))
+    ));
+    assert_eq!(f.dep.current_anchor(), &before);
+    RetainedMetadata::open(&f.dep, retained.identity(), None, &f.cx)?;
+    Ok(())
+}
+
+#[test]
 fn names_and_corrupt_metadata_never_supply_lifecycle_membership() -> TestResult {
     let mut f = Fixture::new("onvif-unverified-lifecycle")?;
     let junk = b"not an ONVIF custody recipe";

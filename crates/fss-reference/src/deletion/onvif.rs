@@ -6,7 +6,7 @@
 use fss_core::{ContentDigest, SensorId};
 
 use super::DeletionError;
-use crate::onvif::metadata::{MetadataError, RetainedMetadata};
+use crate::onvif::metadata::{MetadataError, lifecycle_sensor};
 use crate::{ReferenceDeployment, ReplayCx};
 
 const BATCH_PREFIX: &str = "batch:local-root:onvif-metadata-";
@@ -57,24 +57,23 @@ pub(super) fn inspect(
     if !has_terminal(deployment, import) {
         return Err(DeletionError::UnknownImport(import));
     }
-    let retained =
-        RetainedMetadata::open(deployment, import, None, cx).map_err(|error| match error {
-            MetadataError::Cancelled => DeletionError::Cancelled {
-                stage: super::STAGE_DELETION_SCAN,
-            },
-            MetadataError::Limit => DeletionError::Bound {
-                limit: "onvif_metadata_verification",
-            },
-            MetadataError::EvidenceDeleted { identity, plan } => DeletionError::EvidenceDeleted {
-                import: identity,
-                plan,
-            },
-            _ => DeletionError::RecordMismatch,
-        })?;
+    let sensor = lifecycle_sensor(deployment, import, cx).map_err(|error| match error {
+        MetadataError::Cancelled => DeletionError::Cancelled {
+            stage: super::STAGE_DELETION_SCAN,
+        },
+        MetadataError::Limit => DeletionError::Bound {
+            limit: "onvif_metadata_verification",
+        },
+        MetadataError::EvidenceDeleted { identity, plan } => DeletionError::EvidenceDeleted {
+            import: identity,
+            plan,
+        },
+        _ => DeletionError::RecordMismatch,
+    })?;
     let hex = &import.to_text()[7..];
     let slot = format!("onvif-metadata-{hex}");
     Ok(OnvifImport {
-        sensor: retained.binding().sensor_id.clone(),
+        sensor,
         object_id: format!("object:local-root:{slot}"),
         // Reachability batches are excluded from deletion units by the existing owner.
         // The verified visible root holds the recipe, source and projection closure.
