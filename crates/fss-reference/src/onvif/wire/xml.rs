@@ -65,6 +65,39 @@ impl Document {
         self.root
     }
 
+    pub(super) fn expanded_name(&self, id: usize) -> (&str, &str) {
+        let name = &self.nodes[id].name;
+        (&name.namespace, &name.local)
+    }
+
+    pub(super) fn in_scope_namespaces(&self, id: usize) -> Vec<(String, String)> {
+        let mut bindings = std::collections::BTreeMap::new();
+        let mut current = Some(id);
+        while let Some(id) = current {
+            for (prefix, namespace) in &self.nodes[id].namespaces {
+                bindings
+                    .entry(prefix.clone())
+                    .or_insert_with(|| namespace.clone());
+            }
+            current = self.nodes[id].parent;
+        }
+        bindings.into_iter().collect()
+    }
+
+    pub(super) fn has_xml_context(&self, id: usize) -> bool {
+        let mut current = Some(id);
+        while let Some(id) = current {
+            if self.nodes[id].attributes.iter().any(|attribute| {
+                attribute.name.namespace == XML_NS
+                    && matches!(attribute.name.local.as_str(), "base" | "lang" | "space")
+            }) {
+                return true;
+            }
+            current = self.nodes[id].parent;
+        }
+        false
+    }
+
     pub(super) fn named(&self, id: usize, namespace: &str, local: &str) -> bool {
         let name = &self.nodes[id].name;
         name.namespace == namespace && name.local == local

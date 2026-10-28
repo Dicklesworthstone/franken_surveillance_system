@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! Bounded native HTTP ownership for read-only ONVIF SOAP and snapshot requests.
+//! Bounded native HTTP ownership for ONVIF SOAP, snapshots and scoped event subscriptions.
 //!
 //! The caller pins the peer, HTTP authority, generation and plaintext approval,
 //! supplies a live authority and admission clock, and owns every wait. This owner
@@ -27,6 +27,7 @@ pub struct HttpRoute {
     plaintext_approval: ContentDigest,
     digest: ContentDigest,
     snapshot: bool,
+    event_subscription: bool,
 }
 
 impl HttpRoute {
@@ -78,6 +79,7 @@ impl HttpRoute {
             plaintext_approval,
             digest,
             snapshot: false,
+            event_subscription: false,
         })
     }
 
@@ -86,6 +88,15 @@ impl HttpRoute {
     pub fn with_target(&self, target: &str) -> Result<Self, HttpError> {
         if self.snapshot {
             return Err(HttpError::Configuration);
+        }
+        if self.event_subscription {
+            return Self::event_service(
+                self.peer,
+                &self.authority,
+                target,
+                self.generation,
+                self.plaintext_approval,
+            );
         }
         Self::new(
             self.peer,
@@ -100,7 +111,7 @@ impl HttpRoute {
     /// origin or changing the pinned peer. Query tokens are sent only to that peer.
     /// A snapshot route cannot be used for SOAP or credential signing.
     pub fn snapshot(&self, uri: &str) -> Result<Self, HttpError> {
-        if self.snapshot {
+        if self.snapshot || self.event_subscription {
             return Err(HttpError::Configuration);
         }
         let rest = uri
@@ -128,7 +139,68 @@ impl HttpRoute {
             plaintext_approval: self.plaintext_approval,
             digest,
             snapshot: true,
+            event_subscription: false,
         })
+    }
+
+    /// Explicitly approve a bounded event-subscription lifecycle. This capability
+    /// is distinct from read-only media/snapshot routes: Create, PullMessages and
+    /// Unsubscribe consume it, and it cannot be used for ordinary media requests.
+    /// Query tokens are accepted only as bounded literal origin-form bytes; no
+    /// percent escapes, fragments, userinfo or path traversal are admitted.
+    pub fn event_service(
+        peer: SocketAddr,
+        authority: &str,
+        target: &str,
+        generation: u64,
+        plaintext_approval: ContentDigest,
+    ) -> Result<Self, HttpError> {
+        if !valid_event_target(target) {
+            return Err(HttpError::Configuration);
+        }
+        let path = target.split('?').next().ok_or(HttpError::Configuration)?;
+        let base = Self::new(peer, authority, path, generation, plaintext_approval)?;
+        let mut encoder = CanonicalEncoder::new();
+        encoder.text("fss.onvif.event-route.v1:explicit-plaintext:bounded-subscription");
+        encoder.text(&peer.to_string());
+        encoder.text(authority);
+        encoder.text(target);
+        encoder.u64(generation);
+        encoder.digest(plaintext_approval);
+        let digest = ContentDigest::sha256(
+            &encoder
+                .finish_checked()
+                .map_err(|_| HttpError::Configuration)?,
+        );
+        Ok(Self {
+            target: target.to_owned(),
+            digest,
+            event_subscription: true,
+            ..base
+        })
+    }
+
+    /// Admit a subscription EPR only inside the independently approved origin and
+    /// service subtree. Its opaque query is part of the exact route/Digest target.
+    /// An EPR never changes the literal peer, generation or plaintext approval.
+    pub fn event_subscription(&self, uri: &str, service_root: &str) -> Result<Self, HttpError> {
+        if !self.event_subscription || self.snapshot || uri.len() > 4096 {
+            return Err(HttpError::Configuration);
+        }
+        let rest = uri
+            .strip_prefix("http://")
+            .ok_or(HttpError::Configuration)?;
+        let slash = rest.find('/').ok_or(HttpError::Configuration)?;
+        let (authority, target) = rest.split_at(slash);
+        if authority != self.authority || !event_target_in_root(target, service_root) {
+            return Err(HttpError::Configuration);
+        }
+        self.with_target(target)
+    }
+
+    /// Whether this route explicitly authorizes the bounded event lifecycle.
+    pub const fn is_event_subscription(&self) -> bool {
+        self.event_subscription
     }
 
     /// Frozen network destination; no DNS or redirect may alter it.
@@ -155,6 +227,50 @@ impl HttpRoute {
     pub fn digest(&self) -> ContentDigest {
         self.digest
     }
+}
+
+fn valid_event_target(target: &str) -> bool {
+    if target.is_empty()
+        || target.len() > 2048
+        || !target.starts_with('/')
+        || target.starts_with("//")
+        || target.bytes().filter(|byte| *byte == b'?').count() > 1
+    {
+        return false;
+    }
+    let (path, query) = target
+        .split_once('?')
+        .map_or((target, None), |(path, query)| (path, Some(query)));
+    if !path
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || b"/._~-".contains(&byte))
+        || path.split('/').any(|part| matches!(part, "." | ".."))
+    {
+        return false;
+    }
+    query.is_none_or(|query| {
+        !query.is_empty()
+            && query
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"/._~-!$&'()*+,;=:@".contains(&byte))
+    })
+}
+
+pub(super) fn event_target_in_root(target: &str, root: &str) -> bool {
+    if !valid_event_target(target)
+        || root.len() > 512
+        || root.contains('?')
+        || !valid_event_target(root)
+    {
+        return false;
+    }
+    let path = target.split('?').next().unwrap_or("");
+    let root = root.trim_end_matches('/');
+    root.is_empty()
+        || path == root
+        || path
+            .strip_prefix(root)
+            .is_some_and(|tail| tail.starts_with('/'))
 }
 
 fn valid_snapshot_target(target: &str) -> bool {
@@ -342,7 +458,7 @@ impl Default for HttpLimits {
 }
 
 impl HttpLimits {
-    fn validate(self) -> Result<(), HttpError> {
+    pub(super) fn validate(self) -> Result<(), HttpError> {
         self.validate_profile(false)
     }
 
@@ -488,7 +604,7 @@ impl Drop for HttpResponse {
 trait HttpSocket: Read + Write + Send {}
 impl HttpSocket for TcpStream {}
 
-/// A single read-only request and response, with no automatic authentication/retry.
+/// A single capability-matched request and response, with no automatic authentication/retry.
 /// Dropping closes its sole socket; cleanup needs no renewed network authority.
 pub struct HttpExchange {
     route: HttpRoute,
@@ -518,8 +634,8 @@ impl fmt::Debug for HttpExchange {
 }
 
 impl HttpExchange {
-    /// Connect once to the pinned address. The typed request can only be built by
-    /// the read-only ONVIF request constructors. The caller supplies Digest
+    /// Connect once to the pinned address. Event-lifecycle requests require a
+    /// separately authorized event route; read-only routes reject them. The caller supplies Digest
     /// authorization only for this exact origin/target and revalidates its secret
     /// lease through the live authority at every subsequent socket boundary.
     pub fn connect(
@@ -532,7 +648,11 @@ impl HttpExchange {
         authority: &dyn HttpAuthority,
     ) -> Result<Self, HttpError> {
         limits.validate()?;
-        if route.snapshot || now_ns >= deadline_ns {
+        if route.snapshot
+            || route.event_subscription != request.is_event_subscription()
+            || route.event_subscription && request.message_id().is_none()
+            || now_ns >= deadline_ns
+        {
             return Err(HttpError::Configuration);
         }
         let request = make_request(&route, request, authorization, limits.request_bytes)?;

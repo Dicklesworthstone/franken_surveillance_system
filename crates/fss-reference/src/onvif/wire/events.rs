@@ -187,7 +187,7 @@ impl fmt::Debug for EventDocument {
 /// (1970–9999, up to nine fractional digits) and concrete topics. It does not
 /// flatten missing groups, unknown property operations, or complex item values.
 pub fn parse_event_document(bytes: &[u8]) -> Result<EventDocument, WireError> {
-    parse_document(bytes, false)
+    parse_document(bytes, false, false)
 }
 
 /// Parse the v2 bounded vendor-event and VideoAnalytics metadata projection.
@@ -197,15 +197,32 @@ pub fn parse_event_document(bytes: &[u8]) -> Result<EventDocument, WireError> {
 /// Sensitive appearance extensions remain opaque in the retained source. The separate
 /// [`parse_event_document`] entry point retains v1 semantics for old publication roots.
 pub fn parse_metadata_document(bytes: &[u8]) -> Result<EventDocument, WireError> {
-    parse_document(bytes, true)
+    parse_document(bytes, true, false)
 }
 
-fn parse_document(bytes: &[u8], include_analytics: bool) -> Result<EventDocument, WireError> {
+pub(super) fn parse_event_document_addressed(bytes: &[u8]) -> Result<EventDocument, WireError> {
+    parse_document(bytes, false, true)
+}
+
+fn parse_document(
+    bytes: &[u8],
+    include_analytics: bool,
+    addressed: bool,
+) -> Result<EventDocument, WireError> {
     let doc = xml::Document::parse(bytes)?;
     let root = doc.root();
     if doc.named(root, SOAP_NS, "Envelope") {
         drop(doc);
-        let (doc, root) = response(bytes, EVENTS_NS, "PullMessagesResponse")?;
+        let (doc, root) = if addressed {
+            super::response_with_addressing(
+                bytes,
+                EVENTS_NS,
+                "PullMessagesResponse",
+                Some(super::pullpoint::PULL_RESPONSE),
+            )?
+        } else {
+            response(bytes, EVENTS_NS, "PullMessagesResponse")?
+        };
         let current_id = required(&doc, root, EVENTS_NS, "CurrentTime")?;
         let termination_id = required(&doc, root, EVENTS_NS, "TerminationTime")?;
         let current = scalar(&doc, current_id)?;

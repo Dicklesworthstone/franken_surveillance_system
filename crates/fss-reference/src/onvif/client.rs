@@ -347,6 +347,14 @@ pub trait OnvifContext: HttpAuthority {
         challenge: &DigestChallenge,
     ) -> Result<DigestAuthorization, ClientError>;
 
+    /// Produce one fresh, unpredictable 128-bit identity for a logical ONVIF event
+    /// operation under live entropy authority. Create, every PullMessages and
+    /// Unsubscribe require distinct values; an HTTP 401 retry reuses its logical ID.
+    /// Existing media-only owners refuse by default and gain no event authority.
+    fn event_request_id(&self) -> Result<[u8; 16], ClientError> {
+        Err(ClientError::Entropy)
+    }
+
     /// Revalidate the exact route, operation, and current credential lease, then
     /// create one fresh UsernameToken using unpredictable 128-bit entropy and
     /// exactly `created`. The core supplies camera UTC advanced only by owned

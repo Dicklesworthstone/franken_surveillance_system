@@ -16,6 +16,8 @@ mod analytics;
 mod events;
 #[path = "wire/media2.rs"]
 mod media2;
+#[path = "wire/pullpoint.rs"]
+mod pullpoint;
 #[path = "wire/time.rs"]
 mod time;
 #[path = "wire/xml.rs"]
@@ -37,6 +39,13 @@ pub use media2::{
     MAX_ONVIF_SERVICES, Media2Service, Media2StreamUri, ServiceVersion,
     get_media2_profiles_request, get_media2_stream_uri_request, get_services_request,
     parse_media2_profiles, parse_media2_service, parse_media2_stream_uri,
+};
+pub use pullpoint::{
+    MAX_PULL_POINT_LIFETIME_SECONDS, MAX_PULL_TIMEOUT_SECONDS, MAX_REFERENCE_PARAMETERS,
+    PullPointLease, PullPointSubscription, create_pull_point_request, parse_pull_messages_response,
+    parse_pull_point_subscription, parse_renew_response, parse_unsubscribe_response,
+    pull_messages_request, renew_pull_point_request, unsubscribe_pull_point_request,
+    validate_relates_to,
 };
 pub use time::{UtcDateTime, get_system_date_and_time_request, parse_system_date_and_time};
 
@@ -68,7 +77,8 @@ pub enum MediaVersion {
     Media2,
 }
 
-/// The complete read-only operation set admitted by this module.
+/// The complete operation set admitted by this module. Event-subscription
+/// operations require separate explicit remote transient-state authority.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OnvifOperation {
     /// Read camera UTC before authentication; this grants no recording-time authority.
@@ -87,6 +97,14 @@ pub enum OnvifOperation {
     GetMedia2Profiles,
     /// Request the selected Media2 profile's RTSP-over-TCP presentation URI.
     GetMedia2StreamUri,
+    /// Create one finite transient event subscription, with explicit owner authority.
+    CreatePullPointSubscription,
+    /// Pull vendor event notifications from the exact acquired subscription.
+    PullMessages,
+    /// Renew only an explicitly owned transient event subscription.
+    RenewPullPoint,
+    /// Delete only an explicitly owned transient event subscription.
+    UnsubscribePullPoint,
 }
 
 impl OnvifOperation {
@@ -104,11 +122,23 @@ impl OnvifOperation {
             Self::GetServices => "http://www.onvif.org/ver10/device/wsdl/GetServices",
             Self::GetMedia2Profiles => "http://www.onvif.org/ver20/media/wsdl/GetProfiles",
             Self::GetMedia2StreamUri => "http://www.onvif.org/ver20/media/wsdl/GetStreamUri",
+            Self::CreatePullPointSubscription => {
+                "http://www.onvif.org/ver10/events/wsdl/EventPortType/CreatePullPointSubscriptionRequest"
+            }
+            Self::PullMessages => {
+                "http://www.onvif.org/ver10/events/wsdl/PullPointSubscription/PullMessagesRequest"
+            }
+            Self::RenewPullPoint => {
+                "http://docs.oasis-open.org/wsn/bw-2/SubscriptionManager/RenewRequest"
+            }
+            Self::UnsubscribePullPoint => {
+                "http://docs.oasis-open.org/wsn/bw-2/SubscriptionManager/UnsubscribeRequest"
+            }
         }
     }
 }
 
-/// A complete request constructible only through the read-only builders.
+/// A complete request constructible only through operation-specific builders.
 /// Debug output never includes a profile token or SOAP body.
 #[derive(Clone, Eq, PartialEq)]
 pub struct SoapRequest {
@@ -136,26 +166,95 @@ impl SoapRequest {
         self.username_token
     }
 
-    pub(super) fn with_security_header(mut self, header: &[u8]) -> Result<Self, WireError> {
-        if self.username_token || self.action == OnvifOperation::GetSystemDateAndTime.action() {
+    /// Whether this operation requires explicit event-subscription authority.
+    /// HTTP routes for ordinary read-only onboarding cannot authorize these bytes.
+    #[must_use]
+    pub fn is_event_subscription(&self) -> bool {
+        [
+            OnvifOperation::CreatePullPointSubscription,
+            OnvifOperation::PullMessages,
+            OnvifOperation::RenewPullPoint,
+            OnvifOperation::UnsubscribePullPoint,
+        ]
+        .into_iter()
+        .any(|operation| self.action == operation.action())
+    }
+
+    /// Bind one owner-supplied unique request identity to a PullPoint message.
+    /// The live owner must prevent reuse across distinct logical requests; an
+    /// authentication retry of the same message keeps the same identity.
+    pub fn with_message_id(mut self, id: &str) -> Result<Self, WireError> {
+        pullpoint::message_id(id)?;
+        if !self.is_event_subscription() || self.message_id().is_some() || self.username_token {
             return Err(WireError::UnsupportedHeader);
         }
+        let at = self
+            .body
+            .windows(b"<s:Header>".len())
+            .position(|part| part == b"<s:Header>")
+            .ok_or(WireError::UnexpectedEnvelope)?
+            + b"<s:Header>".len();
+        let addition = format!("<wsa:MessageID>{id}</wsa:MessageID>");
         let length = self
             .body
             .len()
-            .checked_add(header.len())
+            .checked_add(addition.len())
             .ok_or(WireError::InputTooLarge)?;
         if length > MAX_SOAP_BYTES {
             return Err(WireError::InputTooLarge);
         }
-        let at = self
+        let mut body = Vec::with_capacity(length);
+        body.extend_from_slice(&self.body[..at]);
+        body.extend_from_slice(addition.as_bytes());
+        body.extend_from_slice(&self.body[at..]);
+        self.body.fill(0);
+        self.body = body;
+        Ok(self)
+    }
+
+    /// Exact owner-supplied WS-Addressing identity, if this subscription request
+    /// has been completed. The HTTP event lane refuses requests without one.
+    #[must_use]
+    pub fn message_id(&self) -> Option<&str> {
+        let body = std::str::from_utf8(&self.body).ok()?;
+        let (_, tail) = body.split_once("<wsa:MessageID>")?;
+        tail.split_once("</wsa:MessageID>").map(|(id, _)| id)
+    }
+
+    pub(super) fn with_security_header(mut self, header: &[u8]) -> Result<Self, WireError> {
+        if self.username_token || self.action == OnvifOperation::GetSystemDateAndTime.action() {
+            return Err(WireError::UnsupportedHeader);
+        }
+        let body_at = self
             .body
             .windows(b"<s:Body>".len())
             .position(|part| part == b"<s:Body>")
             .ok_or(WireError::UnexpectedEnvelope)?;
+        // PullPoint already carries WS-Addressing headers. Insert the typed
+        // Security child into that Header rather than creating a second Header.
+        let existing_header = self.body[..body_at]
+            .windows(b"</s:Header>".len())
+            .position(|part| part == b"</s:Header>");
+        let (at, addition) = if let Some(at) = existing_header {
+            let addition = header
+                .strip_prefix(b"<s:Header>")
+                .and_then(|value| value.strip_suffix(b"</s:Header>"))
+                .ok_or(WireError::UnsupportedHeader)?;
+            (at, addition)
+        } else {
+            (body_at, header)
+        };
+        let length = self
+            .body
+            .len()
+            .checked_add(addition.len())
+            .ok_or(WireError::InputTooLarge)?;
+        if length > MAX_SOAP_BYTES {
+            return Err(WireError::InputTooLarge);
+        }
         let mut body = Vec::with_capacity(length);
         body.extend_from_slice(&self.body[..at]);
-        body.extend_from_slice(header);
+        body.extend_from_slice(addition);
         body.extend_from_slice(&self.body[at..]);
         self.body.fill(0);
         self.body = body;
@@ -629,6 +728,15 @@ fn response(
     namespace: &str,
     local: &str,
 ) -> Result<(xml::Document, usize), WireError> {
+    response_with_addressing(bytes, namespace, local, None)
+}
+
+fn response_with_addressing(
+    bytes: &[u8],
+    namespace: &str,
+    local: &str,
+    expected_action: Option<&str>,
+) -> Result<(xml::Document, usize), WireError> {
     let doc = xml::Document::parse(bytes)?;
     let root = doc.root();
     if !doc.named(root, SOAP_NS, "Envelope") || !doc.only_whitespace(root) {
@@ -639,6 +747,9 @@ fn response(
     }
     let mut body = None;
     let mut header_seen = false;
+    let mut action = None;
+    let mut to_seen = false;
+    let mut relates_seen = false;
     for child in doc.child_ids(root) {
         if doc.named(child, SOAP_NS, "Header") && !header_seen && body.is_none() {
             header_seen = true;
@@ -646,8 +757,46 @@ fn response(
                 return Err(WireError::UnexpectedEnvelope);
             }
             for field in doc.child_ids(child) {
+                let understood = if expected_action.is_some()
+                    && doc.named(field, pullpoint::ADDRESSING_NS, "Action")
+                {
+                    if action.is_some() {
+                        return Err(WireError::DuplicateField);
+                    }
+                    action = Some(scalar(&doc, field)?);
+                    true
+                } else if expected_action.is_some()
+                    && doc.named(field, pullpoint::ADDRESSING_NS, "To")
+                {
+                    if to_seen {
+                        return Err(WireError::DuplicateField);
+                    }
+                    to_seen = true;
+                    if scalar(&doc, field)? != pullpoint::ANONYMOUS {
+                        return Err(WireError::UnsupportedHeader);
+                    }
+                    true
+                } else if expected_action.is_some()
+                    && doc.named(field, pullpoint::ADDRESSING_NS, "RelatesTo")
+                {
+                    if relates_seen {
+                        return Err(WireError::DuplicateField);
+                    }
+                    relates_seen = true;
+                    pullpoint::relates_to(&doc, field)?;
+                    true
+                } else {
+                    false
+                };
+                if understood {
+                    if doc.attribute(field, SOAP_NS, "role").is_some_and(|role| {
+                        role != "http://www.w3.org/2003/05/soap-envelope/role/ultimateReceiver"
+                    }) {
+                        return Err(WireError::UnsupportedHeader);
+                    }
+                }
                 if let Some(required) = doc.attribute(field, SOAP_NS, "mustUnderstand") {
-                    if parse_boolean(required)? {
+                    if parse_boolean(required)? && !understood {
                         return Err(WireError::UnsupportedHeader);
                     }
                 }
@@ -680,6 +829,11 @@ fn response(
     }
     if !doc.named(response, namespace, local) || !doc.only_whitespace(response) {
         return Err(WireError::UnexpectedResponse);
+    }
+    if let (Some(expected), Some(observed)) = (expected_action, action) {
+        if observed != expected {
+            return Err(WireError::UnexpectedResponse);
+        }
     }
     Ok((doc, response))
 }

@@ -753,7 +753,8 @@
     "crates/fss-reference/src/rtsp/client/authenticated/offers.rs": "support",
     "crates/fss-reference/src/onvif/metadata.rs": "ambiguous",
     "crates/fss-reference/src/onvif/metadata/record.rs": "cognition",
-    "crates/fss-cli/src/bin/fss-onvif-metadata.rs": "support"
+    "crates/fss-cli/src/bin/fss-onvif-metadata.rs": "support",
+    "crates/fss-reference/src/onvif/wire/pullpoint.rs": "cognition"
   },
   "types": {
     "AlertEffectRecord": {
@@ -1333,6 +1334,16 @@
       "file": "crates/fss-reference/src/onvif/metadata.rs",
       "plane": "support",
       "description": "Payload-free metadata import refusal code with typed internal cause."
+    },
+    "PullPointSubscription": {
+      "file": "crates/fss-reference/src/onvif/wire/pullpoint.rs",
+      "plane": "cognition",
+      "description": "Bounded vendor endpoint reference and claimed lease times; construction grants no subscription or network authority."
+    },
+    "PullPointLease": {
+      "file": "crates/fss-reference/src/onvif/wire/pullpoint.rs",
+      "plane": "cognition",
+      "description": "Exact vendor-declared subscription times and conservative duration; no trusted clock, coverage or continuity authority."
     }
   }
 }
