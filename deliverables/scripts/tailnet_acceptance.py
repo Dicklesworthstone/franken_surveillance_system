@@ -22,9 +22,13 @@ Rows (pass/fail each):
   onvif-capabilities  GetCapabilities parses; Media XAddr + RTP/RTSP/TCP true
   onvif-device-info   GetDeviceInformation returns Manufacturer/Model/FirmwareVersion
                       (the flashed unit identity assertion for flash-day)
+  onvif-profile-s  GetProfiles (media wsdl) lists >=1 profile with an H264
+                   VideoEncoderConfiguration (ONVIF Profile-S media profile)
   http-control     HTTP GET answers (snapshot/control UI)
   tailscaled-status   `tailscale status` over SSH (dropbear, S30dropbear) lists
                       the camera node; only run with --ssh-user set
+  dropbear-sftp    sftp batch put+get round-trip through dropbear; opt-in
+                   --sftp with --ssh-user
   tailnet-bind     the target address is a tailscale interface address
 """
 from __future__ import annotations
@@ -41,6 +45,7 @@ import sys
 import tempfile
 import threading
 import time
+from pathlib import Path
 
 SOAP_ENVELOPE = (
     '<?xml version="1.0" encoding="UTF-8"?>'
@@ -92,6 +97,24 @@ DEVINFO_FIELD_RE = {
     "Model": re.compile(r"<tds:Model>([^<]+)</tds:Model>"),
     "FirmwareVersion": re.compile(r"<tds:FirmwareVersion>([^<]+)</tds:FirmwareVersion>"),
 }
+
+# tds:GetProfiles (media wsdl) — ONVIF Profile-S: the media service must expose at
+# least one profile whose configuration binds an H264 video encoder (Profile-S §5.2:
+# VideoEncoderConfiguration with H264 option) and an RTSP source. thingino ships
+# /usr/sbin/onvif_notify_server + onvif.cgi (firmware-build.md §4), so this row is
+# the flashed-image media-profile gate.
+GET_PROFILES_ENVELOPE = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" '
+    'xmlns:trt="http://www.onvif.org/ver10/media/wsdl">'
+    "<s:Body><trt:GetProfiles/></s:Body></s:Envelope>"
+)
+PROFILES_RE = re.compile(
+    r"<trt:GetProfilesResponse>(?P<body>.*?)</trt:GetProfilesResponse>", re.S
+)
+PROFILE_TOKEN_RE = re.compile(r"<tt:profile\s+token=\"([^\"]+)\"", re.S)
+H264_RE = re.compile(r"<tt:H264\b", re.S)
+VIDEO_ENC_RE = re.compile(r"<tt:VideoEncoderConfiguration\b", re.S)
 
 # One real decodable H264 frame (64x64 gray, libx264 ultrafast/zerolatency, one GOP):
 # SPS(7) + PPS(8) + SEI(6) + IDR slice(5), hex NALs, start codes stripped —
@@ -368,6 +391,100 @@ def tailscaled_status_row(host: str, port: int, user: str, timeout: float,
     return True, "node + %d peer lines" % (len(lines) - 1)
 
 
+def onvif_profiles_row(host: str, port: int, timeout: float,
+                       path: str = "/onvif/device_service",
+                       media_path: str = "/onvif/media_service") -> tuple[bool, str]:
+    """ONVIF Profile-S GetProfiles (media wsdl, POSTed to the media service).
+
+    Pass when: >=1 profile token, and that profile carries a VideoEncoderConfiguration
+    with an H264 element (Profile-S media profile must bind an H264 encoder). The
+    media XAddr from GetCapabilities names the endpoint; POST there, falling back to
+    the device path when capabilities gave none.
+    """
+    # discover the media endpoint from GetCapabilities first (the flashed thingino
+    # onvif.cgi serves both, but the XAddr is the contract-named location)
+    cap_ok, cap_detail = onvif_row(host, port, timeout, path)
+    if cap_ok:
+        m = XADDR_RE.search(cap_detail)
+        # XAddr detail carries "http://host:port/path"; reuse its path when parseable
+        xm = re.search(r"https?://[^/]+(/.+)$", cap_detail)
+        if xm:
+            media_path = xm.group(1)
+    s = connect_tcp(host, port, timeout)
+    if s is None:
+        return False, "connect %s:%d failed" % (host, port)
+    try:
+        body = GET_PROFILES_ENVELOPE.encode()
+        req = (
+            "POST %s HTTP/1.1\r\nHost: %s:%d\r\nContent-Type: application/soap+xml; charset=utf-8\r\n"
+            "Content-Length: %d\r\nConnection: close\r\n\r\n" % (media_path, host, port, len(body))
+        ).encode() + body
+        s.sendall(req)
+        buf = b""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                chunk = s.recv(4096)
+            except OSError:
+                break
+            if not chunk:
+                break
+            buf += chunk
+            if b"</s:Envelope>" in buf:
+                break
+        text = buf.decode("utf-8", "replace")
+        pm = PROFILES_RE.search(text)
+        if not pm:
+            return False, "no trt:GetProfilesResponse (%d bytes)" % len(text)
+        tokens = PROFILE_TOKEN_RE.findall(pm.group("body"))
+        if not tokens:
+            return False, "GetProfilesResponse lists no profiles"
+        blob = pm.group("body")
+        if not VIDEO_ENC_RE.search(blob):
+            return False, "profiles carry no tt:VideoEncoderConfiguration"
+        if not H264_RE.search(blob):
+            return False, "VideoEncoderConfiguration has no tt:H264 (not Profile-S)"
+        return True, "%d profile(s), first token %r, H264 VideoEncoder bound" % (
+            len(tokens), tokens[0])
+    finally:
+        s.close()
+
+
+def sftp_row(host: str, port: int, user: str, timeout: float,
+             sftp_cmd: str = "sftp") -> tuple[bool, str]:
+    """Dropbear SFTP reachability: run `sftp -b -` in batch mode, put+get a probe
+    file in /tmp, verify round-trip bytes. Dropbear's sftp-server lives at
+    /usr/libexec/sftp-server on thingino (firmware-build.md §4: dropbear stays
+    enabled). Batch mode = no interactive prompts; StrictHostKeyChecking off (the
+    flashed unit's host key is regenerated on reflash).
+    """
+    probe = Path(tempfile.mkdtemp()) / "fss-sftp-probe"
+    payload = os.urandom(64).hex().encode()
+    probe.write_bytes(payload)
+    remote = "/tmp/fss-sftp-probe-%d" % os.getpid()
+    try:
+        proc = subprocess.run(
+            [sftp_cmd, "-oBatchMode=yes", "-oStrictHostKeyChecking=no",
+             "-oUserKnownHostsFile=/dev/null", "-oConnectTimeout=%d" % int(timeout),
+             "-P", str(port), "%s@%s" % (user, host)],
+            input=(
+                "put %s %s\nget %s %s.out\nrm %s\n" % (probe, remote, remote, probe, remote)
+            ).encode(),
+            capture_output=True, timeout=timeout + 15, cwd=str(probe.parent),
+        )
+    except FileNotFoundError:
+        return False, "sftp client not found on PATH"
+    except subprocess.TimeoutExpired:
+        return False, "sftp timed out on %s@%s:%d" % (user, host, port)
+    out = probe.parent / (probe.name + ".out")
+    if proc.returncode != 0:
+        err = (proc.stderr or "").strip().splitlines()
+        return False, "sftp rc=%d: %s" % (proc.returncode, (err[-1] if err else "no stderr"))
+    if not out.exists() or out.read_bytes() != payload:
+        return False, "round-trip mismatch (put/get did not preserve %d bytes)" % len(payload)
+    return True, "put+get round-trip %d bytes via %s@%s:%d" % (len(payload), user, host, port)
+
+
 def http_row(host: str, port: int, timeout: float, path: str = "/") -> tuple[bool, str]:
     s = connect_tcp(host, port, timeout)
     if s is None:
@@ -402,7 +519,9 @@ def run_contract(host: str, rtsp_port: int, onvif_port: int, http_port: int,
                  expect_model: str | None = None,
                  ssh_user: str | None = None, ssh_port: int = 22,
                  want_frame: bool = True,
-                 ssh_cmd: str = "ssh") -> tuple[list[dict], bool]:
+                 ssh_cmd: str = "ssh",
+                 want_sftp: bool = False,
+                 sftp_cmd: str = "sftp") -> tuple[list[dict], bool]:
     rows = []
     ts_addrs = tailscale_addrs()
     ip = ip_of(host)
@@ -430,6 +549,8 @@ def run_contract(host: str, rtsp_port: int, onvif_port: int, http_port: int,
     rows.append({"row": "onvif-capabilities", "pass": ok, "detail": detail})
     ok, detail = onvif_device_info_row(host, onvif_port, timeout, expect_model=expect_model)
     rows.append({"row": "onvif-device-info", "pass": ok, "detail": detail})
+    ok, detail = onvif_profiles_row(host, onvif_port, timeout)
+    rows.append({"row": "onvif-profile-s", "pass": ok, "detail": detail})
     ok, detail = http_row(host, http_port, timeout)
     rows.append({"row": "http-control", "pass": ok, "detail": detail})
     if ssh_user:
@@ -437,6 +558,12 @@ def run_contract(host: str, rtsp_port: int, onvif_port: int, http_port: int,
     else:
         ok, detail = False, "skipped: no --ssh-user (row is opt-in; needs dropbear creds)"
     rows.append({"row": "tailscaled-status", "pass": ok, "detail": detail})
+    if ssh_user and want_sftp:
+        ok, detail = sftp_row(host, ssh_port, ssh_user, timeout, sftp_cmd=sftp_cmd)
+    else:
+        ok, detail = False, ("skipped: needs --ssh-user and --sftp"
+                             if want_sftp else "skipped: no --sftp")
+    rows.append({"row": "dropbear-sftp", "pass": ok, "detail": detail})
     all_pass = all(r["pass"] for r in rows)
     return rows, all_pass
 
@@ -580,6 +707,20 @@ class MockServer(threading.Thread):
                         "<tds:HardwareId>T41NQ</tds:HardwareId>"
                         "</tds:GetDeviceInformationResponse></s:Body></s:Envelope>"
                     ).encode()
+                elif "GetProfiles" in soap:
+                    payload = (
+                        '<?xml version="1.0" encoding="UTF-8"?>'
+                        '<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" '
+                        'xmlns:trt="http://www.onvif.org/ver10/media/wsdl" '
+                        'xmlns:tt="http://www.onvif.org/ver10/schema"><s:Body>'
+                        "<trt:GetProfilesResponse>"
+                        '<tt:profile token="profile_1">'
+                        "<tt:VideoEncoderConfiguration>"
+                        "<tt:H264><tt:H264Profiles>Main</tt:H264Profiles></tt:H264>"
+                        "</tt:VideoEncoderConfiguration>"
+                        "</tt:profile>"
+                        "</trt:GetProfilesResponse></s:Body></s:Envelope>"
+                    ).encode()
                 else:
                     caps = (
                         '<?xml version="1.0" encoding="UTF-8"?>'
@@ -626,10 +767,26 @@ class MockSSHServer(threading.Thread):
         'echo "peer-x\\tactive\\toffline";; *) exit 255;; esac\n'
     )
 
+    FAKE_SFTP = (
+        "#!/bin/sh\n"
+        "# fake sftp batch client for self-test: perform the put/get/rm batch\n"
+        "# against the local filesystem so the row's round-trip check is real.\n"
+        "batch=$(cat)\n"
+        'echo "$batch" | while IFS= read -r line; do\n'
+        '  case "$line" in\n'
+        '    put\\ *) set -- $line; cp "$2" "$3" ;;\n'
+        '    get\\ *) set -- $line; cp "$2" "$3" ;;\n'
+        '    rm\\ *) set -- $line; rm -f "$2" ;;\n'
+        "  esac\n"
+        "done\n"
+        "exit 0\n"
+    )
+
     def __init__(self, port: int):
         super().__init__(daemon=True)
         self.port = port
         self.path = os.path.join(tempfile.gettempdir(), f"fss-fake-ssh-{port}.sh")
+        self.sftp_path = os.path.join(tempfile.gettempdir(), f"fss-fake-sftp-{port}.sh")
         self.stop_flag = False
         self.ready = threading.Event()
 
@@ -639,6 +796,9 @@ class MockSSHServer(threading.Thread):
         with open(self.path, "w", encoding="utf-8") as f:
             f.write(self.FAKE_SSH)
         os.chmod(self.path, os.stat(self.path).st_mode | stat.S_IEXEC)
+        with open(self.sftp_path, "w", encoding="utf-8") as f:
+            f.write(self.FAKE_SFTP)
+        os.chmod(self.sftp_path, os.stat(self.sftp_path).st_mode | stat.S_IEXEC)
         self.ready.set()
         while not self.stop_flag:
             time.sleep(0.1)
@@ -648,6 +808,8 @@ class MockSSHServer(threading.Thread):
         with contextlib.suppress(OSError):
             import os
             os.unlink(self.path)
+        with contextlib.suppress(OSError):
+            os.unlink(self.sftp_path)
 
 
 def self_test() -> int:
@@ -665,7 +827,7 @@ def self_test() -> int:
             "127.0.0.1", rtsp_port, http_port, http_port,
             timeout=3.0, require_tailnet_bind=False,
             expect_model="wyze_cam4", ssh_user="root", ssh_port=ssh_port,
-            ssh_cmd=sshd.path,
+            ssh_cmd=sshd.path, want_sftp=True, sftp_cmd=sshd.sftp_path,
         )
     finally:
         server.stop_flag = True
@@ -697,6 +859,8 @@ def main() -> int:
     ap.add_argument("--ssh-port", type=int, default=22)
     ap.add_argument("--no-frame", action="store_true",
                     help="skip the ffmpeg rtsp-frame row (e.g. ffmpeg absent)")
+    ap.add_argument("--sftp", action="store_true",
+                    help="add the dropbear-sftp row (needs --ssh-user; put+get probe)")
     ap.add_argument("--json", action="store_true", help="JSON summary only")
     ap.add_argument("--self-test", action="store_true",
                     help="run the mock RTSP+ONVIF+SSH server on loopback and test against it")
@@ -710,7 +874,7 @@ def main() -> int:
                                   a.timeout, not a.no_bind_check,
                                   expect_model=a.expect_model,
                                   ssh_user=a.ssh_user, ssh_port=a.ssh_port,
-                                  want_frame=not a.no_frame)
+                                  want_frame=not a.no_frame, want_sftp=a.sftp)
     summary = {"host": a.host, "all_pass": all_pass, "rows": rows}
     if a.json:
         print(json.dumps(summary, indent=2))
