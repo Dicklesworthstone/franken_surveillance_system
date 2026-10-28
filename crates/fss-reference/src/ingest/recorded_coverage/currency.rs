@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
-//! Current-authority checks for *new uses* of version-6 coverage approvals.
+//! Current-authority checks for new uses of coverage approvals.
+//! Explicit calibration withdrawals also gate legacy records with an exact calibration basis.
 //!
 //! Historical decoding is deliberately independent of current authority. Approval checking
 //! and retention are not: an embedded screening receipt is not a lease on the privacy or
@@ -39,18 +40,72 @@ fn same_adoption(currency: GenerationCurrency, current: Option<ContentDigest>) -
     }
 }
 
+// A withdrawal is permanent for this exact basis, even after another generation recovers.
+// Legacy owner assertions do not override a later owner withdrawal of the same physical basis.
+fn withdrawn_basis(
+    adoptions: &BTreeMap<u64, Vec<RetainedAdoption>>,
+    calibration: ContentDigest,
+    sensor: &str,
+    camera: CameraGeneration,
+) -> bool {
+    adoptions.get(&camera.camera).is_some_and(|history| {
+        history.iter().any(|adoption| {
+            adoption.invalidation.is_some()
+                && adoption.receipt.calibration_digest == calibration
+                && adoption.receipt.sensor_id.as_str() == sensor
+                && adoption.receipt.intrinsics_generation == camera.intrinsics
+                && adoption.receipt.extrinsics_generation == camera.extrinsics
+        })
+    })
+}
+
 /// Revalidation is scoped to the record's actual sensor/camera, not the global ledger head.
 /// Unrelated event publications do not invalidate an otherwise unchanged approval.
 pub(super) fn check_guard_current(
     deployment: &ReferenceDeployment,
     record: &CoverageRecord,
 ) -> Result<(), CoverageError> {
+    // New uses of every historical record version respect a known withdrawal. Decoding old
+    // bytes remains independent of current authority; re-retaining an old approval does not.
+    let adoptions = match record.pose_provenance {
+        Some(PoseProvenance::SiteCalibration {
+            calibration_digest,
+            camera_handle,
+            intrinsics_generation,
+            extrinsics_generation,
+            ..
+        }) => {
+            let history = retained_adoptions(deployment).map_err(|_| {
+                refused(
+                    record,
+                    "current calibration authority could not be verified",
+                )
+            })?;
+            if withdrawn_basis(
+                &history,
+                calibration_digest,
+                &record.sensor_id,
+                CameraGeneration {
+                    camera: camera_handle,
+                    intrinsics: intrinsics_generation,
+                    extrinsics: extrinsics_generation,
+                },
+            ) {
+                return Err(refused(
+                    record,
+                    "calibration basis was invalidated; adopt a newer calibration and reanalyse",
+                ));
+            }
+            Some(history)
+        }
+        _ => None,
+    };
     let Some(receipt) = record
         .pose_uncertainty
         .as_ref()
         .and_then(PoseUncertainty::guard_receipt)
     else {
-        // Legacy canonical bytes and their existing approval semantics are not reinterpreted.
+        // Historical bytes remain readable; only a known exact-basis withdrawal changes use.
         return Ok(());
     };
     // The caller validates the enclosing record first, including every receipt binding.
@@ -74,18 +129,15 @@ pub(super) fn check_guard_current(
             "full-camera receipt has no calibration provenance",
         ));
     };
-    let adoptions = retained_adoptions(deployment).map_err(|_| {
-        refused(
-            record,
-            "current calibration authority could not be verified",
-        )
-    })?;
+    let adoptions = adoptions
+        .as_ref()
+        .ok_or_else(|| refused(record, "full-camera receipt has no calibration authority"))?;
     check_adoption_binding(
         &sensor,
         receipt.camera(),
         receipt.calibration_digest(),
         currency,
-        &adoptions,
+        adoptions,
     )
     .map_err(|reason| refused(record, reason))?;
     Ok(())
@@ -189,6 +241,7 @@ mod tests {
             digest: receipt.digest(),
             receipt,
             committed_sequence: 10,
+            invalidation: None,
         };
         let currency = GenerationCurrency::AdoptedCurrent {
             receipt: retained.digest,
@@ -216,6 +269,86 @@ mod tests {
                 "accepted binding change {changed}"
             );
         }
+        // A historical withdrawn basis stays withdrawn after a newer adoption recovers.
+        use crate::ingest::calibration_invalidation::{
+            InvalidationReason, InvalidationReceipt, RetainedInvalidation, authority_domain,
+        };
+        let mut withdrawn = retained.clone();
+        let withdrawal = InvalidationReceipt {
+            authority_domain: authority_domain("site:currency", 0),
+            adoption: withdrawn.receipt.adoption,
+            adoption_digest: withdrawn.digest,
+            camera_handle: camera.camera,
+            sensor_id: sensor.clone(),
+            calibration_digest: calibration,
+            intrinsics_generation: camera.intrinsics,
+            extrinsics_generation: camera.extrinsics,
+            reason: InvalidationReason::CameraMoved,
+            evidence: None,
+        };
+        withdrawn.invalidation = Some(RetainedInvalidation {
+            digest: withdrawal.digest(),
+            receipt: withdrawal,
+            committed_sequence: 11,
+        });
+        let mut recovered = retained.clone();
+        recovered.receipt.adoption += 1;
+        recovered.receipt.calibration_digest = ContentDigest::sha256(b"recovered calibration");
+        recovered.receipt.extrinsics_generation += 1;
+        recovered.receipt.supersedes = Some(retained.digest);
+        recovered.digest = recovered.receipt.digest();
+        recovered.committed_sequence = 12;
+        let recovered_digest = recovered.receipt.calibration_digest;
+        let history = BTreeMap::from([(camera.camera, vec![withdrawn, recovered])]);
+        assert!(withdrawn_basis(
+            &history,
+            calibration,
+            sensor.as_str(),
+            camera
+        ));
+        assert!(!withdrawn_basis(
+            &good,
+            calibration,
+            sensor.as_str(),
+            camera
+        ));
+        assert!(!withdrawn_basis(
+            &history,
+            recovered_digest,
+            sensor.as_str(),
+            CameraGeneration {
+                extrinsics: camera.extrinsics + 1,
+                ..camera
+            }
+        ));
+        assert!(!withdrawn_basis(
+            &history,
+            calibration,
+            "sensor:other",
+            camera
+        ));
+        for changed in [
+            CameraGeneration {
+                camera: 99,
+                ..camera
+            },
+            CameraGeneration {
+                intrinsics: camera.intrinsics + 1,
+                ..camera
+            },
+            CameraGeneration {
+                extrinsics: camera.extrinsics + 1,
+                ..camera
+            },
+        ] {
+            assert!(!withdrawn_basis(
+                &history,
+                calibration,
+                sensor.as_str(),
+                changed
+            ));
+        }
+
         // Without retained adoption, an explicit owner assertion remains an assertion.
         assert!(
             check_adoption_binding(

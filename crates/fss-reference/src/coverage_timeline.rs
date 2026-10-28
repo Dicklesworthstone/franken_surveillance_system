@@ -5,6 +5,8 @@
 //! carries an existing `ALG-BRIDGE-001` witness binding the full request, segment and anchor.
 //! A gap means no qualifying retained coverage witness; it may contain observed activity or
 //! excluded analysis and must not be promoted to sensor failure, quietness or physical absence.
+//! Withdrawn calibration bases retain explicit sensor/zone rows but contribute no intervals at
+//! the requested committed prefix, including after a replacement calibration is adopted.
 
 use std::path::Path;
 
@@ -88,7 +90,7 @@ fn projection_identity(
 fn analyse_records<'a>(
     site: &str,
     anchor: &LedgerAnchor,
-    records: impl Iterator<Item = &'a CoverageRecord>,
+    records: impl Iterator<Item = (&'a CoverageRecord, bool)>,
     window: CaptureInterval,
     budget: GraphBudget,
 ) -> Result<CoverageTimelineReport, CoverageGraphError> {
@@ -102,7 +104,7 @@ fn analyse_records<'a>(
     let mut record_count = 0;
     let mut witness_count = 0_usize;
     let mut source_operations = 0;
-    for record in records {
+    for (record, invalidated) in records {
         charge_source(&mut source_operations, 1, budget.max_operations)?;
         record_count += 1;
         if record_count > MAX_TIMELINE_FACTS {
@@ -130,6 +132,7 @@ fn analyse_records<'a>(
                 covered: zone
                     .witnesses
                     .iter()
+                    .filter(|_| !invalidated)
                     .map(|witness| witness.covered)
                     .collect(),
             });
@@ -191,7 +194,12 @@ pub fn coverage_timeline(
     analyse_records(
         &snapshot.site_lineage,
         &snapshot.anchor,
-        snapshot.coverage.iter().map(|retained| &retained.record),
+        snapshot.coverage.iter().map(|retained| {
+            (
+                &retained.record,
+                retained.calibration_invalidation.is_some(),
+            )
+        }),
         window,
         budget,
     )
@@ -299,7 +307,7 @@ mod tests {
         let result = analyse_records(
             "site:timeline-tests",
             &anchor,
-            records.iter(),
+            records.iter().map(|record| (record, false)),
             window(0, 1200),
             budget(),
         )?;
@@ -346,7 +354,7 @@ mod tests {
         let result = analyse_records(
             "site:timeline-tests",
             &anchor,
-            [&record].into_iter(),
+            [(&record, false)].into_iter(),
             window(-1, 191),
             budget(),
         )?;
@@ -376,14 +384,14 @@ mod tests {
         let a = analyse_records(
             "site:timeline-tests",
             &anchor,
-            records.iter(),
+            records.iter().map(|record| (record, false)),
             window(60, 120),
             budget(),
         )?;
         let b = analyse_records(
             "site:timeline-tests",
             &anchor,
-            records.iter(),
+            records.iter().map(|record| (record, false)),
             window(70, 110),
             budget(),
         )?;
@@ -435,7 +443,7 @@ mod tests {
         let result = analyse_records(
             "site:timeline-tests",
             &anchor,
-            records.iter(),
+            records.iter().map(|record| (record, false)),
             window(0, 1200),
             budget(),
         )?;
@@ -444,7 +452,7 @@ mod tests {
             analyse_records(
                 "site:timeline-tests",
                 &anchor,
-                records.iter().rev(),
+                records.iter().rev().map(|record| (record, false)),
                 window(0, 1200),
                 budget()
             )?
@@ -458,7 +466,7 @@ mod tests {
             analyse_records(
                 "site:timeline-tests",
                 &anchor,
-                records.iter(),
+                records.iter().map(|record| (record, false)),
                 window(0, 1200),
                 exact
             )?
@@ -467,7 +475,7 @@ mod tests {
             analyse_records(
                 "site:timeline-tests",
                 &anchor,
-                records.iter(),
+                records.iter().map(|record| (record, false)),
                 window(0, 1200),
                 GraphBudget {
                     max_operations: result.operations - 1,

@@ -301,6 +301,7 @@ fn current(record: &CoverageRecord) -> TestResult<RetainedAdoption> {
         digest: receipt.digest(),
         receipt,
         committed_sequence: 1,
+        invalidation: None,
     })
 }
 

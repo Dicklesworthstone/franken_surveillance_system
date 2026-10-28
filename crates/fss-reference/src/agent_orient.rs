@@ -61,6 +61,7 @@ use fss_core::{
 use fss_object::ObjectManifest;
 
 use crate::doctor::{DoctorVerdict, inspect_deployment};
+use crate::ingest::calibration_adoption::{AdoptionError, retained_adoptions_from_batches};
 use crate::ingest::recorded_coverage::CoverageRecord;
 use crate::ingest::source_coverage::{
     RetainedAbsence, SourceCoverageRecord, verify_retained_coverage,
@@ -1025,6 +1026,26 @@ impl DeploymentHistory {
         let mut coverage = Vec::with_capacity(coverage_deltas.len());
         let mut source_records = Vec::new();
         let mut coverage_privacy_checks = 0;
+        // Authority is evaluated at this requested prefix, not the later deployment head.
+        // Every adoption and withdrawal receipt is verified before any old coverage is reused;
+        // missing or damaged custody must never be interpreted as no invalidation.
+        let mut calibration_read_error = None;
+        let adoptions = retained_adoptions_from_batches(batches, |digest, maximum| {
+            reader
+                .read_object(objects, digest, maximum.min(limits.max_object_bytes))
+                .map_err(|error| {
+                    calibration_read_error = Some(error);
+                    AdoptionError::InvalidRecord("calibration authority custody is unavailable")
+                })
+        })
+        .map_err(|error| {
+            calibration_read_error.unwrap_or_else(|| {
+                corrupt(format!(
+                    "calibration authority at requested prefix: {error}"
+                ))
+            })
+        })?;
+        let invalidated_calibrations = coverage::InvalidatedCalibrations::from_adoptions(adoptions);
         for (digest, committed_sequence) in coverage_deltas {
             if deletions.object(digest).is_some() {
                 continue;
@@ -1045,6 +1066,7 @@ impl DeploymentHistory {
                         corrupt(format!("coverage record {digest} privacy basis: {error}"))
                     })?;
             coverage.push(RetainedCoverage {
+                calibration_invalidation: invalidated_calibrations.for_record(&record),
                 record,
                 payload_digest: digest,
                 committed_sequence,
@@ -2822,7 +2844,13 @@ fn site_coverage_cell(
         provenance: ProvenanceClass::Derived,
         hypothesis: None,
         evidence: assessment.witness_digests(),
-        contradictions: assessment.health_contradictions(),
+        contradictions: assessment
+            .health_contradictions()
+            .into_iter()
+            .chain(assessment.calibration_contradictions())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect(),
         valid_until: None,
         state_basis: None,
     })
@@ -2893,6 +2921,20 @@ fn zone_coverage_cell(
     } else {
         statement
     };
+    let statement =
+        if zone.state == ZoneCoverageState::Covered && !zone.calibration_invalidations.is_empty() {
+            format!(
+                "{statement} Calibration invalidation(s) {} withdrew other historical witnesses; \
+             this window uses only the unaffected witnesses listed here.",
+                zone.calibration_invalidations
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            )
+        } else {
+            statement
+        };
     // Only a posed zone names its pose source, so other statements keep their exact text.
     let statement = format!("{statement}{}", zone.pose_clause().unwrap_or_default());
     cell(KnowledgeCellParams {
@@ -2908,6 +2950,7 @@ fn zone_coverage_cell(
             zone.health_conflicts
                 .iter()
                 .map(|conflict| conflict.diagnostic)
+                .chain(zone.calibration_invalidations.iter().copied())
                 .collect::<BTreeSet<_>>()
                 .into_iter()
                 .collect()

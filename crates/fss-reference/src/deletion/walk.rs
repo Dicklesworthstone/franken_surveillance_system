@@ -61,6 +61,8 @@ const AUTHORITY_HISTORY_FAMILIES: &[&str] = &[
     FAMILY_ALERT_EFFECT_OUTCOME,
     FAMILY_PRIVACY_MASK_POLICY,
     crate::reference_deployment::FAMILY_EVIDENCE_HOLD,
+    crate::reference_deployment::FAMILY_TWIN_LOCALIZATION_RECEIPT,
+    crate::reference_deployment::FAMILY_CALIBRATION_INVALIDATION,
 ];
 /// Families this module owns; their batches are never units.
 const DELETION_FAMILIES: &[&str] = &[

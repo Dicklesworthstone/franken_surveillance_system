@@ -44,19 +44,24 @@
 //!
 //! Non-claim: "observed" currency here means only that the deployment retains the owner's
 //! approval-gated adoption. It is owner authority, not a physical measurement: nothing checks that
-//! the camera has not moved, zoomed or been relensed since the adoption.
+//! the camera has not moved, zoomed or been relensed since the adoption. A retained owner
+//! invalidation withdraws that adoption from every currency check; recovery requires a new
+//! calibration identity with strictly newer intrinsics or extrinsics and neither lowered.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use fss_core::{
     BatchId, CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder, CaptureInterval,
-    ContentDigest, ContractError, DigestAlgorithm, EvidenceDelta, ObjectId, Plane, SensorCapsule,
-    SensorId, TimestampNs,
+    ContentDigest, ContractError, DigestAlgorithm, EvidenceDelta, EvidenceDeltaBatch, ObjectId,
+    Plane, SensorCapsule, SensorId, TimestampNs,
 };
 /// Camera identity and generations an adoption binds (fss-geometry), re-exported for callers.
 pub use fss_geometry::CameraGeneration;
 
+use super::calibration_invalidation::{
+    InvalidationReason, RetainedInvalidation, attach_invalidations, bind_recovery_approval,
+};
 use super::retained::{RetainedFileImport, RetainedReadLimits};
 use super::site_calibration::{SiteCalibration, valid_camera_name};
 use crate::reference_deployment::{FAMILY_SENSOR_CAPSULE, FAMILY_TWIN_LOCALIZATION_RECEIPT};
@@ -110,6 +115,17 @@ pub enum AdoptionError {
     /// The approval matches neither this adoption over the current retained state nor the
     /// approval that retained the current adoptions.
     StaleApproval(ContentDigest),
+    /// The exact current adoption was withdrawn by retained owner authority.
+    Invalidated {
+        /// Camera name in the caller's calibration.
+        camera: String,
+        /// Withdrawn adoption receipt.
+        adoption: ContentDigest,
+        /// Immutable owner withdrawal receipt.
+        invalidation: ContentDigest,
+        /// Owner's bounded reason, not an automatic physical diagnosis.
+        reason: InvalidationReason,
+    },
     /// `corroborate`: the calibration (or a lower generation) was adopted for this camera and
     /// has been superseded by a later adoption.
     Stale {
@@ -162,6 +178,7 @@ impl AdoptionError {
             Self::SensorConflict { .. } => "ERR-CALIBRATION-ADOPTION-SENSOR-CONFLICT-001",
             Self::Regression { .. } => "ERR-CALIBRATION-ADOPTION-REGRESSION-001",
             Self::StaleApproval(_) => "ERR-CALIBRATION-ADOPTION-APPROVAL-STALE-001",
+            Self::Invalidated { .. } => "ERR-CALIBRATION-INVALID-001",
             Self::Stale { .. } => "ERR-CALIBRATION-ADOPTION-STALE-001",
             Self::Unadopted { .. } => "ERR-CALIBRATION-ADOPTION-UNADOPTED-001",
             Self::SensorMismatch { .. } => "ERR-CALIBRATION-ADOPTION-SENSOR-MISMATCH-001",
@@ -199,6 +216,17 @@ impl fmt::Display for AdoptionError {
                 f,
                 "calibration adoption approval {digest} matches neither this adoption over the \
                  cameras' current retained adoptions nor the approval that retained them"
+            ),
+            Self::Invalidated {
+                camera,
+                adoption,
+                invalidation,
+                reason,
+            } => write!(
+                f,
+                "camera {camera}: adoption {adoption} was withdrawn by invalidation {invalidation} \
+                 ({reason}); adopt a new calibration with a newer camera generation",
+                reason = reason.as_str(),
             ),
             Self::Stale {
                 camera,
@@ -436,6 +464,8 @@ pub struct RetainedAdoption {
     pub digest: ContentDigest,
     /// Commit sequence of the batch that retained it.
     pub committed_sequence: u64,
+    /// Immutable owner withdrawal effective in this retained prefix, if any.
+    pub invalidation: Option<RetainedInvalidation>,
 }
 
 /// Ledger object of one camera's adoptions.
@@ -450,10 +480,26 @@ pub fn adoption_object_id(camera_handle: u64) -> Result<ObjectId, ContractError>
 pub fn retained_adoptions(
     deployment: &ReferenceDeployment,
 ) -> Result<BTreeMap<u64, Vec<RetainedAdoption>>, AdoptionError> {
+    retained_adoptions_from_batches(deployment.ledger().batches(), |digest, maximum| {
+        deployment
+            .publisher()
+            .spool()
+            .read_bounded(digest, maximum)
+            .map_err(|_| AdoptionError::InvalidRecord("calibration authority receipt unreadable"))
+    })
+}
+
+/// Reconstruct adoption and withdrawal authority only from the supplied committed prefix.
+/// The reader must enforce the supplied byte ceiling before allocation. Historical queries must
+/// pass their requested prefix, never the deployment's later head; damaged custody fails closed.
+pub fn retained_adoptions_from_batches(
+    batches: &[EvidenceDeltaBatch],
+    mut read_object: impl FnMut(ContentDigest, usize) -> Result<Vec<u8>, AdoptionError>,
+) -> Result<BTreeMap<u64, Vec<RetainedAdoption>>, AdoptionError> {
     // Per camera handle: (new generation, prior generation, payload, commit sequence).
     type Row = (u64, Option<u64>, ContentDigest, u64);
     let mut deltas: BTreeMap<u64, Vec<Row>> = BTreeMap::new();
-    for batch in deployment.ledger().batches() {
+    for batch in batches {
         for delta in &batch.deltas {
             if delta.family != FAMILY_TWIN_LOCALIZATION_RECEIPT {
                 continue;
@@ -480,7 +526,6 @@ pub fn retained_adoptions(
             ));
         }
     }
-    let spool = deployment.publisher().spool();
     let mut out = BTreeMap::new();
     for (handle, mut generations) in deltas {
         generations.sort_unstable();
@@ -494,9 +539,7 @@ pub fn retained_adoptions(
                     "adoption generations not contiguous",
                 ));
             }
-            let bytes = spool
-                .read(digest)
-                .map_err(|_| AdoptionError::InvalidRecord("adoption receipt unreadable"))?;
+            let bytes = read_object(digest, MAX_ADOPTION_RECEIPT_BYTES)?;
             let receipt = AdoptionReceipt::from_bytes(&bytes, digest)?;
             let previous = history.last();
             if receipt.adoption != generation
@@ -504,6 +547,7 @@ pub fn retained_adoptions(
                 || receipt.supersedes != previous.map(|p| p.digest)
                 || previous.is_some_and(|p| {
                     p.receipt.sensor_id != receipt.sensor_id
+                        || committed_sequence <= p.committed_sequence
                         || receipt.intrinsics_generation < p.receipt.intrinsics_generation
                         || receipt.extrinsics_generation < p.receipt.extrinsics_generation
                 })
@@ -514,10 +558,12 @@ pub fn retained_adoptions(
                 receipt,
                 digest,
                 committed_sequence,
+                invalidation: None,
             });
         }
         out.insert(handle, history);
     }
+    attach_invalidations(batches, &mut out, &mut read_object)?;
     Ok(out)
 }
 
@@ -582,6 +628,8 @@ pub struct CameraAdoption {
     pub current: Option<RetainedAdoption>,
     /// The camera's predecessor of `current` (used to recognize the retaining approval).
     predecessor: Option<(u64, ContentDigest)>,
+    /// A recovery approval additionally bound the predecessor's immutable withdrawal.
+    predecessor_invalidation: Option<ContentDigest>,
 }
 
 /// Outcome of a preview or adoption.
@@ -754,6 +802,10 @@ pub fn preview_adoption(
             .len()
             .checked_sub(2)
             .map(|index| (past[index].receipt.adoption, past[index].digest));
+        let predecessor_invalidation = past
+            .len()
+            .checked_sub(2)
+            .and_then(|index| past[index].invalidation.as_ref().map(|value| value.digest));
         let wanted = (generation.intrinsics, generation.extrinsics);
         let status = match &current {
             None => AdoptionStatus::Proposed,
@@ -764,6 +816,26 @@ pub fn preview_adoption(
                         sensor: sensor.clone(),
                         reason: "the camera is already bound to another sensor",
                     });
+                }
+                if let Some(invalidation) = &current.invalidation {
+                    if current.receipt.calibration_digest == subject.calibration_digest {
+                        return Err(AdoptionError::Invalidated {
+                            camera: name.clone(),
+                            adoption: current.digest,
+                            invalidation: invalidation.digest,
+                            reason: invalidation.receipt.reason,
+                        });
+                    }
+                    let (intrinsics, extrinsics) = current.receipt.generation();
+                    if wanted.0 < intrinsics
+                        || wanted.1 < extrinsics
+                        || wanted == (intrinsics, extrinsics)
+                    {
+                        return Err(AdoptionError::Regression {
+                            camera_handle: handle,
+                            reason: "recovery requires a new calibration and at least one newer camera generation, with neither lower",
+                        });
+                    }
                 }
                 if current.receipt.calibration_digest == subject.calibration_digest
                     && current.receipt.generation() == wanted
@@ -818,6 +890,7 @@ pub fn preview_adoption(
             status,
             current,
             predecessor,
+            predecessor_invalidation,
         });
     }
     cameras.sort_by_key(|c| c.receipt.camera_handle);
@@ -835,7 +908,17 @@ pub fn preview_adoption(
         .collect();
     Ok(Adoption {
         calibration_digest: subject.calibration_digest,
-        approval: approval_digest(subject.calibration_digest, &entries),
+        approval: bind_recovery_approval(
+            approval_digest(subject.calibration_digest, &entries),
+            cameras.iter().map(|camera| {
+                (
+                    camera.receipt.camera_handle,
+                    camera.current.as_ref().and_then(|current| {
+                        current.invalidation.as_ref().map(|value| value.digest)
+                    }),
+                )
+            }),
+        ),
         cameras,
     })
 }
@@ -866,7 +949,15 @@ pub fn adopt(
                 )
             })
             .collect();
-        let original = approval_digest(subject.calibration_digest, &entries);
+        let original = bind_recovery_approval(
+            approval_digest(subject.calibration_digest, &entries),
+            preview.cameras.iter().map(|camera| {
+                (
+                    camera.receipt.camera_handle,
+                    camera.predecessor_invalidation,
+                )
+            }),
+        );
         if approval != preview.approval && approval != original {
             return Err(AdoptionError::StaleApproval(approval));
         }
@@ -946,7 +1037,8 @@ pub fn recording_sensor(
 /// behaviour). `Ok(Some(current))`: the current adoption names exactly this calibration digest
 /// and generation, and `recorded_sensor` (the sensor of the recording, read lazily and only when
 /// the camera has an adoption) is the adopted sensor: the camera is `adopted_current`. Otherwise a
-/// typed refusal: [`AdoptionError::Stale`] when the calibration or a generation not above this
+/// typed refusal: [`AdoptionError::Invalidated`] when the current adoption was withdrawn (before
+/// reading any sensor), [`AdoptionError::Stale`] when the calibration or a generation not above this
 /// one was adopted and later superseded, [`AdoptionError::Unadopted`] when the camera's adoptions
 /// never named it, [`AdoptionError::SensorMismatch`] when the recording is another sensor's.
 pub fn adopted_currency(
@@ -962,6 +1054,14 @@ pub fn adopted_currency(
     let Some(current) = history.last() else {
         return Ok(None);
     };
+    if let Some(invalidation) = &current.invalidation {
+        return Err(AdoptionError::Invalidated {
+            camera: camera.to_owned(),
+            adoption: current.digest,
+            invalidation: invalidation.digest,
+            reason: invalidation.receipt.reason,
+        });
+    }
     let wanted = (generation.intrinsics, generation.extrinsics);
     if current.receipt.calibration_digest != calibration_digest
         || current.receipt.generation() != wanted
@@ -997,7 +1097,22 @@ pub fn adopted_currency(
     Ok(Some(current.clone()))
 }
 
-/// `fss.calibration_adoption_state.v1`: every adopted camera's current receipt and full history.
+fn invalidation_json(invalidation: Option<&RetainedInvalidation>) -> String {
+    invalidation.map_or_else(
+        || "null".to_owned(),
+        |value| {
+            let body = value.receipt.to_json();
+            let body = body.strip_suffix('}').unwrap_or(&body);
+            format!(
+                "{body},\"committed_sequence\":{}}}",
+                value.committed_sequence
+            )
+        },
+    )
+}
+
+/// `fss.calibration_adoption_state.v1`: current adoption, effective withdrawal and full history.
+/// Historical adoption receipt objects retain their original immutable canonical meaning.
 pub fn state_json(deployment: &ReferenceDeployment) -> Result<String, AdoptionError> {
     let adoptions = retained_adoptions(deployment)?;
     let cameras: Vec<String> = adoptions
@@ -1009,12 +1124,26 @@ pub fn state_json(deployment: &ReferenceDeployment) -> Result<String, AdoptionEr
                 .map(|a| {
                     let body = a.receipt.to_json();
                     let body = body.strip_suffix('}').unwrap_or(&body);
-                    format!("{body},\"committed_sequence\":{}}}", a.committed_sequence)
+                    format!(
+                        "{body},\"committed_sequence\":{},\"invalidation\":{}}}",
+                        a.committed_sequence,
+                        invalidation_json(a.invalidation.as_ref()),
+                    )
                 })
                 .collect();
             Some(format!(
-                "{{\"camera_handle\":{handle},\"current\":{},\"history\":[{}]}}",
+                concat!(
+                    "{{\"camera_handle\":{},\"current\":{},\"current_status\":\"{}\",",
+                    "\"current_invalidation\":{},\"history\":[{}]}}"
+                ),
+                handle,
                 current.receipt.to_json(),
+                if current.invalidation.is_some() {
+                    "invalidated"
+                } else {
+                    "adopted_current"
+                },
+                invalidation_json(current.invalidation.as_ref()),
                 past.join(",")
             ))
         })

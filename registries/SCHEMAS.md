@@ -159,6 +159,15 @@ AVC recipes and native AVC/HEVC recording formats are unchanged.
 |---|---|---|---|
 | `FMT-014` | `fss.multipart_journal_record.v2` | upload custody and local ownership | Owner: fss-object::upload_journal. CanonicalEncoder text domain, physical namespace digest, one-based u64 sequence, optional exact predecessor digest and length-framed canonical multipart checkpoint. Whole consumption and byte-identical reencoding required; record envelopes and torn staging count toward explicit byte/record limits. Complete contiguous semantic replay checks immutable intent, monotone spend, restrictions and settlement against an independently retained minimum. Existing v1 bytes remain unchanged and readable; mutation requires explicit original-authority legacy adoption into one inspected namespace, preserving the v1 prefix. A later unbound record refuses. No checkpoint is a live capability or proof of provider retrievability. |
 
+## Retained owner calibration withdrawal
+
+| Schema/domain | Owner | Encoding and compatibility |
+|---|---|---|
+| `fss.calibration_invalidation.v1` | `ingest::calibration_invalidation` | CanonicalEncoder `FSSINV01` magic, u32 version 1 and domain, deployment/restore domain digest, adoption generation/digest, camera handle, canonical sensor id, calibration digest, intrinsic/extrinsic generations, bounded reason token, optional-evidence boolean and capsule digest. At most 2048 bytes; all digests require SHA-256, handles/generations are nonzero, whole decode and byte-identical re-encoding are mandatory. One immutable generation-1 authority delta on `object:calibration-invalidation:<adoption digest>`, with the receipt, approval witness, target adoption and optional capsule as custody children. Existing `FSSTLR01` adoption receipts stay unchanged. |
+| `fss.calibration_invalidation_approval.v1` | `ingest::calibration_invalidation` | Canonical domain and exact withdrawal receipt digest, at most 256 bytes. Its SHA-256 is the explicit approval and retained witness. Cold authority loading verifies the witness and that the target was current when withdrawn. Later loss of optional source evidence cannot restore the withdrawn adoption. Recovery requires a new calibration digest and newer generation under an approval that also binds the exact withdrawal. |
+
+Withdrawal is owner-reported authority, not a physical observation. Current coverage consumers exclude the withdrawn exact basis, including older owner-asserted coverage using that basis; historical prefix queries retain the state that existed at their requested sequence. A replacement never resurrects old witnesses.
+
 ## Retained ONVIF vendor event imports
 
 | Schema/domain | Owner | Encoding and compatibility |

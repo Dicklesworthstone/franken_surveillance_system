@@ -79,6 +79,9 @@ pub const FAMILY_MODEL_INVOCATION_RECEIPT: &str = "model_invocation_receipt";
 pub const FAMILY_EXECUTOR_MODEL_RESULT: &str = "executor_model_result";
 /// Registered ledger delta family: twin localization receipt.
 pub const FAMILY_TWIN_LOCALIZATION_RECEIPT: &str = "twin_localization_receipt";
+/// Reserved authority: an owner's withdrawal of one exact adopted calibration.
+/// Only [`crate::ingest::calibration_invalidation::invalidate`] may publish this family.
+pub const FAMILY_CALIBRATION_INVALIDATION: &str = "calibration_invalidation";
 /// Registered ledger delta family: retained coverage witnesses of one analysed recording
 /// (`ingest::recorded_coverage`), committed only after exact operator approval.
 pub const FAMILY_COVERAGE_WITNESS: &str = "coverage_witness";
@@ -110,6 +113,7 @@ pub const KNOWN_LEDGER_DELTA_FAMILIES: &[&str] = &[
     FAMILY_MODEL_INVOCATION_RECEIPT,
     FAMILY_EXECUTOR_MODEL_RESULT,
     FAMILY_TWIN_LOCALIZATION_RECEIPT,
+    FAMILY_CALIBRATION_INVALIDATION,
     FAMILY_COVERAGE_WITNESS,
     FAMILY_PRIVACY_MASK_POLICY,
     FAMILY_EVIDENCE_HOLD,
@@ -177,6 +181,7 @@ pub const DEPLOYMENT_CANCEL_STAGES: &[&str] = &[
 /// unguarded authority into the ledger.
 fn reserved_family_entry_point(family: &str) -> Option<&'static str> {
     match family {
+        FAMILY_CALIBRATION_INVALIDATION => Some("ingest::calibration_invalidation::invalidate"),
         FAMILY_EVENT_REVISION | FAMILY_SENSOR_TAMPER_STATUS => Some("publish_event"),
         crate::evidence_export::FAMILY_EVIDENCE_EXPORT => Some("evidence_export::commit_export"),
         crate::deployment_backup::FAMILY_RESTORE_FENCE => Some("deployment_backup::restore_backup"),
@@ -1569,6 +1574,17 @@ impl ReferenceDeployment {
         }
         // Reserved families are committed only by their guarded entry points; refused before
         // any custody work, preparation, or journal I/O.
+        if deltas.iter().any(|delta| {
+            delta
+                .object_id
+                .as_str()
+                .starts_with(crate::ingest::calibration_invalidation::INVALIDATION_OBJECT_PREFIX)
+        }) {
+            return Err(ReferenceError::ReservedDeltaFamily {
+                family: FAMILY_CALIBRATION_INVALIDATION.to_owned(),
+                entry_point: "ingest::calibration_invalidation::invalidate",
+            });
+        }
         if let Some((family, entry_point)) = deltas.iter().find_map(|delta| {
             reserved_family_entry_point(&delta.family).map(|entry| (delta.family.clone(), entry))
         }) {
@@ -1576,6 +1592,42 @@ impl ReferenceDeployment {
                 family,
                 entry_point,
             });
+        }
+        self.append_checked_batch(batch_id, deltas, children)
+    }
+
+    /// Commits a withdrawal only after the calibration owner has verified the exact adoption,
+    /// owner approval and optional retained evidence. Ordinary appends cannot manufacture or
+    /// replace a withdrawal, including by disguising its object namespace under another family.
+    pub(crate) fn append_calibration_invalidation_batch(
+        &mut self,
+        batch_id: BatchId,
+        deltas: Vec<EvidenceDelta>,
+        children: Vec<ContentDigest>,
+        cx: &ReplayCx,
+    ) -> Result<LedgerAnchor, ReferenceError> {
+        if cx.is_cancelled() {
+            cx.drain_and_finalize();
+            return Err(ReferenceError::CancellationRequested {
+                stage: STAGE_APPEND_BATCH,
+            });
+        }
+        if deltas.len() != 1
+            || deltas.iter().any(|delta| {
+                delta.family != FAMILY_CALIBRATION_INVALIDATION
+                    || !delta.object_id.as_str().starts_with(
+                        crate::ingest::calibration_invalidation::INVALIDATION_OBJECT_PREFIX,
+                    )
+                    || delta.plane != Plane::Authority
+                    || delta.prior_generation.is_some()
+                    || delta.new_generation != 1
+                    || delta.witness_digest.is_none()
+                    || delta.operation_id.is_some()
+            })
+        {
+            return Err(ReferenceError::InvalidSpec(
+                "invalid calibration invalidation batch",
+            ));
         }
         self.append_checked_batch(batch_id, deltas, children)
     }

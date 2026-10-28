@@ -389,6 +389,8 @@
     "crates/fss-reference/src/ingest/analysis.rs": "support",
     "crates/fss-reference/src/ingest/annexb.rs": "support",
     "crates/fss-reference/src/ingest/calibration_adoption.rs": "authority",
+    "crates/fss-reference/src/ingest/calibration_invalidation.rs": "authority",
+    "crates/fss-reference/src/ingest/calibration_invalidation/codec.rs": "authority",
     "crates/fss-reference/src/ingest/calibration_adoption/tests.rs": "support",
     "crates/fss-reference/src/ingest/calibration_coverage.rs": "support",
     "crates/fss-reference/src/ingest/calibration_coverage/receipt.rs": "support",

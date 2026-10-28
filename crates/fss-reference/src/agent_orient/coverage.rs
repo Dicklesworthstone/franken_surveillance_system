@@ -31,6 +31,10 @@
 //! camera generation and whether its currency was owner-asserted (never observed); a posed record
 //! that predates provenance binding is named as unrecorded.
 //!
+//! A verified calibration withdrawal at the requested committed prefix removes every witness
+//! using the withdrawn camera, sensor, calibration and generation. The original record stays
+//! readable as history; a later replacement generation cannot reactivate its old witnesses.
+//!
 //! A zone whose most recent record binds its pose uncertainty (fss-x8j0v covariance propagation)
 //! also names it: `uncertainty_not_provided` for an owner `--pose`, or its robustness under the
 //! sigma-point perturbations of the calibration pose covariance. A zone observable only under the
@@ -68,6 +72,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use fss_core::{CaptureInterval, ContentDigest, ContractError, LedgerAnchor, TimestampNs};
 
+use crate::ingest::calibration_adoption::RetainedAdoption;
 use crate::ingest::ground_visibility::PoseRobustness;
 use crate::ingest::ground_visibility::{CameraModel, ZoneVisibility};
 use crate::ingest::recorded_coverage::{
@@ -101,6 +106,59 @@ pub struct RetainedCoverage {
     /// Exact ledger generation of that historical policy. Reissuing identical mask geometry
     /// after another policy does not make the generations interchangeable.
     pub privacy_generation: Option<u64>,
+    /// Verified owner withdrawal of this record's exact calibration basis at the requested
+    /// committed prefix. Historical record bytes and provenance remain unchanged.
+    pub calibration_invalidation: Option<ContentDigest>,
+}
+
+/// Index every withdrawn historical generation, including ones followed by a new adoption.
+/// Matching the full basis also withdraws earlier owner-asserted coverage of that same basis.
+pub(super) struct InvalidatedCalibrations(
+    BTreeMap<(u64, u64, u64, ContentDigest, String), ContentDigest>,
+);
+
+impl InvalidatedCalibrations {
+    pub(super) fn from_adoptions(adoptions: BTreeMap<u64, Vec<RetainedAdoption>>) -> Self {
+        let mut invalidated = BTreeMap::new();
+        for adoption in adoptions.into_values().flatten() {
+            if let Some(invalidation) = adoption.invalidation {
+                let receipt = adoption.receipt;
+                invalidated.insert(
+                    (
+                        receipt.camera_handle,
+                        receipt.intrinsics_generation,
+                        receipt.extrinsics_generation,
+                        receipt.calibration_digest,
+                        receipt.sensor_id.as_str().to_owned(),
+                    ),
+                    invalidation.digest,
+                );
+            }
+        }
+        Self(invalidated)
+    }
+
+    pub(super) fn for_record(&self, record: &CoverageRecord) -> Option<ContentDigest> {
+        let PoseProvenance::SiteCalibration {
+            calibration_digest,
+            camera_handle,
+            intrinsics_generation,
+            extrinsics_generation,
+            ..
+        } = record.pose_provenance?
+        else {
+            return None;
+        };
+        self.0
+            .get(&(
+                camera_handle,
+                intrinsics_generation,
+                extrinsics_generation,
+                calibration_digest,
+                record.sensor_id.clone(),
+            ))
+            .copied()
+    }
 }
 
 /// One committed source coverage record read back from the spool, with its verdict.
@@ -159,6 +217,8 @@ pub struct ZoneAssessment {
     /// Source-exact witnesses withheld by independently retained heuristic diagnostics.
     /// Remaining independent witnesses can still establish the declared coverage window.
     pub health_conflicts: Vec<CoverageHealthConflict>,
+    /// Verified calibration-withdrawal receipts excluding witnesses from this zone.
+    pub calibration_invalidations: Vec<ContentDigest>,
     /// Basis anchor of the zone's most recent record (the stale basis).
     pub basis: Option<LedgerAnchor>,
     /// Named gaps and exclusions.
@@ -203,7 +263,14 @@ impl ZoneAssessment {
     pub fn pose_clause(&self) -> Option<String> {
         match (&self.pose_provenance, &self.visibility) {
             (Some(provenance), _) => Some(format!(
-                " Pose source: {}.{}",
+                " {}: {}.{}",
+                if self.state != ZoneCoverageState::Covered
+                    && !self.calibration_invalidations.is_empty()
+                {
+                    "Historical pose source (withdrawn calibration)"
+                } else {
+                    "Pose source"
+                },
                 provenance.summary(),
                 match (&self.pose_uncertainty, &self.pose_robustness) {
                     (Some(PoseUncertainty::NotProvided), _) => {
@@ -298,6 +365,19 @@ impl CoverageAssessment {
                     .iter()
                     .map(|conflict| conflict.diagnostic)
             })
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    }
+
+    /// Calibration withdrawals that prevent a requested negative claim. A covered zone can
+    /// still rest on independently valid replacement-generation witnesses.
+    #[must_use]
+    pub fn calibration_contradictions(&self) -> Vec<ContentDigest> {
+        self.zones
+            .iter()
+            .filter(|zone| zone.state != ZoneCoverageState::Covered)
+            .flat_map(|zone| zone.calibration_invalidations.iter().copied())
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect()
@@ -483,13 +563,27 @@ pub(super) fn assess(
                  and not reused (current generation {generation})."
             ));
         }
+        let mut calibration_invalidations = BTreeSet::new();
+        for index in &current {
+            if let Some(invalidation) = records[*index].calibration_invalidation {
+                calibration_invalidations.insert(invalidation);
+                gaps.push(format!(
+                    "{label}: coverage record {} is withheld by calibration invalidation \
+                     {invalidation}; its historical camera calibration cannot support coverage \
+                     or absence at this committed prefix. Reanalyse with an adopted replacement \
+                     generation.",
+                    records[*index].payload_digest,
+                ));
+            }
+        }
         let basis = Some(records[latest].record.basis.clone());
         let newest = newest_evidence.get(&sensor).copied();
         let fresh: Vec<usize> = current
             .iter()
             .copied()
             .filter(|index| {
-                !evidence_unattributed
+                records[*index].calibration_invalidation.is_none()
+                    && !evidence_unattributed
                     && newest.is_none_or(|newest| records[*index].record.analysed.latest >= newest)
             })
             .collect();
@@ -502,6 +596,7 @@ pub(super) fn assess(
             pipeline_generation: Some(generation),
             witnesses: Vec::new(),
             health_conflicts: Vec::new(),
+            calibration_invalidations: calibration_invalidations.into_iter().collect(),
             basis,
             gaps,
             visibility: latest_zone.visibility.clone(),
@@ -512,10 +607,19 @@ pub(super) fn assess(
         let Some(freshest) = fresh.last().copied() else {
             let analysed = current
                 .iter()
+                .filter(|index| records[**index].calibration_invalidation.is_none())
                 .map(|index| records[*index].record.analysed.latest.0)
                 .max()
                 .unwrap_or_default();
-            assessment.gaps.push(if evidence_unattributed {
+            assessment.gaps.push(if current
+                .iter()
+                .all(|index| records[*index].calibration_invalidation.is_some())
+            {
+                format!(
+                    "{label}: stale: every retained coverage record of this pipeline generation \
+                     uses an invalidated calibration."
+                )
+            } else if evidence_unattributed {
                 format!(
                     "{label}: stale: newer retained evidence could not be attributed to sensors \
                      within {MAX_COVERAGE_CAPSULE_READS} capsule reads."
@@ -538,6 +642,14 @@ pub(super) fn assess(
             }
         }
         let freshest_zone = zone_of(freshest, &scope);
+        if records[latest].calibration_invalidation.is_some() {
+            // When an independent valid record preserves this window, describe that record's
+            // geometry, never the withdrawn record's formerly current pose.
+            assessment.pose_provenance = records[freshest].record.pose_provenance;
+            assessment.pose_uncertainty = records[freshest].record.pose_uncertainty;
+            assessment.visibility = freshest_zone.and_then(|zone| zone.visibility.clone());
+            assessment.pose_robustness = freshest_zone.and_then(|zone| zone.pose_robustness);
+        }
         let Some(last_witness) = freshest_zone.and_then(|zone| zone.witnesses.last()) else {
             assessment.state = ZoneCoverageState::NotObservable;
             assessment.gaps.push(format!(
@@ -551,6 +663,9 @@ pub(super) fn assess(
         // Every current witness, ordered by its certain window.
         let mut witnesses: Vec<(usize, &ZoneCoverage, &ZoneWitness)> = Vec::new();
         for index in &current {
+            if records[*index].calibration_invalidation.is_some() {
+                continue;
+            }
             if let Some(zone) = zone_of(*index, &scope) {
                 for witness in &zone.witnesses {
                     let conflicts = health.conflicts(&records[*index], witness)?;
@@ -638,6 +753,7 @@ pub(super) fn assess(
             pipeline_generation: None,
             witnesses: Vec::new(),
             health_conflicts: Vec::new(),
+            calibration_invalidations: Vec::new(),
             basis: None,
             gaps: vec![format!(
                 "event-zone:{zone_id}: not observable: a published event names this zone but no \
@@ -687,6 +803,7 @@ fn assess_source_domains(source_records: &[RetainedSourceCoverage]) -> Vec<ZoneA
                 pipeline_generation: None,
                 witnesses: Vec::new(),
                 health_conflicts: Vec::new(),
+                calibration_invalidations: Vec::new(),
                 basis: Some(witness.anchor.clone()),
                 gaps: Vec::new(),
                 visibility: None,
