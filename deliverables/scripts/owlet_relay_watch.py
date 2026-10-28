@@ -162,8 +162,16 @@ def capture_3478(window=60):
     last = t0
     gap = 0.0
     n = 0
+    import select
+    fd = p.stdout.fileno()
     try:
         while time.time() - t0 < window:
+            # readline() blocks forever when the camera is silent (no packets → no
+            # newlines → the window check never runs); poll the fd first so the window
+            # deadline always governs.
+            ready, _, _ = select.select([fd], [], [], min(0.5, window - (time.time() - t0)))
+            if not ready:
+                continue
             line = p.stdout.readline()
             if not line:
                 if p.poll() is not None:
