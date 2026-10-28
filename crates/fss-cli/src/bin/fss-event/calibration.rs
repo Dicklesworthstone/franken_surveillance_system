@@ -9,8 +9,10 @@
 //! current retained adoption, and writes nothing. With `--approve DIGEST` it retains exactly that
 //! adoption, one `twin_localization_receipt` authority delta per camera in one batch; a stale or
 //! wrong approval is refused before any write, and an exact rerun writes nothing. `show` prints
-//! every adopted camera's current receipt and history. An adoption is owner authority, not a
-//! physical observation of the camera.
+//! every adopted camera's current receipt and history. `invalidate` withdraws one exact current
+//! adoption with a separately retained owner approval. Recovery requires a new calibration
+//! digest and a newer camera generation. These commands retain owner authority, not a physical
+//! observation of the camera.
 
 use std::ffi::OsString;
 use std::io::Write;
@@ -20,6 +22,10 @@ use fss_core::{ContentDigest, DigestAlgorithm, PrincipalId, SensorId};
 use fss_reference::ingest::calibration_adoption::{
     ADOPTION_CLAIM, AdoptionStatus, CalibrationSubject, MAX_ADOPTION_CAMERAS, adopt,
     preview_adoption, state_json,
+};
+use fss_reference::ingest::calibration_invalidation::{
+    INVALIDATION_CLAIM, InvalidationReason, InvalidationRequest, InvalidationStatus, invalidate,
+    preview_invalidation,
 };
 use fss_reference::ingest::site_calibration::{MAX_CALIBRATION_BYTES, SiteCalibration};
 use fss_reference::{ReferenceDeployment, ReplayCx};
@@ -33,6 +39,10 @@ enum Operation {
         path: PathBuf,
         digest: ContentDigest,
         bindings: Vec<(String, SensorId)>,
+        approve: Option<ContentDigest>,
+    },
+    Invalidate {
+        request: InvalidationRequest,
         approve: Option<ContentDigest>,
     },
     Show,
@@ -80,12 +90,15 @@ fn binding(value: &str) -> Result<(String, SensorId), String> {
 
 /// Parses the arguments after `calibration`.
 pub(super) fn parse(args: &[OsString]) -> Result<CalibrationAction, String> {
+    if args.len() > 64 || args.iter().any(|arg| arg.as_encoded_bytes().len() > 4096) {
+        return Err("calibration request exceeds its argument bounds".to_owned());
+    }
     let operation = args
         .first()
         .and_then(|a| a.to_str())
-        .ok_or("calibration requires adopt or show")?;
-    if !matches!(operation, "adopt" | "show") {
-        return Err("calibration requires adopt or show".to_owned());
+        .ok_or("calibration requires adopt, invalidate or show")?;
+    if !matches!(operation, "adopt" | "invalidate" | "show") {
+        return Err("calibration requires adopt, invalidate or show".to_owned());
     }
     let mut values: Vec<(String, String)> = Vec::new();
     let mut bindings: Vec<(String, SensorId)> = Vec::new();
@@ -107,7 +120,16 @@ pub(super) fn parse(args: &[OsString]) -> Result<CalibrationAction, String> {
         }
         let allowed = matches!(key, "--root" | "--site" | "--principal" | "--report-out")
             || (operation == "adopt"
-                && matches!(key, "--calibration" | "--calibration-digest" | "--approve"));
+                && matches!(key, "--calibration" | "--calibration-digest" | "--approve"))
+            || (operation == "invalidate"
+                && matches!(
+                    key,
+                    "--camera-handle"
+                        | "--adoption-digest"
+                        | "--reason"
+                        | "--evidence"
+                        | "--approve"
+                ));
         if key == "--bind" && operation == "adopt" {
             if bindings.len() == MAX_ADOPTION_CAMERAS {
                 return Err("at most 16 --bind".to_owned());
@@ -152,6 +174,28 @@ pub(super) fn parse(args: &[OsString]) -> Result<CalibrationAction, String> {
                 Err(_) => None,
             },
         }
+    } else if operation == "invalidate" {
+        let camera_handle = text("--camera-handle")?
+            .parse::<u64>()
+            .ok()
+            .filter(|handle| *handle != 0)
+            .ok_or("--camera-handle must be a nonzero unsigned integer")?;
+        Operation::Invalidate {
+            request: InvalidationRequest {
+                camera_handle,
+                adoption_digest: sha256(text("--adoption-digest")?, "--adoption-digest")?,
+                reason: InvalidationReason::parse(text("--reason")?)
+                    .map_err(|error| error.to_string())?,
+                evidence: match text("--evidence") {
+                    Ok(value) => Some(sha256(value, "--evidence")?),
+                    Err(_) => None,
+                },
+            },
+            approve: match text("--approve") {
+                Ok(value) => Some(sha256(value, "--approve")?),
+                Err(_) => None,
+            },
+        }
     } else {
         Operation::Show
     };
@@ -168,7 +212,7 @@ pub(super) fn parse(args: &[OsString]) -> Result<CalibrationAction, String> {
     })
 }
 
-/// Previews, adopts or shows, and prints the JSON report.
+/// Previews, adopts, withdraws or shows, and prints the JSON report.
 pub(super) fn run(
     action: &CalibrationAction,
     deployment: &mut ReferenceDeployment,
@@ -178,6 +222,35 @@ pub(super) fn run(
 ) -> RunResult<()> {
     let json = match &action.operation {
         Operation::Show => state_json(deployment)?,
+        Operation::Invalidate { request, approve } => {
+            let invalidation = match approve {
+                None => preview_invalidation(deployment, request)?,
+                Some(approval) => invalidate(deployment, request, *approval, cx)?,
+            };
+            let command = if invalidation.status == InvalidationStatus::Proposed {
+                format!(
+                    "\"{} --approve {}\"",
+                    fss_cli::escape_json_str(&action.rerun),
+                    invalidation.approval
+                )
+            } else {
+                "null".to_owned()
+            };
+            format!(
+                concat!(
+                    "{{\"format\":\"fss.calibration_invalidation_report.v1\",",
+                    "\"status\":\"{}\",\"approval_digest\":\"{}\",",
+                    "\"approve_command\":{},\"receipt\":{},\"claim\":\"{}\",",
+                    "\"authority_sequence\":{}}}"
+                ),
+                invalidation.status.as_str(),
+                invalidation.approval,
+                command,
+                invalidation.receipt.to_json(),
+                INVALIDATION_CLAIM,
+                deployment.current_anchor().commit_sequence
+            )
+        }
         Operation::Adopt {
             path,
             digest,
@@ -195,7 +268,7 @@ pub(super) fn run(
             let command = match adoption.status() {
                 AdoptionStatus::Proposed => format!(
                     "\"{} --approve {}\"",
-                    action.rerun.replace('\\', "\\\\").replace('"', "\\\""),
+                    fss_cli::escape_json_str(&action.rerun),
                     adoption.approval
                 ),
                 AdoptionStatus::Retained | AdoptionStatus::AlreadyCurrent => "null".to_owned(),

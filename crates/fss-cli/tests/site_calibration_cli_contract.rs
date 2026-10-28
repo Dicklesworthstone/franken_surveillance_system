@@ -1977,3 +1977,382 @@ fn a_camera_without_an_adoption_keeps_its_owner_asserted_or_unasserted_currency(
     }
     Ok(())
 }
+
+#[test]
+fn owner_invalidation_withdraws_retained_coverage_and_requires_fresh_newer_recovery() -> TestResult
+{
+    use fss_reference::ingest::recorded_coverage::PoseProvenance;
+
+    let fixture = calibrated("invalidate-recover")?;
+    let root = fixture.directory.root();
+    let binds = ["--bind", EAST_BIND, "--bind", WEST_BIND];
+    let adopted = fixture.adopt_approved(&fixture.path, &fixture.digest, &binds)?;
+    let original_adoption_approval = adopted.get("approval_digest")?.text()?.to_owned();
+    let receipts = adopted_receipts(&adopted)?;
+    let east_receipt = receipts
+        .iter()
+        .find(|(camera, _)| *camera == 21)
+        .ok_or("missing east adoption")?
+        .1
+        .clone();
+    let west_receipt = receipts
+        .iter()
+        .find(|(camera, _)| *camera == 22)
+        .ok_or("missing west adoption")?
+        .1
+        .clone();
+
+    // Keep a real retained witness and its valid approval before the physical basis is withdrawn.
+    let coverage = report(&fixture.run(&[])?)?;
+    let old_coverage_approval = coverage
+        .path(&["coverage", "approval_digest"])?
+        .text()?
+        .to_owned();
+    let kept = report(&fixture.run(&["--retain-coverage", &old_coverage_approval])?)?;
+    assert_eq!(
+        kept.path(&["coverage", "coverage_status"])?.text()?,
+        "retained"
+    );
+
+    // A strictly newer candidate can exist before withdrawal, but its old approval cannot recover
+    // authority after the owner withdraws the predecessor that approval was based on.
+    let (v2_path, v2_digest) = fixture.recalibrate_east_extrinsics()?;
+    assert_ne!(v2_digest, fixture.digest);
+    let earlier_replacement = report(&fixture.adopt(&v2_path, &v2_digest, &binds)?)?;
+    let earlier_recovery_approval = earlier_replacement
+        .get("approval_digest")?
+        .text()?
+        .to_owned();
+    let before = fixture.snapshot()?;
+    assert_eq!(before.coverage.len(), 2);
+    assert!(
+        before
+            .coverage
+            .iter()
+            .all(|record| record.calibration_invalidation.is_none())
+    );
+
+    let request = [
+        "--camera-handle",
+        "21",
+        "--adoption-digest",
+        east_receipt.as_str(),
+        "--reason",
+        "camera_moved",
+    ];
+    let preview = report(&calibration(&root, "invalidate", &request)?)?;
+    assert_eq!(
+        preview.get("format")?.text()?,
+        "fss.calibration_invalidation_report.v1"
+    );
+    assert_eq!(preview.get("status")?.text()?, "proposed");
+    assert_eq!(
+        preview.get("claim")?.text()?,
+        "owner_withdrawal_not_a_physical_observation"
+    );
+    let withdrawal_approval = preview.get("approval_digest")?.text()?.to_owned();
+    let withdrawal_digest = preview
+        .path(&["receipt", "receipt_digest"])?
+        .text()?
+        .to_owned();
+    assert_eq!(
+        preview.path(&["receipt", "adoption_digest"])?.text()?,
+        east_receipt
+    );
+    assert_eq!(preview.path(&["receipt", "camera_handle"])?.number()?, 21);
+    assert_eq!(
+        preview.path(&["receipt", "sensor_id"])?.text()?,
+        "sensor:east"
+    );
+    assert_eq!(
+        preview.path(&["receipt", "calibration_digest"])?.text()?,
+        fixture.digest
+    );
+    assert_eq!(
+        preview
+            .path(&["receipt", "intrinsics_generation"])?
+            .number()?,
+        1
+    );
+    assert_eq!(
+        preview
+            .path(&["receipt", "extrinsics_generation"])?
+            .number()?,
+        1
+    );
+    assert_eq!(
+        preview.path(&["receipt", "reason"])?.text()?,
+        "camera_moved"
+    );
+    assert_eq!(preview.path(&["receipt", "evidence"])?, &Json::Null);
+    assert!(
+        preview
+            .get("approve_command")?
+            .text()?
+            .ends_with(&withdrawal_approval)
+    );
+    assert_eq!(
+        report(&calibration(&root, "invalidate", &request)?)?,
+        preview
+    );
+    assert_eq!(fixture.snapshot()?.batch_count, before.batch_count);
+    assert_eq!(fixture.snapshot()?.ledger_root, before.ledger_root);
+
+    let wrong = ContentDigest::sha256(b"unapproved calibration withdrawal").to_string();
+    let mut wrong_request = request.to_vec();
+    wrong_request.extend_from_slice(&["--approve", wrong.as_str()]);
+    let rejected = calibration(&root, "invalidate", &wrong_request)?;
+    assert!(!rejected.status.success());
+    assert!(rejected.stdout.is_empty());
+    assert_eq!(refusal(&rejected), "ERR-CALIBRATION-INVALID-001");
+    assert_eq!(fixture.snapshot()?.ledger_root, before.ledger_root);
+
+    let mut approved_request = request.to_vec();
+    approved_request.extend_from_slice(&["--approve", withdrawal_approval.as_str()]);
+    let withdrawn = report(&calibration(&root, "invalidate", &approved_request)?)?;
+    assert_eq!(withdrawn.get("status")?.text()?, "retained");
+    assert_eq!(withdrawn.get("receipt")?, preview.get("receipt")?);
+    assert_eq!(
+        withdrawn.get("approval_digest")?.text()?,
+        withdrawal_approval
+    );
+    assert_eq!(withdrawn.get("approve_command")?, &Json::Null);
+    let withdrawal = ContentDigest::parse(&withdrawal_digest)?;
+    let after_withdrawal = fixture.snapshot()?;
+    assert_eq!(after_withdrawal.batch_count, before.batch_count + 1);
+    assert_eq!(
+        after_withdrawal
+            .family_counts
+            .get("calibration_invalidation"),
+        Some(&1)
+    );
+    assert_eq!(after_withdrawal.coverage.len(), 2);
+    for record in &after_withdrawal.coverage {
+        let Some(PoseProvenance::SiteCalibration { camera_handle, .. }) =
+            record.record.pose_provenance
+        else {
+            return Err("retained coverage lost calibration provenance".into());
+        };
+        assert_eq!(
+            record.calibration_invalidation,
+            match camera_handle {
+                21 => Some(withdrawal),
+                22 => None,
+                _ => return Err("unexpected calibrated camera".into()),
+            }
+        );
+    }
+
+    // Every invocation is a fresh process. Show and the read-only snapshot both reconstruct the
+    // withdrawal from disk; only east loses authority and the frozen adoption remains inspectable.
+    let show = report(&calibration(&root, "show", &[])?)?;
+    assert_eq!(report(&calibration(&root, "show", &[])?)?, show);
+    let cameras = show.get("cameras")?.items()?;
+    assert_eq!(cameras.len(), 2);
+    assert_eq!(cameras[0].get("camera_handle")?.number()?, 21);
+    assert_eq!(cameras[0].get("current_status")?.text()?, "invalidated");
+    assert_eq!(
+        cameras[0].path(&["current", "receipt_digest"])?.text()?,
+        east_receipt
+    );
+    assert_eq!(
+        cameras[0]
+            .path(&["current_invalidation", "receipt_digest"])?
+            .text()?,
+        withdrawal_digest
+    );
+    let history = cameras[0].get("history")?.items()?;
+    assert_eq!(history.len(), 1);
+    assert_eq!(
+        history[0]
+            .path(&["invalidation", "receipt_digest"])?
+            .text()?,
+        withdrawal_digest
+    );
+    assert_eq!(cameras[1].get("camera_handle")?.number()?, 22);
+    assert_eq!(cameras[1].get("current_status")?.text()?, "adopted_current");
+    assert_eq!(
+        cameras[1].path(&["current", "receipt_digest"])?.text()?,
+        west_receipt
+    );
+    assert_eq!(cameras[1].get("current_invalidation")?, &Json::Null);
+
+    let retry = report(&calibration(&root, "invalidate", &approved_request)?)?;
+    assert_eq!(retry.get("status")?.text()?, "already_invalidated");
+    assert_eq!(retry.get("receipt")?, preview.get("receipt")?);
+    assert_eq!(
+        fixture.snapshot()?.ledger_root,
+        after_withdrawal.ledger_root
+    );
+
+    // An owner assertion, an already retained coverage approval, and the original adoption
+    // approval cannot override withdrawal. Every refusal leaves authority unchanged.
+    for args in [
+        vec![],
+        vec!["--camera-generation", "east:1:1"],
+        vec!["--retain-coverage", old_coverage_approval.as_str()],
+    ] {
+        let output = fixture.run(&args)?;
+        assert!(!output.status.success(), "{args:?}");
+        assert!(output.stdout.is_empty(), "{args:?}");
+        assert_eq!(refusal(&output), "ERR-CALIBRATION-INVALID-001", "{args:?}");
+    }
+    for extra in [
+        binds.to_vec(),
+        vec![
+            "--bind",
+            EAST_BIND,
+            "--bind",
+            WEST_BIND,
+            "--approve",
+            original_adoption_approval.as_str(),
+        ],
+    ] {
+        let output = fixture.adopt(&fixture.path, &fixture.digest, &extra)?;
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        assert_eq!(refusal(&output), "ERR-CALIBRATION-INVALID-001");
+    }
+    let stale_recovery = fixture.adopt(
+        &v2_path,
+        &v2_digest,
+        &[
+            "--bind",
+            EAST_BIND,
+            "--bind",
+            WEST_BIND,
+            "--approve",
+            earlier_recovery_approval.as_str(),
+        ],
+    )?;
+    assert!(!stale_recovery.status.success());
+    assert!(stale_recovery.stdout.is_empty());
+    assert_eq!(
+        refusal(&stale_recovery),
+        "ERR-CALIBRATION-ADOPTION-APPROVAL-STALE-001"
+    );
+    assert_eq!(
+        fixture.snapshot()?.batch_count,
+        after_withdrawal.batch_count
+    );
+    assert_eq!(
+        fixture.snapshot()?.ledger_root,
+        after_withdrawal.ledger_root
+    );
+
+    let recovery_preview = report(&fixture.adopt(&v2_path, &v2_digest, &binds)?)?;
+    let recovery_approval = recovery_preview.get("approval_digest")?.text()?.to_owned();
+    assert_ne!(recovery_approval, earlier_recovery_approval);
+    let recovery_args = [
+        "--bind",
+        EAST_BIND,
+        "--bind",
+        WEST_BIND,
+        "--approve",
+        recovery_approval.as_str(),
+    ];
+    let recovered = report(&fixture.adopt(&v2_path, &v2_digest, &recovery_args)?)?;
+    assert_eq!(recovered.get("status")?.text()?, "retained");
+    let new_receipts = adopted_receipts(&recovered)?;
+    assert_ne!(new_receipts[0].1, east_receipt);
+    assert_eq!(
+        recovered.get("cameras")?.items()?[0]
+            .path(&["receipt", "extrinsics_generation"])?
+            .number()?,
+        2
+    );
+    let recovered_snapshot = fixture.snapshot()?;
+    assert_eq!(
+        recovered_snapshot.batch_count,
+        after_withdrawal.batch_count + 1
+    );
+    assert_eq!(
+        recovered_snapshot
+            .family_counts
+            .get("calibration_invalidation"),
+        Some(&1)
+    );
+    let recovery_retry = report(&fixture.adopt(&v2_path, &v2_digest, &recovery_args)?)?;
+    assert_eq!(recovery_retry.get("status")?.text()?, "already_current");
+    assert_eq!(
+        fixture.snapshot()?.ledger_root,
+        recovered_snapshot.ledger_root
+    );
+
+    // The old target is no longer current: replaying its withdrawal cannot touch the replacement.
+    let stale_withdrawal = calibration(&root, "invalidate", &approved_request)?;
+    assert!(!stale_withdrawal.status.success());
+    assert!(stale_withdrawal.stdout.is_empty());
+    assert_eq!(refusal(&stale_withdrawal), "ERR-CALIBRATION-INVALID-001");
+    assert!(
+        String::from_utf8_lossy(&stale_withdrawal.stderr)
+            .contains("not the current retained adoption")
+    );
+    assert_eq!(
+        fixture.snapshot()?.ledger_root,
+        recovered_snapshot.ledger_root
+    );
+    let recovered_show = report(&calibration(&root, "show", &[])?)?;
+    let east = &recovered_show.get("cameras")?.items()?[0];
+    assert_eq!(east.get("current_status")?.text()?, "adopted_current");
+    assert_eq!(east.get("current_invalidation")?, &Json::Null);
+    assert_eq!(
+        east.path(&["current", "receipt_digest"])?.text()?,
+        new_receipts[0].1
+    );
+    let history = east.get("history")?.items()?;
+    assert_eq!(history.len(), 2);
+    assert_eq!(
+        history[0]
+            .path(&["invalidation", "receipt_digest"])?
+            .text()?,
+        withdrawal_digest
+    );
+    assert_eq!(history[1].get("invalidation")?, &Json::Null);
+    assert_eq!(history[1].get("supersedes")?.text()?, east_receipt);
+
+    let stale = fixture.run(&["--retain-coverage", &old_coverage_approval])?;
+    assert!(!stale.status.success());
+    assert_eq!(refusal(&stale), "ERR-CALIBRATION-ADOPTION-STALE-001");
+    let fresh_coverage = report(&fixture.run_with(&v2_path, &v2_digest, &[])?)?;
+    for (entry, (handle, receipt)) in record_provenance(&fresh_coverage)?
+        .iter()
+        .zip(&new_receipts)
+    {
+        assert_eq!(entry.get("camera_handle")?.number()?, *handle);
+        assert_eq!(entry.get("calibration_digest")?.text()?, v2_digest);
+        assert_eq!(entry.get("generation_currency")?.text()?, "adopted_current");
+        assert_eq!(entry.get("adoption_receipt")?.text()?, receipt);
+    }
+    let fresh_coverage_approval = fresh_coverage
+        .path(&["coverage", "approval_digest"])?
+        .text()?
+        .to_owned();
+    let kept = report(&fixture.run_with(
+        &v2_path,
+        &v2_digest,
+        &["--retain-coverage", &fresh_coverage_approval],
+    )?)?;
+    assert_eq!(
+        kept.path(&["coverage", "coverage_status"])?.text()?,
+        "retained"
+    );
+    let final_snapshot = fixture.snapshot()?;
+    assert_eq!(final_snapshot.coverage.len(), 4);
+    let old_calibration = ContentDigest::parse(&fixture.digest)?;
+    for record in &final_snapshot.coverage {
+        let Some(PoseProvenance::SiteCalibration {
+            calibration_digest,
+            camera_handle,
+            ..
+        }) = record.record.pose_provenance
+        else {
+            return Err("retained coverage lost calibration provenance".into());
+        };
+        assert_eq!(
+            record.calibration_invalidation,
+            (calibration_digest == old_calibration && camera_handle == 21).then_some(withdrawal)
+        );
+    }
+    Ok(())
+}

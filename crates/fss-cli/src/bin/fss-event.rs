@@ -277,7 +277,16 @@ const HELP: &str = "fss-event <report|prepare|publish|read|verify|watch|corrobor
     a new generation or calibration supersedes, a lower generation or a superseded calibration\n\
     is refused, the sensor binding is fixed, and history is never erased. An adoption is\n\
     owner authority, not a physical observation of the camera.\n\
-  calibration show: every adopted camera's current receipt and full history.\n\
+  calibration invalidate: --camera-handle N --adoption-digest sha256:HEX\n\
+    --reason camera_moved|optics_changed|crop_changed|firmware_changed|residual_drift|owner_revoked\n\
+    [--evidence sha256:HEX] [--approve sha256:HEX] [--report-out FILE].\n\
+    Without --approve: previews withdrawal of the exact current adoption and its approval.\n\
+    Optional evidence must be a retained SensorCapsule for that camera's adopted sensor.\n\
+    With --approve: retains the owner's withdrawal; calibrated coverage/corroboration refuse\n\
+    the invalidated adoption (ERR-CALIBRATION-INVALID-001). An exact retry writes nothing.\n\
+    Recovery requires a new calibration digest, no lower generation, and at least one newer\n\
+    intrinsics/extrinsics generation. Replaying an old adoption approval cannot undo withdrawal.\n\
+  calibration show: every adopted camera's current receipt, withdrawal and full history.\n\
   alert (one webhook for a corroborated event): --event-id ID --relay IP:PORT --path /PATH\n\
           --plaintext-approval sha256:HEX --deadline-ms N (1..60000)\n\
           [--approve sha256:PLAN [--dispatch sha256:DISPATCH]] [--report-out FILE]\n\
@@ -814,9 +823,10 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
         priority: 10,
         budgets: BudgetVector::builder()
             .bytes(options.limits.maximum_report_bytes as u64)
-            .network_bytes(dispatch_deadline_ms.map_or(0, |_| {
-                fss_cli::alert_effect::MAX_DISPATCH_NETWORK_BYTES
-            }))
+            .network_bytes(
+                dispatch_deadline_ms
+                    .map_or(0, |_| fss_cli::alert_effect::MAX_DISPATCH_NETWORK_BYTES),
+            )
             .latency_ms(dispatch_deadline_ms.map_or(0, |deadline| {
                 deadline + fss_cli::alert_effect::DISPATCH_CLEANUP_MS
             }))
@@ -1080,9 +1090,7 @@ fn read_package_event(
         let detection = frame
             .detections
             .iter()
-            .find(|detection| {
-                detection.row == row && detection.class_index == report.class_index()
-            })
+            .find(|detection| detection.row == row && detection.class_index == report.class_index())
             .ok_or(PackageEventError::Mismatch)?;
         if detection.score_bits != score_bits || detection.bounds != bounds {
             return Err(PackageEventError::Mismatch.into());
@@ -1101,7 +1109,10 @@ fn read_package_event(
                 "selector",
                 object(&[
                     ("event_id", string(id.as_str())),
-                    ("capsule_digest", string(&observation.capsule_digest.to_text())),
+                    (
+                        "capsule_digest",
+                        string(&observation.capsule_digest.to_text()),
+                    ),
                     ("segment", observation.segment.to_string()),
                     ("detection_row", row.to_string()),
                 ]),
@@ -1282,6 +1293,8 @@ fn main() -> ExitCode {
                 } else if let Some(refusal) = e.downcast_ref::<fss_reference::ingest::privacy_mask::PrivacyMaskError>() {
                     eprintln!("refusal_id={}", refusal.stable_id());
                 } else if let Some(refusal) = e.downcast_ref::<fss_reference::ingest::calibration_adoption::AdoptionError>() {
+                    eprintln!("refusal_id={}", refusal.stable_id());
+                } else if let Some(refusal) = e.downcast_ref::<fss_reference::ingest::calibration_invalidation::InvalidationError>() {
                     eprintln!("refusal_id={}", refusal.stable_id());
                 } else if let Some(refusal) = e.downcast_ref::<fss_reference::deletion::DeletionError>() {
                     eprintln!("refusal_id={}", refusal.stable_id());

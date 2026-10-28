@@ -434,6 +434,58 @@ Non-claim: `adopted_current` means the deployment retains the owner's approval-g
 that calibration. It is owner authority, not a physical measurement: nothing observes that the
 camera has not moved, zoomed or been relensed since.
 
+### Withdraw an adopted calibration (FSS-091)
+
+When the owner learns that a camera moved, its optics/crop/firmware changed, its residuals
+drifted, or the adoption should otherwise be revoked, withdraw the **exact current adoption**.
+First inspect the camera handle and `current.receipt_digest` from:
+
+```sh
+fss-event calibration show --root DIR --site SITE
+```
+
+Preview the withdrawal without writing authority:
+
+```sh
+fss-event calibration invalidate --root DIR --site SITE \
+  --camera-handle 21 --adoption-digest sha256:ADOPTION_HEX \
+  --reason camera_moved
+```
+
+The report uses `fss.calibration_invalidation_report.v1`. Review its exact target, sensor,
+calibration digest, generations, reason, optional evidence and `approval_digest`, then execute
+its `approve_command` or repeat the same request with `--approve sha256:APPROVAL_HEX`.
+The allowed reason tokens are `camera_moved`, `optics_changed`, `crop_changed`,
+`firmware_changed`, `residual_drift`, and `owner_revoked`. Optional `--evidence sha256:HEX`
+must identify readable, retained **sensor capsule metadata from the adopted sensor**; a source
+file, import identity, arbitrary blob or another sensor's capsule is refused. `--report-out FILE`
+and `--principal ID` work as for adoption.
+
+Publication appends one immutable withdrawal receipt and its exact approval witness. A changed
+reason, evidence, target or deployment domain cannot consume the old approval. An exact retry
+returns `already_invalidated` without another authority batch. `calibration show` adds
+`current_status`, `current_invalidation` and each historical adoption's `invalidation`.
+The underlying adoption receipts and their canonical bytes remain unchanged.
+
+After withdrawal, current calibration checks and new coverage publication refuse with
+`ERR-CALIBRATION-INVALID-001`, including retries of already-retained coverage. Orientation,
+coverage graphs, timelines and follow queries exclude witnesses based on the withdrawn exact
+calibration and generations, including older owner-asserted records using that basis.
+Historical queries before the withdrawal still reflect the authority at their requested
+sequence. Unaffected cameras remain usable. Deleting source footage preserves the adoption,
+withdrawal and approval history; disappearance of optional evidence cannot restore currency.
+
+Recovery requires a **different calibration digest**, neither camera generation lower, and at
+least one of its intrinsic or extrinsic generations strictly newer. Generate that calibration,
+preview `calibration adopt` again, and approve the new result. An approval prepared before the
+withdrawal is stale even if it already described a newer generation. Fresh recovery approval
+binds the exact withdrawal. Old withdrawal requests cannot affect the replacement, and a new
+adoption does not resurrect old coverage witnesses.
+
+This is durable owner-reported withdrawal. It does not automatically detect camera movement,
+optics changes or residual drift, and does not yet implement a live calibration monitor.
+FSS-091 remains open for those observation and propagation paths.
+
 ### Pose uncertainty in ground coverage (fss-x8j0v covariance propagation)
 
 A calibrated pose is a point estimate; the calibration also carries each camera's local

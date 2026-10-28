@@ -810,11 +810,19 @@ one-time vendor-app provisioning (NEG-006) with the yi-hack owner-flash path doc
   covariance, generation invalidators) and joint multi-camera refinement against an owner atlas
   (fss-twin). `fss-event calibrate` builds a digest-bound calibration (`FSSCAL01/02`) from owner
   correspondence files or still JPEG frames (native FAST-9/BRIEF features, cross-camera ties);
-  `fss-event calibration adopt|show` retains approval-gated adoptions; `corroborate --calibration`
+  `fss-event calibration adopt|invalidate|show` retains approval-gated adoptions and immutable
+  owner withdrawals of exact current adoptions. Withdrawn bases cannot authorize new coverage
+  or current orientation/graph/timeline/follow witnesses; historical-prefix queries preserve
+  their earlier state. Recovery requires a different calibration digest, a strictly newer camera
+  generation with neither lower, and fresh approval bound to the withdrawal. Adoption and
+  withdrawal authority survive source deletion. `corroborate --calibration`
   uses the calibrated poses, refuses stale or unadopted calibrations, binds pose provenance into
   coverage records, and withholds absence witnesses for zones whose visibility changes under the
   calibration covariance. Proven on synthetic scenes only; per-camera time offset and real-footage
-  accuracy are open, and adoption is owner authority, not an observation of the camera.
+  accuracy are open, and adoption/withdrawal are owner authority, not observations of the camera.
+  The invalidation codec has four passing native exact-source tests; the added reference and CLI
+  contracts remain unexecuted in the resource-constrained build environment. Automatic physical
+  movement/residual monitoring remains open (FSS-091).
 - **Decode refusals as coverage gaps (fss-fnrgr follow-up):** `watch --tolerate-decode-refusals`
   (opt-in) records a mid-recording refusal or source gap as `decode_refused` intervals with the
   error id, resumes H.264/H.265 at the next IDR/IRAP, restarts tracking (no bridging) and never
