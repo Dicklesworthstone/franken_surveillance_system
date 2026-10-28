@@ -80,3 +80,17 @@ Re-extraction of the **base** APK (`com.glazero.android.apk` from
 Baseline still: `checkStatus -1`, `INIT=null`, `RESULT=abe3a823…` (unchanged by both new assets
 on the `cmd 1` path — the acceptance gate is the *content* of `tecrkcehc_ext`, which is what the
 parser-acceptance sweep targets next).
+
+### Mirror hunt (2026-10-28, PearlGull) — no new APK source reachable without Cloudflare/auth
+
+| source | result |
+|---|---|
+| apkmirror `wp-json/v2/search` | 403 (5660 B wall) |
+| apkpure `/search` + `d.apkpure.com/b/XAPK/...` | 403 both |
+| apkcombo | connection failure |
+| apk4fun, apkmonk | 403 / unreachable |
+| evozi apk-downloader | reachable but fully client-side (Next.js, no server API found in HTML) |
+| android-apk.org | JS redirect loop, no APK |
+| **play.google.com listing** | **200** — Play is readable without auth; live version **5.10.22** ("What's new"), `[[["5.10.22"]]]` in page data. Delivery of the APK itself requires the Google account delivery protocol (token + device registration) — out of lane scope; a Play-installed copy or its `/data/data/com.glazero.android/` dir remains the surest blob source. |
+
+Play listing also confirms the fleet's 5.10.12 is one minor behind current.
