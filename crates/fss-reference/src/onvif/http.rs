@@ -993,6 +993,10 @@ fn make_request(
                 | "http://www.onvif.org/ver10/device/wsdl/GetServices"
                 | "http://www.onvif.org/ver20/media/wsdl/GetProfiles"
                 | "http://www.onvif.org/ver20/media/wsdl/GetStreamUri"
+                | "http://www.onvif.org/ver10/events/wsdl/EventPortType/CreatePullPointSubscriptionRequest"
+                | "http://www.onvif.org/ver10/events/wsdl/PullPointSubscription/PullMessagesRequest"
+                | "http://docs.oasis-open.org/wsn/bw-2/SubscriptionManager/RenewRequest"
+                | "http://docs.oasis-open.org/wsn/bw-2/SubscriptionManager/UnsubscribeRequest"
         )
         || request.body().len() > limit
         || (authorization.is_some() && request.has_username_token())

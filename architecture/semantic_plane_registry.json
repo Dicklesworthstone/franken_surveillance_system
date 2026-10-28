@@ -45,7 +45,8 @@
     "crates/fss-reference/src/situation_guard.rs",
     "crates/fss-reference/src/situation_sections.rs",
     "crates/fss-reference/src/ingest/historical_health/exposure.rs",
-    "crates/fss-reference/src/onvif/metadata.rs"
+    "crates/fss-reference/src/onvif/metadata.rs",
+    "crates/fss-reference/src/onvif/pullpoint.rs"
   ],
   "module_declarations": {
     "crates/fss-cli/src/alert_effect/report.rs": "support",
@@ -754,7 +755,11 @@
     "crates/fss-reference/src/onvif/metadata.rs": "ambiguous",
     "crates/fss-reference/src/onvif/metadata/record.rs": "cognition",
     "crates/fss-cli/src/bin/fss-onvif-metadata.rs": "support",
-    "crates/fss-reference/src/onvif/wire/pullpoint.rs": "cognition"
+    "crates/fss-reference/src/onvif/wire/pullpoint.rs": "cognition",
+    "crates/fss-reference/src/onvif/pullpoint.rs": "ambiguous",
+    "crates/fss-reference/src/onvif/metadata/source.rs": "support",
+    "crates/fss-cli/src/bin/fss-onvif-metadata/capture.rs": "support",
+    "crates/fss-cli/src/bin/fss-onvif-metadata/capture/plan.rs": "support"
   },
   "types": {
     "AlertEffectRecord": {
@@ -1344,6 +1349,51 @@
       "file": "crates/fss-reference/src/onvif/wire/pullpoint.rs",
       "plane": "cognition",
       "description": "Exact vendor-declared subscription times and conservative duration; no trusted clock, coverage or continuity authority."
+    },
+    "PullPointConfig": {
+      "file": "crates/fss-reference/src/onvif/pullpoint.rs",
+      "plane": "support",
+      "description": "Explicit finite native subscription plan with independently approved event route, exact subtree and nonrefillable lifecycle limits."
+    },
+    "PullBatch": {
+      "file": "crates/fss-reference/src/onvif/pullpoint.rs",
+      "plane": "cognition",
+      "description": "Complete private vendor response plus native acquisition observations delivered to the caller-owned retention sink; no coverage or device identity."
+    },
+    "RetainedBatch": {
+      "file": "crates/fss-reference/src/onvif/pullpoint.rs",
+      "plane": "cognition",
+      "description": "Exact import and publication handles acknowledged by the retention sink; no inference of event completeness or physical truth."
+    },
+    "SubscriptionState": {
+      "file": "crates/fss-reference/src/onvif/pullpoint.rs",
+      "plane": "cognition",
+      "description": "Last observed remote creation/cleanup state; an indeterminate outcome never proves that no subscription exists."
+    },
+    "CaptureStop": {
+      "file": "crates/fss-reference/src/onvif/pullpoint.rs",
+      "plane": "support",
+      "description": "Explicit finite polling stop reason, including reserved cleanup limits; never implies complete event coverage."
+    },
+    "CaptureReport": {
+      "file": "crates/fss-reference/src/onvif/pullpoint.rs",
+      "plane": "cognition",
+      "description": "Ordered retained response receipts, bounded native attempt counts and observed subscription cleanup; private Create response remains in memory until independently retained."
+    },
+    "CaptureFailure": {
+      "file": "crates/fss-reference/src/onvif/pullpoint.rs",
+      "plane": "support",
+      "description": "Primary acquisition refusal retaining all earlier acknowledged durable batches and cleanup state."
+    },
+    "PullPointError": {
+      "file": "crates/fss-reference/src/onvif/pullpoint.rs",
+      "plane": "support",
+      "description": "Typed native acquisition refusal with bounded, payload-free diagnostic identity."
+    },
+    "PullPointAcquisition": {
+      "file": "crates/fss-reference/src/onvif/metadata/source.rs",
+      "plane": "support",
+      "description": "Immutable owner acquisition witness binding approval, exact route and control-source hashes, request identities and ordered monotonic intervals; no authenticated server or profile-filter claim."
     }
   }
 }

@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! Local, source-retained ONVIF vendor events/analytics and independent cold verification.
+//! Bounded live ONVIF acquisition, retained vendor claims, and independent cold verification.
 
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
@@ -22,10 +22,15 @@ use fss_reference::onvif::wire::{
 };
 use fss_reference::{ReferenceDeployment, ReplayCx};
 
+#[path = "fss-capture-rtsp/authentication.rs"]
+mod authentication;
+#[path = "fss-onvif-metadata/capture.rs"]
+mod capture;
 #[path = "fss-onvif/runtime.rs"]
 mod runtime;
 
-const HELP: &str = "fss-onvif-metadata <import|inspect|verify> [options]
+const HELP: &str = "fss-onvif-metadata <capture|import|inspect|verify> [options]
+  capture: see fss-onvif-metadata capture --help for explicit live subscription options.
   All commands: --root ABSOLUTE_DIR --site SITE [--principal ID]
                 [--include-values yes|no]
   import: --input FILE --sensor ID --device-generation sha256:HEX
@@ -45,7 +50,8 @@ SimpleItem values, object IDs, classes and geometry are withheld by default.
 --include-values yes explicitly reveals private
 vendor values to this local command's stdout; it enables no sensitive analysis or effects.
 Notification order, duplicates, initialization and deletion operations are preserved.
-No live subscription, camera authentication, coverage, physical absence or control is claimed.
+File imports do not authenticate a camera. The capture command requires a separately
+approved finite subscription. Neither lane establishes coverage, physical absence or control.
 ";
 
 const ARGUMENT_ERROR: &str = "ERR-ONVIF-METADATA-ARGUMENT-001";
@@ -455,7 +461,47 @@ fn report(
     );
     line!("plane={}", retained.plane().as_str());
     line!("provenance={}", retained.provenance().as_str());
-    line!("source_mode=owner_supplied_file");
+    line!("source_mode={}", retained.source_mode());
+    if let Some(acquisition) = retained.pullpoint_acquisition() {
+        line!("capture_approval={}", acquisition.approval);
+        line!("event_route_sha256={}", acquisition.event_route);
+        line!(
+            "subscription_route_sha256={}",
+            acquisition.subscription_route
+        );
+        line!(
+            "subscription_source_sha256={}",
+            acquisition.subscription_source
+        );
+        line!(
+            "subscription_source_bytes={}",
+            acquisition.subscription_source_bytes
+        );
+        line!("pull_index={}", acquisition.pull_index);
+        line!(
+            "client_digest_authenticated={}",
+            acquisition.client_authenticated
+        );
+        line!("request_message_id={}", acquisition.message_id);
+        line!(
+            "subscription_message_id={}",
+            acquisition.subscription_message_id
+        );
+        line!(
+            "subscription_started_ns={}",
+            acquisition.subscription_started_ns
+        );
+        line!(
+            "subscription_completed_ns={}",
+            acquisition.subscription_completed_ns
+        );
+        line!("pull_started_ns={}", acquisition.started_ns);
+        line!("pull_completed_ns={}", acquisition.completed_ns);
+        line!("subscription_scope=device_events");
+        line!("profile_attribution_verified=false");
+        line!("server_identity_verified=false");
+        line!("transport_encrypted=false");
+    }
     line!("camera_authenticated=false");
     line!("vendor_clock_trusted=false");
     line!("coverage_claimed=false");
@@ -799,8 +845,9 @@ fn report_items(
     }
     Ok(())
 }
-// Keep the durable acknowledgment separate from optional rendered values. Only
-// successful imports construct a receipt; output text never grants that status.
+// Keep durable acknowledgments separate from optional rendered vendor values.
+// Live capture also carries a bounded progress receipt, including incomplete states;
+// only its explicitly listed batch roots claim durable publication.
 struct CommandOutput {
     report: String,
     custody_receipt: Option<String>,
@@ -820,8 +867,8 @@ fn write_output(
     }
     let _ = stderr.write_all(b"ERR-ONVIF-METADATA-OUTPUT-001\n");
     if let Some(receipt) = &output.custody_receipt {
-        // This independent, bounded receipt contains hashes and retry guidance,
-        // never the optional report, even after a partially successful write.
+        // This independent, bounded receipt contains hashes and progress/retry
+        // guidance, never optional vendor values, even after a partial write.
         let _ = stderr.write_all(receipt.as_bytes());
     }
     let _ = stderr.flush();
@@ -829,21 +876,37 @@ fn write_output(
 }
 
 fn main() -> ExitCode {
-    let args: Vec<_> = std::env::args_os().skip(1).take(41).collect();
-    let result = match parse(&args) {
-        Ok(None) => {
-            print!("{HELP}");
-            return ExitCode::SUCCESS;
+    let args: Vec<_> = std::env::args_os().skip(1).take(81).collect();
+    let result = if args.first().is_some_and(|arg| arg == "capture") {
+        capture::run_args(&args[1..]).map(|(report, complete)| {
+            let output = CommandOutput {
+                custody_receipt: Some(report.clone()),
+                report,
+            };
+            (output, complete)
+        })
+    } else {
+        match parse(&args) {
+            Ok(None) => Ok((
+                CommandOutput {
+                    report: HELP.to_owned(),
+                    custody_receipt: None,
+                },
+                true,
+            )),
+            Ok(Some(options)) => run(options).map(|output| (output, true)),
+            Err(error) => Err(error),
         }
-        Ok(Some(options)) => run(options),
-        Err(error) => Err(error),
     };
     match result {
-        Ok(output) => write_output(
-            &output,
-            &mut std::io::stdout().lock(),
-            &mut std::io::stderr().lock(),
-        ),
+        Ok((output, complete)) => {
+            let status = write_output(
+                &output,
+                &mut std::io::stdout().lock(),
+                &mut std::io::stderr().lock(),
+            );
+            if complete { status } else { ExitCode::from(1) }
+        }
         Err(error) => {
             eprintln!("{error}");
             ExitCode::from(if error == ARGUMENT_ERROR { 2 } else { 1 })

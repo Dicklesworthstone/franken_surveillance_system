@@ -1,13 +1,16 @@
 #![forbid(unsafe_code)]
 //! Source-retained ONVIF vendor event and analytics imports (a bounded FSS-046 subset).
 //!
-//! A local operator supplies complete PullMessages or MetadataStream XML and exact
+//! An owner supplies complete XML or authorizes native PullPoint acquisition, with exact
 //! device/profile generation pins. Raw source, the deterministic vendor-cognition
 //! projection, and its owner binding share one immutable root. Only custody enters
 //! authority: camera timestamps, labels, false values and empty responses establish
 //! neither physical truth nor coverage, absence, identity or effect permission.
 
 mod record;
+mod source;
+
+pub use source::PullPointAcquisition;
 
 use std::fmt;
 
@@ -33,6 +36,8 @@ pub const RECIPE_DOMAIN: &str = "fss.onvif_vendor_event_import.v2";
 pub const PROJECTION_DOMAIN: &str = "fss.onvif_vendor_event_projection.v2";
 /// Current immutable interpretation; old imports always retain their original generation.
 pub const PARSER_GENERATION: &str = "gen:fss1:onvif-vendor-analytics-v2";
+/// Native PullPoint custody domain; file-import v1 and v2 encodings remain unchanged.
+pub const PULLPOINT_RECIPE_DOMAIN: &str = "fss.onvif_vendor_event_pullpoint.v1";
 
 /// Exact interpretation selected before parsing and permanently bound into custody.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -89,7 +94,7 @@ pub const STAGE_METADATA_PUBLISH: &str = "onvif_metadata:publish";
 /// Owner-supplied attribution, independent of anything asserted by the source XML.
 #[derive(Clone, Eq, PartialEq)]
 pub struct SourceBinding {
-    /// Stable enrolled sensor label; this file import does not authenticate the camera.
+    /// Stable enrolled sensor label; owner attribution does not authenticate the camera.
     pub sensor_id: SensorId,
     /// Exact owner-declared device/firmware/configuration generation.
     pub device_generation: ContentDigest,
@@ -273,7 +278,20 @@ impl RetainedMetadata {
             return Err(MetadataError::Custody);
         }
         checkpoint(cx, "onvif_metadata:parse_retained")?;
-        let document = recipe.interpretation.parse(&source)?;
+        let document = if recipe.acquisition.is_some() {
+            super::wire::parse_pull_messages_response(&source)?
+        } else {
+            recipe.interpretation.parse(&source)?
+        };
+        if let Some(acquisition) = &recipe.acquisition {
+            let subscription = read(
+                deployment,
+                acquisition.subscription_source,
+                acquisition.subscription_source_bytes,
+                cx,
+            )?;
+            acquisition.validate_sources(&source, &subscription)?;
+        }
         let projection = record::projection(&document, recipe.interpretation)?;
         if ContentDigest::sha256(&projection) != recipe.projection
             || read(deployment, recipe.projection, MAX_PROJECTION_BYTES, cx)? != projection
@@ -330,6 +348,18 @@ impl RetainedMetadata {
     /// Explicit operator attribution and receive interval.
     pub fn binding(&self) -> &SourceBinding {
         &self.recipe.binding
+    }
+    /// Acquisition mode retained in the immutable recipe.
+    pub fn source_mode(&self) -> &'static str {
+        if self.recipe.acquisition.is_some() {
+            "onvif_pullpoint"
+        } else {
+            "owner_supplied_file"
+        }
+    }
+    /// Native acquisition witness, absent for an owner-supplied file.
+    pub fn pullpoint_acquisition(&self) -> Option<&PullPointAcquisition> {
+        self.recipe.acquisition.as_ref()
     }
     /// Parsed claims, preserving original notification order and repeated occurrences.
     /// Values can contain private vendor data; callers must apply their disclosure policy.
@@ -410,6 +440,43 @@ pub fn retain_with_interpretation(
     interpretation: Interpretation,
     cx: &ReplayCx,
 ) -> Result<RetainedMetadata, MetadataError> {
+    retain_inner(deployment, binding, source, interpretation, None, None, cx)
+}
+
+/// Retain a native PullPoint response and its exact subscription source.
+///
+/// This live lane preserves the event-only projection and never silently selects
+/// the current analytics import default. Both complete SOAP bodies and the owner
+/// acquisition witness are immutable children of the same custody root.
+pub fn retain_pullpoint(
+    deployment: &mut ReferenceDeployment,
+    binding: SourceBinding,
+    source: &[u8],
+    acquisition: PullPointAcquisition,
+    subscription_source: &[u8],
+    cx: &ReplayCx,
+) -> Result<RetainedMetadata, MetadataError> {
+    acquisition.validate_sources(source, subscription_source)?;
+    retain_inner(
+        deployment,
+        binding,
+        source,
+        Interpretation::EventsV1,
+        Some(acquisition),
+        Some(subscription_source),
+        cx,
+    )
+}
+
+fn retain_inner(
+    deployment: &mut ReferenceDeployment,
+    binding: SourceBinding,
+    source: &[u8],
+    interpretation: Interpretation,
+    acquisition: Option<PullPointAcquisition>,
+    subscription_source: Option<&[u8]>,
+    cx: &ReplayCx,
+) -> Result<RetainedMetadata, MetadataError> {
     admit(deployment, cx, "onvif_metadata:admit")?;
     deployment
         .ledger()
@@ -429,7 +496,16 @@ pub fn retain_with_interpretation(
     if source.is_empty() || source.len() > MAX_SOURCE_BYTES {
         return Err(MetadataError::Limit);
     }
-    let document = interpretation.parse(source)?;
+    if acquisition.is_some() != subscription_source.is_some()
+        || acquisition.is_some() && interpretation != Interpretation::EventsV1
+    {
+        return Err(MetadataError::InvalidBinding);
+    }
+    let document = if acquisition.is_some() {
+        super::wire::parse_pull_messages_response(source)?
+    } else {
+        interpretation.parse(source)?
+    };
     let projection = record::projection(&document, interpretation)?;
     let recipe = record::Recipe {
         interpretation,
@@ -438,6 +514,7 @@ pub fn retain_with_interpretation(
         source: ContentDigest::sha256(source),
         source_bytes: source.len(),
         projection: ContentDigest::sha256(&projection),
+        acquisition,
     };
     let encoded = record::encode(&recipe)?;
     if record::decode(&encoded)? != recipe {
@@ -460,12 +537,17 @@ pub fn retain_with_interpretation(
                 .require_durable_record(&slot)
                 .map_err(|_| MetadataError::Custody)?;
         }
-        for (digest, bytes) in [
+        let mut retained_objects = vec![
             (identity, encoded.as_slice()),
             (recipe.source, source),
             (recipe.projection, projection.as_slice()),
             (manifest.root(), manifest_bytes.as_slice()),
-        ] {
+        ];
+        if let (Some(acquisition), Some(subscription)) = (&recipe.acquisition, subscription_source)
+        {
+            retained_objects.push((acquisition.subscription_source, subscription));
+        }
+        for (digest, bytes) in retained_objects {
             if read(deployment, digest, bytes.len(), cx)? != bytes {
                 return Err(MetadataError::Custody);
             }
@@ -488,11 +570,11 @@ pub fn retain_with_interpretation(
             return Err(MetadataError::Custody);
         }
         checkpoint(cx, "onvif_metadata:stage")?;
-        let staged = deployment.stage_and_publish(
-            &slot,
-            &[encoded.as_slice(), source, projection.as_slice()],
-            cx,
-        )?;
+        let mut objects = vec![encoded.as_slice(), source, projection.as_slice()];
+        if let Some(subscription) = subscription_source {
+            objects.push(subscription);
+        }
+        let staged = deployment.stage_and_publish(&slot, &objects, cx)?;
         if staged.manifest != manifest {
             return Err(MetadataError::Custody);
         }
@@ -539,6 +621,9 @@ fn manifest(
     recipe: &record::Recipe,
 ) -> Result<ObjectManifest, MetadataError> {
     let mut children = vec![identity, recipe.source, recipe.projection];
+    if let Some(acquisition) = &recipe.acquisition {
+        children.push(acquisition.subscription_source);
+    }
     children.sort_unstable();
     children.dedup();
     ObjectManifest::new(slot(identity)?.as_str(), children, None)

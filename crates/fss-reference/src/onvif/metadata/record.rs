@@ -8,7 +8,7 @@ use fss_core::{
 
 use super::{
     Interpretation, MAX_PROJECTION_BYTES, MAX_RECIPE_BYTES, MAX_SOURCE_BYTES, MetadataError,
-    RECIPE_DOMAIN, RECIPE_DOMAIN_V1, SourceBinding,
+    PULLPOINT_RECIPE_DOMAIN, PullPointAcquisition, RECIPE_DOMAIN, RECIPE_DOMAIN_V1, SourceBinding,
 };
 use crate::onvif::wire::{
     AnalyticsAppearance, AnalyticsClassFormat, AnalyticsFrame, AnalyticsTransformation,
@@ -24,6 +24,7 @@ pub(super) struct Recipe {
     pub(super) source: ContentDigest,
     pub(super) source_bytes: usize,
     pub(super) projection: ContentDigest,
+    pub(super) acquisition: Option<PullPointAcquisition>,
 }
 
 pub(super) fn valid_label(value: &str) -> bool {
@@ -43,10 +44,28 @@ pub(super) fn encode(recipe: &Recipe) -> Result<Vec<u8>, MetadataError> {
     {
         return Err(MetadataError::InvalidBinding);
     }
+    if let Some(acquisition) = &recipe.acquisition {
+        acquisition.validate()?;
+        let span =
+            recipe.binding.receive_interval.latest.0 - recipe.binding.receive_interval.earliest.0;
+        if recipe.interpretation != Interpretation::EventsV1
+            || span != i128::from(acquisition.completed_ns - acquisition.started_ns)
+        {
+            return Err(MetadataError::InvalidBinding);
+        }
+    }
     let mut e = CanonicalEncoder::new();
-    e.text(recipe.interpretation.recipe_domain());
+    e.text(if recipe.acquisition.is_some() {
+        PULLPOINT_RECIPE_DOMAIN
+    } else {
+        recipe.interpretation.recipe_domain()
+    });
     e.text(recipe.interpretation.parser_generation());
-    e.text("owner_supplied_file");
+    e.text(if recipe.acquisition.is_some() {
+        "onvif_pullpoint"
+    } else {
+        "owner_supplied_file"
+    });
     e.text(&recipe.site);
     source_binding(&mut e, &recipe.binding);
     e.i128(recipe.binding.receive_interval.earliest.0);
@@ -54,6 +73,21 @@ pub(super) fn encode(recipe: &Recipe) -> Result<Vec<u8>, MetadataError> {
     e.digest(recipe.source);
     e.u64(recipe.source_bytes as u64);
     e.digest(recipe.projection);
+    if let Some(acquisition) = &recipe.acquisition {
+        e.digest(acquisition.approval);
+        e.digest(acquisition.event_route);
+        e.digest(acquisition.subscription_route);
+        e.u64(u64::from(acquisition.pull_index));
+        e.u64(acquisition.started_ns);
+        e.u64(acquisition.completed_ns);
+        e.bool(acquisition.client_authenticated);
+        e.digest(acquisition.subscription_source);
+        e.u64(acquisition.subscription_source_bytes as u64);
+        e.text(&acquisition.message_id);
+        e.text(&acquisition.subscription_message_id);
+        e.u64(acquisition.subscription_started_ns);
+        e.u64(acquisition.subscription_completed_ns);
+    }
     let bytes = e.finish_checked()?;
     if bytes.len() > MAX_RECIPE_BYTES {
         return Err(MetadataError::Limit);
@@ -66,12 +100,18 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Recipe, MetadataError> {
         return Err(MetadataError::Limit);
     }
     let mut d = CanonicalDecoder::new(bytes);
-    let interpretation = match d.text()? {
-        RECIPE_DOMAIN_V1 => Interpretation::EventsV1,
-        RECIPE_DOMAIN => Interpretation::AnalyticsV2,
+    let (interpretation, live) = match d.text()? {
+        RECIPE_DOMAIN_V1 => (Interpretation::EventsV1, false),
+        RECIPE_DOMAIN => (Interpretation::AnalyticsV2, false),
+        PULLPOINT_RECIPE_DOMAIN => (Interpretation::EventsV1, true),
         _ => return Err(MetadataError::Custody),
     };
-    if d.text()? != interpretation.parser_generation() || d.text()? != "owner_supplied_file" {
+    let mode = if live {
+        "onvif_pullpoint"
+    } else {
+        "owner_supplied_file"
+    };
+    if d.text()? != interpretation.parser_generation() || d.text()? != mode {
         return Err(MetadataError::Custody);
     }
     let site = d.text()?.to_owned();
@@ -83,6 +123,26 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Recipe, MetadataError> {
     let source = d.digest()?;
     let source_bytes = usize::try_from(d.u64()?).map_err(|_| MetadataError::Limit)?;
     let projection = d.digest()?;
+    let acquisition = if live {
+        Some(PullPointAcquisition {
+            approval: d.digest()?,
+            event_route: d.digest()?,
+            subscription_route: d.digest()?,
+            pull_index: u32::try_from(d.u64()?).map_err(|_| MetadataError::Limit)?,
+            started_ns: d.u64()?,
+            completed_ns: d.u64()?,
+            client_authenticated: d.bool()?,
+            subscription_source: d.digest()?,
+            subscription_source_bytes: usize::try_from(d.u64()?)
+                .map_err(|_| MetadataError::Limit)?,
+            message_id: d.text()?.to_owned(),
+            subscription_message_id: d.text()?.to_owned(),
+            subscription_started_ns: d.u64()?,
+            subscription_completed_ns: d.u64()?,
+        })
+    } else {
+        None
+    };
     d.ensure_finished()?;
     let recipe = Recipe {
         interpretation,
@@ -97,6 +157,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Recipe, MetadataError> {
         source,
         source_bytes,
         projection,
+        acquisition,
     };
     if encode(&recipe)? != bytes {
         return Err(MetadataError::Custody);

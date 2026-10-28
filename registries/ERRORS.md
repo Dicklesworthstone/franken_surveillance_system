@@ -654,3 +654,13 @@ stable identities and recovery contracts.
 | `ERR-ONVIF-METADATA-CANCELLED-001` | Cancellation occurred before the import committed | Inspect retained state and retry only the exact intended input and binding with a new valid context. |
 | `ERR-ONVIF-METADATA-PUBLICATION-001` | The deployment rejected publication or reported an indeterminate outcome | Reopen and inspect the exact root and ledger before retry; never assume no durable progress. |
 | `ERR-ONVIF-METADATA-OUTPUT-001` | The local report could not be written to stdout | Publication may already be durable; inspect the exact import identity before retrying. |
+
+## Bounded ONVIF PullPoint acquisition
+
+| Error | Meaning | Operator action |
+|---|---|---|
+| `ERR-ONVIF-PULLPOINT-CONFIG-001` | Event-purpose route, independent service subtree or finite lifecycle limits are invalid | Supply the explicit approved peer/origin/subtree and bounded capture options before creating a subscription. Read-only media permission is insufficient. |
+| `ERR-ONVIF-PULLPOINT-LIMIT-001` | A complete reply exceeds the exact requested notification limit | Preserve earlier retained batch handles; inspect the device behavior without treating the rejected reply as an empty poll. |
+| `ERR-ONVIF-PULLPOINT-LEASE-001` | The returned lease cannot safely admit the bounded operation | Inspect the observed subscription state and cleanup error. An Active/Indeterminate subscription requires owner/device reconciliation before another Create. |
+
+Native transport, authentication, authority and metadata custody refusals retain their existing codes. Capture reports keep every definitely committed batch after later failure; a failed/ambiguous request does not prove that no remote subscription or durable publication exists. No automatic Create retry is safe merely because a request failed. Zero-batch control-source persistence and per-filesystem-checkpoint linkage to native cancellation remain separate limitations documented in `docs/onvif-metadata.md`.

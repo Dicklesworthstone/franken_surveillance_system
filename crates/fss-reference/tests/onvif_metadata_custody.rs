@@ -12,9 +12,9 @@ use fss_core::{
 };
 use fss_publication::{LedgerCutPoint, SlotName};
 use fss_reference::onvif::metadata::{
-    Interpretation, MetadataError, PARSER_GENERATION, PARSER_GENERATION_V1, RECIPE_DOMAIN,
-    RECIPE_DOMAIN_V1, RetainedMetadata, STAGE_METADATA_PUBLISH, SourceBinding, retain,
-    retain_with_interpretation,
+    Interpretation, MetadataError, PARSER_GENERATION, PARSER_GENERATION_V1, PullPointAcquisition,
+    RECIPE_DOMAIN, RECIPE_DOMAIN_V1, RetainedMetadata, STAGE_METADATA_PUBLISH, SourceBinding,
+    retain, retain_pullpoint, retain_with_interpretation,
 };
 use fss_reference::onvif::wire::PropertyOperation;
 use fss_reference::{ReferenceDeployment, ReplayCx};
@@ -927,5 +927,323 @@ fn retry_refuses_a_root_previously_ledgered_with_a_different_receive_interval() 
         Err(MetadataError::Custody)
     ));
     assert_eq!(deployment.ledger().batches().len(), 1);
+    Ok(())
+}
+
+#[test]
+fn file_import_v1_identity_and_mode_remain_compatible() -> Test {
+    let directory = Directory::new("v1-identity")?;
+    let cx = directory.cx()?;
+    let mut deployment = ReferenceDeployment::open(&directory.0, SITE, &cx)?;
+    let retained = retain_with_interpretation(
+        &mut deployment,
+        binding()?,
+        &source(""),
+        Interpretation::EventsV1,
+        &cx,
+    )?;
+    assert_eq!(
+        retained.identity().to_text(),
+        "sha256:9c33dec96c55c2f08f6fe1cafec4505ff509d4784777d5ed437d1d822c1f87fe"
+    );
+    assert_eq!(retained.source_mode(), "owner_supplied_file");
+    assert!(retained.pullpoint_acquisition().is_none());
+    let reopened = RetainedMetadata::open(&deployment, retained.identity(), None, &cx)?;
+    assert_eq!(reopened.identity(), retained.identity());
+    assert_eq!(reopened.source_mode(), "owner_supplied_file");
+    Ok(())
+}
+
+fn subscription_source() -> Vec<u8> {
+    br#"<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:e="http://www.onvif.org/ver10/events/wsdl" xmlns:w="http://www.w3.org/2005/08/addressing" xmlns:n="http://docs.oasis-open.org/wsn/b-2"><s:Header><w:Action s:mustUnderstand="1">http://www.onvif.org/ver10/events/wsdl/EventPortType/CreatePullPointSubscriptionResponse</w:Action></s:Header><s:Body><e:CreatePullPointSubscriptionResponse><e:SubscriptionReference><w:Address>http://192.0.2.4/onvif/subscription?Idx=7</w:Address></e:SubscriptionReference><n:CurrentTime>2026-10-27T00:00:00Z</n:CurrentTime><n:TerminationTime>2026-10-27T00:02:00Z</n:TerminationTime></e:CreatePullPointSubscriptionResponse></s:Body></s:Envelope>"#.to_vec()
+}
+
+fn pullpoint_acquisition(subscription: &[u8]) -> PullPointAcquisition {
+    PullPointAcquisition {
+        approval: ContentDigest::sha256(b"owner-approved-pullpoint-plan"),
+        event_route: ContentDigest::sha256(b"exact-event-service-route"),
+        subscription_route: ContentDigest::sha256(b"exact-subscription-route"),
+        subscription_source: ContentDigest::sha256(subscription),
+        subscription_source_bytes: subscription.len(),
+        pull_index: 0,
+        started_ns: 1_000,
+        completed_ns: 1_010,
+        client_authenticated: true,
+        message_id: "urn:fss:onvif:pull-0".to_owned(),
+        subscription_message_id: "urn:fss:onvif:create-0".to_owned(),
+        subscription_started_ns: 900,
+        subscription_completed_ns: 990,
+    }
+}
+
+#[test]
+fn live_pullpoint_cold_reopen_retains_subscription_source_and_distinct_source_mode() -> Test {
+    let directory = Directory::new("pullpoint-cold")?;
+    let cx = directory.cx()?;
+    let xml = source(&notification("Changed", ""));
+    let subscription = subscription_source();
+    let acquisition = pullpoint_acquisition(&subscription);
+    let (identity, root, anchor) = {
+        let mut deployment = ReferenceDeployment::open(&directory.0, SITE, &cx)?;
+        let imported = retain(&mut deployment, binding()?, &xml, &cx)?;
+        let live = retain_pullpoint(
+            &mut deployment,
+            binding()?,
+            &xml,
+            acquisition.clone(),
+            &subscription,
+            &cx,
+        )?;
+        assert_ne!(live.identity(), imported.identity());
+        assert_eq!(live.source_mode(), "onvif_pullpoint");
+        assert_eq!(live.interpretation(), Interpretation::EventsV1);
+        assert_eq!(live.parser_generation(), PARSER_GENERATION_V1);
+        assert_eq!(imported.interpretation(), Interpretation::AnalyticsV2);
+        assert_eq!(imported.source_mode(), "owner_supplied_file");
+        assert_eq!(live.pullpoint_acquisition(), Some(&acquisition));
+        assert_eq!(live.document(), imported.document());
+        assert_eq!(live.plane(), Plane::Cognition);
+        assert_eq!(live.provenance(), ProvenanceClass::VendorClaimed);
+        let slot = fss_publication::SlotName::parse(&format!(
+            "onvif-metadata-{}",
+            &live.identity().to_text()[7..]
+        ))?;
+        assert_eq!(
+            deployment
+                .publisher()
+                .root_closure(&slot)
+                .ok_or("closure")?
+                .len(),
+            5
+        );
+        assert_eq!(
+            deployment.publisher().spool().read_bounded(
+                acquisition.subscription_source,
+                acquisition.subscription_source_bytes
+            )?,
+            subscription
+        );
+        let retry = retain_pullpoint(
+            &mut deployment,
+            binding()?,
+            &xml,
+            acquisition.clone(),
+            &subscription,
+            &cx,
+        )?;
+        assert_eq!(retry.identity(), live.identity());
+        assert_eq!(retry.authority_anchor(), live.authority_anchor());
+        assert_eq!(deployment.ledger().batches().len(), 2);
+        (
+            live.identity(),
+            live.publication_root(),
+            live.authority_anchor().clone(),
+        )
+    };
+    let deployment = ReferenceDeployment::reopen(&directory.0, SITE, &cx)?;
+    let live = RetainedMetadata::open(&deployment, identity, Some(root), &cx)?;
+    assert_eq!(live.pullpoint_acquisition(), Some(&acquisition));
+    assert_eq!(live.authority_anchor(), &anchor);
+    assert_eq!(live.source_mode(), "onvif_pullpoint");
+    Ok(())
+}
+
+#[test]
+fn changed_poll_occurrence_changes_live_identity_without_discarding_duplicates() -> Test {
+    let directory = Directory::new("pullpoint-occurrence")?;
+    let cx = directory.cx()?;
+    let mut deployment = ReferenceDeployment::open(&directory.0, SITE, &cx)?;
+    let claim = notification("Changed", "");
+    let xml = source(&format!("{claim}{claim}"));
+    let subscription = subscription_source();
+    let first_acquisition = pullpoint_acquisition(&subscription);
+    let first = retain_pullpoint(
+        &mut deployment,
+        binding()?,
+        &xml,
+        first_acquisition.clone(),
+        &subscription,
+        &cx,
+    )?;
+    let mut second_acquisition = first_acquisition;
+    second_acquisition.pull_index = 1;
+    second_acquisition.message_id = "urn:fss:onvif:pull-1".to_owned();
+    second_acquisition.started_ns = 1_020;
+    second_acquisition.completed_ns = 1_030;
+    let mut second_binding = binding()?;
+    second_binding.receive_interval = CaptureInterval::new(TimestampNs(120), TimestampNs(130))?;
+    let second = retain_pullpoint(
+        &mut deployment,
+        second_binding,
+        &xml,
+        second_acquisition,
+        &subscription,
+        &cx,
+    )?;
+    assert_ne!(first.identity(), second.identity());
+    assert_eq!(first.document().notifications.len(), 2);
+    assert_eq!(second.document().notifications.len(), 2);
+    assert_eq!(
+        first.notification_digest(0)?,
+        second.notification_digest(0)?
+    );
+    assert_eq!(deployment.ledger().batches().len(), 2);
+    Ok(())
+}
+
+#[test]
+fn missing_or_corrupt_subscription_source_refuses_cold_read_and_retry_without_repair() -> Test {
+    for remove in [false, true] {
+        let directory = Directory::new(if remove {
+            "pullpoint-missing"
+        } else {
+            "pullpoint-corrupt"
+        })?;
+        let cx = directory.cx()?;
+        let mut deployment = ReferenceDeployment::open(&directory.0, SITE, &cx)?;
+        let xml = source("");
+        let subscription = subscription_source();
+        let acquisition = pullpoint_acquisition(&subscription);
+        let live = retain_pullpoint(
+            &mut deployment,
+            binding()?,
+            &xml,
+            acquisition.clone(),
+            &subscription,
+            &cx,
+        )?;
+        let path = deployment
+            .publisher()
+            .spool()
+            .object_path(acquisition.subscription_source);
+        if remove {
+            fs::remove_file(&path)?;
+        } else {
+            fs::write(&path, b"corrupted subscription custody")?;
+        }
+        assert!(RetainedMetadata::open(&deployment, live.identity(), None, &cx).is_err());
+        assert!(
+            retain_pullpoint(
+                &mut deployment,
+                binding()?,
+                &xml,
+                acquisition,
+                &subscription,
+                &cx
+            )
+            .is_err()
+        );
+        assert_eq!(deployment.ledger().batches().len(), 1);
+        if remove {
+            assert!(!path.exists());
+        } else {
+            assert_eq!(fs::read(&path)?, b"corrupted subscription custody");
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn malformed_or_mismatched_live_acquisition_publishes_nothing() -> Test {
+    let directory = Directory::new("pullpoint-refusals")?;
+    let cx = directory.cx()?;
+    let mut deployment = ReferenceDeployment::open(&directory.0, SITE, &cx)?;
+    let xml = source("");
+    let subscription = subscription_source();
+    let acquisition = pullpoint_acquisition(&subscription);
+    let mut wrong_digest = acquisition.clone();
+    wrong_digest.subscription_source = ContentDigest::sha256(b"different source");
+    let mut wrong_size = acquisition.clone();
+    wrong_size.subscription_source_bytes += 1;
+    let mut backwards = acquisition.clone();
+    backwards.completed_ns = backwards.started_ns - 1;
+    let mut wrong_span = acquisition.clone();
+    wrong_span.completed_ns += 1;
+    let mut backwards_create = acquisition.clone();
+    backwards_create.subscription_completed_ns = backwards_create.subscription_started_ns - 1;
+    let mut late_create = acquisition.clone();
+    late_create.subscription_completed_ns = late_create.started_ns + 1;
+    let mut missing_id = acquisition.clone();
+    missing_id.message_id.clear();
+    let mut same_id = acquisition.clone();
+    same_id.message_id = same_id.subscription_message_id.clone();
+    let mut invalid_id = acquisition.clone();
+    invalid_id.subscription_message_id = "urn:invalid id".to_owned();
+    let mut long_id = acquisition.clone();
+    long_id.message_id = format!("urn:{}", "x".repeat(253));
+    for bad in [
+        wrong_digest,
+        wrong_size,
+        backwards,
+        wrong_span,
+        backwards_create,
+        late_create,
+        missing_id,
+        same_id,
+        invalid_id,
+        long_id,
+    ] {
+        assert!(
+            retain_pullpoint(&mut deployment, binding()?, &xml, bad, &subscription, &cx).is_err()
+        );
+    }
+    let not_subscription = source("");
+    assert!(
+        retain_pullpoint(
+            &mut deployment,
+            binding()?,
+            &xml,
+            pullpoint_acquisition(&not_subscription),
+            &not_subscription,
+            &cx
+        )
+        .is_err()
+    );
+    let stream = br#"<t:MetadataStream xmlns:t="http://www.onvif.org/ver10/schema"><t:Event/></t:MetadataStream>"#;
+    assert!(
+        retain_pullpoint(
+            &mut deployment,
+            binding()?,
+            stream,
+            acquisition,
+            &subscription,
+            &cx
+        )
+        .is_err()
+    );
+    // Explicit reply correlation must survive cold-source validation; neither
+    // import may claim a response that names a different logical request.
+    let wrong_poll = String::from_utf8(xml.clone())?.replace(
+        "<s:Body>",
+        "<s:Header><w:RelatesTo xmlns:w=\"http://www.w3.org/2005/08/addressing\">urn:fss:onvif:wrong-pull</w:RelatesTo></s:Header><s:Body>",
+    );
+    assert!(
+        retain_pullpoint(
+            &mut deployment,
+            binding()?,
+            wrong_poll.as_bytes(),
+            pullpoint_acquisition(&subscription),
+            &subscription,
+            &cx,
+        )
+        .is_err()
+    );
+    let wrong_create = String::from_utf8(subscription.clone())?.replace(
+        "</s:Header>",
+        "<w:RelatesTo>urn:fss:onvif:wrong-create</w:RelatesTo></s:Header>",
+    );
+    assert!(
+        retain_pullpoint(
+            &mut deployment,
+            binding()?,
+            &xml,
+            pullpoint_acquisition(wrong_create.as_bytes()),
+            wrong_create.as_bytes(),
+            &cx,
+        )
+        .is_err()
+    );
+    assert!(deployment.ledger().batches().is_empty());
+    assert_eq!(deployment.publisher().visible_roots().count(), 0);
     Ok(())
 }

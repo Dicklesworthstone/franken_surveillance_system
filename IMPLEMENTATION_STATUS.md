@@ -1209,3 +1209,42 @@ runner; none of its 20 custody cases executed. Native custody/CLI execution and
 integrated compilation remain unverified. This is not full FSS-046 qualification. Live subscriptions,
 RTP metadata ingestion, physical-device/Profile M interoperability, calibrated
 interpretation and aggregate release evidence remain outside this slice.
+
+## Native ONVIF PullPoint capture — scoped implementation (2026-10-28)
+
+The FSS-046 acquisition subset now has an explicit Linux-native
+`fss-onvif-metadata capture` command: one finite Create/PullMessages/Unsubscribe
+lifecycle, independently pinned literal peer/HTTP authority/service subtree,
+optional exact-realm HTTP Digest, fresh logical WS-Addressing request identities,
+and a cleanup time/step reserve. Read-only media routes cannot authorize event
+subscriptions. Complete empty and duplicate-bearing responses are retained before
+the next poll; earlier durable batch handles survive later transport, custody,
+cancellation or cleanup refusal. Output distinguishes NotCreated, Indeterminate,
+Active and confirmed Unsubscribed and preserves bounded receipts on stdout failure.
+
+Live custody uses its own recipe domain, the frozen event projection, both request
+identities and ordered local Create/poll intervals. Each retained batch includes
+the exact Create SOAP as a fourth immutable child. Cold reads verify both source
+bodies, correlations and exact ledger custody. File-import v1/v2 bytes and the
+analytics-v2 default remain unchanged. Device-event subscriptions have no profile
+filter: profile pins remain owner attribution, and no coverage/absence/identity
+or effect authority follows from vendor notifications.
+
+Exact production-source validation passed: 16 real-TCP PullPoint contracts,
+23 existing ONVIF onboarding contracts, 14 HTTP unit tests, 5 UsernameToken
+contracts and 117 RTSP contracts. The PullPoint tests exposed and now cover a
+serializer action-dispatch omission. A separate exact-source canonical/source
+harness passed 10 tests (6 recipe/source checks plus 4 shared wire checks),
+including frozen v1 fixtures, unchanged v1/v2 encodings and live request/time/
+correlation binding. The coordinator's fixture sink proves transport/control
+behavior, not durable deployment publication. The expanded 25-case deployment
+custody suite and native CLI were not executed: full-reference code generation
+and real Asupersync compilation remain resource-blocked in this environment.
+
+Remaining material limits: the CLI has no standalone durable control receipt if
+Create succeeds but zero batches reach custody; network deadlines and batch
+admission do not preempt every synchronous reference-storage checkpoint;
+continuous renewal/reconnect recovery, HTTPS/UsernameToken in this capture lane,
+RTP metadata and physical-device/Profile M qualification remain unfinished.
+FSS-046 remains open. See `docs/onvif-metadata.md` for executable commands and
+precise failure/reconciliation behavior.
