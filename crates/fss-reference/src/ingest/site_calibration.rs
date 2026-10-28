@@ -1052,6 +1052,20 @@ pub struct FrameInput {
     pub tie_observations: u64,
 }
 
+/// Original image basis recovered only from the exact hash-pinned calibration input.
+/// Legacy calibration bytes are unchanged; the original input remains an explicit dependency.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CalibrationImageBasis {
+    /// Exposure, pixel, image-domain and grid identities used during calibration.
+    pub image: ImageIdentity,
+    /// Original JPEG bytes when calibration used a frame; correspondences have no source bytes.
+    pub encoded_frame: Option<ContentDigest>,
+    /// JPEG interpretation originally enforced, if applicable.
+    pub interpretation: Option<ComponentInterpretation>,
+    /// Exact original observation or frame metadata file identity.
+    pub input_digest: ContentDigest,
+}
+
 /// Decoder, extraction and tie-derivation policy of every frame camera of a calibration.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FramePolicy {
@@ -1685,6 +1699,83 @@ impl SiteCalibration {
         };
         record.validate()?;
         Ok(record)
+    }
+
+    /// Recover the original image basis from the exact input already pinned by this record.
+    /// Frame input requires its original metadata, not the original JPEG; correspondence input
+    /// requires its original observation file. No caller-supplied replacement domain is accepted.
+    pub fn camera_input_basis(
+        &self,
+        camera_handle: u64,
+        bytes: &[u8],
+    ) -> Result<CalibrationImageBasis, SiteCalibrationError> {
+        if bytes.len() > MAX_OBSERVATION_BYTES {
+            return Err(SiteCalibrationError::Format(
+                "camera input exceeds its bound",
+            ));
+        }
+        let camera = self
+            .cameras
+            .iter()
+            .find(|camera| camera.identity.camera == camera_handle)
+            .ok_or(SiteCalibrationError::Format(
+                "calibration has no requested camera",
+            ))?;
+        let input_digest = ContentDigest::sha256(bytes);
+        let (expected, mode) = match camera.input {
+            CalibrationInput::Correspondences => (camera.observations, CameraText::Observations),
+            CalibrationInput::Frame(input) => (input.metadata, CameraText::Frame),
+        };
+        if input_digest != expected {
+            return Err(SiteCalibrationError::Format(
+                "original camera input digest mismatch",
+            ));
+        }
+        let header = parse_camera_text(&camera.name, bytes, mode)?;
+        if header.identity != camera.identity || header.dimensions != camera.dimensions {
+            return Err(SiteCalibrationError::Format(
+                "original camera input identity mismatch",
+            ));
+        }
+        let (pixels, encoded_frame, interpretation) = match camera.input {
+            CalibrationInput::Correspondences => {
+                if header.descriptor_domain != Some(self.descriptor_domain) {
+                    return Err(SiteCalibrationError::Format(
+                        "original descriptor domain mismatch",
+                    ));
+                }
+                (
+                    header
+                        .pixels
+                        .ok_or(SiteCalibrationError::Format("missing original pixels"))?,
+                    None,
+                    None,
+                )
+            }
+            CalibrationInput::Frame(input) => {
+                if header.interpretation != Some(input.interpretation) {
+                    return Err(SiteCalibrationError::Format(
+                        "original frame interpretation mismatch",
+                    ));
+                }
+                (
+                    input.luma.bytes(),
+                    Some(camera.observations),
+                    Some(input.interpretation),
+                )
+            }
+        };
+        Ok(CalibrationImageBasis {
+            image: ImageIdentity {
+                exposure: header.exposure,
+                pixels,
+                image_domain: header.image_domain,
+                dimensions: header.dimensions,
+            },
+            encoded_frame,
+            interpretation,
+            input_digest,
+        })
     }
 
     /// The named camera, if calibrated.
@@ -2718,6 +2809,66 @@ mod tests {
                 "{broken}"
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn original_camera_basis_is_pinned_for_both_legacy_wire_generations()
+    -> Result<(), SiteCalibrationError> {
+        let sha = |bytes| ContentDigest::new(DigestAlgorithm::Sha256, bytes);
+        let observations = format!(
+            "fss.site_camera_observations.v1\ncamera 1 2 3\nimage 96 48\nexposure {}\npixels {}\nimage-domain {}\ndescriptor-domain {}\nintrinsics fixed 10 10 48 24\n",
+            sha([8; 32]),
+            sha([7; 32]),
+            sha([9; 32]),
+            sha([5; 32]),
+        );
+        let mut value = record([0.0, 0.0]);
+        value.cameras[0].observations = ContentDigest::sha256(observations.as_bytes());
+        let before = value.encode()?;
+        let basis = value.camera_input_basis(1, observations.as_bytes())?;
+        assert_eq!(basis.image.exposure, [8; 32]);
+        assert_eq!(basis.image.pixels, [7; 32]);
+        assert_eq!(basis.image.image_domain, [9; 32]);
+        assert_eq!(basis.encoded_frame, None);
+        assert_eq!(basis.interpretation, None);
+        assert_eq!(value.encode()?, before);
+        assert!(before.starts_with(SITE_CALIBRATION_MAGIC));
+        assert!(
+            value
+                .camera_input_basis(2, observations.as_bytes())
+                .is_err()
+        );
+        assert!(
+            value
+                .camera_input_basis(1, format!("{observations}# altered\n").as_bytes())
+                .is_err()
+        );
+        let metadata = format!(
+            "fss.site_camera_frame.v1\ncamera 1 2 3\nimage 96 48\nexposure {}\nimage-domain {}\ninterpretation gray\nintrinsics fixed 10 10 48 24\n",
+            sha([8; 32]),
+            sha([9; 32]),
+        );
+        let mut frame = frame_record();
+        if let CalibrationInput::Frame(input) = &mut frame.cameras[0].input {
+            input.metadata = ContentDigest::sha256(metadata.as_bytes());
+        }
+        let before = frame.encode()?;
+        let basis = frame.camera_input_basis(1, metadata.as_bytes())?;
+        assert_eq!(basis.image.pixels, ContentDigest::sha256(b"luma").bytes());
+        assert_eq!(basis.image.exposure, [8; 32]);
+        assert_eq!(basis.encoded_frame, Some(frame.cameras[0].observations));
+        assert_eq!(
+            basis.interpretation,
+            Some(ComponentInterpretation::Grayscale)
+        );
+        assert_eq!(frame.encode()?, before);
+        assert!(before.starts_with(SITE_CALIBRATION_MAGIC_V2));
+        assert!(
+            frame
+                .camera_input_basis(1, observations.as_bytes())
+                .is_err()
+        );
         Ok(())
     }
 

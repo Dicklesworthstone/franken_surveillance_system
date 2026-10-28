@@ -12,6 +12,8 @@ use fss_twin::atlas_archive::{ArchiveExpectation, ReferenceProvenance, encode_at
 
 #[path = "archive_fixture.rs"]
 mod archive_fixture;
+#[path = "monitor.rs"]
+mod monitor;
 
 struct Archives {
     twin: Vec<u8>,

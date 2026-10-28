@@ -13,6 +13,8 @@ pub mod calibration_adoption;
 /// Full camera-covariance screening of nominal coverage against image and privacy boundaries.
 pub mod calibration_coverage;
 pub mod calibration_invalidation;
+/// Measured frozen-pose residuals and exact replay from retained native exposure evidence.
+pub mod calibration_monitor;
 /// Cross-camera association of tracked objects via time and geometry gates.
 pub mod cross_camera;
 /// Explicit model-output decoding and source-linked detector proposals.

@@ -12,7 +12,12 @@
 //! every adopted camera's current receipt and history. `invalidate` withdraws one exact current
 //! adoption with a separately retained owner approval. Recovery requires a new calibration
 //! digest and a newer camera generation. These commands retain owner authority, not a physical
-//! observation of the camera.
+//! observation of the camera. `monitor` separately measures the frozen adopted pose against
+//! exact retained native localization evidence; `monitor-replay` reproduces an approved result
+//! from custody. Both expose a bounded observation, never automatic adoption or withdrawal.
+
+#[path = "calibration/monitor.rs"]
+mod monitor;
 
 use std::ffi::OsString;
 use std::io::Write;
@@ -45,6 +50,7 @@ enum Operation {
         request: InvalidationRequest,
         approve: Option<ContentDigest>,
     },
+    Monitor(monitor::Action),
     Show,
 }
 
@@ -96,9 +102,14 @@ pub(super) fn parse(args: &[OsString]) -> Result<CalibrationAction, String> {
     let operation = args
         .first()
         .and_then(|a| a.to_str())
-        .ok_or("calibration requires adopt, invalidate or show")?;
-    if !matches!(operation, "adopt" | "invalidate" | "show") {
-        return Err("calibration requires adopt, invalidate or show".to_owned());
+        .ok_or("calibration requires adopt, invalidate, monitor, monitor-replay or show")?;
+    if !matches!(
+        operation,
+        "adopt" | "invalidate" | "monitor" | "monitor-replay" | "show"
+    ) {
+        return Err(
+            "calibration requires adopt, invalidate, monitor, monitor-replay or show".to_owned(),
+        );
     }
     let mut values: Vec<(String, String)> = Vec::new();
     let mut bindings: Vec<(String, SensorId)> = Vec::new();
@@ -119,6 +130,7 @@ pub(super) fn parse(args: &[OsString]) -> Result<CalibrationAction, String> {
             return Err(format!("missing value for {key}"));
         }
         let allowed = matches!(key, "--root" | "--site" | "--principal" | "--report-out")
+            || monitor::accepts(operation, key)
             || (operation == "adopt"
                 && matches!(key, "--calibration" | "--calibration-digest" | "--approve"))
             || (operation == "invalidate"
@@ -196,6 +208,8 @@ pub(super) fn parse(args: &[OsString]) -> Result<CalibrationAction, String> {
                 Err(_) => None,
             },
         }
+    } else if matches!(operation, "monitor" | "monitor-replay") {
+        Operation::Monitor(monitor::parse(operation, &values)?)
     } else {
         Operation::Show
     };
@@ -222,6 +236,7 @@ pub(super) fn run(
 ) -> RunResult<()> {
     let json = match &action.operation {
         Operation::Show => state_json(deployment)?,
+        Operation::Monitor(monitor) => monitor::run(monitor, action, deployment, cx)?,
         Operation::Invalidate { request, approve } => {
             let invalidation = match approve {
                 None => preview_invalidation(deployment, request)?,

@@ -286,6 +286,24 @@ const HELP: &str = "fss-event <report|prepare|publish|read|verify|watch|corrobor
     the invalidated adoption (ERR-CALIBRATION-INVALID-001). An exact retry writes nothing.\n\
     Recovery requires a new calibration digest, no lower generation, and at least one newer\n\
     intrinsics/extrinsics generation. Replaying an old adoption approval cannot undo withdrawal.\n\
+  calibration monitor: --calibration FILE --calibration-digest sha256:HEX --camera-handle N\n\
+    --adoption-digest sha256:HEX --camera-input ORIGINAL_INPUT_FILE\n\
+    --localization-id sha256:HEX --localization-root sha256:HEX --localization-receipt sha256:HEX\n\
+    [--work-units N] [--geometry-work-units N] [--approve sha256:HEX] [--report-out FILE]\n\
+    Replays exact retained native localization, then measures landmark residuals against the\n\
+    frozen adopted pinhole pose. ORIGINAL_INPUT_FILE is the exact observation text or JPEG\n\
+    metadata used to produce the calibration. Refuses fit/reference exposure or pixel reuse,\n\
+    stale/withdrawn adoption, mismatched sensor, twin, atlas, image grid or camera model.\n\
+    Prints pass_under_policy, contradicted or indeterminate for this one recorded exposure;\n\
+    this is not continuous or present-day camera validity. Preview writes no deployment state.\n\
+    Exact --approve retains only measured evidence and replay inputs; it never withdraws or\n\
+    activates calibration. A contradiction recommends a separate owner withdrawal preview.\n\
+  calibration monitor-replay: --monitor-id sha256:HEX --expected-root sha256:HEX\n\
+    --expected-receipt sha256:HEX [--work-units N] [--geometry-work-units N] [--report-out FILE]\n\
+    Rebuilds the approved monitor from retained bytes; needs no original calibration files.\n\
+    Verifies adoption at the monitor's publication prefix; later withdrawal or replacement\n\
+    remains intact. Current source/privacy custody must still admit replay. Default decode\n\
+    allowance is 100000000 units and geometry allowance 2000000000; both need positive limits.\n\
   calibration show: every adopted camera's current receipt, withdrawal and full history.\n\
   alert (one webhook for a corroborated event): --event-id ID --relay IP:PORT --path /PATH\n\
           --plaintext-approval sha256:HEX --deadline-ms N (1..60000)\n\
@@ -1295,6 +1313,8 @@ fn main() -> ExitCode {
                 } else if let Some(refusal) = e.downcast_ref::<fss_reference::ingest::calibration_adoption::AdoptionError>() {
                     eprintln!("refusal_id={}", refusal.stable_id());
                 } else if let Some(refusal) = e.downcast_ref::<fss_reference::ingest::calibration_invalidation::InvalidationError>() {
+                    eprintln!("refusal_id={}", refusal.stable_id());
+                } else if let Some(refusal) = e.downcast_ref::<fss_reference::ingest::calibration_monitor::MonitorError>() {
                     eprintln!("refusal_id={}", refusal.stable_id());
                 } else if let Some(refusal) = e.downcast_ref::<fss_reference::deletion::DeletionError>() {
                     eprintln!("refusal_id={}", refusal.stable_id());

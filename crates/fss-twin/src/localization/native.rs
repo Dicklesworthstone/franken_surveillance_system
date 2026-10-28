@@ -436,6 +436,16 @@ pub struct ImageLocalization {
     pub selection: FeatureSelection,
     /// Match decisions and all admitted pose hypotheses.
     pub localization: CameraLocalization,
+    // Preserved native observations let frozen-pose monitors rematch the actual extracted
+    // features without accepting caller-invented correspondences or fitting a replacement.
+    query_features: FeatureFrame,
+}
+impl ImageLocalization {
+    /// Exact native features extracted from the verified pixels and allowed descriptor support.
+    /// This adds no new wire fields to existing localization receipts.
+    pub fn query_features(&self) -> &FeatureFrame {
+        &self.query_features
+    }
 }
 /// Extract, match, and estimate pose without a foreign runtime or supplied query matches.
 pub fn localize_gray_frame(
@@ -477,5 +487,6 @@ pub fn localize_gray_frame(
     Ok(ImageLocalization {
         selection: extracted.selection,
         localization,
+        query_features: extracted.frame,
     })
 }

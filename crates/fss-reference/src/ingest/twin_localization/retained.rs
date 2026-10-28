@@ -69,6 +69,17 @@ pub struct RetainedLocalization {
     encoded: Vec<u8>,
 }
 
+/// Native replay context shared with measured calibration residual monitoring. The package
+/// remains the source owner: callers cannot substitute pixels, extracted features or map bytes.
+pub(crate) struct ReplayedLocalization {
+    pub result: RecordedLocalization,
+    pub twin: PropertyTwin,
+    pub atlas: fss_twin::atlas_archive::ArchivedAtlas,
+    pub image: RecordedImageMode,
+    pub options: ImageLocalizationOptions,
+    pub capsule: SensorCapsule,
+}
+
 fn sha(bytes: [u8; 32]) -> ContentDigest {
     ContentDigest::new(DigestAlgorithm::Sha256, bytes)
 }
@@ -322,6 +333,28 @@ impl RetainedLocalization {
         geometry_budget: &mut WorkBudget<'_>,
         cx: &ReplayCx,
     ) -> Result<RecordedLocalization> {
+        Ok(self
+            .replay_context(
+                deployment,
+                basis,
+                jpeg_budget,
+                video_budget,
+                geometry_budget,
+                cx,
+            )?
+            .result)
+    }
+
+    /// Reproduce the existing receipt before exposing its exact maps and query features.
+    pub(crate) fn replay_context(
+        &self,
+        deployment: &mut ReferenceDeployment,
+        basis: GeometryBasis,
+        jpeg_budget: &mut DecodeBudget<'_>,
+        video_budget: &mut RecordedVideoDecodeBudget,
+        geometry_budget: &mut WorkBudget<'_>,
+        cx: &ReplayCx,
+    ) -> Result<ReplayedLocalization> {
         let reopened = Self::open(
             deployment,
             self.identity,
@@ -379,12 +412,19 @@ impl RetainedLocalization {
         if result.encoded() != self.receipt || result.digest() != self.recipe.receipt {
             return Err(RecordedLocalizationError::ReplayDiverged);
         }
-        source_binding(deployment, &self.recipe, cx)?;
+        let capsule = source_binding(deployment, &self.recipe, cx)?;
         if deployment.current_anchor() != &anchor {
             return Err(RecordedLocalizationError::RetainedPackage);
         }
         checkpoint(cx, "recorded_localization:replay_verified")?;
-        Ok(result)
+        Ok(ReplayedLocalization {
+            result,
+            twin,
+            atlas,
+            image: self.recipe.image,
+            options: self.recipe.options,
+            capsule,
+        })
     }
 }
 

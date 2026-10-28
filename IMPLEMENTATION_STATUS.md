@@ -821,8 +821,10 @@ one-time vendor-app provisioning (NEG-006) with the yi-hack owner-flash path doc
   calibration covariance. Proven on synthetic scenes only; per-camera time offset and real-footage
   accuracy are open, and adoption/withdrawal are owner authority, not observations of the camera.
   The invalidation codec has four passing native exact-source tests; the added reference and CLI
-  contracts remain unexecuted in the resource-constrained build environment. Automatic physical
-  movement/residual monitoring remains open (FSS-091).
+  contracts remain unexecuted in the resource-constrained build environment. The bounded
+  `calibration monitor|monitor-replay` path now measures frozen-pose residuals from independent
+  retained native exposures and retains approved replayable observations. Continuous physical
+  monitoring and deployment accuracy remain open (FSS-091); see the scoped implementation below.
 - **Decode refusals as coverage gaps (fss-fnrgr follow-up):** `watch --tolerate-decode-refusals`
   (opt-in) records a mid-recording refusal or source gap as `decode_refused` intervals with the
   error id, resumes H.264/H.265 at the next IDR/IRAP, restarts tracking (no bridging) and never
@@ -1345,3 +1347,34 @@ workspace, device interoperability or release qualification is claimed. Continuo
 capture/reconnect, durable pre-dispatch cleanup attempts, stable owner operation
 IDs for ambiguous Create recovery, HTTPS/UsernameToken and RTP metadata remain
 open. FSS-046 / fss-x4a.11.4 remains open.
+
+
+## Retained calibration residual monitoring — scoped implementation
+
+`fss-event calibration monitor` now connects the native frozen-pose monitor to exact retained
+JPEG/AVC/HEVC localization custody, original hash-pinned calibration input and a current camera
+adoption. It replays the actual native decoder, privacy handling, feature extractor and atlas
+matching, then measures those features against the frozen adopted pose. A newly fitted pose
+cannot conceal drift by becoming the comparison baseline. Original fit and atlas-reference
+exposures/pixels are refused. Exact sensor, image, model, twin, atlas and adoption pins must agree.
+
+The bounded observation reports `pass_under_policy`, `contradicted` or `indeterminate`, with
+capture interval, residuals, support, image span and work accounting. Preview publishes nothing;
+explicit approval retains the observation, original calibration/input bytes and the complete
+native localization replay graph. `monitor-replay` reproduces it without external source files.
+Historical replay checks adoption at the observation's publication prefix while still enforcing
+current source and privacy custody, so later owner withdrawal does not erase the audit path.
+It reports this historical scope explicitly and grants no present calibration currency.
+
+A contradiction recommends a separately approved owner withdrawal using `residual_drift` and
+the exact same-sensor evidence capsule. No monitor response automatically changes adoption,
+geometry, coverage, calibration generations or effect authority. Existing calibration v1/v2 and
+localization receipt bytes remain unchanged. This first slice requires undistorted pinhole
+calibration and the retained-localization v1 flat-source scope, and measures one recorded exposure.
+Continuous scheduling, physical camera-movement diagnosis and site accuracy remain open.
+
+Validation: the exact production replay-recipe codec test passed against the real `fss-core`
+library. Native retained-JPEG lifecycle, original-input compatibility and CLI pin/argument
+contracts are added but remain unexecuted because the full reference/runtime build is blocked by
+shared memory pressure. Formatting and source checks do not establish integrated execution or
+release qualification. See `docs/RETAINED_CALIBRATION_MONITOR.md` for the executable workflow.
