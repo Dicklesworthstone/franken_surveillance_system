@@ -17,9 +17,10 @@ IP=${1:?camera ip}
 USER=${2:?rtsp user}
 PASS=${3:?rtsp password}
 PICS=${4:-300}
+WAIT=${WAIT:-5}
 ROOT=${ROOT:-/tmp/fss-e2e-rtsp}
 SITE=${SITE:-e2e}
-BIN=$(cd "$(dirname "$0")/../../target/debug" && pwd)
+BIN=${BIN:-$(cd "$(dirname "$0")/../../target/debug" && pwd)}
 HERE=$(cd "$(dirname "$0")" && pwd)
 SENSOR=tapo-c460
 STREAM=stream1
@@ -36,7 +37,7 @@ JOURNAL=sha256:$(digest fss-e2e-rtsp-journal)
 [ -x "$BIN/fss-capture-rtsp" ] || { echo "missing $BIN/fss-capture-rtsp (cargo build -p fss-cli)"; exit 1; }
 
 echo "== prove the account (presence + authenticated DESCRIBE)"
-"$HERE/tapo_post.py" "$IP" --rtsp-verify --rtsp-user "$USER" --rtsp-pass "$PASS" --wait 5
+"$HERE/tapo_post.py" "$IP" --rtsp-verify --rtsp-user "$USER" --rtsp-pass "$PASS" --wait "$WAIT"
 
 REALM=$("$HERE/tapo_post.py" "$IP" --rtsp-realm) || { echo "no Digest realm"; exit 1; }
 echo "  realm: $REALM"
@@ -104,7 +105,7 @@ while read -r SLOT WROOT; do
   }
   # shellcheck disable=SC2046
   "$BIN/fss-import-rtsp" $(import_args) > "$ROOT/import-plan-$SLOT.json"
-  IAPPROVAL=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["approval"])' \
+  IAPPROVAL=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["approval_digest"])' \
     "$ROOT/import-plan-$SLOT.json")
   # shellcheck disable=SC2046
   "$BIN/fss-import-rtsp" $(import_args) --approve "$IAPPROVAL" > "$ROOT/import-$SLOT.json"
@@ -124,4 +125,4 @@ for ID in $IMPORTS; do
 done
 
 echo "== orient"
-"$BIN/fss" session orient --root "$ROOT/deployment" --site "$SITE" --json 2>&1 | head -30
+"$BIN/fss" session orient --root "$ROOT/deployment" --json 2>&1 | head -30

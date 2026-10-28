@@ -221,7 +221,7 @@ fn valid_label(value: &str) -> bool {
         && !value.chars().any(char::is_control)
 }
 fn valid_digest(value: ContentDigest) -> bool {
-    value.algorithm == DigestAlgorithm::Sha256 && value.bytes != [0; 32]
+    value.algorithm() == DigestAlgorithm::Sha256 && value.bytes() != [0; 32]
 }
 fn validate(binding: &CaptureOperationBinding) -> Result<(), CaptureOperationError> {
     if !valid_label(&binding.principal)
