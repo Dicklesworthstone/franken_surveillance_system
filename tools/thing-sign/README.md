@@ -51,3 +51,32 @@ replaced by swapped MD5-base64). Expected sign: `2d2b754c…88e0`.
 
 `Dockerfile.musl` + `harness.c` are the JVM-free variant (fake `JNIEnv` table, slot names in
 `slotnames.txt`); it reaches the same place with less fidelity.
+
+## 2026-10-28 (PearlGull, fss-fkkpw): base-APK re-mined — `t_cdc.tcfg` found, `cers` found
+
+Re-extraction of the **base** APK (`com.glazero.android.apk` from
+`~/Downloads/Aosu_5.10.12_APKPure.xapk`) found two assets the earlier asset census missed:
+
+- `assets/t_cdc.tcfg` — 4926 bytes, binary, MD5 `e981b2ca2a73ef3e3e8951f7c28bf065`.
+  Opened at `0x13210` (`AAssetManager_open` with `t_cdc.tcfg` at `.rodata 0x7f58`), read fully,
+  and parsed by the function at `0x13500` (varargs `stp q0,q1`-style call site). Copied into
+  `assets/`; harness runs unchanged with it present (`RESULT` identical, so it is not on the
+  `cmd 1` path, but `checkStatus`/init may read it — not yet distinguished).
+- `assets/cers` — 4555 bytes, base64 lines (60 lines, line 0 decodes to 57 ASCII hex chars).
+  **No dex string references it and `libthing_security.so` does not name it** — likely read by
+  another library or via resources. Not on the harness path either.
+
+`libthing_security.so` (arm64, MD5 `465e5af0…`, same as `libs/`) disassembly landmarks
+(`llvm-objdump`, all `JNI_OnLoad`-span):
+
+| address | fact |
+|---|---|
+| `0x1362c–0x13648` | `AAssetManager_open` with **`t_s.bmp` XOR `t_s_daily.bmp` chosen by `csel` on w20 bit0** — the daily variant is a runtime flag, not a separate asset hunt |
+| `0x19214–0x19220` | opens **`tecrkcehc_ext`** (0x8782), full read into `malloc` buffer, len stored at `x19+0x80`, ptr at `x19+0x78` |
+| `0x1950c` | **16-char decimal literal `7178265647164836`** (`.rodata 0x81e0`) SSO-constructed and passed to the parse helper at `0x18dbc` — candidate built-in default seed/key |
+| `0x1a230` | the `0x9040` base64 blob is the **mbedtls base64 self-test vector** — not signer data (dead end) |
+| `0x13210` | opens `t_cdc.tcfg` then calls the parser `0x13500` |
+
+Baseline still: `checkStatus -1`, `INIT=null`, `RESULT=abe3a823…` (unchanged by both new assets
+on the `cmd 1` path — the acceptance gate is the *content* of `tecrkcehc_ext`, which is what the
+parser-acceptance sweep targets next).
