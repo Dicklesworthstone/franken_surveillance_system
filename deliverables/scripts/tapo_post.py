@@ -313,6 +313,20 @@ def rtsp_verify(host: str, user: str, password: str, port: int = RTSP_PORT,
     return 1
 
 
+def rtsp_realm(host: str, port: int = RTSP_PORT) -> int:
+    """Print the Digest realm from the 401 challenge (no credential needed)."""
+    r = rtsp_probe(host, "", "", port)
+    if not r["listening"]:
+        print("rtsp %d: CLOSED" % port)
+        return 1
+    m = re.search(r'realm="([^"]*)"', r["challenge"] or "")
+    if not m:
+        print("no Digest challenge (status %s)" % r["status"])
+        return 1
+    print(m.group(1))
+    return 0
+
+
 def present(host: str) -> bool:
     """Doctrine presence: ICMP reply AND a resolved ARP entry.
 
@@ -354,6 +368,8 @@ def main() -> int:
                     help="setAccountEnabled + changeThirdAccount over the DS API")
     ap.add_argument("--rtsp-verify", action="store_true",
                     help="probe 554/2020 and DESCRIBE with the account")
+    ap.add_argument("--rtsp-realm", action="store_true",
+                    help="print the Digest realm from the 401 challenge")
     ap.add_argument("--rtsp-user", default="fssuser")
     ap.add_argument("--rtsp-pass", default=None,
                     help="default: random, printed once")
@@ -370,10 +386,12 @@ def main() -> int:
 
     password = a.rtsp_pass or secrets.token_urlsafe(12)
 
-    if a.rtsp_enable or a.rtsp_verify:
+    if a.rtsp_enable or a.rtsp_verify or a.rtsp_realm:
         if a.wait is not None and not wait_present(a.host, a.wait):
             print("wait: %s never became present" % a.host)
             return 2
+    if a.rtsp_realm:
+        return rtsp_realm(a.host, a.rtsp_port)
     if a.rtsp_enable:
         return rtsp_enable(a.host, a.rtsp_user, password, a.rtsp_unique_key, a.rtsp_reset)
     if a.rtsp_verify:

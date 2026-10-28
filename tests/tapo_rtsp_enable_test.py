@@ -22,8 +22,10 @@ is not a listener).
   python3 tests/tapo_rtsp_enable_test.py
 """
 import base64
+import contextlib
 import hashlib
 import importlib.util
+import io
 import json
 import os
 import re
@@ -217,6 +219,17 @@ def test_probe():
     finally:
         m.close()
 
+    print("realm is extractable without a credential:")
+    m = MockRTSP()
+    try:
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = post.rtsp_realm("127.0.0.1", m.port)
+        check("realm printed", rc == 0 and buf.getvalue().strip() == "TP-Link IP-Camera",
+              repr(buf.getvalue()))
+    finally:
+        m.close()
+
     print("wrong password is rejected:")
     m = MockRTSP()
     try:
@@ -296,6 +309,24 @@ def test_presence():
         check("wait gives up at the deadline", post.wait_present("192.0.2.1", 0.001, poll=0) is False)
     finally:
         post.present = real_present
+
+    print("the overflow guard's arp_present uses the same census form:")
+    install(True, "? (192.0.2.1) at aa:bb on en0")
+    try:
+        check("both signals -> True", post.ds.arp_present("192.0.2.1") is True)
+        install(False, "? (192.0.2.1) at aa:bb on en0")
+        check("ARP only -> False", post.ds.arp_present("192.0.2.1") is False)
+        install(True, "? (192.0.2.1) at (incomplete) on en0")
+        check("incomplete -> False", post.ds.arp_present("192.0.2.1") is False)
+
+        def broken(cmd, **kw):
+            if cmd[0] == "ping":
+                return R(1)
+            return R(1, "")
+        post.subprocess.run = broken
+        check("unreadable ARP -> None", post.ds.arp_present("192.0.2.1") is None)
+    finally:
+        post.subprocess.run = real
 
 
 def main() -> int:
