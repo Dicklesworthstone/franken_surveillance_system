@@ -1344,7 +1344,7 @@ Cargo check of `fss-onvif-metadata` was killed with SIGKILL while compiling genu
 Asupersync metadata, before reaching project diagnostics; the new native runtime
 and deployment suites therefore remain unexecuted at this checkpoint. No full
 workspace, device interoperability or release qualification is claimed. Continuous
-capture/reconnect, durable pre-dispatch cleanup attempts, stable owner operation
+capture/reconnect, stable owner operation
 IDs for ambiguous Create recovery, HTTPS/UsernameToken and RTP metadata remain
 open. FSS-046 / fss-x4a.11.4 remains open.
 
@@ -1378,3 +1378,33 @@ library. Native retained-JPEG lifecycle, original-input compatibility and CLI pi
 contracts are added but remain unexecuted because the full reference/runtime build is blocked by
 shared memory pressure. Formatting and source checks do not establish integrated execution or
 release qualification. See `docs/RETAINED_CALIBRATION_MONITOR.md` for the executable workflow.
+
+
+## Durable ONVIF cleanup attempts and terminal reconciliation — scoped implementation
+
+Recorded capture and explicit cold cleanup now publish an Unsubscribe intent before dispatch,
+binding the original Created receipt, current route/approval, fresh logical request, exact SOAP
+request digest and verified cleanup-state witness. Exact custody retries cannot redispatch;
+another explicit attempt requires fresh review, request identity and approval. Complete final
+HTTP responses reach raw outcome custody before success interpretation, including malformed,
+empty, refused and uncorrelated bodies. Transport-admitted completion and known durable handles
+survive later clock, cancellation and storage refusals.
+
+`control inspect --kind created` reports the current cleanup witness. `control unsubscribe`
+requires it through `--expected-control` and binds it into a separate v2 owner approval. Known
+successful raw outcomes or existing successful v1 terminal receipts return `already_unsubscribed`
+before credentials, entropy or network work. A missing final marker therefore cannot cause a
+second request. A targeted bounded history query verifies selected source closures, with at
+most 1024 catalog records and 64 cleanup attempts. The existing hold/deletion owner handles
+both new record kinds; deleted custody remains unavailable to reads and exact retries.
+
+Existing successful control formats, metadata recipes, mandatory correlation, bounded renewal,
+network ceilings and explicit legacy batch-only capture compatibility remain unchanged. Raw
+Create outcomes before semantic validation, stable owner operation IDs for ambiguous Create,
+continuous capture/reconnect and device qualification remain open; FSS-046 stays open.
+
+Validation: 24 exact current-production PullPoint wire tests passed with the pinned compiler.
+Eight new native TCP regressions, seven new deployment custody/lifecycle regressions and CLI
+control-witness admission cases are added but unexecuted under the full-reference build resource
+constraint. Scoped formatting, source review and manifest checks do not substitute for that
+integrated execution or physical-device qualification. See `docs/onvif-metadata.md` for recovery.

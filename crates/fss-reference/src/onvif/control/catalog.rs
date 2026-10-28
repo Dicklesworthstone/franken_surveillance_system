@@ -11,8 +11,10 @@ use std::collections::BTreeMap;
 use fss_core::{CanonicalDecoder, ContentDigest};
 
 use super::{
-    CREATED_DOMAIN, RENEW_INTENT_DOMAIN, RENEWED_DOMAIN, RetainedCreateIntent, RetainedRenewIntent,
-    RetainedRenewal, RetainedSubscription, RetainedUnsubscribe, UNSUBSCRIBED_DOMAIN, read_record,
+    CREATED_DOMAIN, PARSER_GENERATION, RENEW_INTENT_DOMAIN, RENEWED_DOMAIN, RetainedCreateIntent,
+    RetainedRenewIntent, RetainedRenewal, RetainedSubscription, RetainedUnsubscribe,
+    RetainedUnsubscribeIntent, RetainedUnsubscribeOutcome, UNSUBSCRIBE_INTENT_DOMAIN,
+    UNSUBSCRIBE_OUTCOME_DOMAIN, UNSUBSCRIBED_DOMAIN, read_record,
 };
 use crate::adapter_replay::ReplayAdmission;
 use crate::deletion::DeletionIndex;
@@ -36,6 +38,10 @@ pub enum ControlKind {
     /// A complete Renew response was retained, including refused or malformed responses.
     /// This kind alone does not establish that a lease was granted.
     Renewed,
+    /// Cleanup was durably prepared; dispatch/result may remain unknown.
+    UnsubscribeIntent,
+    /// Complete cleanup HTTP response, including rejected/malformed/untimed bodies.
+    UnsubscribeOutcome,
 }
 
 /// Bounded hash-only discovery record. No endpoint, reference parameter or raw source is exposed.
@@ -53,6 +59,8 @@ pub struct ControlDescriptor {
     pub subscription_identity: Option<ContentDigest>,
     /// Exact pre-dispatch Renew intent, preserving independent attempt/outcome linkage.
     pub renewal_intent_identity: Option<ContentDigest>,
+    /// Exact pre-dispatch cleanup intent for a cleanup attempt or raw outcome.
+    pub unsubscribe_intent_identity: Option<ContentDigest>,
     /// Original ledger commit sequence, preserving multiple observations separately.
     pub authority_sequence: u64,
 }
@@ -127,6 +135,106 @@ pub fn list_control<G: ReplayAdmission>(
     Ok(descriptors)
 }
 
+/// Read small immutable record headers to select one subscription's cleanup records before
+/// loading complete sources. This is a targeted custody query, not a claim about other sessions.
+/// A damaged candidate or parent cannot silently disappear from the selected history.
+pub(super) fn list_cleanup_control<G: ReplayAdmission>(
+    deployment: &ReferenceDeployment,
+    subscription: ContentDigest,
+    cx: &ReplayCx<G>,
+) -> Result<Vec<ControlDescriptor>, MetadataError> {
+    metadata::admit(deployment, cx, "onvif_control:cleanup_catalog")?;
+    deployment
+        .ledger()
+        .verify_durable_head()
+        .map_err(|_| MetadataError::Custody)?;
+    metadata::history_work(deployment)?;
+    let deletions = DeletionIndex::read(deployment).map_err(|_| MetadataError::Custody)?;
+    let mut candidates = BTreeMap::new();
+    for batch in deployment.ledger().batches() {
+        metadata::checkpoint(cx, "onvif_control:cleanup_catalog_history")?;
+        for delta in &batch.deltas {
+            if let Some(name) = delta.object_id.as_str().strip_prefix("object:local-root:") {
+                insert_candidate(
+                    &mut candidates,
+                    name,
+                    delta.payload_digest,
+                    MAX_CATALOG_RECORDS,
+                    &deletions,
+                )?;
+            }
+        }
+    }
+    for (index, root) in deployment.publisher().visible_roots().enumerate() {
+        if index >= MAX_HISTORY_BATCHES {
+            return Err(MetadataError::Limit);
+        }
+        metadata::checkpoint(cx, "onvif_control:cleanup_catalog_root")?;
+        insert_candidate(
+            &mut candidates,
+            root.slot.as_str(),
+            root.root,
+            MAX_CATALOG_RECORDS,
+            &deletions,
+        )?;
+    }
+    let mut descriptors = Vec::new();
+    for ((identity, is_intent), root) in candidates {
+        if is_intent {
+            continue;
+        }
+        metadata::checkpoint(cx, "onvif_control:cleanup_catalog_record")?;
+        let (encoded, _) = match read_record(deployment, identity, false, Some(root), cx) {
+            Ok(value) => value,
+            Err(MetadataError::EvidenceDeleted { .. }) => continue,
+            Err(error) => return Err(error),
+        };
+        let mut d = CanonicalDecoder::new(&encoded);
+        let domain = d.text()?;
+        let parent = match domain {
+            CREATED_DOMAIN | RENEW_INTENT_DOMAIN | RENEWED_DOMAIN => continue,
+            UNSUBSCRIBED_DOMAIN | UNSUBSCRIBE_INTENT_DOMAIN => {
+                if d.text()? != PARSER_GENERATION {
+                    return Err(MetadataError::Custody);
+                }
+                d.digest()?
+            }
+            UNSUBSCRIBE_OUTCOME_DOMAIN => {
+                if d.text()? != PARSER_GENERATION {
+                    return Err(MetadataError::Custody);
+                }
+                let intent = d.digest()?;
+                let (parent, _) = match read_record(deployment, intent, false, None, cx) {
+                    Ok(value) => value,
+                    Err(MetadataError::EvidenceDeleted { .. }) => continue,
+                    Err(error) => return Err(error),
+                };
+                let mut p = CanonicalDecoder::new(&parent);
+                if p.text()? != UNSUBSCRIBE_INTENT_DOMAIN || p.text()? != PARSER_GENERATION {
+                    return Err(MetadataError::Custody);
+                }
+                p.digest()?
+            }
+            _ => return Err(MetadataError::Custody),
+        };
+        if parent != subscription {
+            continue;
+        }
+        match describe(deployment, identity, false, root, cx) {
+            Ok(descriptor) => descriptors.push(descriptor),
+            Err(MetadataError::EvidenceDeleted { .. }) => {}
+            Err(error) => return Err(error),
+        }
+    }
+    descriptors.sort_unstable_by_key(|item| (item.authority_sequence, item.identity));
+    deployment
+        .ledger()
+        .verify_durable_head()
+        .map_err(|_| MetadataError::Custody)?;
+    metadata::checkpoint(cx, "onvif_control:cleanup_catalog_complete")?;
+    Ok(descriptors)
+}
+
 fn describe<G: ReplayAdmission>(
     deployment: &ReferenceDeployment,
     identity: ContentDigest,
@@ -143,6 +251,7 @@ fn describe<G: ReplayAdmission>(
             intent_identity: identity,
             subscription_identity: None,
             renewal_intent_identity: None,
+            unsubscribe_intent_identity: None,
             authority_sequence: intent.authority_anchor().commit_sequence,
         }
     } else {
@@ -158,6 +267,7 @@ fn describe<G: ReplayAdmission>(
                     intent_identity: created.intent_identity(),
                     subscription_identity: Some(identity),
                     renewal_intent_identity: None,
+                    unsubscribe_intent_identity: None,
                     authority_sequence: created.authority_anchor().commit_sequence,
                 }
             }
@@ -170,6 +280,7 @@ fn describe<G: ReplayAdmission>(
                     intent_identity: ended.subscription().intent_identity(),
                     subscription_identity: Some(ended.subscription_identity()),
                     renewal_intent_identity: None,
+                    unsubscribe_intent_identity: None,
                     authority_sequence: ended.authority_anchor().commit_sequence,
                 }
             }
@@ -182,6 +293,7 @@ fn describe<G: ReplayAdmission>(
                     intent_identity: intent.subscription().intent_identity(),
                     subscription_identity: Some(intent.subscription().identity()),
                     renewal_intent_identity: Some(identity),
+                    unsubscribe_intent_identity: None,
                     authority_sequence: intent.authority_anchor().commit_sequence,
                 }
             }
@@ -194,7 +306,35 @@ fn describe<G: ReplayAdmission>(
                     intent_identity: renewed.intent().subscription().intent_identity(),
                     subscription_identity: Some(renewed.intent().subscription().identity()),
                     renewal_intent_identity: Some(renewed.intent().identity()),
+                    unsubscribe_intent_identity: None,
                     authority_sequence: renewed.authority_anchor().commit_sequence,
+                }
+            }
+            UNSUBSCRIBE_INTENT_DOMAIN => {
+                let intent = RetainedUnsubscribeIntent::open(deployment, identity, Some(root), cx)?;
+                ControlDescriptor {
+                    kind: ControlKind::UnsubscribeIntent,
+                    identity,
+                    root,
+                    intent_identity: intent.subscription().intent_identity(),
+                    subscription_identity: Some(intent.subscription().identity()),
+                    renewal_intent_identity: None,
+                    unsubscribe_intent_identity: Some(identity),
+                    authority_sequence: intent.authority_anchor().commit_sequence,
+                }
+            }
+            UNSUBSCRIBE_OUTCOME_DOMAIN => {
+                let outcome =
+                    RetainedUnsubscribeOutcome::open(deployment, identity, Some(root), cx)?;
+                ControlDescriptor {
+                    kind: ControlKind::UnsubscribeOutcome,
+                    identity,
+                    root,
+                    intent_identity: outcome.intent().subscription().intent_identity(),
+                    subscription_identity: Some(outcome.intent().subscription().identity()),
+                    renewal_intent_identity: None,
+                    unsubscribe_intent_identity: Some(outcome.intent().identity()),
+                    authority_sequence: outcome.authority_anchor().commit_sequence,
                 }
             }
             _ => return Err(MetadataError::Custody),

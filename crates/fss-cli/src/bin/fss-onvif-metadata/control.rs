@@ -12,8 +12,9 @@ use fss_core::{
     BudgetVector, CanonicalEncoder, ContentDigest, ContextAuthority, OperationId, RootAuthoritySpec,
 };
 use fss_reference::onvif::control::{
-    ControlKind, MAX_CATALOG_RECORDS, RetainedCreateIntent, RetainedRenewIntent, RetainedRenewal,
-    RetainedSubscription, RetainedUnsubscribe, list_control,
+    CleanupStatus, ControlDescriptor, ControlKind, MAX_CATALOG_RECORDS, RetainedCreateIntent,
+    RetainedRenewIntent, RetainedRenewal, RetainedSubscription, RetainedUnsubscribe,
+    RetainedUnsubscribeIntent, RetainedUnsubscribeOutcome, inspect_cleanup, list_control,
 };
 use fss_reference::onvif::pullpoint::{self, CaptureReport, SubscriptionState};
 use fss_reference::{ReferenceDeployment, ReplayCx};
@@ -28,10 +29,12 @@ use super::{
 const HELP: &str = "fss-onvif-metadata control <list|inspect|unsubscribe> [options]
   list: --root ABSOLUTE_DIR --site SITE [--principal ID] [--max-records 64]
   inspect: --root ABSOLUTE_DIR --site SITE [--principal ID]
-           --kind intent|created|unsubscribed|renew-intent|renewed --control-id sha256:HEX
+           --kind intent|created|unsubscribed|renew-intent|renewed|unsubscribe-intent|unsubscribe-outcome
+           --control-id sha256:HEX
            [--expected-root sha256:HEX]
   unsubscribe: --root ABSOLUTE_DIR --site SITE [--principal ID]
            --subscription-id sha256:HEX --expected-root sha256:HEX
+           --expected-control sha256:HEX
            --sensor SENSOR --device-generation sha256:HEX
            --profile-generation sha256:HEX --profile TOKEN
            --peer IP:PORT --authority HOST[:PORT] --events-path /onvif/events
@@ -45,11 +48,14 @@ list and inspect cold-verify exact local custody and disclose hashes only.
 list either returns every admitted record or refuses; its ceiling is 1024 records.
 Verified native deletions are omitted. Empty output proves no remote absence.
 An intent alone leaves dispatch and result unknown; it never authorizes Create retry.
-A renewal intent alone also leaves its remote result unknown; it never authorizes retry.
+A renewal or cleanup intent alone leaves its remote result unknown; it never authorizes retry.
 Retained responses are historical observations, not current remote state.
 unsubscribe requires a fresh, explicit owner request with the original independent pins.
 It performs only Unsubscribe against the retained scoped endpoint; it never creates or polls.
-The expected root is mandatory for cleanup. The current receive origin must follow the
+Inspect the created record for cleanup_control_witness before approving cleanup. Both the
+expected root and expected control witness are mandatory; stale cleanup state refuses dispatch.
+A verified prior success returns already_unsubscribed before credentials or network work.
+The current receive origin must follow the
 retained Create interval. Fresh cleanup authority is distinct from the retained approval.
 Known terminal receipts survive late refusal and output failure; incomplete cleanup exits 1.
 ";
@@ -136,6 +142,8 @@ fn parse_cold(args: &[OsString]) -> Result<ColdOptions, &'static str> {
             "unsubscribed" => ControlKind::Unsubscribed,
             "renew-intent" => ControlKind::RenewIntent,
             "renewed" => ControlKind::Renewed,
+            "unsubscribe-intent" => ControlKind::UnsubscribeIntent,
+            "unsubscribe-outcome" => ControlKind::UnsubscribeOutcome,
             _ => return Err(ARGUMENT_ERROR),
         };
         ColdAction::Inspect {
@@ -173,13 +181,59 @@ fn existing(root: &Path, scope: &runtime::Scope<'_, '_>) -> Result<(), &'static 
     Ok(())
 }
 
+fn cleanup_report(status: &CleanupStatus) -> String {
+    let mut out = format!(
+        "cleanup_control_witness={}\ncleanup_attempts={}\ncleanup_success_retained={}\nautomatic_unsubscribe_retry_safe=false\n",
+        status.witness,
+        status.attempts,
+        status.terminal.is_some()
+    );
+    if let Some(intent) = status.latest_intent {
+        out.push_str(&format!(
+            "latest_unsubscribe_intent.identity={}\nlatest_unsubscribe_intent.publication_root={}\n",
+            intent.identity, intent.root
+        ));
+    }
+    if let Some(terminal) = status.terminal {
+        out.push_str(&format!(
+            "terminal.kind={}\nterminal.identity={}\nterminal.publication_root={}\nsafe_next=already_unsubscribed_no_dispatch\n",
+            kind_name(terminal.kind), terminal.identity, terminal.root
+        ));
+    } else {
+        out.push_str(
+            "safe_next=review_cleanup_history_then_explicit_unsubscribe_with_expected_control\n",
+        );
+    }
+    out
+}
+
 fn cold(options: ColdOptions) -> Result<String, &'static str> {
     let records = match options.action {
         ColdAction::List { max_records } => max_records as u64,
         ColdAction::Inspect { .. } => 1,
     };
-    let bytes = (records + 1) * 4 * 1024 * 1024;
-    let operations = capture::storage_allowance(2 * records + 2);
+    let cleanup_history = matches!(
+        &options.action,
+        ColdAction::Inspect {
+            kind: ControlKind::Created,
+            ..
+        }
+    );
+    let bytes = (records + 1) * 4 * 1024 * 1024
+        + if cleanup_history {
+            capture::CLEANUP_READ_BYTES
+        } else {
+            0
+        };
+    let operations = capture::storage_allowance(
+        2 * records
+            + 2
+            + if cleanup_history {
+                capture::CLEANUP_READ_OPERATIONS
+            } else {
+                0
+            },
+    );
     let request = runtime::Request {
         approval: options.approval,
         principal: options.principal.clone(),
@@ -248,6 +302,9 @@ fn cold(options: ColdOptions) -> Result<String, &'static str> {
                         if let Some(identity) = record.renewal_intent_identity {
                             line!("record.{index}.renewal_intent_identity={identity}");
                         }
+                        if let Some(identity) = record.unsubscribe_intent_identity {
+                            line!("record.{index}.unsubscribe_intent_identity={identity}");
+                        }
                     }
                 }
                 ColdAction::Inspect {
@@ -292,7 +349,9 @@ fn cold(options: ColdOptions) -> Result<String, &'static str> {
                                 value.authority_anchor().commit_sequence
                             );
                             line!("historical_observation=create_response_retained");
-                            line!("safe_next=explicit_unsubscribe_with_fresh_owner_pins");
+                            let cleanup =
+                                inspect_cleanup(&deployment, &value, &cx).map_err(|e| e.code())?;
+                            out.push_str(&cleanup_report(&cleanup));
                         }
                         ControlKind::Unsubscribed => {
                             let value = RetainedUnsubscribe::open(
@@ -330,6 +389,55 @@ fn cold(options: ColdOptions) -> Result<String, &'static str> {
                             line!("historical_observation=renew_intent_prepared");
                             line!("remote_dispatch=unknown");
                             line!("automatic_renew_retry_safe=false");
+                        }
+                        ControlKind::UnsubscribeIntent => {
+                            let value = RetainedUnsubscribeIntent::open(
+                                &deployment,
+                                *identity,
+                                *expected_root,
+                                &cx,
+                            )
+                            .map_err(|e| e.code())?;
+                            line!("publication_root={}", value.publication_root());
+                            line!("subscription_identity={}", value.subscription().identity());
+                            line!("expected_control={}", value.binding().expected_control);
+                            line!("request_sha256={}", value.binding().request_digest);
+                            line!(
+                                "authority_sequence={}",
+                                value.authority_anchor().commit_sequence
+                            );
+                            line!("historical_observation=unsubscribe_intent_prepared");
+                            line!("remote_dispatch=unknown");
+                            line!("automatic_unsubscribe_retry_safe=false");
+                        }
+                        ControlKind::UnsubscribeOutcome => {
+                            let value = RetainedUnsubscribeOutcome::open(
+                                &deployment,
+                                *identity,
+                                *expected_root,
+                                &cx,
+                            )
+                            .map_err(|e| e.code())?;
+                            line!("publication_root={}", value.publication_root());
+                            line!("unsubscribe_intent_identity={}", value.intent().identity());
+                            line!(
+                                "subscription_identity={}",
+                                value.intent().subscription().identity()
+                            );
+                            line!("source_sha256={}", value.source_digest());
+                            line!("source_bytes={}", value.source_bytes());
+                            line!(
+                                "authority_sequence={}",
+                                value.authority_anchor().commit_sequence
+                            );
+                            line!("historical_observation=unsubscribe_response_retained");
+                            line!("success_observed={}", value.success_observed());
+                            line!("http_status={}", value.binding().http_status);
+                            line!(
+                                "completion_time_observed={}",
+                                value.binding().completed_ns.is_some()
+                            );
+                            line!("automatic_unsubscribe_retry_safe=false");
                         }
                         ControlKind::Renewed => {
                             let value =
@@ -378,18 +486,21 @@ fn kind_name(kind: ControlKind) -> &'static str {
         ControlKind::Unsubscribed => "unsubscribed",
         ControlKind::RenewIntent => "renew-intent",
         ControlKind::Renewed => "renewed",
+        ControlKind::UnsubscribeIntent => "unsubscribe-intent",
+        ControlKind::UnsubscribeOutcome => "unsubscribe-outcome",
     }
 }
 
 fn cleanup_options(
     args: &[OsString],
 ) -> Result<(Plan, ContentDigest, ContentDigest), &'static str> {
-    if args.len() > 68 || args.len() % 2 != 0 {
+    if args.len() > 70 || args.len() % 2 != 0 {
         return Err(ARGUMENT_ERROR);
     }
     let mut remaining = Vec::new();
     let mut identity = None;
     let mut expected_root = None;
+    let mut expected_control = None;
     for pair in args.chunks_exact(2) {
         match pair[0].to_str() {
             Some("--subscription-id") if identity.is_none() => {
@@ -398,14 +509,20 @@ fn cleanup_options(
             Some("--expected-root") if expected_root.is_none() => {
                 expected_root = Some(digest(pair[1].to_str().ok_or(ARGUMENT_ERROR)?)?);
             }
-            Some("--subscription-id" | "--expected-root") => return Err(ARGUMENT_ERROR),
+            Some("--expected-control") if expected_control.is_none() => {
+                expected_control = Some(digest(pair[1].to_str().ok_or(ARGUMENT_ERROR)?)?);
+            }
+            Some("--subscription-id" | "--expected-root" | "--expected-control") => {
+                return Err(ARGUMENT_ERROR);
+            }
             _ => remaining.extend_from_slice(pair),
         }
     }
     let identity = identity.ok_or(ARGUMENT_ERROR)?;
     let expected_root = expected_root.ok_or(ARGUMENT_ERROR)?;
+    let expected_control = expected_control.ok_or(ARGUMENT_ERROR)?;
     Ok((
-        Plan::parse_cleanup(&remaining, identity, expected_root)?,
+        Plan::parse_cleanup(&remaining, identity, expected_root, expected_control)?,
         identity,
         expected_root,
     ))
@@ -433,24 +550,28 @@ fn verify_current_pins(plan: &Plan, retained: &RetainedSubscription) -> Result<(
 fn unsubscribe(args: &[OsString]) -> Result<(String, bool), &'static str> {
     let (plan, identity, expected_root) = cleanup_options(args)?;
     let network = 2 * (plan.config.limits.request_bytes + plan.config.limits.wire_bytes) as u64;
-    let bytes = 16 * 1024 * 1024;
+    let bytes = 16 * 1024 * 1024 + capture::CLEANUP_READ_BYTES;
+    let operations = 6 + capture::CLEANUP_READ_OPERATIONS;
     let mut controls = ControlReceipts::default();
     let mut observed = None::<CaptureReport>;
     let mut error = None;
+    let mut current_control = None;
+    let mut prior_terminal = None::<ControlDescriptor>;
     let request = runtime::Request {
         approval: plan.approval,
         principal: plan.principal.clone(),
         timeout_ns: plan.config.deadline_ns,
         bytes: network + bytes + MAX_CREDENTIAL_BYTES as u64 + 65536,
         network_bytes: network,
-        storage_operations: capture::storage_allowance(4) + u64::from(plan.config.max_steps) * 64,
+        storage_operations: capture::storage_allowance(operations)
+            + u64::from(plan.config.max_steps) * 64,
         network: true,
         write: true,
         secrets: true,
     };
     let result = runtime::run(request, |scope| {
         existing(&plan.root, scope)?;
-        let authority = capture::storage_authority(&plan, bytes, 4)?;
+        let authority = capture::storage_authority(&plan, bytes, operations)?;
         let cx = ReplayCx::from_context_authority_read_only(&authority, plan.root.clone())
             .map_err(|_| ARGUMENT_ERROR)?
             .with_admission(|_| admission::check(scope));
@@ -467,6 +588,19 @@ fn unsubscribe(args: &[OsString]) -> Result<(String, bool), &'static str> {
             )
             .map_err(|e| e.code())?;
             verify_current_pins(&plan, &retained)?;
+            let cleanup =
+                inspect_cleanup(&deployment.borrow(), &retained, &cx).map_err(|e| e.code())?;
+            current_control = Some(cleanup.witness);
+            if let Some(terminal) = cleanup.terminal {
+                // Current independent pins are checked, but no new effect is needed. A raw
+                // correlated success is sufficient even if its final marker was interrupted.
+                prior_terminal = Some(terminal);
+                controls.created = Some(retained);
+                return Ok(());
+            }
+            if plan.cleanup_expected_control != Some(cleanup.witness) {
+                return Err("ERR-ONVIF-METADATA-AUTHORITY-001");
+            }
             let subscription = retained.subscription().clone();
             let create_message_id = retained.binding().message_id.clone();
             controls.created = Some(retained);
@@ -516,25 +650,44 @@ fn unsubscribe(args: &[OsString]) -> Result<(String, bool), &'static str> {
         .is_some_and(|r| r.subscription_state == SubscriptionState::Unsubscribed);
     let complete = error.is_none()
         && cleanup_error.is_none()
-        && remote_success
-        && controls.unsubscribed.is_some();
+        && (prior_terminal.is_some() || (remote_success && controls.successful_cleanup()));
     let mut out = format!(
         "operation=control_unsubscribe\nphase={}\nselected_subscription={identity}\nexpected_root={expected_root}\napproval={}\nvalues_disclosed=false\ncreate_dispatched=false\npolls_dispatched=0\nremote_unsubscribe_success_observed={remote_success}\nerror={}\ncleanup_error={}\n",
-        if complete { "completed" } else { "incomplete" },
+        if complete && prior_terminal.is_some() {
+            "already_unsubscribed"
+        } else if complete {
+            "completed"
+        } else {
+            "incomplete"
+        },
         plan.approval,
         error.unwrap_or("none"),
         cleanup_error.unwrap_or("none"),
     );
+    if let Some(witness) = current_control {
+        out.push_str(&format!("cleanup_control_witness={witness}\n"));
+    }
+    if let Some(expected) = plan.cleanup_expected_control {
+        out.push_str(&format!("expected_control={expected}\n"));
+    }
+    if let Some(terminal) = prior_terminal {
+        out.push_str(&format!(
+            "previous_unsubscribe_success_retained=true\nterminal.kind={}\nterminal.identity={}\nterminal.publication_root={}\nterminal.authority_sequence={}\nunsubscribe_dispatched=false\nhttp_exchanges=0\n",
+            kind_name(terminal.kind), terminal.identity, terminal.root, terminal.authority_sequence
+        ));
+    }
     out.push_str(&controls.report());
     if let Some(report) = observed {
         out.push_str(&format!(
             "http_exchanges={}\nsubscription_state={:?}\n",
             report.exchanges, report.subscription_state
         ));
+    } else if prior_terminal.is_some() {
+        out.push_str("subscription_state=Unsubscribed\n");
     } else {
         out.push_str("subscription_state=Unknown\n");
     }
-    out.push_str("current_remote_state=unknown\nautomatic_create_retry_safe=false\nsafe_next=control_list_and_inspect_exact_receipts\n");
+    out.push_str("current_remote_state=unknown\nautomatic_create_retry_safe=false\nautomatic_unsubscribe_retry_safe=false\nsafe_next=control_list_and_inspect_exact_receipts\n");
     if out.len() > 65536 {
         return Err(LIMIT_ERROR);
     }
@@ -651,11 +804,13 @@ mod tests {
     }
 
     #[test]
-    fn cold_renewal_kinds_are_exact_and_do_not_grant_network_authority() {
+    fn cold_attempt_kinds_are_exact_and_do_not_grant_network_authority() {
         let identity = ContentDigest::sha256(b"renewal-receipt").to_string();
         for (name, expected) in [
             ("renew-intent", ControlKind::RenewIntent),
             ("renewed", ControlKind::Renewed),
+            ("unsubscribe-intent", ControlKind::UnsubscribeIntent),
+            ("unsubscribe-outcome", ControlKind::UnsubscribeOutcome),
         ] {
             let mut values = args(&[
                 "inspect",
@@ -675,5 +830,60 @@ mod tests {
             values.extend(args(&["--max-renewals", "1"]));
             assert!(parse_cold(&values).is_err());
         }
+    }
+
+    #[test]
+    fn cleanup_requires_an_exact_reviewed_control_witness() -> Result<(), &'static str> {
+        let pin = ContentDigest::sha256(b"selected-control").to_text();
+        let mut values = args(&[
+            "--root",
+            "/owner",
+            "--site",
+            "site:cleanup",
+            "--sensor",
+            "sensor:front",
+            "--profile",
+            "main",
+            "--peer",
+            "127.0.0.1:8080",
+            "--authority",
+            "camera.local:8080",
+            "--events-path",
+            "/onvif/events",
+            "--service-root",
+            "/onvif",
+            "--owner-authorized",
+            "yes",
+            "--plaintext",
+            "yes",
+            "--unsubscribe",
+            "yes",
+            "--receive-origin-ns",
+            "100",
+            "--device-generation",
+            &pin,
+            "--profile-generation",
+            &pin,
+            "--subscription-id",
+            &pin,
+            "--expected-root",
+            &pin,
+            "--expected-control",
+            &pin,
+        ]);
+        let (plan, _, _) = cleanup_options(&values)?;
+        assert_eq!(plan.cleanup_expected_control, Some(digest(&pin)?));
+        let expected = values
+            .iter()
+            .position(|value| value == "--expected-control")
+            .ok_or(ARGUMENT_ERROR)?;
+        values[expected + 1] = OsString::from(ContentDigest::sha256(b"changed-state").to_text());
+        assert_ne!(cleanup_options(&values)?.0.approval, plan.approval);
+        let mut duplicate = values.clone();
+        duplicate.extend(args(&["--expected-control", &pin]));
+        assert!(cleanup_options(&duplicate).is_err());
+        drop(values.drain(expected..expected + 2));
+        assert!(cleanup_options(&values).is_err());
+        Ok(())
     }
 }

@@ -56,6 +56,7 @@ pub(crate) struct Plan {
     pub profile: String,
     pub receive_origin_ns: i128,
     pub approval: ContentDigest,
+    pub cleanup_expected_control: Option<ContentDigest>,
     pub credentials: Option<PathBuf>,
     pub config: PullPointConfig,
 }
@@ -91,19 +92,23 @@ impl Plan {
         args: &[OsString],
         subscription_id: ContentDigest,
         expected_root: ContentDigest,
+        expected_control: ContentDigest,
     ) -> Result<Self, &'static str> {
-        if [subscription_id, expected_root]
+        if [subscription_id, expected_root, expected_control]
             .iter()
             .any(|value| value.algorithm() != DigestAlgorithm::Sha256 || value.bytes() == [0; 32])
         {
             return Err(ARGUMENT_ERROR);
         }
-        Self::parse_inner(args, Some((subscription_id, expected_root)))
+        Self::parse_inner(
+            args,
+            Some((subscription_id, expected_root, expected_control)),
+        )
     }
 
     fn parse_inner(
         args: &[OsString],
-        cleanup: Option<(ContentDigest, ContentDigest)>,
+        cleanup: Option<(ContentDigest, ContentDigest, ContentDigest)>,
     ) -> Result<Self, &'static str> {
         if args.len() > 64
             || args.len() % 2 != 0
@@ -261,11 +266,12 @@ impl Plan {
         // Bind defaults as well as exact user arguments, including the finite
         // subscription lifecycle. No credential values enter this identity.
         let mut e = CanonicalEncoder::new();
-        if let Some((subscription_id, expected_root)) = cleanup {
-            e.text("fss.onvif_metadata_unsubscribe_request.v1");
+        if let Some((subscription_id, expected_root, expected_control)) = cleanup {
+            e.text("fss.onvif_metadata_unsubscribe_request.v2");
             e.text("unsubscribe-existing-only:no-create:no-pull");
             e.digest(subscription_id);
             e.digest(expected_root);
+            e.digest(expected_control);
         } else {
             // Preserve the existing capture approval domain and encoding.
             e.text("fss.onvif_metadata_capture_request.v1");
@@ -328,6 +334,7 @@ impl Plan {
             profile,
             receive_origin_ns,
             approval,
+            cleanup_expected_control: cleanup.map(|(_, _, witness)| witness),
             credentials,
             config,
         })
@@ -372,6 +379,7 @@ mod tests {
             args,
             ContentDigest::sha256(b"created-receipt"),
             ContentDigest::sha256(b"created-root"),
+            ContentDigest::sha256(b"cleanup-control-state"),
         )
     }
 
@@ -477,14 +485,23 @@ mod tests {
             &args,
             ContentDigest::sha256(b"different-created-receipt"),
             ContentDigest::sha256(b"created-root"),
+            ContentDigest::sha256(b"cleanup-control-state"),
         )?;
         let changed_root = Plan::parse_cleanup(
             &args,
             ContentDigest::sha256(b"created-receipt"),
             ContentDigest::sha256(b"different-created-root"),
+            ContentDigest::sha256(b"cleanup-control-state"),
         )?;
         assert_ne!(baseline, changed_identity.approval);
         assert_ne!(baseline, changed_root.approval);
+        let changed_control = Plan::parse_cleanup(
+            &args,
+            ContentDigest::sha256(b"created-receipt"),
+            ContentDigest::sha256(b"created-root"),
+            ContentDigest::sha256(b"different-control-state"),
+        )?;
+        assert_ne!(baseline, changed_control.approval);
         assert_ne!(baseline, Plan::parse(&arguments("--subscribe"))?.approval);
         Ok(())
     }
@@ -540,8 +557,9 @@ mod tests {
             ContentDigest::new(DigestAlgorithm::Sha256, [0; 32]),
             ContentDigest::new(DigestAlgorithm::Blake3, [1; 32]),
         ] {
-            assert!(Plan::parse_cleanup(&args, invalid, valid).is_err());
-            assert!(Plan::parse_cleanup(&args, valid, invalid).is_err());
+            assert!(Plan::parse_cleanup(&args, invalid, valid, valid).is_err());
+            assert!(Plan::parse_cleanup(&args, valid, invalid, valid).is_err());
+            assert!(Plan::parse_cleanup(&args, valid, valid, invalid).is_err());
         }
         Ok(())
     }

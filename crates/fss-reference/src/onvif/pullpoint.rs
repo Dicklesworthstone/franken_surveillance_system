@@ -198,6 +198,38 @@ pub enum PullPointControl<'a> {
         /// Whether the response declared application/soap+xml.
         soap_content_type: bool,
     },
+    /// Persist the exact cleanup obligation before any Unsubscribe dispatch.
+    UnsubscribeIntent {
+        /// Independently current route, constrained to the original subscription EPR.
+        route: &'a HttpRoute,
+        /// Fresh logical cleanup identity, reused only for the explicit HTTP 401 retry.
+        message_id: &'a str,
+        /// Exact original Create identity, independently checked against retained custody.
+        create_message_id: &'a str,
+        /// SHA-256 of the exact request SOAP, including EPR parameters and fresh MessageID.
+        request_digest: ContentDigest,
+        /// Current owner's monotonic admission before intent custody.
+        started_ns: u64,
+    },
+    /// Persist the complete cleanup response before interpreting success or refusal.
+    UnsubscribeOutcome {
+        /// Independently current route used for the cleanup request.
+        route: &'a HttpRoute,
+        /// Complete transfer-decoded response, including malformed or refused bodies.
+        source: &'a [u8],
+        /// Exact logical cleanup identity belonging to the prior durable intent.
+        message_id: &'a str,
+        /// Current owner's monotonic request admission.
+        started_ns: u64,
+        /// Transport-admitted completion time, preserved across later clock refusal.
+        completed_ns: Option<u64>,
+        /// Whether this response followed a client Digest proof.
+        authenticated: bool,
+        /// Complete final HTTP status, independent of SOAP parsing.
+        http_status: u16,
+        /// Whether the response declared application/soap+xml.
+        soap_content_type: bool,
+    },
     /// Persist the exact validated cleanup response as a terminal historical receipt.
     Unsubscribed {
         /// Independently current subscription route actually used.
@@ -225,6 +257,13 @@ impl fmt::Debug for PullPointControl<'_> {
             Self::RenewIntent { .. } => f.write_str("PullPointControl::RenewIntent([redacted])"),
             Self::Renewed { source, .. } => f
                 .debug_struct("PullPointControl::Renewed")
+                .field("source_bytes", &source.len())
+                .finish_non_exhaustive(),
+            Self::UnsubscribeIntent { .. } => {
+                f.write_str("PullPointControl::UnsubscribeIntent([redacted])")
+            }
+            Self::UnsubscribeOutcome { source, .. } => f
+                .debug_struct("PullPointControl::UnsubscribeOutcome")
                 .field("source_bytes", &source.len())
                 .finish_non_exhaustive(),
             Self::Unsubscribed { source, .. } => f
@@ -274,6 +313,10 @@ pub struct CaptureReport {
     pub create_intent: Option<RetainedBatch>,
     /// Definitely durable complete Create response, written before any poll.
     pub created_subscription: Option<RetainedBatch>,
+    /// Durable cleanup obligation retained before any Unsubscribe dispatch.
+    pub unsubscribe_intent: Option<RetainedBatch>,
+    /// Durable complete cleanup response, including refused or malformed outcomes.
+    pub unsubscribe_outcome: Option<RetainedBatch>,
     /// Definitely durable terminal Unsubscribe observation, if its sink succeeded.
     pub unsubscribe_receipt: Option<RetainedBatch>,
     /// Durable pre-dispatch renewal obligations, including attempts with unknown outcomes.
@@ -305,6 +348,8 @@ impl Default for CaptureReport {
             retained: Vec::new(),
             create_intent: None,
             created_subscription: None,
+            unsubscribe_intent: None,
+            unsubscribe_outcome: None,
             unsubscribe_receipt: None,
             renewal_intents: Vec::new(),
             renewal_outcomes: Vec::new(),
@@ -351,6 +396,8 @@ impl fmt::Debug for CaptureReport {
             .field("retained", &self.retained)
             .field("create_intent", &self.create_intent)
             .field("created_subscription", &self.created_subscription)
+            .field("unsubscribe_intent", &self.unsubscribe_intent)
+            .field("unsubscribe_outcome", &self.unsubscribe_outcome)
             .field("unsubscribe_receipt", &self.unsubscribe_receipt)
             .field("renewal_intents", &self.renewal_intents)
             .field("renewal_outcomes", &self.renewal_outcomes)
@@ -872,18 +919,41 @@ fn renew_exchange(
     cx: &impl OnvifContext,
     budget: &mut Budget,
 ) -> Result<(HttpResponse, bool, Option<ClientError>), ClientError> {
-    let first = send(
+    let (response, authenticated, _, refusal) = control_exchange(
         config,
         route,
         request,
-        None,
         deadline,
         work_steps(config),
         cx,
         budget,
     )?;
+    Ok((response, authenticated, refusal))
+}
+
+/// Retain the last complete control response even when authentication refuses it. A lost
+/// transport response remains unresolved; the explicit 401 retry is the same logical request.
+fn control_exchange(
+    config: &PullPointConfig,
+    route: &HttpRoute,
+    request: &SoapRequest,
+    deadline: u64,
+    maximum_steps: u32,
+    cx: &impl OnvifContext,
+    budget: &mut Budget,
+) -> Result<(HttpResponse, bool, u64, Option<ClientError>), ClientError> {
+    let (first, completed_ns) = send_observed(
+        config,
+        route,
+        request,
+        None,
+        deadline,
+        maximum_steps,
+        cx,
+        budget,
+    )?;
     if first.status() != 401 {
-        return Ok((first, false, None));
+        return Ok((first, false, completed_ns, None));
     }
     let authorization = (|| {
         let auth = config
@@ -894,78 +964,27 @@ fn renew_exchange(
             .digest_challenge()
             .ok_or(ClientError::AuthenticationRefused)?;
         let challenge = DigestChallenge::parse(header, &auth.expected_realm, auth.policy)?;
-        let now = budget.now(deadline, work_steps(config), cx)?;
+        let now = budget.now(deadline, maximum_steps, cx)?;
         cx.checkpoint(route, HttpOperation::Write, now, deadline)
             .map_err(denial)?;
         cx.authorize(route, &challenge)
     })();
     let authorization = match authorization {
         Ok(value) => value,
-        Err(error) => return Ok((first, false, Some(error))),
+        Err(error) => return Ok((first, false, completed_ns, Some(error))),
     };
-    let response = send(
+    let (response, completed_ns) = send_observed(
         config,
         route,
         request,
         Some(&authorization),
         deadline,
-        work_steps(config),
+        maximum_steps,
         cx,
         budget,
     )?;
     let error = (response.status() == 401).then_some(ClientError::AuthenticationRefused);
-    Ok((response, true, error))
-}
-
-struct CleanupSource {
-    source: Vec<u8>,
-    message_id: String,
-    started_ns: u64,
-    completed_ns: u64,
-    authenticated: bool,
-}
-
-fn cleanup(
-    config: &PullPointConfig,
-    cx: &impl OnvifContext,
-    budget: &mut Budget,
-    subscription: &PullPointSubscription,
-    route: &HttpRoute,
-    create_message_id: &str,
-) -> Result<CleanupSource, PullPointError> {
-    let started_ns = budget.now(config.deadline_ns, config.max_steps, cx)?;
-    let message_id = next_request_id(route, config.deadline_ns, config.max_steps, cx, budget)?;
-    if message_id == create_message_id {
-        return Err(ClientError::Entropy.into());
-    }
-    let request = unsubscribe_pull_point_request(subscription)?.with_message_id(&message_id)?;
-    let (response, authenticated) = exchange(
-        config,
-        route,
-        &request,
-        config.deadline_ns,
-        config.max_steps,
-        cx,
-        budget,
-    )?;
-    let source = soap_body(&response)?;
-    wire::require_relates_to(source, &message_id)?;
-    parse_unsubscribe_response(source)?;
-    let completed_ns = budget.now(config.deadline_ns, config.max_steps, cx)?;
-    cx.checkpoint(
-        route,
-        HttpOperation::Release,
-        completed_ns,
-        config.deadline_ns,
-    )
-    .map_err(denial)?;
-    Ok(CleanupSource {
-        source: response.into_body(),
-        message_id,
-        started_ns,
-        completed_ns,
-        authenticated,
-    })
+    Ok((response, true, completed_ns, error))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -979,16 +998,82 @@ fn finish_cleanup(
     report: &mut CaptureReport,
     control: &mut impl FnMut(PullPointControl<'_>) -> Result<Option<RetainedProgress>, MetadataError>,
 ) -> Result<(), PullPointError> {
-    let cleaned = cleanup(config, cx, budget, subscription, route, create_message_id)?;
-    // The observed remote outcome and durable local acknowledgment are separate.
-    report.subscription_state = SubscriptionState::Unsubscribed;
+    let started_ns = budget.now(config.deadline_ns, config.max_steps, cx)?;
+    let message_id = next_request_id(route, config.deadline_ns, config.max_steps, cx, budget)?;
+    if message_id == create_message_id {
+        return Err(ClientError::Entropy.into());
+    }
+    let request = unsubscribe_pull_point_request(subscription)?.with_message_id(&message_id)?;
+    if let Some(progress) = control(PullPointControl::UnsubscribeIntent {
+        route,
+        message_id: &message_id,
+        create_message_id,
+        request_digest: ContentDigest::sha256(request.body()),
+        started_ns,
+    })? {
+        report.unsubscribe_intent = Some(progress.receipt);
+        if let Some(error) = progress.stop {
+            return Err(error);
+        }
+    }
+    // Recorded entrypoints always return Some above. Only the explicitly batch-only legacy
+    // capture adapter can omit control custody; its existing cleanup behavior is unchanged.
+    let (response, authenticated, completed_ns, response_error) = control_exchange(
+        config,
+        route,
+        &request,
+        config.deadline_ns,
+        config.max_steps,
+        cx,
+        budget,
+    )?;
+    let outcome = control(PullPointControl::UnsubscribeOutcome {
+        route,
+        source: response.body(),
+        message_id: &message_id,
+        started_ns,
+        completed_ns: Some(completed_ns),
+        authenticated,
+        http_status: response.status(),
+        soap_content_type: is_soap_response(&response),
+    });
+    let custody_error = match outcome {
+        Ok(Some(progress)) => {
+            // A returned immutable receipt survives parsing, cancellation, or finalization.
+            report.unsubscribe_outcome = Some(progress.receipt);
+            progress.stop
+        }
+        Ok(None) => None,
+        Err(error) => Some(error.into()),
+    };
+    let validated = (|| {
+        if let Some(error) = response_error {
+            return Err(error);
+        }
+        let source = soap_body(&response)?;
+        wire::require_relates_to(source, &message_id)?;
+        parse_unsubscribe_response(source)?;
+        Ok::<_, ClientError>(())
+    })();
+    if validated.is_ok() {
+        // The complete response was released under live authority. A later custody or clock
+        // refusal cannot erase its validated remote outcome, or justify an automatic resend.
+        report.subscription_state = SubscriptionState::Unsubscribed;
+    }
+    if let Some(error) = custody_error {
+        return Err(error);
+    }
+    validated?;
+    let now = budget.now(config.deadline_ns, config.max_steps, cx)?;
+    cx.checkpoint(route, HttpOperation::Release, now, config.deadline_ns)
+        .map_err(denial)?;
     if let Some(progress) = control(PullPointControl::Unsubscribed {
         route,
-        source: &cleaned.source,
-        message_id: &cleaned.message_id,
-        started_ns: cleaned.started_ns,
-        completed_ns: cleaned.completed_ns,
-        authenticated: cleaned.authenticated,
+        source: response.body(),
+        message_id: &message_id,
+        started_ns,
+        completed_ns,
+        authenticated,
     })? {
         report.unsubscribe_receipt = Some(progress.receipt);
         if let Some(error) = progress.stop {
@@ -1002,8 +1087,10 @@ fn finish_cleanup(
 ///
 /// The caller independently checks its retained generation/route pins against
 /// this new configuration. This function performs no Create or PullMessages and
-/// never interprets a retained approval as a current grant. Its receipt sink
-/// preserves the complete response before success is returned.
+/// never interprets a retained approval as a current grant. Its sink must retain a new,
+/// current cleanup intent before dispatch, returning a stop with the receipt for replayed
+/// or stale attempts. Complete responses reach custody before interpretation; a validated
+/// success also retains the existing terminal receipt when current authority permits it.
 pub fn unsubscribe_existing(
     config: &PullPointConfig,
     cx: &impl OnvifContext,
@@ -1218,6 +1305,30 @@ fn send(
     cx: &impl OnvifContext,
     budget: &mut Budget,
 ) -> Result<HttpResponse, ClientError> {
+    send_observed(
+        config,
+        route,
+        request,
+        authorization,
+        deadline,
+        maximum_steps,
+        cx,
+        budget,
+    )
+    .map(|(response, _)| response)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn send_observed(
+    config: &PullPointConfig,
+    route: &HttpRoute,
+    request: &SoapRequest,
+    authorization: Option<&DigestAuthorization>,
+    deadline: u64,
+    maximum_steps: u32,
+    cx: &impl OnvifContext,
+    budget: &mut Budget,
+) -> Result<(HttpResponse, u64), ClientError> {
     budget.exchanges = budget.exchanges.checked_add(1).ok_or(ClientError::Budget)?;
     let maximum_exchanges = config
         .max_pulls
@@ -1242,7 +1353,10 @@ fn send(
         match exchange.step(now, cx)? {
             HttpProgress::Complete => {
                 let now = budget.now(deadline, maximum_steps, cx)?;
-                return exchange.take_response(now, cx).map_err(Into::into);
+                return exchange
+                    .take_response(now, cx)
+                    .map(|response| (response, now))
+                    .map_err(Into::into);
             }
             HttpProgress::Advanced => {}
             HttpProgress::Pending => cx.wait(deadline)?,

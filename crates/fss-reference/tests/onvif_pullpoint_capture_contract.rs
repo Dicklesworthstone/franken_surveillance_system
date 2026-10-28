@@ -145,6 +145,7 @@ struct Context {
     ids: AtomicU32,
     repeat_ids: bool,
     cancel_on_create_release: bool,
+    cancel_on_subscription_release: bool,
     offset_ns: AtomicU64,
 }
 impl Context {
@@ -159,6 +160,7 @@ impl Context {
             ids: AtomicU32::new(0),
             repeat_ids: false,
             cancel_on_create_release: false,
+            cancel_on_subscription_release: false,
             offset_ns: AtomicU64::new(0),
         }
     }
@@ -199,6 +201,12 @@ impl HttpAuthority for Context {
         if self.cancel_on_create_release
             && operation == HttpOperation::Release
             && route.target() == "/onvif/events"
+        {
+            self.cancelled.store(true, Ordering::SeqCst);
+        }
+        if self.cancel_on_subscription_release
+            && operation == HttpOperation::Release
+            && route.target() == SUBSCRIPTION
         {
             self.cancelled.store(true, Ordering::SeqCst);
         }
@@ -773,9 +781,24 @@ fn durable_control_callbacks_precede_create_dispatch_and_first_poll() {
                 Ok(receipt(source))
             }
             PullPointControl::Unsubscribed { source, route, .. } => {
+                assert_eq!(stage.load(Ordering::SeqCst), 4);
+                assert_eq!(route.target(), SUBSCRIPTION);
+                stage.store(5, Ordering::SeqCst);
+                Ok(receipt(source))
+            }
+            PullPointControl::UnsubscribeIntent {
+                message_id, route, ..
+            } => {
                 assert_eq!(stage.load(Ordering::SeqCst), 2);
+                assert_eq!(server.requests().len(), 2);
                 assert_eq!(route.target(), SUBSCRIPTION);
                 stage.store(3, Ordering::SeqCst);
+                Ok(receipt(message_id.as_bytes()))
+            }
+            PullPointControl::UnsubscribeOutcome { source, .. } => {
+                assert_eq!(stage.load(Ordering::SeqCst), 3);
+                assert_eq!(server.requests().len(), 3);
+                stage.store(4, Ordering::SeqCst);
                 Ok(receipt(source))
             }
         },
@@ -786,7 +809,9 @@ fn durable_control_callbacks_precede_create_dispatch_and_first_poll() {
         },
     )
     .unwrap();
-    assert_eq!(stage.load(Ordering::SeqCst), 3);
+    assert_eq!(stage.load(Ordering::SeqCst), 5);
+    assert!(report.unsubscribe_intent.is_some());
+    assert!(report.unsubscribe_outcome.is_some());
     assert!(report.unsubscribe_receipt.is_some());
     assert_eq!(report.create_intent, Some(intent_receipt));
     assert_eq!(
@@ -811,7 +836,10 @@ fn failed_create_intent_custody_refuses_before_any_connection_or_dispatch() {
                 panic!("renewal disabled in this fixture")
             }
             PullPointControl::CreateIntent { .. } => Err(MetadataError::Custody),
-            PullPointControl::Created { .. } | PullPointControl::Unsubscribed { .. } => {
+            PullPointControl::Created { .. }
+            | PullPointControl::Unsubscribed { .. }
+            | PullPointControl::UnsubscribeIntent { .. }
+            | PullPointControl::UnsubscribeOutcome { .. } => {
                 panic!("Create was never admitted")
             }
         },
@@ -846,7 +874,11 @@ fn failed_created_custody_prevents_poll_but_preserves_intent_and_attempts_cleanu
             }
             PullPointControl::CreateIntent { .. } => Ok(intent_receipt),
             PullPointControl::Created { .. } => Err(MetadataError::Custody),
-            PullPointControl::Unsubscribed { source, .. } => Ok(receipt(source)),
+            PullPointControl::UnsubscribeIntent { message_id, .. } => {
+                Ok(receipt(message_id.as_bytes()))
+            }
+            PullPointControl::Unsubscribed { source, .. }
+            | PullPointControl::UnsubscribeOutcome { source, .. } => Ok(receipt(source)),
         },
         |_| panic!("Create custody must precede the first poll"),
     )
@@ -888,7 +920,11 @@ fn zero_poll_lease_failure_retains_both_control_receipts_for_cold_recovery() {
                 panic!("renewal disabled in this fixture")
             }
             PullPointControl::CreateIntent { .. } => Ok(intent_receipt),
+            PullPointControl::UnsubscribeIntent { message_id, .. } => {
+                Ok(receipt(message_id.as_bytes()))
+            }
             PullPointControl::Created { source, .. }
+            | PullPointControl::UnsubscribeOutcome { source, .. }
             | PullPointControl::Unsubscribed { source, .. } => Ok(receipt(source)),
         },
         |_| panic!("the short lease cannot admit a poll"),
@@ -939,7 +975,11 @@ fn cancellation_after_control_receipt_preserves_every_acknowledged_handle() {
                     cx.cancelled.store(true, Ordering::SeqCst);
                     Ok(receipt(source))
                 }
-                PullPointControl::Unsubscribed { .. } => panic!("cancelled owner cannot clean up"),
+                PullPointControl::Unsubscribed { .. }
+                | PullPointControl::UnsubscribeIntent { .. }
+                | PullPointControl::UnsubscribeOutcome { .. } => {
+                    panic!("cancelled owner cannot clean up")
+                }
             },
             |_| panic!("cancelled owner cannot admit a poll"),
         )
@@ -974,7 +1014,11 @@ fn acknowledged_control(event: PullPointControl<'_>) -> Result<RetainedProgress,
             panic!("renewal disabled in this fixture")
         }
         PullPointControl::CreateIntent { .. } => receipt(b"fixture:create-intent").into(),
+        PullPointControl::UnsubscribeIntent { message_id, .. } => {
+            receipt(message_id.as_bytes()).into()
+        }
         PullPointControl::Created { source, .. }
+        | PullPointControl::UnsubscribeOutcome { source, .. }
         | PullPointControl::Unsubscribed { source, .. } => receipt(source).into(),
     })
 }
@@ -996,8 +1040,10 @@ fn renewed(seconds: u32) -> String {
 fn renewable_control(event: PullPointControl<'_>) -> Result<RetainedProgress, MetadataError> {
     Ok(match event {
         PullPointControl::CreateIntent { message_id, .. }
+        | PullPointControl::UnsubscribeIntent { message_id, .. }
         | PullPointControl::RenewIntent { message_id, .. } => receipt(message_id.as_bytes()).into(),
         PullPointControl::Created { source, .. }
+        | PullPointControl::UnsubscribeOutcome { source, .. }
         | PullPointControl::Renewed { source, .. }
         | PullPointControl::Unsubscribed { source, .. } => receipt(source).into(),
     })
@@ -1455,6 +1501,7 @@ fn cleanup_only_uses_retained_epr_and_fresh_id_without_create_or_poll() {
     let source = created(server.peer).replace("REQUEST_ID", create_id);
     let subscription =
         parse_pull_point_subscription(source.strip_prefix("SOAP:").unwrap().as_bytes()).unwrap();
+    let request_digest = std::cell::Cell::new(None);
     let report = unsubscribe_existing(
         &config(server.peer),
         &cx,
@@ -1464,6 +1511,18 @@ fn cleanup_only_uses_retained_epr_and_fresh_id_without_create_or_poll() {
             PullPointControl::RenewIntent { .. } | PullPointControl::Renewed { .. } => {
                 panic!("renewal disabled in this fixture")
             }
+            PullPointControl::UnsubscribeIntent {
+                message_id,
+                create_message_id,
+                request_digest: actual_request,
+                ..
+            } => {
+                assert_eq!(create_message_id, create_id);
+                assert_eq!(cx.connects.load(Ordering::SeqCst), 0);
+                request_digest.set(Some(actual_request));
+                Ok(receipt(message_id.as_bytes()).into())
+            }
+            PullPointControl::UnsubscribeOutcome { source, .. } => Ok(receipt(source).into()),
             PullPointControl::Unsubscribed {
                 route,
                 source,
@@ -1492,6 +1551,8 @@ fn cleanup_only_uses_retained_epr_and_fresh_id_without_create_or_poll() {
     assert_eq!(report.pulls, 0);
     assert!(report.retained.is_empty());
     assert!(report.unsubscribe_receipt.is_some());
+    assert!(report.unsubscribe_intent.is_some());
+    assert!(report.unsubscribe_outcome.is_some());
     let requests = server.requests();
     assert_eq!(requests.len(), 1);
     assert!(requests[0].contains("Unsubscribe"));
@@ -1499,6 +1560,336 @@ fn cleanup_only_uses_retained_epr_and_fresh_id_without_create_or_poll() {
     assert!(requests[0].contains("IsReferenceParameter"));
     assert!(!requests[0].contains("CreatePullPointSubscription"));
     assert!(!requests[0].contains("PullMessages"));
+    let request_body = requests[0].split_once("\r\n\r\n").unwrap().1;
+    assert_eq!(
+        request_digest.get(),
+        Some(ContentDigest::sha256(request_body.as_bytes()))
+    );
+}
+
+fn cleanup_fixture(peer: SocketAddr) -> fss_reference::onvif::wire::PullPointSubscription {
+    let source = created(peer).replace("REQUEST_ID", "urn:fixture:retained-create");
+    parse_pull_point_subscription(source.strip_prefix("SOAP:").unwrap().as_bytes()).unwrap()
+}
+
+#[test]
+fn cleanup_intent_custody_or_replay_refusal_precedes_every_connection() {
+    for refused_after_receipt in [false, true] {
+        let server = Server::start(|_| vec![unsubscribed()]);
+        let cx = Context::new(server.peer);
+        let expected = receipt(b"fixture:cleanup-intent");
+        let failure = unsubscribe_existing(
+            &config(server.peer),
+            &cx,
+            &cleanup_fixture(server.peer),
+            "urn:fixture:retained-create",
+            |event| match event {
+                PullPointControl::UnsubscribeIntent { .. } if refused_after_receipt => {
+                    Ok(RetainedProgress {
+                        receipt: expected,
+                        // A previously prepared intent returns its handle plus refusal to resend.
+                        stop: Some(PullPointError::Retention(MetadataError::Authority)),
+                    })
+                }
+                PullPointControl::UnsubscribeIntent { .. } => Err(MetadataError::Custody),
+                _ => panic!("unadmitted cleanup cannot receive a response"),
+            },
+        )
+        .unwrap_err();
+        assert_eq!(
+            failure.report.unsubscribe_intent,
+            refused_after_receipt.then_some(expected)
+        );
+        assert!(failure.report.unsubscribe_outcome.is_none());
+        assert!(failure.report.unsubscribe_receipt.is_none());
+        assert_eq!(failure.report.subscription_state, SubscriptionState::Active);
+        assert_eq!(failure.report.exchanges, 0);
+        assert_eq!(cx.connects.load(Ordering::SeqCst), 0);
+        assert!(server.requests().is_empty());
+    }
+}
+
+#[test]
+fn capture_cleanup_intent_failure_keeps_batches_without_dispatching_unsubscribe() {
+    let server = Server::start(|peer| vec![created(peer), pulled(1)]);
+    let cx = Context::new(server.peer);
+    let mut cfg = config(server.peer);
+    cfg.max_pulls = 1;
+    let failure = capture_with_progress(
+        &cfg,
+        &cx,
+        |event| match event {
+            PullPointControl::UnsubscribeIntent { .. } => Err(MetadataError::Custody),
+            PullPointControl::UnsubscribeOutcome { .. } | PullPointControl::Unsubscribed { .. } => {
+                panic!("cleanup was never dispatched")
+            }
+            event => acknowledged_control(event),
+        },
+        |batch| Ok(receipt(batch.source).into()),
+    )
+    .unwrap_err();
+    assert_eq!(failure.code(), MetadataError::Custody.code());
+    assert_eq!(failure.report.retained.len(), 1);
+    assert_eq!(failure.report.subscription_state, SubscriptionState::Active);
+    assert!(failure.report.unsubscribe_intent.is_none());
+    assert!(failure.report.unsubscribe_outcome.is_none());
+    assert_eq!(server.requests().len(), 2);
+    assert_eq!(cx.connects.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn malformed_status_or_uncorrelated_cleanup_is_retained_before_refusal() {
+    for variant in 0..4 {
+        let server = Server::start(|_| {
+            vec![match variant {
+                0 => soap("<wsnt:WrongResponse/>", "REQUEST_ID"),
+                1 => unsubscribed().replace("REQUEST_ID", "urn:fixture:other-request"),
+                2 => unsubscribed().replace("<a:RelatesTo>REQUEST_ID</a:RelatesTo>", ""),
+                _ => "HTTP/1.1 503 Unavailable\r\nContent-Length: 10\r\n\r\nraw-failed".into(),
+            }]
+        });
+        let mut observed = None;
+        let failure = unsubscribe_existing(
+            &config(server.peer),
+            &Context::new(server.peer),
+            &cleanup_fixture(server.peer),
+            "urn:fixture:retained-create",
+            |event| match event {
+                PullPointControl::UnsubscribeIntent { message_id, .. } => {
+                    Ok(receipt(message_id.as_bytes()).into())
+                }
+                PullPointControl::UnsubscribeOutcome {
+                    source,
+                    completed_ns,
+                    http_status,
+                    soap_content_type,
+                    ..
+                } => {
+                    assert!(completed_ns.is_some());
+                    assert_eq!(server.requests().len(), 1);
+                    assert_eq!(http_status, if variant == 3 { 503 } else { 200 });
+                    assert_eq!(soap_content_type, variant != 3);
+                    let retained = receipt(source);
+                    observed = Some(retained);
+                    Ok(retained.into())
+                }
+                _ => panic!("an invalid response cannot produce terminal custody"),
+            },
+        )
+        .unwrap_err();
+        assert!(failure.report.unsubscribe_intent.is_some());
+        assert!(observed.is_some());
+        assert_eq!(failure.report.unsubscribe_outcome, observed);
+        assert!(failure.report.unsubscribe_receipt.is_none());
+        assert_eq!(failure.report.subscription_state, SubscriptionState::Active);
+        assert_eq!(server.requests().len(), 1);
+    }
+}
+
+#[test]
+fn complete_terminal_cleanup_auth_refusal_reaches_raw_custody() {
+    for retry in [false, true] {
+        let server = Server::start(|_| {
+            let mut replies = vec![challenge(REALM)];
+            if retry {
+                replies.push(challenge(REALM));
+            }
+            replies
+        });
+        let mut cfg = config(server.peer);
+        if retry {
+            cfg.auth = Some(DigestConfig {
+                expected_realm: REALM.into(),
+                policy: DigestPolicy::default(),
+            });
+        }
+        let failure = unsubscribe_existing(
+            &cfg,
+            &Context::new(server.peer),
+            &cleanup_fixture(server.peer),
+            "urn:fixture:retained-create",
+            |event| match event {
+                PullPointControl::UnsubscribeIntent { message_id, .. } => {
+                    Ok(receipt(message_id.as_bytes()).into())
+                }
+                PullPointControl::UnsubscribeOutcome {
+                    source,
+                    authenticated,
+                    http_status,
+                    completed_ns,
+                    ..
+                } => {
+                    assert!(source.is_empty());
+                    assert_eq!(http_status, 401);
+                    assert_eq!(authenticated, retry);
+                    assert!(completed_ns.is_some());
+                    Ok(receipt(source).into())
+                }
+                _ => panic!("authentication refusal cannot confirm cleanup"),
+            },
+        )
+        .unwrap_err();
+        assert_eq!(failure.report.unsubscribe_outcome, Some(receipt(b"")));
+        assert!(failure.report.unsubscribe_receipt.is_none());
+        assert_eq!(failure.report.subscription_state, SubscriptionState::Active);
+        let requests = server.requests();
+        assert_eq!(requests.len(), if retry { 2 } else { 1 });
+        if retry {
+            assert_eq!(message_id(&requests[0]), message_id(&requests[1]));
+        }
+    }
+}
+
+#[test]
+fn lost_cleanup_reply_preserves_intent_without_retry_create_or_renew() {
+    let server = Server::start(|_| vec![String::new()]);
+    let mut cfg = config(server.peer);
+    cfg.max_renewals = 1;
+    let failure = unsubscribe_existing(
+        &cfg,
+        &Context::new(server.peer),
+        &cleanup_fixture(server.peer),
+        "urn:fixture:retained-create",
+        |event| match event {
+            PullPointControl::UnsubscribeIntent { message_id, .. } => {
+                Ok(receipt(message_id.as_bytes()).into())
+            }
+            _ => panic!("lost response cannot create a response receipt"),
+        },
+    )
+    .unwrap_err();
+    assert!(failure.report.unsubscribe_intent.is_some());
+    assert!(failure.report.unsubscribe_outcome.is_none());
+    assert!(failure.report.unsubscribe_receipt.is_none());
+    assert_eq!(failure.report.subscription_state, SubscriptionState::Active);
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].contains("Unsubscribe"));
+    for operation in [
+        "CreatePullPointSubscription",
+        "PullMessages",
+        "<wsnt:Renew>",
+    ] {
+        assert!(!requests[0].contains(operation));
+    }
+}
+
+#[test]
+fn complete_cleanup_outcome_survives_custody_stop_and_late_live_refusal() {
+    for variant in 0..4 {
+        let server = Server::start(|_| vec![unsubscribed()]);
+        let cx = Context::new(server.peer);
+        let mut observed = None;
+        let failure = unsubscribe_existing(
+            &config(server.peer),
+            &cx,
+            &cleanup_fixture(server.peer),
+            "urn:fixture:retained-create",
+            |event| match event {
+                PullPointControl::UnsubscribeIntent { message_id, .. } => {
+                    Ok(receipt(message_id.as_bytes()).into())
+                }
+                PullPointControl::UnsubscribeOutcome { source, .. } => {
+                    if variant == 0 {
+                        return Err(MetadataError::Custody);
+                    }
+                    let retained = receipt(source);
+                    observed = Some(retained);
+                    if variant == 2 {
+                        cx.cancelled.store(true, Ordering::SeqCst);
+                    }
+                    if variant == 3 {
+                        cx.revoked.store(true, Ordering::SeqCst);
+                    }
+                    Ok(RetainedProgress {
+                        receipt: retained,
+                        stop: (variant == 1).then_some(PullPointError::Client(ClientError::Budget)),
+                    })
+                }
+                _ => panic!("outcome refusal prevents the later terminal callback"),
+            },
+        )
+        .unwrap_err();
+        assert_eq!(
+            failure.report.subscription_state,
+            SubscriptionState::Unsubscribed
+        );
+        assert_eq!(failure.report.unsubscribe_outcome, observed);
+        assert!(failure.report.unsubscribe_intent.is_some());
+        assert!(failure.report.unsubscribe_receipt.is_none());
+        assert!(failure.report.cleanup_error.is_some());
+        assert_eq!(server.requests().len(), 1);
+    }
+}
+
+#[test]
+fn cleanup_intent_cannot_override_late_cancellation_revocation_or_deadline() {
+    for variant in 0..3 {
+        let server = Server::start(|_| vec![unsubscribed()]);
+        let cx = Context::new(server.peer);
+        let failure = unsubscribe_existing(
+            &config(server.peer),
+            &cx,
+            &cleanup_fixture(server.peer),
+            "urn:fixture:retained-create",
+            |event| match event {
+                PullPointControl::UnsubscribeIntent { message_id, .. } => {
+                    match variant {
+                        0 => cx.cancelled.store(true, Ordering::SeqCst),
+                        1 => cx.revoked.store(true, Ordering::SeqCst),
+                        _ => cx.offset_ns.store(8_000_000_000, Ordering::SeqCst),
+                    }
+                    Ok(receipt(message_id.as_bytes()).into())
+                }
+                _ => panic!("live authority refusal prevents every connection"),
+            },
+        )
+        .unwrap_err();
+        assert!(failure.report.unsubscribe_intent.is_some());
+        assert!(failure.report.unsubscribe_outcome.is_none());
+        assert_eq!(failure.report.subscription_state, SubscriptionState::Active);
+        assert_eq!(cx.connects.load(Ordering::SeqCst), 0);
+        assert!(server.requests().is_empty());
+    }
+}
+
+#[test]
+fn released_cleanup_source_and_completion_survive_immediate_clock_cancellation() {
+    let server = Server::start(|_| vec![unsubscribed()]);
+    let mut cx = Context::new(server.peer);
+    cx.cancel_on_subscription_release = true;
+    let mut completed = None;
+    let failure = unsubscribe_existing(
+        &config(server.peer),
+        &cx,
+        &cleanup_fixture(server.peer),
+        "urn:fixture:retained-create",
+        |event| match event {
+            PullPointControl::UnsubscribeIntent { message_id, .. } => {
+                Ok(receipt(message_id.as_bytes()).into())
+            }
+            PullPointControl::UnsubscribeOutcome {
+                source,
+                completed_ns,
+                ..
+            } => {
+                assert!(cx.cancelled.load(Ordering::SeqCst));
+                completed = completed_ns;
+                Ok(receipt(source).into())
+            }
+            _ => panic!("cancelled owner cannot publish the final marker"),
+        },
+    )
+    .unwrap_err();
+    assert_eq!(failure.code(), "ERR-ONVIF-CANCELLED-001");
+    assert!(completed.is_some());
+    assert!(failure.report.unsubscribe_outcome.is_some());
+    assert!(failure.report.unsubscribe_receipt.is_none());
+    assert_eq!(
+        failure.report.subscription_state,
+        SubscriptionState::Unsubscribed
+    );
+    assert_eq!(server.requests().len(), 1);
 }
 
 #[test]
@@ -1535,7 +1926,11 @@ fn terminal_custody_refusal_preserves_observed_cleanup_and_all_earlier_receipts(
                 panic!("renewal disabled in this fixture")
             }
             PullPointControl::CreateIntent { .. } => Ok(receipt(b"fixture:create-intent")),
+            PullPointControl::UnsubscribeIntent { message_id, .. } => {
+                Ok(receipt(message_id.as_bytes()))
+            }
             PullPointControl::Created { source, .. } => Ok(receipt(source)),
+            PullPointControl::UnsubscribeOutcome { source, .. } => Ok(receipt(source)),
             PullPointControl::Unsubscribed { .. } => Err(MetadataError::Custody),
         },
         |batch| Ok(receipt(batch.source)),
@@ -1578,7 +1973,11 @@ fn cleanup_without_explicit_correlation_cannot_claim_remote_success_or_terminal_
                 panic!("renewal disabled in this fixture")
             }
             PullPointControl::CreateIntent { .. } => Ok(receipt(b"fixture:create-intent")),
+            PullPointControl::UnsubscribeIntent { message_id, .. } => {
+                Ok(receipt(message_id.as_bytes()))
+            }
             PullPointControl::Created { source, .. } => Ok(receipt(source)),
+            PullPointControl::UnsubscribeOutcome { source, .. } => Ok(receipt(source)),
             PullPointControl::Unsubscribed { .. } => {
                 panic!("uncorrelated cleanup cannot reach terminal custody")
             }
@@ -1610,7 +2009,10 @@ fn create_without_explicit_correlation_keeps_intent_without_following_an_unbound
                 panic!("renewal disabled in this fixture")
             }
             PullPointControl::CreateIntent { .. } => Ok(intent_receipt),
-            PullPointControl::Created { .. } | PullPointControl::Unsubscribed { .. } => {
+            PullPointControl::Created { .. }
+            | PullPointControl::Unsubscribed { .. }
+            | PullPointControl::UnsubscribeIntent { .. }
+            | PullPointControl::UnsubscribeOutcome { .. } => {
                 panic!("an uncorrelated Create response cannot admit EPR custody or cleanup")
             }
         },

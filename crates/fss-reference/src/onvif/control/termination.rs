@@ -6,6 +6,14 @@
 //! fresh logical request ID. A receipt proves the observed response, not future
 //! device behavior or that the camera could never reuse an endpoint.
 
+mod attempt;
+pub use attempt::{
+    CleanupStatus, RetainedUnsubscribeIntent, RetainedUnsubscribeOutcome,
+    STAGE_UNSUBSCRIBE_INTENT_PUBLISH, STAGE_UNSUBSCRIBE_OUTCOME_PUBLISH, UNSUBSCRIBE_INTENT_DOMAIN,
+    UNSUBSCRIBE_OUTCOME_DOMAIN, UnsubscribeIntentBinding, UnsubscribeOutcomeBinding,
+    inspect_cleanup, prepare_unsubscribe, retain_unsubscribe_outcome,
+};
+
 use std::fmt;
 use std::net::SocketAddr;
 

@@ -6,8 +6,9 @@ use fss_core::{CanonicalDecoder, ContentDigest, SensorId};
 
 use super::{
     CREATED_DOMAIN, RENEW_INTENT_DOMAIN, RENEWED_DOMAIN, RetainedCreateIntent, RetainedRenewIntent,
-    RetainedRenewal, RetainedSubscription, RetainedUnsubscribe, UNSUBSCRIBED_DOMAIN, read_record,
-    slot,
+    RetainedRenewal, RetainedSubscription, RetainedUnsubscribe, RetainedUnsubscribeIntent,
+    RetainedUnsubscribeOutcome, UNSUBSCRIBE_INTENT_DOMAIN, UNSUBSCRIBE_OUTCOME_DOMAIN,
+    UNSUBSCRIBED_DOMAIN, read_record, slot,
 };
 use crate::adapter_replay::ReplayAdmission;
 use crate::deletion::DeletionIndex;
@@ -56,6 +57,23 @@ pub(crate) fn lifecycle_sensor<G: ReplayAdmission>(
             .source
             .sensor_id
             .clone()),
+        UNSUBSCRIBE_INTENT_DOMAIN => Ok(RetainedUnsubscribeIntent::open(
+            deployment, identity, None, cx,
+        )?
+        .subscription()
+        .binding()
+        .source
+        .sensor_id
+        .clone()),
+        UNSUBSCRIBE_OUTCOME_DOMAIN => Ok(RetainedUnsubscribeOutcome::open(
+            deployment, identity, None, cx,
+        )?
+        .intent()
+        .subscription()
+        .binding()
+        .source
+        .sensor_id
+        .clone()),
         _ => Err(MetadataError::Custody),
     }
 }

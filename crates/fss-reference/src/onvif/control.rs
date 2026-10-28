@@ -20,8 +20,11 @@ pub use renewal::{
     prepare_renew, retain_renewal,
 };
 pub use termination::{
-    RetainedUnsubscribe, STAGE_UNSUBSCRIBED_PUBLISH, UNSUBSCRIBED_DOMAIN, UnsubscribeBinding,
-    retain_unsubscribed,
+    CleanupStatus, RetainedUnsubscribe, RetainedUnsubscribeIntent, RetainedUnsubscribeOutcome,
+    STAGE_UNSUBSCRIBE_INTENT_PUBLISH, STAGE_UNSUBSCRIBE_OUTCOME_PUBLISH,
+    STAGE_UNSUBSCRIBED_PUBLISH, UNSUBSCRIBE_INTENT_DOMAIN, UNSUBSCRIBE_OUTCOME_DOMAIN,
+    UNSUBSCRIBED_DOMAIN, UnsubscribeBinding, UnsubscribeIntentBinding, UnsubscribeOutcomeBinding,
+    inspect_cleanup, prepare_unsubscribe, retain_unsubscribe_outcome, retain_unsubscribed,
 };
 
 use std::fmt;

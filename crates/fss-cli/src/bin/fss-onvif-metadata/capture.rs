@@ -14,9 +14,11 @@ use fss_core::{
 };
 use fss_reference::onvif::client::{ClientError, OnvifContext};
 use fss_reference::onvif::control::{
-    CreateIntentBinding, RenewIntentBinding, RenewOutcomeBinding, RetainedCreateIntent,
-    RetainedRenewIntent, RetainedRenewal, RetainedSubscription, RetainedUnsubscribe,
-    UnsubscribeBinding, prepare_create, prepare_renew, retain_created, retain_renewal,
+    CreateIntentBinding, MAX_CATALOG_RECORDS, RenewIntentBinding, RenewOutcomeBinding,
+    RetainedCreateIntent, RetainedRenewIntent, RetainedRenewal, RetainedSubscription,
+    RetainedUnsubscribe, RetainedUnsubscribeIntent, RetainedUnsubscribeOutcome, UnsubscribeBinding,
+    UnsubscribeIntentBinding, UnsubscribeOutcomeBinding, inspect_cleanup, prepare_create,
+    prepare_renew, prepare_unsubscribe, retain_created, retain_renewal, retain_unsubscribe_outcome,
     retain_unsubscribed,
 };
 use fss_reference::onvif::http::{HttpAuthority, HttpDenial, HttpOperation, HttpRoute};
@@ -33,6 +35,12 @@ use fss_reference::{ReferenceDeployment, ReplayAdmission, ReplayCx};
 use super::authentication::{CredentialLease, Entropy, MAX_CREDENTIAL_BYTES, SecretError};
 use super::{ARGUMENT_ERROR, INPUT_ERROR, LIMIT_ERROR, admission, runtime};
 use plan::Plan;
+
+// Current-state inspection scans at most 1024 small control headers and verifies at most
+// 64 cleanup attempts with their parent/source closures. This is a cumulative I/O admission
+// ceiling, not an allocation or permission for additional network effects.
+pub(super) const CLEANUP_READ_BYTES: u64 = 512 * 1024 * 1024;
+pub(super) const CLEANUP_READ_OPERATIONS: u64 = 4 * MAX_CATALOG_RECORDS as u64 + 32;
 
 pub(super) struct Owner<'a, 'scope, 'task> {
     pub(super) scope: &'a runtime::Scope<'scope, 'task>,
@@ -193,11 +201,21 @@ pub(super) struct ControlReceipts {
     pub(super) intent: Option<RetainedCreateIntent>,
     pub(super) created: Option<RetainedSubscription>,
     pub(super) unsubscribed: Option<RetainedUnsubscribe>,
+    pub(super) unsubscribe_intent: Option<RetainedUnsubscribeIntent>,
+    pub(super) unsubscribe_outcome: Option<RetainedUnsubscribeOutcome>,
     pub(super) renewal_intents: Vec<RetainedRenewIntent>,
     pub(super) renewal_outcomes: Vec<RetainedRenewal>,
 }
 
 impl ControlReceipts {
+    pub(super) fn successful_cleanup(&self) -> bool {
+        self.unsubscribed.is_some()
+            || self
+                .unsubscribe_outcome
+                .as_ref()
+                .is_some_and(RetainedUnsubscribeOutcome::success_observed)
+    }
+
     pub(super) fn report(&self) -> String {
         let mut out = String::new();
         for (name, receipt) in [
@@ -219,10 +237,29 @@ impl ControlReceipts {
                     .as_ref()
                     .map(|r| (r.identity(), r.publication_root())),
             ),
+            (
+                "unsubscribe_intent",
+                self.unsubscribe_intent
+                    .as_ref()
+                    .map(|r| (r.identity(), r.publication_root())),
+            ),
+            (
+                "unsubscribe_outcome",
+                self.unsubscribe_outcome
+                    .as_ref()
+                    .map(|r| (r.identity(), r.publication_root())),
+            ),
         ] {
             if let Some((identity, root)) = receipt {
                 out.push_str(&format!("{name}.identity={identity}\n{name}.publication_root={root}\n{name}.durable_publication=true\n"));
             }
+        }
+        if let Some(value) = &self.unsubscribe_outcome {
+            out.push_str(&format!(
+                "unsubscribe_outcome.intent_identity={}\nunsubscribe_outcome.success_observed={}\nunsubscribe_outcome.http_status={}\nunsubscribe_outcome.completion_time_observed={}\n",
+                value.intent().identity(), value.success_observed(), value.binding().http_status,
+                value.binding().completed_ns.is_some()
+            ));
         }
         for (index, value) in self.renewal_intents.iter().enumerate() {
             out.push_str(&format!(
@@ -337,6 +374,79 @@ pub(super) fn retain_control<G: ReplayAdmission>(
                 root: value.publication_root(),
             };
             receipts.created = Some(value);
+            (receipt, true)
+        }
+        PullPointControl::UnsubscribeIntent {
+            route,
+            message_id,
+            create_message_id,
+            request_digest,
+            started_ns,
+        } => {
+            let created = receipts.created.as_ref().ok_or(MetadataError::Custody)?;
+            let expected_control = match plan.cleanup_expected_control {
+                Some(expected) => expected,
+                None => inspect_cleanup(&deployment, created, cx)?.witness,
+            };
+            let value = prepare_unsubscribe(
+                &mut deployment,
+                created,
+                UnsubscribeIntentBinding {
+                    route: route.clone(),
+                    create_message_id: create_message_id.to_owned(),
+                    message_id: message_id.to_owned(),
+                    request_digest,
+                    started_ns,
+                    receive_time: interval(plan, started_ns, started_ns)?.earliest,
+                    expected_control,
+                },
+                cx,
+            )?;
+            let receipt = RetainedBatch {
+                identity: value.identity(),
+                root: value.publication_root(),
+            };
+            let dispatch_allowed = value.newly_prepared();
+            receipts.unsubscribe_intent = Some(value);
+            (receipt, dispatch_allowed)
+        }
+        PullPointControl::UnsubscribeOutcome {
+            route,
+            source,
+            message_id,
+            started_ns,
+            completed_ns,
+            authenticated,
+            http_status,
+            soap_content_type,
+        } => {
+            let intent = receipts
+                .unsubscribe_intent
+                .as_ref()
+                .ok_or(MetadataError::Custody)?;
+            if intent.binding().message_id != message_id
+                || intent.binding().started_ns != started_ns
+                || intent.binding().route.digest() != route.digest()
+            {
+                return Err(MetadataError::Custody);
+            }
+            let value = retain_unsubscribe_outcome(
+                &mut deployment,
+                intent,
+                UnsubscribeOutcomeBinding {
+                    completed_ns,
+                    client_authenticated: authenticated,
+                    http_status,
+                    soap_content_type,
+                },
+                source,
+                cx,
+            )?;
+            let receipt = RetainedBatch {
+                identity: value.identity(),
+                root: value.publication_root(),
+            };
+            receipts.unsubscribe_outcome = Some(value);
             (receipt, true)
         }
         PullPointControl::Unsubscribed {
@@ -478,8 +588,10 @@ pub(super) fn run_args(args: &[OsString]) -> Result<(String, bool), &'static str
         2 * (u64::from(plan.config.max_pulls) + u64::from(plan.config.max_renewals) + 2);
     let network =
         exchanges * (plan.config.limits.request_bytes + plan.config.limits.wire_bytes) as u64;
-    let operations = u64::from(plan.config.max_pulls) + 2 * u64::from(plan.config.max_renewals) + 3;
-    let retained_allowance = operations * 4 * 1024 * 1024;
+    let publications =
+        u64::from(plan.config.max_pulls) + 2 * u64::from(plan.config.max_renewals) + 5;
+    let operations = publications + CLEANUP_READ_OPERATIONS;
+    let retained_allowance = publications * 4 * 1024 * 1024 + CLEANUP_READ_BYTES;
     let mut retained = Vec::<RetainedMetadata>::new();
     let mut controls = ControlReceipts::default();
     let mut capture_report = None::<CaptureReport>;
@@ -618,7 +730,7 @@ fn render(
         ($($arg:tt)*) => { writeln!(&mut out, $($arg)*).map_err(|_| LIMIT_ERROR)? };
     }
     let cleanup_error = report.and_then(|report| report.cleanup_error);
-    let complete = controls.unsubscribed.is_some()
+    let complete = controls.successful_cleanup()
         && error.is_none()
         && cleanup_error.is_none()
         && report.is_some_and(|report| {
@@ -645,6 +757,7 @@ fn render(
     line!("current_remote_state=unknown");
     line!("automatic_create_retry_safe=false");
     line!("automatic_renew_retry_safe=false");
+    line!("automatic_unsubscribe_retry_safe=false");
     line!("sensitive_features_enabled=false");
     line!("values_disclosed=false");
     out.push_str(&controls.report());

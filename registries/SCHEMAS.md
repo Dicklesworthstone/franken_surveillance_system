@@ -205,3 +205,31 @@ The native capture coordinator permits renewal only with an explicit finite `max
 | `fss.recorded_calibration_monitor_package.v1` | `ingest::calibration_monitor` | CanonicalEncoder domain, calibration object and semantic identity, original camera input, nonzero u64 camera handle, adoption digest, localization identity/root/receipt and measured receipt. SHA-256 pins only, at most 1024 bytes, whole consumption and byte-identical reencoding. Digest-derived calibration-monitor slot, with recipe metadata and calibration/input/localization root/receipt/approval/adoption custody children, published through existing ledgered local-root reachability. |
 | `fss.recorded_calibration_monitor_approval.v1` | `ingest::calibration_monitor` | Canonical domain plus exact measured receipt digest. SHA-256 names the explicit review approval and retained approval material. Only derived evidence is retained; no calibration activation or withdrawal authority is minted. |
 | `fss.calibration_monitor_report.v1` | `fss-event calibration monitor` | JSON projection of one immutable measured observation with proposed/retained/already_retained/replayed status; pass_under_policy/contradicted/indeterminate outcome; source, calibration, adoption and replay pins; capture interval, residuals/support/span and work accounting; fixed false activation/invalidation fields. A contradiction recommends a separately reviewed owner withdrawal. CLI adds exact approval/replay commands and current authority sequence. Report is not a present-day or continuous validity lease. |
+
+
+### ONVIF cleanup attempt custody
+
+`fss.onvif_pullpoint_unsubscribe_intent.v1` stores the frozen control parser generation,
+Created identity, exact current route and approval, original Create MessageID, fresh cleanup
+MessageID, reconstructed SOAP request digest, monotonic admission, independent deployment-clock
+admission point and expected cleanup-state witness. `fss.onvif_pullpoint_unsubscribe_outcome.v1`
+stores the same parser generation, exact intent, optional completion time, client-Digest flag,
+HTTP status, SOAP-content-type flag, raw body digest and u64 byte length. Both canonical records
+are at most 8192 bytes, require whole consumption and byte-identical re-encoding, and keep the
+original Created/intent source closure in the existing onvif-subscription publication namespace.
+Raw outcomes allow zero bytes up to 256 KiB; a complete response is retained before interpretation.
+
+A missing completion time leaves the declared receive interval at the admission point; it does
+not imply an exact response time. A successful, exactly correlated raw UnsubscribeResponse
+suppresses redispatch even without the unchanged successful `fss.onvif_pullpoint_unsubscribed.v1`
+marker. Malformed/refused outcomes and intent-only attempts retain explicit uncertainty. A
+Created-scoped cleanup query scans bounded canonical headers before verifying selected source
+closures, allows at most 1024 catalog records and 64 cleanup attempts, and binds all selected
+identities, roots and authority sequences into `fss.onvif_pullpoint_cleanup_state.v1`.
+
+CLI `control inspect --kind created` exposes that witness. `control unsubscribe` requires
+`--expected-control`, bound into the separate `fss.onvif_metadata_unsubscribe_request.v2`
+approval. Already verified successful cleanup returns without credentials, entropy or network
+work. An unresolved attempt requires fresh owner review, request identity and approval; stale
+state is refused before dispatch. New records participate in existing holds/deletion closure,
+and deleted evidence cannot be restored by cold open or exact retention retry.
