@@ -34,7 +34,9 @@ IFACE = "en1"
 PORT = 63616
 UID = b"TDEWNKCZVSYLVLT7111A"
 LOG = "/tmp/owlet_root_attempt.log"
-CUBO = os.path.expanduser("~/fw-lab/owlet/cubo")
+CUBO = "/Users/jemanuel/fw-lab/owlet/cubo"   # absolute: launchd root HOME is /var/root
+if not os.path.isdir(CUBO):
+    CUBO = os.path.expanduser("~/fw-lab/owlet/cubo")
 sys.path.insert(0, CUBO)
 import cuboai_pure_owlet as cp  # the proven stack: transcode, inv_transcode, build_av_connect
 
@@ -77,7 +79,9 @@ def liveness(timeout=8):
 
 def mint_if_stale(max_age=3600):
     """Refresh credentials via the proven watcher mint path when older than max_age."""
-    cred_path = os.path.expanduser("~/.config/fss/owlet_credentials.json")
+    cred_path = ("/Users/jemanuel/.config/fss/owlet_credentials.json"
+                 if os.path.exists("/Users/jemanuel/.config/fss/owlet_credentials.json")
+                 else os.path.expanduser("~/.config/fss/owlet_credentials.json"))
     cred = None
     try:
         with open(cred_path) as f:

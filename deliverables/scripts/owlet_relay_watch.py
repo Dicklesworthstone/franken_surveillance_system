@@ -48,9 +48,13 @@ MY_IP = "192.168.4.160"          # this host on en1
 IFACE = "en1"
 LAN_SEARCH_PORT = 63616          # the app's own 0xF880, not the 32761 default
 RELAY_PEERS = ("14.1.31.34", "64.74.160.146", "66.23.205.210")
-CUBO_DIR = os.path.expanduser("~/fw-lab/owlet/cubo")
+CUBO_DIR = ("/Users/jemanuel/fw-lab/owlet/cubo"
+            if os.path.isdir("/Users/jemanuel/fw-lab/owlet/cubo")
+            else os.path.expanduser("~/fw-lab/owlet/cubo"))
 LOG = "/tmp/owlet_relay_watch.log"
-CRED = os.path.expanduser("~/.config/fss/owlet_credentials.json")
+CRED = ("/Users/jemanuel/.config/fss/owlet_credentials.json"
+        if os.path.exists("/Users/jemanuel/.config/fss/owlet_credentials.json")
+        else os.path.expanduser("~/.config/fss/owlet_credentials.json"))
 
 sys.path.insert(0, CUBO_DIR)
 
@@ -105,7 +109,7 @@ def camera_on_wire(seconds=6, wake=True):
     time.sleep(1.5)  # BPF attach
     if wake:
         try:
-            sys.path.insert(0, os.path.expanduser("~/fw-lab/owlet/cubo"))
+            sys.path.insert(0, CUBO_DIR)
             import cuboai_pure_owlet as _cp
             import socket as _s
             pkt = _cp.build_probe(b"TDEWNKCZVSYLVLT7111A", 0x2ac2)
@@ -231,7 +235,9 @@ def mint():
     The account email/password come from ~/.config/fss/owlet_account.json
     ({"email": "...", "password": "..."}). Never logged.
     """
-    acct_path = os.path.expanduser("~/.config/fss/owlet_account.json")
+    acct_path = ("/Users/jemanuel/.config/fss/owlet_account.json"
+             if os.path.exists("/Users/jemanuel/.config/fss/owlet_account.json")
+             else os.path.expanduser("~/.config/fss/owlet_account.json"))
     try:
         with open(acct_path) as f:
             acct = json.load(f)
