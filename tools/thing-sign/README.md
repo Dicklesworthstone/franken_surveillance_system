@@ -94,3 +94,48 @@ parser-acceptance sweep targets next).
 | **play.google.com listing** | **200** — Play is readable without auth; live version **5.10.22** ("What's new"), `[[["5.10.22"]]]` in page data. Delivery of the APK itself requires the Google account delivery protocol (token + device registration) — out of lane scope; a Play-installed copy or its `/data/data/com.glazero.android/` dir remains the surest blob source. |
 
 Play listing also confirms the fleet's 5.10.12 is one minor behind current.
+
+### Parser-acceptance harness (`ext_acceptance.py`, 2026-10-28) — results
+
+`ext_acceptance.py` mirrors the blob parser/consumer evaluation order exactly (addresses from
+the arm64 `libthing_security.so`, MD5 `465e5af0…`):
+
+| step | site | semantics |
+|---|---|---|
+| newline scan | `0x192e8` | first `\n` scanning from **index 1**; none → `-1` |
+| decimal field | `0x1930c–0x19368` | backward digit accumulate with `pow(10,k)` (non-digits skipped), stored `ctx+0x14` |
+| payload split | `0x193d8` | base64 payload = `[newline+1, len)`; remainder-length guard `cmn #0x10` at `0x19388` |
+| decode | `0x18c68→0x18ce0` | strict `mbedtls_base64_decode` (rejects embedded newlines/whitespace) |
+| decrypt | `0x18dbc→0x10fb0→0x11098` | **AES-128-ECB** (FIPS-197 tables in-binary: SBOX `0x756f`, Rcon `0x7470`, InvSBOX `0x766f`, InvShiftRows idx `0x7410`; 9 main rounds), key from init state |
+| normalize | `0x18e9c–0x18ee0` | plaintext → string with **every NUL byte replaced by `'0'`** (`movz w24,#0x3002`) |
+
+AES-128 core validated against FIPS-197 Appendix C.1 (key `000102…`, ct `69c4e0d8…` → pt
+`00112233…` PASS) and round-key schedule matches C.1 (`w4=d6aa74fd…`, `w40=13111d7f…`).
+
+**Live-gate matrix** (each candidate swapped into `assets/tecrkcehc_ext`, real JVM harness):
+
+| candidate | class | dec len | live result |
+|---|---|---|---|
+| current placeholder (t_s.bmp copy) | cipher | 128 | `checkStatus -1`, RESULT `abe3a823…` (baseline) |
+| AES-enc json-keys (16B-padded) | cipher | 32 | unchanged baseline |
+| AES-enc csv-keys | cipher | 16 | unchanged baseline |
+| AES-enc fips197 vector | cipher | 16 | unchanged baseline |
+| raw 32-byte | cipher | 32 | unchanged baseline |
+| raw 27-byte JSON (not block-multiple) | b64 | 27 | **SIGSEGV in musl** (`ld-musl+0x2a0e4`) |
+| raw 11-byte CSV | b64 | 11 | **SIGSEGV** (same) |
+| trailing-newline base64 (`-padnl`) | shape | — | strict decode rejects → parse class only |
+
+Conclusions, all measured:
+
+1. **Block alignment is a hard requirement** — non-multiple-of-16 decoded content crashes the
+   signer path (the decrypt runs unguarded). Any synthesized blob must decode to a multiple
+   of 16.
+2. **The embedded `\n` of multi-line base64 (`cers` shape) is rejected** by the strict decoder —
+   `cers` is *not* in `tecrkcehc_ext` format; its 60-line base64 would fail at `0x18ce0`.
+3. `checkStatus -1` and `cmd 1` result are **insensitive** to placeholder *content* in the
+   16/32-byte cipher class — the acceptance gate needs the genuine plaintext (or the crash
+   class difference indicates the decimal field at `ctx+0x14` gates a length-sensitive copy
+   that our placeholders satisfy trivially). Next discriminating run: vary the decimal field
+   against a fixed payload and watch for a length check mismatch path.
+4. Sweep driver: `python3 ext_acceptance.py sweep --out DIR` regenerates all candidates;
+   `decrypt` mode + `--keyhex` full-pipeline-decrypts a candidate offline.
