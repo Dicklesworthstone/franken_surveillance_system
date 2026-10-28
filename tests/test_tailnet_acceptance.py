@@ -72,6 +72,22 @@ class MockStack:
             "exit 0\n"
         )
         os.chmod(self.ssh_shim, 0o755)
+        # fake sftp shim: real filesystem round-trip of the put/get/rm batch
+        self.sftp_shim = self.ssh_shim.parent / "fake-sftp.sh"
+        self.sftp_shim.write_text(
+            "#!/bin/sh\n"
+            "batch=$(cat)\n"
+            'echo "$batch" | while IFS= read -r line; do\n'
+            '  case "$line" in\n'
+            '    put\\ *) set -- $line; cp "$2" "$3" ;;\n'
+            '    get\\ *) set -- $line; cp "$2" "$3" ;;\n'
+            '    rm\\ *) set -- $line; rm -f "$2" ;;\n'
+            "  esac\n"
+            "done\n"
+            'if [ -n "$FAKE_SFTP_FAIL" ]; then echo "sftp: subystem failed" >&2; exit 1; fi\n'
+            "exit 0\n"
+        )
+        os.chmod(self.sftp_shim, 0o755)
 
     def stop(self) -> None:
         self.server.stop_flag = True
@@ -89,18 +105,24 @@ def main() -> int:
             "127.0.0.1", stack.rtsp_port, stack.http_port, stack.http_port,
             timeout=5.0, require_tailnet_bind=False,
             expect_model="wyze_cam4", ssh_user="root",
-            ssh_cmd=str(stack.ssh_shim),
+            ssh_cmd=str(stack.ssh_shim), want_sftp=True,
+            sftp_cmd=str(stack.sftp_shim),
         )
         by_row = {r["row"]: r for r in rows}
         check(all_pass, "all rows pass against mocks")
-        check(len(rows) == 8, "exactly 8 contract rows, got %d" % len(rows))
+        check(len(rows) == 10, "exactly 10 contract rows, got %d" % len(rows))
         for row in ("rtsp-port", "rtsp-handshake", "rtsp-frame", "onvif-capabilities",
-                    "onvif-device-info", "http-control", "tailscaled-status", "tailnet-bind"):
+                    "onvif-device-info", "onvif-profile-s", "http-control",
+                    "tailscaled-status", "dropbear-sftp", "tailnet-bind"):
             check(row in by_row and by_row[row]["pass"], "row %s PASS" % row)
         check("decoded" in by_row["rtsp-frame"]["detail"],
               "rtsp-frame detail reports a decoded frame")
         check("thingino" in by_row["onvif-device-info"]["detail"],
               "device-info detail carries Manufacturer=thingino")
+        check("H264" in by_row["onvif-profile-s"]["detail"],
+              "profile-s detail reports H264 encoder binding")
+        check("round-trip" in by_row["dropbear-sftp"]["detail"],
+              "sftp detail reports put+get round-trip")
         check("peer lines" in by_row["tailscaled-status"]["detail"],
               "tailscaled-status detail reports peers")
 
@@ -116,6 +138,16 @@ def main() -> int:
         ts = next(r for r in rows if r["row"] == "tailscaled-status")
         check(not ts["pass"] and "skipped" in ts["detail"],
               "tailscaled-status is an explicit skip without --ssh-user")
+        sf = next(r for r in rows if r["row"] == "dropbear-sftp")
+        check(not sf["pass"] and "skipped" in sf["detail"],
+              "dropbear-sftp is an explicit skip without --ssh-user/--sftp")
+
+        # --- sftp failure mode via the shim
+        os.environ["FAKE_SFTP_FAIL"] = "1"
+        ok, detail = ta.sftp_row("127.0.0.1", 22, "root", 5.0,
+                                 sftp_cmd=str(stack.sftp_shim))
+        check(not ok and "rc=1" in detail, "dropbear-sftp FAILS on shim rc!=0")
+        del os.environ["FAKE_SFTP_FAIL"]
 
         # --- tailscaled-status failure modes via the shim
         env_backup = dict(os.environ)
