@@ -313,6 +313,38 @@ def rtsp_verify(host: str, user: str, password: str, port: int = RTSP_PORT,
     return 1
 
 
+def present(host: str) -> bool:
+    """Doctrine presence: ICMP reply AND a resolved ARP entry.
+
+    ARP alone is not enough — a sleeping battery unit keeps its ARP entry
+    (the radio answers) while the SoC serves nothing, and `arp -a` is empty in
+    spawned subprocesses, so the census form is `sudo -n arp -an`.
+    """
+    icmp = subprocess.run(["ping", "-c", "1", "-W", "1", host],
+                          capture_output=True).returncode == 0
+    out = subprocess.run(["sudo", "-n", "/usr/sbin/arp", "-an"],
+                         capture_output=True, text=True).stdout
+    line = [ln for ln in out.splitlines() if "(%s)" % host in ln]
+    resolved = bool(line) and "(incomplete)" not in line[0]
+    return icmp and resolved
+
+
+def wait_present(host: str, minutes: float, poll: float = 10.0) -> bool:
+    """Block until both presence signals hold. 0 minutes waits forever."""
+    deadline = None if minutes == 0 else time.monotonic() + minutes * 60
+    last = None
+    while True:
+        now = present(host)
+        if now is not last:
+            print("wait: %s %s" % (host, "PRESENT" if now else "absent"), flush=True)
+            last = now
+        if now:
+            return True
+        if deadline is not None and time.monotonic() >= deadline:
+            return False
+        time.sleep(poll)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("host")
@@ -331,10 +363,17 @@ def main() -> int:
                     help="soft_reset after the writes (a reboot is required)")
     ap.add_argument("--rtsp-port", type=int, default=RTSP_PORT)
     ap.add_argument("--onvif-port", type=int, default=ONVIF_PORT)
+    ap.add_argument("--wait", type=float, default=None,
+                    help="minutes to wait for ICMP+ARP presence before acting (0 = forever, "
+                         "only with --rtsp-enable/--rtsp-verify)")
     a = ap.parse_args()
 
     password = a.rtsp_pass or secrets.token_urlsafe(12)
 
+    if a.rtsp_enable or a.rtsp_verify:
+        if a.wait is not None and not wait_present(a.host, a.wait):
+            print("wait: %s never became present" % a.host)
+            return 2
     if a.rtsp_enable:
         return rtsp_enable(a.host, a.rtsp_user, password, a.rtsp_unique_key, a.rtsp_reset)
     if a.rtsp_verify:
