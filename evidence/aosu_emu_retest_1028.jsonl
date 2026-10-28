@@ -1,0 +1,11 @@
+RETEST 2026-10-28 cooldown check — single shot, exact sequence per aosu-localkey.md §'Exact retest sequence'
+# emulator: aosu AVD headless -no-snapshot, boot 19.4s; frida-server 17.24.3 pid 4539
+# tuya_sp.xml cleared BEFORE spawn (adb rm /data/data/com.glazero.android/shared_prefs/tuya_sp.xml)
+# hook: /tmp/hook_full.js under frida qjs runtime + frida_tools/bridges/java.js inlined (frida 17 needs manual bridge load; see runbook note)
+# app: com.glazero.android spawned pid 6242, hook FULL_OK
+FULL_OK
+2026-10-28T23:13:22.847Z G {"a":"smartlife.m.miniprogram.kit.whitelist.query","sign":"f05a8cfada5491c7221bf5bbc92b718d3be4e08fb9ccae5f7d579d181905ab60","chKey":"19d68b18","postData":"w9aO+3aAjPOgBVjCkm2hgWBubXyBFgB+edzY1eYs","time":"1793229202","sid":""}
+2026-10-28T23:13:24.339Z RSP 200 https://a1.tuyaus.com/api.json body={"success":false,"errorCode":"ILLEGAL_CLIENT_ID","status":"error","errorMsg":"Invalid client;No access"}
+# VERDICT: cooldown STILL HOLDS — fresh-identity whitelist query (sign f05a8cfa..., chKey 19d68b18) answered
+# ILLEGAL_CLIENT_ID 'Invalid client;No access' at 2026-10-28T23:13:24.339Z (38h40m after the 10-27 06:46 UTC confirmation).
+# Single-shot rule: STOP here. token.get and keyget NOT attempted (sequence gates on success:true).
