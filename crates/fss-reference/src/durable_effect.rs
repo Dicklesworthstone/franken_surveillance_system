@@ -8,6 +8,7 @@ use std::error::Error;
 use std::fmt;
 use std::path::Path;
 
+use fss_core::effect::EffectAuthority;
 use fss_core::{
     BatchId, CanonicalDecode, CanonicalEncode, ContentDigest, ContractError, EffectIntent,
     EffectJournal, EffectJournalTransition, EffectRecordVersion, EffectState, LedgerAnchor,
@@ -49,7 +50,8 @@ pub const EFFECT_TRANSITION_V2_RECORD_KIND: u16 = 3;
 ///
 /// The payload is the same `fss.effect_transition.v1` encoding. Its receipts use the v2 receipt
 /// encoding; a cancellation is a proof-bound `Cancel` record, which replay re-verifies against the
-/// journal's own prepared record and the recorded cancel-request evidence.
+/// journal's own prepared record and the recorded cancel-request evidence. Explicit
+/// owner preparation uses `PrepareWithAuthority`; legacy `Prepare` bytes are unchanged.
 pub const EFFECT_TRANSITION_V3_RECORD_KIND: u16 = 4;
 
 /// Indeterminate reason recorded when restart reconciliation finds a `Committed` operation of
@@ -771,6 +773,55 @@ impl DurableEffectJournal {
             .memory
             .prepare(intent, obligation_id, terminal_predicate_str, now)?;
         Ok(receipt)
+    }
+
+    /// Prepares an effect durably with the exact explicit owner authority.
+    ///
+    /// The owner must admit current authority before calling this method; the
+    /// historical receipt never grants authority for a new dispatch. Exact retries
+    /// preserve intent, authority, obligation identity and terminal predicate and
+    /// append nothing. Conflicting retries fail before any durable record is written.
+    pub fn prepare_with_authority(
+        &mut self,
+        intent: EffectIntent,
+        obligation_id: ObligationId,
+        terminal_predicate: impl Into<String>,
+        authority: EffectAuthority,
+        now: TimestampNs,
+    ) -> Result<&OperationReceipt, DurableEffectError> {
+        let terminal_predicate = terminal_predicate.into();
+        if self
+            .memory
+            .validate_prepare_with_authority(
+                &intent,
+                &obligation_id,
+                &terminal_predicate,
+                &authority,
+            )?
+            .is_some()
+        {
+            return self
+                .memory
+                .operation(&intent.operation_id)
+                .ok_or_else(|| ContractError::NotFound.into());
+        }
+        let transition = EffectJournalTransition::PrepareWithAuthority {
+            intent: intent.clone(),
+            obligation_id: obligation_id.clone(),
+            terminal_predicate: terminal_predicate.clone(),
+            authority: authority.clone(),
+            now,
+        };
+        let bytes = transition.try_canonical_bytes()?;
+        self.journal
+            .append(EFFECT_TRANSITION_V3_RECORD_KIND, &bytes)?;
+        Ok(self.memory.prepare_with_authority(
+            intent,
+            obligation_id,
+            terminal_predicate,
+            authority,
+            now,
+        )?)
     }
 
     /// Transitions an operation state durably.

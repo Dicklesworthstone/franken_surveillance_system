@@ -546,7 +546,8 @@ fn replay_record(
             let transition = EffectJournalTransition::decode_canonical(&mut decoder)
                 .map_err(|_| invalid("transition decode"))?;
             match &transition {
-                EffectJournalTransition::Prepare { .. } => {
+                EffectJournalTransition::Prepare { .. }
+                | EffectJournalTransition::PrepareWithAuthority { .. } => {
                     return Err(invalid("unbound preparation"));
                 }
                 EffectJournalTransition::Transition {
@@ -596,4 +597,43 @@ fn replay_record(
         return Err(invalid("replayed state root"));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod preparation_guard_tests {
+    use super::*;
+    use fss_core::{EffectIntent, IdempotencyKey, ObligationId};
+
+    #[test]
+    fn generic_explicit_authority_prepare_cannot_bypass_runtime_binding()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let transition = EffectJournalTransition::PrepareWithAuthority {
+            intent: EffectIntent::new(
+                OperationId::parse("operation:guard:explicit")?,
+                IdempotencyKey::parse("idempotency:guard:explicit")?,
+                "owner.effect",
+                ContentDigest::sha256(b"request"),
+                ContentDigest::sha256(b"preconditions"),
+            )?,
+            obligation_id: ObligationId::parse("obligation:guard:explicit")?,
+            terminal_predicate: "observation_retained".to_owned(),
+            authority: EffectAuthority::new("principal:owner", "effect:execute", Some(4))?,
+            now: TimestampNs(1),
+        };
+        let mut journal = EffectJournal::new();
+        let before = journal.journal_root();
+        let mut intended = journal.clone();
+        intended.apply_transition(transition.clone())?;
+        let bytes = JournalEvent::Transition(transition).encode(before, intended.journal_root())?;
+        let mut bindings = BTreeMap::new();
+        assert!(matches!(
+            replay_record(&bytes, &mut journal, &mut bindings),
+            Err(EffectPersistenceError::InvalidHistory(
+                "unbound preparation"
+            )),
+        ));
+        assert_eq!(journal.journal_root(), before);
+        assert!(bindings.is_empty());
+        Ok(())
+    }
 }

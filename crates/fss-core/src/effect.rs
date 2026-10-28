@@ -2212,6 +2212,23 @@ pub enum EffectJournalTransition {
         /// Preparation timestamp.
         now: TimestampNs,
     },
+    /// Preparation carrying the exact explicit owner authority.
+    ///
+    /// This is a current-version record; legacy `Prepare` bytes retain their
+    /// system-default authority semantics. Exact retries bind the complete intent,
+    /// authority, obligation identity and terminal predicate.
+    PrepareWithAuthority {
+        /// Prepared effect intent.
+        intent: EffectIntent,
+        /// Associated obligation id.
+        obligation_id: ObligationId,
+        /// Terminal predicate to be proven.
+        terminal_predicate: String,
+        /// Explicit authority admitted by the effect owner.
+        authority: EffectAuthority,
+        /// Preparation timestamp.
+        now: TimestampNs,
+    },
     /// General effect state transition.
     Transition {
         /// Target operation id.
@@ -2278,6 +2295,20 @@ impl CanonicalEncode for EffectJournalTransition {
                 intent.encode_canonical(encoder);
                 obligation_id.encode_canonical(encoder);
                 encoder.text(terminal_predicate);
+                now.encode_canonical(encoder);
+            }
+            Self::PrepareWithAuthority {
+                intent,
+                obligation_id,
+                terminal_predicate,
+                authority,
+                now,
+            } => {
+                encoder.u8(6);
+                intent.encode_canonical(encoder);
+                obligation_id.encode_canonical(encoder);
+                encoder.text(terminal_predicate);
+                authority.encode_canonical(encoder);
                 now.encode_canonical(encoder);
             }
             Self::Transition {
@@ -2434,6 +2465,25 @@ impl CanonicalDecode for EffectJournalTransition {
                     reason,
                 })
             }
+            6 => {
+                let intent = EffectIntent::decode_canonical(decoder)?;
+                let obligation_id = ObligationId::decode_canonical(decoder)?;
+                let terminal_predicate = decoder.text()?.to_string();
+                if terminal_predicate.is_empty()
+                    || terminal_predicate.len() > MAX_TERMINAL_PREDICATE_LEN
+                {
+                    return Err(ContractError::InvalidIdentifier);
+                }
+                let authority = EffectAuthority::decode_canonical(decoder)?;
+                let now = TimestampNs::decode_canonical(decoder)?;
+                Ok(Self::PrepareWithAuthority {
+                    intent,
+                    obligation_id,
+                    terminal_predicate,
+                    authority,
+                    now,
+                })
+            }
             _ => Err(ContractError::InvalidIdentifier),
         }
     }
@@ -2463,7 +2513,10 @@ impl EffectJournal {
         }
     }
 
-    /// Prepares an effect exactly once with explicit authority, and returns the existing receipt on an exact retry.
+    /// Prepares an effect exactly once with explicit authority.
+    ///
+    /// An exact retry must preserve the intent, authority, obligation identity and
+    /// terminal predicate; its later admission timestamp does not change the record.
     pub fn prepare_with_authority(
         &mut self,
         intent: EffectIntent,
@@ -2472,6 +2525,13 @@ impl EffectJournal {
         authority: EffectAuthority,
         now: TimestampNs,
     ) -> Result<&OperationReceipt, ContractError> {
+        let terminal_predicate = terminal_predicate.into();
+        self.validate_prepare_with_authority(
+            &intent,
+            &obligation_id,
+            &terminal_predicate,
+            &authority,
+        )?;
         self.prepare_versioned(
             intent,
             obligation_id,
@@ -2551,12 +2611,14 @@ impl EffectJournal {
         terminal_predicate: impl Into<String>,
         now: TimestampNs,
     ) -> Result<&OperationReceipt, ContractError> {
-        self.prepare_with_authority(
+        // Preserve the legacy default-authority preparation and retry contract.
+        self.prepare_versioned(
             intent,
             obligation_id,
             terminal_predicate,
             EffectAuthority::system_default(),
             now,
+            EffectRecordVersion::V3,
         )
     }
 
@@ -3014,6 +3076,44 @@ impl EffectJournal {
         Ok(None)
     }
 
+    /// Pre-validates an explicit-authority prepare without mutating the journal.
+    ///
+    /// Unlike the legacy default-authority API, retries bind the complete immutable
+    /// preparation. Invalid public-field values are refused before durable encoding.
+    pub fn validate_prepare_with_authority(
+        &self,
+        intent: &EffectIntent,
+        obligation_id: &ObligationId,
+        terminal_predicate: &str,
+        authority: &EffectAuthority,
+    ) -> Result<Option<&OperationReceipt>, ContractError> {
+        if intent.effect_class.is_empty()
+            || intent.effect_class.len() > MAX_EFFECT_CLASS_LEN
+            || terminal_predicate.is_empty()
+            || terminal_predicate.len() > MAX_TERMINAL_PREDICATE_LEN
+            || authority.principal.is_empty()
+            || authority.capability.is_empty()
+        {
+            return Err(ContractError::InvalidIdentifier);
+        }
+        let Some(existing) = self.validate_prepare(intent, obligation_id)? else {
+            return Ok(None);
+        };
+        if existing.authority != *authority {
+            return Err(ContractError::IdempotencyConflict);
+        }
+        let obligation = self
+            .obligations
+            .get(obligation_id)
+            .ok_or(ContractError::ObligationConflict)?;
+        if obligation.operation_id != intent.operation_id
+            || obligation.terminal_predicate != terminal_predicate
+        {
+            return Err(ContractError::ObligationConflict);
+        }
+        Ok(Some(existing))
+    }
+
     /// Pre-validates a transition without mutating the journal.
     pub fn validate_transition(
         &self,
@@ -3222,6 +3322,25 @@ impl EffectJournal {
                 now,
                 version,
             ),
+            EffectJournalTransition::PrepareWithAuthority {
+                intent,
+                obligation_id,
+                terminal_predicate,
+                authority,
+                now,
+            } => {
+                // Earlier versions never carried explicit preparation authority.
+                if version < EffectRecordVersion::V3 {
+                    return Err(ContractError::InvalidEffectTransition);
+                }
+                self.prepare_with_authority(
+                    intent,
+                    obligation_id,
+                    terminal_predicate,
+                    authority,
+                    now,
+                )
+            }
             EffectJournalTransition::Transition {
                 operation_id,
                 next,
@@ -3275,6 +3394,19 @@ impl EffectJournal {
                 terminal_predicate,
                 now,
             } => self.prepare(intent, obligation_id, terminal_predicate, now),
+            EffectJournalTransition::PrepareWithAuthority {
+                intent,
+                obligation_id,
+                terminal_predicate,
+                authority,
+                now,
+            } => self.prepare_with_authority(
+                intent,
+                obligation_id,
+                terminal_predicate,
+                authority,
+                now,
+            ),
             EffectJournalTransition::Transition {
                 operation_id,
                 next,
@@ -3921,6 +4053,82 @@ mod tests {
             ),
             Err(ContractError::IdempotencyConflict)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_authority_prepare_round_trips_and_rejects_legacy_record_versions()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let effect = intent(b"owner-approved-request")?;
+        let authority = EffectAuthority::new("principal:owner", "effect:onvif.create", Some(7))?;
+        let transition = EffectJournalTransition::PrepareWithAuthority {
+            intent: effect.clone(),
+            obligation_id: ObligationId::parse("obligation:owner")?,
+            terminal_predicate: "create_response_retained".to_owned(),
+            authority: authority.clone(),
+            now: TimestampNs(10),
+        };
+        let bytes = transition.try_canonical_bytes()?;
+        let decoded = EffectJournalTransition::from_canonical_bytes(&bytes)?;
+        assert_eq!(decoded, transition);
+        let replayed = EffectJournal::replay([decoded])?;
+        let mut applied = EffectJournal::new();
+        applied.apply_transition(transition.clone())?;
+        assert_eq!(applied, replayed);
+        let receipt = replayed
+            .operation(&effect.operation_id)
+            .ok_or(ContractError::NotFound)?;
+        assert_eq!(receipt.authority, authority);
+        assert_eq!(receipt.prepared_at, TimestampNs(10));
+        for version in [EffectRecordVersion::V1, EffectRecordVersion::V2] {
+            assert_eq!(
+                EffectJournal::replay_versioned([(version, transition.clone())]),
+                Err(ContractError::InvalidEffectTransition),
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_authority_replay_refuses_every_changed_preparation_binding()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let original = EffectJournalTransition::PrepareWithAuthority {
+            intent: intent(b"owner-approved-request")?,
+            obligation_id: ObligationId::parse("obligation:owner")?,
+            terminal_predicate: "create_response_retained".to_owned(),
+            authority: EffectAuthority::new("principal:owner", "effect:onvif.create", Some(7))?,
+            now: TimestampNs(10),
+        };
+        let single = EffectJournal::replay([original.clone()])?;
+        let mut exact = original.clone();
+        if let EffectJournalTransition::PrepareWithAuthority { now, .. } = &mut exact {
+            *now = TimestampNs(99);
+        }
+        assert_eq!(EffectJournal::replay([original.clone(), exact])?, single);
+        for field in 0..6 {
+            let mut changed = original.clone();
+            if let EffectJournalTransition::PrepareWithAuthority {
+                intent,
+                authority,
+                obligation_id,
+                terminal_predicate,
+                ..
+            } = &mut changed
+            {
+                match field {
+                    0 => authority.principal = "principal:another-owner".to_owned(),
+                    1 => authority.capability = "effect:another-capability".to_owned(),
+                    2 => authority.lease_fence = Some(8),
+                    3 => *obligation_id = ObligationId::parse("obligation:another")?,
+                    4 => *terminal_predicate = "different_postcondition".to_owned(),
+                    _ => intent.request_digest = ContentDigest::sha256(b"changed request"),
+                }
+            }
+            assert!(
+                EffectJournal::replay([original.clone(), changed]).is_err(),
+                "field {field}"
+            );
+        }
         Ok(())
     }
 
