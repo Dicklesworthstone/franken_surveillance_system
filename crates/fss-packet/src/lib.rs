@@ -13,6 +13,8 @@ pub mod cadence;
 /// Bounded H.265 access-unit/VPS/SPS/PPS parser (FSS-114).
 pub mod h265_access_unit;
 pub mod hevc;
+/// Bounded uncompressed ONVIF metadata documents over owner-scoped RTP.
+pub mod onvif_metadata;
 
 mod continuity;
 mod error;
@@ -54,4 +56,11 @@ pub use receiver::{
 pub use reorder::{
     OrderedRtpPacket, QueueDiscard, QueueDiscardReason, ReorderAdmission, ReorderDisposition,
     ReorderError, ReorderGap, ReorderGapReason, ReorderLimits, ReorderPoll, RtpReorderBuffer,
+};
+
+pub use onvif_metadata::{
+    OnvifMetadataBoundary, OnvifMetadataDiscard, OnvifMetadataDiscardReason, OnvifMetadataDocument,
+    OnvifMetadataError, OnvifMetadataFailure, OnvifMetadataLimits, OnvifMetadataOutput,
+    OnvifMetadataReceiveAdmission, OnvifMetadataReceiveCancellation, OnvifMetadataReceiveError,
+    OnvifMetadataReceivePoll, OnvifMetadataReceiver, OnvifMetadataSourceSpan, OnvifMetadataStatus,
 };
