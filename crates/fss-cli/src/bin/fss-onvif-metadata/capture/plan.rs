@@ -6,7 +6,8 @@ use std::ffi::OsString;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-use fss_core::{CanonicalEncoder, ContentDigest, DigestAlgorithm, SensorId};
+use fss_core::{CanonicalEncoder, ContentDigest, DigestAlgorithm, OperationId, SensorId};
+use fss_reference::onvif::capture_operation::CaptureOperationBinding;
 use fss_reference::onvif::client::DigestConfig;
 use fss_reference::onvif::http::{HttpLimits, HttpRoute};
 use fss_reference::onvif::pullpoint::{MAX_RENEWALS, PullPointConfig, route_in_service_root};
@@ -22,10 +23,14 @@ pub(super) const HELP: &str = "fss-onvif-metadata capture [options]
   --receive-origin-ns N
   [--principal ID] [--generation 1] [--max-pulls 4] [--poll-seconds 5]
   [--message-limit 128] [--lifetime-seconds 120] [--timeout-ms 30000]
-  [--max-steps 100000] [--max-renewals 0]
+  [--max-steps 100000] [--max-renewals 0] [--operation-id OPERATION_ID]
   [--credential-file /PRIVATE_FILE --auth-realm EXACT_REALM]
   [--legacy-md5 yes] [--legacy-no-qop yes]
 
+Use --operation-id to fence this owner operation across retries and restarts. Any existing
+ID refuses another Create, including an attempt whose result is unknown. Changed owner
+or capture pins under the same ID conflict. Inspect with control operation --operation-id.
+The fence survives metadata/control source deletion; it never resumes an old attempt.
 Creates one finite device-event PullPoint subscription, retains complete event responses,
 then attempts Unsubscribe within the original deadline. No automatic reconnect.
 Renewal is opt-in: --max-renewals 1..4 allows bounded extensions using --lifetime-seconds.
@@ -57,6 +62,7 @@ pub(crate) struct Plan {
     pub receive_origin_ns: i128,
     pub approval: ContentDigest,
     pub cleanup_expected_control: Option<ContentDigest>,
+    pub operation: Option<CaptureOperationBinding>,
     pub credentials: Option<PathBuf>,
     pub config: PullPointConfig,
 }
@@ -154,12 +160,23 @@ impl Plan {
                         | "--message-limit"
                         | "--lifetime-seconds"
                         | "--max-renewals"
+                        | "--operation-id"
                 )
             };
             if !(common || action) || values.insert(key.to_owned(), pair[1].clone()).is_some() {
                 return Err(ARGUMENT_ERROR);
             }
         }
+        let operation_id = values
+            .get("--operation-id")
+            .map(|value| {
+                let value = value.to_str().ok_or(ARGUMENT_ERROR)?;
+                if value.len() > 256 {
+                    return Err(ARGUMENT_ERROR);
+                }
+                OperationId::parse(value).map_err(|_| ARGUMENT_ERROR)
+            })
+            .transpose()?;
         let action_approval = if cleanup.is_some() {
             "--unsubscribe"
         } else {
@@ -324,7 +341,7 @@ impl Plan {
             lifetime_seconds,
         };
         fss_reference::onvif::pullpoint::validate_config(&config).map_err(|_| ARGUMENT_ERROR)?;
-        Ok(Self {
+        let mut plan = Self {
             root,
             site,
             principal,
@@ -335,8 +352,85 @@ impl Plan {
             receive_origin_ns,
             approval,
             cleanup_expected_control: cleanup.map(|(_, _, witness)| witness),
+            operation: None,
             credentials,
             config,
+        };
+        plan.operation = operation_id
+            .map(|operation_id| plan.bind_operation(operation_id))
+            .transpose()?;
+        Ok(plan)
+    }
+
+    /// Stable effective request identity. Fresh observation clocks, MessageIDs,
+    /// process-local deadlines, store paths and exact argument spelling are not
+    /// part of the owner operation. Credential values are never inspected here.
+    fn bind_operation(
+        &self,
+        operation_id: OperationId,
+    ) -> Result<CaptureOperationBinding, &'static str> {
+        if self.principal.trim() != self.principal
+            || self.device_generation.bytes() == [0; 32]
+            || self.profile_generation.bytes() == [0; 32]
+        {
+            return Err(ARGUMENT_ERROR);
+        }
+        let mut pins = CanonicalEncoder::new();
+        pins.text("fss.onvif_capture_operation_preconditions.v1");
+        pins.text(&self.site);
+        pins.text(&self.principal);
+        pins.text(self.sensor.as_str());
+        pins.digest(self.device_generation);
+        pins.digest(self.profile_generation);
+        pins.text(&self.profile);
+        let precondition_digest =
+            ContentDigest::sha256(&pins.finish_checked().map_err(|_| ARGUMENT_ERROR)?);
+        let config = &self.config;
+        let mut request = CanonicalEncoder::new();
+        request.text("fss.onvif_capture_operation_request.v1");
+        request.text("owner-authorized:plaintext:subscribe:bounded-pull:unsubscribe");
+        request.digest(precondition_digest);
+        request.text(&config.events.peer().to_string());
+        request.text(config.events.authority());
+        request.text(config.events.target());
+        request.u64(config.events.generation());
+        request.text(&config.service_root);
+        match (&config.auth, &self.credentials) {
+            (None, None) => request.bool(false),
+            (Some(auth), Some(path)) => {
+                request.bool(true);
+                request.bytes(path.as_os_str().as_encoded_bytes());
+                request.text(&auth.expected_realm);
+                request.bool(auth.policy.allow_legacy_md5);
+                request.bool(auth.policy.allow_legacy_no_qop);
+            }
+            _ => return Err(ARGUMENT_ERROR),
+        }
+        for value in [
+            config.deadline_ns,
+            u64::from(config.max_steps),
+            u64::from(config.max_pulls),
+            u64::from(config.max_renewals),
+            u64::from(config.pull_timeout_seconds),
+            u64::from(config.message_limit),
+            u64::from(config.lifetime_seconds),
+            config.limits.request_bytes as u64,
+            config.limits.header_bytes as u64,
+            config.limits.body_bytes as u64,
+            config.limits.wire_bytes as u64,
+            config.limits.io_bytes as u64,
+            config.limits.io_calls,
+            config.limits.connect_timeout_ns,
+        ] {
+            request.u64(value);
+        }
+        Ok(CaptureOperationBinding {
+            operation_id,
+            principal: self.principal.clone(),
+            request_digest: ContentDigest::sha256(
+                &request.finish_checked().map_err(|_| ARGUMENT_ERROR)?,
+            ),
+            precondition_digest,
         })
     }
 }
@@ -461,6 +555,7 @@ mod tests {
             ("--message-limit", "1"),
             ("--lifetime-seconds", "5"),
             ("--max-renewals", "1"),
+            ("--operation-id", "operation:fixture"),
         ] {
             let mut args = arguments("--unsubscribe");
             args.extend([OsString::from(key), OsString::from(value)]);
@@ -561,6 +656,156 @@ mod tests {
             assert!(Plan::parse_cleanup(&args, valid, invalid, valid).is_err());
             assert!(Plan::parse_cleanup(&args, valid, valid, invalid).is_err());
         }
+        Ok(())
+    }
+
+    fn operation_arguments() -> Vec<OsString> {
+        let mut args = arguments("--subscribe");
+        args.extend([
+            OsString::from("--operation-id"),
+            OsString::from("operation:owner-capture-1"),
+        ]);
+        args
+    }
+
+    fn replace_argument(args: &mut Vec<OsString>, key: &str, value: &str) {
+        if let Some(index) = args.chunks_exact(2).position(|pair| pair[0] == key) {
+            args[index * 2 + 1] = OsString::from(value);
+        } else {
+            args.extend([OsString::from(key), OsString::from(value)]);
+        }
+    }
+
+    #[test]
+    fn stable_operation_normalizes_defaults_order_and_observation_clock() -> Test {
+        let args = operation_arguments();
+        let original = Plan::parse(&args)?;
+        let expected = original.operation.as_ref().ok_or("operation absent")?;
+        let mut changed = args;
+        replace_argument(&mut changed, "--receive-origin-ns", "100000000000");
+        replace_argument(&mut changed, "--root", "/different/physical/store");
+        replace_argument(&mut changed, "--timeout-ms", "030000");
+        replace_argument(&mut changed, "--max-pulls", "4");
+        replace_argument(&mut changed, "--max-renewals", "0");
+        replace_argument(&mut changed, "--principal", "operator:local-onvif-metadata");
+        let reversed: Vec<_> = changed.chunks_exact(2).rev().flatten().cloned().collect();
+        let normalized = Plan::parse(&reversed)?;
+        assert_eq!(normalized.operation.as_ref(), Some(expected));
+        assert_ne!(normalized.approval, original.approval);
+        assert_ne!(
+            normalized.config.events.digest(),
+            original.config.events.digest()
+        );
+        assert!(Plan::parse(&arguments("--subscribe"))?.operation.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn stable_operation_changes_fingerprint_but_not_key_when_effective_pins_change() -> Test {
+        let args = operation_arguments();
+        let original = Plan::parse(&args)?;
+        let expected = original.operation.as_ref().ok_or("operation absent")?;
+        let original_key = fss_reference::onvif::capture_operation::operation_key(
+            &original.site,
+            &expected.operation_id,
+        )?;
+        for (key, value) in [
+            ("--principal", "operator:different"),
+            ("--sensor", "sensor:side"),
+            ("--profile", "other-profile"),
+            ("--peer", "127.0.0.2:8080"),
+            ("--authority", "other-camera.local:8080"),
+            ("--events-path", "/onvif/other-events"),
+            ("--service-root", "/"),
+            ("--generation", "2"),
+            ("--timeout-ms", "40000"),
+            ("--max-steps", "90000"),
+            ("--max-pulls", "3"),
+            ("--max-renewals", "1"),
+            ("--poll-seconds", "4"),
+            ("--message-limit", "64"),
+            ("--lifetime-seconds", "240"),
+        ] {
+            let mut changed = args.clone();
+            replace_argument(&mut changed, key, value);
+            let changed = Plan::parse(&changed)?;
+            let binding = changed.operation.as_ref().ok_or("operation absent")?;
+            assert_ne!(binding.request_digest, expected.request_digest, "{key}");
+            assert_eq!(
+                fss_reference::onvif::capture_operation::operation_key(
+                    &changed.site,
+                    &binding.operation_id,
+                )?,
+                original_key,
+                "{key} changed the dispatch key",
+            );
+        }
+        for key in ["--device-generation", "--profile-generation"] {
+            let mut changed = args.clone();
+            replace_argument(
+                &mut changed,
+                key,
+                &ContentDigest::sha256(b"new-generation").to_text(),
+            );
+            let changed = Plan::parse(&changed)?;
+            let binding = changed.operation.as_ref().ok_or("operation absent")?;
+            assert_ne!(binding.precondition_digest, expected.precondition_digest);
+            assert_ne!(binding.request_digest, expected.request_digest);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn stable_operation_binds_authentication_locator_and_policy_without_reading_secrets() -> Test {
+        let mut args = operation_arguments();
+        let anonymous = Plan::parse(&args)?.operation.ok_or("operation absent")?;
+        replace_argument(&mut args, "--credential-file", "/not-read/credential-one");
+        replace_argument(&mut args, "--auth-realm", "owner-pinned-realm");
+        let digest = Plan::parse(&args)?.operation.ok_or("operation absent")?;
+        assert_ne!(anonymous.request_digest, digest.request_digest);
+        for (key, value) in [
+            ("--credential-file", "/not-read/credential-two"),
+            ("--auth-realm", "another-realm"),
+            ("--legacy-md5", "yes"),
+        ] {
+            let mut changed = args.clone();
+            replace_argument(&mut changed, key, value);
+            let binding = Plan::parse(&changed)?.operation.ok_or("operation absent")?;
+            assert_ne!(binding.request_digest, digest.request_digest, "{key}");
+        }
+        replace_argument(&mut args, "--legacy-md5", "yes");
+        let md5 = Plan::parse(&args)?.operation.ok_or("operation absent")?;
+        replace_argument(&mut args, "--legacy-no-qop", "yes");
+        let legacy = Plan::parse(&args)?.operation.ok_or("operation absent")?;
+        assert_ne!(md5.request_digest, legacy.request_digest);
+        Ok(())
+    }
+
+    #[test]
+    fn stable_operation_rejects_invalid_duplicate_and_cleanup_ids() -> Test {
+        for value in [
+            "",
+            "spaces are invalid",
+            "operation:bad/segment",
+            "operation:\nnewline",
+        ] {
+            let mut args = operation_arguments();
+            replace_argument(&mut args, "--operation-id", value);
+            assert!(Plan::parse(&args).is_err());
+        }
+        let mut duplicate = operation_arguments();
+        duplicate.extend([
+            OsString::from("--operation-id"),
+            OsString::from("operation:other"),
+        ]);
+        assert!(Plan::parse(&duplicate).is_err());
+        let mut cleanup_args = arguments("--unsubscribe");
+        replace_argument(
+            &mut cleanup_args,
+            "--operation-id",
+            "operation:owner-capture-1",
+        );
+        assert!(cleanup(&cleanup_args).is_err());
         Ok(())
     }
 }

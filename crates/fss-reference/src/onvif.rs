@@ -13,6 +13,8 @@
 //! responses and owner-supplied XML can be retained and verified through the metadata module.
 
 pub mod authentication;
+/// Optional source-free stable operation fence against duplicate native Create dispatch.
+pub mod capture_operation;
 pub mod client;
 /// Durable subscription intent, exact responses and restart discovery under fresh authority.
 pub mod control;

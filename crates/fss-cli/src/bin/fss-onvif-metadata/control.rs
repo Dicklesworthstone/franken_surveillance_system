@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use fss_core::{
     BudgetVector, CanonicalEncoder, ContentDigest, ContextAuthority, OperationId, RootAuthoritySpec,
 };
+use fss_reference::onvif::capture_operation;
 use fss_reference::onvif::control::{
     CleanupStatus, ControlDescriptor, ControlKind, MAX_CATALOG_RECORDS, RetainedCreateIntent,
     RetainedRenewIntent, RetainedRenewal, RetainedSubscription, RetainedUnsubscribe,
@@ -26,12 +27,14 @@ use super::{
     optional_digest, runtime, text,
 };
 
-const HELP: &str = "fss-onvif-metadata control <list|inspect|unsubscribe> [options]
+const HELP: &str = "fss-onvif-metadata control <list|inspect|operation|unsubscribe> [options]
   list: --root ABSOLUTE_DIR --site SITE [--principal ID] [--max-records 64]
   inspect: --root ABSOLUTE_DIR --site SITE [--principal ID]
            --kind intent|created|unsubscribed|renew-intent|renewed|unsubscribe-intent|unsubscribe-outcome
            --control-id sha256:HEX
            [--expected-root sha256:HEX]
+  operation: --root ABSOLUTE_DIR --site SITE [--principal ID]
+           --operation-id OPERATION_ID [--minimum-journal-root sha256:HEX]
   unsubscribe: --root ABSOLUTE_DIR --site SITE [--principal ID]
            --subscription-id sha256:HEX --expected-root sha256:HEX
            --expected-control sha256:HEX
@@ -50,6 +53,11 @@ Verified native deletions are omitted. Empty output proves no remote absence.
 An intent alone leaves dispatch and result unknown; it never authorizes Create retry.
 A renewal or cleanup intent alone leaves its remote result unknown; it never authorizes retry.
 Retained responses are historical observations, not current remote state.
+operation inspects the source-free capture fence by the stable owner ID, without camera
+credentials or network access. Every recorded state consumes that ID. An independently
+saved --minimum-journal-root must occur in the verified history, detecting rollback past
+that pin. An unavailable operation is not proof that no remote subscription exists.
+The fence records dispatch intent; use control custody to inspect Create/cleanup outcomes.
 unsubscribe requires a fresh, explicit owner request with the original independent pins.
 It performs only Unsubscribe against the retained scoped endpoint; it never creates or polls.
 Inspect the created record for cleanup_control_witness before approving cleanup. Both the
@@ -61,6 +69,10 @@ Known terminal receipts survive late refusal and output failure; incomplete clea
 ";
 
 enum ColdAction {
+    Operation {
+        operation_id: OperationId,
+        minimum_journal_root: Option<ContentDigest>,
+    },
     List {
         max_records: usize,
     },
@@ -87,17 +99,20 @@ fn parse_cold(args: &[OsString]) -> Result<ColdOptions, &'static str> {
     {
         return Err(ARGUMENT_ERROR);
     }
-    let listing = match args[0].to_str() {
-        Some("list") => true,
-        Some("inspect") => false,
-        _ => return Err(ARGUMENT_ERROR),
-    };
+    let command = args[0].to_str().ok_or(ARGUMENT_ERROR)?;
+    if !matches!(command, "list" | "inspect" | "operation") {
+        return Err(ARGUMENT_ERROR);
+    }
+    let listing = command == "list";
+    let operation = command == "operation";
     let mut values = BTreeMap::new();
     for pair in args[1..].chunks_exact(2) {
         let key = pair[0].to_str().ok_or(ARGUMENT_ERROR)?;
         let common = matches!(key, "--root" | "--site" | "--principal");
         let specific = if listing {
             key == "--max-records"
+        } else if operation {
+            matches!(key, "--operation-id" | "--minimum-journal-root")
         } else {
             matches!(key, "--kind" | "--control-id" | "--expected-root")
         };
@@ -135,6 +150,16 @@ fn parse_cold(args: &[OsString]) -> Result<ColdOptions, &'static str> {
             return Err(ARGUMENT_ERROR);
         }
         ColdAction::List { max_records }
+    } else if operation {
+        let minimum_journal_root = optional_digest(&values, "--minimum-journal-root")?;
+        if minimum_journal_root.is_some_and(|digest| digest.bytes() == [0; 32]) {
+            return Err(ARGUMENT_ERROR);
+        }
+        ColdAction::Operation {
+            operation_id: OperationId::parse(text(&values, "--operation-id")?)
+                .map_err(|_| ARGUMENT_ERROR)?,
+            minimum_journal_root,
+        }
     } else {
         let kind = match text(&values, "--kind")? {
             "intent" => ControlKind::CreateIntent,
@@ -210,7 +235,7 @@ fn cleanup_report(status: &CleanupStatus) -> String {
 fn cold(options: ColdOptions) -> Result<String, &'static str> {
     let records = match options.action {
         ColdAction::List { max_records } => max_records as u64,
-        ColdAction::Inspect { .. } => 1,
+        ColdAction::Inspect { .. } | ColdAction::Operation { .. } => 1,
     };
     let cleanup_history = matches!(
         &options.action,
@@ -219,7 +244,13 @@ fn cold(options: ColdOptions) -> Result<String, &'static str> {
             ..
         }
     );
+    let operation_history = matches!(&options.action, ColdAction::Operation { .. });
     let bytes = (records + 1) * 4 * 1024 * 1024
+        + if operation_history {
+            2 * capture_operation::MAX_JOURNAL_BYTES
+        } else {
+            0
+        }
         + if cleanup_history {
             capture::CLEANUP_READ_BYTES
         } else {
@@ -281,6 +312,26 @@ fn cold(options: ColdOptions) -> Result<String, &'static str> {
             line!("current_remote_state=unknown");
             line!("automatic_create_retry_safe=false");
             match &options.action {
+                ColdAction::Operation {
+                    operation_id,
+                    minimum_journal_root,
+                } => {
+                    let value = capture_operation::inspect(
+                        &deployment,
+                        operation_id,
+                        None,
+                        *minimum_journal_root,
+                        &cx,
+                    )
+                    .map_err(|error| error.code())?;
+                    line!("operation=control_operation_inspect");
+                    line!(
+                        "minimum_journal_root_checked={}",
+                        minimum_journal_root.is_some()
+                    );
+                    out.push_str(&capture::operation_report(&value));
+                    line!("safe_next=inspect_control_custody_no_create_retry");
+                }
                 ColdAction::List { max_records } => {
                     let records =
                         list_control(&deployment, *max_records, &cx).map_err(|e| e.code())?;
@@ -626,7 +677,14 @@ fn unsubscribe(args: &[OsString]) -> Result<(String, bool), &'static str> {
                 &subscription,
                 &create_message_id,
                 |observation| {
-                    capture::retain_control(&deployment, &plan, &mut controls, observation, &cx)
+                    capture::retain_control(
+                        &deployment,
+                        &plan,
+                        &mut controls,
+                        observation,
+                        &cx,
+                        || scope.now().map_err(capture::context_error),
+                    )
                 },
             ) {
                 Ok(report) => observed = Some(report),
@@ -702,7 +760,9 @@ pub(super) fn run_args(args: &[OsString]) -> Result<(String, bool), &'static str
     }
     match args[0].to_str() {
         Some("unsubscribe") => unsubscribe(&args[1..]),
-        Some("list" | "inspect") => cold(parse_cold(args)?).map(|report| (report, true)),
+        Some("list" | "inspect" | "operation") => {
+            cold(parse_cold(args)?).map(|report| (report, true))
+        }
         _ => Err(ARGUMENT_ERROR),
     }
 }
@@ -885,5 +945,55 @@ mod tests {
         drop(values.drain(expected..expected + 2));
         assert!(cleanup_options(&values).is_err());
         Ok(())
+    }
+
+    #[test]
+    fn operation_inspection_requires_exact_id_and_only_accepts_its_own_pins() {
+        let valid = args(&[
+            "operation",
+            "--root",
+            "/owner",
+            "--site",
+            "site:test",
+            "--operation-id",
+            "operation:capture-one",
+        ]);
+        assert!(matches!(
+            parse_cold(&valid).map(|options| options.action),
+            Ok(ColdAction::Operation {
+                minimum_journal_root: None,
+                ..
+            }),
+        ));
+        for (key, value) in [
+            (
+                "--expected-root",
+                "sha256:0000000000000000000000000000000000000000000000000000000000000001",
+            ),
+            ("--kind", "created"),
+            ("--max-records", "1"),
+            ("--credential-file", "/secret"),
+            ("--operation-id", "operation:duplicate"),
+        ] {
+            let mut changed = valid.clone();
+            changed.extend([OsString::from(key), OsString::from(value)]);
+            assert!(parse_cold(&changed).is_err(), "accepted {key}");
+        }
+        let mut pinned = valid.clone();
+        pinned.extend([
+            OsString::from("--minimum-journal-root"),
+            OsString::from(ContentDigest::sha256(b"independent-journal-pin").to_text()),
+        ]);
+        assert!(matches!(
+            parse_cold(&pinned).map(|options| options.action),
+            Ok(ColdAction::Operation {
+                minimum_journal_root: Some(_),
+                ..
+            }),
+        ));
+        let last = pinned.len() - 1;
+        pinned[last] = OsString::from(format!("sha256:{}", "0".repeat(64)));
+        assert!(parse_cold(&pinned).is_err());
+        assert!(parse_cold(&valid[..valid.len() - 2]).is_err());
     }
 }

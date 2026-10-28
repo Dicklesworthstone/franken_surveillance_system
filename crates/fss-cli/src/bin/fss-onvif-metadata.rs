@@ -35,7 +35,7 @@ mod runtime;
 
 const HELP: &str = "fss-onvif-metadata <capture|control|import|inspect|verify> [options]
   capture: see fss-onvif-metadata capture --help for explicit live subscription options.
-  control: see fss-onvif-metadata control --help for cold discovery and explicit cleanup.
+  control: see fss-onvif-metadata control --help for cold discovery, operation inspection and explicit cleanup.
   All commands: --root ABSOLUTE_DIR --site SITE [--principal ID]
                 [--include-values yes|no]
   import: --input FILE --sensor ID --device-generation sha256:HEX

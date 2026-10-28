@@ -3,6 +3,9 @@
 
 pub(super) mod plan;
 
+#[cfg(test)]
+mod operation_tests;
+
 use std::cell::RefCell;
 use std::ffi::OsString;
 use std::fmt::Write as _;
@@ -11,6 +14,9 @@ use std::fs;
 use fss_core::{
     BudgetVector, CaptureInterval, ContentDigest, ContextAuthority, OperationId, RootAuthoritySpec,
     RuntimeGrant, TimestampNs,
+};
+use fss_reference::onvif::capture_operation::{
+    self, CaptureOperationError, CaptureOperationInspection,
 };
 use fss_reference::onvif::client::{ClientError, OnvifContext};
 use fss_reference::onvif::control::{
@@ -41,6 +47,9 @@ use plan::Plan;
 // ceiling, not an allocation or permission for additional network effects.
 pub(super) const CLEANUP_READ_BYTES: u64 = 512 * 1024 * 1024;
 pub(super) const CLEANUP_READ_OPERATIONS: u64 = 4 * MAX_CATALOG_RECORDS as u64 + 32;
+// Reservation verifies twice; commitment verifies before pin checks, before append,
+// and after append. This cumulative read allowance is separate from cleanup custody.
+const OPERATION_READ_BYTES: u64 = 5 * capture_operation::MAX_JOURNAL_BYTES;
 
 pub(super) struct Owner<'a, 'scope, 'task> {
     pub(super) scope: &'a runtime::Scope<'scope, 'task>,
@@ -198,6 +207,8 @@ impl OnvifContext for Owner<'_, '_, '_> {
 /// These owned handles outlive request retirement and output failures.
 #[derive(Default)]
 pub(super) struct ControlReceipts {
+    pub(super) operation: Option<CaptureOperationInspection>,
+    pub(super) operation_error: Option<&'static str>,
     pub(super) intent: Option<RetainedCreateIntent>,
     pub(super) created: Option<RetainedSubscription>,
     pub(super) unsubscribed: Option<RetainedUnsubscribe>,
@@ -207,7 +218,34 @@ pub(super) struct ControlReceipts {
     pub(super) renewal_outcomes: Vec<RetainedRenewal>,
 }
 
+/// This is a retained journal snapshot, not a remote-state or capture-success claim.
+pub(super) fn operation_report(value: &CaptureOperationInspection) -> String {
+    format!(
+        "capture_operation.internal_id={}\ncapture_operation.journal_root={}\ncapture_operation.snapshot_state={:?}\ncapture_operation.prepared_at_ns={}\ncapture_operation.updated_at_ns={}\ncapture_operation.request_digest={}\ncapture_operation.precondition_digest={}\ncapture_operation.obligation_id={}\ncapture_operation.durable_publication=true\ncapture_operation.historical_snapshot=true\ncapture_operation.create_retry_allowed=false\ncapture_operation.remote_dispatch=unknown\n",
+        value.internal_operation_id,
+        value.journal_root,
+        value.receipt.state,
+        value.receipt.prepared_at.0,
+        value.receipt.updated_at.0,
+        value.receipt.intent.request_digest,
+        value.receipt.intent.precondition_digest,
+        value.obligation_id,
+    )
+}
+
 impl ControlReceipts {
+    fn operation_refused(&mut self, error: CaptureOperationError) -> MetadataError {
+        self.operation_error = Some(error.code());
+        match error {
+            CaptureOperationError::Existing(value) | CaptureOperationError::Conflict(value) => {
+                self.operation = Some(*value);
+                MetadataError::Authority
+            }
+            CaptureOperationError::Authority => MetadataError::Authority,
+            _ => MetadataError::Custody,
+        }
+    }
+
     pub(super) fn successful_cleanup(&self) -> bool {
         self.unsubscribed.is_some()
             || self
@@ -218,6 +256,14 @@ impl ControlReceipts {
 
     pub(super) fn report(&self) -> String {
         let mut out = String::new();
+        if let Some(operation) = &self.operation {
+            out.push_str(&operation_report(operation));
+        }
+        if let Some(code) = self.operation_error {
+            out.push_str(&format!(
+                "capture_operation.error={code}\nsafe_next=control_operation_inspect\n"
+            ));
+        }
         for (name, receipt) in [
             (
                 "create_intent",
@@ -317,6 +363,7 @@ pub(super) fn retain_control<G: ReplayAdmission>(
     receipts: &mut ControlReceipts,
     observation: PullPointControl<'_>,
     cx: &ReplayCx<G>,
+    commit_now_ns: impl FnOnce() -> Result<u64, ClientError>,
 ) -> Result<RetainedProgress, MetadataError> {
     let mut deployment = deployment
         .try_borrow_mut()
@@ -329,6 +376,18 @@ pub(super) fn retain_control<G: ReplayAdmission>(
             started_ns,
             lifetime_seconds,
         } => {
+            // Reserve the stable owner operation before retaining a fresh wire intent.
+            // Every existing journal state consumes the ID; only this live guard may
+            // commit once, after exact Create intent custody and before network I/O.
+            let operation = if let Some(binding) = &plan.operation {
+                let now = interval(plan, started_ns, started_ns)?.earliest;
+                let guard = capture_operation::reserve(&mut deployment, binding, now, cx)
+                    .map_err(|error| receipts.operation_refused(error))?;
+                receipts.operation = Some(guard.prepared().clone());
+                Some(guard)
+            } else {
+                None
+            };
             let value = prepare_create(
                 &mut deployment,
                 CreateIntentBinding {
@@ -353,6 +412,18 @@ pub(super) fn retain_control<G: ReplayAdmission>(
             };
             let dispatch_allowed = value.newly_prepared();
             receipts.intent = Some(value);
+            if dispatch_allowed {
+                if let Some(guard) = operation {
+                    // Preparation uses the observed request start; commitment needs
+                    // a fresh observation after custody work, never a fabricated tick.
+                    let observed_now = commit_now_ns().map_err(|_| MetadataError::Authority)?;
+                    let now = interval(plan, started_ns, observed_now)?.latest;
+                    let committed = guard
+                        .commit(&mut deployment, now, cx)
+                        .map_err(|error| receipts.operation_refused(error))?;
+                    receipts.operation = Some(committed);
+                }
+            }
             (receipt, dispatch_allowed)
         }
         PullPointControl::Created {
@@ -590,8 +661,15 @@ pub(super) fn run_args(args: &[OsString]) -> Result<(String, bool), &'static str
         exchanges * (plan.config.limits.request_bytes + plan.config.limits.wire_bytes) as u64;
     let publications =
         u64::from(plan.config.max_pulls) + 2 * u64::from(plan.config.max_renewals) + 5;
-    let operations = publications + CLEANUP_READ_OPERATIONS;
-    let retained_allowance = publications * 4 * 1024 * 1024 + CLEANUP_READ_BYTES;
+    let operations =
+        publications + CLEANUP_READ_OPERATIONS + if plan.operation.is_some() { 8 } else { 0 };
+    let retained_allowance = publications * 4 * 1024 * 1024
+        + CLEANUP_READ_BYTES
+        + if plan.operation.is_some() {
+            OPERATION_READ_BYTES
+        } else {
+            0
+        };
     let mut retained = Vec::<RetainedMetadata>::new();
     let mut controls = ControlReceipts::default();
     let mut capture_report = None::<CaptureReport>;
@@ -644,7 +722,11 @@ pub(super) fn run_args(args: &[OsString]) -> Result<(String, bool), &'static str
             let captured = pullpoint::capture_with_progress(
                 &plan.config,
                 &owner,
-                |observation| retain_control(&deployment, &plan, &mut controls, observation, &cx),
+                |observation| {
+                    retain_control(&deployment, &plan, &mut controls, observation, &cx, || {
+                        scope.now().map_err(context_error)
+                    })
+                },
                 |batch| {
                     scope.output().map_err(|_| MetadataError::Authority)?;
                     let acquisition = PullPointAcquisition {
@@ -694,7 +776,7 @@ pub(super) fn run_args(args: &[OsString]) -> Result<(String, bool), &'static str
             match captured {
                 Ok(report) => capture_report = Some(report),
                 Err(failure) => {
-                    capture_error = Some(failure.error.code());
+                    capture_error = Some(controls.operation_error.unwrap_or(failure.error.code()));
                     capture_report = Some(failure.report);
                 }
             }
@@ -746,6 +828,14 @@ fn render(
     );
     line!("approval={}", plan.approval);
     line!("source_mode=onvif_pullpoint");
+    line!("operation_fence_enabled={}", plan.operation.is_some());
+    if let Some(binding) = &plan.operation {
+        line!(
+            "capture_operation.requested_internal_id={}",
+            capture_operation::operation_key(&plan.site, &binding.operation_id)
+                .map_err(|_| ARGUMENT_ERROR)?
+        );
+    }
     line!("subscription_scope=device_events");
     line!("profile_attribution_verified=false");
     line!("deadline_scope=network_and_cooperative_storage_checkpoints");

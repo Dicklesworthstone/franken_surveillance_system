@@ -1408,3 +1408,13 @@ Eight new native TCP regressions, seven new deployment custody/lifecycle regress
 control-witness admission cases are added but unexecuted under the full-reference build resource
 constraint. Scoped formatting, source review and manifest checks do not substitute for that
 integrated execution or physical-device qualification. See `docs/onvif-metadata.md` for recovery.
+
+## Stable native ONVIF capture operations and explicit durable authority (2026-10-28)
+
+`fss-onvif-metadata capture --operation-id ID` now consumes a stable owner operation in the existing effect journal before a fresh Create intent can permit network dispatch. Site plus supplied ID determines the internal key; changed owner, effective route/authentication scope, attribution pins or capture limits conflict at that same key. Fresh receive origins, MessageIDs and argument ordering cannot obtain another dispatch. Only the newly reserved live guard can commit, after exact wire intent custody and a fresh observed commit time. Every existing state refuses reuse, including a pre-dispatch crash's Prepared state. The source-free fence survives native ONVIF source deletion.
+
+`control operation --operation-id ID` inspects the fence locally without credentials or network access. Optional `--minimum-journal-root` requires an independently saved root in verified bounded history. Full rollback before an unpinned reservation cannot be detected from that old snapshot alone. Fence snapshots express dispatch intent, while existing control custody owns Create/cleanup observations; the fence does not complete the generic effect obligation or assert current remote state.
+
+The underlying explicit-authority Prepare transition is additive tag 6 under current V3 journal records; prior tags/default preparation behavior remain unchanged. Explicit retries bind the complete intent, authority, obligation and terminal predicate before append. Runtime recovery continues to reject generic preparations outside its richer bound-preparation envelope.
+
+Validation: the pinned compiler built the complete actual fss-core crate and all 169 unit tests passed, including 13 effect tests. The current production-source PullPoint wire target also passed all 24 tests. New real-file durable authority, source-free fence/deletion/cancellation, runtime envelope, CLI argument and native custody-hook tests were added and statically reviewed. Those reference/runtime/CLI targets remain unexecuted: the genuine Asupersync dependency build was killed previously, no usable compiled dependency artifacts exist, and this session's ordinary filesystem remains full. No dependency facades, camera/Profile M qualification or full integrated release pass is claimed.

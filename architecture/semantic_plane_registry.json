@@ -52,7 +52,8 @@
     "crates/fss-reference/src/onvif/control/renewal.rs",
     "crates/fss-reference/src/onvif/control/termination.rs",
     "crates/fss-reference/src/ingest/calibration_monitor.rs",
-    "crates/fss-reference/src/onvif/control/termination/attempt.rs"
+    "crates/fss-reference/src/onvif/control/termination/attempt.rs",
+    "crates/fss-reference/src/onvif/capture_operation.rs"
   ],
   "module_declarations": {
     "crates/fss-cli/src/alert_effect/report.rs": "support",
@@ -782,7 +783,8 @@
     "crates/fss-reference/src/ingest/calibration_monitor/recipe.rs": "support",
     "crates/fss-cli/src/bin/fss-event/calibration/monitor.rs": "support",
     "crates/fss-reference/src/onvif/control/termination/attempt.rs": "ambiguous",
-    "crates/fss-reference/src/onvif/control/termination/attempt/codec.rs": "support"
+    "crates/fss-reference/src/onvif/control/termination/attempt/codec.rs": "support",
+    "crates/fss-reference/src/onvif/capture_operation.rs": "effect"
   },
   "types": {
     "AlertEffectRecord": {
@@ -1497,6 +1499,26 @@
       "file": "crates/fss-reference/src/onvif/pullpoint.rs",
       "plane": "ambiguous",
       "description": "Audited retention boundary for owner-declared Create/Renew intents and private Create/Renew/Unsubscribe observations; callbacks must establish custody before progress, and payloads grant no I/O authority."
+    },
+    "CaptureOperationBinding": {
+      "file": "crates/fss-reference/src/onvif/capture_operation.rs",
+      "plane": "effect",
+      "description": "Stable owner capture intent; actual owner and normalized request/precondition digests, never a reusable dispatch grant."
+    },
+    "CaptureOperationInspection": {
+      "file": "crates/fss-reference/src/onvif/capture_operation.rs",
+      "plane": "cognition",
+      "description": "Verified historical source-free capture fence snapshot; all states remain consumed and confer no remote-state or retry authority."
+    },
+    "CaptureOperationGuard": {
+      "file": "crates/fss-reference/src/onvif/capture_operation.rs",
+      "plane": "effect",
+      "description": "Single live non-cloneable owner reservation, consumed by pre-dispatch commit after exact store/principal/history checks; never reconstructed by cold inspection."
+    },
+    "CaptureOperationError": {
+      "file": "crates/fss-reference/src/onvif/capture_operation.rs",
+      "plane": "support",
+      "description": "Payload-free bounded owner-operation admission, custody, history and conflict outcomes."
     }
   }
 }
