@@ -1257,7 +1257,6 @@ RTP metadata and physical-device/Profile M qualification remain unfinished.
 FSS-046 remains open. See `docs/onvif-metadata.md` for executable commands and
 precise failure/reconciliation behavior.
 
-
 ## Retained ONVIF holds and deletion (2026-10-28)
 
 Verified ONVIF metadata imports now join import/sensor/event deletion closure and
@@ -1281,3 +1280,9 @@ effects cannot inspect vendor cognition or derive approval from it. The contract
 reviewed but remain unexecuted because full-reference dependencies cannot be built
 within the current environment. This closes the retained metadata lifecycle gap;
 it does not add remote/device erasure or continuous subscription recovery.
+
+## Native metadata storage admission — implementation follow-up
+
+`ReplayCx` and its I/O authority can now carry a borrowed live owner callback using a default generic parameter, preserving existing replay callers. Native metadata import and inspection attach the current request scope. The first cancellation, deadline, capability, budget, reentrancy or unwind refusal closes admission permanently across context and I/O-authority views. Known durable receipts survive post-commit refusal, with original owner errors retained and optional private values withheld. The bridge covers cooperative replay/publication checkpoints; it does not preempt a running syscall.
+
+Nine exact-production context/publication tests passed on the pinned toolchain against genuine core, ledger, object-spool and publication implementations, including borrowed callbacks, explicit authority, sticky refusal, recursion, unwind and concurrent access. Twelve repository regressions were added; three full deployment/metadata contracts remain unexecuted. A genuine low-memory Cargo metadata check was killed while compiling real Asupersync; full CLI integration remains unexecuted. No whole-workspace or release qualification is claimed.

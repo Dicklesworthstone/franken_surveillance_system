@@ -28,7 +28,7 @@ use fss_publication::{
     RootLedgerReconciliation, SlotName,
 };
 
-use crate::adapter_replay::ReplayCx;
+use crate::adapter_replay::{NoReplayAdmission, ReplayAdmission, ReplayCx};
 use crate::alert::{ReferenceAlertPlan, ReferenceAlertProvider, ReferenceProviderBehavior};
 use crate::durable_effect::{DurableEffectError, DurableEffectJournal};
 use crate::error::ReferenceError;
@@ -942,9 +942,11 @@ pub(crate) const fn publish_cut_point_stage(point: PublishCutPoint) -> &'static 
 /// the cut point's registered stage, and a requested cancellation is drained and finalized before
 /// the publisher is told to stop.
 #[derive(Debug)]
-pub struct ReplayCancellationBridge<'a>(pub &'a ReplayCx);
+pub struct ReplayCancellationBridge<'a, G: ReplayAdmission = NoReplayAdmission>(
+    pub &'a ReplayCx<G>,
+);
 
-impl PublishCancellation for ReplayCancellationBridge<'_> {
+impl<G: ReplayAdmission> PublishCancellation for ReplayCancellationBridge<'_, G> {
     fn cancel_requested(&self, point: PublishCutPoint) -> bool {
         self.0.reach_stage(publish_cut_point_stage(point));
         if self.0.is_cancelled() {
@@ -976,12 +978,20 @@ pub struct ReferenceDeployment {
 
 impl ReferenceDeployment {
     /// Opens or reopens a reference deployment with standard publication limits.
-    pub fn open(root: &Path, site_lineage: &str, cx: &ReplayCx) -> Result<Self, ReferenceError> {
+    pub fn open(
+        root: &Path,
+        site_lineage: &str,
+        cx: &ReplayCx<impl ReplayAdmission>,
+    ) -> Result<Self, ReferenceError> {
         Self::open_with_limits(root, site_lineage, DeploymentLimits::standard(), cx)
     }
 
     /// Reopens an existing reference deployment root.
-    pub fn reopen(root: &Path, site_lineage: &str, cx: &ReplayCx) -> Result<Self, ReferenceError> {
+    pub fn reopen(
+        root: &Path,
+        site_lineage: &str,
+        cx: &ReplayCx<impl ReplayAdmission>,
+    ) -> Result<Self, ReferenceError> {
         Self::open(root, site_lineage, cx)
     }
 
@@ -990,7 +1000,7 @@ impl ReferenceDeployment {
         root: &Path,
         site_lineage: &str,
         limits: DeploymentLimits,
-        cx: &ReplayCx,
+        cx: &ReplayCx<impl ReplayAdmission>,
     ) -> Result<Self, ReferenceError> {
         Self::open_with_after_lock(root, site_lineage, limits, cx, &|_: &Path| {})
     }
@@ -1004,7 +1014,7 @@ impl ReferenceDeployment {
         root: &Path,
         site_lineage: &str,
         limits: DeploymentLimits,
-        cx: &ReplayCx,
+        cx: &ReplayCx<impl ReplayAdmission>,
         after_lock: &dyn Fn(&Path),
     ) -> Result<Self, ReferenceError> {
         if cx.is_cancelled() {
@@ -1385,7 +1395,7 @@ impl ReferenceDeployment {
         &mut self,
         slot: &SlotName,
         objects: &[&[u8]],
-        cx: &ReplayCx,
+        cx: &ReplayCx<impl ReplayAdmission>,
     ) -> Result<StagedManifestHandle, ReferenceError> {
         if cx.is_cancelled() {
             cx.drain_and_finalize();
@@ -1464,7 +1474,7 @@ impl ReferenceDeployment {
         slot: &SlotName,
         manifest: &ObjectManifest,
         validity: CaptureInterval,
-        cx: &ReplayCx,
+        cx: &ReplayCx<impl ReplayAdmission>,
     ) -> Result<RootLedgerReceipt, ReferenceError> {
         if cx.is_cancelled() {
             cx.drain_and_finalize();

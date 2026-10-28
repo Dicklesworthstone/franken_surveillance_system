@@ -179,10 +179,10 @@ pub use adapter_replay::{
     ADP_REPLAY_MAX_TOTAL_BYTES, ADP_REPLAY_PROMOTION_GATE, ADP_REPLAY_PROTOCOL_PROFILE,
     ADP_REPLAY_ROW_ID, ADP_REPLAY_SURFACE, ADP_REPLAY_TIER, DEFAULT_MAX_ROLLBACK_SNAPSHOT_BYTES,
     DEFAULT_MAX_ROLLBACK_SNAPSHOT_OBJECTS, ERR_ADAPTER_REPLAY_DIVERGED, ERR_REPLAY_DIVERGED,
-    MAX_SCOPED_DIR_ATTEMPTS, ReplayAdapter, ReplayAdapterConfig, ReplayAdapterError,
-    ReplayAuditRecord, ReplayCx, ReplayDivergence, ReplayExecutionOutput, ReplayExecutionRequest,
-    ReplayIoAuthority, ReplayLifecycleState, ReplayTerminalStatus, ScopedLedgerDir,
-    compute_audit_hash,
+    MAX_SCOPED_DIR_ATTEMPTS, NoReplayAdmission, ReplayAdapter, ReplayAdapterConfig,
+    ReplayAdapterError, ReplayAdmission, ReplayAdmissionError, ReplayAuditRecord, ReplayCx,
+    ReplayDivergence, ReplayExecutionOutput, ReplayExecutionRequest, ReplayIoAuthority,
+    ReplayLifecycleState, ReplayTerminalStatus, ScopedLedgerDir, compute_audit_hash,
 };
 pub use adapter_rtsp_row::{
     ADP_RTSP_CAPABILITIES, ADP_RTSP_CURRENT_STATE, ADP_RTSP_GENERATION, ADP_RTSP_PROMOTION_GATE,

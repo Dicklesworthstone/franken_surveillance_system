@@ -11,7 +11,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 
 use fss_core::{
     AdapterCapabilities, AdapterGeneration, AdapterId, AdapterIdentity, AdapterKind, ContentDigest,
@@ -69,6 +69,148 @@ pub const ADP_REPLAY_GOLDEN_STATE_ROOT: &str =
 pub const ADP_REPLAY_GOLDEN_AUDIT_HASH: &str =
     "sha256:fbf3b421bcbe2bf30c95cd723496087902ac25eb1a1087d63352f564a9a7e100";
 
+/// A native owner's denial at an explicitly scoped replay boundary.
+///
+/// A refusal is sticky for the derived context. It cannot be cleared by a later
+/// successful callback, and does not imply that earlier durable work rolled back.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReplayAdmissionError {
+    /// The owning operation was cancelled.
+    Cancelled,
+    /// The owning operation's deadline or clock contract was violated.
+    Deadline,
+    /// Current owner capability, generation or resource scope was refused.
+    Authority,
+    /// The owner's remaining metered allowance was exhausted.
+    Budget,
+    /// An admission callback recursively or concurrently reentered its context.
+    Reentrant,
+    /// An admission callback unwound; the context cannot safely admit more work.
+    Panicked,
+}
+
+impl ReplayAdmissionError {
+    const fn tag(self) -> u8 {
+        match self {
+            Self::Cancelled => 1,
+            Self::Deadline => 2,
+            Self::Authority => 3,
+            Self::Budget => 4,
+            Self::Reentrant => 5,
+            Self::Panicked => 6,
+        }
+    }
+}
+
+/// Additional live owner admission that can only narrow replay I/O authority.
+///
+/// A callback may borrow its native request scope: the resulting context cannot
+/// outlive that borrow. It must admit and meter the named cooperative boundary
+/// without recursively using this replay context. An in-flight OS syscall is
+/// not preempted; the next cooperative boundary observes the owner's refusal.
+pub trait ReplayAdmission {
+    /// Check current owner authority, cancellation, clock and remaining budget.
+    fn admit(&self, stage: &'static str) -> Result<(), ReplayAdmissionError>;
+}
+
+impl<F> ReplayAdmission for F
+where
+    F: Fn(&'static str) -> Result<(), ReplayAdmissionError>,
+{
+    fn admit(&self, stage: &'static str) -> Result<(), ReplayAdmissionError> {
+        self(stage)
+    }
+}
+
+/// Backward-compatible replay context without an additional native owner callback.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct NoReplayAdmission;
+
+impl ReplayAdmission for NoReplayAdmission {
+    fn admit(&self, _: &'static str) -> Result<(), ReplayAdmissionError> {
+        Ok(())
+    }
+}
+
+struct ReplayOwnerAdmission<G: ReplayAdmission> {
+    owner: G,
+    entering: AtomicBool,
+    refusal: AtomicU8,
+}
+
+impl<G: ReplayAdmission> ReplayOwnerAdmission<G> {
+    fn new(owner: G) -> Self {
+        Self {
+            owner,
+            entering: AtomicBool::new(false),
+            refusal: AtomicU8::new(0),
+        }
+    }
+
+    fn refusal(&self) -> Option<ReplayAdmissionError> {
+        match self.refusal.load(Ordering::SeqCst) {
+            0 => None,
+            1 => Some(ReplayAdmissionError::Cancelled),
+            2 => Some(ReplayAdmissionError::Deadline),
+            3 => Some(ReplayAdmissionError::Authority),
+            4 => Some(ReplayAdmissionError::Budget),
+            5 => Some(ReplayAdmissionError::Reentrant),
+            6 => Some(ReplayAdmissionError::Panicked),
+            _ => Some(ReplayAdmissionError::Authority),
+        }
+    }
+
+    fn refuse(&self, error: ReplayAdmissionError, state: &AtomicU8) {
+        let _ = self
+            .refusal
+            .compare_exchange(0, error.tag(), Ordering::SeqCst, Ordering::SeqCst);
+        let _ = state.compare_exchange(
+            STATE_ACTIVE,
+            STATE_CANCEL_REQUESTED,
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        );
+    }
+
+    fn admit(&self, stage: &'static str, state: &AtomicU8) -> bool {
+        if self.refusal().is_some() {
+            return false;
+        }
+        if self.entering.swap(true, Ordering::SeqCst) {
+            self.refuse(ReplayAdmissionError::Reentrant, state);
+            return false;
+        }
+        let mut attempt = ReplayAdmissionAttempt {
+            admission: self,
+            state,
+            completed: false,
+        };
+        if let Err(error) = self.owner.admit(stage) {
+            self.refuse(error, state);
+        }
+        attempt.completed = true;
+        // A reentrant callback can have latched a refusal even if its outer
+        // invocation returns Ok. No later callback result reopens admission.
+        self.refusal().is_none() && state.load(Ordering::SeqCst) == STATE_ACTIVE
+    }
+}
+
+struct ReplayAdmissionAttempt<'a, G: ReplayAdmission> {
+    admission: &'a ReplayOwnerAdmission<G>,
+    state: &'a AtomicU8,
+    completed: bool,
+}
+
+impl<G: ReplayAdmission> Drop for ReplayAdmissionAttempt<'_, G> {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.admission
+                .refuse(ReplayAdmissionError::Panicked, self.state);
+        }
+        self.admission.entering.store(false, Ordering::SeqCst);
+    }
+}
+
 /// Explicit I/O authority capability required for journal persistence and ledger access.
 ///
 /// Unforgeable capability: cannot be fabricated without validating an authorized principal
@@ -110,13 +252,26 @@ pub const ADP_REPLAY_GOLDEN_AUDIT_HASH: &str =
 /// fn assert_clone<T: Clone>() {}
 /// assert_clone::<ReplayIoAuthority>();
 /// ```
-#[derive(Debug)]
-pub struct ReplayIoAuthority {
+pub struct ReplayIoAuthority<G: ReplayAdmission = NoReplayAdmission> {
     principal: String,
     capability: String,
     root_dir: PathBuf,
     state: Arc<AtomicU8>,
     dir_counter: Arc<AtomicUsize>,
+    admission: Option<ReplayOwnerAdmission<G>>,
+}
+
+impl<G: ReplayAdmission> fmt::Debug for ReplayIoAuthority<G> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ReplayIoAuthority")
+            .field("principal", &self.principal)
+            .field("capability", &self.capability)
+            .field("root_dir", &self.root_dir)
+            .field("state", &self.state)
+            .field("owner_scoped", &self.admission.is_some())
+            .field("admission_refusal", &self.admission_refusal())
+            .finish_non_exhaustive()
+    }
 }
 
 impl PartialEq for ReplayIoAuthority {
@@ -162,6 +317,7 @@ impl ReplayIoAuthority {
             root_dir,
             state,
             dir_counter,
+            admission: None,
         })
     }
 
@@ -222,8 +378,12 @@ impl ReplayIoAuthority {
         }
         let root_dir = root_dir.into();
         if !root_dir.is_absolute()
-            || root_dir.components().any(|part| matches!(part,
-                std::path::Component::ParentDir | std::path::Component::CurDir))
+            || root_dir.components().any(|part| {
+                matches!(
+                    part,
+                    std::path::Component::ParentDir | std::path::Component::CurDir
+                )
+            })
         {
             return Err(ReplayAdapterError::Unauthorized {
                 reason: "inspection requires an exact absolute root",
@@ -235,7 +395,26 @@ impl ReplayIoAuthority {
             root_dir,
             state: Arc::new(AtomicU8::new(STATE_ACTIVE)),
             dir_counter: Arc::new(AtomicUsize::new(0)),
+            admission: None,
         })
+    }
+}
+
+impl<G: ReplayAdmission> ReplayIoAuthority<G> {
+    fn admit_owner(&self, stage: &'static str) -> bool {
+        if self.state.load(Ordering::SeqCst) != STATE_ACTIVE {
+            return false;
+        }
+        self.admission
+            .as_ref()
+            .is_none_or(|admission| admission.admit(stage, &self.state))
+    }
+
+    /// First live owner refusal, without performing another admission.
+    pub fn admission_refusal(&self) -> Option<ReplayAdmissionError> {
+        self.admission
+            .as_ref()
+            .and_then(ReplayOwnerAdmission::refusal)
     }
 
     /// Authorized principal identity.
@@ -259,7 +438,7 @@ impl ReplayIoAuthority {
     /// Returns `true` if authority is active and not revoked.
     #[must_use]
     pub fn is_valid(&self) -> bool {
-        self.state.load(Ordering::SeqCst) == STATE_ACTIVE
+        self.admit_owner("replay_io:authority")
     }
 
     /// Revokes this authority, transitioning its lifecycle state to `Finalized`.
@@ -310,20 +489,29 @@ const STATE_FINALIZED: u8 = 3;
 /// use fss_reference::ReplayCx;
 /// let _ = ReplayCx::for_test();
 /// ```
-#[derive(Debug)]
-pub struct ReplayCx {
+pub struct ReplayCx<G: ReplayAdmission = NoReplayAdmission> {
     state: Arc<AtomicU8>,
     checkpoints: AtomicUsize,
-    io: ReplayIoAuthority,
+    io: ReplayIoAuthority<G>,
     /// Armed cancellation target: the stage and how many more reaches of it pass before the
     /// cancellation fires (`1` fires on the next reach).
     cancel_at_stage: Mutex<Option<(&'static str, usize)>>,
 }
 
-impl ReplayCx {
+impl<G: ReplayAdmission> fmt::Debug for ReplayCx<G> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ReplayCx")
+            .field("state", &self.state)
+            .field("checkpoints", &self.checkpoints)
+            .field("io", &self.io)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<G: ReplayAdmission> ReplayCx<G> {
     /// Constructs a new replay execution context with explicit I/O authority.
     #[must_use]
-    pub fn new(io: ReplayIoAuthority) -> Self {
+    pub fn new(io: ReplayIoAuthority<G>) -> Self {
         let state = io.state.clone();
         if !io.is_valid() {
             state.store(STATE_FINALIZED, Ordering::SeqCst);
@@ -335,7 +523,9 @@ impl ReplayCx {
             cancel_at_stage: Mutex::new(None),
         }
     }
+}
 
+impl ReplayCx {
     /// Constructs a new replay execution context directly from a validated [`ContextAuthority`]
     /// with an explicit filesystem root directory.
     ///
@@ -357,6 +547,48 @@ impl ReplayCx {
     ) -> Result<Self, ReplayAdapterError> {
         let io = ReplayIoAuthority::from_context_authority_read_only(auth, root_dir)?;
         Ok(Self::new(io))
+    }
+
+    /// Consume an unbound context and add borrowed live owner admission.
+    ///
+    /// The original root, capability, counters and cancellation state are preserved.
+    /// Only an unbound context exposes this method: a scoped caller cannot replace
+    /// or drop its existing owner callback to regain admission.
+    pub fn with_admission<G: ReplayAdmission>(self, owner: G) -> ReplayCx<G> {
+        let ReplayCx {
+            state,
+            checkpoints,
+            io,
+            cancel_at_stage,
+        } = self;
+        let ReplayIoAuthority {
+            principal,
+            capability,
+            root_dir,
+            state: io_state,
+            dir_counter,
+            ..
+        } = io;
+        ReplayCx {
+            state,
+            checkpoints,
+            io: ReplayIoAuthority {
+                principal,
+                capability,
+                root_dir,
+                state: io_state,
+                dir_counter,
+                admission: Some(ReplayOwnerAdmission::new(owner)),
+            },
+            cancel_at_stage,
+        }
+    }
+}
+
+impl<G: ReplayAdmission> ReplayCx<G> {
+    /// First live owner refusal, retained even after drain or finalization.
+    pub fn admission_refusal(&self) -> Option<ReplayAdmissionError> {
+        self.io.admission_refusal()
     }
 
     /// Injects cooperative cancellation when the specified checkpoint stage is reached.
@@ -416,7 +648,7 @@ impl ReplayCx {
     /// Returns `true` if cancellation has been requested or the context has begun draining.
     #[must_use]
     pub fn is_cancelled(&self) -> bool {
-        self.state.load(Ordering::SeqCst) != STATE_ACTIVE
+        !self.io.admit_owner("replay:cancel_probe")
     }
 
     /// Initiates the drain phase of cancellation (`CancellationRequested` -> `Draining`).
@@ -472,7 +704,7 @@ impl ReplayCx {
     pub fn checkpoint(&self, _stage: &'static str) -> Result<(), ReplayAdapterError> {
         self.checkpoints.fetch_add(1, Ordering::SeqCst);
         self.arm_reach(_stage);
-        if self.is_cancelled() {
+        if !self.io.admit_owner(_stage) {
             self.drain_and_finalize();
             Err(ReplayAdapterError::CancellationRequested)
         } else {
@@ -503,7 +735,7 @@ impl ReplayCx {
     pub fn checkpoint_post_commit(&self, _stage: &'static str) {
         self.checkpoints.fetch_add(1, Ordering::SeqCst);
         self.arm_reach(_stage);
-        if self.is_cancelled() {
+        if !self.io.admit_owner(_stage) {
             self.drain_and_finalize();
         }
     }
@@ -515,11 +747,12 @@ impl ReplayCx {
     pub(crate) fn reach_stage(&self, _stage: &'static str) {
         self.checkpoints.fetch_add(1, Ordering::SeqCst);
         self.arm_reach(_stage);
+        self.io.admit_owner(_stage);
     }
 
     /// Explicit I/O authority held by this context.
     #[must_use]
-    pub const fn io_authority(&self) -> &ReplayIoAuthority {
+    pub const fn io_authority(&self) -> &ReplayIoAuthority<G> {
         &self.io
     }
 }
@@ -585,7 +818,7 @@ impl ScopedLedgerDir {
     /// # Errors
     /// Returns [`std::io::Error`] with [`std::io::ErrorKind::PermissionDenied`] if context is finalized or cancelled.
     /// Returns [`std::io::Error`] if directory prefix validation fails or creation fails.
-    pub fn new(prefix: &str, cx: &ReplayCx) -> Result<Self, std::io::Error> {
+    pub fn new(prefix: &str, cx: &ReplayCx<impl ReplayAdmission>) -> Result<Self, std::io::Error> {
         if !cx.io_authority().is_valid() || cx.is_cancelled() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,
@@ -605,7 +838,10 @@ impl ScopedLedgerDir {
     /// # Errors
     /// Returns [`std::io::Error`] with [`std::io::ErrorKind::PermissionDenied`] if authority is revoked.
     /// Returns [`std::io::Error`] if directory prefix validation fails or creation fails.
-    pub fn from_authority(prefix: &str, auth: &ReplayIoAuthority) -> Result<Self, std::io::Error> {
+    pub fn from_authority(
+        prefix: &str,
+        auth: &ReplayIoAuthority<impl ReplayAdmission>,
+    ) -> Result<Self, std::io::Error> {
         if !auth.is_valid() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,

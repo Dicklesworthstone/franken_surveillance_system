@@ -22,6 +22,8 @@ use fss_reference::onvif::wire::{
 };
 use fss_reference::{ReferenceDeployment, ReplayCx};
 
+#[path = "fss-onvif-metadata/admission.rs"]
+mod admission;
 #[path = "fss-capture-rtsp/authentication.rs"]
 mod authentication;
 #[path = "fss-onvif-metadata/capture.rs"]
@@ -59,6 +61,10 @@ const INPUT_ERROR: &str = "ERR-ONVIF-METADATA-INPUT-001";
 const LIMIT_ERROR: &str = "ERR-ONVIF-METADATA-LIMIT-001";
 const CUSTODY_ERROR: &str = "ERR-ONVIF-METADATA-CUSTODY-001";
 const REPORT_LIMIT: usize = 2 * 1024 * 1024;
+// Each bounded history step admits through both the replay and I/O authority;
+// leave a fixed reserve for source reads, root publication and request retirement.
+const STORAGE_CHECKPOINT_ALLOWANCE: u64 =
+    4 * fss_reference::onvif::metadata::MAX_HISTORY_BATCHES as u64 + 4096;
 const COMMITTED_GUIDANCE: &str = "durable_publication=true\nsafe_next=verify_exact_import\n";
 
 enum Action {
@@ -265,7 +271,7 @@ fn run(options: Options) -> Result<CommandOutput, &'static str> {
         timeout_ns: 30_000_000_000,
         bytes: 4 * 1024 * 1024,
         network_bytes: 0,
-        storage_operations: 256,
+        storage_operations: STORAGE_CHECKPOINT_ALLOWANCE,
         network: false,
         // Existing deployment opens take its owner lock and may finalize its own recovery.
         write: true,
@@ -320,7 +326,7 @@ fn run(options: Options) -> Result<CommandOutput, &'static str> {
             priority: 10,
             budgets: BudgetVector::builder()
                 .bytes(4 * 1024 * 1024)
-                .storage_operations(256)
+                .storage_operations(STORAGE_CHECKPOINT_ALLOWANCE)
                 .build()
                 .map_err(|_| LIMIT_ERROR)?,
             privacy_scope: "privacy:owner-private-vendor-metadata".into(),
@@ -331,7 +337,8 @@ fn run(options: Options) -> Result<CommandOutput, &'static str> {
         .map_err(|_| ARGUMENT_ERROR)?;
         // This constructor performs no ambient filesystem work.
         let cx = ReplayCx::from_context_authority_read_only(&authority, options.root.clone())
-            .map_err(|_| ARGUMENT_ERROR)?;
+            .map_err(|_| ARGUMENT_ERROR)?
+            .with_admission(|_| admission::check(scope));
         let result = (|| {
             scope.output()?;
             let mut deployment = ReferenceDeployment::open(&options.root, &options.site, &cx)
@@ -364,8 +371,12 @@ fn run(options: Options) -> Result<CommandOutput, &'static str> {
                 }
             }
         })();
+        let owner_error = cx.admission_refusal().map(admission::code);
         cx.drain_and_finalize();
-        result
+        match result {
+            Ok(retained) => Ok((retained, owner_error)),
+            Err(error) => Err(owner_error.unwrap_or(error)),
+        }
     };
     if matches!(&options.action, Action::Import { .. }) {
         let completed = runtime::run_committing(request, |scope| {
@@ -374,19 +385,24 @@ fn run(options: Options) -> Result<CommandOutput, &'static str> {
             // custody receipt fallback if optional detail exceeds its bound.
             work(scope).map(runtime::Committed::new)
         })?;
-        let mut custody_receipt = custody_header(&completed.value);
+        let (retained, owner_error) = completed.value;
+        let post_commit_error = owner_error.or(completed.post_commit_error);
+        let mut custody_receipt = custody_header(&retained);
         custody_receipt.push_str(COMMITTED_GUIDANCE);
         Ok(CommandOutput {
             report: committed_report(
-                &completed.value,
+                &retained,
                 options.include_values,
-                completed.post_commit_error,
+                post_commit_error,
                 completed.finalization_error,
             ),
             custody_receipt: Some(custody_receipt),
         })
     } else {
-        let retained = runtime::run(request, work)?;
+        let (retained, owner_error) = runtime::run(request, work)?;
+        if let Some(error) = owner_error {
+            return Err(error);
+        }
         let operation = match options.action {
             Action::Inspect { verify: true, .. } => "verify",
             _ => "inspect",

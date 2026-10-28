@@ -23,7 +23,7 @@ use fss_publication::{LocalPublicationState, SlotName};
 
 use super::wire::{EventDocument, WireError, parse_event_document, parse_metadata_document};
 use crate::deletion::DeletionIndex;
-use crate::{ReferenceDeployment, ReplayCx};
+use crate::{ReferenceDeployment, ReplayAdmission, ReplayCx};
 
 /// Original event-only recipe compatibility domain; never reinterpreted as analytics.
 pub const RECIPE_DOMAIN_V1: &str = "fss.onvif_vendor_event_import.v1";
@@ -259,7 +259,7 @@ impl RetainedMetadata {
         deployment: &ReferenceDeployment,
         identity: ContentDigest,
         expected_root: Option<ContentDigest>,
-        cx: &ReplayCx,
+        cx: &ReplayCx<impl ReplayAdmission>,
     ) -> Result<Self, MetadataError> {
         admit(deployment, cx, "onvif_metadata:open")?;
         deployment
@@ -457,7 +457,7 @@ pub fn retain(
     deployment: &mut ReferenceDeployment,
     binding: SourceBinding,
     source: &[u8],
-    cx: &ReplayCx,
+    cx: &ReplayCx<impl ReplayAdmission>,
 ) -> Result<RetainedMetadata, MetadataError> {
     retain_with_interpretation(deployment, binding, source, Interpretation::AnalyticsV2, cx)
 }
@@ -471,7 +471,7 @@ pub fn retain_with_interpretation(
     binding: SourceBinding,
     source: &[u8],
     interpretation: Interpretation,
-    cx: &ReplayCx,
+    cx: &ReplayCx<impl ReplayAdmission>,
 ) -> Result<RetainedMetadata, MetadataError> {
     retain_inner(deployment, binding, source, interpretation, None, None, cx)
 }
@@ -487,7 +487,7 @@ pub fn retain_pullpoint(
     source: &[u8],
     acquisition: PullPointAcquisition,
     subscription_source: &[u8],
-    cx: &ReplayCx,
+    cx: &ReplayCx<impl ReplayAdmission>,
 ) -> Result<RetainedMetadata, MetadataError> {
     acquisition.validate_sources(source, subscription_source)?;
     retain_inner(
@@ -508,7 +508,7 @@ fn retain_inner(
     interpretation: Interpretation,
     acquisition: Option<PullPointAcquisition>,
     subscription_source: Option<&[u8]>,
-    cx: &ReplayCx,
+    cx: &ReplayCx<impl ReplayAdmission>,
 ) -> Result<RetainedMetadata, MetadataError> {
     admit(deployment, cx, "onvif_metadata:admit")?;
     deployment
@@ -637,9 +637,9 @@ fn retain_inner(
     Ok(retained)
 }
 
-fn admit(
+pub(super) fn admit(
     deployment: &ReferenceDeployment,
-    cx: &ReplayCx,
+    cx: &ReplayCx<impl ReplayAdmission>,
     stage: &'static str,
 ) -> Result<(), MetadataError> {
     if cx.root_dir() != deployment.root() {
@@ -648,7 +648,10 @@ fn admit(
     checkpoint(cx, stage)
 }
 
-fn checkpoint(cx: &ReplayCx, stage: &'static str) -> Result<(), MetadataError> {
+pub(super) fn checkpoint(
+    cx: &ReplayCx<impl ReplayAdmission>,
+    stage: &'static str,
+) -> Result<(), MetadataError> {
     if !cx.io_authority().is_valid() {
         return Err(MetadataError::Authority);
     }
@@ -705,11 +708,11 @@ fn manifest(
         .map_err(crate::ReferenceError::from)
         .map_err(Into::into)
 }
-fn read(
+pub(super) fn read(
     deployment: &ReferenceDeployment,
     digest: ContentDigest,
     maximum: usize,
-    cx: &ReplayCx,
+    cx: &ReplayCx<impl ReplayAdmission>,
 ) -> Result<Vec<u8>, MetadataError> {
     checkpoint(cx, "onvif_metadata:read")?;
     let bytes = deployment
@@ -721,7 +724,7 @@ fn read(
     }
     Ok(bytes)
 }
-fn history_work(deployment: &ReferenceDeployment) -> Result<usize, MetadataError> {
+pub(super) fn history_work(deployment: &ReferenceDeployment) -> Result<usize, MetadataError> {
     if deployment.ledger().batches().len() > MAX_HISTORY_BATCHES {
         return Err(MetadataError::Limit);
     }
@@ -737,12 +740,12 @@ fn history_work(deployment: &ReferenceDeployment) -> Result<usize, MetadataError
     Ok(work)
 }
 
-fn check_publication(
+pub(super) fn check_publication(
     deployment: &ReferenceDeployment,
     slot: &SlotName,
     expected: &ObjectManifest,
     binding: &SourceBinding,
-    cx: &ReplayCx,
+    cx: &ReplayCx<impl ReplayAdmission>,
 ) -> Result<LedgerAnchor, MetadataError> {
     if deployment.ledger().batches().len() > MAX_HISTORY_BATCHES {
         return Err(MetadataError::Limit);

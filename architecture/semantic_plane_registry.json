@@ -762,7 +762,8 @@
     "crates/fss-reference/src/onvif/pullpoint.rs": "ambiguous",
     "crates/fss-reference/src/onvif/metadata/source.rs": "support",
     "crates/fss-cli/src/bin/fss-onvif-metadata/capture.rs": "support",
-    "crates/fss-cli/src/bin/fss-onvif-metadata/capture/plan.rs": "support"
+    "crates/fss-cli/src/bin/fss-onvif-metadata/capture/plan.rs": "support",
+    "crates/fss-cli/src/bin/fss-onvif-metadata/admission.rs": "support"
   },
   "types": {
     "AlertEffectRecord": {
@@ -1397,6 +1398,21 @@
       "file": "crates/fss-reference/src/onvif/metadata/source.rs",
       "plane": "support",
       "description": "Immutable owner acquisition witness binding approval, exact route and control-source hashes, request identities and ordered monotonic intervals; no authenticated server or profile-filter claim."
+    },
+    "ReplayAdmission": {
+      "file": "crates/fss-reference/src/adapter_replay.rs",
+      "plane": "support",
+      "description": "Borrowed live native owner admission at replay and publication checkpoints; only narrows existing I/O authority and cannot outlive its request."
+    },
+    "ReplayAdmissionError": {
+      "file": "crates/fss-reference/src/adapter_replay.rs",
+      "plane": "support",
+      "description": "Sticky typed owner cancellation, deadline, authority, budget, reentrancy or unwind refusal; never implies rollback of earlier durable work."
+    },
+    "NoReplayAdmission": {
+      "file": "crates/fss-reference/src/adapter_replay.rs",
+      "plane": "support",
+      "description": "Compatibility marker preserving existing replay context behavior when no additional live owner gate is attached."
     }
   }
 }

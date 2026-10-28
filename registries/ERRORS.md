@@ -664,3 +664,12 @@ stable identities and recovery contracts.
 | `ERR-ONVIF-PULLPOINT-LEASE-001` | The returned lease cannot safely admit the bounded operation | Inspect the observed subscription state and cleanup error. An Active/Indeterminate subscription requires owner/device reconciliation before another Create. |
 
 Native transport, authentication, authority and metadata custody refusals retain their existing codes. Capture reports keep every definitely committed batch after later failure; a failed/ambiguous request does not prove that no remote subscription or durable publication exists. No automatic Create retry is safe merely because a request failed. Zero-batch control-source persistence and per-filesystem-checkpoint linkage to native cancellation remain separate limitations documented in `docs/onvif-metadata.md`.
+
+## Native metadata storage admission
+
+| Error | Meaning | Operator action |
+|---|---|---|
+| `ERR-ONVIF-STORAGE-REENTRANT-001` | A live replay admission callback recursively or concurrently reentered its context | Stop this request; preserve any previously returned durable handles and acquire a fresh owner scope before verification. |
+| `ERR-ONVIF-STORAGE-PANIC-001` | A replay admission callback unwound and its context is permanently closed | Preserve partial receipts and investigate the owning callback; do not reopen the same authority. |
+
+Native metadata storage retains the original cancellation/deadline/budget/authority identity from the owner. Post-commit refusal preserves the exact publication receipt and suppresses optional private values. The bridge checks cooperative replay/publication boundaries, not preemption inside an operating-system syscall.
