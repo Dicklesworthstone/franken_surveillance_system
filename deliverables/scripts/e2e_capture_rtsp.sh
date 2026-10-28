@@ -19,7 +19,7 @@ PASS=${3:?rtsp password}
 PICS=${4:-300}
 ROOT=${ROOT:-/tmp/fss-e2e-rtsp}
 SITE=${SITE:-e2e}
-BIN=$(cd "$(dirname "$0")/../../target/debug" && pwd)
+BIN=${BIN:-$(cd "$(dirname "$0")/../../target/debug" && pwd)}
 HERE=$(cd "$(dirname "$0")" && pwd)
 SENSOR=tapo-c460
 STREAM=stream1
@@ -104,7 +104,7 @@ while read -r SLOT WROOT; do
   }
   # shellcheck disable=SC2046
   "$BIN/fss-import-rtsp" $(import_args) > "$ROOT/import-plan-$SLOT.json"
-  IAPPROVAL=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["approval"])' \
+  IAPPROVAL=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["approval_digest"])' \
     "$ROOT/import-plan-$SLOT.json")
   # shellcheck disable=SC2046
   "$BIN/fss-import-rtsp" $(import_args) --approve "$IAPPROVAL" > "$ROOT/import-$SLOT.json"
