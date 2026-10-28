@@ -219,7 +219,7 @@ impl From<fss_object::SpoolError> for MetadataError {
 pub(crate) fn lifecycle_sensor(
     deployment: &ReferenceDeployment,
     identity: ContentDigest,
-    cx: &ReplayCx,
+    cx: &ReplayCx<impl ReplayAdmission>,
 ) -> Result<SensorId, MetadataError> {
     Ok(RetainedMetadata::open(deployment, identity, None, cx)?
         .binding()
@@ -663,6 +663,17 @@ fn check_deleted(
     objects: impl IntoIterator<Item = ContentDigest>,
 ) -> Result<(), MetadataError> {
     let unit = format!("slot:onvif-metadata-{}", &identity.to_text()[7..]);
+    check_deleted_for_unit(deletions, identity, &unit, objects)
+}
+
+/// Verify that the exact publication unit and complete source closure remain outside
+/// every committed deletion, including a derivative removed under another import.
+pub(super) fn check_deleted_for_unit(
+    deletions: &DeletionIndex,
+    identity: ContentDigest,
+    unit: &str,
+    objects: impl IntoIterator<Item = ContentDigest>,
+) -> Result<(), MetadataError> {
     let entry = deletions
         .import(identity)
         .or_else(|| {

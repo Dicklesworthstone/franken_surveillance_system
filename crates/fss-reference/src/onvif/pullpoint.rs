@@ -117,6 +117,85 @@ pub struct RetainedBatch {
     pub root: ContentDigest,
 }
 
+/// A definitely durable receipt and an optional refusal of any further work.
+/// A late storage denial must preserve the receipt while stopping the next poll.
+#[derive(Debug)]
+pub struct RetainedProgress {
+    /// Exact source/control publication that completed.
+    pub receipt: RetainedBatch,
+    /// A post-commit owner refusal; cleanup may still use its independently live authority.
+    pub stop: Option<PullPointError>,
+}
+impl From<RetainedBatch> for RetainedProgress {
+    fn from(receipt: RetainedBatch) -> Self {
+        Self {
+            receipt,
+            stop: None,
+        }
+    }
+}
+
+/// Control boundaries that must reach durable custody before further network work.
+/// Bodies and route fields may contain private endpoint references; Debug omits them.
+pub enum PullPointControl<'a> {
+    /// Persist this exact logical request before any Create dispatch.
+    CreateIntent {
+        /// Independently approved event route.
+        events: &'a HttpRoute,
+        /// Independently approved subscription subtree.
+        service_root: &'a str,
+        /// Fresh logical Create identity, reused only for its explicit HTTP 401 retry.
+        message_id: &'a str,
+        /// Original monotonic admission point, before intent storage.
+        started_ns: u64,
+        /// Finite requested lease, not a remote guarantee.
+        lifetime_seconds: u32,
+    },
+    /// Persist the complete scoped Create response before the first poll.
+    Created {
+        /// Complete transfer-decoded Create SOAP.
+        source: &'a [u8],
+        /// Original logical Create identity.
+        message_id: &'a str,
+        /// Original monotonic Create admission.
+        started_ns: u64,
+        /// Complete response observation time.
+        completed_ns: u64,
+        /// Whether this response followed a client Digest proof.
+        authenticated: bool,
+    },
+    /// Persist the exact validated cleanup response as a terminal historical receipt.
+    Unsubscribed {
+        /// Independently current subscription route actually used.
+        route: &'a HttpRoute,
+        /// Complete Unsubscribe SOAP.
+        source: &'a [u8],
+        /// Fresh logical Unsubscribe request identity.
+        message_id: &'a str,
+        /// Current owner's monotonic request start.
+        started_ns: u64,
+        /// Current owner's monotonic complete response time.
+        completed_ns: u64,
+        /// Whether this response followed a client Digest proof.
+        authenticated: bool,
+    },
+}
+impl fmt::Debug for PullPointControl<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::CreateIntent { .. } => f.write_str("PullPointControl::CreateIntent([redacted])"),
+            Self::Created { source, .. } => f
+                .debug_struct("PullPointControl::Created")
+                .field("source_bytes", &source.len())
+                .finish_non_exhaustive(),
+            Self::Unsubscribed { source, .. } => f
+                .debug_struct("PullPointControl::Unsubscribed")
+                .field("source_bytes", &source.len())
+                .finish_non_exhaustive(),
+        }
+    }
+}
+
 /// Observed subscription outcome, not proof of future device behavior.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SubscriptionState {
@@ -133,6 +212,8 @@ pub enum SubscriptionState {
 /// Explicit bounded stopping reason; none implies complete camera event coverage.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CaptureStop {
+    /// An explicit cleanup-only operation performed no Create or PullMessages.
+    CleanupOnly,
     /// The requested maximum number of complete responses was retained.
     PullLimit,
     /// Further polling would consume the cleanup time reservation.
@@ -150,6 +231,12 @@ pub enum CaptureStop {
 pub struct CaptureReport {
     /// Ordered durable sources, including empty batches and duplicate notifications.
     pub retained: Vec<RetainedBatch>,
+    /// Definitely durable logical Create intent, written before dispatch.
+    pub create_intent: Option<RetainedBatch>,
+    /// Definitely durable complete Create response, written before any poll.
+    pub created_subscription: Option<RetainedBatch>,
+    /// Definitely durable terminal Unsubscribe observation, if its sink succeeded.
+    pub unsubscribe_receipt: Option<RetainedBatch>,
     /// Actual HTTP attempts, including authentication retries and cleanup.
     pub exchanges: u32,
     /// Complete responses successfully handed to durable custody.
@@ -171,6 +258,9 @@ impl Default for CaptureReport {
     fn default() -> Self {
         Self {
             retained: Vec::new(),
+            create_intent: None,
+            created_subscription: None,
+            unsubscribe_receipt: None,
             exchanges: 0,
             pulls: 0,
             notifications: 0,
@@ -211,6 +301,9 @@ impl fmt::Debug for CaptureReport {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("CaptureReport")
             .field("retained", &self.retained)
+            .field("create_intent", &self.create_intent)
+            .field("created_subscription", &self.created_subscription)
+            .field("unsubscribe_receipt", &self.unsubscribe_receipt)
             .field("exchanges", &self.exchanges)
             .field("pulls", &self.pulls)
             .field("notifications", &self.notifications)
@@ -316,13 +409,84 @@ pub fn capture(
     cx: &impl OnvifContext,
     mut sink: impl FnMut(PullBatch<'_>) -> Result<RetainedBatch, MetadataError>,
 ) -> Result<CaptureReport, CaptureFailure> {
+    capture_inner(
+        config,
+        cx,
+        |_| Ok(None),
+        |batch| sink(batch).map(Into::into),
+    )
+}
+
+/// Capture with mandatory durable Create intent and response callbacks.
+///
+/// The intent callback completes before dispatch. The Created callback completes
+/// before the first poll; if it refuses, cleanup is still attempted under the
+/// original live authority. A cold intent without a response remains indeterminate
+/// and never authorizes another Create. Earlier returned receipts survive refusal.
+pub fn capture_with_control(
+    config: &PullPointConfig,
+    cx: &impl OnvifContext,
+    mut control: impl FnMut(PullPointControl<'_>) -> Result<RetainedBatch, MetadataError>,
+    mut sink: impl FnMut(PullBatch<'_>) -> Result<RetainedBatch, MetadataError>,
+) -> Result<CaptureReport, CaptureFailure> {
+    capture_with_progress(
+        config,
+        cx,
+        |event| control(event).map(Into::into),
+        |batch| sink(batch).map(Into::into),
+    )
+}
+
+/// Capture while preserving a durable receipt alongside any post-commit refusal.
+/// A storage-budget or storage-authority denial stops polling even when network
+/// authority still permits the separately bounded Unsubscribe obligation.
+pub fn capture_with_progress(
+    config: &PullPointConfig,
+    cx: &impl OnvifContext,
+    mut control: impl FnMut(PullPointControl<'_>) -> Result<RetainedProgress, MetadataError>,
+    sink: impl FnMut(PullBatch<'_>) -> Result<RetainedProgress, MetadataError>,
+) -> Result<CaptureReport, CaptureFailure> {
+    capture_inner(config, cx, |event| control(event).map(Some), sink)
+}
+
+fn capture_inner(
+    config: &PullPointConfig,
+    cx: &impl OnvifContext,
+    mut control: impl FnMut(PullPointControl<'_>) -> Result<Option<RetainedProgress>, MetadataError>,
+    mut sink: impl FnMut(PullBatch<'_>) -> Result<RetainedProgress, MetadataError>,
+) -> Result<CaptureReport, CaptureFailure> {
     let mut report = CaptureReport::default();
     let mut budget = Budget::default();
-    let active = begin(config, cx, &mut budget, &mut report);
+    let active = begin(config, cx, &mut budget, &mut report, &mut control);
     let result = match active {
         Ok(active) => {
-            let captured = poll(config, cx, &mut budget, &active, &mut report, &mut sink);
-            let cleaned = cleanup(config, cx, &mut budget, &active);
+            let captured = control(PullPointControl::Created {
+                source: &active.source,
+                message_id: &active.message_id,
+                started_ns: active.started_ns,
+                completed_ns: active.completed_ns,
+                authenticated: active.authenticated,
+            })
+            .map_err(PullPointError::Retention)
+            .and_then(|progress| {
+                if let Some(progress) = progress {
+                    report.created_subscription = Some(progress.receipt);
+                    if let Some(error) = progress.stop {
+                        return Err(error);
+                    }
+                }
+                poll(config, cx, &mut budget, &active, &mut report, &mut sink)
+            });
+            let cleaned = finish_cleanup(
+                config,
+                cx,
+                &mut budget,
+                &active.subscription,
+                &active.route,
+                &active.message_id,
+                &mut report,
+                &mut control,
+            );
             match cleaned {
                 Ok(()) => report.subscription_state = SubscriptionState::Unsubscribed,
                 Err(ref error) => report.cleanup_error = Some(error.code()),
@@ -352,6 +516,7 @@ struct Active {
     completed_ns: u64,
     lease_deadline_ns: u64,
     message_id: String,
+    authenticated: bool,
 }
 
 fn begin(
@@ -359,6 +524,7 @@ fn begin(
     cx: &impl OnvifContext,
     budget: &mut Budget,
     report: &mut CaptureReport,
+    control: &mut impl FnMut(PullPointControl<'_>) -> Result<Option<RetainedProgress>, MetadataError>,
 ) -> Result<Active, PullPointError> {
     validate_config(config)?;
     let first = budget.now(config.deadline_ns, config.max_steps, cx)?;
@@ -391,10 +557,24 @@ fn begin(
         budget,
     )?;
     let request = request.with_message_id(&message_id)?;
-    report.subscription_state = SubscriptionState::Indeterminate;
     report.subscription_started_ns = Some(started_ns);
     report.subscription_message_id = Some(message_id.clone());
-    let (response, _) = exchange(
+    if let Some(progress) = control(PullPointControl::CreateIntent {
+        events: &config.events,
+        service_root: &config.service_root,
+        message_id: &message_id,
+        started_ns,
+        lifetime_seconds: config.lifetime_seconds,
+    })? {
+        report.create_intent = Some(progress.receipt);
+        if let Some(error) = progress.stop {
+            return Err(error);
+        }
+    }
+    // Dispatch can begin only after the intent sink acknowledges durable custody.
+    // The next exchange independently rechecks time and live route authority.
+    report.subscription_state = SubscriptionState::Indeterminate;
+    let (response, authenticated) = exchange(
         config,
         &config.events,
         &request,
@@ -407,7 +587,7 @@ fn begin(
     let completed_ns = budget.now(work_deadline(config), work_steps(config), cx)?;
     report.subscription_completed_ns = Some(completed_ns);
     let source = soap_body(&response)?;
-    validate_relates_to(source, &message_id)?;
+    wire::require_relates_to(source, &message_id)?;
     let subscription = parse_pull_point_subscription(source)?;
     let route = config
         .events
@@ -426,6 +606,7 @@ fn begin(
         completed_ns,
         lease_deadline_ns,
         message_id,
+        authenticated,
     })
 }
 
@@ -435,7 +616,7 @@ fn poll(
     budget: &mut Budget,
     active: &Active,
     report: &mut CaptureReport,
-    sink: &mut impl FnMut(PullBatch<'_>) -> Result<RetainedBatch, MetadataError>,
+    sink: &mut impl FnMut(PullBatch<'_>) -> Result<RetainedProgress, MetadataError>,
 ) -> Result<(), PullPointError> {
     let lease_work_deadline = active.lease_deadline_ns.saturating_sub(CLEANUP_RESERVE_NS);
     if lease_work_deadline
@@ -503,32 +684,42 @@ fn poll(
         })?;
         // A completed durable sink receipt is retained even if cancellation arrives
         // immediately afterwards. The next admission and cleanup will observe it.
-        report.retained.push(retained);
+        report.retained.push(retained.receipt);
         report.pulls += 1;
         report.notifications += document.notifications.len() as u64;
+        if let Some(error) = retained.stop {
+            return Err(error);
+        }
     }
     report.stop = CaptureStop::PullLimit;
     Ok(())
+}
+
+struct CleanupSource {
+    source: Vec<u8>,
+    message_id: String,
+    started_ns: u64,
+    completed_ns: u64,
+    authenticated: bool,
 }
 
 fn cleanup(
     config: &PullPointConfig,
     cx: &impl OnvifContext,
     budget: &mut Budget,
-    active: &Active,
-) -> Result<(), PullPointError> {
-    let message_id = next_request_id(
-        &active.route,
-        config.deadline_ns,
-        config.max_steps,
-        cx,
-        budget,
-    )?;
-    let request =
-        unsubscribe_pull_point_request(&active.subscription)?.with_message_id(&message_id)?;
-    let (response, _) = exchange(
+    subscription: &PullPointSubscription,
+    route: &HttpRoute,
+    create_message_id: &str,
+) -> Result<CleanupSource, PullPointError> {
+    let started_ns = budget.now(config.deadline_ns, config.max_steps, cx)?;
+    let message_id = next_request_id(route, config.deadline_ns, config.max_steps, cx, budget)?;
+    if message_id == create_message_id {
+        return Err(ClientError::Entropy.into());
+    }
+    let request = unsubscribe_pull_point_request(subscription)?.with_message_id(&message_id)?;
+    let (response, authenticated) = exchange(
         config,
-        &active.route,
+        route,
         &request,
         config.deadline_ns,
         config.max_steps,
@@ -536,17 +727,106 @@ fn cleanup(
         budget,
     )?;
     let source = soap_body(&response)?;
-    validate_relates_to(source, &message_id)?;
+    wire::require_relates_to(source, &message_id)?;
     parse_unsubscribe_response(source)?;
-    let now = budget.now(config.deadline_ns, config.max_steps, cx)?;
+    let completed_ns = budget.now(config.deadline_ns, config.max_steps, cx)?;
     cx.checkpoint(
-        &active.route,
+        route,
         HttpOperation::Release,
-        now,
+        completed_ns,
         config.deadline_ns,
     )
     .map_err(denial)?;
+    Ok(CleanupSource {
+        source: response.into_body(),
+        message_id,
+        started_ns,
+        completed_ns,
+        authenticated,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn finish_cleanup(
+    config: &PullPointConfig,
+    cx: &impl OnvifContext,
+    budget: &mut Budget,
+    subscription: &PullPointSubscription,
+    route: &HttpRoute,
+    create_message_id: &str,
+    report: &mut CaptureReport,
+    control: &mut impl FnMut(PullPointControl<'_>) -> Result<Option<RetainedProgress>, MetadataError>,
+) -> Result<(), PullPointError> {
+    let cleaned = cleanup(config, cx, budget, subscription, route, create_message_id)?;
+    // The observed remote outcome and durable local acknowledgment are separate.
+    report.subscription_state = SubscriptionState::Unsubscribed;
+    if let Some(progress) = control(PullPointControl::Unsubscribed {
+        route,
+        source: &cleaned.source,
+        message_id: &cleaned.message_id,
+        started_ns: cleaned.started_ns,
+        completed_ns: cleaned.completed_ns,
+        authenticated: cleaned.authenticated,
+    })? {
+        report.unsubscribe_receipt = Some(progress.receipt);
+        if let Some(error) = progress.stop {
+            return Err(error);
+        }
+    }
     Ok(())
+}
+
+/// Explicitly unsubscribe a previously verified endpoint under fresh live authority.
+///
+/// The caller independently checks its retained generation/route pins against
+/// this new configuration. This function performs no Create or PullMessages and
+/// never interprets a retained approval as a current grant. Its receipt sink
+/// preserves the complete response before success is returned.
+pub fn unsubscribe_existing(
+    config: &PullPointConfig,
+    cx: &impl OnvifContext,
+    subscription: &PullPointSubscription,
+    create_message_id: &str,
+    mut control: impl FnMut(PullPointControl<'_>) -> Result<RetainedProgress, MetadataError>,
+) -> Result<CaptureReport, CaptureFailure> {
+    let mut report = CaptureReport {
+        // This is the last historical Create observation, not a fresh active-state proof.
+        subscription_state: SubscriptionState::Active,
+        stop: CaptureStop::CleanupOnly,
+        ..CaptureReport::default()
+    };
+    let mut budget = Budget::default();
+    let result = (|| {
+        validate_config(config)?;
+        let first = budget.now(config.deadline_ns, config.max_steps, cx)?;
+        if config.deadline_ns.saturating_sub(first) > MAX_SESSION_NS {
+            return Err(PullPointError::Configuration);
+        }
+        unsubscribe_pull_point_request(subscription)?.with_message_id(create_message_id)?;
+        let route = config
+            .events
+            .event_subscription(subscription.endpoint(), &config.service_root)
+            .map_err(|_| ClientError::Scope)?;
+        finish_cleanup(
+            config,
+            cx,
+            &mut budget,
+            subscription,
+            &route,
+            create_message_id,
+            &mut report,
+            &mut |event| control(event).map(Some),
+        )
+    })();
+    report.exchanges = budget.exchanges;
+    match result {
+        Ok(()) => Ok(report),
+        Err(error) => {
+            report.cleanup_error = Some(error.code());
+            report.stop = CaptureStop::Failure;
+            Err(CaptureFailure { report, error })
+        }
+    }
 }
 
 /// Validate all static owner bounds without reading a clock, credentials, disk or network.

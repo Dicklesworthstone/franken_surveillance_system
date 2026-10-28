@@ -1,15 +1,31 @@
 #![forbid(unsafe_code)]
-//! Admit source-verified ONVIF metadata publications to the existing import lifecycle.
-//! A ledger name only discovers a candidate; the ONVIF owner replays its exact frozen source
-//! interpretation, manifest and current publication before sensor or closure membership exists.
+//! Admit source-verified ONVIF metadata and control publications to the existing lifecycle.
+//! A ledger name only discovers a candidate; each ONVIF owner verifies exact source,
+//! parent custody, manifest and current publication before sensor or closure membership exists.
 
 use fss_core::{ContentDigest, SensorId};
 
 use super::DeletionError;
-use crate::onvif::metadata::{MetadataError, lifecycle_sensor};
+use crate::adapter_replay::ReplayAdmission;
+use crate::onvif::metadata::MetadataError;
+use crate::onvif::{control, metadata};
 use crate::{ReferenceDeployment, ReplayCx};
 
-const BATCH_PREFIX: &str = "batch:local-root:onvif-metadata-";
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum OnvifKind {
+    Metadata,
+    CreateIntent,
+    Subscription,
+}
+impl OnvifKind {
+    fn prefix(self) -> &'static str {
+        match self {
+            Self::Metadata => "onvif-metadata-",
+            Self::CreateIntent => "onvif-create-intent-",
+            Self::Subscription => "onvif-subscription-",
+        }
+    }
+}
 
 #[derive(Debug)]
 pub(super) struct OnvifImport {
@@ -24,9 +40,17 @@ impl OnvifImport {
     }
 }
 
-/// Recognize only an exact immutable publication identity, never a similarly prefixed child.
-pub(super) fn identity(batch: &str) -> Option<ContentDigest> {
-    let hex = batch.strip_prefix(BATCH_PREFIX)?;
+/// Recognize an exact immutable publication identity, never a similarly prefixed child.
+pub(super) fn identity(batch: &str) -> Option<(OnvifKind, ContentDigest)> {
+    let slot = batch.strip_prefix("batch:local-root:")?;
+    let kind = [
+        OnvifKind::Metadata,
+        OnvifKind::CreateIntent,
+        OnvifKind::Subscription,
+    ]
+    .into_iter()
+    .find(|kind| slot.starts_with(kind.prefix()))?;
+    let hex = slot.strip_prefix(kind.prefix())?;
     if hex.len() != 64
         || !hex
             .bytes()
@@ -34,7 +58,7 @@ pub(super) fn identity(batch: &str) -> Option<ContentDigest> {
     {
         return None;
     }
-    ContentDigest::parse(format!("sha256:{hex}")).ok()
+    Some((kind, ContentDigest::parse(format!("sha256:{hex}")).ok()?))
 }
 
 pub(super) fn has_terminal(deployment: &ReferenceDeployment, import: ContentDigest) -> bool {
@@ -42,27 +66,40 @@ pub(super) fn has_terminal(deployment: &ReferenceDeployment, import: ContentDige
         .ledger()
         .batches()
         .iter()
-        .any(|batch| identity(batch.batch_id.as_str()) == Some(import))
+        .any(|batch| identity(batch.batch_id.as_str()).is_some_and(|(_, digest)| digest == import))
 }
 
-pub(super) fn slot_unit(import: ContentDigest) -> String {
-    format!("slot:onvif-metadata-{}", &import.to_text()[7..])
+pub(super) fn slot_unit(kind: OnvifKind, import: ContentDigest) -> String {
+    format!("slot:{}{}", kind.prefix(), &import.to_text()[7..])
 }
 
 pub(super) fn inspect(
     deployment: &ReferenceDeployment,
     import: ContentDigest,
-    cx: &ReplayCx,
+    cx: &ReplayCx<impl ReplayAdmission>,
 ) -> Result<OnvifImport, DeletionError> {
-    if !has_terminal(deployment, import) {
-        return Err(DeletionError::UnknownImport(import));
+    let mut matches = deployment
+        .ledger()
+        .batches()
+        .iter()
+        .filter_map(|batch| identity(batch.batch_id.as_str()))
+        .filter_map(|(kind, digest)| (digest == import).then_some(kind));
+    let kind = matches.next().ok_or(DeletionError::UnknownImport(import))?;
+    // One lifecycle identity must never ambiguously select multiple owners.
+    if matches.next().is_some() {
+        return Err(DeletionError::RecordMismatch);
     }
-    let sensor = lifecycle_sensor(deployment, import, cx).map_err(|error| match error {
+    let sensor = match kind {
+        OnvifKind::Metadata => metadata::lifecycle_sensor(deployment, import, cx),
+        OnvifKind::CreateIntent => control::lifecycle_sensor(deployment, import, true, cx),
+        OnvifKind::Subscription => control::lifecycle_sensor(deployment, import, false, cx),
+    }
+    .map_err(|error| match error {
         MetadataError::Cancelled => DeletionError::Cancelled {
             stage: super::STAGE_DELETION_SCAN,
         },
         MetadataError::Limit => DeletionError::Bound {
-            limit: "onvif_metadata_verification",
+            limit: "onvif_custody_verification",
         },
         MetadataError::EvidenceDeleted { identity, plan } => DeletionError::EvidenceDeleted {
             import: identity,
@@ -70,13 +107,11 @@ pub(super) fn inspect(
         },
         _ => DeletionError::RecordMismatch,
     })?;
-    let hex = &import.to_text()[7..];
-    let slot = format!("onvif-metadata-{hex}");
+    let slot = format!("{}{}", kind.prefix(), &import.to_text()[7..]);
     Ok(OnvifImport {
         sensor,
         object_id: format!("object:local-root:{slot}"),
-        // Reachability batches are excluded from deletion units by the existing owner.
-        // The verified visible root holds the recipe, source and projection closure.
-        slot_unit: slot_unit(import),
+        // Existing reachability batches are authority; the verified root holds the source.
+        slot_unit: slot_unit(kind, import),
     })
 }

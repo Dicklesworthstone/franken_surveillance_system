@@ -46,7 +46,10 @@
     "crates/fss-reference/src/situation_sections.rs",
     "crates/fss-reference/src/ingest/historical_health/exposure.rs",
     "crates/fss-reference/src/onvif/metadata.rs",
-    "crates/fss-reference/src/onvif/pullpoint.rs"
+    "crates/fss-reference/src/onvif/pullpoint.rs",
+    "crates/fss-reference/src/onvif/control.rs",
+    "crates/fss-reference/src/onvif/control/lifecycle.rs",
+    "crates/fss-reference/src/onvif/control/termination.rs"
   ],
   "module_declarations": {
     "crates/fss-cli/src/alert_effect/report.rs": "support",
@@ -763,7 +766,12 @@
     "crates/fss-reference/src/onvif/metadata/source.rs": "support",
     "crates/fss-cli/src/bin/fss-onvif-metadata/capture.rs": "support",
     "crates/fss-cli/src/bin/fss-onvif-metadata/capture/plan.rs": "support",
-    "crates/fss-cli/src/bin/fss-onvif-metadata/admission.rs": "support"
+    "crates/fss-cli/src/bin/fss-onvif-metadata/admission.rs": "support",
+    "crates/fss-reference/src/onvif/control.rs": "ambiguous",
+    "crates/fss-reference/src/onvif/control/codec.rs": "support",
+    "crates/fss-reference/src/onvif/control/catalog.rs": "cognition",
+    "crates/fss-reference/src/onvif/control/lifecycle.rs": "ambiguous",
+    "crates/fss-reference/src/onvif/control/termination.rs": "ambiguous"
   },
   "types": {
     "AlertEffectRecord": {
@@ -1382,12 +1390,12 @@
     "CaptureReport": {
       "file": "crates/fss-reference/src/onvif/pullpoint.rs",
       "plane": "cognition",
-      "description": "Ordered retained response receipts, bounded native attempt counts and observed subscription cleanup; private Create response remains in memory until independently retained."
+      "description": "Known durable batch/control handles, bounded native attempts and observed cleanup state; no current remote-state, event-completeness or effect authority."
     },
     "CaptureFailure": {
       "file": "crates/fss-reference/src/onvif/pullpoint.rs",
       "plane": "support",
-      "description": "Primary acquisition refusal retaining all earlier acknowledged durable batches and cleanup state."
+      "description": "Primary acquisition refusal preserving all acknowledged batch/control receipts and the observed or indeterminate cleanup outcome."
     },
     "PullPointError": {
       "file": "crates/fss-reference/src/onvif/pullpoint.rs",
@@ -1413,6 +1421,51 @@
       "file": "crates/fss-reference/src/adapter_replay.rs",
       "plane": "support",
       "description": "Compatibility marker preserving existing replay context behavior when no additional live owner gate is attached."
+    },
+    "CreateIntentBinding": {
+      "file": "crates/fss-reference/src/onvif/control.rs",
+      "plane": "support",
+      "description": "Frozen owner-declared Create request, exact route, generation pins and admission point; retained approval is provenance and grants no fresh I/O."
+    },
+    "RetainedCreateIntent": {
+      "file": "crates/fss-reference/src/onvif/control.rs",
+      "plane": "cognition",
+      "description": "Verified durable pre-dispatch request custody; dispatch and result remain unknown without a response, and cold opens or exact retries never authorize redispatch."
+    },
+    "RetainedSubscription": {
+      "file": "crates/fss-reference/src/onvif/control.rs",
+      "plane": "cognition",
+      "description": "Historical Create observation with exact source, intent and ledger custody; require_relates_to enforces explicit reply correlation, never current active state or network authority."
+    },
+    "ControlKind": {
+      "file": "crates/fss-reference/src/onvif/control/catalog.rs",
+      "plane": "cognition",
+      "description": "Historical intent, Create-response or Unsubscribe-response receipt classification; never an assertion of current remote subscription state."
+    },
+    "ControlDescriptor": {
+      "file": "crates/fss-reference/src/onvif/control/catalog.rs",
+      "plane": "cognition",
+      "description": "Bounded hash-only discovery of cold-verified control custody and parent links under current access authority; native tombstones exclude deleted evidence and grant no effects."
+    },
+    "UnsubscribeBinding": {
+      "file": "crates/fss-reference/src/onvif/control/termination.rs",
+      "plane": "support",
+      "description": "Independently owner-declared cleanup route, approval, request identity and receive interval; historical endpoint custody cannot substitute for current authority."
+    },
+    "RetainedUnsubscribe": {
+      "file": "crates/fss-reference/src/onvif/control/termination.rs",
+      "plane": "cognition",
+      "description": "Historical successful cleanup response linked to exact Create custody; require_relates_to enforces explicit reply correlation without guaranteeing future device behavior or granting effects."
+    },
+    "RetainedProgress": {
+      "file": "crates/fss-reference/src/onvif/pullpoint.rs",
+      "plane": "support",
+      "description": "Known durable batch or control receipt plus an optional refusal of further work; late cancellation preserves committed custody without granting cleanup or polling authority."
+    },
+    "PullPointControl": {
+      "file": "crates/fss-reference/src/onvif/pullpoint.rs",
+      "plane": "ambiguous",
+      "description": "Audited retention boundary for owner-declared Create intents and private Create/Unsubscribe observations; callbacks must establish custody before progress, and payloads grant no I/O authority."
     }
   }
 }

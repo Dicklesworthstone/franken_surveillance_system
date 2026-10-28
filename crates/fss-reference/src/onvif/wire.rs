@@ -44,8 +44,8 @@ pub use pullpoint::{
     MAX_PULL_POINT_LIFETIME_SECONDS, MAX_PULL_TIMEOUT_SECONDS, MAX_REFERENCE_PARAMETERS,
     PullPointLease, PullPointSubscription, create_pull_point_request, parse_pull_messages_response,
     parse_pull_point_subscription, parse_renew_response, parse_unsubscribe_response,
-    pull_messages_request, renew_pull_point_request, unsubscribe_pull_point_request,
-    validate_relates_to,
+    pull_messages_request, renew_pull_point_request, require_relates_to,
+    unsubscribe_pull_point_request, validate_relates_to,
 };
 pub use time::{UtcDateTime, get_system_date_and_time_request, parse_system_date_and_time};
 

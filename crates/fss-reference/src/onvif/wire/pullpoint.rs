@@ -344,6 +344,21 @@ pub fn parse_unsubscribe_response(bytes: &[u8]) -> Result<(), WireError> {
 /// is tolerated, but a present mismatch, duplicate or non-reply relationship
 /// is refused. This never substitutes for route or authentication validation.
 pub fn validate_relates_to(bytes: &[u8], expected_id: &str) -> Result<(), WireError> {
+    reply_relationship(bytes, expected_id, false)
+}
+
+/// Require one explicit namespace-correct reply relationship for durable control custody.
+/// Unlike the compatibility validator, an omitted Header or RelatesTo is refused.
+/// This proves correlation to the retained logical request, never server identity.
+pub fn require_relates_to(bytes: &[u8], expected_id: &str) -> Result<(), WireError> {
+    reply_relationship(bytes, expected_id, true)
+}
+
+fn reply_relationship(
+    bytes: &[u8],
+    expected_id: &str,
+    require_explicit: bool,
+) -> Result<(), WireError> {
     message_id(expected_id)?;
     let doc = xml::Document::parse(bytes)?;
     let root = doc.root();
@@ -356,7 +371,11 @@ pub fn validate_relates_to(bytes: &[u8], expected_id: &str) -> Result<(), WireEr
             if relates_to(&doc, field)? != expected_id {
                 return Err(WireError::UnexpectedResponse);
             }
+            return Ok(());
         }
+    }
+    if require_explicit {
+        return Err(WireError::UnexpectedResponse);
     }
     Ok(())
 }

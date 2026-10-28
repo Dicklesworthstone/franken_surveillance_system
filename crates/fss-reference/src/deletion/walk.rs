@@ -117,6 +117,8 @@ fn unit_kind(id: &str) -> &'static str {
         ("batch:rtp:", "import_custody"),
         ("slot:rtp-", "import_custody"),
         ("slot:onvif-metadata-", "import_custody"),
+        ("slot:onvif-create-intent-", "import_custody"),
+        ("slot:onvif-subscription-", "import_custody"),
         ("batch:recorded-decode:", "decoded_frames"),
         ("slot:fd-", "decoded_frames"),
         ("batch:coverage:", "coverage_record"),
@@ -436,11 +438,11 @@ impl Universe {
         // exact root that its source owner verifies. Already-deleted imports are not reopened.
         let mut onvif_imports = BTreeMap::new();
         for batch in batches {
-            let Some(identity) = super::onvif::identity(batch.batch_id.as_str()) else {
+            let Some((kind, identity)) = super::onvif::identity(batch.batch_id.as_str()) else {
                 continue;
             };
             if index.import(identity).is_some()
-                || index.unit_deleted(&super::onvif::slot_unit(identity))
+                || index.unit_deleted(&super::onvif::slot_unit(kind, identity))
             {
                 continue;
             }

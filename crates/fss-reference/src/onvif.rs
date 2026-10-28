@@ -14,6 +14,8 @@
 
 pub mod authentication;
 pub mod client;
+/// Durable subscription intent, exact responses and restart discovery under fresh authority.
+pub mod control;
 pub mod http;
 /// Immutable owner-attributed vendor-event imports and independent retained-source verification.
 pub mod metadata;
