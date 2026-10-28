@@ -135,20 +135,25 @@ def connect_params(b64: str, ssid: str, bssid: str) -> dict:
 
 
 def arp_present(host: str) -> bool | None:
-    """True when `host` has a resolved ARP entry, False when it is absent.
+    """True when the unit is really present: ICMP reply AND a resolved ARP entry.
 
-    None means ARP could not be read (no entry and the probe failed) — callers
-    treat that as absent. A missing ARP entry means the unit is off the network:
-    requests would only hit the kernel backlog or a dead IP, and on the C660
-    that is exactly how the wedge was aggravated (fss-wpryz).
+    `arp -n <host>` is useless from a spawned subprocess — it prints
+    "no entry" even when the entry exists — so the census form is
+    `sudo -n arp -an` plus a line match. ARP alone is not enough: a sleeping
+    battery unit keeps its entry (the radio answers) while the SoC serves
+    nothing, and firing at it only hits a dead listener (fss-wpryz).
+
+    None means ARP could not be read at all; callers treat that as absent.
     """
-    subprocess.run(["ping", "-c", "1", "-t", "1", host], capture_output=True)
-    time.sleep(1)
-    r = subprocess.run(["arp", "-n", host], capture_output=True, text=True)
-    out = r.stdout
-    if "no entry" in out or "incomplete" in out:
-        return False
-    return "(incomplete)" not in out and bool(out.strip()) and "-- no entry" not in out
+    icmp = subprocess.run(["ping", "-c", "1", "-t", "1", host],
+                          capture_output=True).returncode == 0
+    r = subprocess.run(["sudo", "-n", "/usr/sbin/arp", "-an"],
+                       capture_output=True, text=True)
+    if r.returncode != 0 and not r.stdout.strip():
+        return None
+    line = [ln for ln in r.stdout.splitlines() if "(%s)" % host in ln]
+    resolved = bool(line) and "(incomplete)" not in line[0]
+    return icmp and resolved
 
 
 def guard_wait(host: str, mac: str | None = None, deadline: float | None = None,
