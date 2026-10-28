@@ -319,6 +319,7 @@
     "crates/fss-reference/src/deletion/holds/state.rs": "effect",
     "crates/fss-reference/src/deletion/index.rs": "effect",
     "crates/fss-reference/src/deletion/index/proof.rs": "effect",
+    "crates/fss-reference/src/deletion/onvif.rs": "effect",
     "crates/fss-reference/src/deletion/plan.rs": "effect",
     "crates/fss-reference/src/deletion/retention.rs": "effect",
     "crates/fss-reference/src/deletion/rtp.rs": "effect",

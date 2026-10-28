@@ -687,9 +687,11 @@ pub fn preview_hold(
         }
         .into());
     }
-    if super::rtp::has_terminal(deployment, request.import_identity) {
-        // A lifecycle identity cannot ambiguously name two import families. RTP uses its
-        // exact root; file imports retain their existing identity and admission behavior.
+    let rtp = super::rtp::has_terminal(deployment, request.import_identity);
+    let onvif = super::onvif::has_terminal(deployment, request.import_identity);
+    if rtp || onvif {
+        // A lifecycle identity cannot ambiguously name two import families. Each specialized
+        // owner still verifies its own exact bytes and current custody before admission.
         let hex: String = request
             .import_identity
             .bytes()
@@ -697,15 +699,20 @@ pub fn preview_hold(
             .map(|byte| format!("{byte:02x}"))
             .collect();
         let file_batch = format!("batch:file-import:{hex}:manifest");
-        if deployment
-            .ledger()
-            .batches()
-            .iter()
-            .any(|batch| batch.batch_id.as_str() == file_batch)
+        if (rtp && onvif)
+            || deployment
+                .ledger()
+                .batches()
+                .iter()
+                .any(|batch| batch.batch_id.as_str() == file_batch)
         {
             return Err(HoldError::InvalidRecord);
         }
-        super::rtp::inspect(deployment, request.import_identity, cx)?;
+        if rtp {
+            super::rtp::inspect(deployment, request.import_identity, cx)?;
+        } else {
+            super::onvif::inspect(deployment, request.import_identity, cx)?;
+        }
     } else {
         RetainedFileImport::open(
             deployment,

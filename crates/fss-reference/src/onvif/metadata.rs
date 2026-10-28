@@ -22,6 +22,7 @@ use fss_object::ObjectManifest;
 use fss_publication::{LocalPublicationState, SlotName};
 
 use super::wire::{EventDocument, WireError, parse_event_document, parse_metadata_document};
+use crate::deletion::DeletionIndex;
 use crate::{ReferenceDeployment, ReplayCx};
 
 /// Original event-only recipe compatibility domain; never reinterpreted as analytics.
@@ -148,6 +149,14 @@ pub enum MetadataError {
     Wire(WireError),
     /// The immutable import/root cannot be found in current custody.
     Unavailable,
+    /// A committed deletion denies this import or one of its required source objects, even
+    /// before interrupted unlinking finishes. A new owner binding cannot restore deleted bytes.
+    EvidenceDeleted {
+        /// Requested immutable import identity.
+        identity: ContentDigest,
+        /// Verified deletion plan that denies custody.
+        plan: ContentDigest,
+    },
     /// Retained bytes, source pins, projection, root or ledger disagree.
     Custody,
     /// Explicit cancellation; an interrupted publication must be inspected before retry.
@@ -169,6 +178,7 @@ impl MetadataError {
             Self::Limit => "ERR-ONVIF-METADATA-LIMIT-001",
             Self::Wire(_) => "ERR-ONVIF-METADATA-WIRE-001",
             Self::Unavailable => "ERR-ONVIF-METADATA-UNAVAILABLE-001",
+            Self::EvidenceDeleted { .. } => "ERR-EVIDENCE-DELETED-001",
             Self::Custody | Self::Storage(_) => "ERR-ONVIF-METADATA-CUSTODY-001",
             Self::Cancelled => "ERR-ONVIF-METADATA-CANCELLED-001",
             Self::Deployment(_) => "ERR-ONVIF-METADATA-PUBLICATION-001",
@@ -244,6 +254,8 @@ impl RetainedMetadata {
         if identity.algorithm() != DigestAlgorithm::Sha256 {
             return Err(MetadataError::InvalidBinding);
         }
+        let deletions = DeletionIndex::read(deployment).map_err(|_| MetadataError::Custody)?;
+        check_deleted(&deletions, identity, [identity])?;
         let slot = slot(identity)?;
         if deployment.publisher().is_broken_slot(&slot) {
             return Err(MetadataError::Custody);
@@ -257,6 +269,7 @@ impl RetainedMetadata {
         {
             return Err(MetadataError::Custody);
         }
+        check_deleted(&deletions, identity, [visible.root])?;
         deployment
             .publisher()
             .require_durable_record(&slot)
@@ -268,6 +281,11 @@ impl RetainedMetadata {
         }
         let manifest = manifest(identity, &recipe)?;
         let root = manifest.root();
+        check_deleted(
+            &deletions,
+            identity,
+            std::iter::once(root).chain(manifest.children().iter().copied()),
+        )?;
         if visible.root != root
             || read(deployment, root, MAX_RECIPE_BYTES, cx)? != manifest.canonical_bytes()
         {
@@ -524,6 +542,15 @@ fn retain_inner(
     let slot = slot(identity)?;
     let manifest = manifest(identity, &recipe)?;
     let manifest_bytes = manifest.canonical_bytes();
+    let deletions = DeletionIndex::read(deployment).map_err(|_| MetadataError::Custody)?;
+    // Check before every stage/retry, including a fresh identity using a previously deleted
+    // source, projection or native subscription response. The complete manifest closure is
+    // denied from the durable deletion record, before any stage or retry can restore bytes.
+    check_deleted(
+        &deletions,
+        identity,
+        std::iter::once(manifest.root()).chain(manifest.children().iter().copied()),
+    )?;
     if deployment.publisher().is_broken_slot(&slot) {
         return Err(MetadataError::Custody);
     }
@@ -612,6 +639,39 @@ fn checkpoint(cx: &ReplayCx, stage: &'static str) -> Result<(), MetadataError> {
     }
     cx.checkpoint(stage).map_err(|_| MetadataError::Cancelled)
 }
+fn check_deleted(
+    deletions: &DeletionIndex,
+    identity: ContentDigest,
+    objects: impl IntoIterator<Item = ContentDigest>,
+) -> Result<(), MetadataError> {
+    let unit = format!("slot:onvif-metadata-{}", &identity.to_text()[7..]);
+    let entry = deletions
+        .import(identity)
+        .or_else(|| {
+            objects
+                .into_iter()
+                .find_map(|digest| deletions.object(digest))
+        })
+        .or_else(|| {
+            // A closure can remove this publication as another import's derivative without
+            // listing its identity as a scope member, even when history preserves some bytes.
+            deletions.entries().iter().find(|entry| {
+                entry
+                    .plan
+                    .units
+                    .iter()
+                    .any(|member| member.id == unit && member.class == "deletable_content")
+            })
+        });
+    if let Some(entry) = entry {
+        return Err(MetadataError::EvidenceDeleted {
+            identity,
+            plan: entry.plan_digest,
+        });
+    }
+    Ok(())
+}
+
 fn slot(identity: ContentDigest) -> Result<SlotName, MetadataError> {
     SlotName::parse(&format!("onvif-metadata-{}", &identity.to_text()[7..]))
         .map_err(|_| MetadataError::InvalidBinding)

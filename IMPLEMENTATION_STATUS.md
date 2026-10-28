@@ -1256,3 +1256,26 @@ continuous renewal/reconnect recovery, HTTPS/UsernameToken in this capture lane,
 RTP metadata and physical-device/Profile M qualification remain unfinished.
 FSS-046 remains open. See `docs/onvif-metadata.md` for executable commands and
 precise failure/reconciliation behavior.
+
+
+## Retained ONVIF holds and deletion (2026-10-28)
+
+Verified ONVIF metadata imports now join import/sensor/event deletion closure and
+evidence holds through the existing lifecycle owner. Candidate publication names
+never establish membership: exact retained source, projection, manifest and owner
+sensor binding must verify. Active holds, shared objects, exact approvals and
+crash-resumable deletion keep their existing semantics.
+
+Metadata reads and publication retries consult durable deletion authority before
+serving or staging content, including incomplete unlink operations and metadata
+removed as another import's derivative. A different owner binding cannot restore
+a deleted recipe/source/projection/root. Native PullPoint imports additionally
+fence their retained Create/subscription response. File v1/v2 and native recipe
+bytes remain unchanged.
+
+Six new contracts cover holds/release, restart, wrong approval, tombstone crash
+cuts, cross-binding resurrection, mixed scopes/shared bytes, counterfeit custody,
+derivative deletion and native subscription-source reuse. They are formatted and
+reviewed but remain unexecuted because full-reference dependencies cannot be built
+within the current environment. This closes the retained metadata lifecycle gap;
+it does not add remote/device erasure or continuous subscription recovery.

@@ -116,6 +116,7 @@ fn unit_kind(id: &str) -> &'static str {
         ("slot:fi-", "import_custody"),
         ("batch:rtp:", "import_custody"),
         ("slot:rtp-", "import_custody"),
+        ("slot:onvif-metadata-", "import_custody"),
         ("batch:recorded-decode:", "decoded_frames"),
         ("slot:fd-", "decoded_frames"),
         ("batch:coverage:", "coverage_record"),
@@ -207,6 +208,8 @@ pub(super) struct Universe {
     imports: BTreeMap<ContentDigest, Vec<usize>>,
     /// RTP membership comes from full source/recipe/terminal verification, not a name prefix.
     rtp_imports: BTreeMap<ContentDigest, super::rtp::RtpImport>,
+    /// ONVIF metadata membership requires exact retained source/projection/publication replay.
+    onvif_imports: BTreeMap<ContentDigest, super::onvif::OnvifImport>,
     /// Ledger object id -> who wrote it.
     writers: BTreeMap<String, Vec<Writer>>,
     /// Committed deletions whose completion record is not durable yet.
@@ -428,6 +431,35 @@ impl Universe {
             rtp_imports.insert(identity, admitted);
         }
 
+        // ONVIF imports publish custody through one immutable local root. The reachability
+        // batch is not a deletion unit, so discover from committed history and seed only the
+        // exact root that its source owner verifies. Already-deleted imports are not reopened.
+        let mut onvif_imports = BTreeMap::new();
+        for batch in batches {
+            let Some(identity) = super::onvif::identity(batch.batch_id.as_str()) else {
+                continue;
+            };
+            if index.import(identity).is_some()
+                || index.unit_deleted(&super::onvif::slot_unit(identity))
+            {
+                continue;
+            }
+            if imports.contains_key(&identity) {
+                return Err(DeletionError::RecordMismatch);
+            }
+            let admitted = super::onvif::inspect(deployment, identity, cx)?;
+            let seeds: Vec<_> = units
+                .iter()
+                .enumerate()
+                .filter_map(|(at, unit)| admitted.owns(&unit.id).then_some(at))
+                .collect();
+            if seeds.len() != 1 {
+                return Err(DeletionError::RecordMismatch);
+            }
+            imports.insert(identity, seeds);
+            onvif_imports.insert(identity, admitted);
+        }
+
         // Candidate universe of embedded references.
         let spool_digests: Vec<ContentDigest> = spool.digests().collect();
         let mut universe: HashSet<[u8; 32]> = HashSet::new();
@@ -554,6 +586,7 @@ impl Universe {
             broken_slots,
             imports,
             rtp_imports,
+            onvif_imports,
             writers,
             incomplete_deletions: index
                 .entries()
@@ -605,6 +638,11 @@ impl Universe {
                     .rtp_imports
                     .get(import)
                     .map(|rtp| BTreeSet::from([rtp.sensor.clone()]))
+                    .or_else(|| {
+                        self.onvif_imports
+                            .get(import)
+                            .map(|metadata| BTreeSet::from([metadata.sensor.clone()]))
+                    })
                     .or_else(|| import_sensors(deployment, *import));
                 match named {
                     Some(named) => {
@@ -917,10 +955,16 @@ impl Universe {
 
         let mut hull: Option<CaptureInterval> = None;
         for import in &imports {
-            let import_object = self.rtp_imports.get(import).map_or_else(
-                || format!("object:file-import:{}", hex(*import)),
-                |rtp| rtp.object_id.clone(),
-            );
+            let import_object = self
+                .rtp_imports
+                .get(import)
+                .map(|rtp| rtp.object_id.clone())
+                .or_else(|| {
+                    self.onvif_imports
+                        .get(import)
+                        .map(|metadata| metadata.object_id.clone())
+                })
+                .unwrap_or_else(|| format!("object:file-import:{}", hex(*import)));
             let own = self
                 .current
                 .get(&import_object)

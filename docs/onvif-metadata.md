@@ -112,6 +112,33 @@ Known notification digests permit conservative comparisons within the exact site
 
 ## Custody and authority
 
+### Holds and evidence deletion
+
+Retained metadata participates in the existing evidence-hold and deletion lifecycle. Use the
+receipt's `import_identity` as the import target. Sensor-scoped deletion includes both file
+metadata and native PullPoint imports under their verified owner sensor binding. A ledger name
+alone is insufficient: the metadata owner must verify the source, versioned interpretation,
+projection, manifest and exact publication before admitting an import to a hold or deletion
+closure. Damaged custody blocks planning instead of silently omitting the import.
+
+Existing exact approval, active-hold, shared-object and recovery rules apply. A hold on metadata
+also protects its derivative closure when another import's deletion would touch it. Shared
+source, projection or subscription-response objects remain when another retained owner needs
+them. Releasing a hold requires its own existing approval; deletion cannot release it implicitly.
+
+Once the deletion record is durable, metadata reads and exact import retries refuse with
+`ERR-EVIDENCE-DELETED-001`, even if an interrupted unlink has left bytes on disk. A different
+sensor binding, interpretation or native poll identity cannot restore a deleted required object.
+The check covers the recipe, source, projection, publication root and native PullPoint Create
+response. Metadata deleted as another import's derivative is likewise denied and cannot be
+rediscovered from its old publication batch. Deletion completion remains crash-resumable through
+the existing owner.
+
+This uses local filesystem unlink and the existing deletion-plan scope. Original input files,
+external exports, device storage and unrecorded remote copies remain outside that scope.
+
+### Versioned metadata custody
+
 Live captures use the separate `fss.onvif_vendor_event_pullpoint.v1` custody domain and the frozen event-only projection; the analytics-v2 file-import default is unchanged. The live recipe additionally binds the capture approval, event/subscription route digests, poll occurrence, both request IDs and ordered monotonic Create/poll intervals. Cold verification checks both explicit reply correlations and the fourth source object's exact digest. Existing v1/v2 file recipes receive no new bytes.
 
 Camera labels and timestamps always remain vendor-claimed cognition. Retention proves which bytes were supplied under the operator's attribution; it does not authenticate the camera or establish physical truth, coverage, absence, identity or permission to send alerts or move a camera.

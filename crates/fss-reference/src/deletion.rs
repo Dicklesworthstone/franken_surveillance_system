@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
-//! Graph-complete deletion closure of one retained import, or of every retained import of one
+//! Graph-complete deletion closure of one retained file, RTP or ONVIF metadata import, or of
+//! every retained import of one
 //! sensor or one event (FSS-037, `CAP-DELETE-PREPARE-001`, `CAP-DELETE-COMMIT-001`,
 //! `PUB-DELETE-001`).
 //!
@@ -43,6 +44,7 @@ mod commit;
 /// Approval-gated preservation of retained imports and their shared derivative closures.
 pub mod holds;
 mod index;
+mod onvif;
 mod plan;
 /// Conservative age selection and exact, crash-resumable cleanup of completed recordings.
 pub mod retention;
