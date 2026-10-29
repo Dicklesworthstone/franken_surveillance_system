@@ -17,6 +17,7 @@ use super::{
     inspect_with_deletions, valid_digest,
 };
 use crate::ingest::sensor_health::HealthFinding;
+use crate::reference_deployment::FAMILY_DELETION_TOMBSTONE;
 use crate::{ReferenceDeployment, ReferenceError, ReplayCx};
 
 /// Maximum committed diagnostic identities in one complete catalog, including tombstoned rows.
@@ -338,6 +339,12 @@ impl HealthExposureCatalog {
                         .as_str()
                         .starts_with(HISTORICAL_HEALTH_OBJECT_PREFIX)
                 {
+                    continue;
+                }
+                if delta.family == FAMILY_DELETION_TOMBSTONE {
+                    // A deletion successor is not another diagnostic. The mandatory deletion
+                    // index below verifies every such transition against its exact sealed plan;
+                    // an orphan or altered tombstone still refuses the entire catalog.
                     continue;
                 }
                 charge(&mut usage.records_seen, 1, limits.maximum_records)?;

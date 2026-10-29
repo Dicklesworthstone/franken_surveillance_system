@@ -99,6 +99,10 @@ The catalog verifies retained metadata and provenance. It does not read or repla
 native trace or media; the downstream native source owner retains that responsibility. Corrupt
 or missing nondeleted metadata, authority drift and exhausted bounds refuse the operation.
 Explicitly deleted diagnostic metadata remains accounted for as a deletion exclusion.
+The catalog counts each original diagnostic once and sends its later deletion tombstone
+through the canonical deletion verifier. A valid deletion does not become a malformed extra
+diagnostic or force a read of deleted bytes. Orphaned, altered or unverified tombstones still
+refuse the catalog; unrelated wrong-family updates in the diagnostic namespace also refuse.
 
 The source-exposure regressions use actual retained native JPEG screens, including cold reopen,
 exact-frame repetition, threshold latency, incomplete decode, unrelated source/privacy bindings,

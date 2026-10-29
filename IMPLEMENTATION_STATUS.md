@@ -42,6 +42,13 @@ cases cover freeze/clear/incomplete screens, unrelated diagnostics, cold replay/
 publication crash cuts and pin tampering. Runtime execution remains unverified because of the
 shared build environment's memory limit. See [retained event supervision](docs/RETAINED_EVENT_SUPERVISOR.md#historical-source-health).
 
+The shared health catalog also recognizes deletion-owner-verified tombstones as successors to
+their original diagnostic instead of rejecting the whole catalog after legitimate deletion.
+Original diagnostic and deletion counts remain separate, deleted payloads stay unread, and an
+orphan or forged tombstone still refuses. This repairs the functional deletion failure observed
+in the existing privacy-generation regression; its new refusal coverage remains subject to
+native test execution.
+
 ## Lost deployment journal refusal (2026-10-29, reference)
 
 Opening a deployment now refuses to create a missing authority or effect journal over

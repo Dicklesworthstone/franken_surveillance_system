@@ -13,7 +13,7 @@ use crate::ingest::recorded_watch::{
 use crate::ingest::{CaptureHint, FileIngestAdapter, FileIngestLimits, FileIngestRequest};
 use crate::media_fixture::jpeg::{JpegConfig, Subsampling, encode_jpeg};
 use fss_core::region::{ContextAuthority, RootAuthoritySpec};
-use fss_core::{BudgetVector, OperationId, StreamId, TimestampNs};
+use fss_core::{BatchId, BudgetVector, OperationId, StreamId, TimestampNs};
 use std::fs;
 use std::path::Path;
 
@@ -476,6 +476,61 @@ fn a_new_privacy_generation_cannot_borrow_old_findings_and_deletion_is_explicit(
     assert_eq!(catalog.usage().records_seen, 1);
     assert_eq!(catalog.usage().deleted_records, 1);
     assert_eq!(catalog.usage().records_loaded, 0);
+    assert_eq!(fixture.snapshot(), before);
+    Ok(())
+}
+
+#[test]
+fn an_orphan_deletion_tombstone_cannot_hide_a_retained_diagnostic() -> Test {
+    let mut fixture = Fixture::new("orphan-tombstone", true, false)?;
+    let retained = fixture.retain(false)?;
+    let mut tombstone = fixture
+        .deployment
+        .ledger()
+        .batches()
+        .iter()
+        .flat_map(|batch| &batch.deltas)
+        .find(|delta| {
+            delta.family == FAMILY_HISTORICAL_HEALTH
+                && delta.payload_digest == retained.record_digest
+        })
+        .ok_or("missing retained health delta")?
+        .clone();
+    let unverified_plan = fixture
+        .deployment
+        .stage_payload(b"unverified health deletion plan")?;
+    tombstone.delta_id = format!("delta:deletion-tombstone:{}", tombstone.object_id);
+    tombstone.family = FAMILY_DELETION_TOMBSTONE.to_owned();
+    tombstone.prior_generation = Some(tombstone.new_generation);
+    tombstone.new_generation += 1;
+    tombstone.payload_digest = unverified_plan;
+    tombstone.witness_digest = None;
+    tombstone.operation_id = None;
+    // Exercise the reader with a canonical successor lacking the deletion owner's sealed
+    // record and exact closure. Ordinary callers cannot append this reserved family.
+    fixture.deployment.append_deletion_batch(
+        BatchId::parse("batch:deletion:orphan-health-tombstone")?,
+        vec![tombstone],
+        vec![unverified_plan],
+        &fixture.cx,
+    )?;
+    let before = fixture.snapshot();
+    assert!(matches!(
+        HealthExposureCatalog::read(
+            &fixture.deployment,
+            HealthExposureLimits::default(),
+            &fixture.cx,
+        ),
+        Err(HistoricalHealthError::Unavailable)
+    ));
+    assert!(
+        fixture
+            .deployment
+            .publisher()
+            .spool()
+            .object_path(retained.record_digest)
+            .is_file()
+    );
     assert_eq!(fixture.snapshot(), before);
     Ok(())
 }
