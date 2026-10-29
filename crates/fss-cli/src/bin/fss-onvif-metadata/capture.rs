@@ -1,9 +1,11 @@
 #![forbid(unsafe_code)]
 //! Request-owned native PullPoint acquisition and durable per-response custody.
 
+#[path = "capture/plan.rs"]
 pub(super) mod plan;
 
 #[cfg(test)]
+#[path = "capture/operation_tests.rs"]
 mod operation_tests;
 
 use std::cell::RefCell;
