@@ -17,8 +17,9 @@
 //! by its total and, when truncated, a continuation cursor. Payload bytes are never printed; only
 //! digests, counts, and offsets are.
 //!
-//! Unknown is never flattened. Every writer state keeps its typed name. A failed linkage replay
-//! is `linkage_unknown` with its reason, and an exceeded limit is `over_budget` naming the limit.
+//! Unknown is never flattened. Every writer state keeps its typed name. Missing authority or a
+//! failed linkage replay is `linkage_unknown` with its reason, and an exceeded limit is
+//! `over_budget` naming the limit. Missing journals never establish empty history or obligations.
 //! A finding that an explicit operator recovery action addresses names the exact
 //! `fss-lab recover --root <dir> <action>` command line (fss-2h5zq.15, fss-93udx); the doctor
 //! itself never runs it. A recovery command that does not exist in this build is named as a
@@ -717,7 +718,7 @@ pub fn inspect_deployment_with(
         &rerun,
     );
     let ledger_inspection =
-        ledger_inspection(io, &ledger_file, &ledger_read, &layout.site_lineage, limits);
+        ledger_inspection(&ledger_file, &ledger_read, &layout.site_lineage, limits);
 
     // 4. Effects journal and obligations checks
     let effects_read = read_journal(io.files, &effects_file, limits.max_journal_bytes);
@@ -1442,7 +1443,6 @@ fn journal_check(
 }
 
 fn ledger_inspection(
-    io: DoctorIo<'_>,
     path: &Path,
     read: &JournalRead,
     site_lineage: &str,
@@ -1455,8 +1455,10 @@ fn ledger_inspection(
             inspect_durable_with_io(&snapshot, path, site_lineage, bound)
                 .map_err(|error| format!("ledger replay failed: {error}"))
         }
-        JournalRead::Absent => inspect_durable_with_io(io.files, path, site_lineage, bound)
-            .map_err(|error| format!("ledger replay failed: {error}")),
+        // The generic inspector represents an absent journal with a genesis snapshot. That is
+        // not evidence of an empty deployment: its authority history may have been lost. Keep
+        // all dependent classifications unknown, using this same observation of absence.
+        JournalRead::Absent => Err("ledger journal absent".to_owned()),
         JournalRead::InvalidLayout => {
             Err("ledger journal path is a symlink or not a regular file".to_owned())
         }

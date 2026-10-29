@@ -235,35 +235,37 @@ pub fn validate_site_lineage(lineage: &str) -> Result<(), ReferenceError> {
 }
 
 fn is_skeleton_or_empty(root: &Path) -> Result<bool, ReferenceError> {
-    if !root.exists() {
-        return Ok(true);
-    }
-    if !root.is_dir() {
-        return Ok(false);
+    match fs::metadata(root) {
+        Ok(metadata) if metadata.is_dir() => {}
+        Ok(_) => return Ok(false),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(true),
+        Err(error) => return Err(error.into()),
     }
     for entry in fs::read_dir(root)? {
         let entry = entry?;
         let name = entry.file_name();
         let s = name.to_string_lossy();
-        if s == DEPLOYMENT_LAYOUT_FILENAME {
-            continue;
-        }
-        if s.starts_with("LAYOUT.tmp.") {
+        let kind = entry.file_type()?;
+        if (s == DEPLOYMENT_LAYOUT_FILENAME || s.starts_with("LAYOUT.tmp.")) && kind.is_file() {
             continue;
         }
         if s == "objects" {
             let path = entry.path();
-            if path.is_dir() {
+            if kind.is_dir() {
                 for sub in fs::read_dir(&path)? {
                     let sub = sub?;
                     let sub_name = sub.file_name();
                     let sub_s = sub_name.to_string_lossy();
-                    if sub_s == "LOCK" || sub_s.starts_with("LOCK.tmp.") {
+                    let sub_kind = sub.file_type()?;
+                    if (sub_s == "LOCK" || sub_s.starts_with("LOCK.tmp."))
+                        && sub_kind.is_file()
+                        && sub.metadata()?.len() == 0
+                    {
                         continue;
                     }
                     if sub_s == "roots" || sub_s == "tombstones" {
                         let sub_path = sub.path();
-                        if sub_path.is_dir() {
+                        if sub_kind.is_dir() {
                             if fs::read_dir(&sub_path)?.next().is_some() {
                                 return Ok(false);
                             }
@@ -273,12 +275,16 @@ fn is_skeleton_or_empty(root: &Path) -> Result<bool, ReferenceError> {
                     }
                     if sub_s == "spool" {
                         let sub_path = sub.path();
-                        if sub_path.is_dir() {
+                        if sub_kind.is_dir() {
                             for inner in fs::read_dir(&sub_path)? {
                                 let inner = inner?;
                                 let inner_name = inner.file_name();
                                 let inner_s = inner_name.to_string_lossy();
-                                if inner_s == "LOCK" || inner_s.starts_with("LOCK.tmp.") {
+                                let inner_kind = inner.file_type()?;
+                                if (inner_s == "LOCK" || inner_s.starts_with("LOCK.tmp."))
+                                    && inner_kind.is_file()
+                                    && inner.metadata()?.len() == 0
+                                {
                                     continue;
                                 }
                                 if (inner_s == "objects"
@@ -288,7 +294,7 @@ fn is_skeleton_or_empty(root: &Path) -> Result<bool, ReferenceError> {
                                     || inner_s == "holds"
                                     || inner_s == "staged"
                                     || inner_s == "corrupt")
-                                    && inner.path().is_dir()
+                                    && inner_kind.is_dir()
                                 {
                                     if fs::read_dir(inner.path())?.next().is_some() {
                                         return Ok(false);
@@ -307,23 +313,16 @@ fn is_skeleton_or_empty(root: &Path) -> Result<bool, ReferenceError> {
             }
             return Ok(false);
         }
-        if s == "ledger" {
-            let path = entry.path();
-            if path.is_dir() {
-                let j = path.join("journal.fssj");
-                if j.exists() && fs::metadata(&j)?.len() > 0 {
-                    return Ok(false);
-                }
-                continue;
-            }
-            return Ok(false);
-        }
-        if s == "effects" {
-            let path = entry.path();
-            if path.is_dir() {
-                let j = path.join("journal.fssj");
-                if j.exists() && fs::metadata(&j)?.len() > 0 {
-                    return Ok(false);
+        if s == "ledger" || s == "effects" {
+            if kind.is_dir() {
+                for journal in fs::read_dir(entry.path())? {
+                    let journal = journal?;
+                    if journal.file_name() != "journal.fssj"
+                        || !journal.file_type()?.is_file()
+                        || journal.metadata()?.len() != 0
+                    {
+                        return Ok(false);
+                    }
                 }
                 continue;
             }
@@ -332,6 +331,36 @@ fn is_skeleton_or_empty(root: &Path) -> Result<bool, ReferenceError> {
         return Ok(false);
     }
     Ok(true)
+}
+
+/// Only an empty initialization skeleton may create a missing journal. LAYOUT is published
+/// before the two journal files during initialization, so its presence alone cannot distinguish
+/// a new root interrupted at that boundary from a deployment with lost history. Any surviving
+/// journal records, retained objects, publication, session, or unknown entry makes that distinction
+/// unsafe: refusing preserves the evidence needed for deliberate recovery.
+fn require_journals_or_empty_skeleton(root: &Path) -> Result<(), ReferenceError> {
+    let mut missing = None;
+    for relative in [RELATIVE_PATH_LEDGER, RELATIVE_PATH_EFFECTS] {
+        let path = root.join(relative);
+        match fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.is_file() => {}
+            Ok(_) => {
+                return Err(ReferenceError::NotADeployment {
+                    path: root.to_path_buf(),
+                });
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                missing.get_or_insert(path);
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+    if let Some(path) = missing
+        && !is_skeleton_or_empty(root)?
+    {
+        return Err(ReferenceError::MissingDeploymentJournal { path });
+    }
+    Ok(())
 }
 
 const ROOT_DOMAIN: &[u8] = b"FSS-JOURNAL-RECORD-ROOT-V1\0";
@@ -1051,6 +1080,7 @@ impl ReferenceDeployment {
         if root.exists() && !layout_path.exists() && !is_skeleton_or_empty(root)? {
             return Err(ReferenceError::NotADeployment { path: root_buf });
         }
+        require_journals_or_empty_skeleton(root)?;
 
         if !root.exists() {
             fs::create_dir_all(root)?;
@@ -1080,6 +1110,7 @@ impl ReferenceDeployment {
         if !layout_path.exists() && !is_skeleton_or_empty(root)? {
             return Err(ReferenceError::NotADeployment { path: root_buf });
         }
+        require_journals_or_empty_skeleton(root)?;
         for entry in fs::read_dir(root)? {
             let entry = entry?;
             let name = entry.file_name();

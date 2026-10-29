@@ -58,6 +58,27 @@ Bundles contain unredacted originals and private cognition, stored in private ne
 and directories. These profiles supply no encryption, remote transfer, key-store backup
 or redaction.
 
+### Missing canonical history
+
+Ordinary deployment opening refuses a missing authority or effect journal when any
+durable state survives. It checks before initialization and again under the deployment
+lock, so retained evidence, effect idempotency and unresolved obligations cannot be
+silently paired with newly empty history. An interrupted first initialization remains
+resumable only when the root is a strict empty skeleton: no journal records, retained
+objects, publication roots, session state or unknown directory entries.
+
+Preserve the damaged deployment and recover the original history from a verified source.
+Creating an empty `ledger/journal.fssj` or `effects/journal.fssj` is not recovery. The
+backup workflow above restores a complete verified snapshot to a fresh destination;
+ordinary open does not reconstruct a lost journal or authorize resending an effect.
+
+Read-only diagnostics preserve the uncertainty. A missing authority journal makes
+publication linkage and import completeness unknown, and agent orientation refuses to
+invent a genesis history. If only the effect journal is missing, orientation marks
+effect history unknown and cannot certify that no effects or obligations existed.
+Doctor reports unavailable obligations without suggesting reconciliation of an invented
+empty operation list.
+
 ## Committed scope and verification
 
 The canonical `fss.deployment_backup_manifest.v1` encoding commits version 1, the exact

@@ -566,6 +566,12 @@ impl DeploymentHistory {
             limits.max_journal_bytes,
         )
         .map_err(|error| corrupt(format!("authority ledger replay failed: {error}")))?;
+        if ledger.status == fss_ledger::DurableLedgerStatus::Absent {
+            return Err(DeploymentReadError::Unreadable {
+                reason: "the authority ledger is missing; retained history cannot be reconstructed from an empty replacement"
+                    .to_owned(),
+            });
+        }
         let ledger_positions = fss_ledger::committed_batch_positions(&ledger).ok_or_else(|| {
             corrupt("authority ledger records do not reproduce their committed positions")
         })?;
@@ -2138,9 +2144,9 @@ fn compile_capsule(
                 snapshot.completed_imports.clone()
             },
         )?,
-        known_cell(
-            CLAIM_EFFECT_JOURNAL,
-            if snapshot.effect_journal_present {
+        cell(KnowledgeCellParams {
+            claim_id: CLAIM_EFFECT_JOURNAL.to_owned(),
+            statement: if snapshot.effect_journal_present {
                 format!(
                     "The durable effect journal holds {} and {} ({} open).",
                     plural(snapshot.operations.len(), "operation", "operations"),
@@ -2148,10 +2154,25 @@ fn compile_capsule(
                     snapshot.open_obligations().len()
                 )
             } else {
-                "No durable effect journal exists, so no effect was ever prepared.".to_owned()
+                "Durable effect history is unavailable at this anchor; a missing journal does not establish that no effects or obligations existed."
+                    .to_owned()
             },
-            vec![snapshot.effect_journal_digest],
-        )?,
+            knowledge_state: if snapshot.effect_journal_present {
+                KnowledgeState::Known
+            } else {
+                KnowledgeState::Unknown
+            },
+            provenance: ProvenanceClass::Derived,
+            hypothesis: None,
+            evidence: if snapshot.effect_journal_present {
+                vec![snapshot.effect_journal_digest]
+            } else {
+                Vec::new()
+            },
+            contradictions: Vec::new(),
+            valid_until: None,
+            state_basis: None,
+        })?,
         site_coverage_cell(coverage.as_ref())?,
     ];
     cells.extend(mission_context.cells);
@@ -2195,11 +2216,14 @@ fn compile_capsule(
     unknown.extend(memory.unknown);
     at_risk.extend(memory.at_risk);
     warnings.extend(memory.warnings);
-    let mut nominal = BTreeSet::from([
-        CLAIM_LEDGER_HEAD.to_owned(),
-        CLAIM_IMPORTS.to_owned(),
-        CLAIM_EFFECT_JOURNAL.to_owned(),
-    ]);
+    let mut nominal = BTreeSet::from([CLAIM_LEDGER_HEAD.to_owned(), CLAIM_IMPORTS.to_owned()]);
+    if snapshot.effect_journal_present {
+        nominal.insert(CLAIM_EFFECT_JOURNAL.to_owned());
+    } else {
+        unknown.push("Prior effects and outstanding obligations cannot be determined without their durable journal.".to_owned());
+        at_risk.push("Durable effect history is unavailable; restore or reconcile that history before preparing or resending effects.".to_owned());
+        degradation.push("The effect journal is unavailable at this anchor; empty operation lists are not evidence of no prior effects.".to_owned());
+    }
 
     let corroborated = planned
         .iter()

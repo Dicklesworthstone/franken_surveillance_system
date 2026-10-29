@@ -20,8 +20,8 @@ use fss_publication::{
 };
 
 use crate::reference_deployment::{
-    DEPLOYMENT_CANCEL_STAGES, RELATIVE_PATH_LEDGER, RELATIVE_PATH_OBJECTS, ReferenceDeployment,
-    STAGE_AFTER_ROOT_RENAME, STAGE_STAGE_MANIFEST, publish_cut_point_stage,
+    DEPLOYMENT_CANCEL_STAGES, RELATIVE_PATH_EFFECTS, RELATIVE_PATH_LEDGER, RELATIVE_PATH_OBJECTS,
+    ReferenceDeployment, STAGE_AFTER_ROOT_RENAME, STAGE_STAGE_MANIFEST, publish_cut_point_stage,
 };
 use crate::reference_deployment::{DEPLOYMENT_LAYOUT_FILENAME, DeploymentLimits, RecoveryAction};
 use crate::{ADP_REPLAY_ROW_ID, ReferenceError, ReplayCx, ReplayIoAuthority};
@@ -289,5 +289,52 @@ fn foreign_file_appearing_after_the_lock_is_refused_under_the_lock() -> TestResu
     assert_eq!(fs::read(root.join("foreign.txt"))?, b"foreign");
     assert!(!root.join(DEPLOYMENT_LAYOUT_FILENAME).exists());
     fs::remove_dir_all(&root)?;
+    Ok(())
+}
+
+/// A journal lost between the advisory pre-check and the exclusive classification cannot be
+/// recreated, even when both journals were empty and only the object spool retains evidence.
+#[test]
+fn missing_journal_after_lock_is_refused_before_cleanup_or_replacement() -> TestResult {
+    for (tag, journal) in [
+        ("ledger", RELATIVE_PATH_LEDGER),
+        ("effects", RELATIVE_PATH_EFFECTS),
+    ] {
+        let root = fresh_root(&format!("missing-after-lock-{tag}"))?;
+        let cx = test_cx(&format!("missing-after-lock-{tag}"))?;
+        let mut deployment = ReferenceDeployment::open(&root, "site:missing-after-lock", &cx)?;
+        let payload = b"retained before an under-lock journal loss";
+        let digest = deployment.stage_payload(payload)?;
+        drop(deployment);
+        let path = root.join(journal);
+        let journal_bytes = fs::read(&path)?;
+        let temporary = root.join("LAYOUT.tmp.must-survive-refusal");
+        fs::write(&temporary, b"interrupted initialization evidence")?;
+        let result = ReferenceDeployment::open_with_after_lock(
+            &root,
+            "site:missing-after-lock",
+            DeploymentLimits::standard(),
+            &cx,
+            &|dir| {
+                assert!(fs::remove_file(dir.join(journal)).is_ok());
+            },
+        );
+        match result {
+            Err(ReferenceError::MissingDeploymentJournal { path: missing }) => {
+                assert_eq!(missing, path);
+            }
+            other => return Err(format!("expected missing-journal refusal, got {other:?}").into()),
+        }
+        assert!(!path.exists());
+        assert_eq!(
+            fs::read(&temporary)?,
+            b"interrupted initialization evidence"
+        );
+        fs::write(&path, &journal_bytes)?;
+        let reopened = ReferenceDeployment::open(&root, "site:missing-after-lock", &cx)?;
+        assert_eq!(reopened.publisher().spool().read(digest)?, payload);
+        drop(reopened);
+        fs::remove_dir_all(&root)?;
+    }
     Ok(())
 }

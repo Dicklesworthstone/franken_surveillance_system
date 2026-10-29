@@ -173,6 +173,12 @@ pub enum ReferenceError {
         /// Root path that failed deployment validation.
         path: PathBuf,
     },
+    /// A required journal is absent from a deployment that retains durable state.
+    /// Opening must not create empty replacement history over surviving custody or effects.
+    MissingDeploymentJournal {
+        /// Missing authority or effect journal path.
+        path: PathBuf,
+    },
     /// A deployment capacity limit was exceeded.
     CapacityExceeded {
         /// Named limit.
@@ -430,6 +436,13 @@ impl fmt::Display for ReferenceError {
                     path.display()
                 )
             }
+            Self::MissingDeploymentJournal { path } => {
+                write!(
+                    formatter,
+                    "required deployment journal is missing: {}; refusing to replace lost history with an empty journal",
+                    path.display()
+                )
+            }
             Self::CapacityExceeded {
                 limit,
                 maximum,
@@ -579,6 +592,7 @@ impl Error for ReferenceError {
             | Self::IncompleteJournalTail { .. }
             | Self::CancellationRequested { .. }
             | Self::NotADeployment { .. }
+            | Self::MissingDeploymentJournal { .. }
             | Self::CapacityExceeded { .. }
             | Self::ScanLimitExceeded { .. }
             | Self::ReservedDeltaFamily { .. }

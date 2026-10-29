@@ -1499,6 +1499,135 @@ fn failed_linkage_replay_is_unknown_never_clean() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn missing_authority_journal_keeps_linkage_and_imports_unknown() -> TestResult {
+    let dep = init("missing_authority_journal")?;
+    let ledger_path = dep.join(RELATIVE_PATH_LEDGER);
+    publish(&dep, "retained_slot")?;
+    append_batch(
+        &ledger_path,
+        LINEAGE,
+        "batch:file-import:ab12:c0",
+        "obj:retained-capsule",
+        "sensor_capsule",
+    )?;
+    fs::remove_file(&ledger_path)?;
+
+    let report = inspect_read_only("missing authority journal", &dep)?;
+    assert_eq!(report.verdict, DoctorVerdict::AttentionRequired);
+    let restore_aff = owner(
+        "restore_journal",
+        "the deployment journal is missing; doctor never creates it",
+    );
+    assert_eq!(
+        check_json(&report, "ledger.journal")?,
+        check(
+            "ledger.journal",
+            "absent",
+            "attention",
+            &[],
+            &[finding("absent", "attention", None, Some(&restore_aff))],
+            Some(&restore_aff),
+        )
+    );
+    let linkage_aff = owner(
+        "owner_action",
+        "root-ledger linkage could not be determined; pending roots, unbacked claims, and slot conflicts are unknown",
+    );
+    assert_eq!(
+        check_json(&report, "publication.roots")?,
+        check(
+            "publication.roots",
+            "linkage_unknown",
+            "attention",
+            &[
+                (
+                    "counts",
+                    nums(&[
+                        ("broken_roots", 0),
+                        ("orphaned_root_temps", 0),
+                        ("visible_roots", 1),
+                    ]),
+                ),
+                ("linkage_reason", s("ledger journal absent")),
+                ("linkage_state", s("unknown")),
+            ],
+            &[finding(
+                "linkage_unknown",
+                "attention",
+                None,
+                Some(&linkage_aff),
+            )],
+            Some(&linkage_aff),
+        )
+    );
+    let imports_aff = owner(
+        "owner_action",
+        "the ledger could not be replayed; import completeness is unknown",
+    );
+    assert_eq!(
+        check_json(&report, "imports.incomplete")?,
+        check(
+            "imports.incomplete",
+            "unknown",
+            "attention",
+            &[("reason", s("ledger journal absent"))],
+            &[finding("unknown", "attention", None, Some(&imports_aff))],
+            Some(&imports_aff),
+        )
+    );
+    assert!(
+        !report.to_json().contains("rerun_producing_command"),
+        "missing history must not turn a surviving publication into a retry instruction"
+    );
+    Ok(())
+}
+
+#[test]
+fn missing_effect_journal_keeps_obligations_unknown() -> TestResult {
+    let dep = init("missing_effect_journal")?;
+    indeterminate_ops(&dep, 1)?;
+    fs::remove_file(dep.join(RELATIVE_PATH_EFFECTS))?;
+
+    let report = inspect_read_only("missing effect journal", &dep)?;
+    assert_eq!(report.verdict, DoctorVerdict::AttentionRequired);
+    let restore_aff = owner(
+        "restore_journal",
+        "the deployment journal is missing; doctor never creates it",
+    );
+    assert_eq!(
+        check_json(&report, "effects.journal")?,
+        check(
+            "effects.journal",
+            "absent",
+            "attention",
+            &[],
+            &[finding("absent", "attention", None, Some(&restore_aff))],
+            Some(&restore_aff),
+        )
+    );
+    let unknown_aff = owner(
+        "owner_action",
+        "this state could not be determined; it is reported as unknown, never as clean",
+    );
+    assert_eq!(
+        check_json(&report, "effects.obligations")?,
+        check(
+            "effects.obligations",
+            "unknown",
+            "attention",
+            &[("reason", s("effects journal absent"))],
+            &[finding("unknown", "attention", None, Some(&unknown_aff))],
+            Some(&unknown_aff),
+        )
+    );
+    assert!(
+        !report.to_json().contains("reconcile_effects"),
+        "an absent journal cannot establish operations to reconcile"
+    );
+    Ok(())
+}
+
 fn indeterminate_check(dep: &Path, ids: &[String], total: u64) -> String {
     let aff = recover(dep, "reconcile_effects", "--reconcile-effects");
     let mut fields = vec![

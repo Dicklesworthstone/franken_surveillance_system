@@ -10,6 +10,24 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Lost deployment journal refusal (2026-10-29, reference)
+
+Opening a deployment now refuses to create a missing authority or effect journal over
+surviving durable state. The check runs before initialization and under the publisher
+lock; only a strict empty initialization skeleton can resume journal creation. This
+preserves original alert idempotency and unresolved effect history through operator
+recovery instead of silently treating lost history as a new deployment.
+
+Doctor keeps publication linkage, import completeness and obligations unknown when
+their journal is unavailable. Agent orientation refuses absent authority history and
+marks absent effect history unknown, so follow cannot turn missing effect history into
+a silence certificate. Focused regressions cover fresh-process refusal without source
+mutation, exact-journal restoration, interrupted initialization, retained unpublished
+custody, unknown siblings and recovery diagnostics. The implementation and tests passed
+format/whitespace checks; local compilation was blocked by the shared environment
+killing the existing Asupersync dependency for memory pressure. No test-pass or release
+qualification claim is made for this slice. See [recovery guidance](docs/deployment_backup.md#missing-canonical-history).
+
 ## ONVIF RTP metadata reconstruction and custody (2026-10-28, reference)
 
 The production packet owner now reconstructs uncompressed ONVIF metadata from
