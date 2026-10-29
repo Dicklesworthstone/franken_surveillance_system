@@ -138,6 +138,16 @@ pub trait TcpAuthority {
     ) -> Result<(), TcpDenial>;
 }
 
+/// Readiness from the owning reactor or caller. False never attempts that socket operation.
+/// Readiness is advisory: WouldBlock still returns a bounded pending result.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct SocketReadiness {
+    /// Permit at most one nonblocking read when protocol input is drained.
+    pub readable: bool,
+    /// Permit at most one nonblocking write of the current request suffix.
+    pub writable: bool,
+}
+
 /// Independent connection-wide work/byte ceilings. No unbounded reconnect or retry.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TcpLimits {

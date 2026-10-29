@@ -17,6 +17,10 @@ pub mod hevc_client;
 pub mod hevc_recording_capture;
 /// Continuous HEVC window collection with original boundary-packet retention.
 pub mod hevc_recording_collector;
+/// Explicit-authority native TCP transport for the metadata session owner.
+pub mod live_metadata;
+/// Exact, bounded ONVIF metadata transport on the shared RTSP session owner.
+pub mod metadata_client;
 
 /// Independently persisted checkpoint references and exact cold pin recovery.
 pub mod archive_pins;

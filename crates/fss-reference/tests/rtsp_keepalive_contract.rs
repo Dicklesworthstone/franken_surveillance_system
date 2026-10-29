@@ -52,7 +52,7 @@ fn request(session: &mut RtspClientSession, command: C, digest: bool, now: u64) 
     })
 }
 fn ready(codec: ClientCodec, digest: bool) -> Test<RtspClientSession> {
-    let mut session = RtspClientSession::with_codec(config(), codec)?;
+    let mut session = RtspClientSession::with_codec_and_payload_type(config(), codec, 96)?;
     if digest {
         session.enable_digest("camera-realm", DigestPolicy::default())?;
     }
@@ -62,9 +62,15 @@ fn ready(codec: ClientCodec, digest: bool) -> Test<RtspClientSession> {
             "a=rtpmap:96 H264/90000\r\na=fmtp:96 packetization-mode=1;sprop-parameter-sets=Z0IAHw==,aAA=\r\n"
         }
         ClientCodec::H265 => "a=rtpmap:96 H265/90000\r\n",
+        ClientCodec::OnvifMetadata => "a=rtpmap:96 vnd.onvif.metadata/90000\r\n",
+    };
+    let media_type = if codec == ClientCodec::OnvifMetadata {
+        "application"
+    } else {
+        "video"
     };
     let body = format!(
-        "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=fixture\r\nt=0 0\r\na=control:*\r\nm=video 0 RTP/AVP 96\r\n{media}a=control:track\r\n"
+        "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=fixture\r\nt=0 0\r\na=control:*\r\nm={media_type} 0 RTP/AVP 96\r\n{media}a=control:track\r\n"
     );
     session.accept(
         &response(cseq, 200, "Content-Type: application/sdp\r\n", &body)?,
@@ -87,8 +93,12 @@ fn challenge(cseq: u32) -> Vec<u8> {
 }
 
 #[test]
-fn both_codecs_emit_only_empty_scoped_get_parameter_and_keep_original_lifetime() -> Test {
-    for codec in [ClientCodec::H264, ClientCodec::H265] {
+fn all_media_contracts_emit_only_empty_scoped_get_parameter_and_keep_original_lifetime() -> Test {
+    for codec in [
+        ClientCodec::H264,
+        ClientCodec::H265,
+        ClientCodec::OnvifMetadata,
+    ] {
         let mut session = playing(codec, false)?;
         let due = 4 + 5 * SECOND;
         assert_eq!(session.next_wake_ns(), Some(due));
@@ -111,7 +121,11 @@ fn both_codecs_emit_only_empty_scoped_get_parameter_and_keep_original_lifetime()
 
 #[test]
 fn legacy_options_wire_is_unchanged_and_liveness_cannot_start_media() -> Test {
-    for codec in [ClientCodec::H264, ClientCodec::H265] {
+    for codec in [
+        ClientCodec::H264,
+        ClientCodec::H265,
+        ClientCodec::OnvifMetadata,
+    ] {
         let mut session = ready(codec, false)?;
         let queued = session.request(C::KeepAlive, 4)?;
         assert_eq!(
@@ -198,7 +212,11 @@ fn wrong_session_and_rejected_method_never_trigger_fallback_or_hide_uncertainty(
 
 #[test]
 fn challenged_keepalive_signs_actual_method_and_preserves_its_original_deadline() -> Test {
-    for codec in [ClientCodec::H264, ClientCodec::H265] {
+    for codec in [
+        ClientCodec::H264,
+        ClientCodec::H265,
+        ClientCodec::OnvifMetadata,
+    ] {
         let mut session = playing(codec, true)?;
         let sent = 10;
         let unsigned =

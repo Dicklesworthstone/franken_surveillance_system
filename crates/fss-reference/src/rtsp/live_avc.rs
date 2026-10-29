@@ -56,15 +56,8 @@ impl fmt::Debug for LiveAvcConfig {
     }
 }
 
-/// Readiness from the owning reactor or caller. False never attempts that socket operation.
-/// Readiness is advisory: WouldBlock still returns a bounded pending result.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct SocketReadiness {
-    /// Permit at most one nonblocking read when protocol input is drained.
-    pub readable: bool,
-    /// Permit at most one nonblocking write of the current request suffix.
-    pub writable: bool,
-}
+/// Shared native TCP readiness; retained here for existing AVC callers.
+pub use super::tcp::SocketReadiness;
 
 /// What the caller should wait for. Protocol deadlines must run even on a silent socket.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

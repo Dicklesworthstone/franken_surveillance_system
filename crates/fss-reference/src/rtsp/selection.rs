@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! Bounded, payload-exact AVC and HEVC selection from an SDP media offer.
+//! Bounded, payload-exact AVC, HEVC and ONVIF metadata SDP selection.
 //!
 //! This is a derived description, not replacement source evidence. The caller retains
 //! the original DESCRIBE response. Selection does not authorize a different media
@@ -25,7 +25,7 @@ pub enum SelectionError {
     Media,
     /// The exact requested payload was not offered in this media section.
     Payload,
-    /// No selected mapping is exactly the requested codec with its 90 kHz video clock.
+    /// The selected mapping or format is outside the explicitly admitted media subset.
     Unsupported,
     /// More than one requested-codec mapping exists and no exact payload was selected.
     Ambiguous,
@@ -57,7 +57,7 @@ pub fn select_h264_description(
     media_index: usize,
     payload_type: Option<u8>,
 ) -> Result<SdpSession, SelectionError> {
-    let derived = select_video_text(body, media_index, payload_type, "H264/90000")?;
+    let derived = select_media_text(body, media_index, payload_type, "video", "H264/90000")?;
     parse_sdp_bytes(derived.as_bytes()).map_err(|_| SelectionError::Description)
 }
 
@@ -78,15 +78,40 @@ pub fn select_h265_description(
     media_index: usize,
     payload_type: Option<u8>,
 ) -> Result<(SdpSession, String), SelectionError> {
-    let derived = select_video_text(body, media_index, payload_type, "H265/90000")?;
+    let derived = select_media_text(body, media_index, payload_type, "video", "H265/90000")?;
     let parsed = parse_sdp_bytes(derived.as_bytes()).map_err(|_| SelectionError::Description)?;
     Ok((parsed, derived))
 }
 
-fn select_video_text(
+/// Select an owner-pinned uncompressed ONVIF application mapping.
+///
+/// The dynamic payload type is mandatory. Gzip/EXI, extra rtpmap channel fields,
+/// non-90-kHz clocks and selected fmtp parameters have no admitted interpretation
+/// in this subset and are refused. Another offered mapping cannot substitute for
+/// the requested one. Original DESCRIBE bytes remain separate source evidence.
+pub fn select_onvif_metadata_description(
+    body: &[u8],
+    media_index: usize,
+    payload_type: u8,
+) -> Result<SdpSession, SelectionError> {
+    if !(96..=127).contains(&payload_type) {
+        return Err(SelectionError::Payload);
+    }
+    let derived = select_media_text(
+        body,
+        media_index,
+        Some(payload_type),
+        "application",
+        "vnd.onvif.metadata/90000",
+    )?;
+    parse_sdp_bytes(derived.as_bytes()).map_err(|_| SelectionError::Description)
+}
+
+fn select_media_text(
     body: &[u8],
     media_index: usize,
     payload_type: Option<u8>,
+    media_type: &str,
     encoding: &str,
 ) -> Result<String, SelectionError> {
     if body.len() > MAX_SELECTION_BYTES || media_index >= MAX_SELECTION_MEDIA {
@@ -133,7 +158,7 @@ fn select_video_text(
                 let media = fields.next().ok_or(SelectionError::Malformed)?;
                 let port = fields.next().ok_or(SelectionError::Malformed)?;
                 let protocol = fields.next().ok_or(SelectionError::Malformed)?;
-                if media != "video" || !matches!(protocol, "RTP/AVP" | "RTP/AVP/TCP") {
+                if media != media_type || !matches!(protocol, "RTP/AVP" | "RTP/AVP/TCP") {
                     return Err(SelectionError::Media);
                 }
                 decimal(port)?;
@@ -203,6 +228,9 @@ fn select_video_text(
         selected.ok_or(SelectionError::Unsupported)?
     };
     if let Some(format) = formats[usize::from(selected)] {
+        if media_type == "application" {
+            return Err(SelectionError::Unsupported);
+        }
         validate_format(format)?;
     }
 
@@ -221,7 +249,7 @@ fn select_video_text(
             media_count += 1;
             if section == Some(media_index) {
                 use std::fmt::Write as _;
-                writeln!(&mut derived, "m=video {port} {protocol} {selected}")
+                writeln!(&mut derived, "m={media_type} {port} {protocol} {selected}")
                     .map_err(|_| SelectionError::Allocation)?;
                 continue;
             }

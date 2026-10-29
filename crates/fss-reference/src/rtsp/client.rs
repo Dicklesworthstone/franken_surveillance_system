@@ -6,8 +6,12 @@
 pub mod authenticated;
 /// Bounded RFC 7798 negotiation without a decoder or codec fallback.
 pub mod hevc;
+/// Owner-selected uncompressed ONVIF application transport metadata.
+pub mod metadata;
 
-use super::selection::{select_h264_description, select_h265_description};
+use super::selection::{
+    select_h264_description, select_h265_description, select_onvif_metadata_description,
+};
 use super::{AuthScheme, RtspHeaders, RtspResponse};
 use std::fmt;
 
@@ -66,7 +70,7 @@ pub enum ClientCommand {
     Options,
     /// Fetch one description.
     Describe,
-    /// Negotiate the selected TCP-interleaved video track.
+    /// Negotiate the selected TCP-interleaved media track.
     Setup,
     /// Start the negotiated session.
     Play,
@@ -175,12 +179,15 @@ pub enum ClientCodec {
     H264,
     /// RFC 7798 HEVC in single-stream transmission order with no DON fields.
     H265,
+    /// Uncompressed ONVIF metadata with an explicitly pinned dynamic payload type.
+    OnvifMetadata,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum NegotiatedMedia {
     H264(ClientMedia),
     H265(hevc::HevcClientMedia),
+    OnvifMetadata(metadata::MetadataClientMedia),
 }
 
 /// Negotiated compressed-video parameters. Syntax/decodability remain the codec owner's job.
@@ -299,7 +306,16 @@ impl RtspClientSession {
     }
     /// Pin a codec before any request. The original constructor remains H.264-only.
     /// HEVC uses the same scope, CSeq, Digest, session, expiry, and teardown rules.
+    /// ONVIF metadata requires `with_codec_and_payload_type` with a dynamic payload.
     pub fn with_codec(config: ClientConfig, codec: ClientCodec) -> Result<Self, ClientError> {
+        if codec == ClientCodec::OnvifMetadata {
+            // Metadata has no implicit first/only-payload selection contract.
+            return Err(ClientError::Configuration);
+        }
+        Self::new_for_codec(config, codec)
+    }
+
+    fn new_for_codec(config: ClientConfig, codec: ClientCodec) -> Result<Self, ClientError> {
         if config.channels.0.checked_add(1) != Some(config.channels.1)
             || config.media_index >= 64
             || config.response_timeout_ns == 0
@@ -357,15 +373,16 @@ impl RtspClientSession {
     /// No other offered payload can substitute for an absent or invalid selection.
     /// This also permits explicit selection between multiple HEVC mappings while
     /// retaining the existing HEVC format, URI, session and transport validators.
+    /// ONVIF metadata requires an exact dynamic payload (96 through 127).
     pub fn with_codec_and_payload_type(
         config: ClientConfig,
         codec: ClientCodec,
         payload_type: u8,
     ) -> Result<Self, ClientError> {
-        if payload_type > 127 {
+        if payload_type > 127 || (codec == ClientCodec::OnvifMetadata && payload_type < 96) {
             return Err(ClientError::Configuration);
         }
-        let mut session = Self::with_codec(config, codec)?;
+        let mut session = Self::new_for_codec(config, codec)?;
         session.selected_payload_type = Some(payload_type);
         Ok(session)
     }
@@ -373,8 +390,8 @@ impl RtspClientSession {
     pub fn state(&self) -> ClientState {
         self.state
     }
-    /// Immutable H.264 parameters after DESCRIBE; always None for an HEVC session.
-    /// Existing AVC callers cannot accidentally consume HEVC parameter-set bytes.
+    /// Immutable H.264 parameters after DESCRIBE; None for other media contracts.
+    /// Existing AVC callers cannot consume another codec's parameters or metadata.
     pub fn media(&self) -> Option<&ClientMedia> {
         match self.media.as_ref() {
             Some(NegotiatedMedia::H264(media)) => Some(media),
@@ -385,6 +402,13 @@ impl RtspClientSession {
     pub fn hevc_media(&self) -> Option<&hevc::HevcClientMedia> {
         match self.media.as_ref() {
             Some(NegotiatedMedia::H265(media)) => Some(media),
+            _ => None,
+        }
+    }
+    /// Exact uncompressed ONVIF transport selection; no XML or vendor claim is implied.
+    pub fn metadata_media(&self) -> Option<&metadata::MetadataClientMedia> {
+        match self.media.as_ref() {
+            Some(NegotiatedMedia::OnvifMetadata(media)) => Some(media),
             _ => None,
         }
     }
@@ -821,7 +845,7 @@ fn description(
     {
         return Err(ClientError::Description);
     }
-    // Both codec owners consume one bounded exact payload projection. HEVC must
+    // Every media owner consumes one bounded exact payload projection. HEVC must
     // receive that projection's matching text because the observational parser
     // does not retain every RFC 7798 field. Original response custody is unchanged.
     let (sdp, hevc_text) = match codec {
@@ -835,6 +859,15 @@ fn description(
                 .map_err(|_| ClientError::Description)?;
             (sdp, Some(text))
         }
+        ClientCodec::OnvifMetadata => (
+            select_onvif_metadata_description(
+                &r.body,
+                config.media_index,
+                payload_type.ok_or(ClientError::Description)?,
+            )
+            .map_err(|_| ClientError::Description)?,
+            None,
+        ),
     };
     let m = sdp
         .media
@@ -847,6 +880,7 @@ fn description(
             config.media_index,
             m,
         )?),
+        ClientCodec::OnvifMetadata => NegotiatedMedia::OnvifMetadata(metadata::negotiate(m)?),
     };
     let content_base = singleton(&r.headers, "Content-Base")?;
     let location = singleton(&r.headers, "Content-Location")?;
