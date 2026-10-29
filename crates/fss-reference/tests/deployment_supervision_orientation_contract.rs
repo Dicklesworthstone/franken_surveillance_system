@@ -218,6 +218,7 @@ impl SyntheticEvaluator<'_> {
             event_id: EventId::parse(PRIVATE_EVENT).map_err(|_| Self::refused())?,
             event_root: ContentDigest::sha256(PRIVATE_SOURCE),
             source_verified: true,
+            health_digest: None,
         }])
     }
 }

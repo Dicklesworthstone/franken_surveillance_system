@@ -265,3 +265,71 @@ fn resumed_pending_native_delivery_still_obeys_deleted_generation_excluded_sourc
     assert_eq!(canonical_inventory(&f)?, canonical);
     Ok(())
 }
+
+#[test]
+fn new_source_health_blocks_cold_event_report_replay_and_ack_but_preserves_inspect_and_discard()
+-> TestResult {
+    let mut fixture = Fixture::with_source_frames("event-session-health", 1, 12, false)?;
+    let session = open_session(&fixture)?;
+    let first = poll(
+        &fixture,
+        &fixture.discovery(&[0])?,
+        &session,
+        "health",
+        3,
+        None,
+    )?;
+    success(&first);
+    let receipt = text(&report(&first)?, "delivery_receipt")?.to_owned();
+    let original = state(&fixture, "health")?;
+    let pending = original.pending().ok_or("original event report")?;
+    assert_eq!(pending.source_inventory().len(), 1);
+    assert!(pending.source_inventory()[0].health_digest.is_some());
+    assert!(pending.detection_source_inventory().is_empty());
+    remove_configuration(&fixture)?;
+
+    super::super::health::retain_health(&mut fixture, 0, 12, false)?;
+    let canonical = canonical_inventory(&fixture)?;
+    for flags in [Vec::new(), vec![("--acknowledge", receipt.as_str())]] {
+        let output = resume(&fixture, &session, "health", &flags)?;
+        refusal(&output);
+        assert!(String::from_utf8_lossy(&output.stderr).contains("health context changed"));
+    }
+    let blocked = state(&fixture, "health")?;
+    assert_eq!(blocked.attempts_reserved(), 3);
+    assert_eq!(blocked.registration(), original.registration());
+    assert_eq!(blocked.last_acknowledged(), None);
+    let blocked_pending = blocked.pending().ok_or("blocked event report")?;
+    assert_eq!(blocked_pending.receipt().to_text(), receipt);
+    assert_eq!(blocked_pending.payload_digest(), pending.payload_digest());
+    assert_eq!(
+        blocked_pending.source_inventory(),
+        pending.source_inventory()
+    );
+
+    let inspected = resume(&fixture, &session, "health", &[("--inspect", "yes")])?;
+    success(&inspected);
+    let inspected = report(&inspected)?;
+    assert_eq!(text(&inspected, "pending_receipt")?, receipt);
+    assert_eq!(field(&inspected, "report")?, &Value::Null);
+    assert_eq!(field(&inspected, "source_validation")?, &Value::Null);
+    assert_eq!(state(&fixture, "health")?, blocked);
+    success(&resume(
+        &fixture,
+        &session,
+        "health",
+        &[("--discard", &receipt)],
+    )?);
+    let discarded = state(&fixture, "health")?;
+    assert!(discarded.pending().is_none());
+    assert_eq!(discarded.attempts_reserved(), 3);
+    assert_eq!(discarded.last_acknowledged(), None);
+    assert_eq!(
+        discarded.last_discarded(),
+        Some(ContentDigest::parse(&receipt)?)
+    );
+    refusal(&resume(&fixture, &session, "health", &[])?);
+    assert!(!fixture.directory.0.join("session-discovery.json").exists());
+    assert_eq!(canonical_inventory(&fixture)?, canonical);
+    Ok(())
+}

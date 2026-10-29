@@ -727,6 +727,22 @@ fn report_fields(report: &RetainedDiscoveryReport) -> Result<Vec<(&'static str, 
         ),
         ("selected_plan", plan_to_json(&report.selected_plan)),
         (
+            "source_inventory",
+            list(report.source_inventory()?.iter().map(|source| {
+                object(&[
+                    ("event_id", string(source.event_id.as_str())),
+                    ("event_root", digest_json(source.event_root)),
+                    ("source_verified", source.source_verified.to_string()),
+                    (
+                        "health_digest",
+                        source
+                            .health_digest
+                            .map_or_else(|| "null".to_owned(), digest_json),
+                    ),
+                ])
+            })),
+        ),
+        (
             "discovery",
             object(&[
                 ("catalog_objects", discovery.catalog_objects.to_string()),

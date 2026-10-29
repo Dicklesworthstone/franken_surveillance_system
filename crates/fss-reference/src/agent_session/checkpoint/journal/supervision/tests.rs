@@ -19,6 +19,9 @@ type TestResult<T = ()> = std::result::Result<T, Box<dyn Error>>;
 static NEXT_PATH: AtomicU64 = AtomicU64::new(0);
 const PRIVATE_REPORT: &[u8] = br#"{"private":"synthetic supervision journal fixture"}"#;
 
+#[path = "tests/event_health.rs"]
+mod event_health;
+
 fn unused_path() -> TestResult<PathBuf> {
     for _ in 0..128 {
         let serial = NEXT_PATH.fetch_add(1, Ordering::Relaxed);
@@ -69,11 +72,13 @@ fn sources() -> TestResult<Vec<SupervisionSourcePin>> {
             event_id: EventId::parse("event:package:metadata-only")?,
             event_root: ContentDigest::sha256(b"exact metadata-only excluded source root"),
             source_verified: false,
+            health_digest: None,
         },
         SupervisionSourcePin {
             event_id: EventId::parse("event:package:native-opened")?,
             event_root: ContentDigest::sha256(b"exact native opened source root"),
             source_verified: true,
+            health_digest: None,
         },
     ])
 }

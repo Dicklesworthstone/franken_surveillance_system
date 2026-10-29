@@ -145,7 +145,8 @@ report must be acknowledged or discarded before advancing the finite schedule. T
 Native source pins retain report, record and detection-root identities, verification class and
 the optional exact health-context digest. They are distinct from event source pins: no synthetic
 event identifier is created. A nonempty native inventory uses additive journal publication tag 8
-and its own delivery-receipt domain; existing event-only publications keep their original bytes.
+and its own delivery-receipt domain; legacy event-only publications keep their original bytes.
+New health-bound event deliveries use their separate additive tag 9.
 An older reader refuses the new command rather than dropping its source inventory.
 
 A new relevant frozen-frame diagnostic, withdrawn privacy permission, deleted evidence or corrupt

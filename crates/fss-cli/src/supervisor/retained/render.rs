@@ -138,6 +138,7 @@ fn fields(r: &RetainedSupervisorReport) -> Vec<(&'static str, String)> {
             })),
         ),
         ("observations", list(r.observations.iter().map(observation))),
+        ("health_catalog", r.health_json.clone()),
         (
             "windows",
             list(r.windows.iter().map(|w| {

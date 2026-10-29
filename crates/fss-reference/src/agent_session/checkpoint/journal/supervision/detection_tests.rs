@@ -323,6 +323,7 @@ fn native_duplicates_mixed_inventories_unverified_health_and_invalid_digests_nev
         event_id: EventId::parse("event:package:mixed")?,
         event_root: ContentDigest::sha256(b"event root"),
         source_verified: true,
+        health_digest: None,
     }];
     assert!(
         store

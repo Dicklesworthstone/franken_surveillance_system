@@ -402,6 +402,7 @@ impl SupervisionEvaluator for NativeEvaluator<'_> {
                         event_id: source.event_id,
                         event_root: source.event_root,
                         source_verified: source.source_verified,
+                        health_digest: source.health_digest,
                     })
                     .collect();
                 SupervisionEvaluation {
@@ -505,6 +506,7 @@ impl SupervisionEvaluator for NativeEvaluator<'_> {
                         event_id: source.event_id.clone(),
                         event_root: source.event_root,
                         source_verified: source.source_verified,
+                        health_digest: source.health_digest,
                     })
                     .collect();
                 let validation = revalidate_retained_discovery_sources(

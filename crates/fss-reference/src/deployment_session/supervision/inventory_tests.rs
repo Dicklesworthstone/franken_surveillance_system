@@ -90,6 +90,7 @@ impl Fixture {
                 event_id: EventId::parse(PRIVATE_EVENT)?,
                 event_root: ContentDigest::sha256(b"synthetic native source root"),
                 source_verified: true,
+                health_digest: None,
             }], ContentDigest::sha256(b"synthetic native report receipt"), head.observed_at)?;
         // Retain an interrupted revalidation at the exhausted lifetime cap. Listing must still
         // recover its metadata without opening any native source or attempting a new poll.

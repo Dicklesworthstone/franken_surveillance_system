@@ -50,6 +50,7 @@ const STATE_DOMAIN: &str = "fss.reference_supervision_state.v1";
 const AUTHORITY_DOMAIN: &str = "fss.reference_supervision_authority.v1";
 const RESERVATION_DOMAIN: &str = "fss.reference_supervision_reservation.v1";
 const DELIVERY_DOMAIN: &str = "fss.reference_supervision_delivery.v1";
+const EVENT_HEALTH_DELIVERY_DOMAIN: &str = "fss.reference_supervision_event_health_delivery.v1";
 const DETECTION_DELIVERY_DOMAIN: &str = "fss.reference_supervision_detection_delivery.v1";
 const SCHEDULED_STATE_DOMAIN: &str = "fss.reference_supervision_scheduled_state.v1";
 const ADVANCE_DOMAIN: &str = "fss.reference_supervision_window_advance.v1";
@@ -183,6 +184,9 @@ pub struct SupervisionSourcePin {
     pub event_root: ContentDigest,
     /// True only when the native owner reopened the complete source, including excluded sources.
     pub source_verified: bool,
+    /// Exact selected-row health interpretation. Legacy unassessed deliveries retain None;
+    /// the native owner must refuse their release when selected rows require a health pin.
+    pub health_digest: Option<ContentDigest>,
 }
 
 impl SupervisionSourcePin {
@@ -415,16 +419,28 @@ impl PendingSupervisionDelivery {
     }
 
     fn delivery_receipt(&self, state: ContentDigest, reservation: ContentDigest) -> ContentDigest {
-        let domain = if self.detection_sources.is_empty() {
-            DELIVERY_DOMAIN
-        } else {
+        let event_health = self
+            .sources
+            .iter()
+            .any(|source| source.health_digest.is_some());
+        let domain = if !self.detection_sources.is_empty() {
             DETECTION_DELIVERY_DOMAIN
+        } else if event_health {
+            EVENT_HEALTH_DELIVERY_DOMAIN
+        } else {
+            DELIVERY_DOMAIN
         };
         hash(domain, |e| {
             e.digest(state);
             e.digest(reservation);
-            // The old descriptor and domain remain byte-identical for event-only deliveries.
+            // Legacy unassessed event deliveries remain byte-identical. New health pins are
+            // sealed under their own domain without redefining existing journal history.
             self.encode_descriptor(e);
+            if event_health {
+                for source in &self.sources {
+                    optional_digest(e, source.health_digest);
+                }
+            }
             if !self.detection_sources.is_empty() {
                 e.u64(self.detection_sources.len() as u64);
                 for source in &self.detection_sources {
@@ -690,6 +706,9 @@ fn validate_sources(sources: &[SupervisionSourcePin]) -> Result<()> {
         if source.event_id.as_str().len() > MAX_EVENT_ID_BYTES
             || !source.event_id.as_str().starts_with("event:package:")
             || !sha(source.event_root)
+            || source
+                .health_digest
+                .is_some_and(|digest| !source.source_verified || !sha(digest))
         {
             return Err(DurableSupervisionError::InvalidRequest);
         }

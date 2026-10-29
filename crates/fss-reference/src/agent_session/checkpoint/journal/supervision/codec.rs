@@ -85,13 +85,23 @@ pub(super) fn encode_record(record: &Record) -> Result<Vec<u8>> {
             detection_sources,
             report_receipt,
         } => {
-            e.tag(if detection_sources.is_empty() { 2 } else { 8 });
+            let event_health = sources.iter().any(|source| source.health_digest.is_some());
+            e.tag(if !detection_sources.is_empty() {
+                8
+            } else if event_health {
+                9
+            } else {
+                2
+            });
             identity(&mut e, subscription, *expected);
             e.digest(*reservation);
             e.bytes(payload);
             e.u64(sources.len() as u64);
             for source in sources {
                 source.encode(&mut e);
+                if event_health {
+                    optional_digest(&mut e, source.health_digest);
+                }
             }
             e.digest(*report_receipt);
             if !detection_sources.is_empty() {
@@ -195,7 +205,7 @@ pub(super) fn decode_record(encoded: &[u8]) -> Result<Record> {
             expected: d.digest()?,
             anchor: anchor(&mut d)?,
         },
-        tag @ (2 | 8) => {
+        tag @ (2 | 8 | 9) => {
             let subscription = text(&mut d, MAX_SUBSCRIPTION_BYTES)?;
             let expected = d.digest()?;
             let reservation = d.digest()?;
@@ -207,6 +217,11 @@ pub(super) fn decode_record(encoded: &[u8]) -> Result<Record> {
                     event_id: EventId::parse(&text(&mut d, MAX_EVENT_ID_BYTES)?)?,
                     event_root: d.digest()?,
                     source_verified: d.bool()?,
+                    health_digest: if tag == 9 && d.bool()? {
+                        Some(d.digest()?)
+                    } else {
+                        None
+                    },
                 });
             }
             let report_receipt = d.digest()?;
@@ -223,9 +238,9 @@ pub(super) fn decode_record(encoded: &[u8]) -> Result<Record> {
                         health_digest: if d.bool()? { Some(d.digest()?) } else { None },
                     });
                 }
-                validate_source_inventories(&sources, &detection_sources)
-                    .map_err(|_| DurableSessionError::InvalidHistory)?;
             }
+            validate_source_inventories(&sources, &detection_sources)
+                .map_err(|_| DurableSessionError::InvalidHistory)?;
             Command::Publish {
                 subscription,
                 expected,

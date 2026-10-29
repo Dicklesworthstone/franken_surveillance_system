@@ -10,6 +10,22 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Retained event health through session recovery (2026-10-29, reference)
+
+Explicit and discovered package-event supervision now apply the same source-bound historical
+health constraints as direct detector supervision. Frozen or incompletely screened footage
+retains its exact native rows and scores but contributes neither positive nor negative class
+support. Repeated selections share one assessment and remain deduplicated.
+
+Discovery seals each selected event's exact health interpretation, including unknown diagnostic
+coverage. Cold pending-report delivery and first acknowledgement revalidate that interpretation
+under current authority. New relevant findings refuse reuse while preserving the original report
+for inspection or discard. Additive journal tag 9 and a distinct receipt domain retain legacy
+encoding identity; selected legacy reports without health pins require reevaluation. Regression
+cases cover freeze/clear/incomplete screens, unrelated diagnostics, cold replay/ACK invalidation,
+publication crash cuts and pin tampering. Runtime execution remains unverified because of the
+shared build environment's memory limit. See [retained event supervision](docs/RETAINED_EVENT_SUPERVISOR.md#historical-source-health).
+
 ## Lost deployment journal refusal (2026-10-29, reference)
 
 Opening a deployment now refuses to create a missing authority or effect journal over

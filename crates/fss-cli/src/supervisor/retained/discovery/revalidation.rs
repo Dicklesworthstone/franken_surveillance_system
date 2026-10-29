@@ -9,16 +9,18 @@ use std::collections::BTreeMap;
 
 use fss_core::{CanonicalEncoder, ContentDigest, EventId, LedgerAnchor};
 use fss_reference::agent_orient::{DeploymentHistory, OrientLimits};
+use fss_reference::ingest::historical_health::exposure::HealthExposure;
 use fss_reference::ingest::package_event::{PackageEvent, PackageEventError};
 use fss_reference::{ReferenceDeployment, ReplayCx};
 
 use crate::agent_json::{object, string};
 
+use super::super::health::{HealthGuard, exposure_json};
+use super::super::{Error, Result, RetainedSupervisorPlan};
 use super::{
     Discovery, RetainedDiscoveryReport, RetainedDiscoveryRequest, checkpoint, finish,
     history_scan_units, package_error,
 };
-use super::super::{Error, Result, RetainedSupervisorPlan};
 
 /// An exact event revision disclosed by the original discovery report.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -30,6 +32,9 @@ pub struct RetainedDiscoverySource {
     /// True requires the native source owner again, including for generation exclusions.
     /// False preserves only the original metadata-only verification claim.
     pub source_verified: bool,
+    /// Exact health interpretation of this event's selected native rows, including an explicit
+    /// lack of matching diagnostics. Exclusions without selected rows carry no health pin.
+    pub health_digest: Option<ContentDigest>,
 }
 
 impl RetainedDiscoveryRequest {
@@ -54,11 +59,15 @@ impl RetainedDiscoveryReport {
                 }
                 old.source_verified |= native;
             } else {
-                inventory.insert(event_id.clone(), RetainedDiscoverySource {
-                    event_id: event_id.clone(),
-                    event_root,
-                    source_verified: native,
-                });
+                inventory.insert(
+                    event_id.clone(),
+                    RetainedDiscoverySource {
+                        event_id: event_id.clone(),
+                        event_root,
+                        source_verified: native,
+                        health_digest: None,
+                    },
+                );
             }
             Ok(())
         };
@@ -71,6 +80,41 @@ impl RetainedDiscoveryReport {
                 exclusion.event_root,
                 exclusion.source_verified,
             )?;
+        }
+        let observations: BTreeMap<_, _> = self
+            .supervision
+            .observations
+            .iter()
+            .map(|observation| (observation.identity, observation))
+            .collect();
+        let mut exposures = BTreeMap::<EventId, SourceHealth>::new();
+        for window in &self.supervision.windows {
+            for selection in &window.selections {
+                let observation = observations
+                    .get(&selection.observation)
+                    .ok_or(Error::Selection("event health observation inventory"))?;
+                let exposure = observation
+                    .health
+                    .as_ref()
+                    .ok_or(Error::Selection("event health interpretation missing"))?;
+                exposures
+                    .entry(selection.selector.event_id.clone())
+                    .or_default()
+                    .insert(
+                        (
+                            observation.capsule_digest,
+                            observation.segment,
+                            observation.detection_row,
+                        ),
+                        exposure.clone(),
+                    );
+            }
+        }
+        for (event_id, health) in exposures {
+            inventory
+                .get_mut(&event_id)
+                .ok_or(Error::Selection("event health source inventory"))?
+                .health_digest = source_health_digest(&health)?;
         }
         if inventory.len() != self.discovery.metadata_reads
             || inventory.len() > self.request.maximum_catalog_events()
@@ -153,27 +197,31 @@ impl RetainedDiscoveryValidation {
     }
 }
 
-fn inventory_digest(
-    sources: &[RetainedDiscoverySource],
-    maximum: usize,
-) -> Result<ContentDigest> {
+fn inventory_digest(sources: &[RetainedDiscoverySource], maximum: usize) -> Result<ContentDigest> {
     if sources.len() > maximum {
         return Err(Error::Limit("historical discovery source inventory"));
     }
     let mut encoder = CanonicalEncoder::new();
-    encoder.text("fss.retained_supervisor_source_inventory.v1");
+    encoder.text("fss.retained_supervisor_source_inventory.v2");
     encoder.u64(sources.len() as u64);
     let mut previous: Option<&EventId> = None;
     for source in sources {
         if !source.event_id.as_str().starts_with("event:package:")
             || !super::super::sha(source.event_root)
             || previous.is_some_and(|old| old >= &source.event_id)
+            || source
+                .health_digest
+                .is_some_and(|digest| !source.source_verified || !super::super::sha(digest))
         {
             return Err(Error::Plan("sorted unique historical discovery source roots"));
         }
         encoder.text(source.event_id.as_str());
         encoder.digest(source.event_root);
         encoder.bool(source.source_verified);
+        encoder.bool(source.health_digest.is_some());
+        if let Some(digest) = source.health_digest {
+            encoder.digest(digest);
+        }
         previous = Some(&source.event_id);
     }
     finish(encoder)
@@ -221,6 +269,7 @@ pub fn revalidate_retained_discovery_sources(
         .filter(|units| *units <= super::MAX_RETAINED_DISCOVERY_HISTORY_SCAN_UNITS)
         .ok_or(Error::Limit("source revalidation metadata history work"))?;
     let mut native_sources = 0_usize;
+    let mut health = HealthGuard::read(deployment, &spec.limits, cx)?;
     for source in sources {
         checkpoint(cx)?;
         let (metadata, receipt) = deployment
@@ -234,6 +283,13 @@ pub fn revalidate_retained_discovery_sources(
                 .map_err(package_error)?;
             if native.root() != source.event_root || native.event() != &metadata {
                 return Err(Error::Selection("historical native source revision changed"));
+            }
+            let current_health =
+                compute_event_health(deployment, request, &native, &mut health, cx)?;
+            if current_health != source.health_digest {
+                return Err(Error::Selection(
+                    "historical native event health context changed",
+                ));
             }
             native_sources += 1;
         }
@@ -272,28 +328,145 @@ pub fn revalidate_retained_discovery_sources(
     Ok(result)
 }
 
+type SourceHealth = BTreeMap<(ContentDigest, u64, u64), HealthExposure>;
+
+fn source_health_digest(exposures: &SourceHealth) -> Result<Option<ContentDigest>> {
+    if exposures.is_empty() {
+        return Ok(None);
+    }
+    let mut encoder = CanonicalEncoder::new();
+    encoder.text("fss.retained_supervisor_event_health.v1");
+    encoder.u64(exposures.len() as u64);
+    for ((capsule, segment, row), exposure) in exposures {
+        encoder.digest(*capsule);
+        encoder.u64(*segment);
+        encoder.u64(*row);
+        encoder.bytes(exposure_json(exposure).as_bytes());
+    }
+    Ok(Some(finish(encoder)?))
+}
+
+/// Reconstruct exactly the tracked native rows selected by the original discovery scope.
+/// Unrelated diagnostics and unselected frames cannot rebind an historical delivery; a legacy
+/// selected event with no retained health pin must be discarded and evaluated afresh.
+fn compute_event_health(
+    deployment: &ReferenceDeployment,
+    request: &RetainedDiscoveryRequest,
+    event: &PackageEvent,
+    health: &mut HealthGuard,
+    cx: &ReplayCx,
+) -> Result<Option<ContentDigest>> {
+    let spec = request.template().spec();
+    let report = event.report();
+    let record = report.retained().record();
+    let sensor = &record
+        .frames
+        .first()
+        .ok_or(Error::Selection("native event health source frames"))?
+        .sensor_id;
+    let Some(camera) = spec
+        .cameras
+        .iter()
+        .find(|camera| &camera.sensor_id == sensor)
+    else {
+        return Ok(None);
+    };
+    if record.package_digest != camera.package_digest
+        || record.model_digest != camera.model_digest
+        || record.contract_digest != camera.contract_digest
+        || report.class_index() != camera.class_index
+        || report.label() != spec.label
+        || record
+            .labels
+            .get(camera.class_index as usize)
+            .map(String::as_str)
+            != Some(spec.label.as_str())
+    {
+        return Ok(None);
+    }
+    let track = report
+        .tracks()
+        .iter()
+        .find(|track| track.identity == event.track())
+        .ok_or(Error::Selection("native event health track"))?;
+    let mut exposures = SourceHealth::new();
+    for observation in &track.observations {
+        checkpoint(cx)?;
+        let Some((row, score_bits, bounds, _)) = observation.detection else {
+            continue;
+        };
+        let frame = record
+            .frames
+            .iter()
+            .find(|frame| {
+                frame.segment == observation.segment
+                    && frame.capsule_digest == observation.capsule_digest
+            })
+            .ok_or(Error::Selection("native event health frame"))?;
+        if frame.sensor_id != *sensor || frame.capture.earliest > frame.capture.latest {
+            return Err(Error::Selection("native event health sensor or capture"));
+        }
+        if super::enclosing_window(
+            spec.start_ns,
+            &spec.windows,
+            frame.capture.earliest.0,
+            frame.capture.latest.0,
+        )
+        .is_err()
+        {
+            continue;
+        }
+        if !frame.detections.iter().any(|detection| {
+            detection.class_index == camera.class_index
+                && detection.row == row
+                && detection.score_bits == score_bits
+                && detection.bounds == bounds
+        }) {
+            return Err(Error::Selection("native event health assigned class row"));
+        }
+        let key = (frame.capsule_digest, frame.segment, row);
+        let current_len = exposures.len();
+        if let std::collections::btree_map::Entry::Vacant(entry) = exposures.entry(key) {
+            if current_len >= super::super::MAX_RETAINED_SUPERVISOR_OBSERVATIONS {
+                return Err(Error::Limit("selected event health observations"));
+            }
+            entry.insert(health.assess(record, frame, deployment, cx)?);
+        }
+    }
+    source_health_digest(&exposures)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn inventory_binds_native_verification_and_rejects_duplicates_or_reordering()
-        -> std::result::Result<(), Box<dyn std::error::Error>>
-    {
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let first = RetainedDiscoverySource {
             event_id: EventId::parse("event:package:first")?,
             event_root: ContentDigest::sha256(b"first revision"),
             source_verified: false,
+            health_digest: None,
         };
         let second = RetainedDiscoverySource {
             event_id: EventId::parse("event:package:second")?,
             event_root: ContentDigest::sha256(b"second revision"),
             source_verified: true,
+            health_digest: None,
         };
         let original = inventory_digest(&[first.clone(), second.clone()], 2)?;
         let mut native = first.clone();
         native.source_verified = true;
         assert_ne!(original, inventory_digest(&[native, second.clone()], 2)?);
+        let mut assessed = second.clone();
+        assessed.health_digest = Some(ContentDigest::sha256(b"selected event health"));
+        assert_ne!(
+            original,
+            inventory_digest(&[first.clone(), assessed.clone()], 2)?
+        );
+        assessed.source_verified = false;
+        assert!(inventory_digest(&[first.clone(), assessed], 2).is_err());
         assert!(inventory_digest(&[second.clone(), first.clone()], 2).is_err());
         assert!(inventory_digest(&[first.clone(), first.clone()], 2).is_err());
         assert!(inventory_digest(&[first, second], 1).is_err());

@@ -35,6 +35,8 @@ type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
 #[path = "supervisor_retained_contract/detection.rs"]
 mod detection;
+#[path = "supervisor_retained_contract/health.rs"]
+mod health;
 const SITE: &str = "site:retained-supervisor-cli";
 const JPEG: &[u8] =
     include_bytes!("../../../tests/fixtures/media/jpeg/rgb_64x48_colorbars_420.jpg");
@@ -111,6 +113,15 @@ struct Fixture {
 }
 impl Fixture {
     fn new(name: &str, count: usize) -> TestResult<Self> {
+        Self::with_source_frames(name, count, 1, false)
+    }
+
+    fn with_source_frames(
+        name: &str,
+        count: usize,
+        source_frames: usize,
+        refused_frame: bool,
+    ) -> TestResult<Self> {
         let directory = Directory::new(name)?;
         let root = directory.0.join("deployment");
         let cx = context(&root)?;
@@ -128,17 +139,35 @@ impl Fixture {
             let alias = format!("camera-{index}");
             let sensor = format!("sensor:retained-supervisor-{index}");
             let source = directory.0.join(format!("source-{index}.jpg"));
-            fs::write(&source, JPEG)?;
-            let imported = FileIngestAdapter::ingest(
-                FileIngestRequest::new(
-                    &source,
-                    SensorId::parse(&sensor)?,
-                    StreamId::parse(format!("stream:retained-supervisor-{index}"))?,
-                )
-                .with_receive_time(TimestampNs(1_000_000_000)),
-                &cx,
-                &mut deployment,
-            )?;
+            let mut source_bytes = JPEG.repeat(source_frames);
+            if refused_frame {
+                let last_frame = &mut source_bytes[JPEG.len() * (source_frames - 1)..];
+                let sof = last_frame
+                    .windows(2)
+                    .position(|pair| pair == [0xff, 0xc0])
+                    .ok_or("fixture JPEG SOF0")?;
+                last_frame[sof + 1] = 0xc2;
+            }
+            fs::write(&source, source_bytes)?;
+            let mut request = FileIngestRequest::new(
+                &source,
+                SensorId::parse(&sensor)?,
+                StreamId::parse(format!("stream:retained-supervisor-{index}"))?,
+            )
+            .with_format_hint(fss_reference::ingest::FileFormatHint::JpegStream)
+            .with_receive_time(TimestampNs(if source_frames > 1 {
+                2_000_000_000
+            } else {
+                1_000_000_000
+            }));
+            if source_frames > 1 {
+                request = request.with_capture_hint(fss_reference::ingest::CaptureHint::new(
+                    TimestampNs(0),
+                    0,
+                    10.0,
+                )?);
+            }
+            let imported = FileIngestAdapter::ingest(request, &cx, &mut deployment)?;
             fs::remove_file(source)?;
             let native = run_package_detection(
                 &deployment,

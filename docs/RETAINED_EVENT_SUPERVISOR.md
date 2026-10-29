@@ -2,7 +2,7 @@
 
 For retained detector or sentinel results that have no confirmed track or published event,
 use [direct detector-record supervision](RETAINED_DETECTION_SUPERVISION.md). That source path
-also applies exact retained visual-health diagnostic constraints before class fusion.
+and retained event supervision share exact source-bound visual-health constraints before class fusion.
 
 `fss-event supervise --retained-plan` evaluates a bounded sequence of cumulative evidence windows
 over current, published package events. It reopens the exact native detections assigned to those
@@ -319,6 +319,24 @@ observations, and cameras without new selections. Missing evidence remains expli
 observable or uncalibrated. The query has a coverage gap: selected class detections cannot
 establish detector-class absence, a healthy camera interval or uninterrupted acquisition.
 
+## Historical source health
+
+Every selected native row is assessed against one bounded retained health catalog using its
+exact source import/root, sensor, segment and verified privacy interpretation. The report keeps
+the diagnostic identities and distinguishes unknown screening coverage, a finite clear screen,
+incomplete screening and findings. Publishing a detector row as a tracked event does not remove
+this assessment.
+
+Matching findings or incomplete screening make the row `not_observable` for fusion. Its original
+score, source identity and calibration remain visible, while both positive and negative likelihood
+contributions are withheld. Repeated selections reuse the same assessment and remain one piece
+of evidence. Diagnostic matching shares the existing read allowance and has finite comparison
+and output bounds. Metadata corruption, missing custody or exhausted limits refuse the result.
+
+These are historical heuristic observations. Neither a missing diagnostic nor a clear finite
+screen certifies present camera health, continuous coverage or absence. The native supervisor
+verifies diagnostic provenance without replaying the complete health trace or neural inference.
+
 ## Calibration, common causes and effects
 
 With `calibration: null`, the command reports exact native scores while preserving their lack
@@ -373,12 +391,18 @@ The library exposes the complete sorted source inventory of a discovery report t
 `RetainedDiscoveryReport::source_inventory()`. It includes every metadata-read package event:
 selected events, generation-excluded native sources, and sensor/time exclusions that were checked
 only as metadata. Each entry retains its exact event revision and original verification class.
+Selected events also retain a digest of their selected rows' complete health interpretation,
+including the explicit state in which no matching diagnostic exists. The JSON report includes
+this bound `source_inventory`.
 
 `revalidate_retained_discovery_sources` checks that inventory against an explicitly selected
 current authority root. Metadata-only entries must still have their original verified revision.
 Every originally native-verified entry goes through the native package reader again, including
 sources excluded because their package/model/head did not match the requested generation. Current
 privacy, deletion, missing custody and corruption therefore still apply to historical disclosure.
+The original selected-row health interpretation must also reproduce. New matching diagnostics
+or changed diagnostic custody refuse historical reuse; unrelated diagnostics do not change the
+source-specific digest. The original active window scope remains fixed.
 
 The validation brackets these reads with fresh bounded ledger/effect history, uses one shared
 nonrefillable stored-object allowance, and returns a receipt with its consumed read costs. Its
@@ -619,6 +643,13 @@ is created. Register, configure schedule, advance, reserve, publish, release, AC
 canonical bounded commands re-executed during recovery. Torn/uncertain appends retain the existing reconciliation behavior;
 a failed response may follow committed progress and must not be interpreted as rollback.
 Older readers refuse the new journal record kind instead of silently dropping delivery progress.
+
+Health-bound event deliveries use additive publication tag 9 and a distinct receipt domain.
+Legacy tag-2 journal bytes remain readable and retain their original identities. A legacy pending
+delivery whose selected rows lack a health pin can still be inspected or explicitly discarded,
+but cannot be released or first acknowledged without reevaluation. A changed health context
+likewise preserves the pending report and receipt while refusing replay and first ACK. Exact
+retries of an already acknowledged receipt retain the existing idempotent behavior.
 Schedule commands add distinct tags within that record kind; older readers also refuse unknown
 tags. Existing unscheduled command bytes, state digests and delivery receipts remain unchanged.
 

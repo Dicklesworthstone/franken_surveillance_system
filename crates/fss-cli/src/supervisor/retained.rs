@@ -521,8 +521,8 @@ pub struct RetainedSupervisorObservation {
     pub calibration_digest: Option<ContentDigest>,
     /// Complete input to the unchanged fusion engine.
     pub evidence: EvidenceItem,
-    /// Source-bound finite historical screening. None preserves the earlier event-only profile;
-    /// matching diagnostics are advisory constraints, never current camera-health certificates.
+    /// Source-bound finite historical screening, populated before a native row enters fusion.
+    /// Matching diagnostics are advisory constraints, never current camera-health certificates.
     pub health: Option<fss_reference::ingest::historical_health::exposure::HealthExposure>,
 }
 
@@ -569,6 +569,7 @@ pub struct RetainedSupervisorReport {
     windows: Vec<RetainedSupervisorWindowReport>,
     read_before: SpoolReadBudgetUsage,
     read_after: SpoolReadBudgetUsage,
+    health_json: String,
     digest: ContentDigest,
 }
 
@@ -823,6 +824,7 @@ pub fn run_retained_supervisor(
         .publisher_mut()
         .tighten_read_budget(spec.limits.max_read_bytes, spec.limits.max_read_attempts)
         .map_err(Error::ReadBudget)?;
+    let mut health = health::HealthGuard::read(deployment, &spec.limits, cx)?;
     let pins: BTreeMap<_, _> = spec
         .events
         .iter()
@@ -861,7 +863,7 @@ pub fn run_retained_supervisor(
             let event = opened
                 .get(&selector.event_id)
                 .ok_or(Error::Selection("opened event"))?;
-            let observation = resolve(
+            let mut observation = resolve(
                 event,
                 camera,
                 selector,
@@ -873,6 +875,35 @@ pub fn run_retained_supervisor(
                 cx,
             )?;
             let identity = observation.identity;
+            let record = event.report().retained().record();
+            // Health is a source property, independent of whether a detector row later became
+            // a tracked event. Repeated selections reuse the same anchored assessment rather
+            // than multiplying either its evidence or its diagnostic-matching work.
+            let exposure = if let Some(old) = observations.get(&identity) {
+                let exposure = old
+                    .health
+                    .clone()
+                    .ok_or(Error::Selection("selected source health assessment"))?;
+                if exposure.source().import_identity != record.import_identity
+                    || exposure.source().import_root != record.import_root
+                {
+                    return Err(Error::Selection(
+                        "same native row has conflicting health sources",
+                    ));
+                }
+                exposure
+            } else {
+                let frame = record
+                    .frames
+                    .iter()
+                    .find(|frame| {
+                        frame.segment == selector.segment
+                            && frame.capsule_digest == selector.capsule_digest
+                    })
+                    .ok_or(Error::Selection("selected health source frame"))?;
+                health.assess(record, frame, deployment, cx)?
+            };
+            apply_health(&mut observation, exposure);
             let new_evidence = match observations.get(&identity) {
                 Some(old) if old != &observation => {
                     return Err(Error::Selection("same native row has conflicting evidence"));
@@ -960,6 +991,7 @@ pub fn run_retained_supervisor(
         windows,
         read_before,
         read_after,
+        health_json: health.to_json(),
         digest: ContentDigest::sha256(b"unsealed retained supervisor report"),
     };
     report.digest = render::seal(&report)?;

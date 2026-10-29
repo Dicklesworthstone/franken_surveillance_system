@@ -73,9 +73,11 @@ fn reserve(store: &mut DurableSessionStore, session: &AgentSession,
     Ok((state, reservation))
 }
 
-fn publish(store: &mut DurableSessionStore, session: &AgentSession,
-    state: &SupervisionSubscription) -> TestResult<SupervisionSubscription>
-{
+fn publish(
+    store: &mut DurableSessionStore,
+    session: &AgentSession,
+    state: &SupervisionSubscription,
+) -> TestResult<SupervisionSubscription> {
     let (state, reservation) = reserve(store, session, state)?;
     Ok(store.publish_supervision(
         &session.principal_id, &state, &reservation, PRIVATE_REPORT.to_vec(),
@@ -83,6 +85,7 @@ fn publish(store: &mut DurableSessionStore, session: &AgentSession,
             event_id: EventId::parse(PRIVATE_SOURCE)?,
             event_root: ContentDigest::sha256(b"private inventory source root"),
             source_verified: true,
+            health_digest: None,
         }],
         ContentDigest::sha256(b"original inventory native report receipt"), TimestampNs(10),
     )?)
