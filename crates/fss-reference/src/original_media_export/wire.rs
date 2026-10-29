@@ -14,21 +14,27 @@ impl OriginalMediaExportRecord {
     }
     /// Explicit portable disclosure profile. Original revision-one records remain byte-identical.
     pub fn profile(&self) -> &'static str {
-        if self.review_lineage.is_some() {
+        if self.event_profile == "package_track" {
+            PACKAGE_ORIGINAL_MEDIA_EXPORT_PROFILE
+        } else if self.review_lineage.is_some() {
             REVIEWED_ORIGINAL_MEDIA_EXPORT_PROFILE
         } else {
             ORIGINAL_MEDIA_EXPORT_PROFILE
         }
     }
     fn domain(&self) -> &'static str {
-        if self.review_lineage.is_some() {
+        if self.event_profile == "package_track" {
+            PACKAGE_ORIGINAL_MEDIA_EXPORT_DOMAIN
+        } else if self.review_lineage.is_some() {
             REVIEWED_ORIGINAL_MEDIA_EXPORT_DOMAIN
         } else {
             ORIGINAL_MEDIA_EXPORT_DOMAIN
         }
     }
     pub(super) fn policy(&self) -> &'static [u8] {
-        if self.review_lineage.is_some() {
+        if self.event_profile == "package_track" {
+            PACKAGE_POLICY
+        } else if self.review_lineage.is_some() {
             REVIEWED_POLICY
         } else {
             POLICY
@@ -54,7 +60,13 @@ impl OriginalMediaExportRecord {
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut e = CanonicalEncoder::new();
         e.bytes(b"FSSEXM01");
-        e.u32(if self.review_lineage.is_some() { 2 } else { 1 });
+        e.u32(if self.event_profile == "package_track" {
+            3
+        } else if self.review_lineage.is_some() {
+            2
+        } else {
+            1
+        });
         e.text(self.domain());
         e.bytes(self.policy());
         e.bytes(&self.event_summary.to_bytes());
@@ -87,7 +99,7 @@ impl OriginalMediaExportRecord {
         }
         e.finish()
     }
-    /// Decode only explicit v1-original or v2-reviewed profiles. Unknown/trailing fields fail closed.
+    /// Decode explicit v1-native, v2-reviewed or v3-package profiles. Unknown/trailing fields refuse.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
         if bytes.len() > MAX_ORIGINAL_MEDIA_RECORD_BYTES {
             return Err(OriginalMediaExportError::Limit);
@@ -100,6 +112,7 @@ impl OriginalMediaExportRecord {
         let (domain, policy) = match version {
             1 => (ORIGINAL_MEDIA_EXPORT_DOMAIN, POLICY),
             2 => (REVIEWED_ORIGINAL_MEDIA_EXPORT_DOMAIN, REVIEWED_POLICY),
+            3 => (PACKAGE_ORIGINAL_MEDIA_EXPORT_DOMAIN, PACKAGE_POLICY),
             _ => return Err(OriginalMediaExportError::UnsupportedProfile),
         };
         if d.text()? != domain || d.bytes()? != policy {
@@ -178,10 +191,23 @@ impl OriginalMediaExportRecord {
     }
     pub(super) fn validate(&self) -> Result<()> {
         self.request.validate()?;
+        if self.event_profile == "package_track"
+            && (self.review_lineage.is_some()
+                || !self
+                    .request
+                    .event
+                    .event_id
+                    .as_str()
+                    .starts_with("event:package:")
+                || self.event_summary.event_state() != fss_core::EventState::Indeterminate)
+        {
+            return Err(OriginalMediaExportError::UnsupportedProfile);
+        }
         if let Some(lineage) = &self.review_lineage {
             lineage.validate(self)?;
         } else if self.event_summary.event_revision() != 1 {
-            // V1 has never authorized a successor: a reviewed event must carry its v2 proof pins.
+            // Native v1/v3 profiles never authorize a successor. Supported operator reviews
+            // carry their distinct v2 proof pins, and package reviews remain unsupported.
             return Err(OriginalMediaExportError::CustodyMismatch);
         }
         if self.event_summary.request() != &self.request.event
@@ -207,7 +233,7 @@ impl OriginalMediaExportRecord {
             return Err(OriginalMediaExportError::CustodyMismatch);
         }
         let expected_sources = match self.event_profile.as_str() {
-            "long_watch" | "long_dwell" => 1,
+            "long_watch" | "long_dwell" | "package_track" => 1,
             "long_corroboration" => 2,
             _ => return Err(OriginalMediaExportError::UnsupportedProfile),
         };

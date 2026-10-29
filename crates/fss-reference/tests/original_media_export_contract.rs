@@ -40,6 +40,8 @@ use fss_reference::original_media_export::{
 use fss_reference::{ReferenceDeployment, ReplayCx};
 
 type Test<T = ()> = Result<T, Box<dyn std::error::Error>>;
+#[path = "original_media_export_contract/package.rs"]
+mod package;
 #[path = "original_media_export_contract/reviewed.rs"]
 mod reviewed;
 const SITE: &str = "site:original-media-export";

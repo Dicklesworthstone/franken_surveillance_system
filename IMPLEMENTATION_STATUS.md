@@ -10,6 +10,22 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Original footage for retained trained-detector events (2026-10-29, reference)
+
+`fss-export media` now accepts current native retained package-track events. The existing
+package owner reopens the exact event, reconstructs retained tracking and verifies original
+detection/source custody without inference or loose model/source files. The selected import
+must actually belong to that event. Export retains whole-source disclosure, unclassified and
+indeterminate event semantics, exact destination approval and independent original-media read
+authority. Current masks, deletion, source/provenance damage and event successors refuse.
+
+The additive FSSEXM01 version-three profile binds the package-event provenance and retained
+detection root under a distinct policy/domain; earlier native and reviewed formats retain their
+bytes. Four native contracts and one real CLI workflow cover cold recovery, exact source/profile
+binding, post-approval invalidation, repeat delivery and independent offline verification.
+Pinned formatting and source review passed; execution of the added cases is pending native
+capacity. See [original-footage export](docs/ORIGINAL_MEDIA_EXPORT.md).
+
 ## Calibrated advice from screened dwell checkpoints (2026-10-29, reference)
 
 An already complete incremental dwell checkpoint with `--sensor-health conservative-v1` can

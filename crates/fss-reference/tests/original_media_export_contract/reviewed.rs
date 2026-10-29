@@ -424,8 +424,8 @@ fn offline_reviewed_record_rejects_inconsistent_current_summary_and_unbounded_or
             Err(OriginalMediaExportError::Limit)
         ));
     }
-    // Each package remains explicitly versioned; changing v2 to an unknown version cannot fall
-    // back to v1 interpretation or drop the complete review lineage.
+    // Each package remains explicitly versioned; changing v2 to the package-event version cannot
+    // reinterpret a reviewed long event or drop its complete review lineage.
     let mut version_prefix = fss_core::CanonicalEncoder::new();
     version_prefix.bytes(b"FSSEXM01");
     let position = version_prefix.finish().len();

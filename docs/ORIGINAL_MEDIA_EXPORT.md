@@ -12,6 +12,19 @@ and video-only AVC/HEVC MP4 created by the native RTSP window/catalog/page impor
 MP4 imports can contain unexamined audio or other tracks and are refused. The selected source is
 limited to 64 MiB and 16,384 source capsules.
 
+Current native detector-package candidates use
+`event-package-original-media-whole-source-v3`. This connects retained `package-detect` results,
+approved package-track events and their original footage to the same export and independent
+verification workflow. The export verifies the event's complete authoritative history, exact
+retained detector/tracker analysis, source capsules and provenance graph without running inference
+again. Loose source, model and report files are unnecessary after retention.
+
+Package candidates keep their unclassified, indeterminate and uncalibrated interpretation. The
+version-three record binds the package-event provenance root and the retained detector-analysis
+root separately from the selected recording. It does not turn a class score into a confirmed
+event, absence claim or alert authority. An operator-reviewed package successor remains outside
+this native-candidate profile and is refused; reviewed long events keep their version-two path.
+
 ## Preview and approve
 
 Choose the exact current event revision and one of its retained imports. The import root must
@@ -83,6 +96,12 @@ capsule identity, deletion state and current privacy. Native RTSP imports additi
 original packet/wire custody that produced the retained MP4. Whole-source reconstruction checks
 every chunk and the complete source digest. A masked camera has no unredacted override.
 
+For package candidates, `--import-identity` and `--expected-import-root` must equal the selected
+retained detection's original source pins. Substituting another recording from the same camera is
+refused. Corrupt or missing detector, tracking or source proof also refuses both a fresh preview
+and final release of an already approved output. Version-one and version-two canonical records
+and package roots are unchanged; a version-three record cannot be downgraded into either profile.
+
 The command holds the deployment's exclusive lease throughout preparation and output. Before
 publishing completion it rechecks the current event, import, privacy and complete source through
 that owner. A second process cannot commit a compliant privacy or deletion change during release.
@@ -142,3 +161,9 @@ chains, stale approvals, missing or corrupt review custody, private rationale re
 continued refusal to replay an operator decision as native model output. They do not qualify detector accuracy or arbitrary camera/browser codec
 profiles. This implementation advances FSS-068; broader incident clip editing and multi-camera
 handoff remain separate work.
+
+Package-event cases cover cold export of exact whole-source bytes, explicit uncertainty, profile
+round trips and downgrade refusal, wrong source/revision pins, missing source and analysis custody,
+privacy/deletion/review invalidation, and the real CLI preview → approved write → exact retry →
+deployment-independent verification sequence. Each synthetic fixture performs one native package
+inference to establish retained input; export and verification perform none.

@@ -61,6 +61,8 @@ use fss_reference::{
 };
 
 type Test<T = ()> = Result<T, Box<dyn std::error::Error>>;
+#[path = "rtsp_event_media_export_cli/package.rs"]
+mod package;
 const SITE: &str = "site:original-media-export-cli";
 const ACTOR: &str = "principal:original-media-export-cli";
 const SENSOR: &str = "sensor:original-media-export-cli";
