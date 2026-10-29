@@ -10,6 +10,22 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Calibrated advice from screened dwell checkpoints (2026-10-29, reference)
+
+An already complete incremental dwell checkpoint with `--sensor-health conservative-v1` can
+now produce read-only calibrated class advice through the existing fusion profile workflow.
+Cold restoration reproduces the original temporal and health owners; classification, fusion
+and output retain the native finding/incomplete-screen fence. Removing screening changes the
+saved recipe and refuses. Partial checkpoints cannot advance inside an advice invocation.
+
+The progress wrapper preserves separate original and cold-restoration health work. Terminal
+delivery reopens the exact checkpoint graph and retained health policy before report export
+and stdout, without another frame scan or checkpoint publication. Added real-process contracts
+compare screened cold advice with a same-anchor whole-recording analysis, preserve exact retry
+output and journal bytes, and refuse frozen-source advice or removal of the screening option.
+Pinned formatting and independent source review passed; runtime tests remain unverified under
+the shared build constraints described below. See [completed checkpoint advice](docs/incremental_dwell.md#calibrated-advice-from-a-completed-checkpoint).
+
 ## Retained event health through session recovery (2026-10-29, reference)
 
 Explicit and discovered package-event supervision now apply the same source-bound historical

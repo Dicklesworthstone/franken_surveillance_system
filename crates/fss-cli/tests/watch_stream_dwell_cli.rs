@@ -52,6 +52,14 @@ struct Fixture {
 }
 impl Fixture {
     fn new(label: &str, known_time: bool, moving: bool) -> Test<Self> {
+        Self::with_changing_background(label, known_time, moving, false)
+    }
+    fn with_changing_background(
+        label: &str,
+        known_time: bool,
+        moving: bool,
+        changing: bool,
+    ) -> Test<Self> {
         let directory = Directory::new(label)?;
         let root = directory.0.join("deployment with spaces");
         let input = directory.0.join("source.mjpeg");
@@ -63,7 +71,10 @@ impl Fixture {
         };
         let mut bytes = Vec::new();
         for frame in 0..FRAMES {
-            let mut pixels = vec![40_u8; 48 * 32];
+            // Small exposure variation prevents an exact-frame freeze finding while
+            // preserving the same foreground object and sampled dwell trajectory.
+            let background = 40 + if changing { (frame % 2) as u8 * 8 } else { 0 };
+            let mut pixels = vec![background; 48 * 32];
             if moving && frame >= 3 {
                 for y in 8..24 {
                     for x in 8..24 {

@@ -26,7 +26,7 @@ impl StepOptions {
 pub(super) fn parse(
     values: &[(String, String)],
     stream_dwell: bool,
-    health_screen: bool,
+    _health_screen: bool,
 ) -> Result<Option<StepOptions>, String> {
     let has = |key: &str| values.iter().any(|(name, _)| name == key);
     let keys = [
@@ -45,9 +45,6 @@ pub(super) fn parse(
     }
     if has("--retain-health") || has("--retain-coverage") {
         return Err("incremental dwell excludes sensor-health and coverage retention".to_owned());
-    }
-    if health_screen && (has("--fusion-profile") || has("--fusion-digest")) {
-        return Err("calibrated incremental dwell excludes sensor-health screening".to_owned());
     }
     let step_frames = number(values, "--dwell-step-frames", 0_usize)?;
     if !(1..=MAX_LONG_DWELL_FRAMES).contains(&step_frames) {
@@ -117,17 +114,6 @@ pub(super) fn run(
     if action.retain_health.is_some() || action.retain_coverage.is_some() {
         return Err(WatchError::InvalidPlan(
             "incremental dwell excludes sensor-health and coverage retention",
-        )
-        .into());
-    }
-    if action.health_screen
-        && action
-            .cascade
-            .as_ref()
-            .is_some_and(|options| options.has_fusion())
-    {
-        return Err(WatchError::InvalidPlan(
-            "calibrated incremental dwell excludes sensor-health screening",
         )
         .into());
     }
@@ -428,12 +414,6 @@ fn run_completed_fusion(
             || action.retain_health.is_some()
             || action.retain_coverage.is_some(),
     )?;
-    if action.health_screen || saved.prepared().screened() {
-        return Err(WatchError::InvalidPlan(
-            "calibrated incremental dwell excludes sensor-health screening",
-        )
-        .into());
-    }
     // Tolerated decode refusals still consume positions. A step which could finish a partial
     // prefix is insufficient: advice cannot advance or retain any new temporal work.
     let count = saved.prepared().plan().segment_count;
@@ -456,6 +436,18 @@ fn run_completed_fusion(
     let running = saved.resume(deployment, restore, cx)?;
     let work = running.work();
     let restoration = running.restoration_work();
+    // A screened checkpoint reconstructs the original health owner with the temporal
+    // prefix. Preserve its separate logical and cold-replay costs in the outer response.
+    // Classification and fusion both revalidate the completed native health fence;
+    // neither a finding nor an incomplete screen can produce class advice.
+    let health = match (running.health_work(), running.restoration_health_work()) {
+        (None, None) => None,
+        (Some(logical), Some(restoration)) => Some(HealthProgress {
+            logical,
+            restoration,
+        }),
+        _ => return Err(WatchError::Conflict.into()),
+    };
     let pin = saved.pin();
     let continuation = continuation_command(action, pin, work.source_positions)?;
     let mut report = running.finish(deployment, cx)?;
@@ -476,7 +468,7 @@ fn run_completed_fusion(
             pin,
             work,
             restoration,
-            health: None,
+            health,
             prefix: work.source_positions,
             count,
             complete: true,
@@ -488,10 +480,15 @@ fn run_completed_fusion(
     report.revalidate_derived_source(deployment, cx)?;
     cx.checkpoint("incremental_dwell_fusion:output")?;
     if let Some(path) = &action.report_out {
+        // Terminal classification can outlive the last checkpoint-custody read. Reopen the
+        // exact retained graph (including its health policy) at delivery without replaying
+        // frames, renewing work allowances, or retaining another checkpoint.
+        RetainedDwellCheckpoint::open(deployment, pin, restore, cx)?;
         export(path, output.as_bytes(), root, cx)?;
     }
     report.revalidate_derived_source(deployment, cx)?;
     cx.checkpoint("incremental_dwell_fusion:stdout")?;
+    RetainedDwellCheckpoint::open(deployment, pin, restore, cx)?;
     out.write_all(output.as_bytes())?;
     Ok(())
 }

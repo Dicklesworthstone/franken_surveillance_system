@@ -161,9 +161,9 @@ health policy. Version-one unscreened checkpoints keep their original bytes and 
 Adding or removing screening while resuming changes the request identity and is refused before
 native reconstruction. A missing or damaged retained health policy cannot be repaired by a
 retry. Trained classification remains a separate terminal stage and is subject to the completed
-native health gate. Incremental calibrated fusion, historical-health retention and coverage
-retention are not admitted together with this new screening path; their existing whole-recording
-owners remain available.
+native health gate. An already complete screened checkpoint also supports read-only calibrated
+advice through the workflow below. Historical-health retention and coverage retention remain
+separate operations through their existing whole-recording owners.
 
 ## Calibrated advice from a completed checkpoint
 
@@ -183,7 +183,24 @@ append the exact profile pins:
 The checkpoint must already cover the full original range. A fresh incremental request or a
 partial prefix is refused, even if its selected step could finish the remaining positions.
 Finish and retain that temporal scan in a separate invocation first. Fusion also refuses
-event approval, health/coverage retention and incremental health screening.
+event approval and health/coverage retention.
+
+A checkpoint created with `--sensor-health conservative-v1` keeps that exact requirement during
+calibrated advice. Cold reconstruction restores the complete original screen, including its
+findings and spent sample allowance. The terminal classifier, fusion adapter and output delivery
+all pass the existing native health fence. A finding or incomplete screen refuses advice even
+when the recording contains no qualifying episode. A clear finite screen supplies no current
+health or absence certificate. Omitting the screening option cannot bypass the fence: it changes
+the pinned temporal request and refuses before reconstruction.
+The exact checkpoint graph and retained health policy are reopened before report-file export
+and again before stdout. This checks continuing custody without replaying additional frames or
+renewing the original work allowance.
+
+Screened advice preserves `sensor_health_policy`, `sensor_health_policy_digest`,
+`sensor_health_stage`, `logical_health_scan_work` and `cold_health_restoration_work` in the
+progress wrapper, alongside the unchanged native `event_report.sensor_health`. Logical health
+work remains the single original scan; cold health work reports the full reconstructed prefix
+paid for by this invocation. Neither allowance is reset or folded into foreground work.
 
 This invocation opens the exact retained checkpoint, reconstructs its complete prefix under
 `--dwell-restore-max-frames`, finishes the native report and executes the requested terminal

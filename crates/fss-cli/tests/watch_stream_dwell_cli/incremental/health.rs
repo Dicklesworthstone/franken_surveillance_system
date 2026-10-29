@@ -187,7 +187,7 @@ fn empty_screened_scan_retains_diagnostics_and_partial_classifier_remains_deferr
 }
 
 #[test]
-fn screened_checkpoint_fusion_and_retention_refuse_before_deployment_creation() -> Test {
+fn screened_partial_fusion_and_retention_refuse_before_deployment_creation() -> Test {
     let directory = Directory::new("incremental-health-admission")?;
     let root = directory.0.join("never-created");
     let pin = ContentDigest::sha256(b"unavailable exact object").to_text();
@@ -210,12 +210,6 @@ fn screened_checkpoint_fusion_and_retention_refuse_before_deployment_creation() 
         vec!["--retain-health", pin.as_str()],
         vec!["--retain-coverage", pin.as_str()],
         vec![
-            "--dwell-checkpoint",
-            &pin,
-            "--dwell-checkpoint-root",
-            &pin,
-            "--dwell-restore-max-frames",
-            "128",
             "--detector-package",
             "/unused/package",
             "--detector-digest",

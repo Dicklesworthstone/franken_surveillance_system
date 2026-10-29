@@ -125,7 +125,10 @@ exact file pins to that response's continuation command. The original checkpoint
 reconstructed and the terminal classifier executes under the original remaining ceilings;
 fusion consumes those class records without another inference pass. The invocation advances
 zero new positions and appends no checkpoint or event. Partial prefixes have no complete
-episode inventory and are refused even when one more step could finish them. The complete
+episode inventory and are refused even when one more step could finish them. Screened checkpoints
+preserve the exact health policy, native finding fence and separate logical/restoration health
+work. Findings or incomplete screening refuse both the terminal classifier and derived advice;
+removing screening from a resumed request is an identity mismatch. The complete
 progress wrapper contains `event_report.calibrated_class_advice` and is subject to the same
 2 MiB output bound, including its final newline. Existing dwell publication, checkpoint
 advancement, short sampled dwell, whole-recording entry fusion and paired-entry corroboration

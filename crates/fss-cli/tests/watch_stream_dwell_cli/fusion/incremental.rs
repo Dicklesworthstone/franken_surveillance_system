@@ -131,6 +131,114 @@ fn complete_checkpoint_advice_matches_same_basis_native_fusion_without_writes() 
 }
 
 #[test]
+fn screened_checkpoint_advice_preserves_native_health_and_cold_work_without_writes() -> Test {
+    let f = Fixture::with_changing_background("checkpoint-fusion-screened", true, true, true)?;
+    let mut args = trained(&f)?;
+    args.extend(["--sensor-health".into(), "conservative-v1".into()]);
+    let saved = checkpoint(&args, "300")?;
+    let saved_report = member(&saved, "event_report")?;
+    let health = member(saved_report, "sensor_health")?;
+    assert_eq!(member(health, "complete")?.boolean(), Some(true));
+    assert_eq!(
+        member(health, "publication_blocked")?.boolean(),
+        Some(false)
+    );
+    assert_eq!(integer(saved_report, "candidate_count")?, 1);
+    let calibration = profile(saved_report)?;
+    let before = f.snapshot()?;
+
+    // The one-shot oracle runs at the same authority anchor as the cold checkpoint.
+    let whole_args = with_profile(&f, &args, &calibration, "screened-whole-profile")?;
+    let whole = parse(&good(run(&whole_args)?)?)?;
+    let extra = with_profile(&f, &[], &calibration, "screened-checkpoint-profile")?;
+    let command = text(&saved, "continuation_command")?;
+    assert!(command.contains("--sensor-health conservative-v1"));
+    let output_path = f.directory.0.join("screened checkpoint advice.json");
+    let mut exported = extra.clone();
+    exported.extend(["--report-out".into(), output_path.clone().into_os_string()]);
+    let output = good(emitted(command, &exported)?)?;
+    assert_eq!(fs::read_to_string(&output_path)?, output);
+    let fused = parse(&output)?;
+    assert_eq!(text(&fused, "sensor_health_stage")?, "complete");
+    assert_eq!(integer(&fused, "new_source_positions")?, 0);
+    for key in [
+        "checkpoint_digest",
+        "checkpoint_root",
+        "logical_scan_work",
+        "sensor_health_policy",
+        "sensor_health_policy_digest",
+        "logical_health_scan_work",
+    ] {
+        assert_eq!(member(&fused, key)?, member(&saved, key)?, "changed {key}");
+    }
+    let cold_health = member(&fused, "cold_health_restoration_work")?;
+    assert_eq!(cold_health, member(&saved, "logical_health_scan_work")?);
+    assert_eq!(integer(cold_health, "frames_screened")?, 300);
+    assert_eq!(integer(cold_health, "samples_screened")?, 300 * 48 * 32);
+    let native = member(&fused, "event_report")?;
+    assert_eq!(member(native, "sensor_health")?, health);
+    assert_eq!(
+        without_publish_hints(native)?,
+        without_publish_hints(&whole)?
+    );
+    read_only(member(native, "calibrated_class_advice")?)?;
+    assert_eq!(f.snapshot()?, before);
+    assert_eq!(parse(&good(emitted(command, &extra)?)?)?, fused);
+    assert_eq!(f.snapshot()?, before);
+
+    // The saved health requirement cannot be stripped to avoid its completed-screen fence.
+    let mut without_screen = resumed(&args, &saved, "300")?;
+    let at = without_screen
+        .iter()
+        .position(|arg| arg == "--sensor-health")
+        .ok_or("missing health option")?;
+    without_screen.drain(at..at + 2);
+    let refused = with_profile(&f, &without_screen, &calibration, "screened-mode-change")?;
+    refuses(
+        run(&refused)?,
+        "checkpoint source, dwell rule, privacy or resource recipe changed",
+    );
+    assert_eq!(f.snapshot()?, before);
+    Ok(())
+}
+
+#[test]
+fn frozen_completed_checkpoint_cannot_gain_advice_through_terminal_classification() -> Test {
+    let f = Fixture::new("checkpoint-fusion-health-refusal", true, true)?;
+    let mut screened = f.args();
+    screened.extend(["--sensor-health".into(), "conservative-v1".into()]);
+    // Retain the complete diagnostic even when health prevents the terminal classifier.
+    let saved = checkpoint(&screened, "300")?;
+    assert_eq!(
+        member(
+            member(member(&saved, "event_report")?, "sensor_health")?,
+            "publication_blocked"
+        )?
+        .boolean(),
+        Some(true)
+    );
+    let mut args = trained(&f)?;
+    let unscreened = parse(&good(run(&args)?)?)?;
+    let calibration = profile(&unscreened)?;
+    args.extend(["--sensor-health".into(), "conservative-v1".into()]);
+    let attempted = with_profile(
+        &f,
+        &resumed(&args, &saved, "300")?,
+        &calibration,
+        "blocked-screen-profile",
+    )?;
+    let before = f.snapshot()?;
+    // Health blocks the native classifier before the incompatible unscreened profile can
+    // be considered. There is no successful JSON prefix, new checkpoint or authority write.
+    refuses(
+        run(&attempted)?,
+        "sensor-health findings or incomplete screening block long-dwell publication",
+    );
+    assert_eq!(f.snapshot()?, before);
+    Ok(())
+}
+
+#[test]
 fn partial_checkpoint_cannot_be_completed_inside_read_only_fusion() -> Test {
     let f = Fixture::new("checkpoint-fusion-partial", true, true)?;
     let args = trained(&f)?;
