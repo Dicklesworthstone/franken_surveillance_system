@@ -250,8 +250,11 @@ fn native_import_freezes_independent_owner_pins_and_cold_verifies_without_input(
     for (key, expected) in [
         ("operation", "import-rtp"),
         ("source_mode", "owner_supplied_rtpdump"),
+        ("source_representation", "original_owner_supplied_rtpdump"),
+        ("native_source_retained", "false"),
         ("durable_publication", "true"),
         ("processing_complete", "true"),
+        ("replay_processing_complete", "true"),
         ("complete_documents", "1"),
         ("usable_documents", "1"),
         ("rejected_documents", "0"),
@@ -712,5 +715,230 @@ fn post_publication_bad_document_selection_preserves_recoverable_identity() -> T
         field(&verified, "publication_root")?,
         field(&retained, "publication_root")?
     );
+    Ok(())
+}
+
+#[test]
+fn cold_native_reports_preserve_acquisition_stops_clocks_and_private_source_boundaries() -> Test {
+    use fss_core::{
+        BudgetVector, CaptureInterval, ContextAuthority, OperationId, RootAuthoritySpec, SensorId,
+        TimestampNs,
+    };
+    use fss_packet::{OnvifMetadataLimits, ReorderLimits, StreamKey};
+    use fss_reference::onvif::metadata::SourceBinding;
+    use fss_reference::onvif::metadata::rtp::{
+        RtpMetadataConfig, RtpMetadataImportLimits, retain_native,
+    };
+    use fss_reference::rtsp::client::{ClientConfig, ClientProgress, ClientState};
+    use fss_reference::rtsp::framed::{RtspWireFrame, RtspWireIntake};
+    use fss_reference::rtsp::metadata_source::{
+        NativeMetadataConfig, NativeMetadataSource, NativeMetadataStop,
+    };
+    use fss_reference::rtsp::tcp::{TcpBinding, TcpSecurityPolicy};
+    use fss_reference::{ReferenceDeployment, ReplayCx};
+
+    const ORIGIN: i128 = 1_700_000_000_000_000_000;
+    const START: u64 = 1_000_000_123;
+    const END: u64 = START + 4_000_999;
+    const SDP: &str = "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=private-description-canary\r\nt=0 0\r\na=control:*\r\nm=application 0 RTP/AVP 107\r\na=rtpmap:107 vnd.onvif.metadata/90000\r\na=control:metadata\r\n";
+    fn frame(bytes: &[u8], received_ns: u64) -> Test<RtspWireFrame> {
+        let mut intake = RtspWireIntake::new();
+        intake.ingest(bytes, received_ns)?;
+        intake
+            .poll(received_ns)?
+            .ok_or_else(|| "missing fixture frame".into())
+    }
+
+    for (stop, unprocessed) in [
+        (NativeMetadataStop::TargetReached, 0),
+        (NativeMetadataStop::Timeout, 0),
+        (NativeMetadataStop::Checkpoint, 0),
+        (NativeMetadataStop::TargetReached, 7),
+    ] {
+        let directory = Directory::new("native-cold-report")?;
+        let authority = ContextAuthority::new_root(RootAuthoritySpec {
+            trace_id: "trace:native-metadata-cli-fixture".into(),
+            operation_id: OperationId::parse("operation:native-metadata-cli-fixture")?,
+            principal: "principal:native-metadata-cli-fixture".into(),
+            capabilities: vec![fss_reference::ADP_REPLAY_ROW_ID.into()],
+            deadline: None,
+            priority: 10,
+            budgets: BudgetVector::builder()
+                .bytes(64 * 1024 * 1024)
+                .storage_operations(8192)
+                .build()?,
+            privacy_scope: "privacy:fixture".into(),
+            retention_scope: "retention:fixture".into(),
+            anchor_universe: ContentDigest::sha256(SITE.as_bytes()),
+            generation: 1,
+        })?;
+        let cx = ReplayCx::from_context_authority(&authority, directory.root())?;
+        let config = RtpMetadataConfig {
+            stream: StreamKey {
+                ingress: INGRESS.parse()?,
+                generation: 3,
+                ssrc: 42,
+            },
+            payload_type: 107,
+            limits: RtpMetadataImportLimits::default(),
+            reorder: ReorderLimits::default(),
+            metadata: OnvifMetadataLimits::default(),
+        };
+        let mut native = NativeMetadataSource::new(NativeMetadataConfig {
+            approval: ContentDigest::sha256(b"native fixture approval"),
+            protocol: ClientConfig {
+                presentation_uri: "rtsp://private-route-canary.example/live/".into(),
+                control_root_uri: "rtsp://private-route-canary.example/live".into(),
+                media_index: 0,
+                channels: (0, 1),
+                response_timeout_ns: 1_000_000_000,
+                default_session_timeout_seconds: 60,
+            },
+            binding: TcpBinding::new(
+                config.stream,
+                "127.0.0.1:8554".parse()?,
+                "private-route-canary.example",
+                TcpSecurityPolicy::OwnerApprovedPlaintext,
+            )?,
+            payload_type: 107,
+            receive_origin_ns: ORIGIN,
+            started_ns: START,
+            max_source_bytes: 1024 * 1024,
+            max_records: 32,
+        })?;
+        for (index, state, headers, body) in [
+            (
+                1,
+                ClientState::Described,
+                "Content-Type: application/sdp\r\n",
+                SDP,
+            ),
+            (
+                2,
+                ClientState::Ready,
+                "Session: private-session-canary;timeout=60\r\nTransport: RTP/AVP/TCP;unicast;interleaved=0-1;ssrc=0000002a\r\n",
+                "",
+            ),
+            (
+                3,
+                ClientState::Playing,
+                "Session: private-session-canary\r\n",
+                "",
+            ),
+        ] {
+            let wire = format!(
+                "RTSP/1.0 200 OK\r\nCSeq: {index}\r\nContent-Length: {}\r\n{headers}\r\n{body}",
+                body.len()
+            );
+            native.observe_control(
+                &ClientProgress::Accepted(state),
+                &frame(wire.as_bytes(), START + index * 100)?,
+            )?;
+        }
+        for (index, packet) in [
+            packet(100, 1, false, b"unknown"),
+            packet(101, 2, true, b"preceding-marker"),
+            packet(102, 3, true, XML.as_bytes()),
+        ]
+        .iter()
+        .enumerate()
+        {
+            let mut wire = vec![b'$', 0];
+            wire.extend(u16::try_from(packet.len())?.to_be_bytes());
+            wire.extend(packet);
+            native.observe_interleaved(&frame(
+                &wire,
+                START + (index as u64 + 1) * 1_000_000 + 789,
+            )?)?;
+        }
+        native.record_unprocessed_wire(unprocessed)?;
+        native.finish(END, stop)?;
+        let retained = {
+            let mut deployment = ReferenceDeployment::open(&directory.root(), SITE, &cx)?;
+            retain_native(
+                &mut deployment,
+                &native,
+                SourceBinding {
+                    sensor_id: SensorId::parse(SENSOR)?,
+                    device_generation: ContentDigest::sha256(b"device"),
+                    profile_generation: ContentDigest::sha256(b"profile"),
+                    profile_token: PROFILE.into(),
+                    receive_interval: CaptureInterval::new(
+                        TimestampNs(ORIGIN + i128::from(START)),
+                        TimestampNs(ORIGIN + i128::from(END)),
+                    )?,
+                },
+                config,
+                &cx,
+            )?
+        };
+        let complete = stop == NativeMetadataStop::TargetReached && unprocessed == 0;
+        assert_eq!(retained.processing_complete(), complete);
+        let verified = report(
+            run(&cold_args(
+                "verify-rtp",
+                &directory.root(),
+                &retained.identity().to_text(),
+            ))?,
+            true,
+        )?;
+        for (key, expected) in [
+            ("source_mode", "native_rtsp_tcp"),
+            (
+                "source_representation",
+                "derived_rtpdump_from_native_observations",
+            ),
+            ("native_source_retained", "true"),
+            (
+                "receive_interval_source",
+                "owner_origin_plus_native_monotonic",
+            ),
+            ("native_receive_timestamp_unit", "nanoseconds"),
+            (
+                "native_projection_clock",
+                "floor_milliseconds_since_native_start",
+            ),
+            ("replay_clock_quantum_ns", "1000000"),
+            ("native_frame_count", "3"),
+            ("native_control_count", "3"),
+            ("native_projection_omissions", "0"),
+            ("native_omitted_observations", "0"),
+            ("native_raw_tcp_bytes_retained", "false"),
+            ("native_raw_control_responses_retained", "false"),
+            ("native_description_values_disclosed", "false"),
+            ("replay_processing_complete", "true"),
+            (
+                "processing_complete",
+                if complete { "true" } else { "false" },
+            ),
+        ] {
+            assert_eq!(field(&verified, key)?, expected, "{key}");
+        }
+        assert_eq!(field(&verified, "native_stop")?, stop.code());
+        assert_eq!(
+            field(&verified, "native_source_sha256")?,
+            ContentDigest::sha256(&native.canonical_bytes()?).to_text()
+        );
+        assert_eq!(field(&verified, "native_started_ns")?, START.to_string());
+        assert_eq!(field(&verified, "native_ended_ns")?, END.to_string());
+        assert_eq!(
+            field(&verified, "native_unprocessed_wire_bytes")?,
+            unprocessed.to_string()
+        );
+        for private in [
+            SENSOR,
+            PROFILE,
+            "private-route-canary",
+            "private-description-canary",
+            "private-session-canary",
+            "private-module-canary",
+            "opaque-biometric-canary",
+        ] {
+            assert!(
+                !verified.contains(private),
+                "private source leaked: {private}"
+            );
+        }
+    }
     Ok(())
 }

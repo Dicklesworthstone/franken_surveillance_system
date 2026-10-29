@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! Owner-scoped packet-file import and cold verification of ONVIF RTP metadata.
+//! Owner-scoped packet-file import and cold verification of recorded or native ONVIF RTP metadata.
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -56,6 +56,9 @@ including malformed/rejected documents. Damaged or empty reconstruction exits no
 after publication and still reports its retained identity for cold verification.
 Cold commands verify the retained generation and packet provenance without the input
 file. Their success means custody verified, even for an originally incomplete import.
+They also verify capture-rtp roots: original SDP/packet acquisition and nanosecond
+receive observations are retained separately from the derived millisecond replay file.
+Native source omissions and terminal stop remain distinct from replay completeness.
 Values are withheld by default. --include-values yes reveals parsed vendor values;
 --document-index selects one document and its full packet span map without weakening
 whole-root verification. Record outcomes and issues are summarized by reason; their
@@ -471,7 +474,7 @@ fn run(options: Options) -> Result<(CommandOutput, bool), &'static str> {
                 false,
             ),
         };
-        let complete = detail_ok && retained.report().processing_complete();
+        let complete = detail_ok && retained.processing_complete();
         Ok((
             CommandOutput {
                 report,
@@ -513,7 +516,7 @@ fn custody_header(retained: &RetainedRtpMetadata) -> String {
     )
 }
 
-fn report(
+pub(super) fn report(
     retained: &RetainedRtpMetadata,
     operation: &str,
     include_values: bool,
@@ -544,6 +547,66 @@ fn report(
         retained.authority_anchor().commit_sequence
     );
     line!("source_mode={}", retained.source_mode());
+    line!("source_representation={}", retained.source_representation());
+    line!(
+        "native_source_retained={}",
+        retained.native_source().is_some()
+    );
+    if let Some(native) = retained.native_source() {
+        line!(
+            "native_source_sha256={}",
+            retained.native_source_digest().ok_or(CUSTODY_ERROR)?
+        );
+        line!("native_receive_timestamp_unit=nanoseconds");
+        line!("native_clock_basis=owner_monotonic");
+        line!(
+            "native_receive_origin_ns={}",
+            native.config().receive_origin_ns
+        );
+        line!("native_started_ns={}", native.started_ns());
+        line!(
+            "native_ended_ns={}",
+            native.ended_ns().ok_or(CUSTODY_ERROR)?
+        );
+        line!("native_stop={}", native.stop().ok_or(CUSTODY_ERROR)?.code());
+        line!("native_frame_count={}", native.records().len());
+        line!("native_control_count={}", native.controls().len());
+        line!(
+            "native_description_retained={}",
+            native.description().is_some()
+        );
+        if let Some(description) = native.description() {
+            line!(
+                "native_description_sha256={}",
+                ContentDigest::sha256(description.bytes())
+            );
+            line!("native_description_bytes={}", description.bytes().len());
+        }
+        line!(
+            "native_projection_omissions={}",
+            native.projection_omissions()
+        );
+        line!(
+            "native_omitted_observations={}",
+            native.omitted_observations()
+        );
+        line!("native_omitted_bytes={}", native.omitted_bytes());
+        if let Some(received_ns) = native.omitted_received_ns() {
+            line!("native_omitted_received_ns={received_ns}");
+        }
+        line!(
+            "native_unprocessed_wire_bytes={}",
+            native.unprocessed_wire_bytes()
+        );
+        line!(
+            "native_processing_complete={}",
+            native.processing_complete()
+        );
+        line!("native_projection_clock=floor_milliseconds_since_native_start");
+        line!("native_raw_tcp_bytes_retained=false");
+        line!("native_raw_control_responses_retained=false");
+        line!("native_description_values_disclosed=false");
+    }
     line!("replay_generation={}", rtp::REPLAY_GENERATION);
     line!("parser_generation={}", retained.parser_generation());
     line!("plane={}", retained.plane().as_str());
@@ -566,8 +629,16 @@ fn report(
     );
     line!("received_start_ns={}", binding.receive_interval.earliest.0);
     line!("received_end_ns={}", binding.receive_interval.latest.0);
-    line!("receive_interval_source=owner_declaration");
+    line!(
+        "receive_interval_source={}",
+        if retained.native_source().is_some() {
+            "owner_origin_plus_native_monotonic"
+        } else {
+            "owner_declaration"
+        }
+    );
     line!("reconstruction_scope=after_first_observed_marker");
+    line!("replay_clock_quantum_ns=1000000");
     line!("recorded_offsets_trusted=false");
     line!("camera_authenticated=false");
     line!("vendor_clock_trusted=false");
@@ -583,7 +654,11 @@ fn report(
         line!("sensor={:?}", binding.sensor_id.as_str());
         line!("profile_token={:?}", binding.profile_token);
     }
-    line!("processing_complete={}", replay.processing_complete());
+    line!("processing_complete={}", retained.processing_complete());
+    line!(
+        "replay_processing_complete={}",
+        replay.processing_complete()
+    );
     line!("end_reason={}", replay.end_reason);
     line!("record_count={}", replay.records.len());
     line!("issue_count={}", replay.issues.len());

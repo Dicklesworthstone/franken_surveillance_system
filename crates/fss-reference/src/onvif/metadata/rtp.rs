@@ -1,8 +1,9 @@
 #![forbid(unsafe_code)]
-//! Source-closed import of recorded, uncompressed ONVIF metadata RTP.
+//! Source-closed import of recorded or natively acquired, uncompressed ONVIF metadata RTP.
 //!
-//! This is a finite owner-attributed file import, not live RTSP negotiation. The complete
-//! original dump remains in custody, including probation, duplicate, malformed and unparsed
+//! The original file recipe remains a finite owner-attributed import. A separate native
+//! acquisition recipe also retains original negotiation and nanosecond packet observations.
+//! The complete replay dump remains in custody, including probation, duplicate, malformed and unparsed
 //! records. Every reconstructed document has exact original packet/payload spans and an
 //! observed preceding marker. Recorder offsets drive only a frozen replay clock; neither they
 //! nor RTP timestamps replace the independently declared owner receive interval.
@@ -22,14 +23,19 @@ use fss_publication::{LocalPublicationState, SlotName};
 use super::{MetadataError, SourceBinding};
 use crate::deletion::DeletionIndex;
 use crate::onvif::wire::EventDocument;
+use crate::rtsp::metadata_source::NativeMetadataSource;
 use crate::{ReferenceDeployment, ReplayAdmission, ReplayCx};
 
 /// New custody domain; the owner-file and native PullPoint recipes remain unchanged.
 pub const RECIPE_DOMAIN: &str = "fss.onvif_metadata_rtpdump_import.v1";
+/// Native acquisition is bound separately; the original file recipe is byte-identical.
+pub const NATIVE_RECIPE_DOMAIN: &str = "fss.onvif_metadata_rtsp_import.v1";
 /// Frozen packet reconstruction, timeline mapping and reporting interpretation.
 pub const REPLAY_GENERATION: &str = "gen:fss1:onvif-metadata-rtpdump-v1";
 /// Exact source byte ceiling, independent of packet and document limits.
 pub const MAX_INPUT_BYTES: usize = 8 * 1024 * 1024;
+/// Independent ceiling for original SDP, packet receive clocks and acquisition evidence.
+pub const MAX_NATIVE_SOURCE_BYTES: usize = 8 * 1024 * 1024;
 /// Maximum complete record headers examined per import.
 pub const MAX_RECORDS: usize = 16_384;
 /// Maximum complete transport documents, including rejected XML.
@@ -269,6 +275,7 @@ pub struct RetainedRtpMetadata {
     identity: ContentDigest,
     root: ContentDigest,
     recipe: record::Recipe,
+    native_source: Option<NativeMetadataSource>,
     report: RtpMetadataReport,
     documents: Vec<RtpMetadataDocument>,
     anchor: LedgerAnchor,
@@ -289,15 +296,16 @@ impl RetainedRtpMetadata {
     pub const fn identity(&self) -> ContentDigest {
         self.identity
     }
-    /// Exact root containing the whole dump, recipe, report and every retained derivative.
+    /// Exact root containing the replay file, recipe, report, every derivative and any native source.
     pub const fn publication_root(&self) -> ContentDigest {
         self.root
     }
-    /// Digest of the whole original recorded packet source, not reconstructed XML.
+    /// Digest of the complete replay packet file, not reconstructed XML. For native acquisition
+    /// this is a deterministic millisecond projection; `native_source_digest` identifies originals.
     pub const fn source_digest(&self) -> ContentDigest {
         self.recipe.source
     }
-    /// Exact complete original source length.
+    /// Exact replay packet file length, including the complete projected source prefix.
     pub const fn source_bytes(&self) -> usize {
         self.recipe.source_bytes
     }
@@ -313,7 +321,8 @@ impl RetainedRtpMetadata {
     pub fn config(&self) -> &RtpMetadataConfig {
         &self.recipe.config
     }
-    /// Original record outcomes and explicit completeness boundaries.
+    /// Replay-file record outcomes and explicit processing boundaries. Native acquisition stops
+    /// and projection omissions remain separate; use `processing_complete` for the whole result.
     pub fn report(&self) -> &RtpMetadataReport {
         &self.report
     }
@@ -325,9 +334,42 @@ impl RetainedRtpMetadata {
     pub fn authority_anchor(&self) -> &LedgerAnchor {
         &self.anchor
     }
-    /// File acquisition is never presented as native live RTP receipt.
+    /// Exact acquisition mode, bound by separate immutable recipe domains.
     pub const fn source_mode(&self) -> &'static str {
-        "owner_supplied_rtpdump"
+        if self.recipe.native_source.is_some() {
+            "native_rtsp_tcp"
+        } else {
+            "owner_supplied_rtpdump"
+        }
+    }
+    /// Meaning of the packet-file digest and replay report's millisecond clock.
+    pub const fn source_representation(&self) -> &'static str {
+        if self.recipe.native_source.is_some() {
+            "derived_rtpdump_from_native_observations"
+        } else {
+            "original_owner_supplied_rtpdump"
+        }
+    }
+    /// Original bounded acquisition evidence, including exact nanosecond packet observations.
+    /// Its private route and SDP values require the caller's disclosure policy.
+    pub fn native_source(&self) -> Option<&NativeMetadataSource> {
+        self.native_source.as_ref()
+    }
+    /// Original canonical native source digest, separate from its replay-file projection.
+    pub const fn native_source_digest(&self) -> Option<ContentDigest> {
+        match self.recipe.native_source {
+            Some((digest, _)) => Some(digest),
+            None => None,
+        }
+    }
+    /// Complete interpretation requires both bounded acquisition and packet replay to finish.
+    /// It never certifies camera identity, trusted capture time, coverage or physical absence.
+    pub fn processing_complete(&self) -> bool {
+        self.report.processing_complete()
+            && self
+                .native_source
+                .as_ref()
+                .is_none_or(NativeMetadataSource::processing_complete)
     }
     /// Frozen XML interpretation, independently pinned from packet replay generation.
     pub const fn parser_generation(&self) -> &'static str {
@@ -388,6 +430,29 @@ impl RetainedRtpMetadata {
         if source.len() != recipe.source_bytes {
             return Err(MetadataError::Custody);
         }
+        let native_source = if let Some((digest, length)) = recipe.native_source {
+            check_deleted(&deletions, identity, [digest])?;
+            let bytes = super::read(deployment, digest, length, cx)?;
+            if bytes.len() != length || length > MAX_NATIVE_SOURCE_BYTES {
+                return Err(MetadataError::Custody);
+            }
+            super::checkpoint(cx, "onvif_rtp_metadata:native_replay")?;
+            let native =
+                NativeMetadataSource::decode(&bytes).map_err(|_| MetadataError::Custody)?;
+            validate_native_binding(&native, &recipe.binding, &recipe.config)
+                .map_err(|_| MetadataError::Custody)?;
+            if native
+                .canonical_bytes()
+                .map_err(|_| MetadataError::Custody)?
+                != bytes
+                || native.rtpdump().map_err(|_| MetadataError::Custody)? != source
+            {
+                return Err(MetadataError::Custody);
+            }
+            Some(native)
+        } else {
+            None
+        };
         let replay = replay::analyze(&source, recipe.config, || {
             super::checkpoint(cx, "onvif_rtp_metadata:replay")
         })?;
@@ -445,6 +510,7 @@ impl RetainedRtpMetadata {
             identity,
             root: manifest.root(),
             recipe,
+            native_source,
             report: replay.report,
             documents: replay.documents,
             anchor,
@@ -460,6 +526,63 @@ pub fn retain(
     source: &[u8],
     binding: SourceBinding,
     config: RtpMetadataConfig,
+    cx: &ReplayCx<impl ReplayAdmission>,
+) -> Result<RetainedRtpMetadata, MetadataError> {
+    retain_inner(deployment, source, binding, config, None, cx)
+}
+
+/// Retain a finite native RTSP acquisition and its exact deterministic packet-file projection.
+/// Original SDP and nanosecond packet observations share the same flat publication root as the
+/// replay recipe, report and XML. No socket, credential lookup or network effect occurs here.
+/// Partial/failed acquisitions still retain original evidence; completeness is independent.
+pub fn retain_native(
+    deployment: &mut ReferenceDeployment,
+    native: &NativeMetadataSource,
+    binding: SourceBinding,
+    config: RtpMetadataConfig,
+    cx: &ReplayCx<impl ReplayAdmission>,
+) -> Result<RetainedRtpMetadata, MetadataError> {
+    super::admit(deployment, cx, "onvif_rtp_metadata:native_admit")?;
+    validate_native_binding(native, &binding, &config)?;
+    let native_bytes = native
+        .canonical_bytes()
+        .map_err(|_| MetadataError::InvalidBinding)?;
+    if native_bytes.len() > MAX_NATIVE_SOURCE_BYTES {
+        return Err(MetadataError::Limit);
+    }
+    // Validate the durable interpretation before publishing its handle, not only on cold open.
+    let durable_native =
+        NativeMetadataSource::decode(&native_bytes).map_err(|_| MetadataError::Custody)?;
+    validate_native_binding(&durable_native, &binding, &config)
+        .map_err(|_| MetadataError::Custody)?;
+    let source = native
+        .rtpdump()
+        .map_err(|_| MetadataError::InvalidBinding)?;
+    if durable_native
+        .rtpdump()
+        .map_err(|_| MetadataError::Custody)?
+        != source
+    {
+        return Err(MetadataError::Custody);
+    }
+    drop(durable_native);
+    super::checkpoint(cx, "onvif_rtp_metadata:native_projected")?;
+    retain_inner(
+        deployment,
+        &source,
+        binding,
+        config,
+        Some((native, &native_bytes)),
+        cx,
+    )
+}
+
+fn retain_inner(
+    deployment: &mut ReferenceDeployment,
+    source: &[u8],
+    binding: SourceBinding,
+    config: RtpMetadataConfig,
+    native: Option<(&NativeMetadataSource, &[u8])>,
     cx: &ReplayCx<impl ReplayAdmission>,
 ) -> Result<RetainedRtpMetadata, MetadataError> {
     super::admit(deployment, cx, "onvif_rtp_metadata:admit")?;
@@ -491,6 +614,7 @@ pub fn retain(
         source: ContentDigest::sha256(source),
         source_bytes: source.len(),
         report: ContentDigest::sha256(&report_bytes),
+        native_source: native.map(|(_, bytes)| (ContentDigest::sha256(bytes), bytes.len())),
     };
     let encoded = record::encode(&recipe)?;
     if record::decode(&encoded)? != recipe {
@@ -510,6 +634,9 @@ pub fn retain(
         return Err(MetadataError::Custody);
     }
     let mut objects = vec![source, encoded.as_slice(), report_bytes.as_slice()];
+    if let Some((_, bytes)) = native {
+        objects.push(bytes);
+    }
     for document in &replay.documents {
         objects.push(document.bytes.as_slice());
         if let Some(projection) = &document.projection {
@@ -562,12 +689,43 @@ pub fn retain(
         identity,
         root: receipt.root,
         recipe,
+        native_source: native.map(|(native, _)| native.clone()),
         report: replay.report,
         documents: replay.documents,
         anchor: receipt.anchor,
     };
     cx.checkpoint_post_commit("onvif_rtp_metadata:committed");
     Ok(retained)
+}
+
+fn validate_native_binding(
+    native: &NativeMetadataSource,
+    binding: &SourceBinding,
+    config: &RtpMetadataConfig,
+) -> Result<(), MetadataError> {
+    binding.validate()?;
+    config.validate()?;
+    native
+        .validate()
+        .map_err(|_| MetadataError::InvalidBinding)?;
+    let acquired = native.config();
+    let ended_ns = native.ended_ns().ok_or(MetadataError::InvalidBinding)?;
+    let earliest = acquired
+        .receive_origin_ns
+        .checked_add(i128::from(native.started_ns()))
+        .ok_or(MetadataError::InvalidBinding)?;
+    let latest = acquired
+        .receive_origin_ns
+        .checked_add(i128::from(ended_ns))
+        .ok_or(MetadataError::InvalidBinding)?;
+    if acquired.binding.key() != config.stream
+        || acquired.payload_type != config.payload_type
+        || binding.receive_interval.earliest.0 != earliest
+        || binding.receive_interval.latest.0 != latest
+    {
+        return Err(MetadataError::InvalidBinding);
+    }
+    Ok(())
 }
 
 /// Lifecycle admission performs the same complete cold replay before exposing owner scope.
@@ -592,6 +750,9 @@ fn manifest(
     documents: &[RtpMetadataDocument],
 ) -> Result<ObjectManifest, MetadataError> {
     let mut children = vec![identity, recipe.source, recipe.report];
+    if let Some((digest, _)) = recipe.native_source {
+        children.push(digest);
+    }
     for document in documents {
         children.push(document.source_digest());
         if let Some(projection) = document.projection_digest() {

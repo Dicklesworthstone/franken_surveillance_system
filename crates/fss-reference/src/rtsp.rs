@@ -21,6 +21,8 @@ pub mod hevc_recording_collector;
 pub mod live_metadata;
 /// Exact, bounded ONVIF metadata transport on the shared RTSP session owner.
 pub mod metadata_client;
+/// Canonical original native observations and an explicitly derived packet replay.
+pub mod metadata_source;
 
 /// Independently persisted checkpoint references and exact cold pin recovery.
 pub mod archive_pins;

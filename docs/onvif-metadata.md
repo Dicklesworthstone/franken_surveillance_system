@@ -222,6 +222,18 @@ A successful cold command means custody verified. It can exit zero while reporti
 
 The new `fss.onvif_metadata_rtpdump_import.v1` recipe and `gen:fss1:onvif-metadata-rtpdump-v1` replay generation have their own `onvif-rtp-metadata-` publication family. Existing XML and PullPoint recipe bytes and readers remain unchanged. Cold-verified source membership integrates the entire packet import into the existing hold/deletion owner. A committed deletion prevents reopening or re-importing the deleted source under changed attribution or stream pins.
 
+### Native RTP source evidence and cold reports
+
+`retain_native` records a separate native acquisition witness in the same publication family. Its `fss.onvif_native_rtsp_metadata_source.v1` object preserves the exact accepted SDP and control-scope fields, hash-only control progress, original complete interleaved frames and their nanosecond receive observations, source limits, stop reason and explicit omissions. Raw TCP chunks and raw authentication/session responses are outside this retained representation. A retained source does not prove that the camera's identity, clock or claims are authentic.
+
+The `fss.onvif_metadata_rtsp_import.v1` recipe binds that original witness to a deterministic `rtpdump` projection, replay report and XML derivatives under one flat root. `source_mode=native_rtsp_tcp` and `source_representation=derived_rtpdump_from_native_observations` distinguish it from an owner-file import. `native_source_sha256` identifies the original acquisition witness; `source_sha256` identifies the replay file. Existing owner-file recipe bytes remain unchanged.
+
+Native packet arrival times remain exact nanosecond observations in the source witness. The replay file uses floor-millisecond offsets relative to the acquisition start, preserving the existing replay generation's semantics. The report explicitly names `native_projection_clock` and `replay_clock_quantum_ns`; document fragment `replay_received_ns` fields describe this projection. The overall receive interval is the separately supplied owner origin plus the native start/end observations. None of these fields establishes calibrated UTC or camera capture time.
+
+The same `inspect-rtp` and `verify-rtp` commands cold-open a native root without reconnecting or reading credentials. They validate the original witness, rederive the replay file, and verify the full XML/report/publication closure. Reports include native timing, stop, frame/control counts, source-cap omissions, projection omissions and unprocessed wire-byte counts. Raw network locations, SDP values and authentication/session material are never displayed by these reports. Parsed vendor values still require `--include-values yes`.
+
+`replay_processing_complete` describes only the frozen packet reconstruction. `processing_complete` additionally requires a complete native acquisition with no source or projection omissions. In particular, a durable checkpoint or a timed-out capture can contain usable XML and pass cold custody verification while remaining incomplete. Holds protect the original acquisition and replay derivatives together; deletion includes both source representations.
+
 ## Supported analytics projection
 
 The parser resolves ONVIF namespaces and preserves source order. Its supported subset is:
