@@ -192,6 +192,15 @@ def l2_send(payload: bytes, sport: int):
           iface=IFACE, verbose=0)
 
 
+def l2_send_to(payload: bytes, sport: int, cam_addr):
+    """L2 send to a specific camera address — the nO source (P2P/session) port,
+    which is where native TUTK sends the post-search frames (ACK, av-connect)."""
+    from scapy.all import Ether, IP, UDP, sendp
+    sendp(Ether(dst=CAM_MAC) / IP(src=MY_IP, dst=cam_addr[0])
+          / UDP(sport=sport, dport=cam_addr[1]) / payload,
+          iface=IFACE, verbose=0)
+
+
 def load_creds():
     try:
         with open(CRED) as f:
@@ -218,8 +227,15 @@ def round_trip(cred, round_no, wait_grant=4.0, post_grant=10.0, sport_opt=0):
     """
     out = {"round": round_no, "grant": False}
     uid = cred["tutkid"].encode()
-    account = cred.get("authKey", "").encode()
-    password = cred.get("password", "").encode()
+    # gnj.smali:22763 ground truth (the app's avClientStartEx):
+    #   account_or_identity="admin", password_or_token=<authKey>,
+    #   security_mode=2, auth_type=0. Default to that; the historical
+    #   account=authKey choice stays available via OWLET_ACCOUNT=authkey.
+    if os.environ.get("OWLET_ACCOUNT", "admin") == "authkey":
+        account = cred.get("authKey", "").encode()
+    else:
+        account = b"admin"
+    password = cred.get("authKey", "").encode()
     rx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     rx.settimeout(2.5)
     rx.bind((MY_IP, sport_opt))
@@ -249,10 +265,15 @@ def round_trip(cred, round_no, wait_grant=4.0, post_grant=10.0, sport_opt=0):
     log(f"[r{round_no}] nO1 {len(raw1)}B type={out['nO1']['type']} "
         f"from={addr1[1]} t+{out['nO1']['t']}s hex={hx(raw1)}")
 
-    # 2. ACK
-    l2_send(ack, sport)
+    # 2. ACK — native TUTK sends every post-search frame to the ADDRESS THE nO CAME
+    # FROM (cuboxai_pure_owlet connect(): `nO, nO_raw, cam = d, raw, addr` then
+    # `s.sendto(ack, cam)`), NOT back to the search listener. Our ACK/av0 went to
+    # 63616 and the camera's session layer never saw them (§9.9.1's r1-r12, all
+    # grant-less). The nO source port is the camera's P2P/session socket — send there.
+    cam_addr = (addr1[0], addr1[1])
+    l2_send_to(ack, sport, cam_addr)
     out["t_ack"] = round(time.time() - t0, 3)
-    log(f"[r{round_no}] ack sent t+{out['t_ack']}s hex={hx(ack)}")
+    log(f"[r{round_no}] ack sent → cam:{addr1[1]} t+{out['t_ack']}s hex={hx(ack)}")
 
     # 3. the camera's answer to the ACK: measured = second 0x0602
     try:
@@ -270,15 +291,21 @@ def round_trip(cred, round_no, wait_grant=4.0, post_grant=10.0, sport_opt=0):
         f"from={addr2[1]} t+{out['ack_reply']['t']}s hex={hx(raw2)}")
 
     # 4. RESPONDER SIDE: the second 0x0602 re-arms search — answer it with the
-    # frames a granted client would send: av connect ch0 (598B) immediately, then
-    # keep the socket open for 0x2041.
+    # frames a granted client would send. Native TUTK sequence (cuboai_pure_owlet
+    # connect()): ACK → 8 ms → av-connect ch0 AND ch1 back-to-back → wait 0x2041.
+    # Send to the nO source port (the session socket), NOT the search listener.
     if typ2 == 0x0602:
         av0 = build_av_connect(d2, R, account, password, channel=0)
-        l2_send(av0, sport)
+        l2_send_to(av0, sport, cam_addr)
         out["av0_len"] = len(av0)
         out["t_av0"] = round(time.time() - t0, 3)
-        log(f"[r{round_no}] AV-CONNECT ch0 {len(av0)}B sent t+{out['t_av0']}s "
-            f"hex={hx(av0, 160)}")
+        log(f"[r{round_no}] AV-CONNECT ch0 {len(av0)}B → cam:{addr1[1]} "
+            f"t+{out['t_av0']}s hex={hx(av0, 160)}")
+        av1 = build_av_connect(d2, R, account, password, channel=1)
+        l2_send_to(av1, sport, cam_addr)
+        out["av1_len"] = len(av1)
+        log(f"[r{round_no}] AV-CONNECT ch1 {len(av1)}B → cam:{addr1[1]} "
+            f"(pre-grant pair, native timing)")
 
     # 5. wait for the grant (or anything else)
     got = None
