@@ -11,6 +11,15 @@ and HTTP control/snapshot reachability — all over the tailnet interface only
   tailnet_acceptance.py --host wyze-424.tailnet-name.ts.net [--rtsp-port 554]
                         [--onvif-port 80] [--http-port 80] [--timeout 5]
 
+Exit-code contract (the flash-day harness consumes these):
+  0  all-pass  — every contract row passed
+  1  partial   — the harness ran and at least one row FAILED (device answered)
+  2  infra-fail — the harness could not run at all (host unresolvable, or no
+                  tailscale interface when the bind check is required)
+
+--json emits schema fss.tailnet-acceptance.v1:
+  {schema, host, all_pass, exit_code, exit, infra_fail, rows:[{row,pass,detail}]}
+
 Exit 0 only if every contract row passes. --self-test runs the mock
 RTSP+ONVIF+SSH server on loopback and runs the full harness against it.
 
@@ -521,7 +530,13 @@ def run_contract(host: str, rtsp_port: int, onvif_port: int, http_port: int,
                  want_frame: bool = True,
                  ssh_cmd: str = "ssh",
                  want_sftp: bool = False,
-                 sftp_cmd: str = "sftp") -> tuple[list[dict], bool]:
+                 sftp_cmd: str = "sftp") -> tuple[list[dict], bool, bool]:
+    """Run the contract. Returns (rows, all_pass, infra_fail); infra_fail means
+    the harness could not run at all (unresolvable host / missing tailscale
+    interface when the bind check is required) — the exit-code contract maps
+    that to EXIT_INFRA, distinct from a device that answered and failed rows.
+    """
+    infra_fail = False
     rows = []
     ts_addrs = tailscale_addrs()
     ip = ip_of(host)
@@ -529,7 +544,10 @@ def run_contract(host: str, rtsp_port: int, onvif_port: int, http_port: int,
     if require_tailnet_bind and not ts_addrs:
         rows.append({"row": "tailnet-bind", "pass": False,
                      "detail": "no tailscale interface addresses found on this host"})
-        return rows, False
+        infra_fail = True
+        return rows, False, infra_fail
+    if ip is None:
+        infra_fail = True
     rows.append({"row": "tailnet-bind", "pass": tailnet_ok,
                  "detail": "%s -> %s; tailscale addrs %s" % (host, ip, sorted(ts_addrs) or "none")})
     ok, detail = rtsp_row(host, rtsp_port, timeout)
@@ -565,7 +583,7 @@ def run_contract(host: str, rtsp_port: int, onvif_port: int, http_port: int,
                              if want_sftp else "skipped: no --sftp")
     rows.append({"row": "dropbear-sftp", "pass": ok, "detail": detail})
     all_pass = all(r["pass"] for r in rows)
-    return rows, all_pass
+    return rows, all_pass, infra_fail
 
 
 # ---------------------------------------------------------------------------
@@ -823,7 +841,7 @@ def self_test() -> int:
         return 2
     time.sleep(0.1)
     try:
-        rows, all_pass = run_contract(
+        rows, all_pass, _infra = run_contract(
             "127.0.0.1", rtsp_port, http_port, http_port,
             timeout=3.0, require_tailnet_bind=False,
             expect_model="wyze_cam4", ssh_user="root", ssh_port=ssh_port,
@@ -839,6 +857,27 @@ def self_test() -> int:
     for r in rows:
         print("  %-18s %s  %s" % (r["row"], "PASS" if r["pass"] else "FAIL", r["detail"]))
     return 0 if all_pass else 1
+
+
+# Exit-code contract for the flash-day harness (see module docstring):
+#   EXIT_ALL_PASS = 0   every contract row passed
+#   EXIT_PARTIAL  = 1   at least one row FAILED but the harness itself ran
+#   EXIT_INFRA    = 2   the harness could not run at all (unresolvable host,
+#                       no tailscale interface when the bind check is required)
+EXIT_ALL_PASS = 0
+EXIT_PARTIAL = 1
+EXIT_INFRA = 2
+
+
+def verdict(rows: list[dict], infra_fail: bool) -> int:
+    """Classify a run: 0 all pass, 1 partial (some row failed), 2 infra fail."""
+    if infra_fail:
+        return EXIT_INFRA
+    if not rows:
+        return EXIT_INFRA
+    if all(r["pass"] for r in rows):
+        return EXIT_ALL_PASS
+    return EXIT_PARTIAL
 
 
 def main() -> int:
@@ -870,20 +909,31 @@ def main() -> int:
         return self_test()
     if not a.host:
         ap.error("--host required unless --self-test")
-    rows, all_pass = run_contract(a.host, a.rtsp_port, a.onvif_port, a.http_port,
-                                  a.timeout, not a.no_bind_check,
-                                  expect_model=a.expect_model,
-                                  ssh_user=a.ssh_user, ssh_port=a.ssh_port,
-                                  want_frame=not a.no_frame, want_sftp=a.sftp)
-    summary = {"host": a.host, "all_pass": all_pass, "rows": rows}
+    rows, all_pass, infra_fail = run_contract(
+        a.host, a.rtsp_port, a.onvif_port, a.http_port,
+        a.timeout, not a.no_bind_check,
+        expect_model=a.expect_model,
+        ssh_user=a.ssh_user, ssh_port=a.ssh_port,
+        want_frame=not a.no_frame, want_sftp=a.sftp)
+    code = verdict(rows, infra_fail)
+    summary = {
+        "schema": "fss.tailnet-acceptance.v1",
+        "host": a.host,
+        "all_pass": all_pass,
+        "exit_code": code,
+        "exit": {EXIT_ALL_PASS: "all-pass", EXIT_PARTIAL: "partial",
+                 EXIT_INFRA: "infra-fail"}[code],
+        "infra_fail": infra_fail,
+        "rows": rows,
+    }
     if a.json:
         print(json.dumps(summary, indent=2))
     else:
         print("tailnet acceptance — %s" % a.host)
         for r in rows:
             print("  %-18s %s  %s" % (r["row"], "PASS" if r["pass"] else "FAIL", r["detail"]))
-        print("verdict: %s" % ("PASS" if all_pass else "FAIL"))
-    return 0 if all_pass else 1
+        print("verdict: %s (exit %d)" % (summary["exit"], code))
+    return code
 
 
 if __name__ == "__main__":

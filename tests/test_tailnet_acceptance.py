@@ -101,7 +101,7 @@ def main() -> int:
         time.sleep(0.1)
 
         # --- positive: every row passes against the mocks
-        rows, all_pass = ta.run_contract(
+        rows, all_pass, _infra = ta.run_contract(
             "127.0.0.1", stack.rtsp_port, stack.http_port, stack.http_port,
             timeout=5.0, require_tailnet_bind=False,
             expect_model="wyze_cam4", ssh_user="root",
@@ -127,7 +127,7 @@ def main() -> int:
               "tailscaled-status detail reports peers")
 
         # --- negative: wrong expected model must fail the identity gate
-        rows, all_pass = ta.run_contract(
+        rows, all_pass, _infra = ta.run_contract(
             "127.0.0.1", stack.rtsp_port, stack.http_port, stack.http_port,
             timeout=5.0, require_tailnet_bind=False,
             expect_model="tapo_c660", ssh_user=None,
@@ -164,15 +164,86 @@ def main() -> int:
         os.environ.clear()
         os.environ.update(env_backup)
 
-        # --- tailnet-bind: no tailscale interface on this host -> row must be
-        #     pass with 'tailscale addrs none' only when binding is not required
-        ok, detail = ta.tailscale_addrs() is not None, ""
-        rows, _ = ta.run_contract(
+        # --- exit-code contract: verdict() classification, pinned
+        check(ta.EXIT_ALL_PASS == 0 and ta.EXIT_PARTIAL == 1 and ta.EXIT_INFRA == 2,
+              "exit-code constants pinned: 0=all-pass, 1=partial, 2=infra-fail")
+        check(ta.verdict([{"row": "x", "pass": True, "detail": ""}], False) == 0,
+              "verdict: all rows pass -> 0")
+        check(ta.verdict([{"row": "x", "pass": True, "detail": ""},
+                          {"row": "y", "pass": False, "detail": ""}], False) == 1,
+              "verdict: any failed row -> 1 (partial)")
+        check(ta.verdict([], False) == 2, "verdict: no rows -> 2 (infra)")
+        check(ta.verdict([{"row": "x", "pass": False, "detail": ""}], True) == 2,
+              "verdict: infra_fail overrides rows -> 2 even with failures")
+
+        # --- exit-code contract end to end against the mocks
+        rc_rows, rc_all, rc_infra = ta.run_contract(
             "127.0.0.1", stack.rtsp_port, stack.http_port, stack.http_port,
-            timeout=5.0, require_tailnet_bind=False, ssh_user=None,
+            timeout=5.0, require_tailnet_bind=False,
+            expect_model="wyze_cam4", ssh_user="root",
+            ssh_cmd=str(stack.ssh_shim), want_sftp=True, sftp_cmd=str(stack.sftp_shim),
         )
-        bind = next(r for r in rows if r["row"] == "tailnet-bind")
-        check("tailscale addrs" in bind["detail"], "tailnet-bind row reports resolution + addrs")
+        check(ta.verdict(rc_rows, rc_infra) == 0 and not rc_infra,
+              "healthy mock run classifies as exit 0 (all-pass)")
+
+        # a real partial: kill the RTSP mock port so a row fails but the harness ran
+        stack.server.stop_flag = True
+        time.sleep(0.4)
+        rc_rows, rc_all, rc_infra = ta.run_contract(
+            "127.0.0.1", stack.rtsp_port, stack.http_port, stack.http_port,
+            timeout=2.0, require_tailnet_bind=False, ssh_user=None,
+        )
+        check(not rc_infra and ta.verdict(rc_rows, rc_infra) == 1,
+              "mock torn down -> rows fail, harness ran -> exit 1 (partial, not infra)")
+
+        # infra: require the tailscale bind on a host with none -> exit 2
+        rc_rows, rc_all, rc_infra = ta.run_contract(
+            "127.0.0.1", stack.rtsp_port, stack.http_port, stack.http_port,
+            timeout=2.0, require_tailnet_bind=True, ssh_user=None,
+        )
+        check(rc_infra and ta.verdict(rc_rows, rc_infra) == 2,
+              "no tailscale interface + required bind -> exit 2 (infra)")
+
+        # --- JSON schema contract (what the flash-day harness consumes)
+        d = Path(tempfile.mkdtemp())
+        json_out = d / "summary.json"
+        stack2 = MockStack()
+        try:
+            time.sleep(0.1)
+            # PATH shims so the CLI's default `ssh`/`sftp` hit the fake shells
+            shimdir = Path(tempfile.mkdtemp())
+            for name, target in (("ssh", stack2.ssh_shim), ("sftp", stack2.sftp_shim)):
+                link = shimdir / name
+                os.symlink(target, link)
+            env = dict(os.environ, PATH=f"{shimdir}{os.pathsep}{os.environ['PATH']}")
+            code = subprocess.run(
+                [sys.executable, str(SCRIPT), "--host", "127.0.0.1",
+                 "--rtsp-port", str(stack2.rtsp_port),
+                 "--onvif-port", str(stack2.http_port),
+                 "--http-port", str(stack2.http_port),
+                 "--no-bind-check", "--expect-model", "wyze_cam4",
+                 "--ssh-user", "root", "--sftp",
+                 "--json"],
+                capture_output=True, text=True, timeout=60, env=env,
+            )
+            json_out.write_text(code.stdout)
+            summary = json.loads(json_out.read_text())
+            check(code.returncode == 0, "CLI against mocks exits 0")
+            check(summary.get("schema") == "fss.tailnet-acceptance.v1",
+                  "JSON schema field is fss.tailnet-acceptance.v1")
+            check(summary.get("exit_code") == 0 and summary.get("exit") == "all-pass",
+                  "JSON exit_code/exit agree with the exit contract")
+            check(summary.get("infra_fail") is False, "JSON infra_fail false on healthy run")
+            check(isinstance(summary.get("rows"), list)
+                  and all(set(r) == {"row", "pass", "detail"} for r in summary["rows"]),
+                  "JSON rows carry exactly {row,pass,detail}")
+            check({r["row"] for r in summary["rows"]} ==
+                  {"rtsp-port", "rtsp-handshake", "rtsp-frame", "onvif-capabilities",
+                   "onvif-device-info", "onvif-profile-s", "http-control",
+                   "tailscaled-status", "dropbear-sftp", "tailnet-bind"},
+                  "JSON rows list all 10 contract rows")
+        finally:
+            stack2.stop()
 
         # --- rtsp-frame against a CLOSED port must fail cleanly (no hang)
         closed = free_port()
