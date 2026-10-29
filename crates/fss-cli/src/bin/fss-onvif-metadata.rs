@@ -28,6 +28,8 @@ mod admission;
 mod authentication;
 #[path = "fss-onvif-metadata/capture.rs"]
 mod capture;
+#[path = "fss-onvif-metadata/capture_rtp.rs"]
+mod capture_rtp;
 #[path = "fss-onvif-metadata/control.rs"]
 mod control;
 #[path = "fss-onvif-metadata/rtp.rs"]
@@ -35,8 +37,8 @@ mod rtp;
 #[path = "fss-onvif/runtime.rs"]
 mod runtime;
 
-const HELP: &str = "fss-onvif-metadata <capture|control|import|inspect|verify|import-rtp|inspect-rtp|verify-rtp> [options]
-  RTP metadata: import-rtp/inspect-rtp/verify-rtp --help
+const HELP: &str = "fss-onvif-metadata <capture|capture-rtp|control|import|inspect|verify|import-rtp|inspect-rtp|verify-rtp> [options]
+  RTP metadata: capture-rtp/import-rtp/inspect-rtp/verify-rtp --help
   capture: see fss-onvif-metadata capture --help for explicit live subscription options.
   control: see fss-onvif-metadata control --help for cold discovery, operation inspection and explicit cleanup.
   All commands: --root ABSOLUTE_DIR --site SITE [--principal ID]
@@ -898,8 +900,10 @@ fn write_output(
 }
 
 fn main() -> ExitCode {
-    let args: Vec<_> = std::env::args_os().skip(1).take(81).collect();
-    let result = if args.first().is_some_and(|arg| arg == "capture") {
+    let args: Vec<_> = std::env::args_os().skip(1).take(101).collect();
+    let result = if args.first().is_some_and(|arg| arg == "capture-rtp") {
+        capture_rtp::run_args(&args)
+    } else if args.first().is_some_and(|arg| arg == "capture") {
         capture::run_args(&args[1..]).map(|(report, complete)| {
             let output = CommandOutput {
                 custody_receipt: Some(report.clone()),

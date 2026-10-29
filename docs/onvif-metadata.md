@@ -1,8 +1,8 @@
 # Retained ONVIF vendor metadata
 
-`fss-onvif-metadata` captures a finite live ONVIF PullPoint event session, imports one complete owner-supplied PullMessages SOAP response or MetadataStream XML document, or reconstructs metadata from an owner-supplied RTP packet file. It retains the exact source, a deterministic vendor-event/analytics projection and the explicit source binding in an immutable, ledgered publication. New imports interpret the supported `VideoAnalytics` frame, object, coarse shape, classification and transformation fields alongside event notifications.
+`fss-onvif-metadata` captures a finite live ONVIF PullPoint event session or an explicitly selected RTSP/TCP metadata track, imports one complete owner-supplied PullMessages SOAP response or MetadataStream XML document, or reconstructs metadata from an owner-supplied RTP packet file. It retains the declared source representation, a deterministic vendor-event/analytics projection and the explicit source binding in an immutable, ledgered publication. New imports interpret the supported `VideoAnalytics` frame, object, coarse shape, classification and transformation fields alongside event notifications.
 
-This implements bounded native PullPoint acquisition with opt-in finite renewal, stable owner-operation fencing, durable control recovery and the local XML/RTP import/replay subset of FSS-046. Continuous reconnect, live RTSP negotiation/acquisition of metadata tracks, cross-frame tracking, calibrated scene interpretation and physical-device/Profile M qualification remain separate work.
+This implements bounded native PullPoint acquisition with opt-in finite renewal, stable owner-operation fencing, durable control recovery, finite native RTSP metadata acquisition and the local XML/RTP import/replay subset of FSS-046. These are finite capture commands, not a continuous acquisition service. Automatic reconnect, cross-frame tracking, calibrated scene interpretation and physical-device/Profile M qualification remain separate work; FSS-046 remains open.
 
 ## Capture live PullPoint events
 
@@ -233,6 +233,72 @@ Native packet arrival times remain exact nanosecond observations in the source w
 The same `inspect-rtp` and `verify-rtp` commands cold-open a native root without reconnecting or reading credentials. They validate the original witness, rederive the replay file, and verify the full XML/report/publication closure. Reports include native timing, stop, frame/control counts, source-cap omissions, projection omissions and unprocessed wire-byte counts. Raw network locations, SDP values and authentication/session material are never displayed by these reports. Parsed vendor values still require `--include-values yes`.
 
 `replay_processing_complete` describes only the frozen packet reconstruction. `processing_complete` additionally requires a complete native acquisition with no source or projection omissions. In particular, a durable checkpoint or a timed-out capture can contain usable XML and pass cold custody verification while remaining incomplete. Holds protect the original acquisition and replay derivatives together; deletion includes both source representations.
+
+### Capture a live RTP metadata track
+
+Run `target/debug/fss-onvif-metadata capture-rtp --help` for the complete argument contract. `capture-rtp` negotiates DESCRIBE, SETUP and PLAY for one owner-selected, uncompressed `vnd.onvif.metadata/90000` application track, receives its RTP/RTCP over the selected TCP channels, and attempts bounded TEARDOWN when the target is reached. It does not discover a camera or select another track when the supplied pins fail. Gzip/EXI, UDP metadata transport and automatic reconnect are outside this command.
+
+Select the device/profile generation digests, sensor/profile attribution, SDP media index, dynamic payload type, ingress identity, stream generation and SSRC independently before running the command. Device and profile generations must be actual `sha256:` digests with 64 hexadecimal digits; the example deliberately uses variables instead of fabricated identities. The profile token is owner attribution, not a camera-side profile filter. A successful SDP or SSRC match does not authenticate the camera.
+
+The peer is a literal IP address and port. The independently supplied authority must exactly match the RTSP presentation and control-root authorities, including any explicit port. No DNS lookup resolves that authority or broadens the peer. A logical hostname may be pinned to the literal peer, but a redirect to another authority or outside the selected control subtree is refused. Credentials belong in the private credential file, never in a URL or command-line password.
+
+```sh
+target/debug/fss-onvif-metadata capture-rtp \
+  --root /srv/fss/site --site site:home --sensor sensor:front \
+  --device-generation "${DEVICE_GENERATION:?set the verified sha256 device generation}" \
+  --profile-generation "${PROFILE_GENERATION:?set the verified sha256 profile generation}" \
+  --profile "$PROFILE_TOKEN" \
+  --peer 192.0.2.10:554 --authority 192.0.2.10:554 \
+  --url rtsp://192.0.2.10:554/live/ \
+  --control-root rtsp://192.0.2.10:554/live \
+  --media-index "$MEDIA_INDEX" --payload-type "$PAYLOAD_TYPE" \
+  --ingress "$INGRESS" --stream-generation "$STREAM_GENERATION" --ssrc "$SSRC" \
+  --receive-origin-ns "$RECEIVE_ORIGIN_NS" \
+  --owner-authorized yes --plaintext yes --retain-source yes \
+  --capture-ms 5000 --timeout-ms 30000 --max-documents 16 \
+  --max-source-bytes 1048576 --max-records 4096 \
+  --credential-file /srv/fss/private/camera-credentials --auth-realm "$EXACT_REALM"
+```
+
+Replace the documentation address, presentation path, control subtree and every variable with the approved camera's actual configuration. Payload type must be `96..127`; the media index is zero-based. Ingress and stream generation are nonzero; SSRC is an unsigned 32-bit pin. TCP channels default to `0/1`; `--rtp-channel N` selects the consecutive `N/N+1` pair, with `N` at most 254.
+
+Omit both credential options only for an endpoint that permits anonymous access. Digest uses the existing Linux private regular-file lease and entropy backend, with username newline password newline. File rotation or replacement revokes the lease. SHA-256 is the default policy; legacy MD5 requires `--legacy-md5 yes`, and legacy no-qop additionally requires `--legacy-no-qop yes`. A challenge cannot silently enable another authentication policy. Plaintext approval does not provide encryption or server identity verification.
+
+The default capture target is five seconds or 16 complete reconstructed documents, whichever stops acquisition first. The duration includes connection and negotiation. Capture is bounded to 45 seconds, total request timeout to 60 seconds, source retention to 8 MiB and 16,384 complete interleaved frames, and document target to 64. The total timeout must exceed the requested capture duration by at least five seconds; storage setup and credential loading consume the same request deadline, and admission refuses when the remaining cleanup/publication reserve is inadequate. Actual source and document limits can stop acquisition before either target. The default live source budget is 1 MiB and 4,096 frames, smaller than the file-import defaults.
+
+#### Four finite publication milestones
+
+The command can publish at most four immutable source prefixes. Each successful publication names its own import identity and root; it is independently verifiable after a later failure.
+
+| `publication.N.kind` | What the retained prefix establishes |
+|---|---|
+| `description` | The accepted original SDP and bounded negotiation observations have reached custody; no packet or document is implied. |
+| `first_packet` | The first complete RTP source observation has reached custody; probation or an unknown document boundary may still prevent reconstruction. |
+| `first_document` | The first marker-complete reconstructed document is in the source prefix. XML interpretation can still reject it. |
+| `final` | The finite attempt's final source, stop classification and omission accounting have reached custody. This can be a valid partial or failed capture. |
+
+Nonterminal prefixes carry `checkpoint` and remain incomplete even when they contain useful XML. A first document does not end the command unless it reaches the requested document count. Packet arrival, document reconstruction, durable publication and acknowledged remote cleanup remain separate states.
+
+Save each `publication.N.import_identity`, matching `publication.N.root` and `publication.N.native_source_sha256`, including when the command exits nonzero. `final_source_published=false` means the latest known durable result may be an earlier prefix. Later cancellation, timeout, storage refusal or request-finalization failure preserves already returned durable handles. A stdout failure uses the existing hash-only stderr receipt path; if both output channels fail, delivery of those handles cannot be guaranteed. Local socket release never substitutes for a TEARDOWN acknowledgment: inspect `teardown_acknowledged` and `remote_session_may_exist` separately.
+
+Cold verification uses one matching identity/root pair from the capture output:
+
+```sh
+target/debug/fss-onvif-metadata verify-rtp \
+  --root /srv/fss/site --site site:home \
+  --import-id "$CAPTURE_IMPORT_ID" --expected-root "$CAPTURE_PUBLICATION_ROOT"
+
+target/debug/fss-onvif-metadata inspect-rtp \
+  --root /srv/fss/site --site site:home \
+  --import-id "$CAPTURE_IMPORT_ID" --expected-root "$CAPTURE_PUBLICATION_ROOT" \
+  --document-index 0
+```
+
+These commands use retained objects without a camera connection, credential file or original live process. An intact checkpoint or failed capture can pass custody verification while reporting `processing_complete=false`. To disclose parsed vendor values, add `--include-values yes` to a separate inspection; capture itself accepts no disclosure flag.
+
+The original witness retains nanosecond receive observations and exact complete interleaved frames. The derived replay floors their offsets to milliseconds relative to capture start; fragment `replay_received_ns` values are therefore replay observations, not the original native receive times. The owner origin supplies the receive interval, while camera UTC and RTP timestamps remain unverified claims. Raw TCP chunks and raw authentication/session headers are deliberately outside the retained source representation; unprocessed wire and bounded omissions are reported instead of being silently called retained.
+
+The native transport and pure source witness have focused protocol and localhost TCP tests. The capture command, full runtime/publication integration and physical-camera interoperability require their own execution evidence; source presence and those narrower tests do not establish full runtime qualification, Profile M conformance, continuous service readiness or a real-device support claim.
 
 ## Supported analytics projection
 

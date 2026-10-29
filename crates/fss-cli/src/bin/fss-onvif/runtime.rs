@@ -43,6 +43,8 @@ pub(crate) struct Scope<'a, 'task> {
     clock: &'a dyn Clock,
     observed_ns: Cell<u64>,
     charged_ms: Cell<u64>,
+    observed_network_bytes: Cell<u64>,
+    reserved_network_bytes: u64,
     resource: &'a str,
     deadline: u64,
 }
@@ -96,6 +98,35 @@ impl Scope<'_, '_> {
 
     pub(crate) fn input(&self) -> Result<(), &'static str> {
         self.admit(RuntimeGrant::ReadMedia, true).map(|_| ())
+    }
+    /// Last admitted owner clock, usable for retirement after live authority expires.
+    #[allow(
+        dead_code,
+        reason = "Shared owner also serves commands without native capture"
+    )]
+    pub(crate) fn observed_ns(&self) -> u64 {
+        self.observed_ns.get()
+    }
+
+    /// Account actual socket bytes within this request's prepaid network reservation.
+    /// The complete ceiling is charged once at request admission. Revalidate live
+    /// network authority here without charging that reservation a second time.
+    #[allow(
+        dead_code,
+        reason = "Shared owner also serves commands without native capture"
+    )]
+    pub(crate) fn network_bytes(&self, bytes: u64) -> Result<(), &'static str> {
+        self.admit(RuntimeGrant::AdapterNet, false)?;
+        let observed = self
+            .observed_network_bytes
+            .get()
+            .checked_add(bytes)
+            .ok_or(BUDGET)?;
+        if observed > self.reserved_network_bytes {
+            return Err(BUDGET);
+        }
+        self.observed_network_bytes.set(observed);
+        Ok(())
     }
     pub(crate) fn output(&self) -> Result<(), &'static str> {
         self.admit(RuntimeGrant::ObjectStage, true)?;
@@ -326,6 +357,8 @@ fn run_with_clock<T, C: Clock>(
                     clock: &clock,
                     observed_ns: Cell::new(0),
                     charged_ms: Cell::new(0),
+                    observed_network_bytes: Cell::new(0),
+                    reserved_network_bytes: request.network_bytes,
                     resource: &resource,
                     deadline: request.timeout_ns,
                 };
@@ -481,6 +514,37 @@ mod tests {
             write: true,
             secrets: false,
         }
+    }
+
+    #[test]
+    fn actual_network_bytes_use_the_prepaid_allowance_once() {
+        let mut request = writing_request();
+        request.network = true;
+        request.network_bytes = 3;
+        let result = run(request, |scope| {
+            scope.network_bytes(2)?;
+            scope.network_bytes(1)?;
+            assert_eq!(scope.observed_network_bytes.get(), 3);
+            assert_eq!(scope.network_bytes(1), Err(BUDGET));
+            assert_eq!(scope.observed_network_bytes.get(), 3);
+            Ok(())
+        });
+        assert_eq!(result, Ok(()));
+    }
+
+    #[test]
+    fn prepaid_network_budget_never_replaces_live_authority() {
+        let mut request = writing_request();
+        request.network = true;
+        request.network_bytes = 3;
+        let result = run(request, |scope| {
+            scope.network_bytes(1)?;
+            cancel(scope)?;
+            assert_eq!(scope.network_bytes(1), Err(CANCELLED));
+            assert_eq!(scope.observed_network_bytes.get(), 1);
+            Ok(())
+        });
+        assert_eq!(result, Err(CANCELLED));
     }
 
     fn publication() -> (ContentDigest, ContentDigest) {
