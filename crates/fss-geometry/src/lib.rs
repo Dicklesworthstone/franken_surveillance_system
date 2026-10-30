@@ -31,6 +31,9 @@ pub mod temporal_triangulation;
 /// Held-out trajectory validation over complete capture-time intervals.
 pub mod temporal_validation;
 
+/// Complete finite clock-offset hypotheses over native moving-feature fits.
+pub mod temporal_alignment;
+
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub use bundle::{
