@@ -114,6 +114,21 @@ fn explicit_control_entrypoint_never_falls_through_to_ambient_io()
         control.checkpoints, 0,
         "missing wait is refused before admission or I/O"
     );
+    let args = parse(&[
+        "--wait-ms",
+        "1000",
+        "--session",
+        "session:owner",
+        "--subscription",
+        "watch",
+    ])?;
+    let (body, exit) = execute_follow_with_control(&args, &mut control);
+    assert_eq!(exit, ExitIdentity::AGENT_REFUSED);
+    assert!(body.contains(crate::ERR_CLI_MALFORMED_VALUE));
+    assert_eq!(
+        control.checkpoints, 0,
+        "read-only wait authority cannot discard an owned subscription or execute its ACK"
+    );
     let args = parse(&["--wait-ms", "1000"])?;
     let (body, exit) = execute_follow_with_control(&args, &mut control);
     assert_eq!(exit, ExitIdentity::AGENT_REFUSED);

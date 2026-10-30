@@ -30,8 +30,21 @@ check retained-localization cargo "+$channel" test --locked --offline --no-fail-
     -p fss-reference --test recorded_twin_localization_contract
 check incremental-dwell cargo "+$channel" test --locked --offline --no-fail-fast \
     -p fss-reference --lib ingest::long_dwell
+check retained-delivery-recovery cargo "+$channel" test --locked --offline --no-fail-fast \
+    -p fss-reference --test original_media_export_contract --test onvif_capture_operation \
+    --test deployment_missing_journal_contract --test doctor_deployment_contract
+check durable-follow-wait cargo "+$channel" test --locked --offline --no-fail-fast \
+    -p fss-reference --lib deployment_session::follow::wait::tests
+check historical-health-catalog cargo "+$channel" test --locked --offline --no-fail-fast \
+    -p fss-reference --lib ingest::historical_health::exposure::
 check event-fusion cargo "+$channel" test --locked --offline --no-fail-fast \
     -p fss-cli --lib event_fusion::
+check durable-follow-cli cargo "+$channel" test --locked --offline --no-fail-fast \
+    -p fss-cli --lib follow_cmd::
+check native-onvif-cli cargo "+$channel" test --locked --offline --no-fail-fast \
+    -p fss-cli --bin fss-onvif-metadata
+check durable-follow-mcp cargo "+$channel" test --locked --offline --no-fail-fast \
+    -p fss-cli --bin fss-mcp durable_follow
 check operator-unit cargo "+$channel" test --locked --offline --no-fail-fast \
     -p fss-cli --bin fss-file --bin fss-event --bin fss-fusion-profile
 # Integration targets require Cargo's normal executable builds. These suites also invoke
@@ -39,5 +52,7 @@ check operator-unit cargo "+$channel" test --locked --offline --no-fail-fast \
 check operator-integration cargo "+$channel" test --locked --offline --no-fail-fast \
     -p fss-cli --test retained_localization_cli --test watch_stream_dwell_cli \
     --test agent_rehearsal_contract --test watch_stream_detector_cli \
-    --test event_fusion_cli --test fusion_profile_cli
+    --test event_fusion_cli --test fusion_profile_cli \
+    --test rtsp_event_media_export_cli --test onvif_native_capture_cli \
+    --test follow_subscription_cli_contract --test supervisor_retained_contract
 exit "$status"

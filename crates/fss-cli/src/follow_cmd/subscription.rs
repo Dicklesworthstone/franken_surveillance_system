@@ -2,6 +2,7 @@
 //! Explicit, session-owned follow delivery and acknowledgement.
 
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use fss_core::{
     BudgetVector, Completeness, ContentDigest, KnowledgeState, PrincipalId, ResponseOutcome,
@@ -10,8 +11,15 @@ use fss_core::{
 use fss_reference::agent_follow::replay::{
     ReplayBinding, ReplayBoundary, ReplayControl, ReplayDenial, ReplayError,
 };
+use fss_reference::agent_follow::wait::{
+    FOLLOW_WAIT_POLL_MS, FollowWaitBinding, FollowWaitBoundary, FollowWaitControl,
+    FollowWaitDenial, FollowWaitProgress, MAX_FOLLOW_WAIT_READS,
+};
 use fss_reference::agent_session::checkpoint::journal::follow::DurableFollowError;
 use fss_reference::deployment_session::DeploymentSessionError;
+use fss_reference::deployment_session::follow::wait::{
+    FollowSessionWaitBinding, follow_session_wait,
+};
 use fss_reference::deployment_session::follow::{
     FollowSessionBinding, FollowSessionBoundary, FollowSessionControl, FollowSessionDelivery,
     FollowSessionError, FollowSessionFailure, FollowSessionRequest, follow_session,
@@ -43,7 +51,7 @@ pub struct FollowSubscriptionArgs {
 pub(super) fn parse(
     values: &[(String, String, usize)],
     has_continuation: bool,
-    has_wait: bool,
+    _has_wait: bool,
 ) -> Result<Option<FollowSubscriptionArgs>, CliError> {
     let session = take(values, "--session");
     let subscription = take(values, "--subscription");
@@ -59,11 +67,11 @@ pub(super) fn parse(
     let (_, raw_session, session_index) = session.ok_or_else(|| required("--session"))?;
     let (_, subscription_id, subscription_index) =
         subscription.ok_or_else(|| required("--subscription"))?;
-    if has_continuation || has_wait {
+    if has_continuation {
         return Err(super::malformed(
             "--subscription",
             subscription_id,
-            "durable follow owns its page cursor; --continuation and --wait-ms cannot be combined with --subscription",
+            "durable follow owns its page cursor; --continuation cannot be combined with --subscription",
             *subscription_index,
         ));
     }
@@ -113,6 +121,8 @@ struct LocalControl<'a> {
     session_boundaries: u32,
     replay_boundaries: u32,
     replay: Option<ReplayBinding>,
+    wait: Option<FollowWaitBinding>,
+    started: Instant,
 }
 
 impl FollowSessionControl for LocalControl<'_> {
@@ -132,7 +142,11 @@ impl FollowSessionControl for LocalControl<'_> {
             .session_boundaries
             .checked_add(1)
             .ok_or(ReplayDenial::Budget)?;
-        if self.session_boundaries > 16 {
+        let maximum = self
+            .wait
+            .as_ref()
+            .map_or(16, |scope| scope.max_reads() * 16);
+        if self.session_boundaries > maximum {
             return Err(ReplayDenial::Budget);
         }
         Ok(())
@@ -167,8 +181,35 @@ impl ReplayControl for LocalControl<'_> {
             .ok_or(ReplayDenial::Budget)?;
         // An ACK may reverify the pending page before reconstructing its successor. Each native
         // replay has exactly four admitted boundaries and at most two bounded snapshots.
-        if self.replay_boundaries > 8 {
+        let maximum = self.wait.as_ref().map_or(8, |scope| scope.max_reads() * 8);
+        if self.replay_boundaries > maximum {
             return Err(ReplayDenial::Budget);
+        }
+        Ok(())
+    }
+}
+
+impl FollowWaitControl for LocalControl<'_> {
+    fn checkpoint(
+        &mut self,
+        binding: &FollowWaitBinding,
+        _: FollowWaitBoundary,
+    ) -> Result<u64, FollowWaitDenial> {
+        if self.wait.as_ref() != Some(binding) {
+            return Err(FollowWaitDenial::Unauthorized);
+        }
+        u64::try_from(self.started.elapsed().as_millis())
+            .map_err(|_| FollowWaitDenial::ClockUnavailable)
+    }
+
+    fn park(&mut self, binding: &FollowWaitBinding, delay_ms: u64) -> Result<(), FollowWaitDenial> {
+        let now = self.checkpoint(binding, FollowWaitBoundary::Park)?;
+        if delay_ms == 0 || delay_ms > FOLLOW_WAIT_POLL_MS {
+            return Err(FollowWaitDenial::Unauthorized);
+        }
+        let remaining = binding.wait_ms().saturating_sub(now);
+        if remaining > 0 {
+            std::thread::sleep(Duration::from_millis(delay_ms.min(remaining)));
         }
         Ok(())
     }
@@ -178,7 +219,7 @@ pub(super) fn execute(args: &FollowArgs) -> (String, ExitIdentity) {
     let Some(scope) = &args.subscription else {
         return internal_failure("follow", &args.root);
     };
-    if args.wait_ms.is_some() || args.continuation.is_some() {
+    if args.continuation.is_some() {
         return (
             execution_diagnostic(
                 "follow",
@@ -198,6 +239,33 @@ pub(super) fn execute(args: &FollowArgs) -> (String, ExitIdentity) {
         acknowledge: scope.acknowledge,
     };
     let limits = OrientLimits::default();
+    let wait = match args
+        .wait_ms
+        .map(|milliseconds| {
+            FollowSessionWaitBinding::new(
+                &args.root,
+                args.principal.clone(),
+                request.clone(),
+                limits,
+                milliseconds,
+                MAX_FOLLOW_WAIT_READS,
+            )
+        })
+        .transpose()
+    {
+        Ok(wait) => wait,
+        Err(_) => {
+            return (
+                execution_diagnostic(
+                    "follow",
+                    &args.root,
+                    crate::ERR_CLI_MALFORMED_VALUE,
+                    ExitIdentity::AGENT_REFUSED,
+                ),
+                ExitIdentity::AGENT_REFUSED,
+            );
+        }
+    };
     let mut control = LocalControl {
         root: &args.root,
         principal: &args.principal,
@@ -206,10 +274,27 @@ pub(super) fn execute(args: &FollowArgs) -> (String, ExitIdentity) {
         session_boundaries: 0,
         replay_boundaries: 0,
         replay: None,
+        wait: wait.as_ref().map(|binding| binding.read_scope().clone()),
+        started: Instant::now(),
     };
+    if let Some(wait) = wait {
+        return match follow_session_wait(&wait, &mut control) {
+            Ok(result) => rendered(
+                delivery_response(args, &result.delivery, Some(&result.progress)),
+                ExitIdentity::SUCCESS,
+                "follow",
+                &args.root,
+            ),
+            Err(failure) => failure_response_with_wait(
+                args,
+                &failure.failure,
+                Some((&failure.progress, failure.last_follow.as_ref())),
+            ),
+        };
+    }
     match follow_session(&args.root, &args.principal, &request, &limits, &mut control) {
         Ok(delivery) => rendered(
-            delivery_response(args, &delivery),
+            delivery_response(args, &delivery, None),
             ExitIdentity::SUCCESS,
             "follow",
             &args.root,
@@ -221,6 +306,7 @@ pub(super) fn execute(args: &FollowArgs) -> (String, ExitIdentity) {
 fn delivery_response(
     args: &FollowArgs,
     delivery: &FollowSessionDelivery,
+    wait: Option<&FollowWaitProgress>,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let capsule = delivery.follow.result.capsule();
     if capsule.session_id != delivery.session.session_id
@@ -281,7 +367,41 @@ fn delivery_response(
         ),
         Vec::new(),
     );
+    if let Some(progress) = wait {
+        parts.budgets_json = wait_budget(args, progress);
+        parts.degradation.retain(|line| {
+            !line.starts_with("Budget counters cover the returned native comparison.")
+        });
+        parts.degradation.extend(wait_accounting(args, progress));
+    }
     build_response(parts)
+}
+
+fn wait_budget(args: &FollowArgs, progress: &FollowWaitProgress) -> String {
+    let mut requested = progress.requested;
+    let mut consumed = progress.consumed;
+    requested.latency_ms = args.wait_ms.unwrap_or(0);
+    consumed.latency_ms = progress.elapsed_ms;
+    crate::agent_json::budget_summary(&requested, &consumed)
+}
+
+fn wait_accounting(args: &FollowArgs, progress: &FollowWaitProgress) -> Vec<String> {
+    vec![
+        format!(
+            "Durable bounded wait: {} ms admission deadline; {} ms last observed elapsed; {} of {} history reads, including revalidations; {} completed comparisons; {} completed parks. Lock acquisitions and semantic scans are bounded by these read admissions; no journal lock is held while parked.",
+            args.wait_ms.unwrap_or(0), progress.elapsed_ms, progress.admitted_reads,
+            MAX_FOLLOW_WAIT_READS, progress.completed_comparisons, progress.completed_parks,
+        ),
+        "Pending pages and every actual adjacent transition return immediately. Only newly computed certified quiet at the exact acknowledged head can park. Quiet probes create no pending delivery and never acknowledge a page. Wall waiting does not renew an evidence clock, session, grant or coverage interval.".to_owned(),
+        format!(
+            "Fresh source custody across all polls: {} read admissions; {} verified reads; {} payload bytes; {} publication-metadata bytes; {} requested envelope bytes; {} of {} charged envelope bytes. Failed reads retain their reservation. The allowance and accounting never reset between polls.",
+            progress.source_read_attempts, progress.verified_source_reads,
+            progress.source_payload_bytes, progress.source_metadata_bytes,
+            progress.source_requested_bytes, progress.source_reserved_bytes,
+            fss_reference::agent_follow::wait::MAX_FOLLOW_WAIT_SOURCE_ENVELOPE_BYTES,
+        ),
+        "Budgets include every completed native comparison (including ACK reconstruction), the extra source-audit snapshot and returned source-custody counters. Session-journal replay, publication and history-only revalidation are bounded additional work that is not fully metered or claimed free. Source envelope charges are allowances, not exact consumed bytes. An admitted read can finish after the deadline.".to_owned(),
+    ]
 }
 
 struct FailureClass {
@@ -387,6 +507,14 @@ fn classify(error: &FollowSessionError) -> FailureClass {
 }
 
 fn failure_response(args: &FollowArgs, failure: &FollowSessionFailure) -> (String, ExitIdentity) {
+    failure_response_with_wait(args, failure, None)
+}
+
+fn failure_response_with_wait(
+    args: &FollowArgs,
+    failure: &FollowSessionFailure,
+    wait: Option<(&FollowWaitProgress, Option<&super::DeploymentFollow>)>,
+) -> (String, ExitIdentity) {
     let class = classify(&failure.error);
     let Some(head) = &failure.head else {
         return (
@@ -422,7 +550,7 @@ fn failure_response(args: &FollowArgs, failure: &FollowSessionFailure) -> (Strin
             ack.to_text()
         ));
     }
-    let parts = ResponseParts {
+    let mut parts = ResponseParts {
         operation: "session.follow", request_digest: digest, principal: args.principal.clone(),
         session_id: failure.since_anchor.as_ref().and_then(|_| args.subscription.as_ref().map(|s| s.session_id.as_str().to_owned())),
         mission_id: None, anchor: head.anchor.clone(), view: args.view,
@@ -451,6 +579,20 @@ fn failure_response(args: &FollowArgs, failure: &FollowSessionFailure) -> (Strin
         created_at_ns: head.observed_at.0, workspace_revision: None,
         idempotency_key: args.subscription.as_ref().and_then(|s| s.acknowledge.map(session_cmd::idempotency_key)),
     };
+    if let Some((progress, last)) = wait {
+        parts.budgets_json = wait_budget(args, progress);
+        parts
+            .degradation
+            .retain(|line| !line.starts_with("Completed failed-call I/O"));
+        parts.degradation.extend(wait_accounting(args, progress));
+        if let Some(last) = last {
+            parts.proof_pointers.extend([
+                last.basis.publication.publication_digest.to_text(),
+                last.result.publication.publication_digest.to_text(),
+                last.delta.selection_witness.to_text(),
+            ]);
+        }
+    }
     rendered(
         build_response_with_resnapshot(parts, class.resnapshot),
         ExitIdentity::AGENT_REFUSED,
@@ -487,7 +629,7 @@ mod tests {
             ("--subscription", "overnight"),
         ]);
         assert!(parse(&values, true, false).is_err());
-        assert!(parse(&values, false, true).is_err());
+        assert_eq!(parse(&values, false, true)?, parse(&values, false, false)?);
         let scope = parse(&values, false, false)?.ok_or("missing subscription")?;
         assert_eq!(scope.session_id.as_str(), "session:owner");
         assert_eq!(scope.subscription_id, "overnight");
@@ -514,6 +656,92 @@ mod tests {
         for invalid in ["../cursor", "cursor/other", "", "cursor with spaces"] {
             let values = options(&[("--session", "session:owner"), ("--subscription", invalid)]);
             assert!(parse(&values, false, false).is_err());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn wait_refusals_preserve_committed_ack_and_cumulative_cost_without_a_payload()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use fss_reference::deployment_session::follow::FollowSessionHead;
+
+        let token = fss_reference::agent_follow::AnchorToken::parse(
+            "anchor:0123456789abcdef:3:e2:abababababababababababababababababababababababababababababababab",
+        ).ok_or("synthetic renderer anchor")?;
+        let ack = ContentDigest::sha256(b"explicit already committed acknowledgement");
+        let args = FollowArgs {
+            root: "/unopened-durable-follow-render-fixture".into(),
+            since: token.clone(),
+            view: fss_core::AgentView::Brief,
+            principal: PrincipalId::parse("principal:wait-render")?,
+            max_entries: 64,
+            continuation: None,
+            wait_ms: Some(500),
+            subscription: Some(FollowSubscriptionArgs {
+                session_id: SessionId::parse("session:wait-render")?,
+                subscription_id: "watch".to_owned(),
+                acknowledge: Some(ack),
+            }),
+        };
+        let mut progress = FollowWaitProgress::default();
+        progress.admitted_reads = 4;
+        progress.completed_comparisons = 2;
+        progress.completed_parks = 1;
+        progress.elapsed_ms = 500;
+        progress.consumed.bytes = 42;
+        progress.source_reserved_bytes = 71;
+        for (denial, outcome, error) in [
+            (
+                ReplayDenial::Deadline,
+                "partial",
+                Some(session_cmd::ERR_OP_TIMEOUT),
+            ),
+            (ReplayDenial::Cancelled, "cancelled", None),
+            (
+                ReplayDenial::Budget,
+                "partial",
+                Some(session_cmd::ERR_BUDGET_EXHAUSTED),
+            ),
+        ] {
+            let failure = FollowSessionFailure {
+                error: FollowSessionError::Denied(denial),
+                head: Some(FollowSessionHead {
+                    anchor: fss_core::LedgerAnchor::genesis("site:wait-render"),
+                    token: token.clone(),
+                    observed_at: fss_core::TimestampNs::ZERO,
+                }),
+                since_anchor: Some(token.clone()),
+                horizon_anchor: Some(token.clone()),
+                acknowledged: Some(ack),
+                journal_may_have_changed: true,
+            };
+            let (body, exit) = failure_response_with_wait(&args, &failure, Some((&progress, None)));
+            assert_eq!(exit, ExitIdentity::AGENT_REFUSED);
+            let parsed = crate::json_input::parse(&body)?;
+            let fields = parsed.object().ok_or("response object")?;
+            assert_eq!(
+                fields
+                    .get("outcome")
+                    .and_then(crate::json_input::Value::text),
+                Some(outcome)
+            );
+            assert_eq!(
+                fields
+                    .get("errorId")
+                    .and_then(crate::json_input::Value::text),
+                error
+            );
+            assert_eq!(fields.get("payload"), Some(&crate::json_input::Value::Null));
+            assert_eq!(
+                fields.get("continuation"),
+                Some(&crate::json_input::Value::Null)
+            );
+            assert!(body.contains(&format!("follow-acknowledged:{ack}")));
+            assert!(body.contains(&format!("Confirmed durable acknowledgement {ack}")));
+            assert!(body.contains("4 of 41 history reads"));
+            assert!(body.contains("2 completed comparisons; 1 completed parks"));
+            assert!(body.contains("71 of 67108864 charged envelope bytes"));
+            assert!(!body.contains("zero budget placeholders"));
         }
         Ok(())
     }

@@ -5,9 +5,10 @@
 //! owns classification. No command changes source history, prepares an effect, rewrites a
 //! workspace, renews a lease, or acknowledges a page merely because a renderer ran.
 //!
-//! This bounded synchronous adapter has no detached task or parked writer. One call reconstructs
-//! at most the pending page being ACKed and its successor. Journal capacity is finite; history
-//! loss, changed custody, authority drift and ambiguous cross-journal order require explicit
+//! This bounded synchronous adapter has no detached task or parked writer. An immediate call
+//! reconstructs at most the pending page being ACKed and its successor; the bounded wait profile
+//! may repeat only an unpublished quiet comparison at the acknowledged head. Journal capacity
+//! is finite; history loss, changed custody, authority drift and ambiguous cross-journal order require explicit
 //! recovery/resnapshot and never silently skip a protected transition.
 //!
 //! A populated mission may start a subscription at the exact current deployment head. Its
@@ -46,6 +47,9 @@ use crate::agent_session::checkpoint::journal::supervision::{
 };
 use crate::agent_session::checkpoint::journal::{DurableSessionError, SessionRecoveryState};
 use crate::agent_session::work_claims::WorkClaimRevision;
+
+/// Bounded waiting after explicit acknowledgement, preserving the same durable cursor.
+pub mod wait;
 
 /// All request fields are explicit; the registration's original anchor remains its retry identity.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -513,21 +517,26 @@ fn semantic_history(
     })
 }
 
-fn revalidate(
+fn revalidate<C: FollowSessionControl, P: DeliveryPolicy<C>>(
     binding: &FollowSessionBinding<'_>,
     journal: &mut SessionJournal,
     session: &AgentSession,
     state: &FollowSubscription,
-    head: &FollowSessionHead,
-    control: &mut impl FollowSessionControl,
+    control: &mut C,
     progress: &mut FollowSessionFailure,
+    policy: &mut P,
 ) -> Result<(), FollowSessionError> {
     control
         .admit_session(binding, FollowSessionBoundary::RevalidateHistory)
         .map_err(FollowSessionError::Denied)?;
+    policy.before_history(control)?;
     let current = DeploymentHistory::read(binding.root, binding.limits)
         .map_err(|error| FollowSessionError::Session(error.into()))?;
     let current_head = observe_head(&current)?;
+    let head = progress
+        .head
+        .clone()
+        .ok_or(FollowSessionError::ChangedDelivery)?;
     progress.head = Some(current_head.clone());
     if current_head.token != head.token
         || !same_generations(&session.current_anchor, &current_head.anchor)
@@ -553,16 +562,22 @@ pub fn follow_session(
     limits: &OrientLimits,
     control: &mut impl FollowSessionControl,
 ) -> Result<FollowSessionDelivery, Box<FollowSessionFailure>> {
-    let mut progress = FollowSessionFailure {
-        error: FollowSessionError::InvalidRequest,
-        head: None,
-        since_anchor: None,
-        horizon_anchor: None,
-        acknowledged: None,
-        journal_may_have_changed: false,
-    };
-    match execute(root, principal, request, limits, control, &mut progress) {
-        Ok(delivery) => Ok(delivery),
+    let mut progress = initial_progress();
+    match execute(
+        root,
+        principal,
+        request,
+        limits,
+        control,
+        &mut progress,
+        &mut Immediate,
+    ) {
+        Ok(Some(delivery)) => Ok(delivery),
+        // The immediate policy never defers a delivery.
+        Ok(None) => {
+            progress.error = FollowSessionError::ChangedDelivery;
+            Err(Box::new(progress))
+        }
         Err(error) => {
             progress.error = error;
             Err(Box::new(progress))
@@ -570,14 +585,57 @@ pub fn follow_session(
     }
 }
 
-fn execute(
+fn initial_progress() -> FollowSessionFailure {
+    FollowSessionFailure {
+        error: FollowSessionError::InvalidRequest,
+        head: None,
+        since_anchor: None,
+        horizon_anchor: None,
+        acknowledged: None,
+        journal_may_have_changed: false,
+    }
+}
+
+// A wait can defer only a new, certified quiet comparison at the already acknowledged head.
+// The ordinary policy is inert, preserving existing request, publication and journal bytes.
+trait DeliveryPolicy<C: FollowSessionControl> {
+    fn before_history(&mut self, _control: &mut C) -> Result<(), FollowSessionError> {
+        Ok(())
+    }
+
+    fn compared(&mut self, _step: &ReplayStep) -> Result<(), FollowSessionError> {
+        Ok(())
+    }
+
+    fn defer(
+        &mut self,
+        _history: &DeploymentHistory,
+        _step: &ReplayStep,
+        _control: &mut C,
+    ) -> Result<bool, FollowSessionError> {
+        Ok(false)
+    }
+
+    fn before_release(&mut self, _control: &mut C) -> Result<(), FollowSessionError> {
+        Ok(())
+    }
+}
+
+struct Immediate;
+impl<C: FollowSessionControl> DeliveryPolicy<C> for Immediate {}
+
+// None is reserved for an unpublished quiet probe; immediate callers never receive it.
+type Attempt = Option<FollowSessionDelivery>;
+
+fn execute<C: FollowSessionControl, P: DeliveryPolicy<C>>(
     root: &Path,
     principal: &PrincipalId,
     request: &FollowSessionRequest,
     limits: &OrientLimits,
-    control: &mut impl FollowSessionControl,
+    control: &mut C,
     progress: &mut FollowSessionFailure,
-) -> Result<FollowSessionDelivery, FollowSessionError> {
+    policy: &mut P,
+) -> Result<Attempt, FollowSessionError> {
     let mut registration = request.registration(ContentDigest::sha256(&[]));
     registration
         .validate()
@@ -607,6 +665,7 @@ fn execute(
     control
         .admit_session(&binding, FollowSessionBoundary::ReadHistory)
         .map_err(FollowSessionError::Denied)?;
+    policy.before_history(control)?;
     let history =
         DeploymentHistory::read(root, limits).map_err(|e| FollowSessionError::Session(e.into()))?;
     let head = observe_head(&history)?;
@@ -693,6 +752,7 @@ fn execute(
                 pending.input_continuation(),
                 control,
             )?;
+            policy.compared(&prior)?;
             if prior.page_digest() != pending.page_digest() {
                 return Err(FollowSessionError::ChangedDelivery);
             }
@@ -703,9 +763,9 @@ fn execute(
                 &mut journal,
                 &session,
                 &state,
-                &head,
                 control,
                 progress,
+                policy,
             )?;
         }
         control
@@ -756,6 +816,7 @@ fn execute(
         input,
         control,
     )?;
+    policy.compared(&step)?;
     let expected_basis = journal
         .store
         .follow_contract_basis(&request.session_id)
@@ -772,6 +833,12 @@ fn execute(
         return Err(FollowSessionError::ChangedDelivery);
     }
 
+    let defer = state.pending().is_none()
+        && step.since == step.result_anchor
+        && step.result_anchor == head.token
+        && step.horizon_reached
+        && policy.defer(&history, &step, control)?;
+
     // Source availability is current even for an old prefix. Refuse concurrent journal movement
     // instead of releasing a page compiled across a deletion or authority-generation change.
     revalidate(
@@ -779,10 +846,15 @@ fn execute(
         &mut journal,
         &session,
         &state,
-        &head,
         control,
         progress,
+        policy,
     )?;
+    if defer {
+        // The caller drops this command's writer before parking. No receipt exists for an
+        // undisclosed quiet probe, and no implicit acknowledgement advances its position.
+        return Ok(None);
+    }
     let receipt = if let Some(pending) = state.pending() {
         pending.receipt()
     } else {
@@ -802,7 +874,8 @@ fn execute(
     control
         .admit_session(&binding, FollowSessionBoundary::Deliver)
         .map_err(FollowSessionError::Denied)?;
-    Ok(FollowSessionDelivery {
+    policy.before_release(control)?;
+    Ok(Some(FollowSessionDelivery {
         follow: step.follow,
         session,
         subscription_id: request.subscription_id.clone(),
@@ -814,5 +887,5 @@ fn execute(
         result_anchor: step.result_anchor,
         horizon_anchor: step.horizon,
         horizon_reached: step.horizon_reached,
-    })
+    }))
 }

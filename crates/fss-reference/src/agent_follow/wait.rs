@@ -20,7 +20,7 @@ use fss_core::{AgentView, BudgetVector, LedgerAnchor, MeaningfulDeltaClass, Prin
 use super::{AnchorToken, DeploymentFollow, FollowError, FollowRequest, MAX_FOLLOW_ENTRIES};
 use crate::agent_orient::{DeploymentHistory, OrientLimits};
 
-mod custody;
+pub(crate) mod custody;
 
 /// Largest wall wait admitted by this reference implementation.
 pub const MAX_FOLLOW_WAIT_MS: u64 = 10_000;
@@ -328,7 +328,7 @@ impl std::fmt::Display for FollowWaitError {
 }
 impl std::error::Error for FollowWaitError {}
 
-fn checkpoint(
+pub(crate) fn checkpoint(
     binding: &FollowWaitBinding,
     control: &mut dyn FollowWaitControl,
     boundary: FollowWaitBoundary,
@@ -344,7 +344,7 @@ fn checkpoint(
     Ok(())
 }
 
-fn account(
+pub(crate) fn account(
     progress: &mut FollowWaitProgress,
     follow: &DeploymentFollow,
 ) -> Result<(), FollowWaitError> {
@@ -370,7 +370,7 @@ fn account(
     Ok(())
 }
 
-fn certified_quiet(follow: &DeploymentFollow) -> bool {
+pub(crate) fn certified_quiet(follow: &DeploymentFollow) -> bool {
     follow.delta.classes.len() == 1
         && follow
             .delta

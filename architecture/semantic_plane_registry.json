@@ -349,6 +349,8 @@
     "crates/fss-reference/src/deployment_session/feedback.rs": "cognition",
     "crates/fss-reference/src/deployment_session/findings.rs": "cognition",
     "crates/fss-reference/src/deployment_session/follow.rs": "cognition",
+    "crates/fss-reference/src/deployment_session/follow/wait.rs": "cognition",
+    "crates/fss-reference/src/deployment_session/follow/wait/tests.rs": "support",
     "crates/fss-reference/src/deployment_session/investigation.rs": "cognition",
     "crates/fss-reference/src/deployment_session/mission.rs": "cognition",
     "crates/fss-reference/src/deployment_session/opening_retry.rs": "cognition",

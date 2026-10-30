@@ -259,7 +259,7 @@ impl SourceAudit<'_> {
     }
 }
 
-pub(super) fn verify(
+pub(crate) fn verify(
     history: &DeploymentHistory,
     snapshot: &DeploymentSnapshot,
     witnesses: &BTreeSet<ContentDigest>,

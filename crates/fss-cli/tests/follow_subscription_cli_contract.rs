@@ -435,14 +435,26 @@ impl Fixture {
         ack: Option<ContentDigest>,
         error: bool,
     ) -> TestResult<Reply> {
+        self.mcp_with_wait(label, size, ack, error, None)
+    }
+
+    fn mcp_with_wait(
+        &self,
+        label: &str,
+        size: u32,
+        ack: Option<ContentDigest>,
+        error: bool,
+        wait_ms: Option<u64>,
+    ) -> TestResult<Reply> {
         let quote = |text: &str| format!("\"{}\"", fss_cli::escape_json_str(text));
         let init = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"follow-subscription-contract","version":"1"}}}"#;
         let ready = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
         let acknowledge = ack.map_or_else(String::new, |receipt| {
             format!(",\"acknowledge\":{}", quote(&receipt.to_text()))
         });
+        let wait = wait_ms.map_or_else(String::new, |value| format!(",\"wait_ms\":{value}"));
         let request = format!(
-            r#"{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"session_follow","arguments":{{"since":{},"session":{},"subscription":{},"view":"brief","max_entries":{size}{acknowledge}}}}}}}"#,
+            r#"{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"session_follow","arguments":{{"since":{},"session":{},"subscription":{},"view":"brief","max_entries":{size}{acknowledge}{wait}}}}}}}"#,
             quote(&self.since),
             quote(&self.session),
             quote(label),
@@ -483,6 +495,63 @@ impl Fixture {
             "agent_meaningful_delta.v1.json",
         )
     }
+}
+
+#[test]
+fn waiting_cli_and_mcp_replay_exact_pending_receipts_and_only_explicitly_acknowledge() -> TestResult
+{
+    let mut fixture = Fixture::new("wait-restart")?;
+    fixture.append()?;
+    fixture.append()?;
+    let authority = authority_tree(&fixture.root)?;
+    let first = fixture.follow("wait-watch", 64, None)?;
+    let receipt = first.receipt()?;
+    let before = fixture.journal()?;
+    let mut args = fixture.args("wait-watch", 64, None);
+    args.extend(["--wait-ms", "10000"].map(OsString::from));
+    let cli = fixture.command(&args, 0)?;
+    let mcp = fixture.mcp_with_wait("wait-watch", 64, None, false, Some(10_000))?;
+    for retry in [&cli, &mcp] {
+        retry.assert_bound(&fixture)?;
+        assert_eq!(retry.receipt()?, receipt);
+        assert_eq!(
+            field(&retry.value, "payload")?,
+            field(&first.value, "payload")?
+        );
+        assert_eq!(
+            pointer(&retry.value, "follow-journal:")?,
+            pointer(&first.value, "follow-journal:")?
+        );
+        assert!(retry.body.contains("0 completed parks"));
+        assert!(retry.body.contains("Durable bounded wait"));
+    }
+    assert_eq!(
+        fixture.journal()?,
+        before,
+        "waiting does not acknowledge a pending page"
+    );
+    let mut args = fixture.args("wait-watch", 64, Some(receipt));
+    args.extend(["--wait-ms", "10000"].map(OsString::from));
+    let second = fixture.command(&args, 0)?;
+    let repeated = fixture.mcp_with_wait("wait-watch", 64, Some(receipt), false, Some(10_000))?;
+    assert_eq!(commit(&second.value, "basisAnchor")?, 1);
+    assert_eq!(commit(&second.value, "resultAnchor")?, 2);
+    assert_ne!(second.receipt()?, receipt);
+    assert_eq!(second.receipt()?, repeated.receipt()?);
+    assert_eq!(
+        field(&second.value, "payload")?,
+        field(&repeated.value, "payload")?
+    );
+    assert_eq!(
+        pointer(&second.value, "follow-acknowledged:")?,
+        receipt.to_text()
+    );
+    assert_eq!(
+        fixture.inspect()?.follows[0].last_acknowledged(),
+        Some(receipt)
+    );
+    assert_eq!(authority_tree(&fixture.root)?, authority);
+    Ok(())
 }
 
 fn common_args(root: &Path) -> Vec<OsString> {
@@ -971,7 +1040,7 @@ fn invalid_subscription_pairs_and_cursor_overrides_refuse_before_opening_the_roo
             "--subscription",
             "watch",
             "--wait-ms",
-            "1",
+            "0",
         ],
         vec![
             "--session",

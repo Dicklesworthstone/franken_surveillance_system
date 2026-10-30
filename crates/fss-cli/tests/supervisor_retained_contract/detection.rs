@@ -11,7 +11,7 @@ use fss_cli::supervisor::retained::{
 use fss_core::{BatchId, CaptureInterval, EvidenceDelta, ObjectId, Plane};
 use fss_reference::ingest::long_dwell::LongDwellLimits;
 use fss_reference::ingest::long_watch::LongWatchReport;
-use fss_reference::ingest::package_event::{RecordDetection, RecordFrame};
+use fss_reference::ingest::package_event::{PackageDetectionRecord, RecordDetection, RecordFrame};
 use fss_reference::ingest::recorded_watch::{
     WatchDetectorConfig, WatchOptions, WatchPlan, WatchTrackerConfig, WatchZone,
 };
@@ -43,6 +43,23 @@ struct DetectionFixture {
     cameras: Vec<DetectionCamera>,
     sources: Vec<DetectionSource>,
     authority: ContentDigest,
+}
+
+fn class_rows(
+    record: &PackageDetectionRecord,
+    class_index: u64,
+) -> Vec<(RecordFrame, RecordDetection)> {
+    record
+        .frames
+        .iter()
+        .flat_map(|frame| {
+            frame
+                .detections
+                .iter()
+                .filter(move |detection| detection.class_index == class_index)
+                .map(move |detection| (frame.clone(), *detection))
+        })
+        .collect()
 }
 
 impl DetectionFixture {
@@ -141,14 +158,6 @@ impl DetectionFixture {
                     .iter()
                     .position(|label| label == "tie")
                     .ok_or("native fixture class")? as u64;
-                let mut native_rows = Vec::new();
-                for frame in &record.frames {
-                    for detection in &frame.detections {
-                        if detection.class_index == class_index {
-                            native_rows.push((frame.clone(), *detection));
-                        }
-                    }
-                }
                 camera = Some(DetectionCamera {
                     alias: alias.clone(),
                     sensor: sensor.clone(),
@@ -157,7 +166,7 @@ impl DetectionFixture {
                     model: record.model_digest,
                     contract: record.contract_digest,
                     class_index,
-                    rows: native_rows,
+                    rows: class_rows(record, class_index),
                 });
             }
             cameras.push(camera.ok_or("retained native report")?);
@@ -288,6 +297,26 @@ impl DetectionFixture {
     }
 }
 
+fn exact_row<'a>(
+    observed: &'a [Value],
+    sensor: &str,
+    frame: &RecordFrame,
+    native: &RecordDetection,
+) -> TestResult<&'a Value> {
+    observed
+        .iter()
+        .find(|row| {
+            text(row, "sensor_id").is_ok_and(|value| value == sensor)
+                && text(row, "capsule_digest")
+                    .is_ok_and(|value| value == frame.capsule_digest.to_text())
+                && field(row, "segment")
+                    .is_ok_and(|value| value.integer() == Some(i128::from(frame.segment)))
+                && field(row, "detection_row")
+                    .is_ok_and(|value| value.integer() == Some(i128::from(native.row)))
+        })
+        .ok_or("exact native detector row".into())
+}
+
 fn assert_native_rows(fixture: &DetectionFixture, document: &Value) -> TestResult {
     let observed = field(document, "observations")?
         .array()
@@ -296,16 +325,7 @@ fn assert_native_rows(fixture: &DetectionFixture, document: &Value) -> TestResul
     assert_eq!(observed.len(), expected_count);
     for camera in &fixture.cameras {
         for (frame, native) in &camera.rows {
-            let observation = observed
-                .iter()
-                .find(|row| {
-                    text(row, "sensor_id").is_ok_and(|sensor| sensor == camera.sensor)
-                        && field(row, "segment")
-                            .is_ok_and(|value| value.integer() == Some(i128::from(frame.segment)))
-                        && field(row, "detection_row")
-                            .is_ok_and(|value| value.integer() == Some(i128::from(native.row)))
-                })
-                .ok_or("exact native detector row")?;
+            let observation = exact_row(observed, &camera.sensor, frame, native)?;
             assert_eq!(
                 text(observation, "capsule_digest")?,
                 frame.capsule_digest.to_text()
@@ -408,7 +428,12 @@ fn append_unrelated_authority(fixture: &mut DetectionFixture) -> TestResult {
 #[test]
 fn cold_detector_bursts_contribute_without_events_and_preserve_native_uncertainty() -> TestResult {
     let fixture = DetectionFixture::new("detection-no-event", 2, 1, false, None)?;
-    assert!(fixture.cameras.iter().all(|camera| camera.rows.len() == 1));
+    assert!(fixture.cameras.iter().all(|camera| !camera.rows.is_empty()));
+    let native_count = fixture
+        .cameras
+        .iter()
+        .map(|camera| camera.rows.len())
+        .sum::<usize>() as i128;
     let before = inventory(&fixture.root)?;
     let request = fixture.request()?;
     let bytes = encode(&request);
@@ -444,10 +469,13 @@ fn cold_detector_bursts_contribute_without_events_and_preserve_native_uncertaint
         "posterior_log_odds_millibans",
     )?;
     for (index, window) in windows.iter().enumerate() {
-        assert_eq!(field(window, "unique_observations")?.integer(), Some(2));
+        assert_eq!(
+            field(window, "unique_observations")?.integer(),
+            Some(native_count)
+        );
         assert_eq!(
             field(window, "new_observations")?.integer(),
-            Some(if index == 0 { 2 } else { 0 })
+            Some(if index == 0 { native_count } else { 0 })
         );
         assert_eq!(
             field(field(window, "outcome")?, "posterior_log_odds_millibans")?,
@@ -494,7 +522,13 @@ fn overlapping_native_reports_count_each_source_row_once_and_wait_for_its_whole_
     let fixture = DetectionFixture::new("detection-overlap", 1, 2, true, None)?;
     assert_eq!(fixture.sources.len(), 2);
     assert_ne!(fixture.sources[0].report, fixture.sources[1].report);
-    assert_eq!(fixture.cameras[0].rows.len(), 2);
+    let native_count = fixture.cameras[0].rows.len() as i128;
+    let repeated_count = fixture.cameras[0]
+        .rows
+        .iter()
+        .filter(|(frame, _)| frame.segment == 0)
+        .count() as i128;
+    assert!(repeated_count > 0 && native_count > repeated_count);
     let before = inventory(&fixture.root)?;
     let mut request = fixture.request()?;
     let windows = rows(
@@ -515,17 +549,17 @@ fn overlapping_native_reports_count_each_source_row_once_and_wait_for_its_whole_
     );
     assert_eq!(
         field(discovery, "selected_observations")?.integer(),
-        Some(3)
+        Some(native_count + repeated_count)
     );
     let windows = field(&document, "windows")?.array().ok_or("windows")?;
     for (index, window) in windows.iter().enumerate() {
         assert_eq!(
             field(window, "unique_observations")?.integer(),
-            Some(if index == 0 { 0 } else { 2 })
+            Some(if index == 0 { 0 } else { native_count })
         );
         assert_eq!(
             field(window, "new_observations")?.integer(),
-            Some(if index == 1 { 2 } else { 0 })
+            Some(if index == 1 { native_count } else { 0 })
         );
     }
     assert_eq!(
@@ -709,20 +743,34 @@ fn retained_frozen_health_withholds_early_detection_and_invalidates_prior_advice
         None,
         true,
     )?;
-    assert_eq!(fixture.cameras[0].rows.len(), 1);
+    let native_count = fixture.cameras[0].rows.len();
+    assert!(native_count > 0);
     let request = fixture.request()?;
     let initial = fixture.run(&request)?;
     success(&initial);
     let initial = report(&initial)?;
-    let initial_observation = &field(&initial, "observations")?
+    let initial_observations = field(&initial, "observations")?
         .array()
-        .ok_or("native rows")?[0];
-    let initial_health = field(initial_observation, "historical_health")?;
-    assert_eq!(text(initial_health, "state")?, "no_matching_diagnostic");
-    assert_eq!(
-        field(initial_health, "support_withheld")?.boolean(),
-        Some(false)
-    );
+        .ok_or("native rows")?;
+    assert_eq!(initial_observations.len(), native_count);
+    for (frame, native) in &fixture.cameras[0].rows {
+        let observation = exact_row(
+            initial_observations,
+            &fixture.cameras[0].sensor,
+            frame,
+            native,
+        )?;
+        assert_eq!(
+            field(observation, "score_f32_bits")?.integer(),
+            Some(i128::from(native.score_bits))
+        );
+        let initial_health = field(observation, "historical_health")?;
+        assert_eq!(text(initial_health, "state")?, "no_matching_diagnostic");
+        assert_eq!(
+            field(initial_health, "support_withheld")?.boolean(),
+            Some(false)
+        );
+    }
     let (historical_request, historical_sources) = retained_detection_sources(&fixture, &request)?;
     assert_eq!(historical_sources.len(), 1);
     assert!(historical_sources[0].health_digest.is_some());
@@ -789,67 +837,80 @@ fn retained_frozen_health_withholds_early_detection_and_invalidates_prior_advice
     let observations = field(&refreshed, "observations")?
         .array()
         .ok_or("native rows")?;
-    assert_eq!(observations.len(), 1);
-    let observation = &observations[0];
-    for key in [
-        "identity",
-        "capsule_digest",
-        "inference_identity",
-        "score_f32_bits",
-    ] {
-        assert_eq!(field(observation, key)?, field(initial_observation, key)?);
+    assert_eq!(observations.len(), native_count);
+    for (frame, native) in &fixture.cameras[0].rows {
+        let observation = exact_row(observations, &fixture.cameras[0].sensor, frame, native)?;
+        let initial_observation = exact_row(
+            initial_observations,
+            &fixture.cameras[0].sensor,
+            frame,
+            native,
+        )?;
+        for key in [
+            "identity",
+            "capsule_digest",
+            "inference_identity",
+            "score_f32_bits",
+        ] {
+            assert_eq!(field(observation, key)?, field(initial_observation, key)?);
+        }
+        assert_eq!(field(observation, "segment")?.integer(), Some(0));
+        assert_eq!(
+            text(observation, "capture_time_label")?,
+            "operator_assumption"
+        );
+        let health = field(observation, "historical_health")?;
+        assert_eq!(text(health, "state")?, "findings");
+        assert_eq!(field(health, "support_withheld")?.boolean(), Some(true));
+        assert_eq!(
+            field(health, "screening_incomplete")?.boolean(),
+            Some(false)
+        );
+        assert_eq!(
+            field(health, "current_camera_health_established")?.boolean(),
+            Some(false)
+        );
+        assert_eq!(
+            text(health, "source_import")?,
+            fixture.cameras[0].import.to_text()
+        );
+        let diagnostics = field(health, "diagnostics")?
+            .array()
+            .ok_or("diagnostic pins")?;
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(
+            text(&diagnostics[0], "record_digest")?,
+            retained.record_digest.to_text()
+        );
+        assert_eq!(
+            text(&diagnostics[0], "provenance_root")?,
+            retained.provenance_root.to_text()
+        );
+        let findings = field(health, "findings")?
+            .array()
+            .ok_or("native findings")?;
+        let frozen = findings
+            .iter()
+            .find(|finding| {
+                text(finding, "finding").is_ok_and(|name| name == "exact_frame_repetition")
+            })
+            .ok_or("actual native repetition finding")?;
+        assert!(
+            field(frozen, "finding_first_segment")?
+                .integer()
+                .is_some_and(|segment| segment > 0)
+        );
+        assert_eq!(field(frozen, "withheld_first_segment")?.integer(), Some(0));
+        assert_eq!(
+            field(frozen, "withheld_last_segment")?.integer(),
+            Some((SOURCE_FRAMES - 1) as i128)
+        );
     }
-    assert_eq!(field(observation, "segment")?.integer(), Some(0));
-    assert_eq!(
-        text(observation, "capture_time_label")?,
-        "operator_assumption"
-    );
-    let health = field(observation, "historical_health")?;
-    assert_eq!(text(health, "state")?, "findings");
-    assert_eq!(field(health, "support_withheld")?.boolean(), Some(true));
-    assert_eq!(
-        field(health, "screening_incomplete")?.boolean(),
-        Some(false)
-    );
-    assert_eq!(
-        field(health, "current_camera_health_established")?.boolean(),
-        Some(false)
-    );
-    assert_eq!(
-        text(health, "source_import")?,
-        fixture.cameras[0].import.to_text()
-    );
-    let diagnostics = field(health, "diagnostics")?
-        .array()
-        .ok_or("diagnostic pins")?;
-    assert_eq!(diagnostics.len(), 1);
-    assert_eq!(
-        text(&diagnostics[0], "record_digest")?,
-        retained.record_digest.to_text()
-    );
-    assert_eq!(
-        text(&diagnostics[0], "provenance_root")?,
-        retained.provenance_root.to_text()
-    );
-    let findings = field(health, "findings")?
-        .array()
-        .ok_or("native findings")?;
-    let frozen = findings
-        .iter()
-        .find(|finding| text(finding, "finding").is_ok_and(|name| name == "exact_frame_repetition"))
-        .ok_or("actual native repetition finding")?;
-    assert!(
-        field(frozen, "finding_first_segment")?
-            .integer()
-            .is_some_and(|segment| segment > 0)
-    );
-    assert_eq!(field(frozen, "withheld_first_segment")?.integer(), Some(0));
-    assert_eq!(
-        field(frozen, "withheld_last_segment")?.integer(),
-        Some((SOURCE_FRAMES - 1) as i128)
-    );
     for window in field(&refreshed, "windows")?.array().ok_or("windows")? {
-        assert_eq!(field(window, "unique_observations")?.integer(), Some(1));
+        assert_eq!(
+            field(window, "unique_observations")?.integer(),
+            Some(native_count as i128)
+        );
         let outcome = field(window, "outcome")?;
         assert_eq!(field(outcome, "supporting_clusters")?.integer(), Some(0));
         assert_eq!(
@@ -860,8 +921,11 @@ fn retained_frozen_health_withholds_early_detection_and_invalidates_prior_advice
         let evidence = field(field(window, "query")?, "evidence")?
             .array()
             .ok_or("fusion evidence")?;
-        let reason = text(field(&evidence[0], "observability")?, "not_observable")?;
-        assert!(reason.contains("exact_frame_repetition"));
+        assert_eq!(evidence.len(), native_count);
+        for item in evidence {
+            let reason = text(field(item, "observability")?, "not_observable")?;
+            assert!(reason.contains("exact_frame_repetition"));
+        }
     }
     assert_eq!(
         field(&refreshed, "supports_absence_claim")?.boolean(),
@@ -956,6 +1020,9 @@ fn current_privacy_and_import_deletion_withdraw_direct_detector_advice() -> Test
     )
     .remove(0);
     success(&fixture.run(&second_only)?);
+    let (historical_request, historical_sources) =
+        retained_detection_sources(&fixture, &second_only)?;
+    validate_detection_sources(&fixture, &historical_request, &historical_sources)?;
     let deletion = Command::new(env!("CARGO_BIN_EXE_fss-event"))
         .args(["delete", "plan", "--root"])
         .arg(&fixture.root)
@@ -986,7 +1053,43 @@ fn current_privacy_and_import_deletion_withdraw_direct_detector_advice() -> Test
         "expected_authority_root".into(),
         Value::Text(fixture.authority.to_text()),
     );
-    fixture.refuses_without_mutation(&second_only)?;
+    let canonical = inventory(&fixture.root)?;
+    // Deletion tombstones withdraw the report from a fresh catalog. Discovery remains usable
+    // and explicitly unobserved; it cannot serve an old pending report or infer class absence.
+    let withdrawn = fixture.run(&second_only)?;
+    success(&withdrawn);
+    let withdrawn = report(&withdrawn)?;
+    assert!(
+        field(&withdrawn, "observations")?
+            .array()
+            .ok_or("native rows")?
+            .is_empty()
+    );
+    assert_unobserved_camera(&withdrawn, &fixture.cameras[1].sensor)?;
+    assert_eq!(
+        field(&withdrawn, "supports_absence_claim")?.boolean(),
+        Some(false)
+    );
+    for window in field(&withdrawn, "windows")?.array().ok_or("windows")? {
+        assert_eq!(field(window, "new_observations")?.integer(), Some(0));
+        assert_eq!(field(window, "unique_observations")?.integer(), Some(0));
+        let outcome = field(window, "outcome")?;
+        assert_eq!(field(outcome, "supporting_clusters")?.integer(), Some(0));
+        assert_eq!(
+            field(outcome, "posterior_log_odds_millibans")?,
+            &Value::Array(vec![numeric(0), numeric(0)])
+        );
+        assert_eq!(field(outcome, "effect_authority")?.boolean(), Some(false));
+    }
+    let error = validate_detection_sources(&fixture, &historical_request, &historical_sources)
+        .expect_err("deleted detector custody must invalidate historical delivery");
+    assert!(
+        error
+            .to_string()
+            .contains("historical native detector publication unavailable"),
+        "{error}"
+    );
+    assert_eq!(inventory(&fixture.root)?, canonical);
     Ok(())
 }
 

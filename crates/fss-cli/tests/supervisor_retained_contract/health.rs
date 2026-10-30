@@ -214,7 +214,10 @@ fn event_supervision_distinguishes_clear_finite_screen_from_incomplete_screen() 
             true,
         ),
     ] {
-        let mut fixture = Fixture::with_source_frames(name, 1, frames, refused)?;
+        // A temporal health screen requires explicit capture hints. Keep a two-frame timed
+        // source even for the clear one-frame screen: only its selected first frame is assessed,
+        // and the unscreened remainder must not acquire an absence or camera-health claim.
+        let mut fixture = Fixture::with_source_frames(name, 1, frames.max(2), refused)?;
         retain_health(&mut fixture, 0, frames, refused)?;
         let output = fixture.run(&fixture.plan(&[0], true)?)?;
         success(&output);

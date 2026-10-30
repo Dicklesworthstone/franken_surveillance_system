@@ -10,6 +10,29 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Durable follow with bounded waiting (2026-10-29, reference)
+
+Owned follow subscriptions can now combine their exact durable cursor and explicit ACK with
+`--wait-ms` in CLI and MCP. Pending pages and every real adjacent history transition return
+immediately, including harmless transitions. Only a fresh source-verified quiet comparison at
+the acknowledged current head may park; it creates no hidden pending page or implicit ACK.
+The session writer is released before waiting, then live authority and the pinned semantic
+scope are reacquired. Protected transitions still pass through adjacent replay.
+
+History admissions, writer opportunities, comparisons and source-custody work accumulate across
+the invocation. Timeout, cancellation, closed/changed session, source loss, invalid clock and
+ambiguous history order return explicit failure with any already committed registration/ACK.
+No response substitutes an old comparison for current truth or refunds prior work. Existing
+immediate receipt formats remain unchanged; the read-only wait API refuses owned subscriptions
+instead of dropping their durable scope.
+
+Nine native contracts plus CLI/MCP subprocess and rendering cases cover pending replay,
+ACK/cancellation/cold retry, released locks, adjacent wakes and bounded failure. Pinned formatting
+and independent source review precede runtime execution. The existing repository-owned native
+entrypoint now includes the new follow, ONVIF reconciliation, original-footage and checkpoint
+health workflows while preserving all existing checks and their failure status.
+See [durable acknowledged waits](docs/AGENT_FOLLOW_WAIT.md).
+
 ## Terminal ONVIF capture obligations and cold reconciliation (2026-10-29, reference)
 
 New stable capture reservations now pin their exact future Create intent in the original

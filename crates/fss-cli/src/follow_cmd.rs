@@ -72,7 +72,7 @@ pub struct FollowArgs {
     pub max_entries: u32,
     /// Exact continuation token of the page to deliver.
     pub continuation: Option<String>,
-    /// Optional bounded wall wait on a certified quiet exact head; never a subscription.
+    /// Optional bounded wall wait on a certified quiet exact head, including owned subscriptions.
     pub wait_ms: Option<u64>,
     /// Optional durable delivery/acknowledgement scope in an existing session.
     pub subscription: Option<FollowSubscriptionArgs>,
@@ -103,7 +103,7 @@ fn continuation_spelling(value: &str) -> bool {
 
 /// Parses `follow --json --root <dir> --since <anchor> [--view pulse|brief] [--principal <id>]
 /// [--max-entries <n>] [--continuation <token> | --wait-ms <1..10000>]`, or an explicit
-/// `--session <id> --subscription <id> [--acknowledge <sha256>]` scope.
+/// `--session <id> --subscription <id> [--acknowledge <sha256>] [--wait-ms <1..10000>]` scope.
 pub fn parse_follow_args(tokens: &[ArgToken]) -> Result<FollowArgs, CliError> {
     let values = collect_options(
         "follow",
@@ -712,16 +712,17 @@ pub fn execute_follow(args: &FollowArgs) -> (String, ExitIdentity) {
     )
 }
 
-/// Executes an explicitly bounded follow wait with the caller's own read/time/cancellation Cx.
+/// Executes an explicitly bounded ordinary anchor wait with the caller's read/time/cancellation Cx.
 /// An explicit `wait_ms` is required; its absence is refused before I/O. The supplied authority
 /// is never bypassed by falling through to the ordinary immediate entrypoint. A refusal before
 /// any complete comparison uses the ordinary CLI diagnostic, because no evidence timestamp can
-/// be invented.
+/// be invented. An owned subscription requires session/replay admission too and is refused here;
+/// use the native `follow_session_wait` entrypoint with both control contracts for that scope.
 pub fn execute_follow_with_control(
     args: &FollowArgs,
     control: &mut dyn fss_reference::agent_follow::wait::FollowWaitControl,
 ) -> (String, ExitIdentity) {
-    if args.wait_ms.is_none() {
+    if args.wait_ms.is_none() || args.subscription.is_some() {
         return (
             crate::orient_cmd::execution_diagnostic(
                 "follow",

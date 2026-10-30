@@ -158,7 +158,7 @@ fn assert_native_inventory(
 
 fn append_later_detection(
     fixture: &mut DetectionFixture,
-) -> TestResult<(DetectionSource, ContentDigest, u32)> {
+) -> TestResult<(DetectionSource, Vec<(RecordFrame, RecordDetection)>)> {
     let source = fixture.directory.0.join("later-native-burst.jpg");
     fs::write(&source, JPEG)?;
     let cx = context(&fixture.root)?;
@@ -197,24 +197,15 @@ fn append_later_detection(
         &scalar,
     )?;
     let retained = retain_package_detection(&mut deployment, &package, &native, &cx)?;
-    let frame = retained
-        .record()
-        .frames
-        .first()
-        .ok_or("later retained frame")?;
-    let row = frame
-        .detections
-        .iter()
-        .find(|row| row.class_index == fixture.cameras[0].class_index)
-        .ok_or("later native class row")?;
+    let native_rows = class_rows(retained.record(), fixture.cameras[0].class_index);
+    assert!(!native_rows.is_empty(), "later native class rows");
     let result = (
         DetectionSource {
             report: native.digest,
             record: retained.record_digest(),
             root: retained.root(),
         },
-        frame.capsule_digest,
-        row.score_bits,
+        native_rows,
     );
     assert_eq!(
         deployment
@@ -296,7 +287,7 @@ fn cold_native_schedule_recovers_typed_sources_advances_real_bursts_and_preserve
     assert_eq!(state(&fixture)?, original);
 
     // A genuine newer native burst cannot widen a pending report or its historical inventory.
-    let (later, later_capsule, later_score) = append_later_detection(&mut fixture)?;
+    let (later, later_rows) = append_later_detection(&mut fixture)?;
     let canonical = canonical_inventory(&fixture)?;
     let replay = resume(&fixture, &session, &[])?;
     success(&replay);
@@ -338,28 +329,34 @@ fn cold_native_schedule_recovers_typed_sources_advances_real_bursts_and_preserve
     let observations = field(native, "observations")?
         .array()
         .ok_or("native observations")?;
-    assert_eq!(observations.len(), 2);
-    let later_row = observations
-        .iter()
-        .find(|row| {
-            text(row, "capsule_digest").is_ok_and(|digest| digest == later_capsule.to_text())
-        })
-        .ok_or("newly eligible native burst")?;
-    assert_eq!(
-        field(later_row, "score_f32_bits")?.integer(),
-        Some(i128::from(later_score))
-    );
-    assert_eq!(text(later_row, "capture_time_label")?, "unknown");
+    let first_count = fixture.cameras[0].rows.len() as i128;
+    let later_count = later_rows.len() as i128;
+    assert_eq!(observations.len() as i128, first_count + later_count);
+    for (frame, row) in fixture.cameras[0].rows.iter().chain(&later_rows) {
+        let observation = exact_row(observations, &fixture.cameras[0].sensor, frame, row)?;
+        assert_eq!(
+            field(observation, "score_f32_bits")?.integer(),
+            Some(i128::from(row.score_bits))
+        );
+        assert_eq!(
+            text(observation, "inference_identity")?,
+            frame.inference_identity.to_text()
+        );
+        assert_eq!(text(observation, "capture_time_label")?, "unknown");
+    }
     for (index, window) in field(native, "windows")?
         .array()
         .ok_or("native windows")?
         .iter()
         .enumerate()
     {
-        assert_eq!(field(window, "new_observations")?.integer(), Some(1));
+        assert_eq!(
+            field(window, "new_observations")?.integer(),
+            Some(if index == 0 { first_count } else { later_count })
+        );
         assert_eq!(
             field(window, "unique_observations")?.integer(),
-            Some(index as i128 + 1)
+            Some(first_count + if index == 0 { 0 } else { later_count })
         );
         assert_eq!(
             field(field(window, "outcome")?, "effect_authority")?.boolean(),
@@ -560,7 +557,7 @@ fn corrupt_generation_excluded_native_source_still_blocks_cold_replay_and_ack() 
             .array()
             .ok_or("selected rows")?
             .len(),
-        1
+        fixture.cameras[1].rows.len()
     );
     let receipt = text(&first_json, "delivery_receipt")?.to_owned();
     let original = state(&fixture)?;
