@@ -163,7 +163,7 @@ fn exact_guard_preserves_fresh_then_explicit_cold_pending_delivery() -> TestResu
     let bytes = journal_bytes(&fixture)?;
     let mut stale = GuardControl::new(&fixture);
     conflict(
-        &stale
+        &*stale
             .run(initial.digest(), SupervisionAction::Poll)
             .err()
             .ok_or("old state reused")?,
@@ -231,7 +231,7 @@ fn lost_final_delivery_cannot_repeat_source_work_under_original_expectation() ->
     let bytes = journal_bytes(&fixture)?;
     let mut retry = GuardControl::new(&fixture);
     conflict(
-        &retry
+        &*retry
             .run(expected, SupervisionAction::Poll)
             .err()
             .ok_or("lost output blind retry")?,
@@ -263,7 +263,7 @@ fn state_guard_precedes_terminal_actions_and_never_reopens_resolved_work() -> Te
     ] {
         let mut control = GuardControl::new(&fixture);
         conflict(
-            &control
+            &*control
                 .run(old, action)
                 .err()
                 .ok_or("stale terminal state")?,

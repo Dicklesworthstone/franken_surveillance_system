@@ -2350,8 +2350,9 @@ fn assert_learning_discovery(
 #[test]
 fn closed_episode_feedback_publishes_captured_learning_with_cold_cli_mcp_recovery() -> TestResult {
     let (directory, event_id) = corroborated_event("episode-learning")?;
-    // Captured learning adds protected recovery context. Request its registered view up front;
-    // a larger cumulative grant alone cannot widen Brief's 1,600-token response maximum.
+    // Captured learning adds protected recovery context. Pin the session view for handoff and
+    // resume; individual orientation reads must also select it explicitly. A larger cumulative
+    // grant alone cannot widen Brief's 1,600-token response maximum.
     let agent = Agent::open_with_options(
         &directory,
         &["--view", "epistemic_map", "--budget-tokens", "64000"],
@@ -2581,7 +2582,13 @@ fn closed_episode_feedback_publishes_captured_learning_with_cold_cli_mcp_recover
     // can advance that workspace at the same evidence anchor; recovery must authenticate
     // the retained source revision instead of compiling a different binding from today's head.
     let before_inventory = learning_tree(&agent.root, &[""])?;
-    let (code, before_resume) = agent.run("orient", &["--session", &agent.session])?;
+    let inventory_options = [
+        "--session",
+        agent.session.as_str(),
+        "--view",
+        "epistemic_map",
+    ];
+    let (code, before_resume) = agent.run("orient", &inventory_options)?;
     assert_eq!(code, Some(0), "{before_resume:?}");
     assert_eq!(
         text(&before_resume, &["payload", "compressionReceipt", "viewId"])?,
@@ -2624,15 +2631,18 @@ fn closed_episode_feedback_publishes_captured_learning_with_cold_cli_mcp_recover
         before_inventory,
         "captured-learning discovery must not mutate the deployment or session journal"
     );
-    let (code, repeated_inventory) = agent.run("orient", &["--session", &agent.session])?;
+    let (code, repeated_inventory) = agent.run("orient", &inventory_options)?;
     assert_eq!(code, Some(0), "{repeated_inventory:?}");
     assert_eq!(repeated_inventory, before_resume);
     assert_eq!(learning_tree(&agent.root, &[""])?, before_inventory);
     let inventory_mcp = learning_mcp_tool_wire(
         &agent,
         principal,
-        "orient",
-        &format!(r#"{{"session":{}}}"#, learning_quote(&agent.session)),
+        "session_orient",
+        &format!(
+            r#"{{"session":{},"view":"epistemic_map"}}"#,
+            learning_quote(&agent.session)
+        ),
     )?;
     assert_eq!(
         field(&inventory_mcp, &["result", "isError"])?,
@@ -2650,7 +2660,14 @@ fn closed_episode_feedback_publishes_captured_learning_with_cold_cli_mcp_recover
     assert_eq!(learning_tree(&agent.root, &[""])?, before_inventory);
     let (code, too_small) = agent.run(
         "orient",
-        &["--session", &agent.session, "--budget-tokens", "1"],
+        &[
+            "--session",
+            &agent.session,
+            "--view",
+            "epistemic_map",
+            "--budget-tokens",
+            "1",
+        ],
     )?;
     assert_eq!(code, Some(5), "{too_small:?}");
     assert_eq!(text(&too_small, &["outcome"])?, "refused");
@@ -2691,6 +2708,11 @@ fn closed_episode_feedback_publishes_captured_learning_with_cold_cli_mcp_recover
     let (code, resumed) = agent.answer(code, &resumed_stdout)?;
     assert_eq!(code, Some(0), "{resumed_stdout}");
     assert_eq!(text(&resumed, &["sessionId"])?, agent.session);
+    assert_eq!(
+        text(&resumed, &["payload", "compressionReceipt", "viewId"])?,
+        "AVIEW-008",
+        "handoff recovery preserves the retained session view"
+    );
     assert_learning_discovery(
         &resumed,
         &candidate,
@@ -2754,7 +2776,7 @@ fn closed_episode_feedback_publishes_captured_learning_with_cold_cli_mcp_recover
         }
         let damaged = learning_tree(&agent.root, &["agent/publications"])?;
         let before_failed_read = learning_tree(&agent.root, &[""])?;
-        let (code, unreadable) = agent.run("orient", &["--session", &agent.session])?;
+        let (code, unreadable) = agent.run("orient", &inventory_options)?;
         assert_eq!(code, Some(5), "{unreadable:?}");
         assert_ne!(text(&unreadable, &["outcome"])?, "ok");
         assert_eq!(

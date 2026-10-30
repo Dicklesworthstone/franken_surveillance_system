@@ -8,6 +8,7 @@ use std::process::Stdio;
 #[path = "../../mcp_investigation_contract/wire.rs"]
 mod wire;
 
+#[path = "probe/case.rs"]
 mod case;
 
 fn cli(f: &Fixture, session: &str, transition: &str, flags: &[(&str, &str)]) -> TestResult<Output> {

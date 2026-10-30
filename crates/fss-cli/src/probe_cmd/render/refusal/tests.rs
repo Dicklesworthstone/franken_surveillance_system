@@ -275,7 +275,7 @@ fn packaging_refusal_preserves_real_case_pending_and_committed_charge() -> TestR
     let mut native_request = SupervisionSessionRequest {
         registration: registration.clone(),
         expected_authority_root: session.current_anchor.state_root,
-        action: SupervisionAction::Inspect,
+        action: SupervisionAction::ConfigureSchedule { total_windows: 1 },
     };
     let initial = supervise_session(
         &root,
