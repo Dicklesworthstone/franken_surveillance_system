@@ -11,7 +11,9 @@ use fss_core::{
     RootAuthoritySpec, SessionId,
 };
 use fss_reference::ReplayCx;
+use fss_reference::agent_session::checkpoint::journal::coordination::investigations::ProbeCitationTarget;
 use fss_reference::deployment_session::DeploymentSessionError;
+use fss_reference::deployment_session::probe::case::CaseProbeAction;
 use fss_reference::deployment_session::probe::{
     ProbeCharge, ProbeContext, ProbeRequest, admit_probe, charge_probe_delivery,
 };
@@ -28,6 +30,7 @@ use crate::supervisor::retained::session::{
 };
 use crate::token::ArgToken;
 
+mod case;
 mod compression;
 mod projection;
 mod render;
@@ -47,6 +50,32 @@ pub struct ProbeArgs {
     pub root: PathBuf,
     /// Existing subscription and one exact native action.
     pub request: ProbeRequest,
+    /// Optional exact case use or metadata-only historical citation recovery.
+    pub case: Option<CaseProbeAction>,
+}
+
+impl ProbeArgs {
+    /// Exact transport intent, including explicit case/pre-work state when selected.
+    pub fn digest(&self) -> ContentDigest {
+        self.case.as_ref().map_or_else(
+            || self.request.digest(),
+            |action| action.digest(&self.request),
+        )
+    }
+
+    /// Stable semantic transition; a citation inspection is never labelled a native poll.
+    pub fn name(&self) -> &'static str {
+        self.case
+            .as_ref()
+            .map_or_else(|| self.request.name(), CaseProbeAction::name)
+    }
+
+    fn validate(&self) -> Result<(), DeploymentSessionError> {
+        self.case.as_ref().map_or_else(
+            || self.request.validate(),
+            |action| action.validate(&self.request),
+        )
+    }
 }
 
 /// True only for the explicit retained-probe transition family.
@@ -110,6 +139,11 @@ pub fn parse_probe_args(tokens: &[ArgToken]) -> Result<ProbeArgs, CliError> {
             "--receipt",
             "--window-index",
             "--after-receipt",
+            "--case",
+            "--expected",
+            "--hypothesis",
+            "--side",
+            "--subscription-state",
         ],
     )?;
     let root = required_root(COMMAND, &values)?;
@@ -143,7 +177,7 @@ pub fn parse_probe_args(tokens: &[ArgToken]) -> Result<ProbeArgs, CliError> {
     let (_, transition, index) = required(&values, "--transition")?;
     let (action, extra): (SupervisionAction, &[&str]) = match transition.as_str() {
         "probe" => (SupervisionAction::Poll, &[]),
-        "probe-inspect" => (SupervisionAction::Inspect, &[]),
+        "probe-inspect" | "probe-citation" => (SupervisionAction::Inspect, &[]),
         "probe-ack" => (
             SupervisionAction::Acknowledge(digest(&values, "--receipt")?),
             &["--receipt"],
@@ -178,10 +212,62 @@ pub fn parse_probe_args(tokens: &[ArgToken]) -> Result<ProbeArgs, CliError> {
             return Err(malformed(
                 "--transition",
                 transition,
-                "expected probe, probe-inspect, probe-ack, probe-discard or probe-advance",
+                "expected probe, probe-inspect, probe-ack, probe-discard, probe-advance or probe-citation",
                 *index,
             ));
         }
+    };
+    let case_fields = [
+        "--case",
+        "--expected",
+        "--hypothesis",
+        "--side",
+        "--subscription-state",
+    ];
+    let case = if transition == "probe-citation"
+        || values
+            .iter()
+            .any(|(key, _, _)| case_fields.contains(&key.as_str()))
+    {
+        if transition != "probe" && transition != "probe-citation" {
+            return Err(malformed(
+                "--transition",
+                transition,
+                "case linkage is admitted only for probe or probe-citation",
+                *index,
+            ));
+        }
+        let (_, case_id, _) = required(&values, "--case")?;
+        let (_, hypothesis, _) = required(&values, "--hypothesis")?;
+        let (_, side, side_index) = required(&values, "--side")?;
+        let contradicts = match side.as_str() {
+            "support" => false,
+            "contradiction" => true,
+            _ => {
+                return Err(malformed(
+                    "--side",
+                    side,
+                    "expected support or contradiction",
+                    *side_index,
+                ));
+            }
+        };
+        let target = ProbeCitationTarget {
+            case_id: case_id.clone(),
+            expected: digest(&values, "--expected")?,
+            hypothesis: hypothesis.clone(),
+            contradicts,
+        };
+        if transition == "probe" {
+            Some(CaseProbeAction::Cite {
+                target,
+                expected_subscription_state: digest(&values, "--subscription-state")?,
+            })
+        } else {
+            Some(CaseProbeAction::InspectCitation(target))
+        }
+    } else {
+        None
     };
     for (key, raw, index) in &values {
         if ![
@@ -195,6 +281,9 @@ pub fn parse_probe_args(tokens: &[ArgToken]) -> Result<ProbeArgs, CliError> {
         ]
         .contains(&key.as_str())
             && !extra.contains(&key.as_str())
+            && !(case.is_some()
+                && case_fields.contains(&key.as_str())
+                && (key != "--subscription-state" || transition == "probe"))
         {
             return Err(malformed(
                 key,
@@ -204,7 +293,7 @@ pub fn parse_probe_args(tokens: &[ArgToken]) -> Result<ProbeArgs, CliError> {
             ));
         }
     }
-    Ok(ProbeArgs {
+    let args = ProbeArgs {
         root,
         request: ProbeRequest {
             session_id,
@@ -214,7 +303,17 @@ pub fn parse_probe_args(tokens: &[ArgToken]) -> Result<ProbeArgs, CliError> {
             view,
             action,
         },
-    })
+        case,
+    };
+    args.validate().map_err(|_| {
+        malformed(
+            "--transition",
+            transition,
+            "invalid exact probe/case profile",
+            *index,
+        )
+    })?;
+    Ok(args)
 }
 
 pub(super) struct ProbeFailure {
@@ -283,7 +382,7 @@ fn refusal(args: &ProbeArgs, error: DeploymentSessionError) -> (String, ExitIden
             view: args.request.view,
             root: args.root.clone(),
             principal: args.request.principal.clone(),
-            request: args.request.digest().to_text().into_bytes(),
+            request: args.digest().to_text().into_bytes(),
         },
         error,
     )
@@ -307,7 +406,8 @@ fn fail_after_charge(
 ) -> (String, ExitIdentity) {
     rendered(
         render::response(args, context, delivery, None, charge, Some(failure))
-            .map(|prepared| prepared.text),
+            .map(|prepared| prepared.text)
+            .or_else(|_| render::progress_refusal(args, context, delivery, charge, failure, None)),
         ExitIdentity::AGENT_REFUSED,
         COMMAND,
         &args.root,
@@ -322,6 +422,9 @@ fn run(args: &ProbeArgs, cx: &ReplayCx) -> (String, ExitIdentity) {
         Ok(context) => context,
         Err(error) => return refusal(args, error),
     };
+    if args.case.is_some() {
+        return case::run(args, cx, before);
+    }
     let recovery = SupervisionRecoveryRequest {
         session_id: args.request.session_id.clone(),
         subscription_id: args.request.subscription_id.clone(),
@@ -500,7 +603,7 @@ fn run(args: &ProbeArgs, cx: &ReplayCx) -> (String, ExitIdentity) {
 /// Execute one explicitly selected existing retained probe; never register, auto-ACK or retry.
 #[must_use]
 pub fn execute_probe(args: &ProbeArgs) -> (String, ExitIdentity) {
-    if let Err(error) = args.request.validate() {
+    if let Err(error) = args.validate() {
         return refusal(args, error);
     }
     if !std::fs::symlink_metadata(&args.root).is_ok_and(|m| m.file_type().is_dir())

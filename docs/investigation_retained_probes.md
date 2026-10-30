@@ -52,8 +52,8 @@ its actual context and proof objects can require the explicit `forensic` view (`
 selected view is part of the command identity and every admission, pack, receipt and token charge.
 There is no automatic promotion after a Case refusal, and choosing Forensic does not enlarge the
 session's remaining lifetime allowance or its source-work bounds.
-Every operation requires the live session's registered `CASE-WRITE` grant in addition to
-the native supervision grants and private-property scope. Narrowing any pinned grant,
+Every native probe action requires the live session's registered `CASE-WRITE` grant in addition
+to the native supervision grants and private-property scope. Narrowing any pinned grant,
 expiry, closure or interpretation-generation drift prevents further native work. A recipe
 or a session label is never a source-read grant.
 
@@ -80,6 +80,79 @@ the proof; they do not promise a source-hydration endpoint or authorize access t
 No transition automatically acknowledges, advances, polls a successor, assesses a case,
 contacts a camera/provider or executes an external effect. MCP notifications invoke none
 of these operations.
+
+## Attach a result to an exact case
+
+An explicitly linked `probe` completes the investigation loop: it executes or revalidates the
+selected retained subscription, then records its exact payload digest on one case hypothesis.
+The case must already name that literal subscription in its `probes` set. The selected hypothesis
+must match the immutable native recipe's hypothesis identifier. Case and native disclosure scope
+must both be `private:property`, and the ordinary case owner checks the live session, mission,
+current case predecessor, authority, deadline and capacity before source work.
+
+First inspect the current subscription state with `probe-inspect`. Its progress proposition
+contains the exact state digest, configuration identity, pending receipt and lifetime work.
+Also inspect the case to obtain its exact current `revisionDigest`. Then explicitly select both:
+
+```sh
+fss investigate --json --root /deployment --principal principal:local-operator \
+  --session SESSION --transition probe --subscription probe:door \
+  --authority-root sha256:CURRENT_AUTHORITY --view forensic \
+  --case case:door --expected sha256:CASE_REVISION \
+  --hypothesis hypothesis:configured --side support \
+  --subscription-state sha256:INSPECTED_NATIVE_STATE
+```
+
+MCP accepts the same `case`, `expected`, `hypothesis`, `side` and `subscription_state` fields
+on its existing `probe` transition. All five are required together. `side` is the operator's
+explicit choice of `support` or `contradiction`; the operation does not assess the hypothesis,
+change its knowledge state, eliminate alternatives or conclude the case. The exact native state
+is checked again while holding the native session journal immediately before a reservation or
+action. A concurrent attempt, ACK, discard or schedule change therefore refuses the old request
+before additional source work.
+
+The native report and the case citation are separate durable commits. The citation records the
+original pending receipt, report receipt, payload, configuration, native subscription state,
+authority, fresh/replayed status and native journal root. Its own case revision, citation receipt
+and commit root remain distinct. Journal recovery verifies the adjacent native Publish or Release
+command and the exact state association. That establishes recorded native-owner custody at that
+point; it does not independently re-execute the evaluator, interpret the opaque recipe or certify
+present source availability. Native recipe/hypothesis semantics remain the native owner's assertion.
+
+The successful response includes the actual case receipt identity as the typed H0 handle
+`retained_probe_case_citation` and preserves its complete linkage metadata in the required context
+pack. The report remains pending. Case citation never acknowledges or discards it, and a later
+explicit ACK does not erase the historical citation.
+
+## Recover an interrupted case probe
+
+After a lost response, use the original case target with `probe-citation`:
+
+```sh
+fss investigate --json --root /deployment --principal principal:local-operator \
+  --session CURRENT_READER_SESSION --transition probe-citation --subscription probe:door \
+  --authority-root sha256:CURRENT_AUTHORITY --view forensic \
+  --case case:door --expected sha256:ORIGINAL_CASE_PREDECESSOR \
+  --hypothesis hypothesis:configured --side support
+```
+
+This lookup omits `--subscription-state`. It reads the exact historical citation under the current
+reader's case, mission and privacy authority, including after the case has advanced or the original
+report was ACKed or discarded. It does not require ownership of the original subscription, recover
+its native configuration, revalidate sources, consume another native attempt, relink a case or revive
+the original session's grants. It charges only its bounded metadata output. The returned pending
+receipt describes citation-time custody; historical lookup does not establish current delivery state.
+
+An absent citation is explicitly unknown about native execution: a process can stop after native
+Publish or Release but before the separate case append. Repeating the original linked `probe` is
+fenced by its old native state or case predecessor. Inspect the pending native report and current
+case before deciding whether to select a new exact `subscription-state` for a deliberate, bounded
+revalidation and link. An empty lookup never authorizes that retry automatically.
+
+If citation committed but current-context admission, output quotation or durable output charging
+later refuses, the known citation revision/root, native pending receipt and any committed token
+charge remain visible in the refusal. The case and native owners retain their separate histories;
+output failure does not roll them back or refund work.
 
 ## Complete decisions and bounded work
 
@@ -138,7 +211,12 @@ The full response also has a 256 KiB byte ceiling. If the complete decision proj
 not fit, it is withheld with an explicit partial/refused outcome. The pending native report,
 receipt and already spent work remain durable, and no implicit ACK occurs. Inspect the
 subscription to choose an explicit next action. Failure output preserves known receipt,
-ACK/discard/advance and token-charge progress; unobserved later state remains unknown.
+ACK/discard/advance, case-link and token-charge progress; unobserved later state remains unknown.
+If even a complete refusal context cannot be packaged, the registered outer envelope returns an
+explicit partial outcome with `payload: null`, no compression receipt and bounded recovery metadata.
+It withholds the incomplete cognitive context rather than presenting it as complete. Exact known
+receipts and original lookup selectors survive this fallback, within the unchanged selected-view
+ceiling. A fresh admitted complete context is required before making a decision.
 
 ## Verification scope
 
@@ -152,6 +230,12 @@ The real-source fixture explicitly selects Forensic and compares every native in
 likelihood/probability interval with the required pack, validates the actual V2/pack/receipt schemas,
 and checks actual serialized response bytes against the durably charged selected-view quote.
 A separate default-Case overflow fixture preserves its unchanged ceiling and pending receipt.
+
+The linked-case fixtures additionally cover exact predecessor/native-state admission, unchanged
+competing hypotheses, cold CLI/MCP citation recovery after ACK and later case revisions,
+published-but-unlinked interruption, explicit new-state revalidation and default-Case overflow
+with retained case/native custody. Native journal tests cover append faults and forged historical
+associations; the guarded deployment contract checks interleaving before the journal lock.
 
 These fixtures verify the runtime path and custody boundaries. They do not qualify detector
 accuracy, live devices or continuous surveillance coverage.

@@ -19,6 +19,9 @@ use super::supervision::{SupervisionSessionDelivery, observe_head};
 use super::{DeploymentSessionError, digest_of};
 use crate::agent_session::checkpoint::journal::coordination::investigations::InvestigationError;
 
+/// Exact case linkage and metadata-only historical recovery of an admitted native probe.
+pub mod case;
+
 /// One existing subscription and exactly one explicit native action.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProbeRequest {

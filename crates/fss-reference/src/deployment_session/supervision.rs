@@ -20,8 +20,11 @@ use crate::agent_session::checkpoint::journal::supervision::{
     SupervisionSubscription,
 };
 
+mod guarded;
 mod inventory;
 mod recovery;
+use guarded::SubscriptionAdmission;
+pub use guarded::{GuardedSupervisionDelivery, supervise_existing_session_at};
 pub use inventory::{
     SupervisionInventoryBinding, SupervisionInventoryBoundary, SupervisionInventoryControl,
     SupervisionInventoryDelivery, SupervisionInventoryRequest, list_supervision,
@@ -419,7 +422,14 @@ pub fn supervise_session(
     limits: &OrientLimits,
     control: &mut impl SupervisionEvaluator,
 ) -> Result<SupervisionSessionDelivery, Box<SupervisionSessionFailure>> {
-    supervise(root, principal, request, limits, control, false)
+    supervise(
+        root,
+        principal,
+        request,
+        limits,
+        control,
+        SubscriptionAdmission::RegisterIfAbsent,
+    )
 }
 
 /// Execute one operation only if the exact registration still exists in the admitted journal.
@@ -432,7 +442,14 @@ pub fn supervise_existing_session(
     limits: &OrientLimits,
     control: &mut impl SupervisionEvaluator,
 ) -> Result<SupervisionSessionDelivery, Box<SupervisionSessionFailure>> {
-    supervise(root, principal, request, limits, control, true)
+    supervise(
+        root,
+        principal,
+        request,
+        limits,
+        control,
+        SubscriptionAdmission::Existing,
+    )
 }
 
 fn supervise(
@@ -441,7 +458,7 @@ fn supervise(
     request: &SupervisionSessionRequest,
     limits: &OrientLimits,
     control: &mut impl SupervisionEvaluator,
-    require_existing: bool,
+    admission: SubscriptionAdmission,
 ) -> Result<SupervisionSessionDelivery, Box<SupervisionSessionFailure>> {
     let mut progress = SupervisionSessionFailure {
         error: SupervisionSessionError::InvalidRequest,
@@ -460,7 +477,7 @@ fn supervise(
         limits,
         control,
         &mut progress,
-        require_existing,
+        admission,
     ) {
         Ok(delivery) => Ok(delivery),
         Err(error) => {
@@ -477,8 +494,9 @@ fn execute(
     limits: &OrientLimits,
     control: &mut impl SupervisionEvaluator,
     progress: &mut SupervisionSessionFailure,
-    require_existing: bool,
+    admission: SubscriptionAdmission,
 ) -> Result<SupervisionSessionDelivery, SupervisionSessionError> {
+    let require_existing = admission.requires_existing();
     request
         .registration
         .validate()
@@ -486,6 +504,9 @@ fn execute(
     if root.as_os_str().is_empty()
         || request.expected_authority_root.algorithm() != DigestAlgorithm::Sha256
         || request.expected_authority_root.bytes() == [0; 32]
+        || admission.expected_state().is_some_and(|digest| {
+            digest.algorithm() != DigestAlgorithm::Sha256 || digest.bytes() == [0; 32]
+        })
         || matches!(
             request.action,
             SupervisionAction::Acknowledge(digest) | SupervisionAction::Discard(digest)
@@ -582,6 +603,16 @@ fn execute(
         .commit_pin()
         .map_err(SupervisionSessionError::Session)?;
     progress.attempts_reserved = state.attempts_reserved();
+    // Still holding the one session-journal writer: external preflight cannot authorize
+    // a later reservation, pending report, terminal transition or schedule revision.
+    if admission
+        .expected_state()
+        .is_some_and(|expected| state.digest() != expected)
+    {
+        return Err(SupervisionSessionError::Store(
+            DurableSupervisionError::Conflict,
+        ));
+    }
     binding.active_window_count = state.active_window_count();
 
     let outcome = match request.action {

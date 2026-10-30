@@ -16,10 +16,13 @@ use fss_cli::probe_cmd::ProbeArgs;
 use fss_core::{
     AgentView, ContentDigest, HypothesisDisposition, InvestigationLifecycle, PrincipalId, SessionId,
 };
-use fss_reference::agent_session::checkpoint::journal::coordination::investigations::InvestigationChange;
 use fss_reference::agent_session::checkpoint::journal::coordination::investigations::evolution::InvestigationCitation;
+use fss_reference::agent_session::checkpoint::journal::coordination::investigations::{
+    InvestigationChange, ProbeCitationTarget,
+};
 use fss_reference::deployment_session::investigation::CaseAction;
 use fss_reference::deployment_session::probe::ProbeRequest;
+use fss_reference::deployment_session::probe::case::CaseProbeAction;
 use fss_reference::deployment_session::supervision::SupervisionAction;
 
 use super::json::Value;
@@ -281,7 +284,7 @@ fn probe(
     let mut allowed = common.to_vec();
     let action = match transition {
         "probe" => SupervisionAction::Poll,
-        "probe-inspect" => SupervisionAction::Inspect,
+        "probe-inspect" | "probe-citation" => SupervisionAction::Inspect,
         "probe-ack" | "probe-discard" => {
             allowed.push("receipt");
             let receipt = digest(args, "receipt")?;
@@ -308,6 +311,38 @@ fn probe(
         }
         _ => return Err(INVALID),
     };
+    let case_fields = [
+        "case",
+        "expected",
+        "hypothesis",
+        "side",
+        "subscription_state",
+    ];
+    let case = if transition == "probe-citation"
+        || case_fields.iter().any(|field| args.contains_key(*field))
+    {
+        if transition != "probe" && transition != "probe-citation" {
+            return Err(INVALID);
+        }
+        allowed.extend(["case", "expected", "hypothesis", "side"]);
+        let target = ProbeCitationTarget {
+            case_id: identity(args, "case")?,
+            expected: digest(args, "expected")?,
+            hypothesis: identity(args, "hypothesis")?,
+            contradicts: contradicts(args)?,
+        };
+        if transition == "probe" {
+            allowed.push("subscription_state");
+            Some(CaseProbeAction::Cite {
+                target,
+                expected_subscription_state: digest(args, "subscription_state")?,
+            })
+        } else {
+            Some(CaseProbeAction::InspectCitation(target))
+        }
+    } else {
+        None
+    };
     only(args, &allowed)?;
     let request = ProbeRequest {
         session_id,
@@ -323,9 +358,13 @@ fn probe(
         action,
     };
     request.validate().map_err(|_| INVALID)?;
+    if let Some(action) = &case {
+        action.validate(&request).map_err(|_| INVALID)?;
+    }
     Ok(FssCommand::Probe(Box::new(ProbeArgs {
         root: PathBuf::from(root),
         request,
+        case,
     })))
 }
 
@@ -389,6 +428,25 @@ mod probe_tests {
             return Err("wrong forensic route".into());
         };
         assert_eq!(forensic.request.view, AgentView::Forensic);
+        let case_fields = format!(
+            r#", "case":"case:one","expected":"{ROOT}","hypothesis":"hypothesis:one","side":"support""#
+        );
+        assert!(decode("probe", &case_fields).is_err());
+        let linked_fields = format!(r#"{case_fields},"subscription_state":"{ROOT}""#);
+        let FssCommand::Probe(linked) =
+            decode("probe", &linked_fields).map_err(|_| "linked probe refused")?
+        else {
+            return Err("wrong linked route".into());
+        };
+        let FssCommand::Probe(inspected) =
+            decode("probe-citation", &case_fields).map_err(|_| "citation lookup refused")?
+        else {
+            return Err("wrong citation route".into());
+        };
+        assert!(linked.case.is_some());
+        assert_eq!(inspected.name(), "probe-citation");
+        assert_ne!(linked.digest(), inspected.digest());
+        assert!(decode("probe-citation", &linked_fields).is_err());
         for extra in [
             r#", "root":"/other""#,
             r#", "principal":"principal:other""#,

@@ -383,6 +383,8 @@ fn test_parity_against_json_crosswalk() -> TestResult {
 
 const EXPECTED_FREEZE_DIGEST: &str =
     "sha256:9bbec4e6845ea702f676cd22472e5fb0d35ca3b3d97f66cbfccb452182413da8";
+const EXPECTED_FREEZE_DIGEST_V2: &str =
+    "sha256:5eafaf9e3047686c734079a021482d08f9359c39cee6d66bb3c67a31563aa885";
 
 #[derive(Debug, Clone, PartialEq)]
 enum JsonVal {
@@ -593,16 +595,18 @@ fn validate_frozen_registry_against_compiled(val: &JsonVal) -> Result<(), String
         .get("registryGeneration")
         .ok_or("missing registryGeneration")?
         .as_str()?;
-    if generation != "gen:fss1:public-v1" {
-        return Err(format!("unexpected registryGeneration: {generation}"));
-    }
+    let expected_digest = match generation {
+        "gen:fss1:public-v1" => EXPECTED_FREEZE_DIGEST,
+        "gen:fss1:public-v2" => EXPECTED_FREEZE_DIGEST_V2,
+        _ => return Err(format!("unexpected registryGeneration: {generation}")),
+    };
     let freeze_digest = root
         .get("freezeDigest")
         .ok_or("missing freezeDigest")?
         .as_str()?;
-    if freeze_digest != EXPECTED_FREEZE_DIGEST {
+    if freeze_digest != expected_digest {
         return Err(format!(
-            "freeze digest mismatch: expected {EXPECTED_FREEZE_DIGEST}, got {freeze_digest}"
+            "freeze digest mismatch: expected {expected_digest}, got {freeze_digest}"
         ));
     }
 
@@ -771,6 +775,42 @@ fn test_compiled_operation_table_equals_frozen_registry() -> TestResult {
     let frozen_str = include_str!("../../../architecture/fss1_public_registry.json");
     let json_val = parse_json(frozen_str).map_err(|e| format!("parse error: {e}"))?;
     validate_frozen_registry_against_compiled(&json_val).map_err(|e| e.into())
+}
+
+#[test]
+fn test_compiled_crosswalk_preserves_frozen_v1_registry() -> TestResult {
+    let frozen = include_str!("../../../architecture/fss1_public_registry.v1.json");
+    let val = parse_json(frozen).map_err(|error| format!("parse error: {error}"))?;
+    validate_frozen_registry_against_compiled(&val).map_err(Into::into)
+}
+
+#[test]
+fn test_public_generation_cannot_reuse_another_pin_or_bypass_registration() -> TestResult {
+    let frozen = include_str!("../../../architecture/fss1_public_registry.json");
+    for (generation, expected_error) in [
+        ("gen:fss1:public-v2", "freeze digest mismatch"),
+        (
+            "gen:fss1:public-unregistered",
+            "unexpected registryGeneration",
+        ),
+    ] {
+        let mut val = parse_json(frozen).map_err(|error| format!("parse error: {error}"))?;
+        if let JsonVal::Obj(ref mut root) = val {
+            root.insert(
+                "registryGeneration".to_owned(),
+                JsonVal::Str(generation.to_owned()),
+            );
+            root.insert(
+                "freezeDigest".to_owned(),
+                JsonVal::Str(EXPECTED_FREEZE_DIGEST.to_owned()),
+            );
+        }
+        let error = validate_frozen_registry_against_compiled(&val)
+            .err()
+            .ok_or("different generation must not acquire the historical pin")?;
+        assert!(error.contains(expected_error), "{error}");
+    }
+    Ok(())
 }
 
 fn get_ops_arr_mut(root: &mut JsonVal) -> Option<&mut Vec<JsonVal>> {

@@ -8,6 +8,8 @@ use std::process::Stdio;
 #[path = "../../mcp_investigation_contract/wire.rs"]
 mod wire;
 
+mod case;
+
 fn cli(f: &Fixture, session: &str, transition: &str, flags: &[(&str, &str)]) -> TestResult<Output> {
     let mut command = Command::new(env!("CARGO_BIN_EXE_fss"));
     command
@@ -552,15 +554,22 @@ fn complete_probe_overflow_preserves_pending_receipt_and_explicit_discard_withou
     let response = report(&response)?;
     assert_eq!(text(&response, "outcome")?, "partial");
     assert_eq!(
-        text(payload(&response)?, "viewId")?,
+        text(&response, "effectiveViewId")?,
         "AVIEW-003",
         "default Case was silently widened"
+    );
+    assert!(
+        (encode(&response).len() as u64).div_ceil(4) <= 5_000,
+        "partial response escaped the selected Case wire bound"
     );
     assert_eq!(
         text(&response, "errorId")?,
         "ERR-AGENT-CONTEXT-INCOMPLETE-001"
     );
-    assert!(has_receipt(&response, receipt)?);
+    assert!(
+        encode(&response).contains(&receipt.to_text()),
+        "exact pending receipt missing from partial recovery response"
+    );
     let retained = state(&f, "agent-probe")?;
     assert_eq!(retained.pending(), pending.pending());
     assert_eq!(retained.last_acknowledged(), None);
@@ -615,6 +624,7 @@ fn probe_refuses_foreign_missing_and_stale_scope_before_native_work_and_preserve
             view: fss_core::AgentView::Case,
             action: fss_reference::deployment_session::supervision::SupervisionAction::Poll,
         },
+        case: None,
     };
     assert_ne!(
         fss_cli::probe_cmd::execute_probe(&wrong).1,

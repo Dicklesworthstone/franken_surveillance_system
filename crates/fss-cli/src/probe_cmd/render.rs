@@ -23,6 +23,11 @@ use crate::supervisor::retained::session::{NativeSupervisionRequest, released_re
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
+mod case;
+pub(super) use case::CaseProjection;
+mod refusal;
+pub(super) use refusal::progress_refusal;
+
 /// Private complete response, released only after its quoted token charge is durable.
 pub(super) struct Prepared {
     pub text: String,
@@ -159,13 +164,36 @@ pub(super) fn response(
     charge: Option<&ProbeCharge>,
     failure: Option<&ProbeFailure>,
 ) -> Result<Prepared> {
+    response_with_case(args, context, delivery, native, charge, failure, None)
+}
+
+#[allow(clippy::too_many_arguments)] // independent durable native/case/charge outcomes stay explicit
+pub(super) fn response_with_case(
+    args: &ProbeArgs,
+    context: &ProbeContext,
+    delivery: Option<&SupervisionSessionDelivery>,
+    native: Option<&NativeSupervisionRequest>,
+    charge: Option<&ProbeCharge>,
+    failure: Option<&ProbeFailure>,
+    case: Option<&CaseProjection<'_>>,
+) -> Result<Prepared> {
     let orientation = &context.oriented.orientation;
     if orientation.view != args.request.view {
         return Err(RenderError("probe context differs from explicitly selected view").into());
     }
     let capsule = orientation.capsule();
     let frame = capsule.decision_fingerprint()?;
-    let progress = progress(args, context, delivery);
+    let historical_case_read = matches!(
+        args.case.as_ref(),
+        Some(fss_reference::deployment_session::probe::case::CaseProbeAction::InspectCitation(_))
+    );
+    // A historical case reader need not own the original subscription. A coincidentally equal
+    // label in the reader's current session cannot become the historical operation's progress.
+    let progress = if historical_case_read {
+        None
+    } else {
+        progress(args, context, delivery)
+    };
     let mut propositions: Vec<_> = orientation
         .publication
         .context_pack
@@ -214,19 +242,27 @@ pub(super) fn response(
         "Admitted live session, CASE-WRITE and protected {} context.",
         args.request.view.name()
     )];
-    let mut observed = vec![format!(
-        "session:{};subscription:{}",
-        args.request.session_id.as_str(),
-        args.request.subscription_id
-    )];
+    let mut observed = vec![if historical_case_read {
+        format!(
+            "current case-reader session:{}; historical subscription label:{}",
+            args.request.session_id.as_str(),
+            args.request.subscription_id
+        )
+    } else {
+        format!(
+            "session:{};subscription:{}",
+            args.request.session_id.as_str(),
+            args.request.subscription_id
+        )
+    }];
     let mut omissions = vec!["Original spatial detector rows, model numeric internals and media are represented by exact native payload/source identities; this H0 decision projection does not hydrate them.".to_owned()];
     let mut omitted_count = 0_u64;
     let mut boundary_unknown = Vec::new();
     if let Some(p) = &progress {
         proof.extend([p.configuration, p.state]);
         propositions.push(proposition("progress", format!(
-            "Subscription {}; lifetime native attempts {}/{}; reserved stored-envelope bytes {}; indexed reads {}; no refund. Last ACK {}; discard {}. {}",
-            args.request.subscription_id, p.attempts, p.maximum, p.bytes, p.reads,
+            "Subscription {}; exact state {}; configuration {}; lifetime native attempts {}/{}; reserved stored-envelope bytes {}; indexed reads {}; no refund. Last ACK {}; discard {}. {}",
+            args.request.subscription_id, p.state, p.configuration, p.attempts, p.maximum, p.bytes, p.reads,
             optional(p.last_ack), optional(p.last_discard),
             if delivery.is_some() { "Exact returned native state." } else { "Pre-action metadata; later progress unknown." },
         ), KnowledgeState::Known, &[p.state]));
@@ -373,17 +409,34 @@ pub(super) fn response(
             charge.quoted_tokens, charge.journal_root
         ));
     }
+    if let Some(case) = case {
+        case.append(
+            args,
+            &mut propositions,
+            &mut proof,
+            &mut handles,
+            &mut completed,
+            &mut not_observable,
+            &mut omissions,
+        )?;
+    }
     let coverage = EnvelopeCoverage {
-        authorized_domain: vec![format!(
-            "existing owned retained-source subscription {}",
-            args.request.subscription_id
-        )],
+        authorized_domain: vec![if historical_case_read {
+            "current principal/mission/privacy visibility of the exact historical case citation; no source or original-session authority is revived".to_owned()
+        } else {
+            format!(
+                "existing owned retained-source subscription {}",
+                args.request.subscription_id
+            )
+        }],
         observed_domain: observed,
         not_observable_domain: not_observable,
         omitted_count,
         omission_reasons: omissions,
         stop_reason: if failure.is_some() {
             "explicit refusal; retained progress requires inspection"
+        } else if historical_case_read {
+            "one exact historical case-citation lookup completed; no native source action or relink"
         } else {
             "one explicit bounded native action completed; no automatic successor"
         }
@@ -421,6 +474,8 @@ pub(super) fn response(
                         | "probe:acknowledged"
                         | "probe:discarded"
                         | "probe:packaging-scope"
+                        | "probe:case-linked"
+                        | "probe:case-citation-absent"
                 )
             })
             .cloned()
@@ -480,7 +535,7 @@ pub(super) fn response(
         proof.sort();
         proof.dedup();
         let decision = request_identity("fss.cli.retained_probe_projection.v1", |e| {
-            e.digest(args.request.digest());
+            e.digest(args.digest());
             e.digest(frame);
             for p in &proof {
                 e.digest(*p);
@@ -490,13 +545,13 @@ pub(super) fn response(
                 e.text(&f.reason);
             }
         });
-        let text = args.request.digest().to_text();
+        let text = args.digest().to_text();
         let hex = text
             .strip_prefix("sha256:")
             .ok_or(RenderError("probe request digest differs"))?;
         let envelope = AgentCognitiveEnvelope::new(
         capsule.contract_basis.clone(), format!("request:investigate:{hex}"), format!("response:investigate:{hex}"),
-        format!("trace:investigate:{hex}"), COMMAND, args.request.name(), args.request.view.id(),
+        format!("trace:investigate:{hex}"), COMMAND, args.name(), args.request.view.id(),
         if failure.is_some() { CognitiveAnswerClass::Refusal } else { CognitiveAnswerClass::BoundedSummary },
         capsule.anchor.clone(), summary.clone(), coverage.clone(),
         EnvelopeBudget { requested_json: requested.clone(), consumed_json: consumed.clone(), remaining_json: remaining.clone(),
@@ -510,7 +565,7 @@ pub(super) fn response(
         let payload = agent_json::cognitive_envelope_v2(&envelope, &handles, &[])
             .ok_or(RenderError("probe cognitive envelope differs"))?;
         let output = build_probe_response(ResponseParts {
-        operation: COMMAND, request_digest: args.request.digest(), principal: args.request.principal.clone(),
+        operation: COMMAND, request_digest: args.digest(), principal: args.request.principal.clone(),
         session_id: Some(args.request.session_id.as_str().to_owned()), mission_id: Some(capsule.mission_id.as_str().to_owned()),
         anchor: capsule.anchor.clone(), view: args.request.view, capability: CAPABILITY,
         outcome: if failure.is_some() { ResponseOutcome::Partial } else { ResponseOutcome::Ok }, error_id: failure.map(|f| f.identity),
@@ -542,10 +597,14 @@ pub(super) fn response(
         let quote = (preview.len() as u64).div_ceil(4).saturating_add(512);
         (assemble(quote)?, quote)
     };
-    if failure.is_none()
-        && (quoted_tokens > u64::from(args.request.view.maximum_tokens())
-            || quoted_tokens > context.remaining_tokens
-            || (output.len() as u64).div_ceil(4) > quoted_tokens)
+    let wire_tokens = (output.len() as u64).div_ceil(4);
+    let maximum_tokens = u64::from(args.request.view.maximum_tokens());
+    // A refusal is also a bounded transport response. If its complete protected context cannot
+    // fit, the caller preserves durable progress through the explicit null-payload fallback.
+    if quoted_tokens > maximum_tokens
+        || wire_tokens > maximum_tokens
+        || (failure.is_none()
+            && (quoted_tokens > context.remaining_tokens || wire_tokens > quoted_tokens))
     {
         return Err(std::io::Error::other(format!(
             "complete serialized probe is {} bytes ({} quoted tokens); selected {} ceiling is {}, remaining session allowance is {}. Complete native payload withheld without ACK; an explicitly selected forensic view has a separate registered bound",

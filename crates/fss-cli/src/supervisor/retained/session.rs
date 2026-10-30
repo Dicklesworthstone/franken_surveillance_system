@@ -13,13 +13,13 @@ use fss_reference::agent_session::checkpoint::journal::supervision::{
     SupervisionSourcePin,
 };
 use fss_reference::deployment_session::supervision::{
-    SupervisionAction, SupervisionAdapterError, SupervisionEvaluation, SupervisionEvaluator,
-    SupervisionRecoveryBinding, SupervisionRecoveryBoundary, SupervisionRecoveryControl,
-    SupervisionRecoveryRequest, SupervisionSessionBinding, SupervisionSessionBoundary,
-    SupervisionSessionControl, SupervisionSessionDelivery, SupervisionSessionError,
-    SupervisionSessionFailure, SupervisionSessionOutcome, SupervisionSessionRequest,
-    SupervisionValidation, recover_supervision_registration, supervise_existing_session,
-    supervise_session,
+    GuardedSupervisionDelivery, SupervisionAction, SupervisionAdapterError, SupervisionEvaluation,
+    SupervisionEvaluator, SupervisionRecoveryBinding, SupervisionRecoveryBoundary,
+    SupervisionRecoveryControl, SupervisionRecoveryRequest, SupervisionSessionBinding,
+    SupervisionSessionBoundary, SupervisionSessionControl, SupervisionSessionDelivery,
+    SupervisionSessionError, SupervisionSessionFailure, SupervisionSessionOutcome,
+    SupervisionSessionRequest, SupervisionValidation, recover_supervision_registration,
+    supervise_existing_session, supervise_existing_session_at, supervise_session,
 };
 use fss_reference::{ReferenceDeployment, ReplayCx};
 
@@ -501,6 +501,62 @@ pub fn execute_native_supervision(
     existing_only: bool,
     cx: &ReplayCx,
 ) -> Result<SupervisionSessionDelivery, SupervisionSessionFailure> {
+    let orient_limits = native_session_limits(command, request)?;
+    let mut evaluator = NativeEvaluator {
+        root,
+        site: &request.template().spec().site_lineage,
+        principal,
+        command,
+        request,
+        limits: orient_limits,
+        cx,
+        boundaries: 0,
+    };
+    if existing_only {
+        supervise_existing_session(root, principal, command, &orient_limits, &mut evaluator)
+            .map_err(|failure| *failure)
+    } else {
+        supervise_session(root, principal, command, &orient_limits, &mut evaluator)
+            .map_err(|failure| *failure)
+    }
+}
+
+/// Existing native work with an explicit pre-work state, enforced under the journal lock.
+/// The sealed result lets a later case citation prove that the guard was actually consumed.
+pub fn execute_native_supervision_at(
+    root: &Path,
+    principal: &PrincipalId,
+    command: &SupervisionSessionRequest,
+    request: &NativeSupervisionRequest,
+    expected_subscription_state: ContentDigest,
+    cx: &ReplayCx,
+) -> Result<GuardedSupervisionDelivery, SupervisionSessionFailure> {
+    let orient_limits = native_session_limits(command, request)?;
+    let mut evaluator = NativeEvaluator {
+        root,
+        site: &request.template().spec().site_lineage,
+        principal,
+        command,
+        request,
+        limits: orient_limits,
+        cx,
+        boundaries: 0,
+    };
+    supervise_existing_session_at(
+        root,
+        principal,
+        command,
+        expected_subscription_state,
+        &orient_limits,
+        &mut evaluator,
+    )
+    .map_err(|failure| *failure)
+}
+
+fn native_session_limits(
+    command: &SupervisionSessionRequest,
+    request: &NativeSupervisionRequest,
+) -> Result<OrientLimits, SupervisionSessionFailure> {
     let limits = request.template().spec().limits;
     let valid = NativeSupervisionRequest::from_configuration(
         &command.registration.configuration,
@@ -522,27 +578,10 @@ pub fn execute_native_supervision(
             journal_may_have_changed: false,
         });
     }
-    let orient_limits = OrientLimits {
+    Ok(OrientLimits {
         max_journal_bytes: limits.max_journal_bytes,
         ..OrientLimits::default()
-    };
-    let mut evaluator = NativeEvaluator {
-        root,
-        site: &request.template().spec().site_lineage,
-        principal,
-        command,
-        request,
-        limits: orient_limits,
-        cx,
-        boundaries: 0,
-    };
-    if existing_only {
-        supervise_existing_session(root, principal, command, &orient_limits, &mut evaluator)
-            .map_err(|failure| *failure)
-    } else {
-        supervise_session(root, principal, command, &orient_limits, &mut evaluator)
-            .map_err(|failure| *failure)
-    }
+    })
 }
 
 /// Parse only the exact already released historical report, never an unvalidated journal payload.

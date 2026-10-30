@@ -116,7 +116,7 @@ pub(super) fn package(
         });
     }
     let input = request_identity("fss.cli.retained_probe_context.v1", |e| {
-        e.digest(args.request.digest());
+        e.digest(args.digest());
         e.digest(frame);
         e.digest(context.oriented.journal_root);
         e.u64(items.len() as u64);

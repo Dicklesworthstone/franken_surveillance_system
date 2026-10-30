@@ -60,7 +60,14 @@
     "crates/fss-reference/src/ingest/package_zones/storage.rs",
     "crates/fss-cli/src/probe_cmd.rs",
     "crates/fss-cli/src/supervisor/retained/session.rs",
-    "crates/fss-reference/src/deployment_session/probe.rs"
+    "crates/fss-reference/src/deployment_session/probe.rs",
+    "crates/fss-reference/src/deployment_session/probe/case.rs",
+    "crates/fss-cli/src/probe_cmd/case.rs",
+    "crates/fss-reference/src/agent_session/checkpoint/journal/coordination/investigations/journal/probe_citation.rs",
+    "crates/fss-reference/src/agent_session/checkpoint/journal/coordination/investigations/mod.rs",
+    "crates/fss-cli/src/probe_cmd/render.rs",
+    "crates/fss-cli/src/probe_cmd/render/case.rs",
+    "crates/fss-cli/src/probe_cmd/render/refusal.rs"
   ],
   "module_declarations": {
     "crates/fss-cli/src/alert_effect/report.rs": "support",
@@ -817,7 +824,24 @@
     "crates/fss-cli/src/supervisor/retained/session.rs": "cognition",
     "crates/fss-reference/src/deployment_session/probe.rs": "cognition",
     "crates/fss-reference/src/agent_session/checkpoint/journal/supervision/projection_charge.rs": "authority",
-    "crates/fss-core/src/contract_basis/probe_profile_tests.rs": "support"
+    "crates/fss-core/src/contract_basis/probe_profile_tests.rs": "support",
+    "crates/fss-reference/src/agent_session/checkpoint/journal/coordination/investigations/journal/probe_citation.rs": "authority",
+    "crates/fss-reference/src/agent_session/checkpoint/journal/coordination/investigations/journal/probe_citation/codec.rs": "support",
+    "crates/fss-reference/src/agent_session/checkpoint/journal/coordination/investigations/journal/probe_citation/inspection.rs": "authority",
+    "crates/fss-reference/src/agent_session/checkpoint/journal/coordination/investigations/journal/probe_citation/tests.rs": "support",
+    "crates/fss-reference/src/agent_session/checkpoint/journal/coordination/investigations/journal/probe_citation/tests/recovery.rs": "support",
+    "crates/fss-reference/src/agent_session/checkpoint/journal/supervision/case_citation.rs": "authority",
+    "crates/fss-reference/src/deployment_session/probe/case.rs": "cognition",
+    "crates/fss-reference/src/deployment_session/supervision/guarded.rs": "authority",
+    "crates/fss-reference/tests/deployment_supervision_orientation_contract/guarded.rs": "support",
+    "crates/fss-cli/src/probe_cmd/render/case.rs": "cognition",
+    "crates/fss-cli/src/probe_cmd/case.rs": "cognition",
+    "crates/fss-cli/src/probe_cmd/render/refusal.rs": "cognition",
+    "crates/fss-cli/tests/supervisor_retained_contract/session/probe/case.rs": "support",
+    "crates/fss-cli/src/probe_cmd/render/refusal/tests.rs": "support",
+    "crates/fss-cli/src/bin/fss_mcp/investigate.rs": "support",
+    "crates/fss-cli/src/bin/fss_mcp/server.rs": "support",
+    "crates/fss-cli/src/fss_cmd.rs": "support"
   },
   "types": {
     "AlertEffectRecord": {
@@ -1656,7 +1680,62 @@
     "ProbeArgs": {
       "file": "crates/fss-cli/src/probe_cmd.rs",
       "plane": "cognition",
-      "description": "Typed CLI/MCP existing-subscription intent; cannot supply a native recipe or score."
+      "description": "Typed CLI/MCP retained-probe intent with optional exact case target and source-state precondition; cannot supply a native recipe or score."
+    },
+    "ProbeCitationTarget": {
+      "file": "crates/fss-reference/src/agent_session/checkpoint/journal/coordination/investigations/journal/probe_citation.rs",
+      "plane": "cognition",
+      "description": "Explicit existing case predecessor, hypothesis and support or counterevidence intent; no assessment authority."
+    },
+    "ProbeCustody": {
+      "file": "crates/fss-reference/src/agent_session/checkpoint/journal/coordination/investigations/journal/probe_citation.rs",
+      "plane": "authority",
+      "description": "Private canonical witness authenticated against the actual adjacent native Publish or Release and replayed subscription state."
+    },
+    "ProbeCitationReceipt": {
+      "file": "crates/fss-reference/src/agent_session/checkpoint/journal/coordination/investigations/journal/probe_citation.rs",
+      "plane": "authority",
+      "description": "Exact retained native custody and resulting case revision; preserves the original pending report and work accounting."
+    },
+    "ProbeCitationInspection": {
+      "file": "crates/fss-reference/src/agent_session/checkpoint/journal/coordination/investigations/journal/probe_citation/inspection.rs",
+      "plane": "authority",
+      "description": "Historical authenticated citation under a current case reader, without current source-availability or retry authority."
+    },
+    "GuardedSupervisionDelivery": {
+      "file": "crates/fss-reference/src/deployment_session/supervision/guarded.rs",
+      "plane": "authority",
+      "description": "Sealed native delivery proving the explicit expected subscription state was compared under the journal writer before source reservation or action."
+    },
+    "CaseProbeAction": {
+      "file": "crates/fss-reference/src/deployment_session/probe/case.rs",
+      "plane": "cognition",
+      "description": "Explicit linked probe or metadata-only historical citation lookup, each bound to its original exact case target."
+    },
+    "ProbeCaseAdmission": {
+      "file": "crates/fss-reference/src/deployment_session/probe/case.rs",
+      "plane": "authority",
+      "description": "Sealed exact case and native-state preflight; final native work and case CAS remain independently checked."
+    },
+    "ProbeCaseLink": {
+      "file": "crates/fss-reference/src/deployment_session/probe/case.rs",
+      "plane": "authority",
+      "description": "Sealed continuation from the original native result to a separately committed exact case citation, preserving both journal roots."
+    },
+    "ProbeCaseLinkFailure": {
+      "file": "crates/fss-reference/src/deployment_session/probe/case.rs",
+      "plane": "support",
+      "description": "Final link refusal retaining any definitely committed case receipt without refund or automatic retry."
+    },
+    "ProbeCaseInspection": {
+      "file": "crates/fss-reference/src/deployment_session/probe/case.rs",
+      "plane": "authority",
+      "description": "Sealed current-reader historical citation lookup retaining its exact inspected journal and original citation metadata without native source work."
+    },
+    "ProbeCaseInspectionFailure": {
+      "file": "crates/fss-reference/src/deployment_session/probe/case.rs",
+      "plane": "support",
+      "description": "Historical lookup refusal retaining any definite inspected result and admission progress."
     }
   }
 }

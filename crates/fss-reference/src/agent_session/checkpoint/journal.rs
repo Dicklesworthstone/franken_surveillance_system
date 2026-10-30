@@ -773,6 +773,7 @@ fn replay_all(
     claim_ceilings: Option<WorkClaimLimits>,
 ) -> Result<ReplayedSessionState, DurableSessionError> {
     DurableSessionStore::verify_source_charge_links(report)?;
+    DurableSessionStore::verify_probe_custody_links(report)?;
     let mut memory: Option<ReferenceSessionStore> = None;
     let mut coordination: Option<CoordinationState> = None;
     let mut cursor_history = None;
@@ -816,7 +817,15 @@ fn replay_all(
                 let state = coordination
                     .as_mut()
                     .ok_or(DurableSessionError::InvalidHistory)?;
-                coordination::replay_command(record.payload(), sessions, state, limits)?;
+                if !DurableSessionStore::replay_probe_citation(
+                    record.payload(),
+                    sessions,
+                    state,
+                    &supervisions,
+                    limits,
+                )? {
+                    coordination::replay_command(record.payload(), sessions, state, limits)?;
+                }
             }
             workspace::WORKSPACE_INIT_RECORD_KIND => {
                 let sessions = memory.as_ref().ok_or(DurableSessionError::InvalidHistory)?;

@@ -10,6 +10,39 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Authenticated native probe evidence in investigation cases (reference)
+
+A retained `investigate --transition probe` can now explicitly cite its native result to an
+existing case, exact predecessor revision and selected hypothesis, with support or counterevidence
+chosen by the caller. Linking also requires the exact pre-work subscription-state digest. The
+native owner compares that digest while holding its journal writer before reserving source work
+or performing an action. A blind retry after native publication or case linkage therefore cannot
+silently spend another attempt or attach a different result.
+
+Native publication, case citation and output charging are separate durable stages. The citation
+authenticates the immediately preceding native Publish/Release record, full subscription progress,
+original pending/report/payload identities, native session and authority, and the case CAS. Replay
+verifies physical adjacency before restoring state or repairing an incomplete tail. The case
+continues to distinguish explicit evidence use from a hypothesis assessment or authorized effect;
+the original native delivery root and the later citation root remain separate.
+
+`probe-citation` provides an explicit historical lookup after restart or lost output. A currently
+authorized case reader can recover the original receipt after the source session closes, without
+reopening its recipe, revalidating source or charging a native attempt. The projection identifies
+historical custody and does not substitute a same-name subscription owned by the current reader.
+An absent link never proves that native work did not occur or authorizes an automatic retry.
+
+If a complete context cannot be delivered after a stage commits, a bounded registered response
+preserves the known native, case and charge receipts, exact historical lookup coordinates and
+remaining uncertainty. Its cognitive payload and compression receipt are explicitly absent.
+The requested view is unchanged, and no truncated cognitive result or implicit ACK is returned.
+
+Twelve native citation-owner regressions and five real-deployment state-admission regressions
+cover cold recovery, forged custody, case/source scope, exact CAS, partial append cuts and retry
+fencing. CLI/MCP process fixtures exercise the composed workflow and bounded recovery response.
+Scoped formatting and schema checks pass; dependency-bearing native execution remains pending.
+See [retained investigation probes](docs/investigation_retained_probes.md).
+
 ## Agent investigation of retained native probes (reference)
 
 `fss investigate` and MCP `investigate` now expose explicit probe, inspect, exact-receipt ACK,

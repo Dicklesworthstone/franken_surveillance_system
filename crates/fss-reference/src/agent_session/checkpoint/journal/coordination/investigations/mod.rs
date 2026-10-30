@@ -23,6 +23,9 @@ pub mod evolution;
 pub(super) mod journal;
 
 pub use journal::DurableInvestigationError;
+pub use journal::probe_citation::{
+    ProbeCitationInspection, ProbeCitationReceipt, ProbeCitationTarget, ProbeCustody,
+};
 pub use journal::source_citation::{
     SourceAcquisition, SourceCitationError, SourceCitationInspection, SourceCitationReceipt,
     SourceCitationTarget,

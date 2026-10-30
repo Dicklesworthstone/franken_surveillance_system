@@ -18,6 +18,7 @@ use fss_core::{
 use super::{DurableSessionError, DurableSessionLimits, DurableSessionStore, PendingSession};
 use crate::agent_session::{ReferenceSessionStore, SessionEntry};
 
+pub(super) mod case_citation;
 mod codec;
 mod inventory;
 mod projection_charge;

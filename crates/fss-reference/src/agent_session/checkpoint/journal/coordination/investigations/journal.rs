@@ -10,6 +10,7 @@ use fss_core::CanonicalDecoder;
 
 mod codec;
 mod evolution;
+pub(super) mod probe_citation;
 pub(super) mod source_citation;
 
 const INIT: &str = "fss.reference_investigation_init.v1";

@@ -78,6 +78,8 @@ fn probe_cannot_register_replace_refill_or_mix_native_actions() {
         ("probe", vec!["--budget-tokens", "1000000"]),
         ("probe", vec!["--view", "epistemic_map"]),
         ("probe", vec!["--view", "brief"]),
+        ("probe", vec!["--case", "case:one"]),
+        ("probe-citation", vec![]),
         ("probe-ack", vec![]),
         ("probe-configure", vec![]),
         (
@@ -109,4 +111,41 @@ fn probe_cannot_register_replace_refill_or_mix_native_actions() {
             "accepted {transition}: {extra:?}"
         );
     }
+}
+
+#[test]
+fn case_probe_intent_binds_target_side_state_and_never_aliases_plain_poll()
+-> Result<(), Box<dyn std::error::Error>> {
+    let common = [
+        "--case",
+        "case:one",
+        "--expected",
+        ROOT,
+        "--hypothesis",
+        "hypothesis:one",
+        "--side",
+        "support",
+    ];
+    let mut link = common.to_vec();
+    link.extend(["--subscription-state", ROOT]);
+    let linked = parse("probe", &link)?;
+    let inspected = parse("probe-citation", &common)?;
+    let plain = parse("probe", &[])?;
+    assert_ne!(linked.digest(), plain.digest());
+    assert_ne!(linked.digest(), inspected.digest());
+    assert_eq!(linked.name(), "probe");
+    assert_eq!(inspected.name(), "probe-citation");
+    let mut other_side = link.clone();
+    other_side[7] = "contradiction";
+    assert_ne!(linked.digest(), parse("probe", &other_side)?.digest());
+    assert!(
+        parse("probe", &common).is_err(),
+        "case poll omitted explicit native state"
+    );
+    assert!(
+        parse("probe-citation", &link).is_err(),
+        "historical lookup accepted a work precondition"
+    );
+    assert!(parse("probe-inspect", &common).is_err());
+    Ok(())
 }

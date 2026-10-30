@@ -50,6 +50,12 @@ check cognitive-context-envelope cargo "+$channel" test --locked --offline --no-
     -p fss-core --lib agent_cognitive_context::
 check probe-contract-profile cargo "+$channel" test --locked --offline --no-fail-fast \
     -p fss-core --lib probe_profile_tests::
+check retained-probe-case-custody cargo "+$channel" test --locked --offline --no-fail-fast \
+    -p fss-reference --lib probe_citation::
+check retained-probe-state-admission cargo "+$channel" test --locked --offline --no-fail-fast \
+    -p fss-reference --test deployment_supervision_orientation_contract
+check registered-operation-compatibility cargo "+$channel" test --locked --offline --no-fail-fast \
+    -p fss-cli --test operation_crosswalk_contract
 check retained-delivery-recovery cargo "+$channel" test --locked --offline --no-fail-fast \
     -p fss-reference --test original_media_export_contract --test onvif_capture_operation \
     --test deployment_missing_journal_contract --test doctor_deployment_contract
