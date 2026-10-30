@@ -10,6 +10,34 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Retained detector-class zones and sampled dwell (reference)
+
+`fss-event package-zones analyze` now derives complete image-zone observations from an exact
+retained trained-package analysis and one selected vocabulary label. The native owner uses each
+track's actual assigned detector box and its confirmation state at that sample. Predictions,
+earlier tentative samples, clipped silhouettes, privacy-masked areas and missing observations
+cannot count as inside occupancy. Observed boundary crossings remain distinct from a continuous
+presence claim, and explicit capture-time assumptions are required for sampled dwell.
+
+The complete report preserves every source frame and track/zone/frame cell, observed transitions,
+interruptions and qualifying dwell run. Processing admits at most 16 zones, 64 source frames,
+8192 total cells and 16384 events, with complete canonical and JSON byte ceilings. Source custody
+is verified through the existing package owner; no inference is rerun and no foreground proxy
+substitutes for the selected detector class.
+
+An exact principal/report/root approval retains configuration, analysis and complete derivation
+through existing root-last publication and cognition custody. `package-zones read` reconstructs
+the selected report after restart, including current source, privacy and deletion checks; exact
+retry preserves its original retention anchor and damaged custody is never repaired implicitly.
+Reports do not grant calibrated classification, physical identity, continuous occupancy, absence
+or effects, and explicitly state that this operation has not independently screened source health.
+
+Six native integration contracts, native temporal/geometry tests, an actual-tracker lifecycle
+comparison and a cross-process CLI/schema workflow cover these boundaries. Positive fixtures run
+a synthetic numeric FMPK model through real JPEG/Conv2d/Reshape execution; the bundled trained
+YOLOX model independently exercises clipped-box refusal. Scoped formatting, Python syntax and
+schema checks pass; native Rust execution is pending. See [package zones](docs/PACKAGE_ZONES.md).
+
 ## Cold continuation after a retained RTSP retryable failure (reference)
 
 The native campaign owner now derives a sealed continuation summary from the exact retained

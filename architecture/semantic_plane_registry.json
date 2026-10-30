@@ -55,7 +55,9 @@
     "crates/fss-reference/src/onvif/control/termination/attempt.rs",
     "crates/fss-reference/src/onvif/capture_operation.rs",
     "crates/fss-reference/src/onvif/capture_operation/reconciliation.rs",
-    "crates/fss-reference/src/onvif/metadata/rtp.rs"
+    "crates/fss-reference/src/onvif/metadata/rtp.rs",
+    "crates/fss-reference/src/ingest/package_zones.rs",
+    "crates/fss-reference/src/ingest/package_zones/storage.rs"
   ],
   "module_declarations": {
     "crates/fss-cli/src/alert_effect/report.rs": "support",
@@ -795,7 +797,14 @@
     "crates/fss-reference/src/onvif/metadata/rtp/replay.rs": "cognition",
     "crates/fss-cli/src/bin/fss-onvif-metadata/rtp.rs": "support",
     "crates/fss-packet/src/onvif_metadata.rs": "support",
-    "crates/fss-packet/src/onvif_metadata/receiver.rs": "support"
+    "crates/fss-packet/src/onvif_metadata/receiver.rs": "support",
+    "crates/fss-reference/src/ingest/package_zones.rs": "cognition",
+    "crates/fss-reference/src/ingest/package_zones/compute.rs": "cognition",
+    "crates/fss-reference/src/ingest/package_zones/storage.rs": "cognition",
+    "crates/fss-reference/src/ingest/package_zones/wire.rs": "support",
+    "crates/fss-reference/src/ingest/package_zones/json.rs": "support",
+    "crates/fss-reference/src/ingest/package_zones/tests.rs": "support",
+    "crates/fss-cli/src/bin/fss-event/package_zones.rs": "support"
   },
   "types": {
     "AlertEffectRecord": {
@@ -1555,6 +1564,56 @@
       "file": "crates/fss-reference/src/onvif/metadata/rtp.rs",
       "plane": "support",
       "description": "Observed preceding marker and exact original arrival records and packet/payload/XML spans in reconstruction order, with uninterpreted timestamps."
+    },
+    "PackageZone": {
+      "file": "crates/fss-reference/src/ingest/package_zones.rs",
+      "plane": "cognition",
+      "description": "Bounded source-verified image-zone cognition; actual class-selected assignments and uncertainty confer no event, absence or effect authority."
+    },
+    "PackageZoneDwell": {
+      "file": "crates/fss-reference/src/ingest/package_zones.rs",
+      "plane": "cognition",
+      "description": "Bounded source-verified image-zone cognition; actual class-selected assignments and uncertainty confer no event, absence or effect authority."
+    },
+    "PackageZoneConfig": {
+      "file": "crates/fss-reference/src/ingest/package_zones.rs",
+      "plane": "cognition",
+      "description": "Bounded source-verified image-zone cognition; actual class-selected assignments and uncertainty confer no event, absence or effect authority."
+    },
+    "PackageZoneRelation": {
+      "file": "crates/fss-reference/src/ingest/package_zones.rs",
+      "plane": "cognition",
+      "description": "Bounded source-verified image-zone cognition; actual class-selected assignments and uncertainty confer no event, absence or effect authority."
+    },
+    "PackageZoneFrame": {
+      "file": "crates/fss-reference/src/ingest/package_zones.rs",
+      "plane": "cognition",
+      "description": "Bounded source-verified image-zone cognition; actual class-selected assignments and uncertainty confer no event, absence or effect authority."
+    },
+    "PackageZoneCell": {
+      "file": "crates/fss-reference/src/ingest/package_zones.rs",
+      "plane": "cognition",
+      "description": "Bounded source-verified image-zone cognition; actual class-selected assignments and uncertainty confer no event, absence or effect authority."
+    },
+    "PackageZoneEventKind": {
+      "file": "crates/fss-reference/src/ingest/package_zones.rs",
+      "plane": "cognition",
+      "description": "Bounded source-verified image-zone cognition; actual class-selected assignments and uncertainty confer no event, absence or effect authority."
+    },
+    "PackageZoneEvent": {
+      "file": "crates/fss-reference/src/ingest/package_zones.rs",
+      "plane": "cognition",
+      "description": "Bounded source-verified image-zone cognition; actual class-selected assignments and uncertainty confer no event, absence or effect authority."
+    },
+    "PackageZoneReport": {
+      "file": "crates/fss-reference/src/ingest/package_zones.rs",
+      "plane": "cognition",
+      "description": "Bounded source-verified image-zone cognition; actual class-selected assignments and uncertainty confer no event, absence or effect authority."
+    },
+    "PackageZoneError": {
+      "file": "crates/fss-reference/src/ingest/package_zones.rs",
+      "plane": "support",
+      "description": "Typed complete package-zone refusal preserving source/custody, authority, budget and cancellation distinctions."
     }
   }
 }

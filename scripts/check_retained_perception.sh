@@ -30,6 +30,12 @@ check retained-localization cargo "+$channel" test --locked --offline --no-fail-
     -p fss-reference --test recorded_twin_localization_contract
 check incremental-dwell cargo "+$channel" test --locked --offline --no-fail-fast \
     -p fss-reference --lib ingest::long_dwell
+check package-zones cargo "+$channel" test --locked --offline --no-fail-fast \
+    -p fss-reference --test package_zones_contract
+check package-zone-observations cargo "+$channel" test --locked --offline --no-fail-fast \
+    -p fss-reference --lib package_zones
+check package-track-confirmation cargo "+$channel" test --locked --offline --no-fail-fast \
+    -p fss-reference --lib exact_sample_confirmation_matches_native_lifecycle
 check retained-delivery-recovery cargo "+$channel" test --locked --offline --no-fail-fast \
     -p fss-reference --test original_media_export_contract --test onvif_capture_operation \
     --test deployment_missing_journal_contract --test doctor_deployment_contract
@@ -57,5 +63,6 @@ check operator-integration cargo "+$channel" test --locked --offline --no-fail-f
     --test agent_rehearsal_contract --test watch_stream_detector_cli \
     --test event_fusion_cli --test fusion_profile_cli \
     --test rtsp_event_media_export_cli --test onvif_native_capture_cli \
-    --test follow_subscription_cli_contract --test supervisor_retained_contract
+    --test follow_subscription_cli_contract --test supervisor_retained_contract \
+    --test package_zones_cli_contract
 exit "$status"

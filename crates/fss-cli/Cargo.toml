@@ -194,3 +194,5 @@ workspace = true
 [dev-dependencies]
 fss-codec-h265 = { path = "../fss-codec-h265" }
 fss-container = { path = "../fss-container" }
+fss-model-ir = { path = "../fss-model-ir" }
+fss-tensor = { path = "../fss-tensor" }

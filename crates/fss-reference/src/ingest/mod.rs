@@ -187,6 +187,8 @@ mod detector_cascade_engine;
 
 /// Retained package detections tracked into unresolved recorded events (report/prepare/publish).
 pub mod package_event;
+/// Retained class-selected package tracks, observed image-zone transitions and sampled dwell.
+pub mod package_zones;
 
 /// Opt-in, source-bound visual-degradation screening before recorded watch publication.
 pub mod sensor_health;

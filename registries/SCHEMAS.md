@@ -22,6 +22,7 @@
 | `SCHEMA-MODEL-PACKAGE-001` | `fss.model_package_manifest.v1` | `schemas/model_package_manifest.v1.json` | model authority/package | immutable package root; operator/tensor/preprocess/numeric/license identities preserved |
 | `SCHEMA-MODEL-MANIFEST-001` | `fss.model_manifest.v1` | `schemas/model_manifest.v1.json` | model authority/package | immutable model manifest root; model identity, generation, weights, schemas, calibration, and license/provenance preserved |
 | `SCHEMA-MODEL-RECEIPT-001` | `fss.model_execution_receipt.v1` | `schemas/model_execution_receipt.v1.json` | derived/model evidence | input/model/plan/backend/numeric/budget/outcome and output identities preserved |
+| `SCHEMA-PACKAGE-ZONE-REPORT-001` | `fss.package_zone_report.v1` | `schemas/package_zone_report.v1.json` | derived/cognition | Owner: fss-reference::ingest::package_zones. Complete source-verified image-zone observations over exact retained class-selected tracks; all frames/cells/transitions, confirmation and uncertainty preserved. The native owner additionally verifies source/privacy/deletion custody, exact references, aggregate work and canonical replay. No calibrated class, continuous occupancy, absence, source health or effect authority. |
 | `SCHEMA-RELEASE-BUILD-001` | `fss.release_build_receipt.v1` | `schemas/release_build_receipt.v1.json` | release custody | native target/toolchain/source/lock/manifest/smoke identities immutable |
 | `SCHEMA-RELEASE-STAGE-001` | `fss.release_stage_verification.v1` | `schemas/release_stage_verification.v1.json` | release custody | stage inventory and content digests preserved exactly |
 | `SCHEMA-SOURCE-MANIFEST-001` | `fss.source_manifest.v1` | `schemas/source_manifest.v1.json` | source custody | clean tracked source identity and executable bits preserved |
@@ -235,3 +236,9 @@ approval. Already verified successful cleanup returns without credentials, entro
 work. An unresolved attempt requires fresh owner review, request identity and approval; stale
 state is refused before dispatch. New records participate in existing holds/deletion closure,
 and deleted evidence cannot be restored by cold open or exact retention retry.
+
+## Retained package-track image zones
+
+| Format ID | Domain | Authority | Encoding and compatibility |
+|---|---|---|---|
+| `FMT-017` | `fss.package_zone_report.v1` | derived cognition and source custody | Owner: fss-reference::ingest::package_zones. CanonicalEncoder FSSPZNR1 magic, u32 version 1 and report domain; exact retained v2 package analysis, selected label/tracking configuration, ordered zones and optional dwell rule, source roots and anchor, clock/capture assumptions, current privacy, complete frames/cells/events. At most 16 zones, 64 frames, 8192 cells, 16384 events and 8 MiB. Existing package detection and v2 tracking bytes remain unchanged. Root-last package-zones-v1 manifest closes over the complete report, analysis, original source and capsules, configuration and privacy policy. Cold selected read uses the retained recipe only to reconstruct and byte-compare the entire report under current source/privacy/deletion checks. Principal/report/root approval is separate; exact retry preserves the original cognition anchor. No inference rerun, mutable tracker snapshot, calibrated class, continuous occupancy, absence or effect grant. |

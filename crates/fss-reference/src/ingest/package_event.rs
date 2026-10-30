@@ -980,6 +980,16 @@ impl PackageAnalysisReport {
     pub fn tracks(&self) -> &[PackageTrack] {
         &self.tracks
     }
+    /// Confirmation at this exact actual observation, without retroactively confirming the
+    /// earlier tentative samples. Tentative tracks die at their first missed frame; a surviving
+    /// track confirms on its `confirmation_hits`-th match and never becomes tentative again.
+    /// The identity and observation index must belong to this sealed, source-rebuilt report.
+    #[must_use]
+    pub fn sample_is_confirmed(&self, track: ContentDigest, observation: usize) -> Option<bool> {
+        let track = self.tracks.iter().find(|value| value.identity == track)?;
+        track.observations.get(observation)?;
+        Some(tracking::sample_confirmed(self.config, observation))
+    }
     /// Index of the tracked label in the package vocabulary.
     #[must_use]
     pub fn class_index(&self) -> u64 {

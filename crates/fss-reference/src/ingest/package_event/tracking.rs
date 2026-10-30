@@ -11,6 +11,10 @@ use crate::ingest::detector_cascade::iou_ppm;
 use crate::ingest::tracker::{Detection, MultiObjectTracker, TrackStatus, TrackerLimits};
 use fss_core::ContentDigest;
 
+pub(super) fn sample_confirmed(config: PackageTrackingConfig, observation: usize) -> bool {
+    observation >= config.confirmation_hits.saturating_sub(1) as usize
+}
+
 /// Pure bounded frame composition. `checkpoint` is supplied by the authority-owning caller;
 /// tests can exercise the same computation without filesystem or model dependencies.
 pub(super) fn build_tracks(
@@ -171,6 +175,64 @@ mod tests {
             maximum_missed_frames: 2,
             minimum_iou_ppm: 100_000,
         }
+    }
+
+    #[test]
+    fn exact_sample_confirmation_matches_native_lifecycle_through_misses_and_retirement()
+    -> Result<()> {
+        for hits in 1..=4 {
+            for misses in 1..=2 {
+                for pattern in 0..256_u32 {
+                    let mut input = record(8);
+                    let config = PackageTrackingConfig {
+                        confirmation_hits: hits,
+                        maximum_missed_frames: misses,
+                        ..config()
+                    };
+                    let mut oracle = MultiObjectTracker::new(config.tracker()?)?;
+                    let mut actual = BTreeMap::new();
+                    for (index, frame) in input.frames.iter_mut().enumerate() {
+                        if pattern & (1 << index) == 0 {
+                            frame.detections.clear();
+                        }
+                        let detections: Vec<_> = frame
+                            .detections
+                            .iter()
+                            .map(|d| Detection {
+                                box_x: f64::from(d.bounds[0]) / 256.0,
+                                box_y: f64::from(d.bounds[1]) / 256.0,
+                                box_w: f64::from(d.bounds[2] - d.bounds[0]) / 256.0,
+                                box_h: f64::from(d.bounds[3] - d.bounds[1]) / 256.0,
+                            })
+                            .collect();
+                        let result =
+                            oracle.try_step_assigned(&detections, TrackerLimits::default())?;
+                        for track in result
+                            .output
+                            .tracks
+                            .iter()
+                            .filter(|track| track.misses == 0)
+                        {
+                            actual.insert(
+                                (track.id, frame.segment),
+                                track.status == TrackStatus::Confirmed,
+                            );
+                        }
+                    }
+                    for track in build_tracks(&input, 0, config, &[], || Ok(()))? {
+                        for (index, observation) in track.observations.iter().enumerate() {
+                            assert_eq!(
+                                sample_confirmed(config, index),
+                                actual[&(track.track_id, observation.segment)],
+                                "pattern={pattern} hits={hits} misses={misses} track={} sample={index}",
+                                track.track_id
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
     }
     fn gap(before_segment: u64) -> PackageTrackingBoundary {
         PackageTrackingBoundary {
