@@ -382,6 +382,7 @@ fn case_view_overflow_retains_case_link_pending_receipt_and_recovers_without_sou
     let answer = report(&output)?;
     assert_eq!(text(&answer, "outcome")?, "partial");
     assert_eq!(text(&answer, "effectiveViewId")?, "AVIEW-003");
+    assert_schema(&f, "agent_response_envelope.v1.json", &answer)?;
     assert!(
         (encode(&answer).len() as u64).div_ceil(4) <= 5_000,
         "case-link refusal escaped the selected Case wire bound"

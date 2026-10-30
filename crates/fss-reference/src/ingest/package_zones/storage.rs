@@ -2,7 +2,7 @@
 //! Approved, root-last cognition retention and exact selected cold reconstruction.
 
 use super::*;
-use fss_core::{BatchId, CanonicalEncoder, EvidenceDelta, ObjectId, Plane};
+use fss_core::{BatchId, CanonicalEncode, CanonicalEncoder, EvidenceDelta, ObjectId, Plane};
 use fss_publication::SlotName;
 use std::collections::BTreeSet;
 

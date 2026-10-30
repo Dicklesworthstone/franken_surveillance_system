@@ -292,6 +292,29 @@ fn has_receipt(value: &Value, receipt: ContentDigest) -> TestResult<bool> {
         .any(|h| text(h, "objectDigest").is_ok_and(|v| v == receipt.to_text())))
 }
 
+fn assert_schema(f: &Fixture, schema: &str, instance: &Value) -> TestResult {
+    let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .ok_or("repository root")?;
+    let path = f.directory.0.join(format!("probe-validate-{schema}"));
+    fs::write(&path, encode(instance))?;
+    let result = Command::new("python3")
+        .arg("-B")
+        .arg(repository.join("scripts/json_instance_validate.py"))
+        .arg(repository.join("schemas").join(schema))
+        .arg(&path)
+        .output()?;
+    fs::remove_file(&path)?;
+    assert!(
+        result.status.success(),
+        "{schema}: {}{}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+    Ok(())
+}
+
 fn assert_v2_contract(f: &Fixture, answer: &Value) -> TestResult {
     let payload = payload(answer)?;
     let pack = field(payload, "contextPack")?;
@@ -347,31 +370,13 @@ fn assert_v2_contract(f: &Fixture, answer: &Value) -> TestResult {
             assert!(basis.contains(evidence));
         }
     }
-    let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .ok_or("repository root")?;
     for (schema, instance) in [
         ("agent_response_envelope.v1.json", answer),
         ("agent_cognitive_envelope.v2.json", payload),
         ("semantic_context_pack.v1.json", pack),
         ("semantic_compression_receipt.v1.json", receipt),
     ] {
-        let path = f.directory.0.join(format!("probe-validate-{schema}"));
-        fs::write(&path, encode(instance))?;
-        let result = Command::new("python3")
-            .arg("-B")
-            .arg(repository.join("scripts/json_instance_validate.py"))
-            .arg(repository.join("schemas").join(schema))
-            .arg(&path)
-            .output()?;
-        fs::remove_file(&path)?;
-        assert!(
-            result.status.success(),
-            "{schema}: {}{}",
-            String::from_utf8_lossy(&result.stdout),
-            String::from_utf8_lossy(&result.stderr)
-        );
+        assert_schema(f, schema, instance)?;
     }
     Ok(())
 }

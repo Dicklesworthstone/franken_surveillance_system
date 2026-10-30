@@ -622,7 +622,14 @@ fn large_catalogue_preserves_all_worlds_with_bounded_projection() -> TestResult 
 fn direct_expansion_profile_is_preserved_through_128_events() -> TestResult {
     let (root, mut snapshot) = synthetic_catalogue("boundary", 128)?;
     let orient_request = request(AgentView::Brief)?;
-    let legacy = super::compile_capsule(&snapshot, &orient_request, None, None, &[])?;
+    let legacy = super::compile_capsule(
+        &snapshot,
+        &orient_request,
+        None,
+        None,
+        &[],
+        super::ProjectionPurpose::Orientation,
+    )?;
     assert_eq!(legacy.source.handles.len(), 128);
     assert!(
         legacy
@@ -649,7 +656,14 @@ fn direct_expansion_profile_is_preserved_through_128_events() -> TestResult {
     );
 
     snapshot.events.push(synthetic_event(128)?);
-    let grouped = super::compile_capsule(&snapshot, &orient_request, None, None, &[])?;
+    let grouped = super::compile_capsule(
+        &snapshot,
+        &orient_request,
+        None,
+        None,
+        &[],
+        super::ProjectionPurpose::Orientation,
+    )?;
     assert_eq!(grouped.hydration.len(), 129);
     assert_eq!(grouped.source.handles.len(), 2);
     assert!(grouped.proof_roots.len() < legacy.proof_roots.len());
@@ -783,7 +797,14 @@ fn late_conflicts_and_tamper_remain_inline_and_never_disappear_into_inventory() 
         &mut snapshot.events[257],
         EvidenceEdgeRelation::SensorTamper,
     )?;
-    let compiled = super::compile_capsule(&snapshot, &request(AgentView::Brief)?, None, None, &[])?;
+    let compiled = super::compile_capsule(
+        &snapshot,
+        &request(AgentView::Brief)?,
+        None,
+        None,
+        &[],
+        super::ProjectionPurpose::Orientation,
+    )?;
     for row in &snapshot.events[256..] {
         let slot = compiled
             .hydration

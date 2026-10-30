@@ -4,7 +4,6 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use fss_core::{
@@ -447,23 +446,7 @@ fn packaging_refusal_preserves_real_case_pending_and_committed_charge() -> TestR
     assert_eq!(evaluator.evaluations, 1);
     assert_eq!(charged.supervisions[0].last_acknowledged(), None);
 
-    let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .ok_or("repository root")?;
-    let response_path = directory.0.join("refusal.json");
-    fs::write(&response_path, &text)?;
-    let validation = Command::new("python3")
-        .arg("-B")
-        .arg(repository.join("scripts/json_instance_validate.py"))
-        .arg(repository.join("schemas/agent_response_envelope.v1.json"))
-        .arg(&response_path)
-        .output()?;
-    assert!(
-        validation.status.success(),
-        "outer schema: {}{}",
-        String::from_utf8_lossy(&validation.stdout),
-        String::from_utf8_lossy(&validation.stderr)
-    );
+    // The real CLI Case-overflow fixture validates the outer JSON schema in the integration
+    // harness. Keep this native-owner fixture entirely inside the Rust test process.
     Ok(())
 }

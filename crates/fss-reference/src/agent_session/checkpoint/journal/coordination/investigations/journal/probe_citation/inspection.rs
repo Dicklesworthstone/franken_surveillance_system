@@ -108,7 +108,7 @@ impl DurableSessionStore {
                 continue;
             }
             let mut d = CanonicalDecoder::new(record.payload());
-            if d.text()? != RECORD {
+            if d.text().map_err(DurableSessionError::from)? != RECORD {
                 continue;
             }
             let (recorded_target, custody, revision, after, digest) =
