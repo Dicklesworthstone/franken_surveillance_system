@@ -892,7 +892,12 @@ fn exported_constants_and_tables_integrity() -> Result<(), Box<dyn Error>> {
     // 16 = 15 + FAMILY_EVIDENCE_HOLD (owner evidence holds, 83f58e5).
     // 17 = 16 + the irreversible current-format deployment restore fence.
     // 19 = 17 + retained historical diagnostics + owner-enrolled network observations.
-    assert_eq!(KNOWN_LEDGER_DELTA_FAMILIES.len(), 19);
+    // 20 = 19 + the owner's exact calibration withdrawal.
+    assert_eq!(KNOWN_LEDGER_DELTA_FAMILIES.len(), 20);
+    assert!(
+        KNOWN_LEDGER_DELTA_FAMILIES
+            .contains(&fss_reference::reference_deployment::FAMILY_CALIBRATION_INVALIDATION)
+    );
     assert!(
         KNOWN_LEDGER_DELTA_FAMILIES
             .contains(&fss_reference::discovery::retained_liveness::FAMILY_SENSOR_LIVENESS)

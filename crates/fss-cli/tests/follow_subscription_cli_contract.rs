@@ -17,6 +17,7 @@ use fss_core::{
     EvidenceDelta, IdempotencyKey, ObjectId, ObligationId, OperationId, Plane, RootAuthoritySpec,
     TimestampNs,
 };
+use fss_publication::SlotName;
 use fss_reference::agent_follow::AnchorToken;
 use fss_reference::agent_session::checkpoint::journal::{
     DurableSessionLimits, SessionRecoveryState, inspect_session_bytes,
@@ -281,6 +282,23 @@ impl Fixture {
                 operation_id: None,
             }],
             vec![payload],
+            &self.cx,
+        )?;
+        Ok(())
+    }
+
+    fn publish_metadata(&mut self) -> TestResult {
+        self.commits += 1;
+        let mut deployment = ReferenceDeployment::open(&self.root, SITE, &self.cx)?;
+        let slot = SlotName::parse(format!("follow-metadata-{}", self.commits))?;
+        let payload = format!("synthetic published metadata {}", self.commits);
+        let staged = deployment.stage_and_publish(&slot, &[payload.as_bytes()], &self.cx)?;
+        // One root-last publication and its canonical reachability commit. Unlike the raw
+        // append fixture, this leaves no unpublished source that changes the current doctor.
+        deployment.publish_and_commit(
+            &slot,
+            &staged.manifest,
+            CaptureInterval::new(TimestampNs(0), TimestampNs(10_000))?,
             &self.cx,
         )?;
         Ok(())
@@ -864,6 +882,10 @@ fn populated_case_follow_redelivers_across_transports_and_classifies_evidence_ad
     let mut fixture = Fixture::new("populated-replay")?;
     let opened = fixture.open_case()?;
     assert_eq!(
+        fss_reference::doctor::inspect_deployment(&fixture.root).verdict,
+        fss_reference::doctor::DoctorVerdict::Healthy,
+    );
+    assert_eq!(
         text(field(&opened.value, "payload")?, "investigationId")?,
         CASE
     );
@@ -904,9 +926,14 @@ fn populated_case_follow_redelivers_across_transports_and_classifies_evidence_ad
     assert_eq!(fixture.journal()?, journal);
     assert_eq!(authority_tree(&fixture.root)?, authority);
 
-    // Evidence advances independently of the retained case revision. The successor must
-    // explain that the case needs rebasing without rewriting its original basis.
-    fixture.append()?;
+    // Fully published evidence advances independently of the retained case revision. Keep
+    // current custody diagnostics stable so this isolates historical case freshness. The
+    // successor must explain rebasing without rewriting its original basis.
+    fixture.publish_metadata()?;
+    assert_eq!(
+        fss_reference::doctor::inspect_deployment(&fixture.root).verdict,
+        fss_reference::doctor::DoctorVerdict::Healthy,
+    );
     let authority = authority_tree(&fixture.root)?;
     let advanced = fixture.mcp("populated", 64, Some(pending), false)?;
     advanced.assert_bound(&fixture)?;
@@ -932,6 +959,63 @@ fn populated_case_follow_redelivers_across_transports_and_classifies_evidence_ad
         raw_payload(&advanced.body)?
     );
     assert_eq!(fixture.journal()?, journal);
+    assert_eq!(authority_tree(&fixture.root)?, authority);
+    Ok(())
+}
+
+#[test]
+fn current_doctor_drift_requires_resnapshot_without_consuming_a_populated_pending_page()
+-> TestResult {
+    let mut fixture = Fixture::new("populated-doctor-drift")?;
+    fixture.open_case()?;
+    assert_eq!(
+        fss_reference::doctor::inspect_deployment(&fixture.root).verdict,
+        fss_reference::doctor::DoctorVerdict::Healthy,
+    );
+    let first = fixture.follow("doctor-drift", 64, None)?;
+    let pending = first.receipt()?;
+    let before = fixture.inspect()?.follows;
+
+    // A generic batch verifies child custody but does not publish a root. The resulting
+    // unreferenced object changes the current doctor verdict. That diagnostic is explicitly
+    // current, so historical replay must not invent a prior verdict to accept the old ACK.
+    fixture.append()?;
+    assert_eq!(
+        fss_reference::doctor::inspect_deployment(&fixture.root).verdict,
+        fss_reference::doctor::DoctorVerdict::AttentionRequired,
+    );
+    let authority = authority_tree(&fixture.root)?;
+    let refused = fixture.command(&fixture.args("doctor-drift", 64, Some(pending)), 5)?;
+    let journal = fixture.journal()?;
+    let repeated = fixture.mcp("doctor-drift", 64, Some(pending), true)?;
+    for reply in [&refused, &repeated] {
+        assert_resnapshot_without_ack(reply)?;
+    }
+    assert_eq!(
+        fixture.journal()?,
+        journal,
+        "retry cannot consume the changed page"
+    );
+
+    let current = fixture.orient()?;
+    assert!(
+        array(&current.value, "degradation")?
+            .iter()
+            .filter_map(Value::text)
+            .any(|note| note.contains("deployment doctor reports attention_required")),
+        "an explicit current orientation must preserve the custody diagnostic"
+    );
+    let retained = fixture.inspect()?;
+    assert_eq!(retained.follows, before);
+    assert_eq!(
+        retained.follows[0]
+            .pending()
+            .ok_or("original pending page")?
+            .receipt(),
+        pending
+    );
+    assert_eq!(retained.follows[0].acknowledged_anchor(), fixture.since);
+    assert_eq!(retained.follows[0].last_acknowledged(), None);
     assert_eq!(authority_tree(&fixture.root)?, authority);
     Ok(())
 }

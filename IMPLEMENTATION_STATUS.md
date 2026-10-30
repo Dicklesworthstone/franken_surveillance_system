@@ -23,8 +23,11 @@ current privacy/deletion checks and final release revalidation apply. Further re
 an older approval. Missing original or intermediate evidence refuses without output or repair.
 V1/V2/V3 bytes remain unchanged; the separate V4 policy/domain/profile prevents reinterpretation.
 Reference and real CLI regressions cover cold multi-review export, proof corruption, forged
-native probability, cancellation, exact retry and independent offline verification. Pinned
-formatting and independent review passed; execution of this added profile remains pending.
+native probability, cancellation, exact retry and independent offline verification. All 23
+native export contracts and 14 CLI contracts passed in the
+[supplementary reference run](https://github.com/Dicklesworthstone/franken_surveillance_system/actions/runs/40980790547),
+including every new reviewed-package case. The CLI workflow also passed independently in the
+[native capture run](https://github.com/Dicklesworthstone/franken_surveillance_system/actions/runs/40980790535).
 See [reviewed original-footage export](docs/ORIGINAL_MEDIA_EXPORT.md).
 
 ## Closed-episode citations through captured learning (2026-10-30, reference)
@@ -67,8 +70,12 @@ Nine native contracts plus CLI/MCP subprocess and rendering cases cover pending 
 ACK/cancellation/cold retry, released locks, adjacent wakes and bounded failure. All nine native
 contracts, six CLI library cases and two MCP cases passed in the
 [combined native run](https://github.com/Dicklesworthstone/franken_surveillance_system/actions/runs/40978826772).
-Eight of nine subprocess integrations passed; the populated-case cross-transport advance still
-requires diagnosis, with its exact MCP refusal now included in the assertion. The repository-owned native
+Eight of nine subprocess integrations passed. The remaining fixture advanced with an unpublished
+source, changing the current doctor verdict and correctly invalidating exact pending-page replay.
+Its successful advance now uses canonical root-last publication and checks healthy custody;
+a separate regression preserves resnapshot and an unconsumed pending receipt when unpublished
+data changes the current diagnostic. Native execution of these fixture repairs remains pending.
+The repository-owned native
 entrypoint now includes the new follow, ONVIF reconciliation, original-footage and checkpoint
 health workflows while preserving all existing checks and their failure status.
 See [durable acknowledged waits](docs/AGENT_FOLLOW_WAIT.md).
