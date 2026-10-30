@@ -285,6 +285,11 @@ fn packaging_refusal_preserves_real_case_pending_and_committed_charge() -> TestR
         &mut evaluator,
     )?;
     assert_eq!(evaluator.evaluations, 0);
+    // Genuine empty deployment histories have canonical zero journal roots. Their native
+    // citation and cold replay must work before any authority batch or effect is published.
+    let genesis = ContentDigest::new(fss_core::DigestAlgorithm::Sha256, [0; 32]);
+    assert_eq!(initial.head.ledger_root, genesis);
+    assert_eq!(initial.head.effect_root, genesis);
     let expected_state = initial.subscription.digest();
     let request = ProbeRequest {
         session_id: session.session_id.clone(),
@@ -313,6 +318,7 @@ fn packaging_refusal_preserves_real_case_pending_and_committed_charge() -> TestR
     )?;
     assert_eq!(evaluator.evaluations, 1);
     let linked = commit_probe_case(&root, &admission, &guarded).map_err(|error| error.error)?;
+    assert_eq!(linked.receipt().custody().head(), &guarded.delivery().head);
     let context = admit_probe(&root, &request)?;
     let before_charge = retained(&root)?;
     let charge =

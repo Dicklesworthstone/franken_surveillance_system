@@ -46,7 +46,7 @@ fn diagnostic(
     f: &mut Fixture,
     first: usize,
     count: usize,
-    refused: bool,
+    tolerant: bool,
 ) -> Test<HistoricalHealthRecord> {
     let plan = WatchPlan {
         import_identity: f.import,
@@ -63,10 +63,7 @@ fn diagnostic(
         detector: WatchDetectorConfig::default(),
         tracker: WatchTrackerConfig::default(),
     };
-    let mut limits = LongDwellLimits::default();
-    if refused {
-        limits.decode.jpeg_limits.maximum_dimension = 16;
-    }
+    let limits = LongDwellLimits::default();
     let report = LongDwellReport::analyze_screened(
         &f.deployment,
         &plan,
@@ -76,7 +73,7 @@ fn diagnostic(
             minimum_observations: 3,
         },
         WatchOptions {
-            tolerate_decode_refusals: refused,
+            tolerate_decode_refusals: tolerant,
         },
         &limits,
         &f.cx,
@@ -231,7 +228,18 @@ fn complete_screen_preserves_native_events_and_single_catalog_work_across_zone_p
 
 #[test]
 fn unscreened_gap_and_incomplete_native_scan_interrupt_dwell_but_never_imply_departure() -> Test {
-    let mut f = fixture("health-gap", &clear_media(), &package()?, true)?;
+    // Native package detection is complete for seven valid frames of this same import.
+    // An additional real source frame is unsupported by the native decoder, so a tolerant
+    // health scan spanning the whole import is incomplete without exceeding any work limit.
+    let mut media = clear_media();
+    let mut unsupported = jpeg(208);
+    let sof = unsupported
+        .windows(2)
+        .position(|pair| pair == [0xff, 0xc0])
+        .ok_or("JPEG SOF0")?;
+    unsupported[sof + 1] = 0xc2;
+    media.extend(unsupported);
+    let mut f = fixture_with_detection_frames("health-gap", &media, &package()?, true, Some(7))?;
     assert_eq!(diagnostic(&mut f, 0, 3, false)?.status(), "no_findings");
     assert_eq!(diagnostic(&mut f, 4, 3, false)?.status(), "no_findings");
     let report = screened(&f, whole_image())?;
@@ -254,7 +262,7 @@ fn unscreened_gap_and_incomplete_native_scan_interrupt_dwell_but_never_imply_dep
     assert_eq!(dwells.len(), 1);
     assert_eq!(dwells[0].from_frame, Some(4));
     assert_eq!(dwells[0].through_frame, 6);
-    assert_eq!(diagnostic(&mut f, 0, 7, true)?.status(), "incomplete");
+    assert_eq!(diagnostic(&mut f, 0, 8, true)?.status(), "incomplete");
     let incomplete = screened(&f, whole_image())?;
     assert!(incomplete.events().is_empty());
     assert!(

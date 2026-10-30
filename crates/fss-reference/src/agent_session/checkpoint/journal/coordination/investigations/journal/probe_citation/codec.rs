@@ -88,6 +88,10 @@ pub(super) fn validate_custody(custody: &ProbeCustody) -> Result<(), DurableSess
         || historical.policy_epoch != current.policy_epoch
         || historical.privacy_epoch != current.privacy_epoch
         || (!pin.replayed && historical != current)
+        // DeploymentHistory::roots_at uses SHA-256 zero for a verified empty journal.
+        // Preserve those exact history roots; content/proof identities below remain nonzero.
+        || custody.head.ledger_root.algorithm() != DigestAlgorithm::Sha256
+        || custody.head.effect_root.algorithm() != DigestAlgorithm::Sha256
         || [
             pin.configuration,
             pin.supervisions,
@@ -99,8 +103,6 @@ pub(super) fn validate_custody(custody: &ProbeCustody) -> Result<(), DurableSess
             pin.payload,
             custody.native_root,
             custody.request,
-            custody.head.ledger_root,
-            custody.head.effect_root,
             historical.state_root,
             current.state_root,
         ]

@@ -408,3 +408,60 @@ fn wrong_payload_metadata_action_hypothesis_or_intervening_record_cannot_link() 
     }
     Ok(())
 }
+
+#[test]
+fn genesis_journal_heads_survive_exact_link_and_cold_replay_without_zero_proofs() -> TestResult {
+    let zero = ContentDigest::new(DigestAlgorithm::Sha256, [0; 32]);
+    let recorded = ContentDigest::sha256(b"synthetic nonempty native history");
+    for (ledger_root, effect_root) in [(zero, zero), (recorded, zero), (zero, recorded)] {
+        let mut f = Fixture::new()?;
+        let mut delivery = f.native(false)?;
+        delivery.head.ledger_root = ledger_root;
+        delivery.head.effect_root = effect_root;
+        let receipt = f.cite(&delivery)?;
+        assert_eq!(receipt.custody().head(), &delivery.head);
+        let mut invalid = receipt.custody().clone();
+        invalid.native.command = zero;
+        assert!(matches!(
+            codec::validate_custody(&invalid),
+            Err(DurableSessionError::InvalidHistory)
+        ));
+        let mut invalid = receipt.custody().clone();
+        invalid.native_root = zero;
+        assert!(matches!(
+            codec::validate_custody(&invalid),
+            Err(DurableSessionError::InvalidHistory)
+        ));
+        let mut invalid = receipt.custody().clone();
+        invalid.native.payload = zero;
+        assert!(matches!(
+            codec::validate_custody(&invalid),
+            Err(DurableSessionError::InvalidHistory)
+        ));
+        let mut cold = f.reopen()?;
+        let recovered = cold.inspect(RECEIPT_CEILING)?;
+        assert_eq!(recovered.receipt(), Some(&receipt));
+        assert_eq!(cold.retained()?, delivery.subscription);
+    }
+    Ok(())
+}
+
+#[test]
+fn genesis_support_does_not_admit_a_foreign_journal_root_algorithm() -> TestResult {
+    for ledger in [false, true] {
+        let mut f = Fixture::new()?;
+        let mut delivery = f.native(false)?;
+        let foreign = ContentDigest::new(DigestAlgorithm::Blake3, [0; 32]);
+        if ledger {
+            delivery.head.ledger_root = foreign;
+        } else {
+            delivery.head.effect_root = foreign;
+        }
+        let before = fs::read(f.path())?;
+        assert!(f.cite(&delivery).is_err());
+        assert_eq!(fs::read(f.path())?, before);
+        assert_eq!(f.retained()?, delivery.subscription);
+        assert_eq!(f.store.investigation_heads()[0].digest(), f.target.expected);
+    }
+    Ok(())
+}

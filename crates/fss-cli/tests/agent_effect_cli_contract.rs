@@ -27,6 +27,9 @@ mod learning_explain;
 #[path = "agent_effect_cli_contract/historical_health.rs"]
 mod historical_health;
 
+#[path = "mcp_investigation_contract/wire.rs"]
+mod mcp_response;
+
 use std::error::Error;
 use std::ffi::OsString;
 use std::fs;
@@ -2132,9 +2135,11 @@ fn learning_mcp_tool_wire(
     let output = child.wait_with_output()?;
     assert!(output.status.success(), "{output:?}");
     assert!(output.stderr.is_empty(), "{output:?}");
+    // MCP wraps the complete semantic envelope in one bounded text string. Decode that
+    // response boundary without applying the smaller intent-string admission limit to it.
     let mut replies = String::from_utf8(output.stdout)?
         .lines()
-        .map(|line| parse(line).map_err(Into::into))
+        .map(mcp_response::parse_response)
         .collect::<TestResult<Vec<Value>>>()?;
     assert_eq!(replies.len(), 2);
     assert_eq!(

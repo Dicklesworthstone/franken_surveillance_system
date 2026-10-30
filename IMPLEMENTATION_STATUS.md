@@ -68,6 +68,11 @@ verifies physical adjacency before restoring state or repairing an incomplete ta
 continues to distinguish explicit evidence use from a hypothesis assessment or authorized effect;
 the original native delivery root and the later citation root remain separate.
 
+Native ledger and effect heads preserve the canonical SHA-256 zero root for empty histories,
+so an investigation can cite a retained probe before the first effect has occurred. Evidence,
+publication, request and authority-state identities still require nonzero digests; exact custody
+and cold replay comparisons are unchanged.
+
 `probe-citation` provides an explicit historical lookup after restart or lost output. A currently
 authorized case reader can recover the original receipt after the source session closes, without
 reopening its recipe, revalidating source or charging a native attempt. The projection identifies
@@ -79,7 +84,7 @@ preserves the known native, case and charge receipts, exact historical lookup co
 remaining uncertainty. Its cognitive payload and compression receipt are explicitly absent.
 The requested view is unchanged, and no truncated cognitive result or implicit ACK is returned.
 
-Twelve native citation-owner regressions and five real-deployment state-admission regressions
+Fourteen native citation-owner regressions and five real-deployment state-admission regressions
 cover cold recovery, forged custody, case/source scope, exact CAS, partial append cuts and retry
 fencing. CLI/MCP process fixtures exercise the composed workflow and bounded recovery response.
 Scoped formatting and schema checks pass; dependency-bearing native execution remains pending.

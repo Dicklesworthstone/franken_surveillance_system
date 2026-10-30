@@ -79,6 +79,15 @@ struct Fixture {
     detection: ContentDigest,
 }
 fn fixture(label: &str, media: &[u8], bytes: &[u8], hint: bool) -> Test<Fixture> {
+    fixture_with_detection_frames(label, media, bytes, hint, None)
+}
+fn fixture_with_detection_frames(
+    label: &str,
+    media: &[u8],
+    bytes: &[u8],
+    hint: bool,
+    detection_frames: Option<usize>,
+) -> Test<Fixture> {
     let directory = Directory::new(label)?;
     let root = directory.0.join("deployment");
     let source = directory.0.join("source.mjpeg");
@@ -115,7 +124,7 @@ fn fixture(label: &str, media: &[u8], bytes: &[u8], hint: bool) -> Test<Fixture>
         &PackageDetectRequest {
             import_identity: imported.import_identity,
             first_segment: 0,
-            segment_count: retained.manifest().segment_spans.len(),
+            segment_count: detection_frames.unwrap_or(retained.manifest().segment_spans.len()),
             interpretation: ComponentInterpretation::YCbCr,
             minimum_score_ppm: None,
         },
