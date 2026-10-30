@@ -564,7 +564,7 @@ fn orient_investigate_plan_commit_verify_learn_handoff_rehearsal() -> TestResult
             "Alert the owner on a corroborated entry.",
             // The full case and captured-learning uncertainty must fit the session's explicit
             // 3,000-token orientation view. A cumulative grant cannot widen Brief's 1,600-token
-            // hard cap; the separate grant also admits the later 8,000-token forensic read.
+            // hard cap; the separate grant also admits the later 16,000-token forensic read.
             "--view",
             "epistemic_map",
             "--budget-tokens",
@@ -1102,6 +1102,10 @@ fn orient_investigate_plan_commit_verify_learn_handoff_rehearsal() -> TestResult
 
     // A separate process must recover the same complete capture without resubmitting feedback.
     // This exercises the historical verifier as well as live capture's evidence admission.
+    // The complete selected metadata can exceed Forensic's 8,000-token target; admit its
+    // existing registered maximum without increasing either the view or the session grant.
+    let forensic_maximum = fss_core::AgentView::Forensic.maximum_tokens();
+    let forensic_allowance = forensic_maximum.to_string();
     let inspected = driver.ok(
         "learning-explain",
         &[
@@ -1113,9 +1117,21 @@ fn orient_investigate_plan_commit_verify_learn_handoff_rehearsal() -> TestResult
             "--view",
             "forensic",
             "--budget-tokens",
-            "8000",
+            &forensic_allowance,
         ],
     )?;
+    let requested = field(&inspected, &["budgets", "requested", "tokens"])?
+        .integer()
+        .ok_or("selected learning token allowance")?;
+    let consumed = field(&inspected, &["budgets", "consumed", "tokens"])?
+        .integer()
+        .ok_or("selected learning token consumption")?;
+    assert_eq!(requested, i128::from(forensic_maximum));
+    assert!((1..=requested).contains(&consumed));
+    assert_eq!(
+        field(&inspected, &["payload", "budget", "consumed", "tokens"])?.integer(),
+        Some(consumed),
+    );
     let inspected_proofs = pointers(&inspected)?;
     for pointer in learned_pointers.iter().take(6) {
         assert!(
