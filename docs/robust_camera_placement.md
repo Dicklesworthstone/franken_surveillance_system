@@ -52,6 +52,48 @@ The canonical owner contract is
 `architecture/graph_algorithms.json`. This implements a reference slice of bead
 `fss-x4a.23.50`, not its aggregate physical or `INT-FNX-001` qualification.
 
+## Operator command
+
+`fss-cover placement` reads the existing deployment coverage owner at its committed
+anchor. Every baseline sensor/zone edge requires one retained positive witness covering
+the entire requested capture window. It never joins partial intervals or treats zero
+witness counts as support. The report separately identifies proposed coverage and the
+movement model as `operator_asserted_hypothetical`.
+
+For example, compare a proposed camera at an entrance with the existing retained layout:
+
+```sh
+fss-cover placement --root /path/to/deployment --site site:home \
+  --during 1401000000:2099000000 \
+  --zone ground-zone:entry --zone ground-zone:door \
+  --entry ground-zone:entry --target ground-zone:door \
+  --move ground-zone:entry=ground-zone:door \
+  --candidate sensor:proposed=150:1:ground-zone:entry \
+  --installation-budget 200 --max-additions 1 \
+  --installation-cost-unit usd --sensor-loss-cost-unit sensor-count
+```
+
+The candidate grammar is `SENSOR=INSTALL_COST:LOSS_COST:ZONE[,ZONE...]`.
+Movement arcs are directed; declare both directions when both are intended. All zones
+must be named with `--zone`. Existing relevant sensors default to loss cost one;
+`--sensor-disable-cost SENSOR=N` overrides a known positive baseline observer. Candidate
+identities must not collide with any retained sensor, including a currently unsupported
+one. Both cost-unit names are required and bound into the exact query.
+
+The command emits one complete `fss.coverage_robust_placement.v1` JSON report, with the
+source witness and anchor, baseline observer inventory, all declarations, unsupported
+zones, selected cameras, baseline and defended loss/path witnesses and the exact
+algorithm certificate. `--expected-coverage sha256:...` can pin a prior source witness.
+An exact repeat against unchanged custody has identical output. A stale pin, solver
+refusal or insufficient report budget emits no partial report. Query success does not
+mean current live coverage or a physical installation has been approved.
+
+CLI input limits are 64 zones and 128 movement arcs in addition to the solver's sensor
+and candidate limits. The default cumulative solver budget is two million work units;
+`--work-units` can request at most 50 million. `--max-report-bytes` is at most two MiB.
+The default timeout is 30 seconds, checked around independently bounded source reads
+and throughout solver work; a running filesystem syscall cannot be preempted.
+
 ## Validation
 
 On the pinned `nightly-2026-08-31`, all 11 tests in the focused native suite passed:
@@ -67,3 +109,19 @@ one-unit-short budgets, cancellation during nested work, exact output limits, co
 unit identity, overflow, malformed inputs, existing blind paths and unreachable graphs.
 These results establish the bounded reference behavior; they are not a deployment or
 release qualification claim.
+
+Six focused command tests and a native retained-custody contract exercise the operator
+path, including a complete schema check, incorrect solver-witness mutations, repeatable
+cold reads, whole-window refusal, stale pins and unchanged deployment files:
+
+```sh
+cargo test --offline --locked -j1 -p fss-cli --bin fss-cover placement::tests
+cargo test --offline --locked -j1 -p fss-cli --test coverage_cli_contract \
+  robust_placement_uses_cold_whole_window_custody_without_writing_or_claiming_live_coverage
+```
+
+Those native command tests have not yet executed: the pinned compiler was killed by the
+shared environment's memory limit while compiling the unchanged Asupersync dependency.
+The complete schema catalog validates (94 schemas, 453 references). Repository-wide
+architecture and semantic-plane audits still report existing unrelated registry gaps;
+no qualification status is upgraded by this command.

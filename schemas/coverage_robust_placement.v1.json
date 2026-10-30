@@ -1,0 +1,557 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/coverage_robust_placement.v1.json",
+  "title": "Exact hypothetical camera-addition analysis over retained whole-window coverage v1",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "format": {
+      "const": "fss.coverage_robust_placement.v1"
+    },
+    "site": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "anchor": {
+      "$ref": "evidence_anchor.v1.json"
+    },
+    "capture_window": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "start_ns": {
+          "type": "string",
+          "pattern": "^-?[0-9]+$"
+        },
+        "end_ns": {
+          "type": "string",
+          "pattern": "^-?[0-9]+$"
+        },
+        "endpoints": {
+          "const": "inclusive"
+        },
+        "selection": {
+          "const": "whole-witness-v1"
+        },
+        "clock_alignment": {
+          "const": "operator_hints_not_calibration"
+        }
+      },
+      "required": [
+        "start_ns",
+        "end_ns",
+        "endpoints",
+        "selection",
+        "clock_alignment"
+      ]
+    },
+    "source_coverage_witness": {
+      "$ref": "graph_algorithm_witness.v1.json"
+    },
+    "source_coverage_witness_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "baseline_observers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "zone": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "sensors": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "maxItems": 20,
+            "minItems": 0,
+            "uniqueItems": true
+          }
+        },
+        "required": [
+          "zone",
+          "sensors"
+        ]
+      },
+      "maxItems": 64,
+      "minItems": 1
+    },
+    "zones_without_retained_support": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 512
+      },
+      "maxItems": 64,
+      "minItems": 0,
+      "uniqueItems": true
+    },
+    "declared_problem": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "provenance": {
+          "const": "operator_asserted_hypothetical"
+        },
+        "movement_orientation": {
+          "const": "directed"
+        },
+        "zones": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "maxItems": 64,
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "moves": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "from": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512
+              },
+              "to": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512
+              }
+            },
+            "required": [
+              "from",
+              "to"
+            ]
+          },
+          "maxItems": 128,
+          "minItems": 0
+        },
+        "entries": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "maxItems": 64,
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "targets": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "maxItems": 64,
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "existing_sensor_loss_costs": {
+          "type": "object",
+          "maxProperties": 20,
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 18446744073709551615
+          }
+        },
+        "candidates": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "sensor_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512
+              },
+              "observes": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 512
+                },
+                "maxItems": 64,
+                "minItems": 1,
+                "uniqueItems": true
+              },
+              "installation_cost_units": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 18446744073709551615
+              },
+              "sensor_loss_cost_units": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 18446744073709551615
+              }
+            },
+            "required": [
+              "sensor_id",
+              "observes",
+              "installation_cost_units",
+              "sensor_loss_cost_units"
+            ]
+          },
+          "maxItems": 16,
+          "minItems": 1
+        },
+        "installation_budget_units": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "installation_cost_unit": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9:_\\-.]+$"
+        },
+        "sensor_loss_cost_unit": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9:_\\-.]+$"
+        },
+        "maximum_additions": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 16
+        },
+        "objective": {
+          "const": "maximize_minimum_additive_sensor_loss_cost"
+        },
+        "tie_break": {
+          "const": "lower_installation_cost_then_fewer_additions_then_sensor_ids"
+        }
+      },
+      "required": [
+        "provenance",
+        "movement_orientation",
+        "zones",
+        "moves",
+        "entries",
+        "targets",
+        "existing_sensor_loss_costs",
+        "candidates",
+        "installation_budget_units",
+        "installation_cost_unit",
+        "sensor_loss_cost_unit",
+        "maximum_additions",
+        "objective",
+        "tie_break"
+      ]
+    },
+    "selected_sensors": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 512
+      },
+      "maxItems": 16,
+      "minItems": 0,
+      "uniqueItems": true
+    },
+    "installation_cost_units": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615
+    },
+    "baseline": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "status": {
+              "const": "blind_path"
+            },
+            "sensor_loss_cost_units": {
+              "const": 0
+            },
+            "disabled_sensors": {
+              "const": []
+            },
+            "path": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512
+              },
+              "maxItems": 64,
+              "minItems": 1,
+              "uniqueItems": true
+            }
+          },
+          "required": [
+            "status",
+            "sensor_loss_cost_units",
+            "disabled_sensors",
+            "path"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "status": {
+              "const": "interdiction"
+            },
+            "sensor_loss_cost_units": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "disabled_sensors": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512
+              },
+              "maxItems": 20,
+              "minItems": 1,
+              "uniqueItems": true
+            },
+            "path": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512
+              },
+              "maxItems": 64,
+              "minItems": 1,
+              "uniqueItems": true
+            }
+          },
+          "required": [
+            "status",
+            "sensor_loss_cost_units",
+            "disabled_sensors",
+            "path"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "status": {
+              "const": "unreachable_in_declared_graph"
+            },
+            "sensor_loss_cost_units": {
+              "const": null
+            },
+            "disabled_sensors": {
+              "const": []
+            },
+            "path": {
+              "const": []
+            }
+          },
+          "required": [
+            "status",
+            "sensor_loss_cost_units",
+            "disabled_sensors",
+            "path"
+          ]
+        }
+      ]
+    },
+    "defended": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "status": {
+              "const": "blind_path"
+            },
+            "sensor_loss_cost_units": {
+              "const": 0
+            },
+            "disabled_sensors": {
+              "const": []
+            },
+            "path": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512
+              },
+              "maxItems": 64,
+              "minItems": 1,
+              "uniqueItems": true
+            }
+          },
+          "required": [
+            "status",
+            "sensor_loss_cost_units",
+            "disabled_sensors",
+            "path"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "status": {
+              "const": "interdiction"
+            },
+            "sensor_loss_cost_units": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "disabled_sensors": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512
+              },
+              "maxItems": 20,
+              "minItems": 1,
+              "uniqueItems": true
+            },
+            "path": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512
+              },
+              "maxItems": 64,
+              "minItems": 1,
+              "uniqueItems": true
+            }
+          },
+          "required": [
+            "status",
+            "sensor_loss_cost_units",
+            "disabled_sensors",
+            "path"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "status": {
+              "const": "unreachable_in_declared_graph"
+            },
+            "sensor_loss_cost_units": {
+              "const": null
+            },
+            "disabled_sensors": {
+              "const": []
+            },
+            "path": {
+              "const": []
+            }
+          },
+          "required": [
+            "status",
+            "sensor_loss_cost_units",
+            "disabled_sensors",
+            "path"
+          ]
+        }
+      ]
+    },
+    "evaluated_placements": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 65536
+    },
+    "witness": {
+      "allOf": [
+        {
+          "$ref": "graph_algorithm_witness.v1.json"
+        },
+        {
+          "properties": {
+            "algorithmId": {
+              "const": "ALG-INTERDICT-001"
+            },
+            "implementationId": {
+              "const": "fss-graph-algorithms:alg-interdict-001:exact-robust-placement:v1"
+            },
+            "policyId": {
+              "const": "placement-policy:exact-only:declared-observers:independent-sensor-removals:separate-u64-install-disable-costs:v1"
+            },
+            "exactness": {
+              "const": "bounded_exact"
+            },
+            "stopReason": {
+              "const": "completed"
+            },
+            "errorBound": {
+              "const": null
+            }
+          }
+        }
+      ]
+    },
+    "witness_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "work_budget_scope": {
+      "const": "all_placement_and_sensor_loss_searches; source_reader_and_projection_separately_bounded"
+    },
+    "authority": {
+      "const": "derived_cognition_no_effect_authority"
+    },
+    "claim": {
+      "const": "exact hypothetical camera-addition optimum for the declared movement graph, candidate coverage and additive sensor-loss costs; baseline support uses retained whole-window witnesses, not current health, calibrated clocks, independent failures, complete physical routes, absence, or authority to install or disable cameras"
+    },
+    "qualification": {
+      "const": "deterministic_reference_not_production_qualified"
+    }
+  },
+  "required": [
+    "format",
+    "site",
+    "anchor",
+    "capture_window",
+    "source_coverage_witness",
+    "source_coverage_witness_digest",
+    "baseline_observers",
+    "zones_without_retained_support",
+    "declared_problem",
+    "selected_sensors",
+    "installation_cost_units",
+    "baseline",
+    "defended",
+    "evaluated_placements",
+    "witness",
+    "witness_digest",
+    "work_budget_scope",
+    "authority",
+    "claim",
+    "qualification"
+  ]
+}

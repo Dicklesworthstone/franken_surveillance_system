@@ -845,6 +845,163 @@ fn quiet_scene_coverage_is_approval_gated_orients_complete_and_follow_certifies_
 }
 
 #[test]
+fn robust_placement_uses_cold_whole_window_custody_without_writing_or_claiming_live_coverage()
+-> TestResult {
+    let directory = OwnedDirectory::new("placement")?;
+    let root = directory.root();
+    let id = import(
+        &directory,
+        "placement",
+        &scene(Scene::Quiet(40), None)?,
+        "sensor:quiet",
+        Some("1000000000"),
+    )?;
+    let preview = report(&watch(&root, &id, &[])?)?;
+    let approval = preview.get("coverage")?.get("approval_digest")?.text()?;
+    success(&watch(&root, &id, &["--retain-coverage", approval])?);
+    let original = tree_digest(&root)?;
+    let run = |during: &str, extra: &[&str]| -> TestResult<Output> {
+        Ok(Command::new(env!("CARGO_BIN_EXE_fss-cover"))
+            .arg("placement")
+            .arg("--root")
+            .arg(&root)
+            .args([
+                "--site",
+                SITE,
+                "--during",
+                during,
+                "--zone",
+                "zone:entry",
+                "--zone",
+                "zone:door",
+                "--entry",
+                "zone:entry",
+                "--target",
+                "zone:door",
+                "--move",
+                "zone:entry=zone:door",
+                "--candidate",
+                "sensor:proposed=5:1:zone:entry",
+                "--installation-budget",
+                "5",
+                "--installation-cost-unit",
+                "installation-points",
+                "--sensor-loss-cost-unit",
+                "sensor-count",
+            ])
+            .args(extra)
+            .output()?)
+    };
+    let first = run("1401000000:2099000000", &[])?;
+    success(&first);
+    let text = std::str::from_utf8(&first.stdout)?;
+    let result = Json::parse(text)?;
+    assert_conforms(
+        "coverage_robust_placement.v1.json",
+        text,
+        &directory.0,
+        "retained camera placement",
+    )?;
+    // The original removal-mode witness shares the algorithm ID, but cannot stand in for
+    // this exact placement certificate. The wire schema must reject that substitution.
+    for (key, replacement) in [
+        ("implementationId", Json::Text("fss-graph-algorithms:alg-interdict-001:exact-sensor-subset-enumeration-or-node-weighted-path-bound:v1".into())),
+        ("exactness", Json::Text("bounded_exact_or_approximate".into())),
+        ("stopReason", Json::Text("budget_exhausted".into())),
+        ("errorBound", Json::Number("0.1".into())),
+    ] {
+        let mut foreign = result.clone();
+        let Json::Object(fields) = &mut foreign else { return Err("report is not an object".into()); };
+        let witness = fields.iter_mut().find(|(name, _)| name == "witness").ok_or("witness missing")?;
+        let Json::Object(fields) = &mut witness.1 else { return Err("witness is not an object".into()); };
+        fields.iter_mut().find(|(name, _)| name == key).ok_or("witness field missing")?.1 = replacement;
+        let instance = directory.0.join("foreign-placement-witness.json");
+        fs::write(&instance, render(&foreign))?;
+        let checked = Command::new("python3").arg("-B")
+            .arg(repository_root().join("scripts/json_instance_validate.py"))
+            .arg(repository_root().join("schemas/coverage_robust_placement.v1.json"))
+            .arg(&instance).output()?;
+        assert!(!checked.status.success(), "foreign {key} witness accepted");
+        fs::remove_file(instance)?;
+    }
+    assert_eq!(
+        result.get("selected_sensors")?.texts()?,
+        vec!["sensor:proposed"]
+    );
+    assert_eq!(
+        result
+            .get("baseline")?
+            .get("sensor_loss_cost_units")?
+            .number()?,
+        1
+    );
+    assert_eq!(
+        result
+            .get("defended")?
+            .get("sensor_loss_cost_units")?
+            .number()?,
+        2
+    );
+    assert_eq!(
+        result.get("declared_problem")?.get("provenance")?.text()?,
+        "operator_asserted_hypothetical"
+    );
+    assert_eq!(
+        result.get("authority")?.text()?,
+        "derived_cognition_no_effect_authority"
+    );
+    let pin = result.get("source_coverage_witness_digest")?.text()?;
+    let again = run("1401000000:2099000000", &["--expected-coverage", pin])?;
+    success(&again);
+    assert_eq!(
+        first.stdout, again.stdout,
+        "cold reads produce exactly the same report"
+    );
+    let outside = run("1000000000:2099000000", &[])?;
+    success(&outside);
+    let outside_report = Json::parse(std::str::from_utf8(&outside.stdout)?)?;
+    assert_eq!(
+        outside_report.get("baseline")?.get("status")?.text()?,
+        "blind_path"
+    );
+    assert_eq!(
+        outside_report
+            .get("baseline")?
+            .get("sensor_loss_cost_units")?
+            .number()?,
+        0
+    );
+    assert_eq!(
+        outside_report
+            .get("zones_without_retained_support")?
+            .texts()?,
+        vec!["zone:door", "zone:entry"]
+    );
+    assert_conforms(
+        "coverage_robust_placement.v1.json",
+        std::str::from_utf8(&outside.stdout)?,
+        &directory.0,
+        "explicit missing whole-window support",
+    )?;
+    let stale = ContentDigest::sha256(b"stale coverage").to_text();
+    for options in [
+        vec!["--expected-coverage", stale.as_str()],
+        vec!["--work-units", "1"],
+        vec!["--max-report-bytes", "1024"],
+    ] {
+        let refused = run("1401000000:2099000000", &options)?;
+        assert!(!refused.status.success());
+        assert!(refused.stdout.is_empty(), "no partial optimum on refusal");
+    }
+    assert_eq!(
+        tree_digest(&root)?,
+        original,
+        "every placement read leaves durable custody unchanged"
+    );
+    Ok(())
+}
+
+#[test]
 fn unknown_capture_time_yields_no_witness_and_no_silence() -> TestResult {
     let directory = OwnedDirectory::new("unknown")?;
     let root = directory.root();

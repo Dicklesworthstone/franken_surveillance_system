@@ -847,7 +847,9 @@
     "crates/fss-reference/src/ingest/long_dwell/tests/incremental/video.rs": "support",
     "crates/fss-reference/src/ingest/package_zones/health.rs": "cognition",
     "crates/fss-reference/src/ingest/package_zones/json/screened.rs": "support",
-    "crates/fss-graph-algorithms/src/robust_placement.rs": "cognition"
+    "crates/fss-graph-algorithms/src/robust_placement.rs": "cognition",
+    "crates/fss-cli/src/bin/fss-cover/placement.rs": "cognition",
+    "crates/fss-cli/src/bin/fss-cover/placement_tests.rs": "support"
   },
   "types": {
     "AlertEffectRecord": {

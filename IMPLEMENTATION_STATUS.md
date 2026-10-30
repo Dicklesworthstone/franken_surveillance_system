@@ -20,6 +20,17 @@ canonical ties and work/output witnesses remain visible. Every nested search sha
 one cancellable allowance; an exhausted request refuses without an approximate optimum.
 Existing interdiction formats and identities remain unchanged.
 
+`fss-cover placement` exposes the same solver over committed deployment coverage.
+Baseline support requires one positive retained witness spanning the whole requested
+window; proposed camera coverage, directed movement and both cost scales remain explicit
+hypothetical declarations. Complete JSON reports include the original anchor and source
+witness, unsupported zones, selected additions and baseline/defended removal paths.
+Stale source pins, exhausted work, cancellation and insufficient output bounds refuse
+without a partial optimum. Six focused command cases and a native cold-custody/schema
+contract are added. Their execution remains pending: the pinned native CLI build was
+killed by the shared environment's memory limit in the unchanged Asupersync dependency.
+All 94 JSON schemas and 453 references validate; this is not full qualification.
+
 All 11 focused native tests passed on pinned `nightly-2026-08-31`, including 180 seeded
 comparisons with independent exhaustive placement using the existing interdiction
 oracle, cancellation, budgets, output limits and numeric/input failures. The result is
