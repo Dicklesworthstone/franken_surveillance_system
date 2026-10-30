@@ -173,6 +173,56 @@ pub struct CampaignTerminal {
     pub error_id: Option<String>,
 }
 
+/// Historical failure retained by a verified continuation. It cannot authorize a retry.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CampaignPriorFailure {
+    ordinal: u32,
+    error_id: String,
+}
+impl CampaignPriorFailure {
+    /// Original one-based attempt, never renumbered after restart.
+    pub const fn ordinal(&self) -> u32 {
+        self.ordinal
+    }
+    /// Exact original native/controller failure identity.
+    pub fn error_id(&self) -> &str {
+        &self.error_id
+    }
+}
+
+/// Bounded totals derived from the owner's verified finished prefix, not caller counters.
+/// This is an observation; current authority and `start_attempt` still gate every successor.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CampaignContinuationSummary {
+    completed_attempts: u32,
+    remaining_attempts: u32,
+    durable_pictures: u64,
+    successful_attempts: u32,
+    first_failure: Option<CampaignPriorFailure>,
+}
+impl CampaignContinuationSummary {
+    /// Number of original attempts whose finishes are retained.
+    pub const fn completed_attempts(&self) -> u32 {
+        self.completed_attempts
+    }
+    /// Unused attempts in the original immutable schedule.
+    pub const fn remaining_attempts(&self) -> u32 {
+        self.remaining_attempts
+    }
+    /// Sum of the native durable-picture observations, without a continuity claim.
+    pub const fn durable_pictures(&self) -> u64 {
+        self.durable_pictures
+    }
+    /// Number of settled successful attempts, excluding every partial or failed capture.
+    pub const fn successful_attempts(&self) -> u32 {
+        self.successful_attempts
+    }
+    /// First exact original failure, even when later retained attempts succeeded.
+    pub fn first_failure(&self) -> Option<&CampaignPriorFailure> {
+        self.first_failure.as_ref()
+    }
+}
+
 /// One selected start and optional selected native finish. Later activity remains unknown.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CampaignAttemptHistory {
@@ -602,6 +652,22 @@ impl CampaignWriter {
         {
             return Err(CampaignHistoryError::Mismatch);
         }
+        let root = publisher.root_dir().to_owned();
+        let access = Access {
+            authority,
+            operation: CampaignOperation::Retain,
+            plan: &plan,
+            root: &root,
+            cx,
+        };
+        storage::require_unoccupied_suffix(
+            publisher,
+            plan.approval,
+            expected.records,
+            limits,
+            &access,
+            work,
+        )?;
         Ok(Self {
             plan_digest: fresh.plan_digest,
             plan,
@@ -612,6 +678,65 @@ impl CampaignWriter {
             pending: None,
             retained_bytes: verified.retained_metadata_bytes(),
         })
+    }
+
+    /// Derive continuation totals from this owner's exact finished prefix.
+    ///
+    /// `validate_finish` already proves every retry reason against the frozen plan. A missing
+    /// native result, unresolved custody/control, controller failure, exhausted schedule,
+    /// start-only tail, pending append, or terminal campaign cannot supply a continuation.
+    /// Historical budget is not refunded, and a subsequent success cannot erase these failures.
+    pub fn continuation_summary(&self) -> Result<CampaignContinuationSummary> {
+        let completed = self.state.attempts.len();
+        let tail = self
+            .state
+            .attempts
+            .last()
+            .ok_or(CampaignHistoryError::Mismatch)?;
+        if self.pending.is_some()
+            || self.state.terminal.is_some()
+            || completed >= self.plan.attempts.len()
+            || self.tip.is_none()
+            || tail.finish_pin != self.tip
+        {
+            return Err(CampaignHistoryError::Mismatch);
+        }
+        let mut summary = CampaignContinuationSummary {
+            completed_attempts: completed as u32,
+            remaining_attempts: (self.plan.attempts.len() - completed) as u32,
+            durable_pictures: 0,
+            successful_attempts: 0,
+            first_failure: None,
+        };
+        for attempt in &self.state.attempts {
+            let finish = attempt
+                .finish
+                .as_ref()
+                .ok_or(CampaignHistoryError::Mismatch)?;
+            validate_finish(&self.plan, attempt.attempt.ordinal, finish)?;
+            if !finish.next_attempt_planned {
+                return Err(CampaignHistoryError::Mismatch);
+            }
+            let native = finish
+                .native
+                .as_ref()
+                .ok_or(CampaignHistoryError::Mismatch)?;
+            summary.durable_pictures = summary
+                .durable_pictures
+                .checked_add(native.durable_pictures)
+                .ok_or(CampaignHistoryError::Limit)?;
+            if finish.settled_success {
+                summary.successful_attempts += 1;
+            } else if summary.first_failure.is_none() {
+                summary.first_failure = Some(CampaignPriorFailure {
+                    ordinal: attempt.attempt.ordinal,
+                    error_id: finish_error(finish)
+                        .ok_or(CampaignHistoryError::Mismatch)?
+                        .to_owned(),
+                });
+            }
+        }
+        Ok(summary)
     }
     /// Frozen exact owner-approved campaign scope.
     pub fn plan(&self) -> &CampaignPlan {
@@ -728,6 +853,21 @@ impl CampaignWriter {
         // leaves no authority to adopt a start subsequently written by a different owner.
         if self.tip.is_none() && self.pending.is_none() {
             storage::require_empty(publisher, self.plan.approval, self.limits, &access, work)?;
+        }
+        if let Some(prior) = self.tip
+            && self.pending.is_none()
+            && matches!(transition, Transition::Start(_))
+        {
+            // Another owner using this same live publisher may have advanced after our
+            // continuation was admitted. Only our own exact pending append can reuse a slot.
+            storage::require_unoccupied_suffix(
+                publisher,
+                self.plan.approval,
+                prior.records,
+                self.limits,
+                &access,
+                work,
+            )?;
         }
         let record = CampaignRecord {
             approval: self.plan.approval,

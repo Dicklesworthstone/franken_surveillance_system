@@ -290,7 +290,7 @@ impl Fixture {
     fn publish_metadata(&mut self) -> TestResult {
         self.commits += 1;
         let mut deployment = ReferenceDeployment::open(&self.root, SITE, &self.cx)?;
-        let slot = SlotName::parse(format!("follow-metadata-{}", self.commits))?;
+        let slot = SlotName::parse(&format!("follow-metadata-{}", self.commits))?;
         let payload = format!("synthetic published metadata {}", self.commits);
         let staged = deployment.stage_and_publish(&slot, &[payload.as_bytes()], &self.cx)?;
         // One root-last publication and its canonical reachability commit. Unlike the raw

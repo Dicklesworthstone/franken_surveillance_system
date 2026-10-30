@@ -139,10 +139,14 @@ independently saved `attempt_finished` receipt:
 
 Preview again and approve the newly returned outer digest. The original capture
 identity and every child attempt identity remain unchanged; the new continuation
-approval separately binds the exact saved finish pin. The selected prefix must
-contain only settled-success attempts, have no campaign terminal, and end with
-`next_attempt_planned=true`. Start-only tails, failed/retry prefixes, terminal
-campaigns, changed plans, changed writer limits and partial coordinates refuse.
+approval separately binds the exact saved finish pin. By default the selected
+prefix must contain only settled-success attempts, have no campaign terminal,
+and end with `next_attempt_planned=true`. Start-only tails, terminal campaigns,
+changed plans, changed writer limits and partial coordinates refuse. A saved
+finish also refuses if the live history contains any later start, finish or
+temporary publication in that campaign namespace. Removing old media directories
+cannot make an already-started ordinal reusable. Historical inspection can still
+read an exact older prefix without granting continuation.
 
 The existing history graph is reopened and reverified through the live publisher
 before any new camera session. Verification uses a fresh `--history-work` account;
@@ -152,9 +156,33 @@ before the next predeclared attempt, because a dead process cannot prove whether
 already completed that wait. Previously completed archives are not reopened as live
 capture destinations and no generation, clock or path is reused.
 
-This first operator continuation mode intentionally resumes only a clean
-settled-success prefix. Retry-after-failure continuation remains unsupported rather
-than losing the earlier failure when reconstructing terminal campaign statistics.
+### Continue an already admitted retry after a process restart
+
+Add `--continue-retry-history yes` to the same exact continuation request when the
+retained prefix includes a failed attempt. Preview again and approve this mode's
+new outer digest; neither the original capture approval nor a success-only
+continuation approval authorizes it. The original campaign and child attempt
+identities remain unchanged.
+
+The native history owner must already have recorded a finish that planned the
+next attempt under the original retry policy. Eligible causes remain a typed
+transient connection failure, settled source EOF, an explicitly enabled supervised
+stall, or an explicitly enabled read interruption whose collected prefix and
+control work fully settled. Missing native outcomes, unresolved custody/control,
+authentication or protocol refusal, cancellation and exhausted schedules cannot
+acquire retry authority through this option.
+
+The resumed report carries the exact first failure and original ordinal, prior
+durable pictures, successful/unsuccessful counts, and remaining original attempts.
+A later success leaves an earlier failed all-attempt campaign incomplete and retains
+that failure in both terminal output and durable campaign history. Ordinary reconnect
+histories may also use this explicit mode without `--continue-after-success yes`:
+their original rule still stops at the first later success, with a successful terminal
+result and the earlier error, ordinal and partial-picture totals preserved separately.
+An unused later attempt is not consumed after that success. Native recording
+generations, clocks, destinations and per-attempt limits are never recycled; the
+metadata byte account includes the retained prefix, and only the unused original
+schedule can run. This does not repair or reverify historical media custody.
 
 ## Explicit offline recovery
 

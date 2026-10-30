@@ -95,6 +95,21 @@ enum Failure {
     Shortfall,
     Output,
 }
+
+/// Recover the identical static diagnostic after native campaign history has independently
+/// verified retry eligibility. This lookup grants no retry and never classifies error text.
+pub(super) fn retained_retry_error(error: &str) -> Option<&'static str> {
+    [
+        Failure::ConnectionUnavailable,
+        Failure::Shortfall,
+        Failure::ProgressStalled,
+        Failure::ReadInterrupted,
+    ]
+    .into_iter()
+    .map(Failure::code)
+    .find(|candidate| *candidate == error)
+}
+
 impl Failure {
     fn code(self) -> &'static str {
         match self {

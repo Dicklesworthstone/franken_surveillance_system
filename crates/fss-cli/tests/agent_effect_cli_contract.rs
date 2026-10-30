@@ -416,8 +416,12 @@ struct Agent {
 
 impl Agent {
     fn open(directory: &OwnedDirectory) -> TestResult<Self> {
+        Self::open_with_options(directory, &[])
+    }
+
+    fn open_with_options(directory: &OwnedDirectory, extra: &[&str]) -> TestResult<Self> {
         let root = directory.root();
-        let (code, stdout) = run_fss(&[
+        let mut args = vec![
             "session".into(),
             "open".into(),
             "--json".into(),
@@ -427,7 +431,9 @@ impl Agent {
             "Protect the door.".into(),
             "--objective".into(),
             "Alert the owner on a corroborated entry.".into(),
-        ])?;
+        ];
+        args.extend(extra.iter().map(OsString::from));
+        let (code, stdout) = run_fss(&args)?;
         assert_eq!(code, Some(0), "{stdout}");
         let scratch = directory.0.join("scratch");
         fs::create_dir_all(&scratch)?;
@@ -2344,7 +2350,12 @@ fn assert_learning_discovery(
 #[test]
 fn closed_episode_feedback_publishes_captured_learning_with_cold_cli_mcp_recovery() -> TestResult {
     let (directory, event_id) = corroborated_event("episode-learning")?;
-    let agent = Agent::open(&directory)?;
+    // Captured learning adds protected recovery context. Request its registered view up front;
+    // a larger cumulative grant alone cannot widen Brief's 1,600-token response maximum.
+    let agent = Agent::open_with_options(
+        &directory,
+        &["--view", "epistemic_map", "--budget-tokens", "64000"],
+    )?;
     let relay = Relay::spawn(None)?;
     let (code, planned) = agent.plan(&event_id, relay.address, &[])?;
     assert_eq!(code, Some(0), "{planned:?}");
@@ -2572,6 +2583,36 @@ fn closed_episode_feedback_publishes_captured_learning_with_cold_cli_mcp_recover
     let before_inventory = learning_tree(&agent.root, &[""])?;
     let (code, before_resume) = agent.run("orient", &["--session", &agent.session])?;
     assert_eq!(code, Some(0), "{before_resume:?}");
+    assert_eq!(
+        text(&before_resume, &["payload", "compressionReceipt", "viewId"])?,
+        "AVIEW-008"
+    );
+    let context_tokens = field(
+        &before_resume,
+        &["payload", "compressionReceipt", "actualTokens"],
+    )?
+    .integer()
+    .ok_or("learning context token count")?;
+    assert!((1..=3000).contains(&context_tokens));
+    for omitted in [
+        "omittedCriticalItems",
+        "omittedInvalidations",
+        "omittedContradictions",
+    ] {
+        assert_eq!(
+            field(
+                &before_resume,
+                &[
+                    "payload",
+                    "compressionReceipt",
+                    "criticalPreservation",
+                    omitted
+                ],
+            )?
+            .integer(),
+            Some(0),
+        );
+    }
     assert_learning_discovery(
         &before_resume,
         &candidate,

@@ -11,7 +11,9 @@ use fss_cli::agent_json::{object, string};
 use fss_core::{
     BudgetVector, CanonicalEncoder, ContentDigest, ContextAuthority, OperationId, RootAuthoritySpec,
 };
-use fss_reference::rtsp::campaign_history::{CampaignFinish, CampaignPin, NativeAttemptObservation};
+use fss_reference::rtsp::campaign_history::{
+    CampaignFinish, CampaignPin, NativeAttemptObservation,
+};
 
 use super::driver::{self, AttemptOutcome};
 use super::plan::{self, Options};
@@ -26,7 +28,7 @@ pub(super) mod recovery;
 #[path = "campaign_history.rs"]
 pub(super) mod history;
 
-pub(super) const MAX_ARGUMENTS: usize = plan::MAX_ARGUMENTS + 54;
+pub(super) const MAX_ARGUMENTS: usize = plan::MAX_ARGUMENTS + 56;
 const FORMAT: &str = "fss.rtsp_reconnect_cli.v1";
 const MAX_CONTROL_REPORT_BYTES: usize = 262_144;
 const POLICY: &str = "bounded-owner-approved-attempts:literal-peer-only:fresh-generation-and-clocks:\
@@ -47,6 +49,10 @@ every-approved-attempt-is-independent:all-attempts-must-settle-for-completion";
 const CONTINUATION_POLICY: &str = "fss.rtsp_capture_campaign_continuation.v1:\
 exact-independent-finish-pin:fresh-owner-approval:fresh-history-work:\
 settled-success-prefix-only:repeat-backoff-before-next-camera:no-budget-refund";
+const RETRY_CONTINUATION_POLICY: &str = "fss.rtsp_capture_campaign_retry_continuation.v1:\
+exact-independent-finish-pin:native-verified-planned-retry:fresh-owner-approval:\
+preserve-original-failure-and-totals:remaining-original-attempts-only:\
+repeat-backoff-before-next-camera:fresh-history-work:no-budget-refund";
 pub(super) const HELP: &str = "fss-capture-rtsp reconnect [ordinary capture options]\n\
   --max-attempts 3 --retry-delay-ms 250 --retry-max-delay-ms 5000\n\
   [--progress-timeout-ms 5000] [--capture-duration-ms 10000]\n\
@@ -107,6 +113,18 @@ A campaign is complete only when EVERY planned attempt settles successfully. A l
 cannot erase an earlier shortfall: partial campaigns return an original failure and retain per-attempt reports.\n\
 This is bounded repeated capture, NOT gap-free recording or an always-on daemon.\n\
 Repeat this option unchanged when previewing offline recovery of a campaign.\n\
+\n\
+Cold continuation requires all four independently saved --continue-history-approval,\n\
+--continue-history-plan, --continue-history-root-digest and --continue-history-records values.\n\
+Repeat every original campaign/history option and approve the new continuation preview.\n\
+By default only settled-success prefixes continue. --continue-retry-history yes separately\n\
+admits a finished prefix whose native owner already planned a bounded typed retry. Original\n\
+failure identities, partial pictures and unsuccessful-attempt counts remain in terminal history.\n\
+It also supports ordinary reconnect: the first later success ends that original retry schedule,\n\
+while its terminal report preserves the earlier failures and partial pictures.\n\
+Only unused original attempts may run, with their original generations, paths and budgets.\n\
+Start-only, terminal, exhausted, unresolved-custody/control and nonretryable tails refuse.\n\
+Old continuation approvals cannot enable this mode; backoff is repeated after restart.\n\
 Between attempts, exponential backoff is capped by --retry-max-delay-ms. At most 16 attempts.\n\
 Per-attempt resource ceilings are not silently widened; the outer preview prices their sum.\n\
 Credentials, when explicitly configured, are loaded into a fresh private lease per attempt.\n\
@@ -183,6 +201,7 @@ pub(super) struct ReconnectPlan {
     sources: Option<retained::SourcePlans>,
     history: Option<history::Config>,
     continuation: Option<CampaignPin>,
+    continue_retry_history: bool,
     retry_delay_ms: u64,
     retry_max_delay_ms: u64,
     progress_timeout_ns: Option<u64>,
@@ -274,11 +293,18 @@ impl ReconnectPlan {
                     .map_err(|_| "invalid continuation history root")?,
                 records: positive(&records, 1, 33)? as u32,
             }),
-            _ => return Err("cold continuation requires all four --continue-history-* coordinates"),
+            _ => {
+                return Err("cold continuation requires all four --continue-history-* coordinates");
+            }
         };
         if recover && continuation.is_some() {
             return Err("cold continuation cannot be combined with offline recovery");
         }
+        let continue_retry_history = match values.remove("--continue-retry-history").as_deref() {
+            None => false,
+            Some("yes") if continuation.is_some() => true,
+            _ => return Err("--continue-retry-history requires yes and an exact continuation pin"),
+        };
         let continue_after_success = match values.remove("--continue-after-success").as_deref() {
             None => false,
             Some("yes") => true,
@@ -436,6 +462,7 @@ impl ReconnectPlan {
             sources,
             history,
             continuation,
+            continue_retry_history,
             retry_delay_ms,
             retry_max_delay_ms,
             progress_timeout_ns,
@@ -469,14 +496,20 @@ impl ReconnectPlan {
                 .history
                 .as_ref()
                 .ok_or("cold continuation requires --history-root and original history limits")?;
-            if !out.continue_after_success
+            if (!out.continue_after_success && !out.continue_retry_history)
                 || pin.approval != out.digest()?
-                || pin.plan != history.campaign(&out)?.digest().map_err(|_| "history plan digest")?
+                || pin.plan
+                    != history
+                        .campaign(&out)?
+                        .digest()
+                        .map_err(|_| "history plan digest")?
                 || pin.records < 2
                 || pin.records % 2 != 0
                 || pin.records as usize / 2 >= out.attempts.len()
             {
-                return Err("cold continuation requires an exact nonterminal settled campaign finish");
+                return Err(
+                    "cold continuation requires an exact nonterminal settled campaign finish",
+                );
             }
         }
         Ok(out)
@@ -578,7 +611,11 @@ impl ReconnectPlan {
             return Ok(capture);
         };
         let mut e = CanonicalEncoder::new();
-        e.text(CONTINUATION_POLICY);
+        e.text(if self.continue_retry_history {
+            RETRY_CONTINUATION_POLICY
+        } else {
+            CONTINUATION_POLICY
+        });
         e.digest(capture);
         e.digest(pin.approval);
         e.digest(pin.plan);
@@ -669,7 +706,14 @@ impl ReconnectPlan {
             fields.push((
                 "cold_continuation",
                 object(&[
-                    ("policy", string(CONTINUATION_POLICY)),
+                    (
+                        "policy",
+                        string(if self.continue_retry_history {
+                            RETRY_CONTINUATION_POLICY
+                        } else {
+                            CONTINUATION_POLICY
+                        }),
+                    ),
                     ("approval", string(&pin.approval.to_text())),
                     ("plan", string(&pin.plan.to_text())),
                     ("root", string(&pin.root.to_text())),
@@ -801,7 +845,7 @@ trait Effects {
 }
 
 fn run(plan: &ReconnectPlan, effects: &mut impl Effects) -> Result<(), &'static str> {
-    run_from(plan, effects, 0, 0, 0)
+    run_from(plan, effects, 0, 0, 0, None)
 }
 
 fn run_from(
@@ -810,8 +854,15 @@ fn run_from(
     start_index: usize,
     durable_prefix: u64,
     successful_prefix: usize,
+    prior_failure: Option<(usize, &'static str)>,
 ) -> Result<(), &'static str> {
-    if plan.recovery_timeout_ns.is_some() || start_index >= plan.attempts.len() {
+    if plan.recovery_timeout_ns.is_some()
+        || start_index >= plan.attempts.len()
+        || successful_prefix > start_index
+        || (prior_failure.is_some() && !plan.continue_retry_history)
+        || prior_failure.is_some_and(|(ordinal, _)| ordinal == 0 || ordinal > start_index)
+        || (prior_failure.is_some() != (start_index != successful_prefix))
+    {
         return Err("ERR-CAPTURE-RTSP-STATE-001");
     }
     let approval = plan.approval_digest()?;
@@ -821,18 +872,37 @@ fn run_from(
     effects.checkpoint()?;
     let mut durable = durable_prefix;
     let mut successful_attempts = successful_prefix;
-    let mut first_failure: Option<(usize, &'static str)> = None;
+    let mut first_failure = prior_failure;
     if start_index != 0 {
-        effects.emit(
-            "continuation_resumed",
-            object(&[
-                ("approval", string(&approval.to_text())),
-                ("prior_attempts", start_index.to_string()),
-                ("next_attempt", (start_index + 1).to_string()),
-                ("durable_pictures_prior_attempts", durable.to_string()),
-                ("historical_budget_refunded", "false".into()),
-            ]),
-        )?;
+        let mut resumed = vec![
+            ("approval", string(&approval.to_text())),
+            ("prior_attempts", start_index.to_string()),
+            ("next_attempt", (start_index + 1).to_string()),
+            ("durable_pictures_prior_attempts", durable.to_string()),
+            ("historical_budget_refunded", "false".into()),
+        ];
+        if plan.continue_retry_history {
+            resumed.extend([
+                ("successful_prior_attempts", successful_prefix.to_string()),
+                (
+                    "unsuccessful_prior_attempts",
+                    (start_index - successful_prefix).to_string(),
+                ),
+                (
+                    "remaining_original_attempts",
+                    (plan.attempts.len() - start_index).to_string(),
+                ),
+                (
+                    "first_failed_attempt",
+                    first_failure.map_or_else(|| "null".into(), |(ordinal, _)| ordinal.to_string()),
+                ),
+                (
+                    "first_error_id",
+                    first_failure.map_or_else(|| "null".into(), |(_, error)| string(error)),
+                ),
+            ]);
+        }
+        effects.emit("continuation_resumed", object(&resumed))?;
         let delay = plan.delay_ms(start_index - 1);
         effects.emit(
             "backoff",
@@ -1030,11 +1100,15 @@ fn run_from(
                 ("continuity_across_attempts", "false".into()),
                 ("absence_certifiable", "false".into()),
             ];
-            if plan.continue_after_success {
+            if plan.continue_after_success || plan.continue_retry_history {
                 terminal_fields.extend([
                     (
                         "completion_scope",
-                        string("all_planned_attempts_settled_successfully"),
+                        string(if plan.continue_after_success {
+                            "all_planned_attempts_settled_successfully"
+                        } else {
+                            "first_successful_attempt"
+                        }),
                     ),
                     ("planned_attempts", plan.attempts.len().to_string()),
                     ("successful_attempts", successful_attempts.to_string()),
@@ -1290,6 +1364,7 @@ pub(super) fn execute(plan: &mut ReconnectPlan) -> Result<(), &'static str> {
             seed.next_index,
             seed.durable_pictures,
             seed.successful_attempts,
+            seed.first_failure,
         )
     } else {
         run(plan, &mut effects)

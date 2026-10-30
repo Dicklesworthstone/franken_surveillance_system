@@ -10,6 +10,29 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Cold continuation after a retained RTSP retryable failure (reference)
+
+The native campaign owner now derives a sealed continuation summary from the exact retained
+finish chain: spent attempt ordinals, remaining original attempts, durable pictures, successful
+attempts and the first failure. An explicitly approved retry-history continuation can use that
+summary without erasing a shortfall or recreating an earlier capture epoch. The original attempt
+schedule, generation, output paths and limits remain pinned; cold history verification is
+separately bounded, and the original backoff is repeated before the next attempt. Ordinary
+reconnect still stops at its first later success; an all-attempt campaign still fails when an
+earlier required attempt failed. Both preserve the historical failure and aggregate totals.
+
+Continuation checks the live publication namespace for any later start, finish, broken root or
+unfinished publication before adoption and again before starting another attempt. An older
+historical prefix remains inspectable but cannot authorize replay of an already used ordinal.
+Unfinished attempts, unknown outcomes, unresolved recovery/control work, exhausted schedules and
+terminal campaigns refuse. Existing campaign, attempt and success-only continuation encodings
+remain unchanged; retry-history adoption uses its own approval domain.
+
+Native history contracts, controller contracts and two actual loopback subprocess restart fixtures
+cover exact failure accounting, stale-prefix refusal, immutable prior stores and no extra capture
+after an ordinary reconnect succeeds. Pinned formatting and diff checks pass; native execution of this new
+slice is pending. See [RTSP capture campaigns](docs/rtsp_capture_campaign.md).
+
 ## Original footage after reviewing trained-detector events (2026-10-30, reference)
 
 Original-footage export now also accepts current operator-reviewed package events through the

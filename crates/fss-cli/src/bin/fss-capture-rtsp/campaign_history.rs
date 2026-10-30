@@ -382,6 +382,7 @@ pub(super) struct ContinuationSeed {
     pub(super) next_index: usize,
     pub(super) durable_pictures: u64,
     pub(super) successful_attempts: usize,
+    pub(super) first_failure: Option<(usize, &'static str)>,
 }
 
 impl Recorder {
@@ -444,10 +445,9 @@ impl Recorder {
         })
     }
 
-    /// Reopen one exact independently saved successful campaign prefix under fresh current
-    /// authority and a fresh history-work account. Only settled-success prefixes are exposed
-    /// through the live reconnect CLI in this first continuation mode; retry-after-failure
-    /// continuation remains explicit future work rather than silently rewriting terminal counts.
+    /// Reopen one exact independently saved finished campaign prefix under fresh current
+    /// authority and a fresh history-work account. Failed prefixes require the separately
+    /// approved retry-continuation mode and the native owner's verified successor decision.
     pub(super) fn resume(
         config: &Config,
         plan: &ReconnectPlan,
@@ -455,7 +455,7 @@ impl Recorder {
     ) -> Result<(Self, ContinuationSeed), &'static str> {
         config.validate(plan)?;
         let campaign = config.campaign(plan)?;
-        if !campaign.continue_after_success {
+        if !campaign.continue_after_success && !plan.continue_retry_history {
             return Err(ERROR);
         }
         let mut authority = Authority::new(
@@ -490,47 +490,6 @@ impl Recorder {
         let publisher = LocalRootPublisher::open(&root, config.storage()).map_err(|_| ERROR)?;
         authority.check()?;
         let mut work = WorkBudget::new(config.work);
-        let verified = VerifiedCampaignHistory::load(
-            &publisher,
-            expected,
-            config.limits,
-            &authority,
-            &cx,
-            &mut work,
-        )
-        .map_err(|_| ERROR)?;
-        if verified.plan() != &campaign
-            || verified.writer_limits() != config.limits
-            || verified.terminal().is_some()
-            || verified.attempts().is_empty()
-            || verified.attempts().iter().any(|attempt| {
-                attempt
-                    .finish
-                    .as_ref()
-                    .is_none_or(|finish| !finish.settled_success)
-            })
-            || verified
-                .attempts()
-                .last()
-                .and_then(|attempt| attempt.finish.as_ref())
-                .is_none_or(|finish| !finish.next_attempt_planned)
-        {
-            return Err(ERROR);
-        }
-        let next_index = verified.attempts().len();
-        if next_index >= campaign.attempts.len() {
-            return Err(ERROR);
-        }
-        let durable_pictures = verified.attempts().iter().try_fold(0_u64, |sum, attempt| {
-            let pictures = attempt
-                .finish
-                .as_ref()
-                .and_then(|finish| finish.native.as_ref())
-                .map(|native| native.durable_pictures)
-                .ok_or(ERROR)?;
-            sum.checked_add(pictures).ok_or(ERROR)
-        })?;
-        let successful_attempts = next_index;
         let writer = CampaignWriter::resume_from_prefix(
             &publisher,
             campaign,
@@ -541,6 +500,18 @@ impl Recorder {
             &mut work,
         )
         .map_err(|_| ERROR)?;
+        let summary = writer.continuation_summary().map_err(|_| ERROR)?;
+        if summary.first_failure().is_some() && !plan.continue_retry_history {
+            return Err(ERROR);
+        }
+        let first_failure = summary
+            .first_failure()
+            .map(|failure| {
+                super::driver::retained_retry_error(failure.error_id())
+                    .map(|error| (failure.ordinal() as usize, error))
+                    .ok_or(ERROR)
+            })
+            .transpose()?;
         Ok((
             Self {
                 writer,
@@ -550,9 +521,10 @@ impl Recorder {
                 work,
             },
             ContinuationSeed {
-                next_index,
-                durable_pictures,
-                successful_attempts,
+                next_index: summary.completed_attempts() as usize,
+                durable_pictures: summary.durable_pictures(),
+                successful_attempts: summary.successful_attempts() as usize,
+                first_failure,
             },
         ))
     }

@@ -11,6 +11,9 @@ mod watch;
 #[path = "campaign_sentinel.rs"]
 mod sentinel;
 
+#[path = "history/continuation.rs"]
+mod continuation;
+
 fn set(input: &mut Vec<OsString>, key: &str, value: &str) {
     if let Some(index) = input.iter().position(|part| part == key) {
         input[index + 1] = value.into();

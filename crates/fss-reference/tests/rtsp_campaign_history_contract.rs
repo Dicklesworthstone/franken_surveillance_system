@@ -783,7 +783,8 @@ fn slot(pin: CampaignPin) -> Test<SlotName> {
 }
 
 #[test]
-fn cold_continuation_adopts_only_an_exact_finished_prefix_and_starts_the_next_frozen_attempt() -> Test {
+fn cold_continuation_adopts_only_an_exact_finished_prefix_and_starts_the_next_frozen_attempt()
+-> Test {
     let mut f = Fixture::new("cold-continuation", 3, true)?;
     f.start(1)?;
     let finished = f.finish(1, f.success(1, true))?;
@@ -802,7 +803,10 @@ fn cold_continuation_adopts_only_an_exact_finished_prefix_and_starts_the_next_fr
     )?;
     assert_eq!(resumed.tip(), Some(finished));
     assert_eq!(resumed.plan(), &f.plan);
-    assert!(fresh_work.used() > 0, "restart verification uses only the fresh account");
+    assert!(
+        fresh_work.used() > 0,
+        "restart verification uses only the fresh account"
+    );
     assert_eq!(tree(&f.root)?, before, "adoption itself does not append");
     let next = resumed.start_attempt(
         f.publisher.as_mut().ok_or("publisher")?,
@@ -847,30 +851,34 @@ fn cold_continuation_refuses_unknown_terminal_and_noncontinuing_prefixes_without
     let finish = stopped.finish(1, stopped.success(1, false))?;
     stopped.reopen()?;
     let before = tree(&stopped.root)?;
-    assert!(CampaignWriter::resume_from_prefix(
-        stopped.publisher.as_ref().ok_or("publisher")?,
-        stopped.plan.clone(),
-        finish,
-        CampaignHistoryLimits::default(),
-        &stopped.owner,
-        &stopped.cx,
-        &mut WorkBudget::new(WORK)
-    )
-    .is_err());
+    assert!(
+        CampaignWriter::resume_from_prefix(
+            stopped.publisher.as_ref().ok_or("publisher")?,
+            stopped.plan.clone(),
+            finish,
+            CampaignHistoryLimits::default(),
+            &stopped.owner,
+            &stopped.cx,
+            &mut WorkBudget::new(WORK)
+        )
+        .is_err()
+    );
     assert_eq!(tree(&stopped.root)?, before);
     let terminal = stopped.terminal(true, None)?;
     stopped.reopen()?;
     let before = tree(&stopped.root)?;
-    assert!(CampaignWriter::resume_from_prefix(
-        stopped.publisher.as_ref().ok_or("publisher")?,
-        stopped.plan.clone(),
-        terminal,
-        CampaignHistoryLimits::default(),
-        &stopped.owner,
-        &stopped.cx,
-        &mut WorkBudget::new(WORK)
-    )
-    .is_err());
+    assert!(
+        CampaignWriter::resume_from_prefix(
+            stopped.publisher.as_ref().ok_or("publisher")?,
+            stopped.plan.clone(),
+            terminal,
+            CampaignHistoryLimits::default(),
+            &stopped.owner,
+            &stopped.cx,
+            &mut WorkBudget::new(WORK)
+        )
+        .is_err()
+    );
     assert_eq!(tree(&stopped.root)?, before);
     Ok(())
 }
@@ -899,30 +907,34 @@ fn cold_continuation_requires_fresh_current_work_and_exact_frozen_plan_without_m
 
     let mut changed = f.plan.clone();
     changed.continue_after_success = false;
-    assert!(CampaignWriter::resume_from_prefix(
-        f.publisher.as_ref().ok_or("publisher")?,
-        changed,
-        finish,
-        CampaignHistoryLimits::default(),
-        &f.owner,
-        &f.cx,
-        &mut WorkBudget::new(WORK)
-    )
-    .is_err());
+    assert!(
+        CampaignWriter::resume_from_prefix(
+            f.publisher.as_ref().ok_or("publisher")?,
+            changed,
+            finish,
+            CampaignHistoryLimits::default(),
+            &f.owner,
+            &f.cx,
+            &mut WorkBudget::new(WORK)
+        )
+        .is_err()
+    );
     assert_eq!(tree(&f.root)?, before);
 
     let mut narrowed = CampaignHistoryLimits::default();
     narrowed.maximum_metadata_bytes /= 2;
-    assert!(CampaignWriter::resume_from_prefix(
-        f.publisher.as_ref().ok_or("publisher")?,
-        f.plan.clone(),
-        finish,
-        narrowed,
-        &f.owner,
-        &f.cx,
-        &mut WorkBudget::new(WORK)
-    )
-    .is_err());
+    assert!(
+        CampaignWriter::resume_from_prefix(
+            f.publisher.as_ref().ok_or("publisher")?,
+            f.plan.clone(),
+            finish,
+            narrowed,
+            &f.owner,
+            &f.cx,
+            &mut WorkBudget::new(WORK)
+        )
+        .is_err()
+    );
     assert_eq!(tree(&f.root)?, before);
 
     f.owner.enabled.store(false, Ordering::Release);
@@ -939,5 +951,211 @@ fn cold_continuation_requires_fresh_current_work_and_exact_frozen_plan_without_m
         Err(CampaignHistoryError::Denied)
     ));
     assert_eq!(tree(&f.root)?, before);
+    Ok(())
+}
+
+#[test]
+fn cold_failed_retry_summary_preserves_original_counts_and_failure_through_terminal() -> Test {
+    let mut f = Fixture::new("cold-failed-retry", 3, true)?;
+    f.start(1)?;
+    let mut partial = f.failed(1, CampaignRetryReason::SourceEnded, true);
+    partial.native.as_mut().ok_or("native")?.durable_pictures = 1;
+    f.finish(1, partial)?;
+    f.start(2)?;
+    let selected = f.finish(2, f.success(2, true))?;
+    let original = f.writer.continuation_summary()?;
+    f.reopen()?;
+    let before = tree(&f.root)?;
+    f.writer = CampaignWriter::resume_from_prefix(
+        f.publisher.as_ref().ok_or("publisher")?,
+        f.plan.clone(),
+        selected,
+        CampaignHistoryLimits::default(),
+        &f.owner,
+        &f.cx,
+        &mut WorkBudget::new(WORK),
+    )?;
+    let summary = f.writer.continuation_summary()?;
+    assert_eq!(summary, original);
+    assert_eq!(summary.completed_attempts(), 2);
+    assert_eq!(summary.remaining_attempts(), 1);
+    assert_eq!(summary.durable_pictures(), 3);
+    assert_eq!(summary.successful_attempts(), 1);
+    let failure = summary.first_failure().ok_or("original failure")?;
+    assert_eq!(failure.ordinal(), 1);
+    assert_eq!(failure.error_id(), SOURCE_ERROR);
+    assert_eq!(tree(&f.root)?, before);
+    f.start(3)?;
+    assert!(
+        f.writer.continuation_summary().is_err(),
+        "start-only tail cannot continue"
+    );
+    f.finish(3, f.success(3, false))?;
+    assert!(
+        f.writer.continuation_summary().is_err(),
+        "exhausted schedule cannot continue"
+    );
+    assert!(
+        f.terminal(true, None).is_err(),
+        "later success must not erase original failure"
+    );
+    let terminal = f.terminal(false, Some(SOURCE_ERROR))?;
+    assert_eq!(
+        f.inspect(terminal)?
+            .terminal()
+            .and_then(|value| value.error_id.as_deref()),
+        Some(SOURCE_ERROR)
+    );
+    Ok(())
+}
+
+#[test]
+fn cold_continuation_never_reuses_an_ordinal_started_after_the_saved_finish() -> Test {
+    let mut f = Fixture::new("cold-stale-finish", 3, true)?;
+    f.start(1)?;
+    let selected = f.finish(
+        1,
+        f.failed(1, CampaignRetryReason::ConnectionUnavailable, true),
+    )?;
+    let mut admitted = CampaignWriter::resume_from_prefix(
+        f.publisher.as_ref().ok_or("publisher")?,
+        f.plan.clone(),
+        selected,
+        CampaignHistoryLimits::default(),
+        &f.owner,
+        &f.cx,
+        &mut WorkBudget::new(WORK),
+    )?;
+    f.start(2)?;
+    let before = tree(&f.root)?;
+    assert!(matches!(
+        admitted.start_attempt(
+            f.publisher.as_mut().ok_or("publisher")?,
+            2,
+            &f.owner,
+            &f.cx,
+            &mut WorkBudget::new(WORK)
+        ),
+        Err(CampaignHistoryError::Occupied)
+    ));
+    assert_eq!(tree(&f.root)?, before);
+    f.reopen()?;
+    let before = tree(&f.root)?;
+    assert!(matches!(
+        CampaignWriter::resume_from_prefix(
+            f.publisher.as_ref().ok_or("publisher")?,
+            f.plan.clone(),
+            selected,
+            CampaignHistoryLimits::default(),
+            &f.owner,
+            &f.cx,
+            &mut WorkBudget::new(WORK),
+        ),
+        Err(CampaignHistoryError::Occupied)
+    ));
+    // Historical inspection still returns the exact selected old prefix without inventing
+    // later activity; only mutation admission requires an unoccupied suffix.
+    assert_eq!(f.inspect(selected)?.attempts().len(), 1);
+    assert_eq!(tree(&f.root)?, before);
+    f.finish(2, f.success(2, true))?;
+    assert!(
+        CampaignWriter::resume_from_prefix(
+            f.publisher.as_ref().ok_or("publisher")?,
+            f.plan.clone(),
+            selected,
+            CampaignHistoryLimits::default(),
+            &f.owner,
+            &f.cx,
+            &mut WorkBudget::new(WORK),
+        )
+        .is_err(),
+        "a later finish also fences the saved predecessor"
+    );
+    for temporary in [false, true] {
+        let mut damaged = Fixture::new(
+            if temporary {
+                "cold-future-temp"
+            } else {
+                "cold-future-broken"
+            },
+            2,
+            true,
+        )?;
+        damaged.start(1)?;
+        let selected = damaged.finish(1, damaged.success(1, true))?;
+        let later_slot = slot(CampaignPin {
+            records: selected.records + 1,
+            ..selected
+        })?;
+        damaged.close();
+        let path = if temporary {
+            damaged
+                .root
+                .join(LocalRootPublisher::root_temp_path(&later_slot))
+        } else {
+            damaged
+                .root
+                .join("roots")
+                .join(format!("{later_slot}.root"))
+        };
+        fs::write(path, b"unverified later publication")?;
+        // Refusal by storage open is also safe. If recovery exposes its classified inventory,
+        // the continuation owner must refuse the broken/temp slot, never ignore the suffix.
+        if let Ok(publisher) = LocalRootPublisher::open(&damaged.root, local_limits()) {
+            assert!(
+                CampaignWriter::resume_from_prefix(
+                    &publisher,
+                    damaged.plan.clone(),
+                    selected,
+                    CampaignHistoryLimits::default(),
+                    &damaged.owner,
+                    &damaged.cx,
+                    &mut WorkBudget::new(WORK),
+                )
+                .is_err(),
+                "unverified later publication allowed continuation"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn cold_retry_refuses_missing_native_outcome_and_unresolved_custody() -> Test {
+    for (label, unavailable) in [("unknown-native", true), ("unresolved-custody", false)] {
+        let mut f = Fixture::new(label, 2, true)?;
+        f.start(1)?;
+        let finish = if unavailable {
+            CampaignFinish {
+                native: None,
+                controller_error: Some(SOURCE_ERROR.into()),
+                settled_success: false,
+                next_attempt_planned: false,
+            }
+        } else {
+            let mut finish = f.failed(1, CampaignRetryReason::SourceEnded, false);
+            let native = finish.native.as_mut().ok_or("native")?;
+            native.retry = None;
+            native.recovery_required = true;
+            finish
+        };
+        let selected = f.finish(1, finish)?;
+        assert!(f.writer.continuation_summary().is_err());
+        f.reopen()?;
+        let before = tree(&f.root)?;
+        assert!(
+            CampaignWriter::resume_from_prefix(
+                f.publisher.as_ref().ok_or("publisher")?,
+                f.plan.clone(),
+                selected,
+                CampaignHistoryLimits::default(),
+                &f.owner,
+                &f.cx,
+                &mut WorkBudget::new(WORK),
+            )
+            .is_err()
+        );
+        assert_eq!(tree(&f.root)?, before);
+    }
     Ok(())
 }

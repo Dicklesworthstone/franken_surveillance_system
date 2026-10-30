@@ -68,7 +68,24 @@ pub(super) fn require_empty(
     cancel: &dyn PublishCancellation,
     work: &mut WorkBudget<'_>,
 ) -> Result<()> {
+    require_unoccupied_suffix(publisher, approval, 0, limits, cancel, work)
+}
+
+/// The live publisher owns the complete bounded root/temporary inventory. A retained start
+/// anywhere after the selected pin means that the original schedule has already advanced,
+/// even if that attempt's media directories are unavailable. Never adopt it through replay.
+pub(super) fn require_unoccupied_suffix(
+    publisher: &LocalRootPublisher,
+    approval: ContentDigest,
+    after: u32,
+    limits: CampaignHistoryLimits,
+    cancel: &dyn PublishCancellation,
+    work: &mut WorkBudget<'_>,
+) -> Result<()> {
     publisher_bound(publisher.limits(), limits)?;
+    if after > MAX_CAMPAIGN_RECORDS {
+        return Err(Error::Configuration);
+    }
     if publisher.is_poisoned() {
         return Err(Error::NotDurable);
     }
@@ -78,7 +95,7 @@ pub(super) fn require_empty(
     if publisher.tombstones().next().is_some() {
         return Err(Error::Occupied);
     }
-    for sequence in 1..=MAX_CAMPAIGN_RECORDS {
+    for sequence in after + 1..=MAX_CAMPAIGN_RECORDS {
         probe(cancel)?;
         work.charge(limits.maximum_scan_roots as u64 + 256)?;
         let name = slot(approval, sequence)?;

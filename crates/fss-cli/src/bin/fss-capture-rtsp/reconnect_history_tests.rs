@@ -169,6 +169,8 @@ struct Ordered {
     fail: Option<&'static str>,
     captures: usize,
     finished: Vec<(u32, Option<&'static str>, bool, bool)>,
+    reports: Vec<(String, String)>,
+    terminal: Option<Result<(), &'static str>>,
 }
 
 impl Ordered {
@@ -194,7 +196,8 @@ impl Effects for Ordered {
     fn checkpoint(&mut self) -> Result<(), &'static str> {
         Ok(())
     }
-    fn emit(&mut self, kind: &str, _: String) -> Result<(), &'static str> {
+    fn emit(&mut self, kind: &str, detail: String) -> Result<(), &'static str> {
+        self.reports.push((kind.to_owned(), detail));
         self.record(kind)
     }
     fn capture(&mut self, _: &Options) -> Result<AttemptOutcome, &'static str> {
@@ -220,7 +223,8 @@ impl Effects for Ordered {
         self.finished.push((ordinal, error, success, next));
         self.record("durable_finish")
     }
-    fn history_terminal(&mut self, _: Result<(), &'static str>) -> Result<(), &'static str> {
+    fn history_terminal(&mut self, result: Result<(), &'static str>) -> Result<(), &'static str> {
+        self.terminal = Some(result);
         self.record("durable_terminal")
     }
 }
@@ -341,7 +345,11 @@ fn history_native_retry_failure_is_not_mislabeled_controller_failure() {
 }
 
 fn continuation_args() -> Vec<OsString> {
-    let base = ReconnectPlan::parse(&history_args()).expect("base history plan");
+    continuation_args_from(history_args())
+}
+
+fn continuation_args_from(mut input: Vec<OsString>) -> Vec<OsString> {
+    let base = ReconnectPlan::parse(&input).expect("base history plan");
     let capture = base.digest().expect("capture identity");
     let campaign = base
         .history
@@ -349,7 +357,6 @@ fn continuation_args() -> Vec<OsString> {
         .expect("history config")
         .campaign(&base)
         .expect("campaign plan");
-    let mut input = history_args();
     for (key, value) in [
         ("--continue-history-approval", capture.to_text()),
         (
@@ -435,7 +442,7 @@ fn resumed_controller_skips_prior_capture_and_repeats_backoff_before_next_camera
     let plan = continued();
     let mut effects = Ordered::default();
     effects.outcomes.push_back(Ok(Ordered::success()));
-    assert_eq!(run_from(&plan, &mut effects, 1, 2, 1), Ok(()));
+    assert_eq!(run_from(&plan, &mut effects, 1, 2, 1, None), Ok(()));
     assert_eq!(effects.captures, 1);
     assert_eq!(
         effects.events,
@@ -453,4 +460,189 @@ fn resumed_controller_skips_prior_capture_and_repeats_backoff_before_next_camera
         ]
     );
     assert_eq!(effects.finished, [(2, None, true, false)]);
+}
+
+#[test]
+fn retry_continuation_requires_its_own_approval_without_changing_original_attempts() {
+    let success_only = ReconnectPlan::parse(&continuation_args()).unwrap();
+    let mut input = continuation_args();
+    set(&mut input, "--continue-retry-history", "yes");
+    let mut retry = ReconnectPlan::parse(&input).unwrap();
+    assert_eq!(retry.digest().unwrap(), success_only.digest().unwrap());
+    assert_ne!(
+        retry.approval_digest().unwrap(),
+        success_only.approval_digest().unwrap()
+    );
+    for (original, continued) in success_only.attempts.iter().zip(&retry.attempts) {
+        assert_eq!(original.digest().unwrap(), continued.digest().unwrap());
+    }
+    assert!(retry.preview().unwrap().contains(RETRY_CONTINUATION_POLICY));
+    retry.approve = Some(success_only.approval_digest().unwrap());
+    let mut effects = Ordered::default();
+    assert_eq!(
+        run_from(
+            &retry,
+            &mut effects,
+            1,
+            1,
+            0,
+            Some((1, "ERR-CAPTURE-RTSP-SHORTFALL-001"))
+        ),
+        Err("ERR-CAPTURE-RTSP-APPROVAL-001")
+    );
+    assert!(effects.events.is_empty());
+
+    for value in ["no", "true", "1"] {
+        set(&mut input, "--continue-retry-history", value);
+        assert!(ReconnectPlan::parse(&input).is_err());
+    }
+    let mut no_pin = history_args();
+    set(&mut no_pin, "--continue-retry-history", "yes");
+    assert!(ReconnectPlan::parse(&no_pin).is_err());
+}
+
+#[test]
+fn cold_retry_keeps_original_failure_and_partial_pictures_after_later_success() {
+    let mut input = continuation_args();
+    set(&mut input, "--continue-retry-history", "yes");
+    let mut plan = ReconnectPlan::parse(&input).unwrap();
+    plan.approve = Some(plan.approval_digest().unwrap());
+    let failure = "ERR-CAPTURE-RTSP-SHORTFALL-001";
+    let mut effects = Ordered::default();
+    assert_eq!(
+        run_from(&plan, &mut effects, 1, 1, 0, Some((1, failure))),
+        Err(failure)
+    );
+    assert_eq!(effects.captures, 1);
+    assert_eq!(effects.finished, [(2, None, true, false)]);
+    assert_eq!(effects.terminal, Some(Err(failure)));
+    let terminal = &effects
+        .reports
+        .iter()
+        .find(|(kind, _)| kind == "reconnect_terminal")
+        .unwrap()
+        .1;
+    for field in [
+        "\"complete\":false",
+        "\"attempts_used\":2",
+        "\"successful_attempts\":1",
+        "\"unsuccessful_attempts\":1",
+        "\"first_failed_attempt\":1",
+        "\"durable_pictures_all_attempts\":3",
+        "\"error_id\":\"ERR-CAPTURE-RTSP-SHORTFALL-001\"",
+    ] {
+        assert!(terminal.contains(field), "missing {field}: {terminal}");
+    }
+    let resumed = &effects.reports[0].1;
+    assert!(resumed.contains("\"remaining_original_attempts\":1"));
+    assert!(resumed.contains("\"historical_budget_refunded\":false"));
+    assert!(resumed.contains("\"first_error_id\":\"ERR-CAPTURE-RTSP-SHORTFALL-001\""));
+}
+
+#[test]
+fn cold_retry_cannot_extend_exhausted_schedule_or_authorize_an_unrecognized_failure() {
+    let mut input = continuation_args();
+    set(&mut input, "--continue-retry-history", "yes");
+    let mut plan = ReconnectPlan::parse(&input).unwrap();
+    plan.approve = Some(plan.approval_digest().unwrap());
+    let mut effects = Ordered::default();
+    assert_eq!(
+        run_from(
+            &plan,
+            &mut effects,
+            2,
+            3,
+            1,
+            Some((1, "ERR-CAPTURE-RTSP-SHORTFALL-001"))
+        ),
+        Err("ERR-CAPTURE-RTSP-STATE-001")
+    );
+    assert!(effects.events.is_empty());
+    for error in [
+        "ERR-CAPTURE-RTSP-STORAGE-001",
+        "ERR-CAPTURE-RTSP-AUTH-REFUSED-001",
+        "arbitrary_failure",
+    ] {
+        assert_eq!(driver::retained_retry_error(error), None);
+    }
+    for error in [
+        "ERR-CAPTURE-RTSP-CONNECT-001",
+        "ERR-CAPTURE-RTSP-SHORTFALL-001",
+        "ERR-CAPTURE-RTSP-PROGRESS-001",
+        "ERR-CAPTURE-RTSP-SOURCE-001",
+    ] {
+        assert_eq!(driver::retained_retry_error(error), Some(error));
+    }
+}
+
+#[test]
+fn ordinary_reconnect_cold_retry_stops_at_success_and_retains_original_failed_history() {
+    let mut original_args = history_args();
+    let at = original_args
+        .iter()
+        .position(|part| part == "--continue-after-success")
+        .unwrap();
+    original_args.drain(at..at + 2);
+    set(&mut original_args, "--max-attempts", "3");
+    let original = ReconnectPlan::parse(&original_args).unwrap();
+    let mut input = continuation_args_from(original_args);
+    assert!(
+        ReconnectPlan::parse(&input).is_err(),
+        "legacy settled-success continuation cannot admit ordinary reconnect"
+    );
+    set(&mut input, "--continue-retry-history", "yes");
+    let mut plan = ReconnectPlan::parse(&input).unwrap();
+    assert!(!plan.continue_after_success);
+    assert_eq!(plan.digest().unwrap(), original.digest().unwrap());
+    assert_ne!(plan.approval_digest().unwrap(), original.digest().unwrap());
+    for (original, continued) in original.attempts.iter().zip(&plan.attempts) {
+        assert_eq!(original.digest().unwrap(), continued.digest().unwrap());
+    }
+    let failure = "ERR-CAPTURE-RTSP-SHORTFALL-001";
+    plan.approve = Some(original.digest().unwrap());
+    let mut denied = Ordered::default();
+    assert_eq!(
+        run_from(&plan, &mut denied, 1, 1, 0, Some((1, failure))),
+        Err("ERR-CAPTURE-RTSP-APPROVAL-001")
+    );
+    assert!(denied.events.is_empty());
+
+    plan.approve = Some(plan.approval_digest().unwrap());
+    let mut effects = Ordered::default();
+    assert_eq!(
+        run_from(&plan, &mut effects, 1, 1, 0, Some((1, failure))),
+        Ok(())
+    );
+    assert_eq!(
+        effects.captures, 1,
+        "third original attempt must stay unused"
+    );
+    assert_eq!(effects.finished, [(2, None, true, false)]);
+    assert_eq!(effects.terminal, Some(Ok(())));
+    let terminal = &effects
+        .reports
+        .iter()
+        .find(|(kind, _)| kind == "reconnect_terminal")
+        .unwrap()
+        .1;
+    for field in [
+        "\"complete\":true",
+        "\"completion_scope\":\"first_successful_attempt\"",
+        "\"planned_attempts\":3",
+        "\"attempts_used\":2",
+        "\"attempt_limit_reached\":false",
+        "\"successful_attempts\":1",
+        "\"unsuccessful_attempts\":1",
+        "\"first_failed_attempt\":1",
+        "\"first_error_id\":\"ERR-CAPTURE-RTSP-SHORTFALL-001\"",
+        "\"durable_pictures_all_attempts\":3",
+        "\"error_id\":null",
+    ] {
+        assert!(terminal.contains(field), "missing {field}: {terminal}");
+    }
+    assert!(
+        effects.reports[0]
+            .1
+            .contains("\"remaining_original_attempts\":2")
+    );
 }
