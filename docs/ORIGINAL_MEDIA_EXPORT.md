@@ -1,6 +1,6 @@
 # Event-linked original footage export
 
-`fss-export media` exports the verified retained recording behind a current native event. The
+`fss-export media` exports the verified retained recording behind a current native or reviewed event. The
 package contains the exact playable source, a canonical custody record and their shared manifest
 root. A recipient can verify the files without the deployment or the original input file.
 
@@ -22,8 +22,11 @@ again. Loose source, model and report files are unnecessary after retention.
 Package candidates keep their unclassified, indeterminate and uncalibrated interpretation. The
 version-three record binds the package-event provenance root and the retained detector-analysis
 root separately from the selected recording. It does not turn a class score into a confirmed
-event, absence claim or alert authority. An operator-reviewed package successor remains outside
-this native-candidate profile and is refused; reviewed long events keep their version-two path.
+event, absence claim or alert authority. Current operator-reviewed package events use the separate
+`event-reviewed-package-original-media-whole-source-v4` profile. It verifies the complete retained
+review chain and the exact original package computation, preserving the native candidate's
+uncertainty alongside the operator's current lifecycle decision. Reviewed long events keep their
+version-two path.
 
 ## Preview and approve
 
@@ -62,7 +65,7 @@ precede that deadline at preview, approval and final revalidation, independently
 
 ## Export a reviewed incident
 
-An operator can investigate, resolve or reject a native event with `fss-review`, then export its
+An operator can investigate, resolve or reject a native long or trained-package event with `fss-review`, then export its
 original recording with the same `fss-export media` command. Use the **current reviewed revision**
 as `--expected-revision`; an approval obtained before review is stale. No extra source-read or
 export authority is implied by the review itself.
@@ -75,17 +78,23 @@ unsupported or excessive review history refuses export; the command never silent
 The complete chain is bounded to 255 reviews. Event history is capped at 32 MiB, combined lineage
 read reservations at 64 MiB, and the complete exported custody record at 128 KiB.
 
-The version-two custody record distinguishes the current reviewed revision from the original
+The version-two and version-four custody records distinguish the current reviewed revision from the original
 native event and records the ordered review and statement roots, revision identities, authority
 anchors and dispositions. Reviews remain explicitly labelled operator assertions. Reviewer names
 and reason text are not disclosed by this profile. Inspection of the original source computation
-does not claim that a native model reproduced the operator's lifecycle decision.
+does not claim that a native model reproduced the operator's lifecycle decision. A version-four
+record additionally identifies the unchanged native package origin as indeterminate, unclassified
+and uncalibrated. Its `event_provenance_root` and `analysis_roots` remain the original package proof
+and retained detector root; each operator statement has its own separate pins in `review_chain`.
+A resolved or rejected review adds no sensor support, calibration, class confirmation or alert
+authority. The native `PackageEvent::open` reader still refuses a reviewed successor; only the
+complete verified review chain can authorize inspection of that exact historical origin.
 
 Approval binds the reviewed record as well as the exact source bytes. A later review, privacy
 change or deletion invalidates the prepared output. Offline verification checks the versioned
 record and package against the trusted export root; it cannot determine whether a newer review
-exists in a deployment it does not open. Existing version-one canonical records, display records
-and package roots retain their original interpretation.
+exists in a deployment it does not open. Existing version-one, version-two and version-three
+canonical records, display records and package roots retain their original interpretation.
 
 ## Source custody and publication
 
@@ -96,11 +105,12 @@ capsule identity, deletion state and current privacy. Native RTSP imports additi
 original packet/wire custody that produced the retained MP4. Whole-source reconstruction checks
 every chunk and the complete source digest. A masked camera has no unredacted override.
 
-For package candidates, `--import-identity` and `--expected-import-root` must equal the selected
+For native and reviewed package events, `--import-identity` and `--expected-import-root` must equal the selected
 retained detection's original source pins. Substituting another recording from the same camera is
 refused. Corrupt or missing detector, tracking or source proof also refuses both a fresh preview
-and final release of an already approved output. Version-one and version-two canonical records
-and package roots are unchanged; a version-three record cannot be downgraded into either profile.
+and final release of an already approved output. A reviewed package export also checks every
+intermediate review statement, not just the latest decision. Version-four records and manifest
+profiles cannot be substituted for any earlier profile or stripped of their review lineage.
 
 The command holds the deployment's exclusive lease throughout preparation and output. Before
 publishing completion it rechecks the current event, import, privacy and complete source through
@@ -167,3 +177,10 @@ round trips and downgrade refusal, wrong source/revision pins, missing source an
 privacy/deletion/review invalidation, and the real CLI preview → approved write → exact retry →
 deployment-independent verification sequence. Each synthetic fixture performs one native package
 inference to establish retained input; export and verification perform none.
+
+Reviewed-package cases additionally cover cold multi-review recovery, each original/native and
+operator proof pin, current source and destination binding, stale native and intermediate-review
+approvals, review corruption and cancellation, forged native probability changes, and fresh
+privacy/deletion refusal. The real CLI regression reviews the retained candidate, refuses lost
+earlier review custody without creating output, exports the current version-four package, retries
+exactly, then verifies it after the deployment is moved offline.

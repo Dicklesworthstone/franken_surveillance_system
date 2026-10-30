@@ -35,9 +35,10 @@ Previews a separate original-footage profile. Repeat the exact request with its 
 to write verified source media, canonical custody record and manifest; COMPLETE.json appears last.\n\
 The ENTIRE selected source recording is disclosed, including time outside the event. No trimming\n\
 or masking is performed. Only verified video-only native RTSP MP4 and omission-free MJPEG sources\n\
-are supported, including current native detector-package candidates and sources of a verified\n\
-operator-reviewed long event. Package candidates retain their uncalibrated, unclassified and\n\
-indeterminate interpretation; source verification reruns no inference. Review chains bind the\n\
+are supported, including native detector-package candidates and verified operator-reviewed\n\
+long or package events. A package event's native origin remains uncalibrated, unclassified and\n\
+indeterminate; the current review state is an operator assertion. Verification reruns no inference.\n\
+Review chains bind the\n\
 current revision to the original native event; operator assertions are not new sensor evidence.\n\
 Masked, deleted, unsupported, stale or unverified sources are refused. At most 64 MiB.\n\
 Approval binds the current event, source root, actor, recipient, purpose, expiry, clock attestation,\n\

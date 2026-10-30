@@ -55,6 +55,9 @@ pub const REVIEWED_ORIGINAL_MEDIA_EXPORT_PROFILE: &str =
 /// Source-verified trained-package candidate; its classification remains uncalibrated.
 pub const PACKAGE_ORIGINAL_MEDIA_EXPORT_PROFILE: &str =
     "event-package-original-media-whole-source-v3";
+/// Complete operator-review lineage over an unchanged native trained-package candidate.
+pub const REVIEWED_PACKAGE_ORIGINAL_MEDIA_EXPORT_PROFILE: &str =
+    "event-reviewed-package-original-media-whole-source-v4";
 /// Largest returned original source allocation; no implicit stream or unbounded concatenation.
 pub const MAX_ORIGINAL_MEDIA_BYTES: u64 = 64 * 1024 * 1024;
 /// Maximum source capsules whose camera, interval and privacy scope are checked before disclosure.
@@ -67,9 +70,12 @@ pub const ORIGINAL_MEDIA_EXPORT_DOMAIN: &str = "fss.original_media_export.v1";
 pub const REVIEWED_ORIGINAL_MEDIA_EXPORT_DOMAIN: &str = "fss.original_media_export.v2";
 /// Explicit version for native detector-package event source custody.
 pub const PACKAGE_ORIGINAL_MEDIA_EXPORT_DOMAIN: &str = "fss.original_media_export.v3";
+/// Explicit version for reviewed trained-package source custody and operator assertion pins.
+pub const REVIEWED_PACKAGE_ORIGINAL_MEDIA_EXPORT_DOMAIN: &str = "fss.original_media_export.v4";
 const POLICY: &[u8] = b"fss.original_media_export.policy.v1:current-original-long-event:exact-import-root:whole-source-explicit:video-only-native-rtsp-or-complete-mjpeg:no-mask-override:recipient-purpose-expiry-attestation:destination-bound:separate-original-media-capability:revalidate-before-root-last-output:no-delivery-claim-before-readback";
 const REVIEWED_POLICY: &[u8] = b"fss.original_media_export.policy.v2:current-reviewed-long-event:complete-exact-operator-review-derivation:native-origin-source-closure:no-new-sensor-support:review-rationale-and-principal-redacted:exact-import-root:whole-source-explicit:video-only-native-rtsp-or-complete-mjpeg:no-mask-override:recipient-purpose-expiry-attestation:destination-bound:separate-original-media-capability:revalidate-before-root-last-output:no-delivery-claim-before-readback";
 const PACKAGE_POLICY: &[u8] = b"fss.original_media_export.policy.v3:current-native-package-event:exact-retained-detection-and-tracking-proof:source-closed-no-inference-reexecution:uncalibrated-unclassified-indeterminate-no-alert-authority:exact-import-root:whole-source-explicit:video-only-native-rtsp-or-complete-mjpeg:no-mask-override:recipient-purpose-expiry-attestation:destination-bound:separate-original-media-capability:revalidate-before-root-last-output:no-delivery-claim-before-readback";
+const REVIEWED_PACKAGE_POLICY: &[u8] = b"fss.original_media_export.policy.v4:current-reviewed-package-event:complete-exact-operator-review-derivation:sealed-native-origin-exact-retained-detection-and-tracking-proof:source-closed-no-inference-reexecution:uncalibrated-unclassified-indeterminate-native-origin-no-alert-authority:no-new-sensor-support:review-rationale-and-principal-redacted:exact-import-root:whole-source-explicit:video-only-native-rtsp-or-complete-mjpeg:no-mask-override:recipient-purpose-expiry-attestation:destination-bound:separate-original-media-capability:revalidate-before-root-last-output:no-delivery-claim-before-readback";
 type Result<T> = std::result::Result<T, OriginalMediaExportError>;
 
 /// Exact source and recipient disclosure reviewed by the owner.
@@ -469,10 +475,28 @@ fn prepare_record(
             // complete authoritative revision chain, rebuilds the exact tracking report from its
             // retained detections and checks every source capsule and provenance child. It does
             // not rerun inference or accept an operator-reviewed successor as a native candidate.
-            let package = PackageEvent::open(deployment, &request.event.event_id, cx)?;
-            if package.event().revision_digest() != request.event.expected_revision {
-                return Err(ExportError::StaleRevision.into());
-            }
+            // A reviewed export separately proves the entire operator chain before recovering
+            // only its sealed native origin through the same package provenance owner.
+            let (package, review_lineage) = if current.generation == 1 {
+                let package = PackageEvent::open(deployment, &request.event.event_id, cx)?;
+                if package.event().revision_digest() != request.event.expected_revision {
+                    return Err(ExportError::StaleRevision.into());
+                }
+                (package, None)
+            } else {
+                let lineage = inspect_review_lineage(deployment, &request.event.event_id, cx)?;
+                if lineage.current().revision_digest() != request.event.expected_revision {
+                    return Err(ExportError::StaleRevision.into());
+                }
+                let package = PackageEvent::open_review_origin(deployment, &lineage, cx)?;
+                let redacted = ReviewedMediaLineage {
+                    original_revision: lineage.original().revision_digest(),
+                    original_root: lineage.original_root(),
+                    original_anchor: lineage.original_anchor().clone(),
+                    links: lineage.links().to_vec(),
+                };
+                (package, Some(redacted))
+            };
             let detection = package.report().retained();
             if detection.record().import_identity != request.import_identity {
                 return Err(OriginalMediaExportError::SourceNotInEvent);
@@ -485,7 +509,7 @@ fn prepare_record(
                 vec![detection.root()],
                 "package_track".to_owned(),
                 1,
-                None,
+                review_lineage,
             )
         } else {
             let (inspection, review_lineage) = if current.generation == 1 {

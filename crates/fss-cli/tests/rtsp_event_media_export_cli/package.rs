@@ -165,3 +165,191 @@ fn trained_package_candidate_exports_after_restart_and_verifies_offline() -> Tes
     assert_eq!(field(&verified, "delivery_proven")?.boolean(), Some(false));
     Ok(())
 }
+
+fn assert_reviewed_package_record(
+    record: &Value,
+    original: &Value,
+    reviews: &[ReviewWitness],
+) -> Test {
+    assert_eq!(text(record, "schema")?, "fss.original_media_export.v4");
+    assert_eq!(
+        text(record, "profile")?,
+        "event-reviewed-package-original-media-whole-source-v4"
+    );
+    assert_eq!(text(record, "event_profile")?, "package_track");
+    assert_eq!(text(record, "native_origin_state")?, "indeterminate");
+    assert_eq!(text(record, "native_origin_kind")?, "unclassified");
+    assert_eq!(
+        field(record, "native_origin_calibrated")?.boolean(),
+        Some(false)
+    );
+    assert_eq!(
+        field(record, "native_origin_revision")?,
+        field(original, "revision_digest")?
+    );
+    assert_eq!(
+        field(record, "native_origin_event_root")?,
+        field(original, "event_root")?
+    );
+    assert_eq!(
+        field(record, "native_origin_authority_sequence")?.integer(),
+        field(field(original, "event_anchor")?, "capsuleSequence")?.integer()
+    );
+    assert_eq!(
+        field(record, "review_count")?.integer(),
+        Some(reviews.len() as i128)
+    );
+    let chain = field(record, "review_chain")?
+        .array()
+        .ok_or("missing operator chain")?;
+    assert_eq!(chain.len(), reviews.len());
+    for (entry, expected) in chain.iter().zip(reviews) {
+        assert_eq!(field(entry, "revision")?.integer(), Some(expected.revision));
+        assert_eq!(
+            text(entry, "event_revision")?,
+            expected.event_revision.to_text()
+        );
+        assert_eq!(text(entry, "event_root")?, expected.event_root.to_text());
+        assert_eq!(
+            text(entry, "statement_digest")?,
+            expected.statement_digest.to_text()
+        );
+        assert_eq!(
+            text(entry, "statement_root")?,
+            expected.statement_root.to_text()
+        );
+        assert_eq!(text(entry, "disposition")?, expected.disposition);
+        assert_eq!(text(entry, "assertion_class")?, "operator");
+        assert_eq!(field(entry, "sensor_support_added")?.boolean(), Some(false));
+    }
+    for name in [
+        "review_reasons_included",
+        "reviewer_identity_included",
+        "review_is_sensor_recomputation",
+        "native_perception_reexecuted",
+    ] {
+        assert_eq!(field(record, name)?.boolean(), Some(false));
+    }
+    let summary = field(record, "event_summary")?;
+    assert_eq!(text(summary, "state")?, "resolved");
+    assert_eq!(text(summary, "kind")?, "unclassified");
+    assert_eq!(
+        text(summary, "event_revision_digest")?,
+        reviews
+            .last()
+            .ok_or("missing last review")?
+            .event_revision
+            .to_text()
+    );
+    Ok(())
+}
+
+#[test]
+fn reviewed_package_exports_complete_current_assertions_and_original_footage_after_restart() -> Test
+{
+    let _serial = SERIAL.lock().map_err(|_| "test lock poisoned")?;
+    let mut fixture = fixture()?;
+    let original = fixture.review_show()?;
+    let native = fixture.preview()?;
+    let stale_native = approved(fixture.args(), text(&native, "approval_digest")?);
+    const REVIEWER: &str = "principal:private-package-reviewer";
+    const REASON: &str = "Private case notes do not become native detector corroboration";
+    let first = fixture.review("investigate", REVIEWER, REASON)?;
+    let intermediate = fixture.preview()?;
+    let stale_review = approved(fixture.args(), text(&intermediate, "approval_digest")?);
+    let second = fixture.review("investigate", REVIEWER, REASON)?;
+    let third = fixture.review("resolve", REVIEWER, REASON)?;
+    let reviews = [first, second, third];
+    let journals = fixture.journals()?;
+    for args in [
+        stale_native,
+        stale_review,
+        approved(fixture.args(), text(&native, "approval_digest")?),
+    ] {
+        refused(&execute(&args)?);
+        assert!(!fixture.output.exists());
+    }
+    let preview = fixture.preview()?;
+    assert_reviewed_package_record(
+        field(&preview, "record")?,
+        field(&original, "result")?,
+        &reviews,
+    )?;
+    // The original native proof and retained detection stay distinct from every review root.
+    for name in [
+        "event_provenance_root",
+        "analysis_roots",
+        "source_sha256",
+        "source_import_root",
+    ] {
+        assert_eq!(
+            field(field(&preview, "record")?, name)?,
+            field(field(&native, "record")?, name)?
+        );
+    }
+    let args = approved(fixture.args(), text(&preview, "approval_digest")?);
+    let mut statement_path = None;
+    fixture.update(|deployment, _| {
+        statement_path = Some(
+            deployment
+                .publisher()
+                .spool()
+                .object_path(reviews[0].statement_digest),
+        );
+        Ok(())
+    })?;
+    let statement_path = statement_path.ok_or("missing statement path")?;
+    let statement = fs::read(&statement_path)?;
+    fs::remove_file(&statement_path)?;
+    refused(&execute(&args)?);
+    assert!(!fixture.output.exists());
+    assert!(
+        !statement_path.exists(),
+        "export must not repair lost historical review custody"
+    );
+    assert_eq!(fixture.journals()?, journals);
+    fs::write(statement_path, statement)?;
+    let exported = success(&execute(&args)?)?;
+    assert_eq!(text(&exported, "status")?, "exported_original_media");
+    assert_eq!(
+        field(&exported, "export_root")?,
+        field(&preview, "export_root")?
+    );
+    assert_eq!(
+        fs::read(fixture.output.join("source.mjpeg"))?,
+        fixture.source
+    );
+    let package = package_snapshot(&fixture.output)?;
+    for (name, bytes) in &package {
+        if name != "source.mjpeg" {
+            let rendered = String::from_utf8_lossy(bytes);
+            assert!(!rendered.contains(REVIEWER));
+            assert!(!rendered.contains(REASON));
+        }
+    }
+    assert_eq!(
+        text(&success(&execute(&args)?)?, "status")?,
+        "already_exported_original_media"
+    );
+    assert_eq!(package_snapshot(&fixture.output)?, package);
+    assert_eq!(fixture.journals()?, journals);
+    fs::rename(
+        &fixture.root,
+        fixture.directory.0.join("reviewed-package-offline"),
+    )?;
+    let verified = success(&execute(
+        &fixture.verify_args(text(&preview, "export_root")?),
+    )?)?;
+    assert_eq!(text(&verified, "status")?, "verified_original_media");
+    assert_reviewed_package_record(
+        field(&verified, "record")?,
+        field(&original, "result")?,
+        &reviews,
+    )?;
+    assert_eq!(
+        field(&verified, "current_deployment_state_checked")?.boolean(),
+        Some(false)
+    );
+    assert_eq!(field(&verified, "delivery_proven")?.boolean(), Some(false));
+    Ok(())
+}

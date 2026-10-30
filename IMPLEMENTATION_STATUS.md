@@ -10,6 +10,23 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Original footage after reviewing trained-detector events (2026-10-30, reference)
+
+Original-footage export now also accepts current operator-reviewed package events through the
+additive FSSEXM01 version-four profile. The existing review owner authenticates every retained
+successor; only its sealed lineage admits the exact original package analysis and source proof.
+The current operator decision and complete review pins remain distinct from the original native
+candidate's indeterminate, unclassified and uncalibrated interpretation. No inference is rerun.
+
+The existing whole-source permission, exact source/root membership, destination-bound approval,
+current privacy/deletion checks and final release revalidation apply. Further review invalidates
+an older approval. Missing original or intermediate evidence refuses without output or repair.
+V1/V2/V3 bytes remain unchanged; the separate V4 policy/domain/profile prevents reinterpretation.
+Reference and real CLI regressions cover cold multi-review export, proof corruption, forged
+native probability, cancellation, exact retry and independent offline verification. Pinned
+formatting and independent review passed; execution of this added profile remains pending.
+See [reviewed original-footage export](docs/ORIGINAL_MEDIA_EXPORT.md).
+
 ## Closed-episode citations through captured learning (2026-10-30, reference)
 
 The semantic execution-episode digest returned by `plan --close` now works as evidence in the
@@ -101,8 +118,10 @@ The additive FSSEXM01 version-three profile binds the package-event provenance a
 detection root under a distinct policy/domain; earlier native and reviewed formats retain their
 bytes. Four native contracts and one real CLI workflow cover cold recovery, exact source/profile
 binding, post-approval invalidation, repeat delivery and independent offline verification.
-Pinned formatting and source review passed; execution of the added cases is pending native
-capacity. See [original-footage export](docs/ORIGINAL_MEDIA_EXPORT.md).
+The native export contract stage passed in [the supplementary reference run](https://github.com/Dicklesworthstone/franken_surveillance_system/actions/runs/40976559961),
+and all 13 media-export CLI contracts passed in [the native capture run](https://github.com/Dicklesworthstone/franken_surveillance_system/actions/runs/40977388102),
+including the new cold package export and offline verifier. These are supplementary results,
+not release qualification. See [original-footage export](docs/ORIGINAL_MEDIA_EXPORT.md).
 
 ## Calibrated advice from screened dwell checkpoints (2026-10-29, reference)
 

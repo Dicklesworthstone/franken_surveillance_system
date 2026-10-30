@@ -150,9 +150,12 @@ its result. An immediate exact retry therefore sees the same newly retained inve
 refresh fails, the partial response preserves both known feedback and learning publication roots.
 The session workspace is not advanced by this projection.
 
-Historical `follow` replay cannot yet certify learning-publication changes alongside its existing
-journal axes. Sessions with captured learning therefore retain an explicit replay refusal; current
-orientation and handoff remain the supported discovery paths.
+An owned durable `follow` subscription with captured learning can start at the exact current head
+and replay later authority/effect transitions while its registered learning inventory and complete
+source custody remain unchanged. New, removed or replaced captures and changed session semantics
+require resnapshot; missing or corrupt custody refuses. This does not infer an ordering for
+learning-publication changes alongside the existing journal axes. Current orientation and handoff
+remain the inventory discovery paths.
 
 ## Cost and evidence limits
 

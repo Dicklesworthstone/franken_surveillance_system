@@ -18,6 +18,9 @@ use fss_reference::original_media_export::{
 
 use super::*;
 
+#[path = "package/reviewed.rs"]
+mod reviewed;
+
 const JPEG: &[u8] =
     include_bytes!("../../../../tests/fixtures/media/jpeg/rgb_64x48_colorbars_420.jpg");
 const PACKAGE: &[u8] = include_bytes!("../../../../models/yolox-nano/yolox_nano.fmpk");
@@ -262,8 +265,18 @@ fn package_approval_cannot_release_after_source_or_provenance_custody_loss() -> 
 
 #[test]
 fn package_media_masks_deletion_and_operator_successors_invalidate_release() -> Test {
-    for change in ["mask", "delete", "review"] {
-        let mut f = fixture(&format!("package-{change}"))?;
+    for (change, already_reviewed) in [
+        ("mask", false),
+        ("delete", false),
+        ("review", false),
+        ("mask", true),
+        ("delete", true),
+        ("review", true),
+    ] {
+        let mut f = fixture(&format!("package-{change}-{already_reviewed}"))?;
+        if already_reviewed {
+            reviewed::review(&mut f, ReviewDisposition::Investigate)?;
+        }
         let preview =
             preview_original_media_export(&f.deployment, &f.request, &f.authority, &f.cx)?;
         let prepared = approve_original_media_export(
@@ -313,9 +326,31 @@ fn package_media_masks_deletion_and_operator_successors_invalidate_release() -> 
             revalidate_original_media_export(&f.deployment, &prepared, &f.authority, &f.cx),
             Err(OriginalMediaExportError::AuthorityChanged)
         ));
-        assert!(
-            preview_original_media_export(&f.deployment, &f.request, &f.authority, &f.cx).is_err()
-        );
+        if change == "review" {
+            let current =
+                preview_original_media_export(&f.deployment, &f.request, &f.authority, &f.cx)?;
+            assert_eq!(
+                current.profile(),
+                fss_reference::original_media_export::REVIEWED_PACKAGE_ORIGINAL_MEDIA_EXPORT_PROFILE
+            );
+            assert_eq!(current.media_bytes(), f.source);
+            assert_ne!(current.approval(), preview.approval());
+            assert!(matches!(
+                approve_original_media_export(
+                    &f.deployment,
+                    &f.request,
+                    preview.approval(),
+                    &f.authority,
+                    &f.cx
+                ),
+                Err(OriginalMediaExportError::StaleApproval)
+            ));
+        } else {
+            assert!(
+                preview_original_media_export(&f.deployment, &f.request, &f.authority, &f.cx)
+                    .is_err()
+            );
+        }
         assert_eq!(f.snapshot(), before);
     }
     Ok(())

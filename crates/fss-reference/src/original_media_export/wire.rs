@@ -14,7 +14,9 @@ impl OriginalMediaExportRecord {
     }
     /// Explicit portable disclosure profile. Original revision-one records remain byte-identical.
     pub fn profile(&self) -> &'static str {
-        if self.event_profile == "package_track" {
+        if self.event_profile == "package_track" && self.review_lineage.is_some() {
+            REVIEWED_PACKAGE_ORIGINAL_MEDIA_EXPORT_PROFILE
+        } else if self.event_profile == "package_track" {
             PACKAGE_ORIGINAL_MEDIA_EXPORT_PROFILE
         } else if self.review_lineage.is_some() {
             REVIEWED_ORIGINAL_MEDIA_EXPORT_PROFILE
@@ -23,7 +25,9 @@ impl OriginalMediaExportRecord {
         }
     }
     fn domain(&self) -> &'static str {
-        if self.event_profile == "package_track" {
+        if self.event_profile == "package_track" && self.review_lineage.is_some() {
+            REVIEWED_PACKAGE_ORIGINAL_MEDIA_EXPORT_DOMAIN
+        } else if self.event_profile == "package_track" {
             PACKAGE_ORIGINAL_MEDIA_EXPORT_DOMAIN
         } else if self.review_lineage.is_some() {
             REVIEWED_ORIGINAL_MEDIA_EXPORT_DOMAIN
@@ -32,7 +36,9 @@ impl OriginalMediaExportRecord {
         }
     }
     pub(super) fn policy(&self) -> &'static [u8] {
-        if self.event_profile == "package_track" {
+        if self.event_profile == "package_track" && self.review_lineage.is_some() {
+            REVIEWED_PACKAGE_POLICY
+        } else if self.event_profile == "package_track" {
             PACKAGE_POLICY
         } else if self.review_lineage.is_some() {
             REVIEWED_POLICY
@@ -60,13 +66,17 @@ impl OriginalMediaExportRecord {
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut e = CanonicalEncoder::new();
         e.bytes(b"FSSEXM01");
-        e.u32(if self.event_profile == "package_track" {
-            3
-        } else if self.review_lineage.is_some() {
-            2
-        } else {
-            1
-        });
+        e.u32(
+            if self.event_profile == "package_track" && self.review_lineage.is_some() {
+                4
+            } else if self.event_profile == "package_track" {
+                3
+            } else if self.review_lineage.is_some() {
+                2
+            } else {
+                1
+            },
+        );
         e.text(self.domain());
         e.bytes(self.policy());
         e.bytes(&self.event_summary.to_bytes());
@@ -99,7 +109,8 @@ impl OriginalMediaExportRecord {
         }
         e.finish()
     }
-    /// Decode explicit v1-native, v2-reviewed or v3-package profiles. Unknown/trailing fields refuse.
+    /// Decode explicit v1-native, v2-reviewed, v3-package or v4-reviewed-package profiles.
+    /// Unknown profiles, cross-profile interpretations and trailing fields refuse.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
         if bytes.len() > MAX_ORIGINAL_MEDIA_RECORD_BYTES {
             return Err(OriginalMediaExportError::Limit);
@@ -113,6 +124,10 @@ impl OriginalMediaExportRecord {
             1 => (ORIGINAL_MEDIA_EXPORT_DOMAIN, POLICY),
             2 => (REVIEWED_ORIGINAL_MEDIA_EXPORT_DOMAIN, REVIEWED_POLICY),
             3 => (PACKAGE_ORIGINAL_MEDIA_EXPORT_DOMAIN, PACKAGE_POLICY),
+            4 => (
+                REVIEWED_PACKAGE_ORIGINAL_MEDIA_EXPORT_DOMAIN,
+                REVIEWED_PACKAGE_POLICY,
+            ),
             _ => return Err(OriginalMediaExportError::UnsupportedProfile),
         };
         if d.text()? != domain || d.bytes()? != policy {
@@ -157,7 +172,7 @@ impl OriginalMediaExportRecord {
         let source_segments = d.u64()?;
         let source_interval = CaptureInterval::decode_canonical(&mut d)?;
         let source_capture_label = d.text()?.to_owned();
-        let review_lineage = if version == 2 {
+        let review_lineage = if matches!(version, 2 | 4) {
             Some(ReviewedMediaLineage::decode(&mut d)?)
         } else {
             None
@@ -192,14 +207,14 @@ impl OriginalMediaExportRecord {
     pub(super) fn validate(&self) -> Result<()> {
         self.request.validate()?;
         if self.event_profile == "package_track"
-            && (self.review_lineage.is_some()
-                || !self
-                    .request
-                    .event
-                    .event_id
-                    .as_str()
-                    .starts_with("event:package:")
-                || self.event_summary.event_state() != fss_core::EventState::Indeterminate)
+            && (!self
+                .request
+                .event
+                .event_id
+                .as_str()
+                .starts_with("event:package:")
+                || (self.review_lineage.is_none()
+                    && self.event_summary.event_state() != fss_core::EventState::Indeterminate))
         {
             return Err(OriginalMediaExportError::UnsupportedProfile);
         }
@@ -207,7 +222,7 @@ impl OriginalMediaExportRecord {
             lineage.validate(self)?;
         } else if self.event_summary.event_revision() != 1 {
             // Native v1/v3 profiles never authorize a successor. Supported operator reviews
-            // carry their distinct v2 proof pins, and package reviews remain unsupported.
+            // carry their distinct v2/v4 profile and complete proof pins.
             return Err(OriginalMediaExportError::CustodyMismatch);
         }
         if self.event_summary.request() != &self.request.event
@@ -317,6 +332,15 @@ impl OriginalMediaExportRecord {
             result.pop();
             result.push_str(&lineage.json_fields());
             result.push('}');
+        }
+        if self.event_profile == "package_track" && self.review_lineage.is_some() {
+            // The operator's lifecycle state belongs to the current summary. The sealed native
+            // package origin retains its own uncertainty; review adds no native corroboration.
+            result.pop();
+            result.push_str(concat!(
+                ",\"native_origin_state\":\"indeterminate\",",
+                "\"native_origin_kind\":\"unclassified\",\"native_origin_calibrated\":false}"
+            ));
         }
         result
     }

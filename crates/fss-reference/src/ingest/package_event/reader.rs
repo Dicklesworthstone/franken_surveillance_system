@@ -28,6 +28,45 @@ impl PackageEvent {
         checkpoint(cx, "package_event:read")?;
         let (event, root, anchor) =
             load_authority(deployment, id, cx)?.ok_or(PackageEventError::EventUnavailable)?;
+        Self::from_authority(deployment, event, root, anchor, cx)
+    }
+
+    /// Recover only the native origin of a completely verified current review chain. The sealed
+    /// lineage proves exact historical authority and unchanged native facts; callers cannot
+    /// substitute an arbitrary event, root, digest or historical anchor. Public native reads
+    /// still refuse reviewed successors, and all source/privacy/deletion checks remain current.
+    pub(crate) fn open_review_origin(
+        deployment: &ReferenceDeployment,
+        lineage: &crate::event_review::lineage::VerifiedReviewLineage,
+        cx: &ReplayCx,
+    ) -> Result<Self> {
+        lineage
+            .revalidate_basis(deployment, cx)
+            .map_err(review_basis_error)?;
+        let origin = lineage.original();
+        if origin.revision != 1 || origin.supersedes.is_some() {
+            return Err(PackageEventError::Mismatch);
+        }
+        let package = Self::from_authority(
+            deployment,
+            origin.clone(),
+            lineage.original_root(),
+            lineage.original_anchor().clone(),
+            cx,
+        )?;
+        lineage
+            .revalidate_basis(deployment, cx)
+            .map_err(review_basis_error)?;
+        Ok(package)
+    }
+
+    fn from_authority(
+        deployment: &ReferenceDeployment,
+        event: EventHypothesis,
+        root: ContentDigest,
+        anchor: LedgerAnchor,
+        cx: &ReplayCx,
+    ) -> Result<Self> {
         if event.decision_path.policy_generation != ContentDigest::sha256(POLICY) {
             return Err(PackageEventError::Conflict);
         }
@@ -99,6 +138,13 @@ impl PackageEvent {
     #[must_use]
     pub fn track(&self) -> ContentDigest {
         self.receipt.track
+    }
+}
+
+fn review_basis_error(error: crate::event_review::ReviewError) -> PackageEventError {
+    match error {
+        crate::event_review::ReviewError::Cancelled => PackageEventError::Cancelled,
+        _ => PackageEventError::Conflict,
     }
 }
 
