@@ -37,6 +37,8 @@ Retain a diagnosis independently with fss-event watch --stream-watch (or --strea
   --sensor-health conservative-v1 --retain-health sha256:APPROVAL\n\
 using the exact approval and rerun command from the preview's historical_health object.\n\
 This works with no event candidates and with findings that block event publication.\n\
+Completed screened dwell checkpoints also emit an exact retention command. Cold retention\n\
+reconstructs their original bounded prefix without advancing it or loading a detector.\n\
 For two recordings, fss-event corroborate --stream-corroborate with the same health policy\n\
 emits a historical_health array; each camera has its own exact --retain-health command.\n\
 Retain one camera per invocation, independently of paired events; event approval is separate.\n\
@@ -499,6 +501,17 @@ pub(super) fn preflight_watch_diagnostic(
     anchor: &LedgerAnchor,
     rerun: &str,
 ) -> Run<()> {
+    maximal_watch_diagnostic(report, diagnostic, anchor, rerun)?;
+    Ok(())
+}
+
+/// Maximal post-retention projection for enclosing-output admission, never for delivery.
+pub(super) fn maximal_watch_diagnostic(
+    report: String,
+    diagnostic: Option<&HistoricalHealthDiagnostic>,
+    anchor: &LedgerAnchor,
+    rerun: &str,
+) -> Run<String> {
     // A later publication must not discover that its complete response cannot fit. Admit
     // the longest status and the full anchor with its longest sequence before any write.
     let maximal_retention = diagnostic.map(|diagnostic| {
@@ -511,8 +524,9 @@ pub(super) fn preflight_watch_diagnostic(
             already_retained: true,
         }
     });
-    with_watch_diagnostic(report, diagnostic, maximal_retention.as_ref(), rerun)?;
-    Ok(())
+    // The returned maximal projection is only for enclosing-output admission. Never deliver
+    // its placeholder sequence or retention status as an observed publication.
+    with_watch_diagnostic(report, diagnostic, maximal_retention.as_ref(), rerun)
 }
 
 /// The shared literal receipt proposal/retention fields for whole-recording commands.

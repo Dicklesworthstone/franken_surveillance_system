@@ -162,8 +162,35 @@ Adding or removing screening while resuming changes the request identity and is 
 native reconstruction. A missing or damaged retained health policy cannot be repaired by a
 retry. Trained classification remains a separate terminal stage and is subject to the completed
 native health gate. An already complete screened checkpoint also supports read-only calibrated
-advice through the workflow below. Historical-health retention and coverage retention remain
-separate operations through their existing whole-recording owners.
+advice through the workflow below. A completed checkpoint also supplies the independent
+`event_report.historical_health` receipt, exact approval and executable `retain_command`.
+Coverage retention remains unavailable in incremental mode.
+
+### Retain a completed checkpoint's health diagnostic
+
+Run the `event_report.historical_health.retain_command` from a complete screened response.
+It preserves the exact checkpoint body/root and explicit cold-restoration allowance, and adds
+the independent `--retain-health sha256:APPROVAL`. A fresh or partial checkpoint cannot be
+advanced by this command, even if its step would otherwise finish the recording.
+
+Cold retention reconstructs the original full prefix under the saved source, privacy, health
+policy and work ceilings. It reports that reconstruction separately from the original logical
+work, with `new_source_positions: 0`. It retains only the independently approved historical
+diagnostic through the existing root-last owner; it publishes no event or new checkpoint and
+does not change the effect journal. The diagnostic's complete receipt and provenance root match
+the equivalent whole-recording screen, and remain readable/verifiable through `fss-event health`.
+
+Health retention deliberately skips the terminal detector. If detector options remain in the
+saved command, `detector_stage` is `not_run_for_health_retention`; the package is never opened.
+This lets an operator retain frozen footage findings and empty-candidate or incomplete screens
+that correctly block event classification/publication. Such findings remain usable by later
+supervision and alert health checks. Retention grants no current-health, absence or alert claim.
+
+Wrong approvals, changed recipes, missing policy/source custody and privacy drift refuse.
+An exact cold retry verifies the original retained receipt and trace and returns
+`already_retained` without another append. Health retention is separate from event approval
+and calibrated fusion. Complete output bounds are admitted before retention, and checkpoint
+custody is checked again before report export and stdout.
 
 ## Calibrated advice from a completed checkpoint
 
@@ -311,8 +338,9 @@ native owner or cached metadata never repairs a missing published checkpoint bod
 Partitioned imports are explicitly refused before native decoding. Their aggregate metadata
 names typed part roots which are not graph children; the first checkpoint format deliberately
 does not claim that retaining only the aggregate closes all part custody. H.264/H.265
-checkpoint continuation, health retention and coverage retention remain refused in incremental
-mode. Explicit conservative sensor-health screening uses version-two checkpoints. Trained packages run only at the completed temporal
+checkpoint continuation and coverage retention remain refused in incremental mode. Independent
+health retention requires an already complete screened checkpoint. Explicit conservative
+sensor-health screening uses version-two checkpoints. Trained packages run only at the completed temporal
 boundary described above. Calibrated fusion requires an already complete, exactly pinned
 checkpoint and uses the separate read-only path; partial checkpoint advice is refused.
 Existing whole-recording paths retain their supported codec, health and fusion capabilities.

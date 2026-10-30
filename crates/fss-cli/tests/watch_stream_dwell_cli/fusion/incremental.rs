@@ -41,8 +41,8 @@ fn emitted(command: &str, extra: &[OsString]) -> Test<Output> {
         .output()?)
 }
 
-// One-shot and checkpoint commands intentionally have different publication hints. Compare
-// everything else, including the exact current authority basis and complete calibrated advice.
+// One-shot and checkpoint commands intentionally have different publication/retention hints.
+// Compare everything else, including exact diagnostic custody, current authority and advice.
 fn without_publish_hints(value: &Value) -> Test<Value> {
     let mut value = value.clone();
     let Value::Object(fields) = &mut value else {
@@ -56,6 +56,9 @@ fn without_publish_hints(value: &Value) -> Test<Value> {
             return Err("native episode object".into());
         };
         fields.remove("publish_command");
+    }
+    if let Some(Value::Object(health)) = fields.get_mut("historical_health") {
+        health.remove("retain_command");
     }
     Ok(value)
 }

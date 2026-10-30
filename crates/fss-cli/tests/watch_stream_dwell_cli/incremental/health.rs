@@ -231,3 +231,129 @@ fn screened_partial_fusion_and_retention_refuse_before_deployment_creation() -> 
     }
     Ok(())
 }
+
+#[test]
+fn completed_frozen_checkpoint_retains_health_without_events_or_detector_work() -> Test {
+    let fixture = Fixture::new("incremental-health-retention", true, false)?;
+    let whole = parse(&good(run(&screened(&fixture))?)?)?;
+    let mut args = screened(&fixture);
+    args.extend(["--dwell-step-frames".into(), "300".into()]);
+    let complete = parse(&good(run(&args)?)?)?;
+    let native = member(&complete, "event_report")?;
+    let diagnostic = member(native, "historical_health")?;
+    let original = member(&whole, "historical_health")?;
+    assert_eq!(integer(native, "candidate_count")?, 0);
+    for key in [
+        "record_digest",
+        "approval_digest",
+        "provenance_root",
+        "receipt",
+    ] {
+        assert_eq!(member(diagnostic, key)?, member(original, key)?, "{key}");
+    }
+    let command = string(diagnostic, "retain_command")?;
+    assert!(command.contains("--dwell-checkpoint "));
+    assert!(command.contains("--dwell-restore-max-frames 300"));
+    let before = fixture.snapshot()?;
+    let mut retained_args = resume_args(&fixture, &complete, "300")?;
+    let missing_model = fixture.directory.0.join("never opened detector.fmpk");
+    retained_args.extend([
+        "--sensor-health".into(),
+        "conservative-v1".into(),
+        "--detector-package".into(),
+        missing_model.as_os_str().to_owned(),
+        "--detector-digest".into(),
+        ContentDigest::sha256(b"no model work for independent health retention")
+            .to_text()
+            .into(),
+        "--detector-max-inferences".into(),
+        "1".into(),
+        "--retain-health".into(),
+        ContentDigest::sha256(b"not this diagnostic's approval")
+            .to_text()
+            .into(),
+    ]);
+    refuses(run(&retained_args)?, "historical_health_approval_mismatch");
+    assert_eq!(fixture.snapshot()?, before);
+    *retained_args
+        .last_mut()
+        .ok_or("missing retention approval")? = string(diagnostic, "approval_digest")?.into();
+    let retained = parse(&good(run(&retained_args)?)?)?;
+    assert_eq!(integer(&retained, "new_source_positions")?, 0);
+    assert_eq!(
+        string(&retained, "detector_stage")?,
+        "not_run_for_health_retention"
+    );
+    health_work(&retained, "logical_health_scan_work", 300)?;
+    health_work(&retained, "cold_health_restoration_work", 300)?;
+    let retained_native = member(&retained, "event_report")?;
+    assert_eq!(
+        member(retained_native, "model_invoked")?.boolean(),
+        Some(false)
+    );
+    assert_eq!(integer(retained_native, "candidate_count")?, 0);
+    let receipt = member(retained_native, "historical_health")?;
+    assert_eq!(string(receipt, "status")?, "retained");
+    assert_eq!(member(receipt, "receipt")?, member(diagnostic, "receipt")?);
+    assert!(!missing_model.exists());
+    let after = fixture.snapshot()?;
+    assert_ne!(after.0, before.0);
+    assert_eq!(after.1, before.1);
+    let retry = parse(&good(emitted(command)?)?)?;
+    assert_eq!(
+        string(
+            member(member(&retry, "event_report")?, "historical_health")?,
+            "status"
+        )?,
+        "already_retained"
+    );
+    assert_eq!(fixture.snapshot()?, after);
+
+    // Independent cold read/verification needs only retained source and policy, not a loose
+    // source file, the checkpoint owner, or a trained model package.
+    let mut verify: Vec<OsString> = vec![
+        "health".into(),
+        "verify".into(),
+        "--root".into(),
+        fixture.root.as_os_str().to_owned(),
+        "--site".into(),
+        SITE.into(),
+        "--diagnostic-digest".into(),
+        string(diagnostic, "record_digest")?.into(),
+        "--expected-provenance-root".into(),
+        string(diagnostic, "provenance_root")?.into(),
+        "--execute-perception".into(),
+        "yes".into(),
+    ];
+    let verified = parse(&good(run(&verify)?)?)?;
+    assert_eq!(string(&verified, "status")?, "native_replay_matched");
+    verify[1] = "read".into();
+    verify.truncate(8);
+    good(run(&verify)?)?;
+    assert_eq!(fixture.snapshot()?, after);
+    Ok(())
+}
+
+#[test]
+fn health_retention_cannot_advance_a_partial_checkpoint() -> Test {
+    let fixture = Fixture::new("incremental-health-retention-partial", true, false)?;
+    let mut args = screened(&fixture);
+    args.extend(["--dwell-step-frames".into(), "150".into()]);
+    let partial = parse(&good(run(&args)?)?)?;
+    let before = fixture.snapshot()?;
+    let mut retained_args = resume_args(&fixture, &partial, "150")?;
+    retained_args.extend([
+        "--sensor-health".into(),
+        "conservative-v1".into(),
+        "--retain-health".into(),
+        ContentDigest::sha256(b"a partial screen has no retention approval")
+            .to_text()
+            .into(),
+    ]);
+    refuses(
+        run(&retained_args)?,
+        "incremental health retention requires an already complete checkpoint",
+    );
+    assert_eq!(fixture.snapshot()?, before);
+    Ok(())
+}

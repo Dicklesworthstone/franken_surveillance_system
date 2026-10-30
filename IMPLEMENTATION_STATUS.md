@@ -10,6 +10,24 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Independent health retention from completed checkpoints (2026-10-29, reference)
+
+Completed screened dwell checkpoints now expose the same independently approvable historical
+health receipt as a whole-recording scan. Their exact continuation can retain it through the
+existing diagnostic owner, including frozen footage, incomplete screening and zero candidates.
+Cold retention reconstructs the saved bounded prefix and reports that cost separately; it
+advances no source positions, republishes no checkpoint, opens no detector package and changes
+no event or effect state. Fresh/partial checkpoints, wrong approvals and changed custody refuse.
+Exact retries verify the original retained receipt/trace and append nothing.
+
+The complete enclosing output is admitted before retention, with checkpoint/policy custody
+reopened before retention and delivery. Screened fusion reports now preserve the independently
+retainable diagnostic too; the native comparison retains exact receipt/provenance equality
+while allowing the distinct one-shot and checkpoint command hints. Added subprocess contracts
+exercise emitted commands, a deliberately absent detector, frozen/empty candidates, cold
+health verification and non-advancing partial refusal. Runtime execution remains pending.
+See [completed checkpoint health retention](docs/incremental_dwell.md#retain-a-completed-checkpoints-health-diagnostic).
+
 ## Original footage for retained trained-detector events (2026-10-29, reference)
 
 `fss-export media` now accepts current native retained package-track events. The existing

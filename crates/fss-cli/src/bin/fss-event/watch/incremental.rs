@@ -3,6 +3,7 @@
 
 use super::*;
 use fss_cli::event_fusion::{EventFusionProfile, MAX_REPORT_BYTES};
+use fss_reference::ingest::historical_health::HistoricalHealthRetention;
 use fss_reference::ingest::long_dwell::LongDwellDetector;
 use fss_reference::ingest::long_dwell::incremental::{
     DwellCheckpointPin, DwellHealthWork, DwellRestoreLimits, DwellWork, PreparedIncrementalDwell,
@@ -26,7 +27,7 @@ impl StepOptions {
 pub(super) fn parse(
     values: &[(String, String)],
     stream_dwell: bool,
-    _health_screen: bool,
+    health_screen: bool,
 ) -> Result<Option<StepOptions>, String> {
     let has = |key: &str| values.iter().any(|(name, _)| name == key);
     let keys = [
@@ -43,8 +44,8 @@ pub(super) fn parse(
             "incremental options require --stream-dwell and --dwell-step-frames".to_owned(),
         );
     }
-    if has("--retain-health") || has("--retain-coverage") {
-        return Err("incremental dwell excludes sensor-health and coverage retention".to_owned());
+    if has("--retain-coverage") {
+        return Err("incremental dwell excludes coverage retention".to_owned());
     }
     let step_frames = number(values, "--dwell-step-frames", 0_usize)?;
     if !(1..=MAX_LONG_DWELL_FRAMES).contains(&step_frames) {
@@ -82,6 +83,12 @@ pub(super) fn parse(
                 .to_owned(),
         );
     }
+    if has("--retain-health") && (!health_screen || checkpoint.is_none()) {
+        return Err(
+            "incremental health retention requires an exact completed screened checkpoint"
+                .to_owned(),
+        );
+    }
     Ok(Some(StepOptions {
         step_frames,
         checkpoint,
@@ -111,9 +118,16 @@ pub(super) fn run(
             || action.retain_health.is_some()
             || action.retain_coverage.is_some(),
     )?;
-    if action.retain_health.is_some() || action.retain_coverage.is_some() {
+    if action.retain_coverage.is_some() {
+        return Err(
+            WatchError::InvalidPlan("incremental dwell excludes coverage retention").into(),
+        );
+    }
+    if action.retain_health.is_some()
+        && (!action.health_screen || !options.has_checkpoint() || !action.approvals.is_empty())
+    {
         return Err(WatchError::InvalidPlan(
-            "incremental dwell excludes sensor-health and coverage retention",
+            "incremental health retention requires an exact completed screened checkpoint and separate event approval",
         )
         .into());
     }
@@ -195,6 +209,18 @@ pub(super) fn run(
             out,
         );
     }
+    if let Some(approval) = action.retain_health {
+        return run_completed_health(
+            action,
+            deployment,
+            root,
+            saved.as_ref().ok_or(WatchError::Conflict)?,
+            &restore,
+            approval,
+            cx,
+            out,
+        );
+    }
     let prefix = saved
         .as_ref()
         .map_or(0, |checkpoint| checkpoint.prefix_work().source_positions);
@@ -239,13 +265,24 @@ pub(super) fn run(
             // Classification never creates a fresh foreground/tracker or whole-scan budget.
             report.classify_with_detector(deployment, &detector, cx)?;
         }
+        super::super::health::preflight_watch_diagnostic(
+            report.to_json(u64::MAX, Some(&continuation))?,
+            report.health_diagnostic(),
+            deployment.current_anchor(),
+            &continuation,
+        )?;
         // Existing owner validates every approval and source/privacy witness before any event.
         if !action.approvals.is_empty() {
             report.publish(deployment, &action.approvals, cx)?;
         }
-        Some(report.to_json(
-            deployment.current_anchor().commit_sequence,
-            Some(&continuation),
+        Some(super::super::health::with_watch_diagnostic(
+            report.to_json(
+                deployment.current_anchor().commit_sequence,
+                Some(&continuation),
+            )?,
+            report.health_diagnostic(),
+            None,
+            &continuation,
         )?)
     } else {
         None
@@ -260,6 +297,7 @@ pub(super) fn run(
             prefix,
             count,
             complete,
+            health_retention_only: false,
             continuation,
             event_report,
         },
@@ -290,6 +328,7 @@ fn continuation_command(
 }
 
 /// Screening uses its own native sample allowance; it is not folded into foreground work.
+#[derive(Clone, Copy)]
 struct HealthProgress {
     logical: DwellHealthWork,
     restoration: DwellHealthWork,
@@ -304,6 +343,7 @@ struct Progress {
     prefix: usize,
     count: usize,
     complete: bool,
+    health_retention_only: bool,
     continuation: String,
     event_report: Option<String>,
 }
@@ -321,6 +361,7 @@ fn render_progress(
         prefix,
         count,
         complete,
+        health_retention_only,
         continuation,
         event_report,
     } = progress;
@@ -368,7 +409,9 @@ fn render_progress(
                 "\"max_inferences\":{},\"frames_per_track\":{},",
                 "\"minimum_association_iou_ppm\":{},\"minimum_score_ppm\":{}}}"
             ),
-            json(if complete {
+            json(if health_retention_only {
+                "not_run_for_health_retention"
+            } else if complete {
                 "complete"
             } else {
                 "deferred_until_complete"
@@ -391,6 +434,93 @@ fn render_progress(
         return Err(WatchError::Limit.into());
     }
     Ok(output)
+}
+
+/// Retain the independent historical screen from an already complete temporal checkpoint.
+/// The checkpoint is reconstructed under its original recipe, but it is neither advanced nor
+/// republished. Health findings must remain retainable when they forbid terminal classification.
+#[allow(clippy::too_many_arguments)]
+fn run_completed_health(
+    action: &WatchAction,
+    deployment: &mut ReferenceDeployment,
+    root: &Path,
+    saved: &RetainedDwellCheckpoint,
+    restore: &DwellRestoreLimits,
+    approval: ContentDigest,
+    cx: &ReplayCx,
+    out: &mut impl Write,
+) -> RunResult<()> {
+    let count = saved.prepared().plan().segment_count;
+    if saved.prefix_work().source_positions != count {
+        return Err(WatchError::InvalidPlan(
+            "incremental health retention requires an already complete checkpoint",
+        )
+        .into());
+    }
+    let running = saved.resume(deployment, restore, cx)?;
+    let work = running.work();
+    let restoration = running.restoration_work();
+    let health = Some(HealthProgress {
+        logical: running.health_work().ok_or(WatchError::Conflict)?,
+        restoration: running
+            .restoration_health_work()
+            .ok_or(WatchError::Conflict)?,
+    });
+    let pin = saved.pin();
+    let continuation = continuation_command(action, pin, work.source_positions)?;
+    let report = running.finish(deployment, cx)?;
+    let diagnostic = report.health_diagnostic().ok_or(WatchError::Conflict)?;
+    // A terminal detector is unrelated to this diagnostic. Do not load its archive or run it:
+    // a frozen or entirely refused screen must still be available to downstream health gates.
+    let render = |event_report: String| {
+        render_progress(
+            action,
+            Progress {
+                pin,
+                work,
+                restoration,
+                health,
+                prefix: work.source_positions,
+                count,
+                complete: true,
+                health_retention_only: true,
+                continuation: continuation.clone(),
+                event_report: Some(event_report),
+            },
+            1024 * 1024 + 16 * 1024,
+        )
+    };
+    // Admit the complete enclosing response, including a maximal retention anchor and status,
+    // before the first write. A report bound cannot turn a committed receipt into a hidden one.
+    let maximal = super::super::health::maximal_watch_diagnostic(
+        report.to_json(u64::MAX, Some(&continuation))?,
+        Some(diagnostic),
+        deployment.current_anchor(),
+        &continuation,
+    )?;
+    render(maximal)?;
+    cx.checkpoint("incremental_dwell_health:retain")?;
+    RetainedDwellCheckpoint::open(deployment, pin, restore, cx)?;
+    let retained: HistoricalHealthRetention = diagnostic.retain(deployment, approval, cx)?;
+    let native = super::super::health::with_watch_diagnostic(
+        report.to_json(
+            deployment.current_anchor().commit_sequence,
+            Some(&continuation),
+        )?,
+        Some(diagnostic),
+        Some(&retained),
+        &continuation,
+    )?;
+    let output = render(native)?;
+    if let Some(path) = &action.report_out {
+        cx.checkpoint("incremental_dwell_health:output")?;
+        RetainedDwellCheckpoint::open(deployment, pin, restore, cx)?;
+        export(path, output.as_bytes(), root, cx)?;
+    }
+    cx.checkpoint("incremental_dwell_health:stdout")?;
+    RetainedDwellCheckpoint::open(deployment, pin, restore, cx)?;
+    out.write_all(output.as_bytes())?;
+    Ok(())
 }
 
 /// A complete checkpoint supplies an immutable temporal result, not permission to append
@@ -454,9 +584,14 @@ fn run_completed_fusion(
     report.classify_with_detector(deployment, &detector, cx)?;
     let fusion = EventFusionReport::long_dwell(&report, &package, profile, deployment, cx)?;
     let event_report = super::super::detector::with_fusion(
-        report.to_json(
-            deployment.current_anchor().commit_sequence,
-            Some(&continuation),
+        super::super::health::with_watch_diagnostic(
+            report.to_json(
+                deployment.current_anchor().commit_sequence,
+                Some(&continuation),
+            )?,
+            report.health_diagnostic(),
+            None,
+            &continuation,
         )?,
         Some(&fusion),
     )?;
@@ -472,6 +607,7 @@ fn run_completed_fusion(
             prefix: work.source_positions,
             count,
             complete: true,
+            health_retention_only: false,
             continuation,
             event_report: Some(event_report),
         },
