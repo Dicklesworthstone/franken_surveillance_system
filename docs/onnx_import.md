@@ -9,7 +9,7 @@ It does not run ONNX Runtime, Python, a foreign model server, or model-supplied 
 
 `fss_model_ir::import_onnx(source, expected_sha256, generation, limits, cancelled)`
 returns `ImportedOnnx`, with the original borrowed source, verified source digest,
-validated native graph, embedded parameters, runtime input names, and charged import
+validated native graph, embedded/generated parameters, runtime input names, and charged import
 work. `generation` is the existing `fss_core::Generation` newtype, not an untyped ID.
 The caller acquires source bytes through its own authorized, bounded I/O boundary;
 this API performs no I/O or network acquisition.
@@ -39,7 +39,7 @@ including hand-computed dense and convolution/pooling results.
   data and packed/unpacked `float_data` are supported, including signed zero.
 - Static positive dimensions, at most rank eight. Source-ordered acyclic graphs;
   declared outputs and intermediate value information must match native inference.
-- Add, Sub, Mul, Div, Relu, Sigmoid, Tanh, MatMul, Softmax, Conv, MaxPool, Transpose,
+- Add, Sub, Mul, Div, Relu, Sigmoid, Tanh, MatMul, Gemm, Softmax, Conv, MaxPool, Transpose,
   Concat, Identity and Flatten. Identity/Flatten lower to checked native Reshape
   nodes without changing the frozen operator set or canonical Model IR v1 encoding.
 - MatMul requires rank-two-or-higher inputs. Conv is 2-D; declared `kernel_shape`
@@ -50,12 +50,49 @@ including hand-computed dense and convolution/pooling results.
   Softmax uses opset 13's last-axis default, without the older flattening behavior.
 
 Unknown features refuse rather than being skipped or approximated. In particular,
-Gemm, arbitrary Reshape shape inputs, Constant nodes, BatchNormalization, Resize,
+arbitrary Reshape shape inputs, Constant nodes, BatchNormalization, Resize,
 other opsets/domains/dtypes, symbolic or zero-sized shapes, sparse data, external
 weight files, custom functions, training graphs and model activation are not
 implemented by this profile. Initializers that are also graph inputs refuse rather
 than silently freezing an overridable weight. An unused initializer cannot be made
 executable merely by mentioning it in value-info metadata.
+
+## Gemm and dense model heads
+
+The importer admits [ONNX Gemm-13](https://onnx.ai/onnx/operators/onnx__Gemm.html#gemm-13)
+and lowers it into the existing Transpose, MatMul, Mul and Add operators. Both matrix
+inputs must have rank two. Transposition is applied when the corresponding signed
+INT attribute is nonzero; omitted flags are zero. Finite F32 `alpha` and `beta`
+default to one. The native execution order is:
+
+```text
+product = MatMul(transA ? transpose(A) : A, transB ? transpose(B) : B)
+Y = alpha * product + beta * C
+```
+
+An omitted `C`, including an empty trailing input name, takes the no-bias path and
+does not create a beta parameter or Add node. A present `C` must broadcast into the
+fixed matrix-product shape `[M, N]`: scalar, singleton, row, column and matching
+matrix forms are admitted. It cannot enlarge that output through general
+multidirectional broadcasting. Unknown, duplicate, mistyped or nonfinite attributes
+and incompatible matrix dimensions refuse.
+
+Scaling follows matrix multiplication; alpha is not folded into either matrix.
+This preserves the specified F32 evaluation order and its rounding behavior. Exact
+source initializers remain unchanged, including signed zero. Generated multiplier
+scalars are returned in `parameters()` under collision-free names with the requested
+generation. Bind the complete returned parameter map when executing the graph.
+
+Without bias, Gemm produces 2–4 native nodes and one scalar; with bias, it produces
+4–6 nodes and two scalars. Both source and expanded node counts use `limits.nodes`.
+Generated intermediates, names and scalar bytes also consume the existing tensor,
+parameter and work limits. All source tensor names, including later outputs and
+annotations, are reserved before expansion so generated helpers cannot satisfy a
+missing input or an invalid forward reference. The frozen operator set, Model IR
+v1 encoding and previously imported graph bytes are unchanged.
+
+This is an offline library conversion capability. It does not add an ONNX CLI
+provisioning command or activate a trained model.
 
 ## Bounds and failure behavior
 
@@ -78,7 +115,9 @@ remain in force after successful conversion.
 cargo +nightly-2026-08-31 test --locked --offline -p fss-model-ir
 cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test onnx_import_execution
 rustfmt +nightly-2026-08-31 --check --edition 2024 --config skip_children=true \
-  crates/fss-model-ir/src/onnx.rs crates/fss-reference/tests/onnx_import_execution.rs
+  crates/fss-model-ir/src/onnx.rs crates/fss-model-ir/src/onnx/gemm.rs \
+  crates/fss-model-ir/tests/onnx_gemm_execution.rs \
+  crates/fss-reference/tests/onnx_import_execution.rs
 ```
 
 The ONNX-specific tests cover source preservation, numeric execution, signed zero,
@@ -86,6 +125,20 @@ raw/packed parameters, Conv kernel declarations, shape-only lowering, Softmax ax
 semantics, duplicate/overridable/unused parameters, intermediate shape mismatch,
 nonfinite data, exact resource limits, generation fencing, cancellation, every
 truncated prefix of a valid model, and bounded generated malformed wire inputs.
+
+The full native `fss-model-ir` suite passes 125 tests on the pinned compiler. Its
+new `onnx_gemm_execution` target includes the exact, unmodified production scalar
+executor source and executes Gemm graphs without compiling unrelated asynchronous
+runtime code. Fourteen new cases cover dense-head replay, 25 transpose-flag pairs,
+seven bias forms, optional inputs, exact F32 evaluation order, synthetic-name
+collisions, expansion quotas, every import cancellation checkpoint, truncation and
+native execution budgets. A literal 264-byte legacy Add graph remains byte-exact.
+This focused execution target does not establish full `fss-reference` validation.
+
+Scoped formatting and a narrow library/Gemm-target Clippy check pass. Strict
+all-target Clippy remains blocked by two pre-existing `chunks_exact_to_as_chunks`
+lints in the initializer parser and an unused import in `quotas_family.rs`; those
+findings are separate from the passing native semantic tests.
 
 These fixtures establish the tested conversion and native execution contracts only.
 They do not qualify a trained detector, establish framework-wide numerical parity,

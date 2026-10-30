@@ -10,6 +10,25 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Native ONNX Gemm import and execution (2026-10-30, reference)
+
+The offline digest-pinned ONNX importer now lowers Gemm-13 into the frozen native
+Transpose, MatMul, Mul and Add operators. It admits rank-two matrices, any nonzero
+signed transpose flags, finite F32 alpha/beta and an optional bias that broadcasts
+into the fixed result shape. Matrix multiplication precedes alpha scaling to retain
+F32 evaluation order. All source names are reserved before expansion, and generated
+nodes, intermediates and scalar parameters consume the existing import allowances.
+No operator, dependency, source initializer or Model IR v1 encoding changes.
+
+All 125 native Model IR tests pass on pinned `nightly-2026-08-31`. Fourteen added
+feature cases execute the actual unchanged production scalar executor, including
+dense-head replay, 25 transpose combinations, seven bias forms, exact rounding,
+collision/forward-reference refusals, expansion budgets and cancellation. A literal
+legacy Add graph remains byte-exact. Scoped formatting and the narrow new-target
+lint check pass; strict all-target Clippy retains its existing parser/test findings.
+This advances FSS-138 / WP-080's offline library importer, not an ONNX CLI workflow,
+model activation or full runtime qualification. See [ONNX import](docs/onnx_import.md).
+
 ## Native H.264 type-1 picture ordering (2026-10-30, reference)
 
 The pure-Rust AVC decoder now admits picture-order-count type 1 within its existing
