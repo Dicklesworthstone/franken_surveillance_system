@@ -460,28 +460,41 @@ pub(super) fn response_with_case(
     // V2 requires the complete typed pack, so detailed cognition is carried once there. The
     // concise envelope is an exact subset, not a second, silently abbreviated native inventory.
     // Selection never changes the required pack, its receipt or protected uncertainty/coverage.
-    let summary = EnvelopeEpistemic {
-        propositions: epistemic
-            .propositions
-            .iter()
-            .filter(|proposition| {
-                matches!(
-                    proposition.id.as_str(),
-                    "probe:pending"
-                        | "probe:outcome"
-                        | "probe:token-charge"
-                        | "probe:refusal"
-                        | "probe:acknowledged"
-                        | "probe:discarded"
-                        | "probe:packaging-scope"
-                        | "probe:case-linked"
-                        | "probe:case-citation-absent"
-                )
-            })
-            .cloned()
-            .collect(),
-        assumptions: epistemic.assumptions.clone(),
-        invalidators: epistemic.invalidators.clone(),
+    let summary = if failure.is_none() && matches!(case, Some(CaseProjection::Linked(_))) {
+        // Successful linkage carries the complete native report plus exact citation custody.
+        // V2 requires readers to consume the pack, which already contains every proposition,
+        // assumption and invalidation. Do not duplicate those facts in a second summary and
+        // crowd a valid small report out of its selected view. The sealed outcome selects
+        // the same representation before and after charging; pack/receipt identity is unchanged.
+        EnvelopeEpistemic {
+            propositions: Vec::new(),
+            assumptions: Vec::new(),
+            invalidators: Vec::new(),
+        }
+    } else {
+        EnvelopeEpistemic {
+            propositions: epistemic
+                .propositions
+                .iter()
+                .filter(|proposition| {
+                    matches!(
+                        proposition.id.as_str(),
+                        "probe:pending"
+                            | "probe:outcome"
+                            | "probe:token-charge"
+                            | "probe:refusal"
+                            | "probe:acknowledged"
+                            | "probe:discarded"
+                            | "probe:packaging-scope"
+                            | "probe:case-linked"
+                            | "probe:case-citation-absent"
+                    )
+                })
+                .cloned()
+                .collect(),
+            assumptions: epistemic.assumptions.clone(),
+            invalidators: epistemic.invalidators.clone(),
+        }
     };
     proof.extend([pack.pack_digest, receipt.receipt_digest()]);
     let mut assemble = |quoted_tokens: u64| -> Result<String> {

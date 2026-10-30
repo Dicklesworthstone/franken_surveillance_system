@@ -2583,9 +2583,9 @@ fn closed_episode_feedback_publishes_captured_learning_with_cold_cli_mcp_recover
     );
     assert_eq!(learning_tree(&agent.root, &authority_paths)?, authority);
 
-    // Captured artifacts bind the original admitted workspace. A benign explicit resume
-    // can advance that workspace at the same evidence anchor; recovery must authenticate
-    // the retained source revision instead of compiling a different binding from today's head.
+    // Captured artifacts bind the original admitted workspace. Read-only inventory may show
+    // newer evidence while that workspace remains anchored. After an explicit resume rebases
+    // the workspace, recovery must authenticate the original captured source revision.
     let before_inventory = learning_tree(&agent.root, &[""])?;
     let inventory_options = [
         "--session",
@@ -2686,6 +2686,11 @@ fn closed_episode_feedback_publishes_captured_learning_with_cold_cli_mcp_recover
         .ok_or("workspace revision before learning recovery")?;
     let (code, handed) = agent.run("handoff", &["--session", &agent.session])?;
     assert_eq!(code, Some(0), "{handed:?}");
+    assert_eq!(
+        field(&handed, &["payload", "anchor"])?,
+        field(&before_resume, &["payload", "previousAnchor"])?,
+        "handoff seals the retained workspace anchor, not the newer read-only inventory"
+    );
     let handed_pointers = texts(&handed, &["proofPointers"])?;
     let handoff_manifest =
         fss_object::ObjectManifest::from_canonical_bytes(&fss_publication::read_verified(
@@ -2729,9 +2734,24 @@ fn closed_episode_feedback_publishes_captured_learning_with_cold_cli_mcp_recover
         field(&first, &["missionId"])?
     );
     assert_eq!(
-        field(&resumed, &["payload", "anchor"])?,
         field(&resumed, &["payload", "previousAnchor"])?,
-        "this recovery fixture advances workspace state without moving the evidence anchor"
+        field(&handed, &["payload", "anchor"])?,
+        "resume preserves the exact handoff anchor as its comparison basis"
+    );
+    assert_eq!(
+        field(&resumed, &["payload", "anchor"])?,
+        field(&before_resume, &["payload", "anchor"])?,
+        "resume rebases onto the current evidence already exposed by the read-only inventory"
+    );
+    let prior_sequence = field(&handed, &["payload", "anchor", "capsuleSequence"])?
+        .integer()
+        .ok_or("handoff evidence sequence")?;
+    let resumed_sequence = field(&resumed, &["payload", "anchor", "capsuleSequence"])?
+        .integer()
+        .ok_or("resumed evidence sequence")?;
+    assert!(
+        resumed_sequence > prior_sequence,
+        "the closed effect must exercise recovery across a newer evidence anchor"
     );
     assert!(
         field(&resumed, &["workspaceRevision"])?

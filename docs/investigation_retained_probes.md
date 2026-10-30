@@ -169,10 +169,11 @@ The response carries the actual registered `SemanticContextPack` and
 `SemanticCompressionReceipt` objects for its final cognitive packaging, so the receiver can
 verify the complete pair. The existing closed v1 response contract remains unchanged.
 V2 receivers must read the required `contextPack.items`: it carries the complete, knowledge-tagged
-native detail and protected current context. `epistemic.propositions` is a concise summary of
-pending/result/charge state, and each summary proposition exactly matches its item in that pack.
-Detailed native decisions are carried once in the required pack, avoiding a second complete copy
-inside the summary. This placement does not omit any admitted proposition or qualification.
+native detail and protected current context. `epistemic.propositions` is an optional summary;
+each entry exactly matches an item in that pack. Successful linked-probe deliveries leave this
+summary empty to preserve the view allowance for the complete result and its citation. Pending/result/citation/charge state remains in the required pack, with its original
+knowledge state and proof basis. Refusals and historical citation inspection keep their concise
+summaries. This placement does not omit any admitted proposition or qualification.
 The owner constructs and verifies the exact `SemanticContextPack` containing every admitted
 proposition, warning, contradiction, invalidation, coverage qualification, unresolved obligation
 and custody handle. No item is dropped at this step. The receipt's complete/lossless claim applies

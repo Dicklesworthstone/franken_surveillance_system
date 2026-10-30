@@ -23,10 +23,14 @@ The retained report closes over matching diagnostic records and traces alongside
 source. Cold reads and retention revalidate relevant current health/privacy/deletion custody;
 later findings or missing proof refuse the selected report without rewriting old evidence.
 Current-operation catalog/read/trace work is separately bounded and reported. Existing unscreened
-v1 behavior and canonical bytes remain unchanged. Six real native integration cases, a temporal
+v1 behavior and canonical bytes remain unchanged. Six new native integration cases, a temporal
 gate case and the actual CLI fixture cover unknown, partial, clear and frozen screening, late
-diagnosis, source/privacy changes, corruption, budgets and legacy compatibility. Source, format
-and schema checks have run; full native execution is pending. See [package zones](docs/PACKAGE_ZONES.md).
+diagnosis, source/privacy changes, corruption, budgets and legacy compatibility. The pinned native
+run at `67266b1` passed all 12 package-zone integrations, all six observation units and all four
+source-shape regressions ([run 41093354674](https://github.com/Dicklesworthstone/franken_surveillance_system/actions/runs/41093354674)).
+The real CLI exposed a shared nested-schema reference resolver defect; that resolver now retains
+the document root and all 28 validator regressions pass. Full CLI re-execution remains pending.
+See [package zones](docs/PACKAGE_ZONES.md).
 
 ## Native AVC/HEVC incremental dwell (reference)
 
@@ -45,10 +49,12 @@ existing native admission. Partitioned sources and tolerant inter-coded continua
 explicit refusals. This is sampled unclassified dwell, not continuous physical presence or an
 absence certificate. Seven focused native regressions and actual CLI/process schema fixtures
 cover hot/cold equivalence, reordering, CRA/RASL, budgets, cancellation and publication. The
-pinned native run at `53f6f5b` passed all seven new video cases and all 75 long-dwell tests
-([run 41088787310](https://github.com/Dicklesworthstone/franken_surveillance_system/actions/runs/41088787310)).
-The actual CLI integration was blocked by a separate test-module compile error in that run;
-its explicit nested video module path is now repaired and execution remains pending. Source,
+pinned native run at `67266b1` passed all seven new video cases and all 75 long-dwell tests
+([run 41093354674](https://github.com/Dicklesworthstone/franken_surveillance_system/actions/runs/41093354674)).
+The actual unscreened 300-frame AVC CLI also passed cold continuation, schema validation and
+publication/retry. Its screened 300-frame oracle correctly refused the existing complete
+finding-run bound; the CLI fixture now requires that refusal and exercises screened success on
+a bounded 32-frame prefix. Screened AVC and HEVC CLI re-execution remains pending. Source,
 format and schema checks pass; no release qualification is claimed. See
 [incremental dwell](docs/incremental_dwell.md).
 
@@ -84,10 +90,15 @@ preserves the known native, case and charge receipts, exact historical lookup co
 remaining uncertainty. Its cognitive payload and compression receipt are explicitly absent.
 The requested view is unchanged, and no truncated cognitive result or implicit ACK is returned.
 
-Fourteen native citation-owner regressions and five real-deployment state-admission regressions
-cover cold recovery, forged custody, case/source scope, exact CAS, partial append cuts and retry
-fencing. CLI/MCP process fixtures exercise the composed workflow and bounded recovery response.
-Scoped formatting and schema checks pass; dependency-bearing native execution remains pending.
+Fourteen native citation-owner regressions, all nine real-deployment admission contracts and
+all four probe-output units passed in the pinned `67266b1` native run. They cover cold recovery,
+forged custody, case/source scope, exact CAS, partial append cuts and retry fencing. The real
+Case-view overflow workflow also passed. Two complete linked Forensic replies then exposed
+redundant summary bytes beyond the registered ceiling: successful linked responses now carry
+all detail once in their required context pack, leaving the optional proposition summary empty.
+Compaction does not drop or alter required pack items or widen the registered output ceilings;
+refusal and historical-lookup summaries are preserved. Native re-execution of that compaction
+and the remaining CLI/MCP recovery contracts is pending.
 See [retained investigation probes](docs/investigation_retained_probes.md).
 
 ## Agent investigation of retained native probes (reference)

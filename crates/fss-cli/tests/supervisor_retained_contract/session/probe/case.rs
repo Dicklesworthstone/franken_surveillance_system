@@ -153,6 +153,38 @@ fn citation_id(answer: &Value) -> TestResult<String> {
     Ok(text(handle, "objectDigest")?.to_owned())
 }
 
+fn assert_linked_pack(answer: &Value) -> TestResult {
+    let items = packed_items(answer)?;
+    for id in [
+        "probe:pending",
+        "probe:outcome",
+        "probe:case-linked",
+        "probe:case-native-custody",
+        "probe:token-charge",
+        "probe:packaging-scope",
+    ] {
+        assert!(
+            items
+                .iter()
+                .any(|item| text(item, "itemId").is_ok_and(|value| value == id)),
+            "required linked context lost {id}"
+        );
+    }
+    for kind in [
+        "recorded_assumption",
+        "recorded_invalidation",
+        "protected_warning",
+    ] {
+        assert!(
+            items
+                .iter()
+                .any(|item| text(item, "kind").is_ok_and(|value| value == kind)),
+            "required linked context lost {kind}"
+        );
+    }
+    Ok(())
+}
+
 fn assert_unassessed_case(answer: &Value, target: &Target, evidence: ContentDigest) -> TestResult {
     let hypotheses = field(payload(answer)?, "hypotheses")?
         .array()
@@ -181,6 +213,17 @@ fn assert_unassessed_case(answer: &Value, target: &Target, evidence: ContentDige
 fn exact_case_link_recovers_across_cli_mcp_after_ack_and_later_case_revision() -> TestResult {
     let f = Fixture::new("case-probe-cold", 1)?;
     let request = f.discovery(&[0])?;
+    // Independently run the same scheduled prefix to compare the entire native inventory.
+    let mut native_request = request.clone();
+    rows(
+        fields(discovery_plan(&mut native_request))
+            .get_mut("windows")
+            .ok_or("native windows")?,
+    )
+    .truncate(1);
+    let native_output = f.run_discovered(&native_request)?;
+    success(&native_output);
+    let native = report(&native_output)?;
     let session = open_session(&f)?;
     success(&poll(
         &f,
@@ -225,6 +268,8 @@ fn exact_case_link_recovers_across_cli_mcp_after_ack_and_later_case_revision() -
     success(&output);
     let answer = report(&output)?;
     assert_v2_contract(&f, &answer)?;
+    assert_complete_native_inventory(&answer, &native)?;
+    assert_linked_pack(&answer)?;
     let citation = citation_id(&answer)?;
     let after = state(&f, "agent-probe")?;
     assert_eq!(after.attempts_reserved(), 1);
@@ -237,7 +282,7 @@ fn exact_case_link_recovers_across_cli_mcp_after_ack_and_later_case_revision() -
         text(payload(&case)?, "predecessorRevision")?,
         target.expected
     );
-    assert!(has_proposition(
+    assert!(has_packed_proposition(
         &answer,
         "probe:case-linked",
         text(payload(&case)?, "revisionDigest")?
@@ -348,6 +393,14 @@ fn published_but_unlinked_work_requires_new_explicit_state_after_zero_work_looku
     let chosen = pending.digest();
     let linked_output = linked(&f, &session, &target, chosen, "forensic")?;
     success(&linked_output);
+    let linked_answer = report(&linked_output)?;
+    assert_v2_contract(&f, &linked_answer)?;
+    assert_linked_pack(&linked_answer)?;
+    assert!(
+        packed_items(&linked_answer)?.iter().any(|item| {
+            text(item, "itemId").is_ok_and(|id| id == "probe:case-native-validation")
+        })
+    );
     let after = state(&f, "agent-probe")?;
     assert_eq!(after.pending(), pending.pending());
     assert_eq!(after.attempts_reserved(), 2);
