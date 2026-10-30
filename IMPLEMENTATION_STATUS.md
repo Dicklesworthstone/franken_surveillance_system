@@ -10,6 +10,37 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Agent investigation of retained native probes (reference)
+
+`fss investigate` and MCP `investigate` now expose explicit probe, inspect, exact-receipt ACK,
+discard and adjacent-window advance transitions over an already registered retained-source
+supervision subscription. The agent surface shares the companion supervisor's stored recipe
+decoder, actual native evaluator, source validation, durable reservations and pending-delivery
+owner. It checks the live session, investigation grant and explicitly supplied authority root
+before work and rechecks the native delivery against current protected session context.
+
+The additive cognitive-envelope V2 carries its actual typed context pack and compression receipt.
+The required pack preserves every admitted native decision, window, observation, calibration
+qualification, common-cause cluster, counterfactual, exclusion and health warning. A concise
+summary refers to exact matching pack items; detailed evidence is carried once. Packaging
+completeness applies to the admitted projection, while source omissions and uncertainty remain
+explicit. No implicit ACK, case assessment, provider registration or external effect is performed.
+
+Complete serialized responses are priced before release and durably debited from the existing
+session allowance. The default 5000-token Case ceiling remains unchanged; complete reports can
+explicitly select the existing 16000-token Forensic view. There is no silent view promotion.
+Oversized output refuses without hiding a retained pending receipt or refunding spent native
+work. A separate
+probe contract profile admits the new payload without changing legacy basis bytes, public-row
+encodings, session recovery or the closed V1 schema.
+
+The pinned compiler executed all 178 core unit tests successfully, including the V2 proof-pair
+and legacy/probe profile regressions. The 182 focused registry/robot-document Python tests pass.
+Real CLI/MCP retained-supervision integration fixtures cover current admission, native inventory
+preservation, full-wire accounting, restart, replay, exact ACK, scheduled advance, deletion and
+complete-output refusal; execution of those dependency-bearing native fixtures is pending.
+See [retained investigation probes](docs/investigation_retained_probes.md).
+
 ## Retained detector-class zones and sampled dwell (reference)
 
 `fss-event package-zones analyze` now derives complete image-zone observations from an exact

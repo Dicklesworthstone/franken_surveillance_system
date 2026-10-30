@@ -236,6 +236,14 @@ impl AgentResponseEnvelope {
         if self.outcome == ResponseOutcome::Error && self.error_id.is_none() {
             return Err(ContractError::NotFound);
         }
+        if self.payload_schema == "fss.agent_cognitive_envelope.v2"
+            && !self
+                .operation
+                .response_payload_schemas_for_basis(&self.contract_basis)
+                .is_some_and(|schemas| schemas.contains(&self.payload_schema.as_str()))
+        {
+            return Err(ContractError::InvalidIdentifier);
+        }
         for list in [
             &self.effective_capabilities,
             &self.warnings,
@@ -323,6 +331,17 @@ impl AgentResponseEnvelope {
         check_str_public(&trace_id, 256).map_err(ContractBasisError::Contract)?;
         let payload_schema = payload_schema.into();
         check_str_public(&payload_schema, 256).map_err(ContractBasisError::Contract)?;
+        // V2 is an explicit additive presentation profile, never a silent widening of a
+        // public-v1 session or an unrelated operation. Legacy response construction is unchanged.
+        if payload_schema == "fss.agent_cognitive_envelope.v2"
+            && !operation
+                .response_payload_schemas_for_basis(&contract_basis)
+                .is_some_and(|schemas| schemas.contains(&payload_schema.as_str()))
+        {
+            return Err(ContractBasisError::Contract(
+                ContractError::InvalidIdentifier,
+            ));
+        }
         let payload_json = payload_json.into();
         if payload_json.is_empty() {
             return Err(ContractBasisError::Contract(

@@ -10,6 +10,7 @@ pub mod abstraction;
 pub mod acquisition;
 mod agent;
 pub mod agent_cognitive;
+pub mod agent_cognitive_context;
 pub mod agent_contracts;
 pub mod agent_investigation;
 pub mod agent_operation;
@@ -76,6 +77,7 @@ pub use agent_cognitive::{
     AgentCognitiveEnvelope, CognitiveAnswerClass, EnvelopeBudget, EnvelopeContinuity,
     EnvelopeCoverage, EnvelopeEpistemic, EnvelopeProposition,
 };
+pub use agent_cognitive_context::AgentCognitiveEnvelopeV2;
 pub use agent_contracts::{
     AgentSession, AgentSessionParams, MissionContract, MissionContractParams, MissionState,
     ObjectiveContract, ObjectiveContractParams, ObjectiveScope, SessionCapsule,

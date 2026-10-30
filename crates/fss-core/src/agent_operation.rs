@@ -3,8 +3,8 @@
 //! Normative sources (truth hierarchy, highest tier first):
 //! - `architecture/agent_operations.json` (`fss.agent_operations.v1`): the dedicated
 //!   machine registry owning the executable/public operation surface.
-//! - `architecture/fss1_public_registry.json` (`gen:fss1:public-v1`): the frozen public
-//!   operation registry pinned by `REFERENCE_OPERATION_REGISTRY_DIGEST`.
+//! - `architecture/fss1_public_registry.json` (`gen:fss1:public-v2`): the additive
+//!   current presentation registry; the exact public-v1 snapshot remains beside it.
 //! - `registries/AGENT_OPERATIONS.md` and `registries/AGENT_CONTRACTS.md`: human mirrors;
 //!   `AOP-###` remains one stable identity across both (cross-registry reconciliation).
 //!
@@ -20,6 +20,9 @@
 //! lists join on `;`, booleans spell `0`/`1`, and no field may contain `|`, `;`, or a
 //! newline. Any tampered field fails closed: canonical decode reconstructs the row and
 //! must match a registered row exactly.
+//! The existing row codec and no-basis accessors remain frozen public-v1 bytes. Explicit
+//! `for_basis` accessors select the additive public-v2 response only for the checked probe
+//! profile; ordinary session history and old row decoders never change interpretation.
 //!
 //! Effect authority is typed at the mode level: only `effect_commit` and
 //! `lifecycle_effect` rows are effectful; only read/compute rows may refine the
@@ -609,6 +612,27 @@ impl AgentOperation {
         }
     }
 
+    /// Resolve the response allowlist under a known pinned registry, without widening old rows.
+    /// Unknown registries and partial imitations of the probe profile return no allowlist.
+    #[must_use]
+    pub fn response_payload_schemas_for_basis(
+        self,
+        basis: &ContractBasis,
+    ) -> Option<ResponseSchemaList> {
+        let generation = self.generation_for_basis(basis)?;
+        if generation == crate::contract_basis::PROBE_OPERATION_REGISTRY_GENERATION
+            && self == Self::Investigate
+        {
+            Some(&[
+                concat!("fss.investigation_state", ".v1"),
+                concat!("fss.agent_cognitive_envelope", ".v1"),
+                concat!("fss.agent_cognitive_envelope", ".v2"),
+            ])
+        } else {
+            Some(self.response_payload_schemas())
+        }
+    }
+
     /// Returns the required capability IDs of this operation.
     #[must_use]
     pub const fn required_capabilities(self) -> CapabilityList {
@@ -753,6 +777,21 @@ impl AgentOperation {
         OPERATION_REGISTRY_GENERATION
     }
 
+    /// Explicit registry selection preserves the original reference universe and row bytes.
+    #[must_use]
+    pub fn generation_for_basis(self, basis: &ContractBasis) -> Option<&'static str> {
+        if crate::contract_basis::is_probe_contract_basis(basis) {
+            Some(crate::contract_basis::PROBE_OPERATION_REGISTRY_GENERATION)
+        } else if basis.semantic_protocol == crate::contract_basis::CANONICAL_SEMANTIC_PROTOCOL
+            && ContentDigest::parse(crate::contract_basis::REFERENCE_OPERATION_REGISTRY_DIGEST)
+                .is_ok_and(|digest| digest == basis.operation_registry_digest)
+        {
+            Some(OPERATION_REGISTRY_GENERATION)
+        } else {
+            None
+        }
+    }
+
     /// Returns the deterministic canonical text row encoding.
     ///
     /// Field order and delimiters are documented on the module. The row literal is
@@ -803,6 +842,21 @@ impl AgentOperation {
             Self::Doctor => {
                 "AOP-014|doctor|diagnostic_prepare|fss-doctor|AVIEW-004|fss.agent_query_plan.v1|fss.agent_cognitive_envelope.v1;fss.evidence_bundle.v1|fss.agent_request_envelope.v1|fss.agent_response_envelope.v1|0|1|QL-AGENT-001|CAP-REPAIR-PREPARE-001|safe_read_retry;refresh_and_retry;backoff;resume_from_continuation"
             }
+        }
+    }
+
+    /// Current metadata for an explicitly selected known basis. This is not the legacy row codec.
+    #[must_use]
+    pub fn canonical_row_encoding_for_basis(self, basis: &ContractBasis) -> Option<&'static str> {
+        let generation = self.generation_for_basis(basis)?;
+        if generation == crate::contract_basis::PROBE_OPERATION_REGISTRY_GENERATION
+            && self == Self::Investigate
+        {
+            Some(
+                "AOP-006|investigate|cognition_write|fss-investigation|AVIEW-003|fss.investigation_state.v1|fss.investigation_state.v1;fss.agent_cognitive_envelope.v1;fss.agent_cognitive_envelope.v2|fss.agent_request_envelope.v1|fss.agent_response_envelope.v1|0|1|QL-AGENT-001|CAP-AGENT-CASE-WRITE-001|refresh_and_retry;rebase_required;backoff;reconciliation_required;operator_action_required;resume_from_continuation",
+            )
+        } else {
+            Some(self.canonical_row_encoding())
         }
     }
 

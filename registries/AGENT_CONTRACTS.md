@@ -124,6 +124,7 @@ Every operation uses the universal request/response envelopes; the table exposes
 | `LearningProposal` | `fss.agent_learning_proposal.v1` |
 | `HandoffCapsule` | `fss.agent_handoff_capsule.v1` |
 | `AgentCognitiveEnvelope` | `fss.agent_cognitive_envelope.v1` |
+| `AgentCognitiveEnvelopeV2` | `fss.agent_cognitive_envelope.v2` |
 | `AgentResponseEnvelope` | `fss.agent_response_envelope.v1` |
 
 ## Object composition

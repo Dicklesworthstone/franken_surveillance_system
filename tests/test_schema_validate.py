@@ -910,7 +910,7 @@ class TestSchemaConstitution(unittest.TestCase):
         # output, receipt and protected orientation metadata domains.
         # Four explicit mission criterion/revision/history/command domains.
         # Current registry, including three event-health inventory, selected-row and delivery domains.
-        self.assertEqual(result["digestDomainCount"], 550)
+        self.assertEqual(result["digestDomainCount"], 555)
 
         # Continuation cursor is verified implemented
         implemented_names = {s["name"] for s in result["schemas"] if s["status"] == "implemented"}
@@ -1469,7 +1469,7 @@ class TestSchemaConstitutionCrossReviewRegressions(unittest.TestCase):
         # output, receipt and protected orientation metadata domains.
         # Four explicit mission criterion/revision/history/command domains.
         # Current registry, including three event-health inventory, selected-row and delivery domains.
-        self.assertEqual(result["digestDomainCount"], 550)
+        self.assertEqual(result["digestDomainCount"], 555)
         # 36 = 28 + fss.sensor_tamper_status.v1 (owner SensorTamperStatus, fss-2uftm)
         # + fss.agent_operations.v1 / fss.agent_views.v1 / fss.agent_request_envelope.v1
         #   (owners AgentOperation / AgentView / AgentRequestEnvelope, fss-x4a.30.83.17-40)
@@ -1496,7 +1496,7 @@ class TestSchemaConstitutionCrossReviewRegressions(unittest.TestCase):
         # fss.evidence_delta_batch.v1 (owner EvidenceDeltaBatch): typed SCHEMA constants
         # landed 2026-10-10 (fss-x4a.30.51/30.18 realization, camera-ingest lane).
         # 53 = 52 + fss.experiment_receipt.v1 (owner ExperimentReceipt, FSS-196/fss-x4a.26.16).
-        self.assertEqual(result["implementedCount"], 53)
+        self.assertEqual(result["implementedCount"], 54)
 
         unreg_findings = [
             f for f in validator.findings

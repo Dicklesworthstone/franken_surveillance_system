@@ -134,10 +134,20 @@ class RobotDocsContractTests(unittest.TestCase):
         self.assertEqual(res.errors_count, expected_errors_count)
         self.assertEqual(
             res.stats["freeze_digest"],
-            "sha256:9bbec4e6845ea702f676cd22472e5fb0d35ca3b3d97f66cbfccb452182413da8",
+            "sha256:5eafaf9e3047686c734079a021482d08f9359c39cee6d66bb3c67a31563aa885",
         )
         self.assertEqual(res.stats["semantic_protocol"], "fss/1")
-        self.assertEqual(res.stats["generation"], "gen:fss1:public-v1")
+        self.assertEqual(res.stats["generation"], "gen:fss1:public-v2")
+        from frozen_registry_checker import load_legacy_registry
+
+        legacy = load_legacy_registry(ROOT)
+        self.assertEqual(legacy["registryGeneration"], "gen:fss1:public-v1")
+        self.assertEqual(
+            legacy["freezeDigest"],
+            "sha256:9bbec4e6845ea702f676cd22472e5fb0d35ca3b3d97f66cbfccb452182413da8",
+        )
+        original = next(row for row in legacy["operations"] if row["id"] == "AOP-006")
+        self.assertNotIn("fss.agent_cognitive_envelope.v2", original["responsePayloadSchemas"])
 
     def test_generation_is_byte_idempotent(self) -> None:
         """Generating robot docs repeatedly produces byte-identical outputs."""

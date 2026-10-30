@@ -19,12 +19,12 @@ use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
 use fss_core::{
-    ActionAffordance, AffordanceClass, AgentCognitiveEnvelope, AgentOperation,
-    AgentResponseEnvelope, AgentSession, BudgetVector, Completeness, ContentDigest, ContextItem,
-    ContractBasis, ControlEnvelope, CoverageContinuity, CoverageStopReason, CoverageWitness,
-    KnowledgeCell, KnowledgeState, KnowledgeStateBasis, LedgerAnchor, ObjectiveContract,
-    OperationMode, PossibleWorld, ResourceState, SemanticCompressionReceipt, SemanticContextPack,
-    SessionCapsule, StaleBasis, WorldEnvelope,
+    ActionAffordance, AffordanceClass, AgentCognitiveEnvelope, AgentCognitiveEnvelopeV2,
+    AgentOperation, AgentResponseEnvelope, AgentSession, BudgetVector, Completeness, ContentDigest,
+    ContextItem, ContractBasis, ControlEnvelope, CoverageContinuity, CoverageStopReason,
+    CoverageWitness, KnowledgeCell, KnowledgeState, KnowledgeStateBasis, LedgerAnchor,
+    ObjectiveContract, OperationMode, PossibleWorld, ResourceState, SemanticCompressionReceipt,
+    SemanticContextPack, SessionCapsule, StaleBasis, WorldEnvelope,
 };
 
 use crate::diagnostic::escape_json_str;
@@ -1333,6 +1333,36 @@ pub fn cognitive_envelope(
     handles: &[EvidenceHandle],
     next_actions: &[String],
 ) -> Option<String> {
+    Some(object(&cognitive_envelope_fields(
+        value,
+        handles,
+        next_actions,
+    )?))
+}
+
+/// V2 carries the exact registered context pack and compression receipt. V1 bytes stay unchanged.
+#[must_use]
+pub fn cognitive_envelope_v2(
+    value: &AgentCognitiveEnvelopeV2,
+    handles: &[EvidenceHandle],
+    next_actions: &[String],
+) -> Option<String> {
+    value.validate().ok()?;
+    let mut fields = cognitive_envelope_fields(value.cognition(), handles, next_actions)?;
+    fields[0].1 = string(AgentCognitiveEnvelopeV2::SCHEMA);
+    fields.push(("contextPack", context_pack(value.context_pack())));
+    fields.push((
+        "compressionReceipt",
+        compression_receipt(value.compression_receipt()),
+    ));
+    Some(object(&fields))
+}
+
+fn cognitive_envelope_fields(
+    value: &AgentCognitiveEnvelope,
+    handles: &[EvidenceHandle],
+    next_actions: &[String],
+) -> Option<Vec<(&'static str, String)>> {
     if handles.len() != value.evidence_handles.len()
         || handles
             .iter()
@@ -1360,7 +1390,7 @@ pub fn cognitive_envelope(
     let coverage = &value.coverage;
     let budget_block = &value.budget;
     let continuity = &value.continuity;
-    Some(object(&[
+    Some(vec![
         ("schema", string(AgentCognitiveEnvelope::SCHEMA)),
         ("contractBasis", contract_basis(&value.contract_basis)),
         ("requestId", string(&value.request_id)),
@@ -1428,7 +1458,7 @@ pub fn cognitive_envelope(
             ]),
         ),
         ("decisionDigest", string(&value.decision_digest)),
-    ]))
+    ])
 }
 
 /// `AgentResponseEnvelope` as `fss.agent_response_envelope.v1`.

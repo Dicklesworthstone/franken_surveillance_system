@@ -4,6 +4,21 @@ Machine source: `architecture/agent_operations.json`. Semantic protocol: `fss/1`
 
 Every operation accepts `fss.agent_request_envelope.v1` and returns `fss.agent_response_envelope.v1`. The table names the operation-specific typed request payload; response payloads are an allowlisted set in the machine registry.
 
+The current public snapshot is `gen:fss1:public-v2` in
+`architecture/fss1_public_registry.json`. Its only operation-contract addition is
+`fss.agent_cognitive_envelope.v2` in the `AOP-006` response allowlist, carrying the
+actual context pack and compression receipt for an admitted native probe. Stable
+operation/resource IDs, requests, defaults and all existing payloads are unchanged.
+
+`architecture/fss1_public_registry.v1.json` preserves the exact public-v1 bytes and
+freeze digest. Existing durable sessions, cases, workspaces and follow pages keep
+`reference_contract_basis()` and the original native row encoding. The new payload
+requires the explicit `probe_contract_basis()` presentation profile: public-v2 plus
+`fss.agent_probe_schema_catalog.v1`, which binds the frozen reference schema catalog
+and exact V2 cognitive schema bytes. Basis-aware native selectors refuse mixed or
+unknown profiles; the default row codec and V1 schema stay frozen. Both generations
+have independent immutable pins checked by the registry validators.
+
 | ID | Name | Owner | Mode | Default view | Typed request payload | Effectful | Durable | Gate | Status |
 |---|---|---|---|---|---|---:|---:|---|---|
 | `AOP-001` | `session.open` | `fss-agent-session` | `session_control` | `AVIEW-002` | `fss.agent_mission.v1` | no | yes | `QL-AGENT-001` | `specified` |

@@ -211,7 +211,8 @@
     "AgentCognitiveEnvelope": "fss.agent_cognitive_envelope.v1",
     "AgentResponseEnvelope": "fss.agent_response_envelope.v1",
     "ContractBasis": "fss.agent_contract_basis.v1",
-    "AgentRequestEnvelope": "fss.agent_request_envelope.v1"
+    "AgentRequestEnvelope": "fss.agent_request_envelope.v1",
+    "AgentCognitiveEnvelopeV2": "fss.agent_cognitive_envelope.v2"
   },
   "operationRegistry": "architecture/agent_operations.json",
   "viewRegistry": "architecture/agent_views.json",
@@ -228,7 +229,8 @@
     "WorldEnvelope": "separates the nominal world, certified core and absences, material alternative worlds, adversarial residuals, common invariants, unresolved dimensions, and discriminating affordances",
     "AgentRequestEnvelope": "wraps every public operation request with exact contract basis, lifecycle identity, anchor/workspace preconditions, budgets, requested authority/privacy projection, continuation, taint, and one typed semantic payload",
     "ContractBasis": "freezes the exact semantic protocol, schema catalog, ontology, operation/view/capability/error/cost registries, and producing release for portable interpretation",
-    "AgentCognitiveEnvelope": "carries generic decision semantics and effective epistemic/coverage/budget/affordance state inside the universal AgentResponseEnvelope"
+    "AgentCognitiveEnvelope": "carries generic decision semantics and effective epistemic/coverage/budget/affordance state inside the universal AgentResponseEnvelope",
+    "AgentCognitiveEnvelopeV2": "carries unchanged v1 cognitive fields plus the actual registered ContextPack and SemanticCompressionReceipt, cross-checked against the exact contract basis, authority anchor, view and emitted cognition; old v1 stays closed"
   },
   "primaryReadSurface": "SituationCapsule",
   "responseComposition": {

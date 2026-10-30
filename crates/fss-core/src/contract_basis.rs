@@ -26,6 +26,10 @@ use crate::contract::ContractError;
 use crate::digest::{ContentDigest, DigestAlgorithm, Sha256Hasher};
 use crate::evidence::LedgerAnchor;
 
+#[cfg(test)]
+#[path = "contract_basis/probe_profile_tests.rs"]
+mod probe_profile_tests;
+
 /// Canonical schema URI for agent contract basis instances.
 pub const SCHEMA_CONTRACT_BASIS: &str = "fss.agent_contract_basis.v1";
 
@@ -117,6 +121,33 @@ pub const REFERENCE_CONTRACT_BASIS_CANONICAL_DIGEST: &str =
 /// (current: capabilities-v2 + cost-v2 registry freeze; fixture `contract_basis_v2.bin`).
 pub const REFERENCE_CONTRACT_BASIS_FREEZE_DIGEST: &str =
     "sha256:dea13e470a9840b12901f70086da59388542d404955e9324f0ddb449663c6bb4";
+
+/// Explicit additive presentation profile; the default durable reference basis stays frozen.
+pub const PROBE_CONTRACT_BASIS_GENERATION: &str = "gen:fss1:probe-context-v1";
+
+/// Public registry generation admitting the checked V2 cognitive response for AOP-006 only.
+pub const PROBE_OPERATION_REGISTRY_GENERATION: &str = "gen:fss1:public-v2";
+
+/// Exact public-v2 canonical freeze, with unchanged stable operation and resource identities.
+pub const PROBE_OPERATION_REGISTRY_DIGEST: &str =
+    "sha256:5eafaf9e3047686c734079a021482d08f9359c39cee6d66bb3c67a31563aa885";
+
+/// Exact bytes of the closed V2 schema included in the additive schema-catalog profile.
+pub const PROBE_COGNITIVE_SCHEMA_DIGEST: &str =
+    "sha256:eed17b3723f35c2bc9b918fb5f3ee6f4132abbb1bbe10e9b78eb1e56737f7755";
+
+/// CanonicalEncoder text domain, frozen reference catalog digest, V2 schema identity and its
+/// exact file digest, in that order. This never hashes the changing workspace-wide catalog.
+pub const PROBE_SCHEMA_CATALOG_DIGEST: &str =
+    "sha256:c11c9fd2f141a302cecf75ca42a9ca19849de1250a160899243fa3bc89d7ad7e";
+
+/// Canonical semantic identity of the explicitly selected probe presentation basis.
+pub const PROBE_CONTRACT_BASIS_CANONICAL_DIGEST: &str =
+    "sha256:b22d8b888e2d3bd0b4e069849f8041cc09d1fec9993249ed7f2da077de452b69";
+
+/// Binary identity of `tests/fixtures/contract_basis_probe_v1.bin`; legacy fixtures stay intact.
+pub const PROBE_CONTRACT_BASIS_FREEZE_DIGEST: &str =
+    "sha256:44ff604949ddad15ed66453619efb2322a5e2b4f0be3335731aa767488776d00";
 
 /// Maximum byte size of a canonical contract-basis binary payload (64 KiB).
 pub const MAX_CONTRACT_BASIS_BINARY_BYTES: usize = 64 * 1024;
@@ -693,6 +724,25 @@ pub fn reference_contract_basis() -> ContractBasis {
         producer_release_id: CANONICAL_PRODUCER_RELEASE_ID.to_owned(),
         accepted_nightly: None,
     }
+}
+
+/// Select the registered additive probe presentation profile without rewriting a session basis.
+///
+/// Only the private admitted probe compiler uses this profile. Session history, ordinary views,
+/// follow reconstruction, case authority, workspaces and legacy row codecs retain their original
+/// exact reference basis. This selection grants no capability and performs no implicit rebase.
+#[must_use]
+pub fn probe_contract_basis() -> ContractBasis {
+    let mut basis = reference_contract_basis();
+    basis.schema_catalog_digest = parse_reference_digest(PROBE_SCHEMA_CATALOG_DIGEST);
+    basis.operation_registry_digest = parse_reference_digest(PROBE_OPERATION_REGISTRY_DIGEST);
+    basis
+}
+
+/// The V2 projection accepts only this exact profile, never an arbitrary pair of replacement pins.
+#[must_use]
+pub fn is_probe_contract_basis(basis: &ContractBasis) -> bool {
+    basis == &probe_contract_basis()
 }
 
 /// Computes the exact set of registry digests from raw registry byte slices.

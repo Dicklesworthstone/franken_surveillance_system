@@ -33,6 +33,8 @@ mod discovery;
 mod health;
 mod input;
 mod render;
+/// Shared session-owned native execution and cold recovery for retained probes.
+pub mod session;
 
 use budget::package_error;
 use clock::SourceClocks;

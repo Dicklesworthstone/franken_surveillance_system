@@ -57,7 +57,10 @@
     "crates/fss-reference/src/onvif/capture_operation/reconciliation.rs",
     "crates/fss-reference/src/onvif/metadata/rtp.rs",
     "crates/fss-reference/src/ingest/package_zones.rs",
-    "crates/fss-reference/src/ingest/package_zones/storage.rs"
+    "crates/fss-reference/src/ingest/package_zones/storage.rs",
+    "crates/fss-cli/src/probe_cmd.rs",
+    "crates/fss-cli/src/supervisor/retained/session.rs",
+    "crates/fss-reference/src/deployment_session/probe.rs"
   ],
   "module_declarations": {
     "crates/fss-cli/src/alert_effect/report.rs": "support",
@@ -804,7 +807,17 @@
     "crates/fss-reference/src/ingest/package_zones/wire.rs": "support",
     "crates/fss-reference/src/ingest/package_zones/json.rs": "support",
     "crates/fss-reference/src/ingest/package_zones/tests.rs": "support",
-    "crates/fss-cli/src/bin/fss-event/package_zones.rs": "support"
+    "crates/fss-cli/src/bin/fss-event/package_zones.rs": "support",
+    "crates/fss-core/src/agent_cognitive_context.rs": "authority",
+    "crates/fss-cli/src/probe_cmd.rs": "cognition",
+    "crates/fss-cli/src/probe_cmd/projection.rs": "cognition",
+    "crates/fss-cli/src/probe_cmd/render.rs": "cognition",
+    "crates/fss-cli/src/probe_cmd/compression.rs": "cognition",
+    "crates/fss-cli/src/probe_cmd/tests.rs": "support",
+    "crates/fss-cli/src/supervisor/retained/session.rs": "cognition",
+    "crates/fss-reference/src/deployment_session/probe.rs": "cognition",
+    "crates/fss-reference/src/agent_session/checkpoint/journal/supervision/projection_charge.rs": "authority",
+    "crates/fss-core/src/contract_basis/probe_profile_tests.rs": "support"
   },
   "types": {
     "AlertEffectRecord": {
@@ -1614,6 +1627,36 @@
       "file": "crates/fss-reference/src/ingest/package_zones.rs",
       "plane": "support",
       "description": "Typed complete package-zone refusal preserving source/custody, authority, budget and cancellation distinctions."
+    },
+    "AgentCognitiveEnvelopeV2": {
+      "file": "crates/fss-core/src/agent_cognitive_context.rs",
+      "plane": "authority",
+      "description": "Exact versioned response contract joining cognition to the actual verified context and compression receipt; no effect grant."
+    },
+    "ProbeRequest": {
+      "file": "crates/fss-reference/src/deployment_session/probe.rs",
+      "plane": "cognition",
+      "description": "Explicit existing-subscription AOP006 action under exact session/principal and authority."
+    },
+    "ProbeContext": {
+      "file": "crates/fss-reference/src/deployment_session/probe.rs",
+      "plane": "cognition",
+      "description": "Protected immutable current session projection from the existing admitted read owner."
+    },
+    "ProbeCharge": {
+      "file": "crates/fss-reference/src/deployment_session/probe.rs",
+      "plane": "authority",
+      "description": "Definitely committed cumulative token debit under exact session/subscription/journal/head comparisons."
+    },
+    "ProbeChargeFailure": {
+      "file": "crates/fss-reference/src/deployment_session/probe.rs",
+      "plane": "support",
+      "description": "Final projection refusal carrying any already committed token charge."
+    },
+    "ProbeArgs": {
+      "file": "crates/fss-cli/src/probe_cmd.rs",
+      "plane": "cognition",
+      "description": "Typed CLI/MCP existing-subscription intent; cannot supply a native recipe or score."
     }
   }
 }

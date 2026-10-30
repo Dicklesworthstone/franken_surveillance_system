@@ -238,14 +238,44 @@ impl AgentCognitiveEnvelope {
         registered_operation(&contract_basis, operation.name())?;
         let view = AgentView::from_id(view_id)
             .map_err(|_| ContractBasisError::Contract(ContractError::InvalidIdentifier))?;
-        let request_id = request_id.into();
-        check_str(&request_id, 256).map_err(ContractBasisError::Contract)?;
-        let response_id = response_id.into();
-        check_str(&response_id, 256).map_err(ContractBasisError::Contract)?;
-        let trace_id = trace_id.into();
-        check_str(&trace_id, 256).map_err(ContractBasisError::Contract)?;
-        let semantic_verb = semantic_verb.into();
-        check_str(&semantic_verb, 64).map_err(ContractBasisError::Contract)?;
+        let value = Self {
+            contract_basis,
+            request_id: request_id.into(),
+            response_id: response_id.into(),
+            trace_id: trace_id.into(),
+            operation,
+            semantic_verb: semantic_verb.into(),
+            view,
+            answer_class,
+            basis_anchor,
+            epistemic,
+            coverage,
+            budget,
+            evidence_handles,
+            next_actions,
+            continuity,
+            decision_digest: decision_digest.into(),
+        };
+        value.validate()?;
+        Ok(value)
+    }
+
+    /// Recheck the same bounded constructor contract after any public-field mutation.
+    /// Canonical encoding and old constructor defaults remain unchanged.
+    pub fn validate(&self) -> Result<(), ContractBasisError> {
+        registered_operation(&self.contract_basis, self.operation.name())?;
+        for (value, maximum) in [
+            (&self.request_id, 256),
+            (&self.response_id, 256),
+            (&self.trace_id, 256),
+            (&self.semantic_verb, 64),
+        ] {
+            check_str(value, maximum).map_err(ContractBasisError::Contract)?;
+        }
+        let epistemic = &self.epistemic;
+        let coverage = &self.coverage;
+        let budget = &self.budget;
+        let continuity = &self.continuity;
         if epistemic.propositions.len() > 4096
             || epistemic.assumptions.len() > 4096
             || epistemic.invalidators.len() > 4096
@@ -255,8 +285,8 @@ impl AgentCognitiveEnvelope {
             || coverage.omission_reasons.len() > 64
             || budget.degraded_dimensions.len() > 4096
             || budget.marginal_work_declined.len() > 4096
-            || evidence_handles.len() > 4096
-            || next_actions.len() > 64
+            || self.evidence_handles.len() > 4096
+            || self.next_actions.len() > 64
             || continuity.reanchor_triggers.len() > 4096
             || continuity.unresolved_obligations.len() > 4096
         {
@@ -281,26 +311,8 @@ impl AgentCognitiveEnvelope {
         if let Some(cursor) = &continuity.cursor {
             check_str(cursor, 4096).map_err(ContractBasisError::Contract)?;
         }
-        let decision_digest = decision_digest.into();
-        check_decision_digest(&decision_digest).map_err(ContractBasisError::Contract)?;
-        Ok(Self {
-            contract_basis,
-            request_id,
-            response_id,
-            trace_id,
-            operation,
-            semantic_verb,
-            view,
-            answer_class,
-            basis_anchor,
-            epistemic,
-            coverage,
-            budget,
-            evidence_handles,
-            next_actions,
-            continuity,
-            decision_digest,
-        })
+        check_decision_digest(&self.decision_digest).map_err(ContractBasisError::Contract)?;
+        Ok(())
     }
 
     /// Returns the domain-separated canonical digest under the schema identity.

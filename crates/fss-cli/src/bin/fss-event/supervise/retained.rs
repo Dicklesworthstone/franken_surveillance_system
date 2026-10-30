@@ -10,12 +10,11 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use fss_cli::supervisor::retained::{
-    MAX_RETAINED_SUPERVISOR_PLAN_BYTES, RETAINED_DETECTION_REPORT_SCHEMA,
-    RETAINED_DETECTION_REQUEST_SCHEMA, RETAINED_DISCOVERY_REPORT_SCHEMA,
-    RETAINED_DISCOVERY_REQUEST_SCHEMA, RetainedDetectionRequest, RetainedDiscoveryRequest,
+    MAX_RETAINED_SUPERVISOR_PLAN_BYTES, RetainedDetectionRequest, RetainedDiscoveryRequest,
     RetainedSupervisorError, RetainedSupervisorPlan, run_discovered_detection_supervisor,
     run_discovered_retained_supervisor, run_retained_supervisor,
 };
+use fss_cli::supervisor::retained::session::NativeSupervisionRequest as NativeRequest;
 use fss_cli::{ERR_CLI_MALFORMED_VALUE, ERR_CLI_RUNTIME_FAILURE, ExitIdentity};
 use fss_core::{
     BudgetVector, ContentDigest, ContextAuthority, DigestAlgorithm, OperationId, PrincipalId,
@@ -37,102 +36,6 @@ enum Mode {
     Detection,
 }
 
-/// The immutable registered configuration selects its native owner; source identities never
-/// cross between event discovery and direct detector discovery.
-#[derive(Clone, Debug)]
-enum NativeRequest {
-    Event(RetainedDiscoveryRequest),
-    Detection(RetainedDetectionRequest),
-}
-
-impl NativeRequest {
-    fn template(&self) -> &RetainedSupervisorPlan {
-        match self {
-            Self::Event(request) => request.template(),
-            Self::Detection(request) => request.template(),
-        }
-    }
-
-    fn digest(&self) -> ContentDigest {
-        match self {
-            Self::Event(request) => request.digest(),
-            Self::Detection(request) => request.digest(),
-        }
-    }
-
-    fn for_authority(
-        &self,
-        authority: ContentDigest,
-    ) -> std::result::Result<Self, RetainedSupervisorError> {
-        match self {
-            Self::Event(request) => request.for_authority(authority).map(Self::Event),
-            Self::Detection(request) => request.for_authority(authority).map(Self::Detection),
-        }
-    }
-
-    fn for_window_prefix(
-        &self,
-        count: usize,
-    ) -> std::result::Result<Self, RetainedSupervisorError> {
-        match self {
-            Self::Event(request) => request.for_window_prefix(count).map(Self::Event),
-            Self::Detection(request) => request.for_window_prefix(count).map(Self::Detection),
-        }
-    }
-
-    const fn report_schema(&self) -> &'static str {
-        match self {
-            Self::Event(_) => RETAINED_DISCOVERY_REPORT_SCHEMA,
-            Self::Detection(_) => RETAINED_DETECTION_REPORT_SCHEMA,
-        }
-    }
-
-    const fn report_authority_field(&self) -> &'static str {
-        match self {
-            Self::Event(_) => "expected_authority_root",
-            Self::Detection(_) => "authority_state_root",
-        }
-    }
-
-    /// Select only a known native dialect after checking the complete stored configuration.
-    /// Each existing strict owner then validates its full schema and all immutable limits.
-    fn from_configuration(
-        bytes: &[u8],
-        expected: ContentDigest,
-    ) -> std::result::Result<Self, RetainedSupervisorError> {
-        if bytes.is_empty() || bytes.len() > MAX_RETAINED_SUPERVISOR_PLAN_BYTES {
-            return Err(RetainedSupervisorError::Limit(
-                "stored native configuration bytes",
-            ));
-        }
-        if expected.algorithm() != DigestAlgorithm::Sha256
-            || ContentDigest::sha256(bytes) != expected
-        {
-            return Err(RetainedSupervisorError::Plan(
-                "stored native configuration byte digest",
-            ));
-        }
-        let text = std::str::from_utf8(bytes)
-            .map_err(|_| RetainedSupervisorError::Plan("stored native configuration UTF-8"))?;
-        let document = fss_cli::json_input::parse(text)
-            .map_err(|_| RetainedSupervisorError::Plan("stored native configuration JSON"))?;
-        let schema = document
-            .object()
-            .and_then(|fields| fields.get("schema"))
-            .and_then(fss_cli::json_input::Value::text);
-        match schema {
-            Some(RETAINED_DISCOVERY_REQUEST_SCHEMA) => {
-                RetainedDiscoveryRequest::from_json(bytes, expected).map(Self::Event)
-            }
-            Some(RETAINED_DETECTION_REQUEST_SCHEMA) => {
-                RetainedDetectionRequest::from_json(bytes, expected).map(Self::Detection)
-            }
-            _ => Err(RetainedSupervisorError::Plan(
-                "stored native configuration schema",
-            )),
-        }
-    }
-}
 
 enum InputPlan {
     Explicit(RetainedSupervisorPlan),

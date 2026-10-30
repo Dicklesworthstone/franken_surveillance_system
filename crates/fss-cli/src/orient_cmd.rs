@@ -561,12 +561,41 @@ pub(crate) fn build_response_with_resnapshot(
     parts: ResponseParts,
     resnapshot_required: bool,
 ) -> Result<String, Box<dyn std::error::Error>> {
+    build_response_for_basis(
+        parts,
+        resnapshot_required,
+        fss_core::reference_contract_basis(),
+    )
+}
+
+/// The additive retained-probe response profile never changes another operation's basis.
+pub(crate) fn build_probe_response(
+    parts: ResponseParts,
+) -> Result<String, Box<dyn std::error::Error>> {
+    if parts.operation != "investigate"
+        || !matches!(parts.view, AgentView::Case | AgentView::Forensic)
+        || parts.payload_schema != fss_core::AgentCognitiveEnvelopeV2::SCHEMA
+    {
+        return Err(RenderError("invalid admitted probe response profile").into());
+    }
+    build_response_for_basis(
+        parts,
+        false,
+        fss_core::contract_basis::probe_contract_basis(),
+    )
+}
+
+fn build_response_for_basis(
+    parts: ResponseParts,
+    resnapshot_required: bool,
+    basis: fss_core::ContractBasis,
+) -> Result<String, Box<dyn std::error::Error>> {
     let payload_digest = ContentDigest::sha256(parts.payload_json.as_bytes());
     let short = parts.request_digest.to_text();
     let hex = short.split_once(':').map_or(short.as_str(), |(_, hex)| hex);
     let privacy = privacy_projection(&parts.anchor).envelope_json();
     let envelope = AgentResponseEnvelope::new(
-        fss_core::reference_contract_basis(),
+        basis,
         parts.operation,
         format!("request:{}:{hex}", parts.operation),
         1,

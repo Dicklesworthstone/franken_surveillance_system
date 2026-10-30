@@ -36,6 +36,20 @@ check package-zone-observations cargo "+$channel" test --locked --offline --no-f
     -p fss-reference --lib package_zones
 check package-track-confirmation cargo "+$channel" test --locked --offline --no-fail-fast \
     -p fss-reference --lib exact_sample_confirmation_matches_native_lifecycle
+check rtsp-history-continuation cargo "+$channel" test --locked --offline --no-fail-fast \
+    -p fss-reference --test rtsp_campaign_history_contract
+check rtsp-continuation-controller cargo "+$channel" test --locked --offline --no-fail-fast \
+    -p fss-cli --bin fss-capture-rtsp reconnect::history_tests
+check rtsp-cold-process-continuation cargo "+$channel" test --locked --offline --no-fail-fast \
+    -p fss-cli --test capture_rtsp_cli history::continuation
+check retained-agent-probe cargo "+$channel" test --locked --offline --no-fail-fast \
+    -p fss-cli --lib probe_cmd::
+check retained-agent-probe-mcp cargo "+$channel" test --locked --offline --no-fail-fast \
+    -p fss-cli --bin fss-mcp investigate::probe_tests
+check cognitive-context-envelope cargo "+$channel" test --locked --offline --no-fail-fast \
+    -p fss-core --lib agent_cognitive_context::
+check probe-contract-profile cargo "+$channel" test --locked --offline --no-fail-fast \
+    -p fss-core --lib probe_profile_tests::
 check retained-delivery-recovery cargo "+$channel" test --locked --offline --no-fail-fast \
     -p fss-reference --test original_media_export_contract --test onvif_capture_operation \
     --test deployment_missing_journal_contract --test doctor_deployment_contract

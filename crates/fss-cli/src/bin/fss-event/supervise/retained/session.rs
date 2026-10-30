@@ -3,39 +3,31 @@
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
-use std::path::Path;
 
 use fss_cli::agent_json::{object, string};
 use fss_cli::json_input;
-use fss_cli::supervisor::retained::{
-    RetainedDetectionSource, RetainedDiscoverySource, RetainedSupervisorError,
-    revalidate_detection_sources, revalidate_retained_discovery_sources,
-    run_discovered_detection_supervisor, run_discovered_retained_supervisor,
+use fss_cli::supervisor::retained::RetainedSupervisorError;
+use fss_cli::supervisor::retained::session::{
+    checked_payload, execute_native_supervision, recover_native_supervision, scoped_request,
 };
 use fss_cli::{ERR_CLI_RUNTIME_FAILURE, ExitIdentity};
 use fss_core::{
-    CanonicalEncoder, ContentDigest, DigestAlgorithm, LedgerAnchor, PrincipalId, SessionId,
+    CanonicalEncoder, ContentDigest, DigestAlgorithm, PrincipalId, SessionId,
 };
-use fss_reference::agent_orient::OrientLimits;
 use fss_reference::agent_session::checkpoint::journal::supervision::{
-    MAX_SUPERVISION_WINDOWS, PendingSupervisionDelivery, SupervisionDetectionSourcePin,
-    SupervisionRegistration, SupervisionSourcePin,
+    MAX_SUPERVISION_WINDOWS, PendingSupervisionDelivery, SupervisionRegistration,
 };
 use fss_reference::deployment_session::supervision::{
-    SupervisionAction, SupervisionAdapterError, SupervisionEvaluation, SupervisionEvaluator,
-    SupervisionRecoveryBinding, SupervisionRecoveryBoundary, SupervisionRecoveryControl,
-    SupervisionRecoveryRequest, SupervisionSessionBinding, SupervisionSessionBoundary,
-    SupervisionSessionControl, SupervisionSessionDelivery, SupervisionSessionError,
-    SupervisionSessionOutcome, SupervisionSessionRequest, SupervisionValidation,
-    recover_supervision_registration, supervise_existing_session, supervise_session,
+    SupervisionAction, SupervisionAdapterError, SupervisionRecoveryRequest,
+    SupervisionSessionDelivery, SupervisionSessionError, SupervisionSessionOutcome,
+    SupervisionSessionRequest, SupervisionValidation,
 };
-use fss_reference::{ReferenceDeployment, ReplayCx};
+use fss_reference::ReplayCx;
 
 use super::{Failure, InputPlan, NativeRequest, Options, Result};
 
 const SCHEMA: &str = "fss.retained_supervisor_session_report.v1";
 const RECEIPT_DOMAIN: &str = "fss.retained_supervisor_session_receipt.v1";
-const ENVELOPE_BYTES: usize = 16 * 1024;
 
 /// Inert CLI intent; actual admission belongs to the existing session and native source owners.
 pub(super) struct SessionOptions {
@@ -176,44 +168,6 @@ fn source_error(error: RetainedSupervisorError) -> SupervisionAdapterError {
     }
 }
 
-struct RecoveryControl<'a> {
-    root: &'a Path,
-    principal: &'a PrincipalId,
-    request: &'a SupervisionRecoveryRequest,
-    limits: OrientLimits,
-    cx: &'a ReplayCx,
-    boundaries: u32,
-}
-
-impl SupervisionRecoveryControl for RecoveryControl<'_> {
-    fn admit_recovery(
-        &mut self,
-        binding: &SupervisionRecoveryBinding<'_>,
-        _: SupervisionRecoveryBoundary,
-    ) -> std::result::Result<(), SupervisionAdapterError> {
-        if binding.root() != self.root
-            || binding.principal() != self.principal
-            || binding.request() != self.request
-            || binding.limits() != &self.limits
-            || self.cx.root_dir() != self.root
-        {
-            return Err(runtime_error("supervision recovery binding differs"));
-        }
-        self.boundaries = self
-            .boundaries
-            .checked_add(1)
-            .ok_or_else(|| runtime_error("supervision recovery boundary budget exhausted"))?;
-        if self.boundaries > 16 {
-            return Err(runtime_error(
-                "supervision recovery boundary budget exhausted",
-            ));
-        }
-        self.cx
-            .checkpoint("retained_supervisor_session:recover")
-            .map_err(runtime_error)
-    }
-}
-
 /// Recover the original native request through the live session owner. This never exposes a
 /// pending payload and never reserves source work; the separate existing-only action does that.
 pub(super) fn recover(
@@ -232,26 +186,16 @@ pub(super) fn recover(
         subscription_id: session.subscription.clone(),
         expected_authority_root: session.expected_root,
     };
-    let limits = OrientLimits {
-        max_journal_bytes: 32 * 1024 * 1024,
-        ..OrientLimits::default()
-    };
-    let mut control = RecoveryControl {
-        root: &options.root,
-        principal: &principal,
-        request: &request,
-        limits,
-        cx,
-        boundaries: 0,
-    };
-    let registration = recover_supervision_registration(
-        &options.root,
-        &principal,
-        &request,
-        &limits,
-        &mut control,
+    let (discovery, registration) = recover_native_supervision(
+        &options.root, &principal, &request, cx,
     )
-    .map_err(|error| Failure {
+    .map_err(|error| {
+        // Recovery's only Evaluation error is strict stored-configuration decoding. Preserve
+        // the companion command's existing malformed-configuration diagnostic and exit code.
+        if let SupervisionSessionError::Evaluation(error) = &error {
+            return Failure::malformed(&error.reason);
+        }
+        Failure {
         exit: ExitIdentity::RUNTIME_FAILURE.code,
         identity: match &error {
             SupervisionSessionError::Denied(error) | SupervisionSessionError::Evaluation(error) => {
@@ -265,288 +209,13 @@ pub(super) fn recover(
         reason: format!(
             "{error}; journal_may_have_changed=true; no_native_attempt_reserved_by_recovery=true"
         ),
+        }
     })?;
-    let discovery = NativeRequest::from_configuration(
-        &registration.configuration,
-        registration.configuration_digest,
-    )
-    .map_err(Failure::malformed)?;
     Ok(InputPlan::Discover {
         request: discovery,
         bytes: registration.configuration.clone(),
         registration: Some(registration),
     })
-}
-
-fn scoped_request(
-    original: &NativeRequest,
-    authority: ContentDigest,
-    count: Option<u32>,
-) -> std::result::Result<NativeRequest, SupervisionAdapterError> {
-    let request = match count {
-        Some(count) => original
-            .for_window_prefix(count as usize)
-            .map_err(source_error)?,
-        None => original.clone(),
-    };
-    request.for_authority(authority).map_err(source_error)
-}
-
-/// Admit the exact complete report before publication, then repeat the same check on release.
-/// This prevents a successfully stored report from being permanently unrenderable on retry.
-fn checked_payload<'a>(
-    payload: &'a [u8],
-    expected_root: ContentDigest,
-    request_digest: ContentDigest,
-    report_receipt: ContentDigest,
-    payload_digest: ContentDigest,
-    expected_schema: &str,
-    authority_field: &str,
-) -> std::result::Result<&'a str, SupervisionAdapterError> {
-    let text = std::str::from_utf8(payload).map_err(runtime_error)?;
-    let parsed = json_input::parse_retained_supervisor_report(text).map_err(runtime_error)?;
-    let fields = parsed
-        .object()
-        .ok_or_else(|| runtime_error("stored report must be an object"))?;
-    let value = |key| fields.get(key).and_then(json_input::Value::text);
-    if value("schema") != Some(expected_schema)
-        || value("receipt_digest") != Some(report_receipt.to_text().as_str())
-        || value(authority_field) != Some(expected_root.to_text().as_str())
-        || value("request_digest") != Some(request_digest.to_text().as_str())
-        || ContentDigest::sha256(payload) != payload_digest
-    {
-        return Err(runtime_error("complete retained report binding differs"));
-    }
-    Ok(text)
-}
-
-/// Local OS/root access is explicit; durable grants and leases remain owned by the session.
-/// Every operation is additionally admitted through the invocation's owned ReplayCx.
-struct NativeEvaluator<'a> {
-    root: &'a Path,
-    site: &'a str,
-    principal: &'a PrincipalId,
-    command: &'a SupervisionSessionRequest,
-    request: &'a NativeRequest,
-    limits: OrientLimits,
-    cx: &'a ReplayCx,
-    boundaries: u32,
-}
-
-impl NativeEvaluator<'_> {
-    fn admit_scope(
-        &mut self,
-        binding: &SupervisionSessionBinding<'_>,
-    ) -> std::result::Result<(), SupervisionAdapterError> {
-        if binding.root() != self.root
-            || binding.principal() != self.principal
-            || binding.request() != self.command
-            || binding.limits() != &self.limits
-            || self.cx.root_dir() != self.root
-            || binding.active_window_count().is_some_and(|count| {
-                count == 0 || count as usize > self.request.template().spec().windows.len()
-            })
-            || matches!(self.command.action,
-                SupervisionAction::ConfigureSchedule { total_windows }
-                    if total_windows as usize != self.request.template().spec().windows.len())
-        {
-            return Err(runtime_error("supervision operation binding differs"));
-        }
-        self.boundaries = self
-            .boundaries
-            .checked_add(1)
-            .ok_or_else(|| runtime_error("supervision boundary budget exhausted"))?;
-        if self.boundaries > 24 {
-            return Err(runtime_error("supervision boundary budget exhausted"));
-        }
-        self.cx
-            .checkpoint("retained_supervisor_session:admit")
-            .map_err(runtime_error)
-    }
-}
-
-impl SupervisionSessionControl for NativeEvaluator<'_> {
-    fn admit_session(
-        &mut self,
-        binding: &SupervisionSessionBinding<'_>,
-        _: SupervisionSessionBoundary,
-    ) -> std::result::Result<(), SupervisionAdapterError> {
-        self.admit_scope(binding)
-    }
-}
-
-impl SupervisionEvaluator for NativeEvaluator<'_> {
-    fn evaluate(
-        &mut self,
-        binding: &SupervisionSessionBinding<'_>,
-        anchor: &LedgerAnchor,
-    ) -> std::result::Result<SupervisionEvaluation, SupervisionAdapterError> {
-        self.admit_scope(binding)?;
-        let request = scoped_request(
-            self.request,
-            anchor.state_root,
-            binding.active_window_count(),
-        )?;
-        // The deployment owner has already committed and pinned the full-cap reservation.
-        let mut deployment =
-            ReferenceDeployment::open(self.root, self.site, self.cx).map_err(runtime_error)?;
-        let evaluation = match &request {
-            NativeRequest::Event(request) => {
-                let report = run_discovered_retained_supervisor(&mut deployment, request, self.cx)
-                    .map_err(source_error)?;
-                let sources = report
-                    .source_inventory()
-                    .map_err(source_error)?
-                    .into_iter()
-                    .map(|source| SupervisionSourcePin {
-                        event_id: source.event_id,
-                        event_root: source.event_root,
-                        source_verified: source.source_verified,
-                        health_digest: source.health_digest,
-                    })
-                    .collect();
-                SupervisionEvaluation {
-                    basis: report.supervision().basis().clone(),
-                    payload: report.to_json().map_err(source_error)?.into_bytes(),
-                    report_receipt: report.digest(),
-                    sources,
-                    detection_sources: Vec::new(),
-                }
-            }
-            NativeRequest::Detection(request) => {
-                let report = run_discovered_detection_supervisor(&mut deployment, request, self.cx)
-                    .map_err(source_error)?;
-                let detection_sources = report
-                    .source_inventory()
-                    .map_err(source_error)?
-                    .into_iter()
-                    .map(|source| SupervisionDetectionSourcePin {
-                        report_digest: source.report_digest,
-                        record_digest: source.record_digest,
-                        detection_root: source.detection_root,
-                        source_verified: source.source_verified,
-                        health_digest: source.health_digest,
-                    })
-                    .collect();
-                SupervisionEvaluation {
-                    basis: report.basis().clone(),
-                    payload: report.to_json().map_err(source_error)?.into_bytes(),
-                    report_receipt: report.digest(),
-                    sources: Vec::new(),
-                    detection_sources,
-                }
-            }
-        };
-        if evaluation
-            .payload
-            .len()
-            .checked_add(ENVELOPE_BYTES)
-            .is_none_or(|len| len > self.command.registration.max_report_bytes)
-        {
-            return Err(source_error(RetainedSupervisorError::Limit(
-                "complete session report bytes",
-            )));
-        }
-        checked_payload(
-            &evaluation.payload,
-            anchor.state_root,
-            request.digest(),
-            evaluation.report_receipt,
-            ContentDigest::sha256(&evaluation.payload),
-            request.report_schema(),
-            request.report_authority_field(),
-        )?;
-        Ok(evaluation)
-    }
-
-    fn revalidate(
-        &mut self,
-        binding: &SupervisionSessionBinding<'_>,
-        anchor: &LedgerAnchor,
-        pending: &PendingSupervisionDelivery,
-    ) -> std::result::Result<SupervisionValidation, SupervisionAdapterError> {
-        self.admit_scope(binding)?;
-        if pending
-            .payload_len()
-            .checked_add(ENVELOPE_BYTES)
-            .is_none_or(|len| len > self.command.registration.max_report_bytes)
-        {
-            return Err(source_error(RetainedSupervisorError::Limit(
-                "complete session report bytes",
-            )));
-        }
-        // A pending report's health digest binds its originally selected rows. Future schedule
-        // advancement must never enlarge that historical inventory during release or ACK.
-        let request = scoped_request(
-            self.request,
-            anchor.state_root,
-            pending.active_window_count(),
-        )?;
-        match &request {
-            NativeRequest::Event(_) if !pending.detection_source_inventory().is_empty() => {
-                return Err(runtime_error(
-                    "event discovery cannot validate native detector source pins",
-                ));
-            }
-            NativeRequest::Detection(_) if !pending.source_inventory().is_empty() => {
-                return Err(runtime_error(
-                    "direct detection cannot validate package-event source pins",
-                ));
-            }
-            _ => {}
-        }
-        let mut deployment =
-            ReferenceDeployment::open(self.root, self.site, self.cx).map_err(runtime_error)?;
-        match &request {
-            NativeRequest::Event(request) => {
-                let sources: Vec<_> = pending
-                    .source_inventory()
-                    .iter()
-                    .map(|source| RetainedDiscoverySource {
-                        event_id: source.event_id.clone(),
-                        event_root: source.event_root,
-                        source_verified: source.source_verified,
-                        health_digest: source.health_digest,
-                    })
-                    .collect();
-                let validation = revalidate_retained_discovery_sources(
-                    &mut deployment,
-                    request,
-                    &sources,
-                    self.cx,
-                )
-                .map_err(source_error)?;
-                Ok(SupervisionValidation {
-                    basis: validation.basis().clone(),
-                    receipt: validation.digest(),
-                    reserved_bytes: validation.reserved_bytes(),
-                    read_attempts: validation.read_attempts(),
-                })
-            }
-            NativeRequest::Detection(request) => {
-                let sources: Vec<_> = pending
-                    .detection_source_inventory()
-                    .iter()
-                    .map(|source| RetainedDetectionSource {
-                        report_digest: source.report_digest,
-                        record_digest: source.record_digest,
-                        detection_root: source.detection_root,
-                        source_verified: source.source_verified,
-                        health_digest: source.health_digest,
-                    })
-                    .collect();
-                let validation =
-                    revalidate_detection_sources(&mut deployment, request, &sources, self.cx)
-                        .map_err(source_error)?;
-                Ok(SupervisionValidation {
-                    basis: validation.basis().clone(),
-                    receipt: validation.digest(),
-                    reserved_bytes: validation.reserved_bytes(),
-                    read_attempts: validation.read_attempts(),
-                })
-            }
-        }
-    }
 }
 
 fn optional_digest(value: Option<ContentDigest>) -> String {
@@ -895,37 +564,9 @@ pub(super) fn run(
         action,
     };
     let principal = PrincipalId::parse(&options.principal).map_err(Failure::malformed)?;
-    let orient_limits = OrientLimits {
-        max_journal_bytes: limits.max_journal_bytes,
-        ..OrientLimits::default()
-    };
-    let mut control = NativeEvaluator {
-        root: &options.root,
-        site: &options.site,
-        principal: &principal,
-        command: &command,
-        request: discovery,
-        limits: orient_limits,
-        cx,
-        boundaries: 0,
-    };
-    let delivery = if session.resume {
-        supervise_existing_session(
-            &options.root,
-            &principal,
-            &command,
-            &orient_limits,
-            &mut control,
-        )
-    } else {
-        supervise_session(
-            &options.root,
-            &principal,
-            &command,
-            &orient_limits,
-            &mut control,
-        )
-    };
+    let delivery = execute_native_supervision(
+        &options.root, &principal, &command, discovery, session.resume, cx,
+    );
     match delivery {
         Ok(delivery) => render(&delivery, discovery).map_err(|error| Failure {
             exit: ExitIdentity::RUNTIME_FAILURE.code,

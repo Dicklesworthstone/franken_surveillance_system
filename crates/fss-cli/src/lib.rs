@@ -44,6 +44,8 @@ pub mod negative_evidence_cmd;
 pub mod orient_cmd;
 /// Read-only AOP-005 projection of the verified event-record query engine.
 pub mod query_cmd;
+/// AOP-006 bounded retained-source probes over existing owned subscriptions.
+pub mod probe_cmd;
 pub mod redact;
 /// Import explicitly bound camera poses from an authored property scene.
 pub mod scene_rig;

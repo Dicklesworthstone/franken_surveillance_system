@@ -39,6 +39,7 @@ from agent_operation_registry_checker import (
 REGISTRY_FILES = {
     "architecture/agent_operations.json",
     "architecture/fss1_public_registry.json",
+    "architecture/fss1_public_registry.v1.json",
     "registries/AGENT_OPERATIONS.md",
     "crates/fss-core/src/agent_operation.rs",
 }
@@ -178,6 +179,55 @@ class AgentOperationRegistryCheckerTests(unittest.TestCase):
         rs_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         _, codes = self.error_codes()
         self.assertIn(ERR_OP_RUST_DRIFT, codes)
+
+    def test_generation_selectors_preserve_legacy_rows(self) -> None:
+        path = self.fake_root / "crates/fss-core/src/agent_operation.rs"
+        old = extract_rust_canonical_rows(path)
+        current = extract_rust_canonical_rows(path, "gen:fss1:public-v2")
+        self.assertEqual(set(old), set(current))
+        for opid in old:
+            if opid == "AOP-006":
+                legacy = canonical_fields_from_text(old[opid])
+                selected = canonical_fields_from_text(current[opid])
+                self.assertNotIn("fss.agent_cognitive_envelope.v2", legacy["responsePayloadSchemas"])
+                self.assertEqual(selected["responsePayloadSchemas"].pop(), "fss.agent_cognitive_envelope.v2")
+                self.assertEqual(legacy, selected)
+            else:
+                self.assertEqual(old[opid], current[opid])
+        with self.assertRaises(ValueError):
+            extract_rust_canonical_rows(path, "gen:fss1:public-unregistered")
+
+    def test_v1_native_drift_is_not_hidden_by_correct_v2_override(self) -> None:
+        path = self.fake_root / "crates/fss-core/src/agent_operation.rs"
+        old = extract_rust_canonical_rows(path)["AOP-006"]
+        new = extract_rust_canonical_rows(path, "gen:fss1:public-v2")["AOP-006"]
+        text = path.read_text()
+        self.assertEqual(text.count(old), 1)
+        path.write_text(text.replace(old, new, 1))
+        result, codes = self.error_codes()
+        self.assertIn(ERR_OP_RUST_DRIFT, codes)
+        self.assertTrue(any("public-v1/AOP-006/responsePayloadSchemas" in err.target for err in result.errors))
+
+    def test_v2_override_must_match_its_separate_profile(self) -> None:
+        path = self.fake_root / "crates/fss-core/src/agent_operation.rs"
+        old = extract_rust_canonical_rows(path)["AOP-006"]
+        new = extract_rust_canonical_rows(path, "gen:fss1:public-v2")["AOP-006"]
+        path.write_text(path.read_text().replace(new, old, 1))
+        result, codes = self.error_codes()
+        self.assertIn(ERR_OP_RUST_DRIFT, codes)
+        self.assertTrue(any("public-v2/AOP-006/responsePayloadSchemas" in err.target for err in result.errors))
+
+    def test_unregistered_generation_and_missing_history_fail_closed(self) -> None:
+        path = self.fake_root / "architecture/fss1_public_registry.json"
+        data = json.loads(path.read_text())
+        data["registryGeneration"] = "gen:fss1:public-unregistered"
+        path.write_text(json.dumps(data))
+        result, codes = self.error_codes()
+        self.assertFalse(result.passed)
+        self.assertIn(ERR_OP_CORRUPT_FILE, codes)
+        (self.fake_root / "architecture/fss1_public_registry.v1.json").unlink()
+        _, codes = self.error_codes()
+        self.assertIn(ERR_OP_CORRUPT_FILE, codes)
 
     def test_rust_row_literal_helpers(self) -> None:
         rows = extract_rust_canonical_rows(

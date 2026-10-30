@@ -22,6 +22,15 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from frozen_registry_checker import (
+    BASELINE_GENERATION,
+    CURRENT_GENERATION,
+    EXPECTED_FREEZE_DIGESTS,
+    FROZEN_REGISTRY_V1_PATH,
+    compute_canonical_freeze_digest,
+    load_legacy_registry,
+)
+
 ROOT = Path(__file__).resolve().parents[1]
 
 # Registered stable diagnostic finding IDs (registries/ERRORS.md)
@@ -183,14 +192,48 @@ def canonical_fields_from_text(text: str) -> dict[str, Any] | None:
     }
 
 
-def extract_rust_canonical_rows(rs_path: Path) -> dict[str, str]:
-    """Extracts canonical row literals from `canonical_row_encoding` match arms."""
+def _rust_function_body(content: str, name: str) -> str:
+    """Bounds extraction to one row selector, excluding strings and comments from braces."""
+    match = re.search(r"\bfn\s+" + re.escape(name) + r"\s*\(", content)
+    if match is None:
+        raise ValueError(f"Missing native row selector {name}")
+    start = content.index("{", match.end())
+    depth = 0
+    tokens = re.finditer(r'"(?:\\.|[^"\\])*"|//[^\n]*|/\*.*?\*/|[{}]', content[start:], re.S)
+    for token in tokens:
+        if token.group() == "{":
+            depth += 1
+        elif token.group() == "}":
+            depth -= 1
+            if depth == 0:
+                return content[start:start + token.end()]
+    raise ValueError(f"Unterminated native row selector {name}")
+
+
+def _canonical_row_literals(body: str) -> dict[str, str]:
+    literals = CANONICAL_ROW_RE.findall(body)
+    rows = {text.split("|", 1)[0]: text for text in literals}
+    if len(rows) != len(literals):
+        raise ValueError("Duplicate native canonical row literal")
+    return rows
+
+
+def extract_rust_canonical_rows(
+    rs_path: Path, generation: str = BASELINE_GENERATION,
+) -> dict[str, str]:
+    """Extracts frozen V1 bytes by default, or the explicit registered V2 row projection."""
+    if generation not in EXPECTED_FREEZE_DIGESTS:
+        raise ValueError(f"Unregistered public registry generation: {generation!r}")
     content = rs_path.read_text(encoding="utf-8")
-    fn_start = content.index("pub const fn canonical_row_encoding(self)")
-    fn_body = content[fn_start:]
-    return {
-        text.split("|", 1)[0]: text for text in CANONICAL_ROW_RE.findall(fn_body)
-    }
+    rows = _canonical_row_literals(_rust_function_body(content, "canonical_row_encoding"))
+    if generation == CURRENT_GENERATION:
+        additions = _canonical_row_literals(
+            _rust_function_body(content, "canonical_row_encoding_for_basis")
+        )
+        if set(additions) != {"AOP-006"}:
+            raise ValueError("public-v2 must override exactly the AOP-006 response row")
+        rows.update(additions)
+    return rows
 
 
 def canonical_fields_from_json(row: dict[str, Any]) -> dict[str, Any]:
@@ -354,8 +397,15 @@ def validate_agent_operation_registry(repo_root: Path) -> ValidationResult:
             ERR_OP_RUST_DRIFT, AGENT_OPERATION_RS_PATH, "#",
             "missing typed operation table crates/fss-core/src/agent_operation.rs",
         )
+    try:
+        legacy_doc = load_legacy_registry(repo_root)
+    except (OSError, json.JSONDecodeError) as exc:
+        result.add_error(ERR_OP_CORRUPT_FILE, FROZEN_REGISTRY_V1_PATH, "#", str(exc))
+    except ValueError as exc:
+        result.add_error(ERR_OP_SEMANTIC_INVARIANT, FROZEN_REGISTRY_V1_PATH, "#", str(exc))
     if result.errors:
         return result
+    legacy_map = {row["id"]: row for row in legacy_doc["operations"]}
 
     # 2. Stable IDs: exact canonical set, no duplicates, no renumbering.
     json_map: dict[str, dict[str, Any]] = {}
@@ -462,16 +512,28 @@ def validate_agent_operation_registry(repo_root: Path) -> ValidationResult:
     # 5b. Frozen public-registry agreement.
     try:
         frozen_doc = json.loads(frozen_path.read_text(encoding="utf-8"))
+        if not isinstance(frozen_doc, dict):
+            raise ValueError("Frozen registry must be an object")
+        generation = frozen_doc.get("registryGeneration")
+        if generation not in EXPECTED_FREEZE_DIGESTS:
+            raise ValueError(f"Unregistered public registry generation: {generation!r}")
+        pin = EXPECTED_FREEZE_DIGESTS[generation]
+        if frozen_doc.get("freezeDigest") != pin or compute_canonical_freeze_digest(frozen_doc) != pin:
+            result.add_error(
+                ERR_OP_SEMANTIC_INVARIANT, FROZEN_PUBLIC_REGISTRY_PATH, "#/freezeDigest",
+                f"Public registry must match the immutable {generation} freeze pin",
+            )
         frozen_map = {
             op.get("id"): op
             for op in frozen_doc.get("operations", [])
             if isinstance(op, dict) and op.get("id")
         }
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, ValueError) as exc:
         result.add_error(
             ERR_OP_CORRUPT_FILE, FROZEN_PUBLIC_REGISTRY_PATH, "#", f"corrupt frozen registry: {exc}"
         )
         frozen_map = {}
+        generation = BASELINE_GENERATION
     for opid in sorted(set(json_map) & set(frozen_map)):
         row, frozen = json_map[opid], frozen_map[opid]
         for key in ("name", "requestPayloadSchema", "responsePayloadSchemas", "defaultView", "status"):
@@ -483,50 +545,55 @@ def validate_agent_operation_registry(repo_root: Path) -> ValidationResult:
                     f"machine registry ({row.get(key)!r})",
                 )
 
-    # 6. Typed Rust table drift.
+    # 6. Check both the active projection and the immutable legacy codec independently.
+    # Unchanged machine fields are shared; historical frozen fields always come from V1.
+    legacy_machine = {
+        opid: {**row, **{key: value for key, value in legacy_map[opid].items() if key in ROW_KEYS}}
+        for opid, row in json_map.items() if opid in legacy_map
+    }
     if rs_path.is_file():
-        try:
-            rust_rows = extract_rust_canonical_rows(rs_path)
-        except (OSError, ValueError) as exc:
-            result.add_error(
-                ERR_OP_RUST_DRIFT, AGENT_OPERATION_RS_PATH, "#/canonical_row_encoding",
-                f"failed to parse canonical rows from agent_operation.rs: {exc}",
-            )
-            rust_rows = {}
-        for opid in EXPECTED_IDS:
-            if opid not in rust_rows:
+        for selected_generation, expected_rows in (
+            (BASELINE_GENERATION, legacy_machine), (generation, json_map),
+        ):
+            target = f"#/canonical_row_encoding/{selected_generation}"
+            try:
+                rust_rows = extract_rust_canonical_rows(rs_path, selected_generation)
+            except (OSError, ValueError) as exc:
                 result.add_error(
-                    ERR_OP_RUST_DRIFT, AGENT_OPERATION_RS_PATH,
-                    f"#/canonical_row_encoding/{opid}",
-                    f"typed operation table is missing canonical row '{opid}'",
+                    ERR_OP_RUST_DRIFT, AGENT_OPERATION_RS_PATH, target,
+                    f"failed to parse canonical rows from agent_operation.rs: {exc}",
                 )
-        for opid in sorted(rust_rows):
-            if opid not in EXPECTED_IDS:
-                result.add_error(
-                    ERR_OP_RUST_DRIFT, AGENT_OPERATION_RS_PATH,
-                    f"#/canonical_row_encoding/{opid}",
-                    f"typed operation table carries unregistered row '{opid}'",
-                )
-                continue
-            rust_fields = canonical_fields_from_text(rust_rows[opid])
-            if rust_fields is None:
-                result.add_error(
-                    ERR_OP_RUST_DRIFT, AGENT_OPERATION_RS_PATH,
-                    f"#/canonical_row_encoding/{opid}",
-                    f"canonical row '{opid}' does not have exactly 14 fields",
-                )
-                continue
-            if opid in incomplete:
-                continue
-            json_fields = canonical_fields_from_json(json_map[opid])
-            for key in json_fields:
-                if rust_fields[key] != json_fields[key]:
+                rust_rows = {}
+            for opid in EXPECTED_IDS:
+                if opid not in rust_rows:
                     result.add_error(
-                        ERR_OP_RUST_DRIFT, AGENT_OPERATION_RS_PATH,
-                        f"#/canonical_row_encoding/{opid}/{key}",
-                        f"Rust row field '{key}' ({rust_fields[key]!r}) drifted from machine "
-                        f"registry ({json_fields[key]!r})",
+                        ERR_OP_RUST_DRIFT, AGENT_OPERATION_RS_PATH, f"{target}/{opid}",
+                        f"typed operation table is missing canonical row '{opid}'",
                     )
+            for opid in sorted(rust_rows):
+                if opid not in EXPECTED_IDS:
+                    result.add_error(
+                        ERR_OP_RUST_DRIFT, AGENT_OPERATION_RS_PATH, f"{target}/{opid}",
+                        f"typed operation table carries unregistered row '{opid}'",
+                    )
+                    continue
+                rust_fields = canonical_fields_from_text(rust_rows[opid])
+                if rust_fields is None:
+                    result.add_error(
+                        ERR_OP_RUST_DRIFT, AGENT_OPERATION_RS_PATH, f"{target}/{opid}",
+                        f"canonical row '{opid}' does not have exactly 14 fields",
+                    )
+                    continue
+                if opid in incomplete or opid not in expected_rows:
+                    continue
+                json_fields = canonical_fields_from_json(expected_rows[opid])
+                for key in json_fields:
+                    if rust_fields[key] != json_fields[key]:
+                        result.add_error(
+                            ERR_OP_RUST_DRIFT, AGENT_OPERATION_RS_PATH, f"{target}/{opid}/{key}",
+                            f"Rust row field '{key}' ({rust_fields[key]!r}) drifted from "
+                            f"{selected_generation} machine registry ({json_fields[key]!r})",
+                        )
 
     return result
 

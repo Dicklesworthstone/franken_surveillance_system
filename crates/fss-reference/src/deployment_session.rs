@@ -120,6 +120,8 @@ pub mod follow;
 
 /// Bounded retained-supervision polling, historical source checks and explicit ACK/discard.
 pub mod supervision;
+/// Exact live admission and case-facing retained-supervision probe semantics.
+pub mod probe;
 
 /// Experiential operational memory and trauma-guard anti-pattern warning derivation (NS-13).
 pub mod trauma_guard;

@@ -2025,6 +2025,7 @@ fn compile_capsule(
     session: Option<&OrientSessionBinding>,
     advisory_warnings: Option<&[AntiPatternWarning]>,
     workspace_invalidations: &[String],
+    purpose: ProjectionPurpose,
 ) -> Result<CompiledSituation, OrientError> {
     let cases = session.map_or(&[][..], |binding| binding.cases.as_slice());
     let plans = session.map_or(&[][..], |binding| binding.plans.as_slice());
@@ -2047,7 +2048,12 @@ fn compile_capsule(
             request.principal.encode_canonical(encoder);
         })
     ))?;
-    let basis = fss_core::reference_contract_basis();
+    let basis = match purpose {
+        ProjectionPurpose::AdmittedProbe => fss_core::contract_basis::probe_contract_basis(),
+        ProjectionPurpose::Orientation | ProjectionPurpose::AdmittedWorkspace => {
+            fss_core::reference_contract_basis()
+        }
+    };
     let deployment_handle = format!("fss://deployment/{}", short_identity(site_digest));
 
     let mut degradation = vec![UNBOUND_SESSION_DEGRADATION.to_owned()];
@@ -3841,6 +3847,7 @@ pub fn orient_deployment_for(
         session,
         session.and_then(|binding| binding.trauma_warnings.as_deref()),
         &[],
+        ProjectionPurpose::Orientation,
     )
 }
 
@@ -3855,7 +3862,15 @@ pub fn orient_deployment_with_advisories(
     limits: &OrientLimits,
     advisory_warnings: Option<&[AntiPatternWarning]>,
 ) -> Result<DeploymentOrientation, OrientError> {
-    orient_deployment_for_with_advisories(snapshot, request, limits, None, advisory_warnings, &[])
+    orient_deployment_for_with_advisories(
+        snapshot,
+        request,
+        limits,
+        None,
+        advisory_warnings,
+        &[],
+        ProjectionPurpose::Orientation,
+    )
 }
 
 /// Native admitted session snapshots preserve rebase warnings in mandatory context.
@@ -3873,7 +3888,41 @@ pub(crate) fn orient_deployment_for_workspace(
         Some(session),
         session.trauma_warnings.as_deref(),
         workspace_invalidations,
+        ProjectionPurpose::AdmittedWorkspace,
     )
+}
+
+/// AOP-006's authenticated selected probe view uses its additive basis only for this reply.
+/// The session, retained workspace, cases, native subscription and every ordinary view keep their
+/// original exact contract basis; this is neither a session migration nor a grant expansion.
+pub(crate) fn orient_deployment_for_probe(
+    snapshot: &DeploymentSnapshot,
+    request: &OrientRequest,
+    limits: &OrientLimits,
+    session: &OrientSessionBinding,
+    workspace_invalidations: &[String],
+) -> Result<DeploymentOrientation, OrientError> {
+    if !matches!(request.view, AgentView::Case | AgentView::Forensic) {
+        return Err(OrientError::UnsupportedView(request.view));
+    }
+    orient_deployment_for_with_advisories(
+        snapshot,
+        request,
+        limits,
+        Some(session),
+        session.trauma_warnings.as_deref(),
+        workspace_invalidations,
+        ProjectionPurpose::AdmittedProbe,
+    )
+}
+
+/// Only an authenticated workspace owner can compile the protected context of an AOP-006 Case.
+/// Public AOP-003 entrypoints retain their original closed view profile.
+#[derive(Clone, Copy)]
+enum ProjectionPurpose {
+    Orientation,
+    AdmittedWorkspace,
+    AdmittedProbe,
 }
 
 fn orient_deployment_for_with_advisories(
@@ -3883,11 +3932,20 @@ fn orient_deployment_for_with_advisories(
     session: Option<&OrientSessionBinding>,
     advisory_warnings: Option<&[AntiPatternWarning]>,
     workspace_invalidations: &[String],
+    purpose: ProjectionPurpose,
 ) -> Result<DeploymentOrientation, OrientError> {
     if !matches!(
         request.view,
         AgentView::Pulse | AgentView::Brief | AgentView::EpistemicMap
-    ) {
+    ) && !(session.is_some()
+        && match purpose {
+            ProjectionPurpose::AdmittedWorkspace => request.view == AgentView::Case,
+            ProjectionPurpose::AdmittedProbe => {
+                matches!(request.view, AgentView::Case | AgentView::Forensic)
+            }
+            ProjectionPurpose::Orientation => false,
+        })
+    {
         return Err(OrientError::UnsupportedView(request.view));
     }
     if snapshot.events.len() > limits.max_events.min(MAX_DEPLOYMENT_EVENTS) {
@@ -3906,6 +3964,7 @@ fn orient_deployment_for_with_advisories(
         session,
         advisory_warnings,
         workspace_invalidations,
+        purpose,
     )?;
     if let Some(binding) = session {
         compiled.capsule.mission_id = binding.mission_id.clone();

@@ -1,6 +1,6 @@
 {
   "schema": "fss.agent_operations.v1",
-  "asOf": "2026-08-31",
+  "asOf": "2026-10-30",
   "semanticProtocol": "fss/1",
   "operations": [
     {
@@ -170,7 +170,8 @@
       "requestPayloadSchema": "fss.investigation_state.v1",
       "responsePayloadSchemas": [
         "fss.investigation_state.v1",
-        "fss.agent_cognitive_envelope.v1"
+        "fss.agent_cognitive_envelope.v1",
+        "fss.agent_cognitive_envelope.v2"
       ]
     },
     {

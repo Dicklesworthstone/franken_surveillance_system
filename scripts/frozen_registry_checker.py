@@ -30,6 +30,8 @@ ERR_FROZEN_UNREGISTERED_OP = "ERR-FROZEN-UNREGISTERED-OP-001"
 ERR_FROZEN_CORRUPT_FILE = "ERR-FROZEN-CORRUPT-FILE-001"
 
 FROZEN_REGISTRY_PATH = "architecture/fss1_public_registry.json"
+FROZEN_REGISTRY_V1_PATH = "architecture/fss1_public_registry.v1.json"
+ARCHIVED_V1_BYTES_DIGEST = "e4687e12344f9b3209421a99d3e97a1b5389484fbd4af394f96ef124391f2743"
 AGENT_OPERATIONS_PATH = "architecture/agent_operations.json"
 AGENT_CONTRACTS_PATH = "architecture/agent_contracts.json"
 OPERATION_CROSSWALK_PATH = "architecture/operation_crosswalk.json"
@@ -38,8 +40,10 @@ ERRORS_MD_PATH = "registries/ERRORS.md"
 
 # Canonical baseline for generation gen:fss1:public-v1
 BASELINE_GENERATION = "gen:fss1:public-v1"
+CURRENT_GENERATION = "gen:fss1:public-v2"
 EXPECTED_FREEZE_DIGESTS: dict[str, str] = {
     "gen:fss1:public-v1": "sha256:9bbec4e6845ea702f676cd22472e5fb0d35ca3b3d97f66cbfccb452182413da8",
+    "gen:fss1:public-v2": "sha256:5eafaf9e3047686c734079a021482d08f9359c39cee6d66bb3c67a31563aa885",
 }
 
 BASELINE_OPERATIONS: dict[str, dict[str, Any]] = {
@@ -358,18 +362,51 @@ def compute_canonical_freeze_digest(
     return f"sha256:{hashlib.sha256(canonical_bytes).hexdigest()}"
 
 
+
+def frozen_rows_for_generation(
+    generation: str,
+) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+    """Returns a distinct pinned baseline; never rewrites the historical V1 maps."""
+    if generation not in EXPECTED_FREEZE_DIGESTS:
+        raise ValueError(f"Unregistered public registry generation: {generation!r}")
+    operations = json.loads(json.dumps(BASELINE_OPERATIONS))
+    resources = json.loads(json.dumps(BASELINE_RESOURCES))
+    if generation == CURRENT_GENERATION:
+        for row in [*operations.values(), *resources.values()]:
+            row["generation"] = CURRENT_GENERATION
+        operations["AOP-006"]["responsePayloadSchemas"].append(
+            "fss.agent_cognitive_envelope.v2"
+        )
+    return operations, resources
+
+
+def load_legacy_registry(repo_root: Path) -> dict[str, Any]:
+    """Reads the byte-preserved V1 registry and verifies both immutable pins."""
+    raw = (repo_root / FROZEN_REGISTRY_V1_PATH).read_bytes()
+    if hashlib.sha256(raw).hexdigest() != ARCHIVED_V1_BYTES_DIGEST:
+        raise ValueError("Archived public-v1 bytes differ from their immutable snapshot")
+    data = json.loads(raw)
+    if not isinstance(data, dict) or data.get("registryGeneration") != BASELINE_GENERATION:
+        raise ValueError("Archived registry must be the exact public-v1 generation")
+    expected = EXPECTED_FREEZE_DIGESTS[BASELINE_GENERATION]
+    if data.get("freezeDigest") != expected or compute_canonical_freeze_digest(data) != expected:
+        raise ValueError("Archived public-v1 canonical freeze digest differs from its pin")
+    return data
+
+
 def validate_frozen_registry(repo_root: Path = ROOT) -> ValidationResult:
     """Performs full fail-closed validation of the frozen fss/1 registry."""
     result = ValidationResult()
 
     frozen_reg_path = repo_root / FROZEN_REGISTRY_PATH
+    legacy_reg_path = repo_root / FROZEN_REGISTRY_V1_PATH
     agent_ops_path = repo_root / AGENT_OPERATIONS_PATH
     agent_contracts_path = repo_root / AGENT_CONTRACTS_PATH
     crosswalk_path = repo_root / OPERATION_CROSSWALK_PATH
     cli_crosswalk_path = repo_root / CLI_CROSSWALK_RS_PATH
     errors_md_path = repo_root / ERRORS_MD_PATH
 
-    for p in (frozen_reg_path, agent_ops_path, agent_contracts_path, crosswalk_path):
+    for p in (frozen_reg_path, legacy_reg_path, agent_ops_path, agent_contracts_path, crosswalk_path):
         if not p.is_file():
             result.add_error(
                 ERR_FROZEN_CORRUPT_FILE,
@@ -378,6 +415,16 @@ def validate_frozen_registry(repo_root: Path = ROOT) -> ValidationResult:
                 f"Mandatory file missing: {p.name}",
             )
             return result
+
+    # The new active snapshot cannot replace or silently rewrite a retained V1 contract.
+    try:
+        load_legacy_registry(repo_root)
+    except (OSError, json.JSONDecodeError) as exc:
+        result.add_error(ERR_FROZEN_CORRUPT_FILE, FROZEN_REGISTRY_V1_PATH, "#", str(exc))
+        return result
+    except ValueError as exc:
+        result.add_error(ERR_FROZEN_DIGEST_MISMATCH, FROZEN_REGISTRY_V1_PATH, "#", str(exc))
+        return result
 
     # 1. Parse frozen registry JSON
     try:
@@ -425,6 +472,13 @@ def validate_frozen_registry(repo_root: Path = ROOT) -> ValidationResult:
             FROZEN_REGISTRY_PATH,
             "#/registryGeneration",
             "Missing or invalid registryGeneration",
+        )
+        return result
+
+    if generation not in EXPECTED_FREEZE_DIGESTS:
+        result.add_error(
+            ERR_FROZEN_REGISTRY_DRIFT, FROZEN_REGISTRY_PATH, "#/registryGeneration",
+            f"Generation {generation!r} has no registered baseline or immutable freeze pin",
         )
         return result
 
@@ -617,69 +671,69 @@ def validate_frozen_registry(repo_root: Path = ROOT) -> ValidationResult:
             f"Failed to compute canonical freeze digest: {exc}",
         )
 
-    # 4. Check drift without generation bump
-    if generation == BASELINE_GENERATION:
-        # Verify operations match baseline exactly
-        actual_op_ids = sorted(op_map.keys())
-        expected_op_ids = sorted(BASELINE_OPERATIONS.keys())
-        if actual_op_ids != expected_op_ids:
-            result.add_error(
-                ERR_FROZEN_REGISTRY_DRIFT,
-                FROZEN_REGISTRY_PATH,
-                "#/operations",
-                f"Operations altered without generation bump: {actual_op_ids} != {expected_op_ids}",
-            )
-        else:
-            for opid, expected_op in BASELINE_OPERATIONS.items():
-                actual_op = op_map[opid]
-                for key, expected_val in expected_op.items():
-                    actual_val = actual_op.get(key)
-                    if actual_val != expected_val:
-                        result.add_error(
-                            ERR_FROZEN_REGISTRY_DRIFT,
-                            FROZEN_REGISTRY_PATH,
-                            f"#/operations/{opid}/{key}",
-                            f"Operation '{opid}' field '{key}' changed from '{expected_val}' to '{actual_val}' without generation bump",
-                        )
-                for key in actual_op:
-                    if key not in expected_op:
-                        result.add_error(
-                            ERR_FROZEN_REGISTRY_DRIFT,
-                            FROZEN_REGISTRY_PATH,
-                            f"#/operations/{opid}/{key}",
-                            f"Operation '{opid}' has unexpected field '{key}' without generation bump",
-                        )
+    # 4. Check each registered generation against its own exact pinned baseline.
+    expected_operations, expected_resources = frozen_rows_for_generation(generation)
+    # Verify operations match baseline exactly
+    actual_op_ids = sorted(op_map.keys())
+    expected_op_ids = sorted(expected_operations.keys())
+    if actual_op_ids != expected_op_ids:
+        result.add_error(
+            ERR_FROZEN_REGISTRY_DRIFT,
+            FROZEN_REGISTRY_PATH,
+            "#/operations",
+            f"Operations altered without generation bump: {actual_op_ids} != {expected_op_ids}",
+        )
+    else:
+        for opid, expected_op in expected_operations.items():
+            actual_op = op_map[opid]
+            for key, expected_val in expected_op.items():
+                actual_val = actual_op.get(key)
+                if actual_val != expected_val:
+                    result.add_error(
+                        ERR_FROZEN_REGISTRY_DRIFT,
+                        FROZEN_REGISTRY_PATH,
+                        f"#/operations/{opid}/{key}",
+                        f"Operation '{opid}' field '{key}' changed from '{expected_val}' to '{actual_val}' without generation bump",
+                    )
+            for key in actual_op:
+                if key not in expected_op:
+                    result.add_error(
+                        ERR_FROZEN_REGISTRY_DRIFT,
+                        FROZEN_REGISTRY_PATH,
+                        f"#/operations/{opid}/{key}",
+                        f"Operation '{opid}' has unexpected field '{key}' without generation bump",
+                    )
 
-        # Verify resources match baseline exactly
-        actual_res_ids = sorted(res_map.keys())
-        expected_res_ids = sorted(BASELINE_RESOURCES.keys())
-        if actual_res_ids != expected_res_ids:
-            result.add_error(
-                ERR_FROZEN_REGISTRY_DRIFT,
-                FROZEN_REGISTRY_PATH,
-                "#/resources",
-                f"Resources altered without generation bump: {actual_res_ids} != {expected_res_ids}",
-            )
-        else:
-            for resid, expected_res in BASELINE_RESOURCES.items():
-                actual_res = res_map[resid]
-                for key, expected_val in expected_res.items():
-                    actual_val = actual_res.get(key)
-                    if actual_val != expected_val:
-                        result.add_error(
-                            ERR_FROZEN_REGISTRY_DRIFT,
-                            FROZEN_REGISTRY_PATH,
-                            f"#/resources/{resid}/{key}",
-                            f"Resource '{resid}' field '{key}' changed from '{expected_val}' to '{actual_val}' without generation bump",
-                        )
-                for key in actual_res:
-                    if key not in expected_res:
-                        result.add_error(
-                            ERR_FROZEN_REGISTRY_DRIFT,
-                            FROZEN_REGISTRY_PATH,
-                            f"#/resources/{resid}/{key}",
-                            f"Resource '{resid}' has unexpected field '{key}' without generation bump",
-                        )
+    # Verify resources match baseline exactly
+    actual_res_ids = sorted(res_map.keys())
+    expected_res_ids = sorted(expected_resources.keys())
+    if actual_res_ids != expected_res_ids:
+        result.add_error(
+            ERR_FROZEN_REGISTRY_DRIFT,
+            FROZEN_REGISTRY_PATH,
+            "#/resources",
+            f"Resources altered without generation bump: {actual_res_ids} != {expected_res_ids}",
+        )
+    else:
+        for resid, expected_res in expected_resources.items():
+            actual_res = res_map[resid]
+            for key, expected_val in expected_res.items():
+                actual_val = actual_res.get(key)
+                if actual_val != expected_val:
+                    result.add_error(
+                        ERR_FROZEN_REGISTRY_DRIFT,
+                        FROZEN_REGISTRY_PATH,
+                        f"#/resources/{resid}/{key}",
+                        f"Resource '{resid}' field '{key}' changed from '{expected_val}' to '{actual_val}' without generation bump",
+                    )
+            for key in actual_res:
+                if key not in expected_res:
+                    result.add_error(
+                        ERR_FROZEN_REGISTRY_DRIFT,
+                        FROZEN_REGISTRY_PATH,
+                        f"#/resources/{resid}/{key}",
+                        f"Resource '{resid}' has unexpected field '{key}' without generation bump",
+                    )
 
     # 5. Cross-check against architecture/agent_operations.json
     try:

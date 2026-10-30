@@ -28,6 +28,8 @@ try:
     import frozen_registry_checker
     from frozen_registry_checker import (
         BASELINE_GENERATION,
+        CURRENT_GENERATION,
+        FROZEN_REGISTRY_V1_PATH,
         BASELINE_OPERATIONS,
         BASELINE_RESOURCES,
         ERR_FROZEN_CORRUPT_FILE,
@@ -38,11 +40,15 @@ try:
         ERR_FROZEN_UNREGISTERED_OP,
         EXPECTED_FREEZE_DIGESTS,
         compute_canonical_freeze_digest,
+        frozen_rows_for_generation,
+        load_legacy_registry,
         validate_frozen_registry,
     )
 except ImportError:
     frozen_registry_checker = None  # type: ignore[assignment]
     BASELINE_GENERATION = "gen:fss1:public-v1"
+    CURRENT_GENERATION = "gen:fss1:public-v2"
+    FROZEN_REGISTRY_V1_PATH = "architecture/fss1_public_registry.v1.json"
     BASELINE_OPERATIONS = {}
     BASELINE_RESOURCES = {}
     EXPECTED_FREEZE_DIGESTS = {}
@@ -91,7 +97,7 @@ class TestFrozenRegistryChecker(unittest.TestCase):
         self.assertEqual(len(result.errors), 0)
         self.assertEqual(result.operation_count, 14)
         self.assertEqual(result.resource_count, 15)
-        self.assertEqual(result.freeze_digest, EXPECTED_FREEZE_DIGESTS.get("gen:fss1:public-v1"))
+        self.assertEqual(result.freeze_digest, EXPECTED_FREEZE_DIGESTS[CURRENT_GENERATION])
 
     def test_planted_negative_op_added_without_generation_bump(self) -> None:
         """Adding an operation without bumping registry generation must fail closed."""
@@ -378,7 +384,7 @@ class TestFrozenRegistryChecker(unittest.TestCase):
         """Top-level registryGeneration must be bound to the canonical freeze digest."""
         data = json.loads((ROOT / "architecture" / "fss1_public_registry.json").read_text(encoding="utf-8"))
         d1 = compute_canonical_freeze_digest(data)
-        data["registryGeneration"] = "gen:fss1:public-v2"
+        data["registryGeneration"] = "gen:fss1:public-v3"
         d2 = compute_canonical_freeze_digest(data)
         self.assertNotEqual(d1, d2, "Changing registryGeneration must alter canonical freeze digest")
 
@@ -442,13 +448,91 @@ class TestFrozenRegistryChecker(unittest.TestCase):
                 op["responsePayloadSchemas"] = list(reversed(op["responsePayloadSchemas"]))
         d2 = compute_canonical_freeze_digest(data)
         self.assertEqual(d1, d2, "Permuted list fields must produce identical canonical freeze digest")
-        self.assertEqual(d1, EXPECTED_FREEZE_DIGESTS["gen:fss1:public-v1"])
+        self.assertEqual(d1, EXPECTED_FREEZE_DIGESTS[CURRENT_GENERATION])
+
+    def test_two_pinned_generations_preserve_exact_v1_and_only_add_probe_payload(self) -> None:
+        legacy = load_legacy_registry(ROOT)
+        self.assertEqual(legacy["registryGeneration"], BASELINE_GENERATION)
+        self.assertEqual(legacy["freezeDigest"], EXPECTED_FREEZE_DIGESTS[BASELINE_GENERATION])
+        old_ops = {row["id"]: row for row in legacy["operations"]}
+        old_resources = {row["id"]: row for row in legacy["resources"]}
+        self.assertEqual(old_ops, BASELINE_OPERATIONS)
+        self.assertEqual(old_resources, BASELINE_RESOURCES)
+        new_ops, new_resources = frozen_rows_for_generation(CURRENT_GENERATION)
+        for opid, row in new_ops.items():
+            row["generation"] = BASELINE_GENERATION
+            if opid == "AOP-006":
+                self.assertEqual(row["responsePayloadSchemas"].pop(), "fss.agent_cognitive_envelope.v2")
+            self.assertEqual(row, old_ops[opid])
+        for resid, row in new_resources.items():
+            row["generation"] = BASELINE_GENERATION
+            self.assertEqual(row, old_resources[resid])
+        self.assertEqual(frozen_rows_for_generation(BASELINE_GENERATION), (old_ops, old_resources))
+
+    def test_archived_v1_remains_a_valid_complete_generation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo = create_mock_repo(Path(tmp_dir))
+            path = repo / "architecture/fss1_public_registry.json"
+            path.unlink()
+            path.write_bytes((ROOT / FROZEN_REGISTRY_V1_PATH).read_bytes())
+            result = validate_frozen_registry(repo)
+            self.assertTrue(result.passed, result.errors)
+            self.assertEqual(result.freeze_digest, EXPECTED_FREEZE_DIGESTS[BASELINE_GENERATION])
+
+    def test_unregistered_generation_cannot_bypass_a_matching_self_digest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo = create_mock_repo(Path(tmp_dir))
+            path = repo / "architecture/fss1_public_registry.json"
+            data = json.loads(path.read_text())
+            path.unlink()
+            data["registryGeneration"] = "gen:fss1:public-unregistered"
+            for row in data["operations"] + data["resources"]:
+                row["generation"] = data["registryGeneration"]
+            data["operations"][0]["owner"] = "fss-unregistered-owner"
+            data["freezeDigest"] = compute_canonical_freeze_digest(data)
+            path.write_text(json.dumps(data))
+            result = validate_frozen_registry(repo)
+            self.assertFalse(result.passed)
+            self.assertIn(ERR_FROZEN_REGISTRY_DRIFT, {err.code for err in result.errors})
+
+    def test_v1_cannot_gain_v2_payload_by_recomputing_its_digest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo = create_mock_repo(Path(tmp_dir))
+            path = repo / "architecture/fss1_public_registry.json"
+            path.unlink()
+            data = load_legacy_registry(ROOT)
+            row = next(row for row in data["operations"] if row["id"] == "AOP-006")
+            row["responsePayloadSchemas"].append("fss.agent_cognitive_envelope.v2")
+            data["freezeDigest"] = compute_canonical_freeze_digest(data)
+            path.write_text(json.dumps(data))
+            result = validate_frozen_registry(repo)
+            codes = {err.code for err in result.errors}
+            self.assertFalse(result.passed)
+            self.assertIn(ERR_FROZEN_REGISTRY_DRIFT, codes)
+            self.assertIn(ERR_FROZEN_DIGEST_MISMATCH, codes)
+
+    def test_v1_archive_is_mandatory_and_byte_preserved(self) -> None:
+        for mode in ("missing", "rewritten", "widened"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as tmp_dir:
+                repo = create_mock_repo(Path(tmp_dir))
+                path = repo / FROZEN_REGISTRY_V1_PATH
+                path.unlink()
+                if mode != "missing":
+                    data = load_legacy_registry(ROOT)
+                    if mode == "widened":
+                        data["operations"][5]["responsePayloadSchemas"].append("fss.agent_cognitive_envelope.v2")
+                        data["freezeDigest"] = compute_canonical_freeze_digest(data)
+                    path.write_text(json.dumps(data))
+                result = validate_frozen_registry(repo)
+                expected = ERR_FROZEN_CORRUPT_FILE if mode == "missing" else ERR_FROZEN_DIGEST_MISMATCH
+                self.assertFalse(result.passed)
+                self.assertIn(expected, {err.code for err in result.errors})
 
     def test_cli_invocation_json(self) -> None:
         """CLI invocation with --json must return valid JSON payload."""
         checker_path = ROOT / "scripts" / "frozen_registry_checker.py"
         res = subprocess.run(
-            [sys.executable, str(checker_path), "--json"],
+            [sys.executable, "-B", str(checker_path), "--json"],
             capture_output=True,
             text=True,
             check=False,

@@ -6,7 +6,7 @@
 //! subscription or effect changes. The current situation is distinct from the retained workspace.
 
 use super::*;
-use crate::agent_orient::orient_deployment_for_workspace;
+use crate::agent_orient::{orient_deployment_for_probe, orient_deployment_for_workspace};
 use crate::agent_session::checkpoint::journal::projection::SessionProjectionSnapshot;
 
 /// One explicitly scoped read. View and budget affect this response, never the retained session.
@@ -67,99 +67,130 @@ pub fn orient_session(
         .into());
     }
 
-    let (oriented, _, _) = with_admitted_session_read(
-        root,
-        &request.principal,
-        &request.session_id,
-        |read| {
-            let root = read.root;
-            let store = read.store;
-            let session = read.session;
-            let revision = read.revision;
-            let head = read.head;
-            let now = evidence_now(head);
-            let workspace_anchor_token = read.workspace_anchor_token;
-            let invalidated = read.invalidated;
-            let remaining_tokens = read.remaining_tokens;
-            let limits = OrientLimits::default();
-            let mission = mission_for_workspace(root, session, revision)?;
-            let briefs = session_briefs(root, store, session, head, now)?;
-            let binding = OrientSessionBinding {
-                mission_id: session.mission_id.clone(),
-                session_id: session.session_id.clone(),
-                mission: Some(mission.orientation_brief()),
-                mission_progress: briefs.mission_progress,
-                cases: briefs.cases,
-                claims: briefs.claims,
-                findings: briefs.findings,
-                supervisions: briefs.supervisions,
-                captured_learning: briefs.captured_learning.map(|inventory| inventory.briefs),
-                trauma_warnings: if briefs.advisory_memory_allowed {
-                    Some(trauma_guard::derive_trauma_guard_warnings(
-                        root,
-                        &request.principal,
-                        now.0,
-                    )?)
-                } else {
-                    None
-                },
-                plans: plan::plan_briefs(root, head, &session.mission_id, &session.principal_id)?,
-            };
-            let allowance = request.budget_tokens.unwrap_or(maximum);
-            if remaining_tokens == 0 || request.budget_tokens.is_some_and(|n| n > remaining_tokens)
-            {
-                return Err(
-                    DurableSessionError::Session(ReferenceSessionError::BudgetExceeded).into(),
-                );
-            }
-            let oriented_request = OrientRequest {
-                view: request.view,
-                principal: request.principal.clone(),
-                budget_tokens: Some(allowance.min(remaining_tokens)),
-            };
-            let mut orientation = orient_deployment_for_workspace(
-                head,
-                &oriented_request,
-                &limits,
-                &binding,
-                invalidated,
-            )?;
-            let journal_root = store.root();
-            let request_digest = digest_of("fss.reference_session_orient_request.v1", |encoder| {
-                request.principal.encode_canonical(encoder);
-                request.session_id.encode_canonical(encoder);
-                encoder.text(request.view.id());
-                encoder.u64(request.budget_tokens.unwrap_or(0));
-                encoder.text(&orientation.anchor_token);
-                encoder.digest(revision.digest());
-                encoder.digest(journal_root);
-            });
-            orientation.request_digest = request_digest;
-            orientation.degradation.push(
+    let (oriented, _, _) =
+        with_admitted_session_read(root, &request.principal, &request.session_id, |read| {
+            project_session_read(read, request)
+        })?;
+    Ok(oriented)
+}
+
+/// Compile the ordinary protected session projection from an already held immutable admission.
+/// No extra reader, session writer or authority projection is opened here.
+pub(super) fn project_session_read(
+    read: &AdmittedSessionRead<'_>,
+    request: &OrientSessionRequest,
+) -> Result<OrientedSession, DeploymentSessionError> {
+    project_session_read_for(read, request, ReadProjection::CurrentWorkspace)
+}
+
+/// Only the admitted retained-probe owner chooses the additive selected-view presentation basis.
+pub(super) fn project_probe_session_read(
+    read: &AdmittedSessionRead<'_>,
+    request: &OrientSessionRequest,
+) -> Result<OrientedSession, DeploymentSessionError> {
+    project_session_read_for(read, request, ReadProjection::AdmittedProbe)
+}
+
+#[derive(Clone, Copy)]
+enum ReadProjection {
+    CurrentWorkspace,
+    AdmittedProbe,
+}
+
+fn project_session_read_for(
+    read: &AdmittedSessionRead<'_>,
+    request: &OrientSessionRequest,
+    purpose: ReadProjection,
+) -> Result<OrientedSession, DeploymentSessionError> {
+    let maximum = u64::from(request.view.maximum_tokens());
+
+    let root = read.root;
+    let store = read.store;
+    let session = read.session;
+    let revision = read.revision;
+    let head = read.head;
+    let now = evidence_now(head);
+    let workspace_anchor_token = read.workspace_anchor_token;
+    let invalidated = read.invalidated;
+    let remaining_tokens = read.remaining_tokens;
+    let limits = OrientLimits::default();
+    let mission = mission_for_workspace(root, session, revision)?;
+    let briefs = session_briefs(root, store, session, head, now)?;
+    let binding = OrientSessionBinding {
+        mission_id: session.mission_id.clone(),
+        session_id: session.session_id.clone(),
+        mission: Some(mission.orientation_brief()),
+        mission_progress: briefs.mission_progress,
+        cases: briefs.cases,
+        claims: briefs.claims,
+        findings: briefs.findings,
+        supervisions: briefs.supervisions,
+        captured_learning: briefs.captured_learning.map(|inventory| inventory.briefs),
+        trauma_warnings: if briefs.advisory_memory_allowed {
+            Some(trauma_guard::derive_trauma_guard_warnings(
+                root,
+                &request.principal,
+                now.0,
+            )?)
+        } else {
+            None
+        },
+        plans: plan::plan_briefs(root, head, &session.mission_id, &session.principal_id)?,
+    };
+    let allowance = request.budget_tokens.unwrap_or(maximum);
+    if remaining_tokens == 0 || request.budget_tokens.is_some_and(|n| n > remaining_tokens) {
+        return Err(DurableSessionError::Session(ReferenceSessionError::BudgetExceeded).into());
+    }
+    let oriented_request = OrientRequest {
+        view: request.view,
+        principal: request.principal.clone(),
+        budget_tokens: Some(allowance.min(remaining_tokens)),
+    };
+    let mut orientation = match purpose {
+        ReadProjection::CurrentWorkspace => orient_deployment_for_workspace(
+            head,
+            &oriented_request,
+            &limits,
+            &binding,
+            invalidated,
+        )?,
+        ReadProjection::AdmittedProbe => {
+            orient_deployment_for_probe(head, &oriented_request, &limits, &binding, invalidated)?
+        }
+    };
+    let journal_root = store.root();
+    let request_digest = digest_of("fss.reference_session_orient_request.v1", |encoder| {
+        request.principal.encode_canonical(encoder);
+        request.session_id.encode_canonical(encoder);
+        encoder.text(request.view.id());
+        encoder.u64(request.budget_tokens.unwrap_or(0));
+        encoder.text(&orientation.anchor_token);
+        encoder.digest(revision.digest());
+        encoder.digest(journal_root);
+    });
+    orientation.request_digest = request_digest;
+    orientation.degradation.push(
         "Current read-only session projection; retained workspace, assumptions, grants, clocks and budgets are unchanged. No rebase or historical semantic delta is claimed.".to_owned()
     );
-            orientation.degradation.push(
+    orientation.degradation.push(
         "Response budgets meter the deployment snapshot and compiled context. Session-journal replay, root-pin and publication-custody checks, and repeat verification reads are additional bounded work that is not fully metered or claimed to be free.".to_owned()
     );
-            if read.pinned_root != journal_root {
-                orientation.degradation.push(
+    if read.pinned_root != journal_root {
+        orientation.degradation.push(
             "The session journal extends its retained ROOT pin; this read verified the extension and did not repair the pin.".to_owned()
         );
-            }
+    }
 
-            Ok(OrientedSession {
-                session: session.clone(),
-                revision: revision.clone(),
-                orientation,
-                journal_root,
-                request_digest,
-                workspace_anchor_token: workspace_anchor_token.to_owned(),
-                anchor_moved: read.anchor_moved,
-                invalidated: invalidated.to_vec(),
-            })
-        },
-    )?;
-    Ok(oriented)
+    Ok(OrientedSession {
+        session: session.clone(),
+        revision: revision.clone(),
+        orientation,
+        journal_root,
+        request_digest,
+        workspace_anchor_token: workspace_anchor_token.to_owned(),
+        anchor_moved: read.anchor_moved,
+        invalidated: invalidated.to_vec(),
+    })
 }
 
 /// Common immutable admission for a current session read. The borrowed projection and selected

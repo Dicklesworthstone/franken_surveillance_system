@@ -331,7 +331,7 @@ impl fmt::Display for SupervisionSessionFailure {
 }
 impl std::error::Error for SupervisionSessionFailure {}
 
-fn observe_head(
+pub(super) fn observe_head(
     history: &DeploymentHistory,
 ) -> Result<SupervisionSessionHead, SupervisionSessionError> {
     let (anchor, ledger_root, effect_root) = history

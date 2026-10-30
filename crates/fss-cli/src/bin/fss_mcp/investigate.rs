@@ -12,12 +12,15 @@ use std::path::PathBuf;
 use fss_cli::FssCommand;
 use fss_cli::investigate_cmd::{InvestigateArgs, decode_case_draft, decode_expansion};
 use fss_cli::json_input::Value as NativeValue;
+use fss_cli::probe_cmd::ProbeArgs;
 use fss_core::{
-    ContentDigest, HypothesisDisposition, InvestigationLifecycle, PrincipalId, SessionId,
+    AgentView, ContentDigest, HypothesisDisposition, InvestigationLifecycle, PrincipalId, SessionId,
 };
 use fss_reference::agent_session::checkpoint::journal::coordination::investigations::InvestigationChange;
 use fss_reference::agent_session::checkpoint::journal::coordination::investigations::evolution::InvestigationCitation;
 use fss_reference::deployment_session::investigation::CaseAction;
+use fss_reference::deployment_session::probe::ProbeRequest;
+use fss_reference::deployment_session::supervision::SupervisionAction;
 
 use super::json::Value;
 
@@ -108,6 +111,10 @@ pub(super) fn command(
 ) -> Result<FssCommand, Refusal> {
     let session = SessionId::parse(text(args, "session", 128)?).map_err(|_| INVALID)?;
     let principal = PrincipalId::parse(principal).map_err(|_| INVALID)?;
+    let transition = text(args, "transition", 32)?;
+    if transition == "probe" || transition.starts_with("probe-") {
+        return probe(root, principal, session, transition, args);
+    }
     let action = match text(args, "transition", 32)? {
         "open" => {
             only(args, &["draft"])?;
@@ -261,6 +268,149 @@ pub(super) fn command(
         principal,
         action,
     })))
+}
+
+fn probe(
+    root: &OsStr,
+    principal: PrincipalId,
+    session_id: SessionId,
+    transition: &str,
+    args: &BTreeMap<String, Value>,
+) -> Result<FssCommand, Refusal> {
+    let common = ["subscription", "authority_root", "view"];
+    let mut allowed = common.to_vec();
+    let action = match transition {
+        "probe" => SupervisionAction::Poll,
+        "probe-inspect" => SupervisionAction::Inspect,
+        "probe-ack" | "probe-discard" => {
+            allowed.push("receipt");
+            let receipt = digest(args, "receipt")?;
+            if transition == "probe-ack" {
+                SupervisionAction::Acknowledge(receipt)
+            } else {
+                SupervisionAction::Discard(receipt)
+            }
+        }
+        "probe-advance" => {
+            allowed.extend(["window_index", "after_receipt"]);
+            let Value::Number(raw) = args.get("window_index").ok_or(INVALID)? else {
+                return Err(INVALID);
+            };
+            let index = raw
+                .parse::<u32>()
+                .ok()
+                .filter(|value| (1..32).contains(value) && value.to_string() == *raw)
+                .ok_or(INVALID)?;
+            SupervisionAction::Advance {
+                target_count: index + 1,
+                after_receipt: digest(args, "after_receipt")?,
+            }
+        }
+        _ => return Err(INVALID),
+    };
+    only(args, &allowed)?;
+    let request = ProbeRequest {
+        session_id,
+        principal,
+        subscription_id: identity(args, "subscription")?,
+        expected_authority_root: digest(args, "authority_root")?,
+        view: match args.get("view") {
+            None => AgentView::Case,
+            Some(value) if value.text() == Some("case") => AgentView::Case,
+            Some(value) if value.text() == Some("forensic") => AgentView::Forensic,
+            _ => return Err(INVALID),
+        },
+        action,
+    };
+    request.validate().map_err(|_| INVALID)?;
+    Ok(FssCommand::Probe(Box::new(ProbeArgs {
+        root: PathBuf::from(root),
+        request,
+    })))
+}
+
+#[cfg(test)]
+mod probe_tests {
+    use super::*;
+
+    const ROOT: &str = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    fn decode(transition: &str, extra: &str) -> Result<FssCommand, Refusal> {
+        let document = format!(
+            r#"{{"session":"session:owner","transition":"{transition}","subscription":"probe:retained","authority_root":"{ROOT}"{extra}}}"#
+        );
+        let value = super::super::json::parse(&document).map_err(|_| INVALID)?;
+        command(
+            OsStr::new("/existing/deployment"),
+            "principal:owner",
+            value.object().ok_or(INVALID)?,
+        )
+    }
+
+    #[test]
+    fn probe_maps_exact_cold_native_actions_without_recipe_or_scope_override()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for (transition, extra, action) in [
+            ("probe", String::new(), SupervisionAction::Poll),
+            ("probe-inspect", String::new(), SupervisionAction::Inspect),
+            (
+                "probe-ack",
+                format!(r#", "receipt":"{ROOT}""#),
+                SupervisionAction::Acknowledge(ContentDigest::parse(ROOT)?),
+            ),
+            (
+                "probe-discard",
+                format!(r#", "receipt":"{ROOT}""#),
+                SupervisionAction::Discard(ContentDigest::parse(ROOT)?),
+            ),
+            (
+                "probe-advance",
+                format!(r#", "window_index":1,"after_receipt":"{ROOT}""#),
+                SupervisionAction::Advance {
+                    target_count: 2,
+                    after_receipt: ContentDigest::parse(ROOT)?,
+                },
+            ),
+        ] {
+            let FssCommand::Probe(args) =
+                decode(transition, &extra).map_err(|_| "probe request refused")?
+            else {
+                return Err("wrong route".into());
+            };
+            assert_eq!(args.root, PathBuf::from("/existing/deployment"));
+            assert_eq!(args.request.principal.as_str(), "principal:owner");
+            assert_eq!(args.request.session_id.as_str(), "session:owner");
+            assert_eq!(args.request.action, action);
+            assert_eq!(args.request.view, AgentView::Case);
+        }
+        let FssCommand::Probe(forensic) =
+            decode("probe", r#", "view":"forensic""#).map_err(|_| "explicit forensic refused")?
+        else {
+            return Err("wrong forensic route".into());
+        };
+        assert_eq!(forensic.request.view, AgentView::Forensic);
+        for extra in [
+            r#", "root":"/other""#,
+            r#", "principal":"principal:other""#,
+            r#", "recipe":{}"#,
+            r#", "maximum_attempts":64"#,
+            r#", "case":"case:unlinked""#,
+            r#", "view":"epistemic_map""#,
+            r#", "view":"brief""#,
+        ] {
+            assert!(decode("probe", extra).is_err());
+        }
+        for extra in [
+            r#", "window_index":0,"after_receipt":"ROOT""#,
+            r#", "window_index":1.0,"after_receipt":"ROOT""#,
+            r#", "window_index":1e0,"after_receipt":"ROOT""#,
+        ] {
+            assert!(decode("probe-advance", &extra.replace("ROOT", ROOT)).is_err());
+        }
+        assert!(decode("probe-ack", "").is_err());
+        assert!(decode("probe-configure", "").is_err());
+        Ok(())
+    }
 }
 
 #[cfg(test)]

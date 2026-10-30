@@ -20,6 +20,7 @@ use crate::agent_session::{ReferenceSessionStore, SessionEntry};
 
 mod codec;
 mod inventory;
+mod projection_charge;
 pub(super) use inventory::project_inventory;
 
 pub use inventory::{PendingSupervisionInventory, SupervisionInventoryEntry};
