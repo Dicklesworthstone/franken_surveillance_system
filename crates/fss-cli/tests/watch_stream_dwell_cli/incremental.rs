@@ -3,6 +3,7 @@
 
 use super::*;
 
+#[path = "incremental/video.rs"]
 mod video;
 use fss_cli::json_input::{Value, parse};
 

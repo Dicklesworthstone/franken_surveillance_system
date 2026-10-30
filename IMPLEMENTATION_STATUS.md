@@ -44,9 +44,13 @@ progress bytes remain unchanged. Final detector, health, fusion and event public
 existing native admission. Partitioned sources and tolerant inter-coded continuation remain
 explicit refusals. This is sampled unclassified dwell, not continuous physical presence or an
 absence certificate. Seven focused native regressions and actual CLI/process schema fixtures
-cover hot/cold equivalence, reordering, CRA/RASL, budgets, cancellation and publication. Source,
-format and schema checks have run; dependency-bearing native execution is pending and no release
-qualification is claimed. See [incremental dwell](docs/incremental_dwell.md).
+cover hot/cold equivalence, reordering, CRA/RASL, budgets, cancellation and publication. The
+pinned native run at `53f6f5b` passed all seven new video cases and all 75 long-dwell tests
+([run 41088787310](https://github.com/Dicklesworthstone/franken_surveillance_system/actions/runs/41088787310)).
+The actual CLI integration was blocked by a separate test-module compile error in that run;
+its explicit nested video module path is now repaired and execution remains pending. Source,
+format and schema checks pass; no release qualification is claimed. See
+[incremental dwell](docs/incremental_dwell.md).
 
 ## Authenticated native probe evidence in investigation cases (reference)
 
