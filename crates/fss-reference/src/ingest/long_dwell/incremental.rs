@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! Native bounded continuation over one completed retained MJPEG recording.
+//! Native bounded continuation over one completed retained recording.
 //!
 //! A running owner keeps the same source cursor, decoder allowance, foreground model, tracker
 //! and temporal accumulator between steps. Durable checkpoints retain the exact input recipe
@@ -12,16 +12,26 @@ use fss_core::{CanonicalDecode, CanonicalDecoder, DigestAlgorithm, Plane, Princi
 use fss_publication::ROOT_REACHABILITY_FAMILY;
 use std::cell::Cell;
 
+mod video;
+pub use video::DwellVideoProgress;
+use video::NativeVideo;
+
 /// Canonical versioned checkpoint domain. Existing whole-recording event formats are unchanged.
 pub const CHECKPOINT_DOMAIN: &str = "fss.incremental_dwell_checkpoint.v1";
 /// Screened checkpoint domain, binding separate health work and the exact screening policy.
 pub const CHECKPOINT_DOMAIN_V2: &str = "fss.incremental_dwell_checkpoint.v2";
+/// Inter-coded checkpoint: separate coding/display progress and verified native drain.
+pub const CHECKPOINT_DOMAIN_V3: &str = "fss.incremental_dwell_checkpoint.v3";
 /// Maximum checkpoint body, including its complete bounded native trace and original recipe.
-pub const MAX_CHECKPOINT_BYTES: usize = MAX_LONG_DWELL_TRACE_BYTES + 16 * 1024;
+pub const MAX_CHECKPOINT_BYTES: usize =
+    MAX_LONG_DWELL_TRACE_BYTES + 16 * 1024 + MAX_LONG_DWELL_FRAMES * 8;
 /// Durable manifest kind of this source-closed derived computation checkpoint.
 pub const CHECKPOINT_MANIFEST_KIND: &str = "recorded-incremental-dwell-checkpoint-v1";
 /// Durable manifest kind of a checkpoint retaining the complete health-screening recipe.
 pub const CHECKPOINT_MANIFEST_KIND_V2: &str = "recorded-incremental-dwell-checkpoint-v2";
+/// Source-closed native video continuation graph, with optional exact health policy.
+pub const CHECKPOINT_MANIFEST_KIND_V3: &str = "recorded-incremental-dwell-checkpoint-v3";
+const RECIPE_DOMAIN_V3: &str = "fss.incremental-dwell.recipe.v3";
 const RECIPE_DOMAIN: &str = "fss.incremental-dwell.recipe.v1";
 const RECIPE_DOMAIN_V2: &str = "fss.incremental-dwell.recipe.v2";
 
@@ -37,9 +47,11 @@ pub struct DwellCheckpointPin {
 /// Cumulative successful scan work. Counts are never replenished at a step/checkpoint boundary.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct DwellWork {
-    /// Admitted source positions, including explicit decode refusals.
+    /// Consumed source coding positions, including native video read-ahead. For MJPEG these
+    /// are also processed display positions, including explicit decode refusals.
     pub source_positions: usize,
-    /// Successfully decoded native images.
+    /// Native images delivered to and processed by the temporal owner. Codec read-ahead can
+    /// already have decoded additional delayed pictures; coding consumption accounts for it.
     pub frames_decoded: usize,
     /// Actual verified chunk bytes fetched by the shared forward cursor.
     pub source_chunk_bytes: u64,
@@ -157,9 +169,9 @@ impl std::fmt::Debug for PreparedIncrementalDwell {
 }
 
 impl PreparedIncrementalDwell {
-    /// Admit one full MJPEG range and temporal rule without decoding or creating a checkpoint.
-    /// The original unscreened v1 checkpoint bytes remain unchanged. Inter-coded decoder state
-    /// is excluded; trained classification belongs to the completed native report.
+    /// Admit one full native range and temporal rule without decoding or creating a checkpoint.
+    /// Original MJPEG v1/v2 checkpoint bytes remain unchanged. Inter-coded sources use v3;
+    /// trained classification belongs to the completed native report.
     pub fn new(
         deployment: &ReferenceDeployment,
         plan: WatchPlan,
@@ -201,10 +213,13 @@ impl PreparedIncrementalDwell {
             &limits,
             cx,
         )?;
-        if source.inter {
+        if source.inter && options.tolerate_decode_refusals {
             return Err(WatchError::InvalidPlan(
-                "incremental dwell currently requires retained MJPEG",
+                "incremental native video requires strict decode; tolerant continuation is unsupported",
             ));
+        }
+        if source.inter {
+            video::codec(&source.retained.manifest().format)?;
         }
         // A partitioned aggregate pins typed part roots in its metadata, rather than adding
         // them as graph children. Until this checkpoint format has a bounded part-closure
@@ -249,6 +264,11 @@ impl PreparedIncrementalDwell {
         self.screened
     }
 
+    /// Whether this request uses native inter-coded display-order continuation.
+    pub const fn is_inter_coded(&self) -> bool {
+        self.source.inter
+    }
+
     /// Begin an owned native scan. No deployment/source borrow is held between steps.
     pub fn start(&self) -> Result<IncrementalDwell<'_>> {
         Ok(IncrementalDwell {
@@ -263,6 +283,7 @@ impl PreparedIncrementalDwell {
             )?,
             cursor: ChunkCursor::new(self.limits.maximum_source_chunk_bytes),
             codec: DecodeBudget::new(self.limits.decode.jpeg_work_units),
+            video: None,
             next: self.plan.first_segment,
             poisoned: false,
             restoration_work: DwellWork::default(),
@@ -311,15 +332,33 @@ impl PreparedIncrementalDwell {
         Ok(ContentDigest::sha256(&self.recipe()?))
     }
 
+    fn policy(&self) -> &'static [u8] {
+        if self.source.inter {
+            POLICY_INTER
+        } else {
+            POLICY
+        }
+    }
+
     fn recipe(&self) -> Result<Vec<u8>> {
         let mut e = CanonicalEncoder::new();
-        e.text(if self.screened {
+        e.text(if self.source.inter {
+            RECIPE_DOMAIN_V3
+        } else if self.screened {
             RECIPE_DOMAIN_V2
         } else {
             RECIPE_DOMAIN
         });
-        e.digest(ContentDigest::sha256(POLICY));
-        e.digest(ContentDigest::sha256(&fss_codec_mjpeg::decoder_identity()));
+        if self.source.inter {
+            e.text(&self.source.retained.manifest().format);
+            e.bool(self.screened);
+        }
+        e.digest(ContentDigest::sha256(self.policy()));
+        e.digest(if self.source.inter {
+            video::identity(&self.source.retained.manifest().format)?
+        } else {
+            ContentDigest::sha256(&fss_codec_mjpeg::decoder_identity())
+        });
         if self.screened {
             e.digest(health_policy_digest());
         }
@@ -369,7 +408,7 @@ impl PreparedIncrementalDwell {
         let mut children = BTreeSet::from([
             record,
             self.source.retained.import_root(),
-            ContentDigest::sha256(POLICY),
+            ContentDigest::sha256(self.policy()),
         ]);
         if let Some(policy) = self.source.privacy.policy() {
             children.insert(policy.digest());
@@ -378,7 +417,9 @@ impl PreparedIncrementalDwell {
             children.insert(health_policy_digest());
         }
         Ok(ObjectManifest::new(
-            if self.screened {
+            if self.source.inter {
+                CHECKPOINT_MANIFEST_KIND_V3
+            } else if self.screened {
                 CHECKPOINT_MANIFEST_KIND_V2
             } else {
                 CHECKPOINT_MANIFEST_KIND
@@ -396,6 +437,7 @@ pub struct IncrementalDwell<'a> {
     scan: Scan<'a, 'static>,
     cursor: ChunkCursor,
     codec: DecodeBudget<'static>,
+    video: Option<NativeVideo>,
     next: usize,
     poisoned: bool,
     restoration_work: DwellWork,
@@ -424,8 +466,10 @@ impl IncrementalDwell<'_> {
         Ok(())
     }
 
-    /// Continue at most this many positions, preserving native foreground, tracker, clock and
-    /// dwell state. A successful step never closes the still-active temporal episode.
+    /// Continue at most this many MJPEG source positions or native video display pictures,
+    /// preserving foreground, tracker, clock and dwell state. Native coding read-ahead uses
+    /// the original full-range limits and is reported separately. A step never closes a
+    /// still-active temporal episode merely because its scheduling allowance was reached.
     pub fn advance(
         &mut self,
         deployment: &ReferenceDeployment,
@@ -448,30 +492,83 @@ impl IncrementalDwell<'_> {
         checkpoint(cx, "incremental_dwell:advance")?;
         let end = self.prepared.plan.first_segment + self.prepared.plan.segment_count;
         let stop = self.next.saturating_add(maximum_frames).min(end);
-        scan_mjpeg_range(
-            &mut self.scan,
-            deployment,
-            &self.prepared.source,
-            self.prepared.options,
-            self.next,
-            stop,
-            &mut self.cursor,
-            &mut self.codec,
-            self.prepared.screened,
-            cx,
-        )?;
+        if self.prepared.source.inter {
+            self.advance_video(deployment, maximum_frames, cx)?;
+        } else {
+            scan_mjpeg_range(
+                &mut self.scan,
+                deployment,
+                &self.prepared.source,
+                self.prepared.options,
+                self.next,
+                stop,
+                &mut self.cursor,
+                &mut self.codec,
+                self.prepared.screened,
+                cx,
+            )?;
+        }
         self.prepared.check(deployment, cx)?;
-        self.next = stop;
+        if !self.prepared.source.inter {
+            self.next = stop;
+        }
         self.poisoned = false;
         Ok(self.work())
+    }
+
+    fn advance_video(
+        &mut self,
+        deployment: &ReferenceDeployment,
+        maximum_frames: usize,
+        cx: &ReplayCx,
+    ) -> Result<()> {
+        if self.video.is_none() {
+            self.video =
+                Some(NativeVideo::open(self.prepared, deployment, cx).map_err(source_read_error)?);
+        }
+        let video = self.video.as_mut().ok_or(WatchError::Conflict)?;
+        for _ in 0..maximum_frames {
+            if video.drained() {
+                break;
+            }
+            let Some(frame) = video.next(deployment, cx).map_err(source_read_error)? else {
+                break;
+            };
+            checkpoint(cx, "long_dwell:frame")?;
+            self.scan.inter_frame(
+                self.next,
+                frame,
+                &self.prepared.source.first_capsule,
+                self.prepared.screened,
+                cx,
+            )?;
+            self.next = self.next.checked_add(1).ok_or(WatchError::Limit)?;
+            video
+                .finish_if_accounted(deployment, cx)
+                .map_err(source_read_error)?;
+        }
+        Ok(())
+    }
+
+    /// Separate native coding/display progress. None for the unchanged MJPEG owners.
+    pub fn video_progress(&self) -> Option<DwellVideoProgress> {
+        self.video.as_ref().map(NativeVideo::progress)
     }
 
     /// Full logical scan counters, including the reconstructed prefix after cold resume.
     pub fn work(&self) -> DwellWork {
         DwellWork {
-            source_positions: self.next - self.prepared.plan.first_segment,
+            source_positions: self
+                .video
+                .as_ref()
+                .map_or(self.next - self.prepared.plan.first_segment, |video| {
+                    video.consumed()
+                }),
             frames_decoded: self.scan.decoded,
-            source_chunk_bytes: self.cursor.bytes_read(),
+            source_chunk_bytes: self
+                .video
+                .as_ref()
+                .map_or_else(|| self.cursor.bytes_read(), NativeVideo::bytes_read),
             pixel_samples: self.scan.pixel_samples,
             assignment_work: self.scan.assignment_work,
             jpeg_work: self.codec.used(),
@@ -503,7 +600,11 @@ impl IncrementalDwell<'_> {
     /// Whether all requested positions were admitted; this does not imply an event or coverage.
     pub fn complete(&self) -> bool {
         !self.poisoned
-            && self.next == self.prepared.plan.first_segment + self.prepared.plan.segment_count
+            && if self.prepared.source.inter {
+                self.video.as_ref().is_some_and(|video| video.drained())
+            } else {
+                self.next == self.prepared.plan.first_segment + self.prepared.plan.segment_count
+            }
     }
 
     fn record(&self) -> Result<Vec<u8>> {
@@ -513,7 +614,9 @@ impl IncrementalDwell<'_> {
             ));
         }
         let mut e = CanonicalEncoder::new();
-        e.text(if self.prepared.screened {
+        e.text(if self.prepared.source.inter {
+            CHECKPOINT_DOMAIN_V3
+        } else if self.prepared.screened {
             CHECKPOINT_DOMAIN_V2
         } else {
             CHECKPOINT_DOMAIN
@@ -522,6 +625,9 @@ impl IncrementalDwell<'_> {
         self.work().encode(&mut e);
         if let Some(health) = self.health_work() {
             health.encode(&mut e);
+        }
+        if let Some(video) = self.video_progress() {
+            video.encode(&mut e);
         }
         e.bytes(&self.scan.trace);
         let bytes = e.finish_checked()?;
@@ -561,7 +667,7 @@ impl IncrementalDwell<'_> {
                 verify_health_policy(deployment, cx)?;
             }
         } else {
-            for body in [bytes.as_slice(), POLICY] {
+            for body in [bytes.as_slice(), self.prepared.policy()] {
                 let digest = deployment.stage_payload(body)?;
                 deployment.publisher_mut().verify_object(digest)?;
             }
@@ -577,11 +683,24 @@ impl IncrementalDwell<'_> {
         // Include the requested capture hull even when every decoded position was refused.
         // This is source-time metadata, not an assertion of observed presence or continuity.
         let first = self.prepared.source.first_capsule.capture;
-        let (last, _) = source_capsule(deployment, &self.prepared.source.retained, self.next - 1)?;
-        let validity = CaptureInterval {
+        let last_segment = self.prepared.plan.first_segment + self.work().source_positions - 1;
+        let (last, _) = source_capsule(deployment, &self.prepared.source.retained, last_segment)?;
+        let mut validity = CaptureInterval {
             earliest: first.earliest.min(last.capture.earliest),
             latest: first.latest.max(last.capture.latest),
         };
+        if self.prepared.source.inter {
+            // Container presentation times need not increase in coding order. Endpoints
+            // alone can omit an already consumed B-picture's future capture time. This
+            // bounded metadata pass belongs to retention, not hot perception advancement.
+            for segment in self.prepared.plan.first_segment + 1..last_segment {
+                checkpoint(cx, "incremental_dwell:capture_hull")?;
+                let (capsule, _) =
+                    source_capsule(deployment, &self.prepared.source.retained, segment)?;
+                validity.earliest = validity.earliest.min(capsule.capture.earliest);
+                validity.latest = validity.latest.max(capsule.capture.latest);
+            }
+        }
         super::publish_manifest(deployment, &target, &manifest, validity, cx)?;
         self.retained_health_policy.set(self.prepared.screened);
         Ok(DwellCheckpointPin {
@@ -609,6 +728,7 @@ impl IncrementalDwell<'_> {
             .publication_guard
             .revalidate(deployment, cx)?;
         let prepared = self.prepared;
+        let source_bytes = self.work().source_chunk_bytes;
         let scan = finish_scan(
             self.scan,
             deployment,
@@ -617,7 +737,7 @@ impl IncrementalDwell<'_> {
             ScanRule::Dwell(prepared.rule),
             prepared.options,
             &prepared.limits,
-            self.cursor.bytes_read(),
+            source_bytes,
             self.codec.used(),
             prepared.screened,
             cx,
@@ -642,6 +762,7 @@ pub struct RetainedDwellCheckpoint {
     pin: DwellCheckpointPin,
     expected: DwellWork,
     expected_health: Option<DwellHealthWork>,
+    expected_video: Option<DwellVideoProgress>,
     bytes: Vec<u8>,
 }
 
@@ -693,12 +814,13 @@ impl RetainedDwellCheckpoint {
             .spool()
             .read_bounded(pin.provenance_root, 1024)?;
         let manifest = ObjectManifest::from_canonical_bytes(&manifest_bytes)?;
-        let screened = match manifest.kind() {
-            CHECKPOINT_MANIFEST_KIND => false,
+        let video = manifest.kind() == CHECKPOINT_MANIFEST_KIND_V3;
+        let screened_v2 = match manifest.kind() {
+            CHECKPOINT_MANIFEST_KIND | CHECKPOINT_MANIFEST_KIND_V3 => false,
             CHECKPOINT_MANIFEST_KIND_V2 => true,
             _ => return Err(WatchError::Conflict),
         };
-        let maximum_children = if screened { 5 } else { 4 };
+        let maximum_children = if screened_v2 || video { 5 } else { 4 };
         if manifest.root() != pin.provenance_root
             || manifest.metadata_digest().is_some()
             || manifest.children().len() > maximum_children
@@ -708,7 +830,7 @@ impl RetainedDwellCheckpoint {
         let maximum = allowed
             .execution
             .maximum_trace_bytes
-            .checked_add(16 * 1024)
+            .checked_add(16 * 1024 + if video { MAX_LONG_DWELL_FRAMES * 8 } else { 0 })
             .ok_or(WatchError::Limit)?;
         let bytes = deployment
             .publisher()
@@ -718,7 +840,9 @@ impl RetainedDwellCheckpoint {
             return Err(WatchError::Conflict);
         }
         let mut d = CanonicalDecoder::new(&bytes);
-        let domain = if screened {
+        let domain = if video {
+            CHECKPOINT_DOMAIN_V3
+        } else if screened_v2 {
             CHECKPOINT_DOMAIN_V2
         } else {
             CHECKPOINT_DOMAIN
@@ -733,7 +857,8 @@ impl RetainedDwellCheckpoint {
             return Err(WatchError::Limit);
         }
         let decoded = decode_recipe(recipe)?;
-        if decoded.screened != screened {
+        let screened = decoded.screened;
+        if decoded.video_format.is_some() != video || (!video && screened != screened_v2) {
             return Err(WatchError::Conflict);
         }
         super::limits::validate_within(&decoded.limits, &allowed.execution)?;
@@ -743,6 +868,11 @@ impl RetainedDwellCheckpoint {
         } else {
             None
         };
+        let expected_video = decoded
+            .video_format
+            .as_ref()
+            .map(|format| DwellVideoProgress::decode(&mut d, format, &decoded.plan, expected))
+            .transpose()?;
         let trace = d.bytes()?;
         d.ensure_finished()?;
         if expected.source_positions == 0
@@ -790,6 +920,7 @@ impl RetainedDwellCheckpoint {
             pin,
             expected,
             expected_health,
+            expected_video,
             bytes,
         })
     }
@@ -806,6 +937,18 @@ impl RetainedDwellCheckpoint {
     pub const fn prefix_work(&self) -> DwellWork {
         self.expected
     }
+    /// Whether the saved prefix reached native completion. Coding read-ahead alone is insufficient.
+    pub fn complete(&self) -> bool {
+        self.expected_video.as_ref().map_or(
+            self.expected.source_positions == self.prepared.plan.segment_count,
+            |video| video.decoder_drained,
+        )
+    }
+    /// Original native coding/display progress; native resume must reproduce it exactly.
+    pub fn video_progress(&self) -> Option<&DwellVideoProgress> {
+        self.expected_video.as_ref()
+    }
+
     /// Expected original screening work. Opening verifies bounds; only native resume verifies
     /// its derivation. Unscreened v1 checkpoints return None.
     pub const fn prefix_health_work(&self) -> Option<DwellHealthWork> {
@@ -830,9 +973,34 @@ impl RetainedDwellCheckpoint {
             verify_health_policy(deployment, cx)?;
         }
         let mut running = self.prepared.start()?;
-        running.advance(deployment, self.expected.source_positions, cx)?;
+        let prefix = if self.expected_video.is_some() {
+            self.expected.frames_decoded
+        } else {
+            self.expected.source_positions
+        };
+        running.advance(deployment, prefix, cx)?;
+        if self
+            .expected_video
+            .as_ref()
+            .is_some_and(|video| video.decoder_drained)
+            && !running.complete()
+        {
+            // The saved final step may have consumed only explicit skipped access units
+            // before EOF. Reproduce that native drain without admitting another picture.
+            running.poisoned = true;
+            checkpoint(cx, "incremental_dwell:restore_drain")?;
+            running
+                .video
+                .as_mut()
+                .ok_or(WatchError::Conflict)?
+                .require_drain(deployment, cx)
+                .map_err(source_read_error)?;
+            running.prepared.check(deployment, cx)?;
+            running.poisoned = false;
+        }
         if running.work() != self.expected
             || running.health_work() != self.expected_health
+            || running.video_progress() != self.expected_video
             || running.record()? != self.bytes
         {
             return Err(WatchError::InvalidPlan(
@@ -859,6 +1027,7 @@ struct DecodedRecipe {
     options: WatchOptions,
     limits: LongDwellLimits,
     screened: bool,
+    video_format: Option<String>,
 }
 
 fn verify_health_policy(deployment: &ReferenceDeployment, cx: &ReplayCx) -> Result<()> {
@@ -894,17 +1063,33 @@ fn decode_recipe(bytes: &[u8]) -> Result<DecodedRecipe> {
     use super::super::recorded_decode::ComponentInterpretation;
     use super::super::recorded_watch::{WatchDetectorConfig, WatchTrackerConfig};
     let mut d = CanonicalDecoder::new(bytes);
+    let mut video_format = None;
     let screened = match d.text()? {
         RECIPE_DOMAIN => false,
         RECIPE_DOMAIN_V2 => true,
+        RECIPE_DOMAIN_V3 => {
+            let format = d.text()?;
+            video::codec(format)?;
+            video_format = Some(format.to_owned());
+            d.bool()?
+        }
         _ => {
             return Err(WatchError::InvalidPlan(
                 "unsupported incremental dwell recipe",
             ));
         }
     };
-    if d.digest()? != ContentDigest::sha256(POLICY)
-        || d.digest()? != ContentDigest::sha256(&fss_codec_mjpeg::decoder_identity())
+    if d.digest()?
+        != ContentDigest::sha256(if video_format.is_some() {
+            POLICY_INTER
+        } else {
+            POLICY
+        })
+        || d.digest()?
+            != match video_format.as_deref() {
+                Some(format) => video::identity(format)?,
+                None => ContentDigest::sha256(&fss_codec_mjpeg::decoder_identity()),
+            }
         || (screened && d.digest()? != health_policy_digest())
     {
         return Err(WatchError::InvalidPlan(
@@ -1012,5 +1197,6 @@ fn decode_recipe(bytes: &[u8]) -> Result<DecodedRecipe> {
         options,
         limits,
         screened,
+        video_format,
     })
 }

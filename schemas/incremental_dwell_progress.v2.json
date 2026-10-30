@@ -1,0 +1,354 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.dev/schemas/incremental_dwell_progress.v2.json",
+  "title": "FSS native inter-coded incremental dwell progress v2",
+  "description": "Complete bounded progress for native AVC/HEVC v3 checkpoints. Coding read-ahead is separate from temporal display work; analysis completion requires native decoder drain and full access-unit accounting. Nested event_report remains the existing native long-dwell report, whose source custody, permissions and canonical bytes are checked by its owner. JSON validation is not custody or physical occupancy proof.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "status",
+    "checkpoint_digest",
+    "checkpoint_root",
+    "analysis_complete",
+    "next_segment",
+    "remaining_segments",
+    "new_source_positions",
+    "logical_scan_work",
+    "cold_restoration_work",
+    "cold_restoration_replays_prefix",
+    "continuation_command",
+    "checkpoint_is_event",
+    "absence_certifiable",
+    "alert_authorized",
+    "inter_coded_progress",
+    "cold_inter_coded_restoration",
+    "new_display_frames"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.incremental_dwell_progress.v2"
+    },
+    "status": {
+      "enum": [
+        "checkpointed",
+        "complete"
+      ]
+    },
+    "checkpoint_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "checkpoint_root": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "analysis_complete": {
+      "type": "boolean"
+    },
+    "next_segment": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615
+    },
+    "remaining_segments": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 65536
+    },
+    "new_source_positions": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 65536
+    },
+    "logical_scan_work": {
+      "$ref": "#/$defs/work"
+    },
+    "cold_restoration_work": {
+      "$ref": "#/$defs/work"
+    },
+    "cold_restoration_replays_prefix": {
+      "const": true
+    },
+    "continuation_command": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 8192
+    },
+    "checkpoint_is_event": {
+      "const": false
+    },
+    "absence_certifiable": {
+      "const": false
+    },
+    "alert_authorized": {
+      "const": false
+    },
+    "inter_coded_progress": {
+      "$ref": "#/$defs/video"
+    },
+    "cold_inter_coded_restoration": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/video"
+        }
+      ]
+    },
+    "new_display_frames": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 65536
+    },
+    "sensor_health_policy": {
+      "const": "conservative-v1"
+    },
+    "sensor_health_policy_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "sensor_health_stage": {
+      "enum": [
+        "screening",
+        "complete"
+      ]
+    },
+    "logical_health_scan_work": {
+      "$ref": "#/$defs/health"
+    },
+    "cold_health_restoration_work": {
+      "$ref": "#/$defs/health"
+    },
+    "detector_stage": {
+      "enum": [
+        "not_run_for_health_retention",
+        "deferred_until_complete",
+        "complete"
+      ]
+    },
+    "detector_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_inferences",
+        "frames_per_track",
+        "minimum_association_iou_ppm",
+        "minimum_score_ppm"
+      ],
+      "properties": {
+        "max_inferences": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "frames_per_track": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "minimum_association_iou_ppm": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "minimum_score_ppm": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1000000
+            }
+          ]
+        }
+      }
+    },
+    "event_report": {
+      "type": "object",
+      "required": [
+        "format"
+      ],
+      "properties": {
+        "format": {
+          "const": "fss.long_dwell_report.v1"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "work": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_positions",
+        "frames_decoded",
+        "source_chunk_bytes",
+        "pixel_samples",
+        "assignment_work",
+        "jpeg_work",
+        "trace_bytes"
+      ],
+      "properties": {
+        "source_positions": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65536
+        },
+        "frames_decoded": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65536
+        },
+        "source_chunk_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "pixel_samples": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "assignment_work": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "jpeg_work": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "trace_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        }
+      }
+    },
+    "video": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "codec",
+        "source_segments_consumed",
+        "display_frames_processed",
+        "skipped_rasl_segments",
+        "decoder_drained",
+        "step_unit",
+        "coding_read_ahead_is_observation"
+      ],
+      "properties": {
+        "codec": {
+          "enum": [
+            "h264",
+            "h265"
+          ]
+        },
+        "source_segments_consumed": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65536
+        },
+        "display_frames_processed": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65536
+        },
+        "skipped_rasl_segments": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 18446744073709551615
+          },
+          "maxItems": 65536,
+          "uniqueItems": true
+        },
+        "decoder_drained": {
+          "type": "boolean"
+        },
+        "step_unit": {
+          "const": "display_frames"
+        },
+        "coding_read_ahead_is_observation": {
+          "const": false
+        }
+      }
+    },
+    "health": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "frames_screened",
+        "samples_screened"
+      ],
+      "properties": {
+        "frames_screened": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65536
+        },
+        "samples_screened": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "complete"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "analysis_complete": {
+            "const": true
+          },
+          "remaining_segments": {
+            "const": 0
+          },
+          "inter_coded_progress": {
+            "properties": {
+              "decoder_drained": {
+                "const": true
+              }
+            }
+          }
+        },
+        "required": [
+          "event_report"
+        ]
+      },
+      "else": {
+        "properties": {
+          "analysis_complete": {
+            "const": false
+          },
+          "inter_coded_progress": {
+            "properties": {
+              "decoder_drained": {
+                "const": false
+              }
+            }
+          }
+        },
+        "not": {
+          "required": [
+            "event_report"
+          ]
+        }
+      }
+    }
+  ]
+}

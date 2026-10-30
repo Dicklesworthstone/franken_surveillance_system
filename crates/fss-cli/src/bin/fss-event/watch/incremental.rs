@@ -221,10 +221,20 @@ pub(super) fn run(
             out,
         );
     }
+    let video_restoration = saved
+        .as_ref()
+        .and_then(|checkpoint| checkpoint.video_progress())
+        .map(|video| video.to_json());
     let prefix = saved
         .as_ref()
         .map_or(0, |checkpoint| checkpoint.prefix_work().source_positions);
-    if prefix.saturating_add(options.step_frames) < count && !action.approvals.is_empty() {
+    // Inter-coded display counts cannot predict terminal input accounting: HEVC may skip
+    // leading RASL inputs, and coded EOF can still retain delayed pictures. Its actual drain
+    // gate below runs before any checkpoint or event publication.
+    if !prepared.is_inter_coded()
+        && prefix.saturating_add(options.step_frames) < count
+        && !action.approvals.is_empty()
+    {
         return Err(WatchError::InvalidPlan(
             "an incomplete incremental dwell range cannot publish events",
         )
@@ -245,6 +255,13 @@ pub(super) fn run(
         _ => return Err(WatchError::Conflict.into()),
     };
     let complete = running.complete();
+    if !complete && !action.approvals.is_empty() {
+        return Err(WatchError::InvalidPlan(
+            "native decoder has not drained; event publication requires completion",
+        )
+        .into());
+    }
+    let video = running.video_progress().map(|video| video.to_json());
     let pin = running.retain(deployment, cx)?;
     let continuation = continuation_command(action, pin, work.source_positions)?;
     let event_report = if complete {
@@ -294,6 +311,8 @@ pub(super) fn run(
             work,
             restoration,
             health,
+            video,
+            video_restoration,
             prefix,
             count,
             complete,
@@ -340,6 +359,8 @@ struct Progress {
     work: DwellWork,
     restoration: DwellWork,
     health: Option<HealthProgress>,
+    video: Option<String>,
+    video_restoration: Option<String>,
     prefix: usize,
     count: usize,
     complete: bool,
@@ -358,6 +379,8 @@ fn render_progress(
         work,
         restoration,
         health,
+        video,
+        video_restoration,
         prefix,
         count,
         complete,
@@ -367,13 +390,18 @@ fn render_progress(
     } = progress;
     let mut output = format!(
         concat!(
-            "{{\"schema\":\"fss.incremental_dwell_progress.v1\",\"status\":{},",
+            "{{\"schema\":{},\"status\":{},",
             "\"checkpoint_digest\":{},\"checkpoint_root\":{},\"analysis_complete\":{},",
             "\"next_segment\":{},\"remaining_segments\":{},\"new_source_positions\":{},",
             "\"logical_scan_work\":{},\"cold_restoration_work\":{},",
             "\"cold_restoration_replays_prefix\":true,\"continuation_command\":{},",
             "\"checkpoint_is_event\":false,\"absence_certifiable\":false,\"alert_authorized\":false"
         ),
+        json(if video.is_some() {
+            "fss.incremental_dwell_progress.v2"
+        } else {
+            "fss.incremental_dwell_progress.v1"
+        }),
         json(if complete { "complete" } else { "checkpointed" }),
         json(&pin.record_digest.to_text()),
         json(&pin.provenance_root.to_text()),
@@ -385,6 +413,13 @@ fn render_progress(
         restoration.to_json(),
         json(&continuation),
     );
+    if let Some(video) = video {
+        output.push_str(&format!(
+            ",\"inter_coded_progress\":{},\"cold_inter_coded_restoration\":{},\"new_display_frames\":{}",
+            video, video_restoration.as_deref().unwrap_or("null"),
+            work.frames_decoded.checked_sub(restoration.frames_decoded).ok_or(WatchError::Conflict)?,
+        ));
+    }
     if let Some(health) = health {
         output.push_str(&format!(
             concat!(
@@ -451,7 +486,7 @@ fn run_completed_health(
     out: &mut impl Write,
 ) -> RunResult<()> {
     let count = saved.prepared().plan().segment_count;
-    if saved.prefix_work().source_positions != count {
+    if !saved.complete() {
         return Err(WatchError::InvalidPlan(
             "incremental health retention requires an already complete checkpoint",
         )
@@ -466,6 +501,7 @@ fn run_completed_health(
             .restoration_health_work()
             .ok_or(WatchError::Conflict)?,
     });
+    let video = running.video_progress().map(|video| video.to_json());
     let pin = saved.pin();
     let continuation = continuation_command(action, pin, work.source_positions)?;
     let report = running.finish(deployment, cx)?;
@@ -480,6 +516,8 @@ fn run_completed_health(
                 work,
                 restoration,
                 health,
+                video: video.clone(),
+                video_restoration: video.clone(),
                 prefix: work.source_positions,
                 count,
                 complete: true,
@@ -547,7 +585,7 @@ fn run_completed_fusion(
     // Tolerated decode refusals still consume positions. A step which could finish a partial
     // prefix is insufficient: advice cannot advance or retain any new temporal work.
     let count = saved.prepared().plan().segment_count;
-    if saved.prefix_work().source_positions != count {
+    if !saved.complete() {
         return Err(WatchError::InvalidPlan(
             "calibrated incremental dwell requires an already complete checkpoint",
         )
@@ -578,6 +616,7 @@ fn run_completed_fusion(
         }),
         _ => return Err(WatchError::Conflict.into()),
     };
+    let video = running.video_progress().map(|video| video.to_json());
     let pin = saved.pin();
     let continuation = continuation_command(action, pin, work.source_positions)?;
     let mut report = running.finish(deployment, cx)?;
@@ -604,6 +643,8 @@ fn run_completed_fusion(
             work,
             restoration,
             health,
+            video: video.clone(),
+            video_restoration: video,
             prefix: work.source_positions,
             count,
             complete: true,

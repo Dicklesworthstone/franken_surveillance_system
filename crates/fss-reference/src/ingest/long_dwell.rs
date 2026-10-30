@@ -48,7 +48,7 @@ use crate::{
 mod classify;
 pub(super) mod detector;
 mod fusion;
-/// Bounded native MJPEG continuation and source-verified durable checkpoints.
+/// Bounded native MJPEG/AVC/HEVC continuation and source-verified durable checkpoints.
 pub mod incremental;
 pub(in crate::ingest) mod limits;
 pub(super) mod reader;

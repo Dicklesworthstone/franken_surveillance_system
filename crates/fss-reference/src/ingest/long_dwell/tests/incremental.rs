@@ -7,6 +7,8 @@ use crate::ingest::long_dwell::incremental::{
     RetainedDwellCheckpoint,
 };
 
+mod video;
+
 fn prepare(
     f: &Fixture,
     limits: LongDwellLimits,
@@ -359,7 +361,7 @@ fn cancellation_drains_native_reconstruction_and_checkpoint_retry_is_exact() -> 
 }
 
 #[test]
-fn unsupported_video_empty_checkpoint_and_incomplete_finish_are_explicit() -> Test {
+fn unsupported_tolerant_video_empty_checkpoint_and_incomplete_finish_are_explicit() -> Test {
     let f = inter_fixture("incremental-avc-refused", SQUARE_MP4)?;
     let before = f.snapshot();
     assert!(matches!(
@@ -367,12 +369,14 @@ fn unsupported_video_empty_checkpoint_and_incomplete_finish_are_explicit() -> Te
             &f.deployment,
             f.plan.clone(),
             rule(),
-            WatchOptions::default(),
+            WatchOptions {
+                tolerate_decode_refusals: true,
+            },
             LongDwellLimits::default(),
             &f.cx
         ),
         Err(WatchError::InvalidPlan(
-            "incremental dwell currently requires retained MJPEG"
+            "incremental native video requires strict decode; tolerant continuation is unsupported"
         ))
     ));
     assert_eq!(f.snapshot(), before);

@@ -10,6 +10,26 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Native AVC/HEVC incremental dwell (reference)
+
+Supported flat H.264 and H.265 imports can now use bounded hot continuation and retained cold
+recovery through the existing native decoder, foreground, tracker, dwell and optional health
+owners. Scheduling boundaries preserve buffers and original cumulative allowances. New v3
+checkpoints bind exact source/codec/policy identities, coding consumption, processed display
+frames, explicit HEVC RASL omissions and native drain state. A decoder that consumed every input
+but still holds a display frame remains incomplete; cold recovery reproduces the exact saved
+prefix and drain before continuation. Checkpoint validity covers the complete consumed capture
+interval hull, including reordered B pictures.
+
+The CLI exposes these distinctions in `fss.incremental_dwell_progress.v2`; MJPEG checkpoint and
+progress bytes remain unchanged. Final detector, health, fusion and event publication keep their
+existing native admission. Partitioned sources and tolerant inter-coded continuation remain
+explicit refusals. This is sampled unclassified dwell, not continuous physical presence or an
+absence certificate. Seven focused native regressions and actual CLI/process schema fixtures
+cover hot/cold equivalence, reordering, CRA/RASL, budgets, cancellation and publication. Source,
+format and schema checks have run; dependency-bearing native execution is pending and no release
+qualification is claimed. See [incremental dwell](docs/incremental_dwell.md).
+
 ## Authenticated native probe evidence in investigation cases (reference)
 
 A retained `investigate --transition probe` can now explicitly cite its native result to an

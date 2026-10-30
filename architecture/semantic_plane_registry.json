@@ -841,7 +841,9 @@
     "crates/fss-cli/src/probe_cmd/render/refusal/tests.rs": "support",
     "crates/fss-cli/src/bin/fss_mcp/investigate.rs": "support",
     "crates/fss-cli/src/bin/fss_mcp/server.rs": "support",
-    "crates/fss-cli/src/fss_cmd.rs": "support"
+    "crates/fss-cli/src/fss_cmd.rs": "support",
+    "crates/fss-reference/src/ingest/long_dwell/incremental/video.rs": "support",
+    "crates/fss-reference/src/ingest/long_dwell/tests/incremental/video.rs": "support"
   },
   "types": {
     "AlertEffectRecord": {

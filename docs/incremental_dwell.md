@@ -1,11 +1,12 @@
 # Bounded native dwell continuation
 
-`fss-event watch --stream-dwell --dwell-step-frames N` advances a completed retained MJPEG
-recording by at most `N` new source positions, then publishes an immutable computation
+`fss-event watch --stream-dwell --dwell-step-frames N` advances a completed retained MJPEG,
+H.264 or H.265 recording by at most `N` new display positions, then publishes an immutable computation
 checkpoint. The next invocation can reproduce that checkpoint and continue the same native
 foreground model, tracker, capture-clock checks and sampled-dwell accumulator. An episode
 spanning multiple steps has the same final analysis, proposal and event identity as the
-existing whole-recording MJPEG analysis.
+existing whole-recording native analysis. MJPEG positions include explicitly tolerated decode
+refusals; strict inter-coded video separately reports native coding read-ahead and display work.
 
 This closes the previous restart-at-frame-zero analysis boundary for scheduled work: a live
 library owner processes only new positions on each successful advance, and an interrupted
@@ -57,14 +58,64 @@ That command reconstructs the complete checkpoint and passes the original event 
 through the existing guarded publisher. A completed checkpoint advances zero new positions.
 An exact event retry reports `already_published` and appends no duplicate event.
 
-An incomplete range has no `event_report`. Supplying an event approval when the requested step
-cannot complete the range is refused before native work or checkpoint publication. A qualifying
-but still active episode is not prematurely finalized at an arbitrary scheduling boundary.
+An incomplete range has no `event_report`. MJPEG can preflight a step too short to complete;
+inter-coded video validates actual native drain after the admitted work. Both refuse incomplete
+event publication before checkpoint or event writes. A qualifying but still active episode is
+not prematurely finalized at an arbitrary scheduling boundary.
 
 `--report-out PATH` writes the complete progress wrapper using the existing create-only export
 owner. The emitted continuation omits the old output path so it can be executed directly.
 Checkpoint or event publication can finish before a later report-file/stdout failure. Retry
 the exact request to recover the same durable result.
+
+## Native H.264 and H.265 continuation
+
+Supported flat AVC/HEVC imports use the existing native `RecordedH264Range` or `RecordedH265Range`
+owner across hot slices: decoded-picture buffers, delayed output, codec limits, source-read
+allowance, foreground, tracker and screening state are not reset at scheduling boundaries.
+No decoder state is imported from an untrusted checkpoint.
+
+Inter-coded commands return `fss.incremental_dwell_progress.v2` and retain checkpoint version 3.
+MJPEG continues to return progress v1 and keeps its v1/v2 canonical checkpoint bytes. Existing
+whole-recording analysis, proposal, event and publication identities are unchanged.
+
+For video, `--dwell-step-frames` admits display-order pictures. The codec may need to consume
+additional coding access units to produce one picture. `logical_scan_work.source_positions`,
+`next_segment`, `remaining_segments` and `new_source_positions` describe coding consumption;
+`inter_coded_progress.display_frames_processed` and `new_display_frames` describe temporal work.
+The complete `inter_coded_progress` also names the codec, exact original coding positions of
+skipped leading HEVC RASL inputs and `decoder_drained`. Skipped inputs never become observations.
+A successful source read does not imply its delayed picture has been processed.
+
+Consequently a checkpoint can correctly report `remaining_segments: 0` and still have
+`analysis_complete: false`: B-frame output may remain buffered. Completion requires the native
+owner to drain its delayed output and validate every access unit. The final step can produce a
+new display picture while consuming zero new source positions. Completed-checkpoint health
+retention, classification/fusion and event publication all require this validated completion;
+a source counter at the range end cannot bypass it.
+
+The emitted cold continuation separately admits the original number of consumed coding inputs,
+including read-ahead. Resume reproduces the saved display prefix through the actual decoder and
+compares the entire recipe, trace, coding/output counters, omission list, health work and drain
+state before continuing. `cold_inter_coded_restoration` names that exact restored progress;
+`cold_restoration_work` reports its additional work. Repeated cold resumes pay that work again.
+Hot advancement keeps the existing decoder and performs no replay of prior pictures.
+Restoring a completed checkpoint also reproduces the native terminal drain, including final
+explicit skipped inputs; an unexpected extra picture refuses reconstruction.
+
+Capture intervals remain the native source intervals. MP4 presentation timing supports B-frame
+display order where the import provides it; arbitrary coding-index timestamps that regress in
+display order refuse with the existing capture-clock error. No timestamps are sorted, inferred
+from receive time or fabricated to make a dwell result pass. A HEVC RASL omission also prevents a
+screen from claiming that every requested source position was screened.
+Checkpoint publication computes the capture hull of every consumed coding input, since coding
+endpoints alone do not bound B-picture presentation times. This bounded custody-metadata pass
+belongs to retention and does not replay pixels or turn the hull into observed coverage.
+
+This first inter-coded continuation path requires strict decoding. `--tolerate-decode-refusals`
+with an AVC/HEVC incremental request is refused before native decoding. Partitioned imports still
+require a future checkpoint format that explicitly closes every typed part root; a source aggregate
+alone is insufficient. Whole-recording tolerant decoding retains its existing behavior.
 
 ## Finish with trained classification
 
@@ -257,7 +308,7 @@ does not cache trained inference or make repeated observations independent.
 
 | Option | Contract |
 |---|---|
-| `--dwell-step-frames N` | Admit at most 1–65,536 new source positions in this process. The final step stops at the declared range end. |
+| `--dwell-step-frames N` | Admit at most 1–65,536 new MJPEG source positions or actual AVC/HEVC display pictures. Native coding read-ahead is separately reported. |
 | `--dwell-checkpoint DIGEST` | Pin the exact canonical checkpoint body. Requires the root pin. |
 | `--dwell-checkpoint-root DIGEST` | Pin the exact published, ledgered checkpoint graph. Requires the body pin. |
 | `--dwell-restore-max-frames N` | Explicitly admit 1–65,536 old positions for cold reconstruction. Required only with checkpoint pins. |
@@ -329,18 +380,19 @@ automatic unbounded checkpoint history.
 
 ## Retained source and supported modes
 
-The first version accepts completed **flat MJPEG imports** with explicit capture-time hints
-and the existing supported `gray` or `ycbcr` interpretation. The loose original input can be
+Completed **flat MJPEG imports** retain their v1/v2 formats, explicit capture-time hints and
+the existing supported `gray` or `ycbcr` interpretation. Supported **flat AVC/HEVC imports**
+use checkpoint v3, strict native decoding and `ycbcr`. The loose original input can be
 removed after import; the retained source chunks, selected capsules, import root and checkpoint
 body/manifest must remain intact. Missing, deleted, stale or damaged custody refuses. A cached
 native owner or cached metadata never repairs a missing published checkpoint body.
 
 Partitioned imports are explicitly refused before native decoding. Their aggregate metadata
 names typed part roots which are not graph children; the first checkpoint format deliberately
-does not claim that retaining only the aggregate closes all part custody. H.264/H.265
-checkpoint continuation and coverage retention remain refused in incremental mode. Independent
+does not claim that retaining only the aggregate closes all part custody. Coverage retention
+remains refused in incremental mode. Independent
 health retention requires an already complete screened checkpoint. Explicit conservative
-sensor-health screening uses version-two checkpoints. Trained packages run only at the completed temporal
+sensor-health screening uses version-two MJPEG or version-three video checkpoints. Trained packages run only at the completed temporal
 boundary described above. Calibrated fusion requires an already complete, exactly pinned
 checkpoint and uses the separate read-only path; partial checkpoint advice is refused.
 Existing whole-recording paths retain their supported codec, health and fusion capabilities.
@@ -366,6 +418,14 @@ whole consumption and byte-identical native replay; the version cannot be change
 The source-closed graph uses the existing
 `local_root_reachability` publication owner. No checkpoint authority family, mutable serialized
 tracker format, new effect authority or changed whole-recording event encoding is introduced.
+
+Inter-coded checkpoints use `fss.incremental_dwell_checkpoint.v3` (FMT-018),
+`fss.incremental-dwell.recipe.v3` and `recorded-incremental-dwell-checkpoint-v3`. The recipe pins
+the exact native media format, screening flag, inter-coded analysis policy and actual AVC/HEVC
+decoder identity. The record adds native drain state and the bounded count
+and complete strictly ordered skipped-RASL source coordinates before the original full trace.
+Existing MJPEG recipes and record layouts remain byte-identical. A v3 reader accepts v1/v2;
+an older reader refuses v3 rather than silently treating read-ahead as completed analysis.
 
 The native library regressions exercise multiple hot chunkings, cold prefix equality, one-shot
 analysis/proposal/event identity, misses/gaps/refusals across boundaries, original allowance
@@ -395,3 +455,23 @@ cargo test -p fss-reference --lib ingest::long_dwell::health_tests::incremental
 cargo test -p fss-cli --bin fss-event watch::incremental
 cargo test -p fss-cli --test watch_stream_dwell_cli incremental
 ```
+
+### Native video regression targets
+
+```sh
+cargo test --locked --offline -p fss-reference --lib ingest::long_dwell::tests::incremental
+cargo test --locked --offline -p fss-cli --test watch_stream_dwell_cli incremental::video::
+```
+
+The native contracts compare several hot chunkings of the real 300-frame AVC fixture with the
+unchanged one-shot owner, retain and cold-recover a 299-output/300-input B-frame checkpoint,
+finish its delayed picture, and publish/retry the same event. They also cover original allowance
+exhaustion, separate cold admission, cancellation poisoning, coding-clock regression, native
+HEVC continuation, CRA-led RASL omissions, the complete B-picture capture hull and health-screen
+preservation. The real CLI fixture runs fresh native processes for AVC, HEVC and their screened
+variants, removes loose media before analysis, validates actual progress JSON against the
+registered schema and exercises emitted publication retries.
+
+These are synthetic fixtures and exact implementation comparisons, not detector accuracy,
+continuous physical occupancy, camera qualification or measured throughput results. Authored
+regressions require execution under the pinned toolchain; source review alone is not a pass.

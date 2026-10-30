@@ -2,6 +2,8 @@
 //! Actual operator commands, immutable custody and cold native continuation across processes.
 
 use super::*;
+
+mod video;
 use fss_cli::json_input::{Value, parse};
 
 #[path = "incremental/classifier.rs"]
