@@ -96,6 +96,285 @@ fn create_intent<'a>(plan: &'a Plan, message_id: &'a str, started_ns: u64) -> Pu
     }
 }
 
+fn create_outcome() -> PullPointControl<'static> {
+    PullPointControl::CreateOutcome {
+        source: SOURCE,
+        message_id: MESSAGE,
+        started_ns: 1000,
+        completed_ns: Some(1100),
+        authenticated: false,
+        http_status: 200,
+        soap_content_type: true,
+    }
+}
+
+fn recovery_args(plan: &Plan, identity: ContentDigest, root: ContentDigest) -> Vec<OsString> {
+    let mut args = vec![
+        OsString::from("recover-created"),
+        OsString::from("--root"),
+        plan.root.as_os_str().to_owned(),
+    ];
+    for (key, value) in [
+        ("--site", SITE),
+        ("--principal", OWNER),
+        ("--owner-authorized", "yes"),
+        ("--recover", "yes"),
+    ] {
+        args.extend([OsString::from(key), OsString::from(value)]);
+    }
+    args.extend([
+        OsString::from("--control-id"),
+        OsString::from(identity.to_text()),
+        OsString::from("--expected-root"),
+        OsString::from(root.to_text()),
+    ]);
+    args
+}
+
+#[test]
+fn native_cold_created_recovery_keeps_receipt_on_postcommit_refusal_and_retries_locally() -> Test {
+    for refuse_late in [false, true] {
+        let directory = Directory::new(if refuse_late {
+            "create-late"
+        } else {
+            "create-cold"
+        })?;
+        let plan = directory.plan("10000")?;
+        let cx = directory.context(&plan)?;
+        let deployment = RefCell::new(ReferenceDeployment::open(&plan.root, SITE, &cx)?);
+        let mut receipts = ControlReceipts::default();
+        retain_control(
+            &deployment,
+            &plan,
+            &mut receipts,
+            create_intent(&plan, MESSAGE, 1000),
+            &cx,
+            || Ok(1050),
+        )?;
+        retain_control(
+            &deployment,
+            &plan,
+            &mut receipts,
+            create_outcome(),
+            &cx,
+            || Err(ClientError::Authority),
+        )?;
+        assert!(receipts.created.is_none());
+        let raw = receipts
+            .create_outcome
+            .as_ref()
+            .ok_or("raw Create receipt missing")?;
+        let raw_handle = (raw.identity(), raw.publication_root());
+        let intent_identity = raw.intent().identity();
+        let native_report = receipts.report();
+        assert!(native_report.contains("create_outcome.durable_publication=true\n"));
+        assert!(native_report.contains("create_outcome.scoped_response_observed=true\n"));
+        assert!(!native_report.contains("private-native-operation-source"));
+        let mut capture_report = CaptureReport::default();
+        capture_report.subscription_state = pullpoint::SubscriptionState::Indeterminate;
+        let (incomplete, complete) = render(
+            &plan,
+            &[],
+            &receipts,
+            Some(&capture_report),
+            Some("ERR-ONVIF-CANCELLED-001"),
+            true,
+        )?;
+        assert!(!complete);
+        assert!(incomplete.contains("subscription_source_retained=true\n"));
+        assert!(
+            incomplete.contains(
+                "safe_next=control_inspect_create_outcome_then_explicit_recover_created\n"
+            )
+        );
+        let journal = fs::read(plan.root.join("effects/journal.fssj"))?;
+        drop(receipts);
+        drop(deployment);
+
+        let args = recovery_args(&plan, raw_handle.0, raw_handle.1);
+        let reached = Cell::new(false);
+        let (report, complete) = super::super::control::cold(&args, |stage| {
+            if stage == "onvif_control:created_committed" {
+                reached.set(true);
+                if refuse_late {
+                    return Err(fss_reference::ReplayAdmissionError::Cancelled);
+                }
+            }
+            Ok(())
+        })?;
+        assert!(reached.get());
+        assert_eq!(complete, !refuse_late);
+        assert!(report.contains(if refuse_late {
+            "phase=recovered_with_error\n"
+        } else {
+            "phase=recovered\n"
+        }));
+        if refuse_late {
+            assert!(report.contains("post_commit_error=ERR-ONVIF-CANCELLED-001\n"));
+        }
+        for expected in [
+            "custody_verified=true\n",
+            "http_exchanges=0\n",
+            "create_dispatched=false\n",
+            "polls_dispatched=0\n",
+            "unsubscribe_dispatched=false\n",
+            "current_remote_state=unknown\n",
+            "automatic_create_retry_safe=false\n",
+        ] {
+            assert!(report.contains(expected), "missing {expected}");
+        }
+        assert!(!report.contains("private-native-operation-source"));
+        assert!(!report.contains("private-native-profile"));
+        assert_eq!(fs::read(plan.root.join("effects/journal.fssj"))?, journal);
+
+        let cold_cx = directory.context(&plan)?;
+        let cold = ReferenceDeployment::reopen(&plan.root, SITE, &cold_cx)?;
+        let catalog = list_control(&cold, 8, &cold_cx)?;
+        assert_eq!(catalog.len(), 3);
+        let created = catalog
+            .iter()
+            .find(|record| record.kind == fss_reference::onvif::control::ControlKind::Created)
+            .ok_or("recovered Created record missing")?;
+        let retained =
+            RetainedSubscription::open(&cold, created.identity, Some(created.root), &cold_cx)?;
+        assert_eq!(retained.intent_identity(), intent_identity);
+        assert_eq!(retained.source(), SOURCE);
+        assert!(report.contains(&format!("identity={}\n", retained.identity())));
+        assert!(report.contains(&format!(
+            "publication_root={}\n",
+            retained.publication_root()
+        )));
+        let batches = cold.ledger().batches().len();
+        drop(cold);
+        let (retry, complete) = super::super::control::cold(&args, |_| Ok(()))?;
+        assert!(complete);
+        assert!(retry.contains("phase=recovered\n"));
+        assert!(retry.contains(&format!("identity={}\n", retained.identity())));
+        let final_cx = directory.context(&plan)?;
+        let final_deployment = ReferenceDeployment::reopen(&plan.root, SITE, &final_cx)?;
+        assert_eq!(final_deployment.ledger().batches().len(), batches);
+        assert_eq!(fs::read(plan.root.join("effects/journal.fssj"))?, journal);
+    }
+    Ok(())
+}
+
+#[test]
+fn native_rejected_create_outcome_is_cold_inspectable_without_success_or_recovery() -> Test {
+    for (label, source) in [
+        ("create-malformed", b"<private-incomplete-create".to_vec()),
+        (
+            "create-unapproved",
+            std::str::from_utf8(SOURCE)?
+                .replace("192.0.2.4", "192.0.2.5")
+                .into_bytes(),
+        ),
+    ] {
+        let directory = Directory::new(label)?;
+        let plan = directory.plan("10000")?;
+        let cx = directory.context(&plan)?;
+        let deployment = RefCell::new(ReferenceDeployment::open(&plan.root, SITE, &cx)?);
+        let mut receipts = ControlReceipts::default();
+        retain_control(
+            &deployment,
+            &plan,
+            &mut receipts,
+            create_intent(&plan, MESSAGE, 1000),
+            &cx,
+            || Ok(1050),
+        )?;
+        retain_control(
+            &deployment,
+            &plan,
+            &mut receipts,
+            PullPointControl::CreateOutcome {
+                source: &source,
+                message_id: MESSAGE,
+                started_ns: 1000,
+                completed_ns: Some(1100),
+                authenticated: false,
+                http_status: 200,
+                soap_content_type: true,
+            },
+            &cx,
+            || Err(ClientError::Authority),
+        )?;
+        let raw = receipts
+            .create_outcome
+            .as_ref()
+            .ok_or("raw receipt missing")?;
+        let handle = (raw.identity(), raw.publication_root());
+        assert!(raw.scoped_subscription().is_none());
+        let refusal = retain_control(
+            &deployment,
+            &plan,
+            &mut receipts,
+            PullPointControl::Created {
+                source: &source,
+                message_id: MESSAGE,
+                started_ns: 1000,
+                completed_ns: 1100,
+                authenticated: false,
+            },
+            &cx,
+            || Err(ClientError::Authority),
+        );
+        assert!(matches!(refusal, Err(MetadataError::Custody)));
+        assert!(receipts.created.is_none());
+        let mut capture_report = CaptureReport::default();
+        capture_report.subscription_state = pullpoint::SubscriptionState::Indeterminate;
+        let (incomplete, complete) = render(
+            &plan,
+            &[],
+            &receipts,
+            Some(&capture_report),
+            Some("ERR-ONVIF-METADATA-CUSTODY-001"),
+            true,
+        )?;
+        assert!(!complete);
+        assert!(incomplete.contains("subscription_source_retained=true\n"));
+        assert!(incomplete.contains(
+            "safe_next=control_inspect_create_outcome_then_owner_device_reconciliation\n"
+        ));
+        let batches = deployment.borrow().ledger().batches().len();
+        drop(receipts);
+        drop(deployment);
+
+        let mut inspect = vec![
+            OsString::from("inspect"),
+            OsString::from("--root"),
+            plan.root.as_os_str().to_owned(),
+        ];
+        for (key, value) in [
+            ("--site", SITE),
+            ("--principal", OWNER),
+            ("--kind", "create-outcome"),
+        ] {
+            inspect.extend([OsString::from(key), OsString::from(value)]);
+        }
+        inspect.extend([
+            OsString::from("--control-id"),
+            OsString::from(handle.0.to_text()),
+            OsString::from("--expected-root"),
+            OsString::from(handle.1.to_text()),
+        ]);
+        let (report, complete) = super::super::control::cold(&inspect, |_| Ok(()))?;
+        assert!(complete);
+        assert!(report.contains("custody_verified=true\n"));
+        assert!(report.contains("scoped_response_observed=false\n"));
+        assert!(!report.contains("private-incomplete-create"));
+        assert!(!report.contains("private-native-operation-source"));
+        assert!(
+            super::super::control::cold(&recovery_args(&plan, handle.0, handle.1), |_| Ok(()))
+                .is_err()
+        );
+        let cold_cx = directory.context(&plan)?;
+        let cold = ReferenceDeployment::reopen(&plan.root, SITE, &cold_cx)?;
+        assert_eq!(list_control(&cold, 8, &cold_cx)?.len(), 2);
+        assert_eq!(cold.ledger().batches().len(), batches);
+    }
+    Ok(())
+}
+
 #[test]
 fn restarted_native_hook_refuses_fresh_nonce_and_origin_without_losing_custody() -> Test {
     for response_retained in [false, true] {
@@ -133,6 +412,15 @@ fn restarted_native_hook_refuses_fresh_nonce_and_origin_without_losing_custody()
             original_intent.publication_root(),
         );
         let created_handle = if response_retained {
+            let raw = retain_control(
+                &deployment,
+                &plan,
+                &mut receipts,
+                create_outcome(),
+                &cx,
+                || Err(ClientError::Authority),
+            )?;
+            assert!(raw.stop.is_none());
             let observed = retain_control(
                 &deployment,
                 &plan,
@@ -222,7 +510,7 @@ fn restarted_native_hook_refuses_fresh_nonce_and_origin_without_losing_custody()
         }
         assert_eq!(
             list_control(&cold.borrow(), 8, &cold_cx)?.len(),
-            if response_retained { 2 } else { 1 }
+            if response_retained { 3 } else { 1 }
         );
         assert!(
             !repeated
@@ -328,6 +616,14 @@ fn native_cleanup_closes_its_bound_operation_and_preserves_custody_after_clock_r
             create_intent(&plan, MESSAGE, 1000),
             &cx,
             || Ok(1050),
+        )?;
+        retain_control(
+            &deployment,
+            &plan,
+            &mut receipts,
+            create_outcome(),
+            &cx,
+            || Err(ClientError::Authority),
         )?;
         retain_control(
             &deployment,

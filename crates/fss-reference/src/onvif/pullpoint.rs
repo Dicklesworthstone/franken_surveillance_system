@@ -157,6 +157,23 @@ pub enum PullPointControl<'a> {
         /// Finite requested lease, not a remote guarantee.
         lifetime_seconds: u32,
     },
+    /// Persist the complete final Create response before interpreting SOAP, time or route scope.
+    CreateOutcome {
+        /// Complete transfer-decoded body, including empty, malformed and refused replies.
+        source: &'a [u8],
+        /// Original logical Create identity, belonging to the prior durable intent.
+        message_id: &'a str,
+        /// Original monotonic Create admission.
+        started_ns: u64,
+        /// Transport-admitted completion, preserved across later clock refusal.
+        completed_ns: Option<u64>,
+        /// Whether this response followed a client Digest proof.
+        authenticated: bool,
+        /// Complete final HTTP status, independent of successful SOAP interpretation.
+        http_status: u16,
+        /// Whether the response declared application/soap+xml.
+        soap_content_type: bool,
+    },
     /// Persist the complete scoped Create response before the first poll.
     Created {
         /// Complete transfer-decoded Create SOAP.
@@ -250,6 +267,10 @@ impl fmt::Debug for PullPointControl<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::CreateIntent { .. } => f.write_str("PullPointControl::CreateIntent([redacted])"),
+            Self::CreateOutcome { source, .. } => f
+                .debug_struct("PullPointControl::CreateOutcome")
+                .field("source_bytes", &source.len())
+                .finish_non_exhaustive(),
             Self::Created { source, .. } => f
                 .debug_struct("PullPointControl::Created")
                 .field("source_bytes", &source.len())
@@ -311,6 +332,8 @@ pub struct CaptureReport {
     pub retained: Vec<RetainedBatch>,
     /// Definitely durable logical Create intent, written before dispatch.
     pub create_intent: Option<RetainedBatch>,
+    /// Durable complete Create response, including unusable or unscoped replies.
+    pub create_outcome: Option<RetainedBatch>,
     /// Definitely durable complete Create response, written before any poll.
     pub created_subscription: Option<RetainedBatch>,
     /// Durable cleanup obligation retained before any Unsubscribe dispatch.
@@ -347,6 +370,7 @@ impl Default for CaptureReport {
         Self {
             retained: Vec::new(),
             create_intent: None,
+            create_outcome: None,
             created_subscription: None,
             unsubscribe_intent: None,
             unsubscribe_outcome: None,
@@ -395,6 +419,7 @@ impl fmt::Debug for CaptureReport {
         f.debug_struct("CaptureReport")
             .field("retained", &self.retained)
             .field("create_intent", &self.create_intent)
+            .field("create_outcome", &self.create_outcome)
             .field("created_subscription", &self.created_subscription)
             .field("unsubscribe_intent", &self.unsubscribe_intent)
             .field("unsubscribe_outcome", &self.unsubscribe_outcome)
@@ -687,7 +712,7 @@ fn begin(
     // Dispatch can begin only after the intent sink acknowledges durable custody.
     // The next exchange independently rechecks time and live route authority.
     report.subscription_state = SubscriptionState::Indeterminate;
-    let (response, authenticated) = exchange(
+    let (response, authenticated, completed_ns, response_error) = control_exchange(
         config,
         &config.events,
         &request,
@@ -697,8 +722,27 @@ fn begin(
         budget,
     )?;
     report.subscription_source = Some(response.body().to_vec());
-    let completed_ns = budget.now(work_deadline(config), work_steps(config), cx)?;
     report.subscription_completed_ns = Some(completed_ns);
+    // Preserve the transport-admitted observation before any later clock, authority,
+    // HTTP, correlation, SOAP or endpoint refusal can discard the complete response.
+    if let Some(progress) = control(PullPointControl::CreateOutcome {
+        source: response.body(),
+        message_id: &message_id,
+        started_ns,
+        completed_ns: Some(completed_ns),
+        authenticated,
+        http_status: response.status(),
+        soap_content_type: is_soap_response(&response),
+    })? {
+        report.create_outcome = Some(progress.receipt);
+        if let Some(error) = progress.stop {
+            return Err(error);
+        }
+    }
+    if let Some(error) = response_error {
+        return Err(error.into());
+    }
+    budget.now(work_deadline(config), work_steps(config), cx)?;
     let source = soap_body(&response)?;
     wire::require_relates_to(source, &message_id)?;
     let subscription = parse_pull_point_subscription(source)?;

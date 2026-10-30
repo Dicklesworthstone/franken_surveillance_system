@@ -917,7 +917,10 @@ fn main() -> ExitCode {
                 custody_receipt: args
                     .get(1)
                     .filter(|arg| {
-                        matches!(arg.to_str(), Some("unsubscribe" | "reconcile-operation"))
+                        matches!(
+                            arg.to_str(),
+                            Some("unsubscribe" | "recover-created" | "reconcile-operation")
+                        )
                     })
                     .map(|_| report.clone()),
                 report,

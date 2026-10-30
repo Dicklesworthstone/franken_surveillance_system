@@ -48,6 +48,7 @@
     "crates/fss-reference/src/onvif/metadata.rs",
     "crates/fss-reference/src/onvif/pullpoint.rs",
     "crates/fss-reference/src/onvif/control.rs",
+    "crates/fss-reference/src/onvif/control/creation.rs",
     "crates/fss-reference/src/onvif/control/lifecycle.rs",
     "crates/fss-reference/src/onvif/control/renewal.rs",
     "crates/fss-reference/src/onvif/control/termination.rs",
@@ -789,6 +790,7 @@
     "crates/fss-cli/src/bin/fss-onvif-metadata/capture/plan.rs": "support",
     "crates/fss-cli/src/bin/fss-onvif-metadata/admission.rs": "support",
     "crates/fss-reference/src/onvif/control.rs": "ambiguous",
+    "crates/fss-reference/src/onvif/control/creation.rs": "ambiguous",
     "crates/fss-reference/src/onvif/control/codec.rs": "support",
     "crates/fss-reference/src/onvif/control/catalog.rs": "cognition",
     "crates/fss-reference/src/onvif/control/lifecycle.rs": "ambiguous",
@@ -1515,10 +1517,20 @@
       "plane": "cognition",
       "description": "Historical Create observation with exact source, intent and ledger custody; require_relates_to enforces explicit reply correlation, never current active state or network authority."
     },
+    "CreateOutcomeBinding": {
+      "file": "crates/fss-reference/src/onvif/control/creation.rs",
+      "plane": "support",
+      "description": "Complete Create HTTP-response observations with explicit optional monotonic completion, client-Digest status and SOAP content type; no implied usable subscription or camera authentication."
+    },
+    "RetainedCreateOutcome": {
+      "file": "crates/fss-reference/src/onvif/control/creation.rs",
+      "plane": "cognition",
+      "description": "Exact historical Create response, original intent and ledger/source custody, including unusable replies; explicit local recovery revalidates current custody and reconstructs unchanged Created bytes without network, polling, cleanup or retry authority."
+    },
     "ControlKind": {
       "file": "crates/fss-reference/src/onvif/control/catalog.rs",
       "plane": "cognition",
-      "description": "Historical Create/Renew intent or complete response classification, including unusable Renew replies and successful Unsubscribe responses; never an assertion of current remote subscription state."
+      "description": "Historical Create/Renew/Unsubscribe intent and response classification, including unusable complete replies and separately verified successful responses; never an assertion of current remote subscription state."
     },
     "ControlDescriptor": {
       "file": "crates/fss-reference/src/onvif/control/catalog.rs",

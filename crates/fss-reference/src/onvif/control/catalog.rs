@@ -11,10 +11,11 @@ use std::collections::BTreeMap;
 use fss_core::{CanonicalDecoder, ContentDigest};
 
 use super::{
-    CREATED_DOMAIN, PARSER_GENERATION, RENEW_INTENT_DOMAIN, RENEWED_DOMAIN, RetainedCreateIntent,
-    RetainedRenewIntent, RetainedRenewal, RetainedSubscription, RetainedUnsubscribe,
-    RetainedUnsubscribeIntent, RetainedUnsubscribeOutcome, UNSUBSCRIBE_INTENT_DOMAIN,
-    UNSUBSCRIBE_OUTCOME_DOMAIN, UNSUBSCRIBED_DOMAIN, read_record,
+    CREATE_OUTCOME_DOMAIN, CREATED_DOMAIN, PARSER_GENERATION, RENEW_INTENT_DOMAIN, RENEWED_DOMAIN,
+    RetainedCreateIntent, RetainedCreateOutcome, RetainedRenewIntent, RetainedRenewal,
+    RetainedSubscription, RetainedUnsubscribe, RetainedUnsubscribeIntent,
+    RetainedUnsubscribeOutcome, UNSUBSCRIBE_INTENT_DOMAIN, UNSUBSCRIBE_OUTCOME_DOMAIN,
+    UNSUBSCRIBED_DOMAIN, read_record,
 };
 use crate::adapter_replay::ReplayAdmission;
 use crate::deletion::DeletionIndex;
@@ -29,6 +30,8 @@ pub const MAX_CATALOG_RECORDS: usize = 1024;
 pub enum ControlKind {
     /// A request was durably prepared; dispatch/result may remain unknown.
     CreateIntent,
+    /// Complete final Create response, including rejected, malformed or unscoped bodies.
+    CreateOutcome,
     /// A complete scoped Create response was retained.
     Created,
     /// A complete correlated Unsubscribe success was retained.
@@ -192,7 +195,9 @@ pub(super) fn list_cleanup_control<G: ReplayAdmission>(
         let mut d = CanonicalDecoder::new(&encoded);
         let domain = d.text()?;
         let parent = match domain {
-            CREATED_DOMAIN | RENEW_INTENT_DOMAIN | RENEWED_DOMAIN => continue,
+            CREATED_DOMAIN | CREATE_OUTCOME_DOMAIN | RENEW_INTENT_DOMAIN | RENEWED_DOMAIN => {
+                continue;
+            }
             UNSUBSCRIBED_DOMAIN | UNSUBSCRIBE_INTENT_DOMAIN => {
                 if d.text()? != PARSER_GENERATION {
                     return Err(MetadataError::Custody);
@@ -258,6 +263,19 @@ fn describe<G: ReplayAdmission>(
         let (encoded, _) = read_record(deployment, identity, false, Some(root), cx)?;
         let mut decoder = CanonicalDecoder::new(&encoded);
         match decoder.text()? {
+            CREATE_OUTCOME_DOMAIN => {
+                let outcome = RetainedCreateOutcome::open(deployment, identity, Some(root), cx)?;
+                ControlDescriptor {
+                    kind: ControlKind::CreateOutcome,
+                    identity,
+                    root,
+                    intent_identity: outcome.intent().identity(),
+                    subscription_identity: None,
+                    renewal_intent_identity: None,
+                    unsubscribe_intent_identity: None,
+                    authority_sequence: outcome.authority_anchor().commit_sequence,
+                }
+            }
             CREATED_DOMAIN => {
                 let created = RetainedSubscription::open(deployment, identity, Some(root), cx)?;
                 ControlDescriptor {

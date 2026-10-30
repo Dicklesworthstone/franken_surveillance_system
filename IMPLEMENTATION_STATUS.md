@@ -10,6 +10,32 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Durable ONVIF Create responses and cold recovery (2026-10-30, reference)
+
+Native PullPoint capture now commits every admitted complete final Create response
+before HTTP/SOAP, correlation, endpoint or later clock refusal can discard it. The
+additive `create-outcome` record keeps the exact body, transport observations and
+original intent closure, including malformed, refused and empty replies. A raw response
+alone grants no poll, cleanup or retry authority. Transport loss before a complete
+response still leaves an unresolved intent and an unknown camera result.
+
+`fss-onvif-metadata control recover-created` explicitly reconstructs the unchanged
+successful Created v1 marker from exact usable raw custody after restart. It verifies
+the original source/root/intent, current access and deletion state, strict correlation
+and approved endpoint scope before local publication. It sends no network requests and
+cannot reset the existing operation fence. Exact retries preserve identities; known
+receipts survive post-commit refusal and output failure. Catalog, holds and deletion
+include raw outcomes without rewriting legacy control or batch encodings. See
+[ONVIF metadata recovery](docs/onvif-metadata.md#recover-an-interrupted-created-marker).
+
+Eighteen new named regressions cover raw-custody refusal/corruption matrices, crash and
+cancellation cuts, exact legacy Created reconstruction, real TCP ordering, cold native
+recovery, operation-fence preservation and strict CLI approval parsing. Independent
+source review and scoped formatting pass. Native execution remains pending because the
+shared environment killed pinned compilation of the unchanged Asupersync dependency.
+Physical-device/Profile M interoperability, the FSS-046 aggregate and release
+qualification remain open.
+
 ## Exact robust camera-placement analysis (2026-10-30, reference)
 
 The registered `ALG-INTERDICT-001` now includes a bounded exact camera-addition mode.

@@ -8,11 +8,16 @@
 
 mod catalog;
 mod codec;
+mod creation;
 mod lifecycle;
 mod renewal;
 mod termination;
 
 pub use catalog::{ControlDescriptor, ControlKind, MAX_CATALOG_RECORDS, list_control};
+pub use creation::{
+    CREATE_OUTCOME_DOMAIN, CreateOutcomeBinding, RetainedCreateOutcome,
+    STAGE_CREATE_OUTCOME_PUBLISH, recover_created, retain_create_outcome,
+};
 pub(crate) use lifecycle::lifecycle_sensor;
 pub use renewal::{
     RENEW_INTENT_DOMAIN, RENEWED_DOMAIN, RenewIntentBinding, RenewOutcomeBinding,
@@ -385,8 +390,8 @@ pub fn prepare_create<G: ReplayAdmission>(
 /// Retain the complete Create response before the caller begins polling.
 ///
 /// The response must correlate to the exact durable intent and yield a bounded
-/// same-origin/subtree endpoint. Malformed/hostile responses leave only the intent,
-/// whose dispatch/result remains unresolved. No endpoint is followed by this API.
+/// same-origin/subtree endpoint. The separate raw-outcome owner preserves malformed
+/// replies without a successful marker. No endpoint is followed by this API.
 pub fn retain_created<G: ReplayAdmission>(
     deployment: &mut ReferenceDeployment,
     intent: &RetainedCreateIntent,

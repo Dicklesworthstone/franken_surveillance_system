@@ -722,7 +722,7 @@ fn complete_create_source_survives_immediate_post_release_cancellation() {
     assert!(failure.report.subscription_response().is_some());
     assert!(failure.report.subscription_message_id().is_some());
     assert!(failure.report.subscription_started_ns().is_some());
-    assert!(failure.report.subscription_completed_ns().is_none());
+    assert!(failure.report.subscription_completed_ns().is_some());
     assert_eq!(server.requests().len(), 1);
 }
 
@@ -759,6 +759,26 @@ fn durable_control_callbacks_precede_create_dispatch_and_first_poll() {
                 stage.store(1, Ordering::SeqCst);
                 Ok(intent_receipt)
             }
+            PullPointControl::CreateOutcome {
+                source,
+                message_id: observed_id,
+                started_ns,
+                completed_ns,
+                authenticated,
+                http_status,
+                soap_content_type,
+            } => {
+                assert_eq!(stage.load(Ordering::SeqCst), 1);
+                let requests = server.requests();
+                assert_eq!(requests.len(), 1);
+                assert_eq!(observed_id, message_id(&requests[0]));
+                assert!(completed_ns.is_some_and(|end| started_ns <= end));
+                assert!(!authenticated);
+                assert_eq!(http_status, 200);
+                assert!(soap_content_type);
+                stage.store(2, Ordering::SeqCst);
+                Ok(receipt(source))
+            }
             PullPointControl::Created {
                 source,
                 message_id: created_id,
@@ -766,7 +786,7 @@ fn durable_control_callbacks_precede_create_dispatch_and_first_poll() {
                 completed_ns,
                 authenticated,
             } => {
-                assert_eq!(stage.load(Ordering::SeqCst), 1);
+                assert_eq!(stage.load(Ordering::SeqCst), 2);
                 let requests = server.requests();
                 assert_eq!(requests.len(), 1);
                 assert_eq!(created_id, message_id(&requests[0]));
@@ -777,39 +797,40 @@ fn durable_control_callbacks_precede_create_dispatch_and_first_poll() {
                         .unwrap()
                         .contains("exact-opaque")
                 );
-                stage.store(2, Ordering::SeqCst);
+                stage.store(3, Ordering::SeqCst);
                 Ok(receipt(source))
             }
             PullPointControl::Unsubscribed { source, route, .. } => {
-                assert_eq!(stage.load(Ordering::SeqCst), 4);
+                assert_eq!(stage.load(Ordering::SeqCst), 5);
                 assert_eq!(route.target(), SUBSCRIPTION);
-                stage.store(5, Ordering::SeqCst);
+                stage.store(6, Ordering::SeqCst);
                 Ok(receipt(source))
             }
             PullPointControl::UnsubscribeIntent {
                 message_id, route, ..
             } => {
-                assert_eq!(stage.load(Ordering::SeqCst), 2);
+                assert_eq!(stage.load(Ordering::SeqCst), 3);
                 assert_eq!(server.requests().len(), 2);
                 assert_eq!(route.target(), SUBSCRIPTION);
-                stage.store(3, Ordering::SeqCst);
+                stage.store(4, Ordering::SeqCst);
                 Ok(receipt(message_id.as_bytes()))
             }
             PullPointControl::UnsubscribeOutcome { source, .. } => {
-                assert_eq!(stage.load(Ordering::SeqCst), 3);
+                assert_eq!(stage.load(Ordering::SeqCst), 4);
                 assert_eq!(server.requests().len(), 3);
-                stage.store(4, Ordering::SeqCst);
+                stage.store(5, Ordering::SeqCst);
                 Ok(receipt(source))
             }
         },
         |batch| {
-            assert_eq!(stage.load(Ordering::SeqCst), 2);
+            assert_eq!(stage.load(Ordering::SeqCst), 3);
             assert_eq!(server.requests().len(), 2);
             Ok(receipt(batch.source))
         },
     )
     .unwrap();
-    assert_eq!(stage.load(Ordering::SeqCst), 5);
+    assert_eq!(stage.load(Ordering::SeqCst), 6);
+    assert!(report.create_outcome.is_some());
     assert!(report.unsubscribe_intent.is_some());
     assert!(report.unsubscribe_outcome.is_some());
     assert!(report.unsubscribe_receipt.is_some());
@@ -836,7 +857,8 @@ fn failed_create_intent_custody_refuses_before_any_connection_or_dispatch() {
                 panic!("renewal disabled in this fixture")
             }
             PullPointControl::CreateIntent { .. } => Err(MetadataError::Custody),
-            PullPointControl::Created { .. }
+            PullPointControl::CreateOutcome { .. }
+            | PullPointControl::Created { .. }
             | PullPointControl::Unsubscribed { .. }
             | PullPointControl::UnsubscribeIntent { .. }
             | PullPointControl::UnsubscribeOutcome { .. } => {
@@ -861,6 +883,254 @@ fn failed_create_intent_custody_refuses_before_any_connection_or_dispatch() {
 }
 
 #[test]
+fn rejected_complete_create_replies_reach_custody_without_followup_dispatch() {
+    for case in [
+        "malformed-soap",
+        "http-refusal",
+        "non-soap",
+        "wrong-correlation",
+        "missing-correlation",
+        "foreign-authority",
+        "outside-service-root",
+        "authentication-required",
+    ] {
+        let server = Server::start(|peer| {
+            let response = match case {
+                "malformed-soap" => "SOAP:<private-incomplete-source".to_owned(),
+                "http-refusal" => {
+                    let body = "private-refused-create";
+                    format!(
+                        "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{body}",
+                        body.len()
+                    )
+                }
+                "non-soap" => {
+                    let body = "private-non-soap-create";
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/xml\r\nContent-Length: {}\r\n\r\n{body}",
+                        body.len()
+                    )
+                }
+                "wrong-correlation" => created(peer).replace("REQUEST_ID", "urn:foreign:create"),
+                "missing-correlation" => {
+                    created(peer).replace("<a:RelatesTo>REQUEST_ID</a:RelatesTo>", "")
+                }
+                "foreign-authority" => created_uri(
+                    "http://127.0.0.2/onvif/subscription?private=unapproved",
+                    "2026-10-27T00:02:00Z",
+                ),
+                "outside-service-root" => created_uri(
+                    &format!("http://{peer}/outside/subscription?private=unapproved"),
+                    "2026-10-27T00:02:00Z",
+                ),
+                "authentication-required" => challenge(REALM),
+                _ => unreachable!(),
+            };
+            vec![response]
+        });
+        let cx = Context::new(server.peer);
+        let mut observed = None;
+        let failure = capture_with_control(
+            &config(server.peer),
+            &cx,
+            |event| match event {
+                PullPointControl::CreateIntent { .. } => Ok(receipt(b"intent")),
+                PullPointControl::CreateOutcome {
+                    source,
+                    message_id: actual_id,
+                    started_ns,
+                    completed_ns,
+                    authenticated,
+                    http_status,
+                    soap_content_type,
+                } => {
+                    assert!(observed.is_none(), "one raw outcome for {case}");
+                    assert_eq!(server.requests().len(), 1);
+                    assert_eq!(actual_id, message_id(&server.requests()[0]));
+                    assert!(completed_ns.is_some_and(|end| end >= started_ns));
+                    assert!(!authenticated);
+                    assert_eq!(
+                        http_status,
+                        match case {
+                            "http-refusal" => 403,
+                            "authentication-required" => 401,
+                            _ => 200,
+                        }
+                    );
+                    assert_eq!(
+                        soap_content_type,
+                        !matches!(
+                            case,
+                            "http-refusal" | "non-soap" | "authentication-required"
+                        )
+                    );
+                    let retained = receipt(source);
+                    observed = Some(retained);
+                    Ok(retained)
+                }
+                _ => panic!("rejected {case} cannot admit a successful marker or cleanup"),
+            },
+            |_| panic!("rejected {case} cannot admit a poll"),
+        )
+        .unwrap_err();
+        assert!(observed.is_some(), "complete {case} must reach custody");
+        assert_eq!(failure.report.create_outcome, observed);
+        assert_eq!(
+            observed,
+            Some(receipt(failure.report.subscription_response().unwrap()))
+        );
+        assert_eq!(
+            failure.report.subscription_state,
+            SubscriptionState::Indeterminate
+        );
+        assert!(failure.report.created_subscription.is_none());
+        assert!(failure.report.unsubscribe_intent.is_none());
+        assert!(failure.report.cleanup_error.is_none());
+        assert_eq!(failure.report.pulls, 0);
+        assert_eq!(failure.report.exchanges, 1);
+        assert_eq!(server.requests().len(), 1);
+        assert_eq!(cx.connects.load(Ordering::SeqCst), 1);
+    }
+}
+
+#[test]
+fn create_outcome_custody_refusal_preserves_ambiguity_without_poll_or_cleanup() {
+    for after_commit in [false, true] {
+        let server = Server::start(|peer| vec![created(peer)]);
+        let failure = capture_with_progress(
+            &config(server.peer),
+            &Context::new(server.peer),
+            |event| match event {
+                PullPointControl::CreateIntent { .. } => Ok(receipt(b"intent").into()),
+                PullPointControl::CreateOutcome { source, .. } if after_commit => {
+                    Ok(RetainedProgress {
+                        receipt: receipt(source),
+                        stop: Some(PullPointError::Client(ClientError::Budget)),
+                    })
+                }
+                PullPointControl::CreateOutcome { .. } => Err(MetadataError::Custody),
+                _ => panic!("no successful marker or cleanup after raw custody refusal"),
+            },
+            |_| panic!("no polling after raw custody refusal"),
+        )
+        .unwrap_err();
+        assert!(failure.report.create_intent.is_some());
+        assert_eq!(failure.report.create_outcome.is_some(), after_commit);
+        assert!(failure.report.subscription_response().is_some());
+        assert!(failure.report.created_subscription.is_none());
+        assert_eq!(
+            failure.report.subscription_state,
+            SubscriptionState::Indeterminate
+        );
+        assert!(failure.report.unsubscribe_intent.is_none());
+        assert_eq!(failure.report.exchanges, 1);
+        assert_eq!(server.requests().len(), 1);
+        if after_commit {
+            assert!(matches!(
+                failure.error,
+                PullPointError::Client(ClientError::Budget)
+            ));
+        } else {
+            assert!(matches!(
+                failure.error,
+                PullPointError::Retention(MetadataError::Custody)
+            ));
+        }
+    }
+}
+
+#[test]
+fn complete_create_outcome_precedes_post_transport_or_post_custody_cancellation() {
+    for on_transport_release in [false, true] {
+        let server = Server::start(|peer| vec![created(peer)]);
+        let mut cx = Context::new(server.peer);
+        cx.cancel_on_create_release = on_transport_release;
+        let failure = capture_with_control(
+            &config(server.peer),
+            &cx,
+            |event| match event {
+                PullPointControl::CreateIntent { .. } => Ok(receipt(b"intent")),
+                PullPointControl::CreateOutcome {
+                    source,
+                    completed_ns,
+                    ..
+                } => {
+                    assert!(completed_ns.is_some());
+                    assert_eq!(cx.cancelled.load(Ordering::SeqCst), on_transport_release);
+                    cx.cancelled.store(true, Ordering::SeqCst);
+                    Ok(receipt(source))
+                }
+                _ => panic!("cancellation cannot authorize success-marker continuation or cleanup"),
+            },
+            |_| panic!("cancelled owner cannot poll"),
+        )
+        .unwrap_err();
+        assert_eq!(failure.code(), "ERR-ONVIF-CANCELLED-001");
+        assert!(failure.report.create_outcome.is_some());
+        assert!(failure.report.subscription_completed_ns().is_some());
+        assert!(failure.report.created_subscription.is_none());
+        assert!(failure.report.unsubscribe_intent.is_none());
+        assert_eq!(
+            failure.report.subscription_state,
+            SubscriptionState::Indeterminate
+        );
+        assert_eq!(server.requests().len(), 1);
+    }
+}
+
+#[test]
+fn refused_create_authentication_retains_final_response_without_automatic_retry() {
+    for wrong_realm in [false, true] {
+        let server = Server::start(|_| {
+            if wrong_realm {
+                vec![challenge("foreign-camera")]
+            } else {
+                vec![challenge(REALM), challenge(REALM)]
+            }
+        });
+        let mut cfg = config(server.peer);
+        cfg.auth = Some(DigestConfig {
+            expected_realm: REALM.to_owned(),
+            policy: DigestPolicy::default(),
+        });
+        let cx = Context::new(server.peer);
+        let failure = capture_with_control(
+            &cfg,
+            &cx,
+            |event| match event {
+                PullPointControl::CreateIntent { .. } => Ok(receipt(b"intent")),
+                PullPointControl::CreateOutcome {
+                    source,
+                    authenticated,
+                    http_status,
+                    ..
+                } => {
+                    assert!(source.is_empty());
+                    assert_eq!(http_status, 401);
+                    assert_eq!(authenticated, !wrong_realm);
+                    Ok(receipt(source))
+                }
+                _ => panic!("refused authentication cannot admit followup control"),
+            },
+            |_| panic!("refused authentication cannot poll"),
+        )
+        .unwrap_err();
+        assert!(failure.report.create_outcome.is_some());
+        assert!(failure.report.created_subscription.is_none());
+        let requests = server.requests();
+        assert_eq!(requests.len(), if wrong_realm { 1 } else { 2 });
+        assert_eq!(
+            cx.auth_calls.load(Ordering::SeqCst),
+            u32::from(!wrong_realm)
+        );
+        if !wrong_realm {
+            assert_eq!(message_id(&requests[0]), message_id(&requests[1]));
+            assert!(requests[1].contains("Authorization: Digest"));
+        }
+    }
+}
+
+#[test]
 fn failed_created_custody_prevents_poll_but_preserves_intent_and_attempts_cleanup() {
     let server = Server::start(|peer| vec![created(peer), unsubscribed()]);
     let cx = Context::new(server.peer);
@@ -877,7 +1147,8 @@ fn failed_created_custody_prevents_poll_but_preserves_intent_and_attempts_cleanu
             PullPointControl::UnsubscribeIntent { message_id, .. } => {
                 Ok(receipt(message_id.as_bytes()))
             }
-            PullPointControl::Unsubscribed { source, .. }
+            PullPointControl::CreateOutcome { source, .. }
+            | PullPointControl::Unsubscribed { source, .. }
             | PullPointControl::UnsubscribeOutcome { source, .. } => Ok(receipt(source)),
         },
         |_| panic!("Create custody must precede the first poll"),
@@ -923,7 +1194,8 @@ fn zero_poll_lease_failure_retains_both_control_receipts_for_cold_recovery() {
             PullPointControl::UnsubscribeIntent { message_id, .. } => {
                 Ok(receipt(message_id.as_bytes()))
             }
-            PullPointControl::Created { source, .. }
+            PullPointControl::CreateOutcome { source, .. }
+            | PullPointControl::Created { source, .. }
             | PullPointControl::UnsubscribeOutcome { source, .. }
             | PullPointControl::Unsubscribed { source, .. } => Ok(receipt(source)),
         },
@@ -975,6 +1247,7 @@ fn cancellation_after_control_receipt_preserves_every_acknowledged_handle() {
                     cx.cancelled.store(true, Ordering::SeqCst);
                     Ok(receipt(source))
                 }
+                PullPointControl::CreateOutcome { source, .. } => Ok(receipt(source)),
                 PullPointControl::Unsubscribed { .. }
                 | PullPointControl::UnsubscribeIntent { .. }
                 | PullPointControl::UnsubscribeOutcome { .. } => {
@@ -1017,7 +1290,8 @@ fn acknowledged_control(event: PullPointControl<'_>) -> Result<RetainedProgress,
         PullPointControl::UnsubscribeIntent { message_id, .. } => {
             receipt(message_id.as_bytes()).into()
         }
-        PullPointControl::Created { source, .. }
+        PullPointControl::CreateOutcome { source, .. }
+        | PullPointControl::Created { source, .. }
         | PullPointControl::UnsubscribeOutcome { source, .. }
         | PullPointControl::Unsubscribed { source, .. } => receipt(source).into(),
     })
@@ -1042,7 +1316,8 @@ fn renewable_control(event: PullPointControl<'_>) -> Result<RetainedProgress, Me
         PullPointControl::CreateIntent { message_id, .. }
         | PullPointControl::UnsubscribeIntent { message_id, .. }
         | PullPointControl::RenewIntent { message_id, .. } => receipt(message_id.as_bytes()).into(),
-        PullPointControl::Created { source, .. }
+        PullPointControl::CreateOutcome { source, .. }
+        | PullPointControl::Created { source, .. }
         | PullPointControl::UnsubscribeOutcome { source, .. }
         | PullPointControl::Renewed { source, .. }
         | PullPointControl::Unsubscribed { source, .. } => receipt(source).into(),
@@ -1929,7 +2204,8 @@ fn terminal_custody_refusal_preserves_observed_cleanup_and_all_earlier_receipts(
             PullPointControl::UnsubscribeIntent { message_id, .. } => {
                 Ok(receipt(message_id.as_bytes()))
             }
-            PullPointControl::Created { source, .. } => Ok(receipt(source)),
+            PullPointControl::CreateOutcome { source, .. }
+            | PullPointControl::Created { source, .. } => Ok(receipt(source)),
             PullPointControl::UnsubscribeOutcome { source, .. } => Ok(receipt(source)),
             PullPointControl::Unsubscribed { .. } => Err(MetadataError::Custody),
         },
@@ -1976,7 +2252,8 @@ fn cleanup_without_explicit_correlation_cannot_claim_remote_success_or_terminal_
             PullPointControl::UnsubscribeIntent { message_id, .. } => {
                 Ok(receipt(message_id.as_bytes()))
             }
-            PullPointControl::Created { source, .. } => Ok(receipt(source)),
+            PullPointControl::CreateOutcome { source, .. }
+            | PullPointControl::Created { source, .. } => Ok(receipt(source)),
             PullPointControl::UnsubscribeOutcome { source, .. } => Ok(receipt(source)),
             PullPointControl::Unsubscribed { .. } => {
                 panic!("uncorrelated cleanup cannot reach terminal custody")
@@ -2009,7 +2286,8 @@ fn create_without_explicit_correlation_keeps_intent_without_following_an_unbound
                 panic!("renewal disabled in this fixture")
             }
             PullPointControl::CreateIntent { .. } => Ok(intent_receipt),
-            PullPointControl::Created { .. }
+            PullPointControl::CreateOutcome { .. }
+            | PullPointControl::Created { .. }
             | PullPointControl::Unsubscribed { .. }
             | PullPointControl::UnsubscribeIntent { .. }
             | PullPointControl::UnsubscribeOutcome { .. } => {

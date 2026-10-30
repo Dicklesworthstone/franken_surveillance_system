@@ -5,8 +5,9 @@
 use fss_core::{CanonicalDecoder, ContentDigest, SensorId};
 
 use super::{
-    CREATED_DOMAIN, RENEW_INTENT_DOMAIN, RENEWED_DOMAIN, RetainedCreateIntent, RetainedRenewIntent,
-    RetainedRenewal, RetainedSubscription, RetainedUnsubscribe, RetainedUnsubscribeIntent,
+    CREATE_OUTCOME_DOMAIN, CREATED_DOMAIN, RENEW_INTENT_DOMAIN, RENEWED_DOMAIN,
+    RetainedCreateIntent, RetainedCreateOutcome, RetainedRenewIntent, RetainedRenewal,
+    RetainedSubscription, RetainedUnsubscribe, RetainedUnsubscribeIntent,
     RetainedUnsubscribeOutcome, UNSUBSCRIBE_INTENT_DOMAIN, UNSUBSCRIBE_OUTCOME_DOMAIN,
     UNSUBSCRIBED_DOMAIN, read_record, slot,
 };
@@ -33,6 +34,12 @@ pub(crate) fn lifecycle_sensor<G: ReplayAdmission>(
     let (encoded, _) = read_record(deployment, identity, false, None, cx)?;
     let mut decoder = CanonicalDecoder::new(&encoded);
     match decoder.text()? {
+        CREATE_OUTCOME_DOMAIN => Ok(RetainedCreateOutcome::open(deployment, identity, None, cx)?
+            .intent()
+            .binding()
+            .source
+            .sensor_id
+            .clone()),
         CREATED_DOMAIN => Ok(RetainedSubscription::open(deployment, identity, None, cx)?
             .binding()
             .source
