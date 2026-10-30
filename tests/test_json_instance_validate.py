@@ -251,6 +251,101 @@ class TestJsonInstanceValidate(unittest.TestCase):
                 {"digest": "sha256:0123456789ABCDEF0123456789abcdef0123456789abcdef0123456789abcdef"},
             )
 
+    def test_nested_local_refs_keep_document_root(self):
+        schema = {
+            "type": "array",
+            "items": {"$ref": "#/$defs/frame"},
+            "$defs": {
+                "frame": {
+                    "type": "object",
+                    "required": ["digest"],
+                    "additionalProperties": False,
+                    "properties": {"digest": {"$ref": "#/$defs/digest"}},
+                },
+                "digest": {"type": "string", "pattern": "^[a-z]+$"},
+            },
+        }
+        self.validator.validate(schema, [{"digest": "abc"}])
+        for instance in ([{"digest": 1}], [{"digest": "abc\n"}], [{}]):
+            with self.subTest(instance=instance):
+                with self.assertRaises(JsonInstanceValidationError):
+                    self.validator.validate(schema, instance)
+
+    def test_nested_cross_document_refs_keep_target_document_root(self):
+        target = {
+            "$id": "https://example.invalid/target.v1.json",
+            "$defs": {
+                "record": {"$ref": "#/$defs/body"},
+                "body": {
+                    "type": "object",
+                    "required": ["value"],
+                    "properties": {"value": {"$ref": "#/$defs/value"}},
+                },
+                "value": {"type": "integer", "minimum": 1},
+            },
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            schemas_dir = Path(tmp)
+            (schemas_dir / "target.v1.json").write_text(json.dumps(target), encoding="utf-8")
+            validator = InstanceValidator(schemas_dir)
+            schema = {
+                "type": "object",
+                "required": ["record"],
+                "properties": {"record": {"$ref": "target.v1.json#/$defs/record"}},
+                # The target's local references must never use the caller's root.
+                "$defs": {"value": {"type": "boolean"}},
+            }
+            validator.validate(schema, {"record": {"value": 7}})
+            for value in (0, True, "7"):
+                with self.assertRaises(JsonInstanceValidationError):
+                    validator.validate(schema, {"record": {"value": value}})
+
+    def test_nested_refs_statically_refuse_unsupported_keywords(self):
+        target = {
+            "$defs": {
+                "record": {
+                    "properties": {"optional": {"$ref": "#/$defs/unsupported"}},
+                },
+                "unsupported": {"dependentSchemas": {}},
+            },
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            schemas_dir = Path(tmp)
+            (schemas_dir / "target.json").write_text(json.dumps(target), encoding="utf-8")
+            validator = InstanceValidator(schemas_dir)
+            for ref in ("#/$defs/record", "target.json#/$defs/record"):
+                with self.subTest(ref=ref):
+                    schema = {
+                        "properties": {"optional": {"$ref": ref}},
+                        "$defs": target["$defs"],
+                    }
+                    # Refuse statically reachable keywords even when no data visits them.
+                    with self.assertRaises(SchemaSyntaxError) as caught:
+                        validator.validate(schema, {})
+                    self.assertEqual(caught.exception.keyword, "dependentSchemas")
+
+    def test_nested_refs_preserve_catalog_boundaries(self):
+        for ref in ("../outside.json", "https://example.invalid/not-in-catalog.json"):
+            with self.subTest(ref=ref):
+                schema = {
+                    "$ref": "#/$defs/entry",
+                    "$defs": {"entry": {"$ref": ref}},
+                }
+                with self.assertRaises(SchemaSyntaxError) as caught:
+                    self.validator.validate(schema, {})
+                self.assertEqual(caught.exception.keyword, "$ref")
+                self.assertRegex(
+                    caught.exception.message,
+                    "path traversal outside schemas/|cannot resolve remote URI",
+                )
+
+    def test_package_zone_report_schemas_are_statically_supported(self):
+        for name in ("package_zone_report.v1.json", "package_zone_report.v2.json"):
+            with self.subTest(name=name):
+                path = REPO_ROOT / "schemas" / name
+                schema = parse_strict_json(path.read_text(encoding="utf-8"))
+                self.validator.check_reachable_schema_keywords(schema, schema, name, name)
+
     def test_validate_model_execution_receipt_instance(self):
         schema_path = REPO_ROOT / "schemas" / "model_execution_receipt.v1.json"
         valid_receipt = {

@@ -176,8 +176,8 @@ class InstanceValidator:
 
     def _resolve_ref(
         self, ref: str, current_doc: dict[str, Any], origin_rel: str
-    ) -> tuple[dict[str, Any], str]:
-        """Resolves a $ref pointer to a target schema dictionary."""
+    ) -> tuple[dict[str, Any], dict[str, Any], str]:
+        """Resolves a $ref and retains its document root for nested references."""
         file_part, sep, fragment = ref.partition("#")
         target_doc = current_doc
         target_rel = origin_rel
@@ -208,7 +208,7 @@ class InstanceValidator:
                     )
 
         if not sep or not fragment:
-            return target_doc, target_rel
+            return target_doc, target_doc, target_rel
 
         # Resolve fragment pointer e.g. /$defs/digest
         tokens = fragment.lstrip("/").split("/")
@@ -228,7 +228,7 @@ class InstanceValidator:
                 target_rel, "$ref", f"resolved pointer '{ref}' did not yield a schema object"
             )
 
-        return current, target_rel
+        return current, target_doc, target_rel
 
     def _check_reachable_keywords(self, schema: dict[str, Any], schema_loc: str) -> None:
         """Verifies that only supported keywords exist in reachable subschema."""
@@ -279,9 +279,9 @@ class InstanceValidator:
 
         if "$ref" in schema:
             ref = schema["$ref"]
-            resolved, new_origin = self._resolve_ref(ref, current_doc, origin_rel)
+            resolved, target_doc, new_origin = self._resolve_ref(ref, current_doc, origin_rel)
             self.check_reachable_schema_keywords(
-                resolved, resolved, new_origin, f"{new_origin}#{ref}", visited
+                resolved, target_doc, new_origin, f"{new_origin}#{ref}", visited
             )
 
         if "properties" in schema and isinstance(schema["properties"], dict):
@@ -351,12 +351,12 @@ class InstanceValidator:
         # 1. Resolve $ref if present
         if "$ref" in schema:
             ref = schema["$ref"]
-            resolved_schema, new_origin = self._resolve_ref(ref, current_doc, origin_rel)
+            resolved_schema, target_doc, new_origin = self._resolve_ref(ref, current_doc, origin_rel)
             self.validate_node(
                 resolved_schema,
                 instance,
                 data_path,
-                resolved_schema,
+                target_doc,
                 new_origin,
                 f"{new_origin}#{ref}",
             )

@@ -661,7 +661,7 @@ fn render(
         decision_fingerprint: decision_digest,
         compression_receipt_id: None,
         continuation: None,
-        recovery_class: "none",
+        recovery_class: "safe_read_retry",
         safe_retry: ResponseSafeRetry::YesSameRequest,
         boundary: boundary(
             "Verified and read the complete selected learning metadata under current authority.",

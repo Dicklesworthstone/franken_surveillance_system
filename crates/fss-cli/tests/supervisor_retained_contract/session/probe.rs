@@ -714,13 +714,42 @@ fn deleted_source_cannot_escape_through_probe_projection_or_ack_and_work_remains
         assert!(!output.status.success());
         let output = report(&output)?;
         assert_eq!(text(&output, "outcome")?, "partial");
-        assert!(has_receipt(&output, receipt)?);
+        assert_schema(&f, "agent_response_envelope.v1.json", &output)?;
+        let view = fss_core::AgentView::from_id(text(&output, "effectiveViewId")?)?;
         assert!(
-            !packed_items(&output)?
-                .iter()
-                .any(|item| text(item, "itemId").is_ok_and(|id| id.starts_with("probe:window:"))),
-            "historical report escaped failed source custody"
+            (encode(&output).len() as u64).div_ceil(4) <= u64::from(view.maximum_tokens()),
+            "source-custody refusal escaped its selected view"
         );
+        if payload(&output)? == &Value::Null {
+            // A complete refusal pack can itself exceed the selected view. The registered
+            // null-payload fallback preserves exact recovery proofs without native cognition.
+            assert_eq!(field(&output, "compressionReceiptId")?, &Value::Null);
+            assert_eq!(
+                text(&output, "errorId")?,
+                "ERR-AGENT-CONTEXT-INCOMPLETE-001"
+            );
+            assert_eq!(
+                text(&output, "payloadDigest")?,
+                ContentDigest::sha256(b"null").to_text()
+            );
+            assert!(
+                field(&output, "proofPointers")?
+                    .array()
+                    .ok_or("durable recovery proofs")?
+                    .contains(&Value::Text(receipt.to_text())),
+                "bounded refusal lost the exact pending receipt"
+            );
+            assert!(!encode(&output).contains("probe:window:"));
+        } else {
+            assert_schema(&f, "agent_cognitive_envelope.v2.json", payload(&output)?)?;
+            assert!(has_receipt(&output, receipt)?);
+            assert!(
+                !packed_items(&output)?.iter().any(
+                    |item| text(item, "itemId").is_ok_and(|id| id.starts_with("probe:window:"))
+                ),
+                "historical report escaped failed source custody"
+            );
+        }
     }
     let blocked = state(&f, "agent-probe")?;
     assert_eq!(blocked.pending(), original.pending());

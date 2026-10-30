@@ -191,6 +191,8 @@ fn proposition<'a>(value: &'a Value, id: &str) -> TestResult<&'a Value> {
 fn assert_selected(value: &Value, captured: &Captured) -> TestResult {
     assert_eq!(text(value, &["operationId"])?, "AOP-011");
     assert_eq!(text(value, &["outcome"])?, "ok");
+    assert_eq!(text(value, &["recoveryClass"])?, "safe_read_retry");
+    assert_eq!(text(value, &["safeRetry"])?, "yes_same_request");
     assert_eq!(
         text(value, &["payloadSchema"])?,
         "fss.agent_cognitive_envelope.v1"
