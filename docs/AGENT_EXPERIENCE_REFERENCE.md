@@ -35,6 +35,13 @@ MCP uses the same `feedback` tool and fields:
 Target parsing preserves the literal identity after the first prefix: a plan whose native identity
 is `plan:abc` is targeted as `plan:plan:abc`. The example digests and identities are placeholders.
 
+The episode digest returned by `plan --close` as its decision fingerprint and third proof pointer
+is a valid supporting or contradicting citation for that exact plan's episode. Capture and cold
+recovery recompute it from the authenticated retained episode; a digest from another closed plan
+does not qualify, even when both plans name the same terminal operation. This semantic identity
+is distinct from the publication's object hashes. Existing captures that cite object hashes keep
+their original evidence vectors and publication bytes.
+
 The feedback capability, principal, session, mission, original plan, retained episode, current
 authority and complete source custody must all admit the capture. A plan must belong to the
 requesting session; another session under the same principal cannot borrow its outcome. A missing

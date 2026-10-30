@@ -10,6 +10,21 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Closed-episode citations through captured learning (2026-10-30, reference)
+
+The semantic execution-episode digest returned by `plan --close` now works as evidence in the
+existing plan-targeted learning capture. Both capture and cold recovery recompute the identity
+from the exact authenticated target episode. A genuinely retained sibling episode remains an
+invalid citation, including when the two plans share one terminal operation. The extra identity
+is included only when explicitly cited, preserving existing captures' evidence vectors and bytes.
+
+This repairs the real plan/verify/close/feedback/learn integration failure without changing
+promotion, policy or effect authority. Regression coverage preserves exact retry, cold inspection
+and the retained-feedback boundary on refusal. The retained-calibration negative fixture also
+reverifies its exact staged children so it reaches the intended historical withdrawal gate.
+Pinned formatting and independent source review precede native execution; runtime results remain
+pending. See [captured episode experience](docs/AGENT_EXPERIENCE_REFERENCE.md).
+
 ## Durable follow with bounded waiting (2026-10-29, reference)
 
 Owned follow subscriptions can now combine their exact durable cursor and explicit ACK with

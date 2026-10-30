@@ -439,13 +439,16 @@ fn publication_after_withdrawal_cannot_turn_an_old_proposal_into_historical_admi
         evidence: Some(proposal.source().capsule),
     };
     let approval = preview_invalidation(&fixture.imported.deployment, &withdrawal)?.approval;
-    invalidate(
+    let invalidated = invalidate(
         &mut fixture.imported.deployment,
         &withdrawal,
         approval,
         &fixture.imported.cx,
     )?;
-    assert!(fixture.observe(Some(proposal.approval())).is_err());
+    assert!(matches!(
+        fixture.observe(Some(proposal.approval())),
+        Err(MonitorError::Adoption(_))
+    ));
 
     // A generic derived-root writer can publish staged bytes later, but cannot manufacture the
     // old owner state at that later commit. Historical replay checks this exact ledger prefix.
@@ -473,6 +476,17 @@ fn publication_after_withdrawal_cannot_turn_an_old_proposal_into_historical_admi
         &fixture.imported.cx,
     )?;
     let capture = retained_source_capsule(&fixture.imported.deployment, &source, 0)?.capture;
+    // The cancelled retention left unreferenced staged objects. A cold open does not inherit
+    // their old in-memory verification, and staging a manifest verifies only its own body.
+    // Rehash every exact child before deliberately using the generic publisher: the test must
+    // reach historical adoption admission without bypassing the separate custody fence.
+    for child in manifest.children() {
+        fixture
+            .imported
+            .deployment
+            .publisher_mut()
+            .verify_object(*child)?;
+    }
     fixture
         .imported
         .deployment
@@ -492,6 +506,15 @@ fn publication_after_withdrawal_cannot_turn_an_old_proposal_into_historical_admi
     ));
     assert_eq!(fixture.imported.deployment.current_anchor(), &committed);
     assert_eq!(storage(&fixture.imported.deployment), objects);
+    assert_eq!(
+        retained_adoptions(&fixture.imported.deployment)?
+            .get(&21)
+            .and_then(|history| history.last())
+            .and_then(|adoption| adoption.invalidation.as_ref())
+            .map(|invalidation| invalidation.digest),
+        Some(invalidated.receipt.digest()),
+        "a late generic publication cannot restore the withdrawn adoption"
+    );
     Ok(())
 }
 

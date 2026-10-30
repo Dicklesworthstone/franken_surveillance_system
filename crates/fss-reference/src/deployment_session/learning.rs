@@ -12,8 +12,8 @@ use std::path::Path;
 
 use fss_core::{
     AgentFeedbackProposal, BudgetVector, CanonicalDecoder, CanonicalEncode, CanonicalEncoder,
-    ContentDigest, ContractBasis, EvidenceStrength, ExperienceCapsule, FeedbackProposalKind,
-    KnowledgeState, KnownStatement, LearningClass, LearningProposal,
+    ContentDigest, ContractBasis, EvidenceStrength, ExecutionEpisode, ExperienceCapsule,
+    FeedbackProposalKind, KnowledgeState, KnownStatement, LearningClass, LearningProposal,
 };
 use fss_object::ObjectManifest;
 use fss_publication::SlotName;
@@ -233,6 +233,26 @@ fn retained_anchor(history: &DeploymentHistory, anchor: &fss_core::LedgerAnchor)
             effect_records: history.head().effect_records,
         })
         .is_some_and(|(retained, _, _)| retained == *anchor)
+}
+
+/// Admit the semantic episode identity emitted by `plan --close`, recomputed from the exact
+/// authenticated target episode. It is a digest of that episode, not another source object.
+/// Include it only when cited: older captures that cite roots or retained children must keep
+/// their original evidence vector, proposal bytes and publication root on replay.
+fn include_cited_episode_identity(
+    evidence: &mut BTreeSet<ContentDigest>,
+    feedback: &AgentFeedbackProposal,
+    episode: &ExecutionEpisode,
+) {
+    let identity = episode.episode_digest();
+    if feedback
+        .supporting_evidence
+        .iter()
+        .chain(&feedback.contradicting_evidence)
+        .any(|handle| ContentDigest::parse(handle).ok() == Some(identity))
+    {
+        evidence.insert(identity);
+    }
 }
 
 struct Sources<'a> {
@@ -553,6 +573,7 @@ pub(super) fn capture(
                 .and_then(|obligation| obligation.proof_digest),
         );
     }
+    include_cited_episode_identity(&mut evidence, &feedback.proposal, &episode.record.episode);
     for handle in feedback
         .proposal
         .supporting_evidence

@@ -16,7 +16,8 @@ use fss_object::ObjectManifest;
 
 use super::{
     CAPTURE_DOMAIN, COST_UNKNOWN, EFFICACY_UNKNOWN, MAX_CAPTURE_OBJECTS, MAX_PROFILE_ITEMS,
-    MAX_RECORD_BYTES, MAX_SOURCE_BYTES, MAX_SOURCE_OBJECTS, Sources, compile, other_children,
+    MAX_RECORD_BYTES, MAX_SOURCE_BYTES, MAX_SOURCE_OBJECTS, Sources, compile,
+    include_cited_episode_identity, other_children,
 };
 use crate::agent_session::checkpoint::journal::SessionRecoveryState;
 use crate::deployment_session::{
@@ -540,6 +541,7 @@ pub(crate) fn verify_recovery_closure(
         }
         expected_evidence.extend([receipt, result, proof]);
     }
+    include_cited_episode_identity(&mut expected_evidence, &feedback, executed);
     if binding.evidence != expected_evidence.iter().copied().collect::<Vec<_>>()
         || feedback
             .supporting_evidence

@@ -45,6 +45,9 @@ check native-onvif-cli cargo "+$channel" test --locked --offline --no-fail-fast 
     -p fss-cli --bin fss-onvif-metadata
 check durable-follow-mcp cargo "+$channel" test --locked --offline --no-fail-fast \
     -p fss-cli --bin fss-mcp durable_follow
+check episode-learning-compatibility cargo "+$channel" test --locked --offline --no-fail-fast \
+    -p fss-cli --test agent_effect_cli_contract \
+    closed_episode_feedback_publishes_captured_learning_with_cold_cli_mcp_recovery
 check operator-unit cargo "+$channel" test --locked --offline --no-fail-fast \
     -p fss-cli --bin fss-file --bin fss-event --bin fss-fusion-profile
 # Integration targets require Cargo's normal executable builds. These suites also invoke

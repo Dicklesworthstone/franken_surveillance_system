@@ -562,6 +562,10 @@ fn orient_investigate_plan_commit_verify_learn_handoff_rehearsal() -> TestResult
             "Protect the door.",
             "--objective",
             "Alert the owner on a corroborated entry.",
+            // A later selected forensic learning read has its own 8,000-token response
+            // allowance; admit it here without changing the session's compact default view.
+            "--budget-tokens",
+            "64000",
         ],
     )?;
     let session = text(&opened, &["sessionId"])?.to_owned();
@@ -980,7 +984,7 @@ fn orient_investigate_plan_commit_verify_learn_handoff_rehearsal() -> TestResult
     let episode_digest = pointers(&closed)?[2].clone();
     // Both plan records name the same verified operation. Each has its own
     // immutable episode, so the superseded plan is no longer listed as active.
-    driver.ok(
+    let superseded_closed = driver.ok(
         "close-superseded-plan",
         &[
             "plan",
@@ -991,20 +995,113 @@ fn orient_investigate_plan_commit_verify_learn_handoff_rehearsal() -> TestResult
         ],
     )?;
 
-    // Learn: an advisory, evidence-linked proposal citing the episode; nothing activates.
-    let learned = driver.ok(
-        "feedback",
+    // The close owner emits this semantic episode digest as its decision fingerprint. It is
+    // authenticated by the retained episode record, not the hash of its JSON rendering.
+    assert_eq!(episode_digest, fingerprint(&closed)?);
+    assert_ne!(episode_digest, pointers(&closed)?[0]);
+    assert_ne!(episode_digest, pointers(&closed)?[1]);
+    let other_episode = pointers(&superseded_closed)?[2].clone();
+    assert_ne!(episode_digest, other_episode);
+    let ledger_before_learning = fs::read(directory.root().join("ledger/journal.fssj"))?;
+    let effects_before_learning = fs::read(&effects_path)?;
+    let target = format!("plan:{plan_id}");
+    // Even this session's other closed episode names the same terminal operation. It still
+    // cannot substitute for the exact target plan's episode in a learning capture.
+    let (code, rejected) = driver.run(
+        "feedback-other-episode",
         &[
-            "feedback", "--session", &session, "--target", &format!("plan:{plan_id}"),
+            "feedback", "--session", &session, "--target", &target,
             "--kind", "runbook_candidate", "--statement",
-            "Corroborated two-camera door entries justified one relay alert; keep the probe-then-plan order.",
-            "--supporting", &episode_digest, "--disposition", "create_learning_proposal",
+            "This citation belongs to the superseded plan; it must not ground this plan's learning.",
+            "--supporting", &other_episode, "--disposition", "create_learning_proposal",
         ],
     )?;
+    assert_eq!(code, Some(5), "{rejected:?}");
+    assert_eq!(text(&rejected, &["outcome"])?, "partial");
     assert_eq!(
-        field(&learned, &["payload", "activePolicyMutation"])?,
-        &Value::Bool(false)
+        text(&rejected, &["payloadSchema"])?,
+        "fss.agent_feedback_proposal.v1"
     );
+    assert!(texts(&rejected, &["degradation"])?.iter().any(|reason| reason.contains(
+        "learning evidence must belong to the exact retained plan, episode, feedback, mission or terminal-receipt closure"
+    )));
+
+    // Learn: an advisory, evidence-linked proposal citing the episode; nothing activates.
+    let feedback_args = [
+        "feedback",
+        "--session",
+        &session,
+        "--target",
+        &target,
+        "--kind",
+        "runbook_candidate",
+        "--statement",
+        "Corroborated two-camera door entries justified one relay alert; keep the probe-then-plan order.",
+        "--supporting",
+        &episode_digest,
+        "--disposition",
+        "create_learning_proposal",
+    ];
+    let learned = driver.ok("feedback", &feedback_args)?;
+    assert_eq!(
+        text(&learned, &["payloadSchema"])?,
+        "fss.experience_capsule.v1"
+    );
+    assert_eq!(
+        text(&learned, &["payload", "evidenceStrength"])?,
+        "single_episode"
+    );
+    assert!(texts(&learned, &["payload", "evidence"])?.contains(&episode_digest));
+    assert!(!texts(&learned, &["payload", "evidence"])?.contains(&other_episode));
+    for key in ["helpfulCount", "harmfulCount"] {
+        assert_eq!(field(&learned, &["payload", key])?.integer(), Some(0));
+    }
+    let learned_pointers = pointers(&learned)?;
+    let recovered = driver.ok("feedback-retry", &feedback_args)?;
+    assert_eq!(
+        field(&recovered, &["payload"])?,
+        field(&learned, &["payload"])?
+    );
+    assert_eq!(&pointers(&recovered)?[..6], &learned_pointers[..6]);
+
+    // A separate process must recover the same complete capture without resubmitting feedback.
+    // This exercises the historical verifier as well as live capture's evidence admission.
+    let inspected = driver.ok(
+        "learning-explain",
+        &[
+            "explain",
+            "--session",
+            &session,
+            "--learning-root",
+            &learned_pointers[0],
+            "--view",
+            "forensic",
+            "--budget-tokens",
+            "8000",
+        ],
+    )?;
+    let inspected_proofs = pointers(&inspected)?;
+    for pointer in learned_pointers.iter().take(6) {
+        assert!(
+            inspected_proofs.contains(pointer),
+            "lost source proof {pointer}"
+        );
+    }
+    let learned_propositions = propositions(&inspected)?;
+    let status = learned_propositions
+        .iter()
+        .find(|(id, _)| id == "learning:status")
+        .ok_or("captured learning status")?;
+    assert_eq!(text(&parse(&status.1)?, &["promotionState"])?, "captured");
+    assert!(learned_propositions.iter().any(|(id, statement)| {
+        id.starts_with("learning:supporting:") && statement == &episode_digest
+    }));
+    assert_eq!(
+        fs::read(directory.root().join("ledger/journal.fssj"))?,
+        ledger_before_learning
+    );
+    assert_eq!(fs::read(&effects_path)?, effects_before_learning);
+    assert_eq!(relay.connections(), 1);
 
     // Conclude the case against its stop rule, acknowledging the residual unknown.
     let concluded = case_step(
