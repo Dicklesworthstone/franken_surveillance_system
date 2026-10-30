@@ -1,10 +1,10 @@
 //! Slice segment header (ITU-T H.265 clause 7.3.6) including the
 //! prediction weight table (clause 7.3.6.3).
 
+use crate::DecodeError;
 use crate::bits::BitReader;
 use crate::nal::NalHeader;
 use crate::params::{MAX_DPB, Pps, ShortTermRps, Sps, parse_short_term_rps};
-use crate::{DecodeError, UnsupportedFeature};
 
 /// `slice_type` (Table 7-7).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -45,10 +45,13 @@ pub struct PredWeights {
 }
 
 /// Decode-relevant slice segment header fields.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SliceHeader {
     /// `first_slice_segment_in_pic_flag`.
     pub first_slice_in_pic: bool,
+    /// `dependent_slice_segment_flag`. Omitted coding fields inherit the
+    /// most recent independent slice header in the same picture.
+    pub dependent: bool,
     /// `no_output_of_prior_pics_flag` (IRAP pictures).
     pub no_output_of_prior_pics: bool,
     /// `slice_pic_parameter_set_id`.
@@ -106,6 +109,19 @@ pub struct SliceHeader {
 }
 
 impl SliceHeader {
+    /// Decode-relevant values that clause 7.4.7.1 requires to agree across
+    /// a picture. QP, slice type, active lists, weights and filter settings
+    /// may differ between independent slices and are deliberately absent.
+    pub(crate) fn same_picture_as(&self, other: &Self) -> bool {
+        self.pps_id == other.pps_id
+            && self.no_output_of_prior_pics == other.no_output_of_prior_pics
+            && self.pic_output == other.pic_output
+            && self.poc_lsb == other.poc_lsb
+            && self.st_rps == other.st_rps
+            && self.long_term == other.long_term
+            && self.temporal_mvp == other.temporal_mvp
+    }
+
     /// `NumPicTotalCurr` (equation 7-55).
     #[must_use]
     pub fn num_pic_total_curr(&self) -> usize {
@@ -182,16 +198,31 @@ fn pred_weight_table(
 
 /// Parses a slice segment header from the RBSP of a VCL NAL unit.
 /// `pps_lookup` resolves a PPS id to the PPS and its SPS.
+/// This stateless entry point parses independent segments. The streaming
+/// decoder supplies the preceding independent header for dependent segments.
 ///
 /// # Errors
 /// [`DecodeError::MissingParameterSet`] for unknown ids,
-/// [`DecodeError::Unsupported`] for dependent slice segments, and
+/// [`DecodeError::IncompletePicture`] when a dependent segment has no
+/// preceding independent header, and
 /// [`DecodeError::Malformed`] / [`DecodeError::Limit`] otherwise.
 pub fn parse_slice_header<'p>(
     rbsp: &[u8],
     bit_limit: usize,
     nal: NalHeader,
     pps_lookup: impl Fn(u8) -> Option<(&'p Pps, &'p Sps)>,
+) -> Result<SliceHeader, DecodeError> {
+    parse_slice_header_with_previous(rbsp, bit_limit, nal, pps_lookup, None)
+}
+
+/// The caller binds `previous` to the same picture and frozen parameter
+/// sets. It is the most recent independent header, never a dependent one.
+pub(crate) fn parse_slice_header_with_previous<'p>(
+    rbsp: &[u8],
+    bit_limit: usize,
+    nal: NalHeader,
+    pps_lookup: impl Fn(u8) -> Option<(&'p Pps, &'p Sps)>,
+    previous: Option<&SliceHeader>,
 ) -> Result<SliceHeader, DecodeError> {
     let mut reader = BitReader::new(rbsp, bit_limit);
     let r = &mut reader;
@@ -201,16 +232,30 @@ pub fn parse_slice_header<'p>(
     let (pps, sps) = pps_lookup(pps_id).ok_or(DecodeError::MissingParameterSet)?;
     let pic_size_in_ctbs = sps.ctb_width() * sps.ctb_height();
     let mut segment_address = 0;
+    let mut dependent = false;
     if !first_slice_in_pic {
-        if pps.dependent_slices_enabled && r.flag()? {
-            return Err(DecodeError::Unsupported(
-                UnsupportedFeature::DependentSlices,
-            ));
-        }
+        dependent = pps.dependent_slices_enabled && r.flag()?;
         segment_address = r.uint(ceil_log2(pic_size_in_ctbs))?;
         if segment_address >= pic_size_in_ctbs {
             return Err(DecodeError::Malformed);
         }
+    }
+    if dependent {
+        let previous = previous.ok_or(DecodeError::IncompletePicture)?;
+        if previous.dependent
+            || previous.pps_id != pps_id
+            || previous.no_output_of_prior_pics != no_output_of_prior_pics
+            || segment_address <= previous.segment_address
+        {
+            return Err(DecodeError::Malformed);
+        }
+        // Clause 7.4.7.1: only absent fields are inherited. The segment's
+        // own entry points, extension and byte alignment follow below.
+        let mut header = previous.clone();
+        header.first_slice_in_pic = false;
+        header.dependent = true;
+        header.segment_address = segment_address;
+        return finish_slice_header(r, pps, sps, header);
     }
     r.skip(pps.num_extra_slice_header_bits as usize)?;
     let slice_type = match r.ue(2)? {
@@ -302,6 +347,7 @@ pub fn parse_slice_header<'p>(
     }
     let mut header = SliceHeader {
         first_slice_in_pic,
+        dependent: false,
         no_output_of_prior_pics,
         pps_id,
         segment_address,
@@ -418,6 +464,16 @@ pub fn parse_slice_header<'p>(
     } else {
         pps.loop_filter_across_slices
     };
+    finish_slice_header(r, pps, sps, header)
+}
+
+/// Fields present in both independent and dependent segment headers.
+fn finish_slice_header(
+    r: &mut BitReader<'_>,
+    pps: &Pps,
+    sps: &Sps,
+    mut header: SliceHeader,
+) -> Result<SliceHeader, DecodeError> {
     if pps.entropy_coding_sync {
         let entries = r.ue(sps.ctb_height().saturating_sub(1))?;
         if entries > 0 {
@@ -447,6 +503,114 @@ pub fn parse_slice_header<'p>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An abbreviated dependent header inherits every inter-coding field
+    /// from real P/B headers, including reference sets, weighting, temporal
+    /// MVP, SAO and filtering. Its own syntax is not inherited.
+    #[test]
+    fn dependent_headers_inherit_real_inter_slice_fields() -> Result<(), DecodeError> {
+        use crate::nal::{rbsp_from_ebsp, stop_bit_position};
+        use crate::params::{parse_pps, parse_sps};
+
+        fn fixed(bits: &mut Vec<u8>, width: u32, value: u32) {
+            for shift in (0..width).rev() {
+                bits.push(((value >> shift) & 1) as u8);
+            }
+        }
+        fn ue(bits: &mut Vec<u8>, value: u32) {
+            let code = value + 1;
+            let width = u32::BITS - code.leading_zeros();
+            fixed(bits, width - 1, 0);
+            fixed(bits, width, code);
+        }
+
+        let streams: [&[u8]; 2] = [
+            include_bytes!("../tests/fixtures/decode/p_qcif_ref1.h265"),
+            include_bytes!("../tests/fixtures/decode/b_128x96_weighted.h265"),
+        ];
+        let mut seen = [false; 2];
+        let mut weighted = false;
+        for stream in streams {
+            let (mut sps, mut pps) = (None, None);
+            for bytes in crate::annex_b_nal_units(stream) {
+                let (nal, payload) = NalHeader::split(bytes)?;
+                if !matches!(nal.unit_type, 0..=9 | 33 | 34) {
+                    continue;
+                }
+                let rbsp = rbsp_from_ebsp(payload, stream.len())?;
+                match nal.unit_type {
+                    33 => {
+                        sps = Some(parse_sps(&rbsp)?);
+                        continue;
+                    }
+                    34 => {
+                        let mut parsed = parse_pps(&rbsp)?;
+                        // The original first segment has no dependent bit.
+                        parsed.dependent_slices_enabled = true;
+                        pps = Some(parsed);
+                        continue;
+                    }
+                    _ => {}
+                }
+                let sps = sps.as_ref().ok_or(DecodeError::MissingParameterSet)?;
+                let pps = pps.as_ref().ok_or(DecodeError::MissingParameterSet)?;
+                let lookup = |id| (id == pps.id).then_some((pps, sps));
+                let independent =
+                    parse_slice_header(&rbsp, stop_bit_position(&rbsp)?, nal, lookup)?;
+                assert!(independent.first_slice_in_pic);
+                let index = match independent.slice_type {
+                    SliceType::P => 0,
+                    SliceType::B => 1,
+                    SliceType::I => continue,
+                };
+                seen[index] = true;
+                weighted |= independent.weights.is_some();
+
+                let mut bits = vec![0]; // not first in picture
+                ue(&mut bits, u32::from(pps.id));
+                bits.push(1); // dependent
+                let size = sps.ctb_width() * sps.ctb_height();
+                assert!(size > 1);
+                fixed(&mut bits, ceil_log2(size), 1); // CTB address 1
+                if pps.entropy_coding_sync {
+                    ue(&mut bits, 0); // no entry points in this segment
+                }
+                if pps.slice_header_extension_present {
+                    ue(&mut bits, 0); // no extension bytes
+                }
+                bits.push(1); // byte_alignment
+                while !bits.len().is_multiple_of(8) {
+                    bits.push(0);
+                }
+                let dependent_rbsp: Vec<u8> = bits
+                    .as_chunks::<8>()
+                    .0
+                    .iter()
+                    .map(|chunk| chunk.iter().fold(0, |byte, bit| (byte << 1) | bit))
+                    .collect();
+                let dependent = parse_slice_header_with_previous(
+                    &dependent_rbsp,
+                    bits.len(),
+                    nal,
+                    lookup,
+                    Some(&independent),
+                )?;
+                let mut expected = independent;
+                expected.first_slice_in_pic = false;
+                expected.dependent = true;
+                expected.segment_address = 1;
+                expected.data_bit_offset = bits.len();
+                assert_eq!(dependent, expected);
+                assert_eq!(
+                    parse_slice_header(&dependent_rbsp, bits.len(), nal, lookup).err(),
+                    Some(DecodeError::IncompletePicture)
+                );
+            }
+        }
+        assert_eq!(seen, [true, true]);
+        assert!(weighted);
+        Ok(())
+    }
 
     #[test]
     fn ceil_log2_by_hand() {

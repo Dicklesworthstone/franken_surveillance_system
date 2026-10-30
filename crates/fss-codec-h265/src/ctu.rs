@@ -66,7 +66,8 @@ pub(crate) struct PicState {
     pub info: Vec<BlockInfo>,
     /// Slice tag per CTB (raster order); 0 = not decoded.
     pub ctb_slice: Vec<u16>,
-    /// Number of slice segments started in this picture.
+    /// Number of independent slices started in this picture. Dependent
+    /// segments reuse their independent slice's tag and filter/ref maps.
     pub slice_count: u16,
     /// Next CTB address (raster) a slice segment must start at.
     pub next_ctb: u32,
@@ -231,6 +232,17 @@ pub(crate) struct SliceInputs<'a> {
     pub col: Option<&'a ColPic>,
 }
 
+/// State saved only after a complete, validated slice segment. CABAC's
+/// arithmetic engine restarts for every segment, but its context variables
+/// and the logical slice's QP/neighbor state continue (clauses 8.6.1, 9.3.1).
+/// The WPP snapshot is separate from the final dependent-segment contexts.
+pub(crate) struct SegmentContinuation {
+    contexts: Box<Contexts>,
+    last_qp: i32,
+    wpp_saved: Option<(usize, Box<Contexts>)>,
+    slice_tag: u16,
+}
+
 /// Decodes one slice segment's CTUs into `pic`.
 pub(crate) struct SliceDecoder<'a, 'b> {
     sps: &'a Sps,
@@ -270,6 +282,7 @@ impl<'a, 'b> SliceDecoder<'a, 'b> {
         pic: &'b mut PicState,
         rbsp: &'a [u8],
         data_bit_limit: usize,
+        continuation: Option<SegmentContinuation>,
     ) -> Result<Self, DecodeError> {
         let header = inputs.header;
         let init_type = match (header.slice_type, header.cabac_init) {
@@ -279,7 +292,43 @@ impl<'a, 'b> SliceDecoder<'a, 'b> {
         };
         let mut reader = BitReader::new(rbsp, data_bit_limit);
         reader.skip(header.data_bit_offset)?;
-        let cabac = SliceCabac::new(reader, init_contexts(init_type, header.slice_qp)?)?;
+        let (contexts, last_qp, wpp_saved, slice_tag) = if header.dependent {
+            let previous = continuation.ok_or(DecodeError::IncompletePicture)?;
+            if previous.slice_tag == 0 || previous.slice_tag != pic.slice_count {
+                return Err(DecodeError::Malformed);
+            }
+            (
+                *previous.contexts,
+                previous.last_qp,
+                previous.wpp_saved,
+                previous.slice_tag,
+            )
+        } else {
+            pic.slice_count = pic.slice_count.checked_add(1).ok_or(DecodeError::Limit)?;
+            pic.slice_filters.push(SliceFilter {
+                deblocking_disabled: header.deblocking_disabled,
+                beta_offset: header.beta_offset,
+                tc_offset: header.tc_offset,
+                loop_filter_across_slices: header.loop_filter_across_slices,
+            });
+            pic.slice_refs.push(std::array::from_fn(|list| {
+                let refs = &inputs.refs[list];
+                refs.pocs
+                    .iter()
+                    .copied()
+                    .zip(refs.long_term.iter().copied())
+                    .collect()
+            }));
+            (
+                init_contexts(init_type, header.slice_qp)?,
+                header.slice_qp,
+                None,
+                pic.slice_count,
+            )
+        };
+        // The arithmetic engine always starts from the new segment's
+        // byte-aligned payload, even when context probabilities continue.
+        let cabac = SliceCabac::new(reader, contexts)?;
         let scaling = if inputs.sps.scaling_list_enabled {
             inputs
                 .pps
@@ -289,22 +338,6 @@ impl<'a, 'b> SliceDecoder<'a, 'b> {
         } else {
             None
         };
-        pic.slice_count = pic.slice_count.checked_add(1).ok_or(DecodeError::Limit)?;
-        let slice_tag = pic.slice_count;
-        pic.slice_filters.push(SliceFilter {
-            deblocking_disabled: header.deblocking_disabled,
-            beta_offset: header.beta_offset,
-            tc_offset: header.tc_offset,
-            loop_filter_across_slices: header.loop_filter_across_slices,
-        });
-        pic.slice_refs.push(std::array::from_fn(|list| {
-            let refs = &inputs.refs[list];
-            refs.pocs
-                .iter()
-                .copied()
-                .zip(refs.long_term.iter().copied())
-                .collect()
-        }));
         Ok(Self {
             sps: inputs.sps,
             pps: inputs.pps,
@@ -320,18 +353,20 @@ impl<'a, 'b> SliceDecoder<'a, 'b> {
             scaling,
             slice_tag,
             qp_y: header.slice_qp,
-            last_qp: header.slice_qp,
+            last_qp,
             qg_pred: header.slice_qp,
+            // CuQpDeltaVal resets per segment (7.3.6.1). Quantization
+            // groups never cross a CTB boundary, so only last_qp carries.
             is_cu_qp_delta_coded: false,
             cu_qp_delta: 0,
-            wpp_saved: None,
+            wpp_saved,
             levels: vec![0; 32 * 32],
             cu: CuState::default(),
         })
     }
 
     /// `slice_segment_data()` (clause 7.3.8.1).
-    pub fn decode(mut self) -> Result<(), DecodeError> {
+    pub fn decode(mut self) -> Result<Option<SegmentContinuation>, DecodeError> {
         let ctb_w = self.sps.ctb_width() as usize;
         let total = ctb_w * self.sps.ctb_height() as usize;
         let start = self.header.segment_address as usize;
@@ -347,11 +382,14 @@ impl<'a, 'b> SliceDecoder<'a, 'b> {
         let mut addr = start;
         loop {
             let (cx, cy) = (addr % ctb_w, addr / ctb_w);
-            if wpp && cx == 0 && addr != start {
-                self.cabac.restart_engine()?;
+            if wpp && cx == 0 && (addr != start || self.header.dependent) {
+                if addr != start {
+                    self.cabac.restart_engine()?;
+                }
                 // Synchronise from the CTU above-right when it lies in this
-                // slice (clause 9.3.1); otherwise start from the initial
-                // context values.
+                // logical slice (9.3.2.1). WPP row-start synchronization
+                // takes priority over dependent-segment restoration; at a
+                // segment start the engine has already initialized once.
                 let above_right =
                     cy > 0 && ctb_w > 1 && self.pic.ctb_slice[addr + 1 - ctb_w] == self.slice_tag;
                 match self.wpp_saved.take() {
@@ -390,7 +428,15 @@ impl<'a, 'b> SliceDecoder<'a, 'b> {
             return Err(DecodeError::Malformed);
         }
         self.pic.next_ctb = u32::try_from(addr).map_err(|_| DecodeError::Limit)?;
-        Ok(())
+        Ok(self
+            .pps
+            .dependent_slices_enabled
+            .then(|| SegmentContinuation {
+                contexts: Box::new(self.cabac.ctx),
+                last_qp: self.last_qp,
+                wpp_saved: self.wpp_saved,
+                slice_tag: self.slice_tag,
+            }))
     }
 
     /// `sao()` (clause 7.3.8.3) for the CTB at raster address `addr`.

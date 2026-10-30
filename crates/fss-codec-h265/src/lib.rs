@@ -35,7 +35,7 @@
 //! Admitted tool set: Main (and Main Still Picture) profile, 8-bit 4:2:0,
 //! I, P and B slices (all partition modes incl. AMP), short-term
 //! reference pictures, deblocking and SAO, one or more slices per picture
-//! in raster order, wavefront
+//! with independent or dependent segments in raster order, wavefront
 //! parallel processing (`entropy_coding_sync_enabled_flag`), scaling
 //! lists, transform skip, transquant bypass, PCM, sign data hiding,
 //! constrained intra prediction and long-term reference pictures (matched by
@@ -43,7 +43,7 @@
 //! long-term motion-vector rules apply). Everything else is refused with
 //! [`DecodeError::Unsupported`] naming the feature: other profiles, chroma
 //! formats and bit depths, the range / multilayer / 3D / screen-content
-//! extensions, tiles, dependent slice segments, field-coded (SEI-based
+//! extensions, tiles, field-coded (SEI-based
 //! interlaced) sequences and layers above the base layer.
 //!
 //! Correctness is established differentially: tests compare every decoded
@@ -94,7 +94,8 @@ pub enum UnsupportedFeature {
     MultiLayer,
     /// `tiles_enabled_flag`.
     Tiles,
-    /// `dependent_slice_segments_enabled_flag` with a dependent segment.
+    /// Historical: dependent slice segments. Admitted for Main-profile
+    /// frame pictures; no longer produced, kept for API stability.
     DependentSlices,
     /// Field-coded sequences (`field_seq_flag`, SEI-signalled interlace).
     Interlaced,

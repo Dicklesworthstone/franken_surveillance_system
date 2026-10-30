@@ -5,7 +5,7 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-use crate::ctu::{PicState, SliceDecoder, SliceInputs};
+use crate::ctu::{PicState, SegmentContinuation, SliceDecoder, SliceInputs};
 use crate::deblock::{FilterParams, deblock};
 use crate::inter::{ColMv, ColPic, RefList};
 use crate::nal::{NalHeader, rbsp_from_ebsp, stop_bit_position, unit_type};
@@ -13,7 +13,7 @@ use crate::params::{MAX_DPB, Pps, Sps, parse_pps, parse_sps, parse_vps_id};
 use crate::picture::{Frame, Picture, PictureMeta};
 use crate::residual::Scans;
 use crate::sao::apply as apply_sao;
-use crate::slice::{SliceHeader, SliceType, parse_slice_header};
+use crate::slice::{SliceHeader, SliceType, parse_slice_header_with_previous};
 use crate::tables::transform_matrix;
 use crate::{DecodeError, UnsupportedFeature};
 
@@ -102,6 +102,23 @@ struct Pending {
     st_curr: [Vec<i32>; 2],
     /// Full order counts of `RefPicSetLtCurr` (clause 8.3.2).
     lt_curr: Vec<i32>,
+    /// The most recent independent header in this picture; omitted
+    /// dependent-segment fields inherit from this logical slice.
+    independent_header: SliceHeader,
+    /// Validated entropy/QP state of the preceding segment, if the PPS
+    /// permits dependent segments. Never shared across pictures.
+    continuation: Option<SegmentContinuation>,
+}
+
+/// A skipped RASL picture has no decoded surface or CABAC continuation,
+/// but its dependent headers still need a bounded, picture-local parent.
+struct SkippedPicture {
+    sps: Arc<Sps>,
+    pps: Arc<Pps>,
+    nal: NalHeader,
+    independent_header: SliceHeader,
+    last_segment_address: u32,
+    segments: u32,
 }
 
 /// Streaming H.265 decoder (Main profile, 8-bit 4:2:0).
@@ -128,7 +145,7 @@ pub struct Decoder {
     pending: Option<Pending>,
     /// Slices of a skipped (RASL) picture are ignored until the next
     /// picture starts.
-    skipping: bool,
+    skipping: Option<SkippedPicture>,
     need_irap: bool,
     /// The next CRA starts a new coded video sequence (stream start or
     /// after an end-of-sequence NAL unit).
@@ -170,7 +187,7 @@ impl Decoder {
             dpb: Vec::new(),
             output: VecDeque::new(),
             pending: None,
-            skipping: false,
+            skipping: None,
             need_irap: true,
             first_after_eos: true,
             irap_no_rasl_output: true,
@@ -199,6 +216,20 @@ impl Decoder {
     /// # Errors
     /// Any [`DecodeError`]; see the type-level error discipline.
     pub fn decode_nal(&mut self, nal: &[u8]) -> Result<Option<Picture>, DecodeError> {
+        let in_picture = self.pending.is_some() || self.skipping.is_some();
+        let result = self.decode_nal_inner(nal);
+        if result.is_err() && in_picture {
+            // Size, NAL-header and parameter-set errors occur before the
+            // VCL branch below. They must not leave a partial picture's
+            // inherited header or entropy contexts usable by later NALs.
+            self.pending = None;
+            self.skipping = None;
+            self.need_irap = true;
+        }
+        result
+    }
+
+    fn decode_nal_inner(&mut self, nal: &[u8]) -> Result<Option<Picture>, DecodeError> {
         if nal.len() > self.limits.max_nal_bytes {
             return Err(DecodeError::Limit);
         }
@@ -217,6 +248,7 @@ impl Decoder {
             0..=9 | 16..=21 => {
                 if let Err(err) = self.decode_slice(header, payload) {
                     self.pending = None;
+                    self.skipping = None;
                     self.need_irap = true;
                     return Err(err);
                 }
@@ -308,25 +340,113 @@ impl Decoder {
         Some((pps, sps))
     }
 
+    /// Parameter-set redefinition must not mix newly parsed syntax with
+    /// the frozen coding state of a segment's parent picture.
+    fn validate_segment_context(
+        &self,
+        nal: NalHeader,
+        expected_nal: NalHeader,
+        pps: &Pps,
+        sps: &Sps,
+    ) -> Result<(), DecodeError> {
+        let (active_pps, active_sps) = self
+            .lookup(pps.id)
+            .ok_or(DecodeError::MissingParameterSet)?;
+        // An identical repeated parameter set is harmless. Compare every
+        // decode-relevant field rather than Arc allocation identity.
+        if nal != expected_nal || active_pps != pps || active_sps != sps {
+            return Err(DecodeError::Malformed);
+        }
+        Ok(())
+    }
+
     fn decode_slice(&mut self, nal: NalHeader, payload: &[u8]) -> Result<(), DecodeError> {
         let rbsp = rbsp_from_ebsp(payload, self.limits.max_nal_bytes)?;
         let stop = stop_bit_position(&rbsp)?;
-        let header = parse_slice_header(&rbsp, stop, nal, |id| self.lookup(id))?;
+        let previous = self
+            .pending
+            .as_ref()
+            .map(|picture| &picture.independent_header)
+            .or_else(|| {
+                self.skipping
+                    .as_ref()
+                    .map(|picture| &picture.independent_header)
+            });
+        let header =
+            parse_slice_header_with_previous(&rbsp, stop, nal, |id| self.lookup(id), previous)?;
+        if !header.first_slice_in_pic {
+            let context = self
+                .pending
+                .as_ref()
+                .map(|picture| {
+                    (
+                        picture.nal,
+                        &picture.pps,
+                        &picture.sps,
+                        &picture.independent_header,
+                    )
+                })
+                .or_else(|| {
+                    self.skipping.as_ref().map(|picture| {
+                        (
+                            picture.nal,
+                            &picture.pps,
+                            &picture.sps,
+                            &picture.independent_header,
+                        )
+                    })
+                });
+            if let Some((expected_nal, pps, sps, independent)) = context {
+                if !header.same_picture_as(independent) {
+                    return Err(DecodeError::Malformed);
+                }
+                // Check every continuation, even if a changed PPS made
+                // the same bytes parse as an independent segment.
+                self.validate_segment_context(nal, expected_nal, pps, sps)?;
+            }
+        }
         if header.first_slice_in_pic {
             self.finish_pending()?;
-            self.skipping = false;
             if !self.start_picture(nal, &header)? {
-                self.skipping = true;
+                let pps = self.pps[usize::from(header.pps_id)]
+                    .as_ref()
+                    .ok_or(DecodeError::MissingParameterSet)?;
+                let sps = self.sps[usize::from(pps.sps_id)]
+                    .as_ref()
+                    .ok_or(DecodeError::MissingParameterSet)?;
+                self.skipping = Some(SkippedPicture {
+                    sps: Arc::clone(sps),
+                    pps: Arc::clone(pps),
+                    nal,
+                    last_segment_address: header.segment_address,
+                    independent_header: header,
+                    segments: 1,
+                });
                 return Ok(());
             }
-        } else if self.skipping {
+        } else if let Some(skipped) = self.skipping.as_ref() {
+            if header.dependent && header.segment_address <= skipped.last_segment_address {
+                return Err(DecodeError::Malformed);
+            }
+            let skipped = self
+                .skipping
+                .as_mut()
+                .ok_or(DecodeError::IncompletePicture)?;
+            skipped.segments = skipped.segments.checked_add(1).ok_or(DecodeError::Limit)?;
+            if skipped.segments > self.limits.max_slices_per_picture {
+                return Err(DecodeError::Limit);
+            }
+            skipped.last_segment_address = header.segment_address;
+            if !header.dependent {
+                skipped.independent_header = header;
+            }
             return Ok(());
         }
         let mut pending = self.pending.take().ok_or(DecodeError::IncompletePicture)?;
         if header.pps_id != pending.pps.id || nal.unit_type != pending.nal.unit_type {
             return Err(DecodeError::Malformed);
         }
-        pending.slices += 1;
+        pending.slices = pending.slices.checked_add(1).ok_or(DecodeError::Limit)?;
         if pending.slices > self.limits.max_slices_per_picture {
             return Err(DecodeError::Limit);
         }
@@ -343,7 +463,17 @@ impl Decoder {
             refs: &refs,
             col: col.as_ref(),
         };
-        SliceDecoder::new(&inputs, &mut pending.state, &rbsp, stop + 1)?.decode()?;
+        let continuation = if header.dependent {
+            pending.continuation.take()
+        } else {
+            None
+        };
+        pending.continuation =
+            SliceDecoder::new(&inputs, &mut pending.state, &rbsp, stop + 1, continuation)?
+                .decode()?;
+        if !header.dependent {
+            pending.independent_header = header;
+        }
         if pending.state.complete() {
             self.finish_picture(pending)
         } else {
@@ -410,6 +540,8 @@ impl Decoder {
             slices: 0,
             st_curr,
             lt_curr,
+            independent_header: header.clone(),
+            continuation: None,
         });
         Ok(true)
     }
@@ -620,6 +752,7 @@ impl Decoder {
 
     /// Completes the pending picture if its slices are all present.
     fn finish_pending(&mut self) -> Result<(), DecodeError> {
+        self.skipping = None;
         let Some(pending) = self.pending.take() else {
             return Ok(());
         };

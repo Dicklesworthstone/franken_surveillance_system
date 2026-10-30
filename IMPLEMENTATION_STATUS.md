@@ -10,6 +10,27 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Native HEVC dependent slice segments (2026-10-30, reference)
+
+The Main-profile 8-bit 4:2:0 decoder now reconstructs dependent slice segments.
+Picture-local header inheritance, CABAC probability and QP continuation, wavefront
+snapshot precedence and shared logical slice tags preserve prediction, reference maps
+and filtering across segment cuts. Every segment consumes the existing bound. Active
+parameter and picture-identity fences reject mixed contexts; identical parameter
+retransmissions remain valid. Early malformed NALs now clear unfinished state so the
+next good IRAP can recover immediately. Skipped RASL headers retain only bounded
+inheritance and never become decoded pixels. Receipt formats and labels are unchanged.
+
+All 128 native H.265 tests pass on pinned `nightly-2026-08-31`, including all 48 old
+pixel-conformance cases, 20 dependent-segment cases, six skipped-RASL contracts and
+the existing hostile/malformed-media gauntlets. Ten authentic encoded fixtures yield
+11 independently frozen FFmpeg frames; coalesced controls, QP changes, deblocking,
+wavefront cuts and a real IDR-to-P-skip sequence all match. Weighted P/B header fields
+are checked separately; a dependent B-picture pixel oracle is not claimed. Fixture
+regeneration is byte-exact. This advances WP-060's native media path; Main 10, tiles,
+physical-device interoperability and full release qualification remain open. See
+[HEVC dependent segments](docs/hevc_dependent_segments.md).
+
 ## Native ONNX Gemm import and execution (2026-10-30, reference)
 
 The offline digest-pinned ONNX importer now lowers Gemm-13 into the frozen native

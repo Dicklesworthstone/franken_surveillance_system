@@ -13,6 +13,11 @@ slice deltas, frame-number wrap and B-picture display reordering. See
 [native H.264 picture ordering](h264_picture_order.md) for tested boundaries and
 source-to-pixel compatibility.
 
+HEVC Main decoding also accepts dependent slice segments, carrying entropy, QP and
+logical slice state across their boundaries while preserving wavefront row rules.
+See [native HEVC dependent segments](hevc_dependent_segments.md) for the admitted
+profile, failure recovery and independently checked pixel fixtures.
+
 First import the recording using the [file import workflow](FILE_IMPORT_WORKFLOW.md). Use the
 exact printed `import_identity` in the commands below. Examples assume a recording containing
 at least two frames. Replace the digest placeholder and explicitly select the component

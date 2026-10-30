@@ -269,7 +269,7 @@ impl ScalingList {
 }
 
 /// Decode-relevant sequence parameter set fields.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Sps {
     /// `sps_seq_parameter_set_id`.
     pub id: u8,
@@ -676,7 +676,7 @@ pub fn parse_sps(rbsp: &[u8]) -> Result<Sps, DecodeError> {
 }
 
 /// Decode-relevant picture parameter set fields.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Pps {
     /// `pps_pic_parameter_set_id`.
     pub id: u8,
