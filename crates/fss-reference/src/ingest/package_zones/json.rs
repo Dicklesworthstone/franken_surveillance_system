@@ -1,6 +1,8 @@
 #![forbid(unsafe_code)]
 //! Complete bounded operator projection; no ranked/truncated events or hidden missing samples.
 
+mod screened;
+
 use super::*;
 use crate::ingest::package_detect::json_string as quote;
 
@@ -66,6 +68,7 @@ fn render(
     report: &PackageZoneReport,
     operation: PackageZoneOperation,
     retained: Option<&LedgerAnchor>,
+    admit_maximum_usage: bool,
 ) -> Result<String> {
     let r = report.analysis.retained().record();
     let tracking = report.analysis.config();
@@ -80,7 +83,11 @@ fn render(
             "\"configuration\":{{\"confirmation_hits\":{},\"maximum_missed_frames\":{},\"minimum_iou_ppm\":{},",
             "\"maximum_sample_gap_ns\":{},\"dwell\":{},\"zones\":["
         ),
-        quote(PACKAGE_ZONE_REPORT_DOMAIN),
+        quote(if report.health.is_some() {
+            PACKAGE_ZONE_SCREENED_REPORT_DOMAIN
+        } else {
+            PACKAGE_ZONE_REPORT_DOMAIN
+        }),
         quote(operation.as_str()),
         digest(report.digest),
         digest(report.provenance_root()),
@@ -212,11 +219,18 @@ fn render(
             ),
         )?;
     }
+    append(&mut out, "]")?;
+    if let Some(health) = &report.health {
+        screened::append_report(&mut out, health, admit_maximum_usage)?;
+    }
     append(
         &mut out,
-        concat!(
-            "],\"semantics\":{\"calibrated\":false,\"continuous_occupancy\":false,",
-            "\"absence_authorized\":false,\"effects_authorized\":false,\"source_health_assessed\":false}}\n"
+        &format!(
+            concat!(
+                ",\"semantics\":{{\"calibrated\":false,\"continuous_occupancy\":false,",
+                "\"absence_authorized\":false,\"effects_authorized\":false,\"source_health_assessed\":{}}}}}\n"
+            ),
+            report.health.is_some()
         ),
     )?;
     Ok(out)
@@ -224,10 +238,17 @@ fn render(
 impl PackageZoneReport {
     /// Complete bounded JSON; a retained/read status requires an actual retained receipt.
     pub fn to_json(&self, operation: PackageZoneOperation) -> Result<String> {
+        if self
+            .health
+            .as_ref()
+            .is_some_and(health::Screening::delivery_blocked)
+        {
+            return Err(PackageZoneError::Mismatch);
+        }
         if operation != PackageZoneOperation::Analyzed && self.retention.is_none() {
             return Err(PackageZoneError::Unavailable);
         }
-        render(self, operation, self.retention.as_ref())
+        render(self, operation, self.retention.as_ref(), false)
     }
     /// Admit the largest post-retention receipt before writing any retained state. This only
     /// checks output capacity; its hypothetical anchor is never returned as a real result.
@@ -239,7 +260,12 @@ impl PackageZoneReport {
         maximum.schema_epoch = u64::MAX;
         maximum.policy_epoch = u64::MAX;
         maximum.privacy_epoch = u64::MAX;
-        render(self, PackageZoneOperation::AlreadyRetained, Some(&maximum))?;
+        render(
+            self,
+            PackageZoneOperation::AlreadyRetained,
+            Some(&maximum),
+            true,
+        )?;
         Ok(())
     }
 }

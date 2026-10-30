@@ -21,7 +21,7 @@ type Run<T> = Result<T, Box<dyn Error>>;
 const HELP: &str = "fss-event package-zones analyze --root EXISTING_DIR --site SITE\n\
   --package-report sha256:RETAINED_DETECTION_REPORT --label EXACT_PACKAGE_LABEL\n\
   --zone NAME:X:Y:WIDTH:HEIGHT[:MARGIN] [--zone ...] --maximum-sample-gap-ns N\n\
-  [--dwell-ns N --minimum-observations N]\n\
+  [--dwell-ns N --minimum-observations N] [--require-health-screening yes]\n\
   [--confirmation-hits N --maximum-missed-frames N --minimum-iou-ppm N]\n\
   [--retain sha256:EXACT_APPROVAL] [--principal ID]\n\
 fss-event package-zones read --root EXISTING_DIR --site SITE\n\
@@ -41,7 +41,10 @@ model or report files. It never repairs missing custody. A report is not a canon
 calibrated class/presence assertion, continuous occupancy, absence proof or effect grant.\n\
 At most 16 zones, 64 source frames and 8192 total track/zone/frame cells; complete overflow\n\
 refuses. Output is complete JSON on stdout (maximum 16 MiB); no safety fields are truncated.\n\
-The original source health has not been screened by this operation.\n";
+The default v1 report leaves source health unassessed. --require-health-screening yes selects\n\
+v2: only matching complete finite historical screens without findings can support observations.\n\
+Unknown, incomplete and finding-bearing samples preserve boxes but interrupt dwell/crossings.\n\
+This does not establish current camera health, continuous occupancy, physical cause or absence.\n";
 
 enum Action {
     Analyze {
@@ -50,6 +53,7 @@ enum Action {
         tracking: PackageTrackingConfig,
         config: PackageZoneConfig,
         approval: Option<ContentDigest>,
+        screened: bool,
     },
     Read(ContentDigest),
 }
@@ -127,6 +131,7 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
             "--maximum-missed-frames",
             "--minimum-iou-ppm",
             "--retain",
+            "--require-health-screening",
         ];
         if !common.contains(&key)
             && !(analyze && analysis.contains(&key))
@@ -188,7 +193,16 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
         let u32_number = |key, default| -> Result<u32, String> {
             u32::try_from(number(&values, key, default)?).map_err(|_| format!("{key} overflow"))
         };
+        let screened = if values.contains_key("--require-health-screening") {
+            if text(&values, "--require-health-screening")? != "yes" {
+                return Err("--require-health-screening accepts exactly yes".into());
+            }
+            true
+        } else {
+            false
+        };
         Action::Analyze {
+            screened,
             package: digest(text(&values, "--package-report")?)?,
             label,
             tracking: PackageTrackingConfig {
@@ -248,15 +262,17 @@ fn run(options: Options) -> Run<String> {
                 tracking,
                 config,
                 approval,
+                screened,
             } => {
-                let mut report = PackageZoneReport::analyze(
-                    &deployment,
-                    package,
-                    &label,
-                    tracking,
-                    config,
-                    &cx,
-                )?;
+                let mut report = if screened {
+                    PackageZoneReport::analyze_screened(
+                        &deployment, package, &label, tracking, config,
+                        fss_reference::ingest::historical_health::exposure::HealthExposureLimits::default(),
+                        &cx,
+                    )?
+                } else {
+                    PackageZoneReport::analyze(&deployment, package, &label, tracking, config, &cx)?
+                };
                 report.admit_retention_json()?;
                 let operation = match approval {
                     None => PackageZoneOperation::Analyzed,

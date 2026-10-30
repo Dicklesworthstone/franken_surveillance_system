@@ -64,9 +64,20 @@ pub(super) fn derive(
     config: &PackageZoneConfig,
     frames: &[PackageZoneFrame],
     privacy: &MaskBinding,
+    health: Option<&health::Screening>,
     cx: &ReplayCx,
 ) -> Result<(Vec<PackageZoneCell>, Vec<PackageZoneEvent>)> {
     let count = admit(analysis.tracks().len(), frames.len(), config.zones.len())?;
+    if health.is_some_and(|health| health.exposures.len() != frames.len()) {
+        return Err(PackageZoneError::Mismatch);
+    }
+    let support = health.map(|health| {
+        health
+            .exposures
+            .iter()
+            .map(health::support_allowed)
+            .collect::<Vec<_>>()
+    });
     let mut work = Work(MAX_DERIVATION_WORK);
     let frame_index: BTreeMap<_, _> = frames
         .iter()
@@ -139,7 +150,13 @@ pub(super) fn derive(
                 });
             }
             work.charge(frames.len().checked_mul(3).ok_or(PackageZoneError::Limit)?)?;
-            timeline(&cells[start..], frames, config, &mut events)?;
+            timeline_inner(
+                &cells[start..],
+                frames,
+                config,
+                support.as_deref(),
+                &mut events,
+            )?;
         }
     }
     events.sort_by_key(|e| (e.track, e.zone, e.at_frame, e.kind));
@@ -155,23 +172,38 @@ fn push(events: &mut Vec<PackageZoneEvent>, event: PackageZoneEvent) -> Result<(
     Ok(())
 }
 
+#[cfg(test)]
 pub(super) fn timeline(
     cells: &[PackageZoneCell],
     frames: &[PackageZoneFrame],
     config: &PackageZoneConfig,
     events: &mut Vec<PackageZoneEvent>,
 ) -> Result<()> {
+    timeline_inner(cells, frames, config, None, events)
+}
+
+pub(super) fn timeline_inner(
+    cells: &[PackageZoneCell],
+    frames: &[PackageZoneFrame],
+    config: &PackageZoneConfig,
+    health_support: Option<&[bool]>,
+    events: &mut Vec<PackageZoneEvent>,
+) -> Result<()> {
     let Some(first) = cells.first() else {
         return Err(PackageZoneError::Mismatch);
     };
-    if cells.len() != frames.len() {
+    if cells.len() != frames.len()
+        || health_support.is_some_and(|support| support.len() != frames.len())
+    {
         return Err(PackageZoneError::Mismatch);
     }
     let mut prior: Option<(PackageZoneRelation, usize)> = None;
     let mut last_sample: Option<usize> = None;
     for (index, cell) in cells.iter().enumerate() {
         let frame = &frames[index];
-        let definite = cell.sample_confirmed
+        let health_admitted = health_support.is_none_or(|support| support[index]);
+        let definite = health_admitted
+            && cell.sample_confirmed
             && matches!(
                 cell.relation,
                 PackageZoneRelation::Inside | PackageZoneRelation::Outside
@@ -179,7 +211,8 @@ pub(super) fn timeline(
         // A real complete boundary observation preserves trajectory continuity between two
         // definite sides, as in the native image-zone monitor. It never establishes a side
         // itself and never contributes to inside dwell. Partial/missing evidence clears both.
-        let observable = cell.sample_confirmed
+        let observable = health_admitted
+            && cell.sample_confirmed
             && matches!(
                 cell.relation,
                 PackageZoneRelation::Inside
@@ -253,7 +286,8 @@ pub(super) fn timeline(
                 capture: frames[position]
                     .time_reliable
                     .then_some(frames[position].capture),
-                matched_inside: cell.sample_confirmed
+                matched_inside: health_support.is_none_or(|support| support[position])
+                    && cell.sample_confirmed
                     && cell.relation == PackageZoneRelation::Inside,
                 discontinuity: frames[position].source_boundary,
             })

@@ -11,11 +11,18 @@ def main():
     sys.path.insert(0, str(repository / 'scripts'))
     from json_instance_validate import InstanceValidator, parse_strict_json
     validator = InstanceValidator(repository / 'schemas')
-    schema = parse_strict_json((repository / 'schemas/package_zone_report.v1.json').read_text())
+    schemas = {
+        f'fss.package_zone_report.v{version}': (
+            f'package_zone_report.v{version}.json',
+            parse_strict_json((repository / f'schemas/package_zone_report.v{version}.json').read_text()),
+        )
+        for version in (1, 2)
+    }
 
     def checked(output):
         data = document(output.stdout)
-        validator.validate(schema, data, 'package_zone_report.v1.json')
+        name, schema = schemas[data['schema']]
+        validator.validate(schema, data, name)
         return data
 
     root = scratch / 'deployment'
@@ -107,7 +114,83 @@ def main():
     path.write_bytes(data)
     assert checked(run(read))['report_digest'] == retained['report_digest']
     assert not source.exists() and not package.exists()
-    print('PASS: native package class/assignment/confirmation/entry/dwell, approved retention, cold exact read and proof refusal')
+
+    screened_command = [*command, '--require-health-screening', 'yes']
+    head = snapshot(root)
+    unknown = checked(run(screened_command))
+    assert unknown['schema'] == 'fss.package_zone_report.v2'
+    assert unknown['cells'] == preview['cells'] and unknown['frames'] == preview['frames']
+    assert unknown['events'] == []
+    assert all(f['state'] == 'no_matching_diagnostic' and f['zone_support_allowed'] is False
+               for f in unknown['historical_health']['frames'])
+    assert unknown['semantics']['source_health_assessed'] is True
+    assert unknown['historical_health']['current_camera_health_established'] is False
+    assert unknown['historical_health']['native_trace_replayed'] is False
+    run([*screened_command, '--retain', approval], ok=False)
+    run([*command, '--require-health-screening', 'no'], ok=False)
+    run([*read, '--require-health-screening', 'yes'], ok=False)
+    assert snapshot(root) == head, 'screening preview or malformed approval changed custody'
+    unknown_retained = checked(run([*screened_command, '--retain', unknown['approval_digest']]))
+    unknown_read = [event_bin, 'package-zones', 'read', *base,
+                    '--report-digest', unknown_retained['report_digest']]
+    unknown_cold = checked(run(unknown_read))
+    assert unknown_cold['report_digest'] == unknown_retained['report_digest']
+    assert unknown_cold['retention_anchor'] == unknown_retained['retention_anchor']
+    assert unknown_retained['historical_health']['operation_usage']['retention_indexed_read_attempts'] > 0
+    assert unknown_cold['historical_health']['operation_usage']['retention_indexed_read_attempts'] == 0
+
+    def retain_screen(first, count):
+        args = [event_bin, 'watch', *base, '--import-id', import_id, '--interpretation', 'ycbcr',
+                '--zone', 'image:0,0,32,16', '--first-segment', str(first),
+                '--segment-count', str(count), '--stream-watch', '--sensor-health', 'conservative-v1']
+        proposal = document(run(args).stdout)['historical_health']
+        retained_health = document(run([*args, '--retain-health', proposal['approval_digest']]).stdout)['historical_health']
+        assert retained_health['record_digest'] == proposal['record_digest']
+        assert retained_health['status'] in ('retained', 'already_retained')
+        return retained_health['receipt']
+
+    first_screen = retain_screen(0, 7)
+    assert first_screen['status'] == 'no_findings'
+    head = snapshot(root)
+    run(unknown_read, ok=False)
+    partial = checked(run(screened_command))
+    assert partial['cells'] == preview['cells']
+    exposed = partial['historical_health']['frames']
+    assert all(f['zone_support_allowed'] for f in exposed[:7])
+    assert all(not f['zone_support_allowed'] for f in exposed[7:])
+    usage = partial['historical_health']['operation_usage']
+    assert usage['catalog_loads'] == 1 and usage['assessment_work'] == 14
+    assert usage['diagnostic_trace_reads'] == 1
+    assert any(e['kind'] == 'observation_interrupted' and e['at_frame'] == 7 for e in partial['events'])
+    partial_dwells = [e for e in partial['events'] if e['kind'] == 'sampled_dwell']
+    assert partial_dwells and all(e['through_frame'] < 7 for e in partial_dwells)
+    assert snapshot(root) == head, 'read-only health join mutated custody'
+
+    full_screen = retain_screen(0, 14)
+    assert full_screen['status'] == 'suspected_degradation'
+    constrained = checked(run(screened_command))
+    assert constrained['cells'] == preview['cells'] and constrained['events'] == []
+    assert all(f['state'] == 'findings' and not f['zone_support_allowed']
+               for f in constrained['historical_health']['frames'])
+    assert any(finding['finding'] == 'persistent_bright_field'
+               for frame in constrained['historical_health']['frames'] for finding in frame['findings'])
+    retained_screened = checked(run([*screened_command, '--retain', constrained['approval_digest']]))
+    screened_read = [event_bin, 'package-zones', 'read', *base,
+                     '--report-digest', retained_screened['report_digest']]
+    head = snapshot(root)
+    cold_screened = checked(run(screened_read))
+    cold_screened['operation'] = 'retained'
+    retained_usage = retained_screened['historical_health'].pop('operation_usage')
+    cold_usage = cold_screened['historical_health'].pop('operation_usage')
+    assert retained_usage['catalog_loads'] == 3 and cold_usage['catalog_loads'] == 1
+    assert retained_usage['retention_indexed_read_bytes_reserved'] > 0
+    assert retained_usage['retention_indexed_read_bytes_reserved'] <= retained_usage['retention_indexed_read_byte_limit']
+    assert cold_screened == retained_screened, 'v2 cold proof/source/support changed'
+    assert checked(run(read))['report_digest'] == retained['report_digest'], 'v1 bytes changed after historical health publication'
+    assert snapshot(root) == head
+    assert not source.exists() and not package.exists()
+    print('PASS: native class-zone v1/v2 custody, unknown/partial/finding health gates, cumulative work, retained cold replay and legacy identity')
+
 
 
 if __name__ == '__main__':

@@ -1,0 +1,1042 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.dev/schemas/package_zone_report.v2.json",
+  "title": "FSS retained package-track image zones with historical health screening v2",
+  "description": "Complete source-verified package-zone projection with exact historical diagnostic matching. The native owner retains every assigned box and source frame, and withholds positive observations for missing, incomplete or finding-bearing screening. Finite screening without findings establishes no current camera health, physical cause, continuous occupancy or absence. Schema checks representation; native replay checks custody, exact pins, privacy, deletion, cumulative work and all canonical bytes. Current operation usage is excluded from the report digest.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "operation",
+    "report_digest",
+    "provenance_root",
+    "configuration_digest",
+    "approval_digest",
+    "retained",
+    "retention_anchor",
+    "source",
+    "configuration",
+    "frames",
+    "tracks",
+    "cells",
+    "events",
+    "semantics",
+    "historical_health"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.package_zone_report.v2"
+    },
+    "operation": {
+      "enum": [
+        "analyzed",
+        "retained",
+        "already_retained",
+        "read_verified"
+      ]
+    },
+    "report_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "provenance_root": {
+      "$ref": "#/$defs/digest"
+    },
+    "configuration_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "approval_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "retained": {
+      "type": "boolean"
+    },
+    "retention_anchor": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/anchor"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "site",
+        "import_identity",
+        "import_root",
+        "package_report",
+        "analysis_digest",
+        "package_digest",
+        "model_id",
+        "generation",
+        "contract_digest",
+        "label",
+        "class_index",
+        "capture_time_label",
+        "clock_basis",
+        "privacy_binding",
+        "source_anchor"
+      ],
+      "properties": {
+        "site": {
+          "type": "string",
+          "minLength": 1
+        },
+        "import_identity": {
+          "$ref": "#/$defs/digest"
+        },
+        "import_root": {
+          "$ref": "#/$defs/digest"
+        },
+        "package_report": {
+          "$ref": "#/$defs/digest"
+        },
+        "analysis_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "package_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "model_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "generation": {
+          "type": "string",
+          "minLength": 1
+        },
+        "contract_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "class_index": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "capture_time_label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "clock_basis": {
+          "enum": [
+            "utc_disciplined",
+            "device_monotonic",
+            "host_monotonic",
+            "estimated"
+          ]
+        },
+        "privacy_binding": {
+          "$ref": "#/$defs/digest"
+        },
+        "source_anchor": {
+          "$ref": "#/$defs/anchor"
+        }
+      }
+    },
+    "configuration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "confirmation_hits",
+        "maximum_missed_frames",
+        "minimum_iou_ppm",
+        "maximum_sample_gap_ns",
+        "dwell",
+        "zones"
+      ],
+      "properties": {
+        "confirmation_hits": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "maximum_missed_frames": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "minimum_iou_ppm": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000
+        },
+        "maximum_sample_gap_ns": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400000000000
+        },
+        "dwell": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/dwell"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "zones": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/zone"
+          },
+          "minItems": 1,
+          "maxItems": 16
+        }
+      }
+    },
+    "frames": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/frame"
+      },
+      "minItems": 1,
+      "maxItems": 64
+    },
+    "tracks": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/track"
+      },
+      "minItems": 0,
+      "maxItems": 8192
+    },
+    "cells": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/cell"
+      },
+      "minItems": 0,
+      "maxItems": 8192
+    },
+    "events": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/event"
+      },
+      "minItems": 0,
+      "maxItems": 16384
+    },
+    "semantics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "calibrated",
+        "continuous_occupancy",
+        "absence_authorized",
+        "effects_authorized",
+        "source_health_assessed"
+      ],
+      "properties": {
+        "calibrated": {
+          "const": false
+        },
+        "continuous_occupancy": {
+          "const": false
+        },
+        "absence_authorized": {
+          "const": false
+        },
+        "effects_authorized": {
+          "const": false
+        },
+        "source_health_assessed": {
+          "const": true
+        }
+      }
+    },
+    "historical_health": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "policy",
+        "historical_only",
+        "current_camera_health_established",
+        "physical_cause_established",
+        "absence_certified",
+        "native_trace_replayed",
+        "frames",
+        "operation_usage"
+      ],
+      "properties": {
+        "policy": {
+          "const": "require_complete_matching_finite_screen_without_findings"
+        },
+        "historical_only": {
+          "const": true
+        },
+        "current_camera_health_established": {
+          "const": false
+        },
+        "physical_cause_established": {
+          "const": false
+        },
+        "absence_certified": {
+          "const": false
+        },
+        "native_trace_replayed": {
+          "const": false
+        },
+        "frames": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "items": {
+            "$ref": "#/$defs/healthFrame"
+          }
+        },
+        "operation_usage": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "catalog_loads",
+            "records_seen",
+            "records_loaded",
+            "deleted_records",
+            "metadata_bytes_read",
+            "metadata_reads",
+            "history_work_admitted",
+            "assessment_work",
+            "findings_returned",
+            "diagnostic_trace_bytes_verified",
+            "diagnostic_trace_reads",
+            "retention_indexed_read_bytes_reserved",
+            "retention_indexed_read_attempts",
+            "retention_indexed_read_byte_limit",
+            "retention_indexed_read_attempt_limit",
+            "included_in_report_digest"
+          ],
+          "properties": {
+            "catalog_loads": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "records_seen": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "records_loaded": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "deleted_records": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "metadata_bytes_read": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "metadata_reads": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "history_work_admitted": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "assessment_work": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "findings_returned": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "diagnostic_trace_bytes_verified": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "diagnostic_trace_reads": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "retention_indexed_read_bytes_reserved": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 536870912
+            },
+            "retention_indexed_read_attempts": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 65536
+            },
+            "retention_indexed_read_byte_limit": {
+              "const": 536870912
+            },
+            "retention_indexed_read_attempt_limit": {
+              "const": 65536
+            },
+            "included_in_report_digest": {
+              "const": false
+            }
+          }
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "retained": {
+            "const": false
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "retention_anchor": {
+            "type": "null"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "retention_anchor": {
+            "$ref": "#/$defs/anchor"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "enum": [
+              "retained",
+              "already_retained",
+              "read_verified"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "retained": {
+            "const": true
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "signedNanoseconds": {
+      "type": "string",
+      "maxLength": 40,
+      "pattern": "^-?(0|[1-9][0-9]*)$"
+    },
+    "unsignedNanoseconds": {
+      "type": "string",
+      "maxLength": 39,
+      "pattern": "^(0|[1-9][0-9]*)$"
+    },
+    "zoneId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "anchor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "site_lineage",
+        "ledger_epoch",
+        "commit_sequence",
+        "adapter_registry_epoch",
+        "schema_epoch",
+        "policy_epoch",
+        "privacy_epoch",
+        "state_root"
+      ],
+      "properties": {
+        "site_lineage": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ledger_epoch": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "commit_sequence": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "adapter_registry_epoch": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "schema_epoch": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "policy_epoch": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "privacy_epoch": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "state_root": {
+          "$ref": "#/$defs/digest"
+        }
+      }
+    },
+    "capture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "earliest_ns",
+        "latest_ns"
+      ],
+      "properties": {
+        "earliest_ns": {
+          "$ref": "#/$defs/signedNanoseconds"
+        },
+        "latest_ns": {
+          "$ref": "#/$defs/signedNanoseconds"
+        }
+      }
+    },
+    "zone": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "x",
+        "y",
+        "width",
+        "height",
+        "margin"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/zoneId"
+        },
+        "x": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "y": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "width": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "margin": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65536
+        }
+      }
+    },
+    "dwell": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "minimum_duration_ns",
+        "minimum_observations"
+      ],
+      "properties": {
+        "minimum_duration_ns": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400000000000
+        },
+        "minimum_observations": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 128
+        }
+      }
+    },
+    "frame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "segment",
+        "capsule_digest",
+        "capture",
+        "dimensions",
+        "time_reliable",
+        "source_boundary"
+      ],
+      "properties": {
+        "segment": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "capsule_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "capture": {
+          "$ref": "#/$defs/capture"
+        },
+        "dimensions": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 4294967295
+          },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "time_reliable": {
+          "type": "boolean"
+        },
+        "source_boundary": {
+          "type": "boolean"
+        }
+      }
+    },
+    "track": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "identity",
+        "track_id",
+        "ever_confirmed"
+      ],
+      "properties": {
+        "identity": {
+          "$ref": "#/$defs/digest"
+        },
+        "track_id": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "ever_confirmed": {
+          "type": "boolean"
+        }
+      }
+    },
+    "cell": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "track",
+        "zone",
+        "frame",
+        "relation",
+        "sample_confirmed",
+        "detection_row",
+        "bounds",
+        "clipped"
+      ],
+      "properties": {
+        "track": {
+          "$ref": "#/$defs/digest"
+        },
+        "zone": {
+          "$ref": "#/$defs/zoneId"
+        },
+        "frame": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 63
+        },
+        "relation": {
+          "enum": [
+            "inside",
+            "outside",
+            "boundary",
+            "partial",
+            "unobserved",
+            "masked"
+          ]
+        },
+        "sample_confirmed": {
+          "type": "boolean"
+        },
+        "detection_row": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "bounds": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 4294967295
+              },
+              "minItems": 4,
+              "maxItems": 4
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "clipped": {
+          "type": "boolean"
+        }
+      }
+    },
+    "event": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "track",
+        "zone",
+        "from_frame",
+        "at_frame",
+        "through_frame",
+        "observations",
+        "minimum_duration_ns",
+        "maximum_duration_ns"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "observed_inside",
+            "entered_between_observations",
+            "left_between_observations",
+            "observation_interrupted",
+            "sampled_dwell"
+          ]
+        },
+        "track": {
+          "$ref": "#/$defs/digest"
+        },
+        "zone": {
+          "$ref": "#/$defs/zoneId"
+        },
+        "from_frame": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 63
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "at_frame": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 63
+        },
+        "through_frame": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 63
+        },
+        "observations": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 64
+        },
+        "minimum_duration_ns": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/unsignedNanoseconds"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "maximum_duration_ns": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/unsignedNanoseconds"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "healthDiagnostic": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "record_digest",
+        "provenance_root",
+        "trace_digest",
+        "publication_anchor"
+      ],
+      "properties": {
+        "record_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "provenance_root": {
+          "$ref": "#/$defs/digest"
+        },
+        "trace_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "publication_anchor": {
+          "$ref": "#/$defs/anchor"
+        }
+      }
+    },
+    "healthFinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "diagnostic",
+        "provenance_root",
+        "finding",
+        "finding_first_segment",
+        "finding_last_segment",
+        "withheld_first_segment",
+        "withheld_last_segment"
+      ],
+      "properties": {
+        "diagnostic": {
+          "$ref": "#/$defs/digest"
+        },
+        "provenance_root": {
+          "$ref": "#/$defs/digest"
+        },
+        "finding": {
+          "enum": [
+            "persistent_dark_field",
+            "persistent_bright_field",
+            "exact_frame_repetition",
+            "contrast_collapse"
+          ]
+        },
+        "finding_first_segment": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "finding_last_segment": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "withheld_first_segment": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "withheld_last_segment": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "healthFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "frame",
+        "state",
+        "zone_support_allowed",
+        "screening_incomplete",
+        "source_import",
+        "import_root",
+        "sensor_id",
+        "segment",
+        "privacy_policy_digest",
+        "privacy_generation",
+        "diagnostics",
+        "findings"
+      ],
+      "properties": {
+        "frame": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 63
+        },
+        "state": {
+          "enum": [
+            "no_matching_diagnostic",
+            "screened_without_findings",
+            "screening_incomplete",
+            "findings"
+          ]
+        },
+        "zone_support_allowed": {
+          "type": "boolean"
+        },
+        "screening_incomplete": {
+          "type": "boolean"
+        },
+        "source_import": {
+          "$ref": "#/$defs/digest"
+        },
+        "import_root": {
+          "$ref": "#/$defs/digest"
+        },
+        "sensor_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "segment": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "privacy_policy_digest": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/digest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "privacy_generation": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "diagnostics": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "$ref": "#/$defs/healthDiagnostic"
+          }
+        },
+        "findings": {
+          "type": "array",
+          "maxItems": 4096,
+          "items": {
+            "$ref": "#/$defs/healthFinding"
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "screened_without_findings"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "zone_support_allowed": {
+                "const": true
+              },
+              "screening_incomplete": {
+                "const": false
+              },
+              "diagnostics": {
+                "minItems": 1
+              },
+              "findings": {
+                "maxItems": 0
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "zone_support_allowed": {
+                "const": false
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "no_matching_diagnostic"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "screening_incomplete": {
+                "const": false
+              },
+              "diagnostics": {
+                "maxItems": 0
+              },
+              "findings": {
+                "maxItems": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "screening_incomplete"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "screening_incomplete": {
+                "const": true
+              },
+              "diagnostics": {
+                "minItems": 1
+              },
+              "findings": {
+                "maxItems": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "findings"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "diagnostics": {
+                "minItems": 1
+              },
+              "findings": {
+                "minItems": 1
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

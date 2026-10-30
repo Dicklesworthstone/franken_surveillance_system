@@ -51,7 +51,7 @@ There is no metadata-only success mode and no automatic repair of missing custod
 
 ## What the report establishes
 
-The `fss.package_zone_report.v1` output includes source/package/model-generation and
+Both the v1 and v2 package-zone outputs include source/package/model-generation and
 class pins, original capture intervals and clock basis, the full tracking policy and zone
 configuration, every admitted source frame, every track/zone/frame cell, all derived
 transitions, and every qualifying maximal sampled-dwell run. Event addresses are the
@@ -96,10 +96,82 @@ Cancellation before the cognition append may leave a durable publication prefix,
 has no retained-report authority. An exact approved retry revalidates source custody and
 completes it once. Later output errors do not undo an already committed retention.
 
-These are uncalibrated model-proposed class/trajectory observations. The operation does
-not independently screen original sensor health, establish physical identity, prove
-presence/absence, corroborate multiple sensors, assign threat severity, publish a canonical
-event revision or authorize an alert/effect. Those facts are explicit in every JSON result.
+These are uncalibrated model-proposed class/trajectory observations. The default v1 report
+leaves source health unassessed. Neither version establishes physical identity, proves
+presence/absence, corroborates multiple sensors, assigns threat severity, publishes a canonical
+event revision or authorizes an alert/effect. Those facts are explicit in every JSON result.
+
+## Require matching historical health screening
+
+Add `--require-health-screening yes` to the analyze command to select
+`fss.package_zone_report.v2`. Read selects the retained format automatically.
+The native equivalent is `PackageZoneReport::analyze_screened` with explicit
+`HealthExposureLimits`; `open_with_health_limits` gives cold reads an explicit
+whole-operation allowance, while ordinary `open` uses the default limits.
+The original unscreened `analyze` and v1 schema/canonical bytes remain unchanged.
+
+Retain the native diagnostic independently using the existing
+`fss-event watch --stream-watch --sensor-health conservative-v1` or screened
+whole-recording dwell path, with that diagnostic's exact `--retain-health` approval.
+A package-zone preview neither creates a diagnostic nor silently reruns a health scan.
+
+The v2 owner loads one complete retained diagnostic catalog per derivation and assesses
+each source frame once. It does not repeat diagnostic reads for each track or rectangle.
+Matching requires the exact import identity, import root, sensor, original source segment,
+privacy policy and privacy generation. A diagnostic for another source or interpretation
+cannot supply missing screening.
+
+| Matching historical evidence | Positive zone, crossing and dwell support |
+| --- | --- |
+| Complete finite screening without findings | Admitted, subject to the unchanged geometry, confirmation and timing rules |
+| No matching diagnostic | Withheld; health remains unknown |
+| Any matching incomplete screening | Withheld |
+| Any matching retained finding | Withheld over that diagnostic's finite scan, including threshold latency |
+
+A screen without findings describes only a finite heuristic scan. It is not a healthy-camera
+certificate or a claim about present health. Later retained evidence can reveal a problem in
+previously screened samples. Withheld samples interrupt observation and dwell; they never
+become a departure, absence assertion or proof that the scene was empty.
+
+Every actual assigned box, detector row, frame, confirmation flag and geometric relation
+remains in the report. The additive `historical_health.frames` projection includes all
+matching diagnostic record/root/trace pins, original publication anchors, findings and finite
+withholding intervals. `zone_support_allowed` shows the stricter v2 policy; unknown samples
+are withheld even when the generic exposure catalog has no finding to report.
+The retained trace payload is digest-verified once per distinct selected trace during each
+derivation; native trace execution is not replayed and `native_trace_replayed` remains false.
+
+Canonical v2 uses `FSSPZNR2` and separate report/approval domains. Its publication root
+includes every selected diagnostic record, provenance root and trace alongside the existing
+exact detector/source/privacy closure. Cold reads revalidate this exact selection and compare
+every canonical byte. Newly retained relevant diagnostic evidence makes a stale selected
+report fail exact reconstruction; its stored bytes are never changed or repaired. Publishing
+the report itself does not invalidate it, because current catalog anchors and work counters
+are excluded from its identity.
+
+The catalog and selected trace reads share one `HealthExposureLimits` allowance across
+the report's initial analysis, pre-retention revalidation, post-publication revalidation and
+exact retries. A failed revalidation cannot silently refill that allowance. The complete
+`historical_health.operation_usage` describes successful catalog work, selected trace bytes
+and read attempts for the current operation; these counters are outside the report digest.
+
+Retention additionally installs a separate cumulative native spool ceiling of **512 MiB
+of reserved indexed-read bytes and 65,536 indexed-read attempts**. This covers the complete
+retain call, including original source replay, diagnostic publication-closure rereads,
+verification, staging retries and post-publication reconstruction. The spool reserves stored
+envelope bytes (including the header and one trailing-byte probe) before accessing each
+indexed object. Failed admitted reads remain charged. Retention counters are reported as
+`retention_indexed_read_bytes_reserved` and `retention_indexed_read_attempts`, with their
+limits alongside them. They overlap catalog/trace counts and must not be added to those
+counts as if they were disjoint work. Opening recovery, directory/metadata/open syscalls and
+non-indexed staging writes are outside this indexed-read allowance and remain governed by
+their existing native owners. A preexisting tighter spool cap wins; the cap cannot be
+removed or refilled until that deployment owner is dropped. A later report does not widen it.
+
+If a limited retention stops after publishing its root but before the cognition append, the
+prefix carries no retained-report authority. A fresh explicit analysis with sufficient
+allowance can complete only the same source-verified bytes and approval. Existing reports
+never refill their own consumed budget.
 
 ## Regression evidence
 
@@ -115,3 +187,10 @@ privacy, source deletion, wrong approvals, root-prefix cancellation and exact co
 The CLI test validates actual analyze/retain/retry/read JSON against the registered schema.
 The existing tracker lifecycle is independently compared over missing-observation patterns
 to the sample-confirmation accessor; existing v2 analysis encoding is unchanged.
+
+The v2 native contract adds real clear, unknown, partially screened, incomplete and frozen
+source fixtures; later relevant diagnostics; exact pin/trace corruption; changed privacy;
+source deletion; original-owner closure and cold reopen; cumulative retention allowances;
+and legacy-byte preservation. The CLI fixture validates both schemas through actual
+analyze/retain/read commands, verifies partial support and later diagnostic invalidation,
+and checks that every assigned box survives the health gate.

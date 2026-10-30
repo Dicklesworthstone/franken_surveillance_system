@@ -190,7 +190,10 @@ impl PackageDetectionRecord {
             for detection in &frame.detections {
                 let score = f32::from_bits(detection.score_bits);
                 let [x0, y0, x1, y1] = detection.bounds;
-                if !rows.insert(detection.row)
+                // A native multilabel head can assign several classes to one model row.
+                // Each row/class pair is unique; another class must neither invalidate the
+                // retained report nor replace the selected class's actual assignment.
+                if !rows.insert((detection.row, detection.class_index))
                     || detection.class_index >= self.labels.len() as u64
                     || !score.is_finite()
                     || !(0.0..=1.0).contains(&score)
@@ -391,6 +394,31 @@ mod tests {
         let mut dimensions = record();
         dimensions.frames[0].dimensions = [u32::MAX, 1];
         assert!(dimensions.validate_shape().is_err());
+    }
+
+    #[test]
+    fn multilabel_rows_preserve_distinct_classes_and_reject_duplicate_class_assignments()
+    -> Result<()> {
+        let mut value = record();
+        value.labels.push("vehicle".into());
+        for frame in &mut value.frames {
+            let mut other_class = frame.detections[0];
+            other_class.class_index = 1;
+            other_class.score_bits = 0.5_f32.to_bits();
+            frame.detections.push(other_class);
+        }
+        // This is the native MultiLabel head shape: a single source row legitimately appears
+        // once for each admitted class. Retention and cold canonical decode must preserve both.
+        value.validate_shape()?;
+        let bytes = value.encode()?;
+        assert_eq!(PackageDetectionRecord::decode(&bytes)?, value);
+        let duplicate_class = value.frames[0].detections[1];
+        value.frames[0].detections.push(duplicate_class);
+        assert!(matches!(
+            value.validate_shape(),
+            Err(PackageEventError::Mismatch)
+        ));
+        Ok(())
     }
 
     #[test]

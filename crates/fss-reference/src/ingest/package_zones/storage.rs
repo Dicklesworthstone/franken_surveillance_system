@@ -36,9 +36,14 @@ pub(super) fn approval(
     principal: &str,
     report: ContentDigest,
     root: ContentDigest,
+    screened: bool,
 ) -> ContentDigest {
     let mut e = CanonicalEncoder::new();
-    e.text(PACKAGE_ZONE_APPROVAL_DOMAIN);
+    e.text(if screened {
+        PACKAGE_ZONE_SCREENED_APPROVAL_DOMAIN
+    } else {
+        PACKAGE_ZONE_APPROVAL_DOMAIN
+    });
     e.text(principal);
     e.digest(report);
     e.digest(root);
@@ -49,6 +54,7 @@ pub(super) fn manifest(
     digest: ContentDigest,
     config: &PackageZoneConfig,
     privacy: &MaskBinding,
+    health: Option<&health::Screening>,
 ) -> Result<ObjectManifest> {
     let record = analysis.retained().record();
     let mut children = BTreeSet::from([
@@ -61,7 +67,19 @@ pub(super) fn manifest(
     if let Some(policy) = privacy.policy_digest() {
         children.insert(policy);
     }
-    ObjectManifest::new("package-zones-v1", children, Some(digest)).map_err(source)
+    if let Some(health) = health {
+        children.extend(health.children());
+    }
+    ObjectManifest::new(
+        if health.is_some() {
+            "package-zones-v2"
+        } else {
+            "package-zones-v1"
+        },
+        children,
+        Some(digest),
+    )
+    .map_err(source)
 }
 fn read(
     deployment: &ReferenceDeployment,
@@ -196,6 +214,22 @@ impl PackageZoneReport {
         digest: ContentDigest,
         cx: &ReplayCx,
     ) -> Result<Self> {
+        Self::open_with_health_limits(
+            deployment,
+            digest,
+            super::super::historical_health::exposure::HealthExposureLimits::default(),
+            cx,
+        )
+    }
+    /// Cold reconstruction with an explicit whole-operation historical screening allowance.
+    /// The retained canonical recipe selects v1/v2; limits never change its interpretation.
+    pub fn open_with_health_limits(
+        deployment: &ReferenceDeployment,
+        digest: ContentDigest,
+        limits: super::super::historical_health::exposure::HealthExposureLimits,
+        cx: &ReplayCx,
+    ) -> Result<Self> {
+        limits.validate().map_err(source)?;
         checkpoint(cx, "package_zones:open")?;
         check_scope(deployment, cx)?;
         check_history_bound(deployment)?;
@@ -216,12 +250,13 @@ impl PackageZoneReport {
         if recipe.site != deployment.site_lineage() {
             return Err(PackageZoneError::AuthorityChanged);
         }
-        let report = Self::analyze(
+        let report = Self::analyze_inner(
             deployment,
             recipe.detection,
             &recipe.label,
             recipe.tracking,
             recipe.config,
+            recipe.screened.then_some(limits),
             cx,
         )?;
         if report.digest != digest
@@ -233,7 +268,7 @@ impl PackageZoneReport {
         }
         Ok(report)
     }
-    fn revalidate(&self, deployment: &ReferenceDeployment, cx: &ReplayCx) -> Result<()> {
+    fn revalidate(&mut self, deployment: &ReferenceDeployment, cx: &ReplayCx) -> Result<()> {
         check_scope(deployment, cx)?;
         if self.root.as_path() != deployment.root()
             || self.site != deployment.site_lineage()
@@ -241,12 +276,18 @@ impl PackageZoneReport {
         {
             return Err(PackageZoneError::AuthorityChanged);
         }
-        let report = Self::analyze(
+        let health_limits = self
+            .health
+            .as_mut()
+            .map(health::Screening::admit_revalidation)
+            .transpose()?;
+        let report = Self::analyze_inner(
             deployment,
             self.analysis.retained().record().report_digest,
             self.analysis.label(),
             self.analysis.config(),
             self.config.clone(),
+            health_limits,
             cx,
         )?;
         if report.bytes != self.bytes
@@ -254,6 +295,9 @@ impl PackageZoneReport {
             || report.approval != self.approval
         {
             return Err(PackageZoneError::Mismatch);
+        }
+        if let (Some(original), Some(current)) = (&mut self.health, &report.health) {
+            original.complete_revalidation(current)?;
         }
         Ok(())
     }
@@ -270,6 +314,29 @@ impl PackageZoneReport {
         if approved != self.approval {
             return Err(PackageZoneError::StaleApproval);
         }
+        check_scope(deployment, cx)?;
+        if self.root.as_path() != deployment.root()
+            || self.site != deployment.site_lineage()
+            || self.principal != cx.io_authority().principal()
+        {
+            return Err(PackageZoneError::AuthorityChanged);
+        }
+        let before = self
+            .health
+            .as_ref()
+            .map(|health| health.begin_retention(deployment))
+            .transpose()?;
+        let result = self.retain_inner(deployment, cx);
+        if let (Some(health), Some(before)) = (&mut self.health, before) {
+            health.finish_retention(before, deployment.publisher().spool().read_budget_usage())?;
+        }
+        result
+    }
+    fn retain_inner(
+        &mut self,
+        deployment: &mut ReferenceDeployment,
+        cx: &ReplayCx,
+    ) -> Result<bool> {
         self.revalidate(deployment, cx)?;
         if let Some(anchor) = existing(deployment, self)? {
             self.retention = Some(anchor);

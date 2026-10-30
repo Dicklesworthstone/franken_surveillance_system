@@ -30,6 +30,8 @@ check retained-localization cargo "+$channel" test --locked --offline --no-fail-
     -p fss-reference --test recorded_twin_localization_contract
 check incremental-dwell cargo "+$channel" test --locked --offline --no-fail-fast \
     -p fss-reference --lib ingest::long_dwell
+check package-detection-source-shape cargo "+$channel" test --locked --offline --no-fail-fast \
+    -p fss-reference --lib ingest::package_event::source_validation::tests::
 check package-zones cargo "+$channel" test --locked --offline --no-fail-fast \
     -p fss-reference --test package_zones_contract
 check package-zone-observations cargo "+$channel" test --locked --offline --no-fail-fast \

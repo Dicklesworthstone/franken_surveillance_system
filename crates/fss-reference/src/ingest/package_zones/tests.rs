@@ -194,3 +194,34 @@ fn aggregate_product_and_canonical_configuration_are_bounded() -> Result<()> {
     assert!(duplicate.normalized([64, 48]).is_err());
     Ok(())
 }
+
+#[test]
+fn screened_health_cuts_preserve_geometry_but_block_every_positive_transition() -> Result<()> {
+    use PackageZoneRelation::*;
+    let (cells, frames) = sequence(&[Outside, Inside, Inside, Inside, Outside]);
+    let unchanged = cells.clone();
+    let mut events = Vec::new();
+    compute::timeline_inner(
+        &cells,
+        &frames,
+        &config(),
+        Some(&[true, true, false, true, true]),
+        &mut events,
+    )?;
+    assert_eq!(cells, unchanged);
+    assert!(events.iter().any(
+        |event| event.kind == PackageZoneEventKind::ObservationInterrupted && event.at_frame == 2
+    ));
+    assert!(
+        !events
+            .iter()
+            .any(|event| event.kind == PackageZoneEventKind::SampledDwell)
+    );
+    events.clear();
+    compute::timeline_inner(&cells, &frames, &config(), Some(&[false; 5]), &mut events)?;
+    assert!(events.is_empty());
+    assert!(
+        compute::timeline_inner(&cells, &frames, &config(), Some(&[true; 4]), &mut events).is_err()
+    );
+    Ok(())
+}

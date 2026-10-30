@@ -21,6 +21,7 @@ use super::{RetainedFileImport, RetainedReadLimits};
 use crate::{ReferenceDeployment, ReplayCx};
 
 mod compute;
+mod health;
 mod json;
 mod storage;
 mod wire;
@@ -34,6 +35,10 @@ pub const PACKAGE_ZONE_CONFIG_DOMAIN: &str = "fss.package_zone_config.v1";
 pub const PACKAGE_ZONE_REPORT_DOMAIN: &str = "fss.package_zone_report.v1";
 /// Principal-, report- and root-bound cognition retention approval.
 pub const PACKAGE_ZONE_APPROVAL_DOMAIN: &str = "fss.package_zone_retention_approval.v1";
+/// Additive source-health-screened report; the original unscreened encoding remains unchanged.
+pub const PACKAGE_ZONE_SCREENED_REPORT_DOMAIN: &str = "fss.package_zone_report.v2";
+/// Separate approval for the historical-health-screened observation policy.
+pub const PACKAGE_ZONE_SCREENED_APPROVAL_DOMAIN: &str = "fss.package_zone_retention_approval.v2";
 /// Current cognition object family; deletion withdraws the selected report.
 pub const PACKAGE_ZONE_FAMILY: &str = "package_zone_report";
 /// Complete zone-set ceiling; excess zones are never selected by rank.
@@ -308,6 +313,7 @@ pub struct PackageZoneReport {
     capture_time_label: String,
     clock: ClockBasis,
     privacy: MaskBinding,
+    health: Option<health::Screening>,
     frames: Vec<PackageZoneFrame>,
     cells: Vec<PackageZoneCell>,
     events: Vec<PackageZoneEvent>,
@@ -329,7 +335,51 @@ impl PackageZoneReport {
         config: PackageZoneConfig,
         cx: &ReplayCx,
     ) -> Result<Self> {
+        Self::analyze_inner(
+            deployment,
+            package_report,
+            label,
+            tracking,
+            config,
+            None,
+            cx,
+        )
+    }
+    /// Require matching complete finite historical screening without findings for support.
+    /// Unknown, incomplete and finding-bearing samples keep their raw assignments but interrupt
+    /// transitions and dwell. This never certifies present camera health or absence.
+    pub fn analyze_screened(
+        deployment: &ReferenceDeployment,
+        package_report: ContentDigest,
+        label: &str,
+        tracking: PackageTrackingConfig,
+        config: PackageZoneConfig,
+        limits: super::historical_health::exposure::HealthExposureLimits,
+        cx: &ReplayCx,
+    ) -> Result<Self> {
+        Self::analyze_inner(
+            deployment,
+            package_report,
+            label,
+            tracking,
+            config,
+            Some(limits),
+            cx,
+        )
+    }
+    fn analyze_inner(
+        deployment: &ReferenceDeployment,
+        package_report: ContentDigest,
+        label: &str,
+        tracking: PackageTrackingConfig,
+        config: PackageZoneConfig,
+        health_limits: Option<super::historical_health::exposure::HealthExposureLimits>,
+        cx: &ReplayCx,
+    ) -> Result<Self> {
         checkpoint(cx, "package_zones:analyze")?;
+        if let Some(limits) = health_limits {
+            limits.validate().map_err(source)?;
+        }
         storage::check_scope(deployment, cx)?;
         storage::check_history_bound(deployment)?;
         let analysis = PackageAnalysisReport::read(deployment, package_report, label, tracking, cx)
@@ -398,7 +448,11 @@ impl PackageZoneReport {
                     .any(|b| b.before_segment == frame.segment),
             })
             .collect::<Vec<_>>();
-        let (cells, events) = compute::derive(&analysis, &config, &frames, &privacy, cx)?;
+        let health = health_limits
+            .map(|limits| health::Screening::read(deployment, &analysis, &privacy, limits, cx))
+            .transpose()?;
+        let (cells, events) =
+            compute::derive(&analysis, &config, &frames, &privacy, health.as_ref(), cx)?;
         let bytes = wire::encode(
             deployment.site_lineage(),
             &analysis,
@@ -409,11 +463,12 @@ impl PackageZoneReport {
             &frames,
             &cells,
             &events,
+            health.as_ref(),
         )?;
         let digest = ContentDigest::sha256(&bytes);
-        let manifest = storage::manifest(&analysis, digest, &config, &privacy)?;
+        let manifest = storage::manifest(&analysis, digest, &config, &privacy, health.as_ref())?;
         let principal = cx.io_authority().principal().to_owned();
-        let approval = storage::approval(&principal, digest, manifest.root());
+        let approval = storage::approval(&principal, digest, manifest.root(), health.is_some());
         let mut report = Self {
             site: deployment.site_lineage().to_owned(),
             root: deployment.root().to_path_buf(),
@@ -423,6 +478,7 @@ impl PackageZoneReport {
             capture_time_label,
             clock,
             privacy,
+            health,
             frames,
             cells,
             events,
@@ -435,6 +491,30 @@ impl PackageZoneReport {
         report.retention = storage::existing(deployment, &report)?;
         checkpoint(cx, "package_zones:complete")?;
         Ok(report)
+    }
+    /// Whether positive observations require the additive historical screening policy.
+    pub fn requires_health_screening(&self) -> bool {
+        self.health.is_some()
+    }
+    /// Exact per-source-frame historical screening and complete matching diagnostic pins.
+    pub fn health_exposures(
+        &self,
+    ) -> Option<&[super::historical_health::exposure::HealthExposure]> {
+        self.health
+            .as_ref()
+            .map(|health| health.exposures.as_slice())
+    }
+    /// Cumulative current-operation catalog work; excluded from the frozen report identity.
+    pub fn health_usage(&self) -> Option<super::historical_health::exposure::HealthExposureUsage> {
+        self.health.as_ref().map(|health| health.usage)
+    }
+    /// Whether this actual source frame may support a positive observation under this policy.
+    pub fn health_support_allowed(&self, frame: usize) -> Option<bool> {
+        self.health
+            .as_ref()?
+            .exposures
+            .get(frame)
+            .map(health::support_allowed)
     }
     /// Exact canonical bytes, preserving the underlying v2 package-analysis format.
     pub fn encoded(&self) -> &[u8] {

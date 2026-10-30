@@ -1,6 +1,8 @@
 #![forbid(unsafe_code)]
 //! Real retained JPEG/native-package execution, source withdrawals and cold zone reconstruction.
 //! The tiny model is numeric test data; the separate YOLOX case checks real clipped proposals.
+#[path = "package_zones_contract/health.rs"]
+mod health;
 mod package_zone_support;
 use fss_codec_mjpeg::ComponentInterpretation;
 use fss_core::region::{ContextAuthority, RootAuthoritySpec};

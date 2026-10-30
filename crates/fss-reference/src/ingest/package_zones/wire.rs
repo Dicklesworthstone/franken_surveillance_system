@@ -1,10 +1,11 @@
 #![forbid(unsafe_code)]
-//! Version-one canonical recipe and complete result. Recovery rebuilds and compares every byte.
+//! Versioned canonical recipes and complete results; legacy bytes remain unchanged. Recovery rebuilds and compares every byte.
 
 use super::*;
 use fss_core::{CanonicalDecoder, CanonicalEncode, CanonicalEncoder};
 
 const MAGIC: &[u8] = b"FSSPZNR1";
+const SCREENED_MAGIC: &[u8] = b"FSSPZNR2";
 pub(super) fn config_bytes(config: &PackageZoneConfig) -> Vec<u8> {
     let mut e = CanonicalEncoder::new();
     e.text(PACKAGE_ZONE_CONFIG_DOMAIN);
@@ -75,6 +76,7 @@ fn text(d: &mut CanonicalDecoder<'_>, maximum: usize) -> Result<String> {
     Ok(value.to_owned())
 }
 pub(super) struct Recipe {
+    pub screened: bool,
     pub site: String,
     pub detection: ContentDigest,
     pub analysis: ContentDigest,
@@ -87,12 +89,14 @@ pub(super) fn recipe(bytes: &[u8]) -> Result<Recipe> {
         return Err(PackageZoneError::Limit);
     }
     let mut d = CanonicalDecoder::new(bytes);
-    if d.bytes().map_err(source)? != MAGIC
-        || d.u32().map_err(source)? != 1
-        || d.text().map_err(source)? != PACKAGE_ZONE_REPORT_DOMAIN
-    {
-        return Err(PackageZoneError::Mismatch);
-    }
+    let magic = d.bytes().map_err(source)?;
+    let version = d.u32().map_err(source)?;
+    let domain = d.text().map_err(source)?;
+    let screened = match (magic, version, domain) {
+        (MAGIC, 1, PACKAGE_ZONE_REPORT_DOMAIN) => false,
+        (SCREENED_MAGIC, 2, PACKAGE_ZONE_SCREENED_REPORT_DOMAIN) => true,
+        _ => return Err(PackageZoneError::Mismatch),
+    };
     let site = text(&mut d, 256)?;
     let detection = d.digest().map_err(source)?;
     let analysis = d.digest().map_err(source)?;
@@ -106,6 +110,7 @@ pub(super) fn recipe(bytes: &[u8]) -> Result<Recipe> {
     // The complete rebuilt encoding below owns all remaining fields and rejects trailing,
     // missing, reordered or altered cells. This prefix never authorizes a partial result.
     Ok(Recipe {
+        screened,
         site,
         detection,
         analysis,
@@ -126,11 +131,20 @@ pub(super) fn encode(
     frames: &[PackageZoneFrame],
     cells: &[PackageZoneCell],
     events: &[PackageZoneEvent],
+    health: Option<&health::Screening>,
 ) -> Result<Vec<u8>> {
     let mut e = CanonicalEncoder::new();
-    e.bytes(MAGIC);
-    e.u32(1);
-    e.text(PACKAGE_ZONE_REPORT_DOMAIN);
+    e.bytes(if health.is_some() {
+        SCREENED_MAGIC
+    } else {
+        MAGIC
+    });
+    e.u32(if health.is_some() { 2 } else { 1 });
+    e.text(if health.is_some() {
+        PACKAGE_ZONE_SCREENED_REPORT_DOMAIN
+    } else {
+        PACKAGE_ZONE_REPORT_DOMAIN
+    });
     e.text(site);
     e.digest(analysis.retained().record().report_digest);
     e.digest(analysis.digest());
@@ -200,6 +214,9 @@ pub(super) fn encode(
                 e.text(&value.to_string());
             }
         }
+    }
+    if let Some(health) = health {
+        health.encode(&mut e);
     }
     let bytes = e.finish_checked().map_err(source)?;
     if bytes.len() > MAX_PACKAGE_ZONE_REPORT_BYTES {

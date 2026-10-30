@@ -10,6 +10,24 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Health-screened trained-package zones (reference)
+
+An explicit `fss-event package-zones analyze --require-health-screening yes` now combines exact
+retained class-selected geometry with native historical-health diagnostics. The additive v2 path
+loads one bounded catalog and assesses each distinct source frame once. Raw assigned boxes,
+geometric relations and confirmation remain visible, while missing, incomplete or suspect
+screening interrupts positive zone/crossing/dwell support. A clear finite screen is not a healthy
+camera or coverage certificate, and unavailable screening cannot imply departure or absence.
+
+The retained report closes over matching diagnostic records and traces alongside its original
+source. Cold reads and retention revalidate relevant current health/privacy/deletion custody;
+later findings or missing proof refuse the selected report without rewriting old evidence.
+Current-operation catalog/read/trace work is separately bounded and reported. Existing unscreened
+v1 behavior and canonical bytes remain unchanged. Six real native integration cases, a temporal
+gate case and the actual CLI fixture cover unknown, partial, clear and frozen screening, late
+diagnosis, source/privacy changes, corruption, budgets and legacy compatibility. Source, format
+and schema checks have run; full native execution is pending. See [package zones](docs/PACKAGE_ZONES.md).
+
 ## Native AVC/HEVC incremental dwell (reference)
 
 Supported flat H.264 and H.265 imports can now use bounded hot continuation and retained cold

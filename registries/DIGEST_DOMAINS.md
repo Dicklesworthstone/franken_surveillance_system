@@ -602,3 +602,10 @@ V1 registry IDs and domains remain reserved with their original meanings. New im
 |---|---|---|---|---|
 | `SCHEMA-DOMAIN-INCREMENTAL-DWELL-CHECKPOINT-003` | `fss.incremental_dwell_checkpoint.v3` | Native AVC/HEVC dwell continuation | derived/custody | Exact original native recipe, cumulative coding/display/scan/health work, explicit RASL skips, validated drain and complete prefix trace. Cold reconstruction reproduces the display prefix and separately admitted native read-ahead; completion cannot be inferred from consumed input alone. All earlier checkpoint identities remain unchanged. |
 | `SCHEMA-DOMAIN-INCREMENTAL-DWELL-RECIPE-003` | `fss.incremental-dwell.recipe.v3` | Native AVC/HEVC dwell execution recipe | derived/configuration | Exact source codec and native decoder identity, inter-coded policy, screening choice and optional exact health policy, site/principal/source/anchor/privacy, complete foreground/tracker/zone/dwell settings and original cumulative resource ceilings. No live capability or fresh allowance is restored from the recipe. |
+
+## Health-screened package zones
+
+| Registry ID | Domain | Owner | Plane | Meaning |
+|---|---|---|---|---|
+| `SCHEMA-DOMAIN-PACKAGE-ZONE-REPORT-002` | `fss.package_zone_report.v2` | Retained trained-package image zones | derived/cognition | Exact native detector/tracker geometry and temporal interpretation plus complete per-source-frame historical-health diagnostic pins/findings. Unknown, incomplete or suspect screens withhold positive support without removing observations. Current source/privacy/deletion and relevant diagnostic custody are rechecked; actual current-read costs are separate from immutable identity. |
+| `SCHEMA-DOMAIN-PACKAGE-ZONE-APPROVAL-002` | `fss.package_zone_retention_approval.v2` | Health-screened package-zone root publication | authority/approval binding | Exact principal, health-screened report and complete v2 source/diagnostic/trace-closed graph. Grants only explicitly requested root-last retention under existing publication authority; old unscreened approvals cannot authorize v2. No event, health certificate, absence or external effect grant. |
