@@ -14,6 +14,9 @@
 //! of the selected clock hypothesis. Constant offset excludes drift, rolling
 //! shutter, acceleration, camera uncertainty and incorrect feature association.
 
+/// Finite affine offset/rate hypotheses with outward-rounded time intervals.
+pub mod drift;
+
 use crate::temporal_triangulation::{
     MAX_TEMPORAL_SPAN_NS, MAX_TEMPORAL_VIEWS, TemporalTriangulationError,
     TemporalTriangulationOptions, TimedCalibratedView,
