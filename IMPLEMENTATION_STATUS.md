@@ -10,6 +10,24 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Native H.264 type-1 picture ordering (2026-10-30, reference)
+
+The pure-Rust AVC decoder now admits picture-order-count type 1 within its existing
+progressive 8-bit 4:2:0 profile. Bounded reference-offset cycles, signed slice deltas,
+non-reference pictures, frame-number wrap and IDR/MMCO 5 reset feed the existing
+reference-picture and display-order machinery. Inconsistent multi-slice identity,
+overflow and invalid headers refuse without a partial successful picture. Retained
+file and native RTSP consumers use this same decoder; existing type-0/type-2 pixels,
+receipt encodings and decoder labels remain unchanged.
+
+All 162 native codec tests pass on pinned `nightly-2026-08-31`, including three new
+real encoded streams with 19 independently frozen FFmpeg frame hashes, eleven
+focused ordering/bounds tests, and two actual RTP-to-decoder integrations covering
+fragmentation, packet reordering, sequence wrap and exact source byte spans. The
+previous pixel corpus and 2,000-mutant malformed-media gauntlet also pass. This closes
+the specific FSS-124 decoder admission gap, not its aggregate physical-device or
+release qualification. See [native H.264 picture ordering](docs/h264_picture_order.md).
+
 ## Durable ONVIF Create responses and cold recovery (2026-10-30, reference)
 
 Native PullPoint capture now commits every admitted complete final Create response

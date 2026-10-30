@@ -123,7 +123,7 @@ struct Pending {
     slices: Vec<SliceInfo>,
     next_mb: u32,
     poc: i32,
-    /// POC type 0 `PicOrderCntMsb` / lsb, type 2 `FrameNumOffset`.
+    /// POC type 0 `PicOrderCntMsb` / lsb, types 1 and 2 `FrameNumOffset`.
     poc_msb: i32,
     frame_num_offset: i64,
 }
@@ -378,6 +378,7 @@ impl Decoder {
             || header.idr_pic_id != first.idr_pic_id
             || header.poc_lsb != first.poc_lsb
             || header.delta_poc_bottom != first.delta_poc_bottom
+            || header.delta_poc != first.delta_poc
             || header.marking != first.marking
             || pending.sps != sps
         {
@@ -512,7 +513,7 @@ impl Decoder {
         Ok(())
     }
 
-    /// Picture order count (8.2.1) for POC types 0 and 2. Returns
+    /// Picture order count (8.2.1) for progressive frames and POC types 0, 1 and 2. Returns
     /// `(PicOrderCnt, PicOrderCntMsb, FrameNumOffset)`; the "previous
     /// picture" state is updated when the picture completes.
     fn picture_order_count(
@@ -541,6 +542,70 @@ impl Decoder {
                     .ok_or(DecodeError::Malformed)?;
                 Ok((top.min(bottom), msb, 0))
             }
+            1 => {
+                // 8.2.1.2 uses the previous picture in decoding order, including
+                // non-reference pictures. MMCO 5 resets both previous values in
+                // finish_picture; an empty offset cycle still carries frame_num state.
+                let max_frame_num = 1i64 << sps.log2_max_frame_num;
+                let offset = if header.idr {
+                    0
+                } else if self.prev_frame_num > header.frame_num {
+                    self.prev_frame_num_offset
+                        .checked_add(max_frame_num)
+                        .ok_or(DecodeError::Limit)?
+                } else {
+                    self.prev_frame_num_offset
+                };
+                // FrameNumOffset and both field POCs must individually fit i32,
+                // even when taking their minimum would hide an out-of-range field.
+                i32::try_from(offset).map_err(|_| DecodeError::Limit)?;
+                let cycle = &sps.offset_for_ref_frame;
+                let mut absolute = if cycle.is_empty() {
+                    0
+                } else {
+                    offset
+                        .checked_add(i64::from(header.frame_num))
+                        .ok_or(DecodeError::Limit)?
+                };
+                if header.nal_ref_idc == 0 && absolute > 0 {
+                    absolute -= 1;
+                }
+                let mut expected = 0i64;
+                if absolute > 0 {
+                    let length = i64::try_from(cycle.len()).map_err(|_| DecodeError::Limit)?;
+                    let cycles = (absolute - 1) / length;
+                    let index =
+                        usize::try_from((absolute - 1) % length).map_err(|_| DecodeError::Limit)?;
+                    let sum = cycle.iter().try_fold(0i64, |sum, value| {
+                        sum.checked_add(i64::from(*value)).ok_or(DecodeError::Limit)
+                    })?;
+                    expected = cycles.checked_mul(sum).ok_or(DecodeError::Limit)?;
+                    for value in &cycle[..=index] {
+                        expected = expected
+                            .checked_add(i64::from(*value))
+                            .ok_or(DecodeError::Limit)?;
+                    }
+                }
+                if header.nal_ref_idc == 0 {
+                    expected = expected
+                        .checked_add(i64::from(sps.offset_for_non_ref_pic))
+                        .ok_or(DecodeError::Limit)?;
+                }
+                let top = expected
+                    .checked_add(i64::from(header.delta_poc[0]))
+                    .ok_or(DecodeError::Limit)?;
+                let bottom = top
+                    .checked_add(i64::from(sps.offset_for_top_to_bottom_field))
+                    .and_then(|value| value.checked_add(i64::from(header.delta_poc[1])))
+                    .ok_or(DecodeError::Limit)?;
+                let top = i32::try_from(top).map_err(|_| DecodeError::Limit)?;
+                let bottom = i32::try_from(bottom).map_err(|_| DecodeError::Limit)?;
+                let poc = top.min(bottom);
+                if header.idr && poc != 0 {
+                    return Err(DecodeError::Malformed);
+                }
+                Ok((poc, 0, offset))
+            }
             2 => {
                 let max_frame_num = 1i64 << sps.log2_max_frame_num;
                 let offset = if header.idr {
@@ -564,7 +629,7 @@ impl Decoder {
                     offset,
                 ))
             }
-            _ => Err(DecodeError::Unsupported(UnsupportedFeature::PocType1)),
+            _ => Err(DecodeError::Malformed),
         }
     }
 

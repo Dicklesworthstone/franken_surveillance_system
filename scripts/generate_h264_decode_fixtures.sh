@@ -114,6 +114,10 @@ encode_profile h_cavlc_8x8 high 176x144 6 "keyint=6:cabac=0:bframes=2:8x8dct=1:q
 encode_profile h_cqm_custom_100x60 high 100x60 5 \
   "keyint=5:bframes=1:8x8dct=1:qp=24:cqm4i=6,12,19,26,12,19,26,33,19,26,33,40,26,33,40,47:cqm4p=9,14,18,22,14,18,22,26,18,22,26,30,22,26,30,34:cqm8=6,10,13,16,18,23,25,27,10,11,16,18,23,25,27,29,13,16,18,23,25,27,29,31,16,18,23,25,27,29,31,33,18,23,25,27,29,31,33,36,23,25,27,29,31,33,36,38,25,27,29,31,33,36,38,40,27,29,31,33,36,38,40,42"
 
+# Progressive POC type1: implicit cycle, explicit signed field deltas and
+# CAVLC B-picture reordering; encoded macroblock bits remain unchanged.
+python3 scripts/rewrite_h264_poc1_fixtures.py "$OUT"
+
 # Oracle decode: every frame to packed planar I420 via rawvideo; framehash
 # hashes each packet, i.e. exactly one frame (Y, then Cb, then Cr, no
 # padding). Output columns: frame index, byte count, sha256.

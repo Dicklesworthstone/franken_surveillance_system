@@ -7,6 +7,12 @@ decoders for Annex-B, MP4/QuickTime (indexed or fragmented), and Matroska import
 works after the original input file is removed. Supported codec profiles and refusals are those
 of the existing pure-Rust decoders; pixel change is not learned object detection.
 
+The H.264 decoder supports picture-order-count types 0, 1 and 2 within its existing
+progressive 8-bit 4:2:0 profile. Type 1 includes reference-offset cycles, signed
+slice deltas, frame-number wrap and B-picture display reordering. See
+[native H.264 picture ordering](h264_picture_order.md) for tested boundaries and
+source-to-pixel compatibility.
+
 First import the recording using the [file import workflow](FILE_IMPORT_WORKFLOW.md). Use the
 exact printed `import_identity` in the commands below. Examples assume a recording containing
 at least two frames. Replace the digest placeholder and explicitly select the component

@@ -32,9 +32,9 @@
 //!
 //! Admitted tool set: CAVLC and CABAC, I, P and B slices, frame pictures,
 //! 8-bit 4:2:0, the 8x8 transform and scaling matrices, weighted
-//! prediction, one slice group, slices in raster order, POC types 0 and 2.
+//! prediction, one slice group, slices in raster order, POC types 0, 1 and 2.
 //! Everything else (interlaced/PAFF/MBAFF, other chroma formats and bit
-//! depths, lossless, SP/SI, FMO/ASO, data partitioning, POC type 1, MVC
+//! depths, lossless, SP/SI, FMO/ASO, data partitioning, MVC
 //! and SVC) is refused with [`DecodeError::Unsupported`] naming the
 //! feature.
 //!
@@ -122,7 +122,8 @@ pub enum UnsupportedFeature {
     /// Historical: adaptive (MMCO) reference picture marking. Admitted; no
     /// longer produced, kept for API stability.
     AdaptiveRefPicMarking,
-    /// Picture order count type 1.
+    /// Historical: picture order count type 1. Progressive-frame type 1 is
+    /// admitted; no longer produced, kept for API stability.
     PocType1,
     /// Historical: output reordering. Pictures are now reordered through
     /// the decoded picture buffer; no longer produced, kept for API
