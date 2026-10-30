@@ -1,0 +1,47 @@
+{
+  "registry": "fss.clock_alignment_cli_contract.v1",
+  "owner": "fss-cli::fss-clock-align / fss-geometry::temporal_alignment",
+  "requirement_scope": "fss-x8j0v moving-target temporal calibration reference subset; broad bead remains open",
+  "query_schema": "schemas/clock_alignment_query.v1.json",
+  "response_schema": "fss.clock_alignment_response.v1",
+  "report_schema": "fss.clock_alignment_report.v1",
+  "error_schema": "fss.clock_alignment_error.v1",
+  "maximum_input_bytes": 1048576,
+  "maximum_output_bytes_including_newline": 8388608,
+  "maximum_hypotheses": 64,
+  "maximum_training": 128,
+  "maximum_validation": 128,
+  "maximum_absolute_offset_ns": 60000000000,
+  "maximum_work_units": 1000000000,
+  "offset_convention": "target_minus_reference; reference_time = target_time - offset",
+  "membership": "at least three nominal training and one full-interval validation observation per camera; no same-camera source/exposure reuse or global evidence-pin reuse",
+  "report_digest": "SHA-256 of the exact compact report object UTF-8 bytes, without the response wrapper or final newline; schema is part of the hashed object",
+  "trial_order": "ascending signed offset; complete requested set or whole-scan refusal",
+  "trial_refusal": "numerical nonconvergence, weak geometry and inadmissible fit windows remain unresolved, never impossible offsets",
+  "support_claim": "every validation interval satisfies the conditional fitted-motion gate for the explicitly sampled offset only",
+  "source_claim": "all source, calibration, image-domain, world and association pins are caller assertions; only the local input document is independently hash-checked",
+  "excluded_claims": [
+    "clock activation",
+    "continuous-offset uniqueness",
+    "drift estimation",
+    "source authentication",
+    "physical calibration qualification",
+    "coverage",
+    "effect authority",
+    "independent validation of a clock selected with these observations"
+  ],
+  "exit_codes": {
+    "0": "complete inventory; at least one all-times-supported trial, possibly ambiguous",
+    "3": "complete inventory; no all-times-supported trial",
+    "2": "invalid input, resource, I/O, authority or output refusal; no successful inventory"
+  },
+  "errors": {
+    "ERR-CLOCK-ALIGNMENT-INPUT-001": "invalid arguments, pins or schema",
+    "ERR-CLOCK-ALIGNMENT-IO-001": "bounded regular-file read refused",
+    "ERR-CLOCK-ALIGNMENT-LIMIT-001": "finite allocation or output limit",
+    "ERR-CLOCK-ALIGNMENT-SCAN-001": "native whole-scan refusal",
+    "ERR-CLOCK-ALIGNMENT-OUTPUT-001": "output write or flush failure",
+    "ERR-CLOCK-ALIGNMENT-AUTHORITY-001": "local explicit context refused"
+  },
+  "validation_status": "Rust contract tests added, not executed in the authoring environment; independent synthetic numerical fixture oracle executed only"
+}
