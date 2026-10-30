@@ -9,7 +9,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use fss_core::{
-    BudgetVector, CanonicalEncoder, ContentDigest, ContextAuthority, OperationId, RootAuthoritySpec,
+    BudgetVector, CanonicalEncoder, ContentDigest, ContextAuthority, OperationId,
+    RootAuthoritySpec, TimestampNs,
 };
 use fss_reference::onvif::capture_operation;
 use fss_reference::onvif::control::{
@@ -27,7 +28,7 @@ use super::{
     optional_digest, runtime, text,
 };
 
-const HELP: &str = "fss-onvif-metadata control <list|inspect|operation|unsubscribe> [options]
+const HELP: &str = "fss-onvif-metadata control <list|inspect|operation|reconcile-operation|unsubscribe> [options]
   list: --root ABSOLUTE_DIR --site SITE [--principal ID] [--max-records 64]
   inspect: --root ABSOLUTE_DIR --site SITE [--principal ID]
            --kind intent|created|unsubscribed|renew-intent|renewed|unsubscribe-intent|unsubscribe-outcome
@@ -35,6 +36,11 @@ const HELP: &str = "fss-onvif-metadata control <list|inspect|operation|unsubscri
            [--expected-root sha256:HEX]
   operation: --root ABSOLUTE_DIR --site SITE [--principal ID]
            --operation-id OPERATION_ID [--minimum-journal-root sha256:HEX]
+  reconcile-operation: --root ABSOLUTE_DIR --site SITE [--principal ID]
+           --operation-id OPERATION_ID --kind unsubscribed|unsubscribe-outcome
+           --control-id sha256:HEX --expected-root sha256:HEX
+           --receive-origin-ns N --owner-authorized yes --reconcile yes
+           [--minimum-journal-root sha256:HEX]
   unsubscribe: --root ABSOLUTE_DIR --site SITE [--principal ID]
            --subscription-id sha256:HEX --expected-root sha256:HEX
            --expected-control sha256:HEX
@@ -58,6 +64,12 @@ credentials or network access. Every recorded state consumes that ID. An indepen
 saved --minimum-journal-root must occur in the verified history, detecting rollback past
 that pin. An unavailable operation is not proof that no remote subscription exists.
 The fence records dispatch intent; use control custody to inspect Create/cleanup outcomes.
+New capture operations bind their exact Create intent before dispatch. reconcile-operation
+closes such an operation from a selected retained successful cleanup, without credentials,
+network access, Create, polling or Unsubscribe. It requires the original owner and a current
+receive origin. A successful raw cleanup outcome is sufficient after interrupted marker
+publication. Legacy operations without an original intent binding cannot be retrofitted.
+Reconciliation preserves the consumed operation ID and never claims current remote state.
 unsubscribe requires a fresh, explicit owner request with the original independent pins.
 It performs only Unsubscribe against the retained scoped endpoint; it never creates or polls.
 Inspect the created record for cleanup_control_witness before approving cleanup. Both the
@@ -71,6 +83,12 @@ Known terminal receipts survive late refusal and output failure; incomplete clea
 enum ColdAction {
     Operation {
         operation_id: OperationId,
+        minimum_journal_root: Option<ContentDigest>,
+    },
+    ReconcileOperation {
+        operation_id: OperationId,
+        evidence: capture_operation::CaptureCleanupEvidence,
+        receive_origin_ns: i128,
         minimum_journal_root: Option<ContentDigest>,
     },
     List {
@@ -93,18 +111,22 @@ struct ColdOptions {
 
 fn parse_cold(args: &[OsString]) -> Result<ColdOptions, &'static str> {
     if args.is_empty()
-        || args.len() > 19
+        || args.len() > 27
         || args.len() % 2 != 1
         || args.iter().any(|arg| arg.as_encoded_bytes().len() > 4096)
     {
         return Err(ARGUMENT_ERROR);
     }
     let command = args[0].to_str().ok_or(ARGUMENT_ERROR)?;
-    if !matches!(command, "list" | "inspect" | "operation") {
+    if !matches!(
+        command,
+        "list" | "inspect" | "operation" | "reconcile-operation"
+    ) {
         return Err(ARGUMENT_ERROR);
     }
     let listing = command == "list";
     let operation = command == "operation";
+    let reconcile = command == "reconcile-operation";
     let mut values = BTreeMap::new();
     for pair in args[1..].chunks_exact(2) {
         let key = pair[0].to_str().ok_or(ARGUMENT_ERROR)?;
@@ -113,6 +135,18 @@ fn parse_cold(args: &[OsString]) -> Result<ColdOptions, &'static str> {
             key == "--max-records"
         } else if operation {
             matches!(key, "--operation-id" | "--minimum-journal-root")
+        } else if reconcile {
+            matches!(
+                key,
+                "--operation-id"
+                    | "--minimum-journal-root"
+                    | "--kind"
+                    | "--control-id"
+                    | "--expected-root"
+                    | "--receive-origin-ns"
+                    | "--owner-authorized"
+                    | "--reconcile"
+            )
         } else {
             matches!(key, "--kind" | "--control-id" | "--expected-root")
         };
@@ -150,15 +184,47 @@ fn parse_cold(args: &[OsString]) -> Result<ColdOptions, &'static str> {
             return Err(ARGUMENT_ERROR);
         }
         ColdAction::List { max_records }
-    } else if operation {
+    } else if operation || reconcile {
         let minimum_journal_root = optional_digest(&values, "--minimum-journal-root")?;
         if minimum_journal_root.is_some_and(|digest| digest.bytes() == [0; 32]) {
             return Err(ARGUMENT_ERROR);
         }
-        ColdAction::Operation {
-            operation_id: OperationId::parse(text(&values, "--operation-id")?)
-                .map_err(|_| ARGUMENT_ERROR)?,
-            minimum_journal_root,
+        let operation_id =
+            OperationId::parse(text(&values, "--operation-id")?).map_err(|_| ARGUMENT_ERROR)?;
+        if reconcile {
+            if text(&values, "--owner-authorized")? != "yes"
+                || text(&values, "--reconcile")? != "yes"
+            {
+                return Err(ARGUMENT_ERROR);
+            }
+            let identity = digest(text(&values, "--control-id")?)?;
+            let root = digest(text(&values, "--expected-root")?)?;
+            if identity.bytes() == [0; 32] || root.bytes() == [0; 32] {
+                return Err(ARGUMENT_ERROR);
+            }
+            let evidence = match text(&values, "--kind")? {
+                "unsubscribed" => {
+                    capture_operation::CaptureCleanupEvidence::Unsubscribed { identity, root }
+                }
+                "unsubscribe-outcome" => {
+                    capture_operation::CaptureCleanupEvidence::Outcome { identity, root }
+                }
+                _ => return Err(ARGUMENT_ERROR),
+            };
+            let receive_origin_ns = text(&values, "--receive-origin-ns")?
+                .parse::<i128>()
+                .map_err(|_| ARGUMENT_ERROR)?;
+            ColdAction::ReconcileOperation {
+                operation_id,
+                evidence,
+                receive_origin_ns,
+                minimum_journal_root,
+            }
+        } else {
+            ColdAction::Operation {
+                operation_id,
+                minimum_journal_root,
+            }
         }
     } else {
         let kind = match text(&values, "--kind")? {
@@ -232,10 +298,21 @@ fn cleanup_report(status: &CleanupStatus) -> String {
     out
 }
 
-fn cold(options: ColdOptions) -> Result<String, &'static str> {
+enum ColdResult {
+    Report(String),
+    Reconciled(Box<capture_operation::CaptureOperationInspection>),
+}
+
+pub(super) fn cold(
+    args: &[OsString],
+    checkpoint: impl Fn(&str) -> Result<(), fss_reference::ReplayAdmissionError>,
+) -> Result<(String, bool), &'static str> {
+    let options = parse_cold(args)?;
     let records = match options.action {
         ColdAction::List { max_records } => max_records as u64,
-        ColdAction::Inspect { .. } | ColdAction::Operation { .. } => 1,
+        ColdAction::Inspect { .. }
+        | ColdAction::Operation { .. }
+        | ColdAction::ReconcileOperation { .. } => 1,
     };
     let cleanup_history = matches!(
         &options.action,
@@ -244,10 +321,14 @@ fn cold(options: ColdOptions) -> Result<String, &'static str> {
             ..
         }
     );
-    let operation_history = matches!(&options.action, ColdAction::Operation { .. });
+    let operation_history = matches!(
+        &options.action,
+        ColdAction::Operation { .. } | ColdAction::ReconcileOperation { .. }
+    );
+    let reconciliation = matches!(&options.action, ColdAction::ReconcileOperation { .. });
     let bytes = (records + 1) * 4 * 1024 * 1024
         + if operation_history {
-            2 * capture_operation::MAX_JOURNAL_BYTES
+            4 * capture_operation::MAX_JOURNAL_BYTES
         } else {
             0
         }
@@ -263,7 +344,8 @@ fn cold(options: ColdOptions) -> Result<String, &'static str> {
                 capture::CLEANUP_READ_OPERATIONS
             } else {
                 0
-            },
+            }
+            + if reconciliation { 32 } else { 0 },
     );
     let request = runtime::Request {
         approval: options.approval,
@@ -277,7 +359,7 @@ fn cold(options: ColdOptions) -> Result<String, &'static str> {
         write: true,
         secrets: false,
     };
-    runtime::run(request, |scope| {
+    let work = |scope: &runtime::Scope<'_, '_>| {
         existing(&options.root, scope)?;
         let authority = ContextAuthority::new_root(RootAuthoritySpec {
             trace_id: "trace:onvif-control-cold".into(),
@@ -300,9 +382,13 @@ fn cold(options: ColdOptions) -> Result<String, &'static str> {
         .map_err(|_| ARGUMENT_ERROR)?;
         let cx = ReplayCx::from_context_authority_read_only(&authority, options.root.clone())
             .map_err(|_| ARGUMENT_ERROR)?
-            .with_admission(|_| admission::check(scope));
+            .with_admission(|stage| {
+                // Additional checkpoints may only narrow the live native owner.
+                admission::check(scope)?;
+                checkpoint(stage)
+            });
         let result = (|| {
-            let deployment = ReferenceDeployment::open(&options.root, &options.site, &cx)
+            let mut deployment = ReferenceDeployment::open(&options.root, &options.site, &cx)
                 .map_err(|_| "ERR-ONVIF-METADATA-PUBLICATION-001")?;
             let mut out = String::new();
             macro_rules! line {
@@ -331,6 +417,33 @@ fn cold(options: ColdOptions) -> Result<String, &'static str> {
                     );
                     out.push_str(&capture::operation_report(&value));
                     line!("safe_next=inspect_control_custody_no_create_retry");
+                }
+                ColdAction::ReconcileOperation {
+                    operation_id,
+                    evidence,
+                    receive_origin_ns,
+                    minimum_journal_root,
+                } => {
+                    let value = capture_operation::reconcile_cleanup(
+                        &mut deployment,
+                        operation_id,
+                        *evidence,
+                        *minimum_journal_root,
+                        || {
+                            let elapsed = scope
+                                .now()
+                                .map_err(|_| capture_operation::CaptureOperationError::Authority)?;
+                            receive_origin_ns
+                                .checked_add(i128::from(elapsed))
+                                .map(TimestampNs)
+                                .ok_or(capture_operation::CaptureOperationError::InvalidBinding)
+                        },
+                        &cx,
+                    )
+                    .map_err(|error| error.code())?;
+                    // Only the exact durable terminal receipt crosses this boundary.
+                    // Render after retirement so late refusal cannot erase it.
+                    return Ok(ColdResult::Reconciled(Box::new(value)));
                 }
                 ColdAction::List { max_records } => {
                     let records =
@@ -522,12 +635,66 @@ fn cold(options: ColdOptions) -> Result<String, &'static str> {
             if out.len() > REPORT_LIMIT {
                 return Err(LIMIT_ERROR);
             }
-            Ok(out)
+            Ok(ColdResult::Report(out))
         })();
         let refusal = cx.admission_refusal().map(admission::code);
         cx.drain_and_finalize();
-        refusal.map_or(result, Err)
-    })
+        match result {
+            Ok(value) => Ok((value, refusal)),
+            Err(error) => Err(refusal.unwrap_or(error)),
+        }
+    };
+    if reconciliation {
+        let completed = runtime::run_committing(request, |scope| {
+            let (value, refusal) = work(scope)?;
+            match value {
+                ColdResult::Reconciled(value) => Ok(runtime::Committed::new((*value, refusal))),
+                ColdResult::Report(_) => Err(ARGUMENT_ERROR),
+            }
+        })?;
+        let minimum_checked = matches!(
+            options.action,
+            ColdAction::ReconcileOperation {
+                minimum_journal_root: Some(_),
+                ..
+            }
+        );
+        Ok(reconciliation_report(completed, minimum_checked))
+    } else {
+        let (value, refusal) = runtime::run(request, work)?;
+        if let Some(error) = refusal {
+            return Err(error);
+        }
+        match value {
+            ColdResult::Report(out) => Ok((out, true)),
+            ColdResult::Reconciled(_) => Err(ARGUMENT_ERROR),
+        }
+    }
+}
+
+pub(super) fn reconciliation_report(
+    completed: runtime::CommittedCompletion<(
+        capture_operation::CaptureOperationInspection,
+        Option<&'static str>,
+    )>,
+    minimum_checked: bool,
+) -> (String, bool) {
+    let (value, owner_error) = completed.value;
+    let post_commit_error = owner_error.or(completed.post_commit_error);
+    let complete = post_commit_error.is_none() && completed.finalization_error.is_none();
+    let mut out = format!(
+        "operation=control_operation_reconcile\nphase={}\nhttp_exchanges=0\ncreate_dispatched=false\npolls_dispatched=0\nunsubscribe_dispatched=false\ncleanup_custody_verified=true\nminimum_journal_root_checked={minimum_checked}\npost_commit_error={}\nfinalization_error={}\nvalues_disclosed=false\ncurrent_remote_state=unknown\nautomatic_create_retry_safe=false\n",
+        if complete {
+            "verified"
+        } else {
+            "verified_with_error"
+        },
+        post_commit_error.unwrap_or("none"),
+        completed.finalization_error.unwrap_or("none"),
+    );
+    out.push_str(&capture::operation_report(&value));
+    out.push_str("safe_next=operation_terminal_no_create_retry\n");
+    (out, complete)
 }
 
 fn kind_name(kind: ControlKind) -> &'static str {
@@ -760,9 +927,7 @@ pub(super) fn run_args(args: &[OsString]) -> Result<(String, bool), &'static str
     }
     match args[0].to_str() {
         Some("unsubscribe") => unsubscribe(&args[1..]),
-        Some("list" | "inspect" | "operation") => {
-            cold(parse_cold(args)?).map(|report| (report, true))
-        }
+        Some("list" | "inspect" | "operation" | "reconcile-operation") => cold(args, |_| Ok(())),
         _ => Err(ARGUMENT_ERROR),
     }
 }
@@ -773,6 +938,78 @@ mod tests {
 
     fn args(parts: &[&str]) -> Vec<OsString> {
         parts.iter().map(OsString::from).collect()
+    }
+
+    #[test]
+    fn reconciliation_requires_exact_terminal_custody_and_fresh_local_approval() {
+        let hash = ContentDigest::sha256(b"terminal").to_text();
+        let valid = args(&[
+            "reconcile-operation",
+            "--root",
+            "/owner",
+            "--site",
+            "site:test",
+            "--operation-id",
+            "operation:fixture",
+            "--kind",
+            "unsubscribed",
+            "--control-id",
+            &hash,
+            "--expected-root",
+            &hash,
+            "--receive-origin-ns",
+            "30000",
+            "--owner-authorized",
+            "yes",
+            "--reconcile",
+            "yes",
+        ]);
+        assert!(matches!(
+            parse_cold(&valid).map(|o| o.action),
+            Ok(ColdAction::ReconcileOperation { .. })
+        ));
+        for missing in [
+            "--operation-id",
+            "--control-id",
+            "--expected-root",
+            "--receive-origin-ns",
+            "--owner-authorized",
+            "--reconcile",
+        ] {
+            let mut changed = vec![valid[0].clone()];
+            for pair in valid[1..].chunks_exact(2) {
+                if pair[0] != missing {
+                    changed.extend_from_slice(pair);
+                }
+            }
+            assert!(parse_cold(&changed).is_err(), "accepted missing {missing}");
+        }
+        for (flag, value) in [
+            ("--kind", "created"),
+            ("--kind", "unsubscribe-intent"),
+            ("--owner-authorized", "no"),
+            ("--reconcile", "no"),
+        ] {
+            let mut changed = valid.clone();
+            let Some(index) = changed.iter().position(|argument| argument == flag) else {
+                panic!("test flag missing");
+            };
+            changed[index + 1] = value.into();
+            assert!(parse_cold(&changed).is_err(), "accepted {flag} {value}");
+        }
+        for flag in [
+            "--peer",
+            "--credential-file",
+            "--subscribe",
+            "--unsubscribe",
+        ] {
+            let mut changed = valid.clone();
+            changed.extend(args(&[flag, "not-authorized"]));
+            assert!(
+                parse_cold(&changed).is_err(),
+                "accepted network/secret field {flag}"
+            );
+        }
     }
 
     #[test]

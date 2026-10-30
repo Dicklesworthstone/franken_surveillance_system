@@ -916,7 +916,9 @@ fn main() -> ExitCode {
             let output = CommandOutput {
                 custody_receipt: args
                     .get(1)
-                    .filter(|arg| *arg == "unsubscribe")
+                    .filter(|arg| {
+                        matches!(arg.to_str(), Some("unsubscribe" | "reconcile-operation"))
+                    })
                     .map(|_| report.clone()),
                 report,
             };

@@ -49,9 +49,9 @@ use plan::Plan;
 // ceiling, not an allocation or permission for additional network effects.
 pub(super) const CLEANUP_READ_BYTES: u64 = 512 * 1024 * 1024;
 pub(super) const CLEANUP_READ_OPERATIONS: u64 = 4 * MAX_CATALOG_RECORDS as u64 + 32;
-// Reservation verifies twice; commitment verifies before pin checks, before append,
-// and after append. This cumulative read allowance is separate from cleanup custody.
-const OPERATION_READ_BYTES: u64 = 5 * capture_operation::MAX_JOURNAL_BYTES;
+// Reservation, commitment and terminal reconciliation independently verify durable
+// history. This cumulative allowance is separate from source/control custody.
+const OPERATION_READ_BYTES: u64 = 8 * capture_operation::MAX_JOURNAL_BYTES;
 
 pub(super) struct Owner<'a, 'scope, 'task> {
     pub(super) scope: &'a runtime::Scope<'scope, 'task>,
@@ -222,8 +222,8 @@ pub(super) struct ControlReceipts {
 
 /// This is a retained journal snapshot, not a remote-state or capture-success claim.
 pub(super) fn operation_report(value: &CaptureOperationInspection) -> String {
-    format!(
-        "capture_operation.internal_id={}\ncapture_operation.journal_root={}\ncapture_operation.snapshot_state={:?}\ncapture_operation.prepared_at_ns={}\ncapture_operation.updated_at_ns={}\ncapture_operation.request_digest={}\ncapture_operation.precondition_digest={}\ncapture_operation.obligation_id={}\ncapture_operation.durable_publication=true\ncapture_operation.historical_snapshot=true\ncapture_operation.create_retry_allowed=false\ncapture_operation.remote_dispatch=unknown\n",
+    let mut report = format!(
+        "capture_operation.internal_id={}\ncapture_operation.journal_root={}\ncapture_operation.snapshot_state={:?}\ncapture_operation.prepared_at_ns={}\ncapture_operation.updated_at_ns={}\ncapture_operation.request_digest={}\ncapture_operation.precondition_digest={}\ncapture_operation.obligation_id={}\ncapture_operation.obligation_state={:?}\ncapture_operation.cleanup_binding_available={}\ncapture_operation.durable_publication=true\ncapture_operation.historical_snapshot=true\ncapture_operation.create_retry_allowed=false\ncapture_operation.remote_dispatch=unknown\n",
         value.internal_operation_id,
         value.journal_root,
         value.receipt.state,
@@ -232,7 +232,18 @@ pub(super) fn operation_report(value: &CaptureOperationInspection) -> String {
         value.receipt.intent.request_digest,
         value.receipt.intent.precondition_digest,
         value.obligation_id,
-    )
+        value.obligation_state,
+        value.create_intent.is_some(),
+    );
+    if let Some(identity) = value.create_intent {
+        report.push_str(&format!(
+            "capture_operation.create_intent_identity={identity}\n"
+        ));
+    }
+    if let Some(proof) = value.proof_digest {
+        report.push_str(&format!("capture_operation.terminal_proof={proof}\n"));
+    }
+    report
 }
 
 impl ControlReceipts {
@@ -365,7 +376,7 @@ pub(super) fn retain_control<G: ReplayAdmission>(
     receipts: &mut ControlReceipts,
     observation: PullPointControl<'_>,
     cx: &ReplayCx<G>,
-    commit_now_ns: impl FnOnce() -> Result<u64, ClientError>,
+    mut commit_now_ns: impl FnMut() -> Result<u64, ClientError>,
 ) -> Result<RetainedProgress, MetadataError> {
     let mut deployment = deployment
         .try_borrow_mut()
@@ -378,36 +389,39 @@ pub(super) fn retain_control<G: ReplayAdmission>(
             started_ns,
             lifetime_seconds,
         } => {
+            let create = CreateIntentBinding {
+                source: SourceBinding {
+                    sensor_id: plan.sensor.clone(),
+                    device_generation: plan.device_generation,
+                    profile_generation: plan.profile_generation,
+                    profile_token: plan.profile.clone(),
+                    receive_interval: interval(plan, started_ns, started_ns)?,
+                },
+                events: events.clone(),
+                service_root: service_root.to_owned(),
+                message_id: message_id.to_owned(),
+                started_ns,
+                lifetime_seconds,
+            };
             // Reserve the stable owner operation before retaining a fresh wire intent.
             // Every existing journal state consumes the ID; only this live guard may
             // commit once, after exact Create intent custody and before network I/O.
             let operation = if let Some(binding) = &plan.operation {
                 let now = interval(plan, started_ns, started_ns)?.earliest;
-                let guard = capture_operation::reserve(&mut deployment, binding, now, cx)
-                    .map_err(|error| receipts.operation_refused(error))?;
+                let guard = capture_operation::reserve_for_create(
+                    &mut deployment,
+                    binding,
+                    &create,
+                    now,
+                    cx,
+                )
+                .map_err(|error| receipts.operation_refused(error))?;
                 receipts.operation = Some(guard.prepared().clone());
                 Some(guard)
             } else {
                 None
             };
-            let value = prepare_create(
-                &mut deployment,
-                CreateIntentBinding {
-                    source: SourceBinding {
-                        sensor_id: plan.sensor.clone(),
-                        device_generation: plan.device_generation,
-                        profile_generation: plan.profile_generation,
-                        profile_token: plan.profile.clone(),
-                        receive_interval: interval(plan, started_ns, started_ns)?,
-                    },
-                    events: events.clone(),
-                    service_root: service_root.to_owned(),
-                    message_id: message_id.to_owned(),
-                    started_ns,
-                    lifetime_seconds,
-                },
-                cx,
-            )?;
+            let value = prepare_create(&mut deployment, create, cx)?;
             let receipt = RetainedBatch {
                 identity: value.identity(),
                 root: value.publication_root(),
@@ -421,7 +435,12 @@ pub(super) fn retain_control<G: ReplayAdmission>(
                     let observed_now = commit_now_ns().map_err(|_| MetadataError::Authority)?;
                     let now = interval(plan, started_ns, observed_now)?.latest;
                     let committed = guard
-                        .commit(&mut deployment, now, cx)
+                        .commit_with_intent(
+                            &mut deployment,
+                            receipts.intent.as_ref().ok_or(MetadataError::Custody)?,
+                            now,
+                            cx,
+                        )
                         .map_err(|error| receipts.operation_refused(error))?;
                     receipts.operation = Some(committed);
                 }
@@ -549,6 +568,30 @@ pub(super) fn retain_control<G: ReplayAdmission>(
                 root: value.publication_root(),
             };
             receipts.unsubscribed = Some(value);
+            if let Some(binding) = &plan.operation {
+                let evidence = capture_operation::CaptureCleanupEvidence::Unsubscribed {
+                    identity: receipt.identity,
+                    root: receipt.root,
+                };
+                let reconciled = capture_operation::reconcile_cleanup(
+                    &mut deployment,
+                    &binding.operation_id,
+                    evidence,
+                    None,
+                    || {
+                        let observed =
+                            commit_now_ns().map_err(|_| CaptureOperationError::Authority)?;
+                        let now = plan
+                            .receive_origin_ns
+                            .checked_add(i128::from(observed))
+                            .ok_or(CaptureOperationError::InvalidBinding)?;
+                        Ok(TimestampNs(now))
+                    },
+                    cx,
+                )
+                .map_err(|error| receipts.operation_refused(error))?;
+                receipts.operation = Some(reconciled);
+            }
             (receipt, true)
         }
         PullPointControl::RenewIntent {
@@ -664,7 +707,7 @@ pub(super) fn run_args(args: &[OsString]) -> Result<(String, bool), &'static str
     let publications =
         u64::from(plan.config.max_pulls) + 2 * u64::from(plan.config.max_renewals) + 5;
     let operations =
-        publications + CLEANUP_READ_OPERATIONS + if plan.operation.is_some() { 8 } else { 0 };
+        publications + CLEANUP_READ_OPERATIONS + if plan.operation.is_some() { 16 } else { 0 };
     let retained_allowance = publications * 4 * 1024 * 1024
         + CLEANUP_READ_BYTES
         + if plan.operation.is_some() {

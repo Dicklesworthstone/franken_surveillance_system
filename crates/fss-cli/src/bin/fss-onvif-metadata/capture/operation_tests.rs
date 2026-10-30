@@ -308,3 +308,191 @@ fn nonadvancing_commit_clock_keeps_prepared_id_and_intent_without_dispatch_permi
     }
     Ok(())
 }
+
+#[test]
+fn native_cleanup_closes_its_bound_operation_and_preserves_custody_after_clock_refusal() -> Test {
+    for refuse_clock in [false, true] {
+        let directory = Directory::new(if refuse_clock {
+            "cleanup-clock"
+        } else {
+            "cleanup-ok"
+        })?;
+        let plan = directory.plan("10000")?;
+        let cx = directory.context(&plan)?;
+        let deployment = RefCell::new(ReferenceDeployment::open(&plan.root, SITE, &cx)?);
+        let mut receipts = ControlReceipts::default();
+        retain_control(
+            &deployment,
+            &plan,
+            &mut receipts,
+            create_intent(&plan, MESSAGE, 1000),
+            &cx,
+            || Ok(1050),
+        )?;
+        retain_control(
+            &deployment,
+            &plan,
+            &mut receipts,
+            PullPointControl::Created {
+                source: SOURCE,
+                message_id: MESSAGE,
+                started_ns: 1000,
+                completed_ns: 1100,
+                authenticated: false,
+            },
+            &cx,
+            || Err(ClientError::Authority),
+        )?;
+        let route = plan.config.events.event_subscription(
+            receipts
+                .created
+                .as_ref()
+                .ok_or("Create receipt missing")?
+                .subscription()
+                .endpoint(),
+            &plan.config.service_root,
+        )?;
+        let source = br#"<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:w="http://www.w3.org/2005/08/addressing" xmlns:n="http://docs.oasis-open.org/wsn/b-2"><s:Header><w:Action s:mustUnderstand="1">http://docs.oasis-open.org/wsn/bw-2/SubscriptionManager/UnsubscribeResponse</w:Action><w:RelatesTo>urn:fss:onvif:native-operation-cleanup</w:RelatesTo></s:Header><s:Body><n:UnsubscribeResponse/></s:Body></s:Envelope>"#;
+        let mut now = 1300;
+        let result = retain_control(
+            &deployment,
+            &plan,
+            &mut receipts,
+            PullPointControl::Unsubscribed {
+                route: &route,
+                source,
+                message_id: "urn:fss:onvif:native-operation-cleanup",
+                started_ns: 1200,
+                completed_ns: 1210,
+                authenticated: false,
+            },
+            &cx,
+            || {
+                if refuse_clock {
+                    return Err(ClientError::Authority);
+                }
+                now += 1;
+                Ok(now)
+            },
+        );
+        assert_eq!(result.is_ok(), !refuse_clock);
+        let ended = receipts
+            .unsubscribed
+            .as_ref()
+            .ok_or("durable cleanup lost on reconciliation refusal")?;
+        let handle = (ended.identity(), ended.publication_root());
+        let binding = plan.operation.as_ref().ok_or("missing operation")?;
+        let current = capture_operation::inspect(
+            &deployment.borrow(),
+            &binding.operation_id,
+            Some(binding),
+            None,
+            &cx,
+        )?;
+        assert_eq!(
+            current.receipt.state,
+            if refuse_clock {
+                EffectState::Committed
+            } else {
+                EffectState::Verified
+            }
+        );
+        assert!(current.create_intent.is_some());
+        if !refuse_clock {
+            assert_eq!(
+                current.obligation_state,
+                fss_core::ObligationState::Verified
+            );
+            assert!(current.proof_digest.is_some());
+        }
+        drop(deployment);
+        if refuse_clock {
+            // The real cold owner must keep its durable terminal receipt when
+            // admission is refused only after the final journal append.
+            let mut args = vec![
+                OsString::from("reconcile-operation"),
+                OsString::from("--root"),
+                plan.root.as_os_str().to_owned(),
+            ];
+            for (key, value) in [
+                ("--site", SITE),
+                ("--principal", OWNER),
+                ("--operation-id", binding.operation_id.as_str()),
+                ("--kind", "unsubscribed"),
+                ("--receive-origin-ns", "30000"),
+                ("--owner-authorized", "yes"),
+                ("--reconcile", "yes"),
+            ] {
+                args.extend([OsString::from(key), OsString::from(value)]);
+            }
+            args.extend([
+                OsString::from("--control-id"),
+                OsString::from(handle.0.to_text()),
+                OsString::from("--expected-root"),
+                OsString::from(handle.1.to_text()),
+            ]);
+            let reached = Cell::new(false);
+            let (report, complete) = super::super::control::cold(&args, |stage| {
+                if stage == capture_operation::STAGE_CLEANUP_RECONCILED {
+                    reached.set(true);
+                    Err(fss_reference::ReplayAdmissionError::Cancelled)
+                } else {
+                    Ok(())
+                }
+            })?;
+            assert!(reached.get());
+            assert!(!complete);
+            assert!(report.contains("phase=verified_with_error\n"));
+            assert!(report.contains("post_commit_error=ERR-ONVIF-CANCELLED-001\n"));
+            assert!(report.contains("capture_operation.snapshot_state=Verified\n"));
+            assert!(report.contains("capture_operation.obligation_state=Verified\n"));
+            assert!(report.contains("create_dispatched=false\n"));
+            assert!(!report.contains("private-native-operation-source"));
+            let journal = fs::read(plan.root.join("effects/journal.fssj"))?;
+            let (retry, complete) = super::super::control::cold(&args, |_| Ok(()))?;
+            assert!(complete);
+            assert!(retry.contains("phase=verified\n"));
+            assert_eq!(fs::read(plan.root.join("effects/journal.fssj"))?, journal);
+        }
+        let cold_cx = directory.context(&plan)?;
+        let mut cold = ReferenceDeployment::reopen(&plan.root, SITE, &cold_cx)?;
+        RetainedUnsubscribe::open(&cold, handle.0, Some(handle.1), &cold_cx)?;
+        let mut now = 40_000;
+        let reconciled = capture_operation::reconcile_cleanup(
+            &mut cold,
+            &binding.operation_id,
+            capture_operation::CaptureCleanupEvidence::Unsubscribed {
+                identity: handle.0,
+                root: handle.1,
+            },
+            None,
+            || {
+                now += 1;
+                Ok(TimestampNs(now))
+            },
+            &cold_cx,
+        )?;
+        assert_eq!(reconciled.receipt.state, EffectState::Verified);
+        assert_eq!(
+            reconciled.obligation_state,
+            fss_core::ObligationState::Verified
+        );
+        let expected_proof = reconciled.proof_digest.ok_or("terminal proof missing")?;
+        let (report, complete) = super::super::control::reconciliation_report(
+            runtime::CommittedCompletion {
+                value: (reconciled, Some("ERR-ONVIF-CANCELLED-001")),
+                post_commit_error: Some("ERR-ONVIF-DEADLINE-001"),
+                finalization_error: Some("ERR-ONVIF-AUTHORITY-001"),
+            },
+            false,
+        );
+        assert!(!complete);
+        assert!(report.contains("phase=verified_with_error\n"));
+        assert!(report.contains("post_commit_error=ERR-ONVIF-CANCELLED-001\n"));
+        assert!(report.contains("finalization_error=ERR-ONVIF-AUTHORITY-001\n"));
+        assert!(report.contains(&format!(
+            "capture_operation.terminal_proof={expected_proof}\n"
+        )));
+    }
+    Ok(())
+}

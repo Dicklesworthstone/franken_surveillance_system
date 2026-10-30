@@ -35,11 +35,11 @@ Capture defaults to at most four pulls of five seconds each, 128 notifications p
 
 Add `--operation-id operation:front-session-0001` to the capture command when a request must remain identifiable across output loss, process failure or an operator retry. Choose the ID before the first attempt and preserve it with the intended request. The option is additive; calls that omit it retain their existing capture approval and behavior.
 
-The native owner durably reserves the ID before publishing a fresh Create intent. It then publishes the exact wire intent and durably commits dispatch intent before the callback can permit network I/O. Only the newly reserved live guard can commit. Every existing journal state consumes the ID, including `Prepared` left by a crash before the network request, `Committed`, and restart-reclassified `Indeterminate`. Repeating the ID exits nonzero before another Create is permitted. This is a conservative dispatch fence, not a promise of remote exactly-once execution or automatic recovery.
+The native owner durably reserves the ID and the exact forthcoming Create-intent hash before publishing that intent. It then publishes the exact wire intent and durably commits dispatch intent before the callback can permit network I/O. Only the newly reserved live guard can commit, and the intent must have been published after that reservation. A Create hash already bound to another operation cannot obtain another guard. Every existing journal state consumes the ID, including `Prepared` left by a crash before the network request, `Committed`, restart-reclassified `Indeterminate`, and terminal `Verified`. Repeating the ID exits nonzero before another Create is permitted. This is a conservative dispatch fence, not a promise of remote exactly-once execution or automatic recovery.
 
 The key depends only on site lineage and the owner-supplied ID. Reusing it under a different owner or changed request returns a conflict instead of deriving another key. The stable request fingerprint binds the effective sensor/device/profile pins, peer, HTTP authority, service path/subtree/generation, authentication mode/credential locator/realm/policy, and all capture/transport limits. Defaults and argument ordering normalize to the same request; fresh receive origins, MessageIDs, nonces and process clocks do not create a new operation. Credential values are never fingerprint inputs. The admitted live principal must match the declared owner at both reservation and commitment.
 
-Capture output includes `operation_fence_enabled` and, when observed, `capture_operation.internal_id`, `journal_root`, `snapshot_state`, request/precondition digests and obligation ID. These are historical journal snapshots. A committed fence records dispatch intent; it does not prove that the camera received Create or that a subscription is active. The generic effect obligation is not terminalized by this fence, so it can remain `Indeterminate` after restart even when separate control custody records a successful Create and cleanup. Those control records remain the source of observed outcomes.
+Capture output includes `operation_fence_enabled` and, when observed, `capture_operation.internal_id`, `journal_root`, `snapshot_state`, request/precondition digests, the exact Create-intent identity, obligation state and terminal proof. These are historical journal snapshots. A committed fence records dispatch intent; it does not prove that the camera received Create or that a subscription is active. New captures reconcile their obligation to `Verified` only after reopening exact successful cleanup custody linked to the originally pinned Create. Control records remain the source of observed outcomes; terminal reconciliation does not assert current remote state.
 
 Inspect the stable ID after a restart without camera credentials or network access:
 
@@ -51,7 +51,28 @@ target/debug/fss-onvif-metadata control operation \
 
 If a journal root was independently saved from an earlier capture or inspection, add `--minimum-journal-root "$CAPTURE_JOURNAL_ROOT"`. The root must occur in the complete verified journal history; a valid older prefix that omits it is refused. This detects rollback past that known pin, not a newer unobserved suffix. Without an independent pin, restoring an entire deployment to a snapshot from before reservation cannot establish that the operation was already consumed.
 
-The fence retains hashes, fixed labels and timestamps in the existing effect journal. It contains no raw operation ID, principal label, endpoint, credential or SOAP payload. Native metadata/control source deletion leaves it intact and cannot make the ID reusable. History inspection is bounded to 64 MiB and 65,536 operations/obligations; an exceeded or damaged history refuses admission. Native capture reserves an additional 320 MiB of cumulative read allowance for the five bounded pre/post-publication journal checks, separately from cleanup custody; this is not a memory allocation. There is no reset, resume or automatic new-ID path. Inspect control custody and reconcile any uncertainty before separately approving a genuinely new capture under a new ID. An unavailable operation or an empty control catalog does not establish remote absence.
+The fence retains hashes, fixed labels and timestamps in the existing effect journal. It contains no raw operation ID, principal label, endpoint, credential or SOAP payload. Native metadata/control source deletion leaves it intact, preserves any already verified terminal proof and cannot make the ID reusable. History inspection is bounded to 64 MiB and 65,536 operations/obligations; an exceeded or damaged history refuses admission. Native capture reserves an additional 512 MiB of cumulative journal-read allowance, separately from cleanup custody; this is not a memory allocation. There is no Create reset, resume or automatic new-ID path. An unavailable operation or an empty control catalog does not establish remote absence.
+
+### Reconcile a capture obligation after restart
+
+If cleanup custody committed but the process stopped before the effect journal reached `Verified`, select its exact `unsubscribed` identity and root from the control catalog and use the original capture owner:
+
+```sh
+target/debug/fss-onvif-metadata control reconcile-operation \
+  --root /srv/fss/site --site site:home --principal "$CAPTURE_OWNER" \
+  --operation-id operation:front-session-0001 \
+  --kind unsubscribed --control-id "$CLEANUP_ID" --expected-root "$CLEANUP_ROOT" \
+  --receive-origin-ns "$CURRENT_RECEIVE_ORIGIN_NS" \
+  --owner-authorized yes --reconcile yes
+```
+
+This command performs local verification and journal transitions only; it opens no credentials or network connection. A raw `unsubscribe-outcome` with verified success can be selected instead when final marker publication was interrupted. Failed, malformed, uncorrelated, missing, deleted or unrelated cleanup custody refuses. The retained original Create hash, complete parent/source closure, exact selected root, admitted owner and original physical stores all participate in verification. `--minimum-journal-root` also supports an independently saved history pin.
+
+Crashes between historical Create acceptance, cleanup observation and terminal verification leave a resumable journal state. Repeat the same terminal kind, identity and root to finish that proof; an already verified exact retry writes nothing. Fresh clock observations must advance beyond existing transitions and the retained receive interval. A later refusal preserves prior committed progress and never authorizes another camera request. Source deletion after completion preserves the source-free terminal history and retry fence; a deleted source cannot establish a new terminal proof.
+
+If cancellation, deadline expiry or request retirement fails after terminal verification commits, the command retains its operation identity, proof and journal root, reports `phase=verified_with_error` with separate `post_commit_error` and `finalization_error` fields, and exits nonzero. Failure to write stdout uses the same hash-only stderr receipt fallback as cleanup. These errors do not roll back the terminal history or permit another Create.
+
+Legacy reservations report `capture_operation.cleanup_binding_available=false`. Their original unbound predicate is retained byte-for-byte and cannot be retrofitted with a convenient cleanup receipt. Such records remain inspectable and consumed; their unresolved history requires separate owner review. No camera interoperability or remote absence claim follows from this local reconciliation.
 
 ### Opt in to bounded renewal
 
@@ -400,6 +421,7 @@ cargo test --locked -p fss-reference \
   --test durable_effect_authority \
   --test replay_admission_contract
 cargo test --locked -p fss-cli --bin fss-onvif-metadata
+cargo test --locked -p fss-cli --test onvif_native_capture_cli
 ```
 
 These suites cover namespace and numeric rejection, missing/opaque fields, frozen v1 bytes and roots, explicit v2 reinterpretation, generation rebinding, corrupt custody, disclosure controls and durable-receipt preservation. Renewal cases cover bounded attempts, unchanged deadlines, intent-before-dispatch, unusable complete replies, lost-response uncertainty, cold verification and hold/deletion closure. Operation-fence cases cover changed owner/configuration conflicts, preparation/commit cancellation cuts, restart uncertainty, physical-store substitution, independent rollback pins and source deletion; CLI cases cover normalized request identity and the actual pre-Create custody hook. They use synthetic inputs and local reference deployments. Their execution status belongs in `IMPLEMENTATION_STATUS.md`; their existence alone establishes no camera interoperability, Profile M conformance, recognition quality or full release qualification.

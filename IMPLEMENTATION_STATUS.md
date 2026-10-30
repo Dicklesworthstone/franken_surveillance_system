@@ -10,6 +10,28 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Terminal ONVIF capture obligations and cold reconciliation (2026-10-29, reference)
+
+New stable capture reservations now pin their exact future Create intent in the original
+immutable preparation. Dispatch requires that intent to have been freshly published in the
+same local authority history after reservation; old, foreign-store and duplicate-bound intent
+handles refuse. Successful retained cleanup can then verify the operation and close its generic
+effect obligation. The source-free consumed-ID fence survives deletion and never permits replay.
+
+`fss-onvif-metadata control reconcile-operation` completes interrupted operations from exact
+retained Unsubscribe custody, including a verified successful raw outcome when final marker
+publication failed. It needs neither credentials nor network access. Proof binds original owner,
+preparation, physical stores and complete Create/cleanup ancestry. Acceptance/observation/verify
+crash cuts resume under the same proof; terminal retries append nothing. Legacy unbound records
+retain their bytes and cannot borrow an unrelated terminal receipt. Late cancellation or runtime
+retirement failure preserves the terminal receipt with `verified_with_error` and a nonzero exit.
+
+Ten native recovery regressions, native-hook/cold-owner cuts and a subprocess command workflow
+were added. Independent review found and repaired cross-store intent freshness and late-receipt
+loss before delivery. Pinned formatting and static review passed; native execution is pending.
+This closes one capture-obligation lifecycle, without qualifying live devices or continuous
+operation. See [ONVIF recovery commands](docs/onvif-metadata.md).
+
 ## Independent health retention from completed checkpoints (2026-10-29, reference)
 
 Completed screened dwell checkpoints now expose the same independently approvable historical

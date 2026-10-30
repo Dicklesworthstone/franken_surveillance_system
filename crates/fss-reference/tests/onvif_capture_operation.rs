@@ -21,6 +21,9 @@ use fss_reference::onvif::http::HttpRoute;
 use fss_reference::onvif::metadata::{MetadataError, SourceBinding};
 use fss_reference::{ReferenceDeployment, ReplayCx};
 
+#[path = "onvif_capture_operation/reconciliation.rs"]
+mod reconciliation;
+
 type Test<T = ()> = Result<T, Box<dyn std::error::Error>>;
 const SITE: &str = "site:capture-operation-fixture";
 const PRINCIPAL: &str = "operator:private-owner-operation-canary";

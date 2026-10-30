@@ -101,6 +101,19 @@ impl CreateIntentBinding {
         Ok(())
     }
 
+    /// Derive the exact immutable intent identity before dispatch or publication.
+    ///
+    /// A capture-operation reservation can pin this hash before any remote effect.
+    /// The digest is not a custody receipt or permission to dispatch; the actual
+    /// intent still has to be published and reopened under current authority.
+    pub fn identity(&self, site: &str) -> Result<ContentDigest, MetadataError> {
+        let record = codec::IntentRecord {
+            site: site.to_owned(),
+            binding: self.clone(),
+        };
+        Ok(ContentDigest::sha256(&codec::encode_intent(&record)?))
+    }
+
     fn receive_interval(&self, completed_ns: u64) -> Result<CaptureInterval, MetadataError> {
         let elapsed = completed_ns
             .checked_sub(self.started_ns)

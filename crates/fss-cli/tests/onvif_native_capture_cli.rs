@@ -16,6 +16,9 @@ use std::time::{Duration, Instant};
 use fss_core::ContentDigest;
 use fss_reference::rtsp::metadata_source::NativeMetadataSource;
 
+#[path = "onvif_native_capture_cli/reconciliation.rs"]
+mod reconciliation;
+
 type Test<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 const SITE: &str = "site:native-metadata-cli-test";
 const SENSOR: &str = "sensor:private-native-camera";

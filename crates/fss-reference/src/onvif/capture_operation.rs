@@ -14,15 +14,24 @@
 //!
 //! Committed records dispatch intent, not proof of a sent request or an active
 //! remote subscription. Existing ONVIF control custody records own observations.
+//! New reservations can bind their exact Create intent before dispatch and later
+//! reconcile a retained successful cleanup into a terminal journal obligation.
+
+mod reconciliation;
+pub use reconciliation::{
+    CLEANUP_PROOF_DOMAIN, CaptureCleanupEvidence, STAGE_CLEANUP_ACCEPTED, STAGE_CLEANUP_OBSERVED,
+    STAGE_CLEANUP_RECONCILED, STAGE_CLEANUP_REVALIDATED, reconcile_cleanup,
+};
 
 use std::fmt;
 
 use fss_core::effect::EffectAuthority;
 use fss_core::{
     CanonicalEncoder, ContentDigest, ContractError, DigestAlgorithm, EffectIntent, EffectState,
-    IdempotencyKey, ObligationId, OperationId, OperationReceipt, TimestampNs,
+    IdempotencyKey, ObligationId, ObligationState, OperationId, OperationReceipt, TimestampNs,
 };
 
+use super::control::{CreateIntentBinding, RetainedCreateIntent};
 use crate::{DurableEffectError, ReferenceDeployment, ReplayAdmission, ReplayCx};
 
 /// Canonical identity binds site lineage and the owner-provided operation ID only.
@@ -31,8 +40,10 @@ pub const KEY_DOMAIN: &str = "fss.onvif_capture_operation_key.v1";
 pub const PRINCIPAL_DOMAIN: &str = "fss.onvif_capture_operation_principal.v1";
 /// Effect class reserved for this native capture owner.
 pub const EFFECT_CLASS: &str = "onvif.pullpoint.capture";
-/// Informational obligation predicate; this module never asserts its completion.
+/// Legacy unbound obligation predicate. Its historical records cannot be reconciled here.
 pub const TERMINAL_PREDICATE: &str = "onvif.capture.control_reconciled";
+/// An exact Create identity follows this prefix in a new bound obligation predicate.
+pub const BOUND_TERMINAL_PREDICATE: &str = "onvif.capture.control_reconciled.v2:";
 /// Maximum verified effect-journal history at this synchronous boundary.
 pub const MAX_JOURNAL_BYTES: u64 = 64 * 1024 * 1024;
 /// Maximum operation/obligation history inspected by this owner.
@@ -85,6 +96,12 @@ pub struct CaptureOperationInspection {
     pub receipt: OperationReceipt,
     /// Deterministic obligation opened by the original reservation.
     pub obligation_id: ObligationId,
+    /// Exact Create intent pinned before dispatch; absent only for legacy reservations.
+    pub create_intent: Option<ContentDigest>,
+    /// Current durable obligation state, distinct from dispatch or current remote state.
+    pub obligation_state: ObligationState,
+    /// Journal-owned terminal proof, if this obligation has been reconciled.
+    pub proof_digest: Option<ContentDigest>,
     /// Verified current effect-journal root, suitable as an independent minimum pin.
     pub journal_root: ContentDigest,
 }
@@ -100,6 +117,7 @@ pub struct CaptureOperationGuard {
     prepared: CaptureOperationInspection,
     ledger_store_pin: ContentDigest,
     effect_store_pin: ContentDigest,
+    reserved_authority_sequence: u64,
 }
 
 impl fmt::Debug for CaptureOperationGuard {
@@ -237,16 +255,37 @@ fn owner_authority(
     keys: &Keys,
 ) -> Result<EffectAuthority, CaptureOperationError> {
     validate(binding)?;
-    let mut encoder = CanonicalEncoder::new();
-    encoder.text(PRINCIPAL_DOMAIN);
-    encoder.text(&binding.principal);
-    let digest = ContentDigest::sha256(&encoder.finish_checked()?);
     EffectAuthority::new(
-        format!("principal:onvif-capture:{}", digest.to_text()),
+        owner_principal(&binding.principal)?,
         keys.capability.clone(),
         None,
     )
     .map_err(|_| CaptureOperationError::InvalidBinding)
+}
+
+fn owner_principal(principal: &str) -> Result<String, CaptureOperationError> {
+    if !valid_label(principal) {
+        return Err(CaptureOperationError::InvalidBinding);
+    }
+    let mut encoder = CanonicalEncoder::new();
+    encoder.text(PRINCIPAL_DOMAIN);
+    encoder.text(principal);
+    let digest = ContentDigest::sha256(&encoder.finish_checked()?);
+    Ok(format!("principal:onvif-capture:{}", digest.to_text()))
+}
+
+fn bound_intent(predicate: &str) -> Result<Option<ContentDigest>, CaptureOperationError> {
+    if predicate == TERMINAL_PREDICATE {
+        return Ok(None);
+    }
+    let text = predicate
+        .strip_prefix(BOUND_TERMINAL_PREDICATE)
+        .ok_or(CaptureOperationError::Custody)?;
+    let identity = ContentDigest::parse(text).map_err(|_| CaptureOperationError::Custody)?;
+    if !valid_digest(identity) || identity.to_text() != text {
+        return Err(CaptureOperationError::Custody);
+    }
+    Ok(Some(identity))
 }
 
 fn checkpoint(
@@ -312,6 +351,7 @@ fn inspection(
     let obligation = journal
         .obligation(&keys.obligation_id)
         .ok_or(CaptureOperationError::Custody)?;
+    let create_intent = bound_intent(&prepared.terminal_predicate)?;
     let principal_hash = receipt
         .authority
         .principal
@@ -325,9 +365,12 @@ fn inspection(
         || !valid_digest(receipt.intent.request_digest)
         || !valid_digest(receipt.intent.precondition_digest)
         || prepared.obligation_id != keys.obligation_id
-        || prepared.terminal_predicate != TERMINAL_PREDICATE
         || obligation.operation_id != keys.operation_id
-        || obligation.terminal_predicate != TERMINAL_PREDICATE
+        || obligation.terminal_predicate != prepared.terminal_predicate
+        || (receipt.state == EffectState::Verified
+            && (obligation.state != ObligationState::Verified
+                || receipt.result_digest.is_none()
+                || obligation.proof_digest != receipt.result_digest))
         || journal
             .obligations()
             .filter(|value| value.operation_id == keys.operation_id)
@@ -341,6 +384,9 @@ fn inspection(
         internal_operation_id: keys.operation_id.clone(),
         receipt: receipt.clone(),
         obligation_id: keys.obligation_id.clone(),
+        create_intent,
+        obligation_state: obligation.state,
+        proof_digest: obligation.proof_digest,
         journal_root: journal.last_root(),
     };
     if let Some(expected) = expected {
@@ -388,6 +434,37 @@ pub fn reserve(
     now: TimestampNs,
     cx: &ReplayCx<impl ReplayAdmission>,
 ) -> Result<CaptureOperationGuard, CaptureOperationError> {
+    reserve_inner(deployment, binding, None, now, cx)
+}
+
+/// Reserve a new owner operation with its exact future Create intent already pinned.
+///
+/// The immutable predicate is part of the original durable preparation. Existing
+/// reservations, including legacy ones, are never upgraded, rebound or redispatched.
+/// Only `commit_with_intent` may commit this guard after exact fresh intent custody.
+pub fn reserve_for_create(
+    deployment: &mut ReferenceDeployment,
+    binding: &CaptureOperationBinding,
+    create: &CreateIntentBinding,
+    now: TimestampNs,
+    cx: &ReplayCx<impl ReplayAdmission>,
+) -> Result<CaptureOperationGuard, CaptureOperationError> {
+    if create.source.receive_interval.earliest != now {
+        return Err(CaptureOperationError::InvalidBinding);
+    }
+    let identity = create
+        .identity(deployment.site_lineage())
+        .map_err(|_| CaptureOperationError::InvalidBinding)?;
+    reserve_inner(deployment, binding, Some(identity), now, cx)
+}
+
+fn reserve_inner(
+    deployment: &mut ReferenceDeployment,
+    binding: &CaptureOperationBinding,
+    create_intent: Option<ContentDigest>,
+    now: TimestampNs,
+    cx: &ReplayCx<impl ReplayAdmission>,
+) -> Result<CaptureOperationGuard, CaptureOperationError> {
     validate(binding)?;
     if cx.io_authority().principal() != binding.principal {
         return Err(CaptureOperationError::Authority);
@@ -397,6 +474,21 @@ pub fn reserve(
     if deployment.effects().operation(&keys.operation_id).is_some() {
         let existing = inspection(deployment, &binding.operation_id, Some(binding))?;
         return Err(CaptureOperationError::Existing(Box::new(existing)));
+    }
+    if let Some(identity) = create_intent {
+        // A cloned fresh handle must not authorize the same Create through a
+        // second stable owner ID. Reservations are serialized by this deployment.
+        for operation in deployment.effects().operations() {
+            if operation.intent.effect_class == EFFECT_CLASS {
+                let prior = deployment
+                    .effects()
+                    .effect_journal()
+                    .prepared_record(&operation.intent.operation_id)?;
+                if bound_intent(&prior.terminal_predicate)? == Some(identity) {
+                    return Err(CaptureOperationError::Custody);
+                }
+            }
+        }
     }
     let ledger_store_pin = deployment
         .ledger()
@@ -416,10 +508,14 @@ pub fn reserve(
     )
     .map_err(|_| CaptureOperationError::InvalidBinding)?;
     checkpoint(cx, STAGE_PREPARE)?;
+    let terminal_predicate = create_intent.map_or_else(
+        || TERMINAL_PREDICATE.to_owned(),
+        |identity| format!("{BOUND_TERMINAL_PREDICATE}{}", identity.to_text()),
+    );
     deployment.effects_mut().prepare_with_authority(
         intent,
         keys.obligation_id,
-        TERMINAL_PREDICATE,
+        terminal_predicate,
         authority,
         now,
     )?;
@@ -435,6 +531,7 @@ pub fn reserve(
         prepared,
         ledger_store_pin,
         effect_store_pin,
+        reserved_authority_sequence: deployment.current_anchor().commit_sequence,
     })
 }
 
@@ -450,6 +547,50 @@ impl CaptureOperationGuard {
     /// This guard is consumed on every return, including pre-append refusal and
     /// ambiguous persistence failure. No network call belongs inside this method.
     pub fn commit(
+        self,
+        deployment: &mut ReferenceDeployment,
+        now: TimestampNs,
+        cx: &ReplayCx<impl ReplayAdmission>,
+    ) -> Result<CaptureOperationInspection, CaptureOperationError> {
+        if self.prepared.create_intent.is_some() {
+            return Err(CaptureOperationError::Custody);
+        }
+        self.commit_inner(deployment, now, cx)
+    }
+
+    /// Commit a bound reservation only after the exact fresh Create intent is durable.
+    ///
+    /// The intent is reopened against current custody. A retained handle, an old
+    /// intent or another operation's Create cannot grant this one dispatch.
+    pub fn commit_with_intent(
+        self,
+        deployment: &mut ReferenceDeployment,
+        intent: &RetainedCreateIntent,
+        now: TimestampNs,
+        cx: &ReplayCx<impl ReplayAdmission>,
+    ) -> Result<CaptureOperationInspection, CaptureOperationError> {
+        if self.prepared.create_intent != Some(intent.identity())
+            || !intent.newly_prepared()
+            || intent.authority_anchor().commit_sequence <= self.reserved_authority_sequence
+        {
+            return Err(CaptureOperationError::Custody);
+        }
+        let local = RetainedCreateIntent::open(
+            deployment,
+            intent.identity(),
+            Some(intent.publication_root()),
+            cx,
+        )
+        .map_err(|_| CaptureOperationError::Custody)?;
+        if local.authority_anchor() != intent.authority_anchor()
+            || local.authority_anchor().commit_sequence <= self.reserved_authority_sequence
+        {
+            return Err(CaptureOperationError::Custody);
+        }
+        self.commit_inner(deployment, now, cx)
+    }
+
+    fn commit_inner(
         self,
         deployment: &mut ReferenceDeployment,
         now: TimestampNs,
@@ -473,6 +614,7 @@ impl CaptureOperationGuard {
         )?;
         if current.internal_operation_id != self.prepared.internal_operation_id
             || current.receipt != self.prepared.receipt
+            || current.create_intent != self.prepared.create_intent
             || current.receipt.state != EffectState::Prepared
         {
             return Err(CaptureOperationError::Custody);

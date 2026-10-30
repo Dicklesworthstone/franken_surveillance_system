@@ -54,6 +54,7 @@
     "crates/fss-reference/src/ingest/calibration_monitor.rs",
     "crates/fss-reference/src/onvif/control/termination/attempt.rs",
     "crates/fss-reference/src/onvif/capture_operation.rs",
+    "crates/fss-reference/src/onvif/capture_operation/reconciliation.rs",
     "crates/fss-reference/src/onvif/metadata/rtp.rs"
   ],
   "module_declarations": {
@@ -786,6 +787,7 @@
     "crates/fss-reference/src/onvif/control/termination/attempt.rs": "ambiguous",
     "crates/fss-reference/src/onvif/control/termination/attempt/codec.rs": "support",
     "crates/fss-reference/src/onvif/capture_operation.rs": "effect",
+    "crates/fss-reference/src/onvif/capture_operation/reconciliation.rs": "effect",
     "crates/fss-reference/src/onvif/metadata/rtp.rs": "ambiguous",
     "crates/fss-reference/src/onvif/metadata/rtp/record.rs": "cognition",
     "crates/fss-reference/src/onvif/metadata/rtp/replay.rs": "cognition",

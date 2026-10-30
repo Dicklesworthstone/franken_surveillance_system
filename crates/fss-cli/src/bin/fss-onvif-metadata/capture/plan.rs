@@ -30,6 +30,9 @@ pub(super) const HELP: &str = "fss-onvif-metadata capture [options]
 Use --operation-id to fence this owner operation across retries and restarts. Any existing
 ID refuses another Create, including an attempt whose result is unknown. Changed owner
 or capture pins under the same ID conflict. Inspect with control operation --operation-id.
+New reservations bind the exact Create intent before dispatch. Successful retained cleanup
+closes their durable obligation; interrupted reconciliation resumes with control
+reconcile-operation and the exact retained terminal receipt, without another camera request.
 The fence survives metadata/control source deletion; it never resumes an old attempt.
 Creates one finite device-event PullPoint subscription, retains complete event responses,
 then attempts Unsubscribe within the original deadline. No automatic reconnect.
