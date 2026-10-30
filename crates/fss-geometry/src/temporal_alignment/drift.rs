@@ -211,6 +211,18 @@ pub fn scan_clock_drift(
 ) -> Result<ClockDriftScan, ClockDriftError> {
     budget.charge(0)?;
     let started = budget.used();
+    // Match the native fit policy before hypothesis-dependent rounding can
+    // refuse an interval before that fitter's own option admission is reached.
+    if !(1..=32).contains(&options.max_iterations)
+        || !(1e-6..=1e6).contains(&options.max_reprojection_pixels)
+        || !(1e-6..=1e12).contains(&options.max_distance)
+        || !(1e-9..=1e12).contains(&options.max_speed)
+        || !(1.0..=1e12).contains(&options.max_condition_number)
+    {
+        return Err(ClockDriftError::Native(TemporalValidationError::Fit(
+            TemporalTriangulationError::InvalidOptions,
+        )));
+    }
     if training.len() > MAX_TEMPORAL_VIEWS || validation.len() > MAX_TEMPORAL_VIEWS
         || hypotheses.len() > MAX_CLOCK_OFFSET_HYPOTHESES
     {

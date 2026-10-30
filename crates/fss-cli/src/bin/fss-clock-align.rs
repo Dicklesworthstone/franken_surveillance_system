@@ -5,6 +5,8 @@
 mod input;
 #[path = "fss-clock-align/report.rs"]
 mod report;
+#[path = "fss-clock-align/drift.rs"]
+mod drift;
 #[cfg(test)]
 #[path = "fss-clock-align/tests.rs"]
 mod tests;
@@ -25,7 +27,7 @@ const MAX_INPUT_BYTES: usize = 1024 * 1024;
 const MAX_REPORT_BYTES: usize = 8 * 1024 * 1024;
 const DEFAULT_WORK: u64 = 100_000_000;
 const MAX_WORK: u64 = 1_000_000_000;
-const HELP: &str = "fss-clock-align --input QUERY.json --input-digest sha256:HEX [--work-units N]\n\nRead one explicitly pinned local query and report EVERY supplied constant clock-offset\nhypothesis over native moving-feature fits. Query schema: fss.clock_alignment_query.v1.\nNo camera contact, source hydration, clock activation, coverage or effects. Source,\nassociation and calibration pins remain caller assertions. See docs/MOVING_TARGET_CLOCK_ALIGNMENT.md.\nExit 0: complete scan with at least one all-times-supported hypothesis (possibly ambiguous).\nExit 3: complete scan without an all-times-supported hypothesis. Exit 2: refused/incomplete.\n";
+const HELP: &str = "fss-clock-align --input QUERY.json --input-digest sha256:HEX [--work-units N]\n\nRead one explicitly pinned local query and report EVERY supplied clock hypothesis over\nnative moving-feature fits. fss.clock_alignment_query.v1 searches constant offsets;\nfss.clock_drift_query.v1 searches explicit offset/rate pairs at a declared target anchor.\nNo camera contact, source hydration, clock activation, coverage or effects. Source,\nassociation and calibration pins remain caller assertions. See docs/MOVING_TARGET_CLOCK_ALIGNMENT.md.\nExit 0: complete scan with at least one all-times-supported hypothesis (possibly ambiguous).\nExit 3: complete scan without an all-times-supported hypothesis. Exit 2: refused/incomplete.\n";
 
 #[derive(Debug)]
 struct Failure { code: &'static str, detail: String }
@@ -94,6 +96,9 @@ fn analyze(bytes: &[u8], expected: ContentDigest, work_limit: u64) -> Result<(St
     }
     let value = parse(std::str::from_utf8(bytes).map_err(|_| failure("input", "input is not UTF-8"))?)
         .map_err(|_| failure("input", "invalid or oversized JSON"))?;
+    if value.object().and_then(|fields| fields.get("schema")).and_then(|value| value.text()) == Some(drift::SCHEMA) {
+        return drift::analyze(&value, expected, work_limit, bytes.len());
+    }
     let query = input::query(&value)?;
     let mut budget = WorkBudget::new(work_limit);
     let scan = scan_clock_offsets(query.pair, &query.training, &query.validation, &query.offsets,

@@ -165,3 +165,20 @@ fn duplicate_inventory_and_source_clock_changes_are_not_silently_accepted() -> T
     assert!(scan_clock_drift(changed, OFFSET, &training, &validation, &rates(), options(), &mut WorkBudget::new(WORK)).is_err());
     Ok(())
 }
+
+#[test]
+fn malformed_fit_policy_is_a_whole_scan_refusal() -> Test {
+    use fss_geometry::temporal_triangulation::TemporalTriangulationError;
+    use fss_geometry::temporal_validation::TemporalValidationError;
+    let (training, validation) = fixture(0, SKEW, true)?;
+    for invalid in [
+        Options { max_reprojection_pixels: f64::NAN, ..options() },
+        Options { max_speed: f64::INFINITY, ..options() },
+        Options { max_condition_number: 0.5, ..options() },
+        Options { max_iterations: 33, ..options() },
+    ] {
+        assert_eq!(scan_clock_drift(pair(), OFFSET, &training, &validation, &rates(), invalid, &mut WorkBudget::new(WORK)),
+            Err(Error::Native(TemporalValidationError::Fit(TemporalTriangulationError::InvalidOptions))));
+    }
+    Ok(())
+}
