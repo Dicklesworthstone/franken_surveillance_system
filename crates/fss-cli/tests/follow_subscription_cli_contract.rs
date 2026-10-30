@@ -485,7 +485,11 @@ impl Fixture {
         );
         let wire = json_input::parse(lines[1])?;
         let result = field(&wire, "result")?;
-        assert_eq!(field(result, "isError")?, &Value::Bool(error));
+        assert_eq!(
+            field(result, "isError")?,
+            &Value::Bool(error),
+            "MCP follow {label}, acknowledge={ack:?}, wait_ms={wait_ms:?}: {stdout}"
+        );
         let content = array(result, "content")?;
         assert_eq!(content.len(), 1);
         Reply::parse(

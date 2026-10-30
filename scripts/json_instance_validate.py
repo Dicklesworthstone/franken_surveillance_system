@@ -5,7 +5,8 @@ Validates JSON instances against repository JSON schemas adhering to the
 CAP- EXEC model execution receipt specification (fss-2h5zq.47):
 - Supported validation keywords: type (including type arrays), const, enum,
   required, properties, additionalProperties (bool or schema), pattern,
-  minLength, maxLength, minimum, maximum, minItems, maxItems, uniqueItems,
+  minLength, maxLength, minimum, maximum, exclusiveMinimum, exclusiveMaximum,
+  minItems, maxItems, uniqueItems,
   maxProperties, items, anyOf, allOf, not, if/then/else, $ref.
 - Supported container/annotation keywords: $schema, $id, title, description,
   $comment, $defs.
@@ -58,6 +59,8 @@ SUPPORTED_VALIDATION_KEYWORDS = frozenset({
     "maxLength",
     "minimum",
     "maximum",
+    "exclusiveMinimum",
+    "exclusiveMaximum",
     "minItems",
     "maxItems",
     "uniqueItems",
@@ -232,8 +235,6 @@ class InstanceValidator:
         sid = id(schema)
         if sid in self._verified_subschemas:
             return
-        self._verified_subschemas.add(sid)
-
         for kw in schema:
             if kw not in ALL_SUPPORTED_KEYWORDS:
                 raise SchemaSyntaxError(
@@ -241,6 +242,20 @@ class InstanceValidator:
                     kw,
                     f"keyword '{kw}' is not in the supported Draft 2020-12 subset",
                 )
+
+        # Draft 2020-12 exclusive bounds are numbers, not the boolean flags used by
+        # older drafts. Check reachable schemas even when their property is absent.
+        for kw in ("minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum"):
+            if kw in schema:
+                bound = schema[kw]
+                if (
+                    isinstance(bound, bool)
+                    or not isinstance(bound, (int, float))
+                    or (isinstance(bound, float) and not math.isfinite(bound))
+                ):
+                    raise SchemaSyntaxError(schema_loc, kw, f"{kw} must be a finite number")
+
+        self._verified_subschemas.add(sid)
 
     def check_reachable_schema_keywords(
         self,
@@ -424,7 +439,7 @@ class InstanceValidator:
                         "pattern",
                     )
 
-        # 6. Number/Integer-specific keywords: minimum
+        # 6. Number/Integer-specific keywords: inclusive and exclusive bounds
         if isinstance(instance, (int, float)) and not isinstance(instance, bool):
             if "minimum" in schema:
                 min_val = schema["minimum"]
@@ -441,6 +456,22 @@ class InstanceValidator:
                         data_path,
                         f"numeric value {instance} is greater than maximum {max_val}",
                         "maximum",
+                    )
+            if "exclusiveMinimum" in schema:
+                min_val = schema["exclusiveMinimum"]
+                if instance <= min_val:
+                    raise JsonInstanceValidationError(
+                        data_path,
+                        f"numeric value {instance} is not greater than exclusiveMinimum {min_val}",
+                        "exclusiveMinimum",
+                    )
+            if "exclusiveMaximum" in schema:
+                max_val = schema["exclusiveMaximum"]
+                if instance >= max_val:
+                    raise JsonInstanceValidationError(
+                        data_path,
+                        f"numeric value {instance} is not less than exclusiveMaximum {max_val}",
+                        "exclusiveMaximum",
                     )
 
         # 7. Array-specific keywords: minItems, maxItems, uniqueItems, items
@@ -613,6 +644,9 @@ class InstanceValidator:
 
     def validate(self, schema_doc: dict[str, Any], instance: Any, schema_name: str = "root") -> None:
         """Validates instance against root schema document."""
+        # Identity caching is local to this validation: a reused validator may receive a
+        # modified schema or a different object with a recycled Python identity.
+        self._verified_subschemas.clear()
         self.check_reachable_schema_keywords(schema_doc, schema_doc, schema_name, schema_name)
         self.validate_node(
             schema=schema_doc,

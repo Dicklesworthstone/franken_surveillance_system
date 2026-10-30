@@ -562,8 +562,11 @@ fn orient_investigate_plan_commit_verify_learn_handoff_rehearsal() -> TestResult
             "Protect the door.",
             "--objective",
             "Alert the owner on a corroborated entry.",
-            // A later selected forensic learning read has its own 8,000-token response
-            // allowance; admit it here without changing the session's compact default view.
+            // The full case and captured-learning uncertainty must fit the session's explicit
+            // 3,000-token orientation view. A cumulative grant cannot widen Brief's 1,600-token
+            // hard cap; the separate grant also admits the later 8,000-token forensic read.
+            "--view",
+            "epistemic_map",
             "--budget-tokens",
             "64000",
         ],
@@ -1063,6 +1066,39 @@ fn orient_investigate_plan_commit_verify_learn_handoff_rehearsal() -> TestResult
         field(&learned, &["payload"])?
     );
     assert_eq!(&pointers(&recovered)?[..6], &learned_pointers[..6]);
+
+    // Read the complete post-capture context under the same explicitly selected registered
+    // view. Success must preserve every critical item, invalidation and contradiction rather
+    // than obtaining a small answer by dropping the newly retained advisory context.
+    let learning_context = driver.ok(
+        "learning-context",
+        &["orient", "--session", &session, "--view", "epistemic_map"],
+    )?;
+    let context_proofs = pointers(&learning_context)?;
+    for pointer in learned_pointers.iter().take(6) {
+        assert!(
+            context_proofs.contains(pointer),
+            "lost captured context {pointer}"
+        );
+    }
+    for envelope in [&opened, &learning_context] {
+        let receipt = field(envelope, &["payload", "compressionReceipt"])?;
+        assert_eq!(text(receipt, &["viewId"])?, "AVIEW-008");
+        let tokens = field(receipt, &["actualTokens"])?
+            .integer()
+            .ok_or("context token count")?;
+        assert!((1..=3000).contains(&tokens));
+        for name in [
+            "omittedCriticalItems",
+            "omittedInvalidations",
+            "omittedContradictions",
+        ] {
+            assert_eq!(
+                field(receipt, &["criticalPreservation", name])?.integer(),
+                Some(0)
+            );
+        }
+    }
 
     // A separate process must recover the same complete capture without resubmitting feedback.
     // This exercises the historical verifier as well as live capture's evidence admission.

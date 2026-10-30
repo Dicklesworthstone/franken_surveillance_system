@@ -411,12 +411,14 @@ fn captured(
 }
 fn original(root: &Path, digest: &str) -> Test<(NativeMetadataSource, Vec<u8>)> {
     let expected = ContentDigest::parse(digest)?;
-    let path = root.join("objects/spool/objects").join(
-        digest
-            .strip_prefix("sha256:")
-            .ok_or("source is not SHA-256")?,
-    );
-    let bytes = fs::read(path)?;
+    // A spool file contains a durable envelope; the reported source identity binds its
+    // verified payload, not the framing bytes. Keep the native source ceiling and full hash.
+    let bytes = fss_object::read_verified_payload(
+        root.join("objects/spool"),
+        expected,
+        fss_reference::onvif::metadata::rtp::MAX_NATIVE_SOURCE_BYTES,
+        &fss_object::HostSpoolIo,
+    )?;
     assert_eq!(ContentDigest::sha256(&bytes), expected);
     Ok((NativeMetadataSource::decode(&bytes)?, bytes))
 }

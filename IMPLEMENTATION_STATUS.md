@@ -39,8 +39,13 @@ This repairs the real plan/verify/close/feedback/learn integration failure witho
 promotion, policy or effect authority. Regression coverage preserves exact retry, cold inspection
 and the retained-feedback boundary on refusal. The retained-calibration negative fixture also
 reverifies its exact staged children so it reaches the intended historical withdrawal gate.
-Pinned formatting and independent source review precede native execution; runtime results remain
-pending. See [captured episode experience](docs/AGENT_EXPERIENCE_REFERENCE.md).
+The native rehearsal reached durable feedback and learning publication, then correctly refused
+to omit protected context from its 1,600-token Brief view. The rehearsal now explicitly requests
+the registered EpistemicMap view and verifies all six recovered proof pins with zero critical
+omissions. The strict instance validator now supports the registered numeric exclusive bounds
+used by experience decay; its 23 tests pass, including malformed-bound refusal. Full native
+rehearsal and legacy learning recovery are awaiting execution of these integration repairs.
+See [captured episode experience](docs/AGENT_EXPERIENCE_REFERENCE.md).
 
 ## Durable follow with bounded waiting (2026-10-29, reference)
 
@@ -59,8 +64,11 @@ immediate receipt formats remain unchanged; the read-only wait API refuses owned
 instead of dropping their durable scope.
 
 Nine native contracts plus CLI/MCP subprocess and rendering cases cover pending replay,
-ACK/cancellation/cold retry, released locks, adjacent wakes and bounded failure. Pinned formatting
-and independent source review precede runtime execution. The existing repository-owned native
+ACK/cancellation/cold retry, released locks, adjacent wakes and bounded failure. All nine native
+contracts, six CLI library cases and two MCP cases passed in the
+[combined native run](https://github.com/Dicklesworthstone/franken_surveillance_system/actions/runs/40978826772).
+Eight of nine subprocess integrations passed; the populated-case cross-transport advance still
+requires diagnosis, with its exact MCP refusal now included in the assertion. The repository-owned native
 entrypoint now includes the new follow, ONVIF reconciliation, original-footage and checkpoint
 health workflows while preserving all existing checks and their failure status.
 See [durable acknowledged waits](docs/AGENT_FOLLOW_WAIT.md).
@@ -83,7 +91,11 @@ retirement failure preserves the terminal receipt with `verified_with_error` and
 
 Ten native recovery regressions, native-hook/cold-owner cuts and a subprocess command workflow
 were added. Independent review found and repaired cross-store intent freshness and late-receipt
-loss before delivery. Pinned formatting and static review passed; native execution is pending.
+loss before delivery. The combined native run passed all 17 capture-operation contracts,
+61 CLI unit tests and the new cold reconciliation subprocess workflow. Three existing capture
+fixtures incorrectly hashed the spool envelope as the source payload; they now use the public
+verified payload reader and preserve the exact source hash and native decode assertions.
+Execution of those repaired capture fixtures is pending.
 This closes one capture-obligation lifecycle, without qualifying live devices or continuous
 operation. See [ONVIF recovery commands](docs/onvif-metadata.md).
 
@@ -102,7 +114,9 @@ reopened before retention and delivery. Screened fusion reports now preserve the
 retainable diagnostic too; the native comparison retains exact receipt/provenance equality
 while allowing the distinct one-shot and checkpoint command hints. Added subprocess contracts
 exercise emitted commands, a deliberately absent detector, frozen/empty candidates, cold
-health verification and non-advancing partial refusal. Runtime execution remains pending.
+health verification and non-advancing partial refusal. The combined native run passed all
+31 dwell CLI contracts, 68 incremental dwell contracts and eight historical-health catalog
+contracts, including the new independent completed-checkpoint retention cases.
 See [completed checkpoint health retention](docs/incremental_dwell.md#retain-a-completed-checkpoints-health-diagnostic).
 
 ## Original footage for retained trained-detector events (2026-10-29, reference)

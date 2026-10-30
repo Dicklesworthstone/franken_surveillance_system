@@ -105,6 +105,61 @@ class TestJsonInstanceValidate(unittest.TestCase):
         with self.assertRaises(JsonInstanceValidationError):
             self.validator.validate(schema, {"a": 1, "b": 2})
 
+    def test_exclusive_numeric_bounds(self):
+        for keyword, bound, accepted, rejected in (
+            ("exclusiveMinimum", 0, (1, 0.5), (0, 0.0, -1, -0.5)),
+            ("exclusiveMaximum", 1.5, (1, 1.25), (1.5, 2, 2.5)),
+        ):
+            schema = {"type": "number", keyword: bound}
+            for value in accepted:
+                with self.subTest(keyword=keyword, value=value):
+                    self.validator.validate(schema, value)
+            for value in rejected:
+                with self.subTest(keyword=keyword, value=value):
+                    with self.assertRaises(JsonInstanceValidationError) as caught:
+                        self.validator.validate(schema, value)
+                    self.assertEqual(caught.exception.keyword, keyword)
+            for value in (True, False):
+                with self.assertRaises(JsonInstanceValidationError) as caught:
+                    self.validator.validate(schema, value)
+                self.assertEqual(caught.exception.keyword, "type")
+
+        # Bounds apply independently; inclusive endpoints survive when the exclusive
+        # bounds are weaker, and numeric keywords do not impose a type by themselves.
+        schema = {"minimum": 0, "exclusiveMinimum": -1, "maximum": 5, "exclusiveMaximum": 6}
+        for value in (0, 5, "not a number", None, True):
+            self.validator.validate(schema, value)
+        for value in (-0.5, 5.5):
+            with self.assertRaises(JsonInstanceValidationError):
+                self.validator.validate(schema, value)
+
+    def test_numeric_bounds_reject_invalid_reachable_schema_shapes(self):
+        for keyword in ("minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum"):
+            for bound in (True, False, "0", None, [], {}, float("nan"), float("inf")):
+                with self.subTest(keyword=keyword, bound=bound):
+                    schema = {"properties": {"optional": {keyword: bound}}}
+                    with self.assertRaises(SchemaSyntaxError) as caught:
+                        self.validator.validate(schema, {})
+                    self.assertEqual(caught.exception.keyword, keyword)
+
+        # An earlier successful call must not authorize a later malformed version.
+        schema = {"exclusiveMinimum": 0}
+        self.validator.validate(schema, 1)
+        schema["exclusiveMinimum"] = True
+        with self.assertRaises(SchemaSyntaxError):
+            self.validator.validate(schema, 1)
+
+    def test_experience_capsule_decay_half_life_is_strictly_positive(self):
+        path = REPO_ROOT / "schemas" / "experience_capsule.v1.json"
+        schema = parse_strict_json(path.read_text(encoding="utf-8"))
+        self.validator.check_reachable_schema_keywords(schema, schema, path.name, path.name)
+        decay = schema["properties"]["decayHalfLifeDays"]
+        for value in (0.5, 1, 30):
+            self.validator.validate(decay, value)
+        for value in (0, -1, True):
+            with self.assertRaises(JsonInstanceValidationError):
+                self.validator.validate(decay, value)
+
     def test_unique_items_is_type_strict(self):
         schema = {"type": "array", "uniqueItems": True}
         self.validator.validate(schema, [1, 1.0, True, "1", [1], {"a": 1}])
