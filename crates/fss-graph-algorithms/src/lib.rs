@@ -55,6 +55,8 @@ pub mod reference;
 pub mod registry;
 pub mod reliability;
 pub mod resilient_cover;
+/// Exact budgeted placement advice over explicit movement and sensor-loss assumptions.
+pub mod robust_placement;
 pub mod scc;
 /// Bounded unit-cost set cover with exact-small and explicitly heuristic selection.
 pub mod set_cover;

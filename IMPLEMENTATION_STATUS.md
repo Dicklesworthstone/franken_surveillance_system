@@ -10,6 +10,23 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Exact robust camera-placement analysis (2026-10-30, reference)
+
+The registered `ALG-INTERDICT-001` now includes a bounded exact camera-addition mode.
+It chooses among explicitly declared candidates to maximize the minimum sensor-loss
+cost needed to open an unobserved entry-to-target route, subject to separate named
+installation units, cost and count limits. Baseline and defended paths, removal sets,
+canonical ties and work/output witnesses remain visible. Every nested search shares
+one cancellable allowance; an exhausted request refuses without an approximate optimum.
+Existing interdiction formats and identities remain unchanged.
+
+All 11 focused native tests passed on pinned `nightly-2026-08-31`, including 180 seeded
+comparisons with independent exhaustive placement using the existing interdiction
+oracle, cancellation, budgets, output limits and numeric/input failures. The result is
+advice under explicit coverage and movement assumptions; physical sight lines, current
+health, shared-failure independence and effect authority are not established. The
+aggregate bead and qualification remain open. See [robust camera placement](docs/robust_camera_placement.md).
+
 ## Health-screened trained-package zones (reference)
 
 An explicit `fss-event package-zones analyze --require-health-screening yes` now combines exact

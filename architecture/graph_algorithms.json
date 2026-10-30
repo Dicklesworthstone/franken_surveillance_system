@@ -712,13 +712,16 @@
       "tieBreakPolicyId": "tie:cost-then-cardinality-then-lexicographic-sensor-tuple:v1",
       "policyId": "graph-policy:directed-or-undirected:zones-observed-by-sensors:unobserved-walk-entry-to-target:sensor-disable-cost:numeric:u64-exact:checked:v1:tie:cost-then-cardinality-then-lexicographic-sensor-tuple:v1",
       "complexityBoundId": "bound:alg-interdict-001:2-pow-s-branch-nodes-times-linear-search:v1",
-      "projectionBinding": "caller-built movement WeightedGraph over zones plus an InterdictionQuery (zone observers, sensor disable costs, entry and target zones); exact up to 20 relevant sensors, an explicitly approximate feasible upper bound beyond; robust placement is not implemented",
-      "qualification": "not_qualified: certified against brute-force sensor-subset enumeration with witness-walk validity checks on seeded sites; the robust-placement half of the row is not implemented; no INT-FNX-001 differential exists",
+      "projectionBinding": "caller-built movement WeightedGraph over zones plus an InterdictionQuery; the original removal mode remains exact up to 20 relevant sensors and explicitly approximate beyond. The additive exact_robust_placement mode chooses affordable declared additions under architecture/robust_placement_reference.json, with distinct identities, 16 candidate/20 total-sensor limits and one cumulative work budget",
+      "qualification": "not_qualified: removal is certified against brute-force sensor-subset enumeration; exact placement is compared against exhaustive candidate enumeration and the original interdiction owner, including budget/cancellation and input-binding cases. No INT-FNX-001 or physical-coverage qualification is claimed",
       "evidence": [
         "crates/fss-graph-algorithms/src/interdiction.rs",
+        "crates/fss-graph-algorithms/src/robust_placement.rs",
+        "architecture/robust_placement_reference.json",
         "crates/fss-graph-algorithms/src/weighted.rs",
         "crates/fss-graph-algorithms/src/certified.rs",
-        "crates/fss-graph-algorithms/tests/resilience_certification.rs"
+        "crates/fss-graph-algorithms/tests/resilience_certification.rs",
+        "crates/fss-graph-algorithms/tests/robust_placement_contract.rs"
       ]
     },
     {
