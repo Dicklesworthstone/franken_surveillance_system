@@ -20,12 +20,14 @@ mod constants;
 mod export;
 mod gemm;
 mod pooling;
+mod preprocess;
 mod resize;
 mod shape_program;
 mod split;
 mod structure;
 
 pub use export::{OnnxArtifacts, OnnxExportLimits, export_onnx_artifacts, onnx_importer_identity};
+pub use preprocess::{OnnxChannelOrder, OnnxImageTransform, transform_onnx_image};
 
 /// Explicit bounds for parsing, source hashing, graph conversion and parameter allocation.
 #[derive(Clone, Copy, Debug)]
@@ -103,6 +105,9 @@ pub struct ImportedOnnx<'a> {
     parameters: BTreeMap<String, Tensor>,
     runtime_inputs: Vec<String>,
     work: u64,
+    // Keep original control allocations/names charged if an explicit image transform follows.
+    parameter_bytes: usize,
+    reserved: BTreeSet<String>,
 }
 impl<'a> ImportedOnnx<'a> {
     /// Original bytes, including source metadata that does not participate in execution.
@@ -954,6 +959,8 @@ pub fn import_onnx<'a>(
         mut used_parameters,
         control_uses,
         nodes,
+        parameter_bytes,
+        reserved,
         ..
     } = lowering;
     for output in &outputs {
@@ -1013,6 +1020,8 @@ pub fn import_onnx<'a>(
         parameters,
         runtime_inputs,
         work: a.used,
+        parameter_bytes,
+        reserved,
     })
 }
 

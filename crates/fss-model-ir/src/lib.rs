@@ -41,8 +41,8 @@ pub use graph::{ModelIrGraph, ModelIrGraphBuilder, ModelIrVersion, UnsupportedVe
 pub use memory::{MemoryPlan, MemoryPlanError, MemoryPlanLimits, MemoryStep, TensorLifetime};
 pub use node::GraphNode;
 pub use onnx::{
-    ImportedOnnx, OnnxArtifacts, OnnxError, OnnxExportLimits, OnnxLimits, export_onnx_artifacts,
-    import_onnx, onnx_importer_identity,
+    ImportedOnnx, OnnxArtifacts, OnnxChannelOrder, OnnxError, OnnxExportLimits, OnnxImageTransform,
+    OnnxLimits, export_onnx_artifacts, import_onnx, onnx_importer_identity, transform_onnx_image,
 };
 pub use op::{
     AttributeSpec, AttributeType, OPERATOR_BASELINE_IDS, OPERATOR_SPECS,

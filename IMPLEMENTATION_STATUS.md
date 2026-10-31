@@ -10,6 +10,33 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Explicit detector channel order and normalization (2026-10-31, native provisioning)
+
+ONNX RGB package recipes now have an explicit version2 for models requiring BGR
+input or channel-specific mean/standard-deviation normalization. Native image
+masking, resizing and optional unit scaling still run first. The converter then
+freezes the declared channel reorder and separate F32 `(x - mean) / std` operations
+into the immutable graph through existing Slice/Concat/Sub/Div operators. Means
+and divisors are in model-input channel order. No external inference runtime or
+new operator encoding is introduced; original source bytes, parameters and output
+names remain available for provenance. Version1 stays strict and unchanged.
+
+Finite-value and full RGB-range checks reject invalid or overflowing transforms.
+Generated nodes, tensors and parameters share the original import ceilings,
+including consumed compile-time controls. Every source branch consuming the image
+is rewired; a directly exported image input refuses rather than aliasing names.
+The privacy mask is applied before normalization, including nonzero normalized
+masked values. Decoder head interpretation and class labels remain explicit.
+
+The complete native model suite passed **239 tests**. Its new focused target
+passed **12 tests**, covering independent RGB/BGR and raw/unit pixel oracles,
+nonzero detector-head values, resize, canonical graph/Safetensors reload, source
+provenance, exact F32 division order, name collisions, quota exhaustion and
+cancellation. Strict scoped Clippy passed. The real package integration test target also
+passed Cargo check against the pinned runtime. Command and package execution
+await the runtime object build; the additional integration tests are present.
+See `docs/ONNX_PACKAGE_IMPORT.md` for both recipe versions and conversion examples.
+
 ## Retained native detections in the property scene (2026-10-31, integration)
 
 `fss-scene-fuse retained-fuse` connects actual retained package detections and

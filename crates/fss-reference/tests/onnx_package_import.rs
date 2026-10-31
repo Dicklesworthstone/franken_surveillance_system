@@ -6,11 +6,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use fss_codec_mjpeg::ComponentInterpretation;
+use fss_codec_mjpeg::color::RgbDecodeReceipt;
 use fss_core::region::{ContextAuthority, RootAuthoritySpec};
 use fss_core::{
     BudgetVector, ContentDigest, Generation, ModelGeneration, OperationId, SensorId, StreamId,
     TimestampNs,
 };
+use fss_model_ir::{OnnxChannelOrder, OnnxImageTransform};
 use fss_object::{ModelId, ModelPackageArchive, ModelPackageLimits};
 use fss_reference::ingest::onnx_package::{
     ONNX_SOURCE_ARTIFACT, OnnxPackageError, OnnxPackageLimits, OnnxPackageRecipe,
@@ -20,13 +22,17 @@ use fss_reference::ingest::package_detect::{
     PackageDetectLimits, PackageDetectRequest, run_package_detection,
 };
 use fss_reference::ingest::rgb_detections::{HeadBoxes, HeadClasses, HeadLayout, HeadScore};
+use fss_reference::ingest::rgb_detections::{RgbDetectionBudget, project_rgb_detections};
+use fss_reference::ingest::rgb_inference::{RgbInference, RgbRunLimits, RgbSourceBinding};
 use fss_reference::ingest::rgb_package::{PackageHeadSpec, RgbDetectorPackage};
 use fss_reference::ingest::{FileIngestAdapter, FileIngestRequest};
 use fss_reference::preprocess::ResizeFilter;
-use fss_reference::{ReferenceDeployment, ReplayCx, ScalarExecCx};
+use fss_reference::{ExecBudget, ReferenceDeployment, ReplayCx, ScalarExecCx};
 
 type Test<T = ()> = Result<T, Box<dyn std::error::Error>>;
 const SOURCE: &[u8] = include_bytes!("fixtures/onnx_package/tiny_detector.onnx");
+const NORMALIZATION_SOURCE: &[u8] =
+    include_bytes!("fixtures/onnx_package/normalization_detector.onnx");
 const LICENSE: &[u8] = include_bytes!("fixtures/onnx_package/LICENSE");
 const NOTICE: &[u8] = include_bytes!("fixtures/onnx_package/NOTICE");
 const JPEG: &[u8] =
@@ -84,6 +90,7 @@ fn recipe() -> Test<OnnxPackageRecipe> {
         letterbox_pad: 0,
         masked_rgb: [0; 3],
         scale_to_unit: false,
+        image_transform: None,
         head: PackageHeadSpec {
             output_port: "head".into(),
             layout: HeadLayout::Rows,
@@ -320,5 +327,191 @@ fn imported_package_runs_existing_retained_jpeg_detection_without_activation() -
             .contains(&package.package().archive_digest().to_string())
     );
     assert!(report.json.contains("\"quality_claim\":\"none\""));
+    Ok(())
+}
+
+fn normalization_recipe() -> Test<OnnxPackageRecipe> {
+    let mut recipe = recipe()?;
+    recipe.model_id = ModelId::parse("MOD-ONNXNORMFIXTURE-001")?;
+    recipe.model_generation = ModelGeneration::parse("model:onnx-normalization-fixture:g1")?;
+    recipe.target = [2, 2];
+    recipe.scale_to_unit = true;
+    recipe.image_transform = Some(OnnxImageTransform {
+        channel_order: OnnxChannelOrder::Bgr,
+        mean: [0.1, 0.2, 0.3],
+        standard_deviation: [0.25, 0.5, 0.75],
+    });
+    recipe.masked_rgb = [51, 102, 153];
+    Ok(recipe)
+}
+fn normalization_request(recipe: &OnnxPackageRecipe) -> OnnxPackageRequest<'_> {
+    let mut request = request(recipe);
+    request.source = NORMALIZATION_SOURCE;
+    request.source_digest = ContentDigest::sha256(NORMALIZATION_SOURCE);
+    request
+}
+fn run_pixels(package: &RgbDetectorPackage, pixels: &[u8], mask: &[u8]) -> Test<RgbInference> {
+    let encoded = ContentDigest::sha256(pixels).bytes();
+    let source = RgbSourceBinding {
+        encoded_sha256: encoded,
+        exposure: [1; 32],
+        camera: 1,
+        clock: 1,
+        capture: [1, 2],
+        image_domain: [2; 32],
+        calibration: [3; 32],
+        permission_mask: ContentDigest::sha256(mask).bytes(),
+    };
+    // This entrypoint expressly admits caller-attested RGB, and records rather than
+    // authenticates the synthetic decoder identity. No JPEG decode is claimed here.
+    let receipt = RgbDecodeReceipt {
+        encoded_sha256: encoded,
+        rgb_sha256: encoded,
+        decoder: ContentDigest::sha256(b"fixture:explicit-rgb-pixels").bytes(),
+        interpretation: ComponentInterpretation::YCbCr,
+        dimensions: [2, 2],
+        mcus: 0,
+        entropy_blocks: 0,
+        restarts: 0,
+        metadata_segments: 0,
+        metadata_bytes: 0,
+    };
+    Ok(package.model().run_rgb_pixels(
+        pixels,
+        receipt,
+        source,
+        mask,
+        RgbRunLimits {
+            decode: Default::default(),
+            preprocess: ExecBudget::new(1_000_000, 1 << 20),
+            execution: ExecBudget::new(1_000_000, 1 << 20),
+            maximum_output_bytes: 4096,
+        },
+        &ScalarExecCx::new(),
+    )?)
+}
+
+#[test]
+fn normalized_package_reopens_source_and_executes_bgr_pixel_and_detector_oracles() -> Test {
+    let directory = Directory::new("normalization")?;
+    let cx = context(&directory.0)?;
+    let scalar = ScalarExecCx::new();
+    let recipe = normalization_recipe()?;
+    let imported = import_onnx_package(
+        &normalization_request(&recipe),
+        OnnxPackageLimits::default(),
+        &cx,
+        &scalar,
+    )?;
+    let archive = ModelPackageArchive::decode(imported.archive(), &ModelPackageLimits::default())?;
+    let source = archive
+        .artifacts
+        .values()
+        .find(|a| a.name == ONNX_SOURCE_ARTIFACT)
+        .ok_or("source")?;
+    assert_eq!(source.payload, NORMALIZATION_SOURCE);
+    assert_eq!(source.digest, ContentDigest::sha256(NORMALIZATION_SOURCE));
+    assert!(
+        archive
+            .manifest
+            .license()
+            .artifact_digests()
+            .contains(&source.digest)
+    );
+    let loaded = RgbDetectorPackage::load(
+        imported.archive(),
+        ContentDigest::sha256(imported.archive()),
+        1 << 32,
+        &cx,
+        &scalar,
+    )?;
+    assert_eq!(loaded.model().digest(), imported.package().model().digest());
+    let pixels = [10, 50, 90, 20, 100, 180, 30, 150, 210, 40, 200, 240];
+    let result = run_pixels(&loaded, &pixels, &[1; 4])?;
+    let mut expected = Vec::new();
+    let mut means = [0.0_f32; 3];
+    for (channel, rgb_channel) in [2, 1, 0].into_iter().enumerate() {
+        for pixel in 0..4 {
+            let value = f32::from(pixels[pixel * 3 + rgb_channel]) * (1.0_f32 / 255.0_f32);
+            let normalized =
+                (value - [0.1_f32, 0.2, 0.3][channel]) / [0.25_f32, 0.5, 0.75][channel];
+            expected.push(normalized);
+            means[channel] += normalized;
+        }
+        means[channel] /= 4.0_f32;
+    }
+    assert_eq!(result.outputs()["model_pixels"].values(), expected);
+    // Authored dense fixture uses all three normalized channels, in this exact F32 order.
+    let first = ((0.0_f32 + means[0] * 0.125) + means[1] * 0.0) + means[2] * 0.0625 + 0.6;
+    let second = ((0.0_f32 + means[0] * 0.0) + means[1] * 0.125) + means[2] * -0.0625 + 0.4;
+    assert_eq!(
+        result.outputs()["head"].values(),
+        [0.0, 0.0, 2.0, 2.0, first, second]
+    );
+    let detection = project_rgb_detections(
+        &result,
+        loaded.contract(),
+        &[1; 4],
+        &mut RgbDetectionBudget::new(1_000_000, 1 << 20),
+        &scalar,
+    )?;
+    assert_eq!(detection.detections().len(), 1);
+    assert_eq!(detection.detections()[0].class_index(), 0);
+    assert_eq!(detection.detections()[0].score().to_bits(), first.to_bits());
+    assert_eq!(detection.detections()[0].bounds(), [0, 0, 512, 512]);
+    let again = import_onnx_package(
+        &normalization_request(&recipe),
+        OnnxPackageLimits::default(),
+        &cx,
+        &scalar,
+    )?;
+    assert_eq!(again.archive(), imported.archive());
+    Ok(())
+}
+
+#[test]
+fn normalization_occurs_after_rgb_privacy_replacement_and_invalid_recipes_refuse() -> Test {
+    let directory = Directory::new("normalization-mask")?;
+    let cx = context(&directory.0)?;
+    let scalar = ScalarExecCx::new();
+    let recipe = normalization_recipe()?;
+    let imported = import_onnx_package(
+        &normalization_request(&recipe),
+        OnnxPackageLimits::default(),
+        &cx,
+        &scalar,
+    )?;
+    let pixels = [10, 50, 90, 20, 100, 180, 30, 150, 210, 40, 200, 240];
+    let mut changed = pixels;
+    changed[3..6].copy_from_slice(&[255, 7, 23]);
+    let mask = [1, 0, 1, 1];
+    let a = run_pixels(imported.package(), &pixels, &mask)?;
+    let b = run_pixels(imported.package(), &changed, &mask)?;
+    assert_eq!(a.output_digest(), b.output_digest());
+    assert_eq!(a.masked_digest(), b.masked_digest());
+    assert_ne!(a.identity(), b.identity());
+    let model_pixels = a.outputs()["model_pixels"].values();
+    for (channel, byte) in [153_u8, 102, 51].into_iter().enumerate() {
+        let expected = (f32::from(byte) * (1.0_f32 / 255.0_f32) - [0.1_f32, 0.2, 0.3][channel])
+            / [0.25_f32, 0.5, 0.75][channel];
+        assert_eq!(model_pixels[channel * 4 + 1].to_bits(), expected.to_bits());
+    }
+    for bad in [0.0, -1.0, f32::NAN, f32::INFINITY, f32::from_bits(1)] {
+        let mut invalid = recipe.clone();
+        invalid
+            .image_transform
+            .as_mut()
+            .ok_or("transform")?
+            .standard_deviation[0] = bad;
+        assert!(matches!(
+            import_onnx_package(
+                &normalization_request(&invalid),
+                OnnxPackageLimits::default(),
+                &cx,
+                &scalar
+            ),
+            Err(OnnxPackageError::Recipe(_))
+        ));
+    }
     Ok(())
 }

@@ -110,7 +110,7 @@ original ONNX metadata remains in the retained source artifact.
 | `tensor_generation` | Nonzero native graph/tensor generation; separate from the immutable deployment model generation. |
 | Image input | Exactly one runtime input, F32 `[1,3,height,width]`; every other input has a complete parameter binding. |
 | `resize` | `nearest` or `bilinear`, with centered aspect-preserving letterboxing. |
-| `scale_to_unit` | `true` maps RGB bytes to `[0,1]`; `false` keeps `0..255`. No implicit mean/std or channel reversal. |
+| `scale_to_unit` | `true` maps RGB bytes to `[0,1]`; `false` keeps `0..255`. Recipe v1 adds no mean/std or channel reversal; v2 requires those choices explicitly. |
 | `masked_rgb` | Three public byte constants replacing denied source pixels before interpolation. |
 | `layout` | `rows` for `[1,rows,fields]`, or `channels` for `[1,fields,rows]`. |
 | `boxes` | `pixel-corners`, `pixel-center-size`, `normalized-corners`, or `normalized-center-size`. Boxes must already be decoded. |
@@ -123,6 +123,75 @@ original ONNX metadata remains in the retained source artifact.
 The selected head must be an actual declared graph output with batch one, rank three,
 matching field count and a row count within the explicit ceiling. Incompatible metadata
 is refused during packaging, before any source recording is read.
+
+## BGR and per-channel normalization: recipe v2
+
+Models that expect BGR input or per-channel mean/std normalization can use the same native
+package and detection commands. Set `format` to `fss.onnx_rgb_package_recipe.v2` and add
+exactly these three required fields to `preprocess`: `channel_order`, `mean`, and
+`standard_deviation`. Every other recipe field keeps its v1 meaning. For example:
+
+```json
+{
+  "image_input": "image",
+  "height": 2,
+  "width": 2,
+  "resize": "nearest",
+  "letterbox_pad": 0,
+  "masked_rgb": [0, 0, 0],
+  "scale_to_unit": true,
+  "channel_order": "bgr",
+  "mean": [0.1, 0.2, 0.3],
+  "standard_deviation": [0.25, 0.5, 0.75]
+}
+```
+
+This is the complete `preprocess` object for the pixel-dependent numerical fixture
+`crates/fss-reference/tests/fixtures/onnx_package/normalization_detector.onnx`; its complete
+recipe is `recipe_v2.json` in that directory. These numbers demonstrate arithmetic and
+do not specify preprocessing for a trained detector. Supply the exact conventions from
+your model's training/export contract.
+
+The operation order is fixed:
+
+1. Replace denied **source RGB pixels** with `masked_rgb` before interpolation.
+2. Apply the existing RGB resize and centered letterbox, including `letterbox_pad`.
+3. Apply the existing optional scale: `F32(pixel) * (1.0_f32 / 255.0_f32)` when enabled.
+4. Preserve RGB for `channel_order: "rgb"`, or select B, G, R for `"bgr"`.
+5. For each model-input channel, evaluate **`(x - mean[channel]) / standard_deviation[channel]`**
+   with separate F32 subtraction and division.
+
+Mean and standard deviation follow the **model's selected channel order** and the units
+chosen by `scale_to_unit`. With the example above, the first pair `(0.1, 0.25)` applies to
+blue after unit scaling; the third pair applies to red. Mask colors always remain RGB bytes.
+Letterbox padding receives the same channel ordering and normalization as image pixels.
+
+Only the two declared channel orders are supported. Arrays must contain exactly three JSON
+numbers; decimal and exponent forms round directly to F32. Strings and booleans do not count
+as numbers. Means must be finite, and standard deviations must be finite and strictly positive
+after rounding, including refusal of negative zero and positive decimals that underflow to
+zero. Packaging refuses normalization that overflows at either end of the selected RGB
+input interval. The source model's own numerical behavior remains subject to the existing
+finite-output checks.
+
+The converter freezes BGR selection as three native Slice nodes plus Concat, and normalization
+as Sub followed by Div with two exact `[1,3,1,1]` parameter tensors. It rewires every source
+node consuming the declared image input, preserving branches and auxiliary outputs. It does
+not fold normalization into convolution weights or replace division with reciprocal weights.
+A source graph that directly exposes its image input as a graph output is refused for this
+transform because the unchanged input/output name would alias raw and normalized values;
+an ordinary Identity node producing a separately named output is supported.
+
+The added operators, values, parameter bytes and conversion work count against the same
+cumulative import limits, including source shape controls already consumed during import.
+RGB normalization adds two nodes; BGR normalization adds six. Both add 24 parameter bytes.
+No native operator, package wire format or inference runtime dependency is added.
+
+The strict v1 recipe remains accepted and follows its original graph path. It rejects v2-only
+fields. V2 requires all three new fields even for identity normalization; choose RGB,
+`mean: [0,0,0]`, `standard_deviation: [1,1,1]` explicitly when that is the model contract.
+The schemas are `schemas/onnx_rgb_package_recipe.v1.json` and
+`schemas/onnx_rgb_package_recipe.v2.json`.
 
 ## Admitted model profile and bounds
 
@@ -162,8 +231,11 @@ The existing FMPK archive contains six artifacts:
 The existing manifest binds every artifact, the immutable model generation, license decision
 inputs and the explicitly uncalibrated calibration generation. A separate source-bound
 importer identity includes the ONNX parser/lowering/export/canonical-encoding sources and
-the package assembler. Existing package versions, graph bytes, model identities and the
-specialized YOLOX importer are unchanged.
+the package assembler. A v2 transformation is represented by the frozen graph and exact
+parameter bytes, so changing channel order, mean or standard deviation changes the derived
+model identity. The original ONNX source remains byte-for-byte intact. Existing package wire
+versions, already-provisioned packages and the specialized YOLOX importer remain unchanged;
+new conversions bind the current source-derived importer identity.
 
 Native artifact tests reopen the canonical graph, read exported weights with the actual
 production Safetensors parser, and run the actual production scalar executor. They cover
@@ -172,3 +244,11 @@ execution, empty parameter sets, byte/work ceilings and cancellation. Package an
 add archive round trips, shape/license/pin refusals, exclusive output creation and the
 existing retained-JPEG detector path. Their execution status is recorded separately in
 `IMPLEMENTATION_STATUS.md`; authored tests are not a claim of runtime qualification.
+
+`onnx_preprocess_execution` additionally runs actual native RGB resizing, canonical graph
+decoding, Safetensors parsing and scalar execution against an independent pixel/head oracle
+for RGB/BGR and raw/unit inputs. Its fixture has nonzero weights, uses every normalized
+channel, and exposes a second image-consuming branch. Package tests reopen a complete v2
+archive, retain original-source provenance, execute and project its detector head, and check
+that denied RGB pixels are replaced before normalization. CLI tests exercise both strict
+recipe versions and exclusive package output creation.

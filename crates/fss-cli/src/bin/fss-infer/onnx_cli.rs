@@ -15,8 +15,8 @@ use fss_core::{
 };
 use fss_object::ModelId;
 use fss_reference::ingest::onnx_package::{
-    MAX_ATTRIBUTION_BYTES, OnnxPackageLimits, OnnxPackageRecipe, OnnxPackageRequest,
-    import_onnx_package,
+    MAX_ATTRIBUTION_BYTES, OnnxChannelOrder, OnnxImageTransform, OnnxPackageLimits,
+    OnnxPackageRecipe, OnnxPackageRequest, import_onnx_package,
 };
 use fss_reference::ingest::rgb_detections::{HeadBoxes, HeadClasses, HeadLayout, HeadScore};
 use fss_reference::ingest::rgb_package::PackageHeadSpec;
@@ -196,6 +196,28 @@ fn score(value: &str) -> Result<HeadScore, String> {
     }
 }
 
+fn float_triplet(object: &Object, key: &str) -> Result<[f32; 3], String> {
+    let values = field(object, key)?
+        .array()
+        .ok_or_else(|| format!("{key} requires three JSON numbers"))?;
+    let [a, b, c] = values else {
+        return Err(format!("{key} requires exactly three JSON numbers"));
+    };
+    let parse = |value: &Value| {
+        let Value::Number(text) = value else {
+            return Err(format!("{key} requires JSON numbers"));
+        };
+        let value: f32 = text
+            .parse()
+            .map_err(|_| format!("{key} requires F32 numbers"))?;
+        if !value.is_finite() {
+            return Err(format!("{key} requires finite F32 numbers"));
+        }
+        Ok(value)
+    };
+    Ok([parse(a)?, parse(b)?, parse(c)?])
+}
+
 fn recipe(bytes: &[u8]) -> Result<OnnxPackageRecipe, String> {
     let json = json_input::parse(std::str::from_utf8(bytes).map_err(|_| "recipe requires UTF-8")?)
         .map_err(|e| e.to_string())?;
@@ -213,21 +235,45 @@ fn recipe(bytes: &[u8]) -> Result<OnnxPackageRecipe, String> {
             "license",
         ],
     )?;
-    if string(root, "format")? != "fss.onnx_rgb_package_recipe.v1" {
-        return Err("unsupported recipe format".into());
-    }
+    let version_two = match string(root, "format")?.as_str() {
+        "fss.onnx_rgb_package_recipe.v1" => false,
+        "fss.onnx_rgb_package_recipe.v2" => true,
+        _ => return Err("unsupported recipe format".into()),
+    };
+    let preprocess_fields = [
+        "image_input",
+        "height",
+        "width",
+        "resize",
+        "letterbox_pad",
+        "masked_rgb",
+        "scale_to_unit",
+        "channel_order",
+        "mean",
+        "standard_deviation",
+    ];
     let p = object(
         field(root, "preprocess")?,
-        &[
-            "image_input",
-            "height",
-            "width",
-            "resize",
-            "letterbox_pad",
-            "masked_rgb",
-            "scale_to_unit",
-        ],
+        &preprocess_fields[..if version_two { 10 } else { 7 }],
     )?;
+    let scale_to_unit = boolean(p, "scale_to_unit")?;
+    let image_transform = if version_two {
+        let transform = OnnxImageTransform {
+            channel_order: match string(p, "channel_order")?.as_str() {
+                "rgb" => OnnxChannelOrder::Rgb,
+                "bgr" => OnnxChannelOrder::Bgr,
+                _ => return Err("channel_order requires rgb or bgr".into()),
+            },
+            mean: float_triplet(p, "mean")?,
+            standard_deviation: float_triplet(p, "standard_deviation")?,
+        };
+        transform
+            .validate_rgb_range(scale_to_unit)
+            .map_err(|_| "invalid or overflowing image normalization")?;
+        Some(transform)
+    } else {
+        None
+    };
     let h = object(
         field(root, "head")?,
         &[
@@ -278,7 +324,8 @@ fn recipe(bytes: &[u8]) -> Result<OnnxPackageRecipe, String> {
         },
         letterbox_pad: integer(p, "letterbox_pad")?,
         masked_rgb: [byte(r)?, byte(g)?, byte(b)?],
-        scale_to_unit: boolean(p, "scale_to_unit")?,
+        scale_to_unit,
+        image_transform,
         head: PackageHeadSpec {
             output_port: string(h, "output_port")?,
             layout: match string(h, "layout")?.as_str() {

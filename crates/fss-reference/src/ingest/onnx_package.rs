@@ -9,7 +9,11 @@ use fss_core::{
     CalibrationGeneration, CanonicalEncoder, ContentDigest, ContractError, DigestAlgorithm,
     Generation, ModelGeneration, SchemaId,
 };
-use fss_model_ir::{OnnxError, OnnxExportLimits, OnnxLimits, export_onnx_artifacts, import_onnx};
+pub use fss_model_ir::{OnnxChannelOrder, OnnxImageTransform};
+use fss_model_ir::{
+    OnnxError, OnnxExportLimits, OnnxLimits, export_onnx_artifacts, import_onnx,
+    transform_onnx_image,
+};
 use fss_object::{
     MAX_RESTRICTION_LEN, MAX_RESTRICTIONS_COUNT, MAX_SOURCE_IDENTITY_LEN, MAX_SPDX_LEN,
     MAX_UPSTREAM_REVISION_LEN, ModelId, ModelLicenseRecord, ModelManifestError, ModelManifestV1,
@@ -51,6 +55,9 @@ pub struct OnnxPackageRecipe {
     pub masked_rgb: [u8; 3],
     /// Whether to scale input bytes to [0,1].
     pub scale_to_unit: bool,
+    /// Optional recipe-v2 model-input channel ordering and per-channel F32 normalization.
+    /// It is frozen into the graph after RGB masking/resize/scaling; `None` preserves v1.
+    pub image_transform: Option<OnnxImageTransform>,
     /// Already-decoded dense detection-head semantics.
     pub head: PackageHeadSpec,
     /// Ordered unique class labels.
@@ -209,6 +216,11 @@ fn spec(
     source: ContentDigest,
     importer: ContentDigest,
 ) -> Result<RgbPackageSpec, OnnxPackageError> {
+    if let Some(transform) = recipe.image_transform {
+        transform
+            .validate_rgb_range(recipe.scale_to_unit)
+            .map_err(|_| OnnxPackageError::Recipe("invalid or overflowing image normalization"))?;
+    }
     let valid_text = |s: &str| !s.is_empty() && s.len() <= 512 && !s.chars().any(char::is_control);
     if recipe.tensor_generation.0 == 0
         || !valid_text(&recipe.upstream)
@@ -317,6 +329,17 @@ pub fn import_onnx_package(
             "image input must match explicit [1,3,height,width]",
         ));
     }
+    let imported = if let Some(transform) = request.recipe.image_transform {
+        transform_onnx_image(
+            imported,
+            &spec.image_input,
+            transform,
+            limits.import,
+            &cancelled,
+        )?
+    } else {
+        imported
+    };
     let output = imported
         .graph()
         .outputs()
