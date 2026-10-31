@@ -47,3 +47,43 @@ then compute row-major spatial means and the declared matrix/bias. They compare 
 bits after graph and Safetensors export/reload. Package tests additionally cover native head
 projection and privacy substitution before normalization. This remains numerical wiring
 evidence, with no claim of detector quality or suitability for surveillance.
+
+## Raw DFL detector fixture
+
+`raw_dfl_detector.onnx` is an original, pixel-dependent ONNX IR 8 / opset-13 numerical
+fixture (1900 bytes, SHA-256
+`142825f5bcd12d5d830bed123306820af1b73772d9a319ab6cc5c25acb40d76b`). It contains no trained
+weights or external tensors. Its producer is `FSS raw DFL numerical fixture, not trained
+detector`; its graph name is `fixture:onnx-raw-dfl-detector`.
+
+Construction: the F32 `image` input `[1,3,4,4]` passes through GlobalAveragePool and Flatten
+to `embedding` `[1,3]`, then MatMul with `weights` `[1,3,90]`, Add with `bias` `[1,1,90]`,
+and Reshape with the INT64 control `head_shape = [1,5,18]`. Both `raw_head` `[1,5,18]`
+and `embedding` are declared outputs. The original ONNX contains no head decoder.
+
+For row `r` in `0..5`, side `s` in `0..4` (left, top, right, bottom), and spatial RGB means
+`m[0..3]`, the first sixteen fields contain four contiguous groups of four bin logits:
+
+```text
+raw[r, 4*s + 0] = 0
+raw[r, 4*s + 1] = 0.5 * m[s % 3]
+raw[r, 4*s + 2] = 0
+raw[r, 4*s + 3] = -0.25 * m[(s + 1) % 3]
+raw[r, 16] = [0.85, 0.75, 0.65, 0.55, 0.45][r] + 0.05 * m[0]
+raw[r, 17] = 0.1 + 0.05 * m[2]
+```
+
+To construct the matrix, initialize all 270 weights and 90 biases to zero, then place each
+coefficient at `weights[channel, r*18 + field]` and each constant at `bias[r*18 + field]`
+according to those equations. Coefficients and biases are stored as F32; MatMul accumulates
+channels in RGB order before Add applies the bias. The source has finite embedded F32
+initializers and one embedded INT64 shape control.
+
+`recipe_v3.json` supplies explicit RGB/unit preprocessing with zero means and unit standard
+deviations, then declares four DFL bins, raw row layout, and ordered strides `[2,4]` over the
+4x4 input. The first level has four cells and the second has one. Conversion retains the
+original raw output and appends `decoded_head` `[1,5,6]` with pixel corners and the unchanged
+two score fields. Zero RGB makes every side uniform, giving exactly 1.5 bins; nonzero RGB
+changes both geometry and scores. The package tests check exact uniform-case corners, source
+retention, score-bit preservation, existing NMS, and privacy replacement/footprint screening.
+This fixture demonstrates the declared numerical pipeline and makes no model-quality claim.

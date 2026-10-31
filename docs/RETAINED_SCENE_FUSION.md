@@ -263,8 +263,9 @@ source damage, privacy withdrawal, mismatched source/image generations, exact ob
 cancellation, deadlines and complete-output limits. These command tests now typecheck against
 genuine pinned Asupersync metadata, together with the complete current CLI test configuration.
 The production command also passes Cargo check. Earlier builds were killed under shared host
-memory pressure; a later serialized metadata build succeeded. Actual owner execution still
-requires the runtime object build. The passing pure tests do not
+memory pressure; a later serialized metadata build succeeded. The subsequent serialized
+object build was killed at the shared 8 GiB memory ceiling before executing command tests.
+Actual owner execution remains unverified. The passing pure tests do not
 execute deployment recovery, sealed source-owner
 revalidation or command output. No runtime dependency or qualification gate was replaced.
 

@@ -335,6 +335,12 @@ interpret arbitrary framework graphs or download models at runtime.
 See [`PURE_RUST_MODEL_RUNTIME.md`](PURE_RUST_MODEL_RUNTIME.md) and
 [`docs/deep-dives/FRANKENTORCH.md`](docs/deep-dives/FRANKENTORCH.md).
 
+`fss-infer import-onnx` now supports strict recipes for RGB/BGR channel normalization
+and static anchor-free DFL raw-head decoding. Both transformations become immutable native
+graph operations, preserving original ONNX bytes and source outputs. The decoded boxes feed
+the existing privacy, score and NMS pipeline. See
+[`docs/ONNX_PACKAGE_IMPORT.md`](docs/ONNX_PACKAGE_IMPORT.md) for the exact supported profiles.
+
 ## Detection is a cascade, not a monolith
 
 A frontier VLM is too expensive, nondeterministic, and weakly calibrated to inspect every frame or

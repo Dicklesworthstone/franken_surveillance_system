@@ -1,0 +1,67 @@
+{
+  "format": "fss.onnx_rgb_package_recipe.v3",
+  "model_id": "MOD-ONNXDFLFIXTURE-001",
+  "model_generation": "model:onnx-dfl-fixture:g1",
+  "tensor_generation": 1,
+  "preprocess": {
+    "image_input": "image",
+    "height": 4,
+    "width": 4,
+    "resize": "nearest",
+    "letterbox_pad": 0,
+    "masked_rgb": [
+      0,
+      0,
+      0
+    ],
+    "scale_to_unit": true,
+    "channel_order": "rgb",
+    "mean": [
+      0,
+      0,
+      0
+    ],
+    "standard_deviation": [
+      1,
+      1,
+      1
+    ]
+  },
+  "head": {
+    "output_port": "decoded_head",
+    "layout": "rows",
+    "boxes": "pixel-corners",
+    "class_score": "probability",
+    "objectness": "none",
+    "classes": "best",
+    "minimum_score_ppm": 500000,
+    "nms_iou_ppm": 450000,
+    "maximum_rows": 5,
+    "maximum_candidates": 16,
+    "maximum_detections": 5
+  },
+  "labels": [
+    "fixture-object",
+    "fixture-other"
+  ],
+  "source": {
+    "upstream": "fixture:fss/native-onnx-dfl",
+    "revision": "v1",
+    "producer": "FSS pixel-dependent raw DFL numerical fixture"
+  },
+  "license": {
+    "id": "MIT",
+    "use_approved": true,
+    "restrictions": []
+  },
+  "head_decode": {
+    "kind": "anchor-free-dfl",
+    "raw_output": "raw_head",
+    "raw_layout": "rows",
+    "bins": 4,
+    "strides": [
+      2,
+      4
+    ]
+  }
+}

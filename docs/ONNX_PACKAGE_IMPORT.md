@@ -193,6 +193,127 @@ fields. V2 requires all three new fields even for identity normalization; choose
 The schemas are `schemas/onnx_rgb_package_recipe.v1.json` and
 `schemas/onnx_rgb_package_recipe.v2.json`.
 
+## Raw anchor-free DFL distance heads: recipe v3
+
+Some model exports retain a distribution over distances to each box side, instead
+of four decoded box coordinates. Recipe `fss.onnx_rgb_package_recipe.v3` adds an
+explicit static decoder for that profile. It retains every v2 preprocessing
+choice and adds one required top-level object:
+
+```json
+"head_decode": {
+  "kind": "anchor-free-dfl",
+  "raw_output": "raw_head",
+  "raw_layout": "rows",
+  "bins": 16,
+  "strides": [8, 16, 32]
+}
+```
+
+This is an illustrative grid declaration, not a convention inferred from a model
+name. `head.output_port` must name a **new, distinct** decoded output. Set the
+existing `head.layout` to `rows` and `head.boxes` to `pixel-corners`. Every other
+score, objectness, label, threshold, NMS and detection-limit choice keeps its
+existing explicit meaning. V1 and v2 reject `head_decode`; v3 requires it and all
+v2 channel-normalization choices, even when normalization is the identity.
+
+### Exact tensor and grid contract
+
+Let `B` be `bins`, `S` the label count plus one if objectness is present, and `N`
+the sum of all declared feature-grid cell counts.
+
+| Tensor | Shape and field order |
+|---|---|
+| Raw `rows` | `[1, N, 4*B + S]` |
+| Raw `channels` | `[1, 4*B + S, N]` |
+| New decoded output | `[1, N, 4 + S]` |
+| Raw coordinate groups | `B` left logits, `B` top logits, `B` right logits, `B` bottom logits |
+| Score tail | Optional objectness followed by the ordered class values, preserved unchanged |
+| Decoded coordinates | `x_min, y_min, x_max, y_max` in model-input pixels |
+
+There are 2–32 bins and 1–8 unique positive integer strides, each at most 4,096.
+The model input height and width must be positive, at most 4,096, and divisible
+by every stride, with at most 4,194,304 pixels. Counts and strides use plain JSON
+integer literals; decimal-string, fractional and exponent spellings refuse. For
+stride `s`, the level contributes `(height/s)*(width/s)`
+rows, with at most 32,768 rows overall and no more than `head.maximum_rows`.
+Levels follow the **declared stride order**, with `y` outermost and `x`
+innermost within each level. Strides are never silently sorted.
+
+A cell's pixel center is `((x + 0.5)*s, (y + 0.5)*s)`. These exact half-cell
+centers and per-row strides become immutable F32 parameters. Missing levels,
+different row counts, unsupported layouts, duplicate strides, empty/malformed
+names or an occupied decoded-output name refuse conversion. The raw port must
+be an actual declared output of the admitted source graph. All other source
+outputs remain intact.
+
+### Native arithmetic and score handling
+
+For each of the four coordinate groups, the graph evaluates a native Softmax
+across the `B` logits, then a native MatMul against the constant bin indices
+`[0, 1, ..., B-1]`. This computes the expected distance in feature-cell units.
+The graph then performs separate F32 operations in this order:
+
+```text
+distance_pixels = expected_bin * stride
+x_min = center_x - left_distance_pixels
+y_min = center_y - top_distance_pixels
+x_max = center_x + right_distance_pixels
+y_max = center_y + bottom_distance_pixels
+```
+
+The multiplication precedes the final subtraction/addition; the converter does
+not reassociate these expressions. The bin reduction follows the existing
+native MatMul's F32 order. Tests use exact uniform controls and an independent
+higher-precision softmax/distance oracle. This establishes the admitted native
+arithmetic, not bitwise equivalence to every external tensor backend.
+
+The expectation interpretation follows the DFL integral described in the
+[Generalized Focal Loss paper](https://arxiv.org/abs/2006.04388) and the
+[official DFL module reference](https://docs.ultralytics.com/reference/nn/modules/block/#ultralytics.nn.modules.block.DFL).
+This conversion admits the explicitly declared tensor/grid profile above; it
+is not a general claim that every model from either architecture imports.
+
+The decoder does **not** apply sigmoid to scores, invent objectness, reorder
+labels, perform NMS or apply a threshold. It copies the complete score tail.
+The existing `head.class_score` and `head.objectness` select probability versus
+logit interpretation once, and the existing package detector performs source
+projection, privacy handling, candidate limits and NMS. Models whose scores
+already contain sigmoid should continue to declare `probability`.
+
+### Packaging, provenance and bounds
+
+Image privacy replacement, resize, unit scaling and v2 normalization run before
+the source graph. The DFL decoder runs after its selected raw output. Existing
+native Transpose, Slice, Reshape, Softmax, MatMul, Mul, Sub, Add and Concat
+operators express the complete conversion; no new operator, foreign runtime,
+network access or FMPK wire format is introduced.
+
+The original ONNX bytes, original output names and source parameter bits remain
+retained. The additional decoded output, all grid/bin constants and exact
+arithmetic become part of the graph/weights/model identity. A new conversion
+uses the current source-bound importer identity. Existing packages remain
+readable under their existing contract.
+
+All generated nodes, tensor names, parameters and work share the original
+import ceilings, including source controls consumed during import and any
+preceding normalization. Grid counts and allocation sizes are checked before
+construction. Insufficient quotas or cancellation return no partial converted
+graph or successful package. The decoded row count must fit the existing
+`head.maximum_rows`; all package/license/backend verification still completes
+before a new output file is opened.
+
+The original numerical fixture `raw_dfl_detector.onnx` and `recipe_v3.json` use
+4×4 model input, four bins, strides `[2,4]`, five raw rows and two class scores.
+Its raw logits and scores depend on authored nonzero RGB weights. It is an
+arithmetic and integration fixture, not a trained detector or quality claim.
+The schema is `schemas/onnx_rgb_package_recipe.v3.json`.
+
+Unsupported raw anchors, learned/custom grid offsets, nonuniform bin centers,
+rotated boxes, dynamic grids, batches other than one and unrelated YOLO head
+parameterizations remain explicit refusals. Already-decoded boxes continue to
+use v1 or v2 recipes without a DFL conversion.
+
 ## Admitted model profile and bounds
 
 The command uses the existing ONNX IR 7–9, default-domain opset-13 static finite F32 profile.
@@ -202,8 +323,8 @@ MaxPool, AveragePool, GlobalAveragePool, Transpose,
 Concat, Constant, Reshape, Squeeze, Unsqueeze, Slice, Split, Resize, Identity and Flatten.
 Bounded static Shape/Gather/INT64 control programs can supply layout and partition controls;
 their values are evaluated during import and never require runtime integer execution.
-Runtime/data-dependent shapes, external tensors, custom operators, arbitrary raw
-detector-head decoding and unsupported operators refuse explicitly. The command does
+Runtime/data-dependent shapes, external tensors, custom operators, raw detector-head
+profiles outside the explicit v3 DFL contract and unsupported operators refuse explicitly. The command does
 not claim that an arbitrary ONNX detector can be imported.
 
 Default source and parameter limits are 16 MiB each. Export additionally limits the canonical

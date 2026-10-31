@@ -17,6 +17,7 @@ use crate::{AttrValue, AttributeMap, GraphNode, ModelIrGraph, ModelIrVersion, Op
 
 mod batch_normalization;
 mod constants;
+mod dfl;
 mod export;
 mod gemm;
 mod pooling;
@@ -26,6 +27,7 @@ mod shape_program;
 mod split;
 mod structure;
 
+pub use dfl::{OnnxDflHeadDecode, OnnxHeadLayout, decode_onnx_dfl_head};
 pub use export::{OnnxArtifacts, OnnxExportLimits, export_onnx_artifacts, onnx_importer_identity};
 pub use preprocess::{OnnxChannelOrder, OnnxImageTransform, transform_onnx_image};
 

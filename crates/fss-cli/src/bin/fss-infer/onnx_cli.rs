@@ -15,8 +15,8 @@ use fss_core::{
 };
 use fss_object::ModelId;
 use fss_reference::ingest::onnx_package::{
-    MAX_ATTRIBUTION_BYTES, OnnxChannelOrder, OnnxImageTransform, OnnxPackageLimits,
-    OnnxPackageRecipe, OnnxPackageRequest, import_onnx_package,
+    MAX_ATTRIBUTION_BYTES, OnnxChannelOrder, OnnxDflHeadDecode, OnnxHeadLayout, OnnxImageTransform,
+    OnnxPackageLimits, OnnxPackageRecipe, OnnxPackageRequest, import_onnx_package,
 };
 use fss_reference::ingest::rgb_detections::{HeadBoxes, HeadClasses, HeadLayout, HeadScore};
 use fss_reference::ingest::rgb_package::PackageHeadSpec;
@@ -37,6 +37,8 @@ const HELP: &str = "fss-infer import-onnx [options]\n\
   independently supplied SHA-256 pins. Nothing is downloaded or activated.\n\
   Recipe JSON explicitly supplies model/tensor generations, RGB preprocessing,\n\
   decoded detection-head semantics, ordered labels and license-use approval.\n\
+  Recipe v2 adds explicit RGB/BGR channel normalization. Recipe v3 also converts\n\
+  a declared static anchor-free DFL distance head into native pixel-corner boxes.\n\
   See docs/ONNX_PACKAGE_IMPORT.md for the complete strict recipe and supported profile.\n\
   The original ONNX, exact LICENSE and NOTICE remain inside the package. The package\n\
   must pass the same license, graph, parameter and CPU-backend verifier used by\n\
@@ -221,25 +223,26 @@ fn float_triplet(object: &Object, key: &str) -> Result<[f32; 3], String> {
 fn recipe(bytes: &[u8]) -> Result<OnnxPackageRecipe, String> {
     let json = json_input::parse(std::str::from_utf8(bytes).map_err(|_| "recipe requires UTF-8")?)
         .map_err(|e| e.to_string())?;
-    let root = object(
-        &json,
-        &[
-            "format",
-            "model_id",
-            "model_generation",
-            "tensor_generation",
-            "preprocess",
-            "head",
-            "labels",
-            "source",
-            "license",
-        ],
-    )?;
-    let version_two = match string(root, "format")?.as_str() {
-        "fss.onnx_rgb_package_recipe.v1" => false,
-        "fss.onnx_rgb_package_recipe.v2" => true,
+    let unvalidated = json.object().ok_or("recipe requires an object")?;
+    let version = match string(unvalidated, "format")?.as_str() {
+        "fss.onnx_rgb_package_recipe.v1" => 1,
+        "fss.onnx_rgb_package_recipe.v2" => 2,
+        "fss.onnx_rgb_package_recipe.v3" => 3,
         _ => return Err("unsupported recipe format".into()),
     };
+    let root_fields = [
+        "format",
+        "model_id",
+        "model_generation",
+        "tensor_generation",
+        "preprocess",
+        "head",
+        "labels",
+        "source",
+        "license",
+        "head_decode",
+    ];
+    let root = object(&json, &root_fields[..if version == 3 { 10 } else { 9 }])?;
     let preprocess_fields = [
         "image_input",
         "height",
@@ -254,10 +257,10 @@ fn recipe(bytes: &[u8]) -> Result<OnnxPackageRecipe, String> {
     ];
     let p = object(
         field(root, "preprocess")?,
-        &preprocess_fields[..if version_two { 10 } else { 7 }],
+        &preprocess_fields[..if version >= 2 { 10 } else { 7 }],
     )?;
     let scale_to_unit = boolean(p, "scale_to_unit")?;
-    let image_transform = if version_two {
+    let image_transform = if version >= 2 {
         let transform = OnnxImageTransform {
             channel_order: match string(p, "channel_order")?.as_str() {
                 "rgb" => OnnxChannelOrder::Rgb,
@@ -310,13 +313,97 @@ fn recipe(bytes: &[u8]) -> Result<OnnxPackageRecipe, String> {
             .ok_or("masked_rgb entries must be bytes")
     };
     let objectness = string(h, "objectness")?;
+    let target: [usize; 2] = [integer(p, "height")?, integer(p, "width")?];
+    let head_decode = if version == 3 {
+        let d = object(
+            field(root, "head_decode")?,
+            &["kind", "raw_output", "raw_layout", "bins", "strides"],
+        )?;
+        if string(d, "kind")? != "anchor-free-dfl" {
+            return Err("head_decode.kind requires anchor-free-dfl".into());
+        }
+        let positive = |value: &Value, maximum: usize| -> Result<usize, String> {
+            if !matches!(value, Value::Number(_)) {
+                return Err("DFL counts and strides require JSON integers".into());
+            }
+            value
+                .integer()
+                .and_then(|n| usize::try_from(n).ok())
+                .filter(|n| (1..=maximum).contains(n))
+                .ok_or_else(|| "DFL count or stride exceeds its bound".into())
+        };
+        let bins = positive(field(d, "bins")?, 32)?;
+        if bins < 2 {
+            return Err("DFL requires 2..=32 bins".into());
+        }
+        let stride_values = field(d, "strides")?
+            .array()
+            .filter(|v| (1..=8).contains(&v.len()))
+            .ok_or("DFL requires 1..=8 ordered feature strides")?;
+        if target
+            .iter()
+            .any(|dimension| !(1..=4096).contains(dimension))
+            || target[0] * target[1] > 4_194_304
+        {
+            return Err("DFL image dimensions exceed the admitted grid bound".into());
+        }
+        let mut strides = Vec::new();
+        let mut rows = 0_usize;
+        for value in stride_values {
+            let stride = positive(value, 4096)?;
+            if strides.contains(&stride) {
+                return Err("DFL feature strides must be unique".into());
+            }
+            if target
+                .iter()
+                .any(|dimension| !dimension.is_multiple_of(stride))
+            {
+                return Err(
+                    "DFL image dimensions must be positive, bounded and divisible by every stride"
+                        .into(),
+                );
+            }
+            rows = rows
+                .checked_add((target[0] / stride) * (target[1] / stride))
+                .ok_or("DFL grid row count overflow")?;
+            strides.push(stride);
+        }
+        if rows > 32_768 || rows > integer::<usize>(h, "maximum_rows")? {
+            return Err("DFL grid exceeds the declared detection row allowance".into());
+        }
+        let raw_output = string(d, "raw_output")?;
+        if raw_output.trim().is_empty()
+            || raw_output.len() > 512
+            || raw_output.chars().any(char::is_control)
+            || raw_output == string(h, "output_port")?
+        {
+            return Err(
+                "DFL raw output requires a bounded name distinct from the decoded output".into(),
+            );
+        }
+        if string(h, "layout")? != "rows" || string(h, "boxes")? != "pixel-corners" {
+            return Err("DFL decoded head requires rows layout and pixel-corners boxes".into());
+        }
+        Some(OnnxDflHeadDecode {
+            raw_output,
+            bins,
+            strides,
+            raw_layout: match string(d, "raw_layout")?.as_str() {
+                "rows" => OnnxHeadLayout::Rows,
+                "channels" => OnnxHeadLayout::Channels,
+                _ => return Err("DFL raw_layout requires rows or channels".into()),
+            },
+        })
+    } else {
+        None
+    };
     Ok(OnnxPackageRecipe {
         model_id: ModelId::parse(string(root, "model_id")?).map_err(|e| e.to_string())?,
         model_generation: ModelGeneration::parse(string(root, "model_generation")?)
             .map_err(|e| e.to_string())?,
         tensor_generation: Generation(integer(root, "tensor_generation")?),
         image_input: string(p, "image_input")?,
-        target: [integer(p, "height")?, integer(p, "width")?],
+        target,
         filter: match string(p, "resize")?.as_str() {
             "nearest" => ResizeFilter::Nearest,
             "bilinear" => ResizeFilter::Bilinear,
@@ -326,6 +413,7 @@ fn recipe(bytes: &[u8]) -> Result<OnnxPackageRecipe, String> {
         masked_rgb: [byte(r)?, byte(g)?, byte(b)?],
         scale_to_unit,
         image_transform,
+        head_decode,
         head: PackageHeadSpec {
             output_port: string(h, "output_port")?,
             layout: match string(h, "layout")?.as_str() {

@@ -10,6 +10,52 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Native raw DFL detector-head conversion (2026-10-31, detector compatibility)
+
+`fss-infer import-onnx` recipe version 3 now converts an explicitly declared
+static anchor-free DFL distance head into decoded pixel-corner boxes. This
+closes a detector-package gap that previously required predecoded coordinates.
+The new output uses the existing package detector's source projection, privacy,
+score/objectness interpretation, candidate bounds and NMS. The original raw
+output, unrelated source outputs, source weights and complete ONNX bytes remain
+retained; no foreign inference runtime, new operator or FMPK wire format appears.
+
+The profile requires batch one, explicit rows/channels layout, 2–32 bins per
+left/top/right/bottom side, and 1–8 ordered unique feature strides. Exact grid
+rows derive from the declared divisible image dimensions, with fixed half-cell
+centers. Native Softmax and ascending-bin MatMul compute expected distances;
+F32 multiplication by stride precedes pixel-center subtraction/addition. Scores
+are copied unchanged and sigmoid is not silently applied twice. The converted
+output has a new explicit name, rows layout and pixel-corner semantics. Invalid
+shapes, names, grid counts, vocabulary or unsupported conventions refuse.
+
+The original import quotas continue to cover all added work, nodes, tensors,
+parameters and retained compile-time controls, including preceding normalization.
+Rows are bounded to 32,768 and the explicit head allowance. The decoder adds
+13 native nodes, or 14 for channel-layout input, and three parameter arrays
+containing exactly `4 * (3 * rows + bins)` bytes. Cancellation cannot yield a
+partially converted graph. V1/v2 recipes retain their original semantics.
+
+The complete model regression passed **253 tests**. The focused DFL target
+passed **14 tests**, including 12 independent new numerical/artifact/resource
+contracts and two included scalar-executor smoke tests. Final-source focused
+tests and strict scoped Clippy passed after the name-length preflight adjustment.
+Independent F64 oracles cover uniform, asymmetric and extreme logits, both
+layouts, rectangular multilevel grids, unsorted stride order, maximum score
+fields, exact raw/source/score preservation and actual graph/Safetensors reload.
+The original 1,900-byte RGB-dependent raw-head fixture also has real package
+projection/privacy/NMS tests; the seven-test reference target passes genuine
+Cargo typechecking. Production inference and the complete CLI test configurations
+also pass genuine Cargo check against the pinned runtime. The 108-schema
+catalog resolves all 893 references without errors.
+
+The matching, retained-fusion and ONNX package command tests remain separately
+tracked from native numeric execution. A single serialized runtime object build
+was killed by SIGKILL while compiling genuine Asupersync at the shared 8 GiB
+memory ceiling; no command tests executed in that attempt. The full production
+and CLI test configurations do typecheck against the real pinned runtime.
+See `docs/ONNX_PACKAGE_IMPORT.md` for the exact recipe and arithmetic boundary.
+
 ## Automatic native JPEG correspondences and 3D scene points (2026-10-31, integration)
 
 `fss-scene-fuse match` now connects two exact local JPEG sources to native masked
@@ -53,7 +99,8 @@ all 880 references without errors.
 The genuine production scene and inference commands and all current CLI test
 configurations pass Cargo check against the pinned Asupersync runtime; the
 previous retained-fusion custody tests now typecheck too. Actual command-owner
-execution still requires the runtime object build and is tracked separately.
+execution remains unverified: the runtime object build was killed at the shared
+8 GiB memory ceiling before executing tests.
 This is a bounded static-feature slice of FSS-099, not field association-quality
 qualification or closure of the broader cross-camera association bead.
 See `docs/SCENE_FEATURE_MATCHING.md` for exact semantics and an example query.
@@ -82,8 +129,9 @@ nonzero detector-head values, resize, canonical graph/Safetensors reload, source
 provenance, exact F32 division order, name collisions, quota exhaustion and
 cancellation. Strict scoped Clippy passed. The real package integration test target also
 passed Cargo check against the pinned runtime. Command and package execution
-await the runtime object build; the additional integration tests are present.
-See `docs/ONNX_PACKAGE_IMPORT.md` for both recipe versions and conversion examples.
+remain unverified after a serialized Asupersync object build was killed at the
+shared 8 GiB memory ceiling; the additional integration tests are present.
+See `docs/ONNX_PACKAGE_IMPORT.md` for recipe versions and conversion examples.
 
 ## Retained native detections in the property scene (2026-10-31, integration)
 
@@ -119,8 +167,9 @@ all **23** parser/rig/adapter tests also passed in the exact-source harness.
 The seven real-custody CLI tests now typecheck against genuine pinned
 Asupersync metadata, together with the full current CLI test configuration.
 Earlier metadata builds were killed under shared host pressure; a later
-serialized build succeeded. Actual command execution still awaits runtime
-object code. The pure harness does not substitute for deployment recovery,
+serialized metadata build succeeded. A later object build was killed at the
+shared 8 GiB memory ceiling, so command execution remains unverified. The pure
+harness does not substitute for deployment recovery,
 custody or output tests.
 The 104-schema catalog resolves all 801 references without errors; the broader
 constitution scan retains 43 existing findings and none for this feature.

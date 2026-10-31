@@ -6,6 +6,8 @@ const RECIPE: &[u8] =
     include_bytes!("../../../../fss-reference/tests/fixtures/onnx_package/recipe.json");
 const RECIPE_V2: &[u8] =
     include_bytes!("../../../../fss-reference/tests/fixtures/onnx_package/recipe_v2.json");
+const RECIPE_V3: &[u8] =
+    include_bytes!("../../../../fss-reference/tests/fixtures/onnx_package/recipe_v3.json");
 
 #[test]
 fn recipe_requires_complete_explicit_choices() -> RunResult<()> {
@@ -16,6 +18,7 @@ fn recipe_requires_complete_explicit_choices() -> RunResult<()> {
     assert!(r.use_approved);
     assert!(r.head.objectness.is_none());
     assert!(r.image_transform.is_none());
+    assert!(r.head_decode.is_none());
     let original = std::str::from_utf8(RECIPE)?;
     for text in [
         original.replace("\"resize\": \"nearest\"", "\"resize\": \"automatic\""),
@@ -35,6 +38,7 @@ fn recipe_requires_complete_explicit_choices() -> RunResult<()> {
 fn recipe_v2_requires_explicit_order_and_finite_positive_channel_normalization() -> RunResult<()> {
     let parsed = recipe(RECIPE_V2)?;
     assert!(parsed.scale_to_unit);
+    assert!(parsed.head_decode.is_none());
     assert_eq!(parsed.target, [2, 2]);
     assert_eq!(
         parsed.image_transform,
@@ -74,6 +78,134 @@ fn recipe_v2_requires_explicit_order_and_finite_positive_channel_normalization()
         recipe(scientific.as_bytes())?.image_transform,
         parsed.image_transform
     );
+    Ok(())
+}
+
+fn recipe_json(value: &Value) -> String {
+    use fss_cli::json_output::{array, object, string};
+    match value {
+        Value::Null => "null".into(),
+        Value::Bool(value) => value.to_string(),
+        Value::Number(value) => value.clone(),
+        Value::Text(value) => string(value),
+        Value::Array(values) => array(&values.iter().map(recipe_json).collect::<Vec<_>>()),
+        Value::Object(values) => object(
+            &values
+                .iter()
+                .map(|(key, value)| (key.as_str(), recipe_json(value)))
+                .collect::<Vec<_>>(),
+        ),
+    }
+}
+fn replace_recipe(value: &mut Value, path: &[&str], replacement: Value) -> RunResult<()> {
+    if path.is_empty() {
+        *value = replacement;
+        return Ok(());
+    }
+    let Value::Object(fields) = value else {
+        return Err("fixture path requires object".into());
+    };
+    if path.len() == 1 {
+        fields.insert(path[0].to_owned(), replacement);
+        return Ok(());
+    }
+    replace_recipe(
+        fields.get_mut(path[0]).ok_or("missing fixture path")?,
+        &path[1..],
+        replacement,
+    )
+}
+
+#[test]
+fn recipe_v3_preserves_explicit_grid_order_and_decoded_head_conventions() -> RunResult<()> {
+    let parsed = recipe(RECIPE_V3)?;
+    let decode = parsed.head_decode.as_ref().ok_or("DFL decoder missing")?;
+    assert_eq!(parsed.target, [4, 4]);
+    assert_eq!(decode.raw_output, "raw_head");
+    assert!(matches!(decode.raw_layout, OnnxHeadLayout::Rows));
+    assert_eq!(decode.bins, 4);
+    assert_eq!(decode.strides, [2, 4]);
+    assert_eq!(parsed.head.output_port, "decoded_head");
+    assert_eq!(parsed.head.layout, HeadLayout::Rows);
+    assert_eq!(parsed.head.boxes, HeadBoxes::PixelCorners);
+    assert_eq!(parsed.head.class_score, HeadScore::Probability);
+    assert_eq!(
+        parsed
+            .image_transform
+            .ok_or("explicit preprocessing missing")?
+            .mean,
+        [0.0; 3]
+    );
+    let mut changed = json_input::parse(std::str::from_utf8(RECIPE_V3)?)?;
+    replace_recipe(
+        &mut changed,
+        &["head_decode", "raw_layout"],
+        Value::Text("channels".into()),
+    )?;
+    replace_recipe(
+        &mut changed,
+        &["head_decode", "strides"],
+        Value::Array(vec![Value::Number("4".into()), Value::Number("2".into())]),
+    )?;
+    let changed = recipe(recipe_json(&changed).as_bytes())?;
+    let decode = changed.head_decode.ok_or("DFL decoder missing")?;
+    assert!(matches!(decode.raw_layout, OnnxHeadLayout::Channels));
+    assert_eq!(decode.strides, [4, 2]);
+    Ok(())
+}
+
+#[test]
+fn recipe_v3_refuses_implicit_raw_head_rules_and_invalid_grid_profiles() -> RunResult<()> {
+    let original = json_input::parse(std::str::from_utf8(RECIPE_V3)?)?;
+    let number = |value: &str| Value::Number(value.into());
+    let text = |value: &str| Value::Text(value.into());
+    let numbers =
+        |values: &[&str]| Value::Array(values.iter().map(|value| number(value)).collect());
+    for (path, value) in [
+        (vec!["format"], text("fss.onnx_rgb_package_recipe.v2")),
+        (vec!["format"], text("fss.onnx_rgb_package_recipe.v4")),
+        (vec!["head_decode", "kind"], text("automatic")),
+        (vec!["head_decode", "raw_layout"], text("automatic")),
+        (vec!["head_decode", "extra"], Value::Bool(true)),
+        (vec!["head_decode", "raw_output"], text("")),
+        (vec!["head_decode", "raw_output"], text("   ")),
+        (vec!["head_decode", "raw_output"], text("raw\u{0000}head")),
+        (vec!["head", "output_port"], text("raw_head")),
+        (vec!["head", "layout"], text("channels")),
+        (vec!["head", "boxes"], text("normalized-corners")),
+        (vec!["head", "maximum_rows"], number("4")),
+        (vec!["head_decode", "bins"], number("1")),
+        (vec!["head_decode", "bins"], number("33")),
+        (vec!["head_decode", "bins"], number("4.0")),
+        (vec!["head_decode", "bins"], text("4")),
+        (vec!["head_decode", "strides"], numbers(&[])),
+        (vec!["head_decode", "strides"], numbers(&["2", "2"])),
+        (vec!["head_decode", "strides"], numbers(&["0"])),
+        (vec!["head_decode", "strides"], numbers(&["3"])),
+        (vec!["head_decode", "strides"], numbers(&["4097"])),
+        (vec!["head_decode", "strides"], numbers(&["1"; 9])),
+        (
+            vec!["head_decode", "strides"],
+            Value::Array(vec![text("2")]),
+        ),
+        (vec!["preprocess", "height"], number("0")),
+        (vec!["preprocess", "height"], number("4097")),
+    ] {
+        let mut changed = original.clone();
+        replace_recipe(&mut changed, &path, value)?;
+        assert!(
+            recipe(recipe_json(&changed).as_bytes()).is_err(),
+            "accepted {path:?}"
+        );
+    }
+    let mut missing = original;
+    let Value::Object(fields) = &mut missing else {
+        return Err("fixture object".into());
+    };
+    fields.remove("head_decode");
+    assert!(recipe(recipe_json(&missing).as_bytes()).is_err());
+    let older = std::str::from_utf8(RECIPE_V2)?.replace("recipe.v2", "recipe.v3");
+    assert!(recipe(older.as_bytes()).is_err());
     Ok(())
 }
 
@@ -154,6 +286,7 @@ fn command_creates_verified_package_then_refuses_overwrite() -> RunResult<()> {
     for (source_name, recipe_name, output_name) in [
         ("tiny_detector.onnx", "recipe.json", "v1.fmpk"),
         ("normalization_detector.onnx", "recipe_v2.json", "v2.fmpk"),
+        ("raw_dfl_detector.onnx", "recipe_v3.json", "v3.fmpk"),
     ] {
         let output = cleanup.0.join(output_name);
         let mut a = Vec::new();

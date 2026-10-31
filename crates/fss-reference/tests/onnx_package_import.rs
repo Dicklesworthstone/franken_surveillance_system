@@ -15,8 +15,8 @@ use fss_core::{
 use fss_model_ir::{OnnxChannelOrder, OnnxImageTransform};
 use fss_object::{ModelId, ModelPackageArchive, ModelPackageLimits};
 use fss_reference::ingest::onnx_package::{
-    ONNX_SOURCE_ARTIFACT, OnnxPackageError, OnnxPackageLimits, OnnxPackageRecipe,
-    OnnxPackageRequest, import_onnx_package,
+    ONNX_SOURCE_ARTIFACT, OnnxDflHeadDecode, OnnxHeadLayout, OnnxPackageError, OnnxPackageLimits,
+    OnnxPackageRecipe, OnnxPackageRequest, import_onnx_package,
 };
 use fss_reference::ingest::package_detect::{
     PackageDetectLimits, PackageDetectRequest, run_package_detection,
@@ -33,6 +33,7 @@ type Test<T = ()> = Result<T, Box<dyn std::error::Error>>;
 const SOURCE: &[u8] = include_bytes!("fixtures/onnx_package/tiny_detector.onnx");
 const NORMALIZATION_SOURCE: &[u8] =
     include_bytes!("fixtures/onnx_package/normalization_detector.onnx");
+const DFL_SOURCE: &[u8] = include_bytes!("fixtures/onnx_package/raw_dfl_detector.onnx");
 const LICENSE: &[u8] = include_bytes!("fixtures/onnx_package/LICENSE");
 const NOTICE: &[u8] = include_bytes!("fixtures/onnx_package/NOTICE");
 const JPEG: &[u8] =
@@ -91,6 +92,7 @@ fn recipe() -> Test<OnnxPackageRecipe> {
         masked_rgb: [0; 3],
         scale_to_unit: false,
         image_transform: None,
+        head_decode: None,
         head: PackageHeadSpec {
             output_port: "head".into(),
             layout: HeadLayout::Rows,
@@ -369,7 +371,10 @@ fn run_pixels(package: &RgbDetectorPackage, pixels: &[u8], mask: &[u8]) -> Test<
         rgb_sha256: encoded,
         decoder: ContentDigest::sha256(b"fixture:explicit-rgb-pixels").bytes(),
         interpretation: ComponentInterpretation::YCbCr,
-        dimensions: [2, 2],
+        dimensions: [
+            u32::try_from(package.spec().target[1])?,
+            u32::try_from(package.spec().target[0])?,
+        ],
         mcus: 0,
         entropy_blocks: 0,
         restarts: 0,
@@ -512,6 +517,191 @@ fn normalization_occurs_after_rgb_privacy_replacement_and_invalid_recipes_refuse
             ),
             Err(OnnxPackageError::Recipe(_))
         ));
+    }
+    Ok(())
+}
+
+fn dfl_recipe() -> Test<OnnxPackageRecipe> {
+    let mut recipe = recipe()?;
+    recipe.model_id = ModelId::parse("MOD-ONNXDFLFIXTURE-001")?;
+    recipe.model_generation = ModelGeneration::parse("model:onnx-dfl-fixture:g1")?;
+    recipe.target = [4, 4];
+    recipe.scale_to_unit = true;
+    recipe.image_transform = Some(OnnxImageTransform {
+        channel_order: OnnxChannelOrder::Rgb,
+        mean: [0.0; 3],
+        standard_deviation: [1.0; 3],
+    });
+    recipe.head_decode = Some(OnnxDflHeadDecode {
+        raw_output: "raw_head".into(),
+        raw_layout: OnnxHeadLayout::Rows,
+        bins: 4,
+        strides: vec![2, 4],
+    });
+    recipe.head.output_port = "decoded_head".into();
+    recipe.head.maximum_rows = 5;
+    recipe.head.maximum_candidates = 16;
+    recipe.head.maximum_detections = 5;
+    recipe.upstream = "fixture:fss/native-onnx-dfl".into();
+    recipe.producer = "FSS pixel-dependent raw DFL numerical fixture".into();
+    Ok(recipe)
+}
+fn dfl_request(recipe: &OnnxPackageRecipe) -> OnnxPackageRequest<'_> {
+    let mut request = request(recipe);
+    request.source = DFL_SOURCE;
+    request.source_digest = ContentDigest::sha256(DFL_SOURCE);
+    request
+}
+
+#[test]
+fn raw_dfl_package_reloads_and_runs_native_decode_then_existing_privacy_screened_nms() -> Test {
+    let directory = Directory::new("dfl-decode")?;
+    let cx = context(&directory.0)?;
+    let scalar = ScalarExecCx::new();
+    let recipe = dfl_recipe()?;
+    assert_eq!(DFL_SOURCE.len(), 1900);
+    assert_eq!(
+        ContentDigest::sha256(DFL_SOURCE).to_text(),
+        "sha256:142825f5bcd12d5d830bed123306820af1b73772d9a319ab6cc5c25acb40d76b"
+    );
+    let imported = import_onnx_package(
+        &dfl_request(&recipe),
+        OnnxPackageLimits::default(),
+        &cx,
+        &scalar,
+    )?;
+    let repeated = import_onnx_package(
+        &dfl_request(&recipe),
+        OnnxPackageLimits::default(),
+        &cx,
+        &scalar,
+    )?;
+    assert_eq!(imported.archive(), repeated.archive());
+    let archive = ModelPackageArchive::decode(imported.archive(), &ModelPackageLimits::default())?;
+    let source = archive
+        .artifacts
+        .values()
+        .find(|a| a.name == ONNX_SOURCE_ARTIFACT)
+        .ok_or("source")?;
+    assert_eq!(source.payload, DFL_SOURCE);
+    assert!(
+        archive
+            .manifest
+            .license()
+            .artifact_digests()
+            .contains(&source.digest)
+    );
+    let loaded = RgbDetectorPackage::load(
+        imported.archive(),
+        ContentDigest::sha256(imported.archive()),
+        1 << 32,
+        &cx,
+        &scalar,
+    )?;
+    assert_eq!(loaded.model().digest(), imported.package().model().digest());
+    let inference = run_pixels(&loaded, &[0; 48], &[1; 16])?;
+    assert_eq!(inference.outputs()["raw_head"].shape(), [1, 5, 18]);
+    assert_eq!(inference.outputs()["embedding"].values(), [0.0; 3]);
+    assert_eq!(inference.outputs()["decoded_head"].shape(), [1, 5, 6]);
+    // Uniform zero logits give exactly 1.5 bins in each direction. The first four
+    // rows use stride two, and the fifth uses stride four; scores remain source bits.
+    let expected = [
+        [-2.0, -2.0, 4.0, 4.0, 0.85, 0.1],
+        [0.0, -2.0, 6.0, 4.0, 0.75, 0.1],
+        [-2.0, 0.0, 4.0, 6.0, 0.65, 0.1],
+        [0.0, 0.0, 6.0, 6.0, 0.55, 0.1],
+        [-4.0, -4.0, 8.0, 8.0, 0.45, 0.1],
+    ];
+    assert_eq!(
+        inference.outputs()["decoded_head"].values(),
+        expected.as_flattened()
+    );
+    let changed = run_pixels(&loaded, &[128; 48], &[1; 16])?;
+    assert_ne!(
+        &changed.outputs()["decoded_head"].values()[..4],
+        &expected[0][..4]
+    );
+    let raw = changed.outputs()["raw_head"].values();
+    let decoded = changed.outputs()["decoded_head"].values();
+    for row in 0..5 {
+        for score in 0..2 {
+            assert_eq!(
+                raw[row * 18 + 16 + score].to_bits(),
+                decoded[row * 6 + 4 + score].to_bits()
+            );
+        }
+    }
+    let detection = project_rgb_detections(
+        &inference,
+        loaded.contract(),
+        &[1; 16],
+        &mut RgbDetectionBudget::new(1_000_000, 1 << 20),
+        &scalar,
+    )?;
+    assert_eq!(detection.rows().len(), 5);
+    assert_eq!(detection.detections().len(), 1);
+    assert_eq!(detection.detections()[0].bounds(), [0, 0, 1024, 1024]);
+    assert_eq!(
+        detection.detections()[0].score().to_bits(),
+        0.85_f32.to_bits()
+    );
+    assert_eq!(detection.detections()[0].class_index(), 0);
+
+    // Native RGB privacy replacement still precedes raw inference and DFL decoding.
+    // A denied pixel cannot alter either tensor; its footprint also blocks proposals.
+    let mut mask = [1; 16];
+    mask[0] = 0;
+    let mut private_change = [0; 48];
+    private_change[..3].copy_from_slice(&[251, 137, 79]);
+    let a = run_pixels(&loaded, &[0; 48], &mask)?;
+    let b = run_pixels(&loaded, &private_change, &mask)?;
+    assert_eq!(a.output_digest(), b.output_digest());
+    assert_ne!(a.identity(), b.identity());
+    let screened = project_rgb_detections(
+        &b,
+        loaded.contract(),
+        &mask,
+        &mut RgbDetectionBudget::new(1_000_000, 1 << 20),
+        &scalar,
+    )?;
+    assert!(screened.detections().is_empty());
+    assert_eq!(
+        screened.rows()[0].disposition,
+        fss_reference::ingest::rgb_detections::HeadRowDisposition::PrivateFootprint
+    );
+    Ok(())
+}
+
+#[test]
+fn dfl_packaging_refuses_conflicting_head_semantics_and_grid_or_vocabulary_mismatch() -> Test {
+    let directory = Directory::new("dfl-refusals")?;
+    let cx = context(&directory.0)?;
+    let scalar = ScalarExecCx::new();
+    for which in 0..9 {
+        let mut recipe = dfl_recipe()?;
+        let decode = recipe.head_decode.as_mut().ok_or("decoder")?;
+        match which {
+            0 => recipe.head.layout = HeadLayout::Channels,
+            1 => recipe.head.boxes = HeadBoxes::PixelCenterSize,
+            2 => recipe.head.output_port = "raw_head".into(),
+            3 => decode.bins = 2,
+            4 => decode.strides = vec![4],
+            5 => decode.strides = vec![2, 2],
+            6 => decode.raw_layout = OnnxHeadLayout::Channels,
+            7 => decode.raw_output = "missing".into(),
+            _ => {
+                recipe.labels.pop();
+            }
+        }
+        assert!(
+            import_onnx_package(
+                &dfl_request(&recipe),
+                OnnxPackageLimits::default(),
+                &cx,
+                &scalar
+            )
+            .is_err()
+        );
     }
     Ok(())
 }

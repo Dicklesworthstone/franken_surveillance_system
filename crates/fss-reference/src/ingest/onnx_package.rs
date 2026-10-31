@@ -9,10 +9,10 @@ use fss_core::{
     CalibrationGeneration, CanonicalEncoder, ContentDigest, ContractError, DigestAlgorithm,
     Generation, ModelGeneration, SchemaId,
 };
-pub use fss_model_ir::{OnnxChannelOrder, OnnxImageTransform};
+pub use fss_model_ir::{OnnxChannelOrder, OnnxDflHeadDecode, OnnxHeadLayout, OnnxImageTransform};
 use fss_model_ir::{
-    OnnxError, OnnxExportLimits, OnnxLimits, export_onnx_artifacts, import_onnx,
-    transform_onnx_image,
+    OnnxError, OnnxExportLimits, OnnxLimits, decode_onnx_dfl_head, export_onnx_artifacts,
+    import_onnx, transform_onnx_image,
 };
 use fss_object::{
     MAX_RESTRICTION_LEN, MAX_RESTRICTIONS_COUNT, MAX_SOURCE_IDENTITY_LEN, MAX_SPDX_LEN,
@@ -20,7 +20,7 @@ use fss_object::{
     ModelPackage, ModelPackageArchive, ModelPackageArtifact, ModelPackageError,
 };
 
-use super::rgb_detections::{HeadLayout, RgbDetectionContract};
+use super::rgb_detections::{HeadBoxes, HeadLayout, RgbDetectionContract};
 use super::rgb_package::{
     GRAPH_ARTIFACT, LICENSE_ARTIFACT, MAX_RGB_PACKAGE_BYTES, NOTICE_ARTIFACT, PackageHeadSpec,
     PackageSource, RgbDetectorPackage, RgbPackageError, RgbPackageSpec, SPEC_ARTIFACT,
@@ -58,6 +58,9 @@ pub struct OnnxPackageRecipe {
     /// Optional recipe-v2 model-input channel ordering and per-channel F32 normalization.
     /// It is frozen into the graph after RGB masking/resize/scaling; `None` preserves v1.
     pub image_transform: Option<OnnxImageTransform>,
+    /// Optional recipe-v3 static anchor-free DFL decoder. The existing head selects
+    /// its new rows/pixel-corner output; the original raw output remains available.
+    pub head_decode: Option<OnnxDflHeadDecode>,
     /// Already-decoded dense detection-head semantics.
     pub head: PackageHeadSpec,
     /// Ordered unique class labels.
@@ -221,6 +224,19 @@ fn spec(
             .validate_rgb_range(recipe.scale_to_unit)
             .map_err(|_| OnnxPackageError::Recipe("invalid or overflowing image normalization"))?;
     }
+    if let Some(decode) = &recipe.head_decode {
+        decode
+            .validate()
+            .map_err(|_| OnnxPackageError::Recipe("invalid DFL head profile"))?;
+        if recipe.head.layout != HeadLayout::Rows
+            || recipe.head.boxes != HeadBoxes::PixelCorners
+            || decode.raw_output == recipe.head.output_port
+        {
+            return Err(OnnxPackageError::Recipe(
+                "DFL requires a distinct rows/pixel-corner output",
+            ));
+        }
+    }
     let valid_text = |s: &str| !s.is_empty() && s.len() <= 512 && !s.chars().any(char::is_control);
     if recipe.tensor_generation.0 == 0
         || !valid_text(&recipe.upstream)
@@ -334,6 +350,19 @@ pub fn import_onnx_package(
             imported,
             &spec.image_input,
             transform,
+            limits.import,
+            &cancelled,
+        )?
+    } else {
+        imported
+    };
+    let imported = if let Some(decode) = &request.recipe.head_decode {
+        decode_onnx_dfl_head(
+            imported,
+            decode,
+            &spec.head.output_port,
+            spec.target,
+            spec.labels.len() + usize::from(spec.head.objectness.is_some()),
             limits.import,
             &cancelled,
         )?
