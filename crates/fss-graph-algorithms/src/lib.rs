@@ -29,6 +29,8 @@ pub mod bridges;
 pub mod centrality;
 pub mod certified;
 pub mod community;
+/// Source-pinned anonymous tracklet handoff paths with exact implicit alternatives.
+pub mod continuity;
 pub mod coverage;
 pub mod coverage_timeline;
 pub mod dominators;

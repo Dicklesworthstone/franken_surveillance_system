@@ -425,13 +425,16 @@
       "tieBreakPolicyId": "tie:objective-then-lexicographic-assignment-tuple-unassigned-last:v1",
       "policyId": "graph-policy:bipartite:allowed-pairs-only:nonassignment-maximum-cardinality-or-priced:numeric:u64-exact:checked:unit-bound:v1:tie:objective-then-lexicographic-assignment-tuple-unassigned-last:v1",
       "complexityBoundId": "bound:alg-multimatch-001:murty-1-plus-k-n-solves:v1",
-      "projectionBinding": "caller-built canonical AssignmentProblem (fss.graph.assignment_projection.v1: left items, right items, allowed pairs with u64 costs) named in the witness projectionId; witness nodeCount is L + R and edgeCount the allowed pairs; no retained-record projection builder yet",
+      "projectionBinding": "caller-built canonical AssignmentProblem (fss.graph.assignment_projection.v1: left items, right items, allowed pairs with u64 costs) named in the witness projectionId; witness nodeCount is L + R and edgeCount the allowed pairs; additive anonymous handoff path-cover mode is specified by architecture/continuity_reference.json with owner-declared source/scope pins, full-interval DAG gates, complete implicit alternatives and an exact displayed prefix; no authenticated retained-record projection builder yet",
       "qualification": "not_qualified: certified only against the in-tree brute-force oracle (crates/fss-graph-algorithms/src/oracles.rs) on seeded small graphs; the INT-FNX-001 FrankenNetworkX differential, snapshot invalidation, capability noninterference and incremental/full lanes do not exist",
       "evidence": [
         "crates/fss-graph-algorithms/src/assignment.rs",
         "crates/fss-graph-algorithms/src/certified.rs",
         "crates/fss-graph-algorithms/src/oracles.rs",
-        "crates/fss-graph-algorithms/tests/optimization_certification.rs"
+        "crates/fss-graph-algorithms/tests/optimization_certification.rs",
+        "architecture/continuity_reference.json",
+        "crates/fss-graph-algorithms/src/continuity.rs",
+        "crates/fss-graph-algorithms/tests/continuity_contract.rs"
       ]
     },
     {

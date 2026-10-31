@@ -10,6 +10,35 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Global anonymous tracklet handoff paths (2026-10-31, reference)
+
+The native `continuity` planner composes up to 32 camera-local tracklets into globally
+consistent anonymous paths using the existing certified Hungarian/Murty assignment
+implementation. It prices declared links and path births/ends, retains every original
+tracklet, and returns all ordered-pair dispositions with complete source/generation pins.
+Missing, invalidated and redacted support disables incident links while retaining the
+member as a singleton. A shared property/session/privacy/clock scope and compatible
+model generations are mandatory; same-camera links also preserve camera/calibration
+generations. These inputs remain owner declarations, not authenticated source custody.
+
+Full capture intervals must prove strictly forward order and satisfy the transit window
+for every locally valid endpoint choice. Widening uncertainty cannot add an admitted
+link. Failure of this conservative gate means a link is not established by this profile;
+it does not prove physical impossibility. The complete admitted DAG and in/out-degree
+constraints preserve the exact implicit family, including an explicit all-singleton
+explanation. Displayed alternatives are an exact ordered prefix with conservative
+exhaustion reporting. No path or cost becomes a physical identity or probability.
+
+Eighteen native continuity contracts and all 208 prior graph tests passed. The new tests
+include 256 exhaustive small edge-subset cases/permutations, 96 interval-widening cases,
+every cancellation checkpoint, exact shared operation/output budgets, numeric extremes,
+and the maximum 32-tracklet/992-declaration input. The actual paired query adapter also
+passed 12 native tests. Scoped kernel/test Clippy passed with only four independently
+confirmed pre-existing graph lint categories; the full strict baseline remains unchanged.
+The additive assignment cancellation wrappers preserve successful legacy outputs and
+counters. See `architecture/continuity_reference.json`; source authentication, simultaneous
+multiview fusion, identity accuracy and full association qualification remain open.
+
 ## ONNX detector branches and padded spatial pooling (2026-10-31, reference)
 
 The source-preserving ONNX importer now admits static opset-13 `Split` with up to
