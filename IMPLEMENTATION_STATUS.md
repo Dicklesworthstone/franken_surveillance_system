@@ -64,17 +64,18 @@ terminal retirement. Final scoped Clippy passed with only the independently
 identified unchanged `message.rs` counter-loop lint isolated; all new code remained
 subject to fatal warnings, with no source/configuration allowance added.
 
-Cold source-backed JPEG replay now reopens exact saved datagram prefixes and binds
-complete reconstructed images to their actual original packets, including earlier
-cached quantizer definitions. Receive time stays separate from capture time;
-prefix exhaustion never invents EOF. The existing source encoding is unchanged.
+`fss-capture-rtsp jpeg` now supplies one bounded native connection, original
+RTP/RTCP publication before further media progress, complete native luma
+validation, and exact cold replay. Frame provenance binds actual source packets
+and earlier cached quantizers. Capture time stays unknown; saved-prefix
+exhaustion never invents EOF.
 
-Full production CLI/reference and retained JPEG test targets typecheck against
-real runtime/storage dependencies. Native execution of the new custody/replay
-tests remains pending: shared host memory and disk capacity prevented the run.
-No dependency, feature or qualification gate was replaced. Physical-camera,
-clock-synchronization and complete release qualification remain open.
-See `docs/jpeg_datagram_reconstruction.md` and `docs/NATIVE_RTSP_JPEG.md`.
+Production and test targets typecheck against genuine runtime/storage. The earlier
+67 protocol tests ran before these additions; the new custody, replay and
+CLI/runtime tests have not executed because shared host capacity blocked native
+code generation. No dependency or qualification gate was replaced. Physical-camera
+and full release qualification remain open.
+See `docs/rtsp_jpeg_capture_cli.md` and `docs/jpeg_datagram_reconstruction.md`.
 
 ## Handoffs from authenticated retained package tracks (2026-10-31, integration)
 

@@ -295,6 +295,13 @@ revalidation; authentication is disabled by default. Its exact durable window/ca
 feed the [retained RTSP importer](docs/rtsp_recording_import.md) and native decode/analysis,
 including cold use after the original capture archive is offline.
 
+For JPEG cameras, [`fss-capture-rtsp jpeg`](docs/rtsp_jpeg_capture_cli.md) retains
+original selected RTP and RTCP through the same root-last store, validates complete
+images with the native luma decoder, and stops under explicit independent bounds.
+`jpeg replay` reopens an exact saved prefix without network or credentials and binds
+reconstructed images to their actual original packets, including cached quantizer
+definitions. Capture time stays unknown, and prefix exhaustion never invents media EOF.
+
 FSS separates source evidence, live delivery, and analysis:
 
 - source bytes and packet/timing maps are immutable custody objects;

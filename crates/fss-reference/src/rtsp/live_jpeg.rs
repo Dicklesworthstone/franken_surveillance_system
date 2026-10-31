@@ -208,6 +208,24 @@ impl LiveJpegConnection {
         now: u64,
         authority: &dyn TcpAuthority,
     ) -> Result<Self, LiveJpegConnectFailure> {
+        Self::connect_mode(config, now, authority, true)
+    }
+    /// Open an explicitly unauthenticated connection. A challenge is refused by the
+    /// plain session; there is no dummy credential, secret read, or automatic upgrade.
+    /// The route, native transport, lifetime and image bounds remain identical.
+    pub fn connect_unauthenticated(
+        config: LiveJpegConfig,
+        now: u64,
+        authority: &dyn TcpAuthority,
+    ) -> Result<Self, LiveJpegConnectFailure> {
+        Self::connect_mode(config, now, authority, false)
+    }
+    fn connect_mode(
+        config: LiveJpegConfig,
+        now: u64,
+        authority: &dyn TcpAuthority,
+        digest: bool,
+    ) -> Result<Self, LiveJpegConnectFailure> {
         let refused = |reason| LiveJpegConnectFailure {
             reason,
             connection_attempted: false,
@@ -221,15 +239,25 @@ impl LiveJpegConnection {
         {
             return Err(refused(LiveJpegError::Configuration));
         }
-        let protocol = RtspJpegClient::with_digest(
-            config.protocol,
-            config.binding.key(),
-            config.payload_type,
-            config.reorder,
-            config.jpeg,
-            &config.realm,
-            config.digest_policy,
-        )
+        let protocol = if digest {
+            RtspJpegClient::with_digest(
+                config.protocol,
+                config.binding.key(),
+                config.payload_type,
+                config.reorder,
+                config.jpeg,
+                &config.realm,
+                config.digest_policy,
+            )
+        } else {
+            RtspJpegClient::new(
+                config.protocol,
+                config.binding.key(),
+                config.payload_type,
+                config.reorder,
+                config.jpeg,
+            )
+        }
         .map_err(|e| refused(LiveJpegError::Protocol(e)))?;
         let transport = RtspTcpLink::connect(
             config.binding,
@@ -304,6 +332,31 @@ impl LiveJpegConnection {
             .ok_or_else(|| safe(LiveJpegError::Closed))?
             .protocol
             .request_digest(command, credentials, cnonce, now);
+        let request = result.map_err(|e| self.protocol_failure(e))?;
+        self.queue(request, None, now, authority)
+    }
+    /// Prepare one plain command. Digest-enabled sessions reject this method;
+    /// callers must choose unauthenticated mode before opening the connection.
+    pub fn request_unauthenticated(
+        &mut self,
+        command: ClientCommand,
+        now: u64,
+        authority: &dyn TcpAuthority,
+    ) -> Result<QueuedJpegRequest, LiveJpegFailure> {
+        self.admit(now, authority)?;
+        if self
+            .active
+            .as_ref()
+            .is_some_and(|a| a.transport.has_pending_request())
+        {
+            return Err(safe(LiveJpegError::Backpressure));
+        }
+        let result = self
+            .active
+            .as_mut()
+            .ok_or_else(|| safe(LiveJpegError::Closed))?
+            .protocol
+            .request(command, now);
         let request = result.map_err(|e| self.protocol_failure(e))?;
         self.queue(request, None, now, authority)
     }
