@@ -10,6 +10,30 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Retained-source stream capacity and failover command (2026-10-30, reference)
+
+`fss-event graph capacity` now exposes the native capacity planner against one retained
+site/window snapshot. Operators declare camera rates, directed named links, recorder
+acceptance limits, rate/cost units and failed nodes/links. Every selected sensor must be
+known in the retained projection; positive whole-window coverage is reported separately
+and never creates or suppresses a declared demand. An optional expected coverage digest
+rejects stale source selection before solving. The complete strict JSON report carries
+every camera shortfall, link/recorder flow, typed cut, source witness, composition witness
+and both full certified solver proofs. Reordering declarations preserves the report;
+changing a topology or failure assumption changes its bound identity.
+
+The command is bounded and read-only. Source support is selected in one cancellable pass;
+source read/projection bounds remain independent of the shared native solver allowance.
+Unknown declarations, stale source, cancellation, overflow or oversized complete output
+refuse without a partial report. Schema/reference validation passed with zero new findings;
+the catalog retains its 39 unrelated existing findings. Six CLI adapter tests and one cold
+retained-custody process test cover replay, source-path deletion, changed windows, failover,
+zero-support sensors, stale pins and unchanged storage, but are **authored and unexecuted**
+under the existing asynchronous dependency build limit. Independent API/source review and
+scoped formatting passed; the underlying graph package's 208 native tests passed separately.
+This command plans aggregate splittable capacity and does not measure throughput or activate
+streams. See `docs/STREAM_CAPACITY_PLANNING.md` and `schemas/stream_capacity.v1.json`.
+
 ## Native HEVC Main tile decoding and retained generations (2026-10-30, reference)
 
 The native H.265 decoder now admits bounded uniform and explicit tile layouts for Main

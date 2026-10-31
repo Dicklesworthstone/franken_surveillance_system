@@ -1,0 +1,1351 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/stream_capacity.v1.json",
+  "title": "Complete source-bound aggregate camera stream capacity and failover report v1",
+  "description": "Read-only fss-event graph capacity result: exact aggregate integral splittable routing conditional on all declared topology, demand, recorder capacity, cost and failure assumptions. Every declaration and complete original solver output remains present; no truncation or partial optimum is a report. Native verification additionally checks identity uniqueness, endpoint membership, source/witness bindings and digests, conservation, maximum delivery, minimum cost, totals and cut saturation. JSON shape validation alone does not prove those relationships or grant effect authority. The writer refuses complete reports above the explicit byte allowance (hard maximum 2 MiB).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "format",
+    "site",
+    "anchor",
+    "capture_window",
+    "source_coverage_witness",
+    "source_coverage_witness_digest",
+    "retained_sensor_support",
+    "declared_problem",
+    "status",
+    "requested",
+    "delivered",
+    "shortfall",
+    "total_cost",
+    "cameras",
+    "links",
+    "recorders",
+    "source_side",
+    "cut",
+    "maximum_flow_proof",
+    "minimum_cost_proof",
+    "witness",
+    "witness_digest",
+    "work_budget_scope",
+    "authority",
+    "claim",
+    "qualification"
+  ],
+  "properties": {
+    "format": {
+      "const": "fss.stream_capacity.v1"
+    },
+    "site": {
+      "$ref": "#/$defs/identity"
+    },
+    "anchor": {
+      "$ref": "evidence_anchor.v1.json"
+    },
+    "capture_window": {
+      "$ref": "#/$defs/capture_window"
+    },
+    "source_coverage_witness": {
+      "$ref": "#/$defs/source_coverage_witness"
+    },
+    "source_coverage_witness_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "retained_sensor_support": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 128,
+      "items": {
+        "$ref": "#/$defs/retained_sensor_support"
+      },
+      "uniqueItems": true
+    },
+    "declared_problem": {
+      "$ref": "#/$defs/declared_problem"
+    },
+    "status": {
+      "enum": [
+        "fully_routed",
+        "capacity_shortfall"
+      ]
+    },
+    "requested": {
+      "$ref": "#/$defs/positive_u64"
+    },
+    "delivered": {
+      "$ref": "#/$defs/u64"
+    },
+    "shortfall": {
+      "$ref": "#/$defs/u64"
+    },
+    "total_cost": {
+      "$ref": "#/$defs/u64"
+    },
+    "cameras": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 128,
+      "items": {
+        "$ref": "#/$defs/camera"
+      },
+      "uniqueItems": true
+    },
+    "links": {
+      "type": "array",
+      "minItems": 0,
+      "maxItems": 1024,
+      "items": {
+        "$ref": "#/$defs/link"
+      },
+      "uniqueItems": true
+    },
+    "recorders": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "items": {
+        "$ref": "#/$defs/recorder"
+      },
+      "uniqueItems": true
+    },
+    "source_side": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1442,
+      "items": {
+        "$ref": "#/$defs/source_side_endpoint"
+      },
+      "uniqueItems": true
+    },
+    "cut": {
+      "type": "array",
+      "minItems": 0,
+      "maxItems": 2368,
+      "items": {
+        "$ref": "#/$defs/cut_arc"
+      },
+      "uniqueItems": true
+    },
+    "maximum_flow_proof": {
+      "$ref": "#/$defs/maximum_flow_proof"
+    },
+    "minimum_cost_proof": {
+      "$ref": "#/$defs/minimum_cost_proof"
+    },
+    "witness": {
+      "$ref": "#/$defs/capacity_witness"
+    },
+    "witness_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "work_budget_scope": {
+      "const": "reduction_maximum_flow_minimum_cost_and_composition; source_reader_and_projection_separately_bounded"
+    },
+    "authority": {
+      "const": "derived_cognition_no_effect_authority"
+    },
+    "claim": {
+      "const": "exact aggregate routing conditional on declared topology, rates, costs and failures; retained camera identity/support is not measured throughput, current health, multipath session support or permission to activate or route streams"
+    },
+    "qualification": {
+      "const": "deterministic_reference_not_production_qualified"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "fully_routed"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "shortfall": {
+            "const": 0
+          },
+          "cameras": {
+            "items": {
+              "properties": {
+                "shortfall": {
+                  "const": 0
+                }
+              }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "shortfall": {
+            "$ref": "#/$defs/positive_u64"
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "u64": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615
+    },
+    "positive_u64": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 18446744073709551615
+    },
+    "identity": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9:_.-]+$"
+    },
+    "unit": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9:_.-]+$"
+    },
+    "timestamp": {
+      "type": "string",
+      "maxLength": 40,
+      "pattern": "^(0|-?[1-9][0-9]{0,38})$",
+      "description": "Canonical signed i128 nanoseconds. The renderer validates the exact i128 range and start <= end."
+    },
+    "zone": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 507,
+      "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$",
+      "description": "Exact retained zone identity; source validation also enforces its UTF-8 byte ceiling."
+    },
+    "endpoint": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "id"
+          ],
+          "properties": {
+            "kind": {
+              "const": "source"
+            },
+            "id": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "id"
+          ],
+          "properties": {
+            "kind": {
+              "const": "sink"
+            },
+            "id": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "id"
+          ],
+          "properties": {
+            "kind": {
+              "enum": [
+                "node",
+                "link",
+                "camera",
+                "recorder"
+              ]
+            },
+            "id": {
+              "$ref": "#/$defs/identity"
+            }
+          }
+        }
+      ]
+    },
+    "source_side_endpoint": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "id"
+          ],
+          "properties": {
+            "kind": {
+              "const": "source"
+            },
+            "id": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "id"
+          ],
+          "properties": {
+            "kind": {
+              "enum": [
+                "node",
+                "link",
+                "camera",
+                "recorder"
+              ]
+            },
+            "id": {
+              "$ref": "#/$defs/identity"
+            }
+          }
+        }
+      ]
+    },
+    "cut_destination": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "id"
+          ],
+          "properties": {
+            "kind": {
+              "const": "sink"
+            },
+            "id": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "id"
+          ],
+          "properties": {
+            "kind": {
+              "enum": [
+                "node",
+                "link",
+                "camera",
+                "recorder"
+              ]
+            },
+            "id": {
+              "$ref": "#/$defs/identity"
+            }
+          }
+        }
+      ]
+    },
+    "projection_vertex": {
+      "type": "string",
+      "maxLength": 267,
+      "pattern": "^(?:0/source|1/node/[A-Za-z0-9:_.-]{1,256}|2/link/[A-Za-z0-9:_.-]{1,256}|3/camera/[A-Za-z0-9:_.-]{1,256}|4/recorder/[A-Za-z0-9:_.-]{1,256}|5/sink)$"
+    },
+    "projection_source_side_vertex": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/projection_vertex"
+        },
+        {
+          "not": {
+            "const": "5/sink"
+          }
+        }
+      ]
+    },
+    "capture_window": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "start_ns",
+        "end_ns",
+        "endpoints",
+        "selection",
+        "clock_alignment"
+      ],
+      "properties": {
+        "start_ns": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "end_ns": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "endpoints": {
+          "const": "inclusive"
+        },
+        "selection": {
+          "const": "whole-witness-v1"
+        },
+        "clock_alignment": {
+          "const": "operator_hints_not_calibration"
+        }
+      }
+    },
+    "retained_sensor_support": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sensor_id",
+        "qualifying_zones",
+        "qualifying_witness_count"
+      ],
+      "properties": {
+        "sensor_id": {
+          "$ref": "#/$defs/identity"
+        },
+        "qualifying_zones": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 65536,
+          "items": {
+            "$ref": "#/$defs/zone"
+          },
+          "uniqueItems": true
+        },
+        "qualifying_witness_count": {
+          "$ref": "#/$defs/u64"
+        }
+      },
+      "description": "Complete retained whole-window support for one requested camera. Zero support never suppresses its declared demand.",
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "qualifying_witness_count": {
+                "const": 0
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "qualifying_zones": {
+                "maxItems": 0
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "qualifying_zones": {
+                "minItems": 1
+              }
+            }
+          }
+        }
+      ]
+    },
+    "declared_problem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provenance",
+        "orientation",
+        "rate_unit",
+        "cost_unit",
+        "cost_basis",
+        "nodes",
+        "failed_nodes",
+        "failed_links",
+        "objective",
+        "routing",
+        "partial_allocation"
+      ],
+      "properties": {
+        "provenance": {
+          "const": "operator_asserted_hypothetical"
+        },
+        "orientation": {
+          "const": "directed"
+        },
+        "rate_unit": {
+          "$ref": "#/$defs/unit"
+        },
+        "cost_unit": {
+          "$ref": "#/$defs/unit"
+        },
+        "cost_basis": {
+          "const": "per_rate_unit"
+        },
+        "nodes": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 256,
+          "items": {
+            "$ref": "#/$defs/identity"
+          },
+          "uniqueItems": true
+        },
+        "failed_nodes": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 256,
+          "items": {
+            "$ref": "#/$defs/identity"
+          },
+          "uniqueItems": true
+        },
+        "failed_links": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 1024,
+          "items": {
+            "$ref": "#/$defs/identity"
+          },
+          "uniqueItems": true
+        },
+        "objective": {
+          "const": "maximum_aggregate_delivery_then_minimum_cost"
+        },
+        "routing": {
+          "const": "splittable_integral_flow"
+        },
+        "partial_allocation": {
+          "const": "deterministic_without_fairness_or_priority_guarantee"
+        }
+      },
+      "description": "The complete declaration also includes the original positive capacities/demands and endpoints in every camera, link and recorder result row; failed and unused rows remain present."
+    },
+    "camera": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sensor_id",
+        "node",
+        "requested",
+        "delivered",
+        "shortfall",
+        "attachment_failed"
+      ],
+      "properties": {
+        "sensor_id": {
+          "$ref": "#/$defs/identity"
+        },
+        "node": {
+          "$ref": "#/$defs/identity"
+        },
+        "requested": {
+          "$ref": "#/$defs/positive_u64"
+        },
+        "delivered": {
+          "$ref": "#/$defs/u64"
+        },
+        "shortfall": {
+          "$ref": "#/$defs/u64"
+        },
+        "attachment_failed": {
+          "type": "boolean"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "attachment_failed": {
+                "const": true
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "delivered": {
+                "const": 0
+              }
+            }
+          }
+        }
+      ]
+    },
+    "link": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "from",
+        "to",
+        "capacity",
+        "unit_cost",
+        "flow",
+        "failed",
+        "from_failed",
+        "to_failed"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/identity"
+        },
+        "from": {
+          "$ref": "#/$defs/identity"
+        },
+        "to": {
+          "$ref": "#/$defs/identity"
+        },
+        "capacity": {
+          "$ref": "#/$defs/positive_u64"
+        },
+        "unit_cost": {
+          "$ref": "#/$defs/u64"
+        },
+        "flow": {
+          "$ref": "#/$defs/u64"
+        },
+        "failed": {
+          "type": "boolean"
+        },
+        "from_failed": {
+          "type": "boolean"
+        },
+        "to_failed": {
+          "type": "boolean"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "anyOf": [
+              {
+                "properties": {
+                  "failed": {
+                    "const": true
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "from_failed": {
+                    "const": true
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "to_failed": {
+                    "const": true
+                  }
+                }
+              }
+            ]
+          },
+          "then": {
+            "properties": {
+              "flow": {
+                "const": 0
+              }
+            }
+          }
+        }
+      ]
+    },
+    "recorder": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "node",
+        "capacity",
+        "received",
+        "attachment_failed"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/identity"
+        },
+        "node": {
+          "$ref": "#/$defs/identity"
+        },
+        "capacity": {
+          "$ref": "#/$defs/positive_u64"
+        },
+        "received": {
+          "$ref": "#/$defs/u64"
+        },
+        "attachment_failed": {
+          "type": "boolean"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "attachment_failed": {
+                "const": true
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "received": {
+                "const": 0
+              }
+            }
+          }
+        }
+      ]
+    },
+    "cut_arc": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "from",
+        "to",
+        "capacity",
+        "flow"
+      ],
+      "properties": {
+        "from": {
+          "$ref": "#/$defs/source_side_endpoint"
+        },
+        "to": {
+          "$ref": "#/$defs/cut_destination"
+        },
+        "capacity": {
+          "$ref": "#/$defs/u64"
+        },
+        "flow": {
+          "$ref": "#/$defs/u64"
+        }
+      },
+      "description": "Forward maximum-flow minimum-cut arc. Flow is taken from the final minimum-cost maximum flow and verified equal to effective capacity by the native owner."
+    },
+    "capacity_witness": {
+      "allOf": [
+        {
+          "$ref": "graph_algorithm_witness.v1.json"
+        },
+        {
+          "properties": {
+            "algorithmId": {
+              "const": "ALG-MCF-001"
+            },
+            "implementationId": {
+              "const": "fss-graph-algorithms:alg-mcf-001:stream-capacity-composition:v1"
+            },
+            "projectionId": {
+              "type": "string",
+              "pattern": "^DeviceFailureGraph@coverage:sha256:[0-9a-f]{64}$"
+            },
+            "anchor": {
+              "$ref": "evidence_anchor.v1.json"
+            },
+            "nodeCount": {
+              "type": "integer",
+              "minimum": 5,
+              "maximum": 1442
+            },
+            "edgeCount": {
+              "type": "integer",
+              "minimum": 4,
+              "maximum": 2368
+            },
+            "inputDigest": {
+              "$ref": "#/$defs/sha256"
+            },
+            "policyId": {
+              "const": "capacity-policy:declared-directed-links:integer-splittable-routing:maximum-delivery-then-minimum-cost:all-demands-retained:explicit-node-link-failures:no-fairness-or-priority:v1"
+            },
+            "dominantOperationCounts": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "input_bytes",
+                "preparation_steps",
+                "max_flow_operations",
+                "min_cost_flow_operations",
+                "certificate_checks"
+              ],
+              "properties": {
+                "input_bytes": {
+                  "$ref": "#/$defs/u64"
+                },
+                "preparation_steps": {
+                  "$ref": "#/$defs/u64"
+                },
+                "max_flow_operations": {
+                  "$ref": "#/$defs/u64"
+                },
+                "min_cost_flow_operations": {
+                  "$ref": "#/$defs/u64"
+                },
+                "certificate_checks": {
+                  "$ref": "#/$defs/u64"
+                }
+              }
+            },
+            "peakWorkingBytes": {
+              "$ref": "#/$defs/u64"
+            },
+            "budgetConsumed": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "operations",
+                "output_entries"
+              ],
+              "properties": {
+                "operations": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 50000000
+                },
+                "output_entries": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 32768
+                }
+              }
+            },
+            "exactness": {
+              "const": "bounded_exact"
+            },
+            "errorBound": {
+              "type": "null"
+            },
+            "stopReason": {
+              "const": "completed"
+            },
+            "decisionPathDigest": {
+              "$ref": "#/$defs/sha256"
+            },
+            "outputDigest": {
+              "$ref": "#/$defs/sha256"
+            }
+          }
+        }
+      ]
+    },
+    "maximum_flow_witness": {
+      "allOf": [
+        {
+          "$ref": "graph_algorithm_witness.v1.json"
+        },
+        {
+          "properties": {
+            "algorithmId": {
+              "const": "ALG-FLOW-001"
+            },
+            "implementationId": {
+              "const": "fss-graph-algorithms:alg-flow-001:edmonds-karp-certified-cut:v1"
+            },
+            "projectionId": {
+              "type": "string",
+              "pattern": "^DeviceFailureGraph@coverage:sha256:[0-9a-f]{64}/maximum-flow$"
+            },
+            "anchor": {
+              "$ref": "evidence_anchor.v1.json"
+            },
+            "nodeCount": {
+              "type": "integer",
+              "minimum": 5,
+              "maximum": 1442
+            },
+            "edgeCount": {
+              "type": "integer",
+              "minimum": 4,
+              "maximum": 2368
+            },
+            "inputDigest": {
+              "$ref": "#/$defs/sha256"
+            },
+            "policyId": {
+              "const": "graph-policy:directed-or-undirected:simple-strict:arc-capacity-or-node-failure-weight:numeric:u64-exact:checked:unit-bound:v1:tie:canonical-arc-order-residual-edges-forward-before-reverse:v1"
+            },
+            "dominantOperationCounts": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "augmentations",
+                "residual_scans",
+                "path_steps",
+                "certificate_checks"
+              ],
+              "properties": {
+                "augmentations": {
+                  "$ref": "#/$defs/u64"
+                },
+                "residual_scans": {
+                  "$ref": "#/$defs/u64"
+                },
+                "path_steps": {
+                  "$ref": "#/$defs/u64"
+                },
+                "certificate_checks": {
+                  "$ref": "#/$defs/u64"
+                }
+              }
+            },
+            "peakWorkingBytes": {
+              "$ref": "#/$defs/u64"
+            },
+            "budgetConsumed": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "operations",
+                "output_entries"
+              ],
+              "properties": {
+                "operations": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 50000000
+                },
+                "output_entries": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 32768
+                }
+              }
+            },
+            "exactness": {
+              "const": "exact"
+            },
+            "errorBound": {
+              "type": "null"
+            },
+            "stopReason": {
+              "const": "completed"
+            },
+            "decisionPathDigest": {
+              "$ref": "#/$defs/sha256"
+            },
+            "outputDigest": {
+              "$ref": "#/$defs/sha256"
+            }
+          }
+        }
+      ]
+    },
+    "minimum_cost_witness": {
+      "allOf": [
+        {
+          "$ref": "graph_algorithm_witness.v1.json"
+        },
+        {
+          "properties": {
+            "algorithmId": {
+              "const": "ALG-MCF-001"
+            },
+            "implementationId": {
+              "const": "fss-graph-algorithms:alg-mcf-001:successive-shortest-path-potentials-certified:v1"
+            },
+            "projectionId": {
+              "type": "string",
+              "pattern": "^DeviceFailureGraph@coverage:sha256:[0-9a-f]{64}/minimum-cost$"
+            },
+            "anchor": {
+              "$ref": "evidence_anchor.v1.json"
+            },
+            "nodeCount": {
+              "type": "integer",
+              "minimum": 5,
+              "maximum": 1442
+            },
+            "edgeCount": {
+              "type": "integer",
+              "minimum": 4,
+              "maximum": 2368
+            },
+            "inputDigest": {
+              "$ref": "#/$defs/sha256"
+            },
+            "policyId": {
+              "const": "graph-policy:directed:simple-strict:paired-cost-and-capacity-projections:numeric:u64-exact:checked:unit-bound:v1:tie:distance-then-node-heap-strict-improvement-canonical-residual-edges:v1"
+            },
+            "dominantOperationCounts": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "augmentations",
+                "dijkstra_runs",
+                "residual_scans",
+                "heap_operations",
+                "path_steps",
+                "certificate_relaxations"
+              ],
+              "properties": {
+                "augmentations": {
+                  "$ref": "#/$defs/u64"
+                },
+                "dijkstra_runs": {
+                  "$ref": "#/$defs/u64"
+                },
+                "residual_scans": {
+                  "$ref": "#/$defs/u64"
+                },
+                "heap_operations": {
+                  "$ref": "#/$defs/u64"
+                },
+                "path_steps": {
+                  "$ref": "#/$defs/u64"
+                },
+                "certificate_relaxations": {
+                  "$ref": "#/$defs/u64"
+                }
+              }
+            },
+            "peakWorkingBytes": {
+              "$ref": "#/$defs/u64"
+            },
+            "budgetConsumed": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "operations",
+                "output_entries"
+              ],
+              "properties": {
+                "operations": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 50000000
+                },
+                "output_entries": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 32768
+                }
+              }
+            },
+            "exactness": {
+              "const": "exact_or_verified_candidate"
+            },
+            "errorBound": {
+              "type": "null"
+            },
+            "stopReason": {
+              "const": "completed"
+            },
+            "decisionPathDigest": {
+              "$ref": "#/$defs/sha256"
+            },
+            "outputDigest": {
+              "$ref": "#/$defs/sha256"
+            }
+          }
+        }
+      ]
+    },
+    "source_coverage_witness": {
+      "allOf": [
+        {
+          "$ref": "graph_algorithm_witness.v1.json"
+        },
+        {
+          "properties": {
+            "algorithmId": {
+              "const": "ALG-BRIDGE-001"
+            },
+            "implementationId": {
+              "const": "fss-graph-algorithms:alg-bridge-001:iterative-tarjan:v1"
+            },
+            "projectionId": {
+              "type": "string",
+              "pattern": "^SensorCoverageGraph@commit:(?:0|[1-9][0-9]{0,19})@capture:(?:0|-?[1-9][0-9]{0,38}):(?:0|-?[1-9][0-9]{0,38}):whole-witness-v1$"
+            },
+            "anchor": {
+              "$ref": "evidence_anchor.v1.json"
+            },
+            "nodeCount": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65536
+            },
+            "edgeCount": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1048576
+            },
+            "inputDigest": {
+              "$ref": "#/$defs/sha256"
+            },
+            "policyId": {
+              "const": "graph-policy:undirected:simple-strict:unweighted:tie:stable-node-identity-then-stable-edge-identity:v1"
+            },
+            "dominantOperationCounts": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "adjacency_scans",
+                "dfs_node_visits",
+                "low_link_updates",
+                "separation_entries",
+                "tree_edges"
+              ],
+              "properties": {
+                "adjacency_scans": {
+                  "$ref": "#/$defs/u64"
+                },
+                "dfs_node_visits": {
+                  "$ref": "#/$defs/u64"
+                },
+                "low_link_updates": {
+                  "$ref": "#/$defs/u64"
+                },
+                "separation_entries": {
+                  "$ref": "#/$defs/u64"
+                },
+                "tree_edges": {
+                  "$ref": "#/$defs/u64"
+                }
+              }
+            },
+            "peakWorkingBytes": {
+              "$ref": "#/$defs/u64"
+            },
+            "budgetConsumed": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "operations",
+                "output_entries"
+              ],
+              "properties": {
+                "operations": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 18446744073709551615
+                },
+                "output_entries": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 18446744073709551615
+                }
+              }
+            },
+            "exactness": {
+              "const": "exact"
+            },
+            "errorBound": {
+              "type": "null"
+            },
+            "stopReason": {
+              "const": "completed"
+            },
+            "decisionPathDigest": {
+              "$ref": "#/$defs/sha256"
+            },
+            "outputDigest": {
+              "$ref": "#/$defs/sha256"
+            }
+          }
+        }
+      ]
+    },
+    "maximum_flow_output": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source",
+        "sink",
+        "value",
+        "flows",
+        "source_side",
+        "cut"
+      ],
+      "properties": {
+        "source": {
+          "const": "0/source"
+        },
+        "sink": {
+          "const": "5/sink"
+        },
+        "value": {
+          "$ref": "#/$defs/u64"
+        },
+        "flows": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 2368,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "from",
+              "to",
+              "flow"
+            ],
+            "properties": {
+              "from": {
+                "$ref": "#/$defs/projection_vertex"
+              },
+              "to": {
+                "$ref": "#/$defs/projection_vertex"
+              },
+              "flow": {
+                "$ref": "#/$defs/positive_u64"
+              }
+            }
+          },
+          "uniqueItems": true
+        },
+        "source_side": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1442,
+          "items": {
+            "$ref": "#/$defs/projection_source_side_vertex"
+          },
+          "uniqueItems": true
+        },
+        "cut": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 2368,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "from",
+              "to",
+              "capacity"
+            ],
+            "properties": {
+              "from": {
+                "$ref": "#/$defs/projection_source_side_vertex"
+              },
+              "to": {
+                "$ref": "#/$defs/projection_vertex"
+              },
+              "capacity": {
+                "$ref": "#/$defs/u64"
+              }
+            }
+          },
+          "uniqueItems": true
+        }
+      },
+      "description": "Complete original certified maximum-flow output over the typed capacity reduction; its flow can differ from the displayed cost-optimal assignment."
+    },
+    "minimum_cost_output": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source",
+        "sink",
+        "requested",
+        "delivered",
+        "shortfall",
+        "total_cost",
+        "flows"
+      ],
+      "properties": {
+        "source": {
+          "const": "0/source"
+        },
+        "sink": {
+          "const": "5/sink"
+        },
+        "requested": {
+          "$ref": "#/$defs/positive_u64"
+        },
+        "delivered": {
+          "$ref": "#/$defs/u64"
+        },
+        "shortfall": {
+          "$ref": "#/$defs/u64"
+        },
+        "total_cost": {
+          "$ref": "#/$defs/u64"
+        },
+        "flows": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 2368,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "from",
+              "to",
+              "flow",
+              "unit_cost"
+            ],
+            "properties": {
+              "from": {
+                "$ref": "#/$defs/projection_vertex"
+              },
+              "to": {
+                "$ref": "#/$defs/projection_vertex"
+              },
+              "flow": {
+                "$ref": "#/$defs/positive_u64"
+              },
+              "unit_cost": {
+                "$ref": "#/$defs/u64"
+              }
+            }
+          },
+          "uniqueItems": true
+        }
+      },
+      "description": "Complete certified minimum-cost output, requested at the original total demand and independently verified to deliver exactly the maximum-flow value."
+    },
+    "maximum_flow_proof": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "witness",
+        "witness_digest",
+        "output"
+      ],
+      "properties": {
+        "witness": {
+          "$ref": "#/$defs/maximum_flow_witness"
+        },
+        "witness_digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "output": {
+          "$ref": "#/$defs/maximum_flow_output"
+        }
+      }
+    },
+    "minimum_cost_proof": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "witness",
+        "witness_digest",
+        "output"
+      ],
+      "properties": {
+        "witness": {
+          "$ref": "#/$defs/minimum_cost_witness"
+        },
+        "witness_digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "output": {
+          "$ref": "#/$defs/minimum_cost_output"
+        }
+      }
+    }
+  }
+}

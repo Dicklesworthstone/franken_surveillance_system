@@ -1097,6 +1097,138 @@ fn robust_placement_uses_cold_whole_window_custody_without_writing_or_claiming_l
 }
 
 #[test]
+fn stream_capacity_uses_cold_custody_and_reports_routing_failures_without_changing_demands()
+-> TestResult {
+    let directory = OwnedDirectory::new("capacity")?;
+    let root = directory.root();
+    let id = import(
+        &directory,
+        "capacity",
+        &scene(Scene::Quiet(40), None)?,
+        "sensor:quiet",
+        Some("1000000000"),
+    )?;
+    let preview = report(&watch(&root, &id, &[])?)?;
+    let approval = preview.get("coverage")?.get("approval_digest")?.text()?;
+    success(&watch(&root, &id, &["--retain-coverage", approval])?);
+    // Cold queries must use retained custody after the original import path disappears.
+    fs::remove_file(directory.0.join("capacity.mjpeg"))?;
+    let original = tree_digest(&root)?;
+    let run = |during: &str, extra: &[&str]| -> TestResult<Output> {
+        Ok(Command::new(env!("CARGO_BIN_EXE_fss-event"))
+            .args(["graph", "capacity", "--root"])
+            .arg(&root)
+            .args([
+                "--site",
+                SITE,
+                "--during",
+                during,
+                "--rate-unit",
+                "megabits-per-second",
+                "--cost-unit",
+                "routing-points",
+                "--node",
+                "camera",
+                "--node",
+                "archive",
+                "--camera",
+                "sensor:quiet=camera=3",
+                "--recorder",
+                "disk=archive=3",
+                "--link",
+                "primary=camera=archive=2=1",
+                "--link",
+                "backup=camera=archive=1=5",
+            ])
+            .args(extra)
+            .output()?)
+    };
+    let first = run("1401000000:2099000000", &[])?;
+    success(&first);
+    let text = std::str::from_utf8(&first.stdout)?;
+    let result = Json::parse(text)?;
+    assert_conforms(
+        "stream_capacity.v1.json",
+        text,
+        &directory.0,
+        "retained capacity planning",
+    )?;
+    assert_eq!(result.get("status")?.text()?, "fully_routed");
+    assert_eq!(result.get("requested")?.number()?, 3);
+    assert_eq!(result.get("delivered")?.number()?, 3);
+    assert_eq!(result.get("total_cost")?.number()?, 7);
+    let pin = result.get("source_coverage_witness_digest")?.text()?;
+    let replay = run("1401000000:2099000000", &["--expected-coverage", pin])?;
+    success(&replay);
+    assert_eq!(
+        first.stdout, replay.stdout,
+        "same source and topology replay byte-for-byte"
+    );
+
+    for (extra, delivered, shortfall) in [
+        (vec!["--failed-link", "primary"], 1, 2),
+        (vec!["--failed-node", "camera"], 0, 3),
+    ] {
+        let output = run("1401000000:2099000000", &extra)?;
+        success(&output);
+        let text = std::str::from_utf8(&output.stdout)?;
+        assert_conforms(
+            "stream_capacity.v1.json",
+            text,
+            &directory.0,
+            "declared capacity failure",
+        )?;
+        let failed = Json::parse(text)?;
+        assert_eq!(failed.get("status")?.text()?, "capacity_shortfall");
+        assert_eq!(
+            failed.get("requested")?.number()?,
+            3,
+            "failure does not erase demand"
+        );
+        assert_eq!(failed.get("delivered")?.number()?, delivered);
+        assert_eq!(failed.get("shortfall")?.number()?, shortfall);
+        assert_ne!(failed.get("witness_digest")?, result.get("witness_digest")?);
+        assert_eq!(failed.get("source_coverage_witness_digest")?.text()?, pin);
+    }
+    let outside = run("1000000000:2099000000", &[])?;
+    success(&outside);
+    let outside = Json::parse(std::str::from_utf8(&outside.stdout)?)?;
+    assert_eq!(
+        outside.get("delivered")?.number()?,
+        3,
+        "declared rates are independent of historical coverage"
+    );
+    let Json::Array(support) = outside.get("retained_sensor_support")? else {
+        return Err("support rows missing".into());
+    };
+    assert_eq!(support.len(), 1);
+    assert_eq!(support[0].get("qualifying_witness_count")?.number()?, 0);
+    assert!(support[0].get("qualifying_zones")?.texts()?.is_empty());
+    assert_ne!(outside.get("source_coverage_witness_digest")?.text()?, pin);
+    let stale = ContentDigest::sha256(b"stale capacity source").to_text();
+    for extra in [
+        vec!["--expected-coverage", stale.as_str()],
+        vec!["--work-units", "1"],
+        vec!["--max-report-bytes", "1024"],
+        vec!["--camera", "sensor:unknown=camera=1"],
+        vec!["--link", "primary=camera=archive=2=1"],
+    ] {
+        let refused = run("1401000000:2099000000", &extra)?;
+        assert!(!refused.status.success());
+        assert!(
+            refused.stdout.is_empty(),
+            "no partial routing report on refusal"
+        );
+    }
+    assert_eq!(
+        tree_digest(&root)?,
+        original,
+        "capacity and failure queries leave custody unchanged"
+    );
+    Ok(())
+}
+
+#[test]
 fn unknown_capture_time_yields_no_witness_and_no_silence() -> TestResult {
     let directory = OwnedDirectory::new("unknown")?;
     let root = directory.root();
