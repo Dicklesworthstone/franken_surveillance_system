@@ -104,10 +104,12 @@ fn legacy_digest(p: &Plan) -> Result<ContentDigest> {
 }
 
 #[test]
-fn selected_plan_keeps_legacy_approvals_exact_and_binds_the_display_position() -> Result<()> {
+fn selected_plan_versions_inband_admission_and_binds_the_display_position() -> Result<()> {
     let legacy = Plan::parse(&args())?;
     assert_eq!(legacy.output_index, None);
-    assert_eq!(legacy.digest()?, legacy_digest(&legacy)?);
+    // The selected-output encoding stays additive, but broader avc3/hev1 reconstruction
+    // deliberately requires a current-generation approval before any source work.
+    assert_ne!(legacy.digest()?, legacy_digest(&legacy)?);
     assert!(!legacy.preview()?.contains("selection_policy"));
     let mut seen = std::collections::BTreeSet::new();
     for index in 0..3 {

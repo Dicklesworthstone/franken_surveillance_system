@@ -493,7 +493,7 @@ fn run_h264(
     writeln!(
         out,
         "pixel_format=h264_yuv420p_luma\ndecoder_identity={}",
-        fss_reference::ingest::recorded_decode::h264::h264_decoder_identity()
+        range.decoder_identity()
     )?;
     writeln!(
         out,
@@ -900,7 +900,7 @@ impl MotionVideoFrame {
                         receipt.luma_sha256(),
                         receipt.import_root(),
                         receipt.capsule_digest(),
-                        fss_reference::ingest::recorded_decode::h264::h264_decoder_identity(),
+                        receipt.decoder_identity(),
                         receipt.mask_binding(),
                         receipt.mask_policy(),
                         receipt.dimensions(),

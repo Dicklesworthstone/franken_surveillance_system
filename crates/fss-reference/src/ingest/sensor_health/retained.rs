@@ -19,7 +19,9 @@ use super::{
 };
 use crate::ingest::RetainedFileImport;
 use crate::ingest::privacy_mask::current_mask;
-use crate::ingest::recorded_decode::h264::{RecordedH264Range, RecordedH264Request};
+use crate::ingest::recorded_decode::h264::{
+    RecordedH264RangeV2 as RecordedH264Range, RecordedH264Request,
+};
 use crate::ingest::recorded_decode::h265::{
     RecordedH265RangeV1 as RecordedH265Range, RecordedH265Request,
 };

@@ -1058,12 +1058,161 @@ fn mp4_parameter_sets(
     Ok((indexes, length))
 }
 
+/// An added in-band import retains one whole original sample entry instead of the historical
+/// parameter-only omission spans. The explicit marker prevents reinterpreting older imports.
+fn mp4_inband_entry(
+    retained: &RetainedFileImport,
+    expected: &str,
+    legacy: bool,
+) -> Result<Option<(usize, usize)>, RecordedDecodeError> {
+    use super::{MP4_AVC_INBAND_ENTRY_REASON_PREFIX, MP4_HEVC_INBAND_ENTRY_REASON_PREFIX};
+    let mut present = false;
+    for span in &retained.manifest().omission_spans {
+        if [
+            MP4_AVC_INBAND_ENTRY_REASON_PREFIX,
+            MP4_HEVC_INBAND_ENTRY_REASON_PREFIX,
+        ]
+        .iter()
+        .any(|prefix| span.reason.starts_with(prefix))
+        {
+            if !span.reason.starts_with(expected) {
+                return Err(RecordedDecodeError::CustodyMismatch);
+            }
+            present = true;
+        }
+    }
+    if !present {
+        return Ok(None);
+    }
+    if legacy {
+        return Err(RecordedDecodeError::UnsupportedMedia);
+    }
+    let (entries, length) = mp4_parameter_sets(retained, expected)?;
+    if entries.len() != 1
+        || retained.manifest().omission_spans.iter().any(|span| {
+            [
+                super::MP4_PARAMETER_SET_REASON_PREFIX,
+                super::MP4_HEVC_PARAMETER_SET_REASON_PREFIX,
+            ]
+            .iter()
+            .any(|prefix| span.reason.starts_with(prefix))
+        })
+    {
+        return Err(RecordedDecodeError::CustodyMismatch);
+    }
+    Ok(Some((entries[0], length)))
+}
+
+struct InbandBootstrapRead<'a> {
+    retained: &'a RetainedFileImport,
+    sample: &'a [u8],
+    first_sample: usize,
+    limits: RetainedReadLimits,
+    source_budget: Option<&'a super::retained::SourceReadBudget>,
+}
+
+/// Cold bootstrap reads only the retained original sample entry and selected sample. The
+/// container helper validates the actual referenced tuple and random-access self-containment;
+/// earlier samples can neither substitute a missing definition nor charge unbounded reads.
+fn inband_parameter_sets(
+    deployment: &ReferenceDeployment,
+    source: InbandBootstrapRead<'_>,
+    entry: (usize, usize),
+    codec: fss_container::demux::VideoCodec,
+    mut budget: Option<&mut video_budget::RecordedVideoDecodeBudget>,
+    cx: &ReplayCx,
+) -> Result<
+    (
+        fss_container::demux::InbandConfiguration,
+        fss_container::demux::InbandSampleParameters,
+    ),
+    RecordedDecodeError,
+> {
+    use fss_container::demux::{DemuxError, DemuxLimits, InbandSampleEntry, MAX_MP4_INPUT_BYTES};
+    let bytes = source.retained.read_omission_span_budgeted(
+        deployment,
+        entry.0,
+        source.limits,
+        cx,
+        source.source_budget,
+    )?;
+    if let Some(budget) = budget.as_deref_mut() {
+        // The new profile parses both byte sets at open, before feeding the bounded tuple to
+        // the codec. Existing static imports retain their previous reservation behavior.
+        budget.reserve(
+            bytes
+                .len()
+                .checked_add(source.sample.len())
+                .ok_or(RecordedDecodeError::Limit)?,
+            0,
+            cx,
+        )?;
+    }
+    let mut check = || {
+        cx.checkpoint("recorded_video:inband_bootstrap")
+            .map_err(|_| DemuxError::Cancelled)
+    };
+    let error = |error| match error {
+        DemuxError::Cancelled => RecordedDecodeError::Cancelled,
+        DemuxError::Limit => RecordedDecodeError::Limit,
+        _ => RecordedDecodeError::CustodyMismatch,
+    };
+    let configuration_limits = DemuxLimits {
+        maximum_input_bytes: usize::try_from(
+            source
+                .limits
+                .max_source_bytes
+                .min(MAX_MP4_INPUT_BYTES as u64),
+        )
+        .map_err(|_| RecordedDecodeError::Limit)?,
+        ..DemuxLimits::default()
+    };
+    let parsed = InbandSampleEntry::parse_with_checkpoint(&bytes, configuration_limits, &mut check)
+        .map_err(error)?;
+    if parsed.codec() != codec || parsed.nal_length_bytes() != entry.1 {
+        return Err(RecordedDecodeError::CustodyMismatch);
+    }
+    let mut state = parsed
+        .stream_with_checkpoint(source.first_sample, &mut check)
+        .map_err(error)?;
+    let parameters = state
+        .sample_with_checkpoint(source.sample, &mut check)
+        .map_err(error)?;
+    Ok((state, parameters))
+}
+
+fn next_inband_parameters(
+    state: &mut fss_container::demux::InbandConfiguration,
+    sample: &[u8],
+    mut budget: Option<&mut video_budget::RecordedVideoDecodeBudget>,
+    cx: &ReplayCx,
+) -> Result<fss_container::demux::InbandSampleParameters, RecordedDecodeError> {
+    use fss_container::demux::DemuxError;
+    let parameters = state
+        .sample_with_checkpoint(sample, &mut || {
+            cx.checkpoint("recorded_video:inband_sample")
+                .map_err(|_| DemuxError::Cancelled)
+        })
+        .map_err(|error| match error {
+            DemuxError::Cancelled => RecordedDecodeError::Cancelled,
+            DemuxError::Limit => RecordedDecodeError::Limit,
+            _ => RecordedDecodeError::CustodyMismatch,
+        })?;
+    for nal in parameters.decoder_prefix() {
+        if let Some(budget) = budget.as_deref_mut() {
+            budget.reserve(nal.len(), 0, cx)?;
+        }
+    }
+    Ok(parameters)
+}
+
 pub mod h264;
 /// Retained H.265/HEVC Annex-B range decoding bound to the same source custody.
 pub mod h265;
 /// Retained receipts of source-determined decode refusals, and the per-capsule outcome
 /// composition (fss-2h5zq.41).
 pub mod refusal;
+mod video_access_unit;
 /// Conservative cumulative admission accounting for retained H.264/H.265 range decoding.
 pub mod video_budget;
 /// Declared BT.601 limited-range conversion of retained H.264/H.265 4:2:0 pictures to RGB.

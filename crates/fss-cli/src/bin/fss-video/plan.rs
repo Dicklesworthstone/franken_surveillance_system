@@ -374,9 +374,11 @@ impl Plan {
         e.text(&self.native_bounds()?);
         e.text(fss_reference::ingest::recorded_decode::video_budget::VIDEO_DECODE_WORK_MODEL);
         e.digest(match self.codec {
-            Codec::Avc => fss_reference::ingest::recorded_decode::h264::h264_decoder_identity(),
+            Codec::Avc => {
+                fss_reference::ingest::recorded_decode::h264::h264_inband_decoder_identity()
+            }
             Codec::Hevc => {
-                fss_reference::ingest::recorded_decode::h265::h265_tiles_decoder_identity()
+                fss_reference::ingest::recorded_decode::h265::h265_inband_decoder_identity()
             }
         });
         e.u64(MANIFEST_RESERVE as u64);

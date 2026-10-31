@@ -10,6 +10,35 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Retained in-band recording replay (2026-10-31, integration)
+
+File ingestion and codec sniffing now select the added native `avc3`/`hev1` profile.
+An explicit versioned omission marker retains the complete original sample entry,
+while every sample and all remaining source bytes keep their exact custody tiling.
+Current H.264/H.265 ranges bootstrap from that retained entry and the selected IDR/IRAP,
+then carry bounded parameter state through later samples. Cold replay can therefore
+recover a later configuration generation without reopening the original input path or
+silently substituting first-GOP parameters.
+
+New in-band reconstructions bind distinct `mp4-inband-bootstrap:v3` decoder identities
+in the existing frame-receipt slot. Native publication/cold reads, pixel-change output,
+direct file/video decoding and video approval plans carry the actual reconstruction
+generation. Conforming historical static-source receipt bytes remain unchanged.
+Fixed watch/corroboration/long-dwell/cascade/health/tolerant recipes select historical
+range aliases and explicitly refuse the added import marker. Malformed multi-picture
+or incomplete-picture samples now refuse in both generations; no compatibility promise
+preserves incorrect source attribution. Any range failure clears staged outputs and
+makes the range terminal, including cancellation and source-read failure.
+
+The shared sample-boundary implementation is the exact production code exercised by
+the native media tests, whose full **413-case** regression passed. Scoped container and
+codec Clippy passed without allowances; the final model detector target also passed
+16 cases and strict scoped Clippy. The new retained-custody/publication and complete
+CLI tests are authored and source-reviewed but **have not executed**: building the full
+asynchronous reference dependency exceeded this shared host's memory limit. Native
+boundary verification does not establish end-to-end retained-runtime qualification.
+See `docs/RETAINED_DECODE_WORKFLOW.md` and `docs/MP4_INBAND_CONFIGURATION.md`.
+
 ## Native in-band MP4 configuration and atomic sample boundaries (2026-10-31, reference)
 
 The opt-in `AvcMp4::parse_inband*` entrypoints now admit bounded `avc3` and actual

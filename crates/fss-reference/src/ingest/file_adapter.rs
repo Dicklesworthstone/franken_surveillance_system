@@ -507,6 +507,13 @@ pub const MP4_PARAMETER_SET_REASON_PREFIX: &str = "mp4_avc_parameter_set:nal_len
 /// Omission reason prefix of one `hvcC` VPS, SPS or PPS NAL payload, completed by
 /// `nal_length_bytes=N`.
 pub const MP4_HEVC_PARAMETER_SET_REASON_PREFIX: &str = "mp4_hevc_parameter_set:nal_length_bytes=";
+/// Added AVC in-band reconstruction profile: one complete original `avc3` sample-entry box,
+/// completed by the NAL length-field width. Historical imports retain their parameter spans.
+pub const MP4_AVC_INBAND_ENTRY_REASON_PREFIX: &str =
+    "mp4_avc_inband_sample_entry_v1:nal_length_bytes=";
+/// Added HEVC in-band reconstruction profile: one complete original `hev1` sample-entry box.
+pub const MP4_HEVC_INBAND_ENTRY_REASON_PREFIX: &str =
+    "mp4_hevc_inband_sample_entry_v1:nal_length_bytes=";
 
 /// Omission reason prefix of Matroska/WebM container structure: EBML elements, other tracks'
 /// blocks, block headers and the CodecPrivate parameter sets.
@@ -1247,17 +1254,26 @@ impl ContainerVideo {
         };
         let video = match family {
             ContainerFamily::Mp4 => {
-                let mp4 = AvcMp4::parse_recovering_tail(file_bytes, None, limits, &mut check)
-                    .map_err(refuse)?;
+                let mp4 =
+                    AvcMp4::parse_inband_recovering_tail(file_bytes, None, limits, &mut check)
+                        .map_err(refuse)?;
                 let tail = mp4.truncated_tail().unwrap_or(file_bytes.len());
                 Self {
                     family,
-                    parameter_prefix: match mp4.codec() {
-                        VideoCodec::Avc => MP4_PARAMETER_SET_REASON_PREFIX,
-                        VideoCodec::Hevc => MP4_HEVC_PARAMETER_SET_REASON_PREFIX,
+                    parameter_prefix: match (mp4.codec(), mp4.uses_inband_configuration()) {
+                        (VideoCodec::Avc, false) => MP4_PARAMETER_SET_REASON_PREFIX,
+                        (VideoCodec::Hevc, false) => MP4_HEVC_PARAMETER_SET_REASON_PREFIX,
+                        (VideoCodec::Avc, true) => MP4_AVC_INBAND_ENTRY_REASON_PREFIX,
+                        (VideoCodec::Hevc, true) => MP4_HEVC_INBAND_ENTRY_REASON_PREFIX,
                     },
                     nal_length_bytes: mp4.nal_length_bytes(),
-                    parameter_sets: mp4.parameter_sets().to_vec(),
+                    parameter_sets: if mp4.uses_inband_configuration() {
+                        // Cold selected-range replay must recover the exact sample-entry
+                        // generation and partial-array declarations, not stale global NALs.
+                        vec![mp4.sample_entry_range()]
+                    } else {
+                        mp4.parameter_sets().to_vec()
+                    },
                     samples: mp4
                         .samples()
                         .iter()
@@ -1317,7 +1333,9 @@ impl ContainerVideo {
         );
         let demuxed_avc = matches!(
             video.parameter_prefix,
-            MP4_PARAMETER_SET_REASON_PREFIX | MKV_PARAMETER_SET_REASON_PREFIX
+            MP4_PARAMETER_SET_REASON_PREFIX
+                | MKV_PARAMETER_SET_REASON_PREFIX
+                | MP4_AVC_INBAND_ENTRY_REASON_PREFIX
         );
         if declared_avc != demuxed_avc {
             return Err(video.refuse(DemuxError::Unsupported));
@@ -1415,7 +1433,7 @@ pub fn sniff_format_with_hint(
     // the codec (from the one video sample entry); a refused file is refused here, whole.
     if bytes.get(4..8) == Some(b"ftyp".as_slice()) {
         use fss_container::demux::{AvcMp4, VideoCodec};
-        let parsed = AvcMp4::parse_recovering_tail(
+        let parsed = AvcMp4::parse_inband_recovering_tail(
             bytes,
             None,
             mp4_demux_limits(usize::MAX),
@@ -2929,13 +2947,14 @@ impl FileIngestAdapter {
         })
     }
 
-    /// One segment per video sample (MP4 `avc1` or `hvc1`/`hev1`; Matroska `V_MPEG4/ISO/AVC` or
+    /// One segment per video sample (MP4 `avc1`/`avc3` or `hvc1`/`hev1`; Matroska `V_MPEG4/ISO/AVC` or
     /// `V_MPEGH/ISO/HEVC`), in decode order, with the sample's exact length-prefixed bytes.
     /// A fragmented MP4 or Matroska recording its writer never finished keeps its complete
     /// fragments or Clusters (blocks, when no CRC-32 binds the cut Cluster); the unread tail is
     /// one [`CONTAINER_TRUNCATED_TAIL_REASON`] omission.
     /// Every other byte is a typed container-structure span: each `avcC`/`hvcC` parameter-set
-    /// NAL payload (read back verbatim by the decoder) and, split at top-level box or element
+    /// NAL payload, or one complete original sample entry for the explicit in-band profile
+    /// (read back verbatim by the decoder), and, split at top-level box or element
     /// boundaries, the remaining bytes (`mp4_box:<type>`, `mkv_element:<name>`, including other
     /// tracks' data and Matroska block headers).
     /// Samples are complete by construction (the demuxer refuses the whole file otherwise), so

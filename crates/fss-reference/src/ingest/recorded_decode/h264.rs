@@ -4,7 +4,9 @@
 //!
 //! The file adapter retains one access unit per segment: an Annex-B access unit, or one MP4
 //! sample with its original length-prefixed NAL framing. An MP4 range first feeds the decoder
-//! the import's retained `avcC` parameter-set spans, read back verbatim from custody. H.264 pictures predict from earlier
+//! the import's retained `avcC` parameter-set spans, read back verbatim from custody. Explicit
+//! in-band imports instead bind the original sample entry and selected IDR's parameter tuple.
+//! H.264 pictures predict from earlier
 //! pictures, so a single P segment has no meaning on its own: this module decodes a contiguous
 //! segment range that must begin at an IDR access unit and must not cross a retained source
 //! gap. Pictures are returned in display (output) order, which differs from decode order when
@@ -29,8 +31,8 @@ use super::{ComponentInterpretation, RecordedDecodeError, checkpoint, source_cap
 use crate::ingest::privacy_mask::{MaskBinding, binding_digest, current_mask, encode_marker};
 use crate::ingest::retained::SourceReadBudget;
 use crate::ingest::{
-    MKV_PARAMETER_SET_REASON_PREFIX, MP4_PARAMETER_SET_REASON_PREFIX, RetainedFileImport,
-    RetainedReadLimits, VerifiedChunkCache,
+    MKV_PARAMETER_SET_REASON_PREFIX, MP4_AVC_INBAND_ENTRY_REASON_PREFIX,
+    MP4_PARAMETER_SET_REASON_PREFIX, RetainedFileImport, RetainedReadLimits, VerifiedChunkCache,
 };
 use crate::{ReferenceDeployment, ReplayCx};
 
@@ -42,6 +44,8 @@ pub const MAX_H264_STREAM_SEGMENTS: usize = 65_536;
 /// Versioned label of the canonical decoder semantics bound into every frame receipt.
 pub const H264_DECODER_LABEL: &str =
     "fss-codec-h264:baseline-main-high-progressive-420:scalar-reference:output-order:v2";
+/// Added source reconstruction generation, used only for explicitly marked in-band imports.
+pub const H264_INBAND_DECODER_LABEL: &str = "fss-codec-h264:baseline-main-high-progressive-420:scalar-reference:output-order:mp4-inband-bootstrap:v3";
 /// Canonical frame-receipt domain.
 pub const H264_FRAME_RECEIPT_DOMAIN: &str = "fss.recorded_h264_frame_receipt.v2";
 /// Boundary before each retained access unit is read and decoded.
@@ -53,6 +57,12 @@ const NAL_IDR_SLICE: u8 = 5;
 #[must_use]
 pub fn h264_decoder_identity() -> ContentDigest {
     ContentDigest::sha256(H264_DECODER_LABEL.as_bytes())
+}
+
+/// Current reconstruction admission identity. Historical static-source receipts keep v2.
+#[must_use]
+pub fn h264_inband_decoder_identity() -> ContentDigest {
+    ContentDigest::sha256(H264_INBAND_DECODER_LABEL.as_bytes())
 }
 
 /// Explicit retained source range, interpretation, and independent read/decode bounds.
@@ -93,10 +103,16 @@ pub struct RecordedH264FrameReceipt {
     // binds both chroma planes, so receipt bytes stay identical to the luma-era receipts.
     cb_sha256: ContentDigest,
     cr_sha256: ContentDigest,
+    decoder: ContentDigest,
     mask_policy: Option<ContentDigest>,
 }
 
 impl RecordedH264FrameReceipt {
+    /// Native codec and source reconstruction generation that produced this frame.
+    #[must_use]
+    pub fn decoder_identity(&self) -> ContentDigest {
+        self.decoder
+    }
     /// Exact import identity.
     #[must_use]
     pub fn import_identity(&self) -> ContentDigest {
@@ -192,7 +208,7 @@ impl RecordedH264FrameReceipt {
         encoder.u64(self.decode_index);
         encoder.digest(self.luma_sha256);
         encoder.digest(self.i420_sha256);
-        encoder.digest(h264_decoder_identity());
+        encoder.digest(self.decoder);
         encode_marker(&mut encoder, self.mask_policy);
         encoder.finish()
     }
@@ -376,12 +392,21 @@ fn segment_has_idr_slice(nals: &[&[u8]]) -> bool {
 }
 
 /// Streaming decoder over one validated, IDR-led, gap-free retained segment range.
+pub type RecordedH264Range = ProfiledRecordedH264Range<false>;
+
+/// Historical v2 range owner for retained recipes. New in-band import profiles refuse;
+/// static-source successful pixels, canonical receipts and reservations retain their bytes.
+pub type RecordedH264RangeV2 = ProfiledRecordedH264Range<true>;
+
+/// Shared range implementation selected through the current or historical public aliases.
 #[derive(Debug)]
-pub struct RecordedH264Range {
+pub struct ProfiledRecordedH264Range<const LEGACY: bool> {
     request: RecordedH264Request,
     retained: RetainedFileImport,
     decoder: Decoder,
     framing: Framing,
+    decoder_identity: ContentDigest,
+    inband: Option<fss_container::demux::InbandConfiguration>,
     /// Verified custody chunks reused across the range's sequential segment reads.
     chunks: VerifiedChunkCache,
     next: usize,
@@ -393,9 +418,10 @@ pub struct RecordedH264Range {
     ready: std::collections::VecDeque<Picture>,
     seen: Vec<bool>,
     flushed: bool,
+    failed: bool,
 }
 
-impl RecordedH264Range {
+impl<const LEGACY: bool> ProfiledRecordedH264Range<LEGACY> {
     /// Validates the request, the import, the range bounds and gaps, and that the first segment
     /// carries an IDR slice. Reads only the first segment; decodes nothing yet.
     pub fn open(
@@ -494,16 +520,25 @@ impl RecordedH264Range {
         }
         let retained =
             RetainedFileImport::open(deployment, request.import_identity, request.read_limits, cx)?;
-        let (framing, parameter_sets) = match retained.manifest().format.as_str() {
-            "annexb" => (Framing::AnnexB, Vec::new()),
+        let (framing, parameter_sets, inband_entry) = match retained.manifest().format.as_str() {
+            "annexb" => (Framing::AnnexB, Vec::new(), None),
             format @ ("mp4avc" | "mkvavc") => {
                 let prefix = if format == "mp4avc" {
                     MP4_PARAMETER_SET_REASON_PREFIX
                 } else {
                     MKV_PARAMETER_SET_REASON_PREFIX
                 };
-                let (spans, length) = super::mp4_parameter_sets(&retained, prefix)?;
-                (Framing::LengthPrefixed(length), spans)
+                let entry = if format == "mp4avc" {
+                    super::mp4_inband_entry(&retained, MP4_AVC_INBAND_ENTRY_REASON_PREFIX, LEGACY)?
+                } else {
+                    None
+                };
+                if let Some((_, length)) = entry {
+                    (Framing::LengthPrefixed(length), Vec::new(), entry)
+                } else {
+                    let (spans, length) = super::mp4_parameter_sets(&retained, prefix)?;
+                    (Framing::LengthPrefixed(length), spans, None)
+                }
             }
             _ => return Err(RecordedDecodeError::UnsupportedMedia),
         };
@@ -539,6 +574,33 @@ impl RecordedH264Range {
             ..request.decoder_limits
         };
         let mut decoder = Decoder::new(limits)?;
+        let mut inband = None;
+        if let Some(entry) = inband_entry {
+            let (state, parameters) = super::inband_parameter_sets(
+                deployment,
+                super::InbandBootstrapRead {
+                    retained: &retained,
+                    sample: &first_bytes,
+                    first_sample: first,
+                    limits: request.read_limits,
+                    source_budget,
+                },
+                entry,
+                fss_container::demux::VideoCodec::Avc,
+                budget.as_deref_mut(),
+                cx,
+            )?;
+            for nal in parameters.decoder_prefix() {
+                if let Some(budget) = budget.as_deref_mut() {
+                    budget.reserve(nal.len(), 0, cx)?;
+                }
+                checkpoint(cx, "recorded_h264:parameter_set")?;
+                if decoder.decode_nal(nal)?.is_some() {
+                    return Err(RecordedDecodeError::CustodyMismatch);
+                }
+            }
+            inband = Some(state);
+        }
         // Out-of-band configuration precedes the first access unit; it codes no picture.
         for index in parameter_sets {
             let nal = retained.read_omission_span_budgeted(
@@ -565,6 +627,12 @@ impl RecordedH264Range {
             retained,
             decoder,
             framing,
+            decoder_identity: if inband_entry.is_some() {
+                h264_inband_decoder_identity()
+            } else {
+                h264_decoder_identity()
+            },
+            inband,
             chunks,
             next: first,
             end,
@@ -574,6 +642,7 @@ impl RecordedH264Range {
             ready: std::collections::VecDeque::new(),
             seen,
             flushed: false,
+            failed: false,
         })
     }
 
@@ -599,6 +668,12 @@ impl RecordedH264Range {
     #[must_use]
     pub fn decoded(&self) -> u64 {
         self.decoded
+    }
+
+    /// Source reconstruction generation applied to all frames in this range.
+    #[must_use]
+    pub fn decoder_identity(&self) -> ContentDigest {
+        self.decoder_identity
     }
 
     /// Next access unit to feed the codec, which can be ahead of returned display pictures.
@@ -630,6 +705,27 @@ impl RecordedH264Range {
     }
 
     fn next_frame_bounded(
+        &mut self,
+        deployment: &ReferenceDeployment,
+        budget: Option<&mut RecordedVideoDecodeBudget>,
+        cx: &ReplayCx,
+    ) -> Result<Option<RecordedH264Frame>, RecordedDecodeError> {
+        if self.failed {
+            return Err(RecordedDecodeError::H264AccessUnit {
+                segment: self.next.min(self.end - 1),
+            });
+        }
+        let result = self.next_frame_inner(deployment, budget, cx);
+        if result.is_err() {
+            // An error ends this owner. No queued output or partial decoder state may become
+            // publishable through a later call on the same range.
+            self.failed = true;
+            self.ready.clear();
+        }
+        result
+    }
+
+    fn next_frame_inner(
         &mut self,
         deployment: &ReferenceDeployment,
         mut budget: Option<&mut RecordedVideoDecodeBudget>,
@@ -664,16 +760,41 @@ impl RecordedH264Range {
                         cx,
                     )?;
                 }
-                for nal in segment_nals(self.framing, &bytes, index)? {
-                    checkpoint(cx, "recorded_h264:nal")?;
-                    if let Some(picture) = self.decoder.decode_nal(nal)? {
-                        self.ready.push_back(picture);
-                    }
-                    while let Some(picture) = self.decoder.next_output() {
-                        self.ready.push_back(picture);
-                    }
-                }
+                let nals = segment_nals(self.framing, &bytes, index)?;
+                let parameters = if index > self.request.first_segment {
+                    self.inband
+                        .as_mut()
+                        .map(|state| {
+                            super::next_inband_parameters(state, &bytes, budget.as_deref_mut(), cx)
+                        })
+                        .transpose()?
+                } else {
+                    None
+                };
+                let prefixed = parameters.as_ref().map(|parameters| {
+                    parameters
+                        .decoder_prefix()
+                        .chain(nals.iter().copied())
+                        .collect::<Vec<_>>()
+                });
+                let nals = prefixed.as_deref().unwrap_or(&nals);
+                let completed =
+                    super::video_access_unit::h264(&mut self.decoder, nals, &mut || {
+                        cx.checkpoint("recorded_h264:nal").map_err(|_| ())
+                    })
+                    .map_err(|error| match error {
+                        super::video_access_unit::UnitError::Codec(error) => {
+                            RecordedDecodeError::H264(error)
+                        }
+                        super::video_access_unit::UnitError::Boundary => {
+                            RecordedDecodeError::H264AccessUnit { segment: index }
+                        }
+                        super::video_access_unit::UnitError::Cancelled => {
+                            RecordedDecodeError::Cancelled
+                        }
+                    })?;
                 self.next += 1;
+                self.ready.extend(completed);
             } else {
                 self.ready.extend(self.decoder.finish()?);
                 self.flushed = true;
@@ -696,7 +817,7 @@ impl RecordedH264Range {
         })?;
         let index = first
             .checked_add(offset)
-            .filter(|index| *index < self.end)
+            .filter(|index| *index < self.next && *index < self.end)
             .ok_or(RecordedDecodeError::H264AccessUnit {
                 segment: self.end - 1,
             })?;
@@ -742,10 +863,11 @@ impl RecordedH264Range {
             i420_sha256: placeholder,
             cb_sha256: placeholder,
             cr_sha256: placeholder,
+            decoder: self.decoder_identity,
             mask_policy: self.mask.policy_digest(),
         };
-        self.decoded += 1;
         checkpoint(cx, "recorded_h264:decoded")?;
+        self.decoded += 1;
         Ok(RecordedH264Frame {
             output_index: self.decoded - 1,
             range_segment_count: self.request.segment_count,

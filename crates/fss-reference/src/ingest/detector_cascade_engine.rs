@@ -41,7 +41,7 @@ use super::package_detect::{
     VideoPicture,
 };
 use super::privacy_mask::current_mask;
-use super::recorded_decode::h264::{RecordedH264Range, RecordedH264Request};
+use super::recorded_decode::h264::{RecordedH264RangeV2 as RecordedH264Range, RecordedH264Request};
 use super::recorded_decode::h265::{RecordedH265RangeV1 as RecordedH265Range, RecordedH265Request};
 use super::recorded_decode::video_rgb::video_rgb_transform_identity;
 use super::recorded_decode::{ComponentInterpretation, RecordedDecodeError, source_capsule};
