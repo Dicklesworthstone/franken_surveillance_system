@@ -53,6 +53,8 @@ pub mod long_watch;
 pub mod mjpeg;
 /// Offline source-preserving conversion of exact tensor weights into recorded models.
 pub mod model_import;
+/// Source-preserving offline ONNX import into verified RGB detector packages.
+pub mod onnx_package;
 /// Bounded, source-gap-aware pixel-change measurements over recorded frames.
 pub mod pixel_change;
 /// Owner-declared, approval-gated per-sensor privacy masks applied at retained decode.

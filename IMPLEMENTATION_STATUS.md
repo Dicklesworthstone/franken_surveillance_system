@@ -10,6 +10,26 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## ONNX-to-detector-package provisioning command (2026-10-31, reference)
+
+`fss-infer import-onnx` now connects the admitted general ONNX profile to the existing FMPK
+RGB detector package format used by `package-detect` and its sampling workflows. Independently
+pinned local source, recipe, license and notice inputs produce a deterministic archive retaining
+the complete original ONNX. Explicit NCHW input, preprocessing, decoded-head layout, class labels,
+generations and license decisions are required. Shape/field mismatches, unapproved licenses,
+oversized metadata, wrong pins and exhausted bounds refuse. The existing package/license/CPU
+loader verifies the archive before an exclusive new output file is opened; nothing is activated.
+
+The conversion path is supported by the **139 passing native model-IR tests** described below,
+including actual production Safetensors parsing and scalar execution of a rank-four RGB input
+through a batched dense head. Six package/CLI tests additionally cover archive round trips,
+retained-JPEG inference, refusals, output pins and overwrite protection, but remain **unexecuted**:
+the locked Asupersync dependency exceeds this environment's build memory limit. Independent
+source review and scoped formatting passed; schemas have no new validator findings. The native
+artifact tests do not establish full CLI/runtime qualification or trained-model quality. Existing
+opset-11 YOLOX conversion is unchanged. See `docs/ONNX_PACKAGE_IMPORT.md` for the exact command,
+recipe, supported profile, source-retention contract and remaining limits.
+
 ## Camera placement under shared dependency failures (2026-10-31, reference)
 
 `fss-cover placement --failure-action ID=COST=SENSOR[,SENSOR...]` now evaluates camera

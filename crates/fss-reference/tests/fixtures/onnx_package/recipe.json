@@ -1,0 +1,46 @@
+{
+  "format": "fss.onnx_rgb_package_recipe.v1",
+  "model_id": "MOD-ONNXFIXTURE-001",
+  "model_generation": "model:onnx-detector-fixture:g1",
+  "tensor_generation": 1,
+  "preprocess": {
+    "image_input": "image",
+    "height": 1,
+    "width": 1,
+    "resize": "nearest",
+    "letterbox_pad": 0,
+    "masked_rgb": [
+      0,
+      0,
+      0
+    ],
+    "scale_to_unit": false
+  },
+  "head": {
+    "output_port": "head",
+    "layout": "rows",
+    "boxes": "pixel-corners",
+    "class_score": "probability",
+    "objectness": "none",
+    "classes": "best",
+    "minimum_score_ppm": 500000,
+    "nms_iou_ppm": 450000,
+    "maximum_rows": 1,
+    "maximum_candidates": 4,
+    "maximum_detections": 4
+  },
+  "labels": [
+    "fixture-object",
+    "fixture-other"
+  ],
+  "source": {
+    "upstream": "fixture:fss/native-onnx-detector",
+    "revision": "v1",
+    "producer": "FSS test-only numerical fixture"
+  },
+  "license": {
+    "id": "MIT",
+    "use_approved": true,
+    "restrictions": []
+  }
+}

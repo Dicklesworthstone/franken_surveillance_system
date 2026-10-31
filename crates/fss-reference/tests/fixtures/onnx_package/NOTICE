@@ -1,0 +1,2 @@
+FSS native ONNX RGB detector wiring fixture.
+All weights are explicit test constants; this is not a trained detector.

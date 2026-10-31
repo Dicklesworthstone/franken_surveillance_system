@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/onnx_rgb_package_import.v1.json",
+  "title": "fss.onnx_rgb_package_import.v1",
+  "description": "Success-only stdout report from fss-infer import-onnx after the exact archive passes the existing RGB detector package loader and a new output file has been written and synchronized. Digests identify the exact source, recipe, archive, manifest, model, dense head contract and importer generation. Conversion work includes ONNX import and artifact export; package verification has a separate allowance. This report is not a retained receipt, activation, calibration, authenticity proof, model-quality certificate or permission to perform an effect.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "format", "source", "recipe", "package", "manifest", "model", "contract",
+    "importer", "bytes", "conversion_work", "activated", "calibrated"
+  ],
+  "properties": {
+    "format": {"const": "fss.onnx_rgb_package_import.v1"},
+    "source": {"$ref": "#/$defs/sha256"},
+    "recipe": {"$ref": "#/$defs/sha256"},
+    "package": {"$ref": "#/$defs/sha256"},
+    "manifest": {"$ref": "#/$defs/sha256"},
+    "model": {"$ref": "#/$defs/sha256"},
+    "contract": {"$ref": "#/$defs/sha256"},
+    "importer": {"$ref": "#/$defs/sha256"},
+    "bytes": {"type": "integer", "minimum": 1, "maximum": 33554432},
+    "conversion_work": {
+      "type": "integer", "minimum": 0, "maximum": 18446744073709551615
+    },
+    "activated": {"const": false},
+    "calibrated": {"const": false}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  }
+}
