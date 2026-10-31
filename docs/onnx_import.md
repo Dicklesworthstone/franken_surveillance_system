@@ -94,6 +94,43 @@ v1 encoding and previously imported graph bytes are unchanged.
 This is an offline library conversion capability. It does not add an ONNX CLI
 provisioning command or activate a trained model.
 
+## Native graph and weight artifact export
+
+`export_onnx_artifacts(&imported, OnnxExportLimits::default(), &cancelled)` completes
+the conversion to the existing native file formats. It returns canonical Model IR
+bytes, deterministic F32 Safetensors bytes, their SHA-256 identities, the exact
+borrowed original ONNX source and its independently verified digest. Every embedded
+and generated parameter is included, so Gemm's alpha/beta scalars survive export.
+The caller supplies the preprocessing, detection-head and license contract when
+assembling a package; this API has no filesystem or activation effects.
+
+Safetensors names and offsets are sorted deterministically. Quotes, backslashes and
+non-ASCII names are JSON-escaped without renaming or aliases. Parameter values retain
+their exact little-endian F32 bits, including negative zero and subnormals. Empty
+parameter sets produce valid containers. A parameter named `__metadata__` refuses
+because that name is reserved by Safetensors; it is never silently changed. The
+weights header records the source digest and importer identity.
+
+The separate `onnx_importer_identity()` record uses `fss.onnx_importer.v1` and hashes
+the exact ONNX parser, Gemm lowering, artifact exporter and canonical encoder source.
+Existing Model IR bytes, operator IDs and the operator-table freeze remain unchanged.
+
+| Export limit | Hard maximum |
+|---|---:|
+| Canonical graph artifact | 16 MiB |
+| Complete Safetensors artifact, including header | 16 MiB |
+| Safetensors JSON header | 256 KiB |
+| Embedded plus generated parameter tensors | 256 |
+| Original ONNX plus graph plus complete weights | 64 MiB |
+
+Exact graph/header/data sizes and the aggregate source-bearing payload are checked
+before output allocation. Parameter traversal does not allocate another full copy
+of the parameters. The work allowance includes the original import's charged work,
+both encoding passes and hashing the new artifacts; it defaults to 268,435,456 units.
+Cancellation is checked through header, parameter and hash traversal. These are
+payload/work bounds, not a peak process-memory or elapsed-time claim. Any refusal
+returns no partial artifact bundle.
+
 ## Bounds and failure behavior
 
 `OnnxLimits` bounds source bytes, nodes, tensor count, aggregate parameter bytes,
@@ -126,16 +163,30 @@ semantics, duplicate/overridable/unused parameters, intermediate shape mismatch,
 nonfinite data, exact resource limits, generation fencing, cancellation, every
 truncated prefix of a valid model, and bounded generated malformed wire inputs.
 
-The full native `fss-model-ir` suite passes 125 tests on the pinned compiler. Its
-new `onnx_gemm_execution` target includes the exact, unmodified production scalar
+The full native `fss-model-ir` suite passes 139 tests on the pinned compiler. Its
+`onnx_gemm_execution` target includes the exact, unmodified production scalar
 executor source and executes Gemm graphs without compiling unrelated asynchronous
 runtime code. Fourteen new cases cover dense-head replay, 25 transpose-flag pairs,
 seven bias forms, optional inputs, exact F32 evaluation order, synthetic-name
 collisions, expansion quotas, every import cancellation checkpoint, truncation and
-native execution budgets. A literal 264-byte legacy Add graph remains byte-exact.
+native execution budgets. A literal 264-byte legacy Add graph remains byte-exact
+(`sha256:de1ba6db69e22279ecd4bc351ed26a6ebd3db705d456ac14752d9aceb2c57521`).
 This focused execution target does not establish full `fss-reference` validation.
 
-Scoped formatting and a narrow library/Gemm-target Clippy check pass. Strict
+The new `onnx_artifact_export` target passes 14 tests: 12 focused export cases and
+two included production-executor smoke cases. It reloads the actual exported graph
+and weights with the canonical decoder and the unchanged production Safetensors
+parser, then executes the decoded graph through the unchanged production scalar
+executor. The parser uses a small type-only test host for its existing error, limit
+and float-policy types; its parsing and numeric conversion code is not duplicated.
+The fixed untrained RGB fixture `[1,3,1,1] -> Flatten -> batched MatMul -> Add`
+produces a `[1,1,6]` dense head with exact expected values. Further cases exercise
+generated Gemm scalars, a Conv/Pool/Transpose/Gemm/Softmax graph, exact F32 bits,
+escaping, deterministic spans, source metadata provenance, no-weight graphs,
+reserved-name refusal, exact output/work boundaries and cancellation. These fixtures
+establish numerical plumbing, not detector quality.
+
+Scoped formatting and narrow library/Gemm/export-target Clippy checks pass. Strict
 all-target Clippy remains blocked by two pre-existing `chunks_exact_to_as_chunks`
 lints in the initializer parser and an unused import in `quotas_family.rs`; those
 findings are separate from the passing native semantic tests.

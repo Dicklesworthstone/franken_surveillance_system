@@ -14,7 +14,10 @@ use fss_tensor::{DType, Shape, Tensor};
 
 use crate::{AttrValue, AttributeMap, GraphNode, ModelIrGraph, ModelIrVersion, OpCode, TensorPort};
 
+mod export;
 mod gemm;
+
+pub use export::{OnnxArtifacts, OnnxExportLimits, export_onnx_artifacts, onnx_importer_identity};
 
 /// Explicit bounds for parsing, source hashing, graph conversion and parameter allocation.
 #[derive(Clone, Copy, Debug)]

@@ -40,7 +40,10 @@ pub use error::ModelIrError;
 pub use graph::{ModelIrGraph, ModelIrGraphBuilder, ModelIrVersion, UnsupportedVersion};
 pub use memory::{MemoryPlan, MemoryPlanError, MemoryPlanLimits, MemoryStep, TensorLifetime};
 pub use node::GraphNode;
-pub use onnx::{ImportedOnnx, OnnxError, OnnxLimits, import_onnx};
+pub use onnx::{
+    ImportedOnnx, OnnxArtifacts, OnnxError, OnnxExportLimits, OnnxLimits, export_onnx_artifacts,
+    import_onnx, onnx_importer_identity,
+};
 pub use op::{
     AttributeSpec, AttributeType, OPERATOR_BASELINE_IDS, OPERATOR_SPECS,
     OPERATOR_TABLE_DIGEST_DOMAIN, OPERATOR_TABLE_FREEZE_DIGEST, OPERATOR_TOMBSTONES, OpCode,

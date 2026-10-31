@@ -10,6 +10,24 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Source-preserving native ONNX artifact export (2026-10-30, reference)
+
+The general ONNX importer now exports its validated graph and exact finite F32 parameters
+to the existing canonical Model IR and Safetensors formats, retaining the complete original
+ONNX bytes and their independent source pin. Generated Gemm parameters remain bound; tensor
+names are escaped losslessly; graph/header/weights/aggregate byte limits are checked before
+output allocation. Cumulative work includes the original import, and cancellation never
+returns partial artifacts. Existing graph/operator identities and canonical bytes are unchanged.
+
+The pinned native `fss-model-ir` suite passed all **139 tests**, including 12 new export cases
+and two included production executor tests. New cases read exported weights through the actual
+production Safetensors parser and execute the decoded graph through the actual production scalar
+executor, including an RGB-shaped dense-head graph. Exact quotas, cancellation, generated weights,
+escaped names and signed-zero/subnormal bits are covered; the frozen legacy Add bytes still match.
+Scoped Clippy passed with only the pre-existing parser `chunks_exact_to_as_chunks` allowance.
+This validates conversion artifacts, not the full asynchronous reference runtime, package CLI,
+model quality, activation or release qualification. See `docs/onnx_import.md`.
+
 ## Native HEVC dependent slice segments (2026-10-30, reference)
 
 The Main-profile 8-bit 4:2:0 decoder now reconstructs dependent slice segments.
