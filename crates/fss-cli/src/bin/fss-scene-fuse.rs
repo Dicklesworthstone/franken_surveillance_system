@@ -5,6 +5,8 @@
 //! Its report is derived advice: input handles are retained, not authenticated source custody,
 //! and authored camera placements do not become accepted physical calibration.
 
+#[path = "fss-scene-fuse/handoffs.rs"]
+mod handoffs;
 #[path = "fss-scene-fuse/input.rs"]
 mod input;
 #[path = "fss-scene-fuse/report.rs"]
@@ -51,7 +53,8 @@ visible_contact, sigma_pixels, evidence_digest and source_digest. See docs/SCENE
 Every hypothesis is reported, including refusals. Exit 0: all solved; 3: some/all refused;\n\
 2: invalid input, I/O, authority or report failure. --report-out exclusively creates a new\n\
 private file after the complete report is computed; existing files are never overwritten.\n\
-The stdout JSON is identical to that file. Default work allowance: 100000000 units.\n";
+The stdout JSON is identical to that file. Default work allowance: 100000000 units.\n\n\
+For automatic ordered anonymous tracklet association, use fss-scene-fuse handoffs --help.\n";
 
 #[derive(Debug)]
 struct Failure {
@@ -339,13 +342,18 @@ fn execute(options: &Options, out: &mut impl Write) -> Result<bool> {
 }
 
 fn main() -> ExitCode {
-    let result = options(std::env::args_os().skip(1)).and_then(|value| match value {
-        None => {
-            print!("{HELP}");
-            Ok(true)
-        }
-        Some(options) => execute(&options, &mut io::stdout().lock()),
-    });
+    let args: Vec<_> = std::env::args_os().skip(1).collect();
+    let result = if args.first().and_then(|arg| arg.to_str()) == Some("handoffs") {
+        handoffs::run(&args[1..], &mut io::stdout().lock())
+    } else {
+        options(args).and_then(|value| match value {
+            None => {
+                print!("{HELP}");
+                Ok(true)
+            }
+            Some(options) => execute(&options, &mut io::stdout().lock()),
+        })
+    };
     match result {
         Ok(true) => ExitCode::SUCCESS,
         Ok(false) => ExitCode::from(3),

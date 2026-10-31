@@ -13,6 +13,8 @@ pub mod alert_effect;
 pub mod archive_cmd;
 /// Work claims (FSS-226): the work-claiming intent family of `fss investigate` (AOP-006).
 pub mod claim_cmd;
+/// Pure bounded anonymous multi-camera handoff query with complete alternatives.
+pub mod continuity_query;
 pub mod crosswalk;
 /// Checked custody observations over verified local event authority; no effect or export grant.
 pub mod custody_review;
@@ -36,6 +38,8 @@ pub mod hydration_cmd;
 pub mod investigate_cmd;
 /// Bounded strict JSON reading for intent files.
 pub mod json_input;
+/// Deterministic JSON primitives for pure bounded query adapters.
+pub mod json_output;
 pub mod lab_cmd;
 /// Explicit, proof-backed plan-outcome mission contracts under AOP-007.
 pub mod mission_cmd;

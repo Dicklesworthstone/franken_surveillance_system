@@ -38,6 +38,33 @@ Removing the required entry-only PPS makes both dedicated oracle recordings fail
 The Rust tests invoke only native implementations. Main10 metadata admission does not
 upgrade the native HEVC pixel profile. See `docs/MP4_INBAND_CONFIGURATION.md`.
 
+## Executable anonymous handoff query (2026-10-31, reference)
+
+`fss-scene-fuse handoffs` now exposes the native continuity planner through a strict,
+bounded owner-local JSON query. It retains every declared tracklet and ordered-pair
+disposition, ranked globally consistent path covers, the complete admitted implicit
+family, the all-singleton explanation and both full native certificates. Source, clock,
+calibration and model handles remain explicit caller assertions; this standalone path
+does not fabricate source authentication or a deployment ledger anchor.
+
+The command accepts an exact input-document SHA-256 pin, shared solver-work allowance,
+deadline and complete-report byte limit. Cancellation and native budget errors preserve
+their typed stable codes. A requested report is exclusively created as a private file
+after complete computation; its newline-terminated bytes match stdout. Existing paths,
+symlinks, unknown/duplicate fields, coercive integer spellings and truncated answers
+refuse. The existing simultaneous scene-reconstruction interface remains available.
+
+The complete graph package passed **238 tests** (208 prior, 18 continuity and 12 actual
+production parser/adapter/renderer tests). The final 12 adapter cases and scoped graph
+lint passed again after typed-error integration. A real native invocation produced the
+9,270-byte three-camera report with two cost-22 alternatives, five admitted links, twelve
+pair dispositions and the cost-40 all-singleton cover. Both schemas pass the offline
+reference validator (102 references, zero new findings); the exact report passes the
+scoped instance checker and all twelve invalid report mutations refuse. The four CLI
+file/context tests are authored but not executed: full CLI/reference compilation remains
+blocked by the asynchronous dependency's shared-host memory demand. See
+`docs/SCENE_HANDOFFS.md`; this is not release or authenticated-association qualification.
+
 ## Global anonymous tracklet handoff paths (2026-10-31, reference)
 
 The native `continuity` planner composes up to 32 camera-local tracklets into globally

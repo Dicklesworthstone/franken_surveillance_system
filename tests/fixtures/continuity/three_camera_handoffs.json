@@ -1,0 +1,145 @@
+{
+  "schema": "fss.scene_handoffs_query.v1",
+  "scope": {
+    "property": "site:example",
+    "session": "session:handoff-demo",
+    "privacy_policy": "sha256:f12ce4dbd4e12613d4d8e3e9387b46c53e932ee46fb8f736b36e8695d9fd8e9a",
+    "generation": "sha256:9e74b10f1e28e6bffe6f34ae54c97c72bf3535679a3febfcd5dc1f9cb9590f68",
+    "clock": "sha256:db217ff45ad8d8e2ecfd8348306c37498b31b35bed5b14672685764b5a3e2316"
+  },
+  "time_unit": "nanoseconds",
+  "cost_unit": "declared-association-points",
+  "birth_cost": 5,
+  "end_cost": 5,
+  "k": 2,
+  "tracklets": [
+    {
+      "id": "a",
+      "camera": "camera:gate",
+      "camera_generation": "sha256:6494fd5d42b48808d3248198bd0a1af3b1cd65649b2fbe9f62e9dbbd851e903c",
+      "calibration": "sha256:51cacdfa49ab10e1f58a174de22d0feb83e97aace69dd3e90cdcedee9bb71c1d",
+      "model": "sha256:335aaca44b47bdb96468d9560eb848c42f85e6d0e50b861468913a655d2cfa59",
+      "evidence": [
+        "sha256:41c72898755764bda123ac37a0ad7b812d8dbd919883b7d367b8dae0a2273238"
+      ],
+      "start": [
+        0,
+        1
+      ],
+      "end": [
+        4,
+        5
+      ],
+      "support": "declared"
+    },
+    {
+      "id": "x",
+      "camera": "camera:gate",
+      "camera_generation": "sha256:6494fd5d42b48808d3248198bd0a1af3b1cd65649b2fbe9f62e9dbbd851e903c",
+      "calibration": "sha256:51cacdfa49ab10e1f58a174de22d0feb83e97aace69dd3e90cdcedee9bb71c1d",
+      "model": "sha256:335aaca44b47bdb96468d9560eb848c42f85e6d0e50b861468913a655d2cfa59",
+      "evidence": [
+        "sha256:d7ca88bc616a127f57e00bef7db928d13e79c149d01c6d4f1e8dde358d0a862e"
+      ],
+      "start": [
+        0,
+        1
+      ],
+      "end": [
+        4,
+        5
+      ],
+      "support": "declared"
+    },
+    {
+      "id": "b",
+      "camera": "camera:yard",
+      "camera_generation": "sha256:c8fd2bb3d0e973e1aba8f7e8590720af7acc6eee9f12d00a17f574a8cb3b63df",
+      "calibration": "sha256:1f05c1e6f066dff4b13c884dcdc1e62c497fd4eb79ab6d06195778e0e0549697",
+      "model": "sha256:335aaca44b47bdb96468d9560eb848c42f85e6d0e50b861468913a655d2cfa59",
+      "evidence": [
+        "sha256:bd616291fbe219f5eece85fec575344e5d16ca734928298aad0a4ab24e5105f8"
+      ],
+      "start": [
+        10,
+        11
+      ],
+      "end": [
+        14,
+        15
+      ],
+      "support": "declared"
+    },
+    {
+      "id": "c",
+      "camera": "camera:door",
+      "camera_generation": "sha256:df962aade2b416280f9714ca7b7ba8d4e74995b56242ea23d8465a055817a691",
+      "calibration": "sha256:eeaef4fdd0254b1595bdd5cf86d3976afe4fbe0ea2d6650871b242ce2086c040",
+      "model": "sha256:335aaca44b47bdb96468d9560eb848c42f85e6d0e50b861468913a655d2cfa59",
+      "evidence": [
+        "sha256:bf233c16a7d00022c436263f3c120e3d104b81b8d754d138c64f5aa6da1a32e7"
+      ],
+      "start": [
+        20,
+        21
+      ],
+      "end": [
+        24,
+        25
+      ],
+      "support": "declared"
+    }
+  ],
+  "transitions": [
+    {
+      "to": "b",
+      "transit": [
+        4,
+        8
+      ],
+      "cost": 1,
+      "basis": "sha256:1d16cfec1a39a98b7a62d4af4fc8567709da6738e544a0921d55a02360ef1bfa",
+      "from": "a"
+    },
+    {
+      "to": "b",
+      "transit": [
+        4,
+        8
+      ],
+      "cost": 1,
+      "basis": "sha256:261ad39fe018233d945d425c429e416a501c0c558fbd3c6bc551ca46e814892a",
+      "from": "x"
+    },
+    {
+      "to": "c",
+      "transit": [
+        4,
+        8
+      ],
+      "cost": 1,
+      "basis": "sha256:49c6e2e15810f011eb9574cffcc62a40d8347a04df228212f1bb2171491c7151",
+      "from": "b"
+    },
+    {
+      "to": "c",
+      "transit": [
+        14,
+        18
+      ],
+      "cost": 9,
+      "basis": "sha256:df427bb51f5321af6876b0b98fb79ed9c046883cc7055dcf72b4c7302ce93dba",
+      "from": "a"
+    },
+    {
+      "to": "c",
+      "transit": [
+        14,
+        18
+      ],
+      "cost": 9,
+      "basis": "sha256:7a6aa536be638bae04703b872f6cc8be1794b33f6f806349639ca70098cc263d",
+      "from": "x"
+    }
+  ]
+}
