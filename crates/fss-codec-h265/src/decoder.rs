@@ -225,6 +225,15 @@ impl Decoder {
         self.pictures
     }
 
+    /// Whether a started picture is still missing coding tree blocks at this NAL boundary.
+    /// This observation neither flushes the decoded picture buffer nor consumes output.
+    /// Intentionally skipped RASL pictures have no pending decoded surface, so `false` alone
+    /// does not certify an access unit's picture count or identify a skipped picture.
+    #[must_use]
+    pub const fn has_incomplete_picture(&self) -> bool {
+        self.pending.is_some()
+    }
+
     /// Decodes one NAL unit (two-byte header included, no start code) and
     /// returns the next picture in output order, if one is ready. When a
     /// NAL makes several pictures ready at once, the others are returned by

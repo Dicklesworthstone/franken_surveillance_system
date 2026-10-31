@@ -1,0 +1,1653 @@
+{
+  "oracle": "ffmpeg version 6.1.1-3ubuntu5 Copyright (c) 2000-2023 the FFmpeg developers",
+  "fixtures": [
+    {
+      "name": "avc3_empty_change",
+      "entry": "avc3",
+      "carriage": "empty",
+      "nal_length_bytes": 4,
+      "fragmented": true,
+      "sha256": "01d0d7568162e4f35e01d812e5e662c3e5412a8ecc4b85d533432616079ee484",
+      "samples": [
+        {
+          "dts": 0,
+          "pts": 0,
+          "duration": 9000,
+          "sync": true
+        },
+        {
+          "dts": 9000,
+          "pts": 9000,
+          "duration": 9000,
+          "sync": false
+        },
+        {
+          "dts": 18000,
+          "pts": 18000,
+          "duration": 9000,
+          "sync": false
+        },
+        {
+          "dts": 27000,
+          "pts": 27000,
+          "duration": 9000,
+          "sync": false
+        },
+        {
+          "dts": 36000,
+          "pts": 36000,
+          "duration": 9000,
+          "sync": true
+        },
+        {
+          "dts": 45000,
+          "pts": 45000,
+          "duration": 9000,
+          "sync": false
+        },
+        {
+          "dts": 54000,
+          "pts": 54000,
+          "duration": 9000,
+          "sync": false
+        },
+        {
+          "dts": 63000,
+          "pts": 63000,
+          "duration": 9000,
+          "sync": false
+        }
+      ],
+      "frames": [
+        {
+          "dimensions": [
+            64,
+            48
+          ],
+          "i420_sha256": "660a7fca2d988acb8ac6b6ed7a78118a65d23c1979483f99013bc03c7459de98"
+        },
+        {
+          "dimensions": [
+            64,
+            48
+          ],
+          "i420_sha256": "8787ad915bed11d79c487394213b80232444c9c45de901ab187fe43b8ea53ac4"
+        },
+        {
+          "dimensions": [
+            64,
+            48
+          ],
+          "i420_sha256": "7aafb5e45b74fe22f00b53a2a5ee4261f5a40bcc5dfa63dfbf5bb0bd7f82a149"
+        },
+        {
+          "dimensions": [
+            64,
+            48
+          ],
+          "i420_sha256": "7630a0242c3c1cc7380a8beb41c0967378afaafaad2f31f8ba44650985e23bb4"
+        },
+        {
+          "dimensions": [
+            96,
+            64
+          ],
+          "i420_sha256": "acb34f6f145ac3cf0bf378981b2d38525e25ff893bfe77bcae0d111b228cdc4c"
+        },
+        {
+          "dimensions": [
+            96,
+            64
+          ],
+          "i420_sha256": "e4cbdbb771b7f8382011b8277bb919715db4b2e90363fa60e8e683c8147b819f"
+        },
+        {
+          "dimensions": [
+            96,
+            64
+          ],
+          "i420_sha256": "d7fe2a6903e3a914cc6f7c41d1f17ae63f4c6f2be37d780ddecbaf1d94878c92"
+        },
+        {
+          "dimensions": [
+            96,
+            64
+          ],
+          "i420_sha256": "d8a9650905a7a25031a0761755592060b27e1e60006c8bc513a7b0352bef2904"
+        }
+      ],
+      "ranges": [
+        {
+          "first": 0,
+          "count": 4,
+          "dimensions": [
+            64,
+            48
+          ],
+          "hashes": [
+            "660a7fca2d988acb8ac6b6ed7a78118a65d23c1979483f99013bc03c7459de98",
+            "8787ad915bed11d79c487394213b80232444c9c45de901ab187fe43b8ea53ac4",
+            "7aafb5e45b74fe22f00b53a2a5ee4261f5a40bcc5dfa63dfbf5bb0bd7f82a149",
+            "7630a0242c3c1cc7380a8beb41c0967378afaafaad2f31f8ba44650985e23bb4"
+          ]
+        },
+        {
+          "first": 4,
+          "count": 4,
+          "dimensions": [
+            96,
+            64
+          ],
+          "hashes": [
+            "acb34f6f145ac3cf0bf378981b2d38525e25ff893bfe77bcae0d111b228cdc4c",
+            "e4cbdbb771b7f8382011b8277bb919715db4b2e90363fa60e8e683c8147b819f",
+            "d7fe2a6903e3a914cc6f7c41d1f17ae63f4c6f2be37d780ddecbaf1d94878c92",
+            "d8a9650905a7a25031a0761755592060b27e1e60006c8bc513a7b0352bef2904"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "avc3_partial_change",
+      "entry": "avc3",
+      "carriage": "partial",
+      "nal_length_bytes": 4,
+      "fragmented": true,
+      "sha256": "1a06ad950ed02b66394ff62f2eb915e4e2c494b21e4f223ae2b96489559555b3",
+      "samples": [
+        {
+          "dts": 0,
+          "pts": 0,
+          "duration": 9000,
+          "sync": true
+        },
+        {
+          "dts": 9000,
+          "pts": 9000,
+          "duration": 9000,
+          "sync": false
+        },
+        {
+          "dts": 18000,
+          "pts": 18000,
+          "duration": 9000,
+          "sync": false
+        },
+        {
+          "dts": 27000,
+          "pts": 27000,
+          "duration": 9000,
+          "sync": false
+        },
+        {
+          "dts": 36000,
+          "pts": 36000,
+          "duration": 9000,
+          "sync": true
+        },
+        {
+          "dts": 45000,
+          "pts": 45000,
+          "duration": 9000,
+          "sync": false
+        },
+        {
+          "dts": 54000,
+          "pts": 54000,
+          "duration": 9000,
+          "sync": false
+        },
+        {
+          "dts": 63000,
+          "pts": 63000,
+          "duration": 9000,
+          "sync": false
+        }
+      ],
+      "frames": [
+        {
+          "dimensions": [
+            64,
+            48
+          ],
+          "i420_sha256": "660a7fca2d988acb8ac6b6ed7a78118a65d23c1979483f99013bc03c7459de98"
+        },
+        {
+          "dimensions": [
+            64,
+            48
+          ],
+          "i420_sha256": "8787ad915bed11d79c487394213b80232444c9c45de901ab187fe43b8ea53ac4"
+        },
+        {
+          "dimensions": [
+            64,
+            48
+          ],
+          "i420_sha256": "7aafb5e45b74fe22f00b53a2a5ee4261f5a40bcc5dfa63dfbf5bb0bd7f82a149"
+        },
+        {
+          "dimensions": [
+            64,
+            48
+          ],
+          "i420_sha256": "7630a0242c3c1cc7380a8beb41c0967378afaafaad2f31f8ba44650985e23bb4"
+        },
+        {
+          "dimensions": [
+            96,
+            64
+          ],
+          "i420_sha256": "acb34f6f145ac3cf0bf378981b2d38525e25ff893bfe77bcae0d111b228cdc4c"
+        },
+        {
+          "dimensions": [
+            96,
+            64
+          ],
+          "i420_sha256": "e4cbdbb771b7f8382011b8277bb919715db4b2e90363fa60e8e683c8147b819f"
+        },
+        {
+          "dimensions": [
+            96,
+            64
+          ],
+          "i420_sha256": "d7fe2a6903e3a914cc6f7c41d1f17ae63f4c6f2be37d780ddecbaf1d94878c92"
+        },
+        {
+          "dimensions": [
+            96,
+            64
+          ],
+          "i420_sha256": "d8a9650905a7a25031a0761755592060b27e1e60006c8bc513a7b0352bef2904"
+        }
+      ],
+      "ranges": [
+        {
+          "first": 0,
+          "count": 4,
+          "dimensions": [
+            64,
+            48
+          ],
+          "hashes": [
+            "660a7fca2d988acb8ac6b6ed7a78118a65d23c1979483f99013bc03c7459de98",
+            "8787ad915bed11d79c487394213b80232444c9c45de901ab187fe43b8ea53ac4",
+            "7aafb5e45b74fe22f00b53a2a5ee4261f5a40bcc5dfa63dfbf5bb0bd7f82a149",
+            "7630a0242c3c1cc7380a8beb41c0967378afaafaad2f31f8ba44650985e23bb4"
+          ]
+        },
+        {
+          "first": 4,
+          "count": 4,
+          "dimensions": [
+            96,
+            64
+          ],
+          "hashes": [
+            "acb34f6f145ac3cf0bf378981b2d38525e25ff893bfe77bcae0d111b228cdc4c",
+            "e4cbdbb771b7f8382011b8277bb919715db4b2e90363fa60e8e683c8147b819f",
+            "d7fe2a6903e3a914cc6f7c41d1f17ae63f4c6f2be37d780ddecbaf1d94878c92",
+            "d8a9650905a7a25031a0761755592060b27e1e60006c8bc513a7b0352bef2904"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "avc3_full_change",
+      "entry": "avc3",
+      "carriage": "full",
+      "nal_length_bytes": 4,
+      "fragmented": true,
+      "sha256": "5ab0dc3908d1977a4ae0b8e9c6980591de473bd3f0e430d51c0bda0030bcd715",
+      "samples": [
+        {
+          "dts": 0,
+          "pts": 0,
+          "duration": 9000,
+          "sync": true
+        },
+        {
+          "dts": 9000,
+          "pts": 9000,
+          "duration": 9000,
+          "sync": false
+        },
+        {
+          "dts": 18000,
+          "pts": 18000,
+          "duration": 9000,
+          "sync": false
+        },
+        {
+          "dts": 27000,
+          "pts": 27000,
+          "duration": 9000,
+          "sync": false
+        },
+        {
+          "dts": 36000,
+          "pts": 36000,
+          "duration": 9000,
+          "sync": true
+        },
+        {
+          "dts": 45000,
+          "pts": 45000,
+          "duration": 9000,
+          "sync": false
+        },
+        {
+          "dts": 54000,
+          "pts": 54000,
+          "duration": 9000,
+          "sync": false
+        },
+        {
+          "dts": 63000,
+          "pts": 63000,
+          "duration": 9000,
+          "sync": false
+        }
+      ],
+      "frames": [
+        {
+          "dimensions": [
+            64,
+            48
+          ],
+          "i420_sha256": "660a7fca2d988acb8ac6b6ed7a78118a65d23c1979483f99013bc03c7459de98"
+        },
+        {
+          "dimensions": [
+            64,
+            48
+          ],
+          "i420_sha256": "8787ad915bed11d79c487394213b80232444c9c45de901ab187fe43b8ea53ac4"
+        },
+        {
+          "dimensions": [
+            64,
+            48
+          ],
+          "i420_sha256": "7aafb5e45b74fe22f00b53a2a5ee4261f5a40bcc5dfa63dfbf5bb0bd7f82a149"
+        },
+        {
+          "dimensions": [
+            64,
+            48
+          ],
+          "i420_sha256": "7630a0242c3c1cc7380a8beb41c0967378afaafaad2f31f8ba44650985e23bb4"
+        },
+        {
+          "dimensions": [
+            96,
+            64
+          ],
+          "i420_sha256": "acb34f6f145ac3cf0bf378981b2d38525e25ff893bfe77bcae0d111b228cdc4c"
+        },
+        {
+          "dimensions": [
+            96,
+            64
+          ],
+          "i420_sha256": "e4cbdbb771b7f8382011b8277bb919715db4b2e90363fa60e8e683c8147b819f"
+        },
+        {
+          "dimensions": [
+            96,
+            64
+          ],
+          "i420_sha256": "d7fe2a6903e3a914cc6f7c41d1f17ae63f4c6f2be37d780ddecbaf1d94878c92"
+        },
+        {
+          "dimensions": [
+            96,
+            64
+          ],
+          "i420_sha256": "d8a9650905a7a25031a0761755592060b27e1e60006c8bc513a7b0352bef2904"
+        }
+      ],
+      "ranges": [
+        {
+          "first": 0,
+          "count": 4,
+          "dimensions": [
+            64,
+            48
+          ],
+          "hashes": [
+            "660a7fca2d988acb8ac6b6ed7a78118a65d23c1979483f99013bc03c7459de98",
+            "8787ad915bed11d79c487394213b80232444c9c45de901ab187fe43b8ea53ac4",
+            "7aafb5e45b74fe22f00b53a2a5ee4261f5a40bcc5dfa63dfbf5bb0bd7f82a149",
+            "7630a0242c3c1cc7380a8beb41c0967378afaafaad2f31f8ba44650985e23bb4"
+          ]
+        },
+        {
+          "first": 4,
+          "count": 4,
+          "dimensions": [
+            96,
+            64
+          ],
+          "hashes": [
+            "acb34f6f145ac3cf0bf378981b2d38525e25ff893bfe77bcae0d111b228cdc4c",
+            "e4cbdbb771b7f8382011b8277bb919715db4b2e90363fa60e8e683c8147b819f",
+            "d7fe2a6903e3a914cc6f7c41d1f17ae63f4c6f2be37d780ddecbaf1d94878c92",
+            "d8a9650905a7a25031a0761755592060b27e1e60006c8bc513a7b0352bef2904"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "avc3_indexed_change",
+      "entry": "avc3",
+      "carriage": "empty",
+      "nal_length_bytes": 4,
+      "fragmented": false,
+      "sha256": "3a8d58859ef508162b4159ade85e0b14d82388e7f266fe6facd13c7c396dabfb",
+      "samples": [
+        {
+          "dts": 0,
+          "pts": 0,
+          "duration": 9000,
+          "sync": true
+        },
+        {
+          "dts": 9000,
+          "pts": 9000,
+          "duration": 9000,
+          "sync": false
+        },
+        {
+          "dts": 18000,
+          "pts": 18000,
+          "duration": 9000,
+          "sync": false
+        },
+        {
+          "dts": 27000,
+          "pts": 27000,
+          "duration": 9000,
+          "sync": false
+        },
+        {
+          "dts": 36000,
+          "pts": 36000,
+          "duration": 9000,
+          "sync": true
+        },
+        {
+          "dts": 45000,
+          "pts": 45000,
+          "duration": 9000,
+          "sync": false
+        },
+        {
+          "dts": 54000,
+          "pts": 54000,
+          "duration": 9000,
+          "sync": false
+        },
+        {
+          "dts": 63000,
+          "pts": 63000,
+          "duration": 9000,
+          "sync": false
+        }
+      ],
+      "frames": [
+        {
+          "dimensions": [
+            64,
+            48
+          ],
+          "i420_sha256": "660a7fca2d988acb8ac6b6ed7a78118a65d23c1979483f99013bc03c7459de98"
+        },
+        {
+          "dimensions": [
+            64,
+            48
+          ],
+          "i420_sha256": "8787ad915bed11d79c487394213b80232444c9c45de901ab187fe43b8ea53ac4"
+        },
+        {
+          "dimensions": [
+            64,
+            48
+          ],
+          "i420_sha256": "7aafb5e45b74fe22f00b53a2a5ee4261f5a40bcc5dfa63dfbf5bb0bd7f82a149"
+        },
+        {
+          "dimensions": [
+            64,
+            48
+          ],
+          "i420_sha256": "7630a0242c3c1cc7380a8beb41c0967378afaafaad2f31f8ba44650985e23bb4"
+        },
+        {
+          "dimensions": [
+            96,
+            64
+          ],
+          "i420_sha256": "acb34f6f145ac3cf0bf378981b2d38525e25ff893bfe77bcae0d111b228cdc4c"
+        },
+        {
+          "dimensions": [
+            96,
+            64
+          ],
+          "i420_sha256": "e4cbdbb771b7f8382011b8277bb919715db4b2e90363fa60e8e683c8147b819f"
+        },
+        {
+          "dimensions": [
+            96,
+            64
+          ],
+          "i420_sha256": "d7fe2a6903e3a914cc6f7c41d1f17ae63f4c6f2be37d780ddecbaf1d94878c92"
+        },
+        {
+          "dimensions": [
+            96,
+            64
+          ],
+          "i420_sha256": "d8a9650905a7a25031a0761755592060b27e1e60006c8bc513a7b0352bef2904"
+        }
+      ],
+      "ranges": [
+        {
+          "first": 0,
+          "count": 4,
+          "dimensions": [
+            64,
+            48
+          ],
+          "hashes": [
+            "660a7fca2d988acb8ac6b6ed7a78118a65d23c1979483f99013bc03c7459de98",
+            "8787ad915bed11d79c487394213b80232444c9c45de901ab187fe43b8ea53ac4",
+            "7aafb5e45b74fe22f00b53a2a5ee4261f5a40bcc5dfa63dfbf5bb0bd7f82a149",
+            "7630a0242c3c1cc7380a8beb41c0967378afaafaad2f31f8ba44650985e23bb4"
+          ]
+        },
+        {
+          "first": 4,
+          "count": 4,
+          "dimensions": [
+            96,
+            64
+          ],
+          "hashes": [
+            "acb34f6f145ac3cf0bf378981b2d38525e25ff893bfe77bcae0d111b228cdc4c",
+            "e4cbdbb771b7f8382011b8277bb919715db4b2e90363fa60e8e683c8147b819f",
+            "d7fe2a6903e3a914cc6f7c41d1f17ae63f4c6f2be37d780ddecbaf1d94878c92",
+            "d8a9650905a7a25031a0761755592060b27e1e60006c8bc513a7b0352bef2904"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "avc3_length2",
+      "entry": "avc3",
+      "carriage": "empty",
+      "nal_length_bytes": 2,
+      "fragmented": true,
+      "sha256": "9ee19371862aa0f982ae462de76142dbfc3c4c5d31a4d9af53816fdd42d9bf27",
+      "samples": [
+        {
+          "dts": 0,
+          "pts": 0,
+          "duration": 9000,
+          "sync": true
+        },
+        {
+          "dts": 9000,
+          "pts": 9000,
+          "duration": 9000,
+          "sync": false
+        },
+        {
+          "dts": 18000,
+          "pts": 18000,
+          "duration": 9000,
+          "sync": false
+        },
+        {
+          "dts": 27000,
+          "pts": 27000,
+          "duration": 9000,
+          "sync": false
+        }
+      ],
+      "frames": [
+        {
+          "dimensions": [
+            64,
+            48
+          ],
+          "i420_sha256": "660a7fca2d988acb8ac6b6ed7a78118a65d23c1979483f99013bc03c7459de98"
+        },
+        {
+          "dimensions": [
+            64,
+            48
+          ],
+          "i420_sha256": "8787ad915bed11d79c487394213b80232444c9c45de901ab187fe43b8ea53ac4"
+        },
+        {
+          "dimensions": [
+            64,
+            48
+          ],
+          "i420_sha256": "7aafb5e45b74fe22f00b53a2a5ee4261f5a40bcc5dfa63dfbf5bb0bd7f82a149"
+        },
+        {
+          "dimensions": [
+            64,
+            48
+          ],
+          "i420_sha256": "7630a0242c3c1cc7380a8beb41c0967378afaafaad2f31f8ba44650985e23bb4"
+        }
+      ],
+      "ranges": [
+        {
+          "first": 0,
+          "count": 4,
+          "dimensions": [
+            64,
+            48
+          ],
+          "hashes": [
+            "660a7fca2d988acb8ac6b6ed7a78118a65d23c1979483f99013bc03c7459de98",
+            "8787ad915bed11d79c487394213b80232444c9c45de901ab187fe43b8ea53ac4",
+            "7aafb5e45b74fe22f00b53a2a5ee4261f5a40bcc5dfa63dfbf5bb0bd7f82a149",
+            "7630a0242c3c1cc7380a8beb41c0967378afaafaad2f31f8ba44650985e23bb4"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "hev1_empty_change",
+      "entry": "hev1",
+      "carriage": "empty",
+      "nal_length_bytes": 4,
+      "fragmented": true,
+      "sha256": "501dec2478ef11ac8de86a3382f5ea13e802c5843824136503a13a5d1b8e8b93",
+      "samples": [
+        {
+          "dts": 0,
+          "pts": 0,
+          "duration": 9000,
+          "sync": true
+        },
+        {
+          "dts": 9000,
+          "pts": 9000,
+          "duration": 9000,
+          "sync": false
+        },
+        {
+          "dts": 18000,
+          "pts": 18000,
+          "duration": 9000,
+          "sync": false
+        },
+        {
+          "dts": 27000,
+          "pts": 27000,
+          "duration": 9000,
+          "sync": false
+        },
+        {
+          "dts": 36000,
+          "pts": 36000,
+          "duration": 9000,
+          "sync": true
+        },
+        {
+          "dts": 45000,
+          "pts": 45000,
+          "duration": 9000,
+          "sync": false
+        },
+        {
+          "dts": 54000,
+          "pts": 54000,
+          "duration": 9000,
+          "sync": false
+        },
+        {
+          "dts": 63000,
+          "pts": 63000,
+          "duration": 9000,
+          "sync": false
+        }
+      ],
+      "frames": [
+        {
+          "dimensions": [
+            64,
+            48
+          ],
+          "i420_sha256": "51b096e5f8e06f9b65c93e41dd8754a6f958bf63d22973ef0036096914729888"
+        },
+        {
+          "dimensions": [
+            64,
+            48
+          ],
+          "i420_sha256": "152414bef25e0930f852710c91597db73e692629789c9ac2ac7fdbde770b2924"
+        },
+        {
+          "dimensions": [
+            64,
+            48
+          ],
+          "i420_sha256": "65b7fccece7c1d8c7129b5641caf13c0e1278e5b9e9f8b30c5a3aed1855ed2a6"
+        },
+        {
+          "dimensions": [
+            64,
+            48
+          ],
+          "i420_sha256": "d334f36cf09d36ac1253f51f4c891cf932bfeffb92588e81e322e952ae0c47fc"
+        },
+        {
+          "dimensions": [
+            96,
+            64
+          ],
+          "i420_sha256": "c91faf15ab585d5ab80e51de008ae01fed9e26c01be2c97b8dbe19ead9be6e20"
+        },
+        {
+          "dimensions": [
+            96,
+            64
+          ],
+          "i420_sha256": "304b971f4495727ee018df31fc56261b2d33ccfb665dd5abdfeb31afda1dcea8"
+        },
+        {
+          "dimensions": [
+            96,
+            64
+          ],
+          "i420_sha256": "e622db056081a3bb28df8eef1334a4aa4a07a621813df30bbbe824c02d797e8e"
+        },
+        {
+          "dimensions": [
+            96,
+            64
+          ],
+          "i420_sha256": "6d78658f744e8a710e9eceaed9a143a2d65a4cbed0d990ae751cab413b79c588"
+        }
+      ],
+      "ranges": [
+        {
+          "first": 0,
+          "count": 4,
+          "dimensions": [
+            64,
+            48
+          ],
+          "hashes": [
+            "51b096e5f8e06f9b65c93e41dd8754a6f958bf63d22973ef0036096914729888",
+            "152414bef25e0930f852710c91597db73e692629789c9ac2ac7fdbde770b2924",
+            "65b7fccece7c1d8c7129b5641caf13c0e1278e5b9e9f8b30c5a3aed1855ed2a6",
+            "d334f36cf09d36ac1253f51f4c891cf932bfeffb92588e81e322e952ae0c47fc"
+          ]
+        },
+        {
+          "first": 4,
+          "count": 4,
+          "dimensions": [
+            96,
+            64
+          ],
+          "hashes": [
+            "c91faf15ab585d5ab80e51de008ae01fed9e26c01be2c97b8dbe19ead9be6e20",
+            "304b971f4495727ee018df31fc56261b2d33ccfb665dd5abdfeb31afda1dcea8",
+            "e622db056081a3bb28df8eef1334a4aa4a07a621813df30bbbe824c02d797e8e",
+            "6d78658f744e8a710e9eceaed9a143a2d65a4cbed0d990ae751cab413b79c588"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "hev1_partial_change",
+      "entry": "hev1",
+      "carriage": "partial",
+      "nal_length_bytes": 4,
+      "fragmented": true,
+      "sha256": "5a6d1abfa5d91dbe05d3eb0813ad0cc5e8ad1299952729605c7aa2072195e816",
+      "samples": [
+        {
+          "dts": 0,
+          "pts": 0,
+          "duration": 9000,
+          "sync": true
+        },
+        {
+          "dts": 9000,
+          "pts": 9000,
+          "duration": 9000,
+          "sync": false
+        },
+        {
+          "dts": 18000,
+          "pts": 18000,
+          "duration": 9000,
+          "sync": false
+        },
+        {
+          "dts": 27000,
+          "pts": 27000,
+          "duration": 9000,
+          "sync": false
+        },
+        {
+          "dts": 36000,
+          "pts": 36000,
+          "duration": 9000,
+          "sync": true
+        },
+        {
+          "dts": 45000,
+          "pts": 45000,
+          "duration": 9000,
+          "sync": false
+        },
+        {
+          "dts": 54000,
+          "pts": 54000,
+          "duration": 9000,
+          "sync": false
+        },
+        {
+          "dts": 63000,
+          "pts": 63000,
+          "duration": 9000,
+          "sync": false
+        }
+      ],
+      "frames": [
+        {
+          "dimensions": [
+            64,
+            48
+          ],
+          "i420_sha256": "51b096e5f8e06f9b65c93e41dd8754a6f958bf63d22973ef0036096914729888"
+        },
+        {
+          "dimensions": [
+            64,
+            48
+          ],
+          "i420_sha256": "152414bef25e0930f852710c91597db73e692629789c9ac2ac7fdbde770b2924"
+        },
+        {
+          "dimensions": [
+            64,
+            48
+          ],
+          "i420_sha256": "65b7fccece7c1d8c7129b5641caf13c0e1278e5b9e9f8b30c5a3aed1855ed2a6"
+        },
+        {
+          "dimensions": [
+            64,
+            48
+          ],
+          "i420_sha256": "d334f36cf09d36ac1253f51f4c891cf932bfeffb92588e81e322e952ae0c47fc"
+        },
+        {
+          "dimensions": [
+            96,
+            64
+          ],
+          "i420_sha256": "c91faf15ab585d5ab80e51de008ae01fed9e26c01be2c97b8dbe19ead9be6e20"
+        },
+        {
+          "dimensions": [
+            96,
+            64
+          ],
+          "i420_sha256": "304b971f4495727ee018df31fc56261b2d33ccfb665dd5abdfeb31afda1dcea8"
+        },
+        {
+          "dimensions": [
+            96,
+            64
+          ],
+          "i420_sha256": "e622db056081a3bb28df8eef1334a4aa4a07a621813df30bbbe824c02d797e8e"
+        },
+        {
+          "dimensions": [
+            96,
+            64
+          ],
+          "i420_sha256": "6d78658f744e8a710e9eceaed9a143a2d65a4cbed0d990ae751cab413b79c588"
+        }
+      ],
+      "ranges": [
+        {
+          "first": 0,
+          "count": 4,
+          "dimensions": [
+            64,
+            48
+          ],
+          "hashes": [
+            "51b096e5f8e06f9b65c93e41dd8754a6f958bf63d22973ef0036096914729888",
+            "152414bef25e0930f852710c91597db73e692629789c9ac2ac7fdbde770b2924",
+            "65b7fccece7c1d8c7129b5641caf13c0e1278e5b9e9f8b30c5a3aed1855ed2a6",
+            "d334f36cf09d36ac1253f51f4c891cf932bfeffb92588e81e322e952ae0c47fc"
+          ]
+        },
+        {
+          "first": 4,
+          "count": 4,
+          "dimensions": [
+            96,
+            64
+          ],
+          "hashes": [
+            "c91faf15ab585d5ab80e51de008ae01fed9e26c01be2c97b8dbe19ead9be6e20",
+            "304b971f4495727ee018df31fc56261b2d33ccfb665dd5abdfeb31afda1dcea8",
+            "e622db056081a3bb28df8eef1334a4aa4a07a621813df30bbbe824c02d797e8e",
+            "6d78658f744e8a710e9eceaed9a143a2d65a4cbed0d990ae751cab413b79c588"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "hev1_full_change",
+      "entry": "hev1",
+      "carriage": "full",
+      "nal_length_bytes": 4,
+      "fragmented": true,
+      "sha256": "86ac487c26b946c3d8e061e491e7739844057caa060d5376a664f47231caaf5a",
+      "samples": [
+        {
+          "dts": 0,
+          "pts": 0,
+          "duration": 9000,
+          "sync": true
+        },
+        {
+          "dts": 9000,
+          "pts": 9000,
+          "duration": 9000,
+          "sync": false
+        },
+        {
+          "dts": 18000,
+          "pts": 18000,
+          "duration": 9000,
+          "sync": false
+        },
+        {
+          "dts": 27000,
+          "pts": 27000,
+          "duration": 9000,
+          "sync": false
+        },
+        {
+          "dts": 36000,
+          "pts": 36000,
+          "duration": 9000,
+          "sync": true
+        },
+        {
+          "dts": 45000,
+          "pts": 45000,
+          "duration": 9000,
+          "sync": false
+        },
+        {
+          "dts": 54000,
+          "pts": 54000,
+          "duration": 9000,
+          "sync": false
+        },
+        {
+          "dts": 63000,
+          "pts": 63000,
+          "duration": 9000,
+          "sync": false
+        }
+      ],
+      "frames": [
+        {
+          "dimensions": [
+            64,
+            48
+          ],
+          "i420_sha256": "51b096e5f8e06f9b65c93e41dd8754a6f958bf63d22973ef0036096914729888"
+        },
+        {
+          "dimensions": [
+            64,
+            48
+          ],
+          "i420_sha256": "152414bef25e0930f852710c91597db73e692629789c9ac2ac7fdbde770b2924"
+        },
+        {
+          "dimensions": [
+            64,
+            48
+          ],
+          "i420_sha256": "65b7fccece7c1d8c7129b5641caf13c0e1278e5b9e9f8b30c5a3aed1855ed2a6"
+        },
+        {
+          "dimensions": [
+            64,
+            48
+          ],
+          "i420_sha256": "d334f36cf09d36ac1253f51f4c891cf932bfeffb92588e81e322e952ae0c47fc"
+        },
+        {
+          "dimensions": [
+            96,
+            64
+          ],
+          "i420_sha256": "c91faf15ab585d5ab80e51de008ae01fed9e26c01be2c97b8dbe19ead9be6e20"
+        },
+        {
+          "dimensions": [
+            96,
+            64
+          ],
+          "i420_sha256": "304b971f4495727ee018df31fc56261b2d33ccfb665dd5abdfeb31afda1dcea8"
+        },
+        {
+          "dimensions": [
+            96,
+            64
+          ],
+          "i420_sha256": "e622db056081a3bb28df8eef1334a4aa4a07a621813df30bbbe824c02d797e8e"
+        },
+        {
+          "dimensions": [
+            96,
+            64
+          ],
+          "i420_sha256": "6d78658f744e8a710e9eceaed9a143a2d65a4cbed0d990ae751cab413b79c588"
+        }
+      ],
+      "ranges": [
+        {
+          "first": 0,
+          "count": 4,
+          "dimensions": [
+            64,
+            48
+          ],
+          "hashes": [
+            "51b096e5f8e06f9b65c93e41dd8754a6f958bf63d22973ef0036096914729888",
+            "152414bef25e0930f852710c91597db73e692629789c9ac2ac7fdbde770b2924",
+            "65b7fccece7c1d8c7129b5641caf13c0e1278e5b9e9f8b30c5a3aed1855ed2a6",
+            "d334f36cf09d36ac1253f51f4c891cf932bfeffb92588e81e322e952ae0c47fc"
+          ]
+        },
+        {
+          "first": 4,
+          "count": 4,
+          "dimensions": [
+            96,
+            64
+          ],
+          "hashes": [
+            "c91faf15ab585d5ab80e51de008ae01fed9e26c01be2c97b8dbe19ead9be6e20",
+            "304b971f4495727ee018df31fc56261b2d33ccfb665dd5abdfeb31afda1dcea8",
+            "e622db056081a3bb28df8eef1334a4aa4a07a621813df30bbbe824c02d797e8e",
+            "6d78658f744e8a710e9eceaed9a143a2d65a4cbed0d990ae751cab413b79c588"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "hev1_indexed_change",
+      "entry": "hev1",
+      "carriage": "empty",
+      "nal_length_bytes": 4,
+      "fragmented": false,
+      "sha256": "d1d875060206eba9f70ca4d5c2a085cf1c003cbfee8666d7d7823aa12553d1bf",
+      "samples": [
+        {
+          "dts": 0,
+          "pts": 0,
+          "duration": 9000,
+          "sync": true
+        },
+        {
+          "dts": 9000,
+          "pts": 9000,
+          "duration": 9000,
+          "sync": false
+        },
+        {
+          "dts": 18000,
+          "pts": 18000,
+          "duration": 9000,
+          "sync": false
+        },
+        {
+          "dts": 27000,
+          "pts": 27000,
+          "duration": 9000,
+          "sync": false
+        },
+        {
+          "dts": 36000,
+          "pts": 36000,
+          "duration": 9000,
+          "sync": true
+        },
+        {
+          "dts": 45000,
+          "pts": 45000,
+          "duration": 9000,
+          "sync": false
+        },
+        {
+          "dts": 54000,
+          "pts": 54000,
+          "duration": 9000,
+          "sync": false
+        },
+        {
+          "dts": 63000,
+          "pts": 63000,
+          "duration": 9000,
+          "sync": false
+        }
+      ],
+      "frames": [
+        {
+          "dimensions": [
+            64,
+            48
+          ],
+          "i420_sha256": "51b096e5f8e06f9b65c93e41dd8754a6f958bf63d22973ef0036096914729888"
+        },
+        {
+          "dimensions": [
+            64,
+            48
+          ],
+          "i420_sha256": "152414bef25e0930f852710c91597db73e692629789c9ac2ac7fdbde770b2924"
+        },
+        {
+          "dimensions": [
+            64,
+            48
+          ],
+          "i420_sha256": "65b7fccece7c1d8c7129b5641caf13c0e1278e5b9e9f8b30c5a3aed1855ed2a6"
+        },
+        {
+          "dimensions": [
+            64,
+            48
+          ],
+          "i420_sha256": "d334f36cf09d36ac1253f51f4c891cf932bfeffb92588e81e322e952ae0c47fc"
+        },
+        {
+          "dimensions": [
+            96,
+            64
+          ],
+          "i420_sha256": "c91faf15ab585d5ab80e51de008ae01fed9e26c01be2c97b8dbe19ead9be6e20"
+        },
+        {
+          "dimensions": [
+            96,
+            64
+          ],
+          "i420_sha256": "304b971f4495727ee018df31fc56261b2d33ccfb665dd5abdfeb31afda1dcea8"
+        },
+        {
+          "dimensions": [
+            96,
+            64
+          ],
+          "i420_sha256": "e622db056081a3bb28df8eef1334a4aa4a07a621813df30bbbe824c02d797e8e"
+        },
+        {
+          "dimensions": [
+            96,
+            64
+          ],
+          "i420_sha256": "6d78658f744e8a710e9eceaed9a143a2d65a4cbed0d990ae751cab413b79c588"
+        }
+      ],
+      "ranges": [
+        {
+          "first": 0,
+          "count": 4,
+          "dimensions": [
+            64,
+            48
+          ],
+          "hashes": [
+            "51b096e5f8e06f9b65c93e41dd8754a6f958bf63d22973ef0036096914729888",
+            "152414bef25e0930f852710c91597db73e692629789c9ac2ac7fdbde770b2924",
+            "65b7fccece7c1d8c7129b5641caf13c0e1278e5b9e9f8b30c5a3aed1855ed2a6",
+            "d334f36cf09d36ac1253f51f4c891cf932bfeffb92588e81e322e952ae0c47fc"
+          ]
+        },
+        {
+          "first": 4,
+          "count": 4,
+          "dimensions": [
+            96,
+            64
+          ],
+          "hashes": [
+            "c91faf15ab585d5ab80e51de008ae01fed9e26c01be2c97b8dbe19ead9be6e20",
+            "304b971f4495727ee018df31fc56261b2d33ccfb665dd5abdfeb31afda1dcea8",
+            "e622db056081a3bb28df8eef1334a4aa4a07a621813df30bbbe824c02d797e8e",
+            "6d78658f744e8a710e9eceaed9a143a2d65a4cbed0d990ae751cab413b79c588"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "hev1_length2",
+      "entry": "hev1",
+      "carriage": "empty",
+      "nal_length_bytes": 2,
+      "fragmented": true,
+      "sha256": "afe14c2e41ce5214e57cd429db2b37c10b1953a3238b941738ed908b80caff2a",
+      "samples": [
+        {
+          "dts": 0,
+          "pts": 0,
+          "duration": 9000,
+          "sync": true
+        },
+        {
+          "dts": 9000,
+          "pts": 9000,
+          "duration": 9000,
+          "sync": false
+        },
+        {
+          "dts": 18000,
+          "pts": 18000,
+          "duration": 9000,
+          "sync": false
+        },
+        {
+          "dts": 27000,
+          "pts": 27000,
+          "duration": 9000,
+          "sync": false
+        }
+      ],
+      "frames": [
+        {
+          "dimensions": [
+            64,
+            48
+          ],
+          "i420_sha256": "51b096e5f8e06f9b65c93e41dd8754a6f958bf63d22973ef0036096914729888"
+        },
+        {
+          "dimensions": [
+            64,
+            48
+          ],
+          "i420_sha256": "152414bef25e0930f852710c91597db73e692629789c9ac2ac7fdbde770b2924"
+        },
+        {
+          "dimensions": [
+            64,
+            48
+          ],
+          "i420_sha256": "65b7fccece7c1d8c7129b5641caf13c0e1278e5b9e9f8b30c5a3aed1855ed2a6"
+        },
+        {
+          "dimensions": [
+            64,
+            48
+          ],
+          "i420_sha256": "d334f36cf09d36ac1253f51f4c891cf932bfeffb92588e81e322e952ae0c47fc"
+        }
+      ],
+      "ranges": [
+        {
+          "first": 0,
+          "count": 4,
+          "dimensions": [
+            64,
+            48
+          ],
+          "hashes": [
+            "51b096e5f8e06f9b65c93e41dd8754a6f958bf63d22973ef0036096914729888",
+            "152414bef25e0930f852710c91597db73e692629789c9ac2ac7fdbde770b2924",
+            "65b7fccece7c1d8c7129b5641caf13c0e1278e5b9e9f8b30c5a3aed1855ed2a6",
+            "d334f36cf09d36ac1253f51f4c891cf932bfeffb92588e81e322e952ae0c47fc"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "avc3_length1",
+      "entry": "avc3",
+      "carriage": "empty",
+      "nal_length_bytes": 1,
+      "fragmented": true,
+      "sha256": "d352d690b3d6377e8bdc1aa722bc17db0b887ee034bf33de96f38a22cdf6e4d5",
+      "samples": [
+        {
+          "dts": 0,
+          "pts": 0,
+          "duration": 9000,
+          "sync": true
+        },
+        {
+          "dts": 9000,
+          "pts": 9000,
+          "duration": 9000,
+          "sync": false
+        },
+        {
+          "dts": 18000,
+          "pts": 18000,
+          "duration": 9000,
+          "sync": false
+        },
+        {
+          "dts": 27000,
+          "pts": 27000,
+          "duration": 9000,
+          "sync": false
+        }
+      ],
+      "frames": [
+        {
+          "dimensions": [
+            16,
+            16
+          ],
+          "i420_sha256": "f72e259e1d7c31d9ea8a18a2e1f363c75c59265c9fd12dbe8bbeb777df86bb8a"
+        },
+        {
+          "dimensions": [
+            16,
+            16
+          ],
+          "i420_sha256": "f72e259e1d7c31d9ea8a18a2e1f363c75c59265c9fd12dbe8bbeb777df86bb8a"
+        },
+        {
+          "dimensions": [
+            16,
+            16
+          ],
+          "i420_sha256": "f72e259e1d7c31d9ea8a18a2e1f363c75c59265c9fd12dbe8bbeb777df86bb8a"
+        },
+        {
+          "dimensions": [
+            16,
+            16
+          ],
+          "i420_sha256": "f72e259e1d7c31d9ea8a18a2e1f363c75c59265c9fd12dbe8bbeb777df86bb8a"
+        }
+      ],
+      "ranges": [
+        {
+          "first": 0,
+          "count": 4,
+          "dimensions": [
+            16,
+            16
+          ],
+          "hashes": [
+            "f72e259e1d7c31d9ea8a18a2e1f363c75c59265c9fd12dbe8bbeb777df86bb8a",
+            "f72e259e1d7c31d9ea8a18a2e1f363c75c59265c9fd12dbe8bbeb777df86bb8a",
+            "f72e259e1d7c31d9ea8a18a2e1f363c75c59265c9fd12dbe8bbeb777df86bb8a",
+            "f72e259e1d7c31d9ea8a18a2e1f363c75c59265c9fd12dbe8bbeb777df86bb8a"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "avc3_multislice",
+      "entry": "avc3",
+      "carriage": "empty",
+      "nal_length_bytes": 4,
+      "fragmented": true,
+      "sha256": "49632a6b35d6e1556e8cf3c8ef18db0c5bbe727d92430d148aa13aad3d9dde4d",
+      "samples": [
+        {
+          "dts": 0,
+          "pts": 0,
+          "duration": 9000,
+          "sync": true
+        },
+        {
+          "dts": 9000,
+          "pts": 9000,
+          "duration": 9000,
+          "sync": false
+        },
+        {
+          "dts": 18000,
+          "pts": 18000,
+          "duration": 9000,
+          "sync": false
+        },
+        {
+          "dts": 27000,
+          "pts": 27000,
+          "duration": 9000,
+          "sync": false
+        }
+      ],
+      "frames": [
+        {
+          "dimensions": [
+            64,
+            64
+          ],
+          "i420_sha256": "ecaee809640022e41cb90964ddfbabe5c2d95d5ed0dee497edc1bbc7e5cc7021"
+        },
+        {
+          "dimensions": [
+            64,
+            64
+          ],
+          "i420_sha256": "bb2ed34e69aa0e1e007d7c890a0045ca2384d8ceb19352aa471790eb78cc0b03"
+        },
+        {
+          "dimensions": [
+            64,
+            64
+          ],
+          "i420_sha256": "7ad87d321f3aa97574a3c0377522356f85ae5ec4b9a5cc3597daa2acbeceb58c"
+        },
+        {
+          "dimensions": [
+            64,
+            64
+          ],
+          "i420_sha256": "362e60bfb34639f15402543a4157580c2c10ffaf2becb75eadd09598a4e37d77"
+        }
+      ],
+      "ranges": [
+        {
+          "first": 0,
+          "count": 4,
+          "dimensions": [
+            64,
+            64
+          ],
+          "hashes": [
+            "ecaee809640022e41cb90964ddfbabe5c2d95d5ed0dee497edc1bbc7e5cc7021",
+            "bb2ed34e69aa0e1e007d7c890a0045ca2384d8ceb19352aa471790eb78cc0b03",
+            "7ad87d321f3aa97574a3c0377522356f85ae5ec4b9a5cc3597daa2acbeceb58c",
+            "362e60bfb34639f15402543a4157580c2c10ffaf2becb75eadd09598a4e37d77"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "avc3_bframes",
+      "entry": "avc3",
+      "carriage": "empty",
+      "nal_length_bytes": 4,
+      "fragmented": true,
+      "sha256": "e60fb60e8e38a001c0ad3ec4f4d387c3a8d9d807ac4a1f401e6fe901a8acb7f7",
+      "samples": [
+        {
+          "dts": 0,
+          "pts": 18000,
+          "duration": 9000,
+          "sync": true
+        },
+        {
+          "dts": 9000,
+          "pts": 45000,
+          "duration": 9000,
+          "sync": false
+        },
+        {
+          "dts": 18000,
+          "pts": 27000,
+          "duration": 9000,
+          "sync": false
+        },
+        {
+          "dts": 27000,
+          "pts": 36000,
+          "duration": 9000,
+          "sync": false
+        }
+      ],
+      "frames": [
+        {
+          "dimensions": [
+            64,
+            48
+          ],
+          "i420_sha256": "660a7fca2d988acb8ac6b6ed7a78118a65d23c1979483f99013bc03c7459de98"
+        },
+        {
+          "dimensions": [
+            64,
+            48
+          ],
+          "i420_sha256": "d34550b69a2e9f694b679a9dd36edda670be5a289a15a41b625abbd33f969729"
+        },
+        {
+          "dimensions": [
+            64,
+            48
+          ],
+          "i420_sha256": "7d8b79eb0380a94fc9c17f16fe7897f13ea744ee786f0c51f2c9130b5c13dff7"
+        },
+        {
+          "dimensions": [
+            64,
+            48
+          ],
+          "i420_sha256": "0386882af20cf3cd2231ff78555526b35f8d152a02c3a3ca31ec9c21cf4ea3b1"
+        }
+      ],
+      "ranges": [
+        {
+          "first": 0,
+          "count": 4,
+          "dimensions": [
+            64,
+            48
+          ],
+          "hashes": [
+            "660a7fca2d988acb8ac6b6ed7a78118a65d23c1979483f99013bc03c7459de98",
+            "d34550b69a2e9f694b679a9dd36edda670be5a289a15a41b625abbd33f969729",
+            "7d8b79eb0380a94fc9c17f16fe7897f13ea744ee786f0c51f2c9130b5c13dff7",
+            "0386882af20cf3cd2231ff78555526b35f8d152a02c3a3ca31ec9c21cf4ea3b1"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "hev1_bframes",
+      "entry": "hev1",
+      "carriage": "empty",
+      "nal_length_bytes": 4,
+      "fragmented": true,
+      "sha256": "e0b5d69942b8404e9c5a8568d674cb70281afeb3065458b6bc134aad80f46547",
+      "samples": [
+        {
+          "dts": 0,
+          "pts": 18000,
+          "duration": 9000,
+          "sync": true
+        },
+        {
+          "dts": 9000,
+          "pts": 45000,
+          "duration": 9000,
+          "sync": false
+        },
+        {
+          "dts": 18000,
+          "pts": 36000,
+          "duration": 9000,
+          "sync": false
+        },
+        {
+          "dts": 27000,
+          "pts": 27000,
+          "duration": 9000,
+          "sync": false
+        }
+      ],
+      "frames": [
+        {
+          "dimensions": [
+            64,
+            48
+          ],
+          "i420_sha256": "51b096e5f8e06f9b65c93e41dd8754a6f958bf63d22973ef0036096914729888"
+        },
+        {
+          "dimensions": [
+            64,
+            48
+          ],
+          "i420_sha256": "b4db979e0b9488ca40ac374f21f87ea53d044b1a6ec7670b96a2cf7b5472d9da"
+        },
+        {
+          "dimensions": [
+            64,
+            48
+          ],
+          "i420_sha256": "8f78e2fd8a7f3e8b93925abe0ce438a6c03cbf2c61a7c3f678676f149152a8bc"
+        },
+        {
+          "dimensions": [
+            64,
+            48
+          ],
+          "i420_sha256": "b21ab81ca518603485fcd88ec5c61e46b0c9c3974d4680d59d9331bac2702df7"
+        }
+      ],
+      "ranges": [
+        {
+          "first": 0,
+          "count": 4,
+          "dimensions": [
+            64,
+            48
+          ],
+          "hashes": [
+            "51b096e5f8e06f9b65c93e41dd8754a6f958bf63d22973ef0036096914729888",
+            "b4db979e0b9488ca40ac374f21f87ea53d044b1a6ec7670b96a2cf7b5472d9da",
+            "8f78e2fd8a7f3e8b93925abe0ce438a6c03cbf2c61a7c3f678676f149152a8bc",
+            "b21ab81ca518603485fcd88ec5c61e46b0c9c3974d4680d59d9331bac2702df7"
+          ]
+        }
+      ]
+    }
+  ]
+}

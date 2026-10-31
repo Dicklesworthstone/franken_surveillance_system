@@ -214,6 +214,15 @@ impl Decoder {
         self.pictures
     }
 
+    /// Whether a started picture is still missing macroblocks at the current NAL boundary.
+    /// This observation neither flushes the decoded picture buffer nor consumes output. A
+    /// retained access-unit owner can combine it with [`Self::pictures_decoded`] to refuse a
+    /// complete picture followed by an incomplete second picture in the same sample.
+    #[must_use]
+    pub const fn has_incomplete_picture(&self) -> bool {
+        self.pending.is_some()
+    }
+
     /// Decodes one NAL unit (header byte included, no start code) and
     /// returns the next picture in output order, if one is ready. When a
     /// NAL makes several pictures ready at once (an IDR flushing the

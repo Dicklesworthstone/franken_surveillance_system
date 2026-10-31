@@ -556,6 +556,9 @@ dependencies = [
 name = "fss-container"
 version = "0.0.1"
 dependencies = [
+ "fss-codec-h264",
+ "fss-codec-h265",
+ "fss-core",
  "fss-packet",
 ]
 

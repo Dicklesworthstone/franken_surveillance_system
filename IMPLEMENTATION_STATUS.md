@@ -10,6 +10,34 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Native in-band MP4 configuration and atomic sample boundaries (2026-10-31, reference)
+
+The opt-in `AvcMp4::parse_inband*` entrypoints now admit bounded `avc3` and actual
+in-band `hev1` configuration, including empty/partial sample entries, same-ID SPS/PPS
+replacement and later entry-only PPS activation. Indexed and fragmented recordings share
+the checked sample/configuration join. Exact referenced parameter bytes, original spans,
+sample ticks and configuration generations survive extraction. Every selected random-access
+range and following GOP must obtain each definition from the original entry or within that
+range; an earlier GOP cannot silently supply a missing dependency. The historical parser
+entrypoints and conforming static-source extraction bytes retain their existing behavior.
+
+`InbandSampleEntry` provides cold bootstrap from the original entry and selected sample.
+Its bounded owned streaming configuration handles subsequent tuple changes, accumulates
+input/NAL/table/sample allowances and becomes terminal after failure or cancellation.
+The shared native access-unit driver stages output until exactly one complete picture is
+validated, with a precise leading-RASL exception for HEVC. Non-flushing pending-picture
+queries catch a complete picture followed by an incomplete second picture. Early refusal
+of a second picture also bounds temporary surfaces. Display-order reordering remains intact.
+
+All **413 native media tests passed**: 88 container, 165 H.264 and 160 H.265, including 27
+in-band configuration tests, nine tests of the exact production sample-boundary driver
+and six codec boundary tests. Sixteen synthetic recordings match strict independent
+FFmpeg 6.1.1 pixel oracles across resolution changes, multiple parameter IDs, B ordering,
+multiple/dependent slices, fragmented/indexed layouts and 1/2/4-byte NAL lengths.
+Removing the required entry-only PPS makes both dedicated oracle recordings fail.
+The Rust tests invoke only native implementations. Main10 metadata admission does not
+upgrade the native HEVC pixel profile. See `docs/MP4_INBAND_CONFIGURATION.md`.
+
 ## Global anonymous tracklet handoff paths (2026-10-31, reference)
 
 The native `continuity` planner composes up to 32 camera-local tracklets into globally
