@@ -242,6 +242,32 @@ fn rgb_dense_head_round_trips_exported_artifacts_through_native_execution() -> T
 }
 
 #[test]
+fn structural_convolution_head_survives_real_weights_reload() -> Test {
+    let source = include_bytes!("fixtures/onnx/static_conv_head.onnx");
+    let imported = import(source)?;
+    let artifacts = export(&imported)?;
+    let weights = parsed(&artifacts)?;
+    assert_eq!(
+        weights
+            .entries
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["bias", "weights"]
+    );
+    let values: Vec<_> = (1..=12).map(|n| n as f32).collect();
+    let input = Tensor::from_values(Shape::new(vec![1, 3, 2, 2])?, &values, GENERATION)?;
+    assert_eq!(
+        run(&artifacts, &[("rgb", input)], "head")?,
+        [
+            2.25, 6.5, 10.75, 9., 17.25, -4.5, 4.25, 8.5, 12.75, 13., 21.25, -2.5
+        ]
+    );
+    assert_eq!(artifacts.source(), source);
+    Ok(())
+}
+
+#[test]
 fn generated_gemm_parameters_and_scalars_survive_packaging_and_execution() -> Test {
     let source = model(
         &[

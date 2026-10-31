@@ -10,6 +10,28 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Static ONNX constants and detector-head shape operations (2026-10-30, reference)
+
+The general opset-13 importer now admits finite F32 Constant nodes and exact embedded
+INT64 controls for Reshape, Squeeze, Unsqueeze and positive-stride Slice. Controls support
+negative axes, inferred/copied reshape dimensions, clamped Slice endpoints and empty vectors
+where the operator permits them. Compile-time integers and empty vectors never become
+runtime tensors; control-only values are excluded from exported parameters. Runtime data
+uses remain bound, and the complete original ONNX source remains available for provenance.
+Source ordering, namespace collisions, aggregate byte/work quotas and cancellation are
+enforced across initializers, constants and generated native nodes. Existing frozen operator
+IDs and canonical graph encodings are unchanged.
+
+The full native model-IR package passed **161 tests**. A frozen convolution-to-dense-head
+fixture executes through the unchanged production scalar executor and exports its native
+graph/weights; additional tests cover raw/typed constants, scalar/empty controls, negative
+axes, extreme slice indices/steps, malformed fields, source order, truncation and limits.
+Strict library and structural/export-target Clippy passed without allowances. This extends
+the existing package import profile; runtime integer/dynamic shapes, reverse-stride Slice,
+other ONNX opsets and trained-model qualification remain outside the admitted contract.
+The full asynchronous reference/CLI build remains subject to its existing memory limit.
+See `docs/onnx_import.md` for the precise conversion and execution scope.
+
 ## Native progressive JPEG and generation-aware retained replay (2026-10-31, reference)
 
 The existing native JPEG luma/RGB entrypoints now decode self-contained 8-bit Huffman SOF2

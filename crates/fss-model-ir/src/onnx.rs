@@ -2,7 +2,8 @@
 //! Offline ONNX IR 7..=9 / default-domain opset 13 import into the frozen Model IR.
 //!
 //! This is deliberately a closed profile, not an ONNX interpreter. It supports static,
-//! positive F32 shapes, embedded finite F32 initializers, and the operators lowered below.
+//! positive F32 runtime shapes, finite F32 parameters, constant INT64 shape controls,
+//! and the operators lowered below.
 //! Original bytes remain borrowed for provenance. No downloads, external tensor files,
 //! custom functions, training graphs, model activation or inference occur here.
 //! Wire/schema reference: onnx/onnx, onnx/onnx.proto; operator semantics: onnx.ai/operators.
@@ -14,8 +15,10 @@ use fss_tensor::{DType, Shape, Tensor};
 
 use crate::{AttrValue, AttributeMap, GraphNode, ModelIrGraph, ModelIrVersion, OpCode, TensorPort};
 
+mod constants;
 mod export;
 mod gemm;
+mod structure;
 
 pub use export::{OnnxArtifacts, OnnxExportLimits, export_onnx_artifacts, onnx_importer_identity};
 
@@ -28,7 +31,7 @@ pub struct OnnxLimits {
     pub nodes: usize,
     /// Total named tensor declarations and intermediate values, at most 4096.
     pub tensors: usize,
-    /// Aggregate embedded and generated F32 parameter bytes, at most 16 MiB.
+    /// Aggregate embedded controls and embedded/generated parameter bytes, at most 16 MiB.
     pub parameter_bytes: usize,
     /// Each declared/inferred logical tensor size, at most 64 MiB.
     pub tensor_bytes: usize,
@@ -278,7 +281,7 @@ fn port(
     }
     TensorPort::new(name, DType::F32, shape, generation).map_err(|_| OnnxError::Graph)
 }
-fn dimension(bytes: &[u8], a: &mut Admission<'_>) -> Result<usize> {
+fn dimension(bytes: &[u8], allow_zero: bool, a: &mut Admission<'_>) -> Result<usize> {
     let mut wire = Wire(bytes);
     let (mut seen, mut value) = (0, None);
     while let Some((tag, field)) = wire.next(a)? {
@@ -292,12 +295,17 @@ fn dimension(bytes: &[u8], a: &mut Admission<'_>) -> Result<usize> {
         }
     }
     let n = value.ok_or(OnnxError::Unsupported)?;
-    if n == 0 || n > i64::MAX as u64 {
+    if (!allow_zero && n == 0) || n > i64::MAX as u64 {
         return Err(OnnxError::Unsupported);
     }
     usize::try_from(n).map_err(|_| OnnxError::Limit)
 }
-fn value_info(bytes: &[u8], generation: Generation, a: &mut Admission<'_>) -> Result<TensorPort> {
+fn value_info(
+    bytes: &[u8],
+    generation: Generation,
+    control: bool,
+    a: &mut Admission<'_>,
+) -> Result<TensorPort> {
     let mut wire = Wire(bytes);
     let (mut seen, mut id, mut ty) = (0, None, None);
     while let Some((tag, value)) = wire.next(a)? {
@@ -333,7 +341,7 @@ fn value_info(bytes: &[u8], generation: Generation, a: &mut Admission<'_>) -> Re
             _ => return Err(OnnxError::Unsupported),
         }
     }
-    if dtype != Some(1) {
+    if dtype != Some(1) && !(control && dtype == Some(7)) {
         return Err(OnnxError::Unsupported);
     }
     let mut wire = Wire(shape.ok_or(OnnxError::Unsupported)?);
@@ -342,112 +350,25 @@ fn value_info(bytes: &[u8], generation: Generation, a: &mut Admission<'_>) -> Re
         if tag != 1 {
             return Err(OnnxError::Unsupported);
         }
-        push(&mut dims, dimension(value.bytes()?, a)?, 8)?;
+        push(&mut dims, dimension(value.bytes()?, control, a)?, 8)?;
     }
-    port(id.ok_or(OnnxError::Malformed)?, dims, generation, a)
-}
-fn initializer(
-    bytes: &[u8],
-    generation: Generation,
-    a: &mut Admission<'_>,
-) -> Result<(TensorPort, Tensor)> {
-    let mut wire = Wire(bytes);
-    let (mut seen, mut id, mut dtype, mut raw) = (0, None, None, None);
-    let (mut dims, mut floats) = (Vec::new(), Vec::new());
-    let mut typed_data = false;
-    while let Some((tag, value)) = wire.next(a)? {
-        match tag {
-            1 => integers(value, &mut dims, 8, a)?,
-            4 => {
-                typed_data = true;
-                match value {
-                    Value::Fixed32(bits) => {
-                        a.charge(4)?;
-                        push(
-                            &mut floats,
-                            f32::from_bits(bits),
-                            a.limits.parameter_bytes / 4,
-                        )?;
-                    }
-                    Value::Bytes(data) => {
-                        if data.len() % 4 != 0 {
-                            return Err(OnnxError::Malformed);
-                        }
-                        for bytes in data.chunks_exact(4) {
-                            a.charge(4)?;
-                            let bits = u32::from_le_bytes(
-                                bytes.try_into().map_err(|_| OnnxError::Malformed)?,
-                            );
-                            push(
-                                &mut floats,
-                                f32::from_bits(bits),
-                                a.limits.parameter_bytes / 4,
-                            )?;
-                        }
-                    }
-                    _ => return Err(OnnxError::Malformed),
-                }
-            }
-            2 | 8 | 9 | 12 => {
-                singular(&mut seen, tag)?;
-                match tag {
-                    2 => dtype = Some(value.integer()?),
-                    8 => id = Some(name(value.bytes()?)?),
-                    9 => raw = Some(value.bytes()?),
-                    12 => {
-                        text(value.bytes()?)?;
-                    }
-                    _ => return Err(OnnxError::Malformed),
-                }
-            }
-            _ => return Err(OnnxError::Unsupported),
-        }
+    let id = id.ok_or(OnnxError::Malformed)?;
+    if dtype == Some(1) && !dims.contains(&0) {
+        return port(id, dims, generation, a);
     }
-    if dtype != Some(1) {
+    if dims.len() > 1 || dims.first().is_some_and(|&n| n > 8) {
         return Err(OnnxError::Unsupported);
     }
-    let dims = dims
-        .into_iter()
-        .map(|n| {
-            if n <= 0 {
-                Err(OnnxError::Unsupported)
-            } else {
-                usize::try_from(n).map_err(|_| OnnxError::Limit)
-            }
-        })
-        .collect::<Result<Vec<_>>>()?;
-    let declared = port(id.ok_or(OnnxError::Malformed)?, dims, generation, a)?;
-    let count = declared
-        .shape()
-        .num_elements()
-        .map_err(|_| OnnxError::Limit)?;
-    let size = count.checked_mul(4).ok_or(OnnxError::Limit)?;
-    if size > a.limits.parameter_bytes {
+    let dtype = if dtype == Some(7) {
+        DType::I64
+    } else {
+        DType::F32
+    };
+    let shape = Shape::new(dims).map_err(|_| OnnxError::Limit)?;
+    if shape.size_bytes(dtype).map_err(|_| OnnxError::Limit)? > a.limits.tensor_bytes {
         return Err(OnnxError::Limit);
     }
-    if let Some(raw) = raw {
-        if typed_data || raw.len() != size {
-            return Err(OnnxError::Malformed);
-        }
-        for bytes in raw.chunks_exact(4) {
-            a.charge(4)?;
-            push(
-                &mut floats,
-                f32::from_le_bytes(bytes.try_into().map_err(|_| OnnxError::Malformed)?),
-                count,
-            )?;
-        }
-    }
-    if floats.len() != count {
-        return Err(OnnxError::Malformed);
-    }
-    if floats.iter().any(|n| !n.is_finite()) {
-        return Err(OnnxError::NonFinite);
-    }
-    a.charge(size)?;
-    let tensor = Tensor::from_values(declared.shape().clone(), &floats, generation)
-        .map_err(|_| OnnxError::Limit)?;
-    Ok((declared, tensor))
+    TensorPort::new(id, dtype, shape, generation).map_err(|_| OnnxError::Graph)
 }
 fn attribute(bytes: &[u8], a: &mut Admission<'_>) -> Result<(String, AttrValue)> {
     let mut wire = Wire(bytes);
@@ -494,19 +415,24 @@ fn attribute(bytes: &[u8], a: &mut Admission<'_>) -> Result<(String, AttrValue)>
     };
     Ok((id.ok_or(OnnxError::Malformed)?, value))
 }
-struct SourceNode {
+struct SourceNode<'a> {
     id: String,
     label: String,
     op: String,
     inputs: Vec<String>,
     outputs: Vec<String>,
     attrs: AttributeMap,
+    constant: Option<&'a [u8]>,
 }
 
-fn source_node(bytes: &[u8], ordinal: usize, a: &mut Admission<'_>) -> Result<SourceNode> {
+fn source_node<'a>(
+    bytes: &'a [u8],
+    ordinal: usize,
+    a: &mut Admission<'_>,
+) -> Result<SourceNode<'a>> {
     let mut wire = Wire(bytes);
     let (mut seen, mut op, mut node_name) = (0, None, None);
-    let (mut inputs, mut outputs, mut attrs) = (Vec::new(), Vec::new(), AttributeMap::new());
+    let (mut inputs, mut outputs, mut attributes) = (Vec::new(), Vec::new(), Vec::new());
     while let Some((tag, value)) = wire.next(a)? {
         match tag {
             1 => {
@@ -520,13 +446,7 @@ fn source_node(bytes: &[u8], ordinal: usize, a: &mut Admission<'_>) -> Result<So
             }
             2 => push(&mut outputs, name(value.bytes()?)?, 1)?,
             5 => {
-                if attrs.len() >= 16 {
-                    return Err(OnnxError::Limit);
-                }
-                let (key, value) = attribute(value.bytes()?, a)?;
-                if attrs.insert(key, value).is_some() {
-                    return Err(OnnxError::Malformed);
-                }
+                push(&mut attributes, value.bytes()?, 16)?;
             }
             3 | 4 | 6 | 7 => {
                 singular(&mut seen, tag)?;
@@ -554,9 +474,26 @@ fn source_node(bytes: &[u8], ordinal: usize, a: &mut Admission<'_>) -> Result<So
     }
     let op = op.ok_or(OnnxError::Malformed)?;
     let id = format!("onnx-node-{ordinal:04}");
-    if op != "Gemm" && inputs.iter().any(String::is_empty) {
+    if !matches!(op.as_str(), "Gemm" | "Squeeze" | "Slice" | "Resize")
+        && inputs.iter().any(String::is_empty)
+    {
         return Err(OnnxError::Limit);
     }
+    let mut attrs = AttributeMap::new();
+    let constant = if op == "Constant" {
+        if attributes.len() != 1 {
+            return Err(OnnxError::Malformed);
+        }
+        Some(attributes[0])
+    } else {
+        for bytes in attributes {
+            let (key, value) = attribute(bytes, a)?;
+            if attrs.insert(key, value).is_some() {
+                return Err(OnnxError::Malformed);
+            }
+        }
+        None
+    };
     Ok(SourceNode {
         label: node_name.unwrap_or_else(|| id.clone()),
         id,
@@ -564,10 +501,11 @@ fn source_node(bytes: &[u8], ordinal: usize, a: &mut Admission<'_>) -> Result<So
         inputs,
         outputs,
         attrs,
+        constant,
     })
 }
 
-fn node(source: SourceNode, known: &BTreeMap<String, TensorPort>) -> Result<GraphNode> {
+fn node(source: SourceNode<'_>, known: &BTreeMap<String, TensorPort>) -> Result<GraphNode> {
     let SourceNode {
         id,
         label,
@@ -575,6 +513,7 @@ fn node(source: SourceNode, known: &BTreeMap<String, TensorPort>) -> Result<Grap
         inputs,
         outputs,
         mut attrs,
+        constant: _,
     } = source;
     if matches!(op.as_str(), "Identity" | "Flatten") {
         if inputs.len() != 1 || outputs.len() != 1 {
@@ -694,8 +633,10 @@ struct Lowering<'a, 'c> {
     inputs: Vec<TensorPort>,
     known: BTreeMap<String, TensorPort>,
     parameters: BTreeMap<String, Tensor>,
+    constants: BTreeMap<String, Tensor>,
     parameter_bytes: usize,
     used_parameters: BTreeSet<String>,
+    control_uses: BTreeSet<String>,
     nodes: Vec<GraphNode>,
     reserved: BTreeSet<String>,
 }
@@ -717,6 +658,12 @@ impl Lowering<'_, '_> {
                 self.known.get(name).ok_or(OnnxError::Graph)
             })
             .collect::<Result<Vec<_>>>()?;
+        if ports
+            .iter()
+            .any(|port| port.dtype() != DType::F32 || port.shape().dims().contains(&0))
+        {
+            return Err(OnnxError::Unsupported);
+        }
         if node.op() == OpCode::MatMul && ports.iter().any(|p| p.rank() < 2) {
             return Err(OnnxError::Unsupported);
         }
@@ -881,19 +828,19 @@ pub fn import_onnx<'a>(
                 if tag == 5 {
                     let remaining = limits.parameter_bytes.saturating_sub(parameter_bytes);
                     a.limits.parameter_bytes = remaining;
-                    let pair = initializer(bytes, generation, &mut a)?;
+                    let pair = constants::tensor(bytes, None, generation, &mut a)?;
                     a.limits.parameter_bytes = limits.parameter_bytes;
                     parameter_bytes = parameter_bytes
                         .checked_add(
                             pair.0
                                 .shape()
-                                .size_bytes(DType::F32)
+                                .size_bytes(pair.0.dtype())
                                 .map_err(|_| OnnxError::Limit)?,
                         )
                         .ok_or(OnnxError::Limit)?;
                     push(&mut initializers, pair, limits.tensors)?;
                 } else {
-                    let parsed = value_info(bytes, generation, &mut a)?;
+                    let parsed = value_info(bytes, generation, tag == 13, &mut a)?;
                     let target = match tag {
                         11 => &mut inputs,
                         12 => &mut outputs,
@@ -910,12 +857,7 @@ pub fn import_onnx<'a>(
     }
     let runtime_inputs = inputs.iter().map(|p| p.name().to_owned()).collect();
     let mut parameters = BTreeMap::new();
-    for (port, tensor) in initializers {
-        if parameters.insert(port.name().to_owned(), tensor).is_some() {
-            return Err(OnnxError::Malformed);
-        }
-        push(&mut inputs, port, limits.tensors)?;
-    }
+    let mut constants = BTreeMap::new();
     let mut known = BTreeMap::new();
     for input in &inputs {
         if known
@@ -925,11 +867,23 @@ pub fn import_onnx<'a>(
             return Err(OnnxError::Malformed);
         }
     }
+    for (port, tensor) in initializers {
+        let name = port.name().to_owned();
+        if known.contains_key(&name) || constants.contains_key(&name) {
+            return Err(OnnxError::Malformed);
+        }
+        if port.dtype() == DType::F32 && !port.shape().dims().contains(&0) {
+            parameters.insert(name.clone(), tensor.clone());
+            push(&mut inputs, port.clone(), limits.tensors)?;
+        }
+        constants.insert(name.clone(), tensor);
+        known.insert(name, port);
+    }
     // Reserve all source tensor names, including future uses and type annotations,
     // before generating helpers. A helper must never turn a missing source value
     // into a valid input or accidentally satisfy an output/type declaration.
     let mut reserved = BTreeSet::new();
-    for port in inputs.iter().chain(&outputs).chain(&declared) {
+    for port in known.values().chain(&outputs).chain(&declared) {
         reserve_name(&mut reserved, port.name(), &mut a)?;
     }
     let mut sources = Vec::new();
@@ -946,24 +900,35 @@ pub fn import_onnx<'a>(
         inputs,
         known,
         parameters,
+        constants,
         parameter_bytes,
         used_parameters: BTreeSet::new(),
+        control_uses: BTreeSet::new(),
         nodes: Vec::new(),
         reserved,
     };
     for source in sources {
-        if source.op == "Gemm" {
+        if source.op == "Constant" {
+            constants::lower(source, &mut lowering)?;
+        } else if source.op == "Gemm" {
             gemm::lower(source, &mut lowering)?;
+        } else if matches!(
+            source.op.as_str(),
+            "Reshape" | "Squeeze" | "Unsqueeze" | "Slice"
+        ) {
+            structure::lower(source, &mut lowering)?;
         } else {
             let node = node(source, &lowering.known)?;
             lowering.append(node)?;
         }
     }
     let Lowering {
-        inputs,
+        mut inputs,
         known,
-        parameters,
+        mut parameters,
+        constants,
         mut used_parameters,
+        control_uses,
         nodes,
         ..
     } = lowering;
@@ -986,6 +951,17 @@ pub fn import_onnx<'a>(
             }
         }
     }
+    // Compile-time controls consume the same aggregate admission, but never become
+    // runtime inputs/weights. A constant used as both data and control remains bound.
+    for name in constants.keys() {
+        if !used_parameters.contains(name) && !control_uses.contains(name) {
+            return Err(OnnxError::Graph);
+        }
+    }
+    inputs.retain(|port| {
+        !control_uses.contains(port.name()) || used_parameters.contains(port.name())
+    });
+    parameters.retain(|name, _| !control_uses.contains(name) || used_parameters.contains(name));
     if used_parameters.len() != parameters.len() {
         return Err(OnnxError::Graph);
     }

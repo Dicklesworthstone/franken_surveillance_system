@@ -28,7 +28,7 @@ fn transpose_flag(attrs: &mut AttributeMap, name: &str) -> Result<bool> {
 }
 
 impl Lowering<'_, '_> {
-    fn fresh_name(&mut self, base: &str) -> Result<String> {
+    pub(super) fn fresh_name(&mut self, base: &str) -> Result<String> {
         if self.reserved.len() >= self.admission.limits.tensors {
             return Err(OnnxError::Limit);
         }
@@ -111,7 +111,7 @@ impl Lowering<'_, '_> {
     }
 }
 
-pub(super) fn lower(mut source: SourceNode, lowering: &mut Lowering<'_, '_>) -> Result<()> {
+pub(super) fn lower(mut source: SourceNode<'_>, lowering: &mut Lowering<'_, '_>) -> Result<()> {
     if !(2..=3).contains(&source.inputs.len())
         || source.outputs.len() != 1
         || source.inputs[..2].iter().any(String::is_empty)

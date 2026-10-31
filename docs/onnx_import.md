@@ -37,10 +37,13 @@ including hand-computed dense and convolution/pooling results.
 - ONNX IR versions 7 through 9, with exactly the default-domain opset 13 import.
 - F32 runtime inputs/outputs and finite embedded F32 initializers. Raw little-endian
   data and packed/unpacked `float_data` are supported, including signed zero.
+- Embedded INT64 initializers and Constant values may supply compile-time shape,
+  axis and slice controls. They never become runtime integer inputs or exported weights.
 - Static positive dimensions, at most rank eight. Source-ordered acyclic graphs;
   declared outputs and intermediate value information must match native inference.
 - Add, Sub, Mul, Div, Relu, Sigmoid, Tanh, MatMul, Gemm, Softmax, Conv, MaxPool, Transpose,
-  Concat, Identity and Flatten. Identity/Flatten lower to checked native Reshape
+  Concat, Constant, Reshape, Squeeze, Unsqueeze, Slice, Identity and Flatten.
+  Identity/Flatten lower to checked native Reshape
   nodes without changing the frozen operator set or canonical Model IR v1 encoding.
 - MatMul requires rank-two-or-higher inputs. Conv is 2-D; declared `kernel_shape`
   must agree with the actual weight tensor. Explicit strides, dilation, pads and
@@ -50,12 +53,61 @@ including hand-computed dense and convolution/pooling results.
   Softmax uses opset 13's last-axis default, without the older flattening behavior.
 
 Unknown features refuse rather than being skipped or approximated. In particular,
-arbitrary Reshape shape inputs, Constant nodes, BatchNormalization, Resize,
+dynamic shape inputs/computation, negative Slice strides, BatchNormalization, Resize,
 other opsets/domains/dtypes, symbolic or zero-sized shapes, sparse data, external
 weight files, custom functions, training graphs and model activation are not
 implemented by this profile. Initializers that are also graph inputs refuse rather
 than silently freezing an overridable weight. An unused initializer cannot be made
 executable merely by mentioning it in value-info metadata.
+
+## Static tensor controls and detector heads
+
+The importer lowers [Reshape-13](https://onnx.ai/onnx/operators/onnx__Reshape.html#reshape-13),
+[Squeeze-13](https://onnx.ai/onnx/operators/onnx__Squeeze.html#squeeze-13),
+[Unsqueeze-13](https://onnx.ai/onnx/operators/onnx__Unsqueeze.html#unsqueeze-13), and
+[Slice-13](https://onnx.ai/onnx/operators/onnx__Slice.html#slice-13) into the existing
+native layout operators. Their control inputs must be exact embedded INT64 vectors
+with at most eight entries. Raw little-endian and packed/unpacked integer fields
+are supported. Source-order checking, declared type/shape witnesses and the existing
+native graph validator all remain in force.
+
+[Constant-13](https://onnx.ai/onnx/operators/onnx__Constant.html#constant-13) admits
+embedded finite F32 and INT64 tensors, including its scalar/list attribute forms.
+The output name defines the graph value; a name inside a TensorProto attribute is
+metadata. F32 data constants keep their exact bits, including signed zero and
+subnormals, and can be returned directly as a model output. The existing native
+requirement for at least one computation node still applies, so a graph made only
+of constants refuses. INT64 constants can only serve the admitted static controls;
+using one as arithmetic data or a model output refuses.
+
+Reshape supports a zero entry copying the corresponding input dimension, one inferred
+`-1` dimension, and an empty shape vector producing a scalar when the input has one
+element. Squeeze with omitted axes removes every singleton dimension; an explicitly
+empty axes vector removes none. Negative axes are normalized against the input rank
+for Squeeze and the output rank for Unsqueeze. Duplicated, out-of-range or incompatible
+axes refuse. Opset 13 has no Reshape `allowzero` attribute; it is not silently accepted.
+
+Slice accepts optional axes and steps, including empty optional input-name slots.
+It normalizes negative axes and endpoints, clamps endpoints to the static dimension,
+and supports positive strides up to `i64::MAX`. Negative strides and empty runtime
+results explicitly refuse. There is no reverse-slice approximation or dynamic
+shape execution. An empty INT64 vector is valid control data for scalar Reshape;
+zero-sized runtime tensors remain unsupported.
+
+All embedded controls consume the same aggregate parameter-byte allowance as actual
+F32 weights, even when compilation removes them. Control names also consume tensor
+and source-node quotas; parsing, copies and lowering consume the cumulative work
+allowance and check cancellation. Control-only values are omitted from native graph
+inputs and Safetensors. A constant used as runtime data remains a parameter.
+
+The retained numerical fixture `tests/fixtures/onnx/static_conv_head.onnx` is 1,075 bytes
+with SHA-256 `a6b486241551c8a3ce5032b42da918f332b4b3c00140d2956c151307e3c13f8a`.
+It runs `[1,3,2,2] -> Conv -> Reshape -> Transpose -> Slice -> Squeeze -> Unsqueeze`,
+producing a `[1,2,6]` head. Independent hand-computed expected values are checked both
+before export and after the actual canonical-graph/Safetensors loaders reconstruct
+the model. Its constants are untrained numerical test data. This extends the graph
+profile accepted by the existing [`fss-infer import-onnx`](ONNX_PACKAGE_IMPORT.md)
+provisioning command; it does not qualify a trained detector.
 
 ## Gemm and dense model heads
 
@@ -91,8 +143,9 @@ annotations, are reserved before expansion so generated helpers cannot satisfy a
 missing input or an invalid forward reference. The frozen operator set, Model IR
 v1 encoding and previously imported graph bytes are unchanged.
 
-This is an offline library conversion capability. It does not add an ONNX CLI
-provisioning command or activate a trained model.
+The existing [`fss-infer import-onnx`](ONNX_PACKAGE_IMPORT.md) command packages these
+admitted graphs with explicit preprocessing, head and license contracts. Importing
+does not activate a trained model.
 
 ## Native graph and weight artifact export
 
@@ -112,7 +165,8 @@ because that name is reserved by Safetensors; it is never silently changed. The
 weights header records the source digest and importer identity.
 
 The separate `onnx_importer_identity()` record uses `fss.onnx_importer.v1` and hashes
-the exact ONNX parser, Gemm lowering, artifact exporter and canonical encoder source.
+the exact ONNX parser, constants and structural lowering, Gemm lowering, artifact
+exporter and canonical encoder source.
 Existing Model IR bytes, operator IDs and the operator-table freeze remain unchanged.
 
 | Export limit | Hard maximum |
@@ -135,7 +189,7 @@ returns no partial artifact bundle.
 
 `OnnxLimits` bounds source bytes, nodes, tensor count, aggregate parameter bytes,
 per-tensor bytes, and deterministic import work. Hard maxima are 16 MiB source,
-512 nodes, 4096 declared/intermediate tensors, 16 MiB embedded parameters and
+512 nodes, 4096 declared/intermediate tensors, 16 MiB embedded controls/parameters and
 64 MiB per logical tensor. Work units are conversion accounting, not measured MACs
 or peak process memory. Cancellation is checked during source hashing (64 KiB
 chunks), protobuf traversal, parameter conversion and graph lowering.
@@ -163,7 +217,7 @@ semantics, duplicate/overridable/unused parameters, intermediate shape mismatch,
 nonfinite data, exact resource limits, generation fencing, cancellation, every
 truncated prefix of a valid model, and bounded generated malformed wire inputs.
 
-The full native `fss-model-ir` suite passes 139 tests on the pinned compiler. Its
+The full native `fss-model-ir` suite passes 161 tests on the pinned compiler. Its
 `onnx_gemm_execution` target includes the exact, unmodified production scalar
 executor source and executes Gemm graphs without compiling unrelated asynchronous
 runtime code. Fourteen new cases cover dense-head replay, 25 transpose-flag pairs,
@@ -173,7 +227,7 @@ native execution budgets. A literal 264-byte legacy Add graph remains byte-exact
 (`sha256:de1ba6db69e22279ecd4bc351ed26a6ebd3db705d456ac14752d9aceb2c57521`).
 This focused execution target does not establish full `fss-reference` validation.
 
-The new `onnx_artifact_export` target passes 14 tests: 12 focused export cases and
+The `onnx_artifact_export` target passes 15 tests: 13 focused export cases and
 two included production-executor smoke cases. It reloads the actual exported graph
 and weights with the canonical decoder and the unchanged production Safetensors
 parser, then executes the decoded graph through the unchanged production scalar
@@ -186,15 +240,22 @@ escaping, deterministic spans, source metadata provenance, no-weight graphs,
 reserved-name refusal, exact output/work boundaries and cancellation. These fixtures
 establish numerical plumbing, not detector quality.
 
-Scoped formatting and narrow library/Gemm/export-target Clippy checks pass. Strict
-all-target Clippy remains blocked by two pre-existing `chunks_exact_to_as_chunks`
-lints in the initializer parser and an unused import in `quotas_family.rs`; those
-findings are separate from the passing native semantic tests.
+The `onnx_structure_execution` target passes 19 tests: 17 structural conversion
+cases and two included production-executor smoke cases. It covers the convolution
+head fixture, direct F32 Constant outputs, all supported raw/typed constant encodings,
+negative and empty axes, scalar shapes, clamped extreme Slice endpoints/steps,
+invalid runtime integer/empty tensors, duplicate/forward/unused controls, hostile
+protobuf fields, shared quotas, truncation and cancellation. Two additional library
+tests exercise empty control vectors and their runtime exclusion.
+
+Scoped formatting and strict library/structural/export-target Clippy checks pass.
+The unchanged unused import in `quotas_family.rs` still prevents a strict all-target
+Clippy claim; it does not affect the passing native semantic tests.
 
 These fixtures establish the tested conversion and native execution contracts only.
 They do not qualify a trained detector, establish framework-wide numerical parity,
 authorize redistribution of model weights, publish/activate a model, or claim event
-quality, calibrated threat probabilities or absence of activity. CLI provisioning,
-a broader exporter/model corpus, license-backed packages and local DSR qualification
-remain separate work. The existing Safetensors and canonical-graph import paths are
-unchanged.
+quality, calibrated threat probabilities or absence of activity. The package command's
+validation scope is documented separately. A broader exporter/model corpus, model
+qualification and local DSR qualification remain separate work. The existing
+Safetensors and canonical-graph import paths are unchanged.
