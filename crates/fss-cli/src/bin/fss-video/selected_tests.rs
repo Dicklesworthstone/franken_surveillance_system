@@ -132,6 +132,27 @@ fn selected_plan_keeps_legacy_approvals_exact_and_binds_the_display_position() -
 }
 
 #[test]
+fn tiled_hevc_admission_requires_a_new_operator_plan_identity() -> Result<()> {
+    let mut input = args();
+    let position = input
+        .iter()
+        .position(|value| value == "avc")
+        .ok_or_else(|| fail("codec fixture"))?;
+    input[position] = "hevc".into();
+    let mut plan = Plan::parse(&input)?;
+    let old = legacy_digest(&plan)?;
+    assert_ne!(plan.digest()?, old);
+    plan.approval = Some(old);
+    let mut output = Vec::new();
+    assert!(crate::operation::run(&plan, &mut output).is_err());
+    assert!(
+        output.is_empty(),
+        "old admission approval must fail before storage or publication"
+    );
+    Ok(())
+}
+
+#[test]
 fn selection_refuses_signed_overflow_outside_range_and_duplicate_indices() {
     for value in ["-1", "+0", "3", "18446744073709551616"] {
         let mut input = args();

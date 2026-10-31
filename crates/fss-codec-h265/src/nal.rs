@@ -153,6 +153,50 @@ pub fn rbsp_from_ebsp(ebsp: &[u8], max_bytes: usize) -> Result<Vec<u8>, DecodeEr
     Ok(rbsp)
 }
 
+/// Converts bounded tile entry offsets (which count emulation-prevention bytes)
+/// to absolute RBSP byte boundaries without allocating a per-byte source map.
+/// The payload has already passed `rbsp_from_ebsp` validation.
+pub(crate) fn tile_entry_boundaries(
+    ebsp: &[u8],
+    data_byte_offset: usize,
+    lengths: &[usize],
+) -> Result<Vec<usize>, DecodeError> {
+    let mut result = Vec::new();
+    if lengths.is_empty() {
+        return Ok(result);
+    }
+    result
+        .try_reserve_exact(lengths.len())
+        .map_err(|_| DecodeError::Limit)?;
+    let (mut encoded, mut decoded, mut zeros) = (0usize, 0usize, 0u8);
+    let advance =
+        |encoded: &mut usize, decoded: &mut usize, zeros: &mut u8| -> Result<(), DecodeError> {
+            let byte = *ebsp.get(*encoded).ok_or(DecodeError::Limit)?;
+            *encoded += 1;
+            if *zeros == 2 && byte == 3 {
+                *zeros = 0;
+            } else {
+                *decoded += 1;
+                *zeros = if byte == 0 { *zeros + 1 } else { 0 };
+            }
+            Ok(())
+        };
+    while decoded < data_byte_offset {
+        advance(&mut encoded, &mut decoded, &mut zeros)?;
+    }
+    for &length in lengths {
+        let target = encoded.checked_add(length).ok_or(DecodeError::Limit)?;
+        if length == 0 || target >= ebsp.len() {
+            return Err(DecodeError::Malformed);
+        }
+        while encoded < target {
+            advance(&mut encoded, &mut decoded, &mut zeros)?;
+        }
+        result.push(decoded);
+    }
+    Ok(result)
+}
+
 /// Bit index of the `rbsp_stop_one_bit`: the last one-bit of the payload,
 /// ignoring trailing zero bytes (`cabac_zero_word`s and Annex-B padding).
 ///

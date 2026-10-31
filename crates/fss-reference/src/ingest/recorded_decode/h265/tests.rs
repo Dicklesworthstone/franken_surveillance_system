@@ -189,6 +189,84 @@ fn whole_range(imported: &Imported) -> Result<Vec<RecordedH265Frame>, RecordedDe
 }
 
 #[test]
+fn retained_tiles_reach_native_pixels_new_receipts_and_cold_publication() -> TestResult {
+    use crate::ingest::video_publication::{
+        NativeVideoFrame, PublishedVideoFrame, VideoPublicationLimits,
+    };
+    let (stream, expected) = codec_fixture!("tiles_motion");
+    let mut imported = import("tiles-motion", stream)?;
+    let mut old = RecordedH265RangeV1::open(
+        &imported.deployment,
+        request(imported.identity, 0, imported.segments),
+        &imported.cx,
+    )?;
+    assert!(matches!(
+        old.next_frame(&imported.deployment, &imported.cx),
+        Err(RecordedDecodeError::H265(H265DecodeError::Unsupported(
+            UnsupportedFeature::Tiles
+        )))
+    ));
+    let frames = whole_range(&imported)?;
+    let hashes = oracle(expected);
+    assert_eq!(frames.len(), 2);
+    for (frame, expected) in frames.iter().zip(hashes) {
+        assert_eq!(
+            frame.receipt().decoder_identity(),
+            h265_tiles_decoder_identity()
+        );
+        assert_eq!(frame.receipt().i420_sha256().to_text(), expected);
+        assert_eq!(frame.to_rgb()?.len(), 512 * 64 * 3);
+    }
+    let published = PublishedVideoFrame::publish(
+        &mut imported.deployment,
+        NativeVideoFrame::H265(&frames[1]),
+        VideoPublicationLimits::default(),
+        &imported.cx,
+    )?;
+    let root = published.publication_root();
+    let receipt = frames[1].receipt().encoded();
+    assert_eq!(published.codec_receipt(), receipt);
+    drop(imported.deployment);
+    let deployment = ReferenceDeployment::open(
+        &imported._directory.0.join("deployment"),
+        "site:recorded-h265",
+        &imported.cx,
+    )?;
+    let reopened = PublishedVideoFrame::open(
+        &deployment,
+        root,
+        VideoPublicationLimits::default(),
+        &imported.cx,
+    )?;
+    assert_eq!(reopened.codec_receipt(), receipt);
+    assert_eq!(reopened.i420(), published.i420());
+    Ok(())
+}
+
+#[test]
+fn legacy_and_current_untiled_range_receipts_remain_byte_identical() -> TestResult {
+    let (stream, _) = codec_fixture!("dependent_midrow");
+    let imported = import("untiled-profile-compatibility", stream)?;
+    let current = whole_range(&imported)?;
+    let mut old = RecordedH265RangeV1::open(
+        &imported.deployment,
+        request(imported.identity, 0, imported.segments),
+        &imported.cx,
+    )?;
+    let mut legacy = Vec::new();
+    while let Some(frame) = old.next_frame(&imported.deployment, &imported.cx)? {
+        legacy.push(frame);
+    }
+    assert_eq!(legacy.len(), current.len());
+    for (old, new) in legacy.iter().zip(&current) {
+        assert_eq!(old, new);
+        assert_eq!(old.receipt().encoded(), new.receipt().encoded());
+        assert_eq!(new.receipt().decoder_identity(), h265_decoder_identity());
+    }
+    Ok(())
+}
+
+#[test]
 fn auto_detected_hevc_imports_decode_to_the_ffmpeg_oracle_in_display_order() -> TestResult {
     for (name, (stream, oracle_text)) in [
         ("default", DEFAULT),

@@ -23,7 +23,7 @@ use fss_publication::SlotName;
 use super::foreground::{ForegroundConfig, ForegroundDetector};
 use super::privacy_mask::{MaskBinding, current_mask};
 use super::recorded_decode::h264::{RecordedH264Range, RecordedH264Request};
-use super::recorded_decode::h265::{RecordedH265Range, RecordedH265Request};
+use super::recorded_decode::h265::{RecordedH265RangeV1 as RecordedH265Range, RecordedH265Request};
 use super::recorded_decode::{RecordedDecodeError, source_capsule, validate_limits};
 use super::recorded_watch::{
     SourcePublicationGuard, WatchError, WatchLimits, WatchOptions, WatchPlan, WatchStatus,

@@ -35,15 +35,16 @@
 //! Admitted tool set: Main (and Main Still Picture) profile, 8-bit 4:2:0,
 //! I, P and B slices (all partition modes incl. AMP), short-term
 //! reference pictures, deblocking and SAO, one or more slices per picture
-//! with independent or dependent segments in raster order, wavefront
-//! parallel processing (`entropy_coding_sync_enabled_flag`), scaling
+//! with independent or dependent segments in raster or tile-scan order,
+//! uniform or explicit Main-profile tiles, wavefront parallel processing
+//! (`entropy_coding_sync_enabled_flag`, without tiles), scaling
 //! lists, transform skip, transquant bypass, PCM, sign data hiding,
 //! constrained intra prediction and long-term reference pictures (matched by
 //! order-count LSBs or, with a signalled MSB cycle, the full order count; the
 //! long-term motion-vector rules apply). Everything else is refused with
 //! [`DecodeError::Unsupported`] naming the feature: other profiles, chroma
 //! formats and bit depths, the range / multilayer / 3D / screen-content
-//! extensions, tiles, field-coded (SEI-based
+//! extensions, field-coded (SEI-based
 //! interlaced) sequences and layers above the base layer.
 //!
 //! Correctness is established differentially: tests compare every decoded
@@ -69,6 +70,7 @@ mod residual;
 mod sao;
 pub mod slice;
 mod tables;
+mod tiles;
 mod transform;
 
 pub use decoder::{Decoder, DecoderLimits, annex_b_nal_units};
@@ -92,7 +94,7 @@ pub enum UnsupportedFeature {
     /// Multilayer / 3D extension syntax, or a NAL unit above the base layer
     /// (`nuh_layer_id > 0`).
     MultiLayer,
-    /// `tiles_enabled_flag`.
+    /// `tiles_enabled_flag` under the historical [`Decoder::new_v1`] profile.
     Tiles,
     /// Historical: dependent slice segments. Admitted for Main-profile
     /// frame pictures; no longer produced, kept for API stability.

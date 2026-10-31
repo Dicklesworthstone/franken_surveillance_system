@@ -104,6 +104,9 @@ pub struct SliceHeader {
     pub tc_offset: i32,
     /// `slice_loop_filter_across_slices_enabled_flag`.
     pub loop_filter_across_slices: bool,
+    /// Tile substream lengths in original escaped NAL bytes, excluding the
+    /// final substream. Untiled WPP retains its historical admission behavior.
+    pub tile_entry_offsets: Vec<usize>,
     /// Bit position of `slice_segment_data()` in the RBSP.
     pub data_bit_offset: usize,
 }
@@ -245,7 +248,8 @@ pub(crate) fn parse_slice_header_with_previous<'p>(
         if previous.dependent
             || previous.pps_id != pps_id
             || previous.no_output_of_prior_pics != no_output_of_prior_pics
-            || segment_address <= previous.segment_address
+            || crate::tiles::scan_address(pps, sps, segment_address)?
+                <= crate::tiles::scan_address(pps, sps, previous.segment_address)?
         {
             return Err(DecodeError::Malformed);
         }
@@ -374,6 +378,7 @@ pub(crate) fn parse_slice_header_with_previous<'p>(
         beta_offset: 0,
         tc_offset: 0,
         loop_filter_across_slices: false,
+        tile_entry_offsets: Vec::new(),
         data_bit_offset: 0,
     };
     if slice_type != SliceType::I {
@@ -474,12 +479,23 @@ fn finish_slice_header(
     sps: &Sps,
     mut header: SliceHeader,
 ) -> Result<SliceHeader, DecodeError> {
-    if pps.entropy_coding_sync {
-        let entries = r.ue(sps.ctb_height().saturating_sub(1))?;
+    header.tile_entry_offsets.clear();
+    if pps.entropy_coding_sync || pps.tiles_enabled {
+        let maximum = if pps.tiles_enabled {
+            pps.tile_columns * pps.tile_rows - 1
+        } else {
+            sps.ctb_height().saturating_sub(1)
+        };
+        let entries = r.ue(maximum)?;
         if entries > 0 {
             let bits = r.ue(31)? + 1;
             for _ in 0..entries {
-                r.uint(bits)?;
+                let minus_one = r.uint(bits)?;
+                if pps.tiles_enabled {
+                    let length = usize::try_from(u64::from(minus_one) + 1)
+                        .map_err(|_| DecodeError::Limit)?;
+                    header.tile_entry_offsets.push(length);
+                }
             }
         }
     }

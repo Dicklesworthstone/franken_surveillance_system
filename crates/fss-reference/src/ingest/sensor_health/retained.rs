@@ -20,7 +20,9 @@ use super::{
 use crate::ingest::RetainedFileImport;
 use crate::ingest::privacy_mask::current_mask;
 use crate::ingest::recorded_decode::h264::{RecordedH264Range, RecordedH264Request};
-use crate::ingest::recorded_decode::h265::{RecordedH265Range, RecordedH265Request};
+use crate::ingest::recorded_decode::h265::{
+    RecordedH265RangeV1 as RecordedH265Range, RecordedH265Request,
+};
 use crate::ingest::recorded_decode::{RecordedDecodeError, source_capsule, validate_limits};
 use crate::ingest::recorded_watch::{WatchError, WatchLimits, WatchPlan, media_decoder_label};
 use crate::{ReferenceDeployment, ReplayCx};

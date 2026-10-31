@@ -22,7 +22,9 @@
 //! manifest, source capsule) and to the exact codec output (luma and packed I420 digests). Frames
 //! are a rebuildable derivation: nothing is staged, published or appended to the ledger. The
 //! pure-Rust codec is deterministic and bit-exact against the FFmpeg oracle fixtures, and it owns
-//! all H.265 semantics and refusals (Main 10, 4:2:2, range extensions, tiles, ...). Frames also
+//! all H.265 semantics and refusals (Main 10, 4:2:2, range extensions, ...). Current ranges
+//! admit bounded Main tiles; [`RecordedH265RangeV1`] preserves the old tile refusal for fixed
+//! retained recipes. Frames also
 //! carry both chroma planes (`cb`, `cr`, per-plane digests on the receipt) and convert to RGB
 //! through the declared transform in [`super::video_rgb`].
 
@@ -50,6 +52,9 @@ pub const MAX_H265_STREAM_SEGMENTS: usize = 65_536;
 /// Versioned label of the canonical decoder semantics bound into every frame receipt.
 pub const H265_DECODER_LABEL: &str =
     "fss-codec-h265:main-420-8bit:scalar-reference:output-order:rasl-skip-at-range-start:v1";
+/// Additive tile-capable generation. Untiled input histories keep the v1 identity.
+pub const H265_TILES_DECODER_LABEL: &str =
+    "fss-codec-h265:main-420-8bit:scalar-reference:output-order:rasl-skip-at-range-start:tiles:v2";
 /// Canonical frame-receipt domain.
 pub const H265_FRAME_RECEIPT_DOMAIN: &str = "fss.recorded_h265_frame_receipt.v2";
 /// Boundary before each retained access unit is read and decoded.
@@ -59,6 +64,12 @@ pub const STAGE_RECORDED_H265_SEGMENT: &str = "recorded_h265:segment";
 #[must_use]
 pub fn h265_decoder_identity() -> ContentDigest {
     ContentDigest::sha256(H265_DECODER_LABEL.as_bytes())
+}
+
+/// Identity of the current tile-capable admission profile.
+#[must_use]
+pub fn h265_tiles_decoder_identity() -> ContentDigest {
+    ContentDigest::sha256(H265_TILES_DECODER_LABEL.as_bytes())
 }
 
 /// Explicit retained source range, interpretation, and independent read/decode bounds.
@@ -100,10 +111,17 @@ pub struct RecordedH265FrameReceipt {
     // binds both chroma planes, so receipt bytes stay identical to the luma-era receipts.
     cb_sha256: ContentDigest,
     cr_sha256: ContentDigest,
+    decoder: ContentDigest,
     mask_policy: Option<ContentDigest>,
 }
 
 impl RecordedH265FrameReceipt {
+    /// Exact admitted decoder generation, including prior tiled parameter sets
+    /// in this range's input history. The existing v1 bytes remain unchanged.
+    #[must_use]
+    pub fn decoder_identity(&self) -> ContentDigest {
+        self.decoder
+    }
     /// Exact import identity.
     #[must_use]
     pub fn import_identity(&self) -> ContentDigest {
@@ -217,7 +235,7 @@ impl RecordedH265FrameReceipt {
         encoder.u64(self.decode_index);
         encoder.digest(self.luma_sha256);
         encoder.digest(self.i420_sha256);
-        encoder.digest(h265_decoder_identity());
+        encoder.digest(self.decoder);
         encode_marker(&mut encoder, self.mask_policy);
         encoder.finish()
     }
@@ -403,8 +421,16 @@ fn slice_segment_types(nals: &[&[u8]]) -> Vec<u8> {
 }
 
 /// Streaming decoder over one validated, IRAP-led, gap-free retained segment range.
+pub type RecordedH265Range = ProfiledRecordedH265Range<false>;
+
+/// Historical range owner: reproduces fixed v1 recipes, including every tiles
+/// refusal, without changing their canonical bytes or decode-budget charging.
+pub type RecordedH265RangeV1 = ProfiledRecordedH265Range<true>;
+
+/// Shared range implementation. Select [`RecordedH265Range`] for current input
+/// or [`RecordedH265RangeV1`] for a retained v1 recipe.
 #[derive(Debug)]
-pub struct RecordedH265Range {
+pub struct ProfiledRecordedH265Range<const LEGACY: bool> {
     request: RecordedH265Request,
     retained: RetainedFileImport,
     decoder: Decoder,
@@ -426,7 +452,7 @@ pub struct RecordedH265Range {
     flushed: bool,
 }
 
-impl RecordedH265Range {
+impl<const LEGACY: bool> ProfiledRecordedH265Range<LEGACY> {
     /// Validates the request, the import, the range bounds and gaps, and that the first segment
     /// carries an IRAP picture. Reads only the first segment; decodes nothing yet.
     pub fn open(
@@ -570,7 +596,11 @@ impl RecordedH265Range {
                 .min(request.segment_count as u64),
             ..request.decoder_limits
         };
-        let mut decoder = Decoder::new(limits)?;
+        let mut decoder = if LEGACY {
+            Decoder::new_v1(limits)?
+        } else {
+            Decoder::new(limits)?
+        };
         // Out-of-band configuration precedes the first access unit; it codes no picture.
         for index in parameter_sets {
             let nal = retained.read_omission_span_budgeted(
@@ -819,6 +849,11 @@ impl RecordedH265Range {
             i420_sha256: placeholder,
             cb_sha256: placeholder,
             cr_sha256: placeholder,
+            decoder: if picture.uses_tiles() {
+                h265_tiles_decoder_identity()
+            } else {
+                h265_decoder_identity()
+            },
             mask_policy: self.mask.policy_digest(),
         };
         self.decoded += 1;

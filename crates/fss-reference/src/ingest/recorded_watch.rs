@@ -83,7 +83,8 @@ use super::recorded_coverage::{
 };
 use super::recorded_decode::h264::{DecoderLimits, RecordedH264Range, RecordedH264Request};
 use super::recorded_decode::h265::{
-    DecoderLimits as H265DecoderLimits, RecordedH265Range, RecordedH265Request,
+    DecoderLimits as H265DecoderLimits, RecordedH265RangeV1 as RecordedH265Range,
+    RecordedH265Request,
 };
 use super::recorded_decode::{
     ComponentInterpretation, DecodeLimits, RecordedDecodeError, source_capsule, validate_limits,

@@ -161,6 +161,43 @@ Regenerate only this group, including all independent checks, with:
 python3 scripts/generate_h265_dependent_fixtures.py crates/fss-codec-h265/tests/fixtures/decode
 ```
 
+## Main tiles
+
+`scripts/generate_h265_tile_fixtures.py` authors conforming Main level-4 tile
+substreams with fresh arithmetic/CABAC/QP state at each tile. Each tile spans at
+least 256 luma samples horizontally and 64 vertically in padded CTB units. These
+are genuine entropy streams, not independent-slice headers patched into tiles.
+The sealed offline oracle is FFmpeg 6.1.1 (`-xerror -err_detect explode -threads 1`).
+Every positive fixture has exact I420 frame hashes; Rust never runs the oracle.
+
+| Fixture | Coded dimensions | Functional evidence |
+|---|---|---|
+| `tiles_uniform_p` | 512×64, 2 frames | Nonzero intra residuals, different per-tile QP deltas, P merge/skip prediction |
+| `tiles_emulation` | 512×64 | A zero-valued PCM seed forces many emulation-prevention bytes inside an entry-point extent |
+| `tiles_grid`, `tiles_grid_dependent` | 512×128 | Uniform 2×2 grid, tile-scan/raster divergence, conforming dependent cuts and whole-tile substreams |
+| `tiles_explicit`, `tiles_explicit_dependent` | 576×160 | Unequal 16/20-CTB columns and 4/6-CTB rows; dependent partition preserves every sample |
+| `tiles_partial_ctbs` | 504×120 | Legal padded tile dimensions with partial final CTBs and directly checked 8×8 PCM samples |
+| `tiles_independent` | 512×64 | Independent QP reset between tiles and dependent continuation inside each tile |
+| `tiles_motion` | 512×64, 2 frames | Explicit ±4 quarter-sample MVD followed by merge propagation; every P luma sample independently matches a ±1-pixel source translation |
+| `tiles_deblock_closed`, `tiles_deblock_across` | 512×128 | Visible filtering changes at tile boundaries |
+| `tiles_horizontal_*`, `tiles_vertical_*`, `tiles_diagonal_*` | 512×128 | Active edge SAO with cross-tile filtering enabled/disabled; boundary pixels differ |
+| `tiles_band_closed`, `tiles_band_across` | 512×128 | Band SAO has no neighbor-boundary dependence; both outputs agree |
+
+The generator requires strict oracle success and exact frame sizes, and checks
+the independent PCM/motion expectations and filter/partition contrasts before it
+writes a successful result. The separate `tiles_invalid_partial_segment.h265`
+has no positive oracle hash: it deliberately violates H.265 6.3.1 by spanning two
+partial tiles within one dependent segment, even though FFmpeg can decode it.
+The native decoder must refuse it without publishing partial pixels and recover
+on a fresh IDR.
+
+```sh
+python3 scripts/generate_h265_tile_fixtures.py crates/fss-codec-h265/tests/fixtures/decode
+```
+
+See `docs/hevc_tiles.md` for admission bounds, legacy replay and retained receipt
+generation behavior.
+
 ## Negative fixtures (refused, never decoded)
 
 | Stream | Expected refusal |

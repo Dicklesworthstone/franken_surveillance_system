@@ -10,7 +10,7 @@
 pub mod rtp;
 
 use super::recorded_decode::h264::{RecordedH264Frame, h264_decoder_identity};
-use super::recorded_decode::h265::{RecordedH265Frame, h265_decoder_identity};
+use super::recorded_decode::h265::RecordedH265Frame;
 use super::recorded_decode::{ComponentInterpretation, RecordedFrame};
 use crate::ReplayCx;
 use fss_core::{CanonicalEncode, CanonicalEncoder, CapsuleId, CaptureInterval, ContentDigest};
@@ -412,7 +412,7 @@ impl PixelChangeDetector {
             stream: capsule.stream_id.as_str().to_owned(),
             gap: capsule.gap_before,
             dimensions: receipt.dimensions(),
-            decoder: h265_decoder_identity(),
+            decoder: receipt.decoder_identity(),
             mask_binding: receipt.mask_binding(),
         };
         self.push_video(basis, receipt.digest(), capsule, frame.pixels(), cx)

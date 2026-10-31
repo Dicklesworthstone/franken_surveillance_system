@@ -8,8 +8,8 @@ use std::sync::Arc;
 use crate::ctu::{PicState, SegmentContinuation, SliceDecoder, SliceInputs};
 use crate::deblock::{FilterParams, deblock};
 use crate::inter::{ColMv, ColPic, RefList};
-use crate::nal::{NalHeader, rbsp_from_ebsp, stop_bit_position, unit_type};
-use crate::params::{MAX_DPB, Pps, Sps, parse_pps, parse_sps, parse_vps_id};
+use crate::nal::{NalHeader, rbsp_from_ebsp, stop_bit_position, tile_entry_boundaries, unit_type};
+use crate::params::{MAX_DPB, Pps, Sps, parse_pps, parse_pps_v1, parse_sps, parse_vps_id};
 use crate::picture::{Frame, Picture, PictureMeta};
 use crate::residual::Scans;
 use crate::sao::apply as apply_sao;
@@ -137,6 +137,10 @@ struct SkippedPicture {
 /// leave previously stored parameter sets untouched.
 pub struct Decoder {
     limits: DecoderLimits,
+    admit_tiles: bool,
+    /// Sticky within this decoder lifetime: even an unused tiled PPS is an
+    /// input the v1 decoder would refuse, so later receipts must name v2.
+    used_tile_generation: bool,
     vps: [bool; 16],
     sps: Vec<Option<Arc<Sps>>>,
     pps: Vec<Option<Arc<Pps>>>,
@@ -178,9 +182,25 @@ impl Decoder {
     /// # Errors
     /// [`DecodeError::Limit`] when a limit is zero or above its ceiling.
     pub fn new(limits: DecoderLimits) -> Result<Self, DecodeError> {
+        Self::with_tiles(limits, true)
+    }
+
+    /// Preserves the historical untiled admission profile, including immediate
+    /// [`UnsupportedFeature::Tiles`] refusal at the PPS flag. Retained recipes
+    /// whose semantics predate tiles must select this constructor explicitly.
+    ///
+    /// # Errors
+    /// [`DecodeError::Limit`] when a limit is zero or above its ceiling.
+    pub fn new_v1(limits: DecoderLimits) -> Result<Self, DecodeError> {
+        Self::with_tiles(limits, false)
+    }
+
+    fn with_tiles(limits: DecoderLimits, admit_tiles: bool) -> Result<Self, DecodeError> {
         limits.validate()?;
         Ok(Self {
             limits,
+            admit_tiles,
+            used_tile_generation: false,
             vps: [false; 16],
             sps: (0..16).map(|_| None).collect(),
             pps: (0..64).map(|_| None).collect(),
@@ -328,8 +348,13 @@ impl Decoder {
 
     fn store_pps(&mut self, payload: &[u8]) -> Result<(), DecodeError> {
         let rbsp = rbsp_from_ebsp(payload, self.limits.max_nal_bytes)?;
-        let pps = parse_pps(&rbsp)?;
+        let pps = if self.admit_tiles {
+            parse_pps(&rbsp)?
+        } else {
+            parse_pps_v1(&rbsp)?
+        };
         let id = usize::from(pps.id);
+        self.used_tile_generation |= pps.tiles_enabled;
         self.pps[id] = Some(Arc::new(pps));
         Ok(())
     }
@@ -425,7 +450,14 @@ impl Decoder {
                 return Ok(());
             }
         } else if let Some(skipped) = self.skipping.as_ref() {
-            if header.dependent && header.segment_address <= skipped.last_segment_address {
+            if header.dependent
+                && crate::tiles::scan_address(&skipped.pps, &skipped.sps, header.segment_address)?
+                    <= crate::tiles::scan_address(
+                        &skipped.pps,
+                        &skipped.sps,
+                        skipped.last_segment_address,
+                    )?
+            {
                 return Err(DecodeError::Malformed);
             }
             let skipped = self
@@ -468,9 +500,20 @@ impl Decoder {
         } else {
             None
         };
-        pending.continuation =
-            SliceDecoder::new(&inputs, &mut pending.state, &rbsp, stop + 1, continuation)?
-                .decode()?;
+        let entries = tile_entry_boundaries(
+            payload,
+            header.data_bit_offset / 8,
+            &header.tile_entry_offsets,
+        )?;
+        pending.continuation = SliceDecoder::new(
+            &inputs,
+            &mut pending.state,
+            &rbsp,
+            stop + 1,
+            entries,
+            continuation,
+        )?
+        .decode()?;
         if !header.dependent {
             pending.independent_header = header;
         }
@@ -529,7 +572,7 @@ impl Decoder {
                 }
             }
         }
-        let state = PicState::new(&sps)?;
+        let state = PicState::new(&sps, &pps)?;
         self.pending = Some(Pending {
             sps,
             pps,
@@ -786,6 +829,7 @@ impl Decoder {
             poc: pending.poc,
             nal_type: pending.nal.unit_type,
             decode_index: self.pictures,
+            uses_tiles: self.used_tile_generation,
         };
         self.pictures += 1;
         let motion = Arc::new(pending.state.col_motion());

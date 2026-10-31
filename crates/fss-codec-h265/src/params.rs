@@ -720,6 +720,18 @@ pub struct Pps {
     pub transquant_bypass_enabled: bool,
     /// `tiles_enabled_flag`.
     pub tiles_enabled: bool,
+    /// Number of tile columns, at most 40 (the maximum Main-profile level).
+    pub tile_columns: u32,
+    /// Number of tile rows, at most 44.
+    pub tile_rows: u32,
+    /// Uniform spacing; otherwise widths/heights exclude the inferred last tile.
+    pub uniform_tile_spacing: bool,
+    /// Explicit column widths in CTBs, excluding the final column.
+    pub column_widths: Vec<u32>,
+    /// Explicit row heights in CTBs, excluding the final row.
+    pub row_heights: Vec<u32>,
+    /// `loop_filter_across_tiles_enabled_flag`.
+    pub loop_filter_across_tiles: bool,
     /// `entropy_coding_sync_enabled_flag`.
     pub entropy_coding_sync: bool,
     /// `pps_loop_filter_across_slices_enabled_flag`.
@@ -749,6 +761,15 @@ pub struct Pps {
 /// [`DecodeError::Unsupported`] for extensions; [`DecodeError::Malformed`]
 /// / [`DecodeError::Limit`] on bad or truncated syntax.
 pub fn parse_pps(rbsp: &[u8]) -> Result<Pps, DecodeError> {
+    parse_pps_with_tiles(rbsp, true)
+}
+
+/// Historical admission profile: refuse immediately when the PPS enables tiles.
+pub(crate) fn parse_pps_v1(rbsp: &[u8]) -> Result<Pps, DecodeError> {
+    parse_pps_with_tiles(rbsp, false)
+}
+
+fn parse_pps_with_tiles(rbsp: &[u8], admit_tiles: bool) -> Result<Pps, DecodeError> {
     let mut reader = BitReader::new(rbsp, rbsp.len() * 8);
     let r = &mut reader;
     let id = r.ue(63)? as u8;
@@ -773,8 +794,35 @@ pub fn parse_pps(rbsp: &[u8]) -> Result<Pps, DecodeError> {
     let transquant_bypass_enabled = r.flag()?;
     let tiles_enabled = r.flag()?;
     let entropy_coding_sync = r.flag()?;
-    if tiles_enabled {
+    if tiles_enabled && !admit_tiles {
         return Err(DecodeError::Unsupported(UnsupportedFeature::Tiles));
+    }
+    let mut tile_columns = 1;
+    let mut tile_rows = 1;
+    let mut uniform_tile_spacing = true;
+    let mut column_widths = Vec::new();
+    let mut row_heights = Vec::new();
+    let mut loop_filter_across_tiles = true;
+    if tiles_enabled {
+        // Main and Main Still Picture forbid simultaneous tiles and WPP.
+        if entropy_coding_sync {
+            return Err(DecodeError::Malformed);
+        }
+        tile_columns = r.ue(39)? + 1;
+        tile_rows = r.ue(43)? + 1;
+        if tile_columns == 1 && tile_rows == 1 {
+            return Err(DecodeError::Malformed);
+        }
+        uniform_tile_spacing = r.flag()?;
+        if !uniform_tile_spacing {
+            for _ in 1..tile_columns {
+                column_widths.push(r.ue(1023)? + 1);
+            }
+            for _ in 1..tile_rows {
+                row_heights.push(r.ue(1023)? + 1);
+            }
+        }
+        loop_filter_across_tiles = r.flag()?;
     }
     let loop_filter_across_slices = r.flag()?;
     let mut deblocking_override_enabled = false;
@@ -834,6 +882,12 @@ pub fn parse_pps(rbsp: &[u8]) -> Result<Pps, DecodeError> {
         weighted_bipred,
         transquant_bypass_enabled,
         tiles_enabled,
+        tile_columns,
+        tile_rows,
+        uniform_tile_spacing,
+        column_widths,
+        row_heights,
+        loop_filter_across_tiles,
         entropy_coding_sync,
         loop_filter_across_slices,
         deblocking_override_enabled,
@@ -857,6 +911,9 @@ impl Pps {
             || self.log2_parallel_merge_level > sps.ctb_log2
         {
             return Err(DecodeError::Malformed);
+        }
+        if self.tiles_enabled {
+            crate::tiles::boundaries(self, sps)?;
         }
         Ok(())
     }

@@ -10,6 +10,36 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Native HEVC Main tile decoding and retained generations (2026-10-30, reference)
+
+The native H.265 decoder now admits bounded uniform and explicit tile layouts for Main
+and Main Still Picture 8-bit 4:2:0. Raster/tile-scan conversion, escaped substream entry
+offsets, CABAC/QP resets, spatial predictor isolation and independent deblock/SAO tile
+boundaries are implemented. Logical slices and every dependent segment must separately
+satisfy tile-containment rules. Minimum tile geometry counts padded final CTBs, admitting
+partial picture edges correctly. Tiles with WPP and unsupported profiles still refuse;
+incomplete pictures never publish partial surfaces and recover only through the existing
+IRAP boundary.
+
+Current recorded/media/container owners reach the tile-capable decoder. An explicit v1
+constructor/range alias preserves historical tile refusals for fixed watch, tolerant,
+whole-recording/incremental dwell, cascade and health recipes. Untiled input histories keep
+their exact receipt bytes; accepting a tiled PPS selects the new generation for subsequent
+frames. Publication, pixel-change and reports bind actual frame identities; current video
+plans bind the expanded admission generation.
+
+The complete native HEVC package passed **157 tests**, including 29 new tile contracts.
+Nineteen positive authored streams match independent strict FFmpeg I420 digests, covering
+nonzero residuals/QP, nonzero P motion, two-dimensional/unequal tiles, partial CTBs,
+dependent slices, emulation prevention and visibly active deblock/SAO boundaries. A separate
+nonconforming segment fixture verifies normative refusal even though FFmpeg tolerates it.
+Strict all-target Clippy passed without allowances. Independent core/specification and
+retained-caller review passed after correcting two conformance defects. Cold-publication,
+legacy-byte and operator-plan regressions are authored and reviewed but unexecuted under
+the existing reference/CLI dependency memory limit. See `docs/hevc_tiles.md` for the exact
+profile, bounds, generation behavior and oracle provenance; no Main10 or production
+qualification is claimed.
+
 ## Native ONNX detector feature-map upsampling (2026-10-30, reference)
 
 The generic importer now lowers static Resize-13 nearest-neighbor upsampling of rank-four

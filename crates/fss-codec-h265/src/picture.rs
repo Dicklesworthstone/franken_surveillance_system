@@ -51,6 +51,7 @@ pub(crate) struct PictureMeta {
     pub poc: i32,
     pub nal_type: u8,
     pub decode_index: u64,
+    pub uses_tiles: bool,
 }
 
 /// One decoded picture: tightly packed 8-bit 4:2:0 planes after the SPS
@@ -67,6 +68,7 @@ pub struct Picture {
     poc: i32,
     nal_type: u8,
     decode_index: u64,
+    uses_tiles: bool,
 }
 
 impl std::fmt::Debug for Picture {
@@ -112,6 +114,7 @@ impl Picture {
             poc: meta.poc,
             nal_type: meta.nal_type,
             decode_index: meta.decode_index,
+            uses_tiles: meta.uses_tiles,
         })
     }
 
@@ -125,6 +128,14 @@ impl Picture {
     #[must_use]
     pub const fn height(&self) -> u32 {
         self.height
+    }
+
+    /// Whether this decoder accepted a tiled PPS before completing this picture.
+    /// This stays true for subsequent untiled pictures in the same decoder
+    /// lifetime: their full input history also requires the new admission profile.
+    #[must_use]
+    pub const fn uses_tiles(&self) -> bool {
+        self.uses_tiles
     }
 
     /// Chroma plane width (`ceil(width / 2)`).
