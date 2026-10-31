@@ -10,6 +10,40 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Live native RTSP/JPEG reception and image output (2026-10-31, reference)
+
+The JPEG lane now composes the existing RTSP session, Digest authentication,
+exact TCP framing and native socket owner with the new RTP/JPEG receiver and
+actual native luma/RGB decoder. Negotiation preserves the selected media ordinal,
+URI subtree, CSeq, Session, channels and expected SSRC. Static payload 26 may omit
+rtpmap; dynamic payloads require an exact JPEG/90000 offer. Conflicting mappings,
+unsupported selected parameters and ambiguous selection refuse.
+
+`LiveJpegConnection` owns one explicitly authorized, caller-resolved TCP route.
+Every operation probes live authority and independent transport/protocol/media
+bounds. Original accepted TCP chunks transfer before interpreted events; original
+RTP/RTCP frames remain available through failures, reordering and cancellation.
+Those frames fit the existing `DatagramArchive::prepare_frame` publication path
+without a JPEG-specific archive format. Complete reconstructed images pass through
+the actual digest-checking, cancellable native pixel decoder. A decode refusal
+returns the intact reconstruction and source maps without partial pixels.
+
+The focused exact-production-source target passed **67 native tests**: ten new
+JPEG protocol/pixel contracts, five new real TCP contracts, six existing ONVIF
+metadata-selection cases and 46 existing authentication, AVC/HEVC session, SDP
+and native TCP cases. Real loopback checks exercise one-byte/17-byte/4096-byte
+delivery, partial writes, original-wire ordering, Digest challenge and unsent-request
+ownership on queue refusal, complete pixels, actual socket EOF and exactly one
+terminal retirement. Final scoped Clippy passed with only the independently
+identified unchanged `message.rs` counter-loop lint isolated; all new code remained
+subject to fatal warnings, with no source/configuration allowance added.
+
+This checkpoint executes real native protocol/socket/packet/pixel implementations
+without stubs or a foreign runtime. It does not qualify a physical camera, add a
+capture CLI profile, prove durable archive publication/cold replay, establish
+camera synchronization or complete the full asynchronous reference/release matrix.
+See `docs/NATIVE_RTSP_JPEG.md` and `docs/RTP_JPEG_REFERENCE.md`.
+
 ## Handoffs from authenticated retained package tracks (2026-10-31, integration)
 
 `fss-scene-fuse retained-handoffs` now joins existing retained detector custody,

@@ -13,6 +13,10 @@ pub mod avc_client;
 pub mod framed;
 /// Owner-driven TCP framing, optional Digest authentication, and HEVC RTP reception.
 pub mod hevc_client;
+/// Shared RTSP/Digest framing and source-linked native RFC 2435 JPEG reception.
+pub mod jpeg_client;
+/// Explicit-authority native TCP transport for complete RFC 2435 JPEG images.
+pub mod live_jpeg;
 /// Ordered HEVC client-event capture with explicit timing and automatic failure fencing.
 pub mod hevc_recording_capture;
 /// Continuous HEVC window collection with original boundary-packet retention.
@@ -58,7 +62,7 @@ pub mod recording_collector;
 /// Portable codec/timing recipes and exact source-verified recording reconstruction.
 pub mod recording_recipe;
 pub mod sdp;
-/// Exact bounded H.264 selection from multi-payload SDP descriptions.
+/// Exact bounded AVC, HEVC, JPEG and ONVIF selection from multi-payload SDP descriptions.
 pub mod selection;
 /// Native bounded TCP ownership under an exact route and explicit live authority.
 pub mod tcp;

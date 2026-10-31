@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 //! Native source custody before further media progress.
-//! AVC capture retains its existing owner; HEVC framed input uses the same archive.
+//! AVC retains its existing owner; HEVC and JPEG framed input use the same archive.
 
 use super::*;
 

@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! The HEVC wire owner uses the same original-datagram custody format as AVC.
+//! HEVC and JPEG wire owners use the same original-datagram custody format as AVC.
 //! Control messages (including opaque bodies and authentication) are never admitted.
 
 use super::super::*;
@@ -9,7 +9,7 @@ use crate::rtsp::framed::RtspWireFrame;
 impl DatagramArchive {
     /// Prepare an actual parsed interleaved frame, without its four-byte envelope.
     ///
-    /// This borrows the original frame emitted by the native HEVC protocol owner.
+    /// This borrows the original frame emitted by a native framed protocol owner.
     /// Requests, responses and authentication challenges are refused BEFORE work or
     /// allocation, even if their bodies look like RTP. No raw-wire payload sniffing
     /// or reparsing can accidentally archive credentials. The exact channel, parser
