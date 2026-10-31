@@ -38,18 +38,20 @@ including hand-computed dense and convolution/pooling results.
 - F32 runtime inputs/outputs and finite embedded F32 initializers. Raw little-endian
   data and packed/unpacked `float_data` are supported, including signed zero.
 - Embedded INT64 initializers and Constant values may supply compile-time shape,
-  axis and slice controls. They never become runtime integer inputs or exported weights.
+  axis, slice and partition controls. They never become runtime integer inputs or
+  exported weights.
 - Static positive dimensions, at most rank eight. Source-ordered acyclic graphs;
   declared outputs and intermediate value information must match native inference.
 - Add, Sub, Mul, Div, Relu, Sigmoid, Tanh, MatMul, Gemm, Softmax, Conv, MaxPool, Transpose,
-  Concat, Constant, Reshape, Squeeze, Unsqueeze, Slice, Resize, Identity and Flatten.
+  Concat, Constant, Reshape, Squeeze, Unsqueeze, Slice, Split, Resize, Identity and Flatten.
   Identity/Flatten lower to checked native Reshape
   nodes without changing the frozen operator set or canonical Model IR v1 encoding.
 - MatMul requires rank-two-or-higher inputs. Conv is 2-D; declared `kernel_shape`
   must agree with the actual weight tensor. Explicit strides, dilation, pads and
   groups use native validation. `auto_pad`, when present, must be `NOTSET`.
-- MaxPool is 2-D, single-output, with zero padding, no dilation other than one,
-  no ceil mode, and default storage order. Concat requires an explicit axis.
+- MaxPool is 2-D, single-output, with explicit nonnegative padding smaller than
+  each corresponding kernel dimension, no dilation other than one, no ceil mode,
+  and default storage order. Concat requires an explicit axis.
   Softmax uses opset 13's last-axis default, without the older flattening behavior.
 
 Unknown features refuse rather than being skipped or approximated. In particular,
@@ -60,6 +62,48 @@ weight files, custom functions, training graphs and model activation are not
 implemented by this profile. Initializers that are also graph inputs refuse rather
 than silently freezing an overridable weight. An unused initializer cannot be made
 executable merely by mentioning it in value-info metadata.
+
+## Detector branches and spatial pyramid pooling
+
+Static [Split-13](https://onnx.ai/onnx/operators/onnx__Split.html#split-13) accepts
+one through eight named F32 outputs from a rank-one-through-eight tensor. Its axis
+defaults to zero and may be negative. An embedded INT64 vector supplies positive
+partition lengths that must sum exactly to the input's selected dimension. With
+that optional input omitted, or an empty optional input name, the dimension must
+divide exactly into equal parts. Zero-sized outputs, dynamic lengths, the older
+`split` attribute and the later `num_outputs` attribute refuse.
+
+Each output lowers to a native Slice over the original input. Output declaration
+order and F32 bits, including signed zero and subnormals, are preserved; no runtime
+integer operator or generated weight is needed. The control vector remains covered
+by the aggregate parameter allowance even though it is removed from execution
+weights. Every expanded branch consumes the common node, tensor and work limits,
+and cancellation applies during expansion. Other ONNX operators retain the existing
+single-output restriction, including MaxPool's optional index output.
+
+The [MaxPool-12](https://onnx.ai/onnx/operators/onnx__MaxPool.html#maxpool-12) schema
+used by opset 13 now admits explicit padding through the existing native pooling
+operator. It excludes positions outside the input from the maximum. Because every
+pad is smaller than its kernel dimension and output sizing uses floor mode, every
+admitted window contains a real input sample; the executor's empty-window fallback
+is unreachable. This matters for negative feature maps: padding must not introduce
+zeros that can become the maximum. Asymmetric pads and spatial strides follow
+native shape validation. Automatic padding, ceil mode, dilated pooling and indices
+remain outside this profile.
+
+The retained untrained numerical fixture
+`crates/fss-model-ir/tests/fixtures/onnx/detector_split_pool.onnx` is 1,190 bytes with
+SHA-256 `8df7f45bdab665b2c105b0c5ee77be79a0748c6a4ee4b1082f6c79213c79cad5`.
+It executes a `[1,3,4,4]` convolution, an uneven three-way channel split, three
+successive padded pooling stages, branch concatenation, another convolution and a
+transpose/reshape to a `[1,16,6]` head. A second graph output exposes one branch
+directly. Independent coordinate and arithmetic oracles check both outputs before
+export and after the actual canonical graph and Safetensors loaders reconstruct
+the model. The same importer is used by the existing
+[`fss-infer import-onnx`](ONNX_PACKAGE_IMPORT.md) provisioning path. Package admission
+additionally requires its preprocessing, named-output, head and license contracts;
+that complete CLI integration was not executed for this fixture. These numerical
+fixtures establish conversion and execution behavior, not trained detector quality.
 
 ## Nearest-neighbor feature-map upsampling
 
@@ -200,8 +244,8 @@ because that name is reserved by Safetensors; it is never silently changed. The
 weights header records the source digest and importer identity.
 
 The separate `onnx_importer_identity()` record uses `fss.onnx_importer.v1` and hashes
-the exact ONNX parser, constants and structural lowering, Gemm lowering, artifact
-exporter and canonical encoder source.
+the exact ONNX parser, constants, structural, Split, Resize and Gemm lowering,
+artifact exporter and canonical encoder source.
 Existing Model IR bytes, operator IDs and the operator-table freeze remain unchanged.
 
 | Export limit | Hard maximum |
@@ -252,7 +296,7 @@ semantics, duplicate/overridable/unused parameters, intermediate shape mismatch,
 nonfinite data, exact resource limits, generation fencing, cancellation, every
 truncated prefix of a valid model, and bounded generated malformed wire inputs.
 
-The full native `fss-model-ir` suite passes 161 tests on the pinned compiler. Its
+The full native `fss-model-ir` suite passes 186 tests on the pinned compiler. Its
 `onnx_gemm_execution` target includes the exact, unmodified production scalar
 executor source and executes Gemm graphs without compiling unrelated asynchronous
 runtime code. Fourteen new cases cover dense-head replay, 25 transpose-flag pairs,
@@ -283,7 +327,22 @@ invalid runtime integer/empty tensors, duplicate/forward/unused controls, hostil
 protobuf fields, shared quotas, truncation and cancellation. Two additional library
 tests exercise empty control vectors and their runtime exclusion.
 
+The `onnx_detector_blocks_execution` target passes 16 tests: 14 Split/pooling cases
+and two included production-executor smoke cases. It tests every axis of several
+rank-one-through-eight layouts, equal and uneven partitions, all eight outputs,
+source-output ordering, exact sample bits, 42 pooling geometry combinations,
+negative features, extreme finite values and signed-zero ties. The retained detector
+fixture and independent arithmetic checks run both before export and after real
+artifact reload. Invalid partitions, duplicate outputs, wrong shape witnesses,
+forward/dynamic controls, unsupported multi-output operators, expansion limits,
+cancellation and every truncated prefix of the 1,190-byte fixture refuse.
+
 Scoped formatting and strict library/structural/export-target Clippy checks pass.
+The Split/pooling strict library/execution-target Clippy rerun remains incomplete
+because shared memory pressure stalled compiler metadata generation. Its initial
+run identified two test-only `expect` calls; both were replaced with typed error
+handling. Production code passed the full 186-test native run before those test
+helper edits. No full-target lint pass is claimed for this checkpoint.
 The unchanged unused import in `quotas_family.rs` still prevents a strict all-target
 Clippy claim; it does not affect the passing native semantic tests.
 

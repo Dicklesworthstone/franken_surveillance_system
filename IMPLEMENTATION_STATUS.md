@@ -10,6 +10,30 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## ONNX detector branches and padded spatial pooling (2026-10-31, reference)
+
+The source-preserving ONNX importer now admits static opset-13 `Split` with up to
+eight outputs, including equal and explicit positive partitions and negative axes.
+Each branch lowers to the frozen native `Slice` operator and preserves source output
+order and exact F32 bits. Embedded partition controls remain import-only; all emitted
+nodes, tensors and copied controls consume the existing cumulative admission budgets.
+Other operators retain their one-output restriction. The importer also admits explicit
+nonzero `MaxPool` padding under the existing floor-mode, dilation-one native geometry
+contract. Every admitted window overlaps real input, so padding cannot inject zeros
+into negative-valued feature maps.
+
+This supplies detector channel branches and spatial-pyramid pooling without adding
+runtime operators, changing the frozen IR or acquiring a foreign production runtime.
+A retained synthetic Conv/Split/three-pool/Concat/head fixture executes through the
+actual native scalar executor both before export and after canonical graph/Safetensors
+reload. Independent array oracles cover partitions, signed-zero/extreme bits, asymmetric
+padding, strides and negative-only pooling. Malformed controls, source collisions,
+unsupported profiles, cancellation and exact aggregate limits refuse without a graph.
+The complete model-IR package passed **186 native tests**, including the 16-test detector
+block target and the unchanged canonical baseline fixture. This verifies the admitted
+blocks, not a newly qualified trained detector or full asynchronous package CLI.
+See `docs/onnx_import.md` for the precise profile and fixture identity.
+
 ## Retained-source stream capacity and failover command (2026-10-30, reference)
 
 `fss-event graph capacity` now exposes the native capacity planner against one retained

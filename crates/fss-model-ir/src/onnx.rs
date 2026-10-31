@@ -19,6 +19,7 @@ mod constants;
 mod export;
 mod gemm;
 mod resize;
+mod split;
 mod structure;
 
 pub use export::{OnnxArtifacts, OnnxExportLimits, export_onnx_artifacts, onnx_importer_identity};
@@ -445,7 +446,7 @@ fn source_node<'a>(
                 };
                 push(&mut inputs, input, 256)?;
             }
-            2 => push(&mut outputs, name(value.bytes()?)?, 1)?,
+            2 => push(&mut outputs, name(value.bytes()?)?, split::MAX_OUTPUTS)?,
             5 => {
                 push(&mut attributes, value.bytes()?, 16)?;
             }
@@ -474,9 +475,16 @@ fn source_node<'a>(
         }
     }
     let op = op.ok_or(OnnxError::Malformed)?;
+    // Split alone admits multiple source outputs. Keep the historical refusal
+    // for every other operator, including MaxPool's optional indices output.
+    if op != "Split" && outputs.len() > 1 {
+        return Err(OnnxError::Limit);
+    }
     let id = format!("onnx-node-{ordinal:04}");
-    if !matches!(op.as_str(), "Gemm" | "Squeeze" | "Slice" | "Resize")
-        && inputs.iter().any(String::is_empty)
+    if !matches!(
+        op.as_str(),
+        "Gemm" | "Squeeze" | "Slice" | "Resize" | "Split"
+    ) && inputs.iter().any(String::is_empty)
     {
         return Err(OnnxError::Limit);
     }
@@ -612,14 +620,13 @@ fn node(source: SourceNode<'_>, known: &BTreeMap<String, TensorPort>) -> Result<
             ("Softmax", "axis") | ("Concat", "axis") => "axis",
             _ => return Err(OnnxError::Unsupported),
         };
-        if opcode == OpCode::MaxPool2d
-            && target == "padding"
-            && value != AttrValue::IntList(vec![0, 0, 0, 0])
-        {
-            return Err(OnnxError::Unsupported);
-        }
         lowered.insert(target.to_owned(), value);
     }
+    // Native MaxPool skips padding samples. Its shape admission requires each
+    // pad < kernel, so every floor-mode output window overlaps real input:
+    // first start > -kernel; last start <= input + trailing_pad - kernel < input.
+    // Thus the native empty-window fallback is unreachable, including for
+    // entirely negative inputs, and no explicit padding tensor is needed.
     if opcode == OpCode::Concat && !lowered.contains_key("axis") {
         return Err(OnnxError::Malformed);
     }
@@ -915,6 +922,8 @@ pub fn import_onnx<'a>(
             gemm::lower(source, &mut lowering)?;
         } else if source.op == "Resize" {
             resize::lower(source, &mut lowering)?;
+        } else if source.op == "Split" {
+            split::lower(source, &mut lowering)?;
         } else if matches!(
             source.op.as_str(),
             "Reshape" | "Squeeze" | "Unsqueeze" | "Slice"
