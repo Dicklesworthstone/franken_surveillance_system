@@ -1,0 +1,163 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/scene_handoffs_retained_query.v1.json",
+  "title": "Retained package-track handoff selection",
+  "description": "Selects existing retained package detections, exact native tracks and bounded tracking recipes. Sensor, capture, model and privacy facts are reconstructed by the source owner. Alignment, common clock, calibration, transit and costs remain operator assumptions. Native admission enforces at most four distinct recipes, no aliases or detection reuse, cross-row membership, ordered intervals and UTF-8 byte bounds.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "session",
+    "generation",
+    "clock",
+    "cost_unit",
+    "birth_cost",
+    "end_cost",
+    "k",
+    "selections",
+    "transitions"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.scene_handoffs_retained_query.v1"
+    },
+    "session": {
+      "$ref": "scene_handoffs_query.v1.json#/$defs/id"
+    },
+    "generation": {
+      "$ref": "scene_handoffs_query.v1.json#/$defs/digest"
+    },
+    "clock": {
+      "$ref": "scene_handoffs_query.v1.json#/$defs/digest"
+    },
+    "cost_unit": {
+      "$ref": "scene_handoffs_query.v1.json#/$defs/unit"
+    },
+    "birth_cost": {
+      "$ref": "scene_handoffs_query.v1.json#/$defs/u64"
+    },
+    "end_cost": {
+      "$ref": "scene_handoffs_query.v1.json#/$defs/u64"
+    },
+    "k": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 32
+    },
+    "selections": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "items": {
+        "$ref": "#/$defs/selection"
+      }
+    },
+    "transitions": {
+      "type": "array",
+      "minItems": 0,
+      "maxItems": 992,
+      "items": {
+        "$ref": "scene_handoffs_query.v1.json#/$defs/transition"
+      }
+    }
+  },
+  "$defs": {
+    "tracking": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "confirmation_hits",
+        "maximum_missed_frames",
+        "minimum_iou_ppm"
+      ],
+      "properties": {
+        "confirmation_hits": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 64
+        },
+        "maximum_missed_frames": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 64
+        },
+        "minimum_iou_ppm": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000
+        }
+      }
+    },
+    "alignment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "import_identity",
+        "stream_id",
+        "clock_basis",
+        "offset_ns",
+        "basis"
+      ],
+      "properties": {
+        "import_identity": {
+          "$ref": "scene_handoffs_query.v1.json#/$defs/digest"
+        },
+        "stream_id": {
+          "$ref": "scene_handoffs_query.v1.json#/$defs/id"
+        },
+        "clock_basis": {
+          "enum": [
+            "utc_disciplined",
+            "device_monotonic",
+            "host_monotonic",
+            "estimated"
+          ]
+        },
+        "offset_ns": {
+          "$ref": "scene_handoffs_query.v1.json#/$defs/clock_interval"
+        },
+        "basis": {
+          "$ref": "scene_handoffs_query.v1.json#/$defs/digest"
+        }
+      }
+    },
+    "selection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "report_digest",
+        "label",
+        "tracking",
+        "track",
+        "calibration",
+        "alignment"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "scene_handoffs_query.v1.json#/$defs/id"
+        },
+        "report_digest": {
+          "$ref": "scene_handoffs_query.v1.json#/$defs/digest"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "tracking": {
+          "$ref": "#/$defs/tracking"
+        },
+        "track": {
+          "$ref": "scene_handoffs_query.v1.json#/$defs/digest"
+        },
+        "calibration": {
+          "$ref": "scene_handoffs_query.v1.json#/$defs/digest"
+        },
+        "alignment": {
+          "$ref": "#/$defs/alignment"
+        }
+      }
+    }
+  }
+}

@@ -11,6 +11,8 @@ mod handoffs;
 mod input;
 #[path = "fss-scene-fuse/report.rs"]
 mod report;
+#[path = "fss-scene-fuse/retained_handoffs.rs"]
+mod retained_handoffs;
 #[cfg(test)]
 #[path = "fss-scene-fuse/tests.rs"]
 mod tests;
@@ -54,7 +56,8 @@ Every hypothesis is reported, including refusals. Exit 0: all solved; 3: some/al
 2: invalid input, I/O, authority or report failure. --report-out exclusively creates a new\n\
 private file after the complete report is computed; existing files are never overwritten.\n\
 The stdout JSON is identical to that file. Default work allowance: 100000000 units.\n\n\
-For automatic ordered anonymous tracklet association, use fss-scene-fuse handoffs --help.\n";
+For automatic ordered anonymous tracklet association, use fss-scene-fuse handoffs --help.\n\
+For authenticated retained package tracks, use fss-scene-fuse retained-handoffs --help.\n";
 
 #[derive(Debug)]
 struct Failure {
@@ -345,6 +348,8 @@ fn main() -> ExitCode {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
     let result = if args.first().and_then(|arg| arg.to_str()) == Some("handoffs") {
         handoffs::run(&args[1..], &mut io::stdout().lock())
+    } else if args.first().and_then(|arg| arg.to_str()) == Some("retained-handoffs") {
+        retained_handoffs::run(&args[1..], &mut io::stdout().lock())
     } else {
         options(args).and_then(|value| match value {
             None => {

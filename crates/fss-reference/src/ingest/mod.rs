@@ -190,6 +190,8 @@ mod detector_cascade_engine;
 
 /// Retained package detections tracked into unresolved recorded events (report/prepare/publish).
 pub mod package_event;
+/// Source-authenticated package tracks projected into conditional anonymous handoff queries.
+pub mod package_handoffs;
 /// Retained class-selected package tracks, observed image-zone transitions and sampled dwell.
 pub mod package_zones;
 

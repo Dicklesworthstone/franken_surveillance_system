@@ -82,7 +82,10 @@ impl std::error::Error for QueryError {
     }
 }
 
-fn fields<'a>(value: &'a Value, allowed: &[&str]) -> Result<&'a BTreeMap<String, Value>, String> {
+pub(crate) fn fields<'a>(
+    value: &'a Value,
+    allowed: &[&str],
+) -> Result<&'a BTreeMap<String, Value>, String> {
     let value = value.object().ok_or("expected a JSON object")?;
     if value.len() != allowed.len() || value.keys().any(|key| !allowed.contains(&key.as_str())) {
         return Err("missing or unknown query field".into());
@@ -90,15 +93,18 @@ fn fields<'a>(value: &'a Value, allowed: &[&str]) -> Result<&'a BTreeMap<String,
     Ok(value)
 }
 
-fn required<'a>(value: &'a BTreeMap<String, Value>, key: &str) -> Result<&'a Value, String> {
+pub(crate) fn required<'a>(
+    value: &'a BTreeMap<String, Value>,
+    key: &str,
+) -> Result<&'a Value, String> {
     value.get(key).ok_or_else(|| format!("missing field {key}"))
 }
 
-fn text(value: &Value) -> Result<&str, String> {
+pub(crate) fn text(value: &Value) -> Result<&str, String> {
     value.text().ok_or_else(|| "expected a string".into())
 }
 
-fn id(value: &Value, maximum: usize) -> Result<String, String> {
+pub(crate) fn id(value: &Value, maximum: usize) -> Result<String, String> {
     let value = text(value)?;
     if value.is_empty()
         || value.len() > maximum
@@ -111,7 +117,7 @@ fn id(value: &Value, maximum: usize) -> Result<String, String> {
     Ok(value.to_owned())
 }
 
-fn number(value: &Value) -> Result<i128, String> {
+pub(crate) fn number(value: &Value) -> Result<i128, String> {
     // JSON integers, not strings or exponent/fraction spellings, preserve signed clock ticks.
     if !matches!(value, Value::Number(_)) {
         return Err("expected an exact JSON integer".into());
@@ -121,11 +127,11 @@ fn number(value: &Value) -> Result<i128, String> {
         .ok_or_else(|| "expected an exact JSON integer".into())
 }
 
-fn unsigned(value: &Value) -> Result<u64, String> {
+pub(crate) fn unsigned(value: &Value) -> Result<u64, String> {
     u64::try_from(number(value)?).map_err(|_| "integer is outside u64".into())
 }
 
-fn digest(value: &Value) -> Result<ContentDigest, String> {
+pub(crate) fn digest(value: &Value) -> Result<ContentDigest, String> {
     let value = ContentDigest::parse(text(value)?).map_err(|_| "invalid content digest")?;
     if value.algorithm() != DigestAlgorithm::Sha256 || value.bytes() == [0; 32] {
         return Err("expected a nonzero sha256 content digest".into());
@@ -133,14 +139,14 @@ fn digest(value: &Value) -> Result<ContentDigest, String> {
     Ok(value)
 }
 
-fn list(value: &Value, maximum: usize) -> Result<&[Value], String> {
+pub(crate) fn list(value: &Value, maximum: usize) -> Result<&[Value], String> {
     value
         .array()
         .filter(|items| items.len() <= maximum)
         .ok_or_else(|| "expected an array within its declared bound".into())
 }
 
-fn clock_interval(value: &Value) -> Result<[i64; 2], String> {
+pub(crate) fn clock_interval(value: &Value) -> Result<[i64; 2], String> {
     let values = list(value, 2)?;
     if values.len() != 2 {
         return Err("clock interval requires two endpoints".into());
@@ -189,7 +195,7 @@ fn tracklet(value: &Value) -> Result<Tracklet, String> {
     })
 }
 
-fn transition(value: &Value) -> Result<Transition, String> {
+pub(crate) fn transition(value: &Value) -> Result<Transition, String> {
     let row = fields(value, &["from", "to", "transit", "cost", "basis"])?;
     let times = list(required(row, "transit")?, 2)?;
     if times.len() != 2 {
@@ -585,6 +591,40 @@ pub fn analyze(
     let query = parse_query(bytes).map_err(QueryError::Input)?;
     let run = continuity::plan_with_cancel(&query, budget, cancelled).map_err(QueryError::Graph)?;
     let report = render(&run, ContentDigest::sha256(bytes), budget)
+        .map_err(|detail| QueryError::Graph(GraphError::Inconsistent(detail)))?;
+    if report.len() + 1 > max_report_bytes {
+        return Err(QueryError::ReportLimit);
+    }
+    if cancelled() {
+        return Err(QueryError::Cancelled);
+    }
+    Ok(report)
+}
+
+/// Analyze a typed query supplied by a source owner, using the same native solver and
+/// unchanged conditional report as the owner-document entrypoint. This pure operation
+/// does not authenticate the handles: a custody owner must carry its separate projection
+/// witness and revalidate it before returning the enclosing report.
+pub fn analyze_prepared(
+    query: &ContinuityQuery,
+    input_document: ContentDigest,
+    budget: Budget,
+    max_report_bytes: usize,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<String, QueryError> {
+    if budget.max_operations == 0
+        || budget.max_operations > MAX_WORK
+        || budget.max_output_entries == 0
+        || budget.max_output_entries > MAX_OUTPUT_ENTRIES
+        || !(1024..=MAX_REPORT_BYTES).contains(&max_report_bytes)
+    {
+        return Err(QueryError::Allowance);
+    }
+    if cancelled() {
+        return Err(QueryError::Cancelled);
+    }
+    let run = continuity::plan_with_cancel(query, budget, cancelled).map_err(QueryError::Graph)?;
+    let report = render(&run, input_document, budget)
         .map_err(|detail| QueryError::Graph(GraphError::Inconsistent(detail)))?;
     if report.len() + 1 > max_report_bytes {
         return Err(QueryError::ReportLimit);

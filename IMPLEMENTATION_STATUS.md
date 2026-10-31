@@ -10,6 +10,50 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Handoffs from authenticated retained package tracks (2026-10-31, integration)
+
+`fss-scene-fuse retained-handoffs` now joins existing retained detector custody,
+native tracking and the conditional anonymous continuity planner. An exact
+selection names at most 32 tracks across four report/label/tracker recipes.
+The source owner reconstructs actual native assignments and verifies retained
+records, reports, manifests, capsules, original source bytes and current privacy.
+Camera generations and model comparison keys come from those source facts;
+the input cannot inject replacement sensors, detections or capture endpoints.
+
+Every assigned observation remains present with its original signed 128-bit
+capture interval, clock basis, score bits, source-grid bounds, inference/head
+identities and confirmation state. First/last actual observations supply track
+endpoints in native display order. Declared clock offsets use conservative
+checked interval addition and cannot upgrade an estimated clock. Calibration,
+common-clock identity, transit and costs remain explicit assumptions.
+
+The command binds the complete current authority anchor and every retained
+source binding around the unchanged complete planner report. Duplicate native
+aliases, reused assigned observations, incompatible generations, missing or
+damaged custody and privacy withdrawal refuse rather than omitting evidence.
+The sealed owner reopens the selected analyses before release and compares
+the full projection, anchor, root and principal. One shared 4 GiB original-byte
+allowance spans all recipes, clones and revalidations, including original
+HTTP/RTSP provenance reads. Cancellation, arithmetic and complete-output bounds
+remain explicit. Existing deployment startup retains its normal recovery behavior;
+the handoff operation creates no identity, event or effect authority.
+
+The exact production contract, parser, planner adapter and renderer passed
+**13 native tests**; all **12 existing handoff-adapter tests** passed again.
+The emitted 15,858-byte typed-fixture report passed the scoped instance checker,
+and 16 invalid mutations refused. Four schemas resolve 168 references with no
+findings under the repository's offline validator. Scoped Clippy passed with
+only the four independently established pre-existing graph lint categories
+isolated; no source or configuration allowance was added.
+
+Six real retained-owner integration cases and five command/context cases were
+added and independently source-reviewed, but **have not executed**: the full
+asynchronous reference build still exceeds this shared host's memory allowance.
+The native transform fixture does not establish authenticated I/O execution,
+trained-detector quality, physical identity accuracy or release qualification.
+See `docs/RETAINED_HANDOFFS.md` for the executable command, exact source contract,
+assumptions and these verification boundaries.
+
 ## Native RTP/JPEG reconstruction and pixels (2026-10-31, reference)
 
 The first-party packet owner now reconstructs complete RFC 2435 baseline JPEG

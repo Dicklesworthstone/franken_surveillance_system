@@ -11,6 +11,13 @@ correspondences. A handoff report is derived analysis: source handles, generatio
 bounds and costs are owner declarations. The command does not fetch or authenticate the
 source media, establish a person's identity, publish an event, or activate a policy.
 
+For tracks already retained by native package detection, use
+[`fss-scene-fuse retained-handoffs`](RETAINED_HANDOFFS.md). That command reconstructs
+the actual assignments and source provenance, derives the camera/model/privacy bindings,
+and revalidates custody and the current deployment anchor before returning the same
+conditional planner's complete result. Clock alignment, calibration, transit and cost
+remain explicit assumptions.
+
 ## Run a complete query
 
 The repository includes a complete, synthetic four-tracklet/three-camera query:

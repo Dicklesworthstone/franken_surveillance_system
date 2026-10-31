@@ -1,0 +1,68 @@
+{
+  "schema": "fss.scene_handoffs_retained_query.v1",
+  "session": "session:synthetic-selection-parser-fixture",
+  "generation": "sha256:1153d4dfcd203960faf3223459a5f9d3f04b341a52fa77ef6102bbddb28dd6e6",
+  "clock": "sha256:be532b64b41bbcb10a4970d49decb23e9701f9bf60aa1ab9b72dce067e4f9943",
+  "cost_unit": "declared_integer_cost",
+  "birth_cost": 5,
+  "end_cost": 5,
+  "k": 2,
+  "selections": [
+    {
+      "id": "a",
+      "report_digest": "sha256:205e0eb59596cbc0da1fde43aae0512395f763d0036c2d915b9f9a54a62f7fa4",
+      "label": "person",
+      "tracking": {
+        "confirmation_hits": 2,
+        "maximum_missed_frames": 3,
+        "minimum_iou_ppm": 300000
+      },
+      "track": "sha256:c34d35541de86851607f1d7b0264bfdb0bdeeef221fb9f7c8010a35f7f11dbb8",
+      "calibration": "sha256:e117186101187249d92e97cdb7504164eec42efad2764c2d4f4d4395691e4c21",
+      "alignment": {
+        "import_identity": "sha256:64dd2f14845123086339bd559054c565f8415ac0aade9712c34896d31fa78321",
+        "stream_id": "stream:fixture-a",
+        "clock_basis": "estimated",
+        "offset_ns": [
+          -2,
+          3
+        ],
+        "basis": "sha256:4113b169fc9f5073b2106a7d7e48df16bad0933a75e86fa88942521b3fad4285"
+      }
+    },
+    {
+      "id": "b",
+      "report_digest": "sha256:2047dcaa671ee692136aa016bcbf4b22b2c7a11396f6c6362c29ce744897af4b",
+      "label": "person",
+      "tracking": {
+        "confirmation_hits": 2,
+        "maximum_missed_frames": 3,
+        "minimum_iou_ppm": 300000
+      },
+      "track": "sha256:0e90094f2a968459a14ad76de280ed5c957ef6bc4e18037d4344574fecd12eb0",
+      "calibration": "sha256:a38eb642ff05d84fdb94a79c9cbd6b871333d5de1292d2b24577fd7c9bb18361",
+      "alignment": {
+        "import_identity": "sha256:818e92e35959590262b7b9bd77b855afc71eb6dfbedc2113830830e8d291b7d2",
+        "stream_id": "stream:fixture-b",
+        "clock_basis": "estimated",
+        "offset_ns": [
+          -2,
+          3
+        ],
+        "basis": "sha256:ef22fe9123621d936f55ea4ba5f92181937517cb8dc02d1050bb67a6748cd23a"
+      }
+    }
+  ],
+  "transitions": [
+    {
+      "from": "a",
+      "to": "b",
+      "transit": [
+        1,
+        100
+      ],
+      "cost": 1,
+      "basis": "sha256:0d80bcc2abc922a98137fc87d5dc3d89f55e4f54b338d01ec5535d70339790e7"
+    }
+  ]
+}

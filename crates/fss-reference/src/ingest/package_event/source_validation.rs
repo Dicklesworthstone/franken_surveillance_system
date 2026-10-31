@@ -238,6 +238,17 @@ pub(in crate::ingest) fn verify_sources(
     record: &PackageDetectionRecord,
     cx: &ReplayCx,
 ) -> Result<Vec<PackageTrackingBoundary>> {
+    verify_sources_with_budget(deployment, record, None, cx)
+}
+
+/// Optional shared byte admission for consumers composing several native source analyses.
+/// Reservations include raw chunk and HTTP/RTSP origin reads and survive cache replacement.
+pub(in crate::ingest) fn verify_sources_with_budget(
+    deployment: &ReferenceDeployment,
+    record: &PackageDetectionRecord,
+    source_budget: Option<&crate::ingest::retained::SourceReadBudget>,
+    cx: &ReplayCx,
+) -> Result<Vec<PackageTrackingBoundary>> {
     record.validate_shape()?;
     checkpoint(cx, "package_event:verify_sources")?;
     let limits = RetainedReadLimits::default();
@@ -253,6 +264,7 @@ pub(in crate::ingest) fn verify_sources(
     let mut previous = None;
     let mut clock = None;
     let mut boundaries = Vec::new();
+    let mut chunks = crate::ingest::retained::VerifiedChunkCache::with_source_budget(source_budget);
     for frame in ordered {
         checkpoint(cx, "package_event:verify_source_frame")?;
         let segment = usize::try_from(frame.segment).map_err(|_| PackageEventError::Limit)?;
@@ -273,9 +285,11 @@ pub(in crate::ingest) fn verify_sources(
         }
         clock = Some(capsule.clock_basis);
         // Drop each verified segment before reading the next; never buffer the source range.
-        let bytes = retained
-            .read_segment(deployment, segment, limits, cx)
-            .map_err(RecordedDecodeError::from)?;
+        let bytes = match source_budget {
+            Some(_) => retained.read_segment_cached(deployment, segment, limits, cx, &mut chunks),
+            None => retained.read_segment(deployment, segment, limits, cx),
+        }
+        .map_err(RecordedDecodeError::from)?;
         drop(bytes);
         let point = SourcePoint {
             segment: frame.segment,

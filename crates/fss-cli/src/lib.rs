@@ -15,6 +15,10 @@ pub mod archive_cmd;
 pub mod claim_cmd;
 /// Pure bounded anonymous multi-camera handoff query with complete alternatives.
 pub mod continuity_query;
+/// Bounded selection and complete projection report for retained package-track handoffs.
+pub mod retained_continuity_query;
+/// The source owner's pure retained-handoff contract, shared with the query adapter.
+pub use fss_reference::ingest::package_handoffs::contract as retained_handoff_contract;
 pub mod crosswalk;
 /// Checked custody observations over verified local event authority; no effect or export grant.
 pub mod custody_review;
@@ -46,10 +50,10 @@ pub mod mission_cmd;
 pub mod negative_evidence_cmd;
 /// Read-only `orient` (AOP-003) and `explain` (AOP-011) over a deployment root.
 pub mod orient_cmd;
-/// Read-only AOP-005 projection of the verified event-record query engine.
-pub mod query_cmd;
 /// AOP-006 bounded retained-source probes over existing owned subscriptions.
 pub mod probe_cmd;
+/// Read-only AOP-005 projection of the verified event-record query engine.
+pub mod query_cmd;
 pub mod redact;
 /// Import explicitly bound camera poses from an authored property scene.
 pub mod scene_rig;

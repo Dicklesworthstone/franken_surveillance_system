@@ -615,6 +615,17 @@ impl RetainedPackageDetection {
         report_digest: ContentDigest,
         cx: &ReplayCx,
     ) -> Result<Self> {
+        Self::open_with_source_budget(deployment, report_digest, None, cx)
+    }
+
+    /// Additive whole-query source allowance for composing several retained analyses.
+    /// Existing public reads retain their original uncached custody behavior.
+    pub(in crate::ingest) fn open_with_source_budget(
+        deployment: &ReferenceDeployment,
+        report_digest: ContentDigest,
+        source_budget: Option<&super::retained::SourceReadBudget>,
+        cx: &ReplayCx,
+    ) -> Result<Self> {
         checkpoint(cx, "package_event:open")?;
         let target = BatchId::parse(format!("batch:package-detection:{}", hex(report_digest)))?;
         let batch = deployment
@@ -655,7 +666,8 @@ impl RetainedPackageDetection {
             &report_json,
             cx,
         )?;
-        let boundaries = source_validation::verify_sources(deployment, &record, cx)?;
+        let boundaries =
+            source_validation::verify_sources_with_budget(deployment, &record, source_budget, cx)?;
         Ok(Self {
             record,
             record_digest: delta.payload_digest,
@@ -870,9 +882,26 @@ impl PackageAnalysisReport {
         config: PackageTrackingConfig,
         cx: &ReplayCx,
     ) -> Result<Self> {
+        Self::read_with_source_budget(deployment, report_digest, label, config, None, cx)
+    }
+
+    /// Native analysis under a shared original-byte allowance owned by a composing consumer.
+    pub(in crate::ingest) fn read_with_source_budget(
+        deployment: &ReferenceDeployment,
+        report_digest: ContentDigest,
+        label: &str,
+        config: PackageTrackingConfig,
+        source_budget: Option<&super::retained::SourceReadBudget>,
+        cx: &ReplayCx,
+    ) -> Result<Self> {
         checkpoint(cx, "package_event:analyze")?;
         config.tracker()?;
-        let retained = RetainedPackageDetection::open(deployment, report_digest, cx)?;
+        let retained = RetainedPackageDetection::open_with_source_budget(
+            deployment,
+            report_digest,
+            source_budget,
+            cx,
+        )?;
         let record = retained.record();
         let class_index = record.labels.iter().position(|l| l == label).ok_or(
             PackageEventError::InvalidRequest("label is not in the package vocabulary"),
