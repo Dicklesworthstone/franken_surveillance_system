@@ -10,6 +10,9 @@ use fss_graph_algorithms::robust_placement::{
 };
 use fss_graph_algorithms::weighted::{WeightedGraph, WeightedGraphBuilder};
 
+#[path = "placement_failures.rs"]
+mod shared;
+
 const FORMAT: &str = "fss.coverage_robust_placement.v1";
 const MAX_MOVES: usize = 128;
 const CLAIM: &str = "exact hypothetical camera-addition optimum for the declared movement graph, candidate coverage and additive sensor-loss costs; baseline support uses retained whole-window witnesses, not current health, calibrated clocks, independent failures, complete physical routes, absence, or authority to install or disable cameras";
@@ -19,6 +22,7 @@ const HELP: &str = "fss-cover placement --root DIR --site SITE --during START_NS
   [--move FROM=TO ...] (directed; declare both directions when intended)\n\
   --candidate SENSOR=INSTALL_COST:DISABLE_COST:ZONE[,ZONE...] [--candidate ...]\n\
   --installation-budget N [--max-additions N] [--sensor-disable-cost SENSOR=N ...]\n\
+  [--failure-action ID=COST=SENSOR[,SENSOR...] ...]\n\
   --installation-cost-unit UNIT --sensor-loss-cost-unit UNIT\n\
   [--expected-coverage sha256:HEX] [--work-units N] [--max-report-bytes N] [--timeout-ms N]\n\
 \n\
@@ -29,6 +33,13 @@ const HELP: &str = "fss-cover placement --root DIR --site SITE --during START_NS
   Both unit names are required (1..64 ASCII letters/digits or : _ - .).\n\
   Existing relevant sensors default to loss cost 1; overrides must name an existing\n\
   positive observer in this movement graph. Installation and loss units are separate.\n\
+  With --failure-action, shared power/network/host losses are considered alongside\n\
+  individual sensor losses. COST uses --sensor-loss-cost-unit and is charged once per\n\
+  selected action. Overlapping memberships are unioned. Members may name proposed\n\
+  candidates or retained sensors; unknown identities refuse. Explicit retained members\n\
+  without positive support add NO observer edges and default to loss cost 1 (overridable).\n\
+  Only installed members are affected. The report names typed actions, affected sensors\n\
+  and paths; these are hypothetical loss assumptions, not measured probabilities.\n\
 \n\
   Every baseline edge requires one retained witness covering the WHOLE requested window.\n\
   Proposed coverage, movement and costs are owner assertions, never retained sensor facts.\n\
@@ -43,6 +54,8 @@ const HELP: &str = "fss-cover placement --root DIR --site SITE --during START_NS
   optimum. Source reads have independent bounds. --timeout-ms defaults to 30000;\n\
   checks bracket nonpreemptible source reads and run throughout the exact solver.\n\
   Output is complete fss.coverage_robust_placement.v1 JSON (2 MiB maximum by default).\n\
+  Shared actions select fss.coverage_shared_failure_placement.v1 with a distinct witness\n\
+  policy. At most 16 shared actions, additional to the same 20-sensor/16-candidate limits.\n\
   --expected-coverage pins the retained source witness, not the hypothetical declarations.\n\
   IDs in declarations must not contain '=' or ','; duplicates and unknown zones refuse.\n\
   This is a deterministic reference analysis, not production qualification.\n";
@@ -55,6 +68,7 @@ struct PlacementRequest {
     entries: BTreeSet<String>,
     targets: BTreeSet<String>,
     candidates: Vec<PlacementCandidate>,
+    failure_actions: Vec<shared::FailureAction>,
     disable_costs: BTreeMap<String, u64>,
     installation_budget: u64,
     maximum_additions: usize,
@@ -136,6 +150,7 @@ fn parse(args: &[OsString]) -> Result<Option<PlacementRequest>, CommandError> {
     let mut entries = BTreeSet::new();
     let mut targets = BTreeSet::new();
     let mut candidates = BTreeMap::new();
+    let mut failure_actions = BTreeMap::new();
     let mut disable_costs = BTreeMap::new();
     let mut installation_budget = None;
     let mut maximum_additions = 1;
@@ -167,6 +182,16 @@ fn parse(args: &[OsString]) -> Result<Option<PlacementRequest>, CommandError> {
                 {
                     return Err(CommandError::Usage(
                         "duplicate or excessive candidate sensors",
+                    ));
+                }
+            }
+            "--failure-action" => {
+                let action = shared::parse_action(value)?;
+                if failure_actions.len() >= shared::MAX_SHARED_ACTIONS
+                    || failure_actions.insert(action.id.clone(), action).is_some()
+                {
+                    return Err(CommandError::Usage(
+                        "duplicate or excessive shared failure actions",
                     ));
                 }
             }
@@ -254,6 +279,7 @@ fn parse(args: &[OsString]) -> Result<Option<PlacementRequest>, CommandError> {
         entries,
         targets,
         candidates: candidates.into_values().collect(),
+        failure_actions: failure_actions.into_values().collect(),
         disable_costs,
         installation_budget: installation_budget
             .ok_or(CommandError::Usage("--installation-budget is required"))?,
@@ -301,9 +327,27 @@ fn problem(
             "candidate ID already names a retained sensor",
         ));
     }
+    let candidates: BTreeSet<&str> = request
+        .candidates
+        .iter()
+        .map(|c| c.sensor.as_str())
+        .collect();
+    for action in &request.failure_actions {
+        for member in &action.members {
+            if known.contains(member.as_str()) {
+                // Explicitly named retained members remain in the failure catalog, including
+                // zero-support sensors. This adds no coverage and preserves the declared union.
+                costs.entry(member.clone()).or_insert(1);
+            } else if !candidates.contains(member.as_str()) {
+                return Err(CommandError::Usage(
+                    "failure action names no retained or candidate sensor",
+                ));
+            }
+        }
+    }
     for (sensor, cost) in &request.disable_costs {
         let current = costs.get_mut(sensor).ok_or(CommandError::Usage(
-            "sensor loss override names no positive observer in the movement graph",
+            "sensor loss override names no positive observer or declared failure member",
         ))?;
         *current = *cost;
     }
@@ -509,6 +553,9 @@ fn select(
     stopped: &impl Fn() -> bool,
 ) -> Result<String, CommandError> {
     let query = problem(request, source)?;
+    if !request.failure_actions.is_empty() {
+        return shared::select(request, source, query, stopped);
+    }
     let analysis = robust_placement::select_robust_placement_with_cancel(
         &request.movement,
         &query,

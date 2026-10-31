@@ -147,6 +147,197 @@ fn input_order_does_not_change_the_complete_report_or_witness() -> TestResult {
 }
 
 #[test]
+fn shared_power_changes_the_command_recommendation_and_reports_typed_actions() -> TestResult {
+    let source = source()?;
+    let request = request(&[
+        "--candidate",
+        "sensor:separate=5:1:zone:entry",
+        "--failure-action",
+        "power:poe=1=sensor:old,sensor:new",
+    ])?;
+    let report = parse_json(&select(&request, &source, &|| false).map_err(|e| format!("{e:?}"))?)?;
+    assert_eq!(
+        field(&report, "format")?.text(),
+        Some("fss.coverage_shared_failure_placement.v1")
+    );
+    let selected = field(&report, "selected_sensors")?
+        .array()
+        .ok_or("selected sensors missing")?;
+    assert_eq!(selected.len(), 1);
+    assert_eq!(selected[0].text(), Some("sensor:separate"));
+    let defended = field(&report, "defended")?;
+    assert_eq!(
+        field(defended, "failure_action_loss_cost_units")?.integer(),
+        Some(2)
+    );
+    // Individual actions win a tie against a same-cost shared action under the declared order.
+    let actions = field(defended, "failure_actions")?
+        .array()
+        .ok_or("actions missing")?;
+    assert_eq!(actions.len(), 2);
+    assert!(
+        actions
+            .iter()
+            .all(|a| field(a, "kind").is_ok_and(|v| v.text() == Some("individual_sensor")))
+    );
+    assert_eq!(
+        field(&report, "source_coverage_witness_digest")?.text(),
+        Some(source.witness.digest().to_text().as_str())
+    );
+    assert_eq!(
+        field(&report, "authority")?.text(),
+        Some("derived_cognition_no_effect_authority")
+    );
+    Ok(())
+}
+
+#[test]
+fn extra_camera_on_same_switch_can_have_no_robustness_gain() -> TestResult {
+    let source = source()?;
+    let request = request(&["--failure-action", "power:poe=1=sensor:old,sensor:new"])?;
+    let report = parse_json(&select(&request, &source, &|| false).map_err(|e| format!("{e:?}"))?)?;
+    assert_eq!(
+        field(&report, "selected_sensors")?.array(),
+        Some([].as_slice())
+    );
+    assert_eq!(field(&report, "baseline")?, field(&report, "defended")?);
+    assert_eq!(
+        field(
+            field(&report, "defended")?,
+            "failure_action_loss_cost_units"
+        )?
+        .integer(),
+        Some(1)
+    );
+    Ok(())
+}
+
+#[test]
+fn retained_zero_support_failure_members_do_not_create_coverage() -> TestResult {
+    let source = source()?;
+    let request = request(&[
+        "--failure-action",
+        "power:poe=0=sensor:unseen,sensor:old,sensor:new",
+        "--sensor-disable-cost",
+        "sensor:unseen=7",
+    ])?;
+    let query = problem(&request, &source).map_err(|e| format!("{e:?}"))?;
+    assert!(query.baseline.observers["zone:entry"].is_empty());
+    assert_eq!(query.baseline.costs["sensor:unseen"], 7);
+    let report = parse_json(&select(&request, &source, &|| false).map_err(|e| format!("{e:?}"))?)?;
+    let baseline = field(&report, "baseline")?;
+    assert_eq!(
+        field(baseline, "failure_action_loss_cost_units")?.integer(),
+        Some(0)
+    );
+    let disabled = field(baseline, "disabled_sensors")?
+        .array()
+        .ok_or("disabled sensors missing")?;
+    assert_eq!(disabled.len(), 2);
+    assert_eq!(disabled[0].text(), Some("sensor:old"));
+    assert_eq!(disabled[1].text(), Some("sensor:unseen"));
+    let unsupported = field(&report, "zones_without_retained_support")?
+        .array()
+        .ok_or("unsupported zones missing")?;
+    assert_eq!(unsupported.len(), 1);
+    assert_eq!(unsupported[0].text(), Some("zone:entry"));
+    Ok(())
+}
+
+#[test]
+fn shared_action_order_preserves_entire_report_and_no_action_preserves_legacy_format() -> TestResult
+{
+    let source = source()?;
+    let original = args(&[
+        "--failure-action",
+        "power:z=0=sensor:new,sensor:old",
+        "--failure-action",
+        "switch:a=3=sensor:unseen,sensor:old",
+    ]);
+    let mut reordered = vec![OsString::from("placement")];
+    for pair in original[1..].as_chunks::<2>().0.iter().rev() {
+        reordered.extend_from_slice(pair);
+    }
+    let first = parse(&original)
+        .map_err(|e| format!("{e:?}"))?
+        .ok_or("missing request")?;
+    let second = parse(&reordered)
+        .map_err(|e| format!("{e:?}"))?
+        .ok_or("missing request")?;
+    assert_eq!(
+        select(&first, &source, &|| false).map_err(|e| format!("{e:?}"))?,
+        select(&second, &source, &|| false).map_err(|e| format!("{e:?}"))?
+    );
+    let legacy =
+        parse_json(&select(&request(&[])?, &source, &|| false).map_err(|e| format!("{e:?}"))?)?;
+    assert_eq!(field(&legacy, "format")?.text(), Some(FORMAT));
+    assert!(field(field(&legacy, "defended")?, "failure_actions").is_err());
+    Ok(())
+}
+
+#[test]
+fn malformed_duplicate_oversized_and_unknown_shared_actions_refuse() -> TestResult {
+    for declaration in [
+        "power",
+        "power=1",
+        "power=1=",
+        "=1=sensor:old",
+        "power=-1=sensor:old",
+        "power=18446744073709551616=sensor:old",
+        "power=1=sensor:old,sensor:old",
+        "power=1=sensor:old,",
+        "power=1=sensor:old=bad",
+        "power\n=1=sensor:old",
+    ] {
+        assert!(
+            parse(&args(&["--failure-action", declaration])).is_err(),
+            "{declaration:?}"
+        );
+    }
+    assert!(
+        parse(&args(&[
+            "--failure-action",
+            "power=1=sensor:old",
+            "--failure-action",
+            "power=2=sensor:new",
+        ]))
+        .is_err()
+    );
+    let mut excessive = args(&[]);
+    for index in 0..=shared::MAX_SHARED_ACTIONS {
+        excessive.extend([
+            OsString::from("--failure-action"),
+            OsString::from(format!("power:{index}=1=sensor:old")),
+        ]);
+    }
+    assert!(parse(&excessive).is_err());
+    let source = source()?;
+    assert!(matches!(
+        problem(
+            &request(&["--failure-action", "power=1=sensor:missing"])?,
+            &source
+        ),
+        Err(CommandError::Usage(_))
+    ));
+    Ok(())
+}
+
+#[test]
+fn shared_action_solver_cancellation_work_and_output_refuse_complete_reports() -> TestResult {
+    let source = source()?;
+    let declared = ["--failure-action", "power=0=sensor:old,sensor:new"];
+    assert!(select(&request(&declared)?, &source, &|| true).is_err());
+    let small_work = [declared.as_slice(), &["--work-units", "1"]].concat();
+    assert!(select(&request(&small_work)?, &source, &|| false).is_err());
+    let small_output = [declared.as_slice(), &["--max-report-bytes", "1024"]].concat();
+    assert!(matches!(
+        select(&request(&small_output)?, &source, &|| false),
+        Err(CommandError::OutputBound)
+    ));
+    Ok(())
+}
+
+#[test]
 fn malformed_and_ambiguous_declarations_refuse_before_source_io() {
     for extra in [
         vec!["--entry", "zone:entry"],

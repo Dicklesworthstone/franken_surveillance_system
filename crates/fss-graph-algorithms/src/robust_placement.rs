@@ -25,6 +25,9 @@ use crate::interdiction::{InterdictionOutcome, InterdictionQuery};
 use crate::set_cover::{CoverBudget, CoverError, MAX_OUTPUT_ENTRIES, MAX_WORK_UNITS};
 use crate::weighted::{Orientation, WeightedGraph};
 
+/// Exact placement with explicit shared failures in addition to individual sensor losses.
+pub mod shared_failures;
+
 /// Maximum explicitly considered additions; larger requests are refused, not sampled.
 pub const MAX_CANDIDATES: usize = 16;
 /// Maximum baseline and candidate sensor identities, including zero-support sensors.

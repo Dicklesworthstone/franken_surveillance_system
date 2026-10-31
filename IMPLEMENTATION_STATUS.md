@@ -10,6 +10,26 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Camera placement under shared dependency failures (2026-10-31, reference)
+
+`fss-cover placement --failure-action ID=COST=SENSOR[,SENSOR...]` now evaluates camera
+additions against declared common power, network, host or other dependency losses alongside
+individual sensor losses. Each selected action is charged once and overlapping memberships
+are unioned. Proposed cameras participate only when installed. The exact optimum returns
+typed failure actions, affected sensors and an unseen-path witness under explicit cost units,
+one cumulative work budget and cooperative cancellation. Unknown members and partial optima
+refuse. Existing individual-loss mode and canonical bytes remain unchanged.
+
+The full native graph package passed **190 tests**, including 11 new shared-failure contracts
+and 160 seeded tiny cases checked against independent simple-path/set-cover enumeration.
+Focused Clippy passed with four unchanged baseline lint categories allowed; strict all-target
+Clippy still reports those existing findings. Six CLI unit cases and a retained-custody process
+extension are authored but unexecuted because of the existing asynchronous dependency build
+limit. Required schema/domain registrations remove all new-feature scanner findings; 39
+unrelated existing findings remain. This is exact conditional advice about declared failures,
+not measured reliability, installation authority or production qualification. See
+`docs/robust_camera_placement.md` and `architecture/shared_failure_placement_reference.json`.
+
 ## Source-preserving native ONNX artifact export (2026-10-30, reference)
 
 The general ONNX importer now exports its validated graph and exact finite F32 parameters

@@ -957,6 +957,101 @@ fn robust_placement_uses_cold_whole_window_custody_without_writing_or_claiming_l
         first.stdout, again.stdout,
         "cold reads produce exactly the same report"
     );
+    let shared = run(
+        "1401000000:2099000000",
+        &[
+            "--expected-coverage",
+            pin,
+            "--candidate",
+            "sensor:isolated=5:1:zone:entry",
+            "--failure-action",
+            "power:poe=1=sensor:quiet,sensor:proposed",
+        ],
+    )?;
+    success(&shared);
+    let shared_text = std::str::from_utf8(&shared.stdout)?;
+    let shared_result = Json::parse(shared_text)?;
+    assert_conforms(
+        "coverage_shared_failure_placement.v1.json",
+        shared_text,
+        &directory.0,
+        "retained shared-failure camera placement",
+    )?;
+    assert_eq!(
+        shared_result.get("selected_sensors")?.texts()?,
+        vec!["sensor:isolated"]
+    );
+    assert_eq!(
+        shared_result
+            .get("baseline")?
+            .get("failure_action_loss_cost_units")?
+            .number()?,
+        1
+    );
+    assert_eq!(
+        shared_result
+            .get("defended")?
+            .get("failure_action_loss_cost_units")?
+            .number()?,
+        2
+    );
+    assert_eq!(
+        shared_result
+            .get("source_coverage_witness_digest")?
+            .text()?,
+        pin
+    );
+    let shared_again = run(
+        "1401000000:2099000000",
+        &[
+            "--failure-action",
+            "power:poe=1=sensor:proposed,sensor:quiet",
+            "--candidate",
+            "sensor:isolated=5:1:zone:entry",
+            "--expected-coverage",
+            pin,
+        ],
+    )?;
+    success(&shared_again);
+    assert_eq!(
+        shared.stdout, shared_again.stdout,
+        "shared declaration ordering is canonical"
+    );
+    let same_switch = run(
+        "1401000000:2099000000",
+        &[
+            "--failure-action",
+            "power:poe=1=sensor:quiet,sensor:proposed",
+        ],
+    )?;
+    success(&same_switch);
+    let same_switch = Json::parse(std::str::from_utf8(&same_switch.stdout)?)?;
+    assert!(same_switch.get("selected_sensors")?.texts()?.is_empty());
+    for options in [
+        vec![
+            "--failure-action",
+            "power:poe=1=sensor:quiet,sensor:missing",
+        ],
+        vec![
+            "--failure-action",
+            "power:poe=1=sensor:quiet,sensor:proposed",
+            "--work-units",
+            "1",
+        ],
+        vec![
+            "--failure-action",
+            "power:poe=1=sensor:quiet,sensor:proposed",
+            "--max-report-bytes",
+            "1024",
+        ],
+    ] {
+        let refused = run("1401000000:2099000000", &options)?;
+        assert!(!refused.status.success());
+        assert!(
+            refused.stdout.is_empty(),
+            "shared failure refusal cannot emit a partial optimum"
+        );
+    }
     let outside = run("1000000000:2099000000", &[])?;
     success(&outside);
     let outside_report = Json::parse(std::str::from_utf8(&outside.stdout)?)?;
