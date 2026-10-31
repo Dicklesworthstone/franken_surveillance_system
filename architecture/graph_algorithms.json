@@ -363,14 +363,17 @@
       "tieBreakPolicyId": "tie:distance-then-node-heap-strict-improvement-canonical-residual-edges:v1",
       "policyId": "graph-policy:directed:simple-strict:paired-cost-and-capacity-projections:numeric:u64-exact:checked:unit-bound:v1:tie:distance-then-node-heap-strict-improvement-canonical-residual-edges:v1",
       "complexityBoundId": "bound:alg-mcf-001:ssp-demand-augmentations-plus-bellman-ford-certificate:v1",
-      "projectionBinding": "caller-built paired directed cost and capacity WeightedGraph projections over the same nodes and arcs; the witness bound depends on the requested demand bound into its inputDigest",
+      "projectionBinding": "caller-built paired directed cost and capacity WeightedGraph projections over the same nodes and arcs; the witness bound depends on the requested demand bound into its inputDigest; additive stream_capacity_composition mode binds explicit camera demands, directed named links, recorder limits and node/link failures under architecture/stream_capacity_reference.json, retaining every demand and complete certified maximum-flow/minimum-cost proofs",
       "qualification": "not_qualified: certified only against the in-tree brute-force oracle (crates/fss-graph-algorithms/src/oracles.rs) on seeded small graphs; the INT-FNX-001 FrankenNetworkX differential, snapshot invalidation, capability noninterference and incremental/full lanes do not exist",
       "evidence": [
         "crates/fss-graph-algorithms/src/min_cost_flow.rs",
         "crates/fss-graph-algorithms/src/weighted.rs",
         "crates/fss-graph-algorithms/src/certified.rs",
         "crates/fss-graph-algorithms/src/oracles.rs",
-        "crates/fss-graph-algorithms/tests/optimization_certification.rs"
+        "crates/fss-graph-algorithms/tests/optimization_certification.rs",
+        "crates/fss-graph-algorithms/src/stream_capacity.rs",
+        "crates/fss-graph-algorithms/tests/stream_capacity_contract.rs",
+        "architecture/stream_capacity_reference.json"
       ]
     },
     {

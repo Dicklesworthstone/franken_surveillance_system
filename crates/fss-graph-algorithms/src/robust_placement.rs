@@ -183,7 +183,7 @@ pub fn bound(n: u64, m: u64, s: u64, p: u64) -> Vec<BoundRow> {
 }
 
 struct Work<F> {
-    meter: Meter,
+    meter: Meter<'static>,
     cancelled: F,
 }
 

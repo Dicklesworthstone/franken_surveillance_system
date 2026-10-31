@@ -144,14 +144,23 @@ impl Budget {
 
 /// Charges dominant operations against a budget and records the decision path.
 #[derive(Debug)]
-pub struct Meter {
+pub struct Meter<'a> {
     budget: Budget,
     operations: u64,
     counters: BTreeMap<&'static str, u64>,
     path: CanonicalEncoder,
+    cancelled: Option<CancellationProbe<'a>>,
 }
 
-impl Meter {
+struct CancellationProbe<'a>(&'a dyn Fn() -> bool);
+
+impl std::fmt::Debug for CancellationProbe<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("CancellationProbe")
+    }
+}
+
+impl<'a> Meter<'a> {
     /// A fresh meter whose decision path starts with the identity's domain and tie-break policy.
     #[must_use]
     pub fn new(identity: &AlgorithmIdentity, budget: Budget) -> Self {
@@ -163,6 +172,29 @@ impl Meter {
             operations: 0,
             counters: BTreeMap::new(),
             path,
+            cancelled: None,
+        }
+    }
+
+    /// The same meter and charge schedule with an owner-controlled cancellation probe.
+    /// Successful runs retain exactly the original counters and canonical decision bytes.
+    #[must_use]
+    pub fn new_cancellable(
+        identity: &AlgorithmIdentity,
+        budget: Budget,
+        cancelled: &'a dyn Fn() -> bool,
+    ) -> Self {
+        let mut meter = Self::new(identity, budget);
+        meter.cancelled = Some(CancellationProbe(cancelled));
+        meter
+    }
+
+    /// Poll cancellation without changing the historical operation counters or decision path.
+    pub fn checkpoint(&self) -> Result<(), GraphError> {
+        if self.cancelled.as_ref().is_some_and(|probe| (probe.0)()) {
+            Err(GraphError::Cancelled)
+        } else {
+            Ok(())
         }
     }
 
@@ -181,6 +213,7 @@ impl Meter {
     ///
     /// [`GraphError::BudgetExhausted`] when the operation budget is spent.
     pub fn tick_n(&mut self, counter: &'static str, count: u64) -> Result<(), GraphError> {
+        self.checkpoint()?;
         *self.counters.entry(counter).or_insert(0) += count;
         self.operations = self.operations.saturating_add(count);
         if self.operations > self.budget.max_operations {
@@ -225,6 +258,7 @@ impl Meter {
         bound: &[BoundRow],
         peak_working_bytes: u64,
     ) -> Result<CertifiedRun<O>, GraphError> {
+        self.checkpoint()?;
         let output_entries = output.entries();
         if output_entries > self.budget.max_output_entries {
             return Err(GraphError::BudgetExhausted {
@@ -271,6 +305,7 @@ impl Meter {
             ));
         }
         let output_digest = ContentDigest::sha256(&encoder.finish());
+        self.checkpoint()?;
         Ok(CertifiedRun {
             identity,
             node_count: shape.node_count,

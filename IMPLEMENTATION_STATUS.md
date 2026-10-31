@@ -10,6 +10,28 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Native camera-stream capacity and failover planning (2026-10-30, reference)
+
+`fss_graph_algorithms::stream_capacity` now composes the existing certified maximum-flow
+and minimum-cost-flow owners into an exact operational planning query: maximize aggregate
+camera delivery, then minimize declared routing cost. Inputs explicitly name directed links,
+parallel-link identities, positive camera demands, recorder acceptance limits, rate/cost units
+and failed nodes/links. Every camera demand remains present even when its attachment fails.
+Complete camera, link and recorder rows retain delivery/shortfall, inactive declarations,
+the typed limiting cut and both full solver proofs. Final conservation and cut saturation are
+checked against the cost-optimal flow under one work/output allowance and cancellation probe.
+
+All **208 native graph tests** passed, including 18 new capacity contracts. Independent integral
+flow enumeration checks 256 tiny networks and failure variants on 64 seeded networks; further
+cases verify parallel routes, recorder bottlenecks, zero-cost cycles, permutation identities,
+numeric extremes, every cancellation checkpoint and exact shared budget boundaries. Existing
+successful solver outputs, counters and identities are preserved by additive cancellation
+wrappers; signed intermediate cost arithmetic is checked. Focused Clippy passed with only four
+unchanged baseline lint categories allowed. Strict all-target Clippy still reports those same
+existing findings. The bounded composition contract is `architecture/stream_capacity_reference.json`.
+This is conditional aggregate splittable routing, without measured throughput, per-camera
+fairness, individual-session multipath support, stream activation or production qualification.
+
 ## Static ONNX constants and detector-head shape operations (2026-10-30, reference)
 
 The general opset-13 importer now admits finite F32 Constant nodes and exact embedded

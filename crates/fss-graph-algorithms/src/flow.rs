@@ -312,6 +312,35 @@ pub fn max_flow_min_cut(
     mode: CutMode,
     budget: Budget,
 ) -> Result<CertifiedRun<FlowOutput>, GraphError> {
+    run(graph, source, sink, mode, budget, None)
+}
+
+/// The same certified flow/cut with cancellation at dominant steps and bounded setup loops.
+/// Cancellation returns [`GraphError::Cancelled`]; successful canonical bytes are unchanged.
+pub fn max_flow_min_cut_with_cancel(
+    graph: &WeightedGraph,
+    source: &str,
+    sink: &str,
+    mode: CutMode,
+    budget: Budget,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<CertifiedRun<FlowOutput>, GraphError> {
+    run(graph, source, sink, mode, budget, Some(cancelled))
+}
+
+fn run(
+    graph: &WeightedGraph,
+    source: &str,
+    sink: &str,
+    mode: CutMode,
+    budget: Budget,
+    cancelled: Option<&dyn Fn() -> bool>,
+) -> Result<CertifiedRun<FlowOutput>, GraphError> {
+    let mut meter = match cancelled {
+        Some(probe) => Meter::new_cancellable(&IDENTITY, budget, probe),
+        None => Meter::new(&IDENTITY, budget),
+    };
+    meter.checkpoint()?;
     let s = graph.require(source)?;
     let t = graph.require(sink)?;
     if s == t {
@@ -319,7 +348,6 @@ pub fn max_flow_min_cut(
             "a cut needs distinct source and sink".to_owned(),
         ));
     }
-    let mut meter = Meter::new(&IDENTITY, budget);
     let (output, residual_edges) = match mode {
         CutMode::Arcs => arc_cut(graph, s, t, &mut meter)?,
         CutMode::Nodes => node_cut(graph, s, t, &mut meter)?,
@@ -355,6 +383,7 @@ fn arc_cut(
     let mut residual = Residual::new(n);
     let mut forward: Vec<(u32, Option<u32>)> = Vec::with_capacity(graph.arc_count());
     for arc in graph.arcs() {
+        meter.checkpoint()?;
         let first = residual.add(arc.tail, arc.head, arc.weight);
         let second = match graph.orientation() {
             Orientation::Directed => None,
@@ -457,6 +486,7 @@ fn node_cut(
     let outside = |node: u32| 2 * node + 1;
     let mut residual = Residual::new(2 * n);
     for node in 0..n as u32 {
+        meter.checkpoint()?;
         let capacity = if node == s || node == t {
             infinite
         } else {
@@ -465,6 +495,7 @@ fn node_cut(
         residual.add(inside(node), outside(node), capacity);
     }
     for arc in graph.arcs() {
+        meter.checkpoint()?;
         residual.add(outside(arc.tail), inside(arc.head), infinite);
         if graph.orientation() == Orientation::Undirected {
             residual.add(outside(arc.head), inside(arc.tail), infinite);

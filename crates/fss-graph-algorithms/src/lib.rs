@@ -63,6 +63,8 @@ pub mod set_cover;
 pub mod spanning;
 pub mod spectral;
 pub mod steiner;
+/// Exact aggregate camera-demand routing with shared capacity, failure, cost and cut proofs.
+pub mod stream_capacity;
 /// Budgeted positive-weight coverage with exact integer ratio ranking and explicit omissions.
 pub mod submodular;
 pub mod temporal;
