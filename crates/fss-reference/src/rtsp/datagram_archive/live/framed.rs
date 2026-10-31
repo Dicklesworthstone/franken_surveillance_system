@@ -2,7 +2,7 @@
 //! HEVC and JPEG wire owners use the same original-datagram custody format as AVC.
 //! Control messages (including opaque bodies and authentication) are never admitted.
 
-use super::super::*;
+use super::*;
 use crate::rtsp::RtspEvent;
 use crate::rtsp::framed::RtspWireFrame;
 

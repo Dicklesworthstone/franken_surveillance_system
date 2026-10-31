@@ -64,11 +64,17 @@ terminal retirement. Final scoped Clippy passed with only the independently
 identified unchanged `message.rs` counter-loop lint isolated; all new code remained
 subject to fatal warnings, with no source/configuration allowance added.
 
-This checkpoint executes real native protocol/socket/packet/pixel implementations
-without stubs or a foreign runtime. It does not qualify a physical camera, add a
-capture CLI profile, prove durable archive publication/cold replay, establish
-camera synchronization or complete the full asynchronous reference/release matrix.
-See `docs/NATIVE_RTSP_JPEG.md` and `docs/RTP_JPEG_REFERENCE.md`.
+Cold source-backed JPEG replay now reopens exact saved datagram prefixes and binds
+complete reconstructed images to their actual original packets, including earlier
+cached quantizer definitions. Receive time stays separate from capture time;
+prefix exhaustion never invents EOF. The existing source encoding is unchanged.
+
+Full production CLI/reference and retained JPEG test targets typecheck against
+real runtime/storage dependencies. Native execution of the new custody/replay
+tests remains pending: shared host memory and disk capacity prevented the run.
+No dependency, feature or qualification gate was replaced. Physical-camera,
+clock-synchronization and complete release qualification remain open.
+See `docs/jpeg_datagram_reconstruction.md` and `docs/NATIVE_RTSP_JPEG.md`.
 
 ## Handoffs from authenticated retained package tracks (2026-10-31, integration)
 

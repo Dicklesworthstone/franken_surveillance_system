@@ -542,6 +542,9 @@ fn digest_challenge_uses_the_shared_session_and_returns_exact_original_bytes() -
 #[path = "rtsp_jpeg_live/mod.rs"]
 mod live;
 
+#[path = "rtsp_jpeg_retained/mod.rs"]
+mod retained;
+
 // Run the original metadata selection contracts against the exact same production
 // session modules, rather than introducing a second test implementation.
 #[path = "../../fss-reference/tests/rtsp_metadata_selection_contract.rs"]

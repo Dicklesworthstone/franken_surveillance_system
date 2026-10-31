@@ -5,6 +5,10 @@
 pub mod authentication;
 #[path = "../../../fss-reference/src/rtsp/client.rs"]
 pub mod client;
+#[path = "../../../fss-reference/src/rtsp/datagram_archive/source.rs"]
+pub mod datagram_archive;
+#[path = "datagram_reconstruction.rs"]
+pub mod datagram_reconstruction;
 #[path = "../../../fss-reference/src/rtsp/framed.rs"]
 pub mod framed;
 #[path = "../../../fss-reference/src/rtsp/jpeg_client.rs"]
