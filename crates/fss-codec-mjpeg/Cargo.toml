@@ -10,3 +10,6 @@ fss-core = { path = "../fss-core" }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+fss-packet = { path = "../fss-packet" }

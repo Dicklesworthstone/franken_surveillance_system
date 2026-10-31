@@ -10,6 +10,36 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Native RTP/JPEG reconstruction and pixels (2026-10-31, reference)
+
+The first-party packet owner now reconstructs complete RFC 2435 baseline JPEG
+images from ordered RTP, including 4:2:2/4:2:0 sampling, restart intervals,
+computed quality tables, immutable cached Q=128..254 tables and fresh Q=255
+tables. It composes with the existing sequence/reorder owner and preserves the
+original datagram, exact copied image spans, interpreted header dependencies
+and generated JPEG ranges. Reused tables keep their original packet provenance.
+
+Bounds cover derived image bytes, fragments, cache entries, dimensions and an
+unrenewable pending-image lifetime. Gaps, malformed offsets, parameter drift,
+expiration, cancellation and end of input retire incomplete images without
+publishing a prefix. Transport completion is separate from entropy validity:
+the actual native JPEG decoder must validate the reconstructed image before
+releasing luma or RGB. No foreign production dependency or new runtime is added.
+
+The focused native verification passed **45 tests**: 20 packet contracts,
+eight new actual RTP/JPEG pixel cases and 17 existing baseline JPEG cases. The
+final 28 new cases passed again after completing output ownership. Six retained
+synthetic images cover both sampling layouts, extreme quantizers, restart
+markers and edge blocks; native luma agrees with independent retained FFmpeg
+6.1.1 reference output within the existing one-sample tolerance, and native
+luma/RGB agree with native decode of the original JPEG. Scoped Clippy passed
+with only the independently identified existing `result_large_err` category
+isolated; no allowance was added to repository configuration or source.
+
+This checkpoint qualifies the bounded packet reconstruction and native pixel
+path, not a physical camera, live transport, capture synchronization, durable
+custody or the release matrix. See `docs/RTP_JPEG_REFERENCE.md`.
+
 ## Static ONNX detector shape programs (2026-10-31, reference)
 
 The native importer now evaluates source-authored static shape programs instead of

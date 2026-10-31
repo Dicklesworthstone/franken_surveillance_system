@@ -550,6 +550,7 @@ name = "fss-codec-mjpeg"
 version = "0.0.1"
 dependencies = [
  "fss-core",
+ "fss-packet",
 ]
 
 [[package]]

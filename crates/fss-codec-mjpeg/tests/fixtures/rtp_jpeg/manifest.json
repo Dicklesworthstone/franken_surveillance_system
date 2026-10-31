@@ -1,0 +1,123 @@
+{
+  "schema": "fss.rtp_jpeg_lab_fixture.v1",
+  "pillow": "12.3.0",
+  "libjpeg": "6.2",
+  "ffmpeg": "ffmpeg version 6.1.1-3ubuntu5 Copyright (c) 2000-2023 the FFmpeg developers",
+  "source_pattern": "deterministic synthetic RGB; no private camera footage",
+  "cases": [
+    {
+      "name": "422_32x24_q50_rst0",
+      "width": 32,
+      "height": 24,
+      "quality": 50,
+      "rtp_type": 0,
+      "restart_interval": 0,
+      "restart_markers": 0,
+      "jpeg": {
+        "file": "422_32x24_q50_rst0.jpg",
+        "bytes": 954,
+        "sha256": "a36a08e88d315693f58a8bb9f1faf92f5cd8cd4d12c7b1e39cbd4555c1b82afc"
+      },
+      "luma": {
+        "file": "422_32x24_q50_rst0.ffmpeg.luma",
+        "bytes": 768,
+        "sha256": "bf0ec28f7d4df3cc2ce5c58279a577c28d987016243853ffe2de6b7f480afac1"
+      }
+    },
+    {
+      "name": "420_32x24_q75_rst0",
+      "width": 32,
+      "height": 24,
+      "quality": 75,
+      "rtp_type": 1,
+      "restart_interval": 0,
+      "restart_markers": 0,
+      "jpeg": {
+        "file": "420_32x24_q75_rst0.jpg",
+        "bytes": 1070,
+        "sha256": "4fba7cc1a4742a71f802372d2d9833c7cd6563229544210abd2484ce1152a081"
+      },
+      "luma": {
+        "file": "420_32x24_q75_rst0.ffmpeg.luma",
+        "bytes": 768,
+        "sha256": "3651098480ca02a09afda0604b23256cc8bbc67bcb5d7ef65309989e3cdcb51d"
+      }
+    },
+    {
+      "name": "420_40x32_q31_rst2",
+      "width": 40,
+      "height": 32,
+      "quality": 31,
+      "rtp_type": 65,
+      "restart_interval": 2,
+      "restart_markers": 2,
+      "jpeg": {
+        "file": "420_40x32_q31_rst2.jpg",
+        "bytes": 953,
+        "sha256": "ccb2a901e3ea25016f12aa8a87a6fad7b03c0970e585d93a26f80bd658428307"
+      },
+      "luma": {
+        "file": "420_40x32_q31_rst2.ffmpeg.luma",
+        "bytes": 1280,
+        "sha256": "9c515be02bb25d07f0f5313352ea19d6eb607739172db6c88bc5074d5220716c"
+      }
+    },
+    {
+      "name": "422_40x24_q80_rst1",
+      "width": 40,
+      "height": 24,
+      "quality": 80,
+      "rtp_type": 64,
+      "restart_interval": 1,
+      "restart_markers": 8,
+      "jpeg": {
+        "file": "422_40x24_q80_rst1.jpg",
+        "bytes": 1494,
+        "sha256": "290904d9c3424554658a402d4f534abcf502f6a388804733e3314614463bce69"
+      },
+      "luma": {
+        "file": "422_40x24_q80_rst1.ffmpeg.luma",
+        "bytes": 960,
+        "sha256": "c1c9f788de66e475e58440f7179b57627b543ff1b6e0917e9a92099dbeb2e30b"
+      }
+    },
+    {
+      "name": "420_24x16_q99_rst0",
+      "width": 24,
+      "height": 16,
+      "quality": 99,
+      "rtp_type": 1,
+      "restart_interval": 0,
+      "restart_markers": 0,
+      "jpeg": {
+        "file": "420_24x16_q99_rst0.jpg",
+        "bytes": 1306,
+        "sha256": "daf0b483d73c0eecf3376a52a6caa4c780581459d649dc4421649586a2a0e0c0"
+      },
+      "luma": {
+        "file": "420_24x16_q99_rst0.ffmpeg.luma",
+        "bytes": 384,
+        "sha256": "38226da294159c807615bb601c3d6ff6495f4e143ddeb693316d1a27bb2a1152"
+      }
+    },
+    {
+      "name": "422_16x16_q1_rst0",
+      "width": 16,
+      "height": 16,
+      "quality": 1,
+      "rtp_type": 0,
+      "restart_interval": 0,
+      "restart_markers": 0,
+      "jpeg": {
+        "file": "422_16x16_q1_rst0.jpg",
+        "bytes": 639,
+        "sha256": "09ca0c094110cbde9f138c5a9ff1afa744630ba490c5050e57344155bc1b6b02"
+      },
+      "luma": {
+        "file": "422_16x16_q1_rst0.ffmpeg.luma",
+        "bytes": 256,
+        "sha256": "20882e6271c170f94fda7f229d13283f722737a24462fc6ea6b2bf1ef815cc5a"
+      }
+    }
+  ]
+}
