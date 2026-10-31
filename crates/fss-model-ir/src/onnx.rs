@@ -19,6 +19,7 @@ mod batch_normalization;
 mod constants;
 mod export;
 mod gemm;
+mod pooling;
 mod resize;
 mod shape_program;
 mod split;
@@ -929,6 +930,8 @@ pub fn import_onnx<'a>(
             gemm::lower(source, &mut lowering)?;
         } else if source.op == "BatchNormalization" {
             batch_normalization::lower(source, &mut lowering)?;
+        } else if matches!(source.op.as_str(), "AveragePool" | "GlobalAveragePool") {
+            pooling::lower(source, &mut lowering)?;
         } else if source.op == "Resize" {
             resize::lower(source, &mut lowering)?;
         } else if source.op == "Split" {

@@ -10,6 +10,32 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## ONNX average pooling through native execution (2026-10-31, native model import)
+
+The opset-13 importer now admits static F32 `AveragePool-11` and
+`GlobalAveragePool-1` through the existing native graph executor. Two-dimensional
+AveragePool supports positive kernels/strides, explicit bounded padding and both
+padding divisor rules. GlobalAveragePool preserves output rank for ranks three
+through eight. Unsupported automatic padding, ceiling mode, dilation and dynamic
+shapes refuse explicitly.
+
+The lowering uses depthwise Conv2d with exact one weights followed by Div with
+exact integer counts, preserving native row-major F32 accumulation before the
+mean. It avoids reciprocal-weight rounding changes and introduces no new operator
+IDs, graph encoding, runtime dependency or execution backend. Generated tensors,
+parameters and nodes are admitted against cumulative limits before allocation;
+cancellation reaches generated-value construction and ordinary graph admission.
+
+The complete `fss-model-ir` suite passed **227 tests**, including **12** new
+pooling execution/artifact tests. The numeric checks use an independent coordinate
+oracle across 84 pooling profiles, rank-three-through-eight global pooling and
+subnormal/overflow/reduction-order cases. An immutable 830-byte synthetic Conv →
+AveragePool → GlobalAveragePool → Flatten → Gemm → Sigmoid fixture reproduces
+its output after canonical graph/Safetensors export and reload. Existing operator
+ID, graph-byte and other importer regressions passed. This qualifies bounded
+import and native execution, not trained detector quality or universal ONNX support.
+See `docs/onnx_import.md` for the exact admitted schema and numeric contract.
+
 ## Unfused ONNX inference BatchNormalization (2026-10-31, native model import)
 
 The opset-13 importer now accepts the one-output inference form of

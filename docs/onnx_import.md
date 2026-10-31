@@ -42,7 +42,8 @@ including hand-computed dense and convolution/pooling results.
   become runtime integer inputs or exported weights.
 - Static positive dimensions, at most rank eight. Source-ordered acyclic graphs;
   declared outputs and intermediate value information must match native inference.
-- Add, Sub, Mul, Div, Relu, Sigmoid, Tanh, MatMul, Gemm, Softmax, Conv, BatchNormalization, MaxPool, Transpose,
+- Add, Sub, Mul, Div, Relu, Sigmoid, Tanh, MatMul, Gemm, Softmax, Conv, BatchNormalization,
+  MaxPool, AveragePool, GlobalAveragePool, Transpose,
   Concat, Constant, Reshape, Squeeze, Unsqueeze, Slice, Split, Resize, Identity and Flatten.
   Shape and constant-only INT64 Gather are admitted for the bounded shape programs below.
   Identity/Flatten lower to checked native Reshape
@@ -54,6 +55,10 @@ including hand-computed dense and convolution/pooling results.
   each corresponding kernel dimension, no dilation other than one, no ceil mode,
   and default storage order. Concat requires an explicit axis.
   Softmax uses opset 13's last-axis default, without the older flattening behavior.
+- AveragePool is 2-D with explicit padding, positive strides, floor output sizing,
+  and either include-padding or exclude-padding means. GlobalAveragePool reduces
+  all spatial dimensions of a rank-three-through-eight input to singleton dimensions.
+  Both use the bounded native lowering described below.
 
 Unknown features refuse rather than being skipped or approximated. In particular,
 runtime or data-dependent shape inputs/computation, negative Slice strides,
@@ -63,6 +68,75 @@ weight files, custom functions, training graphs and model activation are not
 implemented by this profile. Initializers that are also graph inputs refuse rather
 than silently freezing an overridable weight. An unused initializer cannot be made
 executable merely by mentioning it in value-info metadata.
+
+## Spatial and global average pooling
+
+The importer admits [AveragePool-11](https://onnx.ai/onnx/operators/onnx__AveragePool.html#averagepool-11)
+and [GlobalAveragePool-1](https://onnx.ai/onnx/operators/onnx__GlobalAveragePool.html#globalaveragepool-1),
+the schemas selected by opset 13. This supports average downsampling and global
+context heads in an original convolutional graph, including a subsequent Flatten,
+Gemm or activation, through the existing native execution and packaging path.
+
+AveragePool requires static F32 `N,C,H,W` input and a positive two-element
+`kernel_shape`. `strides` defaults to `[1,1]`; `pads` defaults to four zeros in
+top, left, bottom, right order. Each explicit pad must be nonnegative and smaller
+than its corresponding kernel dimension. The padded extent must contain a kernel.
+Output dimensions use floor sizing, so these conditions guarantee that every
+admitted window contains a real input sample. `count_include_pad=0`, the default,
+divides each window's sum by its real sample count. Setting it to one divides by
+the full kernel area, including padded positions. Asymmetric padding and spatial
+strides apply independently. `auto_pad` must be absent or `NOTSET`; `ceil_mode`
+must be absent or zero. Automatic padding, ceil mode, dilation attributes from
+later AveragePool schemas and malformed attribute types explicitly refuse.
+
+GlobalAveragePool accepts rank three through eight in `N,C,D1,...` layout and
+has no attributes. It produces the same rank, batch count and channel count,
+with every spatial dimension equal to one. Non-2-D spatial inputs temporarily
+reshape to `N,C,product(D1,...),1`; a final native Reshape restores the declared
+output rank. No batch or channel values are mixed into a spatial mean.
+
+Both operations lower to a depthwise Conv2d with exactly one-valued weights,
+followed by Div. The native scalar numerical contract is a row-major F32 spatial
+sum from a zero accumulator, the convolution's existing zero-bias addition, then
+F32 division. A scalar denominator suffices for global pooling, unpadded windows
+and include-padding means. Exclude-padding means with nonzero pads use a static
+`[1,1,Hout,Wout]` denominator tensor, broadcast across batches and channels. Every
+denominator is a strictly positive integer represented exactly as F32. The importer
+does not replace division with reciprocal weights or widen accumulation: those
+changes can lose subnormal values, avoid an intermediate overflow, or alter
+rounding. Runtime nonfinite-result handling remains the ordinary native executor
+behavior. Other backends may choose a different floating-point reduction order.
+
+Generated weights contain `C * kernel_height * kernel_width` F32 values; the
+denominator contains either one value or `Hout * Wout` values. Their complete
+aggregate byte cost is checked against the remaining parameter allowance before
+allocation, together with per-tensor, generated-node and named-value bounds. This
+means a large global reduction can refuse when its generated weights exceed the
+16 MiB aggregate parameter ceiling. Parameter construction checks cancellation
+throughout and charges generation and tensor materialization work. The native
+convolution, division and any reshapes keep their existing inference budgets and
+generation checks. All helpers use collision-free names reserved against the
+complete source graph. The frozen operator IDs and Model IR v1 encoding are
+unchanged, and importer provenance includes the pooling-lowering source.
+
+The retained untrained fixture
+`crates/fss-model-ir/tests/fixtures/onnx/detector_average_pool.onnx` is 830 bytes,
+SHA-256 `408633ceb55af769ac529ed31046fd7da77df505b9e5780a38ab7f99e9866905`.
+It executes a `[1,3,4,5]` convolution, padded/strided average downsampling, global
+average pooling, Flatten, Gemm, Sigmoid and a `[1,1,6]` head reshape. A second
+output exposes the four-channel pooled context. The test reconstructs the exact
+source bytes and checks independent coordinate, affine and sigmoid oracles before
+export and after the real canonical graph and Safetensors loaders reconstruct
+the model. Separate tests cover both padding denominators over 84 window profiles,
+ranks three through eight, subnormal preservation, F32 reduction order and
+intermediate overflow, exact cumulative quotas, name collisions, source identity,
+every pooling import cancellation checkpoint and native execution limits. These
+numerical checks do not establish trained detector quality or full package/CLI
+qualification. Run the focused suite with:
+
+```sh
+cargo test -p fss-model-ir --test onnx_pooling_execution
+```
 
 ## Unfused inference batch normalization
 

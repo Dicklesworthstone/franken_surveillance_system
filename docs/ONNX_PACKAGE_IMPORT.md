@@ -128,7 +128,8 @@ is refused during packaging, before any source recording is read.
 
 The command uses the existing ONNX IR 7–9, default-domain opset-13 static finite F32 profile.
 Supported operators and their restrictions are specified in [onnx_import.md](onnx_import.md):
-Add, Sub, Mul, Div, Relu, Sigmoid, Tanh, MatMul, Gemm, Softmax, Conv, MaxPool, Transpose,
+Add, Sub, Mul, Div, Relu, Sigmoid, Tanh, MatMul, Gemm, Softmax, Conv, BatchNormalization,
+MaxPool, AveragePool, GlobalAveragePool, Transpose,
 Concat, Constant, Reshape, Squeeze, Unsqueeze, Slice, Split, Resize, Identity and Flatten.
 Bounded static Shape/Gather/INT64 control programs can supply layout and partition controls;
 their values are evaluated during import and never require runtime integer execution.
