@@ -18,6 +18,7 @@ use crate::{AttrValue, AttributeMap, GraphNode, ModelIrGraph, ModelIrVersion, Op
 mod constants;
 mod export;
 mod gemm;
+mod resize;
 mod structure;
 
 pub use export::{OnnxArtifacts, OnnxExportLimits, export_onnx_artifacts, onnx_importer_identity};
@@ -912,6 +913,8 @@ pub fn import_onnx<'a>(
             constants::lower(source, &mut lowering)?;
         } else if source.op == "Gemm" {
             gemm::lower(source, &mut lowering)?;
+        } else if source.op == "Resize" {
+            resize::lower(source, &mut lowering)?;
         } else if matches!(
             source.op.as_str(),
             "Reshape" | "Squeeze" | "Unsqueeze" | "Slice"

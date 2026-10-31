@@ -381,8 +381,7 @@ impl Lowering<'_, '_> {
             .map_err(|_| OnnxError::Graph)
     }
 
-    // The following bounded accessor also serves the subsequent Resize lowering.
-    #[allow(dead_code)]
+    // Resize accepts only exact embedded vectors for its compile-time controls.
     pub(super) fn constant_f32_vector(&mut self, name: &str) -> Result<Vec<f32>> {
         self.control_vector(name, DType::F32)?
             .to_vec::<f32>()

@@ -42,7 +42,7 @@ including hand-computed dense and convolution/pooling results.
 - Static positive dimensions, at most rank eight. Source-ordered acyclic graphs;
   declared outputs and intermediate value information must match native inference.
 - Add, Sub, Mul, Div, Relu, Sigmoid, Tanh, MatMul, Gemm, Softmax, Conv, MaxPool, Transpose,
-  Concat, Constant, Reshape, Squeeze, Unsqueeze, Slice, Identity and Flatten.
+  Concat, Constant, Reshape, Squeeze, Unsqueeze, Slice, Resize, Identity and Flatten.
   Identity/Flatten lower to checked native Reshape
   nodes without changing the frozen operator set or canonical Model IR v1 encoding.
 - MatMul requires rank-two-or-higher inputs. Conv is 2-D; declared `kernel_shape`
@@ -53,12 +53,47 @@ including hand-computed dense and convolution/pooling results.
   Softmax uses opset 13's last-axis default, without the older flattening behavior.
 
 Unknown features refuse rather than being skipped or approximated. In particular,
-dynamic shape inputs/computation, negative Slice strides, BatchNormalization, Resize,
+dynamic shape inputs/computation, negative Slice strides, BatchNormalization,
+noninteger/downsampling/non-nearest Resize,
 other opsets/domains/dtypes, symbolic or zero-sized shapes, sparse data, external
 weight files, custom functions, training graphs and model activation are not
 implemented by this profile. Initializers that are also graph inputs refuse rather
 than silently freezing an overridable weight. An unused initializer cannot be made
 executable merely by mentioning it in value-info metadata.
+
+## Nearest-neighbor feature-map upsampling
+
+The importer admits static [Resize-13](https://onnx.ai/onnx/operators/onnx__Resize.html#resize-13)
+for NCHW rank-four tensors, preserving batch/channel sizes and enlarging each spatial
+axis by an integer factor from 1 through 64. This covers nearest-neighbor feature-map
+upsampling in detector necks. Exactly one nonempty embedded F32 `scales` vector or
+INT64 `sizes` vector supplies four values. An omitted ROI or empty F32 ROI is accepted;
+nonempty ROI, dynamic sizes/scales, fractional factors and downsampling refuse.
+Empty optional input names and empty control tensors remain compile-time values.
+
+Two precise coordinate profiles are admitted: `asymmetric` with nearest mode `floor`,
+and `half_pixel` with `round_prefer_floor` (the opset-13 defaults). In the latter,
+writing an output coordinate as `q*s+r` places the transformed source coordinate
+strictly between `q-0.5` and `q+0.5`; nearest rounding therefore selects `q`. Both
+profiles repeat exactly the same samples. Other coordinate/rounding combinations,
+linear/cubic interpolation and `exclude_outside=1` refuse. Exporter-supplied finite
+`cubic_coeff_a` and `extrapolation_value` attributes are validated but have no effect
+under these admitted nearest profiles.
+
+Each Resize lowers to Reshape, two Concat nodes and a final Reshape in the existing
+frozen IR. Repetition preserves exact F32 bits, including signed zero and subnormals.
+Output size is checked before helper expansion; every helper consumes the common
+node, tensor and work quotas and reserves names against all source values. No new
+operator ID or runtime image-resampling kernel is introduced. The importer identity
+includes this lowering source, and the original ONNX source is retained unchanged.
+Controls used only for resizing are removed from execution weights; a scale vector
+also consumed by a runtime node remains present and is exported.
+
+`onnx_resize_execution` checks 100 scale/size/coordinate-profile combinations against
+an independent coordinate-formula oracle after actual graph/Safetensors reload and
+production scalar execution. A Conv-to-Resize-to-dense-head case checks detector-style
+layout; other cases cover exporter Constant nodes, shared data/control values, namespace
+collisions, unsupported modes, malformed controls, exact work bounds and cancellation.
 
 ## Static tensor controls and detector heads
 

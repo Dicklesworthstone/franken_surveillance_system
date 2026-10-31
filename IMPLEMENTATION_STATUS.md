@@ -10,6 +10,26 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Native ONNX detector feature-map upsampling (2026-10-30, reference)
+
+The generic importer now lowers static Resize-13 nearest-neighbor upsampling of rank-four
+NCHW feature maps into the existing frozen Reshape/Concat operators. Spatial integer scales
+1..64 may be supplied as exact F32 scales or INT64 output sizes; batch/channel dimensions
+remain fixed. Both asymmetric/floor and the default half-pixel/round-prefer-floor profiles
+produce the mathematically identical repeated samples under this restriction. Exporter
+Constant nodes, empty optional ROI/scales and shared control/data values are handled without
+creating empty runtime tensors or dropping execution parameters. Unsupported interpolation,
+coordinate profiles, fractional/downsampling scales and dynamic controls explicitly refuse.
+
+All **170 native model-IR tests** passed. The new nine-test target includes 100 combinations
+checked against an independent coordinate-formula oracle after actual canonical graph and
+Safetensors reload through production scalar execution. A convolution/upsampling/dense-head
+case, exact F32 bit preservation, naming collisions, quota boundaries and cancellation are
+also covered. Strict library/Resize-target Clippy passed without allowances. Source bytes,
+frozen operator IDs and prior canonical graph encodings are preserved; the distinct importer
+identity commits the new lowering. No claim of arbitrary Resize or trained-detector quality
+is made. See `docs/onnx_import.md` for the precise profile.
+
 ## Native camera-stream capacity and failover planning (2026-10-30, reference)
 
 `fss_graph_algorithms::stream_capacity` now composes the existing certified maximum-flow
