@@ -42,7 +42,7 @@ including hand-computed dense and convolution/pooling results.
   become runtime integer inputs or exported weights.
 - Static positive dimensions, at most rank eight. Source-ordered acyclic graphs;
   declared outputs and intermediate value information must match native inference.
-- Add, Sub, Mul, Div, Relu, Sigmoid, Tanh, MatMul, Gemm, Softmax, Conv, MaxPool, Transpose,
+- Add, Sub, Mul, Div, Relu, Sigmoid, Tanh, MatMul, Gemm, Softmax, Conv, BatchNormalization, MaxPool, Transpose,
   Concat, Constant, Reshape, Squeeze, Unsqueeze, Slice, Split, Resize, Identity and Flatten.
   Shape and constant-only INT64 Gather are admitted for the bounded shape programs below.
   Identity/Flatten lower to checked native Reshape
@@ -56,13 +56,83 @@ including hand-computed dense and convolution/pooling results.
   Softmax uses opset 13's last-axis default, without the older flattening behavior.
 
 Unknown features refuse rather than being skipped or approximated. In particular,
-runtime or data-dependent shape inputs/computation, negative Slice strides, BatchNormalization,
+runtime or data-dependent shape inputs/computation, negative Slice strides,
 noninteger/downsampling/non-nearest Resize,
 other opsets/domains/dtypes, symbolic or zero-sized shapes, sparse data, external
 weight files, custom functions, training graphs and model activation are not
 implemented by this profile. Initializers that are also graph inputs refuse rather
 than silently freezing an overridable weight. An unused initializer cannot be made
 executable merely by mentioning it in value-info metadata.
+
+## Unfused inference batch normalization
+
+The importer admits the one-output inference form of
+[BatchNormalization-9](https://onnx.ai/onnx/operators/onnx__BatchNormalization.html#batchnormalization-9),
+the schema selected by opset 13. This allows a convolutional backbone or detector
+export to retain its original normalization nodes without an external graph
+simplifier or a new native operator ID. Input data has rank one through eight and
+layout `N,C,D1,...`. For rank-one data, the schema assumes one channel. Scale, bias,
+mean and variance must each be an embedded finite F32 vector of exactly `C` values,
+from an initializer or an earlier Constant node. Channel counts are bounded by
+the existing tensor and aggregate parameter limits, not the eight-value limit
+for shape controls. Runtime channel parameters and data-derived statistics refuse.
+
+Each normalization becomes four ordered native F32 nodes:
+`centered = X - mean`, `normalized = centered / denominator`,
+`scaled = normalized * scale`, and `Y = scaled + bias`. The constant denominator is
+`sqrt(variance + epsilon)`, with the addition and square root each rounded to F32
+at import. Epsilon defaults to `1e-5_f32`; this profile requires finite nonnegative
+epsilon and variance, and a strictly positive finite variance-plus-epsilon sum.
+Zero epsilon is admitted when every variance is positive. Nonfinite source values
+and overflow in the constant sum refuse. Negative statistics and zero denominators
+refuse before a model artifact can be emitted. Finite FLOAT momentum is validated
+but has no effect on one-output inference. Training outputs and attributes from
+other schemas, including `training_mode`, `spatial` and `is_test`, refuse.
+
+Scale, bias and mean use immutable channel-shaped views for right-aligned
+broadcasting across batch and spatial axes. Import reshaping shares source storage
+and adds no runtime layout kernels or repeated spatial weights. The four arithmetic
+nodes retain their ordinary inference work and allocation charges. The importer
+does not replace division with a reciprocal, combine scale and denominator, combine
+bias and mean, or fuse a preceding convolution. Each of those transformations can
+change F32 rounding or intermediate overflow. Existing scalar execution behavior
+for runtime nonfinite results is unchanged; a zero or tiny scale cannot silently
+erase a prior overflowing subtraction.
+
+Every generated denominator and shaped parameter consumes the cumulative logical
+parameter byte quota, named-value quota and work allowance. With four distinct
+source vectors, one rank-three-or-higher node consumes `32*C` parameter bytes in
+total for source and generated vectors/views; rank-one/two nodes reuse the three
+already-broadcastable source vectors and consume `20*C`. Shared source vectors are
+admitted once, while every generated value is charged. These are logical import
+reservations, not a claim about resident memory. Four native nodes and three temporary data values also
+consume the common expansion limits. The importer checks cancellation for every
+denominator channel and throughout name reservation and graph admission. Removing
+compile-only source parameters from exported weights does not refund those quotas.
+A parameter also used by another data node or returned as a graph output keeps its
+original name, shape, generation and F32 bits. The original ONNX bytes and digest
+remain available unchanged, and importer identity includes the new lowering source.
+
+The retained synthetic fixture
+`crates/fss-model-ir/tests/fixtures/onnx/detector_batch_normalization.onnx` is 857 bytes,
+SHA-256 `d720a592cbecf7b95acac0bcdaf2cbabf401279f5fedc0166ad57669a983df1a`.
+It runs a `[1,3,2,4]` convolution, unfused normalization, ReLU, reshape/transpose,
+box/class split, sigmoid and concatenation into a `[1,8,6]` head. A second graph
+output exposes normalization before the activation. Twelve native data nodes and
+six F32 parameter tensors remain. Independent affine and sigmoid formulae check
+both outputs before export and after actual canonical graph/Safetensors reload.
+
+`cargo test -p fss-model-ir --test onnx_batch_normalization_execution` also checks
+66 rank/channel/epsilon profiles against an independently rounded scalar oracle;
+shared Constant parameters and signed-zero bits; subnormal statistics; arithmetic
+order and overflow; namespace collisions; malformed, dynamic and training refusals;
+exact node/tensor/parameter/work ceilings; every import cancellation checkpoint;
+and native execution budgets, cancellation and generation checks. This target
+executes the production scalar and Safetensors sources. It does not compile the
+asynchronous reference crate, run complete package/CLI qualification, or establish
+trained detector accuracy. The existing package importer automatically receives
+this source profile through `import_onnx`, with its separate licensing,
+preprocessing, named-output, head and admission contracts still required.
 
 ## Static shape programs for detector heads
 

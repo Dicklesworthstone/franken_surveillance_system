@@ -10,6 +10,32 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Unfused ONNX inference BatchNormalization (2026-10-31, native model import)
+
+The opset-13 importer now accepts the one-output inference form of
+BatchNormalization-9 with static F32 data and immutable channel parameters.
+This closes a concrete import gap for convolutional backbones and detector
+exports that retain their normalization nodes. The lowering uses the existing
+native Sub, Div, Mul and Add operators in declared F32 order; only the constant
+`sqrt(variance + epsilon)` denominator is evaluated at import. Immutable channel
+views avoid extra runtime reshapes or spatial weight replication. No foreign
+runtime, new operator ID or canonical graph byte format is introduced.
+
+Ranks one through eight, shared initializer/Constant parameters, source-output
+preservation and channel-specific broadcasting are admitted under the existing
+cumulative tensor, parameter, node and work quotas. Training, dynamic statistics,
+unsupported attributes, nonfinite values and invalid denominators refuse.
+Cancellation reaches every channel calculation and ordinary graph admission.
+
+The complete `fss-model-ir` suite passed **215 tests**, including the new native
+execution/artifact target's **10 tests** and its 66 numeric profiles. The retained
+857-byte synthetic Conv → BatchNormalization → detector-head fixture matches
+independent formulas before and after actual canonical graph/Safetensors reload.
+Strict targeted Clippy and changed-file formatting passed. Existing operator-ID
+and legacy graph-byte regressions also passed. This qualifies the import/execution
+seam, not trained detector accuracy or the full asynchronous package/CLI matrix.
+See `docs/onnx_import.md` for the exact admitted schema and numeric contract.
+
 ## Live native RTSP/JPEG reception and image output (2026-10-31, reference)
 
 The JPEG lane now composes the existing RTSP session, Digest authentication,

@@ -15,6 +15,7 @@ use fss_tensor::{DType, Shape, Tensor};
 
 use crate::{AttrValue, AttributeMap, GraphNode, ModelIrGraph, ModelIrVersion, OpCode, TensorPort};
 
+mod batch_normalization;
 mod constants;
 mod export;
 mod gemm;
@@ -67,7 +68,7 @@ pub enum OnnxError {
     Unsupported,
     /// Native graph shape, topology, parameter or output declarations disagree.
     Graph,
-    /// An embedded parameter or floating-point attribute is nonfinite.
+    /// An embedded/generated parameter or floating-point attribute is nonfinite.
     NonFinite,
     /// The caller's cancellation probe requested stopping.
     Cancelled,
@@ -115,7 +116,7 @@ impl<'a> ImportedOnnx<'a> {
     pub fn graph(&self) -> &ModelIrGraph {
         &self.graph
     }
-    /// Exact embedded F32 initializers and generated lowering scalars, generation-bound.
+    /// Exact embedded F32 initializers and generated lowering parameters, generation-bound.
     pub fn parameters(&self) -> &BTreeMap<String, Tensor> {
         &self.parameters
     }
@@ -747,6 +748,7 @@ fn opset(bytes: &[u8], a: &mut Admission<'_>) -> Result<()> {
 /// Every declared output/intermediate is checked against native shape inference.
 /// Unused initializers, duplicate outputs, forward references and custom facilities refuse.
 /// Gemm expands into bounded native transpose/matmul/multiply/add nodes and scalar parameters.
+/// Inference BatchNormalization uses constant channel parameters and ordered native F32 math.
 /// Static shape programs evaluate only metadata and bounded constant INT64 controls;
 /// they never execute runtime integer tensors or read runtime F32 input values.
 /// Source names are reserved before expansion; no helper can alias any source tensor.
@@ -925,6 +927,8 @@ pub fn import_onnx<'a>(
             shape_program::lower(source, &mut lowering)?;
         } else if source.op == "Gemm" {
             gemm::lower(source, &mut lowering)?;
+        } else if source.op == "BatchNormalization" {
+            batch_normalization::lower(source, &mut lowering)?;
         } else if source.op == "Resize" {
             resize::lower(source, &mut lowering)?;
         } else if source.op == "Split" {
