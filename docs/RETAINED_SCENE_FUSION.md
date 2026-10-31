@@ -260,9 +260,11 @@ tests, including its twelve existing JSON and camera-rig regressions.
 Seven additional command tests use real JPEG ingest, first-party detector package execution and
 retained tracking before removing loose source files and reopening custody. Fault cases cover
 source damage, privacy withdrawal, mismatched source/image generations, exact observation pins,
-cancellation, deadlines and complete-output limits. These command tests have not yet typechecked
-or executed: two full build attempts were killed while compiling genuine pinned Asupersync, and
-a serialized retry remains delayed by shared host memory pressure. The passing pure tests do not
+cancellation, deadlines and complete-output limits. These command tests now typecheck against
+genuine pinned Asupersync metadata, together with the complete current CLI test configuration.
+The production command also passes Cargo check. Earlier builds were killed under shared host
+memory pressure; a later serialized metadata build succeeded. Actual owner execution still
+requires the runtime object build. The passing pure tests do not
 execute deployment recovery, sealed source-owner
 revalidation or command output. No runtime dependency or qualification gate was replaced.
 

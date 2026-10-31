@@ -10,6 +10,54 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Automatic native JPEG correspondences and 3D scene points (2026-10-31, integration)
+
+`fss-scene-fuse match` now connects two exact local JPEG sources to native masked
+FAST/BRIEF extraction, automatic symmetric descriptor association, nominal
+bidirectional epipolar gates and existing twin-based static-point fusion. It
+removes the need to supply individual pixel correspondences for this profile.
+The complete inventory includes every Cartesian pair and selected feature,
+all equal nearest alternatives, native 3D estimates and geometric refusals.
+Appearance ambiguity is evaluated before geometry, and a missing runner-up or
+tied best descriptor cannot become a unique match by discarding competitors.
+
+The strict query binds original JPEG bytes, exact rig, image-domain mapping,
+explicit full-pixel or pinned exclusion-mask policy, shared clock/privacy and
+complete capture intervals. Full 33×33 descriptor footprints must be allowed.
+Decoded grids must match the authored nominal undistorted rig. Stationary common
+features, camera placement, capture-clock alignment and physical mapping remain
+explicit assumptions; local byte verification does not claim retained custody
+or physical identity. Unknown calibration error and mesh occlusion conflicts
+remain visible beside conditional pixel-noise covariance.
+
+Both baseline and progressive JPEG use the existing native decoder. One bounded
+work allowance and borrowed cancellation/deadline probe cover decoding, feature
+extraction, geometry and complete-report construction. The match-specific default
+is 2 billion units and maximum 5 billion: paired fully allowed 1080p feature detection
+alone needs over 1.27 billion. Previous supplied-point fusion limits stay unchanged.
+At most 128 features/view produce 16,384 pair rows; the complete report stays within
+8 MiB or refuses without trimming rows. Existing outputs are refused, new reports
+are private, and stdout/file bytes agree. No scene activation or effect occurs.
+
+The native kernel passes **17 actual Cargo tests** and strict scoped Clippy.
+The exact production parser/JPEG-pipeline/report source passes **16 tests**, and
+**three** decoder-probe contracts pass. Original separately encoded JPEG crops
+recover the independent expected depth 10 without manual correspondences. Five
+actual emitted query/report profiles cover complete/empty/geometry-refused/
+epipolar-unobservable/maximum-inventory outcomes; the maximum 128/view example
+retains 16,384 pairs and 112 points in a 3,783,946-byte complete report. Every profile
+passes a labeled local structural comparison to the schemas; no independent
+JSON Schema standards validator was available. The 107-schema catalog resolves
+all 880 references without errors.
+
+The genuine production scene and inference commands and all current CLI test
+configurations pass Cargo check against the pinned Asupersync runtime; the
+previous retained-fusion custody tests now typecheck too. Actual command-owner
+execution still requires the runtime object build and is tracked separately.
+This is a bounded static-feature slice of FSS-099, not field association-quality
+qualification or closure of the broader cross-camera association bead.
+See `docs/SCENE_FEATURE_MATCHING.md` for exact semantics and an example query.
+
 ## Explicit detector channel order and normalization (2026-10-31, native provisioning)
 
 ONNX RGB package recipes now have an explicit version2 for models requiring BGR
@@ -68,10 +116,12 @@ and covers pins, image bounds, full timing uncertainty, source-camera consistenc
 visibility refusals, deterministic aliases and assumption-sensitive evidence.
 The complete current-source Cargo geometry/fusion suites passed **201 tests**;
 all **23** parser/rig/adapter tests also passed in the exact-source harness.
-Seven additional real-custody CLI tests are written but have not yet typechecked
-or executed. Two genuine builds were killed while compiling pinned Asupersync;
-a serialized retry remains delayed by shared host memory pressure. The pure
-harness does not substitute for deployment recovery, custody or output tests.
+The seven real-custody CLI tests now typecheck against genuine pinned
+Asupersync metadata, together with the full current CLI test configuration.
+Earlier metadata builds were killed under shared host pressure; a later
+serialized build succeeded. Actual command execution still awaits runtime
+object code. The pure harness does not substitute for deployment recovery,
+custody or output tests.
 The 104-schema catalog resolves all 801 references without errors; the broader
 constitution scan retains 43 existing findings and none for this feature.
 See `docs/RETAINED_SCENE_FUSION.md` for the command, schema and validation boundary.

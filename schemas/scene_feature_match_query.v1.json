@@ -1,0 +1,322 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/scene_feature_match_query.v1.json",
+  "title": "Pinned local JPEG pair and explicit static-scene matching assumptions",
+  "description": "Operator input only, bounded to1MiB. Native validation additionally enforces nonzero SHA256, exact byte pins, canonical u64 values, ordered full capture intervals, distinct cameras and source bytes, rig image/clock/privacy/validity agreement and every native solver bound. Paths come only from command-line arguments. All image-domain, camera, clock, mask-access and stationary-common-feature assumptions remain explicit. No authentication, physical identity or effect authority.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "camera_rig_digest",
+    "privacy_domain",
+    "clock",
+    "clock_evidence",
+    "association_basis",
+    "reference_time_ns",
+    "max_capture_span_ns",
+    "motion",
+    "left",
+    "right",
+    "extraction",
+    "matching"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.scene_feature_match_query.v1"
+    },
+    "camera_rig_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "privacy_domain": {
+      "$ref": "#/$defs/identity"
+    },
+    "clock": {
+      "$ref": "#/$defs/identity"
+    },
+    "clock_evidence": {
+      "$ref": "#/$defs/digest"
+    },
+    "association_basis": {
+      "$ref": "#/$defs/digest"
+    },
+    "reference_time_ns": {
+      "$ref": "#/$defs/u64"
+    },
+    "max_capture_span_ns": {
+      "oneOf": [
+        {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000000
+        },
+        {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,9})$"
+        }
+      ]
+    },
+    "motion": {
+      "const": "static_during_capture_hull"
+    },
+    "left": {
+      "$ref": "#/$defs/view"
+    },
+    "right": {
+      "$ref": "#/$defs/view"
+    },
+    "extraction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "threshold",
+        "maximum_features",
+        "separation"
+      ],
+      "properties": {
+        "threshold": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 254
+            },
+            {
+              "type": "string",
+              "pattern": "^[1-9][0-9]{0,2}$"
+            }
+          ]
+        },
+        "maximum_features": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 128
+            },
+            {
+              "type": "string",
+              "pattern": "^[1-9][0-9]{0,2}$"
+            }
+          ]
+        },
+        "separation": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 128
+            },
+            {
+              "type": "string",
+              "pattern": "^[1-9][0-9]{0,2}$"
+            }
+          ]
+        }
+      }
+    },
+    "matching": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "maximum_hamming_distance",
+        "ratio_percent",
+        "maximum_epipolar_distance_pixels"
+      ],
+      "properties": {
+        "maximum_hamming_distance": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 256
+            },
+            {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]{0,2})$"
+            }
+          ]
+        },
+        "ratio_percent": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 99
+            },
+            {
+              "type": "string",
+              "pattern": "^[1-9][0-9]{0,1}$"
+            }
+          ]
+        },
+        "maximum_epipolar_distance_pixels": {
+          "type": "number",
+          "minimum": 1e-06,
+          "maximum": 1000
+        }
+      }
+    },
+    "triangulation": {
+      "$ref": "#/$defs/triangulation"
+    }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "u64": {
+      "oneOf": [
+        {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,19})$"
+        }
+      ]
+    },
+    "identity": {
+      "oneOf": [
+        {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,19}$"
+        }
+      ]
+    },
+    "view": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "camera",
+        "source_digest",
+        "image_domain_digest",
+        "mapping_basis",
+        "capture_ns",
+        "sigma_pixels",
+        "component_interpretation",
+        "mask"
+      ],
+      "properties": {
+        "camera": {
+          "$ref": "#/$defs/identity"
+        },
+        "source_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "image_domain_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "mapping_basis": {
+          "$ref": "#/$defs/digest"
+        },
+        "capture_ns": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/u64"
+          },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "sigma_pixels": {
+          "type": "number",
+          "minimum": 0.001,
+          "maximum": 1000
+        },
+        "component_interpretation": {
+          "enum": [
+            "grayscale",
+            "ycbcr"
+          ]
+        },
+        "mask": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind"
+              ],
+              "properties": {
+                "kind": {
+                  "const": "all_allowed"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "digest"
+              ],
+              "properties": {
+                "kind": {
+                  "const": "file"
+                },
+                "digest": {
+                  "$ref": "#/$defs/digest"
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "triangulation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {
+        "min_views": {
+          "enum": [
+            2,
+            "2"
+          ]
+        },
+        "max_outliers": {
+          "enum": [
+            0,
+            "0"
+          ]
+        },
+        "max_reprojection_pixels": {
+          "type": "number",
+          "minimum": 0
+        },
+        "min_ray_angle_radians": {
+          "type": "number",
+          "minimum": 0
+        },
+        "max_distance": {
+          "type": "number",
+          "minimum": 0
+        },
+        "max_condition_number": {
+          "type": "number",
+          "minimum": 1
+        },
+        "max_iterations": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 32
+            },
+            {
+              "type": "string",
+              "pattern": "^[1-9][0-9]{0,1}$"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

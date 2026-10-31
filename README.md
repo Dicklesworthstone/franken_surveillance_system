@@ -400,6 +400,13 @@ feature selections against detector bounds, and revalidates custody after solvin
 retain camera/clock/correspondence assumptions and every geometric refusal. See
 [`docs/RETAINED_SCENE_FUSION.md`](docs/RETAINED_SCENE_FUSION.md) for the command and input contract.
 
+`fss-scene-fuse match` takes two exact JPEGs through native masked feature extraction,
+automatic symmetric descriptor/epipolar matching and 3D point reconstruction. It discovers
+pixel correspondences and preserves the complete candidate inventory, ambiguous features,
+source hashes and geometric refusals. Camera, clock and stationary-feature declarations stay
+explicit. See [`docs/SCENE_FEATURE_MATCHING.md`](docs/SCENE_FEATURE_MATCHING.md) for the query,
+mask policy, image-resolution work bounds and report interpretation.
+
 ## ATP archive, repair, and deletion
 
 Source media, evidence bundles, checkpoints, model packages, graph/search/calibration/twin

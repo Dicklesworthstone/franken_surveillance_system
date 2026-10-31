@@ -262,3 +262,6 @@ pub mod multiview;
 
 /// Source-linked position and velocity reconstruction from staggered camera feeds.
 pub mod multiview_motion;
+
+/// Source-pinned native feature correspondence, nominal epipolar gates and scene-point hypotheses.
+pub mod feature_association;

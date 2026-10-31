@@ -118,13 +118,25 @@ impl DecodeLimits {
     }
 }
 
-/// Bounded synchronous work under an optional owner-controlled cancellation flag.
+/// Bounded synchronous work under an optional owner-controlled cancellation flag or probe.
 /// Units are deterministic reference operations, not time, energy or throughput.
-#[derive(Debug)]
 pub struct DecodeBudget<'a> {
     remaining: u64,
     used: u64,
     cancellation: Option<&'a AtomicBool>,
+    cancellation_probe: Option<&'a (dyn Fn() -> bool + Sync)>,
+}
+impl std::fmt::Debug for DecodeBudget<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DecodeBudget")
+            .field("remaining", &self.remaining)
+            .field("used", &self.used)
+            .field(
+                "cancellable",
+                &(self.cancellation.is_some() || self.cancellation_probe.is_some()),
+            )
+            .finish()
+    }
 }
 impl DecodeBudget<'_> {
     /// Allocate a local allowance, without reading an ambient clock or runtime.
@@ -133,6 +145,7 @@ impl DecodeBudget<'_> {
             remaining: limit,
             used: 0,
             cancellation: None,
+            cancellation_probe: None,
         }
     }
     /// Reference units actually charged, including unsuccessful work.
@@ -147,6 +160,7 @@ impl DecodeBudget<'_> {
         if self
             .cancellation
             .is_some_and(|flag| flag.load(Ordering::Acquire))
+            || self.cancellation_probe.is_some_and(|probe| probe())
         {
             return Err(DecodeError::Cancelled);
         }
@@ -165,6 +179,19 @@ impl<'a> DecodeBudget<'a> {
             remaining: limit,
             used: 0,
             cancellation: Some(flag),
+            cancellation_probe: None,
+        }
+    }
+
+    /// Observe the owner's existing cancellation or deadline before every work charge.
+    /// The borrowed, cheap synchronous probe starts no timer, thread or runtime.
+    /// A refused charge consumes no additional work and exposes no partial pixels.
+    pub fn with_cancellation_probe(limit: u64, probe: &'a (dyn Fn() -> bool + Sync)) -> Self {
+        Self {
+            remaining: limit,
+            used: 0,
+            cancellation: None,
+            cancellation_probe: Some(probe),
         }
     }
 }
