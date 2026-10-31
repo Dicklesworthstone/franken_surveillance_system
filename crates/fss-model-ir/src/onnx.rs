@@ -2,7 +2,7 @@
 //! Offline ONNX IR 7..=9 / default-domain opset 13 import into the frozen Model IR.
 //!
 //! This is deliberately a closed profile, not an ONNX interpreter. It supports static,
-//! positive F32 runtime shapes, finite F32 parameters, constant INT64 shape controls,
+//! positive F32 runtime shapes, finite F32 parameters, bounded static INT64 shape controls,
 //! and the operators lowered below.
 //! Original bytes remain borrowed for provenance. No downloads, external tensor files,
 //! custom functions, training graphs, model activation or inference occur here.
@@ -19,6 +19,7 @@ mod constants;
 mod export;
 mod gemm;
 mod resize;
+mod shape_program;
 mod split;
 mod structure;
 
@@ -33,7 +34,7 @@ pub struct OnnxLimits {
     pub nodes: usize,
     /// Total named tensor declarations and intermediate values, at most 4096.
     pub tensors: usize,
-    /// Aggregate embedded controls and embedded/generated parameter bytes, at most 16 MiB.
+    /// Aggregate embedded/generated controls and parameter bytes, at most 16 MiB.
     pub parameter_bytes: usize,
     /// Each declared/inferred logical tensor size, at most 64 MiB.
     pub tensor_bytes: usize,
@@ -746,6 +747,8 @@ fn opset(bytes: &[u8], a: &mut Admission<'_>) -> Result<()> {
 /// Every declared output/intermediate is checked against native shape inference.
 /// Unused initializers, duplicate outputs, forward references and custom facilities refuse.
 /// Gemm expands into bounded native transpose/matmul/multiply/add nodes and scalar parameters.
+/// Static shape programs evaluate only metadata and bounded constant INT64 controls;
+/// they never execute runtime integer tensors or read runtime F32 input values.
 /// Source names are reserved before expansion; no helper can alias any source tensor.
 /// The cancellation probe is checked throughout bounded wire and tensor traversal.
 /// Original Model IR v1 encodings and operator freeze IDs remain unchanged.
@@ -918,6 +921,8 @@ pub fn import_onnx<'a>(
     for source in sources {
         if source.op == "Constant" {
             constants::lower(source, &mut lowering)?;
+        } else if shape_program::handles(&source, &lowering) {
+            shape_program::lower(source, &mut lowering)?;
         } else if source.op == "Gemm" {
             gemm::lower(source, &mut lowering)?;
         } else if source.op == "Resize" {

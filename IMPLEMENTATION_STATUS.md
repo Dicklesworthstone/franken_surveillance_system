@@ -10,6 +10,32 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Static ONNX detector shape programs (2026-10-31, reference)
+
+The native importer now evaluates source-authored static shape programs instead of
+requiring an external graph simplifier for these bounded detector heads. `Shape-13`
+reads validated dimensions; constant INT64 `Gather`, `Squeeze`, `Unsqueeze`, `Concat`,
+`Identity`, `Add`, `Sub`, `Mul` and `Div` build exact scalar/vector controls for existing
+reshape and split lowering. Negative indices, scalar-versus-vector broadcasting and
+truncation toward zero retain their ONNX semantics. Overflow, division by zero, dynamic
+integer data and unsupported schema attributes refuse. The profile admits at most eight
+control elements and charges every generated value to the cumulative import allowances.
+
+No runtime integer operator, new frozen IR encoding or foreign production dependency is
+introduced. Metadata-only parameter uses can disappear from runtime weights; simultaneous
+data uses and all runtime input bindings remain. A retained 1,416-byte synthetic Conv/head
+fixture computes its reshape and channel partitions from the original shape subgraph,
+lowers to seven existing data operators and two F32 weights, and executes through the
+actual scalar executor before and after canonical graph/Safetensors artifact reload.
+
+The focused native target passed **19 tests** (17 new cases and two executor smoke tests),
+including independent output oracles, exact 328-byte aggregate admission, values above
+2^53, signed division, negative/repeated indices, malformed/unused controls, source-name
+collisions, all truncated prefixes and cancellation checkpoints. Strict scoped library,
+shape-target and previous detector-target Clippy passed without allowances. The full model
+package regression was not rerun for this checkpoint; no full CLI, trained-detector or
+release qualification is claimed. See `docs/onnx_import.md` and `docs/ONNX_PACKAGE_IMPORT.md`.
+
 ## Retained in-band recording replay (2026-10-31, integration)
 
 File ingestion and codec sniffing now select the added native `avc3`/`hev1` profile.

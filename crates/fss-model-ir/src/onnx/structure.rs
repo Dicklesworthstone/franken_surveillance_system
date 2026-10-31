@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 //! Opset-13 layout operators with constant integer controls. Runtime integer
-//! tensors and dynamic shape computation are outside this static F32 profile.
+//! tensors and data-dependent shape computation are outside this static F32 profile.
 
 use super::{Lowering, OnnxError, Result, SourceNode};
 use crate::{AttrValue, AttributeMap, GraphNode, OpCode};

@@ -37,13 +37,14 @@ including hand-computed dense and convolution/pooling results.
 - ONNX IR versions 7 through 9, with exactly the default-domain opset 13 import.
 - F32 runtime inputs/outputs and finite embedded F32 initializers. Raw little-endian
   data and packed/unpacked `float_data` are supported, including signed zero.
-- Embedded INT64 initializers and Constant values may supply compile-time shape,
-  axis, slice and partition controls. They never become runtime integer inputs or
-  exported weights.
+- Embedded INT64 initializers, Constant values and bounded static shape programs
+  may supply compile-time shape, axis, slice and partition controls. They never
+  become runtime integer inputs or exported weights.
 - Static positive dimensions, at most rank eight. Source-ordered acyclic graphs;
   declared outputs and intermediate value information must match native inference.
 - Add, Sub, Mul, Div, Relu, Sigmoid, Tanh, MatMul, Gemm, Softmax, Conv, MaxPool, Transpose,
   Concat, Constant, Reshape, Squeeze, Unsqueeze, Slice, Split, Resize, Identity and Flatten.
+  Shape and constant-only INT64 Gather are admitted for the bounded shape programs below.
   Identity/Flatten lower to checked native Reshape
   nodes without changing the frozen operator set or canonical Model IR v1 encoding.
 - MatMul requires rank-two-or-higher inputs. Conv is 2-D; declared `kernel_shape`
@@ -55,13 +56,59 @@ including hand-computed dense and convolution/pooling results.
   Softmax uses opset 13's last-axis default, without the older flattening behavior.
 
 Unknown features refuse rather than being skipped or approximated. In particular,
-dynamic shape inputs/computation, negative Slice strides, BatchNormalization,
+runtime or data-dependent shape inputs/computation, negative Slice strides, BatchNormalization,
 noninteger/downsampling/non-nearest Resize,
 other opsets/domains/dtypes, symbolic or zero-sized shapes, sparse data, external
 weight files, custom functions, training graphs and model activation are not
 implemented by this profile. Initializers that are also graph inputs refuse rather
 than silently freezing an overridable weight. An unused initializer cannot be made
 executable merely by mentioning it in value-info metadata.
+
+## Static shape programs for detector heads
+
+The importer can evaluate a source-authored shape program from already-admitted
+static dimensions. This lets a detector flatten its feature maps and calculate
+channel partitions using its original graph, without requiring a foreign graph
+simplifier or adding integer execution to the frozen runtime IR.
+
+| Source operation | Admitted compile-time behavior |
+|---|---|
+| [Shape-13](https://onnx.ai/onnx/operators/onnx__Shape.html#shape-13) | Read the exact shape of an already-known tensor into an INT64 vector. No attributes; `start` and `end` belong to later schemas. |
+| [Gather-13](https://onnx.ai/onnx/operators/onnx__Gather.html#gather-13) | Index an INT64 vector with an INT64 scalar or vector, preserving order, duplicates and negative indices. Axis is zero or minus one. |
+| [Squeeze-13](https://onnx.ai/onnx/operators/onnx__Squeeze.html#squeeze-13) / [Unsqueeze-13](https://onnx.ai/onnx/operators/onnx__Unsqueeze.html#unsqueeze-13) | Convert scalar/vector layouts using constant axis vectors. Omitted Squeeze axes remove singleton dimensions; an explicitly empty vector is a no-op. |
+| [Concat-13](https://onnx.ai/onnx/operators/onnx__Concat.html#concat-13) | Join INT64 vectors, including empty vectors, with an explicit zero or minus-one axis. Scalars are not silently promoted to vectors. |
+| Add, Sub, Mul, [Div-13](https://onnx.ai/onnx/operators/onnx__Div.html#div-13) | Checked INT64 arithmetic with scalar/vector multidirectional broadcasting. Division truncates toward zero; division by zero and signed overflow refuse. |
+| Identity | Copy a bounded INT64 control without changing its scalar/vector shape. |
+
+Every control remains rank zero or one and contains at most eight values. A scalar
+and a length-one vector remain distinct. No runtime tensor values are read, no
+floating-point conversion rounds large integers, and no runtime INT64 graph or
+integer output is emitted. Dynamic controls, symbolic dimensions, mixed dtypes,
+rank-two integer controls, unsupported attributes and out-of-range indices refuse.
+Reshape, Slice, Split and Resize continue to enforce their own existing admission
+rules when consuming the computed controls.
+
+Every evaluated result consumes the same cumulative parameter/control byte quota,
+per-tensor size limit and named-value limit as an embedded constant. Source operator
+and work limits still apply, and cancellation is checked through evaluation and
+output admission. Controls remain quota-charged after removal from exported weights.
+Shape-only use of an initializer removes its unused payload from runtime parameters;
+a simultaneous data use keeps it bound. Original runtime inputs retain their exact
+binding, dtype, shape and generation checks even when only their shape is consulted.
+Unknown/forward names, duplicate output bindings, false type witnesses and unused
+controls refuse rather than being repaired or silently ignored.
+
+The retained synthetic fixture
+`crates/fss-model-ir/tests/fixtures/onnx/detector_shape_program.onnx` is 1,416 bytes,
+SHA-256 `96c73cc29267c78d4a78e603a20dcc70cf44163b78222c966c963868d1825f18`.
+It executes a convolution over `[1,3,2,4]`, derives its flattening dimensions through
+Shape/Gather/Mul/Add/Unsqueeze/Concat, and derives box/class Split lengths through
+Div/Sub/Unsqueeze/Concat. Its `[1,8,6]` output contains four box fields and two sigmoid
+class scores. Seven ordinary native data operators and two F32 weight tensors remain;
+no shape-program node or integer tensor is required at inference. The independent
+affine/sigmoid oracle runs through the production scalar executor before export and
+after canonical graph and real Safetensors reload. This untrained numerical fixture
+does not establish detector quality or full package/CLI qualification.
 
 ## Detector branches and spatial pyramid pooling
 
@@ -244,7 +291,7 @@ because that name is reserved by Safetensors; it is never silently changed. The
 weights header records the source digest and importer identity.
 
 The separate `onnx_importer_identity()` record uses `fss.onnx_importer.v1` and hashes
-the exact ONNX parser, constants, structural, Split, Resize and Gemm lowering,
+the exact ONNX parser, constants, static shape programs, structural, Split, Resize and Gemm lowering,
 artifact exporter and canonical encoder source.
 Existing Model IR bytes, operator IDs and the operator-table freeze remain unchanged.
 
@@ -337,12 +384,18 @@ artifact reload. Invalid partitions, duplicate outputs, wrong shape witnesses,
 forward/dynamic controls, unsupported multi-output operators, expansion limits,
 cancellation and every truncated prefix of the 1,190-byte fixture refuse.
 
-Scoped formatting and strict library/structural/export-target Clippy checks pass.
-The Split/pooling strict library/execution-target Clippy rerun remains incomplete
-because shared memory pressure stalled compiler metadata generation. Its initial
-run identified two test-only `expect` calls; both were replaced with typed error
-handling. Production code passed the full 186-test native run before those test
-helper edits. No full-target lint pass is claimed for this checkpoint.
+The `onnx_shape_program_execution` target passes 19 tests: 17 shape-program cases
+and two included production-executor smoke cases. It covers every input rank from
+scalar through eight, exact F32 bit preservation, negative/repeated Gather indices,
+scalar/vector distinctions, INT64 arithmetic above 2^53, signed division, empty
+controls, metadata-only and mixed parameter uses, wrong runtime bindings, namespace
+and declaration failures, exact control-byte/tensor/node/work boundaries, every
+cancellation checkpoint and every truncated prefix of the retained fixture.
+
+Scoped formatting and strict library plus shape-program/detector-target Clippy
+checks pass without allowances. The preceding full model-IR run passed 186 tests;
+the complete package regression has not been rerun after the shape-program addition.
+The final Split/pooling 16-test rerun also passed after its test-helper fixes.
 The unchanged unused import in `quotas_family.rs` still prevents a strict all-target
 Clippy claim; it does not affect the passing native semantic tests.
 
