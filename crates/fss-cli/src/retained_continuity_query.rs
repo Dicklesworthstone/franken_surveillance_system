@@ -82,7 +82,9 @@ fn alignment(value: &Value) -> Result<PackageClockAlignment, String> {
     })
 }
 
-fn selection(value: &Value) -> Result<PackageHandoffSelection, String> {
+/// Parse one exact retained package-track selection without authenticating source custody.
+/// Consumers must use the retained package owner to reconstruct and revalidate the selection.
+pub fn parse_selection(value: &Value) -> Result<PackageHandoffSelection, String> {
     let row = fields(
         value,
         &[
@@ -143,7 +145,7 @@ pub fn parse_query(bytes: &[u8]) -> Result<PackageHandoffRequest, String> {
     }
     let selections = list(required(top, "selections")?, 32)?
         .iter()
-        .map(selection)
+        .map(parse_selection)
         .collect::<Result<Vec<_>, _>>()?;
     if selections.is_empty() {
         return Err("at least one retained track must be selected".into());
@@ -179,7 +181,8 @@ pub fn anchor_digest(anchor: &LedgerAnchor) -> ContentDigest {
     ContentDigest::sha256(&anchor.canonical_bytes())
 }
 
-fn anchor_json(value: &LedgerAnchor) -> String {
+/// Render the complete authority anchor using the retained-analysis report vocabulary.
+pub fn authority_anchor_json(value: &LedgerAnchor) -> String {
     object(&[
         ("site_lineage", string(&value.site_lineage)),
         ("ledger_epoch", value.ledger_epoch.to_string()),
@@ -234,7 +237,9 @@ fn observation(value: &PackageHandoffObservation) -> String {
     ])
 }
 
-fn binding(value: &PackageHandoffBinding) -> String {
+/// Render every source fact and actual observation in one retained track binding.
+/// Public data shapes and serialization do not authenticate custody; use the sealed owner.
+pub fn source_binding_json(value: &PackageHandoffBinding) -> String {
     object(&[
         ("id", string(&value.id)),
         ("report_digest", d(value.report_digest)),
@@ -243,7 +248,10 @@ fn binding(value: &PackageHandoffBinding) -> String {
         ("retained_root", d(value.retained_root)),
         ("import_identity", d(value.import_identity)),
         ("import_root", d(value.import_root)),
-        ("retained_anchor", anchor_json(&value.retained_anchor)),
+        (
+            "retained_anchor",
+            authority_anchor_json(&value.retained_anchor),
+        ),
         ("track", d(value.track)),
         ("confirmed", value.confirmed.to_string()),
         ("sensor_id", string(&value.sensor_id)),
@@ -337,7 +345,7 @@ pub fn analyze(
         ("input_document_digest", d(input.input_document)),
         ("projection_digest", d(input.projection_digest)),
         ("anchor_digest", d(anchor_digest(input.anchor))),
-        ("anchor", anchor_json(input.anchor)),
+        ("anchor", authority_anchor_json(input.anchor)),
         (
             "assumptions",
             strings([
@@ -350,7 +358,13 @@ pub fn analyze(
         ),
         (
             "bindings",
-            array(&input.bindings.iter().map(binding).collect::<Vec<_>>()),
+            array(
+                &input
+                    .bindings
+                    .iter()
+                    .map(source_binding_json)
+                    .collect::<Vec<_>>(),
+            ),
         ),
         ("conditional_analysis", conditional),
     ]);

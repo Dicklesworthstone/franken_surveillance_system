@@ -10,6 +10,45 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Retained native detections in the property scene (2026-10-31, integration)
+
+`fss-scene-fuse retained-fuse` connects actual retained package detections and
+native tracks to the existing property twin, camera rig and multi-view solvers.
+It reconstructs static points, points with supplied velocity, or position and
+constant velocity inferred from staggered observations. The strict selection
+names exact native track/segment/detector-row/capsule identities; feature
+rectangles must remain inside their actual source detector bounds.
+
+The source owner authenticates complete retained custody and current privacy.
+Source-derived sensor identity, image dimensions, model comparison generation
+and full conservative capture intervals cannot be replaced by query fields.
+Explicit source-to-rig, undistorted-image, additive-clock and common-feature
+declarations remain assumptions. One physical source cannot masquerade as
+multiple scene cameras. Query-local aliases preserve original full identities
+without truncating content digests into synthetic persistent identities.
+
+The complete bounded report retains every original selected observation, full
+authority anchor, exact declarations, native geometric results and individual
+refusals. The sealed source owner revalidates all retained source bytes and
+privacy after geometry and report construction, before any report is released.
+A borrowed cancellation/deadline probe now reaches every geometry work charge
+without a detached timer. No event, calibration certificate or effect is activated.
+
+An exact-source native harness passed **14 tests**: eleven adapter/geometry
+contracts and three cancellation/Send+Sync contracts. It reconstructs a known
+point from three cameras and position/velocity from six staggered observations,
+and covers pins, image bounds, full timing uncertainty, source-camera consistency,
+visibility refusals, deterministic aliases and assumption-sensitive evidence.
+The complete current-source Cargo geometry/fusion suites passed **201 tests**;
+all **23** parser/rig/adapter tests also passed in the exact-source harness.
+Seven additional real-custody CLI tests are written but have not yet typechecked
+or executed. Two genuine builds were killed while compiling pinned Asupersync;
+a serialized retry remains delayed by shared host memory pressure. The pure
+harness does not substitute for deployment recovery, custody or output tests.
+The 104-schema catalog resolves all 801 references without errors; the broader
+constitution scan retains 43 existing findings and none for this feature.
+See `docs/RETAINED_SCENE_FUSION.md` for the command, schema and validation boundary.
+
 ## ONNX average pooling through native execution (2026-10-31, native model import)
 
 The opset-13 importer now admits static F32 `AveragePool-11` and

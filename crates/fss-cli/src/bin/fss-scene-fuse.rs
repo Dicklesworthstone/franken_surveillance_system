@@ -11,6 +11,10 @@ mod handoffs;
 mod input;
 #[path = "fss-scene-fuse/report.rs"]
 mod report;
+#[path = "fss-scene-fuse/retained_fusion.rs"]
+mod retained_fusion;
+#[path = "fss-scene-fuse/retained_fusion_input.rs"]
+mod retained_fusion_input;
 #[path = "fss-scene-fuse/retained_handoffs.rs"]
 mod retained_handoffs;
 #[cfg(test)]
@@ -57,7 +61,8 @@ Every hypothesis is reported, including refusals. Exit 0: all solved; 3: some/al
 private file after the complete report is computed; existing files are never overwritten.\n\
 The stdout JSON is identical to that file. Default work allowance: 100000000 units.\n\n\
 For automatic ordered anonymous tracklet association, use fss-scene-fuse handoffs --help.\n\
-For authenticated retained package tracks, use fss-scene-fuse retained-handoffs --help.\n";
+For authenticated retained package tracks, use fss-scene-fuse retained-handoffs --help.\n\
+For 3D reconstruction from retained tracks, use fss-scene-fuse retained-fuse --help.\n";
 
 #[derive(Debug)]
 struct Failure {
@@ -246,7 +251,7 @@ fn analyze(options: &Options, cx: &ReplayCx) -> Result<report::Report> {
         &rig,
         &query,
         rig_digest,
-        ContentDigest::sha256(&query_bytes),
+        report::SourceProvenance::CallerSupplied(ContentDigest::sha256(&query_bytes)),
         &mut work,
         cx,
     )?;
@@ -350,6 +355,8 @@ fn main() -> ExitCode {
         handoffs::run(&args[1..], &mut io::stdout().lock())
     } else if args.first().and_then(|arg| arg.to_str()) == Some("retained-handoffs") {
         retained_handoffs::run(&args[1..], &mut io::stdout().lock())
+    } else if args.first().and_then(|arg| arg.to_str()) == Some("retained-fuse") {
+        retained_fusion::run(&args[1..], &mut io::stdout().lock())
     } else {
         options(args).and_then(|value| match value {
             None => {

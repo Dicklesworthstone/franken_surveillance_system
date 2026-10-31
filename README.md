@@ -393,6 +393,13 @@ invalidates the certificate. NeRF/Gaussian-splat renderings are useful views, no
 
 See [`DIGITAL_TWIN_AND_CALIBRATION.md`](DIGITAL_TWIN_AND_CALIBRATION.md).
 
+`fss-scene-fuse retained-fuse` now connects retained native detector tracks to the
+property scene and declared camera rig for 3D point and constant-velocity reconstruction.
+It authenticates original observations, preserves full capture intervals, checks explicit
+feature selections against detector bounds, and revalidates custody after solving. Reports
+retain camera/clock/correspondence assumptions and every geometric refusal. See
+[`docs/RETAINED_SCENE_FUSION.md`](docs/RETAINED_SCENE_FUSION.md) for the command and input contract.
+
 ## ATP archive, repair, and deletion
 
 Source media, evidence bundles, checkpoints, model packages, graph/search/calibration/twin

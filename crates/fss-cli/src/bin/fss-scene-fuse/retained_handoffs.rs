@@ -196,7 +196,7 @@ fn authority(options: &Options) -> Result<ContextAuthority> {
     })
 }
 
-fn preflight(root: &Path, site: &str, authority: &ContextAuthority) -> Result<PathBuf> {
+pub(super) fn preflight(root: &Path, site: &str, authority: &ContextAuthority) -> Result<PathBuf> {
     authority
         .validate()
         .map_err(|_| fail("ERR-SCENE-FUSION-AUTHORITY-001", "invalid read authority"))?;
