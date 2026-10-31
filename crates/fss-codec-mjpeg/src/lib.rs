@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! Stateless baseline JPEG/MJPEG frame-to-luma or RGB decoding, with no foreign runtime.
+//! Stateless baseline and progressive JPEG/MJPEG decoding, with no foreign runtime.
 //!
 //! Accepts exactly one complete, owner-framed JPEG image, not an HTTP/UVC/AVI stream.
 //! The luma API reconstructs Y; `color::decode_rgb` reconstructs all color components.
@@ -7,6 +7,7 @@
 
 mod entropy;
 mod image;
+mod progressive;
 mod transform;
 
 use fss_core::ContentDigest;
@@ -17,7 +18,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 pub enum DecodeError {
     /// Invalid byte syntax, inconsistent tables, entropy, padding or restart sequence.
     Malformed,
-    /// The admitted baseline, sampling or component-interpretation subset is exceeded.
+    /// The admitted coding, sampling or component-interpretation subset is exceeded.
     Unsupported,
     /// A required byte is absent; no concealment or partial image is performed.
     Truncated,
@@ -80,7 +81,9 @@ impl DecodeLimits {
     /// Upper bound on the work units [`decode_luma`] charges for any frame these limits admit,
     /// so a caller can size a per-frame [`DecodeBudget`] that never exhausts on an admitted frame.
     ///
-    /// Derived from the luma charge schedule: the input length once, 32 per marker, every marker
+    /// Includes the bounded progressive coefficient buffer and at most 256 progressive scans.
+    /// Baseline calls keep their original actual charges. The baseline contribution is derived
+    /// from the input length once, 32 per marker, every marker
     /// segment's length (together at most the input), the luma buffer, the final
     /// `pixels + 1024`, and per MCU `1 + 4096` per entropy block. Every admitted sampling layout
     /// has at most `ceil(w/8) * ceil(h/8)` MCUs and at most 6 blocks per MCU, and for
@@ -96,12 +99,22 @@ impl DecodeLimits {
             .saturating_add(dimension.saturating_mul(14))
             .saturating_add(49)
             .div_ceil(64);
-        bytes
+        let baseline = bytes
             .saturating_mul(2)
             .saturating_add(markers.saturating_mul(32))
             .saturating_add(pixels.saturating_mul(2))
             .saturating_add(1024)
-            .saturating_add(cells.saturating_mul(1 + 6 * 4096))
+            .saturating_add(cells.saturating_mul(1 + 6 * 4096));
+        // Six blocks per cell is conservative for every admitted sampling and edge layout.
+        // Each scan visits each allocated block at most once; reconstruction does so once more.
+        let progressive =
+            baseline
+                .saturating_add(cells.saturating_mul(6 * 128))
+                .saturating_add(cells.saturating_mul(
+                    progressive::MAX_SCANS as u64 * (6 + 6 * 4096) + 6 * (4096 + 64),
+                ))
+                .saturating_add(progressive::profile_bytes() as u64 + 2048);
+        baseline.max(progressive)
     }
 }
 
@@ -164,6 +177,26 @@ pub fn decoder_identity() -> [u8; 32] {
     ]
 }
 
+/// Source-bound identity of the progressive Huffman coefficient/scan decoder and fixed IDCT.
+#[must_use]
+pub fn progressive_decoder_identity() -> [u8; 32] {
+    progressive::identity(false)
+}
+
+/// Deterministically select the decoder generation from the bounded pre-scan marker prefix.
+///
+/// Only an explicit SOF2 selects progressive decoding. Invalid, absent, or unsupported frame
+/// headers retain the baseline generation, whose historical refusals can still be replayed.
+/// This performs no entropy work, allocation, metadata interpretation, or source authentication.
+#[must_use]
+pub fn decoder_identity_for_frame(bytes: &[u8]) -> [u8; 32] {
+    if progressive::is_progressive(bytes) {
+        progressive_decoder_identity()
+    } else {
+        decoder_identity()
+    }
+}
+
 /// Source-linked decoding accounting. A digest is not source custody or authentication.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DecodeReceipt {
@@ -175,9 +208,9 @@ pub struct DecodeReceipt {
     pub decoder: [u8; 32],
     /// Explicit caller-supplied component interpretation.
     pub interpretation: ComponentInterpretation,
-    /// Minimum coded units consumed, including edge padding.
+    /// Coded MCUs consumed, including edge padding; summed over progressive scans.
     pub mcus: usize,
-    /// All luma and chroma entropy blocks validated, not only retained Y blocks.
+    /// All luma and chroma entropy block visits, including progressive refinements.
     pub entropy_blocks: usize,
     /// Correctly ordered restart markers consumed.
     pub restarts: usize,
@@ -216,14 +249,53 @@ impl DecodedLuma {
     }
 }
 
-/// Decode a complete self-contained baseline Huffman JPEG into full-resolution Y.
+/// Decode one complete self-contained baseline or progressive Huffman JPEG into Y.
+///
+/// SOF2 uses bounded coefficient storage and validates DC/AC spectral and successive-approximation
+/// scans, EOB runs, quantizer stability, restart boundaries, and EOI before publishing pixels.
+/// Baseline source, output, accounting, and generation remain exactly the v1 contract.
+pub fn decode_luma(
+    bytes: &[u8],
+    expected_sha256: [u8; 32],
+    interpretation: ComponentInterpretation,
+    limits: DecodeLimits,
+    budget: &mut DecodeBudget<'_>,
+) -> Result<DecodedLuma, DecodeError> {
+    budget.charge(0)?;
+    if progressive::is_progressive(bytes) {
+        progressive::decode_luma(bytes, expected_sha256, interpretation, limits, budget)
+    } else {
+        decode_luma_v1(bytes, expected_sha256, interpretation, limits, budget)
+    }
+}
+
+/// Replay exactly the requested registered generation, including an old progressive refusal.
+pub fn decode_luma_for_identity(
+    decoder: [u8; 32],
+    bytes: &[u8],
+    expected_sha256: [u8; 32],
+    interpretation: ComponentInterpretation,
+    limits: DecodeLimits,
+    budget: &mut DecodeBudget<'_>,
+) -> Result<DecodedLuma, DecodeError> {
+    budget.charge(0)?;
+    if decoder == decoder_identity() {
+        decode_luma_v1(bytes, expected_sha256, interpretation, limits, budget)
+    } else if decoder == progressive_decoder_identity() {
+        progressive::decode_luma(bytes, expected_sha256, interpretation, limits, budget)
+    } else {
+        Err(DecodeError::Unsupported)
+    }
+}
+
+/// Replay the original complete baseline Huffman JPEG-to-Y generation.
 ///
 /// Supports grayscale and YCbCr 4:4:4/4:2:2/4:2:0, in one sequential scan, with
 /// supplied 8-bit quantizers/Huffman tables and optional restart intervals. Chroma
 /// entropy is validated even though chroma pixels are not returned. Progressive,
 /// arithmetic, abbreviated/table-inheriting frames, multi-scan, RGB/CMYK, missing
 /// EOI and trailing bytes are explicit failures. A bad suffix cannot publish Y.
-pub fn decode_luma(
+pub fn decode_luma_v1(
     bytes: &[u8],
     expected_sha256: [u8; 32],
     interpretation: ComponentInterpretation,

@@ -53,7 +53,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
-use fss_codec_mjpeg::{DecodeBudget, decode_luma};
+// Preserve the decoder generation of existing watch/corroboration recipes and coverage.
+use fss_codec_mjpeg::{DecodeBudget, decode_luma_v1 as decode_luma};
 use fss_core::abstraction::runtime_authority::RuntimeGrant;
 use fss_core::event::EventDecodeError;
 use fss_core::{

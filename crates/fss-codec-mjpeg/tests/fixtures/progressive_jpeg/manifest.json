@@ -1,0 +1,872 @@
+{
+  "format": "fss.progressive_jpeg_lab_fixture.v1",
+  "pillow": "12.3.0",
+  "libjpeg": "6.2",
+  "ffmpeg": "ffmpeg version 6.1.1-3ubuntu5 Copyright (c) 2000-2023 the FFmpeg developers",
+  "cases": [
+    {
+      "name": "gray_17x19_rst0",
+      "width": 17,
+      "height": 19,
+      "interpretation": "gray",
+      "restart_interval": 0,
+      "restart_markers": 0,
+      "scans": [
+        {
+          "components": [
+            1
+          ],
+          "ss": 0,
+          "se": 0,
+          "ah": 0,
+          "al": 1
+        },
+        {
+          "components": [
+            1
+          ],
+          "ss": 1,
+          "se": 5,
+          "ah": 0,
+          "al": 2
+        },
+        {
+          "components": [
+            1
+          ],
+          "ss": 6,
+          "se": 63,
+          "ah": 0,
+          "al": 2
+        },
+        {
+          "components": [
+            1
+          ],
+          "ss": 1,
+          "se": 63,
+          "ah": 2,
+          "al": 1
+        },
+        {
+          "components": [
+            1
+          ],
+          "ss": 0,
+          "se": 0,
+          "ah": 1,
+          "al": 0
+        },
+        {
+          "components": [
+            1
+          ],
+          "ss": 1,
+          "se": 63,
+          "ah": 1,
+          "al": 0
+        }
+      ],
+      "baseline": {
+        "file": "gray_17x19_rst0.baseline.jpg",
+        "sha256": "89ae9af27d72d3fa46458a41d95acc2115223b8edd1f61e8e486e75f5b74efcb",
+        "bytes": 398
+      },
+      "progressive": {
+        "file": "gray_17x19_rst0.progressive.jpg",
+        "sha256": "81393868fd577a302c9e095ced979e2ac6d3da4ff836db6a4d5922107b4f358d",
+        "bytes": 524
+      },
+      "luma": {
+        "file": "gray_17x19_rst0.ffmpeg.luma",
+        "sha256": "41fa7b3627475d95cf7e97a9c27e40c6f244f099252d777a28d6f19cf1e126c3"
+      }
+    },
+    {
+      "name": "gray_37x29_rst2",
+      "width": 37,
+      "height": 29,
+      "interpretation": "gray",
+      "restart_interval": 2,
+      "restart_markers": 54,
+      "scans": [
+        {
+          "components": [
+            1
+          ],
+          "ss": 0,
+          "se": 0,
+          "ah": 0,
+          "al": 1
+        },
+        {
+          "components": [
+            1
+          ],
+          "ss": 1,
+          "se": 5,
+          "ah": 0,
+          "al": 2
+        },
+        {
+          "components": [
+            1
+          ],
+          "ss": 6,
+          "se": 63,
+          "ah": 0,
+          "al": 2
+        },
+        {
+          "components": [
+            1
+          ],
+          "ss": 1,
+          "se": 63,
+          "ah": 2,
+          "al": 1
+        },
+        {
+          "components": [
+            1
+          ],
+          "ss": 0,
+          "se": 0,
+          "ah": 1,
+          "al": 0
+        },
+        {
+          "components": [
+            1
+          ],
+          "ss": 1,
+          "se": 63,
+          "ah": 1,
+          "al": 0
+        }
+      ],
+      "baseline": {
+        "file": "gray_37x29_rst2.baseline.jpg",
+        "sha256": "f180311a114aeecf63749116a3dfa49c62dfd68a26e6aa7320ae9bd2c171c67f",
+        "bytes": 777
+      },
+      "progressive": {
+        "file": "gray_37x29_rst2.progressive.jpg",
+        "sha256": "7f74c68364580accefbc723cfdcf07ee0ec4dc10529570ee4742e72b347fd905",
+        "bytes": 992
+      },
+      "luma": {
+        "file": "gray_37x29_rst2.ffmpeg.luma",
+        "sha256": "b924d7198caedc6a3244110edcba79d340584611080028071b19de1be642239e"
+      }
+    },
+    {
+      "name": "444_17x19_rst0",
+      "width": 17,
+      "height": 19,
+      "interpretation": "ycbcr",
+      "restart_interval": 0,
+      "restart_markers": 0,
+      "scans": [
+        {
+          "components": [
+            1,
+            2,
+            3
+          ],
+          "ss": 0,
+          "se": 0,
+          "ah": 0,
+          "al": 1
+        },
+        {
+          "components": [
+            1
+          ],
+          "ss": 1,
+          "se": 5,
+          "ah": 0,
+          "al": 2
+        },
+        {
+          "components": [
+            3
+          ],
+          "ss": 1,
+          "se": 63,
+          "ah": 0,
+          "al": 1
+        },
+        {
+          "components": [
+            2
+          ],
+          "ss": 1,
+          "se": 63,
+          "ah": 0,
+          "al": 1
+        },
+        {
+          "components": [
+            1
+          ],
+          "ss": 6,
+          "se": 63,
+          "ah": 0,
+          "al": 2
+        },
+        {
+          "components": [
+            1
+          ],
+          "ss": 1,
+          "se": 63,
+          "ah": 2,
+          "al": 1
+        },
+        {
+          "components": [
+            1,
+            2,
+            3
+          ],
+          "ss": 0,
+          "se": 0,
+          "ah": 1,
+          "al": 0
+        },
+        {
+          "components": [
+            3
+          ],
+          "ss": 1,
+          "se": 63,
+          "ah": 1,
+          "al": 0
+        },
+        {
+          "components": [
+            2
+          ],
+          "ss": 1,
+          "se": 63,
+          "ah": 1,
+          "al": 0
+        },
+        {
+          "components": [
+            1
+          ],
+          "ss": 1,
+          "se": 63,
+          "ah": 1,
+          "al": 0
+        }
+      ],
+      "baseline": {
+        "file": "444_17x19_rst0.baseline.jpg",
+        "sha256": "f40a7b03864646acd1812638250c9c457561426ef32994844036288e81c8435f",
+        "bytes": 774
+      },
+      "progressive": {
+        "file": "444_17x19_rst0.progressive.jpg",
+        "sha256": "a38537763cbd65b0f3e4153ca4e78f14470aa22abd047154234bf5e778ebcd08",
+        "bytes": 1011
+      },
+      "luma": {
+        "file": "444_17x19_rst0.ffmpeg.luma",
+        "sha256": "def59ecfd3bda022859307a1dacfeff0a673c8cc54b2bf9611e8127462a17609"
+      }
+    },
+    {
+      "name": "444_37x29_rst2",
+      "width": 37,
+      "height": 29,
+      "interpretation": "ycbcr",
+      "restart_interval": 2,
+      "restart_markers": 90,
+      "scans": [
+        {
+          "components": [
+            1,
+            2,
+            3
+          ],
+          "ss": 0,
+          "se": 0,
+          "ah": 0,
+          "al": 1
+        },
+        {
+          "components": [
+            1
+          ],
+          "ss": 1,
+          "se": 5,
+          "ah": 0,
+          "al": 2
+        },
+        {
+          "components": [
+            3
+          ],
+          "ss": 1,
+          "se": 63,
+          "ah": 0,
+          "al": 1
+        },
+        {
+          "components": [
+            2
+          ],
+          "ss": 1,
+          "se": 63,
+          "ah": 0,
+          "al": 1
+        },
+        {
+          "components": [
+            1
+          ],
+          "ss": 6,
+          "se": 63,
+          "ah": 0,
+          "al": 2
+        },
+        {
+          "components": [
+            1
+          ],
+          "ss": 1,
+          "se": 63,
+          "ah": 2,
+          "al": 1
+        },
+        {
+          "components": [
+            1,
+            2,
+            3
+          ],
+          "ss": 0,
+          "se": 0,
+          "ah": 1,
+          "al": 0
+        },
+        {
+          "components": [
+            3
+          ],
+          "ss": 1,
+          "se": 63,
+          "ah": 1,
+          "al": 0
+        },
+        {
+          "components": [
+            2
+          ],
+          "ss": 1,
+          "se": 63,
+          "ah": 1,
+          "al": 0
+        },
+        {
+          "components": [
+            1
+          ],
+          "ss": 1,
+          "se": 63,
+          "ah": 1,
+          "al": 0
+        }
+      ],
+      "baseline": {
+        "file": "444_37x29_rst2.baseline.jpg",
+        "sha256": "79b4b33aa837d12a9456e916e8d8dc5964179f859e3b5ac35c37158119b15442",
+        "bytes": 1562
+      },
+      "progressive": {
+        "file": "444_37x29_rst2.progressive.jpg",
+        "sha256": "425d555333771b554ad5f72591e709993c943ccd7e688ee8cc0e39e2a5197494",
+        "bytes": 1953
+      },
+      "luma": {
+        "file": "444_37x29_rst2.ffmpeg.luma",
+        "sha256": "ff92fde8952f0ce86b85499446e8ae1d000df8256dd1370dd57068296276cd16"
+      }
+    },
+    {
+      "name": "422_17x19_rst0",
+      "width": 17,
+      "height": 19,
+      "interpretation": "ycbcr",
+      "restart_interval": 0,
+      "restart_markers": 0,
+      "scans": [
+        {
+          "components": [
+            1,
+            2,
+            3
+          ],
+          "ss": 0,
+          "se": 0,
+          "ah": 0,
+          "al": 1
+        },
+        {
+          "components": [
+            1
+          ],
+          "ss": 1,
+          "se": 5,
+          "ah": 0,
+          "al": 2
+        },
+        {
+          "components": [
+            3
+          ],
+          "ss": 1,
+          "se": 63,
+          "ah": 0,
+          "al": 1
+        },
+        {
+          "components": [
+            2
+          ],
+          "ss": 1,
+          "se": 63,
+          "ah": 0,
+          "al": 1
+        },
+        {
+          "components": [
+            1
+          ],
+          "ss": 6,
+          "se": 63,
+          "ah": 0,
+          "al": 2
+        },
+        {
+          "components": [
+            1
+          ],
+          "ss": 1,
+          "se": 63,
+          "ah": 2,
+          "al": 1
+        },
+        {
+          "components": [
+            1,
+            2,
+            3
+          ],
+          "ss": 0,
+          "se": 0,
+          "ah": 1,
+          "al": 0
+        },
+        {
+          "components": [
+            3
+          ],
+          "ss": 1,
+          "se": 63,
+          "ah": 1,
+          "al": 0
+        },
+        {
+          "components": [
+            2
+          ],
+          "ss": 1,
+          "se": 63,
+          "ah": 1,
+          "al": 0
+        },
+        {
+          "components": [
+            1
+          ],
+          "ss": 1,
+          "se": 63,
+          "ah": 1,
+          "al": 0
+        }
+      ],
+      "baseline": {
+        "file": "422_17x19_rst0.baseline.jpg",
+        "sha256": "80e83fd2ca6c944a18cc284a3557a4852a28ad44831a56440b364ae3d48315df",
+        "bytes": 667
+      },
+      "progressive": {
+        "file": "422_17x19_rst0.progressive.jpg",
+        "sha256": "9f25b902680a38cf03be34c6d72adcba2de9270a8f11fdf57b6afe3f7526f850",
+        "bytes": 908
+      },
+      "luma": {
+        "file": "422_17x19_rst0.ffmpeg.luma",
+        "sha256": "def59ecfd3bda022859307a1dacfeff0a673c8cc54b2bf9611e8127462a17609"
+      }
+    },
+    {
+      "name": "422_37x29_rst2",
+      "width": 37,
+      "height": 29,
+      "interpretation": "ycbcr",
+      "restart_interval": 2,
+      "restart_markers": 66,
+      "scans": [
+        {
+          "components": [
+            1,
+            2,
+            3
+          ],
+          "ss": 0,
+          "se": 0,
+          "ah": 0,
+          "al": 1
+        },
+        {
+          "components": [
+            1
+          ],
+          "ss": 1,
+          "se": 5,
+          "ah": 0,
+          "al": 2
+        },
+        {
+          "components": [
+            3
+          ],
+          "ss": 1,
+          "se": 63,
+          "ah": 0,
+          "al": 1
+        },
+        {
+          "components": [
+            2
+          ],
+          "ss": 1,
+          "se": 63,
+          "ah": 0,
+          "al": 1
+        },
+        {
+          "components": [
+            1
+          ],
+          "ss": 6,
+          "se": 63,
+          "ah": 0,
+          "al": 2
+        },
+        {
+          "components": [
+            1
+          ],
+          "ss": 1,
+          "se": 63,
+          "ah": 2,
+          "al": 1
+        },
+        {
+          "components": [
+            1,
+            2,
+            3
+          ],
+          "ss": 0,
+          "se": 0,
+          "ah": 1,
+          "al": 0
+        },
+        {
+          "components": [
+            3
+          ],
+          "ss": 1,
+          "se": 63,
+          "ah": 1,
+          "al": 0
+        },
+        {
+          "components": [
+            2
+          ],
+          "ss": 1,
+          "se": 63,
+          "ah": 1,
+          "al": 0
+        },
+        {
+          "components": [
+            1
+          ],
+          "ss": 1,
+          "se": 63,
+          "ah": 1,
+          "al": 0
+        }
+      ],
+      "baseline": {
+        "file": "422_37x29_rst2.baseline.jpg",
+        "sha256": "c1014f7e12fac342e0b772922cbc36dc6d07a311f68640a0df8b2c2a4c98333f",
+        "bytes": 1257
+      },
+      "progressive": {
+        "file": "422_37x29_rst2.progressive.jpg",
+        "sha256": "fe685ca2afd7ae289b10e60d2a4f985970cf9f45fb856393db28e280728e2517",
+        "bytes": 1615
+      },
+      "luma": {
+        "file": "422_37x29_rst2.ffmpeg.luma",
+        "sha256": "ff92fde8952f0ce86b85499446e8ae1d000df8256dd1370dd57068296276cd16"
+      }
+    },
+    {
+      "name": "420_17x19_rst0",
+      "width": 17,
+      "height": 19,
+      "interpretation": "ycbcr",
+      "restart_interval": 0,
+      "restart_markers": 0,
+      "scans": [
+        {
+          "components": [
+            1,
+            2,
+            3
+          ],
+          "ss": 0,
+          "se": 0,
+          "ah": 0,
+          "al": 1
+        },
+        {
+          "components": [
+            1
+          ],
+          "ss": 1,
+          "se": 5,
+          "ah": 0,
+          "al": 2
+        },
+        {
+          "components": [
+            3
+          ],
+          "ss": 1,
+          "se": 63,
+          "ah": 0,
+          "al": 1
+        },
+        {
+          "components": [
+            2
+          ],
+          "ss": 1,
+          "se": 63,
+          "ah": 0,
+          "al": 1
+        },
+        {
+          "components": [
+            1
+          ],
+          "ss": 6,
+          "se": 63,
+          "ah": 0,
+          "al": 2
+        },
+        {
+          "components": [
+            1
+          ],
+          "ss": 1,
+          "se": 63,
+          "ah": 2,
+          "al": 1
+        },
+        {
+          "components": [
+            1,
+            2,
+            3
+          ],
+          "ss": 0,
+          "se": 0,
+          "ah": 1,
+          "al": 0
+        },
+        {
+          "components": [
+            3
+          ],
+          "ss": 1,
+          "se": 63,
+          "ah": 1,
+          "al": 0
+        },
+        {
+          "components": [
+            2
+          ],
+          "ss": 1,
+          "se": 63,
+          "ah": 1,
+          "al": 0
+        },
+        {
+          "components": [
+            1
+          ],
+          "ss": 1,
+          "se": 63,
+          "ah": 1,
+          "al": 0
+        }
+      ],
+      "baseline": {
+        "file": "420_17x19_rst0.baseline.jpg",
+        "sha256": "fb5cc630fbeddb3beb60e3ea77eee509ea92e8950a38936846185ae8705df231",
+        "bytes": 616
+      },
+      "progressive": {
+        "file": "420_17x19_rst0.progressive.jpg",
+        "sha256": "337ae5b9aaa64cc5653e2c0a5df0080202750d50d9ecc9d382eead29378a09d2",
+        "bytes": 856
+      },
+      "luma": {
+        "file": "420_17x19_rst0.ffmpeg.luma",
+        "sha256": "def59ecfd3bda022859307a1dacfeff0a673c8cc54b2bf9611e8127462a17609"
+      }
+    },
+    {
+      "name": "420_37x29_rst2",
+      "width": 37,
+      "height": 29,
+      "interpretation": "ycbcr",
+      "restart_interval": 2,
+      "restart_markers": 48,
+      "scans": [
+        {
+          "components": [
+            1,
+            2,
+            3
+          ],
+          "ss": 0,
+          "se": 0,
+          "ah": 0,
+          "al": 1
+        },
+        {
+          "components": [
+            1
+          ],
+          "ss": 1,
+          "se": 5,
+          "ah": 0,
+          "al": 2
+        },
+        {
+          "components": [
+            3
+          ],
+          "ss": 1,
+          "se": 63,
+          "ah": 0,
+          "al": 1
+        },
+        {
+          "components": [
+            2
+          ],
+          "ss": 1,
+          "se": 63,
+          "ah": 0,
+          "al": 1
+        },
+        {
+          "components": [
+            1
+          ],
+          "ss": 6,
+          "se": 63,
+          "ah": 0,
+          "al": 2
+        },
+        {
+          "components": [
+            1
+          ],
+          "ss": 1,
+          "se": 63,
+          "ah": 2,
+          "al": 1
+        },
+        {
+          "components": [
+            1,
+            2,
+            3
+          ],
+          "ss": 0,
+          "se": 0,
+          "ah": 1,
+          "al": 0
+        },
+        {
+          "components": [
+            3
+          ],
+          "ss": 1,
+          "se": 63,
+          "ah": 1,
+          "al": 0
+        },
+        {
+          "components": [
+            2
+          ],
+          "ss": 1,
+          "se": 63,
+          "ah": 1,
+          "al": 0
+        },
+        {
+          "components": [
+            1
+          ],
+          "ss": 1,
+          "se": 63,
+          "ah": 1,
+          "al": 0
+        }
+      ],
+      "baseline": {
+        "file": "420_37x29_rst2.baseline.jpg",
+        "sha256": "6df1d716bf54eef3569f5159700bcc8464d85fc228c2700f0e8c513e009892c3",
+        "bytes": 1041
+      },
+      "progressive": {
+        "file": "420_37x29_rst2.progressive.jpg",
+        "sha256": "55e95959df7cd43d1e8e7b7b142b3d49df9a15bbc8158e753d347cb515f63064",
+        "bytes": 1365
+      },
+      "luma": {
+        "file": "420_37x29_rst2.ffmpeg.luma",
+        "sha256": "ff92fde8952f0ce86b85499446e8ae1d000df8256dd1370dd57068296276cd16"
+      }
+    }
+  ]
+}

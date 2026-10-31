@@ -241,7 +241,7 @@ fn framing_success_does_not_claim_entropy_or_codec_validation() -> Test {
     Ok(())
 }
 #[test]
-fn progressive_marker_remains_framed_but_unsupported_by_baseline_decoder() -> Test {
+fn progressive_marker_is_framed_but_a_sequential_scan_is_still_malformed() -> Test {
     let mut bytes = GRAY.to_vec();
     let index = bytes
         .windows(2)
@@ -255,7 +255,7 @@ fn progressive_marker_remains_framed_but_unsupported_by_baseline_decoder() -> Te
             DecodeLimits::default(),
             &mut DecodeBudget::new(1_000_000)
         ),
-        Err(DecodeError::Unsupported)
+        Err(DecodeError::Malformed)
     ));
     Ok(())
 }

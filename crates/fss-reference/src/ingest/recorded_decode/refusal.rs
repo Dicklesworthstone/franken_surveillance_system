@@ -26,7 +26,10 @@
 
 use std::collections::BTreeSet;
 
-use fss_codec_mjpeg::{DecodeError, decode_luma, decoder_identity};
+use fss_codec_mjpeg::{
+    DecodeError, decode_luma_for_identity, decoder_identity, decoder_identity_for_frame,
+    progressive_decoder_identity,
+};
 use fss_core::{
     BatchId, CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder, ContentDigest,
     DigestAlgorithm, EvidenceDelta, LedgerAnchor, ObjectId, Plane, SensorCapsule,
@@ -140,6 +143,7 @@ fn encode_limits(e: &mut CanonicalEncoder, axes: [u64; 4]) {
 fn refusal_key(
     import_root: ContentDigest,
     segment: u64,
+    decoder: [u8; 32],
     interpretation: ComponentInterpretation,
     mask: ContentDigest,
     limits: [u64; 4],
@@ -148,7 +152,7 @@ fn refusal_key(
     e.text("fss.recorded_decode_refusal_key.v1");
     e.digest(import_root);
     e.u64(segment);
-    e.digest(sha(decoder_identity()));
+    e.digest(sha(decoder));
     e.u8(interpretation_tag(interpretation));
     e.digest(mask);
     encode_limits(&mut e, limits);
@@ -193,6 +197,7 @@ impl RecordedDecodeRefusal {
         refusal_key(
             self.import_root,
             self.segment_index,
+            self.decoder,
             self.interpretation,
             binding_digest(self.mask_policy),
             self.limits,
@@ -335,7 +340,7 @@ impl RecordedDecodeRefusal {
         {
             return Err(RecordedDecodeError::Limit);
         }
-        if self.decoder != decoder_identity()
+        if ![decoder_identity(), progressive_decoder_identity()].contains(&self.decoder)
             || self.capsule.source_digest.algorithm() != DigestAlgorithm::Sha256
             || ContentDigest::sha256(&self.capsule.try_canonical_bytes()?) != self.capsule_digest
             || self.capsule.capture.earliest > self.capsule.capture.latest
@@ -441,11 +446,39 @@ impl RetainedRefusal {
         request: &RecordedDecodeRequest,
         cx: &ReplayCx,
     ) -> Result<Self, RecordedDecodeError> {
-        let (retained, capsule, capsule_digest, _bytes) = source(deployment, request, cx)?;
+        Self::open_generation(deployment, request, None, cx)
+    }
+
+    /// Reopen a historical refusal under its exact registered decoder generation.
+    ///
+    /// Baseline v1 refusals of SOF2 remain immutable and replayable after progressive admission.
+    /// The ordinary [`Self::open`] selects the current source generation, so a historical refusal
+    /// cannot suppress a newly supported decode of the same retained bytes.
+    pub fn open_with_decoder(
+        deployment: &ReferenceDeployment,
+        request: &RecordedDecodeRequest,
+        decoder: [u8; 32],
+        cx: &ReplayCx,
+    ) -> Result<Self, RecordedDecodeError> {
+        if ![decoder_identity(), progressive_decoder_identity()].contains(&decoder) {
+            return Err(RecordedDecodeError::InvalidReceipt);
+        }
+        Self::open_generation(deployment, request, Some(decoder), cx)
+    }
+
+    fn open_generation(
+        deployment: &ReferenceDeployment,
+        request: &RecordedDecodeRequest,
+        decoder: Option<[u8; 32]>,
+        cx: &ReplayCx,
+    ) -> Result<Self, RecordedDecodeError> {
+        let (retained, capsule, capsule_digest, bytes) = source(deployment, request, cx)?;
+        let decoder = decoder.unwrap_or_else(|| decoder_identity_for_frame(&bytes));
         let mask = current_mask(deployment, &capsule.sensor_id)?;
         let identity = refusal_key(
             retained.import_root(),
             request.segment_index as u64,
+            decoder,
             request.interpretation,
             mask.digest(),
             limit_axes(request.decode_limits),
@@ -515,12 +548,13 @@ impl RetainedRefusal {
         budget: &mut DecodeBudget<'_>,
         cx: &ReplayCx,
     ) -> Result<(), RecordedDecodeError> {
-        if Self::open(deployment, request, cx)? != *self {
+        if Self::open_with_decoder(deployment, request, self.refusal.decoder, cx)? != *self {
             return Err(RecordedDecodeError::InvalidReceipt);
         }
         let (_, capsule, _, bytes) = source(deployment, request, cx)?;
         let before = budget.used();
-        let observed = match decode_luma(
+        let observed = match decode_luma_for_identity(
+            self.refusal.decoder,
             &bytes,
             capsule.source_digest.bytes(),
             request.interpretation,
@@ -595,7 +629,7 @@ pub fn decode_capsule(
         source_offset: retained.manifest().segment_spans[request.segment_index].offset,
         capsule_digest,
         capsule,
-        decoder: decoder_identity(),
+        decoder: decoder_identity_for_frame(&encoded),
         interpretation: request.interpretation,
         limits: limit_axes(request.decode_limits),
         kind,
@@ -638,3 +672,6 @@ pub fn decode_capsule(
         authority_anchor: anchor,
     })))
 }
+
+#[cfg(test)]
+mod progressive_tests;

@@ -10,7 +10,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
-use fss_codec_mjpeg::{DecodeBudget, decode_luma};
+// Existing durable dwell/health recipes name the original baseline generation explicitly.
+use fss_codec_mjpeg::{DecodeBudget, decode_luma_v1 as decode_luma};
 use fss_core::{
     CanonicalEncode, CanonicalEncoder, CaptureInterval, ContentDigest, DecisionPath, EventEvidence,
     EventHypothesis, EventId, EventKind, EventState, EvidenceClass, EvidenceEdgeRelation,

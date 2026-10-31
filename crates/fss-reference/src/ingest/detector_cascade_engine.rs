@@ -29,7 +29,10 @@ use std::fmt;
 use std::fmt::Write as _;
 
 use fss_codec_mjpeg::DecodeBudget;
-use fss_codec_mjpeg::color::{MAX_RGB_BYTES, RgbDecodeLimits, decode_rgb, rgb_decoder_identity};
+// v1 cascade identities bind baseline decoding for both successful and refused frames.
+use fss_codec_mjpeg::color::{
+    MAX_RGB_BYTES, RgbDecodeLimits, decode_rgb_v1 as decode_rgb, rgb_decoder_identity,
+};
 use fss_core::{CanonicalEncoder, ContentDigest};
 
 use super::RetainedFileImport;

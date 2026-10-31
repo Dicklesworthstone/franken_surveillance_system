@@ -56,7 +56,7 @@ fn context(root: &Path) -> Result<ReplayCx, Box<dyn std::error::Error>> {
     )?)
 }
 fn native(work: &mut DecodeBudget<'_>) -> Result<fss_codec_mjpeg::DecodedLuma, DecodeError> {
-    fss_codec_mjpeg::decode_luma(
+    fss_codec_mjpeg::decode_luma_v1(
         JPEG,
         ContentDigest::sha256(JPEG).bytes(),
         ComponentInterpretation::Grayscale,

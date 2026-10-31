@@ -27,7 +27,8 @@
 
 use std::collections::{BTreeSet, VecDeque};
 
-use fss_codec_mjpeg::{DecodeBudget, DecodeError as JpegError, decode_luma};
+// This source belongs to the baseline-pinned temporal recipes; old refusals remain gaps.
+use fss_codec_mjpeg::{DecodeBudget, DecodeError as JpegError, decode_luma_v1 as decode_luma};
 use fss_core::{ContentDigest, SensorCapsule};
 
 use super::privacy_mask::{MaskBinding, current_mask};

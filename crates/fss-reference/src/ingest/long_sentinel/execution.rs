@@ -5,7 +5,8 @@ use std::collections::BTreeSet;
 use std::error::Error;
 
 use fss_codec_mjpeg::DecodeBudget;
-use fss_codec_mjpeg::color::decode_rgb;
+// Existing sentinel recipes encode the baseline RGB generation and must replay that generation.
+use fss_codec_mjpeg::color::decode_rgb_v1 as decode_rgb;
 
 use super::{
     LongSentinelConfig, LongSentinelLimits, LongSentinelPlan, LongSentinelReport,

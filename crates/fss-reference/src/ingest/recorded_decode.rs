@@ -20,7 +20,10 @@ use std::collections::BTreeSet;
 use std::fmt;
 
 pub use fss_codec_mjpeg::{ComponentInterpretation, DecodeBudget, DecodeLimits};
-use fss_codec_mjpeg::{DecodeError, DecodeReceipt, decode_luma, decoder_identity};
+use fss_codec_mjpeg::{
+    DecodeError, DecodeReceipt, decode_luma, decode_luma_for_identity, decoder_identity,
+    decoder_identity_for_frame, progressive_decoder_identity,
+};
 use fss_core::{
     BatchId, CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder, ContentDigest,
     ContractError, DigestAlgorithm, EvidenceDelta, LedgerAnchor, ObjectId, Plane, SensorCapsule,
@@ -269,6 +272,7 @@ fn interpretation_tag(value: ComponentInterpretation) -> u8 {
 fn key(
     import_root: ContentDigest,
     segment: u64,
+    decoder: [u8; 32],
     interpretation: ComponentInterpretation,
     mask: ContentDigest,
 ) -> ContentDigest {
@@ -276,7 +280,7 @@ fn key(
     e.text("fss.recorded_luma_key.v2");
     e.digest(import_root);
     e.u64(segment);
-    e.digest(sha(decoder_identity()));
+    e.digest(sha(decoder));
     e.u8(interpretation_tag(interpretation));
     e.digest(mask);
     ContentDigest::sha256(&e.finish())
@@ -317,6 +321,7 @@ impl RecordedDecodeReceipt {
         key(
             self.import_root,
             self.segment_index,
+            self.codec.decoder,
             self.codec.interpretation,
             binding_digest(self.mask_policy),
         )
@@ -465,7 +470,7 @@ impl RecordedDecodeReceipt {
         {
             return Err(RecordedDecodeError::Limit);
         }
-        if self.codec.decoder != decoder_identity()
+        if ![decoder_identity(), progressive_decoder_identity()].contains(&self.codec.decoder)
             || self.capsule.source_digest != sha(self.codec.encoded_sha256)
             || ContentDigest::sha256(&self.capsule.try_canonical_bytes()?) != self.capsule_digest
             || self.capsule.capture.earliest > self.capsule.capture.latest
@@ -722,6 +727,7 @@ impl RecordedFrame {
         let identity = key(
             retained.import_root(),
             request.segment_index as u64,
+            decoder_identity_for_frame(&encoded),
             request.interpretation,
             mask.digest(),
         );
@@ -839,12 +845,14 @@ impl RecordedFrame {
         request: &RecordedDecodeRequest,
         cx: &ReplayCx,
     ) -> Result<Self, RecordedDecodeError> {
-        let (retained, capsule, capsule_digest, _encoded) = source(deployment, request, cx)?;
+        let (retained, capsule, capsule_digest, encoded) = source(deployment, request, cx)?;
+        let decoder = decoder_identity_for_frame(&encoded);
         let mask = current_mask(deployment, &capsule.sensor_id)?;
         let lineage = |binding: ContentDigest| {
             batch_id(key(
                 retained.import_root(),
                 request.segment_index as u64,
+                decoder,
                 request.interpretation,
                 binding,
             ))
@@ -853,6 +861,7 @@ impl RecordedFrame {
         let identity = key(
             retained.import_root(),
             request.segment_index as u64,
+            decoder,
             request.interpretation,
             mask.digest(),
         );
@@ -949,7 +958,8 @@ impl RecordedFrame {
         let (_, capsule, _, bytes) = source(deployment, request, cx)?;
         let mask = current_mask(deployment, &capsule.sensor_id)?;
         let before = budget.used();
-        let image = decode_luma(
+        let image = decode_luma_for_identity(
+            self.receipt.codec.decoder,
             &bytes,
             capsule.source_digest.bytes(),
             request.interpretation,

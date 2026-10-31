@@ -8,6 +8,22 @@ and indexed MP4 imports (`mp4avc`, `mp4hevc`), use the separate range paths desc
 "Retained H.264 range decode", "Retained MP4 (H.264 and H.265) import" and "Retained H.265
 import and range decode" below.
 
+The current JPEG entrypoints admit both baseline SOF0 and progressive Huffman SOF2, for
+8-bit grayscale or YCbCr 4:4:4/4:2:2/4:2:0. Progressive scans include spectral selection,
+successive DC/AC refinement and restart intervals. No pixels are published before complete
+entropy/EOI validation. Coefficient storage has a 32 MiB ceiling and at most 256 scans are
+accepted, in addition to the existing frame, dimension, output and work limits.
+
+Baseline outcomes keep their original decoder identity, pixels, actual work and canonical keys.
+Progressive outcomes carry a distinct generation already representable in the existing receipt
+formats. `RetainedRefusal::open_with_decoder` can reopen an old baseline refusal of SOF2 and
+replay that exact historical decoder, while a newly supported progressive success has a separate
+key. Existing versioned watch/dwell/health, detector/sentinel/cascade, calibration and HTTP luma
+recipes explicitly retain baseline decoding until their own generations are upgraded. Direct
+package/RGB inference and current retained file decoding use the actual frame generation.
+See [the generation contract](../crates/fss-codec-mjpeg/BASELINE_GENERATION.md) for exact scope
+and compatibility preimages.
+
 ## Library execution
 
 Use `fss_reference::ingest::recorded_decode::{RecordedDecodeRequest, RecordedFrame}`.

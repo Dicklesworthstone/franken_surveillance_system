@@ -10,6 +10,31 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Native progressive JPEG and generation-aware retained replay (2026-10-31, reference)
+
+The existing native JPEG luma/RGB entrypoints now decode self-contained 8-bit Huffman SOF2
+grayscale and YCbCr 4:4:4/4:2:2/4:2:0, including spectral scans, DC/AC refinement, EOB runs,
+restart intervals and odd dimensions. Coefficients are bounded to 32 MiB, scans to 256, and
+all work is cancellable and charged before complete-image publication. Progressive decoding
+reaches retained file decode, direct package/RGB inference and direct HTTP RGB capture.
+
+Baseline entropy/parser/transform sources, pixels, actual work, keys and decoder identities
+remain unchanged. Progressive outcomes have distinct source-bound generations; retained
+success/refusal keys use their actual receipt identity. Historical unsupported-SOF2 refusals
+can reopen/replay explicitly while a new progressive success coexists. Existing temporal,
+detector/sentinel/cascade, calibration and HTTP/reconnect recipes retain explicit baseline
+entrypoints, preserving old refusal-as-gap behavior without silently changing their generations.
+The lab command reports actual completed generations and explicit uncompleted work.
+
+The full native codec package passed **99 tests**, including 12 progressive contracts; strict
+all-target Clippy passed. All eight independently encoded progressive fixtures reproduce their
+baseline partners' native luma and RGB exactly, with separately retained FFmpeg luma within
+one sample value. Existing malformed-media gauntlets still pass. Native twin MJPEG and HTTP
+pipeline contracts also passed **11 tests**. Reference cold-replay and lab-report regressions
+are authored but unexecuted under the existing asynchronous dependency build limit. No
+arithmetic/12-bit/hierarchical JPEG support or production qualification is claimed. Generation
+preimages and the exact supported scope are in `crates/fss-codec-mjpeg/BASELINE_GENERATION.md`.
+
 ## ONNX-to-detector-package provisioning command (2026-10-31, reference)
 
 `fss-infer import-onnx` now connects the admitted general ONNX profile to the existing FMPK
