@@ -383,7 +383,7 @@ pub(super) fn parse_view(value: &Value, version: u8) -> Result<View> {
     })
 }
 
-fn json(value: &Value) -> String {
+pub(super) fn json(value: &Value) -> String {
     match value {
         Value::Null => "null".into(),
         Value::Bool(value) => value.to_string(),
@@ -593,6 +593,34 @@ pub(super) fn bind_view(
     resolved: &ResolvedFrame<'_>,
     rig: &SceneRig,
 ) -> Result<FeatureView> {
+    bind_source_view(
+        ViewBindingPolicy {
+            privacy_domain: matching.privacy_domain,
+            clock: matching.clock,
+            clock_evidence: matching.clock_evidence,
+            maximum_features,
+        },
+        view,
+        resolved,
+        rig,
+    )
+}
+
+/// Common source/rig checks independent of static or moving-feature association policy.
+#[derive(Clone, Copy)]
+pub(super) struct ViewBindingPolicy {
+    pub privacy_domain: u64,
+    pub clock: u64,
+    pub clock_evidence: [u8; 32],
+    pub maximum_features: usize,
+}
+
+pub(super) fn bind_source_view(
+    policy: ViewBindingPolicy,
+    view: &View,
+    resolved: &ResolvedFrame<'_>,
+    rig: &SceneRig,
+) -> Result<FeatureView> {
     let camera = rig
         .camera(view.camera)
         .ok_or_else(|| input_error("selected scene camera is unavailable"))?;
@@ -606,13 +634,13 @@ pub(super) fn bind_view(
         ));
     }
     let identity = resolved.frame.identity();
-    if camera.privacy_domain != matching.privacy_domain
-        || camera.camera.clock != matching.clock
+    if camera.privacy_domain != policy.privacy_domain
+        || camera.camera.clock != policy.clock
         || identity.exposure != resolved.exposure.bytes()
         || !is_pin(resolved.exposure)
         || !is_pin(resolved.luma)
         || resolved.allowed_mask_digest == [0; 32]
-        || resolved.frame.features().len() > maximum_features
+        || resolved.frame.features().len() > policy.maximum_features
     {
         return Err(input_error(
             "retained feature, privacy, clock or image mode does not match its rig binding",
@@ -632,7 +660,7 @@ pub(super) fn bind_view(
         image_domain_digest: image_domain.bytes(),
         mapping_basis: view.mapping_basis.bytes(),
         privacy_domain: camera.privacy_domain,
-        clock_evidence: matching.clock_evidence,
+        clock_evidence: policy.clock_evidence,
         capture,
         sigma_pixels: view.sigma_pixels,
     })

@@ -1,6 +1,13 @@
 #![forbid(unsafe_code)]
 //! Automatic scene correspondences from authenticated, privacy-screened retained frames.
 
+#[path = "retained_matching/temporal.rs"]
+mod temporal;
+#[path = "retained_matching/temporal_input.rs"]
+mod temporal_input;
+#[path = "retained_matching/temporal_report.rs"]
+mod temporal_report;
+
 #[path = "retained_matching/atlas.rs"]
 mod atlas;
 #[path = "retained_matching/atlas_input.rs"]
@@ -639,4 +646,9 @@ pub(super) fn run_multi(args: &[OsString], out: &mut impl Write) -> Result<bool>
 /// Export explicitly selected native reconstructions as an unactivated localization atlas.
 pub(super) fn run_atlas(args: &[OsString], out: &mut impl Write) -> Result<bool> {
     atlas::run(args, out)
+}
+
+/// Infer source-linked position and velocity from repeated native feature exposures.
+pub(super) fn run_temporal(args: &[OsString], out: &mut impl Write) -> Result<bool> {
+    temporal::run(args, out)
 }

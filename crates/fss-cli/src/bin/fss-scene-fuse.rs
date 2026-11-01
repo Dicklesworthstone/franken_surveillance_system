@@ -70,7 +70,8 @@ For 3D reconstruction from retained tracks, use fss-scene-fuse retained-fuse --h
 For automatic native JPEG feature matching and 3D points, use fss-scene-fuse match --help.\n\
 For automatic matching of retained camera frames, use fss-scene-fuse retained-match --help.\n\
 For joint matching across 3-8 retained cameras, use fss-scene-fuse retained-multimatch --help.\n\
-For a reusable localization atlas from retained scene matches, use fss-scene-fuse retained-atlas --help.\n";
+For a reusable localization atlas from retained scene matches, use fss-scene-fuse retained-atlas --help.\n\
+For automatic moving-feature reconstruction across frames, use fss-scene-fuse retained-motion-match --help.\n";
 
 #[derive(Debug)]
 struct Failure {
@@ -367,6 +368,8 @@ fn main() -> ExitCode {
         retained_fusion::run(&args[1..], &mut io::stdout().lock())
     } else if args.first().and_then(|arg| arg.to_str()) == Some("retained-multimatch") {
         retained_matching::run_multi(&args[1..], &mut io::stdout().lock())
+    } else if args.first().and_then(|arg| arg.to_str()) == Some("retained-motion-match") {
+        retained_matching::run_temporal(&args[1..], &mut io::stdout().lock())
     } else if args.first().and_then(|arg| arg.to_str()) == Some("retained-atlas") {
         retained_matching::run_atlas(&args[1..], &mut io::stdout().lock())
     } else if args.first().and_then(|arg| arg.to_str()) == Some("retained-match") {

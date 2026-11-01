@@ -10,6 +10,61 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Retained moving-feature reconstruction (2026-11-01, command integration)
+
+`fss-scene-fuse retained-motion-match` now connects the native temporal feature
+associator to authenticated retained JPEG/AVC/HEVC sources. Four through sixteen
+original exposures from two through eight fixed cameras produce common-time
+3D positions and constant velocities in the imported property twin. This closes
+the automatic-correspondence gap between static retained image matching and
+moving-scene fusion with manually supplied correspondences. Native direct and
+lens-corrected image paths use the existing sealed source/privacy owners.
+
+The strict query binds each exposure's original custody, camera mapping, image
+model and clock alignment. Repeated cameras keep fixed sensor/stream, geometry
+and image declarations; aliases cannot multiply original exposure support.
+Capture hull, interval uncertainty, actual feature inventory and numerical fit
+limits are bounded. Source rows map to the exact original exposure rather than
+the first observation of a camera. Full descriptor tables, every nearest tie,
+incomplete/conflicting components, native motion refusals, all 36 covariance
+terms and nominal per-exposure mesh visibility remain in the report. The one
+requested scene time is preserved; unsupported components never extrapolate.
+
+Every image plan is admitted before decoding. Complete source-dependent analysis
+serialization precedes final original-source/current-privacy revalidation and
+the authority-anchor check. Work includes final revalidation, complete reports
+are bounded without truncating alternatives, and file output is private and
+create-only. Deadline/cancellation checks cover report construction and file
+publication. Exit 3 preserves a complete analysis with no fit or unresolved
+nontrivial components. No persistent track, calibration or landmark is activated.
+
+**59 exact-production parser/image/binding tests pass**, including 14 new
+temporal contracts and a six-exposure, two-moving-point native reconstruction
+with unchanged geometry under source/query permutations. **5 exact-production
+renderer tests pass**, covering all component/descriptor states, complete maximum
+inventories, high-epoch times, covariance, byte/work limits and cancellation.
+Both scoped harnesses pass strict Clippy. Nine emitted production geometry
+fixtures validate against the new standard Draft 2020-12 schema; the catalog
+resolves 121 schemas and 1,585 references with zero errors.
+
+An independent genuine native JPEG decode/extract/associate/render execution
+recovers 26 stationary depth-10 trajectories across four original-grid exposures
+and 16 with the repeated left camera cropped and the right camera direct. Maximum
+depth error is below 3e-13 and absolute velocity components below 1.3e-13 in these
+synthetic fixtures. Their 12/32 unresolved components and all 6,144 Cartesian
+descriptor rows remain explicit. This is pure native pipeline execution, not
+execution of the retained deployment owner or physical field qualification.
+
+Eight real retained-command owner tests are added for original custody, exact
+exposure mapping, native image correction, permutations, current privacy,
+corrupt/missing sources, admission/work/cancellation/output limits and private
+publication. They remain unexecuted at this checkpoint: the full reference/CLI
+build is resource-blocked locally, and the existing hosted retained-perception
+job for the preceding native commit is queued. Earlier production CLI compilation
+and retained-localization execution below cover their exact earlier revision,
+not this new command. No runtime substitute or weakened gate was used. See
+`docs/RETAINED_TEMPORAL_MATCHING.md` for input/report fields and operational limits.
+
 ## Native temporal feature association (2026-11-01, moving-scene bridge)
 
 `fss_twin::temporal_feature_association` now automatically connects native image

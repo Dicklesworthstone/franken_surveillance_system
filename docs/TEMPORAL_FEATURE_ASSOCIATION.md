@@ -12,6 +12,9 @@ The operation accepts existing `FeatureView` snapshots and
 camera mapping and clock alignment belong to the enclosing owner. Constructing
 a `FeatureView` does not authenticate those facts.
 
+For the retained JPEG/AVC/HEVC owner integration, use
+[`fss-scene-fuse retained-motion-match`](RETAINED_TEMPORAL_MATCHING.md).
+
 ## Sources and time
 
 One operation contains four through sixteen distinct original exposures from

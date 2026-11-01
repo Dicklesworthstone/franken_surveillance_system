@@ -439,6 +439,16 @@ The export retains complete source/lens/privacy provenance and unresolved scene
 alternatives; static eligibility is declared and absolute landmark error remains
 unknown. See [`docs/RECONSTRUCTED_LOCALIZATION_ATLAS.md`](docs/RECONSTRUCTED_LOCALIZATION_ATLAS.md).
 
+`fss-scene-fuse retained-motion-match` automatically connects features across
+**4–16 retained exposures from 2–8 fixed cameras** and estimates common-time
+3D position and velocity. Repeated-camera observations keep their original
+source and timing; complete descriptor alternatives, incomplete groups and
+geometric refusals remain visible. The native moving-point fit uses each
+observation's own capture time and does not apply stationary epipolar gating
+or extrapolate unsupported components. Direct and lens-corrected inputs share
+the existing retained source/privacy owners. See
+[`docs/RETAINED_TEMPORAL_MATCHING.md`](docs/RETAINED_TEMPORAL_MATCHING.md).
+
 ## ATP archive, repair, and deletion
 
 Source media, evidence bundles, checkpoints, model packages, graph/search/calibration/twin
