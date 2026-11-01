@@ -3,6 +3,8 @@
 
 #[path = "retained_matching/input.rs"]
 mod input;
+#[path = "retained_multimatching.rs"]
+mod multiview;
 #[path = "retained_matching/report.rs"]
 mod report;
 #[cfg(test)]
@@ -98,6 +100,15 @@ struct Options {
 }
 
 fn options(args: &[OsString]) -> Result<Option<Options>> {
+    options_profile(args, DEFAULT_WORK, MAX_WORK, MAX_REPORT_BYTES)
+}
+
+fn options_profile(
+    args: &[OsString],
+    default_work: u64,
+    maximum_work: u64,
+    maximum_report_bytes: usize,
+) -> Result<Option<Options>> {
     if matches!(args, [flag] if matches!(flag.to_str(), Some("--help" | "-h"))) {
         return Ok(None);
     }
@@ -197,13 +208,13 @@ fn options(args: &[OsString]) -> Result<Option<Options>> {
         report_out: fields.get("--report-out").map(PathBuf::from),
         expected_input: pin("--expected-input")?,
         expected_anchor: pin("--expected-anchor")?,
-        work: integer("--work-units", DEFAULT_WORK, 1, MAX_WORK)?,
+        work: integer("--work-units", default_work, 1, maximum_work)?,
         timeout: Duration::from_millis(integer("--timeout-ms", 30_000, 1, 3_600_000)?),
         report_bytes: integer(
             "--max-report-bytes",
-            MAX_REPORT_BYTES as u64,
+            maximum_report_bytes as u64,
             1024,
-            MAX_REPORT_BYTES as u64,
+            maximum_report_bytes as u64,
         )? as usize,
     }))
 }
@@ -218,7 +229,9 @@ fn authority(options: &Options) -> Result<ContextAuthority> {
         deadline: None,
         priority: 10,
         budgets: BudgetVector::builder()
-            .bytes(SOURCE_BYTES + (MAX_TWIN_BYTES + 2 * MAX_JSON_BYTES + MAX_REPORT_BYTES) as u64)
+            .bytes(
+                SOURCE_BYTES + (MAX_TWIN_BYTES + 2 * MAX_JSON_BYTES + options.report_bytes) as u64,
+            )
             .build()
             .map_err(|_| input_error("matching resource allowance"))?,
         privacy_scope: "privacy:local-authorized-retained-scene-matching".into(),
@@ -310,7 +323,15 @@ fn preflight_sources(
     query: &input::Query,
     cx: &ReplayCx,
 ) -> Result<()> {
-    for view in &query.views {
+    preflight_views(deployment, &query.views, cx)
+}
+
+fn preflight_views(
+    deployment: &ReferenceDeployment,
+    views: &[input::View],
+    cx: &ReplayCx,
+) -> Result<()> {
+    for view in views {
         checkpoint(cx, "retained_scene_match:source_preflight")?;
         let pins = view.source.pins();
         let retained = RetainedFileImport::open(
@@ -524,4 +545,9 @@ pub(super) fn run(args: &[OsString], out: &mut impl Write) -> Result<bool> {
             Ok(true)
         }
     }
+}
+
+/// Retained sources and source ownership are shared with the multi-camera command.
+pub(super) fn run_multi(args: &[OsString], out: &mut impl Write) -> Result<bool> {
+    multiview::run(args, out)
 }

@@ -36,16 +36,16 @@ impl Drop for Directory {
         let _ = fs::remove_dir_all(&self.0);
     }
 }
-fn checked<T>(value: Result<T>) -> TestResult<T> {
+pub(super) fn checked<T>(value: Result<T>) -> TestResult<T> {
     value.map_err(|error| format!("{}: {}", error.code, error.detail).into())
 }
-fn h(value: impl AsRef<[u8]>) -> ContentDigest {
+pub(super) fn h(value: impl AsRef<[u8]>) -> ContentDigest {
     ContentDigest::sha256(value.as_ref())
 }
 fn pin(value: ContentDigest) -> String {
     string(&value.to_text())
 }
-fn json(value: &Value) -> String {
+pub(super) fn json(value: &Value) -> String {
     match value {
         Value::Null => "null".into(),
         Value::Bool(value) => value.to_string(),
@@ -60,7 +60,7 @@ fn json(value: &Value) -> String {
         ),
     }
 }
-fn field<'a>(value: &'a Value, path: &[&str]) -> TestResult<&'a Value> {
+pub(super) fn field<'a>(value: &'a Value, path: &[&str]) -> TestResult<&'a Value> {
     let Some((key, rest)) = path.split_first() else {
         return Ok(value);
     };
@@ -73,7 +73,7 @@ fn field<'a>(value: &'a Value, path: &[&str]) -> TestResult<&'a Value> {
     };
     field(next, rest)
 }
-fn put(value: &mut Value, path: &[&str], replacement: Value) -> TestResult {
+pub(super) fn put(value: &mut Value, path: &[&str], replacement: Value) -> TestResult {
     let Some((key, rest)) = path.split_first() else {
         *value = replacement;
         return Ok(());
@@ -87,7 +87,7 @@ fn put(value: &mut Value, path: &[&str], replacement: Value) -> TestResult {
     };
     put(next, rest, replacement)
 }
-fn context(root: &Path) -> TestResult<ReplayCx> {
+pub(super) fn context(root: &Path) -> TestResult<ReplayCx> {
     let authority = ContextAuthority::new_root(RootAuthoritySpec {
         trace_id: "trace:retained-match-tests".into(),
         operation_id: OperationId::parse("operation:retained-match-tests")?,
@@ -110,18 +110,18 @@ fn context(root: &Path) -> TestResult<ReplayCx> {
     )?)
 }
 
-struct Fixture {
+pub(super) struct Fixture {
     directory: Directory,
-    options: Options,
-    document: Value,
-    imports: Vec<ContentDigest>,
-    capsules: Vec<SensorCapsule>,
+    pub(super) options: Options,
+    pub(super) document: Value,
+    pub(super) imports: Vec<ContentDigest>,
+    pub(super) capsules: Vec<SensorCapsule>,
     original_chunks: Vec<PathBuf>,
     capsule_files: Vec<PathBuf>,
-    head: LedgerAnchor,
+    pub(super) head: LedgerAnchor,
 }
 impl Fixture {
-    fn new(label: &str) -> TestResult<Self> {
+    pub(super) fn new(label: &str) -> TestResult<Self> {
         let directory = Directory::new(label)?;
         let root = directory.0.join("deployment");
         let cx = context(&root)?;
@@ -264,13 +264,16 @@ impl Fixture {
             head,
         })
     }
-    fn set_query(&mut self, document: &Value) -> TestResult {
+    pub(super) fn directory(&self) -> &Path {
+        &self.directory.0
+    }
+    pub(super) fn set_query(&mut self, document: &Value) -> TestResult {
         let text = json(document);
         fs::write(&self.options.query, &text)?;
         self.options.expected_input = Some(h(text));
         Ok(())
     }
-    fn head(&self) -> TestResult<LedgerAnchor> {
+    pub(super) fn head(&self) -> TestResult<LedgerAnchor> {
         let cx = context(&self.options.root)?;
         let deployment = ReferenceDeployment::reopen(&self.options.root, SITE, &cx)?;
         let head = deployment.current_anchor().clone();

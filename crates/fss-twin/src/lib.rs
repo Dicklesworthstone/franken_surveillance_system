@@ -265,3 +265,6 @@ pub mod multiview_motion;
 
 /// Source-pinned native feature correspondence, nominal epipolar gates and scene-point hypotheses.
 pub mod feature_association;
+
+/// Complete multi-camera feature graphs, unresolved cycles and conditional joint scene points.
+pub mod multiview_feature_association;

@@ -6,7 +6,7 @@
 //! that owner after geometry. No source capture time, image size, privacy mask,
 //! decoded pixels or feature coordinates can be supplied by this query.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use fss_cli::json_input::{self, Value};
 use fss_cli::json_output::{array, object, string};
@@ -95,6 +95,14 @@ pub(super) struct Query {
     pub declarations: String,
 }
 
+/// Shared strict policy and complete declarations for explicit retained query shapes.
+pub(super) struct Header {
+    pub document: Value,
+    pub extraction: ExtractionOptions,
+    pub matching: AssociationOptions,
+    pub declarations: String,
+}
+
 /// Borrowed immutable snapshot supplied exclusively by the sealed source owner.
 /// Public fields make the adapter testable; this type itself confers no custody.
 pub(super) struct ResolvedFrame<'a> {
@@ -121,7 +129,7 @@ fn fields<'a>(value: &'a Value, allowed: &[&str]) -> Result<&'a BTreeMap<String,
     Ok(fields)
 }
 
-fn get<'a>(fields: &'a BTreeMap<String, Value>, key: &str) -> Result<&'a Value> {
+pub(super) fn get<'a>(fields: &'a BTreeMap<String, Value>, key: &str) -> Result<&'a Value> {
     fields
         .get(key)
         .ok_or_else(|| input_error(format!("missing retained matching field {key}")))
@@ -324,7 +332,7 @@ fn alignment(value: &Value) -> Result<PackageClockAlignment> {
     Ok(alignment)
 }
 
-fn view(value: &Value) -> Result<View> {
+pub(super) fn parse_view(value: &Value) -> Result<View> {
     let row = fields(
         value,
         &[
@@ -369,33 +377,38 @@ fn json(value: &Value) -> String {
     }
 }
 
-/// Admit exact selections and assumptions; the supplied digest pins the original rig bytes.
-pub(super) fn parse(bytes: &[u8], rig_digest: ContentDigest) -> Result<Query> {
+/// Admit the common header under an explicit schema and source-selection field shape.
+/// Both commands retain the same pair policy; a joint component uses all of its cameras.
+pub(super) fn parse_header(
+    bytes: &[u8],
+    schema: &str,
+    view_keys: &[&str],
+    rig_digest: ContentDigest,
+) -> Result<Header> {
     let value = json_input::parse(
         std::str::from_utf8(bytes)
             .map_err(|_| input_error("retained matching query must be UTF-8"))?,
     )
     .map_err(|_| input_error("malformed retained matching query"))?;
-    let top = fields(
-        &value,
-        &[
-            "schema",
-            "camera_rig_digest",
-            "privacy_domain",
-            "clock",
-            "clock_evidence",
-            "association_basis",
-            "reference_time_ns",
-            "max_capture_span_ns",
-            "motion",
-            "left",
-            "right",
-            "extraction",
-            "matching",
-            "triangulation",
-        ],
-    )?;
-    if text(get(top, "schema")?)? != SCHEMA || digest(get(top, "camera_rig_digest")?)? != rig_digest
+    let allowed: Vec<_> = [
+        "schema",
+        "camera_rig_digest",
+        "privacy_domain",
+        "clock",
+        "clock_evidence",
+        "association_basis",
+        "reference_time_ns",
+        "max_capture_span_ns",
+        "motion",
+        "extraction",
+        "matching",
+        "triangulation",
+    ]
+    .into_iter()
+    .chain(view_keys.iter().copied())
+    .collect();
+    let top = fields(&value, &allowed)?;
+    if text(get(top, "schema")?)? != schema || digest(get(top, "camera_rig_digest")?)? != rig_digest
     {
         return Err(input_error(
             "retained matching schema or exact rig document pin differs",
@@ -466,22 +479,52 @@ pub(super) fn parse(bytes: &[u8], rig_digest: ContentDigest) -> Result<Query> {
         )?,
         triangulation,
     };
-    let views = [view(get(top, "left")?)?, view(get(top, "right")?)?];
-    let [left, right] = [&views[0], &views[1]];
-    if left.camera == right.camera
-        || left.source.pins().sensor_id == right.source.pins().sensor_id
-        || left.source.pins().encoded_source_digest == right.source.pins().encoded_source_digest
-        || left.source.pins().capsule_digest == right.source.pins().capsule_digest
-    {
-        return Err(input_error(
-            "retained matching requires distinct cameras, physical sensors and original sources",
-        ));
-    }
-    Ok(Query {
-        views,
+    let declarations = json(&value);
+    Ok(Header {
+        document: value,
         extraction,
         matching,
-        declarations: json(&value),
+        declarations,
+    })
+}
+
+pub(super) fn validate_distinct_declarations(views: &[View]) -> Result<()> {
+    let mut cameras = BTreeSet::new();
+    let mut sensors = BTreeSet::new();
+    let mut sources = BTreeSet::new();
+    let mut capsules = BTreeSet::new();
+    for view in views {
+        let pins = view.source.pins();
+        if !cameras.insert(view.camera)
+            || !sensors.insert(pins.sensor_id.as_str())
+            || !sources.insert(pins.encoded_source_digest)
+            || !capsules.insert(pins.capsule_digest)
+        {
+            return Err(input_error(
+                "retained matching requires distinct cameras, physical sensors and original sources",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Admit exact selections and assumptions; the supplied digest pins the original rig bytes.
+pub(super) fn parse(bytes: &[u8], rig_digest: ContentDigest) -> Result<Query> {
+    let header = parse_header(bytes, SCHEMA, &["left", "right"], rig_digest)?;
+    let top = header
+        .document
+        .object()
+        .ok_or_else(|| input_error("expected a retained matching object"))?;
+    let views = [
+        parse_view(get(top, "left")?)?,
+        parse_view(get(top, "right")?)?,
+    ];
+    validate_distinct_declarations(&views)?;
+    Ok(Query {
+        views,
+        extraction: header.extraction,
+        matching: header.matching,
+        declarations: header.declarations,
     })
 }
 
@@ -515,10 +558,11 @@ pub(super) fn validate_capsule(view: &View, capsule: &SensorCapsule) -> Result<[
     ])
 }
 
-fn bind_one(
-    query: &Query,
+pub(super) fn bind_view(
+    matching: AssociationOptions,
+    maximum_features: usize,
     view: &View,
-    resolved: ResolvedFrame<'_>,
+    resolved: &ResolvedFrame<'_>,
     rig: &SceneRig,
 ) -> Result<FeatureView> {
     let camera = rig
@@ -534,8 +578,8 @@ fn bind_one(
         ));
     }
     let identity = resolved.frame.identity();
-    if camera.privacy_domain != query.matching.privacy_domain
-        || camera.camera.clock != query.matching.clock
+    if camera.privacy_domain != matching.privacy_domain
+        || camera.camera.clock != matching.clock
         || resolved.dimensions != camera.camera.intrinsics.dimensions()
         || identity.dimensions != resolved.dimensions
         || identity.image_domain != view.image_domain_digest.bytes()
@@ -544,7 +588,7 @@ fn bind_one(
         || !is_pin(resolved.exposure)
         || !is_pin(resolved.luma)
         || resolved.allowed_mask_digest == [0; 32]
-        || resolved.frame.features().len() > query.extraction.maximum_features
+        || resolved.frame.features().len() > maximum_features
     {
         return Err(input_error(
             "retained feature, privacy, clock or image mode does not match its rig binding",
@@ -563,7 +607,7 @@ fn bind_one(
         image_domain_digest: view.image_domain_digest.bytes(),
         mapping_basis: view.mapping_basis.bytes(),
         privacy_domain: camera.privacy_domain,
-        clock_evidence: query.matching.clock_evidence,
+        clock_evidence: matching.clock_evidence,
         capture,
         sigma_pixels: view.sigma_pixels,
     })
@@ -586,8 +630,20 @@ pub(super) fn bind(
             "retained views reuse a physical source or incompatible descriptor space",
         ));
     }
-    let left = bind_one(query, &query.views[0], left, rig)?;
-    let right = bind_one(query, &query.views[1], right, rig)?;
+    let left = bind_view(
+        query.matching,
+        query.extraction.maximum_features,
+        &query.views[0],
+        &left,
+        rig,
+    )?;
+    let right = bind_view(
+        query.matching,
+        query.extraction.maximum_features,
+        &query.views[1],
+        &right,
+        rig,
+    )?;
     let hull = [
         left.capture[0].min(right.capture[0]),
         left.capture[1].max(right.capture[1]),

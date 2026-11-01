@@ -19,6 +19,11 @@ The result preserves every candidate pair, ambiguous feature, selected point
 and geometric refusal. It is a derived report; camera calibration, world
 publication, physical identity, events and effects are not activated.
 
+For **three through eight retained camera frames**, use
+[`retained-multimatch`](RETAINED_MULTICAMERA_MATCHING.md). It reuses these exact
+source contracts and adds complete camera-pair evidence, explicit correspondence
+components and joint static geometry.
+
 ## Select exact retained evidence
 
 The deployment must already exist and contain completed imports. The original

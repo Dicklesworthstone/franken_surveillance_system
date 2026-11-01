@@ -59,7 +59,7 @@ fn hex(bytes: &[u8]) -> String {
     result
 }
 
-fn view_json(view: &FeatureView, owner: &RecordedFeatures, rig: &SceneRig) -> String {
+pub(super) fn view_json(view: &FeatureView, owner: &RecordedFeatures, rig: &SceneRig) -> String {
     let camera = view.camera;
     let [width, height] = camera.intrinsics.dimensions();
     let [fx, fy] = camera.intrinsics.focal_lengths();

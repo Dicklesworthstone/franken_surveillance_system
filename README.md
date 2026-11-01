@@ -419,6 +419,13 @@ uses current deployment privacy masks, and revalidates the source ranges before 
 3D hypotheses. The existing `fss-file decode` output supplies the exact selection pins.
 See [`docs/RETAINED_SCENE_MATCHING.md`](docs/RETAINED_SCENE_MATCHING.md).
 
+`fss-scene-fuse retained-multimatch` extends that workflow to **3–8 retained cameras**.
+Every camera pair retains its complete correspondence evidence; supported components
+fit joint static points using all participating views. Conflicting cycles, incomplete
+chains and geometric refusals remain visible, with explicit source revalidation and
+full capture intervals. See
+[`docs/RETAINED_MULTICAMERA_MATCHING.md`](docs/RETAINED_MULTICAMERA_MATCHING.md).
+
 ## ATP archive, repair, and deletion
 
 Source media, evidence bundles, checkpoints, model packages, graph/search/calibration/twin

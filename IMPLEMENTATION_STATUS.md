@@ -10,6 +10,66 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Joint reconstruction across retained cameras (2026-10-31, static-feature integration)
+
+`fss-scene-fuse retained-multimatch` now connects **3–8 authenticated retained
+JPEG/AVC/HEVC views** to a complete native correspondence graph and joint static
+point reconstruction. Each original source uses the sealed feature owner and
+strict source/rig/image/clock/privacy contract introduced by `retained-match`.
+The shared parser preserves the pair interface. Actual selected features are
+bounded to 128 per view and 256 total before complete pair expansion; excess
+inventory refuses without hidden truncation.
+
+Every camera pair retains all descriptor and epipolar decisions, feature outcomes,
+point estimates and refusals. Connected selected links become explicit components.
+A joint solve requires one feature per camera, complete direct support between
+every pair of members and all participating views with zero outlier removal.
+Repeated-camera conflicts and incomplete cycles preserve the entire component
+without greedy reassignment. A third view can resolve weak pair geometry while
+the original pair refusal remains visible. Unmatched singleton features remain
+diagnostics. Components can use only two views; the report names their actual
+support rather than crediting every selected camera.
+
+Full scene and subset capture hulls remain intact. Original requested scene time
+and the time clamped into each subset hull are explicit and evidence-bound under
+the declared static-scene assumption. No clock synchronization or motion is
+inferred. The complete source-dependent analysis is serialized before all owners
+revalidate original custody and current privacy. Entry/final anchors distinguish
+ordinary JPEG publications. The report includes every source capsule/native
+receipt, current masks, all alternatives and final resource counters. No camera
+calibration, physical identity, world revision, event or effect is activated.
+
+Native association passes **17 new and 17 existing pair contracts**. Coverage
+includes independent 3/4/8-camera coordinates, actual extracted image crops,
+conflicting/incomplete cycles, joint inconsistency despite pair solutions,
+third-view recovery, exact maximum inventory, empty-view validation, staggered
+times near u64 limits, budget/cancellation and evidence sensitivity. The shared
+retained binding passes **18 executed tests**: 11 unchanged pair and 7 new
+multi-camera cases. The new renderer passes **11 executed tests**, preserving
+all 28,672 pair decisions and 1,792 pair-specific feature outcomes at the
+maximum inventory. Strict scoped native/parser/renderer Clippy passes; scratch
+harness exclusions apply only to previously existing unrelated helper warnings.
+
+An original synthetic three-camera JPEG oracle executed native decoding,
+feature extraction, association and reporting: **26 three-camera points and
+6 two-camera points**, all at independently specified depth 10, with 6 unmatched
+features. Its third source explicitly models a different camera center and
+principal point over the authored plane; it makes no physical-independence claim.
+Ten actual production geometry reports, including conflict/refusal/empty/time
+and maximum-inventory cases, pass standard Draft 2020-12 JSON Schema validation.
+The complete catalog resolves **112 schemas and 1,142 references** without errors.
+
+The production scene/file commands and complete CLI test configuration pass
+genuine pinned, locked/offline Cargo check, including **eight new real retained
+owner tests** for source pins/custody, privacy, permutation, complete timing,
+budgets/cancellation and private exclusive output. These owner tests are
+typechecked, **not runtime-executed**: the earlier genuine Asupersync object
+build exceeded the shared memory ceiling, and no substitute runtime or repeated
+object attempt was used. See `docs/RETAINED_MULTICAMERA_MATCHING.md` for exact
+inputs, component outcomes, 32 MiB complete output and cumulative resource bounds.
+Field association quality, moving-object identity and aggregate FSS-099
+qualification remain open.
+
 ## Automatic matching of retained native camera frames (2026-10-31, integration)
 
 `fss-scene-fuse retained-match` now connects authenticated retained JPEG, AVC
