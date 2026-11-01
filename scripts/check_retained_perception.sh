@@ -28,6 +28,8 @@ check() {
 
 check retained-localization cargo "+$channel" test --locked --offline --no-fail-fast \
     -p fss-reference --test recorded_twin_localization_contract
+check retained-scene-calibration cargo "+$channel" test --locked --offline --no-fail-fast \
+    -p fss-reference --lib ingest::scene_calibration::
 check retained-scene-reconstruction cargo "+$channel" test --locked --offline --no-fail-fast \
     -p fss-cli --bin fss-scene-fuse
 check incremental-dwell cargo "+$channel" test --locked --offline --no-fail-fast \

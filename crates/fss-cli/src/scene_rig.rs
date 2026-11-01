@@ -14,6 +14,9 @@ use fss_twin::{PropertyTwin, TrackingCamera};
 
 use crate::json_input::{MAX_INPUT_BYTES, Value, parse};
 
+mod adopted;
+pub use adopted::{ADOPTED_SCENE_RIG_DOMAIN, AdoptedSceneCameraBinding};
+
 /// Bounded control-document contract. Later formats must migrate explicitly.
 pub const SCENE_RIG_SCHEMA: &str = "fss.scene_camera_rig.v1";
 /// Maximum explicitly bound cameras in one property rig.

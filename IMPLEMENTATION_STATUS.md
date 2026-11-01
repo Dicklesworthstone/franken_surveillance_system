@@ -10,6 +10,38 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Retained adopted camera geometry (2026-11-01, native integration)
+
+`fss_reference::ingest::scene_calibration` now resolves the existing FSSCAL01/02
+records and retained camera adoptions into a sealed owner for scene reconstruction.
+It checks exact twin package/source, original camera-input bytes and image mode,
+physical sensor, camera handle/name, both calibration generations and the selected
+current adoption. Missing, superseded, withdrawn or corrupt authority refuses;
+sensor aliases cannot bypass another camera's adoption. The initial profile
+requires the original calibrated pinhole image domain.
+
+The owner preserves complete calibration/covariance provenance and revalidates
+current adoption/withdrawal custody after analysis. Unrelated ledger descendants
+are allowed; changed lineage, divergent prefixes or selected receipts refuse.
+Input, complete authority traversal, source reads and final revalidation have
+cumulative byte/work limits and cancellation checkpoints. The CLI library's
+`SceneRig::from_retained_calibration` derives native camera poses and intrinsics
+from this sealed owner while leaving clock/privacy/validity declarations explicit.
+Local covariance never becomes a deterministic projection bound or physical
+accuracy claim; absolute camera error remains unknown.
+
+Thirteen real deployment owner contracts are added, covering adoption, native
+stereo geometry, original image lineage, supersession/withdrawal, corrupt custody,
+aliases, exact work/read limits and cancellation. These new owner tests remain
+unexecuted at this checkpoint. A genuine offline, locked production type-check
+of the scene-fuse binary passes with the pinned compiler and real Asupersync,
+including the new reference owner and typed rig. The initial full-codegen and
+default metadata attempts exceeded this environment's memory; serializing the
+compiler frontend/backend completed the metadata check. The existing native
+check script now includes this owner target; no runtime substitute or weakened
+gate was used. The retained command integration is a separate increment.
+See `docs/RETAINED_SCENE_CALIBRATION_API.md`.
+
 ## Retained moving-feature reconstruction (2026-11-01, command integration)
 
 `fss-scene-fuse retained-motion-match` now connects the native temporal feature
@@ -55,14 +87,15 @@ synthetic fixtures. Their 12/32 unresolved components and all 6,144 Cartesian
 descriptor rows remain explicit. This is pure native pipeline execution, not
 execution of the retained deployment owner or physical field qualification.
 
-Eight real retained-command owner tests are added for original custody, exact
+Eight real retained-command owner tests cover original custody, exact
 exposure mapping, native image correction, permutations, current privacy,
 corrupt/missing sources, admission/work/cancellation/output limits and private
-publication. They remain unexecuted at this checkpoint: the full reference/CLI
-build is resource-blocked locally, and the existing hosted retained-perception
-job for the preceding native commit is queued. Earlier production CLI compilation
-and retained-localization execution below cover their exact earlier revision,
-not this new command. No runtime substitute or weakened gate was used. See
+publication. Subsequent [hosted execution of exact commit 03d1b97](https://github.com/Dicklesworthstone/franken_surveillance_system/actions/runs/41319017296/job/124892258104)
+compiled the real source-owner runtime and passed **all 177 scene-fuse tests**,
+including **all eight temporal owner tests and all ten atlas owner tests**.
+The overall workflow failed in other ONVIF/agent-learning/policy checks; this
+focused execution does not establish whole-workspace or release qualification.
+No runtime substitute or weakened gate was used. See
 `docs/RETAINED_TEMPORAL_MATCHING.md` for input/report fields and operational limits.
 
 ## Native temporal feature association (2026-11-01, moving-scene bridge)

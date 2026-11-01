@@ -94,6 +94,8 @@ pub mod rtsp_import;
 pub mod rtsp_selected_watch;
 /// Owner site calibration: atlas localization, joint refinement, digest-bound record.
 pub mod site_calibration;
+/// Exact current adopted calibration geometry for retained scene reconstruction.
+pub mod scene_calibration;
 /// Retained continuity witnesses of live or virtual sources and the stored-witness absence rule.
 pub mod source_coverage;
 /// Constant-space sampled occupancy across caller batches, with atomic bounded admission.
