@@ -268,3 +268,6 @@ pub mod feature_association;
 
 /// Complete multi-camera feature graphs, unresolved cycles and conditional joint scene points.
 pub mod multiview_feature_association;
+
+/// Explicit native reconstructed-point admission into reusable localization atlases.
+pub mod reconstruction_atlas;

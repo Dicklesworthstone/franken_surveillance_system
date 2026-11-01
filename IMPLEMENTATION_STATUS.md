@@ -10,6 +10,46 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Native reconstructed localization atlas (2026-11-01, producer/consumer bridge)
+
+`fss-twin::reconstruction_atlas` now turns actual native pair or multi-camera
+reconstruction into the existing `LocalizationAtlas` and `FSATLAS1` archive
+contract. This closes the missing native producer between reconstructed image
+features and image-to-map camera registration; the existing localizer consumes
+its output unchanged.
+
+The bounded producer requires the exact entire association, complete original
+source-record pins and explicit per-point landmark/physical-group/twin-feature/
+enduring-static declarations. It copies actual solved positions and native
+descriptors, retains every member-view binding and complete participating frames,
+and preserves all unused sources and candidate dispositions in its receipt.
+Unknown, refused, unresolved, aliased or nominally occluded selections fail
+atomically. A capture-window stationarity assertion does not establish enduring
+landmark eligibility. Conditional pixel covariance remains diagnostic; absolute
+landmark error is always unknown, including when the twin has a declared map
+error. No calibration, source-access authority or physical identity is activated.
+
+**21 new native tests execute successfully:** 16 admission/lineage/ordering/
+work/cancellation contracts and 5 independent reconstruction/archive/localization
+contracts. Both pair and three-camera cases reconstruct twelve independently
+authored nonplanar points, round-trip the real archive and recover a fresh
+rotated/translated camera within the explicit 1e-7 center/reprojection fixture
+tolerance. A separate real masked-grayscale pipeline executes extraction,
+stereo/multi-view reconstruction, archival and fresh-image localization; it
+recovers the expected depth-10 plane and camera center [0.5, 0, 0] while preserving
+planar alternatives. Replay-exposure laundering and descriptor-alias support
+controls pass. All 59 existing library tests and strict Clippy for the library
+and both new targets also pass. These are synthetic contract results, not field
+accuracy or production qualification.
+
+The pure API performs no source reopening or publication. Retained integration
+must bind complete original source/rig/image/clock records and revalidate custody
+and current privacy after serialization. `docs/RECONSTRUCTED_ATLAS_API.md`
+documents this ownership boundary, unknown-error semantics and archive handoff.
+The native API is compiled and executed; the earlier resource limitation for
+current retained-owner/CLI integration checks remains separate. Broad FSS-097
+and geometry qualification remain open.
+
 ## Retained scene matching with lens correction (2026-11-01, command integration)
 
 `fss-scene-fuse retained-match` and `retained-multimatch` now accept exact v2
