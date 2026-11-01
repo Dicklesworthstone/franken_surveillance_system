@@ -2,12 +2,12 @@
 //! Joint native static-feature reconstruction across three through eight retained cameras.
 
 #[path = "retained_multimatching/input.rs"]
-mod input;
+pub(super) mod input;
 #[path = "retained_multimatching/report.rs"]
-mod report;
+pub(super) mod report;
 #[cfg(test)]
 #[path = "retained_multimatching/tests.rs"]
-mod tests;
+pub(super) mod tests;
 
 use std::ffi::OsString;
 use std::fs;

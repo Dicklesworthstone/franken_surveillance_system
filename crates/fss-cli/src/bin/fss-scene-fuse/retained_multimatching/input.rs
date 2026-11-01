@@ -16,10 +16,10 @@ use fss_twin::multiview_feature_association::{MAX_MULTIVIEW_CAMERAS, MAX_MULTIVI
 use super::super::input as shared;
 use super::super::{Result, fail, input_error};
 
-pub(super) const SCHEMA: &str = "fss.scene_feature_multimatch_retained_query.v1";
-pub(super) const SCHEMA_V2: &str = "fss.scene_feature_multimatch_retained_query.v2";
+pub(in super::super) const SCHEMA: &str = "fss.scene_feature_multimatch_retained_query.v1";
+pub(in super::super) const SCHEMA_V2: &str = "fss.scene_feature_multimatch_retained_query.v2";
 
-pub(super) struct Query {
+pub(in super::super) struct Query {
     pub version: u8,
     pub views: Vec<shared::View>,
     pub extraction: ExtractionOptions,
@@ -28,7 +28,7 @@ pub(super) struct Query {
 }
 
 /// Select three through eight distinct retained source cameras without authenticating custody.
-pub(super) fn parse(bytes: &[u8], rig_digest: ContentDigest) -> Result<Query> {
+pub(in super::super) fn parse(bytes: &[u8], rig_digest: ContentDigest) -> Result<Query> {
     let header = shared::parse_header(bytes, [SCHEMA, SCHEMA_V2], &["views"], rig_digest)?;
     let top = header
         .document
@@ -62,7 +62,7 @@ pub(super) fn parse(bytes: &[u8], rig_digest: ContentDigest) -> Result<Query> {
 
 /// Bind all owner snapshots and the complete global interval before any pair expansion.
 /// Requested per-view maxima never authorize dropping actual selected features to fit the total.
-pub(super) fn bind(
+pub(in super::super) fn bind(
     query: &Query,
     resolved: &[shared::ResolvedFrame<'_>],
     rig: &SceneRig,

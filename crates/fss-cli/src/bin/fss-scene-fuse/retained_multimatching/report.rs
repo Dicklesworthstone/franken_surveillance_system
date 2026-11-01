@@ -11,9 +11,9 @@ use fss_twin::multiview_feature_association::{
 use crate::matching::report::{AssociationRows, association_rows, point};
 use crate::{Result, fail};
 
-pub(super) struct GeometryReport {
-    pub(super) json: String,
-    pub(super) reconstructed: bool,
+pub(in super::super) struct GeometryReport {
+    pub(in super::super) json: String,
+    pub(in super::super) reconstructed: bool,
 }
 
 fn digest(value: [u8; 32]) -> String {
@@ -86,7 +86,7 @@ fn component(index: usize, value: &FeatureComponent) -> String {
 /// of the caller's byte limit. Cancellation or a byte-limit failure returns no partial report.
 /// Source snapshots, original capsules and source-owner revalidation belong to the enclosing
 /// retained command. A successful joint component does not erase its weak two-view refusals.
-pub(super) fn compute(
+pub(in super::super) fn compute(
     association: &MultiFeatureAssociation,
     max_bytes: usize,
     work: &mut WorkBudget<'_>,

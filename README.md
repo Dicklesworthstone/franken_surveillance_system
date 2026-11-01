@@ -432,6 +432,13 @@ comes from the camera rig; original source pixels, corrected feature pixels and
 privacy footprints retain separate provenance. See
 [`docs/RETAINED_LENS_MATCHING.md`](docs/RETAINED_LENS_MATCHING.md).
 
+`fss-scene-fuse retained-atlas` exports explicitly selected reconstructed static
+landmarks and actual reference descriptors as **FSATLAS1**, which the existing
+`fss-file localize` command can use to register another camera into the same twin.
+The export retains complete source/lens/privacy provenance and unresolved scene
+alternatives; static eligibility is declared and absolute landmark error remains
+unknown. See [`docs/RECONSTRUCTED_LOCALIZATION_ATLAS.md`](docs/RECONSTRUCTED_LOCALIZATION_ATLAS.md).
+
 ## ATP archive, repair, and deletion
 
 Source media, evidence bundles, checkpoints, model packages, graph/search/calibration/twin

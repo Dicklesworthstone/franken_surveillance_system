@@ -168,6 +168,25 @@ fn fixture(label: &str, late_third: bool) -> TestResult<Fixture> {
     Ok(f)
 }
 
+/// Reuse the actual three-camera imports and preview without exposing fixture internals.
+/// The third view remains the explicitly authored synthetic camera described above.
+pub(in super::super) fn atlas_fixture_preview(label: &str) -> TestResult<(Fixture, String)> {
+    let f = fixture(label, false)?;
+    let cx = context(&f.options.root)?;
+    let preview = analyze(&f.options, &f.options.root, &cx);
+    cx.drain_and_finalize();
+    let preview = checked(preview)?;
+    assert!(preview.reconstructed);
+    assert!(
+        !f.options
+            .report_out
+            .as_ref()
+            .ok_or("preview output")?
+            .exists()
+    );
+    Ok((f, preview.json))
+}
+
 fn refused(f: &Fixture) -> TestResult {
     let mut stdout = Vec::new();
     assert!(execute(&f.options, &mut stdout).is_err());

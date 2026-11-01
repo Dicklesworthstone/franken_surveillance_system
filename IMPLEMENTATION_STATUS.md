@@ -10,6 +10,57 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Retained reconstruction atlas export (2026-11-01, command integration)
+
+`fss-scene-fuse retained-atlas` now reconstructs an existing exact retained pair
+or multi-camera v1/v2 query and exports explicitly selected points/descriptors
+as the unchanged FSATLAS1 format. The existing `fss-file localize` consumer
+accepts the resulting archive and report-provided package/provenance pins.
+The selection pins the entire original association and requires distinct
+landmark/physical-group IDs, existing twin feature ordinals and enduring-static
+support. It cannot override coordinates, descriptors, source facts or error bounds.
+
+Every original source, including unused views, remains in the complete manifest
+along with original/rectified image lineage, camera/clock/privacy declarations,
+all native pair/component alternatives and the producer admission receipt.
+Exact source-record bytes are hashed independently. The manifest includes the
+semantic atlas, excludes the final package hash, and is itself pinned by the
+archive. The final report embeds the exact manifest UTF-8 string plus archive
+and report-body identities, avoiding recanonicalization and circular hashing.
+A dedicated bounded report reader handles that long string without changing
+ordinary intent or supervisor-report limits.
+
+Complete geometry, manifest and archive serialization precedes final original
+source/current-privacy revalidation. Analysis failures create no atlas/report.
+Output is private and create-only; archive synchronization precedes report
+publication. Cancellation is checked after the archive commit and before stdout.
+Publication I/O failures can leave newly created files for explicit inspection.
+No calibration or canonical world revision is activated, and unknown absolute
+landmark error remains separate from conditional pixel covariance.
+
+**45 exact-source adapter/image tests pass**, including 12 new selection,
+dispatch and actual binding contracts. **8 strict JSON reader tests pass**,
+including 3 new report-capacity/identity tests. **4 actual production atlas
+serializer tests pass**, covering all six eligibility dispositions, complete
+alternatives, unused views, source/receipt identities, exact output/work bounds
+and initial/terminal cancellation. Eight emitted receipt/geometry fixtures and
+their actual selection rows pass standard Draft 2020-12 validation. The catalog
+resolves 119 schemas and 1,521 references with zero errors. Strict adapter/reader
+Clippy passes. The separate renderer harness's strict lint check reports two
+existing unchanged helper warnings; it reports none in the new renderer/tests.
+
+Ten real retained CLI tests are added for stereo and three-camera export,
+archive/provenance roundtrip, v2 cropping, source corruption, current privacy,
+preflight, resource/cancellation refusal and private/exclusive publication.
+**These real owner tests and current CLI integration have not completed genuine
+typechecking or runtime execution.** The earlier current-reference metadata
+attempt was killed under shared memory pressure; measured headroom remains below
+the retry threshold. Shared ordinary disk capacity was subsequently exhausted.
+Source, fixtures, logs and current metadata remain preserved; no runtime
+substitute or weakened gate was used. Native producer/consumer execution below
+does not qualify the retained CLI. See `docs/RECONSTRUCTED_LOCALIZATION_ATLAS.md`
+for exact selection/report fields, consumer handoff and publication recovery.
+
 ## Native reconstructed localization atlas (2026-11-01, producer/consumer bridge)
 
 `fss-twin::reconstruction_atlas` now turns actual native pair or multi-camera

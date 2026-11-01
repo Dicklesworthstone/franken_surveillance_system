@@ -1,6 +1,12 @@
 #![forbid(unsafe_code)]
 //! Automatic scene correspondences from authenticated, privacy-screened retained frames.
 
+#[path = "retained_matching/atlas.rs"]
+mod atlas;
+#[path = "retained_matching/atlas_input.rs"]
+mod atlas_input;
+#[path = "retained_matching/atlas_report.rs"]
+mod atlas_report;
 #[path = "retained_matching/image_report.rs"]
 mod image_report;
 #[path = "retained_matching/images.rs"]
@@ -628,4 +634,9 @@ pub(super) fn run(args: &[OsString], out: &mut impl Write) -> Result<bool> {
 /// Retained sources and source ownership are shared with the multi-camera command.
 pub(super) fn run_multi(args: &[OsString], out: &mut impl Write) -> Result<bool> {
     multiview::run(args, out)
+}
+
+/// Export explicitly selected native reconstructions as an unactivated localization atlas.
+pub(super) fn run_atlas(args: &[OsString], out: &mut impl Write) -> Result<bool> {
+    atlas::run(args, out)
 }

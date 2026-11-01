@@ -16,6 +16,8 @@ const MAX_NODES: usize = 65_536;
 const MAX_RETAINED_REPORT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_RETAINED_REPORT_NODES: usize = 262_144;
 const MAX_STRING_BYTES: usize = 64 * 1024;
+const MAX_RECONSTRUCTION_ATLAS_REPORT_BYTES: usize = 32 * 1024 * 1024;
+const MAX_RECONSTRUCTION_ATLAS_REPORT_NODES: usize = 2_097_152;
 
 /// One decoded JSON value.
 #[derive(Clone, Debug, PartialEq)]
@@ -108,7 +110,13 @@ impl Value {
 
 /// Decodes one complete JSON document.
 pub fn parse(text: &str) -> Result<Value, JsonError> {
-    parse_bounded(text, MAX_INPUT_BYTES, MAX_NODES, "document exceeds the input bound")
+    parse_bounded(
+        text,
+        MAX_INPUT_BYTES,
+        MAX_NODES,
+        MAX_STRING_BYTES,
+        "document exceeds the input bound",
+    )
 }
 
 /// Checks a complete retained-supervisor output before durable publication and redelivery.
@@ -121,7 +129,25 @@ pub fn parse_retained_supervisor_report(text: &str) -> Result<Value, JsonError> 
         text,
         MAX_RETAINED_REPORT_BYTES,
         MAX_RETAINED_REPORT_NODES,
+        MAX_STRING_BYTES,
         "document exceeds the retained report bound",
+    )
+}
+
+/// Inspect a complete reconstructed-atlas report or its exact provenance manifest.
+///
+/// Reports embed the entire source/geometry manifest as one UTF-8 JSON string. This
+/// report-only profile admits 32 MiB total, strings up to that same bound, and at most
+/// 2,097,152 value nodes. Depth, duplicate-key, numeric and Unicode checks are unchanged.
+/// Ordinary intents and retained supervisor reports retain their smaller limits.
+/// Parsing authenticates neither the report nor its archive or source references.
+pub fn parse_reconstruction_atlas_report(text: &str) -> Result<Value, JsonError> {
+    parse_bounded(
+        text,
+        MAX_RECONSTRUCTION_ATLAS_REPORT_BYTES,
+        MAX_RECONSTRUCTION_ATLAS_REPORT_NODES,
+        MAX_RECONSTRUCTION_ATLAS_REPORT_BYTES,
+        "document exceeds the reconstructed atlas report bound",
     )
 }
 
@@ -129,6 +155,7 @@ fn parse_bounded(
     text: &str,
     maximum_bytes: usize,
     maximum_nodes: usize,
+    maximum_string_bytes: usize,
     oversize_reason: &'static str,
 ) -> Result<Value, JsonError> {
     if text.len() > maximum_bytes {
@@ -143,6 +170,7 @@ fn parse_bounded(
         at: 0,
         nodes: 0,
         maximum_nodes,
+        maximum_string_bytes,
     };
     let value = parser.value(0)?;
     parser.whitespace();
@@ -158,6 +186,7 @@ struct Parser<'a> {
     at: usize,
     nodes: usize,
     maximum_nodes: usize,
+    maximum_string_bytes: usize,
 }
 
 impl Parser<'_> {
@@ -318,7 +347,7 @@ impl Parser<'_> {
                     self.at += character.len_utf8();
                 }
             }
-            if out.len() > MAX_STRING_BYTES {
+            if out.len() > self.maximum_string_bytes {
                 return self.fail("string exceeds its bound");
             }
         }
@@ -469,7 +498,9 @@ mod tests {
         assert!(large.len() > MAX_INPUT_BYTES);
         assert!(parse(&large).is_err());
         assert_eq!(
-            parse_retained_supervisor_report(&large)?.array().map(<[Value]>::len),
+            parse_retained_supervisor_report(&large)?
+                .array()
+                .map(<[Value]>::len),
             Some(40),
         );
 
@@ -477,7 +508,9 @@ mod tests {
         assert!(many.len() < MAX_INPUT_BYTES);
         assert!(parse(&many).is_err());
         assert_eq!(
-            parse_retained_supervisor_report(&many)?.array().map(<[Value]>::len),
+            parse_retained_supervisor_report(&many)?
+                .array()
+                .map(<[Value]>::len),
             Some(MAX_NODES + 1),
         );
         Ok(())
@@ -492,5 +525,75 @@ mod tests {
         assert!(parse_retained_supervisor_report(&oversized).is_err());
         let too_many = format!("[{}]", vec!["0"; MAX_RETAINED_REPORT_NODES].join(","));
         assert!(parse_retained_supervisor_report(&too_many).is_err());
+    }
+
+    #[test]
+    fn atlas_report_preserves_the_exact_large_embedded_provenance_string() -> Result<(), JsonError>
+    {
+        let manifest = crate::json_output::object(&[
+            (
+                "original",
+                crate::json_output::string("UTF-8 café 😀; quoted \"source\"\nline"),
+            ),
+            (
+                "geometry",
+                crate::json_output::string(&"x".repeat(MAX_STRING_BYTES + 1)),
+            ),
+        ]);
+        let report = crate::json_output::object(&[(
+            "provenance_manifest_utf8",
+            crate::json_output::string(&manifest),
+        )]);
+        let parsed = parse_reconstruction_atlas_report(&report)?;
+        let exact = parsed
+            .object()
+            .and_then(|fields| fields.get("provenance_manifest_utf8"))
+            .and_then(Value::text);
+        assert_eq!(exact, Some(manifest.as_str()));
+        assert!(
+            parse_reconstruction_atlas_report(&manifest)?
+                .object()
+                .is_some()
+        );
+        assert!(parse(&report).is_err());
+        assert!(parse_retained_supervisor_report(&report).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn atlas_report_node_allowance_does_not_expand_existing_reader_profiles()
+    -> Result<(), JsonError> {
+        let many = format!("[{}]", vec!["0"; MAX_RETAINED_REPORT_NODES].join(","));
+        assert!(parse(&many).is_err());
+        assert!(parse_retained_supervisor_report(&many).is_err());
+        assert_eq!(
+            parse_reconstruction_atlas_report(&many)?
+                .array()
+                .map(<[Value]>::len),
+            Some(MAX_RETAINED_REPORT_NODES),
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn atlas_reports_keep_hard_capacity_depth_and_strict_json_refusals() {
+        for bad in [
+            r#"{"a":1,"a":2}"#,
+            r#"{"a":1} trailing"#,
+            r#""\ud800""#,
+            "[01]",
+        ] {
+            assert!(parse_reconstruction_atlas_report(bad).is_err());
+        }
+        let deep = "[".repeat(MAX_DEPTH + 2) + &"]".repeat(MAX_DEPTH + 2);
+        assert!(parse_reconstruction_atlas_report(&deep).is_err());
+        let too_large = " ".repeat(MAX_RECONSTRUCTION_ATLAS_REPORT_BYTES + 1);
+        assert!(parse_reconstruction_atlas_report(&too_large).is_err());
+        // Exercise the exact report node bound without a large string payload.
+        let too_many = format!(
+            "[{}]",
+            vec!["0"; MAX_RECONSTRUCTION_ATLAS_REPORT_NODES].join(",")
+        );
+        assert!(parse_reconstruction_atlas_report(&too_many).is_err());
     }
 }

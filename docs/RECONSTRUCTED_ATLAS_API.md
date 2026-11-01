@@ -5,6 +5,9 @@ reconstruction to the existing `LocalizationAtlas` and `FSATLAS1` archive APIs.
 A new camera can match against these reconstructed reference landmarks without
 re-entering their coordinates or exporting a separate COLMAP model.
 
+The retained-media command is documented in
+[Build a localization atlas from retained cameras](RECONSTRUCTED_LOCALIZATION_ATLAS.md).
+
 This is an explicit producer of an **unactivated candidate atlas**. Its pure
 Rust inputs are immutable native association results. The owner must retain the
 source records, authorize descriptor use and revalidate source custody/current
