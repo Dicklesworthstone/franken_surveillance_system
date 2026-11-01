@@ -10,6 +10,41 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Native temporal feature association (2026-11-01, moving-scene bridge)
+
+`fss_twin::temporal_feature_association` now automatically connects native image
+features across repeated camera exposures and feeds complete supported groups
+to the existing joint 3D position/velocity solver. Four through sixteen original
+exposures, two through eight fixed logical cameras and at most 256 actual selected
+features produce a complete bounded descriptor graph. Static epipolar screening
+is not applied to staggered moving observations. Every Cartesian descriptor row,
+nearest alternative, selected link and unresolved component remains available.
+
+Repeated cameras retain their fixed calibration/mode and original exposures.
+Direct support from every member pair and one feature per exposure are required;
+open chains and conflicting cycles never become transitive identity assertions.
+Each successful fit uses every observation, the exact global requested scene time
+and the original capture-time midpoints; unsupported reference times refuse instead
+of silently clamping or extrapolating. Full capture intervals, source masks,
+camera/map/clock assumptions, all 6x6 covariance terms and nominal occlusion
+conflicts remain explicit. No persistent track, static landmark or calibration
+is activated. See `docs/TEMPORAL_FEATURE_ASSOCIATION.md`.
+
+**22 new native tests execute successfully**: 17 source/graph/admission/resource
+contracts and 5 independent reconstruction pipelines. Native grayscale feature
+extraction across four staggered exposures reconstructs depth 10 and velocity
+[1, 0.5, 0], while the stationary epipolar matcher rejects those moving pairs.
+Independent crossing trajectories, descriptor aliases, incompatible acceleration,
+exact times near u64::MAX, full covariance propagation, permutations, all bounded
+inventories, budget-minus-one and terminal cancellation pass. Strict Clippy for
+the library and both new test targets also passes. These are synthetic contract
+results, not physical field accuracy, identity confirmation or release authority.
+
+The direct retained-perception check now executes the actual scene-fuse test
+binary after retained localization. Two missing imports in an existing RTSP test
+module, observed as compiler errors in hosted checks, are repaired without runtime
+behavior changes. Existing qualification lanes and release authority are unchanged.
+
 ## Retained reconstruction atlas export (2026-11-01, command integration)
 
 `fss-scene-fuse retained-atlas` now reconstructs an existing exact retained pair
@@ -52,14 +87,18 @@ existing unchanged helper warnings; it reports none in the new renderer/tests.
 Ten real retained CLI tests are added for stereo and three-camera export,
 archive/provenance roundtrip, v2 cropping, source corruption, current privacy,
 preflight, resource/cancellation refusal and private/exclusive publication.
-**These real owner tests and current CLI integration have not completed genuine
-typechecking or runtime execution.** The earlier current-reference metadata
-attempt was killed under shared memory pressure; measured headroom remains below
-the retry threshold. Shared ordinary disk capacity was subsequently exhausted.
-Source, fixtures, logs and current metadata remain preserved; no runtime
-substitute or weakened gate was used. Native producer/consumer execution below
-does not qualify the retained CLI. See `docs/RECONSTRUCTED_LOCALIZATION_ATLAS.md`
-for exact selection/report fields, consumer handoff and publication recovery.
+At initial publication, these owner tests and the current CLI had not completed
+genuine typechecking or execution because shared memory pressure killed the
+local reference build and ordinary disk capacity was exhausted. Subsequent
+[hosted checks of exact commit 6a85bb0](https://github.com/Dicklesworthstone/franken_surveillance_system/actions/runs/41279511798/job/124770256145)
+**compiled the production scene-fuse binary** and executed all **33 retained
+localization owner tests**, including the 12 rectified-feature contracts, plus
+the existing retained-localization CLI integration test. Those jobs did not run
+the scene-fuse test binary, so the ten atlas owner tests remain unexecuted at
+this checkpoint. The overall hosted workflow failed on other test/qualification
+issues and is not release authority. No runtime substitute or weakened gate was
+used. See `docs/RECONSTRUCTED_LOCALIZATION_ATLAS.md` for selection/report fields,
+consumer handoff and publication recovery.
 
 ## Native reconstructed localization atlas (2026-11-01, producer/consumer bridge)
 

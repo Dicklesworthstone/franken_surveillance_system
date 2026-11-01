@@ -3,8 +3,8 @@
 use super::source::tests::{Cancel, Directory, Test, add, limits, scope, work};
 use super::*;
 use crate::rtsp::authentication::{DigestCredentials, DigestPolicy};
-use crate::rtsp::avc_client::AvcClientPoll;
 use crate::rtsp::avc_client::authenticated::DigestAvcPoll;
+use crate::rtsp::avc_client::{AvcClientPoll, InterleavedSource};
 use crate::rtsp::client::{ClientCommand, ClientConfig};
 use crate::rtsp::datagram_archive::live::*;
 use crate::rtsp::live_avc::recording::{LiveRecordingConfig, LiveRecordingStep};
@@ -25,6 +25,7 @@ use fss_publication::{
 use std::cell::Cell;
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
+use std::path::PathBuf;
 use std::time::Duration;
 
 const LEASE: u64 = 100_000_000_000;
