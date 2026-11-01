@@ -744,10 +744,21 @@ fn verified_chunk(
 /// One source-read allowance shared by all decoder ranges and random-access recovery probes.
 /// Reservations happen before reads and are never refunded, including for invalid codec input.
 /// Cloning preserves the same allowance; it cannot reset accounting on a decoder restart.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub(crate) struct SourceReadBudget {
     maximum: u64,
     used: Arc<AtomicU64>,
+    cancelled: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
+}
+
+impl std::fmt::Debug for SourceReadBudget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SourceReadBudget")
+            .field("maximum", &self.maximum)
+            .field("used", &self.used())
+            .field("cancellable", &self.cancelled.is_some())
+            .finish()
+    }
 }
 
 impl SourceReadBudget {
@@ -755,6 +766,27 @@ impl SourceReadBudget {
         Self {
             maximum,
             used: Arc::new(AtomicU64::new(0)),
+            cancelled: None,
+        }
+    }
+
+    pub(crate) fn with_cancellation_probe(
+        maximum: u64,
+        cancelled: Arc<dyn Fn() -> bool + Send + Sync>,
+    ) -> Self {
+        Self {
+            cancelled: Some(cancelled),
+            ..Self::new(maximum)
+        }
+    }
+
+    pub(crate) fn checkpoint(&self) -> Result<(), FileIngestError> {
+        if self.cancelled.as_ref().is_some_and(|cancelled| cancelled()) {
+            Err(FileIngestError::CancellationRequested {
+                stage: "retained_source:admission",
+            })
+        } else {
+            Ok(())
         }
     }
 
@@ -763,6 +795,7 @@ impl SourceReadBudget {
     }
 
     fn reserve(&self, bytes: u64) -> Result<(), FileIngestError> {
+        self.checkpoint()?;
         self.used
             .try_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
                 used.checked_add(bytes).filter(|next| *next <= self.maximum)

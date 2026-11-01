@@ -35,6 +35,7 @@ use super::privacy_mask::{
     MaskBinding, PrivacyMaskError, binding_digest, current_mask, decode_marker, encode_marker,
     superseded_bindings,
 };
+use super::retained::SourceReadBudget;
 use super::{FileIngestError, RetainedFileImport, RetainedReadLimits};
 use crate::{ReferenceDeployment, ReferenceError, ReplayCx};
 
@@ -661,6 +662,18 @@ fn source(
     request: &RecordedDecodeRequest,
     cx: &ReplayCx,
 ) -> Result<(RetainedFileImport, SensorCapsule, ContentDigest, Vec<u8>), RecordedDecodeError> {
+    source_with_budget(deployment, request, cx, None)
+}
+
+fn source_with_budget(
+    deployment: &ReferenceDeployment,
+    request: &RecordedDecodeRequest,
+    cx: &ReplayCx,
+    source_budget: Option<&SourceReadBudget>,
+) -> Result<(RetainedFileImport, SensorCapsule, ContentDigest, Vec<u8>), RecordedDecodeError> {
+    if let Some(budget) = source_budget {
+        budget.checkpoint()?;
+    }
     checkpoint(cx, "recorded_decode:source")?;
     validate_limits(request.decode_limits)?;
     let retained =
@@ -677,8 +690,14 @@ fn source(
         return Err(RecordedDecodeError::Limit);
     }
     let (capsule, digest) = source_capsule(deployment, &retained, request.segment_index)?;
-    let bytes =
-        retained.read_segment(deployment, request.segment_index, request.read_limits, cx)?;
+    let mut chunks = super::VerifiedChunkCache::with_source_budget(source_budget);
+    let bytes = retained.read_segment_cached(
+        deployment,
+        request.segment_index,
+        request.read_limits,
+        cx,
+        &mut chunks,
+    )?;
     // Defence in depth, not a reachable branch of this composition (fss-2h5zq.42 D5): the gate
     // is implied by two earlier checks on the same span. `source_capsule` refused a capsule whose
     // `source_digest`/`source_bytes` differ from the span's `segment_sha256`/`len`
@@ -691,6 +710,9 @@ fn source(
     // The gate itself is proven directly by
     // `decode_receipt_contract::custody_gate_refuses_bytes_that_disagree_with_the_capsule`.
     verify_custody(&capsule, &bytes)?;
+    if let Some(budget) = source_budget {
+        budget.checkpoint()?;
+    }
     Ok((retained, capsule, digest, bytes))
 }
 
@@ -722,7 +744,19 @@ impl RecordedFrame {
         budget: &mut DecodeBudget<'_>,
         cx: &ReplayCx,
     ) -> Result<Self, RecordedDecodeError> {
-        let (retained, capsule, capsule_digest, encoded) = source(deployment, request, cx)?;
+        Self::decode_and_publish_with_source_budget(deployment, request, budget, cx, None)
+    }
+
+    /// The native owner path with a caller-owned, nonrenewable original-source allowance.
+    pub(crate) fn decode_and_publish_with_source_budget(
+        deployment: &mut ReferenceDeployment,
+        request: &RecordedDecodeRequest,
+        budget: &mut DecodeBudget<'_>,
+        cx: &ReplayCx,
+        source_budget: Option<&SourceReadBudget>,
+    ) -> Result<Self, RecordedDecodeError> {
+        let (retained, capsule, capsule_digest, encoded) =
+            source_with_budget(deployment, request, cx, source_budget)?;
         let mask = current_mask(deployment, &capsule.sensor_id)?;
         let identity = key(
             retained.import_root(),
@@ -758,7 +792,7 @@ impl RecordedFrame {
                     budget,
                 )?;
             }
-            return Self::open(deployment, request, cx);
+            return Self::open_with_source_budget(deployment, request, cx, source_budget);
         }
         let used_before = budget.used();
         let image = decode_luma(
@@ -806,6 +840,9 @@ impl RecordedFrame {
             pixels.as_slice(),
             receipt_bytes.as_slice(),
         ] {
+            if let Some(budget) = source_budget {
+                budget.checkpoint()?;
+            }
             checkpoint(cx, "recorded_decode:stage")?;
             let digest = deployment.publisher_mut().stage_object(bytes)?;
             deployment.publisher_mut().verify_object(digest)?;
@@ -845,7 +882,17 @@ impl RecordedFrame {
         request: &RecordedDecodeRequest,
         cx: &ReplayCx,
     ) -> Result<Self, RecordedDecodeError> {
-        let (retained, capsule, capsule_digest, encoded) = source(deployment, request, cx)?;
+        Self::open_with_source_budget(deployment, request, cx, None)
+    }
+
+    pub(crate) fn open_with_source_budget(
+        deployment: &ReferenceDeployment,
+        request: &RecordedDecodeRequest,
+        cx: &ReplayCx,
+        source_budget: Option<&SourceReadBudget>,
+    ) -> Result<Self, RecordedDecodeError> {
+        let (retained, capsule, capsule_digest, encoded) =
+            source_with_budget(deployment, request, cx, source_budget)?;
         let decoder = decoder_identity_for_frame(&encoded);
         let mask = current_mask(deployment, &capsule.sensor_id)?;
         let lineage = |binding: ContentDigest| {
@@ -936,6 +983,9 @@ impl RecordedFrame {
             return Err(RecordedDecodeError::InvalidReceipt);
         }
         checkpoint(cx, "recorded_decode:read_complete")?;
+        if let Some(budget) = source_budget {
+            budget.checkpoint()?;
+        }
         Ok(Self {
             receipt,
             pixels,

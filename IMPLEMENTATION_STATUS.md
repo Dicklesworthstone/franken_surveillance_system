@@ -10,6 +10,58 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Automatic matching of retained native camera frames (2026-10-31, integration)
+
+`fss-scene-fuse retained-match` now connects authenticated retained JPEG, AVC
+and HEVC frames to automatic masked native feature extraction and existing
+cross-camera static-point reconstruction. It closes the gap between local-JPEG
+matching and retained fusion that still required supplied pixel correspondences.
+No exported frame or detector package is required. The existing `fss-file decode`
+output now exposes exact capsule/source/sensor/stream selection pins for this path.
+
+The strict query pins original import/capsule/encoded bytes/sensor/stream and
+native coding-segment selection. All pins are checked before decoding. Complete
+video ranges are bounded to 64 segments; a later malformed or skipped selected
+picture cannot produce a partial successful result. The sealed native feature
+owner reuses the existing decoders and derives dimensions, exposure, source
+capture interval and current privacy from retained custody. Full descriptor
+footprints must be allowed; the query cannot substitute pixels, timestamps,
+dimensions or masks. Camera/source mapping, an undistorted pinhole image domain,
+additive interval clock alignment and stationary common features remain explicit
+assumptions. Distinct retained sensor IDs do not independently certify a physical
+camera placement.
+
+The complete report preserves every candidate pair and selected feature, source
+capsule and native decoder receipt, successful 3D estimate and geometric refusal.
+Source owners revalidate original ranges and current privacy after analysis;
+JPEG also reopens its exact retained pixels/receipt without regenerating damaged
+custody. Ordinary JPEG derivative publication can advance the ledger, so entry
+and final anchors remain separate and the second valid decode does not stale
+the first source. No event, identity, camera calibration or world revision is
+activated. Shared original-read accounting includes final validation and original
+HTTP/RTSP provenance. JPEG work, video byte/luma admission and geometry work are
+separate bounded axes, with final costs in the report.
+
+The exact-source pure parser/binding suite passes **11 tests**, including full
+interval/offset propagation, source/camera/privacy/clock mismatch refusals and
+native geometry recovering an independent expected depth of 5. The existing
+matching parser/pipeline/report harness passes its **16 production tests** plus
+one fixture emitter; all five original emitted report hashes remain unchanged
+after sharing the complete pair/feature/hypothesis serializer. Seven genuine
+reference-owner tests and nine real CLI-owner tests cover source removal,
+JPEG/AVC/HEVC custody, privacy withdrawal, later decode publications, corruption,
+budgets/cancellation and private exclusive output. The seven reference tests,
+production scene/file commands and all current CLI test configurations pass
+genuine pinned Cargo check. Runtime owner tests have not executed: the prior
+Asupersync object build hit the shared 8 GiB ceiling, and no substitute runtime
+or repeated object-build attempt was used. The 110-schema catalog resolves all
+1,006 references without errors.
+
+See `docs/RETAINED_SCENE_MATCHING.md` for source discovery, exact input examples,
+limits, original/declared timing and report interpretation. This implements a
+bounded static-feature portion of FSS-099; field association quality, moving
+object identity and aggregate qualification remain open.
+
 ## Native raw DFL detector-head conversion (2026-10-31, detector compatibility)
 
 `fss-infer import-onnx` recipe version 3 now converts an explicitly declared

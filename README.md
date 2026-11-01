@@ -413,6 +413,12 @@ source hashes and geometric refusals. Camera, clock and stationary-feature decla
 explicit. See [`docs/SCENE_FEATURE_MATCHING.md`](docs/SCENE_FEATURE_MATCHING.md) for the query,
 mask policy, image-resolution work bounds and report interpretation.
 
+`fss-scene-fuse retained-match` runs automatic feature matching directly on two retained
+JPEG, AVC or HEVC camera frames. It authenticates original custody and source clocks,
+uses current deployment privacy masks, and revalidates the source ranges before releasing
+3D hypotheses. The existing `fss-file decode` output supplies the exact selection pins.
+See [`docs/RETAINED_SCENE_MATCHING.md`](docs/RETAINED_SCENE_MATCHING.md).
+
 ## ATP archive, repair, and deletion
 
 Source media, evidence bundles, checkpoints, model packages, graph/search/calibration/twin

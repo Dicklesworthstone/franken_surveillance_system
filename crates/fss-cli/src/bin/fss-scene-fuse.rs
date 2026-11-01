@@ -19,6 +19,8 @@ mod retained_fusion;
 mod retained_fusion_input;
 #[path = "fss-scene-fuse/retained_handoffs.rs"]
 mod retained_handoffs;
+#[path = "fss-scene-fuse/retained_matching.rs"]
+mod retained_matching;
 #[cfg(test)]
 #[path = "fss-scene-fuse/tests.rs"]
 mod tests;
@@ -65,7 +67,8 @@ The stdout JSON is identical to that file. Default work allowance: 100000000 uni
 For automatic ordered anonymous tracklet association, use fss-scene-fuse handoffs --help.\n\
 For authenticated retained package tracks, use fss-scene-fuse retained-handoffs --help.\n\
 For 3D reconstruction from retained tracks, use fss-scene-fuse retained-fuse --help.\n\
-For automatic native JPEG feature matching and 3D points, use fss-scene-fuse match --help.\n";
+For automatic native JPEG feature matching and 3D points, use fss-scene-fuse match --help.\n\
+For automatic matching of retained camera frames, use fss-scene-fuse retained-match --help.\n";
 
 #[derive(Debug)]
 struct Failure {
@@ -360,6 +363,8 @@ fn main() -> ExitCode {
         retained_handoffs::run(&args[1..], &mut io::stdout().lock())
     } else if args.first().and_then(|arg| arg.to_str()) == Some("retained-fuse") {
         retained_fusion::run(&args[1..], &mut io::stdout().lock())
+    } else if args.first().and_then(|arg| arg.to_str()) == Some("retained-match") {
+        retained_matching::run(&args[1..], &mut io::stdout().lock())
     } else if args.first().and_then(|arg| arg.to_str()) == Some("match") {
         matching::run(&args[1..], &mut io::stdout().lock())
     } else {

@@ -2,7 +2,7 @@
 //! Operator commands using the same retained-source and canonical codec path as the library.
 
 use super::{ParseResult, RunResult, Values, malformed, number, text, value, write_new};
-use fss_core::ContentDigest;
+use fss_core::{CanonicalEncode, ContentDigest, SensorCapsule};
 use fss_reference::ingest::pixel_change::{
     PixelChangeConfig, PixelChangeDetector, PixelChangeError, PixelChangeObservation,
     PixelChangeStatistics, VideoPixelChangeObservation,
@@ -262,6 +262,25 @@ pub(super) fn run(
     }
 }
 
+/// Exact retained selection pins for downstream scene matching. This exposes metadata,
+/// not source pixels, and never changes the source clock or sensor identity.
+fn source_selection_lines(
+    out: &mut impl Write,
+    import: ContentDigest,
+    segment: u64,
+    capsule: &SensorCapsule,
+) -> RunResult<()> {
+    let capsule_digest = ContentDigest::sha256(&capsule.try_canonical_bytes()?);
+    writeln!(out, "source_import_identity={import}")?;
+    writeln!(out, "source_segment={segment}")?;
+    writeln!(out, "source_capsule_digest={capsule_digest}")?;
+    writeln!(out, "source_encoded_digest={}", capsule.source_digest)?;
+    writeln!(out, "source_sensor_id={}", capsule.sensor_id)?;
+    writeln!(out, "source_stream_id={}", capsule.stream_id)?;
+    writeln!(out, "source_clock_basis={}", capsule.clock_basis)?;
+    Ok(())
+}
+
 fn run_frame(
     action: &FrameAction,
     deployment: &mut ReferenceDeployment,
@@ -307,6 +326,12 @@ fn run_frame(
         out,
         "decode_authority_sequence={}",
         frame.authority_anchor().commit_sequence
+    )?;
+    source_selection_lines(
+        out,
+        action.request.import_identity,
+        action.request.segment_index as u64,
+        receipt.capsule(),
     )?;
     writeln!(out, "source_capsule={}", receipt.capsule().capsule_id)?;
     writeln!(
@@ -467,6 +492,12 @@ fn run_h264(
             export.frame(frame.dimensions(), frame.pixels(), cx)?;
         }
         let receipt = frame.receipt();
+        source_selection_lines(
+            out,
+            action.request.import_identity,
+            receipt.segment_index(),
+            receipt.capsule(),
+        )?;
         writeln!(out, "frame_output_index={}", frame.output_index())?;
         let [width, height] = receipt.dimensions();
         writeln!(
@@ -549,6 +580,12 @@ fn run_h265(
             export.frame(frame.dimensions(), frame.pixels(), cx)?;
         }
         let receipt = frame.receipt();
+        source_selection_lines(
+            out,
+            action.request.import_identity,
+            receipt.segment_index(),
+            receipt.capsule(),
+        )?;
         writeln!(out, "frame_output_index={}", frame.output_index())?;
         let [width, height] = receipt.dimensions();
         writeln!(

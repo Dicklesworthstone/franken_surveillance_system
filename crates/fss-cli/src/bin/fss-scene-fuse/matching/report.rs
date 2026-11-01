@@ -7,7 +7,8 @@ use fss_codec_mjpeg::ComponentInterpretation;
 use fss_core::ContentDigest;
 use fss_geometry::WorkBudget;
 use fss_twin::feature_association::{
-    DescriptorDecision, EpipolarDecision, FeatureDisposition, FeatureHypothesisOutcome,
+    DescriptorDecision, EpipolarDecision, FeatureAssociation, FeatureDisposition,
+    FeatureHypothesisOutcome,
 };
 use fss_twin::multiview::FusedScenePoint;
 use fss_twin::{PropertyTwin, ScaleEvidence};
@@ -56,7 +57,7 @@ fn hypothesis(value: Option<usize>) -> String {
         None => object(&[("state", string("not_selected"))]),
     }
 }
-fn point(value: &FusedScenePoint) -> String {
+pub(crate) fn point(value: &FusedScenePoint) -> String {
     let estimate = value.estimate();
     let views: Vec<_> = estimate
         .residuals
@@ -115,7 +116,7 @@ fn point(value: &FusedScenePoint) -> String {
         ("views", array(&views)),
     ])
 }
-fn scale(value: ScaleEvidence) -> String {
+pub(crate) fn scale(value: ScaleEvidence) -> String {
     let (kind, factor, error) = match value {
         ScaleEvidence::Relative => ("relative", None, None),
         ScaleEvidence::Estimated {
@@ -135,27 +136,16 @@ fn scale(value: ScaleEvidence) -> String {
     ])
 }
 
-pub(super) fn compute(
-    twin: &PropertyTwin,
-    rig: &SceneRig,
-    query: &Query,
-    query_digest: ContentDigest,
-    analysis: &Analysis,
-    max_bytes: usize,
-    work: &mut WorkBudget<'_>,
-) -> Result<Report> {
-    // Reserve the complete inventory's conservative serialization cost before
-    // constructing it, independently of a caller's smaller output byte limit.
-    // Pair rows are bounded; per-feature nearest lists can retain all128 peers.
-    // This also covers an oversized report that must be refused in its entirety.
-    let report_work = 65_536_u64
-        + query.declarations.len() as u64 * 4
-        + analysis.association.pairs().len() as u64 * 1024
-        + analysis.association.features().len() as u64 * 8192
-        + analysis.association.hypotheses().len() as u64 * 16_384;
-    work.charge(report_work)
-        .map_err(|e| fail("ERR-SCENE-FUSION-LIMIT-001", e.to_string()))?;
-    let association = &analysis.association;
+/// Complete shared association inventory. Callers reserve its bounded serialization work
+/// before construction; no source authority is inferred by these rendering helpers.
+pub(crate) struct AssociationRows {
+    pub hypotheses: Vec<String>,
+    pub pairs: Vec<String>,
+    pub features: Vec<String>,
+    pub solved: usize,
+}
+
+pub(crate) fn association_rows(association: &FeatureAssociation) -> AssociationRows {
     let mut solved = 0_usize;
     let hypotheses: Vec<_> = association
         .hypotheses()
@@ -180,6 +170,119 @@ pub(super) fn compute(
             ])
         })
         .collect();
+    let pairs: Vec<_> = association
+        .pairs()
+        .iter()
+        .map(|row| {
+            object(&[
+                ("features", array(&row.features.map(time))),
+                ("hamming_distance", row.hamming_distance.to_string()),
+                (
+                    "descriptor",
+                    string(match row.descriptor {
+                        DescriptorDecision::TooDistant => "too_distant",
+                        DescriptorDecision::Ambiguous => "ambiguous",
+                        DescriptorDecision::NonMutual => "non_mutual",
+                        DescriptorDecision::Candidate => "candidate",
+                    }),
+                ),
+                (
+                    "epipolar",
+                    string(match row.epipolar {
+                        EpipolarDecision::Passed => "passed",
+                        EpipolarDecision::OutsideGate => "outside_gate",
+                        EpipolarDecision::Unobservable => "unobservable",
+                    }),
+                ),
+                (
+                    "epipolar_distance_pixels",
+                    match row.epipolar_distance_pixels {
+                        Some(distance) => {
+                            object(&[("state", string("available")), ("values", vector(distance))])
+                        }
+                        None => object(&[("state", string("unobservable"))]),
+                    },
+                ),
+                ("hypothesis", hypothesis(row.hypothesis)),
+            ])
+        })
+        .collect();
+    let features: Vec<_> = association
+        .features()
+        .iter()
+        .map(|row| {
+            object(&[
+                ("camera", time(row.camera)),
+                ("feature", time(row.feature)),
+                (
+                    "nearest_features",
+                    array(
+                        &row.nearest_features
+                            .iter()
+                            .copied()
+                            .map(time)
+                            .collect::<Vec<_>>(),
+                    ),
+                ),
+                (
+                    "best_hamming_distance",
+                    metric(row.best_distance.map(f64::from), "no_counterpart"),
+                ),
+                (
+                    "runner_up_hamming_distance",
+                    metric(row.runner_up_distance.map(f64::from), "no_runner_up"),
+                ),
+                (
+                    "disposition",
+                    string(match row.disposition {
+                        FeatureDisposition::NoCounterpart => "no_counterpart",
+                        FeatureDisposition::TooDistant => "too_distant",
+                        FeatureDisposition::Ambiguous => "ambiguous",
+                        FeatureDisposition::NonMutual => "non_mutual",
+                        FeatureDisposition::EpipolarRejected => "epipolar_rejected",
+                        FeatureDisposition::EpipolarUnobservable => "epipolar_unobservable",
+                        FeatureDisposition::Selected => "selected",
+                    }),
+                ),
+                ("hypothesis", hypothesis(row.hypothesis)),
+            ])
+        })
+        .collect();
+    AssociationRows {
+        hypotheses,
+        pairs,
+        features,
+        solved,
+    }
+}
+
+pub(super) fn compute(
+    twin: &PropertyTwin,
+    rig: &SceneRig,
+    query: &Query,
+    query_digest: ContentDigest,
+    analysis: &Analysis,
+    max_bytes: usize,
+    work: &mut WorkBudget<'_>,
+) -> Result<Report> {
+    // Reserve the complete inventory's conservative serialization cost before
+    // constructing it, independently of a caller's smaller output byte limit.
+    // Pair rows are bounded; per-feature nearest lists can retain all128 peers.
+    // This also covers an oversized report that must be refused in its entirety.
+    let report_work = 65_536_u64
+        + query.declarations.len() as u64 * 4
+        + analysis.association.pairs().len() as u64 * 1024
+        + analysis.association.features().len() as u64 * 8192
+        + analysis.association.hypotheses().len() as u64 * 16_384;
+    work.charge(report_work)
+        .map_err(|e| fail("ERR-SCENE-FUSION-LIMIT-001", e.to_string()))?;
+    let association = &analysis.association;
+    let AssociationRows {
+        hypotheses,
+        pairs,
+        features,
+        solved,
+    } = association_rows(association);
     let views: Vec<_> = association
         .views()
         .iter()
@@ -286,84 +389,6 @@ pub(super) fn compute(
                     ]),
                 ),
                 ("features", array(&features)),
-            ])
-        })
-        .collect();
-    let pairs: Vec<_> = association
-        .pairs()
-        .iter()
-        .map(|row| {
-            object(&[
-                ("features", array(&row.features.map(time))),
-                ("hamming_distance", row.hamming_distance.to_string()),
-                (
-                    "descriptor",
-                    string(match row.descriptor {
-                        DescriptorDecision::TooDistant => "too_distant",
-                        DescriptorDecision::Ambiguous => "ambiguous",
-                        DescriptorDecision::NonMutual => "non_mutual",
-                        DescriptorDecision::Candidate => "candidate",
-                    }),
-                ),
-                (
-                    "epipolar",
-                    string(match row.epipolar {
-                        EpipolarDecision::Passed => "passed",
-                        EpipolarDecision::OutsideGate => "outside_gate",
-                        EpipolarDecision::Unobservable => "unobservable",
-                    }),
-                ),
-                (
-                    "epipolar_distance_pixels",
-                    match row.epipolar_distance_pixels {
-                        Some(distance) => {
-                            object(&[("state", string("available")), ("values", vector(distance))])
-                        }
-                        None => object(&[("state", string("unobservable"))]),
-                    },
-                ),
-                ("hypothesis", hypothesis(row.hypothesis)),
-            ])
-        })
-        .collect();
-    let features: Vec<_> = association
-        .features()
-        .iter()
-        .map(|row| {
-            object(&[
-                ("camera", time(row.camera)),
-                ("feature", time(row.feature)),
-                (
-                    "nearest_features",
-                    array(
-                        &row.nearest_features
-                            .iter()
-                            .copied()
-                            .map(time)
-                            .collect::<Vec<_>>(),
-                    ),
-                ),
-                (
-                    "best_hamming_distance",
-                    metric(row.best_distance.map(f64::from), "no_counterpart"),
-                ),
-                (
-                    "runner_up_hamming_distance",
-                    metric(row.runner_up_distance.map(f64::from), "no_runner_up"),
-                ),
-                (
-                    "disposition",
-                    string(match row.disposition {
-                        FeatureDisposition::NoCounterpart => "no_counterpart",
-                        FeatureDisposition::TooDistant => "too_distant",
-                        FeatureDisposition::Ambiguous => "ambiguous",
-                        FeatureDisposition::NonMutual => "non_mutual",
-                        FeatureDisposition::EpipolarRejected => "epipolar_rejected",
-                        FeatureDisposition::EpipolarUnobservable => "epipolar_unobservable",
-                        FeatureDisposition::Selected => "selected",
-                    }),
-                ),
-                ("hypothesis", hypothesis(row.hypothesis)),
             ])
         })
         .collect();

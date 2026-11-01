@@ -11,10 +11,10 @@ use fss_twin::{ImportExpectation, ImportLimits, PropertyTwin, import_twin};
 use super::input::{self, Query};
 
 pub(super) type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
-pub(super) const LEFT: &[u8] = include_bytes!("../../../../tests/fixtures/scene_match_left.jpg");
-pub(super) const RIGHT: &[u8] = include_bytes!("../../../../tests/fixtures/scene_match_right.jpg");
-pub(super) const WIDTH: u32 = 192;
-pub(super) const HEIGHT: u32 = 128;
+pub(crate) const LEFT: &[u8] = include_bytes!("../../../../tests/fixtures/scene_match_left.jpg");
+pub(crate) const RIGHT: &[u8] = include_bytes!("../../../../tests/fixtures/scene_match_right.jpg");
+pub(crate) const WIDTH: u32 = 192;
+pub(crate) const HEIGHT: u32 = 128;
 pub(super) const WORK: u64 = 100_000_000;
 pub(super) const REPORT_BYTES: usize = 8_388_608;
 
@@ -79,7 +79,7 @@ pub(super) fn field<'a>(value: &'a Value, path: &[&str]) -> TestResult<&'a Value
 }
 
 /// Neutral authored triangle behind the synthetic textured plane, with relative scale.
-pub(super) fn package() -> Vec<u8> {
+pub(crate) fn package() -> Vec<u8> {
     fn text(bytes: &mut Vec<u8>, value: &str) {
         bytes.extend_from_slice(&(value.len() as u16).to_le_bytes());
         bytes.extend_from_slice(value.as_bytes());
@@ -120,7 +120,7 @@ pub(super) fn package() -> Vec<u8> {
     bytes
 }
 
-pub(super) fn rig_document(package: &[u8]) -> String {
+pub(crate) fn rig_document(package: &[u8]) -> String {
     let cameras: Vec<_> = (1..=2)
         .map(|camera| {
             object(&[

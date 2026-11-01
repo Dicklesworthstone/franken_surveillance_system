@@ -3,7 +3,7 @@
 
 #[cfg(test)]
 #[path = "matching/fixtures.rs"]
-mod fixtures;
+pub(super) mod fixtures;
 #[path = "matching/input.rs"]
 mod input;
 #[cfg(test)]
@@ -12,7 +12,7 @@ mod owner_tests;
 #[path = "matching/pipeline.rs"]
 mod pipeline;
 #[path = "matching/report.rs"]
-mod report;
+pub(super) mod report;
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
