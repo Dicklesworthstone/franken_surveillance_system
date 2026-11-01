@@ -31,6 +31,9 @@ Resolution requires all of the following:
 - Camera handles and physical sensors are nonzero/valid and unique in the
   complete selection.
 - The original camera input is byte-for-byte the one pinned by the calibration.
+- Atlas package/provenance and selected original image, metadata and luma
+  identities are nonzero SHA-256 values; generic FSSCAL algorithm tags are
+  never relabeled as SHA-256 image provenance.
 - Every camera has an exact current, unwithdrawn retained adoption. The receipt
   agrees on calibration, camera name/handle, both intrinsics and extrinsics
   generations, sensor and twin.

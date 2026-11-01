@@ -640,10 +640,14 @@ V1 registry IDs and domains remain reserved with their original meanings. New im
 
 ## Native image feature association
 
+The stable `SCHEMA-DOMAIN-ADOPTED-SCENE-CAMERA-RIG-001` entry now lives in
+`SCHEMAS.md` beside its strict adopted-rig input schema. Its unchanged domain
+also tags the sealed semantic camera-rig transcript, whose digest is distinct
+from the whole-file JSON pin.
+
 | ID | Domain | Scope | Authority | Invariant rule |
 |---|---|---|---|---|
 | `SCHEMA-DOMAIN-RETAINED-SCENE-CALIBRATION-001` | `fss.retained_scene_calibration.v1` | fss-reference::ingest::scene_calibration | verified owner adoption dependency | Exact deployment lineage/epoch, FSSCAL semantic identity and whole-file bytes, twin package/source, selected camera generations/names/sensors/current adoption receipts and original image-input identities. Complete current adoption/withdrawal custody is bounded and revalidated before release. Unrelated later ledger appends do not change the selection identity. No physical validity, clock accuracy or activation is inferred. |
-| `SCHEMA-DOMAIN-ADOPTED-SCENE-CAMERA-RIG-001` | `fss.scene_camera_rig_adopted.v1` | fss-cli::scene_rig | derived geometry with retained adoption provenance | Exact sealed calibration selection plus declared property handles, source objects, image/clock/privacy handles and validity intervals, with actual calibrated pinhole intrinsics and world-to-camera poses. Both calibration generations and original image domains remain pinned through the sealed owner. Absolute camera error stays unknown; local covariance is not a deterministic projection bound. |
 | `SCHEMA-DOMAIN-CROSS-CAMERA-FEATURE-ASSOCIATION-001` | `fss.cross_camera_feature_association.v1` | fss-twin::feature_association | derived/cognition | Canonical complete pair of source/exposure/pixel/mask/descriptor/image-domain snapshots, camera poses/intrinsics/error declarations and validity, exact twin and rig, clock/privacy, full capture intervals, stationary-feature basis and every matching/solver setting. No pixel-access, retained-custody, physical identity or calibrated-accuracy grant. |
 | `SCHEMA-DOMAIN-CROSS-CAMERA-FEATURE-PAIR-001` | `fss.cross_camera_feature_pair.v1` | fss-twin::feature_association | derived hypothesis | Exact association identity and canonical pair of image-local feature IDs selected by symmetric appearance uniqueness and nominal epipolar gates. Static common-point hypothesis only; native geometric refusal and nominal occlusion contradiction remain visible. |
 | `SCHEMA-DOMAIN-CROSS-CAMERA-FEATURE-OBSERVATION-001` | `fss.cross_camera_feature_observation.v1` | fss-twin::feature_association | derived observation | Exact selected pair identity, logical camera and image-local feature ID bind one native fusion observation to the complete original source snapshot. Query-local track/exposure handles never replace the source hashes or establish persistent identity. |

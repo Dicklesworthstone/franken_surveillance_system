@@ -18,8 +18,8 @@ use super::calibration_adoption::{
     AdoptionError, RetainedAdoption, adopted_currency, retained_adoptions_from_batches,
 };
 use super::site_calibration::{
-    CalibratedCamera, CalibrationImageBasis, MAX_CALIBRATION_BYTES, MAX_OBSERVATION_BYTES,
-    SiteCalibration, SiteCalibrationError,
+    CalibratedCamera, CalibrationImageBasis, CalibrationInput, MAX_CALIBRATION_BYTES,
+    MAX_OBSERVATION_BYTES, SiteCalibration, SiteCalibrationError,
 };
 use crate::{ReferenceDeployment, ReplayCx};
 
@@ -469,6 +469,11 @@ pub fn resolve_scene_calibration(
             "calibration and imported twin package/source differ",
         ));
     }
+    if !pin(calibration.atlas_package) || !pin(calibration.atlas_provenance) {
+        return Err(SceneCalibrationError::InvalidInput(
+            "calibration atlas provenance requires nonzero SHA-256 identities",
+        ));
+    }
     let reads = AuthorityReads::default();
     let history = read_authority(deployment, &reads, work, cx)?;
     let mut cameras = Vec::new();
@@ -484,6 +489,17 @@ pub fn resolve_scene_calibration(
             .ok_or(SceneCalibrationError::BasisMismatch(
                 "selected camera is absent from calibration",
             ))?;
+        // FSSCAL's generic digest codec can carry another algorithm. The original image
+        // basis represents pixel identities as SHA-256 bytes, so admit that exact profile
+        // before camera_input_basis can discard a frame luma digest's algorithm tag.
+        if !pin(record.observations)
+            || matches!(record.input, CalibrationInput::Frame(frame)
+                if !pin(frame.metadata) || !pin(frame.luma))
+        {
+            return Err(SceneCalibrationError::InvalidInput(
+                "calibration image provenance requires nonzero SHA-256 identities",
+            ));
+        }
         if record.distortion != [0.0, 0.0] {
             return Err(SceneCalibrationError::Unsupported(
                 "adopted scene geometry requires an original pinhole camera",

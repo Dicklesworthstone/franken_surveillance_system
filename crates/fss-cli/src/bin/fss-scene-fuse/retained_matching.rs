@@ -1,6 +1,13 @@
 #![forbid(unsafe_code)]
 //! Automatic scene correspondences from authenticated, privacy-screened retained frames.
 
+#[path = "retained_matching/calibrated.rs"]
+mod calibrated;
+#[path = "retained_matching/calibrated_input.rs"]
+mod calibrated_input;
+#[path = "retained_matching/calibrated_report.rs"]
+mod calibrated_report;
+
 #[path = "retained_matching/temporal.rs"]
 mod temporal;
 #[path = "retained_matching/temporal_input.rs"]
@@ -651,4 +658,8 @@ pub(super) fn run_atlas(args: &[OsString], out: &mut impl Write) -> Result<bool>
 /// Infer source-linked position and velocity from repeated native feature exposures.
 pub(super) fn run_temporal(args: &[OsString], out: &mut impl Write) -> Result<bool> {
     temporal::run(args, out)
+}
+
+pub(super) fn run_calibrated(args: &[OsString], out: &mut impl Write) -> Result<bool> {
+    calibrated::run(args, out)
 }

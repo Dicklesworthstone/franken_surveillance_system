@@ -480,6 +480,64 @@ fn frame_calibration_recovers_exact_metadata_mode_and_encoded_frame_lineage() ->
 }
 
 #[test]
+fn adopted_frame_and_atlas_provenance_never_relabels_another_hash_algorithm() -> TestResult {
+    for invalid in [
+        ContentDigest::new(
+            DigestAlgorithm::Blake3,
+            h("other algorithm identity").bytes(),
+        ),
+        raw([0; 32]),
+    ] {
+        for field in 0..5 {
+            let mut f = Fixture::new("provenance-algorithm", false)?;
+            f.calibration.frame_policy = Some(FramePolicy::current());
+            for i in 0..2 {
+                f.inputs[i] = original_input(f.calibration.cameras[i].identity, true);
+                f.calibration.cameras[i].observations = ContentDigest::sha256(JPEG);
+                f.calibration.cameras[i].input = CalibrationInput::Frame(FrameInput {
+                    metadata: ContentDigest::sha256(&f.inputs[i]),
+                    luma: h("original frame luma"),
+                    interpretation: ComponentInterpretation::Grayscale,
+                    extracted_features: 32,
+                    atlas_matches: 8,
+                    tie_observations: 0,
+                });
+            }
+            match field {
+                0 => f.calibration.atlas_package = invalid,
+                1 => f.calibration.atlas_provenance = invalid,
+                2 => f.calibration.cameras[0].observations = invalid,
+                _ => {
+                    let CalibrationInput::Frame(mut frame) = f.calibration.cameras[0].input else {
+                        return Err("frame fixture is not a frame".into());
+                    };
+                    if field == 3 {
+                        frame.metadata = invalid;
+                    } else {
+                        frame.luma = invalid;
+                    }
+                    f.calibration.cameras[0].input = CalibrationInput::Frame(frame);
+                }
+            }
+            // The existing generic FSSCAL codec and real adoption owner can retain this
+            // candidate. New scene admission must reject it rather than relabel its bytes.
+            f.adopt_cameras(&[0, 1])?;
+            let anchor = f.deployment.current_anchor().clone();
+            assert_eq!(
+                SiteCalibration::decode(&f.encoded, Some(f.calibration.digest()?))?.0,
+                f.calibration
+            );
+            assert!(matches!(
+                f.resolve(),
+                Err(SceneCalibrationError::InvalidInput(_))
+            ));
+            assert_eq!(f.deployment.current_anchor(), &anchor);
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn absent_authority_and_duplicate_physical_selections_never_fall_back_to_nominal() -> TestResult {
     let mut f = Fixture::new("required-adoption", false)?;
     assert!(matches!(

@@ -37,7 +37,7 @@ fn later_jpeg(original: &[u8], camera: usize) -> Test<Vec<u8>> {
     Ok(bytes)
 }
 
-fn fixture(label: &str, raw_left: bool) -> Test<Fixture> {
+pub(in crate::retained_matching) fn fixture(label: &str, raw_left: bool) -> Test<Fixture> {
     let mut f = Fixture::new(label)?;
     let cx = context(&f.options.root)?;
     let mut deployment = ReferenceDeployment::reopen(&f.options.root, &f.options.site, &cx)?;

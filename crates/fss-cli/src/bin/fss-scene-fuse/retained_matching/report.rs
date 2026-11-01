@@ -66,6 +66,24 @@ pub(super) fn view_json(
     rig: &SceneRig,
     version: u8,
 ) -> String {
+    source_view_json(view, owner, rig, version, "authored_nominal")
+}
+
+pub(super) fn calibrated_view_json(
+    view: &FeatureView,
+    owner: &RecordedFeatures,
+    rig: &SceneRig,
+) -> String {
+    source_view_json(view, owner, rig, 2, "adopted_current")
+}
+
+fn source_view_json(
+    view: &FeatureView,
+    owner: &RecordedFeatures,
+    rig: &SceneRig,
+    version: u8,
+    status: &str,
+) -> String {
     let camera = view.camera;
     let [width, height] = camera.intrinsics.dimensions();
     let [fx, fy] = camera.intrinsics.focal_lengths();
@@ -110,7 +128,7 @@ pub(super) fn view_json(
         ("validity_ns", interval(camera.validity)),
         ("capture_ns", interval(view.capture)),
         ("sigma_pixels", view.sigma_pixels.to_string()),
-        ("status", string("authored_nominal")),
+        ("status", string(status)),
         ("calibration_error", object(&[("state", string("unknown"))])),
         (
             "world_to_camera",

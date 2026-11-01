@@ -449,6 +449,16 @@ or extrapolate unsupported components. Direct and lens-corrected inputs share
 the existing retained source/privacy owners. See
 [`docs/RETAINED_TEMPORAL_MATCHING.md`](docs/RETAINED_TEMPORAL_MATCHING.md).
 
+`fss-scene-fuse retained-calibrated-match` uses **currently adopted site-calibration
+geometry** for any of those stereo, multi-camera or moving-feature queries.
+The exact calibration, original camera inputs, physical sensors and retained
+adoption receipts determine the intrinsics and poses. Current adoption/withdrawal
+and source/privacy custody are revalidated before release. Reports preserve
+calibration provenance and conditional covariance while keeping absolute camera
+error unknown. The initial profile requires the original calibrated pinhole
+image domain. See
+[`docs/ADOPTED_CALIBRATION_RECONSTRUCTION.md`](docs/ADOPTED_CALIBRATION_RECONSTRUCTION.md).
+
 ## ATP archive, repair, and deletion
 
 Source media, evidence bundles, checkpoints, model packages, graph/search/calibration/twin

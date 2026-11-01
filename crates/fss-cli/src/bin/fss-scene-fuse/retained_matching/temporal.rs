@@ -431,4 +431,4 @@ pub(super) fn run(args: &[OsString], out: &mut impl Write) -> Result<bool> {
 
 #[cfg(test)]
 #[path = "temporal_tests.rs"]
-mod tests;
+pub(super) mod tests;

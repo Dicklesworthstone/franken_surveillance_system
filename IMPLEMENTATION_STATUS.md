@@ -10,6 +10,59 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Reconstruction from adopted calibration (2026-11-01, command integration)
+
+`fss-scene-fuse retained-calibrated-match` connects existing FSSCAL01/02 site
+calibration and retained adoption to stereo, multi-camera and moving-feature
+reconstruction. It accepts the established five retained query schemas and a
+strict adopted-rig document. Intrinsics and poses come exclusively from the
+exact current calibration; selected source sensors, original camera inputs,
+image domains and decoded grids must agree with that authority. The first
+profile requires original pinhole images and explicitly refuses nonzero radial
+distortion or rectification declarations.
+
+The complete native correspondence graph, fitted points/trajectories, alternatives,
+refusals and nominal visibility remain in the report. Calibration identities,
+atlas/control/tie provenance, original image modes, all joint camera generations,
+current receipts and full conditional camera covariance are retained. Absolute
+camera error remains unknown; calibration covariance is never substituted for
+physical accuracy or silently folded into the native pixel-noise covariance.
+The new report's strict outcome consistently includes nominal occlusion conflicts
+across all three modes; existing nominal report contracts remain unchanged.
+
+All source-dependent analysis precedes final original-source/current-privacy and
+adoption/withdrawal revalidation. The exclusive deployment owner remains alive
+through report file/stdout release. Calibration input bytes, authority-read
+reservations, verified authority bytes, original reads and decoder axes are
+separately bounded and reported, including final revalidation. A generic FSSCAL
+hash algorithm cannot be relabeled as SHA-256 image provenance. Outputs remain
+private, create-only and complete; no calibration, world revision, persistent
+track, event or effect is activated.
+
+Twenty-three new exact-production contracts execute successfully: thirteen
+adopted-rig/query parser tests and ten native geometry/envelope tests. Eight
+shared JSON-reader regressions also pass, and the scoped native geometry harness
+passes strict Clippy. The parser harness uses unchanged production readers with
+only the unrelated adopted-owner extension omitted; it substitutes no custody
+or calibration authority. Nine real retained-command contracts are also added,
+covering actual JPEG stereo, multi-camera and repeated-exposure geometry, current
+adoption/withdrawal, original mode/pins, privacy/corrupt custody, resource and
+publication limits, cancellation and the deployment guard through stdout.
+Genuine `cargo check --locked --offline -p fss-cli --bin fss-scene-fuse --tests`
+passes with the pinned compiler and real runtime, including every new command,
+parser and native test. Genuine `cargo check --locked --offline -p fss-reference
+--tests` also passes, including all fourteen resolver owner contracts. A missing
+JPEG arm in an existing RTSP keepalive fixture was repaired after that broad gate
+reported the non-exhaustive match; runtime behavior and gates are unchanged.
+The new schemas pass standard Draft 2020-12 validation; the complete offline
+catalog resolves 123 schemas and 1,739 references with zero errors. Nine actual
+native geometry fixtures (pair/multi/temporal, each clear/occluded/empty) validate
+against the strict new geometry schema and its existing diagnostic references.
+These are actual native solver/serializer outputs, not fabricated owner reports.
+Runtime execution of the nine new command-owner tests remains pending at this checkpoint.
+See `docs/ADOPTED_CALIBRATION_RECONSTRUCTION.md` for exact inputs, report
+interpretation, limits and operational failures.
+
 ## Retained adopted camera geometry (2026-11-01, native integration)
 
 `fss_reference::ingest::scene_calibration` now resolves the existing FSSCAL01/02
@@ -30,16 +83,18 @@ from this sealed owner while leaving clock/privacy/validity declarations explici
 Local covariance never becomes a deterministic projection bound or physical
 accuracy claim; absolute camera error remains unknown.
 
-Thirteen real deployment owner contracts are added, covering adoption, native
+Fourteen real deployment owner contracts are added, covering adoption, native
 stereo geometry, original image lineage, supersession/withdrawal, corrupt custody,
-aliases, exact work/read limits and cancellation. These new owner tests remain
-unexecuted at this checkpoint. A genuine offline, locked production type-check
-of the scene-fuse binary passes with the pinned compiler and real Asupersync,
-including the new reference owner and typed rig. The initial full-codegen and
+aliases, hash-algorithm provenance, exact work/read limits and cancellation.
+The genuine reference test configuration and scene-fuse production/test
+configuration pass with the pinned compiler and real Asupersync. These new
+owner tests remain unexecuted at this checkpoint: initial full-codegen and
 default metadata attempts exceeded this environment's memory; serializing the
-compiler frontend/backend completed the metadata check. The existing native
-check script now includes this owner target; no runtime substitute or weakened
-gate was used. The retained command integration is a separate increment.
+compiler frontend/backend completed the genuine metadata checks. Subsequent
+available headroom remained below the measured heavy compiler requirement,
+so no doomed full-codegen retry was started. The existing native check script
+includes this owner target; no runtime substitute or weakened gate was used.
+The retained command integration is described above.
 See `docs/RETAINED_SCENE_CALIBRATION_API.md`.
 
 ## Retained moving-feature reconstruction (2026-11-01, command integration)
