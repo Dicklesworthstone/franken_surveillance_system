@@ -15,10 +15,14 @@ use fss_twin::localization::native::{
     ExtractionOptions, FeatureSelection, GrayImage, extract_gray,
 };
 use fss_twin::localization::{FeatureFrame, ImageIdentity};
+use fss_twin::rectification::{
+    RawFrameIdentity, RawGrayFrame, RectificationPlan, RectificationReceipt, RectificationSpec,
+    extract_raw_features,
+};
 
 use super::{
-    DecodeAccess, RecordedLocalizationBinding, RecordedLocalizationError,
-    RecordedLocalizationSource, allowed_mask, checkpoint, decode,
+    DecodeAccess, RecordedImageMode, RecordedLocalizationBinding, RecordedLocalizationError,
+    RecordedLocalizationSource, allowed_mask, checkpoint, decode, receipt,
 };
 use crate::ingest::privacy_mask::{MaskBinding, current_mask};
 use crate::ingest::recorded_decode::video_budget::RecordedVideoDecodeBudget;
@@ -39,6 +43,8 @@ pub const MAX_FEATURE_PIXELS: usize = 4_194_304;
 pub const MAX_FEATURE_DIMENSION: u32 = 4096;
 /// Canonical identity of this source-bound extraction, with no effect authority.
 pub const FEATURE_DOMAIN: &str = "fss.recorded_native_features.v1";
+/// Source-bound rectified features, retaining both native and derived image identities.
+pub const RECTIFIED_FEATURE_DOMAIN: &str = "fss.recorded_rectified_native_features.v1";
 /// Cooperative boundary before source work or JPEG derivative publication.
 pub const STAGE_FEATURE_SOURCE: &str = "recorded_features:source";
 /// Cooperative boundary before returning features or revalidating a downstream result.
@@ -87,6 +93,38 @@ pub struct RecordedFeatureRequest {
     pub extraction: ExtractionOptions,
 }
 
+/// Exact retained source and an already admitted immutable raw-to-pinhole image transform.
+///
+/// Compile the plan before calling this owner. Its target grid, map and output-domain identity
+/// determine the extracted frame; callers cannot independently override any of those fields.
+/// Supplying a lens model does not establish its physical accuracy or activate calibration.
+#[derive(Clone, Debug)]
+pub struct RecordedRectifiedFeatureRequest<'a> {
+    /// JPEG segment or complete IDR/IRAP-starting native video range and selected coding segment.
+    pub source: RecordedLocalizationSource,
+    /// Admitted native lens, source/target grids, image domains and luma interpretation.
+    pub rectifier: &'a RectificationPlan,
+    /// Existing native FAST/descriptor selection, with at most 512 selected features.
+    pub extraction: ExtractionOptions,
+}
+
+/// Immutable raw-to-feature image lineage attached only by the sealed retained owner.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RecordedFeatureRectification {
+    spec: RectificationSpec,
+    receipt: RectificationReceipt,
+}
+impl RecordedFeatureRectification {
+    /// Exact admitted source/target intrinsics, lens, image/calibration pins and luma range.
+    pub fn spec(&self) -> RectificationSpec {
+        self.spec
+    }
+    /// Actual source/output identities, sampling map, masks and complete coverage counters.
+    pub fn receipt(&self) -> RectificationReceipt {
+        self.receipt
+    }
+}
+
 /// Immutable features, native receipt and full source evidence, constructed only by this owner.
 /// No raw pixels are exposed. Call [`Self::revalidate`] after downstream computation and before
 /// releasing a report; retained source or privacy may have changed since extraction.
@@ -96,6 +134,7 @@ pub struct RecordedFeatures {
     source: RecordedLocalizationBinding,
     capsule: SensorCapsule,
     native_receipt: Vec<u8>,
+    rectification: Option<RecordedFeatureRectification>,
     geometry_work: u64,
     digest: ContentDigest,
     retained: RetainedFileImport,
@@ -135,6 +174,12 @@ impl RecordedFeatures {
     /// Complete existing native codec receipt. Its digest equals `source().decode_receipt`.
     pub fn native_receipt(&self) -> &[u8] {
         &self.native_receipt
+    }
+    /// Raw-to-pinhole lineage when rectification was requested. Direct extraction returns None.
+    /// `source()` always retains the native decoder dimensions/luma; `frame()` and `selection()`
+    /// describe the actual derived feature grid and its propagated allowed mask.
+    pub fn rectification(&self) -> Option<RecordedFeatureRectification> {
+        self.rectification
     }
     /// Deterministic geometry/extraction work, excluding the independent source and codec axes.
     pub fn geometry_work(&self) -> u64 {
@@ -375,6 +420,7 @@ pub fn extract_recorded_features(
         source: binding,
         capsule,
         native_receipt,
+        rectification: None,
         geometry_work: work.used() - work_start,
         digest,
         retained,
@@ -387,6 +433,163 @@ pub fn extract_recorded_features(
     };
     result.revalidate(deployment, cx, work)?;
     Ok(result)
+}
+
+/// Decode retained evidence, rectify under the admitted plan and extract native features.
+///
+/// Native source dimensions/luma, capsule, exposure and codec receipt remain unchanged. The
+/// feature frame and allowed mask come exclusively from the native rectifier. Source privacy
+/// is enforced before resampling, and extraction excludes the complete derived descriptor
+/// footprint. Unmapped or privacy-excluded output never becomes an observed black feature.
+///
+/// Like direct extraction, this may leave a completed ordinary JPEG derivative on a later
+/// refusal. It publishes no rectified pixels or feature objects. All source-range reads and
+/// final revalidation share the supplied nonrenewable allowance. Plan compilation is a prior
+/// caller-owned operation; this operation's geometry work begins at source decoding.
+pub fn extract_recorded_rectified_features(
+    deployment: &mut ReferenceDeployment,
+    request: &RecordedRectifiedFeatureRequest<'_>,
+    source_budget: &RecordedFeatureReadBudget,
+    jpeg: &mut DecodeBudget<'_>,
+    video: &mut RecordedVideoDecodeBudget,
+    work: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+) -> Result<RecordedFeatures> {
+    guard(&source_budget.source, cx, work, STAGE_FEATURE_SOURCE)?;
+    let rectifier = request.rectifier;
+    let spec = rectifier.spec();
+    // Reuse the unchanged source-range/extraction admission and revalidation recipe. The
+    // feature domain is derived from the compiled plan, never accepted as a caller override.
+    let request = RecordedFeatureRequest {
+        source: bounded_source(&request.source),
+        image_domain: ContentDigest::new(DigestAlgorithm::Sha256, rectifier.output_domain()),
+        extraction: request.extraction,
+    };
+    validate(&request)?;
+    let work_start = work.used();
+    let decoded = decode(
+        deployment,
+        &request.source,
+        jpeg,
+        video,
+        work,
+        cx,
+        DecodeAccess {
+            replay_jpeg: false,
+            source_budget: Some(&source_budget.source),
+        },
+    )?;
+    guard(&source_budget.source, cx, work, STAGE_FEATURE_SOURCE)?;
+    let retained = RetainedFileImport::open(
+        deployment,
+        request.source.import_identity(),
+        request.source.limits(),
+        cx,
+    )
+    .map_err(RecordedDecodeError::from)?;
+    let capsule = retained_source_capsule(deployment, &retained, request.source.segment())?;
+    if decoded.capsule() != &capsule {
+        return Err(RecordedLocalizationError::SourceMismatch);
+    }
+    let (binding, native_receipt) = decoded.binding(&retained, &request.source)?;
+    if native_receipt.len() > 16 * 1024 {
+        return Err(RecordedLocalizationError::InvalidRequest);
+    }
+    if binding.dimensions != spec.source.dimensions() {
+        return Err(RecordedLocalizationError::SourceMismatch);
+    }
+    let mask = current_mask(deployment, &capsule.sensor_id)?;
+    if mask.digest() != binding.mask_binding || mask.policy_digest() != binding.mask_policy {
+        return Err(RecordedLocalizationError::SourceMismatch);
+    }
+    let allowed = allowed_mask(&mask, binding.dimensions, work)?;
+    // The source-mask identity requires its own charged full hash walk, separately from the
+    // RawGrayFrame verification and from construction of the rectified output mask.
+    work.charge(allowed.len() as u64)?;
+    let raw = RawGrayFrame::new(
+        RawFrameIdentity {
+            exposure: binding.exposure.bytes(),
+            storage: binding.luma.bytes(),
+            allowed_mask: ContentDigest::sha256(&allowed).bytes(),
+            image_domain: spec.source_domain,
+            calibration: spec.calibration,
+            dimensions: binding.dimensions,
+            row_stride: binding.dimensions[0],
+            range: spec.range,
+        },
+        decoded.pixels(),
+        &allowed,
+        work,
+    )?;
+    let extracted = extract_raw_features(rectifier, &raw, request.extraction, work)?;
+    if extracted.rectification.source != raw.identity()
+        || extracted.rectification.output != extracted.result.frame.identity()
+        || extracted.rectification.map_digest != rectifier.map_digest()
+        || extracted.rectification.output.image_domain != rectifier.output_domain()
+        || extracted.rectification.output.dimensions != spec.target.dimensions()
+        || extracted.rectification.output.exposure != binding.exposure.bytes()
+        || extracted.rectification.allowed_mask != extracted.result.selection.mask_digest
+    {
+        return Err(RecordedLocalizationError::SourceMismatch);
+    }
+    drop(decoded);
+    let rectification = RecordedFeatureRectification {
+        spec,
+        receipt: extracted.rectification,
+    };
+    let digest = rectified_feature_digest(
+        &binding,
+        &native_receipt,
+        &extracted.result.frame,
+        extracted.result.selection,
+        rectification,
+        work,
+    )?;
+    let result = RecordedFeatures {
+        frame: extracted.result.frame,
+        selection: extracted.result.selection,
+        source: binding,
+        capsule,
+        native_receipt,
+        rectification: Some(rectification),
+        geometry_work: work.used() - work_start,
+        digest,
+        retained,
+        request,
+        mask,
+        source_budget: source_budget.source.clone(),
+        deployment_root: deployment.root().to_path_buf(),
+        context_root: cx.root_dir().to_path_buf(),
+        principal: cx.io_authority().principal().to_owned(),
+    };
+    result.revalidate(deployment, cx, work)?;
+    Ok(result)
+}
+
+fn rectified_feature_digest(
+    binding: &RecordedLocalizationBinding,
+    native_receipt: &[u8],
+    frame: &FeatureFrame,
+    selection: FeatureSelection,
+    rectification: RecordedFeatureRectification,
+    work: &mut WorkBudget<'_>,
+) -> Result<ContentDigest> {
+    // Preserve the complete existing source/feature inventory commitment without changing
+    // direct v1 bytes or work. The separate outer domain additionally commits every raw and
+    // derived image identity, target intrinsics, lens parameter, actual map and mask count.
+    let inventory = feature_digest(binding, native_receipt, frame, selection, work)?;
+    let mut e = CanonicalEncoder::new();
+    e.text(RECTIFIED_FEATURE_DOMAIN);
+    e.text("derived_rectified_native_features_no_effect_authority");
+    e.digest(inventory);
+    receipt::mode(&mut e, RecordedImageMode::Raw(rectification.spec));
+    receipt::rectified(&mut e, &rectification.receipt);
+    let bytes = e.finish();
+    if bytes.len() > 4096 {
+        return Err(RecordedLocalizationError::InvalidRequest);
+    }
+    work.charge(bytes.len() as u64)?;
+    Ok(ContentDigest::sha256(&bytes))
 }
 
 fn feature_digest(

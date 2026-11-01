@@ -10,6 +10,50 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Retained raw-lens feature extraction (2026-11-01, native composition)
+
+The sealed retained feature owner now exposes
+`extract_recorded_rectified_features` alongside the unchanged direct-pinhole
+entry point. A caller compiles an exact native `RectificationPlan`, then the
+owner authenticates retained JPEG/AVC/HEVC, applies the current source privacy
+mask, corrects lens/crop/resize geometry and extracts actual target-grid features.
+The small native `extract_raw_features` composition is independently executable.
+Both entry points return the same sealed source owner and require final original
+custody/current-privacy revalidation before downstream release.
+
+Source luma/dimensions/native decoder receipts retain their original meaning.
+Corrected pixel/domain/dimensions/mask identities and complete native mapping
+receipts are separate. Original exposure is preserved. Brown–Conrady, central
+fisheye, explicit pinhole crop/resize and declared full/video luma transfer reuse
+the existing native rectifier. Every positive-weight source interpolation tap
+must be allowed before the full descriptor-footprint check. Folded or unsupported
+models refuse. No lens estimation, measured calibration or effect activation is
+implied. Direct feature v1 digest/work behavior and existing localization receipt
+encoding remain unchanged; corrected features have a separate versioned identity.
+
+**61 native tests execute successfully:** 8 new rectified-feature contracts plus
+13 rectification, 6 rectified-localization, 17 pair-association and 17 multi-camera
+association regressions. Independently rendered Brown, fisheye and mixed-lens
+images each recover at least 12 stereo and 8 three-view points on a known z=10
+plane within the explicit integer-feature/resampling fixture tolerance. Exact
+crop/resize feature equality, source-mask noninterference, full footprint privacy,
+exposure/domain binding and early/late resource cancellation also pass. Strict
+scoped native Clippy passes.
+
+Twelve new real retained-source owner tests cover JPEG/AVC/HEVC lineage, cropping,
+replay, later JPEG publications, raw/native custody corruption, privacy withdrawal,
+invalid modes, work/source limits, cancellation and frozen direct-v1 compatibility.
+The new genuine pinned Cargo check was SIGKILLed while compiling reference-library
+metadata under shared memory pressure, before reaching these test bodies. Thus
+current owner metadata/typechecking and runtime execution remain unverified;
+the executed native tests above do not substitute for those integration checks.
+Cleanup of an obsolete task-owned build cache recovered disk space, but measured
+reclaimable-adjusted memory headroom remained below the retry threshold.
+`docs/RETAINED_FEATURE_EXTRACTION.md` documents the public
+API, complete source/derived distinction and independent resource axes. This
+advances the imaging-model contract; broader calibration and association gates
+remain open.
+
 ## Joint reconstruction across retained cameras (2026-10-31, static-feature integration)
 
 `fss-scene-fuse retained-multimatch` now connects **3–8 authenticated retained
