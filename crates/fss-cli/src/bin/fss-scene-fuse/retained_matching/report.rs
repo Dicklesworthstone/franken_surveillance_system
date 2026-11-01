@@ -18,6 +18,7 @@ use super::super::{Result, fail};
 use super::input::Query;
 
 pub(super) struct Draft {
+    version: u8,
     analysis: String,
     reconstructed: bool,
 }
@@ -59,7 +60,12 @@ fn hex(bytes: &[u8]) -> String {
     result
 }
 
-pub(super) fn view_json(view: &FeatureView, owner: &RecordedFeatures, rig: &SceneRig) -> String {
+pub(super) fn view_json(
+    view: &FeatureView,
+    owner: &RecordedFeatures,
+    rig: &SceneRig,
+    version: u8,
+) -> String {
     let camera = view.camera;
     let [width, height] = camera.intrinsics.dimensions();
     let [fx, fy] = camera.intrinsics.focal_lengths();
@@ -88,7 +94,7 @@ pub(super) fn view_json(view: &FeatureView, owner: &RecordedFeatures, rig: &Scen
             ])
         })
         .collect();
-    object(&[
+    let mut rows = vec![
         ("camera", time(camera.camera)),
         (
             "source_object_id",
@@ -211,7 +217,18 @@ pub(super) fn view_json(view: &FeatureView, owner: &RecordedFeatures, rig: &Scen
             ]),
         ),
         ("features", array(&features)),
-    ])
+    ];
+    if version == 2 {
+        rows.push((
+            "image_processing",
+            super::image_report::processing(
+                view.frame.identity(),
+                view.allowed_mask_digest,
+                owner.rectification().map(|r| (r.spec(), r.receipt())),
+            ),
+        ));
+    }
+    object(&rows)
 }
 
 pub(super) struct ReportInput<'a> {
@@ -262,6 +279,10 @@ pub(super) fn compute(
             + association.hypotheses().len() as u64 * 16_384,
     )
     .map_err(|e| fail("ERR-SCENE-FUSION-LIMIT-001", e.to_string()))?;
+    if query.version == 2 {
+        work.charge(super::image_report::VIEW_WORK * owners.len() as u64)
+            .map_err(|e| fail("ERR-SCENE-FUSION-LIMIT-001", e.to_string()))?;
+    }
     let AssociationRows {
         hypotheses,
         pairs,
@@ -281,43 +302,85 @@ pub(super) fn compute(
                     "association camera has no source owner",
                 )
             })?;
-        views.push(view_json(view, &owners[index], rig));
+        views.push(view_json(view, &owners[index], rig, query.version));
     }
     let (property, revision) = rig.geometry_basis();
     let analysis = object(&[
-        ("outcome", string(if solved == 0 { "no_reconstruction" } else if reconstructed {
-            "reconstructed" } else { "reconstructed_with_refusals" })),
+        (
+            "outcome",
+            string(if solved == 0 {
+                "no_reconstruction"
+            } else if reconstructed {
+                "reconstructed"
+            } else {
+                "reconstructed_with_refusals"
+            }),
+        ),
         ("authority", string("derived_cognition_no_effect_authority")),
-        ("source_provenance", string("verified_retained_native_frames")),
+        (
+            "source_provenance",
+            string("verified_retained_native_frames"),
+        ),
         ("physical_identity_established", "false".into()),
         ("query_digest", string(&query_digest.to_text())),
         ("association_evidence", digest(association.evidence())),
-        ("entry_anchor_digest", string(&anchor_digest(entry_anchor).to_text())),
+        (
+            "entry_anchor_digest",
+            string(&anchor_digest(entry_anchor).to_text()),
+        ),
         ("entry_anchor", authority_anchor_json(entry_anchor)),
-        ("anchor_digest", string(&anchor_digest(final_anchor).to_text())),
+        (
+            "anchor_digest",
+            string(&anchor_digest(final_anchor).to_text()),
+        ),
         ("anchor", authority_anchor_json(final_anchor)),
         ("reference_time_ns", time(query.matching.reference_time_ns)),
         ("capture_hull_ns", interval(association.capture_hull())),
         ("clock", time(query.matching.clock)),
         ("clock_evidence", digest(query.matching.clock_evidence)),
         ("privacy_domain", time(query.matching.privacy_domain)),
-        ("basis", object(&[
-            ("twin_digest", digest(twin.digest())),
-            ("source_scene_digest", digest(twin.source_scene_digest())),
-            ("camera_rig_digest", digest(query.matching.camera_rig_digest)),
-            ("camera_rig_semantic_digest", string(&rig.digest().to_text())),
-            ("geometry_basis", object(&[("property", time(property)), ("revision", time(revision))])),
-            ("coordinate_frame", string("RH_Z_UP")),
-            ("evaluation_scope", string(twin.evaluation_scope())),
-            ("observation_epoch", string(twin.observation_epoch())),
-            ("scale", scale(twin.scale())),
-            ("map_error", match twin.geometry_error() {
-                Some(value) => object(&[("state", string("available")), ("value", value.to_string())]),
-                None => object(&[("state", string("unavailable")), ("reason", string("map_error_not_quantified"))]),
-            }),
-        ])),
+        (
+            "basis",
+            object(&[
+                ("twin_digest", digest(twin.digest())),
+                ("source_scene_digest", digest(twin.source_scene_digest())),
+                (
+                    "camera_rig_digest",
+                    digest(query.matching.camera_rig_digest),
+                ),
+                (
+                    "camera_rig_semantic_digest",
+                    string(&rig.digest().to_text()),
+                ),
+                (
+                    "geometry_basis",
+                    object(&[("property", time(property)), ("revision", time(revision))]),
+                ),
+                ("coordinate_frame", string("RH_Z_UP")),
+                ("evaluation_scope", string(twin.evaluation_scope())),
+                ("observation_epoch", string(twin.observation_epoch())),
+                ("scale", scale(twin.scale())),
+                (
+                    "map_error",
+                    match twin.geometry_error() {
+                        Some(value) => {
+                            object(&[("state", string("available")), ("value", value.to_string())])
+                        }
+                        None => object(&[
+                            ("state", string("unavailable")),
+                            ("reason", string("map_error_not_quantified")),
+                        ]),
+                    },
+                ),
+            ]),
+        ),
         ("declarations", query.declarations.clone()),
-        ("assumptions", array(&[
+        (
+            "assumptions",
+            if query.version == 2 {
+                super::image_report::assumptions(false)
+            } else {
+                array(&[
             "source_to_rig_mapping_and_undistorted_pixel_domain_are_operator_declarations",
             "camera_rig_is_authored_nominal_not_activated_or_physically_validated",
             "additive_clock_alignment_is_declared_and_preserves_full_source_uncertainty",
@@ -326,12 +389,23 @@ pub(super) fn compute(
             "current_deployment_privacy_masks_exclude_full_descriptor_footprints",
             "pixel_noise_covariance_excludes_camera_map_clock_motion_and_correspondence_error",
             "retained_custody_does_not_establish_live_coverage_or_calibration_quality",
-        ].map(string))),
-        ("views", array(&views)), ("pairs", array(&pairs)),
-        ("feature_outcomes", array(&features)), ("hypotheses", array(&hypotheses)),
-        ("counts", object(&[("features", features.len().to_string()), ("pairs", pairs.len().to_string()),
-            ("selected", hypotheses.len().to_string()), ("solved", solved.to_string()),
-            ("refused", (hypotheses.len() - solved).to_string())])),
+        ].map(string))
+            },
+        ),
+        ("views", array(&views)),
+        ("pairs", array(&pairs)),
+        ("feature_outcomes", array(&features)),
+        ("hypotheses", array(&hypotheses)),
+        (
+            "counts",
+            object(&[
+                ("features", features.len().to_string()),
+                ("pairs", pairs.len().to_string()),
+                ("selected", hypotheses.len().to_string()),
+                ("solved", solved.to_string()),
+                ("refused", (hypotheses.len() - solved).to_string()),
+            ]),
+        ),
     ]);
     if analysis.len().checked_add(1).is_none_or(|n| n > max_bytes) {
         return Err(fail(
@@ -340,6 +414,7 @@ pub(super) fn compute(
         ));
     }
     Ok(Draft {
+        version: query.version,
         analysis,
         reconstructed,
     })
@@ -356,7 +431,10 @@ pub(super) fn finish(
     let body = object(&[
         (
             "schema",
-            string("fss.scene_feature_match_retained_report.v1"),
+            string(&format!(
+                "fss.scene_feature_match_retained_report.v{}",
+                draft.version
+            )),
         ),
         ("analysis", draft.analysis),
         (
@@ -403,7 +481,13 @@ pub(super) fn finish(
         ),
     ]);
     let json = object(&[
-        ("schema", string("fss.scene_feature_match_retained.v1")),
+        (
+            "schema",
+            string(&format!(
+                "fss.scene_feature_match_retained.v{}",
+                draft.version
+            )),
+        ),
         (
             "report_digest",
             string(&ContentDigest::sha256(body.as_bytes()).to_text()),

@@ -426,6 +426,12 @@ chains and geometric refusals remain visible, with explicit source revalidation 
 full capture intervals. See
 [`docs/RETAINED_MULTICAMERA_MATCHING.md`](docs/RETAINED_MULTICAMERA_MATCHING.md).
 
+Both retained matching commands also accept **v2 image declarations** for native
+Brown–Conrady/fisheye correction and explicit pinhole crop/resize. The target grid
+comes from the camera rig; original source pixels, corrected feature pixels and
+privacy footprints retain separate provenance. See
+[`docs/RETAINED_LENS_MATCHING.md`](docs/RETAINED_LENS_MATCHING.md).
+
 ## ATP archive, repair, and deletion
 
 Source media, evidence bundles, checkpoints, model packages, graph/search/calibration/twin

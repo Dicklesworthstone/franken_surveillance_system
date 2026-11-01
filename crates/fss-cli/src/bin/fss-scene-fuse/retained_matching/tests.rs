@@ -45,6 +45,12 @@ pub(super) fn h(value: impl AsRef<[u8]>) -> ContentDigest {
 fn pin(value: ContentDigest) -> String {
     string(&value.to_text())
 }
+fn direct_domain(view: &input::View) -> TestResult<ContentDigest> {
+    match view.image {
+        images::ImageDeclaration::Pinhole(domain) => Ok(domain),
+        images::ImageDeclaration::Rectified(_) => Err("expected direct fixture mode".into()),
+    }
+}
 pub(super) fn json(value: &Value) -> String {
     match value {
         Value::Null => "null".into(),
@@ -571,7 +577,7 @@ fn sealed_feature_revalidation_detects_source_loss_and_new_current_privacy() -> 
             &mut deployment,
             &RecordedFeatureRequest {
                 source: source(&query.views[0]),
-                image_domain: query.views[0].image_domain_digest,
+                image_domain: direct_domain(&query.views[0])?,
                 extraction: query.extraction,
             },
             &reads,
@@ -647,7 +653,7 @@ fn exhausted_original_read_allowance_refuses_before_native_publication() -> Test
         &mut deployment,
         &RecordedFeatureRequest {
             source: source(&query.views[0]),
-            image_domain: query.views[0].image_domain_digest,
+            image_domain: direct_domain(&query.views[0])?,
             extraction: query.extraction,
         },
         &reads,

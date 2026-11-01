@@ -1,8 +1,15 @@
 #![forbid(unsafe_code)]
 //! Automatic scene correspondences from authenticated, privacy-screened retained frames.
 
+#[path = "retained_matching/image_report.rs"]
+mod image_report;
+#[path = "retained_matching/images.rs"]
+mod images;
 #[path = "retained_matching/input.rs"]
 mod input;
+#[cfg(test)]
+#[path = "retained_matching/lens_tests.rs"]
+mod lens_tests;
 #[path = "retained_multimatching.rs"]
 mod multiview;
 #[path = "retained_matching/report.rs"]
@@ -36,11 +43,14 @@ use fss_reference::ingest::recorded_decode::{
 };
 use fss_reference::ingest::twin_localization::RecordedLocalizationSource;
 use fss_reference::ingest::twin_localization::features::{
-    RecordedFeatureReadBudget, RecordedFeatureRequest, RecordedFeatures, extract_recorded_features,
+    RecordedFeatureReadBudget, RecordedFeatureRequest, RecordedFeatures,
+    RecordedRectifiedFeatureRequest, extract_recorded_features,
+    extract_recorded_rectified_features,
 };
 use fss_reference::ingest::{RetainedFileImport, RetainedReadLimits};
 use fss_reference::{ReferenceDeployment, ReplayCx};
 use fss_twin::feature_association::associate_features;
+use fss_twin::localization::native::ExtractionOptions;
 use fss_twin::{ImportExpectation, ImportLimits, import_twin};
 
 use super::{
@@ -64,9 +74,12 @@ authenticated retained camera frames. No exported images or manual feature pixel
 Source import/capsule/encoded-byte/sensor/stream pins are checked before native decoding.\n\
 JPEG, bounded IDR-starting AVC and IRAP-starting HEVC use their existing retained owners.\n\
 Current deployment privacy masks exclude complete FAST/BRIEF descriptor footprints.\n\n\
-The strict schema is fss.scene_feature_match_retained_query.v1. Camera mapping, undistorted\n\
-image-domain applicability, additive clock alignment and a static common scene remain explicit\n\
-assumptions. Source capture intervals, pixel dimensions and privacy cannot be overridden.\n\
+Query v1 keeps its declared native pinhole grid. Query v2 adds explicit image declarations:\n\
+pinhole or native rectification with Brown-Conrady/fisheye lens, source intrinsics, range and\n\
+exact lens/source-mode pins. The target grid comes from the camera rig; its output domain\n\
+is computed by the native plan. All lens plans are admitted before any source is decoded.\n\
+Source-to-rig mapping, lens accuracy, clock alignment and a static scene remain assumptions.\n\
+Source capture intervals, native dimensions and current privacy cannot be overridden.\n\
 Every descriptor pair, ambiguity, reconstructed point and geometric refusal is reported.\n\
 All selected original ranges and current privacy are revalidated before releasing a report.\n\n\
 An existing deployment is required. JPEG decoding may publish its ordinary retained derivative\n\
@@ -81,7 +94,7 @@ Timeout defaults to30000ms (maximum3600000). Complete report maximum8MiB includi
 --report-out exclusively creates a private new file identical to stdout. Exit0: at least one\n\
 point and no selected geometric refusals;3: no reconstruction or selected refusals;2: input,\n\
 custody, privacy, authority, cancellation, resource or output failure.\n\
-See docs/RETAINED_SCENE_MATCHING.md for exact source selections and provenance.\n";
+See docs/RETAINED_SCENE_MATCHING.md and docs/RETAINED_LENS_MATCHING.md for exact inputs.\n";
 
 #[derive(Debug)]
 struct Options {
@@ -378,7 +391,71 @@ fn resolved(owner: &RecordedFeatures) -> input::ResolvedFrame<'_> {
         codec: source.codec,
         range_start: source.range_start,
         range_count: source.range_count,
+        rectification: owner.rectification().map(|r| (r.spec(), r.receipt())),
     }
+}
+
+/// Admit every selected image model before the first native decode can publish a derivative.
+fn prepare_images(
+    views: &[input::View],
+    rig: &SceneRig,
+    work: &mut WorkBudget<'_>,
+) -> Result<Vec<images::PreparedImage>> {
+    views
+        .iter()
+        .map(|view| {
+            let camera = rig
+                .camera(view.camera)
+                .ok_or_else(|| input_error("selected image model has no matching rig camera"))?;
+            view.image.prepare(camera.camera.intrinsics, work)
+        })
+        .collect()
+}
+
+struct FeatureInput<'a> {
+    view: &'a input::View,
+    image: &'a images::PreparedImage,
+    extraction: ExtractionOptions,
+}
+
+fn extract_features(
+    deployment: &mut ReferenceDeployment,
+    input: FeatureInput<'_>,
+    reads: &RecordedFeatureReadBudget,
+    jpeg: &mut DecodeBudget<'_>,
+    video: &mut RecordedVideoDecodeBudget,
+    work: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+) -> Result<RecordedFeatures> {
+    let result = match input.image.rectifier.as_ref() {
+        Some(rectifier) => extract_recorded_rectified_features(
+            deployment,
+            &RecordedRectifiedFeatureRequest {
+                source: source(input.view),
+                rectifier,
+                extraction: input.extraction,
+            },
+            reads,
+            jpeg,
+            video,
+            work,
+            cx,
+        ),
+        None => extract_recorded_features(
+            deployment,
+            &RecordedFeatureRequest {
+                source: source(input.view),
+                image_domain: input.image.domain,
+                extraction: input.extraction,
+            },
+            reads,
+            jpeg,
+            video,
+            work,
+            cx,
+        ),
+    };
+    result.map_err(|e| fail(e.stable_id(), e.to_string()))
 }
 
 fn analyze(options: &Options, root: &Path, cx: &ReplayCx) -> Result<report::Report> {
@@ -444,6 +521,7 @@ fn analyze(options: &Options, root: &Path, cx: &ReplayCx) -> Result<report::Repo
     }
     preflight_sources(&deployment, &query, cx)?;
     check_cancel(cx, &cancelled)?;
+    let images = prepare_images(&query.views, &rig, &mut work)?;
     let reads = RecordedFeatureReadBudget::with_cancellation_probe(
         SOURCE_BYTES,
         Arc::new(move || started.elapsed() >= timeout),
@@ -451,13 +529,13 @@ fn analyze(options: &Options, root: &Path, cx: &ReplayCx) -> Result<report::Repo
     let mut jpeg = DecodeBudget::with_cancellation_probe(JPEG_WORK, &cancelled);
     let mut video = RecordedVideoDecodeBudget::with_separate_limits(VIDEO_BYTES, VIDEO_LUMA)
         .map_err(|e| fail(e.stable_id(), e.to_string()))?;
-    let mut extract = |view: &input::View| -> Result<RecordedFeatures> {
+    let mut extract = |index: usize| -> Result<RecordedFeatures> {
         check_cancel(cx, &cancelled)?;
-        extract_recorded_features(
+        extract_features(
             &mut deployment,
-            &RecordedFeatureRequest {
-                source: source(view),
-                image_domain: view.image_domain_digest,
+            FeatureInput {
+                view: &query.views[index],
+                image: &images[index],
                 extraction: query.extraction,
             },
             &reads,
@@ -466,9 +544,9 @@ fn analyze(options: &Options, root: &Path, cx: &ReplayCx) -> Result<report::Repo
             &mut work,
             cx,
         )
-        .map_err(|e| fail(e.stable_id(), e.to_string()))
     };
-    let owners = [extract(&query.views[0])?, extract(&query.views[1])?];
+    let owners = [extract(0)?, extract(1)?];
+    drop(images);
     let final_anchor = deployment.current_anchor().clone();
     let views = input::bind(&query, [resolved(&owners[0]), resolved(&owners[1])], &rig)?;
     let association = associate_features(&twin, [&views[0], &views[1]], query.matching, &mut work)

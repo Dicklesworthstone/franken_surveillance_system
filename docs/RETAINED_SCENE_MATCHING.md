@@ -24,6 +24,12 @@ For **three through eight retained camera frames**, use
 source contracts and adds complete camera-pair evidence, explicit correspondence
 components and joint static geometry.
 
+This page specifies the original v1 native-pinhole query. For raw distorted
+frames or an explicit crop/resize, the same command accepts
+[v2 image declarations](RETAINED_LENS_MATCHING.md), with native Brown–Conrady and
+fisheye correction, target intrinsics from the rig, and complete original/derived
+image receipts. V1 query and successful report semantics remain unchanged.
+
 ## Select exact retained evidence
 
 The deployment must already exist and contain completed imports. The original

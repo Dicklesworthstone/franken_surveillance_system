@@ -210,6 +210,7 @@ impl Fixture {
                     codec: "jpeg",
                     range_start: 0,
                     range_count: 1,
+                    rectification: None,
                 }
             })
             .collect()
@@ -224,6 +225,146 @@ impl Fixture {
         )? = Value::Text(pin.to_text());
         Ok(())
     }
+}
+
+fn pinhole_v2(document: &Value) -> TestResult<Value> {
+    let mut result = document.clone();
+    *at_mut(&mut result, &["schema"])? = Value::Text(SCHEMA_V2.into());
+    let Value::Array(views) = at_mut(&mut result, &["views"])? else {
+        return Err("views".into());
+    };
+    for view in views {
+        let Value::Object(fields) = view else {
+            return Err("view".into());
+        };
+        let domain = fields.remove("image_domain_digest").ok_or("image domain")?;
+        fields.insert(
+            "image".into(),
+            Value::Object(std::collections::BTreeMap::from([
+                ("kind".into(), Value::Text("pinhole".into())),
+                ("image_domain_digest".into(), domain),
+            ])),
+        );
+    }
+    Ok(result)
+}
+
+#[test]
+fn v2_multi_view_headers_preserve_inventory_and_refuse_mixed_or_unknown_versions() -> TestResult {
+    let f = Fixture::new(8, 32)?;
+    let old = f.query()?;
+    let document = pinhole_v2(&f.document)?;
+    let new = checked(parse(json(&document).as_bytes(), f.rig_digest))?;
+    assert_eq!(old.version, 1);
+    assert_eq!(new.version, 2);
+    assert_eq!(old.matching, new.matching);
+    assert_eq!(
+        checked(bind(&new, &f.resolved(), &f.rig))?
+            .iter()
+            .map(|view| view.frame.features().len())
+            .sum::<usize>(),
+        256
+    );
+    assert_eq!(
+        new.declarations,
+        checked(parse(new.declarations.as_bytes(), f.rig_digest))?.declarations
+    );
+    for schema in [
+        shared::SCHEMA_V2,
+        "fss.scene_feature_multimatch_retained_query.v3",
+        "fss.scene_feature_multimatch_retained_query.v02",
+    ] {
+        let mut changed = document.clone();
+        *at_mut(&mut changed, &["schema"])? = Value::Text(schema.into());
+        assert!(parse(json(&changed).as_bytes(), f.rig_digest).is_err());
+    }
+    let mut mixed = document.clone();
+    *at_mut(&mut mixed, &["views", "7"])? =
+        at_mut(&mut f.document.clone(), &["views", "7"])?.clone();
+    assert!(parse(json(&mixed).as_bytes(), f.rig_digest).is_err());
+    let mut old_mixed = f.document.clone();
+    *at_mut(&mut old_mixed, &["views", "7"])? =
+        at_mut(&mut document.clone(), &["views", "7"])?.clone();
+    assert!(parse(json(&old_mixed).as_bytes(), f.rig_digest).is_err());
+    Ok(())
+}
+
+#[test]
+fn an_empty_corrected_view_keeps_both_image_domains_and_complete_source_checks() -> TestResult {
+    use fss_geometry::PinholeIntrinsics;
+    use fss_twin::localization::native::extract_gray;
+    use fss_twin::rectification::{RawFrameIdentity, RawGrayFrame};
+    let mut f = Fixture::new(3, 0)?;
+    let mut document = pinhole_v2(&f.document)?;
+    *at_mut(&mut document, &["views", "2", "image"])? = json_input::parse(&object(&[
+        ("kind", string("rectified")),
+        ("source_domain_digest", pin(h("third raw source mode"))),
+        ("lens_basis", pin(h("third raw lens"))),
+        (
+            "source_intrinsics",
+            r#"{"width":208,"height":144,"fx":160,"fy":160,"cx":104,"cy":72}"#.into(),
+        ),
+        ("distortion", r#"{"kind":"pinhole"}"#.into()),
+        ("maximum_radius", "1".into()),
+        ("luma_range", string("full")),
+    ]))?;
+    let query = checked(parse(json(&document).as_bytes(), f.rig_digest))?;
+    let mut work = WorkBudget::new(100_000_000);
+    let target = f.rig.camera(3).ok_or("third rig camera")?.camera.intrinsics;
+    assert_eq!(
+        target,
+        PinholeIntrinsics::new(WIDTH, HEIGHT, 160.0, 160.0, 96.0, 64.0)?
+    );
+    let prepared = checked(query.views[2].image.prepare(target, &mut work))?;
+    let plan = prepared.rectifier.ok_or("rectifier")?;
+    let spec = plan.spec();
+    let pixels = vec![128; 208 * 144];
+    let allowed = vec![1; pixels.len()];
+    let raw = RawGrayFrame::new(
+        RawFrameIdentity {
+            exposure: f.frames[2].identity().exposure,
+            storage: h(&pixels).bytes(),
+            allowed_mask: h(&allowed).bytes(),
+            image_domain: spec.source_domain,
+            calibration: spec.calibration,
+            dimensions: [208, 144],
+            row_stride: 208,
+            range: spec.range,
+        },
+        &pixels,
+        &allowed,
+        &mut work,
+    )?;
+    let corrected = plan.apply(&raw, &mut work)?;
+    let extraction = extract_gray(
+        &corrected.as_gray_image(&mut work)?,
+        query.extraction,
+        &mut work,
+    )?;
+    assert!(extraction.frame.features().is_empty());
+    for frame in f.frames.iter_mut().take(2) {
+        *frame = FeatureFrame::new(
+            frame.identity(),
+            extraction.frame.descriptor_domain(),
+            Vec::new(),
+            &mut work,
+        )?;
+    }
+    f.frames[2] = extraction.frame;
+    let mut sources = f.resolved();
+    sources[2].dimensions = [208, 144];
+    sources[2].luma = h(&pixels);
+    sources[2].allowed_mask_digest = extraction.selection.mask_digest;
+    sources[2].rectification = Some((spec, corrected.receipt()));
+    let views = checked(bind(&query, &sources, &f.rig))?;
+    assert_eq!(views.len(), 3);
+    assert_eq!(views[2].frame.identity().dimensions, [WIDTH, HEIGHT]);
+    assert_eq!(views[2].image_domain_digest, prepared.domain.bytes());
+    assert_ne!(views[2].image_domain_digest, spec.source_domain);
+    assert_eq!(views[2].frame.identity().exposure, raw.identity().exposure);
+    sources[2].luma = h("wrong raw source pixels");
+    assert!(bind(&query, &sources, &f.rig).is_err());
+    Ok(())
 }
 
 #[test]

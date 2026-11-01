@@ -267,9 +267,101 @@ impl Fixture {
                 codec: "jpeg",
                 range_start: id as u64,
                 range_count: 1,
+                rectification: None,
             }
         })
     }
+}
+
+fn pinhole_v2(document: &Value) -> TestResult<Value> {
+    let mut result = document.clone();
+    *at_mut(&mut result, &["schema"])? = text_value(SCHEMA_V2);
+    for side in ["left", "right"] {
+        let Value::Object(view) = at_mut(&mut result, &[side])? else {
+            return Err("view object".into());
+        };
+        let domain = view.remove("image_domain_digest").ok_or("pinhole domain")?;
+        view.insert(
+            "image".into(),
+            Value::Object(BTreeMap::from([
+                ("kind".into(), text_value("pinhole")),
+                ("image_domain_digest".into(), domain),
+            ])),
+        );
+    }
+    Ok(result)
+}
+
+#[test]
+fn v2_explicit_pinhole_preserves_v1_source_geometry_and_complete_declarations() -> TestResult {
+    let f = Fixture::new()?;
+    let old = f.query()?;
+    let new = checked(f.parse(&json(&pinhole_v2(&f.document)?)))?;
+    assert_eq!(old.version, 1);
+    assert_eq!(new.version, 2);
+    assert_eq!(old.matching, new.matching);
+    assert_eq!(
+        new.declarations,
+        checked(f.parse(&new.declarations))?.declarations
+    );
+    assert_eq!(old.declarations, json(&f.document));
+    let old_views = checked(bind(&old, f.resolved(), &f.rig))?;
+    let new_views = checked(bind(&new, f.resolved(), &f.rig))?;
+    let old_geometry = associate_features(
+        &f.twin,
+        [&old_views[0], &old_views[1]],
+        old.matching,
+        &mut WorkBudget::new(10_000_000),
+    )?;
+    let new_geometry = associate_features(
+        &f.twin,
+        [&new_views[0], &new_views[1]],
+        new.matching,
+        &mut WorkBudget::new(10_000_000),
+    )?;
+    assert_eq!(old_geometry.evidence(), new_geometry.evidence());
+    assert_eq!(
+        old_geometry.hypotheses().len(),
+        new_geometry.hypotheses().len()
+    );
+    Ok(())
+}
+
+#[test]
+fn exact_schema_versions_have_exclusive_view_image_field_shapes() -> TestResult {
+    let f = Fixture::new()?;
+    let valid = pinhole_v2(&f.document)?;
+    for schema in [
+        "fss.scene_feature_match_retained_query.v0",
+        "fss.scene_feature_match_retained_query.v3",
+        "fss.scene_feature_match_retained_query.v02",
+        "fss.scene_feature_match_retained_query.v2.extra",
+        "fss.scene_feature_multimatch_retained_query.v2",
+    ] {
+        assert!(
+            f.parse(&edit(&valid, &["schema"], text_value(schema))?)
+                .is_err()
+        );
+    }
+    let mut old_with_new = f.document.clone();
+    let Value::Object(left) = at_mut(&mut old_with_new, &["left"])? else {
+        return Err("view".into());
+    };
+    left.insert("image".into(), Value::Object(BTreeMap::new()));
+    assert!(f.parse(&json(&old_with_new)).is_err());
+    let mut new_with_old = valid.clone();
+    let Value::Object(left) = at_mut(&mut new_with_old, &["left"])? else {
+        return Err("view".into());
+    };
+    left.insert(
+        "image_domain_digest".into(),
+        text_value(h("undeclared domain").to_text()),
+    );
+    assert!(f.parse(&json(&new_with_old)).is_err());
+    let mut mixed = valid.clone();
+    *at_mut(&mut mixed, &["right"])? = at_mut(&mut f.document.clone(), &["right"])?.clone();
+    assert!(f.parse(&json(&mixed)).is_err());
+    Ok(())
 }
 
 #[test]

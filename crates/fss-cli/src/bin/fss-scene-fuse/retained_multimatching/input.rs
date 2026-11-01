@@ -17,8 +17,10 @@ use super::super::input as shared;
 use super::super::{Result, fail, input_error};
 
 pub(super) const SCHEMA: &str = "fss.scene_feature_multimatch_retained_query.v1";
+pub(super) const SCHEMA_V2: &str = "fss.scene_feature_multimatch_retained_query.v2";
 
 pub(super) struct Query {
+    pub version: u8,
     pub views: Vec<shared::View>,
     pub extraction: ExtractionOptions,
     pub matching: AssociationOptions,
@@ -27,7 +29,7 @@ pub(super) struct Query {
 
 /// Select three through eight distinct retained source cameras without authenticating custody.
 pub(super) fn parse(bytes: &[u8], rig_digest: ContentDigest) -> Result<Query> {
-    let header = shared::parse_header(bytes, SCHEMA, &["views"], rig_digest)?;
+    let header = shared::parse_header(bytes, [SCHEMA, SCHEMA_V2], &["views"], rig_digest)?;
     let top = header
         .document
         .object()
@@ -46,10 +48,11 @@ pub(super) fn parse(bytes: &[u8], rig_digest: ContentDigest) -> Result<Query> {
         )
     })?;
     for row in rows {
-        views.push(shared::parse_view(row)?);
+        views.push(shared::parse_view(row, header.version)?);
     }
     shared::validate_distinct_declarations(&views)?;
     Ok(Query {
+        version: header.version,
         views,
         extraction: header.extraction,
         matching: header.matching,

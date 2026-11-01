@@ -1,6 +1,6 @@
 # Implementation status
 
-**As of:** 2026-10-14 (reality check; earlier sections written 2026-09-03 and 2026-09-23)
+**As of:** 2026-11-01 (dated feature sections retain their original verification scope)
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
@@ -9,6 +9,57 @@
 Franken Surveillance System now has a coherent, dependency-light Rust reference spine from immutable source evidence through canonical authority state, guarded external effects, agent situation projection, meaningful deltas, exact continuation, and progressive semantic hydration. The repository is no longer merely an architecture corpus or crate skeleton.
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
+
+## Retained scene matching with lens correction (2026-11-01, command integration)
+
+`fss-scene-fuse retained-match` and `retained-multimatch` now accept exact v2
+queries that explicitly select direct pinhole input or native lens correction
+per retained camera. Brown–Conrady, central fisheye and pinhole crop/resize use
+the sealed rectified-feature owner below. Mixed corrected/direct cameras are
+supported. The source grid and lens/range declaration come from the query; the
+target pinhole intrinsics come only from the pinned rig. The native plan computes
+the actual corrected image domain. All selected lens plans are admitted before
+any native source decode can publish a JPEG derivative. Existing v1 wire fields,
+direct feature identities and successful report shapes remain unchanged.
+
+V2 reports preserve original retained capsule, decoder, native dimensions and
+pixel identities and add separate corrected-image lineage. Each view exposes
+its actual output grid, full model, sampling-map digest, propagated mask and
+complete mapping/privacy accounting. Original exposure remains unchanged.
+Current privacy is applied to positive-weight source interpolation taps and the
+full corrected descriptor footprint; complete original custody/current privacy
+is revalidated before releasing the analysis. Compilation, resampling and report
+work share the existing cumulative geometry allowance. All maps are released
+after extraction. Output-pixel noise and omitted interpolation/lens/camera error
+remain explicit assumptions rather than calibrated accuracy claims.
+
+**33 exact-source native adapter/report tests execute successfully:** 18 existing
+pair/multi-camera cases, 12 new v2 declaration/model/receipt-binding cases and
+3 production image-report cases. Strict scoped Clippy passes. Actual direct,
+pinhole-corrected, Brown and fisheye image-processing outputs each pass standard
+Draft 2020-12 validation against both v2 report schemas. The complete schema
+catalog resolves 116 schemas and 1,439 references with zero errors.
+
+Separate original-JPEG native geometry controls execute decoding, rectification,
+extraction, matching and geometry reporting: two corrected sources recover
+24 stereo points at depth 10; mixed corrected/direct sources recover 16; a
+three-camera scene with only its third camera corrected recovers 13 complete
+triples and 14 pairs, with no unresolved components. These zero-distortion crop
+controls have maximum depth error below 2e-14. The independently rendered
+nonzero-lens controls and their looser integer-feature tolerance are described
+in the native section below; these fixture results do not establish field accuracy.
+
+Five new real pair-command tests and two multi-camera command tests cover source
+composition, corrected/native identity separation, current privacy, later-view
+lens preflight, source-grid mismatch, cancellation and work/output limits.
+**The current new reference/CLI integration has not completed genuine metadata
+checking or runtime execution:** the updated reference metadata build was killed
+by shared memory pressure before owner tests, so a dependent CLI build was not
+repeated. Earlier dated typecheck results below cover their earlier revisions,
+not these new owner or command changes. No substitute runtime or weakened gate
+was used. `docs/RETAINED_LENS_MATCHING.md` documents exact v2 declarations,
+resource limits and remaining calibration/motion boundaries. Aggregate FSS-097
+and FSS-099 qualification remains open.
 
 ## Retained raw-lens feature extraction (2026-11-01, native composition)
 

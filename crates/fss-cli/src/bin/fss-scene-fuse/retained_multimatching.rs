@@ -25,18 +25,17 @@ use fss_reference::ingest::recorded_decode::DecodeBudget;
 use fss_reference::ingest::recorded_decode::video_budget::{
     RecordedVideoDecodeBudget, VIDEO_DECODE_SEPARATE_AXIS_POLICY, VIDEO_DECODE_WORK_MODEL,
 };
-use fss_reference::ingest::twin_localization::features::{
-    RecordedFeatureReadBudget, RecordedFeatureRequest, extract_recorded_features,
-};
+use fss_reference::ingest::twin_localization::features::RecordedFeatureReadBudget;
 use fss_reference::{ReferenceDeployment, ReplayCx};
 use fss_twin::multiview_feature_association::associate_multiview_features;
 use fss_twin::{ImportExpectation, ImportLimits, import_twin};
 
 use super::super::matching::report::scale;
 use super::{
-    MAX_JSON_BYTES, MAX_TWIN_BYTES, Options, Result, SOURCE_BYTES, authority, check_cancel,
-    checkpoint, document, fail, fusion_input, input_error, options_profile, preflight_views,
-    read_input, resolved, retained_handoffs, source, write_report,
+    FeatureInput, MAX_JSON_BYTES, MAX_TWIN_BYTES, Options, Result, SOURCE_BYTES, authority,
+    check_cancel, checkpoint, document, extract_features, fail, fusion_input, input_error,
+    options_profile, preflight_views, prepare_images, read_input, resolved, retained_handoffs,
+    write_report,
 };
 
 const DEFAULT_WORK: u64 = 8_000_000_000;
@@ -56,8 +55,10 @@ Every camera pair retains its full appearance/epipolar decisions and geometric o
 Components require one feature per participating camera and complete direct pair support.\n\
 Conflicting camera cycles, incomplete chains and native geometric refusals remain explicit;\n\
 no greedy identity assignment, hidden outlier removal or partial inventory is performed.\n\n\
-The strict schema is fss.scene_feature_multimatch_retained_query.v1. Use views:[...] with\n\
-the same exact source/rig/image/clock declarations as retained-match. Source capture,\n\
+Query v1 keeps declared native pinhole grids. Query v2 adds explicit native Brown-Conrady,\n\
+fisheye and pinhole crop/resize correction. Use views:[...] with the same exact source, rig,\n\
+image and clock declarations as retained-match. Every image plan is admitted before decoding.\n\
+Target intrinsics come from the rig and corrected domains come from native maps. Source capture,\n\
 dimensions and current privacy come from the sealed retained owners. Every source revalidates\n\
 after complete analysis. JPEG may publish its ordinary derivative; no calibration, identity,\n\
 world revision, event or effect is activated. Entry/final anchors are both reported.\n\n\
@@ -74,7 +75,8 @@ Default timeout: 30000 ms, maximum 3600000. Output is private/exclusive and iden
 Exit 0: at least one joint point and no nontrivial unresolved/refused components; 3: no joint\n\
 reconstruction or unresolved/refused components; 2: input/custody/privacy/resource/I/O failure.\n\
 Isolated unmatched features are retained diagnostics; pair refusals rescued by joint geometry\n\
-remain visible without forcing exit 3. See docs/RETAINED_MULTICAMERA_MATCHING.md.\n";
+remain visible without forcing exit 3. See docs/RETAINED_MULTICAMERA_MATCHING.md and\n\
+docs/RETAINED_LENS_MATCHING.md for the exact versioned inputs and corrected source lineage.\n";
 
 fn options(args: &[OsString]) -> Result<Option<Options>> {
     options_profile(args, DEFAULT_WORK, MAX_WORK, MAX_REPORT_BYTES)
@@ -154,6 +156,7 @@ fn analyze(options: &Options, root: &Path, cx: &ReplayCx) -> Result<Report> {
         return Err(input_error("deployment differs from --expected-anchor"));
     }
     preflight_views(&deployment, &query.views, cx)?;
+    let images = prepare_images(&query.views, &rig, &mut work)?;
     let reads = RecordedFeatureReadBudget::with_cancellation_probe(
         SOURCE_BYTES,
         Arc::new(move || started.elapsed() >= timeout),
@@ -162,25 +165,23 @@ fn analyze(options: &Options, root: &Path, cx: &ReplayCx) -> Result<Report> {
     let mut video = RecordedVideoDecodeBudget::with_separate_limits(VIDEO_BYTES, VIDEO_LUMA)
         .map_err(|e| fail(e.stable_id(), e.to_string()))?;
     let mut owners = Vec::with_capacity(query.views.len());
-    for view in &query.views {
+    for (view, image) in query.views.iter().zip(&images) {
         check_cancel(cx, &cancelled)?;
-        owners.push(
-            extract_recorded_features(
-                &mut deployment,
-                &RecordedFeatureRequest {
-                    source: source(view),
-                    image_domain: view.image_domain_digest,
-                    extraction: query.extraction,
-                },
-                &reads,
-                &mut jpeg,
-                &mut video,
-                &mut work,
-                cx,
-            )
-            .map_err(|e| fail(e.stable_id(), e.to_string()))?,
-        );
+        owners.push(extract_features(
+            &mut deployment,
+            FeatureInput {
+                view,
+                image,
+                extraction: query.extraction,
+            },
+            &reads,
+            &mut jpeg,
+            &mut video,
+            &mut work,
+            cx,
+        )?);
     }
+    drop(images);
     let final_anchor = deployment.current_anchor().clone();
     let snapshots = owners.iter().map(resolved).collect::<Vec<_>>();
     let views = input::bind(&query, &snapshots, &rig)?;
@@ -205,6 +206,10 @@ fn analyze(options: &Options, root: &Path, cx: &ReplayCx) -> Result<Report> {
             + geometry.json.len() as u64 * 4,
     )
     .map_err(|e| fail("ERR-SCENE-FUSION-LIMIT-001", e.to_string()))?;
+    if query.version == 2 {
+        work.charge(super::image_report::VIEW_WORK * owners.len() as u64)
+            .map_err(|e| fail("ERR-SCENE-FUSION-LIMIT-001", e.to_string()))?;
+    }
     let mut source_views = Vec::with_capacity(owners.len());
     for view in association.views() {
         let index = query
@@ -212,38 +217,77 @@ fn analyze(options: &Options, root: &Path, cx: &ReplayCx) -> Result<Report> {
             .iter()
             .position(|v| v.camera == view.camera.camera)
             .ok_or_else(|| input_error("multi-camera association has no matching source owner"))?;
-        source_views.push(super::report::view_json(view, &owners[index], &rig));
+        source_views.push(super::report::view_json(
+            view,
+            &owners[index],
+            &rig,
+            query.version,
+        ));
     }
     let (property, revision) = rig.geometry_basis();
     let analysis = object(&[
         ("authority", string("derived_cognition_no_effect_authority")),
-        ("source_provenance", string("verified_retained_native_frames")),
+        (
+            "source_provenance",
+            string("verified_retained_native_frames"),
+        ),
         ("physical_identity_established", "false".into()),
         ("query_digest", string(&query_digest.to_text())),
-        ("entry_anchor_digest", string(&anchor_digest(&entry_anchor).to_text())),
+        (
+            "entry_anchor_digest",
+            string(&anchor_digest(&entry_anchor).to_text()),
+        ),
         ("entry_anchor", authority_anchor_json(&entry_anchor)),
-        ("anchor_digest", string(&anchor_digest(&final_anchor).to_text())),
+        (
+            "anchor_digest",
+            string(&anchor_digest(&final_anchor).to_text()),
+        ),
         ("anchor", authority_anchor_json(&final_anchor)),
         ("clock", count(query.matching.clock)),
         ("clock_evidence", digest(query.matching.clock_evidence)),
         ("privacy_domain", count(query.matching.privacy_domain)),
-        ("basis", object(&[
-            ("twin_digest", digest(twin.digest())),
-            ("source_scene_digest", digest(twin.source_scene_digest())),
-            ("camera_rig_digest", digest(query.matching.camera_rig_digest)),
-            ("camera_rig_semantic_digest", string(&rig.digest().to_text())),
-            ("geometry_basis", object(&[("property", count(property)), ("revision", count(revision))])),
-            ("coordinate_frame", string("RH_Z_UP")),
-            ("evaluation_scope", string(twin.evaluation_scope())),
-            ("observation_epoch", string(twin.observation_epoch())),
-            ("scale", scale(twin.scale())),
-            ("map_error", match twin.geometry_error() {
-                Some(value) => object(&[("state", string("available")), ("value", value.to_string())]),
-                None => object(&[("state", string("unavailable")), ("reason", string("map_error_not_quantified"))]),
-            }),
-        ])),
+        (
+            "basis",
+            object(&[
+                ("twin_digest", digest(twin.digest())),
+                ("source_scene_digest", digest(twin.source_scene_digest())),
+                (
+                    "camera_rig_digest",
+                    digest(query.matching.camera_rig_digest),
+                ),
+                (
+                    "camera_rig_semantic_digest",
+                    string(&rig.digest().to_text()),
+                ),
+                (
+                    "geometry_basis",
+                    object(&[("property", count(property)), ("revision", count(revision))]),
+                ),
+                ("coordinate_frame", string("RH_Z_UP")),
+                ("evaluation_scope", string(twin.evaluation_scope())),
+                ("observation_epoch", string(twin.observation_epoch())),
+                ("scale", scale(twin.scale())),
+                (
+                    "map_error",
+                    match twin.geometry_error() {
+                        Some(value) => {
+                            object(&[("state", string("available")), ("value", value.to_string())])
+                        }
+                        None => object(&[
+                            ("state", string("unavailable")),
+                            ("reason", string("map_error_not_quantified")),
+                        ]),
+                    },
+                ),
+            ]),
+        ),
         ("declarations", query.declarations.clone()),
-        ("assumptions", array(&[
+        (
+            "assumptions",
+            if query.version == 2 {
+                super::image_report::assumptions(true)
+            } else {
+                array(&[
             "source_to_rig_mapping_and_undistorted_pixel_domain_are_operator_declarations",
             "camera_rig_is_authored_nominal_not_activated_or_physically_validated",
             "additive_clock_alignment_is_declared_and_preserves_full_source_uncertainty",
@@ -256,8 +300,11 @@ fn analyze(options: &Options, root: &Path, cx: &ReplayCx) -> Result<Report> {
             "all_participating_component_views_are_required_with_no_outlier_removal",
             "pixel_noise_covariance_excludes_camera_map_clock_motion_and_correspondence_error",
             "retained_custody_does_not_establish_live_coverage_or_calibration_quality",
-        ].map(string))),
-        ("views", array(&source_views)), ("geometry", geometry.json),
+        ].map(string))
+            },
+        ),
+        ("views", array(&source_views)),
+        ("geometry", geometry.json),
     ]);
     if analysis
         .len()
@@ -286,7 +333,10 @@ fn analyze(options: &Options, root: &Path, cx: &ReplayCx) -> Result<Report> {
     let body = object(&[
         (
             "schema",
-            string("fss.scene_feature_multimatch_retained_report.v1"),
+            string(&format!(
+                "fss.scene_feature_multimatch_retained_report.v{}",
+                query.version
+            )),
         ),
         ("analysis", analysis),
         (
@@ -333,7 +383,13 @@ fn analyze(options: &Options, root: &Path, cx: &ReplayCx) -> Result<Report> {
         ),
     ]);
     let json = object(&[
-        ("schema", string("fss.scene_feature_multimatch_retained.v1")),
+        (
+            "schema",
+            string(&format!(
+                "fss.scene_feature_multimatch_retained.v{}",
+                query.version
+            )),
+        ),
         (
             "report_digest",
             string(&ContentDigest::sha256(body.as_bytes()).to_text()),

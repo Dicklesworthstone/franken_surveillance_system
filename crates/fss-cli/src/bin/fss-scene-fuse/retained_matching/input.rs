@@ -19,10 +19,13 @@ use fss_core::{
 use fss_twin::feature_association::{AssociationOptions, FeatureView};
 use fss_twin::localization::FeatureFrame;
 use fss_twin::localization::native::ExtractionOptions;
+use fss_twin::rectification::{RectificationReceipt, RectificationSpec};
 
 use super::super::{Result, input as fusion_input, input_error};
+use super::images::{self, ImageDeclaration};
 
 pub(super) const SCHEMA: &str = "fss.scene_feature_match_retained_query.v1";
+pub(super) const SCHEMA_V2: &str = "fss.scene_feature_match_retained_query.v2";
 pub(super) const MAX_VIDEO_SEGMENTS: usize = 64;
 
 /// Exact identities selected before the source owner opens a retained recording.
@@ -81,7 +84,7 @@ impl Source {
 #[derive(Clone, Debug)]
 pub(super) struct View {
     pub camera: u64,
-    pub image_domain_digest: ContentDigest,
+    pub image: ImageDeclaration,
     pub mapping_basis: ContentDigest,
     pub sigma_pixels: f64,
     pub source: Source,
@@ -89,6 +92,7 @@ pub(super) struct View {
 }
 
 pub(super) struct Query {
+    pub version: u8,
     pub views: [View; 2],
     pub extraction: ExtractionOptions,
     pub matching: AssociationOptions,
@@ -97,6 +101,7 @@ pub(super) struct Query {
 
 /// Shared strict policy and complete declarations for explicit retained query shapes.
 pub(super) struct Header {
+    pub version: u8,
     pub document: Value,
     pub extraction: ExtractionOptions,
     pub matching: AssociationOptions,
@@ -117,9 +122,13 @@ pub(super) struct ResolvedFrame<'a> {
     pub codec: &'a str,
     pub range_start: u64,
     pub range_count: u64,
+    pub rectification: Option<(RectificationSpec, RectificationReceipt)>,
 }
 
-fn fields<'a>(value: &'a Value, allowed: &[&str]) -> Result<&'a BTreeMap<String, Value>> {
+pub(super) fn fields<'a>(
+    value: &'a Value,
+    allowed: &[&str],
+) -> Result<&'a BTreeMap<String, Value>> {
     let fields = value
         .object()
         .ok_or_else(|| input_error("expected a retained matching object"))?;
@@ -135,13 +144,13 @@ pub(super) fn get<'a>(fields: &'a BTreeMap<String, Value>, key: &str) -> Result<
         .ok_or_else(|| input_error(format!("missing retained matching field {key}")))
 }
 
-fn text(value: &Value) -> Result<&str> {
+pub(super) fn text(value: &Value) -> Result<&str> {
     value
         .text()
         .ok_or_else(|| input_error("expected a retained matching string"))
 }
 
-fn unsigned(value: &Value, minimum: u64, maximum: u64) -> Result<u64> {
+pub(super) fn unsigned(value: &Value, minimum: u64, maximum: u64) -> Result<u64> {
     let literal = match value {
         Value::Number(s) | Value::Text(s) => s,
         _ => return Err(input_error("expected an exact unsigned integer")),
@@ -182,11 +191,11 @@ fn signed(value: &Value) -> Result<i64> {
         .map_err(|_| input_error("clock offset is outside i64"))
 }
 
-fn is_pin(digest: ContentDigest) -> bool {
+pub(super) fn is_pin(digest: ContentDigest) -> bool {
     digest.algorithm() == DigestAlgorithm::Sha256 && digest.bytes() != [0; 32]
 }
 
-fn digest(value: &Value) -> Result<ContentDigest> {
+pub(super) fn digest(value: &Value) -> Result<ContentDigest> {
     let value = ContentDigest::parse(text(value)?)
         .map_err(|_| input_error("invalid retained matching digest"))?;
     if !is_pin(value) {
@@ -197,7 +206,7 @@ fn digest(value: &Value) -> Result<ContentDigest> {
     Ok(value)
 }
 
-fn real(value: &Value, minimum: f64, maximum: f64) -> Result<f64> {
+pub(super) fn real(value: &Value, minimum: f64, maximum: f64) -> Result<f64> {
     let Value::Number(literal) = value else {
         return Err(input_error("expected a finite JSON number"));
     };
@@ -332,12 +341,21 @@ fn alignment(value: &Value) -> Result<PackageClockAlignment> {
     Ok(alignment)
 }
 
-pub(super) fn parse_view(value: &Value) -> Result<View> {
+pub(super) fn parse_view(value: &Value, version: u8) -> Result<View> {
+    let image_key = match version {
+        1 => "image_domain_digest",
+        2 => "image",
+        _ => {
+            return Err(input_error(
+                "unsupported retained image declaration version",
+            ));
+        }
+    };
     let row = fields(
         value,
         &[
             "camera",
-            "image_domain_digest",
+            image_key,
             "mapping_basis",
             "sigma_pixels",
             "source",
@@ -353,7 +371,11 @@ pub(super) fn parse_view(value: &Value) -> Result<View> {
     }
     Ok(View {
         camera: unsigned(get(row, "camera")?, 1, u64::MAX)?,
-        image_domain_digest: digest(get(row, "image_domain_digest")?)?,
+        image: if version == 1 {
+            ImageDeclaration::Pinhole(digest(get(row, image_key)?)?)
+        } else {
+            images::parse(get(row, image_key)?)?
+        },
         mapping_basis: digest(get(row, "mapping_basis")?)?,
         sigma_pixels: real(get(row, "sigma_pixels")?, 0.001, 1000.0)?,
         source,
@@ -381,7 +403,7 @@ fn json(value: &Value) -> String {
 /// Both commands retain the same pair policy; a joint component uses all of its cameras.
 pub(super) fn parse_header(
     bytes: &[u8],
-    schema: &str,
+    schemas: [&str; 2],
     view_keys: &[&str],
     rig_digest: ContentDigest,
 ) -> Result<Header> {
@@ -408,8 +430,12 @@ pub(super) fn parse_header(
     .chain(view_keys.iter().copied())
     .collect();
     let top = fields(&value, &allowed)?;
-    if text(get(top, "schema")?)? != schema || digest(get(top, "camera_rig_digest")?)? != rig_digest
-    {
+    let version = match text(get(top, "schema")?)? {
+        value if value == schemas[0] => 1,
+        value if value == schemas[1] => 2,
+        _ => return Err(input_error("unsupported exact retained matching schema")),
+    };
+    if digest(get(top, "camera_rig_digest")?)? != rig_digest {
         return Err(input_error(
             "retained matching schema or exact rig document pin differs",
         ));
@@ -481,6 +507,7 @@ pub(super) fn parse_header(
     };
     let declarations = json(&value);
     Ok(Header {
+        version,
         document: value,
         extraction,
         matching,
@@ -510,17 +537,18 @@ pub(super) fn validate_distinct_declarations(views: &[View]) -> Result<()> {
 
 /// Admit exact selections and assumptions; the supplied digest pins the original rig bytes.
 pub(super) fn parse(bytes: &[u8], rig_digest: ContentDigest) -> Result<Query> {
-    let header = parse_header(bytes, SCHEMA, &["left", "right"], rig_digest)?;
+    let header = parse_header(bytes, [SCHEMA, SCHEMA_V2], &["left", "right"], rig_digest)?;
     let top = header
         .document
         .object()
         .ok_or_else(|| input_error("expected a retained matching object"))?;
     let views = [
-        parse_view(get(top, "left")?)?,
-        parse_view(get(top, "right")?)?,
+        parse_view(get(top, "left")?, header.version)?,
+        parse_view(get(top, "right")?, header.version)?,
     ];
     validate_distinct_declarations(&views)?;
     Ok(Query {
+        version: header.version,
         views,
         extraction: header.extraction,
         matching: header.matching,
@@ -580,11 +608,7 @@ pub(super) fn bind_view(
     let identity = resolved.frame.identity();
     if camera.privacy_domain != matching.privacy_domain
         || camera.camera.clock != matching.clock
-        || resolved.dimensions != camera.camera.intrinsics.dimensions()
-        || identity.dimensions != resolved.dimensions
-        || identity.image_domain != view.image_domain_digest.bytes()
         || identity.exposure != resolved.exposure.bytes()
-        || identity.pixels != resolved.luma.bytes()
         || !is_pin(resolved.exposure)
         || !is_pin(resolved.luma)
         || resolved.allowed_mask_digest == [0; 32]
@@ -594,6 +618,7 @@ pub(super) fn bind_view(
             "retained feature, privacy, clock or image mode does not match its rig binding",
         ));
     }
+    let image_domain = images::bind(view.image, camera.camera.intrinsics, resolved)?;
     if capture[0] < camera.camera.validity[0] || capture[1] > camera.camera.validity[1] {
         return Err(input_error(
             "full aligned capture leaves the declared camera validity",
@@ -604,7 +629,7 @@ pub(super) fn bind_view(
         camera: camera.camera,
         source_digest: resolved.capsule.source_digest.bytes(),
         allowed_mask_digest: resolved.allowed_mask_digest,
-        image_domain_digest: view.image_domain_digest.bytes(),
+        image_domain_digest: image_domain.bytes(),
         mapping_basis: view.mapping_basis.bytes(),
         privacy_domain: camera.privacy_domain,
         clock_evidence: matching.clock_evidence,

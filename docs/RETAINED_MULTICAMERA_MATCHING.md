@@ -20,6 +20,11 @@ the command does not prune conflicting evidence to make a point appear solved.
 The report is derived cognition and does not activate calibration, physical
 identity, world revisions, events or effects.
 
+The original v1 query below selects native pinhole images. The same command also
+accepts [v2 image declarations](RETAINED_LENS_MATCHING.md) for mixed direct and
+corrected views, including native Brown–Conrady/fisheye correction and explicit
+pinhole crop/resize. Original source and corrected feature grids remain distinct.
+
 ## Select the source frames
 
 Use the source-selection procedure and `fss-file decode` output documented in

@@ -591,3 +591,178 @@ fn stdout_failure_preserves_the_complete_private_multi_camera_report() -> TestRe
     );
     Ok(())
 }
+
+fn crop_third_view(f: &mut Fixture) -> TestResult {
+    let mut rig = parse(std::str::from_utf8(&fs::read(&f.options.rig)?)?)?;
+    let source_intrinsics = field(&rig, &["cameras", "2", "intrinsics"])?.clone();
+    for (key, value) in [("width", 128), ("height", 96), ("cx", 80), ("cy", 48)] {
+        put(
+            &mut rig,
+            &["cameras", "2", "intrinsics", key],
+            Value::Number(value.to_string()),
+        )?;
+    }
+    let rig_text = json(&rig);
+    fs::write(&f.options.rig, &rig_text)?;
+    let mut document = f.document.clone();
+    put(
+        &mut document,
+        &["schema"],
+        Value::Text(input::SCHEMA_V2.into()),
+    )?;
+    put(
+        &mut document,
+        &["camera_rig_digest"],
+        Value::Text(h(&rig_text).to_text()),
+    )?;
+    let mut views = field(&document, &["views"])?
+        .array()
+        .ok_or("views")?
+        .to_vec();
+    for (index, view) in views.iter_mut().enumerate() {
+        let Value::Object(fields) = view else {
+            return Err("view object".into());
+        };
+        let domain = fields
+            .remove("image_domain_digest")
+            .ok_or("source image domain")?;
+        let image = if index == 2 {
+            parse(&object(&[
+                ("kind", string("rectified")),
+                ("source_domain_digest", json(&domain)),
+                (
+                    "lens_basis",
+                    string(&h("explicit synthetic camera 3 pinhole crop").to_text()),
+                ),
+                ("source_intrinsics", json(&source_intrinsics)),
+                ("distortion", r#"{"kind":"pinhole"}"#.into()),
+                ("maximum_radius", "1".into()),
+                ("luma_range", string("full")),
+            ]))?
+        } else {
+            parse(&object(&[
+                ("kind", string("pinhole")),
+                ("image_domain_digest", json(&domain)),
+            ]))?
+        };
+        fields.insert("image".into(), image);
+    }
+    put(&mut document, &["views"], Value::Array(views))?;
+    f.set_query(&document)?;
+    f.document = document;
+    Ok(())
+}
+
+#[test]
+fn mixed_native_and_corrected_retained_views_preserve_joint_points_and_original_grid_lineage()
+-> TestResult {
+    let mut f = fixture("multiview-v2-lens", false)?;
+    crop_third_view(&mut f)?;
+    let mut stdout = Vec::new();
+    assert!(checked(execute(&f.options, &mut stdout))?);
+    assert_eq!(
+        stdout,
+        fs::read(f.options.report_out.as_ref().ok_or("report output")?)?
+    );
+    let value = parse(std::str::from_utf8(&stdout)?)?;
+    assert_eq!(
+        field(&value, &["schema"])?.text(),
+        Some("fss.scene_feature_multimatch_retained.v2")
+    );
+    let analysis = field(&value, &["report", "analysis"])?;
+    assert_eq!(
+        field(analysis, &["physical_identity_established"])?.boolean(),
+        Some(false)
+    );
+    let source_view = field(analysis, &["views", "2"])?;
+    let processing = field(source_view, &["image_processing"])?;
+    assert_eq!(
+        field(processing, &["kind"])?.text(),
+        Some("native_rectified")
+    );
+    assert_eq!(
+        field(source_view, &["source", "dimensions", "0"])?.integer(),
+        Some(192)
+    );
+    assert_eq!(
+        field(processing, &["output", "dimensions", "0"])?.integer(),
+        Some(128)
+    );
+    assert_eq!(
+        field(processing, &["output", "dimensions", "1"])?.integer(),
+        Some(96)
+    );
+    assert_eq!(
+        field(processing, &["source", "exposure_digest"])?,
+        field(processing, &["output", "exposure_digest"])?
+    );
+    assert_eq!(
+        field(processing, &["source", "storage_digest"])?,
+        field(source_view, &["source", "pixel_digest"])?
+    );
+    assert_ne!(
+        field(processing, &["output", "pixel_digest"])?,
+        field(source_view, &["source", "pixel_digest"])?
+    );
+    assert_eq!(
+        field(processing, &["output", "image_domain_digest"])?,
+        field(source_view, &["image_domain_digest"])?
+    );
+    assert_eq!(
+        field(processing, &["allowed_mask_digest"])?,
+        field(source_view, &["allowed_mask_digest"])?
+    );
+    assert_eq!(
+        field(source_view, &["source", "encoded_source_digest"])?.text(),
+        Some(f.capsules[2].source_digest.to_text().as_str())
+    );
+    assert_eq!(
+        field(analysis, &["views", "0", "image_processing", "kind"])?.text(),
+        Some("native_pinhole")
+    );
+    assert_eq!(
+        field(analysis, &["views", "1", "image_processing", "kind"])?.text(),
+        Some("native_pinhole")
+    );
+    let g = geometry(&value)?;
+    assert_eq!(field(g, &["counts", "camera_pairs"])?.integer(), Some(3));
+    let mut triples = 0;
+    for component in field(g, &["components"])?.array().ok_or("components")? {
+        if field(component, &["outcome", "state"])?.text() != Some("estimated") {
+            continue;
+        }
+        if field(component, &["members"])?
+            .array()
+            .ok_or("members")?
+            .len()
+            == 3
+        {
+            triples += 1;
+        }
+        let Value::Number(depth) = field(component, &["outcome", "position", "2"])? else {
+            return Err("point depth".into());
+        };
+        assert!((depth.parse::<f64>()? - 10.0).abs() < 1e-8);
+    }
+    assert!(
+        triples >= 3,
+        "expected three-camera components after exact native crop"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_folded_final_camera_lens_prevents_every_earlier_decode_publication() -> TestResult {
+    let mut f = fixture("multiview-v2-preflight", false)?;
+    crop_third_view(&mut f)?;
+    let mut document = f.document.clone();
+    put(
+        &mut document,
+        &["views", "2", "image", "distortion"],
+        parse(r#"{"kind":"brown_conrady","radial":[-1,0,0],"tangential":[0,0]}"#)?,
+    )?;
+    f.set_query(&document)?;
+    refused(&f)?;
+    assert_eq!(f.head()?, f.head);
+    Ok(())
+}
