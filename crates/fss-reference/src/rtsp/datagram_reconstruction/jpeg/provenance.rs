@@ -59,6 +59,55 @@ impl JpegFrameProvenance {
     pub fn dependencies(&self) -> &[JpegSourceDependency] {
         &self.dependencies
     }
+
+    /// Exact existing source-map bytes for retained publication, without a second encoder.
+    ///
+    /// The supplied native frame must match both the encoded-image identity and every
+    /// sealed provenance field, including original dependencies and generated ranges.
+    /// This copies no JPEG pixels into the map and grants no access or publication
+    /// authority. Work for hashing and the complete canonical output is reserved before
+    /// allocation; cancellation withholds the result. The digest/domain are unchanged.
+    pub fn canonical_bytes(&self, frame: &JpegFrame, work: &mut WorkBudget<'_>) -> Result<Vec<u8>> {
+        let entries = [
+            self.dependencies.len(),
+            frame.source_spans().len(),
+            frame.header_sources().len(),
+            frame.generated_ranges().len(),
+        ]
+        .into_iter()
+        .try_fold(0_u64, |sum, length| {
+            sum.checked_add(u64::try_from(length).map_err(|_| DatagramArchiveError::Limit)?)
+                .ok_or(DatagramArchiveError::Limit)
+        })?;
+        let reservation = u64::try_from(frame.bytes().len())
+            .ok()
+            .and_then(|bytes| bytes.checked_mul(2))
+            .and_then(|bytes| {
+                entries
+                    .checked_mul(1024)
+                    .and_then(|maps| bytes.checked_add(maps))
+            })
+            .and_then(|bytes| bytes.checked_add(1024))
+            .ok_or(DatagramArchiveError::Limit)?;
+        work.charge(reservation)
+            .map_err(DatagramArchiveError::Work)?;
+        if ContentDigest::sha256(frame.bytes()) != self.encoded_digest {
+            return Err(JpegReplayError::Invariant);
+        }
+        let bytes = encode(
+            frame,
+            self.source,
+            self.interpretation,
+            self.encoded_digest,
+            self.receive_clock,
+            &self.dependencies,
+        )?;
+        if ContentDigest::sha256(&bytes) != self.digest {
+            return Err(JpegReplayError::Invariant);
+        }
+        work.charge(0).map_err(DatagramArchiveError::Work)?;
+        Ok(bytes)
+    }
 }
 
 /// Bounded metadata only. Pending entries cover the transport queue; delivered entries
@@ -272,6 +321,25 @@ fn digest(
     receive_clock: ContentDigest,
     dependencies: &[JpegSourceDependency],
 ) -> Result<ContentDigest> {
+    let bytes = encode(
+        frame,
+        source,
+        interpretation,
+        encoded_digest,
+        receive_clock,
+        dependencies,
+    )?;
+    ContentDigest::try_sha256(&bytes).map_err(|_| JpegReplayError::Invariant)
+}
+
+fn encode(
+    frame: &JpegFrame,
+    source: DatagramPin,
+    interpretation: ContentDigest,
+    encoded_digest: ContentDigest,
+    receive_clock: ContentDigest,
+    dependencies: &[JpegSourceDependency],
+) -> Result<Vec<u8>> {
     let mut e = CanonicalEncoder::new();
     e.text("fss.rtsp_datagram_jpeg_frame_provenance.v1");
     pin(&mut e, source);
@@ -321,6 +389,5 @@ fn digest(
     for generated in frame.generated_ranges() {
         range(&mut e, generated)?;
     }
-    let bytes = e.finish_checked().map_err(|_| JpegReplayError::Invariant)?;
-    ContentDigest::try_sha256(&bytes).map_err(|_| JpegReplayError::Invariant)
+    e.finish_checked().map_err(|_| JpegReplayError::Invariant)
 }

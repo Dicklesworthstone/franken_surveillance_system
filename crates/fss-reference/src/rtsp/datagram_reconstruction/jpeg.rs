@@ -7,7 +7,8 @@
 //! receiver output is drained between observations. Storage time never becomes media time.
 
 use crate::rtsp::datagram_archive::{
-    DatagramArchive, DatagramArchiveError, DatagramPin, RetainedDatagram,
+    DatagramArchive, DatagramArchiveError, DatagramObjectReader, DatagramPin,
+    DetachedDatagramPrefix, RetainedDatagram,
 };
 use fss_core::{CanonicalEncoder, ContentDigest, DigestAlgorithm};
 use fss_geometry::WorkBudget;
@@ -203,6 +204,14 @@ pub struct DatagramJpegReplay<'a> {
     closed: bool,
     source_index: provenance::SourceIndex,
 }
+
+/// Only source retrieval differs. Polling, timer selection, admission, provenance,
+/// cancellation and terminal ownership stay in the one existing replay scheduler.
+enum ReplayRead<'a> {
+    Publisher(&'a LocalRootPublisher),
+    Detached(&'a mut dyn DatagramObjectReader),
+}
+
 impl<'a> DatagramJpegReplay<'a> {
     /// Validate the exact transport interpretation before reading source. The archive must be a recovered,
     /// owner-accepted inventory. Every later observation is reverified against current custody.
@@ -262,6 +271,17 @@ impl<'a> DatagramJpegReplay<'a> {
             source_index,
         })
     }
+    /// Replay a sealed copied-original closure using the SAME native interpretation.
+    /// The original publisher filesystem is unnecessary. Each `step_detached` read
+    /// still verifies current custody, canonical root/metadata and payload identity.
+    pub fn new_detached(
+        source: &'a DetachedDatagramPrefix,
+        spec: JpegReplaySpec,
+        bounds: JpegReplayBounds,
+        now_ns: u64,
+    ) -> Result<Self> {
+        Self::new(source.archive(), spec, bounds, now_ns)
+    }
     /// Full source/configuration/scheduler commitment, not proof of the original live schedule.
     pub fn interpretation(&self) -> ContentDigest {
         self.interpretation
@@ -288,12 +308,34 @@ impl<'a> DatagramJpegReplay<'a> {
         cancel: &dyn PublishCancellation,
         budget: &mut WorkBudget<'_>,
     ) -> std::result::Result<JpegReplayStep, JpegReplayFailure> {
+        self.step_from(ReplayRead::Publisher(publisher), now_ns, cancel, budget)
+    }
+    /// One existing scheduler step over independently retained original objects.
+    /// The reader carries current I/O authority; no cached payload or caller-supplied
+    /// unchecked record can enter the receiver. Errors transfer terminal ownership
+    /// exactly as `step` does, including an output withheld after cancellation.
+    pub fn step_detached(
+        &mut self,
+        reader: &mut dyn DatagramObjectReader,
+        now_ns: u64,
+        cancel: &dyn PublishCancellation,
+        budget: &mut WorkBudget<'_>,
+    ) -> std::result::Result<JpegReplayStep, JpegReplayFailure> {
+        self.step_from(ReplayRead::Detached(reader), now_ns, cancel, budget)
+    }
+    fn step_from(
+        &mut self,
+        source: ReplayRead<'_>,
+        now_ns: u64,
+        cancel: &dyn PublishCancellation,
+        budget: &mut WorkBudget<'_>,
+    ) -> std::result::Result<JpegReplayStep, JpegReplayFailure> {
         if self.closed {
             return Ok(JpegReplayStep::Ended);
         }
         self.guard(now_ns, cancel, budget)?;
         let mut step = self
-            .advance(publisher, cancel, budget)
+            .advance(source, cancel, budget)
             .map_err(|e| self.fail(e, None))?;
         if let Err(error) = self.source_index.bind(
             &mut step,
@@ -310,7 +352,7 @@ impl<'a> DatagramJpegReplay<'a> {
     }
     fn advance(
         &mut self,
-        publisher: &LocalRootPublisher,
+        reader: ReplayRead<'_>,
         cancel: &dyn PublishCancellation,
         budget: &mut WorkBudget<'_>,
     ) -> Result<JpegReplayStep> {
@@ -364,9 +406,15 @@ impl<'a> DatagramJpegReplay<'a> {
             self.replay_ns = at;
             return Ok(JpegReplayStep::ClockAdvanced { replay_ns: at });
         }
-        let source = self
-            .archive
-            .read(self.next as u64 + 1, publisher, cancel, budget)?;
+        let ordinal = self.next as u64 + 1;
+        let source = match reader {
+            ReplayRead::Publisher(publisher) => {
+                self.archive.read(ordinal, publisher, cancel, budget)?
+            }
+            ReplayRead::Detached(reader) => self
+                .archive
+                .read_detached(ordinal, reader, cancel, budget)?,
+        };
         self.replay_ns = source.record().received_ns;
         self.next += 1;
         if source.record().channel == self.archive.scope().channels.1 {

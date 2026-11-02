@@ -5,11 +5,15 @@
 //! remote-session receipt. RTSP control/authentication messages are NOT stored.
 //! Malformed, duplicate and probation datagrams remain evidence, not silent gaps.
 
+/// Canonical complete-prefix verification over independently retained original objects.
+#[path = "detached.rs"]
+mod detached;
 #[path = "live/framed.rs"]
 mod framed;
 /// Read-only, exact historical source selection without rewinding the capture owner.
 #[path = "prefix.rs"]
 pub mod prefix;
+pub use detached::{DatagramObjectReader, DetachedDatagramPrefix};
 
 use crate::rtsp::tcp::TcpBinding;
 use fss_core::{CanonicalDecoder, CanonicalEncoder, ContentDigest, DigestAlgorithm};

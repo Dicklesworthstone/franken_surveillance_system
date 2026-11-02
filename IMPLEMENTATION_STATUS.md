@@ -10,6 +10,31 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Native JPEG replay from copied original custody (2026-11-02)
+
+`DetachedDatagramPrefix` verifies an independently pinned complete datagram
+chain from original objects retained outside the capture publisher. Every
+canonical root, metadata record, payload, predecessor coordinate, channel and
+receive ordering is checked under explicit reader authority and finite bounds.
+The sealed owner caches only metadata; subsequent original reads revisit
+current custody. `DatagramJpegReplay::new_detached` and `step_detached` use the
+existing native scheduler, receiver and provenance binding without changing
+source or interpretation identities. Cached quantizers, duplicates, timers and
+incomplete-prefix accounting remain exact. Canonical frame source-map bytes can
+also be exported through the existing encoder with frame/hash/work checks.
+
+The complete native JPEG target passes **118/118 tests**, including nineteen
+new detached/source-map cases. Publisher-backed and detached replay agree on
+all native events, reconstructed images and provenance, including cached
+quantizers, sequence wrap, reordering, duplicate originals, RTCP and partial
+tails. Missing or modified original objects, malicious reader returns, exhausted
+work, cancellation, deadlines and wrong pins refuse. Strict scoped Clippy reports
+one preexisting `explicit_counter_loop` finding in unchanged `rtsp/message.rs`;
+the new source has no reported lint findings. This primitive verifies selected
+copied bytes, not original publication durability, later capture observations,
+physical camera identity or calibrated time. The retained MJPEG command bridge
+is a separate integration slice. See `docs/jpeg_datagram_reconstruction.md`.
+
 ## Adopted radial reconstruction and atlas export (2026-11-02, command integration)
 
 The adopted-camera commands now execute native radial correction before stereo,

@@ -100,6 +100,38 @@ occurs after producing an output, `withheld` owns that complete output, includin
 its image and any bound provenance. No successful output escapes after revocation,
 and repeated terminal calls cannot transfer the same retirement again.
 
+## Replay from copied original objects
+
+`DetachedDatagramPrefix` supports original objects retained inside another
+publication, where the original capture directory and its publisher slots are
+unavailable. Construct it with `recover(scope, limits, selected_pin, reader,
+cancel, work)`. Its `DatagramObjectReader` is an explicit custody boundary: the
+implementation carries current I/O and disclosure authority, checks deletion,
+and enforces the requested maximum before allocating an object. The verifier
+independently checks every returned length and SHA-256.
+
+Recovery starts at the independently pinned head and verifies the entire
+predecessor chain to the exact empty-scope identity. It checks canonical root
+and metadata bytes, exact children, all four prefix coordinates, cumulative
+payload counts, channels and nondecreasing original receive times. Independent
+count/object limits and precharged work bound allocations and every read,
+including failed reads. No unchecked record constructor or payload cache is
+exposed. `read` and `revalidate` revisit current original custody through the
+reader; a previously recovered metadata index does not authorize future access.
+
+Create `DatagramJpegReplay::new_detached` from this sealed owner and call
+`step_detached` with the current reader. These entrypoints use the same native
+scheduler, receiver, interpretation digest, source-map binding and terminal
+ownership as ordinary publisher-backed replay. Only original-object retrieval
+changes. Earlier quantizers, duplicates, receive-time ordering and incomplete
+prefix semantics are preserved without a second receive loop.
+
+Detached verification establishes the selected copied bytes. It does not prove
+the original publication's durability, the current capture archive head, later
+observations, physical sensor identity or a calibrated capture clock. A caller
+that imports from a live archive must verify its original publisher separately
+and retain the selected original closure through its own publication owner.
+
 ## Connect original objects to native pixels
 
 For each complete frame, the provenance getters expose:
@@ -113,6 +145,7 @@ For each complete frame, the provenance getters expose:
 | `dependencies()` | Unique original admitted datagrams, ordered by extended RTP sequence |
 | `receive_clock()` | Owner-selected original parser-completion clock identity |
 | `capture_clock()` | `None`: physical capture clock remains unknown |
+| `canonical_bytes(frame, work)` | Exact existing source-map bytes for retained publication; checks the supplied frame and sealed provenance digest under precharged work |
 
 Each `JpegSourceDependency` binds an extended sequence to its actual
 `DatagramRecord`: source root, payload digest, original arrival ordinal, channel
@@ -125,6 +158,8 @@ The native `JpegFrame` retains copied byte ranges, interpreted header ranges and
 generated header ranges. The provenance digest commits these maps, the exact
 encoded image, the source dependencies and unknown capture clock. Generated JPEG
 headers are derived bytes, not a claim that the camera originally sent that file.
+The canonical export uses the same encoder and domain as the existing digest;
+a different frame or exhausted work allowance refuses before releasing map bytes.
 
 Pass the owned frame and `provenance.encoded_digest().bytes()` to
 `jpeg_client::pictures::decode_luma_frame` or `decode_rgb_frame`, retaining the
