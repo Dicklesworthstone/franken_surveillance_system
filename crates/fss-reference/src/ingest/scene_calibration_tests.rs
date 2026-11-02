@@ -955,3 +955,6 @@ fn unrelated_appends_preserve_the_selection_but_not_cross_site_authority() -> Te
     ));
     Ok(())
 }
+
+#[path = "scene_calibration_rectification_tests.rs"]
+mod rectification;

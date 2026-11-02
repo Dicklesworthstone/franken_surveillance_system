@@ -13,6 +13,7 @@ use std::fmt;
 use fss_core::{CanonicalEncoder, ContentDigest, DigestAlgorithm, LedgerAnchor, SensorId};
 use fss_geometry::{GeometryError, PinholeIntrinsics, RigidPose, WorkBudget};
 use fss_twin::PropertyTwin;
+use fss_twin::rectification::{LensDistortion, LumaRange, RectificationSpec};
 
 use super::calibration_adoption::{
     AdoptionError, RetainedAdoption, adopted_currency, retained_adoptions_from_batches,
@@ -25,6 +26,28 @@ use crate::{ReferenceDeployment, ReplayCx};
 
 /// Semantic identity of a complete selected calibration binding, not effect authority.
 pub const SCENE_CALIBRATION_DOMAIN: &str = "fss.retained_scene_calibration.v1";
+/// Explicit calibrated-source profile requiring native image-model admission before use.
+pub const SCENE_CALIBRATION_RECTIFICATION_DOMAIN: &str =
+    "fss.retained_scene_calibration_rectification.v1";
+
+/// Which image interpretation the sealed resolver admitted, separate from adoption authority.
+/// The explicit rectification profile is never interchangeable with original pinhole pixels.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SceneCalibrationImageProfile {
+    /// Every selected camera has zero radial terms and uses its original pinhole image grid.
+    OriginalPinhole,
+    /// The original matrix/grid and two-term radial model require explicit native preparation.
+    /// A zero-radial camera is allowed in a mixed rig; this profile still requires opt-in.
+    NativeRadialRectification,
+}
+impl SceneCalibrationImageProfile {
+    fn domain(self) -> &'static str {
+        match self {
+            Self::OriginalPinhole => SCENE_CALIBRATION_DOMAIN,
+            Self::NativeRadialRectification => SCENE_CALIBRATION_RECTIFICATION_DOMAIN,
+        }
+    }
+}
 /// Bound on selected distinct physical cameras.
 pub const MAX_SCENE_CALIBRATION_CAMERAS: usize = 16;
 /// Complete calibration and original-input byte ceiling, checked before decoding.
@@ -65,7 +88,7 @@ pub enum SceneCalibrationError {
     InvalidInput(&'static str),
     /// Imported twin, input identity, source sensor or retained authority scope differs.
     BasisMismatch(&'static str),
-    /// A noncentral/raw-distorted imaging model is outside this explicit pinhole profile.
+    /// The image model or requested interpretation is outside the selected explicit profile.
     Unsupported(&'static str),
     /// The selected camera has no retained current adoption.
     Unadopted(u64),
@@ -160,7 +183,9 @@ impl SceneCalibrationCamera {
     pub fn pose(&self) -> RigidPose {
         self.pose
     }
-    /// Original pinhole grid from the decoded calibration.
+    /// Refined original camera matrix/grid, also the fixed virtual target of rectification.
+    /// This matrix alone does not remove the radial model in [`Self::record`]. Consumers must
+    /// respect the enclosing owner's [`SceneCalibrationImageProfile`].
     pub fn intrinsics(&self) -> PinholeIntrinsics {
         self.intrinsics
     }
@@ -205,6 +230,7 @@ impl AuthorityReads {
 /// Sealed selected calibration owner. Revalidation renews no source or work allowance.
 #[derive(Debug)]
 pub struct RetainedSceneCalibration {
+    image_profile: SceneCalibrationImageProfile,
     calibration_record: SiteCalibration,
     cameras: Vec<SceneCalibrationCamera>,
     calibration: ContentDigest,
@@ -217,6 +243,53 @@ pub struct RetainedSceneCalibration {
     reads: AuthorityReads,
 }
 impl RetainedSceneCalibration {
+    /// Explicit image interpretation admitted by the resolver. This tag is part of the digest.
+    pub fn image_profile(&self) -> SceneCalibrationImageProfile {
+        self.image_profile
+    }
+
+    /// Construct the exact source-to-virtual-pinhole model from retained calibration evidence.
+    ///
+    /// Both matrices and dimensions are the refined original grid; no crop, zoom, rotation,
+    /// source-domain or lens-coefficient override is accepted. The calibration semantic digest
+    /// is the lens basis. Radius and luma interpretation remain explicit caller declarations.
+    /// This is a specification, not a compiled or authenticated pixel result: compile the native
+    /// plan (including whole-domain non-folding checks) before reading any selected image.
+    pub fn rectification_spec(
+        &self,
+        camera_handle: u64,
+        maximum_radius: f64,
+        range: LumaRange,
+    ) -> Result<RectificationSpec> {
+        if self.image_profile != SceneCalibrationImageProfile::NativeRadialRectification {
+            return Err(SceneCalibrationError::Unsupported(
+                "original pinhole calibration requires explicit rectification resolution",
+            ));
+        }
+        if !maximum_radius.is_finite() || !(1e-6..=64.0).contains(&maximum_radius) {
+            return Err(SceneCalibrationError::InvalidInput(
+                "native lens radius is outside its explicit bound",
+            ));
+        }
+        let camera = self
+            .camera(camera_handle)
+            .ok_or(SceneCalibrationError::BasisMismatch(
+                "rectification camera is not in the selected calibration",
+            ))?;
+        let [k1, k2] = camera.record.distortion;
+        Ok(RectificationSpec {
+            source: camera.intrinsics,
+            target: camera.intrinsics,
+            distortion: LensDistortion::BrownConrady {
+                radial: [k1, k2, 0.0],
+                tangential: [0.0, 0.0],
+            },
+            maximum_radius,
+            source_domain: camera.image_basis.image.image_domain,
+            calibration: self.calibration.bytes(),
+            range,
+        })
+    }
     /// Complete decoded calibration, including atlas, control, solver and covariance assumptions.
     pub fn record(&self) -> &SiteCalibration {
         &self.calibration_record
@@ -426,6 +499,48 @@ pub fn resolve_scene_calibration(
     work: &mut WorkBudget<'_>,
     cx: &ReplayCx,
 ) -> Result<RetainedSceneCalibration> {
+    resolve_profile(
+        deployment,
+        request,
+        twin,
+        work,
+        cx,
+        SceneCalibrationImageProfile::OriginalPinhole,
+    )
+}
+
+/// Resolve current adopted camera models for explicit native radial rectification.
+///
+/// Custody, original camera input, physical sensor, twin, generation and current-adoption
+/// checks are identical to [`resolve_scene_calibration`]. The selected image profile and
+/// digest are distinct, even when every radial coefficient is zero. This API never declares
+/// a raw source to be pinhole and does not compile a map or publish corrected pixels.
+/// Use [`RetainedSceneCalibration::rectification_spec`] and admit the real plan before decoding.
+pub fn resolve_scene_calibration_for_rectification(
+    deployment: &ReferenceDeployment,
+    request: &SceneCalibrationRequest<'_>,
+    twin: &PropertyTwin,
+    work: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+) -> Result<RetainedSceneCalibration> {
+    resolve_profile(
+        deployment,
+        request,
+        twin,
+        work,
+        cx,
+        SceneCalibrationImageProfile::NativeRadialRectification,
+    )
+}
+
+fn resolve_profile(
+    deployment: &ReferenceDeployment,
+    request: &SceneCalibrationRequest<'_>,
+    twin: &PropertyTwin,
+    work: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+    image_profile: SceneCalibrationImageProfile,
+) -> Result<RetainedSceneCalibration> {
     checkpoint(cx, "scene_calibration:begin")?;
     work.charge(0)?;
     if request.bindings.is_empty()
@@ -500,12 +615,40 @@ pub fn resolve_scene_calibration(
                 "calibration image provenance requires nonzero SHA-256 identities",
             ));
         }
-        if record.distortion != [0.0, 0.0] {
-            return Err(SceneCalibrationError::Unsupported(
-                "adopted scene geometry requires an original pinhole camera",
-            ));
-        }
-        let geometry = record.pinhole_pose()?;
+        let (pose, intrinsics) = match image_profile {
+            SceneCalibrationImageProfile::OriginalPinhole => {
+                if record.distortion != [0.0, 0.0] {
+                    return Err(SceneCalibrationError::Unsupported(
+                        "adopted scene geometry requires an original pinhole camera",
+                    ));
+                }
+                let geometry = record.pinhole_pose()?;
+                (geometry.pose, geometry.intrinsics)
+            }
+            SceneCalibrationImageProfile::NativeRadialRectification => {
+                if record
+                    .distortion
+                    .iter()
+                    .any(|value| !value.is_finite() || value.abs() > 100.0)
+                {
+                    return Err(SceneCalibrationError::Unsupported(
+                        "adopted radial coefficients exceed the native model profile",
+                    ));
+                }
+                let [fx, fy, cx, cy] = record.intrinsics;
+                (
+                    RigidPose::new(record.rotation, record.translation)?,
+                    PinholeIntrinsics::new(
+                        record.dimensions[0],
+                        record.dimensions[1],
+                        fx,
+                        fy,
+                        cx,
+                        cy,
+                    )?,
+                )
+            }
+        };
         let image_basis =
             calibration.camera_input_basis(binding.camera_handle, binding.camera_input)?;
         let adoption = checked_adoption(
@@ -518,8 +661,8 @@ pub fn resolve_scene_calibration(
         )?;
         cameras.push(SceneCalibrationCamera {
             record: record.clone(),
-            pose: geometry.pose,
-            intrinsics: geometry.intrinsics,
+            pose,
+            intrinsics,
             image_basis,
             adoption,
         });
@@ -528,7 +671,7 @@ pub fn resolve_scene_calibration(
     let anchor = deployment.current_anchor().clone();
     let file_digest = ContentDigest::sha256(request.calibration_bytes);
     let mut e = CanonicalEncoder::new();
-    e.text(SCENE_CALIBRATION_DOMAIN);
+    e.text(image_profile.domain());
     e.text(&anchor.site_lineage);
     e.u64(anchor.ledger_epoch);
     e.digest(identity);
@@ -553,6 +696,7 @@ pub fn resolve_scene_calibration(
     checkpoint(cx, "scene_calibration:resolved")?;
     work.charge(0)?;
     Ok(RetainedSceneCalibration {
+        image_profile,
         cameras,
         calibration: identity,
         file_digest,

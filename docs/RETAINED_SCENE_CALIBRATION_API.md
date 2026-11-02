@@ -71,6 +71,40 @@ contain cross-camera covariance blocks. It is never converted into a
 `ProjectionError` or absolute accuracy guarantee; native camera `error` remains
 `None`.
 
+## Explicit radial image profile
+
+`resolve_scene_calibration_for_rectification` accepts the same request and
+authority arguments, retaining all current-adoption, original-input, custody and
+budget checks. Its sealed owner carries
+`SceneCalibrationImageProfile::NativeRadialRectification`, exposed by
+`image_profile()`. The original resolver returns `OriginalPinhole` and remains
+strictly zero-radial. The two selection identities use distinct digest domains;
+the original encoding is unchanged.
+
+Call `owner.rectification_spec(camera_handle, maximum_radius, LumaRange)` to
+derive the complete source model. Source and target intrinsics/dimensions are
+the refined camera's original grid; distortion is native Brown–Conrady
+`[k1, k2, 0]` with zero tangential terms. The source domain comes from the exact
+original calibration input, and the lens basis is the semantic FSSCAL identity.
+The helper accepts no matrix, domain or coefficient override. Radius and luma
+range remain explicit caller declarations.
+
+This is a specification, not processed pixels. Compare any external image
+declaration against the complete spec, compile every `RectificationPlan` before
+decoding, then use the existing sealed retained rectified-feature owner and bind
+its actual map, source/output domains, original exposure and privacy receipt.
+Native compilation checks folding across the entire requested radius; invalid
+models refuse and unmapped coverage remains explicit.
+
+`SceneRig::from_retained_rectified_calibration` projects this matching profile
+into virtual pinhole geometry with the fixed refined K/grid. The original rig
+constructor rejects a rectification-profile owner, including zero-radial ones;
+the new constructor rejects an original-profile owner. Neither constructor
+processes pixels or grants a lease on adoption. Direct sources in a mixed v2
+rig must have zero radial terms and preserve the original domain. Every source
+and adoption still requires final revalidation. Full covariance remains
+conditional and native absolute error remains `None`.
+
 ## Revalidate before releasing results
 
 After all source-dependent reconstruction and serialization,

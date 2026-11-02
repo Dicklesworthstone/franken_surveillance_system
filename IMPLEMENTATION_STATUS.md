@@ -10,6 +10,39 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Adopted radial camera geometry (native integration)
+
+The sealed calibration owner now has an explicit
+`NativeRadialRectification` image profile. The new
+`resolve_scene_calibration_for_rectification` entrypoint verifies the same exact
+FSSCAL01/02 bytes, original camera inputs, physical sensors, current adoptions
+and withdrawal history as the existing pinhole resolver. Its
+`rectification_spec` derives the two-term Brown model `[k1, k2, 0]`, zero
+tangential terms, original source image domain and semantic calibration pin.
+Both source and target matrices/grids are the refined original camera values;
+radius and luma interpretation remain explicit owner declarations.
+
+`SceneRig::from_retained_rectified_calibration` projects that matching profile
+into fixed virtual pinhole geometry. The original resolver, rig constructor and
+semantic identity bytes remain strict original-pinhole contracts. Cross-profile
+use refuses even for zero-radial coefficients. Native map compilation, actual
+pixel/privacy receipt binding and final source/adoption revalidation remain the
+caller's responsibility; this API does not certify raw pixels as corrected.
+Local covariance stays conditional and absolute camera error remains unknown.
+
+The genuine reference owner suite executes successfully: **20/20 tests pass**,
+including all six new radial controls and fourteen prior original-profile
+regressions. These cover exact model derivation against independent scalar
+projection, native folding/radius admission, current authority and withdrawal,
+original-input/receipt custody, profile separation, cumulative allowances and
+cancellation. The genuine CLI library also executes all **4/4 typed-rig
+regressions** successfully, covering virtual geometry, mode handles, basis and
+full-inventory checks. Both suites use the pinned compiler and real runtime;
+no substituted dependency or authority owner is involved. Command-level v2 integration is
+the following implementation slice; the published commands at this checkpoint
+retain their original pinhole profile. See
+`docs/RETAINED_SCENE_CALIBRATION_API.md` for the native ownership contract.
+
 ## Localization atlas from adopted cameras (2026-11-02, command integration)
 
 `fss-scene-fuse retained-calibrated-atlas` connects currently adopted FSSCAL01/02

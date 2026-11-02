@@ -3,7 +3,9 @@
 
 use std::collections::BTreeSet;
 
-use fss_reference::ingest::scene_calibration::RetainedSceneCalibration;
+use fss_reference::ingest::scene_calibration::{
+    RetainedSceneCalibration, SceneCalibrationImageProfile,
+};
 
 use super::{SceneRig, SceneRigCamera, SceneRigError};
 use fss_core::{CanonicalEncoder, ContentDigest};
@@ -12,6 +14,8 @@ use fss_twin::{PropertyTwin, TrackingCamera};
 
 /// Semantic identity of a camera rig resolved from exact retained calibration authority.
 pub const ADOPTED_SCENE_RIG_DOMAIN: &str = "fss.scene_camera_rig_adopted.v1";
+/// Semantic identity of an adopted virtual pinhole rig requiring native image preparation.
+pub const ADOPTED_RECTIFIED_SCENE_RIG_DOMAIN: &str = "fss.scene_camera_rig_adopted_rectified.v1";
 
 /// Owner declarations that a calibration does not measure or authorize.
 ///
@@ -24,7 +28,9 @@ pub struct AdoptedSceneCameraBinding {
     pub camera: u64,
     /// Explicit source-scene object mapping.
     pub source_object_id: String,
-    /// Scene-local handle for the exact original calibration image domain.
+    /// Scene-local image-mode handle. Original-pinhole admission binds the original domain;
+    /// rectification admission binds the virtual target grid. The actual source/output domain
+    /// digests remain explicit in the native source-to-feature image receipt.
     pub image_domain: u64,
     /// Declared common capture clock.
     pub clock: u64,
@@ -49,7 +55,59 @@ impl SceneRig {
         declarations: &[AdoptedSceneCameraBinding],
         work: &mut WorkBudget<'_>,
     ) -> Result<Self, SceneRigError> {
+        Self::from_calibration_profile(
+            twin,
+            calibration,
+            geometry_basis,
+            declarations,
+            work,
+            SceneCalibrationImageProfile::OriginalPinhole,
+        )
+    }
+
+    /// Project explicitly resolved radial camera models into their fixed virtual pinhole grids.
+    ///
+    /// The target intrinsics and dimensions are exactly each refined original camera matrix.
+    /// No numeric target override is accepted. The owner must compare every source declaration
+    /// to `calibration.rectification_spec`, compile the native plans before decoding, bind each
+    /// actual output domain/receipt, and revalidate adoption after analysis. Calling this method
+    /// alone does not rectify a source, authorize raw pixels as pinhole, or grant an authority
+    /// lease. Mixed zero-radial/direct and native-rectified views require explicit owner checks.
+    pub fn from_retained_rectified_calibration(
+        twin: &PropertyTwin,
+        calibration: &RetainedSceneCalibration,
+        geometry_basis: (u64, u64),
+        declarations: &[AdoptedSceneCameraBinding],
+        work: &mut WorkBudget<'_>,
+    ) -> Result<Self, SceneRigError> {
+        Self::from_calibration_profile(
+            twin,
+            calibration,
+            geometry_basis,
+            declarations,
+            work,
+            SceneCalibrationImageProfile::NativeRadialRectification,
+        )
+    }
+
+    fn from_calibration_profile(
+        twin: &PropertyTwin,
+        calibration: &RetainedSceneCalibration,
+        geometry_basis: (u64, u64),
+        declarations: &[AdoptedSceneCameraBinding],
+        work: &mut WorkBudget<'_>,
+        image_profile: SceneCalibrationImageProfile,
+    ) -> Result<Self, SceneRigError> {
         work.charge(0)?;
+        if calibration.image_profile() != image_profile
+            || (image_profile == SceneCalibrationImageProfile::OriginalPinhole
+                && calibration
+                    .cameras()
+                    .iter()
+                    .any(|camera| camera.record().distortion != [0.0, 0.0]))
+        {
+            return Err(SceneRigError::Unsupported);
+        }
         if calibration.twin_package().bytes() != twin.digest()
             || calibration.twin_source().bytes() != twin.source_scene_digest()
             || GeometryBasis::new(geometry_basis.0, geometry_basis.1)? != twin.basis()
@@ -109,7 +167,12 @@ impl SceneRig {
         }
         cameras.sort_by_key(|row| row.camera.camera);
         let mut encoder = CanonicalEncoder::new();
-        encoder.text(ADOPTED_SCENE_RIG_DOMAIN);
+        encoder.text(match image_profile {
+            SceneCalibrationImageProfile::OriginalPinhole => ADOPTED_SCENE_RIG_DOMAIN,
+            SceneCalibrationImageProfile::NativeRadialRectification => {
+                ADOPTED_RECTIFIED_SCENE_RIG_DOMAIN
+            }
+        });
         encoder.digest(calibration.digest());
         encoder.digest(calibration.calibration_identity());
         encoder.digest(calibration.calibration_file_digest());
@@ -171,3 +234,7 @@ impl SceneRig {
         })
     }
 }
+
+#[cfg(test)]
+#[path = "adopted_rectification_tests.rs"]
+mod rectification_tests;
