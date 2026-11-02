@@ -78,14 +78,14 @@ export; 2: input/source/privacy/budget/cancellation/publication failure.\n\
 See docs/RECONSTRUCTED_LOCALIZATION_ATLAS.md.\n";
 
 #[derive(Debug)]
-struct Options {
-    matching: MatchOptions,
-    selection: PathBuf,
-    atlas_out: PathBuf,
-    expected_selection: Option<ContentDigest>,
+pub(super) struct Options {
+    pub(super) matching: MatchOptions,
+    pub(super) selection: PathBuf,
+    pub(super) atlas_out: PathBuf,
+    pub(super) expected_selection: Option<ContentDigest>,
 }
 
-fn options(args: &[OsString]) -> Result<Option<Options>> {
+pub(super) fn options(args: &[OsString]) -> Result<Option<Options>> {
     if matches!(args, [flag] if matches!(flag.to_str(), Some("--help" | "-h"))) {
         return Ok(None);
     }
@@ -174,7 +174,7 @@ fn authority(options: &Options) -> Result<ContextAuthority> {
     })
 }
 
-fn preflight_output(path: &Path, cx: &ReplayCx) -> Result<()> {
+pub(super) fn preflight_output(path: &Path, cx: &ReplayCx) -> Result<()> {
     checkpoint(cx, "retained_atlas:output_preflight")?;
     match fs::symlink_metadata(path) {
         Ok(_) => Err(fail(
@@ -208,7 +208,7 @@ impl Association {
     }
 }
 
-fn atlas_error(error: ReconstructionAtlasError) -> super::super::Failure {
+pub(super) fn atlas_error(error: ReconstructionAtlasError) -> super::super::Failure {
     match error {
         ReconstructionAtlasError::Localization(LocalizationError::Geometry(
             GeometryError::Cancelled,
@@ -574,7 +574,7 @@ fn analyze(options: &Options, root: &Path, cx: &ReplayCx) -> Result<Export> {
     })
 }
 
-fn write_archive(
+pub(super) fn write_archive(
     path: &Path,
     bytes: &[u8],
     cx: &ReplayCx,

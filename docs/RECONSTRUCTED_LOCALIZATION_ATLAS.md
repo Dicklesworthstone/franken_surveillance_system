@@ -5,6 +5,11 @@ reconstructions into a portable `FSATLAS1` localization atlas. The existing
 `fss-file localize` command can use that atlas to register another camera against
 the same imported property twin.
 
+To use currently adopted FSSCAL camera geometry, use
+[`retained-calibrated-atlas`](ADOPTED_RECONSTRUCTION_ATLAS.md). It preserves the
+same FSATLAS1 archive and consumer while verifying current adoption and original
+calibration inputs throughout export.
+
 The command supports the exact existing retained pair and multi-camera v1/v2
 queries, including mixed direct and lens-corrected JPEG/AVC/HEVC sources. It
 reconstructs the original inputs again and uses actual native descriptors and

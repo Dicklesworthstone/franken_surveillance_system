@@ -43,9 +43,9 @@ use super::{
 const DEFAULT_WORK: u64 = 8_000_000_000;
 const MAX_WORK: u64 = 16_000_000_000;
 const MAX_REPORT_BYTES: usize = 32 * 1024 * 1024;
-const JPEG_WORK: u64 = 2_000_000_000;
-const VIDEO_BYTES: u64 = 512 * 1024 * 1024;
-const VIDEO_LUMA: u64 = 2_147_483_648;
+pub(super) const JPEG_WORK: u64 = 2_000_000_000;
+pub(super) const VIDEO_BYTES: u64 = 512 * 1024 * 1024;
+pub(super) const VIDEO_LUMA: u64 = 2_147_483_648;
 
 const HELP: &str = "fss-scene-fuse retained-calibrated-match --root DEPLOYMENT --site SITE\n\
     --twin PROPERTY.fsstwin --rig ADOPTED-CAMERAS.json --query QUERY.json\n\
@@ -125,7 +125,7 @@ fn count(value: u64) -> String {
     string(&value.to_string())
 }
 
-fn work_error(error: GeometryError) -> super::super::Failure {
+pub(super) fn work_error(error: GeometryError) -> super::super::Failure {
     fail(
         if error == GeometryError::Cancelled {
             "ERR-SCENE-FUSION-CANCELLED-001"
@@ -136,7 +136,7 @@ fn work_error(error: GeometryError) -> super::super::Failure {
     )
 }
 
-fn rig_error(error: SceneRigError) -> super::super::Failure {
+pub(super) fn rig_error(error: SceneRigError) -> super::super::Failure {
     match error {
         SceneRigError::Geometry(
             inner @ (GeometryError::Cancelled
@@ -157,7 +157,7 @@ fn relative_to_rig(rig: &Path, file: &str) -> PathBuf {
     }
 }
 
-fn same_selected_sensors(query: &MatchingQuery, declaration: &AdoptedRig) -> Result<()> {
+pub(super) fn same_selected_sensors(query: &MatchingQuery, declaration: &AdoptedRig) -> Result<()> {
     let selected: BTreeSet<_> = query.views().iter().map(|v| v.camera).collect();
     if selected != declaration.cameras.iter().map(|v| v.camera).collect() {
         return Err(input_error(
@@ -179,7 +179,10 @@ fn same_selected_sensors(query: &MatchingQuery, declaration: &AdoptedRig) -> Res
     Ok(())
 }
 
-fn declared_modes(query: &MatchingQuery, calibration: &RetainedSceneCalibration) -> Result<()> {
+pub(super) fn declared_modes(
+    query: &MatchingQuery,
+    calibration: &RetainedSceneCalibration,
+) -> Result<()> {
     for view in query.views() {
         let camera = calibration
             .camera(view.camera)
@@ -207,7 +210,10 @@ fn declared_modes(query: &MatchingQuery, calibration: &RetainedSceneCalibration)
     Ok(())
 }
 
-fn actual_modes(views: &[FeatureView], calibration: &RetainedSceneCalibration) -> Result<()> {
+pub(super) fn actual_modes(
+    views: &[FeatureView],
+    calibration: &RetainedSceneCalibration,
+) -> Result<()> {
     for view in views {
         let camera = calibration
             .camera(view.camera.camera)
@@ -241,7 +247,7 @@ fn snapshot<'a>(v: &ResolvedFrame<'a>) -> ResolvedFrame<'a> {
     }
 }
 
-fn bind(
+pub(super) fn bind(
     query: &MatchingQuery,
     snapshots: &[ResolvedFrame<'_>],
     rig: &SceneRig,
@@ -260,7 +266,7 @@ fn bind(
     }
 }
 
-fn load_calibration(
+pub(super) fn load_calibration(
     options: &Options,
     declaration: &AdoptedRig,
     deployment: &ReferenceDeployment,
@@ -734,4 +740,4 @@ pub(super) fn run(args: &[OsString], out: &mut impl Write) -> Result<bool> {
 
 #[cfg(test)]
 #[path = "calibrated_tests.rs"]
-mod tests;
+pub(super) mod tests;

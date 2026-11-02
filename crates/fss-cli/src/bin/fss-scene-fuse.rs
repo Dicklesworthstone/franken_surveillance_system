@@ -73,7 +73,8 @@ For automatic matching of retained camera frames, use fss-scene-fuse retained-ma
 For joint matching across 3-8 retained cameras, use fss-scene-fuse retained-multimatch --help.\n\
 For a reusable localization atlas from retained scene matches, use fss-scene-fuse retained-atlas --help.\n\
 For automatic moving-feature reconstruction across frames, use fss-scene-fuse retained-motion-match --help.\n\
-For reconstruction using currently adopted camera geometry, use fss-scene-fuse retained-calibrated-match --help.\n";
+For reconstruction using currently adopted camera geometry, use fss-scene-fuse retained-calibrated-match --help.\n\
+For localization atlases built with adopted cameras, use fss-scene-fuse retained-calibrated-atlas --help.\n";
 
 #[derive(Debug)]
 struct Failure {
@@ -374,6 +375,8 @@ fn main() -> ExitCode {
         retained_matching::run_temporal(&args[1..], &mut io::stdout().lock())
     } else if args.first().and_then(|arg| arg.to_str()) == Some("retained-calibrated-match") {
         retained_matching::run_calibrated(&args[1..], &mut io::stdout().lock())
+    } else if args.first().and_then(|arg| arg.to_str()) == Some("retained-calibrated-atlas") {
+        retained_matching::run_calibrated_atlas(&args[1..], &mut io::stdout().lock())
     } else if args.first().and_then(|arg| arg.to_str()) == Some("retained-atlas") {
         retained_matching::run_atlas(&args[1..], &mut io::stdout().lock())
     } else if args.first().and_then(|arg| arg.to_str()) == Some("retained-match") {

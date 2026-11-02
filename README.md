@@ -459,6 +459,14 @@ error unknown. The initial profile requires the original calibrated pinhole
 image domain. See
 [`docs/ADOPTED_CALIBRATION_RECONSTRUCTION.md`](docs/ADOPTED_CALIBRATION_RECONSTRUCTION.md).
 
+`fss-scene-fuse retained-calibrated-atlas` exports selected static points from
+that **current adopted geometry** as a portable FSATLAS1 localization atlas.
+The existing `fss-file localize` consumer can register a fresh camera from its
+actual reference descriptors. Complete calibration, source/privacy provenance
+and scene alternatives remain in the manifest; final adoption/withdrawal checks
+stay protected through publication. See
+[`docs/ADOPTED_RECONSTRUCTION_ATLAS.md`](docs/ADOPTED_RECONSTRUCTION_ATLAS.md).
+
 ## ATP archive, repair, and deletion
 
 Source media, evidence bundles, checkpoints, model packages, graph/search/calibration/twin

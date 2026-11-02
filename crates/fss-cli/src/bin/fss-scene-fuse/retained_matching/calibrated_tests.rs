@@ -81,20 +81,20 @@ fn image_domain(value: &Value) -> Test<ContentDigest> {
     }
 }
 
-struct AdoptedFixture {
-    base: Fixture,
-    calibration: SiteCalibration,
-    calibration_path: PathBuf,
+pub(in super::super) struct AdoptedFixture {
+    pub(in super::super) base: Fixture,
+    pub(in super::super) calibration: SiteCalibration,
+    pub(in super::super) calibration_path: PathBuf,
     inputs: Vec<Vec<u8>>,
-    input_paths: Vec<PathBuf>,
+    pub(in super::super) input_paths: Vec<PathBuf>,
     rig: Value,
-    adoptions: Vec<ContentDigest>,
+    pub(in super::super) adoptions: Vec<ContentDigest>,
 }
 impl AdoptedFixture {
-    fn pair(label: &str) -> Test<Self> {
+    pub(in super::super) fn pair(label: &str) -> Test<Self> {
         Self::from_source(Fixture::new(label)?, true)
     }
-    fn from_source(mut base: Fixture, retain: bool) -> Test<Self> {
+    pub(in super::super) fn from_source(mut base: Fixture, retain: bool) -> Test<Self> {
         let nominal = parse(std::str::from_utf8(&fs::read(&base.options.rig)?)?)?;
         let cameras = rows(&nominal, &["cameras"])?;
         let sources = query_views(&base.document)?;
@@ -324,7 +324,7 @@ impl AdoptedFixture {
         self.base.set_query(&query)?;
         Ok(())
     }
-    fn refresh_anchor(&mut self) -> Test {
+    pub(in super::super) fn refresh_anchor(&mut self) -> Test {
         self.base.head = self.base.head()?;
         self.base.options.expected_anchor = Some(anchor_digest(&self.base.head));
         Ok(())
@@ -338,6 +338,19 @@ impl AdoptedFixture {
         }
         Ok(())
     }
+}
+
+/// Reuse actual calibrated reconstruction without publishing a preview report file.
+/// The returned bytes carry no authority lease: the deployment lock is released here.
+pub(in super::super) fn preview_json(f: &AdoptedFixture) -> Test<String> {
+    let cx = context(&f.base.options.root)?;
+    let result = analyze(&f.base.options, &f.base.options.root, &cx);
+    let report = checked(result)?;
+    assert!(report.reconstructed);
+    let json = report.json.clone();
+    drop(report);
+    cx.drain_and_finalize();
+    Ok(json)
 }
 
 fn estimates<'a>(value: &'a Value, output: &mut Vec<&'a Value>) {

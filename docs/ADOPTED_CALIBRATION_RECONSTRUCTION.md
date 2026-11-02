@@ -6,6 +6,11 @@ the exact currently adopted intrinsics and poses for stereo points, joint
 multi-camera points, or moving-feature trajectories. Original camera sources,
 current privacy and calibration adoption remain separately authenticated.
 
+For static pair or multi-camera results, the companion
+[`retained-calibrated-atlas`](ADOPTED_RECONSTRUCTION_ATLAS.md) command exports
+selected points and their actual reference descriptors as a portable atlas for
+the existing `fss-file localize` camera-registration workflow.
+
 ## Run an analysis
 
 Start with the canonical calibration produced by `fss-event calibrate` and

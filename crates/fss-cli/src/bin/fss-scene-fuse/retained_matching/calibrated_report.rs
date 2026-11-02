@@ -29,6 +29,23 @@ pub(super) struct GeometryReport {
     pub solved: usize,
     pub unresolved: usize,
     pub occlusion_conflicts: usize,
+    // Keep the original immutable association for the native atlas producer. Serialized
+    // coordinates or descriptors never become a replacement reconstruction input.
+    association: NativeGeometry,
+}
+
+impl GeometryReport {
+    /// Borrow exactly the native static result that produced this complete report.
+    /// Constant-velocity fits cannot be promoted into enduring static landmarks.
+    pub(super) fn static_reconstruction(&self) -> Result<Reconstruction<'_>> {
+        match &self.association {
+            NativeGeometry::Pair(value) => Ok(Reconstruction::Pair(value)),
+            NativeGeometry::Multi(value) => Ok(Reconstruction::Multiview(value)),
+            NativeGeometry::Temporal(_) => Err(super::input_error(
+                "a moving-feature reconstruction cannot supply a static localization atlas",
+            )),
+        }
+    }
 }
 
 fn digest(value: ContentDigest) -> String {
@@ -103,6 +120,7 @@ pub(super) fn geometry(
         solved: analysis.solved,
         unresolved: analysis.unresolved,
         occlusion_conflicts: analysis.occlusion_conflicts,
+        association: analysis.association,
     })
 }
 

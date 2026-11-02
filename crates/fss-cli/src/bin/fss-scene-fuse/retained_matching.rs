@@ -3,6 +3,10 @@
 
 #[path = "retained_matching/calibrated.rs"]
 mod calibrated;
+#[path = "retained_matching/calibrated_atlas.rs"]
+mod calibrated_atlas;
+#[path = "retained_matching/calibrated_atlas_report.rs"]
+mod calibrated_atlas_report;
 #[path = "retained_matching/calibrated_input.rs"]
 mod calibrated_input;
 #[path = "retained_matching/calibrated_report.rs"]
@@ -662,4 +666,9 @@ pub(super) fn run_temporal(args: &[OsString], out: &mut impl Write) -> Result<bo
 
 pub(super) fn run_calibrated(args: &[OsString], out: &mut impl Write) -> Result<bool> {
     calibrated::run(args, out)
+}
+
+/// Export explicitly selected static points using exact currently adopted camera geometry.
+pub(super) fn run_calibrated_atlas(args: &[OsString], out: &mut impl Write) -> Result<bool> {
+    calibrated_atlas::run(args, out)
 }

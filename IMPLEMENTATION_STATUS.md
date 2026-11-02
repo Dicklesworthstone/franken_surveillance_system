@@ -1,6 +1,6 @@
 # Implementation status
 
-**As of:** 2026-11-01 (dated feature sections retain their original verification scope)
+**As of:** 2026-11-02 (dated feature sections retain their original verification scope)
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
@@ -9,6 +9,51 @@
 Franken Surveillance System now has a coherent, dependency-light Rust reference spine from immutable source evidence through canonical authority state, guarded external effects, agent situation projection, meaningful deltas, exact continuation, and progressive semantic hydration. The repository is no longer merely an architecture corpus or crate skeleton.
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
+
+## Localization atlas from adopted cameras (2026-11-02, command integration)
+
+`fss-scene-fuse retained-calibrated-atlas` connects currently adopted FSSCAL01/02
+camera geometry to the existing native reconstruction-atlas producer and
+FSATLAS1 localization consumer. Static pair and 3–8-camera queries can export
+explicitly selected points and actual reference descriptors without an authored
+pose rig. The exact adopted-rig and static selection contracts are reused;
+moving-feature queries and invalid twin feature ordinals refuse before decoding.
+The original calibrated pinhole image profile remains required.
+
+The new strict report and exact-byte manifest retain complete current calibration
+and covariance provenance, original camera inputs, source/privacy records, all
+native scene alternatives, static eligibility declarations and member bindings.
+Absolute camera/landmark error remains unknown. Original source, current privacy
+and adoption/withdrawal custody revalidate after construction; the exclusive
+deployment owner stays alive through archive, report and stdout publication.
+Final independent cost axes include revalidation and final report serialization.
+The archive format, existing consumer and nominal atlas command remain unchanged.
+
+Ten new pure production serializer contracts pass, including exact manifest/body
+hashes, archive inventory pins, complete diagnostics, final cost accounting,
+output bounds and cancellation; their scoped strict Clippy gate also passes.
+Five genuine native reconstruction/archive/localization contracts pass again.
+An additional actual JPEG oracle executes native decoding, extraction, stereo
+and three-camera reconstruction, FSATLAS1 encoding/decoding and localization
+from newly generated pixels: both atlases supply 26 matches and recover the
+synthetic fresh camera center `[0.5, 0, 0]` within `7.3e-12` source units, with
+RMS below `4.9e-12` pixels. These deterministic fixtures qualify the native
+computation, not real-world camera accuracy or retained custody.
+
+Ten real command-owner contracts are added for actual retained JPEG/adoption
+exports and fresh-image consumption, changed adoption/privacy, corrupt or missing
+custody, exact selection pins, temporal refusal, resource limits, cancellation
+and deployment ownership through successful/failing stdout. Genuine
+`cargo check --locked --offline -p fss-cli --bin fss-scene-fuse --tests` passes
+with the pinned compiler and real runtime, including the new command and all
+new owner tests. Runtime execution of these owner contracts remains pending.
+The offline schema catalog resolves 125 schemas and 1,771 references with zero
+errors; the two new schemas pass Draft 2020-12 validation. Six actual native
+pair/multi-camera geometry fixtures validate in the manifest, while all three
+temporal fixtures correctly refuse its static-only contract. Existing
+constitution findings remain unchanged. See
+`docs/ADOPTED_RECONSTRUCTION_ATLAS.md` for the complete preview, selection,
+export and localization workflow.
 
 ## Reconstruction from adopted calibration (2026-11-01, command integration)
 
