@@ -20,11 +20,17 @@ use super::{Result, atlas_report, fail, input_error};
 pub(super) const MANIFEST_SCHEMA: &str = "fss.reconstruction_atlas_adopted_provenance.v1";
 pub(super) const REPORT_SCHEMA: &str = "fss.reconstruction_atlas_adopted.v1";
 const BODY_SCHEMA: &str = "fss.reconstruction_atlas_adopted_report.v1";
+pub(super) const RECTIFIED_MANIFEST_SCHEMA: &str = "fss.reconstruction_atlas_adopted_provenance.v2";
+pub(super) const RECTIFIED_REPORT_SCHEMA: &str = "fss.reconstruction_atlas_adopted.v2";
+const RECTIFIED_BODY_SCHEMA: &str = "fss.reconstruction_atlas_adopted_report.v2";
 const MAX_REPORT_BYTES: usize = 32 * 1024 * 1024;
 const MAX_COST_BYTES: usize = 4096;
 
 /// Exact immutable declarations, native results and owner-produced current lineage.
 pub(super) struct ManifestInput<'a> {
+    /// Explicit v2 adopted image-profile admission, established by the command before decoding.
+    /// This flag chooses the envelope only; it never authenticates a model or changes pixels.
+    pub rectification: bool,
     pub twin: &'a PropertyTwin,
     pub geometry_basis: (u64, u64),
     pub rig_digest: ContentDigest,
@@ -50,6 +56,7 @@ pub(super) struct ManifestInput<'a> {
 pub(super) struct Manifest {
     pub json: String,
     pub digest: ContentDigest,
+    rectification: bool,
     atlas_digest: [u8; 32],
     descriptor_digest: [u8; 32],
     landmarks: usize,
@@ -109,6 +116,36 @@ pub(super) fn assumptions() -> String {
         "capture_window_stationarity_does_not_establish_enduring_landmark_stability",
         "absolute_landmark_error_remains_unknown_and_is_not_derived_from_pixel_covariance",
         "reconstruction_pixel_covariance_excludes_shared_camera_map_lens_clock_and_correspondence_error",
+        "local_calibration_covariance_is_conditional_and_has_no_cross_camera_covariance_blocks",
+        "archive_checksums_do_not_grant_source_access_or_establish_future_source_privacy",
+        "reference_exposures_are_not_independent_localization_validation_observations",
+        "coordinates_remain_in_the_exact_twin_source_units_and_scale_basis",
+    ].map(string))
+}
+
+/// The v2 envelope preserves explicit native image-model admission and its remaining limits.
+/// Original pinhole v1 assumptions are intentionally left byte-for-byte unchanged.
+pub(super) fn rectified_assumptions() -> String {
+    array(&[
+        "atlas_is_a_derived_candidate_and_does_not_activate_calibration_or_change_the_twin",
+        "current_adoption_is_owner_authority_not_an_independent_physical_calibration_measurement",
+        "source_camera_poses_and_intrinsics_come_only_from_the_exact_current_adopted_candidate",
+        "source_domain_refined_intrinsics_and_two_term_radial_model_come_only_from_the_exact_current_calibration",
+        "native_rectification_target_is_the_exact_refined_original_camera_grid_without_crop_zoom_or_rotation_override",
+        "nonzero_radial_sources_require_native_rectification_and_zero_radial_direct_sources_preserve_the_original_domain",
+        "rectified_views_use_declared_radius_and_luma_transfer_not_calibration_measurements",
+        "every_requested_lens_plan_is_admitted_before_source_decode_and_full_model_map_mask_and_image_receipts_are_preserved",
+        "native_rectification_preserves_original_exposure_and_requires_all_positive_weight_privacy_taps_and_descriptor_support",
+        "current_adoption_and_withdrawal_are_revalidated_at_the_report_anchor_before_publication",
+        "all_original_source_ranges_and_current_privacy_are_revalidated_before_publication",
+        "enduring_static_eligibility_and_twin_feature_assignments_are_explicit_owner_declarations",
+        "physical_groups_are_declared_alias_groups_not_authenticated_object_identity",
+        "all_selected_landmark_member_views_and_actual_native_descriptors_are_preserved",
+        "all_unselected_candidates_and_geometric_refusals_remain_in_the_manifest",
+        "capture_window_stationarity_does_not_establish_enduring_landmark_stability",
+        "absolute_landmark_error_remains_unknown_and_is_not_derived_from_pixel_covariance",
+        "reconstruction_pixel_covariance_excludes_interpolation_correlations_and_lens_parameter_error",
+        "reconstruction_pixel_covariance_excludes_shared_camera_map_clock_and_correspondence_error",
         "local_calibration_covariance_is_conditional_and_has_no_cross_camera_covariance_blocks",
         "archive_checksums_do_not_grant_source_access_or_establish_future_source_privacy",
         "reference_exposures_are_not_independent_localization_validation_observations",
@@ -212,7 +249,14 @@ pub(super) fn manifest(
     work.charge(65_536 + receipt.len() as u64 * 8)
         .map_err(work_error)?;
     let json = object(&[
-        ("schema", string(MANIFEST_SCHEMA)),
+        (
+            "schema",
+            string(if input.rectification {
+                RECTIFIED_MANIFEST_SCHEMA
+            } else {
+                MANIFEST_SCHEMA
+            }),
+        ),
         ("authority", string("derived_cognition_no_effect_authority")),
         ("twin_digest", digest(input.twin.digest())),
         (
@@ -269,7 +313,14 @@ pub(super) fn manifest(
         ("source_records", array(input.source_records)),
         ("geometry", input.geometry.to_owned()),
         ("atlas_build", receipt),
-        ("assumptions", assumptions()),
+        (
+            "assumptions",
+            if input.rectification {
+                rectified_assumptions()
+            } else {
+                assumptions()
+            },
+        ),
     ]);
     bounded_length(
         json.len(),
@@ -281,6 +332,7 @@ pub(super) fn manifest(
     Ok(Manifest {
         json,
         digest,
+        rectification: input.rectification,
         atlas_digest: input.build.atlas_digest,
         descriptor_digest,
         landmarks: input.build.landmarks.len(),
@@ -325,7 +377,14 @@ pub(super) fn finish(
         ));
     }
     let body = object(&[
-        ("schema", string(BODY_SCHEMA)),
+        (
+            "schema",
+            string(if manifest.rectification {
+                RECTIFIED_BODY_SCHEMA
+            } else {
+                BODY_SCHEMA
+            }),
+        ),
         ("outcome", string("candidate_export")),
         (
             "archive",
@@ -345,7 +404,14 @@ pub(super) fn finish(
         ("cost", cost),
     ]);
     let json = object(&[
-        ("schema", string(REPORT_SCHEMA)),
+        (
+            "schema",
+            string(if manifest.rectification {
+                RECTIFIED_REPORT_SCHEMA
+            } else {
+                REPORT_SCHEMA
+            }),
+        ),
         (
             "report_digest",
             string(&ContentDigest::sha256(body.as_bytes()).to_text()),

@@ -118,12 +118,18 @@ alignment, establish an expiry or prove that the physical camera has not moved.
 
 ## Image compatibility and current authority
 
-This first profile requires images already in the **exact original calibrated
+The v1 rig profile requires images already in the **exact original calibrated
 pinhole domain**. FSSCAL01 correspondence inputs and FSSCAL02 frame inputs are
 supported. The command verifies original input bytes, image-domain identity,
 actual decoded dimensions and, where recorded, JPEG component interpretation.
-Nonzero radial distortion and v2 rectification declarations refuse explicitly.
+Nonzero radial distortion and rectification declarations refuse in this profile.
 Matching dimensions alone do not establish compatible crop or lens geometry.
+
+Use rig schema `fss.scene_camera_rig_adopted.v2` for explicitly verified native
+radial correction. It derives the lens model and fixed target grid from the
+current calibration, supports mixed zero-radial direct and corrected sources,
+and returns v2 reports. See [adopted lens reconstruction](ADOPTED_LENS_RECONSTRUCTION.md)
+for exact source-model declarations and compatibility behavior.
 
 Each selected retained source must name the physical sensor bound by the
 current adoption. The receipt must agree on calibration identity, camera

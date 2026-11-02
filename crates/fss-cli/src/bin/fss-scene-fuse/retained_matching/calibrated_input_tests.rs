@@ -538,6 +538,138 @@ fn otherwise_valid_raw_lens_queries_fail_before_any_source_decode() -> Test {
 }
 
 #[test]
+fn radial_image_profile_requires_exact_v2_rig_and_preserves_all_dependencies() -> Test {
+    let original = rig_document(3)?;
+    let pinhole = checked(parse_rig(shared::json(&original).as_bytes()))?;
+    assert!(!pinhole.rectification);
+    let bytes = replace(&original, &["schema"], Value::Text(RECTIFIED_SCHEMA.into()))?;
+    let mut rectified = checked(parse_rig(bytes.as_bytes()))?;
+    assert!(rectified.rectification);
+    rectified.rectification = false;
+    assert_eq!(rectified, pinhole);
+    for schema in [
+        "fss.scene_camera_rig_adopted.v3",
+        "fss.scene_camera_rig_adopted.v2 ",
+    ] {
+        let bytes = replace(&original, &["schema"], Value::Text(schema.into()))?;
+        assert!(parse_rig(bytes.as_bytes()).is_err());
+    }
+    let v2 = json_input::parse(&bytes)?;
+    for key in [
+        "intrinsics",
+        "pose",
+        "distortion",
+        "status",
+        "calibration_error",
+    ] {
+        let forged = add(&v2, &["cameras", "0"], key, Value::Bool(true))?;
+        assert!(parse_rig(forged.as_bytes()).is_err());
+    }
+    Ok(())
+}
+
+#[test]
+fn explicit_v2_profile_dispatches_raw_pair_multi_and_repeated_camera_queries() -> Test {
+    let rig_pin = h("exact-adopted-rig-document");
+    let pinhole = checked(parse_rig(shared::json(&rig_document(3)?).as_bytes()))?;
+    let rectified = checked(parse_rig(
+        replace(
+            &rig_document(3)?,
+            &["schema"],
+            Value::Text(RECTIFIED_SCHEMA.into()),
+        )?
+        .as_bytes(),
+    ))?;
+    for schema in [
+        shared::SCHEMA_V2,
+        multiview::input::SCHEMA_V2,
+        temporal_input::SCHEMA,
+    ] {
+        let mut query = query_document(schema)?;
+        match schema {
+            shared::SCHEMA_V2 => *at(&mut query, &["left", "image"])? = raw_image()?,
+            multiview::input::SCHEMA_V2 => {
+                *at(&mut query, &["views", "2", "image"])? = raw_image()?
+            }
+            _ => {
+                *at(&mut query, &["views", "0", "image"])? = raw_image()?;
+                *at(&mut query, &["views", "2", "image"])? = raw_image()?;
+            }
+        }
+        let bytes = shared::json(&query);
+        assert!(MatchingQuery::for_rig(bytes.as_bytes(), rig_pin, &pinhole).is_err());
+        let admitted = checked(MatchingQuery::for_rig(
+            bytes.as_bytes(),
+            rig_pin,
+            &rectified,
+        ))?;
+        assert_eq!(json_input::parse(admitted.declarations())?, query);
+        assert!(
+            admitted
+                .views()
+                .iter()
+                .any(|view| matches!(view.image, ImageDeclaration::Rectified(_)))
+        );
+        assert!(
+            MatchingQuery::for_rig(bytes.as_bytes(), h("another-rig-file"), &rectified).is_err()
+        );
+        if schema == temporal_input::SCHEMA {
+            // A fixed camera cannot silently change its source lens between exposures.
+            *at(&mut query, &["views", "2", "image", "lens_basis"])? =
+                Value::Text(h("different-lens").to_text());
+            assert!(
+                MatchingQuery::for_rig(shared::json(&query).as_bytes(), rig_pin, &rectified)
+                    .is_err()
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn v2_profile_keeps_direct_queries_and_existing_source_and_numeric_refusals() -> Test {
+    let rig_pin = h("exact-adopted-rig-document");
+    let rig = checked(parse_rig(
+        replace(
+            &rig_document(3)?,
+            &["schema"],
+            Value::Text(RECTIFIED_SCHEMA.into()),
+        )?
+        .as_bytes(),
+    ))?;
+    for schema in QUERY_SCHEMAS {
+        let query = query_document(schema)?;
+        assert!(MatchingQuery::for_rig(shared::json(&query).as_bytes(), rig_pin, &rig).is_ok());
+        let duplicate = add(&query, &[], "pose_override", Value::Array(vec![]))?;
+        assert!(MatchingQuery::for_rig(duplicate.as_bytes(), rig_pin, &rig).is_err());
+    }
+    let mut query = query_document(shared::SCHEMA_V2)?;
+    *at(&mut query, &["left", "image"])? = raw_image()?;
+    for (path, value) in [
+        (
+            vec!["left", "image", "source_intrinsics", "width"],
+            Value::Number("4097".into()),
+        ),
+        (
+            vec!["left", "image", "distortion", "radial"],
+            Value::Array(vec![Value::Number("0.1".into())]),
+        ),
+        (
+            vec!["left", "image", "maximum_radius"],
+            Value::Number("0".into()),
+        ),
+        (
+            vec!["left", "image", "lens_basis"],
+            Value::Text(format!("sha256:{}", "0".repeat(64))),
+        ),
+    ] {
+        let bad = replace(&query, &path, value)?;
+        assert!(MatchingQuery::for_rig(bad.as_bytes(), rig_pin, &rig).is_err());
+    }
+    Ok(())
+}
+
+#[test]
 fn query_dispatch_preserves_exact_rig_pin_schema_and_existing_policy_refusals() -> Test {
     let rig = h("exact-adopted-rig-document");
     for schema in QUERY_SCHEMAS {

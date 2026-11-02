@@ -410,3 +410,43 @@ pub(super) fn assumptions(kind: &str) -> String {
     }
     array(&values.into_iter().map(string).collect::<Vec<_>>())
 }
+
+/// Explicit adopted-radial profile; the original pinhole assumption bytes remain unchanged.
+pub(super) fn rectified_assumptions(kind: &str) -> String {
+    let mut values = vec![
+        "retained_adoption_is_owner_authority_not_a_physical_measurement_of_camera_currency",
+        "current_calibration_adoption_and_withdrawal_are_revalidated_before_report_release",
+        "all_original_source_ranges_and_current_privacy_are_revalidated_before_report_release",
+        "camera_sensor_binding_and_both_calibration_generations_are_exact_retained_dependencies",
+        "source_domain_refined_intrinsics_and_two_term_radial_model_come_only_from_the_exact_current_calibration",
+        "native_rectification_target_is_the_exact_refined_original_camera_grid_without_crop_zoom_or_rotation_override",
+        "nonzero_radial_sources_require_native_rectification_and_zero_radial_direct_sources_preserve_the_original_domain",
+        "rectified_views_use_declared_radius_and_luma_transfer_not_calibration_measurements",
+        "every_requested_lens_plan_is_admitted_before_source_decode_and_full_model_map_mask_and_image_receipts_are_preserved",
+        "native_rectification_preserves_original_exposure_and_requires_all_positive_weight_privacy_taps_and_descriptor_support",
+        "sigma_pixels_is_declared_on_the_actual_output_grid_and_excludes_interpolation_correlations_and_lens_parameter_error",
+        "source_object_binding_clock_alignment_privacy_namespace_and_validity_interval_are_owner_declarations",
+        "camera_absolute_error_is_unknown_and_never_inferred_from_fit_rms_or_covariance",
+        "calibration_covariance_is_a_conditional_local_marginal_without_cross_camera_blocks",
+        "scene_covariance_covers_declared_pixel_noise_not_calibration_map_lens_clock_or_motion_model_error",
+        "shared_calibration_and_camera_errors_are_not_cancelled_or_counted_as_independent_evidence",
+        "appearance_correspondences_are_conditional_hypotheses_not_physical_identity",
+        "nominal_mesh_occlusion_conflicts_are_preserved_and_preclude_strict_success",
+        "unmatched_isolated_features_remain_diagnostics_and_all_nontrivial_alternatives_remain_visible",
+        "no_calibration_world_revision_event_identity_or_effect_is_activated_by_this_report",
+    ];
+    if kind == "temporal" {
+        values.extend([
+            "motion_is_constant_velocity_over_the_complete_capture_hull",
+            "nominal_exposure_times_are_interval_midpoints_without_clock_or_rolling_shutter_estimation",
+            "every_fitted_component_uses_the_requested_global_scene_time_and_must_bracket_it",
+            "repeated_source_bytes_across_distinct_exposures_do_not_establish_independent_sensors",
+        ]);
+    } else {
+        values.push("selected_features_are_stationary_over_the_complete_capture_hull");
+        if kind == "static_multiview" {
+            values.push("each_static_subset_solve_time_is_explicitly_clamped_to_its_capture_hull_under_the_full_hull_stationarity_assumption");
+        }
+    }
+    array(&values.into_iter().map(string).collect::<Vec<_>>())
+}

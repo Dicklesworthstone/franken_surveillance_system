@@ -455,8 +455,10 @@ The exact calibration, original camera inputs, physical sensors and retained
 adoption receipts determine the intrinsics and poses. Current adoption/withdrawal
 and source/privacy custody are revalidated before release. Reports preserve
 calibration provenance and conditional covariance while keeping absolute camera
-error unknown. The initial profile requires the original calibrated pinhole
-image domain. See
+error unknown. Rig v1 uses the original calibrated pinhole image domain;
+**rig v2 supports the adopted radial lens model through native correction**,
+binding exact source intrinsics, original domain and calibration identity before
+decoding. See [adopted lens reconstruction](docs/ADOPTED_LENS_RECONSTRUCTION.md) and
 [`docs/ADOPTED_CALIBRATION_RECONSTRUCTION.md`](docs/ADOPTED_CALIBRATION_RECONSTRUCTION.md).
 
 `fss-scene-fuse retained-calibrated-atlas` exports selected static points from

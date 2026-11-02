@@ -10,6 +10,52 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Adopted radial reconstruction and atlas export (2026-11-02, command integration)
+
+The adopted-camera commands now execute native radial correction before stereo,
+multi-camera and moving-feature reconstruction, and before static localization
+atlas export. An explicit `fss.scene_camera_rig_adopted.v2` selects this profile;
+every declared source matrix, original domain, semantic lens basis and two-term
+Brown coefficient vector must match the sealed current calibration exactly.
+All maps compile before decoding. Actual corrected domains, dimensions, maps,
+exposures and privacy receipts bind back to those plans before geometry runs.
+The target grid remains the refined original camera grid. Mixed rigs may retain
+direct images only for zero-radial cameras. Original v1 contracts and FSATLAS1
+remain unchanged.
+
+New v2 reports and atlas manifests preserve original and corrected provenance,
+conditional camera covariance, coverage exclusions, all native alternatives and
+unresolved components. Full interpolation and descriptor support must be allowed
+by current privacy. Original-source, current-privacy and adoption/withdrawal
+checks still precede publication under the exclusive deployment owner. Absolute
+camera and landmark error remain unknown; these outputs activate no calibration,
+twin revision, identity or effect.
+
+Genuine pinned-runtime execution now passes **267 tests** across the reference
+calibration owner (**20**), adopted rig library (**4**) and complete scene command
+binary (**243**). This closes the earlier execution gap for retained adopted
+matching and atlas command owners. The final report-helper source also passes
+its **14-test** focused rerun, a subset of the scene suite, and scoped strict
+Clippy passes. The new command cases exercise real retained JPEG/adoption paths,
+model mismatch and folding refusals, privacy, changed authority, source
+corruption, bounded work/output, cancellation and exclusive publication.
+
+Independent distorted JPEG fixtures produce 49 solved stereo points, 56 solved
+multi-camera components (40 complete triples, one unresolved component), and
+49 solved stationary trajectories (30 unresolved components). Unresolved cases
+retain the existing non-success analysis outcome. At authored depth 10, maximum
+nominal depth error is 0.666667 source units; maximum absolute stationary velocity
+component is below `1.46e-13`. These fixture measurements do not establish physical
+accuracy. The static atlas contains 49 landmarks, two references and 98 bindings
+in 13,841 bytes and passes native decode and exact re-encoding. Privacy controls
+exclude 640 interpolated output pixels while retaining original exposures.
+
+All four complete actual command reports and the exact atlas manifest validate
+against the new schemas, including exact serialized body/manifest digest checks.
+The catalog resolves **129 schemas and 1,958 references with zero errors**;
+all v1 schemas remain unchanged. See `docs/ADOPTED_LENS_RECONSTRUCTION.md` for
+the complete model declarations, compatibility and reconstruction/export workflow.
+
 ## Adopted radial camera geometry (native integration)
 
 The sealed calibration owner now has an explicit
@@ -38,9 +84,8 @@ original-input/receipt custody, profile separation, cumulative allowances and
 cancellation. The genuine CLI library also executes all **4/4 typed-rig
 regressions** successfully, covering virtual geometry, mode handles, basis and
 full-inventory checks. Both suites use the pinned compiler and real runtime;
-no substituted dependency or authority owner is involved. Command-level v2 integration is
-the following implementation slice; the published commands at this checkpoint
-retain their original pinhole profile. See
+no substituted dependency or authority owner is involved. The command-level v2
+integration above binds this owner to actual corrected pixels. See
 `docs/RETAINED_SCENE_CALIBRATION_API.md` for the native ownership contract.
 
 ## Localization atlas from adopted cameras (2026-11-02, command integration)

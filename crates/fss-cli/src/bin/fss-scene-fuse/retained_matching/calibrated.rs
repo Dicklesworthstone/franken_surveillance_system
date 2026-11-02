@@ -21,7 +21,7 @@ use fss_reference::ingest::recorded_decode::video_budget::{
 use fss_reference::ingest::scene_calibration::{
     MAX_SCENE_CALIBRATION_AUTHORITY_BYTES, MAX_SCENE_CALIBRATION_INPUT_BYTES,
     RetainedSceneCalibration, SceneCalibrationBinding, SceneCalibrationRequest,
-    resolve_scene_calibration,
+    resolve_scene_calibration, resolve_scene_calibration_for_rectification,
 };
 use fss_reference::ingest::site_calibration::{MAX_CALIBRATION_BYTES, MAX_OBSERVATION_BYTES};
 use fss_reference::ingest::twin_localization::features::RecordedFeatureReadBudget;
@@ -31,7 +31,7 @@ use fss_twin::{ImportExpectation, ImportLimits, PropertyTwin, import_twin};
 
 use super::super::matching::report::scale;
 use super::calibrated_input::{AdoptedRig, MatchingQuery};
-use super::images::ImageDeclaration;
+use super::images::{ImageDeclaration, PreparedImage};
 use super::input::{ResolvedFrame, Source};
 use super::{
     FeatureInput, MAX_JSON_BYTES, MAX_TWIN_BYTES, Options, Result, SOURCE_BYTES,
@@ -56,9 +56,12 @@ calibrations. The rig schema fss.scene_camera_rig_adopted.v1 pins an FSSCAL01/02
 original camera input, each current adoption receipt and physical sensor. Intrinsics and\n\
 poses come exclusively from that verified calibration. No caller geometry override is allowed.\n\n\
 Use an existing retained-match v1/v2, retained-multimatch v1/v2 or retained-motion-match v1\n\
-query. All rig cameras must participate. The explicit first profile requires native images\n\
-already in the exact calibrated pinhole domain; raw lens correction is not admitted. Camera\n\
-clock, privacy, source-object mapping and use interval remain explicit owner declarations.\n\n\
+query. All rig cameras must participate. Rig v1 requires the original calibrated pinhole\n\
+domain. Rig fss.scene_camera_rig_adopted.v2 explicitly admits native radial rectification: the\n\
+query source K/grid/domain, Brown[k1,k2,0]/zero tangential terms and semantic FSSCAL lens_basis\n\
+must match adopted calibration exactly. Target K/grid remain the refined calibration values.\n\
+Every map compiles before decoding. Direct images require zero radial terms. Camera clock,\n\
+privacy, source-object mapping and use interval remain explicit owner declarations.\n\n\
 Every original source and the current adoption/withdrawal history are revalidated after\n\
 complete analysis. Missing, superseded, withdrawn or mismatched calibration refuses output.\n\
 The report retains every correspondence alternative, conditional covariance and nominal\n\
@@ -188,15 +191,29 @@ pub(super) fn declared_modes(
             .camera(view.camera)
             .ok_or_else(|| input_error("selected source has no verified calibration"))?;
         let basis = camera.image_basis();
-        let ImageDeclaration::Pinhole(domain) = view.image else {
-            return Err(input_error(
-                "adopted calibration requires the original native pinhole image domain",
-            ));
-        };
-        if domain.bytes() != basis.image.image_domain {
-            return Err(input_error(
-                "source image domain differs from the exact original calibration input",
-            ));
+        match view.image {
+            ImageDeclaration::Pinhole(domain) => {
+                if camera.record().distortion != [0.0, 0.0] {
+                    return Err(input_error(
+                        "nonzero adopted radial distortion requires explicit native rectification",
+                    ));
+                }
+                if domain.bytes() != basis.image.image_domain {
+                    return Err(input_error(
+                        "source image domain differs from the exact original calibration input",
+                    ));
+                }
+            }
+            ImageDeclaration::Rectified(raw) => {
+                let expected = calibration
+                    .rectification_spec(view.camera, raw.maximum_radius, raw.luma_range)
+                    .map_err(|e| fail(e.stable_id(), e.to_string()))?;
+                if raw.spec(camera.intrinsics()) != expected {
+                    return Err(input_error(
+                        "source domain, refined intrinsics, radial model or lens basis differs from adopted calibration",
+                    ));
+                }
+            }
         }
         if let (Some(expected), Source::Jpeg { interpretation, .. }) =
             (basis.interpretation, &view.source)
@@ -210,20 +227,46 @@ pub(super) fn declared_modes(
     Ok(())
 }
 
+/// Check the actual sealed source results against the exact plans compiled before decoding.
+/// Pair/multi/temporal binding preserves query order; each source receipt is already checked
+/// by images::bind, including raw pixels, privacy footprint, map and original exposure.
 pub(super) fn actual_modes(
     views: &[FeatureView],
     calibration: &RetainedSceneCalibration,
+    images: &[PreparedImage],
 ) -> Result<()> {
-    for view in views {
+    if views.len() != images.len() {
+        return Err(input_error(
+            "calibrated image plan and source inventory differ",
+        ));
+    }
+    for (view, image) in views.iter().zip(images) {
         let camera = calibration
             .camera(view.camera.camera)
             .ok_or_else(|| input_error("native source has no verified calibration"))?;
         let actual = view.frame.identity();
-        let original = camera.image_basis().image;
-        if actual.image_domain != original.image_domain || actual.dimensions != original.dimensions
+        if actual.image_domain != image.domain.bytes()
+            || actual.dimensions != camera.intrinsics().dimensions()
         {
             return Err(input_error(
                 "actual native feature image differs from the calibrated image mode",
+            ));
+        }
+        if let Some(plan) = &image.rectifier {
+            let spec = plan.spec();
+            let expected = calibration
+                .rectification_spec(view.camera.camera, spec.maximum_radius, spec.range)
+                .map_err(|e| fail(e.stable_id(), e.to_string()))?;
+            if spec != expected || actual.image_domain != plan.output_domain() {
+                return Err(input_error(
+                    "actual rectification plan differs from the exact adopted lens model",
+                ));
+            }
+        } else if camera.record().distortion != [0.0, 0.0]
+            || actual.image_domain != camera.image_basis().image.image_domain
+        {
+            return Err(input_error(
+                "direct native feature image differs from the calibrated pinhole source",
             ));
         }
     }
@@ -321,7 +364,12 @@ pub(super) fn load_calibration(
             camera_input: bytes.as_slice(),
         })
         .collect::<Vec<_>>();
-    resolve_scene_calibration(
+    let resolve = if declaration.rectification {
+        resolve_scene_calibration_for_rectification
+    } else {
+        resolve_scene_calibration
+    };
+    resolve(
         deployment,
         &SceneCalibrationRequest {
             calibration_bytes: &bytes,
@@ -333,6 +381,40 @@ pub(super) fn load_calibration(
         cx,
     )
     .map_err(|e| fail(e.stable_id(), e.to_string()))
+}
+
+/// Select the exact typed projection for the explicitly declared image profile.
+pub(super) fn project_rig(
+    twin: &PropertyTwin,
+    calibration: &RetainedSceneCalibration,
+    declaration: &AdoptedRig,
+    work: &mut WorkBudget<'_>,
+) -> Result<SceneRig> {
+    let declarations = declaration
+        .cameras
+        .iter()
+        .map(|camera| AdoptedSceneCameraBinding {
+            camera: camera.camera,
+            source_object_id: camera.source_object_id.clone(),
+            image_domain: camera.image_domain,
+            clock: camera.clock,
+            privacy_domain: camera.privacy_domain,
+            validity: camera.validity,
+        })
+        .collect::<Vec<_>>();
+    let project = if declaration.rectification {
+        SceneRig::from_retained_rectified_calibration
+    } else {
+        SceneRig::from_retained_calibration
+    };
+    project(
+        twin,
+        calibration,
+        declaration.geometry_basis,
+        &declarations,
+        work,
+    )
+    .map_err(rig_error)
 }
 
 fn analyze(options: &Options, root: &Path, cx: &ReplayCx) -> Result<Report> {
@@ -369,7 +451,7 @@ fn analyze(options: &Options, root: &Path, cx: &ReplayCx) -> Result<Report> {
     let rig_bytes = read_input(&options.rig, MAX_JSON_BYTES, cx)?;
     let rig_digest = ContentDigest::sha256(&rig_bytes);
     let declaration = input::parse_rig(&rig_bytes)?;
-    let query = MatchingQuery::parse(&query_bytes, rig_digest)?;
+    let query = MatchingQuery::for_rig(&query_bytes, rig_digest, &declaration)?;
     same_selected_sensors(&query, &declaration)?;
     let twin_bytes = read_input(&options.twin, MAX_TWIN_BYTES, cx)?;
     let mut work = WorkBudget::with_cancellation_probe(options.work, &cancelled);
@@ -405,26 +487,7 @@ fn analyze(options: &Options, root: &Path, cx: &ReplayCx) -> Result<Report> {
     check_cancel(cx, &cancelled)?;
     let calibration = load_calibration(options, &declaration, &deployment, &twin, &mut work, cx)?;
     declared_modes(&query, &calibration)?;
-    let declarations = declaration
-        .cameras
-        .iter()
-        .map(|camera| AdoptedSceneCameraBinding {
-            camera: camera.camera,
-            source_object_id: camera.source_object_id.clone(),
-            image_domain: camera.image_domain,
-            clock: camera.clock,
-            privacy_domain: camera.privacy_domain,
-            validity: camera.validity,
-        })
-        .collect::<Vec<_>>();
-    let rig = SceneRig::from_retained_calibration(
-        &twin,
-        &calibration,
-        declaration.geometry_basis,
-        &declarations,
-        &mut work,
-    )
-    .map_err(rig_error)?;
+    let rig = project_rig(&twin, &calibration, &declaration, &mut work)?;
     let images = prepare_images(query.views(), &rig, &mut work)?;
     let reads = RecordedFeatureReadBudget::with_cancellation_probe(
         SOURCE_BYTES,
@@ -450,11 +513,11 @@ fn analyze(options: &Options, root: &Path, cx: &ReplayCx) -> Result<Report> {
             cx,
         )?);
     }
-    drop(images);
     let final_anchor = deployment.current_anchor().clone();
     let snapshots = owners.iter().map(resolved).collect::<Vec<_>>();
     let views = bind(&query, &snapshots, &rig)?;
-    actual_modes(&views, &calibration)?;
+    actual_modes(&views, &calibration, &images)?;
+    drop(images);
     let geometry = report::geometry(&query, &twin, &views, options.report_bytes, &mut work)?;
     let calibration_json = report::calibration(&calibration, &mut work)?;
     let native_bytes = owners
@@ -566,7 +629,14 @@ fn analyze(options: &Options, root: &Path, cx: &ReplayCx) -> Result<Report> {
             "rig_declarations",
             super::input::json(&super::document(&rig_bytes)?),
         ),
-        ("assumptions", report::assumptions(query.kind())),
+        (
+            "assumptions",
+            if declaration.rectification {
+                report::rectified_assumptions(query.kind())
+            } else {
+                report::assumptions(query.kind())
+            },
+        ),
         ("views", array(&source_views)),
         ("geometry", geometry.json),
         (
@@ -611,7 +681,11 @@ fn analyze(options: &Options, root: &Path, cx: &ReplayCx) -> Result<Report> {
     let body = object(&[
         (
             "schema",
-            string("fss.scene_feature_match_adopted_report.v1"),
+            string(if declaration.rectification {
+                "fss.scene_feature_match_adopted_report.v2"
+            } else {
+                "fss.scene_feature_match_adopted_report.v1"
+            }),
         ),
         ("analysis", analysis),
         (
@@ -674,7 +748,14 @@ fn analyze(options: &Options, root: &Path, cx: &ReplayCx) -> Result<Report> {
         ),
     ]);
     let json = object(&[
-        ("schema", string("fss.scene_feature_match_adopted.v1")),
+        (
+            "schema",
+            string(if declaration.rectification {
+                "fss.scene_feature_match_adopted.v2"
+            } else {
+                "fss.scene_feature_match_adopted.v1"
+            }),
+        ),
         (
             "report_digest",
             string(&ContentDigest::sha256(body.as_bytes()).to_text()),

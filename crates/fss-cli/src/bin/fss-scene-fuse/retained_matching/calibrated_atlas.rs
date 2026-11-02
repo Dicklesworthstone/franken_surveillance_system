@@ -9,7 +9,6 @@ use std::time::Instant;
 
 use fss_cli::json_output::{array, object, string};
 use fss_cli::retained_continuity_query::anchor_digest;
-use fss_cli::scene_rig::{AdoptedSceneCameraBinding, SceneRig};
 use fss_core::{BudgetVector, ContentDigest, ContextAuthority, OperationId, RootAuthoritySpec};
 use fss_geometry::{GeometryBasis, WorkBudget};
 use fss_reference::ingest::recorded_decode::DecodeBudget;
@@ -46,10 +45,11 @@ const HELP: &str = "fss-scene-fuse retained-calibrated-atlas --root DEPLOYMENT -
     [--work-units N] [--timeout-ms N] [--max-report-bytes N]\n\n\
 Export native static scene landmarks reconstructed using exact currently adopted camera\n\
 calibrations. The unchanged FSATLAS1 archive can be consumed by fss-file localize.\n\
-The rig schema is fss.scene_camera_rig_adopted.v1; query schemas are the existing static\n\
-retained pair/multiview v1/v2 formats. All selected sensors, original calibration inputs,\n\
-image domains and decoded grids must match the current adopted geometry. The initial\n\
-profile requires original calibrated pinhole images. Temporal/moving queries refuse.\n\n\
+Rig schema fss.scene_camera_rig_adopted.v1 requires original calibrated pinhole images.\n\
+Rig v2 explicitly admits the exact adopted Brown radial model through native rectification,\n\
+with original source domain and refined source/target K/grid. Existing static pair/multiview\n\
+v1/v2 queries are supported. Selected sensors, original calibration inputs and decoded grids\n\
+must match current adopted geometry; all maps compile before decoding. Temporal queries refuse.\n\n\
 First inspect retained-calibrated-match to choose exact native hypothesis/component pins\n\
 from geometry.native_diagnostics. The selection schema fss.reconstruction_atlas_selection.v1\n\
 pins the whole association. Every chosen point declares a unique landmark/physical-group\n\
@@ -152,7 +152,7 @@ fn analyze(options: &Options, root: &Path, cx: &ReplayCx) -> Result<Export> {
     let rig_bytes = read_input(&opts.rig, MAX_JSON_BYTES, cx)?;
     let rig_digest = ContentDigest::sha256(&rig_bytes);
     let declaration = parse_rig(&rig_bytes)?;
-    let query = MatchingQuery::parse(&query_bytes, rig_digest)?;
+    let query = MatchingQuery::for_rig(&query_bytes, rig_digest, &declaration)?;
     if matches!(query, MatchingQuery::Temporal(_)) {
         return Err(input_error(
             "moving-feature reconstructions cannot become static atlas landmarks",
@@ -193,26 +193,7 @@ fn analyze(options: &Options, root: &Path, cx: &ReplayCx) -> Result<Export> {
     let calibration =
         calibrated::load_calibration(opts, &declaration, &deployment, &twin, &mut work, cx)?;
     calibrated::declared_modes(&query, &calibration)?;
-    let declarations = declaration
-        .cameras
-        .iter()
-        .map(|camera| AdoptedSceneCameraBinding {
-            camera: camera.camera,
-            source_object_id: camera.source_object_id.clone(),
-            image_domain: camera.image_domain,
-            clock: camera.clock,
-            privacy_domain: camera.privacy_domain,
-            validity: camera.validity,
-        })
-        .collect::<Vec<_>>();
-    let rig = SceneRig::from_retained_calibration(
-        &twin,
-        &calibration,
-        declaration.geometry_basis,
-        &declarations,
-        &mut work,
-    )
-    .map_err(calibrated::rig_error)?;
+    let rig = calibrated::project_rig(&twin, &calibration, &declaration, &mut work)?;
     let images = prepare_images(query.views(), &rig, &mut work)?;
     let reads = RecordedFeatureReadBudget::with_cancellation_probe(
         SOURCE_BYTES,
@@ -238,11 +219,11 @@ fn analyze(options: &Options, root: &Path, cx: &ReplayCx) -> Result<Export> {
             cx,
         )?);
     }
-    drop(images);
     let final_anchor = deployment.current_anchor().clone();
     let snapshots = owners.iter().map(resolved).collect::<Vec<_>>();
     let views = calibrated::bind(&query, &snapshots, &rig)?;
-    calibrated::actual_modes(&views, &calibration)?;
+    calibrated::actual_modes(&views, &calibration, &images)?;
+    drop(images);
     let geometry =
         calibrated_report::geometry(&query, &twin, &views, opts.report_bytes, &mut work)?;
     let calibration_json = calibrated_report::calibration(&calibration, &mut work)?;
@@ -302,6 +283,7 @@ fn analyze(options: &Options, root: &Path, cx: &ReplayCx) -> Result<Export> {
     let rig_declarations = super::input::json(&document(&rig_bytes)?);
     let manifest = report::manifest(
         &ManifestInput {
+            rectification: declaration.rectification,
             twin: &twin,
             geometry_basis: rig.geometry_basis(),
             rig_digest,

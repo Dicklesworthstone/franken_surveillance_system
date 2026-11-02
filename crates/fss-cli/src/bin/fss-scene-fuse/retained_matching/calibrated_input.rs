@@ -17,6 +17,7 @@ use super::input::{self as shared, View, digest, fields, get, text, unsigned};
 use super::{Result, input_error, multiview, temporal_input};
 
 pub(super) const SCHEMA: &str = "fss.scene_camera_rig_adopted.v1";
+pub(super) const RECTIFIED_SCHEMA: &str = "fss.scene_camera_rig_adopted.v2";
 const MAX_CAMERAS: usize = 16;
 const MAX_PATH_BYTES: usize = 4096;
 
@@ -52,6 +53,8 @@ pub(super) struct AdoptedCamera {
 /// Parsed declarations only. The owner verifies the exact twin and current adoption later.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct AdoptedRig {
+    /// Explicit v2 opt-in to calibrated native radial rectification.
+    pub rectification: bool,
     pub source_scene_digest: ContentDigest,
     pub twin_digest: ContentDigest,
     pub geometry_basis: (u64, u64),
@@ -142,7 +145,12 @@ pub(super) fn parse_rig(bytes: &[u8]) -> Result<AdoptedRig> {
             "cameras",
         ],
     )?;
-    if text(get(top, "schema")?)? != SCHEMA || text(get(top, "coordinate_frame")?)? != "RH_Z_UP" {
+    let rectification = match text(get(top, "schema")?)? {
+        SCHEMA => false,
+        RECTIFIED_SCHEMA => true,
+        _ => return Err(input_error("unsupported adopted rig image profile")),
+    };
+    if text(get(top, "coordinate_frame")?)? != "RH_Z_UP" {
         return Err(input_error(
             "adopted rig schema or world convention differs",
         ));
@@ -176,6 +184,7 @@ pub(super) fn parse_rig(bytes: &[u8]) -> Result<AdoptedRig> {
     }
     cameras.sort_by_key(|camera| camera.camera);
     Ok(AdoptedRig {
+        rectification,
         source_scene_digest: digest(get(top, "source_scene_digest")?)?,
         twin_digest: digest(get(top, "twin_digest")?)?,
         geometry_basis: (
@@ -196,9 +205,36 @@ pub(super) enum MatchingQuery {
 }
 
 impl MatchingQuery {
-    /// Dispatch the existing strict parsers. Adopted mode currently admits only direct
-    /// pinhole pixels; a raw-lens declaration fails before the owner opens source bytes.
+    /// Preserve the original pinhole-only query profile and its early refusal.
     pub(super) fn parse(bytes: &[u8], rig_file_digest: ContentDigest) -> Result<Self> {
+        Self::parse_profile(bytes, rig_file_digest, false)
+    }
+
+    /// V2 admits explicit lens declarations; the sealed owner must authenticate every model.
+    pub(super) fn parse_for_rectification(
+        bytes: &[u8],
+        rig_file_digest: ContentDigest,
+    ) -> Result<Self> {
+        Self::parse_profile(bytes, rig_file_digest, true)
+    }
+
+    pub(super) fn for_rig(
+        bytes: &[u8],
+        rig_file_digest: ContentDigest,
+        rig: &AdoptedRig,
+    ) -> Result<Self> {
+        if rig.rectification {
+            Self::parse_for_rectification(bytes, rig_file_digest)
+        } else {
+            Self::parse(bytes, rig_file_digest)
+        }
+    }
+
+    fn parse_profile(
+        bytes: &[u8],
+        rig_file_digest: ContentDigest,
+        rectification: bool,
+    ) -> Result<Self> {
         let schema = {
             let document = json_input::parse(
                 std::str::from_utf8(bytes)
@@ -224,10 +260,11 @@ impl MatchingQuery {
             1 => Self::Multi(multiview::input::parse(bytes, rig_file_digest)?),
             _ => Self::Temporal(temporal_input::parse(bytes, rig_file_digest)?),
         };
-        if query
-            .views()
-            .iter()
-            .any(|view| !matches!(view.image, ImageDeclaration::Pinhole(_)))
+        if !rectification
+            && query
+                .views()
+                .iter()
+                .any(|view| !matches!(view.image, ImageDeclaration::Pinhole(_)))
         {
             return Err(input_error(
                 "adopted calibration matching requires its original direct pinhole image domain",

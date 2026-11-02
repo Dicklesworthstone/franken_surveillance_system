@@ -105,6 +105,10 @@ rig must have zero radial terms and preserve the original domain. Every source
 and adoption still requires final revalidation. Full covariance remains
 conditional and native absolute error remains `None`.
 
+The adopted-camera commands implement this complete pixel and authority binding;
+see [radial reconstruction and atlas export](ADOPTED_LENS_RECONSTRUCTION.md) for
+the explicit v2 rig profile and source image declarations.
+
 ## Revalidate before releasing results
 
 After all source-dependent reconstruction and serialization,

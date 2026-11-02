@@ -11,9 +11,11 @@ The command accepts the same strict `fss.scene_camera_rig_adopted.v1` rig as
 [`retained-calibrated-match`](ADOPTED_CALIBRATION_RECONSTRUCTION.md), and the
 existing static retained pair or multi-camera v1/v2 query. Intrinsics and poses
 come from the exact FSSCAL01/02 calibration and current retained adoption
-receipts. Every rig camera must participate in the query. This initial image
-profile requires the original calibrated pinhole domain; radial distortion,
-rectification declarations and moving-feature queries refuse explicitly.
+receipts. Every rig camera must participate in the query. The v1 rig profile
+requires the original calibrated pinhole domain. Rig v2 adds
+[verified adopted radial rectification](ADOPTED_LENS_RECONSTRUCTION.md), returning
+v2 report/manifest schemas with complete corrected-image provenance and the same
+archive format. Moving-feature queries refuse static atlas export in both profiles.
 
 ## 1. Preview the adopted reconstruction
 

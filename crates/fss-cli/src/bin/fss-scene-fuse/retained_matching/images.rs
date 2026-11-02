@@ -42,7 +42,7 @@ pub(super) struct PreparedImage {
 }
 
 impl RectifiedImageDeclaration {
-    fn spec(self, target: PinholeIntrinsics) -> RectificationSpec {
+    pub(super) fn spec(self, target: PinholeIntrinsics) -> RectificationSpec {
         RectificationSpec {
             source: self.source_intrinsics,
             target,

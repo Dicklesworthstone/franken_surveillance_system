@@ -482,6 +482,225 @@ fn adopted_multiview_archive_keeps_complete_triples_and_remains_a_native_localiz
 }
 
 #[test]
+fn current_adopted_radial_sources_export_corrected_native_reference_frames_and_exact_provenance()
+-> Test {
+    use super::super::calibrated::tests::rectification::{
+        Mode, export_fixture, fixture, preview_report,
+    };
+
+    let f = fixture("adopted-radial-atlas", Mode::Pair)?;
+    let preview_bytes = preview_report(&f)?;
+    let preview = parse_report(&preview_bytes)?;
+    let diagnostics = field(
+        &preview,
+        &["report", "analysis", "geometry", "native_diagnostics"],
+    )?;
+    let association = text(field(diagnostics, &["scene_evidence"])?)?;
+    let mut hypotheses = Vec::new();
+    for row in rows(diagnostics, &["hypotheses"])? {
+        if field(row, &["estimate", "state"])?.text() == Some("estimated") {
+            hypotheses.push(text(field(row, &["evidence_digest"])?)?.to_owned());
+        }
+    }
+    assert!(
+        hypotheses.len() >= 3,
+        "independent radial pixels must reconstruct native atlas points"
+    );
+    let options = export_options(&f, &declarations(association, &hypotheses))?;
+    let mut stdout = Vec::new();
+    assert!(checked(execute(&options, &mut stdout))?);
+    let exact = std::str::from_utf8(&stdout)?;
+    let value = parse_report(exact)?;
+    assert_eq!(
+        field(&value, &["schema"])?.text(),
+        Some("fss.reconstruction_atlas_adopted.v2")
+    );
+    let body = field(&value, &["report"])?;
+    assert_eq!(
+        field(body, &["schema"])?.text(),
+        Some("fss.reconstruction_atlas_adopted_report.v2")
+    );
+    assert_eq!(field(body, &["outcome"])?.text(), Some("candidate_export"));
+    let exact_body = exact
+        .trim_end()
+        .strip_suffix('}')
+        .ok_or("outer wrapper")?
+        .split_once(",\"report\":")
+        .ok_or("report bytes")?
+        .1;
+    assert_eq!(pin(field(&value, &["report_digest"])?)?, h(exact_body));
+    let manifest_bytes = text(field(body, &["provenance_manifest_utf8"])?)?;
+    let manifest = parse_report(manifest_bytes)?;
+    export_fixture("atlas-report.json", &stdout)?;
+    export_fixture("atlas-manifest.json", manifest_bytes.as_bytes())?;
+    assert_eq!(
+        field(&manifest, &["schema"])?.text(),
+        Some("fss.reconstruction_atlas_adopted_provenance.v2")
+    );
+    assert_eq!(
+        pin(field(&manifest, &["calibration", "calibration_digest"])?)?,
+        f.calibration.digest()?
+    );
+    assert_eq!(
+        pin(field(
+            &manifest,
+            &["calibration", "calibration_file_digest"]
+        )?)?,
+        h(fs::read(&f.calibration_path)?)
+    );
+    assert_eq!(
+        pin(field(&manifest, &["selection_digest"])?)?,
+        h(fs::read(&options.selection)?)
+    );
+
+    let archive = fs::read(&options.atlas_out)?;
+    let package = h(&archive);
+    let provenance = h(manifest_bytes);
+    assert_eq!(pin(field(body, &["archive", "package_digest"])?)?, package);
+    assert_eq!(
+        pin(field(body, &["archive", "provenance_digest"])?)?,
+        provenance
+    );
+    for (key, expected) in [
+        ("bytes", archive.len()),
+        ("landmarks", hypotheses.len()),
+        ("references", 2),
+        ("bindings", hypotheses.len() * 2),
+    ] {
+        assert_eq!(
+            field(body, &["archive", key])?.integer(),
+            Some(expected as i128)
+        );
+    }
+    let rig = parse(std::str::from_utf8(&fs::read(&f.base.options.rig)?)?)?;
+    let (package_sha256, source_scene_sha256, basis) =
+        checked(super::super::fusion_input::twin_expectation(&rig))?;
+    let mut work = WorkBudget::new(WORK);
+    let twin = import_twin(
+        &fs::read(&f.base.options.twin)?,
+        ImportExpectation {
+            package_sha256,
+            source_scene_sha256,
+            basis,
+        },
+        ImportLimits::default(),
+        &mut work,
+    )?;
+    let loaded = decode_atlas(
+        &archive,
+        &twin,
+        ArchiveExpectation {
+            package: package.bytes(),
+            provenance: provenance.bytes(),
+            descriptor: descriptor_domain(),
+        },
+        &mut work,
+    )?;
+    assert_eq!(loaded.atlas().landmarks().len(), hypotheses.len());
+    assert_eq!(loaded.atlas().references().len(), 2);
+    assert_eq!(loaded.atlas().bindings().len(), hypotheses.len() * 2);
+    for point in loaded.atlas().landmarks() {
+        assert_eq!(
+            point.error, None,
+            "lens correction does not establish absolute landmark accuracy"
+        );
+        assert!((point.world[2] - 10.).abs() < 1.0);
+    }
+    let source_records = rows(&manifest, &["source_records"])?;
+    assert_eq!(source_records.len(), 2);
+    for ((source, provenance), reference) in source_records
+        .iter()
+        .zip(loaded.references())
+        .zip(loaded.atlas().references())
+    {
+        assert_eq!(
+            pin(field(source, &["record_digest"])?)?.bytes(),
+            provenance.source_record
+        );
+        let view = field(source, &["record"])?;
+        let processing = field(view, &["image_processing"])?;
+        assert_eq!(field(view, &["status"])?.text(), Some("adopted_current"));
+        assert_eq!(
+            field(processing, &["kind"])?.text(),
+            Some("native_rectified")
+        );
+        assert_eq!(
+            pin(field(processing, &["model", "lens_basis"])?)?,
+            f.calibration.digest()?
+        );
+        let identity = reference.frame.identity();
+        assert_eq!(
+            pin(field(processing, &["output", "pixel_digest"])?)?.bytes(),
+            identity.pixels
+        );
+        assert_eq!(
+            pin(field(processing, &["output", "image_domain_digest"])?)?.bytes(),
+            identity.image_domain
+        );
+        assert_eq!(
+            pin(field(processing, &["output", "exposure_digest"])?)?.bytes(),
+            identity.exposure
+        );
+        assert_eq!(
+            pin(field(view, &["allowed_mask_digest"])?)?.bytes(),
+            provenance.allowed_mask
+        );
+        assert_eq!(
+            field(processing, &["source", "storage_digest"])?,
+            field(view, &["source", "pixel_digest"])?
+        );
+        assert_eq!(
+            pin(field(view, &["source", "exposure_digest"])?)?.bytes(),
+            identity.exposure
+        );
+        assert_ne!(
+            pin(field(processing, &["source", "storage_digest"])?)?.bytes(),
+            identity.pixels
+        );
+        assert_ne!(
+            pin(field(processing, &["source", "image_domain_digest"])?)?.bytes(),
+            identity.image_domain
+        );
+        let original = pin(field(view, &["source", "encoded_source_digest"])?)?;
+        assert!(
+            f.base
+                .capsules
+                .iter()
+                .any(|capsule| capsule.source_digest == original)
+        );
+        assert!(!text(field(view, &["source", "native_receipt_hex"])?)?.is_empty());
+    }
+    assert_eq!(
+        encode_atlas(
+            loaded.atlas(),
+            loaded.provenance(),
+            loaded.references(),
+            &mut work
+        )?,
+        archive
+    );
+    let report_out = options
+        .matching
+        .report_out
+        .as_ref()
+        .ok_or("private report")?;
+    assert_eq!(fs::read(report_out)?, stdout);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        for path in [&options.atlas_out, report_out] {
+            assert_eq!(fs::metadata(path)?.permissions().mode() & 0o777, 0o600);
+        }
+    }
+    let mut refused_output = Vec::new();
+    assert!(execute(&options, &mut refused_output).is_err());
+    assert!(refused_output.is_empty());
+    assert_eq!(fs::read(&options.atlas_out)?, archive);
+    assert_eq!(fs::read(report_out)?, stdout);
+    Ok(())
+}
+
+#[test]
 fn supersession_or_withdrawal_after_preview_cannot_export_previously_adopted_geometry() -> Test {
     for supersede in [false, true] {
         let mut f = AdoptedFixture::pair(if supersede {

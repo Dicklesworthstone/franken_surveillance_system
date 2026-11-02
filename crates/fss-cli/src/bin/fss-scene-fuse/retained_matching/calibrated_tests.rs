@@ -34,6 +34,9 @@ type Test<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 const WORK: u64 = 8_000_000_000;
 const OUTPUT: usize = 32 * 1024 * 1024;
 
+#[path = "calibrated_rectification_tests.rs"]
+pub(in crate::retained_matching) mod rectification;
+
 fn number(value: &Value) -> Test<f64> {
     match value {
         Value::Number(text) => Ok(text.parse()?),

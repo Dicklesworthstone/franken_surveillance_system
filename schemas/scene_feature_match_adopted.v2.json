@@ -1,0 +1,2037 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "report_digest",
+    "report"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.scene_feature_match_adopted.v2"
+    },
+    "report_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "report": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "analysis",
+        "cost"
+      ],
+      "properties": {
+        "schema": {
+          "const": "fss.scene_feature_match_adopted_report.v2"
+        },
+        "analysis": {
+          "$ref": "#/$defs/analysis"
+        },
+        "cost": {
+          "$ref": "#/$defs/cost"
+        }
+      }
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/scene_feature_match_adopted.v2.json",
+  "title": "fss.scene_feature_match_adopted.v2",
+  "description": "Complete adopted-camera retained scene report with explicit native radial preparation. The v2 rig opts into the exact current FSSCAL two-term Brown model; full source/target grid, source mode, semantic calibration lens basis, actual sampling map, original and corrected exposure/pixel/mask identities and coverage remain visible. Each selected camera may use native correction, or direct original pinhole pixels only when its exact radial terms are zero. Rectified target K and grid are fixed to the refined original camera; model and source bindings are verified by the native command, not inferred by Schema. Pixel-noise covariance excludes lens-parameter error and interpolation correlation; local calibration covariance remains conditional and absolute error unknown. Complete static or temporal diagnostics, current adoption/source/privacy revalidation and all nonrenewable cost axes are preserved. No calibration, world, identity or access authority is activated. Exact report-body UTF-8 hashing and 32-MiB output bound remain unchanged.",
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "u64": {
+      "oneOf": [
+        {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        {
+          "type": "string",
+          "pattern": "^(?:0|[1-9][0-9]{0,18}|1[0-7][0-9]{18}|18[0-3][0-9]{17}|184[0-3][0-9]{16}|1844[0-5][0-9]{15}|18446[0-6][0-9]{14}|184467[0-3][0-9]{13}|1844674[0-3][0-9]{12}|184467440[0-6][0-9]{10}|1844674407[0-2][0-9]{9}|18446744073[0-6][0-9]{8}|1844674407370[0-8][0-9]{6}|18446744073709[0-4][0-9]{5}|184467440737095[0-4][0-9]{4}|18446744073709550[0-9]{3}|18446744073709551[0-5][0-9]{2}|1844674407370955160[0-9]{1}|1844674407370955161[0-4]|18446744073709551615)$"
+        }
+      ]
+    },
+    "identity": {
+      "oneOf": [
+        {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        {
+          "type": "string",
+          "pattern": "^(?:[1-9][0-9]{0,18}|1[0-7][0-9]{18}|18[0-3][0-9]{17}|184[0-3][0-9]{16}|1844[0-5][0-9]{15}|18446[0-6][0-9]{14}|184467[0-3][0-9]{13}|1844674[0-3][0-9]{12}|184467440[0-6][0-9]{10}|1844674407[0-2][0-9]{9}|18446744073[0-6][0-9]{8}|1844674407370[0-8][0-9]{6}|18446744073709[0-4][0-9]{5}|184467440737095[0-4][0-9]{4}|18446744073709550[0-9]{3}|18446744073709551[0-5][0-9]{2}|1844674407370955160[0-9]{1}|1844674407370955161[0-4]|18446744073709551615)$"
+        }
+      ]
+    },
+    "anchor": {
+      "$ref": "scene_handoffs_retained.v1.json#/$defs/anchor"
+    },
+    "interval": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/u64"
+      },
+      "minItems": 2,
+      "maxItems": 2
+    },
+    "vector3": {
+      "type": "array",
+      "items": {
+        "type": "number"
+      },
+      "minItems": 3,
+      "maxItems": 3
+    },
+    "pose": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "rotation",
+        "translation"
+      ],
+      "properties": {
+        "rotation": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 3,
+            "maxItems": 3
+          },
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "translation": {
+          "$ref": "#/$defs/vector3"
+        }
+      }
+    },
+    "camera_generation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "camera",
+        "intrinsics",
+        "extrinsics"
+      ],
+      "properties": {
+        "camera": {
+          "$ref": "#/$defs/identity"
+        },
+        "intrinsics": {
+          "$ref": "#/$defs/identity"
+        },
+        "extrinsics": {
+          "$ref": "#/$defs/identity"
+        }
+      }
+    },
+    "image": {
+      "$ref": "scene_feature_match_retained.v2.json#/$defs/output_image"
+    },
+    "unknown_error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state"
+      ],
+      "properties": {
+        "state": {
+          "const": "unknown"
+        }
+      }
+    },
+    "source_view": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "camera",
+        "source_object_id",
+        "calibration",
+        "image_domain",
+        "clock",
+        "privacy_domain",
+        "validity_ns",
+        "capture_ns",
+        "sigma_pixels",
+        "status",
+        "calibration_error",
+        "world_to_camera",
+        "intrinsics",
+        "image_domain_digest",
+        "mapping_basis",
+        "allowed_mask_digest",
+        "descriptor_domain",
+        "selection",
+        "features",
+        "source",
+        "feature_owner_digest",
+        "image_processing"
+      ],
+      "properties": {
+        "camera": {
+          "$ref": "scene_feature_match_retained.v2.json#/$defs/analysis/properties/views/items/properties/camera"
+        },
+        "source_object_id": {
+          "$ref": "scene_feature_match_retained.v2.json#/$defs/analysis/properties/views/items/properties/source_object_id"
+        },
+        "calibration": {
+          "$ref": "scene_feature_match_retained.v2.json#/$defs/analysis/properties/views/items/properties/calibration"
+        },
+        "image_domain": {
+          "$ref": "scene_feature_match_retained.v2.json#/$defs/analysis/properties/views/items/properties/image_domain"
+        },
+        "clock": {
+          "$ref": "scene_feature_match_retained.v2.json#/$defs/analysis/properties/views/items/properties/clock"
+        },
+        "privacy_domain": {
+          "$ref": "scene_feature_match_retained.v2.json#/$defs/analysis/properties/views/items/properties/privacy_domain"
+        },
+        "validity_ns": {
+          "$ref": "scene_feature_match_retained.v2.json#/$defs/analysis/properties/views/items/properties/validity_ns"
+        },
+        "capture_ns": {
+          "$ref": "scene_feature_match_retained.v2.json#/$defs/analysis/properties/views/items/properties/capture_ns"
+        },
+        "sigma_pixels": {
+          "$ref": "scene_feature_match_retained.v2.json#/$defs/analysis/properties/views/items/properties/sigma_pixels"
+        },
+        "status": {
+          "const": "adopted_current"
+        },
+        "calibration_error": {
+          "$ref": "scene_feature_match_retained.v2.json#/$defs/analysis/properties/views/items/properties/calibration_error"
+        },
+        "world_to_camera": {
+          "$ref": "scene_feature_match_retained.v2.json#/$defs/analysis/properties/views/items/properties/world_to_camera"
+        },
+        "intrinsics": {
+          "$ref": "scene_feature_match_retained.v2.json#/$defs/analysis/properties/views/items/properties/intrinsics"
+        },
+        "image_domain_digest": {
+          "$ref": "scene_feature_match_retained.v2.json#/$defs/analysis/properties/views/items/properties/image_domain_digest"
+        },
+        "mapping_basis": {
+          "$ref": "scene_feature_match_retained.v2.json#/$defs/analysis/properties/views/items/properties/mapping_basis"
+        },
+        "allowed_mask_digest": {
+          "$ref": "scene_feature_match_retained.v2.json#/$defs/analysis/properties/views/items/properties/allowed_mask_digest"
+        },
+        "descriptor_domain": {
+          "$ref": "scene_feature_match_retained.v2.json#/$defs/analysis/properties/views/items/properties/descriptor_domain"
+        },
+        "selection": {
+          "$ref": "scene_feature_match_retained.v2.json#/$defs/analysis/properties/views/items/properties/selection"
+        },
+        "features": {
+          "$ref": "scene_feature_match_retained.v2.json#/$defs/analysis/properties/views/items/properties/features"
+        },
+        "source": {
+          "$ref": "scene_feature_match_retained.v2.json#/$defs/analysis/properties/views/items/properties/source"
+        },
+        "feature_owner_digest": {
+          "$ref": "scene_feature_match_retained.v2.json#/$defs/analysis/properties/views/items/properties/feature_owner_digest"
+        },
+        "image_processing": {
+          "allOf": [
+            {
+              "$ref": "scene_feature_match_retained.v2.json#/$defs/image_processing"
+            },
+            {
+              "if": {
+                "properties": {
+                  "kind": {
+                    "const": "native_rectified"
+                  }
+                },
+                "required": [
+                  "kind"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "model": {
+                    "properties": {
+                      "distortion": {
+                        "properties": {
+                          "kind": {
+                            "const": "brown_conrady"
+                          },
+                          "radial": {
+                            "type": "array",
+                            "minItems": 3,
+                            "maxItems": 3,
+                            "prefixItems": [
+                              {
+                                "type": "number",
+                                "minimum": -100,
+                                "maximum": 100
+                              },
+                              {
+                                "type": "number",
+                                "minimum": -100,
+                                "maximum": 100
+                              },
+                              {
+                                "const": 0
+                              }
+                            ],
+                            "items": false
+                          },
+                          "tangential": {
+                            "const": [
+                              0,
+                              0
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          ],
+          "description": "Actual direct original-pinhole output or complete native Brown two-term rectification receipt. In corrected mode k3, p1 and p2 are zero; lens basis, refined source=target K/grid and original source domain must equal the selected current calibration. Every positive-weight source privacy tap and full output descriptor support is required. Cross-record numeric/digest equality is enforced by the command."
+        }
+      }
+    },
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "solved",
+        "unresolved",
+        "nominal_occlusion_conflicts"
+      ],
+      "properties": {
+        "solved": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 256
+        },
+        "unresolved": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 256
+        },
+        "nominal_occlusion_conflicts": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 256
+        }
+      }
+    },
+    "adoption_receipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "receipt_digest",
+        "adoption",
+        "camera_handle",
+        "camera_name",
+        "sensor_id",
+        "calibration_digest",
+        "twin_package",
+        "intrinsics_generation",
+        "extrinsics_generation",
+        "supersedes",
+        "claim"
+      ],
+      "properties": {
+        "receipt_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "adoption": {
+          "$ref": "#/$defs/identity"
+        },
+        "camera_handle": {
+          "$ref": "#/$defs/identity"
+        },
+        "camera_name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9_.-]+$"
+        },
+        "sensor_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9_.:-]+$"
+        },
+        "calibration_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "twin_package": {
+          "$ref": "#/$defs/digest"
+        },
+        "intrinsics_generation": {
+          "$ref": "#/$defs/identity"
+        },
+        "extrinsics_generation": {
+          "$ref": "#/$defs/identity"
+        },
+        "supersedes": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/digest"
+            }
+          ]
+        },
+        "claim": {
+          "const": "owner_adoption_not_a_physical_observation"
+        }
+      }
+    },
+    "original_image_basis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "image",
+        "input_digest",
+        "encoded_frame_digest",
+        "component_interpretation"
+      ],
+      "properties": {
+        "image": {
+          "$ref": "#/$defs/image"
+        },
+        "input_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "encoded_frame_digest": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/digest"
+            }
+          ]
+        },
+        "component_interpretation": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "enum": [
+                "grayscale",
+                "ycbcr"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "calibration_input": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "observation_file_digest"
+          ],
+          "properties": {
+            "kind": {
+              "const": "correspondences"
+            },
+            "observation_file_digest": {
+              "$ref": "#/$defs/digest"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "jpeg_digest",
+            "metadata_digest",
+            "luma_digest",
+            "component_interpretation",
+            "extracted_features",
+            "atlas_matches",
+            "tie_observations"
+          ],
+          "properties": {
+            "kind": {
+              "const": "jpeg_frame"
+            },
+            "jpeg_digest": {
+              "$ref": "#/$defs/digest"
+            },
+            "metadata_digest": {
+              "$ref": "#/$defs/digest"
+            },
+            "luma_digest": {
+              "$ref": "#/$defs/digest"
+            },
+            "component_interpretation": {
+              "enum": [
+                "grayscale",
+                "ycbcr"
+              ]
+            },
+            "extracted_features": {
+              "$ref": "#/$defs/u64"
+            },
+            "atlas_matches": {
+              "$ref": "#/$defs/u64"
+            },
+            "tie_observations": {
+              "$ref": "#/$defs/u64"
+            }
+          }
+        }
+      ]
+    },
+    "local_covariance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scope",
+        "parameters",
+        "matrix",
+        "fixed_parameters"
+      ],
+      "properties": {
+        "scope": {
+          "const": "conditional_camera_marginal_without_cross_camera_blocks"
+        },
+        "parameters": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "rotation_x",
+              "rotation_y",
+              "rotation_z",
+              "translation_x",
+              "translation_y",
+              "translation_z",
+              "focal",
+              "fx",
+              "fy",
+              "cx",
+              "cy",
+              "k1",
+              "k2"
+            ]
+          },
+          "minItems": 0,
+          "maxItems": 13
+        },
+        "matrix": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 0,
+            "maxItems": 13
+          },
+          "minItems": 0,
+          "maxItems": 13
+        },
+        "fixed_parameters": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "rotation_x",
+              "rotation_y",
+              "rotation_z",
+              "translation_x",
+              "translation_y",
+              "translation_z",
+              "focal",
+              "fx",
+              "fy",
+              "cx",
+              "cy",
+              "k1",
+              "k2"
+            ]
+          },
+          "minItems": 0,
+          "maxItems": 13
+        }
+      }
+    },
+    "seed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "sample",
+        "candidate",
+        "alternatives",
+        "inliers",
+        "fit_rms_px",
+        "intrinsics",
+        "rotation",
+        "translation"
+      ],
+      "properties": {
+        "mode": {
+          "enum": [
+            "fixed_intrinsics",
+            "focal_scan"
+          ]
+        },
+        "sample": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/u64"
+            }
+          ]
+        },
+        "candidate": {
+          "$ref": "#/$defs/u64"
+        },
+        "alternatives": {
+          "$ref": "#/$defs/u64"
+        },
+        "inliers": {
+          "$ref": "#/$defs/u64"
+        },
+        "fit_rms_px": {
+          "type": "number"
+        },
+        "intrinsics": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 4,
+          "maxItems": 4
+        },
+        "rotation": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 3,
+            "maxItems": 3
+          },
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "translation": {
+          "$ref": "#/$defs/vector3"
+        }
+      }
+    },
+    "selected_camera": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "camera",
+        "camera_name",
+        "generation",
+        "sensor_id",
+        "status",
+        "adoption",
+        "original_image_basis",
+        "calibration_input",
+        "dimensions",
+        "intrinsics",
+        "radial_distortion",
+        "world_to_camera",
+        "absolute_calibration_error",
+        "local_covariance",
+        "seed",
+        "seed_rms_px",
+        "refined_rms_px",
+        "control_observations",
+        "free_observations"
+      ],
+      "properties": {
+        "camera": {
+          "$ref": "#/$defs/identity"
+        },
+        "camera_name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "generation": {
+          "$ref": "#/$defs/camera_generation"
+        },
+        "sensor_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9_.:-]+$"
+        },
+        "status": {
+          "const": "adopted_current"
+        },
+        "adoption": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "receipt",
+            "committed_sequence",
+            "effective_withdrawal"
+          ],
+          "properties": {
+            "receipt": {
+              "$ref": "#/$defs/adoption_receipt"
+            },
+            "committed_sequence": {
+              "$ref": "#/$defs/u64"
+            },
+            "effective_withdrawal": {
+              "type": "null"
+            }
+          }
+        },
+        "original_image_basis": {
+          "$ref": "#/$defs/original_image_basis"
+        },
+        "calibration_input": {
+          "$ref": "#/$defs/calibration_input"
+        },
+        "dimensions": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 4096
+          },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "intrinsics": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 4,
+          "maxItems": 4
+        },
+        "radial_distortion": {
+          "type": "array",
+          "items": {
+            "type": "number",
+            "minimum": -100,
+            "maximum": 100
+          },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "world_to_camera": {
+          "$ref": "#/$defs/pose"
+        },
+        "absolute_calibration_error": {
+          "$ref": "#/$defs/unknown_error"
+        },
+        "local_covariance": {
+          "$ref": "#/$defs/local_covariance"
+        },
+        "seed": {
+          "$ref": "#/$defs/seed"
+        },
+        "seed_rms_px": {
+          "type": "number"
+        },
+        "refined_rms_px": {
+          "type": "number"
+        },
+        "control_observations": {
+          "$ref": "#/$defs/u64"
+        },
+        "free_observations": {
+          "$ref": "#/$defs/u64"
+        }
+      }
+    },
+    "frame_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "decoder_digest",
+        "extraction",
+        "tie_max_distance",
+        "tie_ratio_percent",
+        "tie_gate_px"
+      ],
+      "properties": {
+        "decoder_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "extraction": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "threshold",
+            "maximum_features",
+            "separation"
+          ],
+          "properties": {
+            "threshold": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 254
+            },
+            "maximum_features": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 512
+            },
+            "separation": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 128
+            }
+          }
+        },
+        "tie_max_distance": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 256
+        },
+        "tie_ratio_percent": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 99
+        },
+        "tie_gate_px": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        }
+      }
+    },
+    "calibration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "resolution_digest",
+        "calibration_digest",
+        "calibration_file_digest",
+        "authority_anchor_at_resolution",
+        "twin_package_digest",
+        "twin_source_digest",
+        "atlas_package_digest",
+        "atlas_fingerprint",
+        "atlas_provenance_digest",
+        "descriptor_domain_digest",
+        "control_policy",
+        "initial_rms_px",
+        "final_rms_px",
+        "iterations",
+        "accepted_steps",
+        "convergence",
+        "observation_sigma_px",
+        "sigma_estimated",
+        "control_points",
+        "tie_points",
+        "excluded_points",
+        "frame_policy",
+        "joint_calibration_camera_generations",
+        "selected_cameras"
+      ],
+      "properties": {
+        "resolution_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "calibration_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "calibration_file_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "authority_anchor_at_resolution": {
+          "$ref": "#/$defs/anchor"
+        },
+        "twin_package_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "twin_source_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "atlas_package_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "atlas_fingerprint": {
+          "$ref": "#/$defs/digest"
+        },
+        "atlas_provenance_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "descriptor_domain_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "control_policy": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind"
+              ],
+              "properties": {
+                "kind": {
+                  "const": "all_used_atlas_landmarks_held_exact"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "bound"
+              ],
+              "properties": {
+                "kind": {
+                  "const": "declared_error_at_most"
+                },
+                "bound": {
+                  "type": "number",
+                  "minimum": 0
+                }
+              }
+            }
+          ]
+        },
+        "initial_rms_px": {
+          "type": "number"
+        },
+        "final_rms_px": {
+          "type": "number"
+        },
+        "iterations": {
+          "$ref": "#/$defs/u64"
+        },
+        "accepted_steps": {
+          "$ref": "#/$defs/u64"
+        },
+        "convergence": {
+          "enum": [
+            "gradient",
+            "cost_stalled",
+            "step_tolerance",
+            "zero_residual"
+          ]
+        },
+        "observation_sigma_px": {
+          "type": "number"
+        },
+        "sigma_estimated": {
+          "type": "boolean"
+        },
+        "control_points": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/u64"
+          },
+          "minItems": 0,
+          "maxItems": 65536
+        },
+        "tie_points": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/u64"
+          },
+          "minItems": 0,
+          "maxItems": 65536
+        },
+        "excluded_points": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/u64"
+          },
+          "minItems": 0,
+          "maxItems": 65536
+        },
+        "frame_policy": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/frame_policy"
+            }
+          ]
+        },
+        "joint_calibration_camera_generations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/camera_generation"
+          },
+          "minItems": 1,
+          "maxItems": 16
+        },
+        "selected_cameras": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/selected_camera"
+          },
+          "minItems": 2,
+          "maxItems": 8
+        }
+      }
+    },
+    "geometry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "outcome",
+        "reference_time_ns",
+        "capture_hull_ns",
+        "counts",
+        "native_diagnostics"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "static_pair",
+            "static_multiview",
+            "temporal"
+          ]
+        },
+        "outcome": {
+          "enum": [
+            "no_reconstruction",
+            "reconstructed",
+            "reconstructed_with_refusals"
+          ]
+        },
+        "reference_time_ns": {
+          "$ref": "#/$defs/u64"
+        },
+        "capture_hull_ns": {
+          "$ref": "#/$defs/interval"
+        },
+        "counts": {
+          "$ref": "#/$defs/counts"
+        },
+        "native_diagnostics": {
+          "oneOf": [
+            {
+              "$ref": "reconstruction_atlas_provenance.v1.json#/$defs/pair_geometry"
+            },
+            {
+              "$ref": "scene_feature_multimatch_retained.v2.json#/$defs/geometry"
+            },
+            {
+              "$ref": "scene_feature_motion_match_retained.v1.json#/$defs/geometry"
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "static_pair"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "native_diagnostics": {
+                "$ref": "reconstruction_atlas_provenance.v1.json#/$defs/pair_geometry"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "static_multiview"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "native_diagnostics": {
+                "$ref": "scene_feature_multimatch_retained.v2.json#/$defs/geometry"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "temporal"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "native_diagnostics": {
+                "$ref": "scene_feature_motion_match_retained.v1.json#/$defs/geometry"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "basis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "twin_digest",
+        "source_scene_digest",
+        "camera_rig_semantic_digest",
+        "geometry_basis",
+        "coordinate_frame",
+        "evaluation_scope",
+        "observation_epoch",
+        "scale",
+        "map_error",
+        "camera_rig_digest"
+      ],
+      "properties": {
+        "twin_digest": {
+          "$ref": "scene_feature_multimatch_retained.v2.json#/$defs/analysis/properties/basis/properties/twin_digest"
+        },
+        "source_scene_digest": {
+          "$ref": "scene_feature_multimatch_retained.v2.json#/$defs/analysis/properties/basis/properties/source_scene_digest"
+        },
+        "camera_rig_semantic_digest": {
+          "$ref": "scene_feature_multimatch_retained.v2.json#/$defs/analysis/properties/basis/properties/camera_rig_semantic_digest"
+        },
+        "geometry_basis": {
+          "$ref": "scene_feature_multimatch_retained.v2.json#/$defs/analysis/properties/basis/properties/geometry_basis"
+        },
+        "coordinate_frame": {
+          "$ref": "scene_feature_multimatch_retained.v2.json#/$defs/analysis/properties/basis/properties/coordinate_frame"
+        },
+        "evaluation_scope": {
+          "$ref": "scene_feature_multimatch_retained.v2.json#/$defs/analysis/properties/basis/properties/evaluation_scope"
+        },
+        "observation_epoch": {
+          "$ref": "scene_feature_multimatch_retained.v2.json#/$defs/analysis/properties/basis/properties/observation_epoch"
+        },
+        "scale": {
+          "$ref": "scene_feature_multimatch_retained.v2.json#/$defs/analysis/properties/basis/properties/scale"
+        },
+        "map_error": {
+          "$ref": "scene_feature_multimatch_retained.v2.json#/$defs/analysis/properties/basis/properties/map_error"
+        },
+        "camera_rig_digest": {
+          "$ref": "scene_feature_multimatch_retained.v2.json#/$defs/analysis/properties/basis/properties/camera_rig_digest"
+        }
+      }
+    },
+    "declarations": {
+      "oneOf": [
+        {
+          "allOf": [
+            {
+              "$ref": "scene_feature_match_retained_query.v1.json"
+            },
+            {
+              "properties": {
+                "left": {
+                  "properties": {
+                    "image": {
+                      "if": {
+                        "properties": {
+                          "kind": {
+                            "const": "rectified"
+                          }
+                        },
+                        "required": [
+                          "kind"
+                        ]
+                      },
+                      "then": {
+                        "properties": {
+                          "distortion": {
+                            "properties": {
+                              "kind": {
+                                "const": "brown_conrady"
+                              },
+                              "radial": {
+                                "type": "array",
+                                "minItems": 3,
+                                "maxItems": 3,
+                                "prefixItems": [
+                                  {
+                                    "type": "number",
+                                    "minimum": -100,
+                                    "maximum": 100
+                                  },
+                                  {
+                                    "type": "number",
+                                    "minimum": -100,
+                                    "maximum": 100
+                                  },
+                                  {
+                                    "const": 0
+                                  }
+                                ],
+                                "items": false
+                              },
+                              "tangential": {
+                                "const": [
+                                  0,
+                                  0
+                                ]
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                },
+                "right": {
+                  "properties": {
+                    "image": {
+                      "if": {
+                        "properties": {
+                          "kind": {
+                            "const": "rectified"
+                          }
+                        },
+                        "required": [
+                          "kind"
+                        ]
+                      },
+                      "then": {
+                        "properties": {
+                          "distortion": {
+                            "properties": {
+                              "kind": {
+                                "const": "brown_conrady"
+                              },
+                              "radial": {
+                                "type": "array",
+                                "minItems": 3,
+                                "maxItems": 3,
+                                "prefixItems": [
+                                  {
+                                    "type": "number",
+                                    "minimum": -100,
+                                    "maximum": 100
+                                  },
+                                  {
+                                    "type": "number",
+                                    "minimum": -100,
+                                    "maximum": 100
+                                  },
+                                  {
+                                    "const": 0
+                                  }
+                                ],
+                                "items": false
+                              },
+                              "tangential": {
+                                "const": [
+                                  0,
+                                  0
+                                ]
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "scene_feature_match_retained_query.v2.json"
+            },
+            {
+              "properties": {
+                "left": {
+                  "properties": {
+                    "image": {
+                      "if": {
+                        "properties": {
+                          "kind": {
+                            "const": "rectified"
+                          }
+                        },
+                        "required": [
+                          "kind"
+                        ]
+                      },
+                      "then": {
+                        "properties": {
+                          "distortion": {
+                            "properties": {
+                              "kind": {
+                                "const": "brown_conrady"
+                              },
+                              "radial": {
+                                "type": "array",
+                                "minItems": 3,
+                                "maxItems": 3,
+                                "prefixItems": [
+                                  {
+                                    "type": "number",
+                                    "minimum": -100,
+                                    "maximum": 100
+                                  },
+                                  {
+                                    "type": "number",
+                                    "minimum": -100,
+                                    "maximum": 100
+                                  },
+                                  {
+                                    "const": 0
+                                  }
+                                ],
+                                "items": false
+                              },
+                              "tangential": {
+                                "const": [
+                                  0,
+                                  0
+                                ]
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                },
+                "right": {
+                  "properties": {
+                    "image": {
+                      "if": {
+                        "properties": {
+                          "kind": {
+                            "const": "rectified"
+                          }
+                        },
+                        "required": [
+                          "kind"
+                        ]
+                      },
+                      "then": {
+                        "properties": {
+                          "distortion": {
+                            "properties": {
+                              "kind": {
+                                "const": "brown_conrady"
+                              },
+                              "radial": {
+                                "type": "array",
+                                "minItems": 3,
+                                "maxItems": 3,
+                                "prefixItems": [
+                                  {
+                                    "type": "number",
+                                    "minimum": -100,
+                                    "maximum": 100
+                                  },
+                                  {
+                                    "type": "number",
+                                    "minimum": -100,
+                                    "maximum": 100
+                                  },
+                                  {
+                                    "const": 0
+                                  }
+                                ],
+                                "items": false
+                              },
+                              "tangential": {
+                                "const": [
+                                  0,
+                                  0
+                                ]
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "scene_feature_multimatch_retained_query.v1.json"
+            },
+            {
+              "properties": {
+                "views": {
+                  "items": {
+                    "properties": {
+                      "image": {
+                        "if": {
+                          "properties": {
+                            "kind": {
+                              "const": "rectified"
+                            }
+                          },
+                          "required": [
+                            "kind"
+                          ]
+                        },
+                        "then": {
+                          "properties": {
+                            "distortion": {
+                              "properties": {
+                                "kind": {
+                                  "const": "brown_conrady"
+                                },
+                                "radial": {
+                                  "type": "array",
+                                  "minItems": 3,
+                                  "maxItems": 3,
+                                  "prefixItems": [
+                                    {
+                                      "type": "number",
+                                      "minimum": -100,
+                                      "maximum": 100
+                                    },
+                                    {
+                                      "type": "number",
+                                      "minimum": -100,
+                                      "maximum": 100
+                                    },
+                                    {
+                                      "const": 0
+                                    }
+                                  ],
+                                  "items": false
+                                },
+                                "tangential": {
+                                  "const": [
+                                    0,
+                                    0
+                                  ]
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "scene_feature_multimatch_retained_query.v2.json"
+            },
+            {
+              "properties": {
+                "views": {
+                  "items": {
+                    "properties": {
+                      "image": {
+                        "if": {
+                          "properties": {
+                            "kind": {
+                              "const": "rectified"
+                            }
+                          },
+                          "required": [
+                            "kind"
+                          ]
+                        },
+                        "then": {
+                          "properties": {
+                            "distortion": {
+                              "properties": {
+                                "kind": {
+                                  "const": "brown_conrady"
+                                },
+                                "radial": {
+                                  "type": "array",
+                                  "minItems": 3,
+                                  "maxItems": 3,
+                                  "prefixItems": [
+                                    {
+                                      "type": "number",
+                                      "minimum": -100,
+                                      "maximum": 100
+                                    },
+                                    {
+                                      "type": "number",
+                                      "minimum": -100,
+                                      "maximum": 100
+                                    },
+                                    {
+                                      "const": 0
+                                    }
+                                  ],
+                                  "items": false
+                                },
+                                "tangential": {
+                                  "const": [
+                                    0,
+                                    0
+                                  ]
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "scene_feature_motion_match_retained_query.v1.json"
+            },
+            {
+              "properties": {
+                "views": {
+                  "items": {
+                    "properties": {
+                      "image": {
+                        "if": {
+                          "properties": {
+                            "kind": {
+                              "const": "rectified"
+                            }
+                          },
+                          "required": [
+                            "kind"
+                          ]
+                        },
+                        "then": {
+                          "properties": {
+                            "distortion": {
+                              "properties": {
+                                "kind": {
+                                  "const": "brown_conrady"
+                                },
+                                "radial": {
+                                  "type": "array",
+                                  "minItems": 3,
+                                  "maxItems": 3,
+                                  "prefixItems": [
+                                    {
+                                      "type": "number",
+                                      "minimum": -100,
+                                      "maximum": 100
+                                    },
+                                    {
+                                      "type": "number",
+                                      "minimum": -100,
+                                      "maximum": 100
+                                    },
+                                    {
+                                      "const": 0
+                                    }
+                                  ],
+                                  "items": false
+                                },
+                                "tangential": {
+                                  "const": [
+                                    0,
+                                    0
+                                  ]
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "analysis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "outcome",
+        "authority",
+        "physical_identity_established",
+        "query_digest",
+        "rig_digest",
+        "reference_time_ns",
+        "capture_hull_ns",
+        "entry_anchor_digest",
+        "entry_anchor",
+        "anchor_digest",
+        "anchor",
+        "basis",
+        "calibration",
+        "declarations",
+        "rig_declarations",
+        "assumptions",
+        "views",
+        "geometry",
+        "counts"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "static_pair",
+            "static_multiview",
+            "temporal"
+          ]
+        },
+        "outcome": {
+          "enum": [
+            "no_reconstruction",
+            "reconstructed",
+            "reconstructed_with_refusals"
+          ]
+        },
+        "authority": {
+          "const": "derived_cognition_no_effect_authority"
+        },
+        "physical_identity_established": {
+          "const": false
+        },
+        "query_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "rig_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "reference_time_ns": {
+          "$ref": "#/$defs/u64"
+        },
+        "capture_hull_ns": {
+          "$ref": "#/$defs/interval"
+        },
+        "entry_anchor_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "entry_anchor": {
+          "$ref": "#/$defs/anchor"
+        },
+        "anchor_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "anchor": {
+          "$ref": "#/$defs/anchor"
+        },
+        "basis": {
+          "$ref": "#/$defs/basis"
+        },
+        "calibration": {
+          "$ref": "#/$defs/calibration"
+        },
+        "declarations": {
+          "$ref": "#/$defs/declarations"
+        },
+        "rig_declarations": {
+          "$ref": "scene_camera_rig_adopted.v2.json"
+        },
+        "assumptions": {
+          "oneOf": [
+            {
+              "const": [
+                "retained_adoption_is_owner_authority_not_a_physical_measurement_of_camera_currency",
+                "current_calibration_adoption_and_withdrawal_are_revalidated_before_report_release",
+                "all_original_source_ranges_and_current_privacy_are_revalidated_before_report_release",
+                "camera_sensor_binding_and_both_calibration_generations_are_exact_retained_dependencies",
+                "source_domain_refined_intrinsics_and_two_term_radial_model_come_only_from_the_exact_current_calibration",
+                "native_rectification_target_is_the_exact_refined_original_camera_grid_without_crop_zoom_or_rotation_override",
+                "nonzero_radial_sources_require_native_rectification_and_zero_radial_direct_sources_preserve_the_original_domain",
+                "rectified_views_use_declared_radius_and_luma_transfer_not_calibration_measurements",
+                "every_requested_lens_plan_is_admitted_before_source_decode_and_full_model_map_mask_and_image_receipts_are_preserved",
+                "native_rectification_preserves_original_exposure_and_requires_all_positive_weight_privacy_taps_and_descriptor_support",
+                "sigma_pixels_is_declared_on_the_actual_output_grid_and_excludes_interpolation_correlations_and_lens_parameter_error",
+                "source_object_binding_clock_alignment_privacy_namespace_and_validity_interval_are_owner_declarations",
+                "camera_absolute_error_is_unknown_and_never_inferred_from_fit_rms_or_covariance",
+                "calibration_covariance_is_a_conditional_local_marginal_without_cross_camera_blocks",
+                "scene_covariance_covers_declared_pixel_noise_not_calibration_map_lens_clock_or_motion_model_error",
+                "shared_calibration_and_camera_errors_are_not_cancelled_or_counted_as_independent_evidence",
+                "appearance_correspondences_are_conditional_hypotheses_not_physical_identity",
+                "nominal_mesh_occlusion_conflicts_are_preserved_and_preclude_strict_success",
+                "unmatched_isolated_features_remain_diagnostics_and_all_nontrivial_alternatives_remain_visible",
+                "no_calibration_world_revision_event_identity_or_effect_is_activated_by_this_report",
+                "selected_features_are_stationary_over_the_complete_capture_hull"
+              ]
+            },
+            {
+              "const": [
+                "retained_adoption_is_owner_authority_not_a_physical_measurement_of_camera_currency",
+                "current_calibration_adoption_and_withdrawal_are_revalidated_before_report_release",
+                "all_original_source_ranges_and_current_privacy_are_revalidated_before_report_release",
+                "camera_sensor_binding_and_both_calibration_generations_are_exact_retained_dependencies",
+                "source_domain_refined_intrinsics_and_two_term_radial_model_come_only_from_the_exact_current_calibration",
+                "native_rectification_target_is_the_exact_refined_original_camera_grid_without_crop_zoom_or_rotation_override",
+                "nonzero_radial_sources_require_native_rectification_and_zero_radial_direct_sources_preserve_the_original_domain",
+                "rectified_views_use_declared_radius_and_luma_transfer_not_calibration_measurements",
+                "every_requested_lens_plan_is_admitted_before_source_decode_and_full_model_map_mask_and_image_receipts_are_preserved",
+                "native_rectification_preserves_original_exposure_and_requires_all_positive_weight_privacy_taps_and_descriptor_support",
+                "sigma_pixels_is_declared_on_the_actual_output_grid_and_excludes_interpolation_correlations_and_lens_parameter_error",
+                "source_object_binding_clock_alignment_privacy_namespace_and_validity_interval_are_owner_declarations",
+                "camera_absolute_error_is_unknown_and_never_inferred_from_fit_rms_or_covariance",
+                "calibration_covariance_is_a_conditional_local_marginal_without_cross_camera_blocks",
+                "scene_covariance_covers_declared_pixel_noise_not_calibration_map_lens_clock_or_motion_model_error",
+                "shared_calibration_and_camera_errors_are_not_cancelled_or_counted_as_independent_evidence",
+                "appearance_correspondences_are_conditional_hypotheses_not_physical_identity",
+                "nominal_mesh_occlusion_conflicts_are_preserved_and_preclude_strict_success",
+                "unmatched_isolated_features_remain_diagnostics_and_all_nontrivial_alternatives_remain_visible",
+                "no_calibration_world_revision_event_identity_or_effect_is_activated_by_this_report",
+                "selected_features_are_stationary_over_the_complete_capture_hull",
+                "each_static_subset_solve_time_is_explicitly_clamped_to_its_capture_hull_under_the_full_hull_stationarity_assumption"
+              ]
+            },
+            {
+              "const": [
+                "retained_adoption_is_owner_authority_not_a_physical_measurement_of_camera_currency",
+                "current_calibration_adoption_and_withdrawal_are_revalidated_before_report_release",
+                "all_original_source_ranges_and_current_privacy_are_revalidated_before_report_release",
+                "camera_sensor_binding_and_both_calibration_generations_are_exact_retained_dependencies",
+                "source_domain_refined_intrinsics_and_two_term_radial_model_come_only_from_the_exact_current_calibration",
+                "native_rectification_target_is_the_exact_refined_original_camera_grid_without_crop_zoom_or_rotation_override",
+                "nonzero_radial_sources_require_native_rectification_and_zero_radial_direct_sources_preserve_the_original_domain",
+                "rectified_views_use_declared_radius_and_luma_transfer_not_calibration_measurements",
+                "every_requested_lens_plan_is_admitted_before_source_decode_and_full_model_map_mask_and_image_receipts_are_preserved",
+                "native_rectification_preserves_original_exposure_and_requires_all_positive_weight_privacy_taps_and_descriptor_support",
+                "sigma_pixels_is_declared_on_the_actual_output_grid_and_excludes_interpolation_correlations_and_lens_parameter_error",
+                "source_object_binding_clock_alignment_privacy_namespace_and_validity_interval_are_owner_declarations",
+                "camera_absolute_error_is_unknown_and_never_inferred_from_fit_rms_or_covariance",
+                "calibration_covariance_is_a_conditional_local_marginal_without_cross_camera_blocks",
+                "scene_covariance_covers_declared_pixel_noise_not_calibration_map_lens_clock_or_motion_model_error",
+                "shared_calibration_and_camera_errors_are_not_cancelled_or_counted_as_independent_evidence",
+                "appearance_correspondences_are_conditional_hypotheses_not_physical_identity",
+                "nominal_mesh_occlusion_conflicts_are_preserved_and_preclude_strict_success",
+                "unmatched_isolated_features_remain_diagnostics_and_all_nontrivial_alternatives_remain_visible",
+                "no_calibration_world_revision_event_identity_or_effect_is_activated_by_this_report",
+                "motion_is_constant_velocity_over_the_complete_capture_hull",
+                "nominal_exposure_times_are_interval_midpoints_without_clock_or_rolling_shutter_estimation",
+                "every_fitted_component_uses_the_requested_global_scene_time_and_must_bracket_it",
+                "repeated_source_bytes_across_distinct_exposures_do_not_establish_independent_sensors"
+              ]
+            }
+          ]
+        },
+        "views": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "index",
+              "exposure",
+              "view"
+            ],
+            "properties": {
+              "index": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 15
+              },
+              "exposure": {
+                "$ref": "#/$defs/identity"
+              },
+              "view": {
+                "$ref": "#/$defs/source_view"
+              }
+            }
+          },
+          "minItems": 2,
+          "maxItems": 16
+        },
+        "geometry": {
+          "$ref": "#/$defs/geometry"
+        },
+        "counts": {
+          "$ref": "#/$defs/counts"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "static_pair"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "geometry": {
+                "properties": {
+                  "kind": {
+                    "const": "static_pair"
+                  }
+                }
+              },
+              "declarations": {
+                "oneOf": [
+                  {
+                    "$ref": "scene_feature_match_retained_query.v1.json"
+                  },
+                  {
+                    "$ref": "scene_feature_match_retained_query.v2.json"
+                  }
+                ]
+              },
+              "assumptions": {
+                "const": [
+                  "retained_adoption_is_owner_authority_not_a_physical_measurement_of_camera_currency",
+                  "current_calibration_adoption_and_withdrawal_are_revalidated_before_report_release",
+                  "all_original_source_ranges_and_current_privacy_are_revalidated_before_report_release",
+                  "camera_sensor_binding_and_both_calibration_generations_are_exact_retained_dependencies",
+                  "source_domain_refined_intrinsics_and_two_term_radial_model_come_only_from_the_exact_current_calibration",
+                  "native_rectification_target_is_the_exact_refined_original_camera_grid_without_crop_zoom_or_rotation_override",
+                  "nonzero_radial_sources_require_native_rectification_and_zero_radial_direct_sources_preserve_the_original_domain",
+                  "rectified_views_use_declared_radius_and_luma_transfer_not_calibration_measurements",
+                  "every_requested_lens_plan_is_admitted_before_source_decode_and_full_model_map_mask_and_image_receipts_are_preserved",
+                  "native_rectification_preserves_original_exposure_and_requires_all_positive_weight_privacy_taps_and_descriptor_support",
+                  "sigma_pixels_is_declared_on_the_actual_output_grid_and_excludes_interpolation_correlations_and_lens_parameter_error",
+                  "source_object_binding_clock_alignment_privacy_namespace_and_validity_interval_are_owner_declarations",
+                  "camera_absolute_error_is_unknown_and_never_inferred_from_fit_rms_or_covariance",
+                  "calibration_covariance_is_a_conditional_local_marginal_without_cross_camera_blocks",
+                  "scene_covariance_covers_declared_pixel_noise_not_calibration_map_lens_clock_or_motion_model_error",
+                  "shared_calibration_and_camera_errors_are_not_cancelled_or_counted_as_independent_evidence",
+                  "appearance_correspondences_are_conditional_hypotheses_not_physical_identity",
+                  "nominal_mesh_occlusion_conflicts_are_preserved_and_preclude_strict_success",
+                  "unmatched_isolated_features_remain_diagnostics_and_all_nontrivial_alternatives_remain_visible",
+                  "no_calibration_world_revision_event_identity_or_effect_is_activated_by_this_report",
+                  "selected_features_are_stationary_over_the_complete_capture_hull"
+                ]
+              },
+              "views": {
+                "minItems": 2,
+                "maxItems": 2
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "static_multiview"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "geometry": {
+                "properties": {
+                  "kind": {
+                    "const": "static_multiview"
+                  }
+                }
+              },
+              "declarations": {
+                "oneOf": [
+                  {
+                    "$ref": "scene_feature_multimatch_retained_query.v1.json"
+                  },
+                  {
+                    "$ref": "scene_feature_multimatch_retained_query.v2.json"
+                  }
+                ]
+              },
+              "assumptions": {
+                "const": [
+                  "retained_adoption_is_owner_authority_not_a_physical_measurement_of_camera_currency",
+                  "current_calibration_adoption_and_withdrawal_are_revalidated_before_report_release",
+                  "all_original_source_ranges_and_current_privacy_are_revalidated_before_report_release",
+                  "camera_sensor_binding_and_both_calibration_generations_are_exact_retained_dependencies",
+                  "source_domain_refined_intrinsics_and_two_term_radial_model_come_only_from_the_exact_current_calibration",
+                  "native_rectification_target_is_the_exact_refined_original_camera_grid_without_crop_zoom_or_rotation_override",
+                  "nonzero_radial_sources_require_native_rectification_and_zero_radial_direct_sources_preserve_the_original_domain",
+                  "rectified_views_use_declared_radius_and_luma_transfer_not_calibration_measurements",
+                  "every_requested_lens_plan_is_admitted_before_source_decode_and_full_model_map_mask_and_image_receipts_are_preserved",
+                  "native_rectification_preserves_original_exposure_and_requires_all_positive_weight_privacy_taps_and_descriptor_support",
+                  "sigma_pixels_is_declared_on_the_actual_output_grid_and_excludes_interpolation_correlations_and_lens_parameter_error",
+                  "source_object_binding_clock_alignment_privacy_namespace_and_validity_interval_are_owner_declarations",
+                  "camera_absolute_error_is_unknown_and_never_inferred_from_fit_rms_or_covariance",
+                  "calibration_covariance_is_a_conditional_local_marginal_without_cross_camera_blocks",
+                  "scene_covariance_covers_declared_pixel_noise_not_calibration_map_lens_clock_or_motion_model_error",
+                  "shared_calibration_and_camera_errors_are_not_cancelled_or_counted_as_independent_evidence",
+                  "appearance_correspondences_are_conditional_hypotheses_not_physical_identity",
+                  "nominal_mesh_occlusion_conflicts_are_preserved_and_preclude_strict_success",
+                  "unmatched_isolated_features_remain_diagnostics_and_all_nontrivial_alternatives_remain_visible",
+                  "no_calibration_world_revision_event_identity_or_effect_is_activated_by_this_report",
+                  "selected_features_are_stationary_over_the_complete_capture_hull",
+                  "each_static_subset_solve_time_is_explicitly_clamped_to_its_capture_hull_under_the_full_hull_stationarity_assumption"
+                ]
+              },
+              "views": {
+                "minItems": 3,
+                "maxItems": 8
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "temporal"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "geometry": {
+                "properties": {
+                  "kind": {
+                    "const": "temporal"
+                  }
+                }
+              },
+              "declarations": {
+                "oneOf": [
+                  {
+                    "$ref": "scene_feature_motion_match_retained_query.v1.json"
+                  }
+                ]
+              },
+              "assumptions": {
+                "const": [
+                  "retained_adoption_is_owner_authority_not_a_physical_measurement_of_camera_currency",
+                  "current_calibration_adoption_and_withdrawal_are_revalidated_before_report_release",
+                  "all_original_source_ranges_and_current_privacy_are_revalidated_before_report_release",
+                  "camera_sensor_binding_and_both_calibration_generations_are_exact_retained_dependencies",
+                  "source_domain_refined_intrinsics_and_two_term_radial_model_come_only_from_the_exact_current_calibration",
+                  "native_rectification_target_is_the_exact_refined_original_camera_grid_without_crop_zoom_or_rotation_override",
+                  "nonzero_radial_sources_require_native_rectification_and_zero_radial_direct_sources_preserve_the_original_domain",
+                  "rectified_views_use_declared_radius_and_luma_transfer_not_calibration_measurements",
+                  "every_requested_lens_plan_is_admitted_before_source_decode_and_full_model_map_mask_and_image_receipts_are_preserved",
+                  "native_rectification_preserves_original_exposure_and_requires_all_positive_weight_privacy_taps_and_descriptor_support",
+                  "sigma_pixels_is_declared_on_the_actual_output_grid_and_excludes_interpolation_correlations_and_lens_parameter_error",
+                  "source_object_binding_clock_alignment_privacy_namespace_and_validity_interval_are_owner_declarations",
+                  "camera_absolute_error_is_unknown_and_never_inferred_from_fit_rms_or_covariance",
+                  "calibration_covariance_is_a_conditional_local_marginal_without_cross_camera_blocks",
+                  "scene_covariance_covers_declared_pixel_noise_not_calibration_map_lens_clock_or_motion_model_error",
+                  "shared_calibration_and_camera_errors_are_not_cancelled_or_counted_as_independent_evidence",
+                  "appearance_correspondences_are_conditional_hypotheses_not_physical_identity",
+                  "nominal_mesh_occlusion_conflicts_are_preserved_and_preclude_strict_success",
+                  "unmatched_isolated_features_remain_diagnostics_and_all_nontrivial_alternatives_remain_visible",
+                  "no_calibration_world_revision_event_identity_or_effect_is_activated_by_this_report",
+                  "motion_is_constant_velocity_over_the_complete_capture_hull",
+                  "nominal_exposure_times_are_interval_midpoints_without_clock_or_rolling_shutter_estimation",
+                  "every_fitted_component_uses_the_requested_global_scene_time_and_must_bracket_it",
+                  "repeated_source_bytes_across_distinct_exposures_do_not_establish_independent_sensors"
+                ]
+              },
+              "views": {
+                "minItems": 4,
+                "maxItems": 16
+              }
+            }
+          }
+        }
+      ]
+    },
+    "cost": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "geometry_work",
+        "source_bytes",
+        "jpeg_work",
+        "video_admission",
+        "unmeasured",
+        "calibration_input_bytes",
+        "calibration_authority_bytes"
+      ],
+      "properties": {
+        "geometry_work": {
+          "$ref": "scene_feature_multimatch_retained.v2.json#/$defs/cost/properties/geometry_work"
+        },
+        "source_bytes": {
+          "$ref": "scene_feature_multimatch_retained.v2.json#/$defs/cost/properties/source_bytes"
+        },
+        "jpeg_work": {
+          "$ref": "scene_feature_multimatch_retained.v2.json#/$defs/cost/properties/jpeg_work"
+        },
+        "video_admission": {
+          "$ref": "scene_feature_multimatch_retained.v2.json#/$defs/cost/properties/video_admission"
+        },
+        "unmeasured": {
+          "$ref": "scene_feature_multimatch_retained.v2.json#/$defs/cost/properties/unmeasured"
+        },
+        "calibration_input_bytes": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "allowance",
+            "used"
+          ],
+          "properties": {
+            "allowance": {
+              "const": "20971520"
+            },
+            "used": {
+              "$ref": "#/$defs/u64"
+            }
+          }
+        },
+        "calibration_authority_bytes": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "allowance",
+            "reserved",
+            "verified",
+            "includes_final_revalidation"
+          ],
+          "properties": {
+            "allowance": {
+              "const": "67108864"
+            },
+            "reserved": {
+              "$ref": "#/$defs/u64"
+            },
+            "verified": {
+              "$ref": "#/$defs/u64"
+            },
+            "includes_final_revalidation": {
+              "const": true
+            }
+          }
+        }
+      }
+    }
+  }
+}
