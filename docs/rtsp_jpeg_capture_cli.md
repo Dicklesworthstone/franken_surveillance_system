@@ -91,6 +91,13 @@ source-map proof below. Pixel bytes are deliberately not retained or printed;
 these commands produce verified source and reproducible image receipts, not an
 MP4, image viewer, live detector or image-export directory.
 
+Use [`fss-import-rtsp jpeg`](RTSP_JPEG_IMPORT.md) to turn the exact saved prefix
+into an ordinary retained MJPEG import for native decode and analysis. That
+separate operation copies the complete selected original graph and source maps
+into destination custody, preserves gaps and unknown capture time, and requires
+an explicit physical sensor/stream mapping. It supports later verification with
+the capture archive offline.
+
 ## Reopen the exact source with no network or credentials
 
 Use the same source scope, payload, limits and independently saved configuration

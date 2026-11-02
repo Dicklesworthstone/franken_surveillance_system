@@ -10,6 +10,53 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Retained RTP/JPEG imports for native analysis (2026-11-02)
+
+`fss-import-rtsp jpeg` connects an independently pinned native datagram prefix to
+the ordinary retained MJPEG, pixel, feature and scene owners. The destination
+retains every selected original root, metadata record and payload alongside the
+reconstructed images, exact native frame source maps and replay diagnostics.
+Current retained reads recover that original chain and reproduce the native
+JPEG stream; an intact derived image cannot replace missing or damaged original
+packet evidence. Completed imports remain usable with the source archive offline.
+
+The request explicitly binds the physical sensor/stream and mapping evidence,
+complete source prefix, configuration and replay interpretation, destination
+receive time and independent operation bounds. Capture time remains unknown.
+Packet gaps, discarded images, cached quantizer ancestry and incomplete tails
+remain visible. Prefix exhaustion grants no EOF or coverage claim, and JPEG
+entropy validity remains the downstream decoder's responsibility. Existing
+AVC/HEVC and HTTP contracts are unchanged.
+
+Publication uses the existing ledgered root-last file owner, including typed
+multipart publication and exact interrupted retries. Source and current import
+authority revalidate before publication; exact retries verify committed custody
+without repairing damaged originals. Preview is pure and opens no storage or
+network. Approved execution requires the exact plan digest, an existing source
+store and a distinct destination store. Current destination privacy still governs pixels.
+
+All **11/11** genuine public-owner integration tests pass with the pinned runtime.
+The import command passes **27/27** tests (six new JPEG cases and 21 existing
+regressions), all **5/5** new actual-process JPEG tests, and all **3/3** existing
+RTSP import process regressions. They execute actual packet publication, cold
+retained verification and native
+pixel decoding, including independent luma-oracle comparison after source archive
+removal, current masks, quantizer ancestry, gap/tail accounting, limits and
+cancellation, source corruption, and forced multipart interruption/recovery.
+The production importer command and new CLI integration test pass strict scoped
+Clippy against the actual compiled dependencies. The full importer bin test
+configuration retains five unrelated existing test lint findings.
+Initial import and later cold verification share the same intrinsic replay-work
+ceiling. Read reservations describe import-managed original/custody payloads,
+not total filesystem I/O or a calibrated memory/latency measurement.
+
+All four actual plan/import/retry/partial-tail JSON outputs pass the strict
+Draft 2020-12 operator schema. Exact retry root, manifest, origin proof and
+interpretation identities agree, as do plan-to-receipt request and approval pins.
+The offline catalog resolves **130 schemas and 1,995 references with zero
+errors**; the separate constitution scan retains the same 43 existing findings.
+See `docs/RTSP_JPEG_IMPORT.md` for the complete workflow and operational limits.
+
 ## Native JPEG replay from copied original custody (2026-11-02)
 
 `DetachedDatagramPrefix` verifies an independently pinned complete datagram
@@ -24,7 +71,9 @@ incomplete-prefix accounting remain exact. Canonical frame source-map bytes can
 also be exported through the existing encoder with frame/hash/work checks.
 
 The complete native JPEG target passes **118/118 tests**, including nineteen
-new detached/source-map cases. Publisher-backed and detached replay agree on
+new detached/source-map cases. The genuine reference datagram-archive suite also
+passes **55/55 tests** with the pinned runtime. Publisher-backed and detached
+replay agree on
 all native events, reconstructed images and provenance, including cached
 quantizers, sequence wrap, reordering, duplicate originals, RTCP and partial
 tails. Missing or modified original objects, malicious reader returns, exhausted
@@ -33,7 +82,8 @@ one preexisting `explicit_counter_loop` finding in unchanged `rtsp/message.rs`;
 the new source has no reported lint findings. This primitive verifies selected
 copied bytes, not original publication durability, later capture observations,
 physical camera identity or calibrated time. The retained MJPEG command bridge
-is a separate integration slice. See `docs/jpeg_datagram_reconstruction.md`.
+uses this sealed owner; see `docs/RTSP_JPEG_IMPORT.md` and
+`docs/jpeg_datagram_reconstruction.md`.
 
 ## Adopted radial reconstruction and atlas export (2026-11-02, command integration)
 

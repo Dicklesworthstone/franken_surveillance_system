@@ -301,6 +301,10 @@ images with the native luma decoder, and stops under explicit independent bounds
 `jpeg replay` reopens an exact saved prefix without network or credentials and binds
 reconstructed images to their actual original packets, including cached quantizer
 definitions. Capture time stays unknown, and prefix exhaustion never invents media EOF.
+[`fss-import-rtsp jpeg`](docs/RTSP_JPEG_IMPORT.md) then connects that exact prefix
+to ordinary retained MJPEG decoding and analysis, preserving every original
+datagram and native image source map in destination custody. Physical camera
+mapping remains explicit; packet gaps and incomplete tails remain visible.
 
 FSS separates source evidence, live delivery, and analysis:
 
