@@ -273,3 +273,126 @@ fn complete_parent_row_refuses_oversized_or_failed_output() {
         Err(super::OUTPUT)
     );
 }
+
+fn prefix_args() -> Vec<OsString> {
+    let mut args = args();
+    replace(&mut args, "--generations", "7");
+    let second = args
+        .iter()
+        .position(|value| value == "9,sensor:camera,stream:camera,10000000000,0,0,25")
+        .unwrap();
+    args.drain(second - 1..=second);
+    replace(&mut args, "--stop-after-frames", "4");
+    replace(&mut args, "--max-frames", "8");
+    replace(&mut args, "--max-frames-per-generation", "8");
+    replace(&mut args, "--max-output-bytes", "4096");
+    args
+}
+
+#[test]
+fn requested_prefix_is_a_distinct_approved_single_generation_selection() {
+    let original = prefix_args();
+    let options = Options::parse_prefix(&original).unwrap();
+    assert_eq!(options.prefix_frames, Some(4));
+    let preview = options.preview().unwrap();
+    assert!(preview.contains("\"format\":\"fss.http_prefix_capture_sentinel.v1\""));
+    assert!(preview.contains("requested_frame_prefix_without_ended_history"));
+    assert!(Options::parse(&original).is_err());
+    assert!(
+        options
+            .resolve(ReconnectHistoryPin {
+                session: options.capture.approval(),
+                root: ContentDigest::sha256(b"ended history"),
+                connections: 1
+            })
+            .is_err()
+    );
+    let mut changed = original.clone();
+    replace(&mut changed, "--stop-after-frames", "3");
+    assert_ne!(
+        Options::parse_prefix(&changed).unwrap().approval().unwrap(),
+        options.approval().unwrap()
+    );
+    let mut excessive = original.clone();
+    replace(&mut excessive, "--sentinel-max-inferences", "65");
+    assert!(Options::parse_prefix(&excessive).is_err());
+    let mut multi = original.clone();
+    replace(&mut multi, "--generations", "7,9");
+    assert!(Options::parse_prefix(&multi).is_err());
+    let mut without = original.clone();
+    let index = without
+        .iter()
+        .position(|value| value == "--stop-after-frames")
+        .unwrap();
+    without.drain(index..index + 2);
+    assert!(Options::parse_prefix(&without).is_err());
+    let mut unapproved = Options::parse_prefix(&original).unwrap();
+    unapproved.approve = Some(unapproved.capture.approval());
+    assert_eq!(
+        super::driver::execute(&mut unapproved, &mut Vec::new()),
+        Err(super::AUTHORITY)
+    );
+}
+
+#[test]
+fn prefix_continuations_preserve_exact_original_selection_and_native_model_output_cap() {
+    use fss_codec_mjpeg::stream::StreamBasis;
+    use fss_reference::ingest::http_archive::{HttpWirePin, HttpWireScope};
+    let options = Options::parse_prefix(&prefix_args()).unwrap();
+    let scope = HttpWireScope {
+        stream: StreamBasis {
+            source: options.capture.source.bytes(),
+            generation: 7,
+        },
+        receive_clock: options.capture.receive_clock.bytes(),
+        retention_evidence: options.capture.retention_evidence.bytes(),
+    };
+    let pin = HttpWirePin {
+        scope: scope.digest().unwrap(),
+        head: ContentDigest::sha256(b"original prefix"),
+        reads: 2,
+        bytes: 8192,
+    };
+    let plan = options.prefix_plan(pin).unwrap();
+    let args = super::prefix_continuation::import(&options, &plan.import).unwrap();
+    let parsed = super::import_plan::Options::parse(
+        &args[1..].iter().map(OsString::from).collect::<Vec<_>>(),
+    )
+    .unwrap();
+    assert_eq!(
+        parsed.request.digest().unwrap(),
+        plan.import.digest().unwrap()
+    );
+    assert_eq!(parsed.approve, Some(parsed.approval().unwrap()));
+    assert_eq!(
+        parsed.request.max_frames, 8,
+        "all bounded read-ahead remains importable"
+    );
+    assert_eq!(
+        plan.acknowledged_frames, 4,
+        "only acknowledged original frames enter sampling"
+    );
+    let identity = ContentDigest::sha256(b"actual retained import");
+    let analysis = super::prefix_continuation::analyze(&options, identity).unwrap();
+    let replay = super::continuation::replay(
+        &options.analysis,
+        ContentDigest::sha256(b"actual retained report"),
+    )
+    .unwrap();
+    for args in [&analysis, &replay] {
+        let position = args
+            .iter()
+            .position(|word| word == "--max-output-bytes")
+            .unwrap();
+        assert_eq!(args[position + 1], "4096");
+    }
+    for (key, value) in [
+        ("--first-segment", "0"),
+        ("--frames", "4"),
+        ("--retain", "yes"),
+        ("--stream-sentinel", "yes"),
+    ] {
+        let position = analysis.iter().position(|word| word == key).unwrap();
+        assert_eq!(analysis[position + 1], value);
+    }
+}

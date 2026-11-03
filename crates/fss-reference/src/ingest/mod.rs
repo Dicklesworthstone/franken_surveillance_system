@@ -165,6 +165,8 @@ pub mod http_archive;
 
 /// Exact archived HTTP/MJPEG originals into source-closed retained recording imports.
 pub mod http_import;
+/// Native trained detection over an exact, explicitly selected HTTP response prefix.
+pub mod http_prefix_sentinel;
 
 /// Source-closed RGB perception evidence with actual native replay after restart.
 pub mod rgb_evidence;

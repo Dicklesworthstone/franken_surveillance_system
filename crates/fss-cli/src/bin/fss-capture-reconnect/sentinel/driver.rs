@@ -34,7 +34,7 @@ const CAPS: [&str; 6] = [
     "CAP-MODEL-INFER-001",
 ];
 
-fn check(
+pub(super) fn check(
     authority: &ContextAuthority,
     start: Instant,
     timeout_ms: u64,
@@ -85,7 +85,7 @@ impl PublishCancellation for Owner<'_> {
     }
 }
 
-fn archive_error(error: &'static str) -> &'static str {
+pub(super) fn archive_error(error: &'static str) -> &'static str {
     match error {
         "ERR-RTSP-CAMPAIGN-WATCH-AUTHORITY-001" => AUTHORITY,
         "ERR-RTSP-CAMPAIGN-WATCH-LIMIT-001" | "ERR-RTSP-CAMPAIGN-SENTINEL-LIMIT-001" => LIMIT,
@@ -191,6 +191,22 @@ pub(super) fn execute(options: &mut Options, out: &mut impl Write) -> Result<(),
         options.capture.approve = Some(options.capture.approval());
         guard()?;
         let receipt = super::super::driver::capture_receipt(&options.capture, out)?;
+        if options.prefix_frames.is_some() {
+            return super::prefix::execute(
+                options,
+                out,
+                &receipt,
+                &authority,
+                start,
+                &cx,
+                &scalar,
+                &package,
+                &package_bytes,
+                &guard,
+                &mut work,
+                &mut framing,
+            );
+        }
         let Some(pin) = receipt.settled_history() else {
             emit(
                 options,

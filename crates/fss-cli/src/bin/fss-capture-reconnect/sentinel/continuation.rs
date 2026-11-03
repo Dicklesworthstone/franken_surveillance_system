@@ -44,6 +44,10 @@ pub(super) fn replay(
             l.package.run.execution.max_bytes.to_string(),
         ),
         (
+            "--max-output-bytes",
+            l.package.run.maximum_output_bytes.to_string(),
+        ),
+        (
             "--max-metadata-bytes",
             MAX_LONG_SENTINEL_METADATA_BYTES.to_string(),
         ),

@@ -662,6 +662,10 @@ Implemented (reference, unqualified):
   pins into motion-independent model bursts, retained source/model/recipe custody and cold
   replay. Package validation precedes camera contact; analysis failure supplies exact offline
   continuation instead of camera reacquisition;
+- [bounded capture from continuous HTTP MJPEG](docs/HTTP_PREFIX_CAPTURE_SENTINEL.md)
+  (`fss-capture-reconnect sentinel-prefix`): stop at an approved frame count without peer EOF,
+  retain received read-ahead and partial-tail custody, analyze only the acknowledged first N
+  frames, and resume import/inference or replay offline from exact typed receipts;
 - [exact saved RTSP campaign watch](docs/rtsp_campaign_watch.md) across independent retained
   AVC/HEVC archives (`fss-watch-rtsp-campaign`), preserving failed, empty and unknown attempts,
   with separate tracking per attempt and native reruns from destination custody;

@@ -9,10 +9,16 @@ mod archive_open;
 mod continuation;
 #[path = "sentinel/driver.rs"]
 mod driver;
+#[path = "../fss-import-http/plan.rs"]
+mod import_plan;
 #[path = "../fss-sentinel-rtsp-campaign/model.rs"]
 mod model;
 #[path = "sentinel/plan.rs"]
 mod plan;
+#[path = "sentinel/prefix.rs"]
+mod prefix;
+#[path = "sentinel/prefix_continuation.rs"]
+mod prefix_continuation;
 #[path = "sentinel/preflight.rs"]
 mod preflight;
 #[cfg(test)]
@@ -43,7 +49,7 @@ fn emit(
     detail: String,
 ) -> Result<(), &'static str> {
     let row = object(&[
-        ("format", string(plan::FORMAT)),
+        ("format", string(options.format())),
         ("kind", string(kind)),
         ("approval_digest", string(&options.approval()?.to_text())),
         ("detail", detail),
@@ -57,12 +63,26 @@ fn emit(
 }
 
 pub(super) fn main(args: &[OsString]) -> ExitCode {
+    run(args, false)
+}
+pub(super) fn main_prefix(args: &[OsString]) -> ExitCode {
+    run(args, true)
+}
+fn run(args: &[OsString], prefix: bool) -> ExitCode {
     let mut out = io::stdout().lock();
     if args.len() == 1 && matches!(args[0].to_str(), Some("help" | "--help" | "-h")) {
         return ExitCode::from(
-            if super::driver::write_bounded(&mut out, plan::HELP.as_bytes())
-                .and_then(|()| out.flush())
-                .is_ok()
+            if super::driver::write_bounded(
+                &mut out,
+                if prefix {
+                    plan::PREFIX_HELP
+                } else {
+                    plan::HELP
+                }
+                .as_bytes(),
+            )
+            .and_then(|()| out.flush())
+            .is_ok()
             {
                 ExitIdentity::SUCCESS.code
             } else {
@@ -70,7 +90,12 @@ pub(super) fn main(args: &[OsString]) -> ExitCode {
             },
         );
     }
-    let mut options = match Options::parse(args) {
+    let parsed = if prefix {
+        Options::parse_prefix(args)
+    } else {
+        Options::parse(args)
+    };
+    let mut options = match parsed {
         Ok(options) => options,
         Err(reason) => {
             eprintln!(

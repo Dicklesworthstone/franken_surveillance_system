@@ -29,6 +29,9 @@ fn main() -> ExitCode {
     if args.first().and_then(|arg| arg.to_str()) == Some("sentinel") {
         return sentinel::main(&args[1..]);
     }
+    if args.first().and_then(|arg| arg.to_str()) == Some("sentinel-prefix") {
+        return sentinel::main_prefix(&args[1..]);
+    }
     if args.len() == 1 && matches!(args[0].to_str(), Some("help" | "--help" | "-h")) {
         return match driver::write_bounded(&mut io::stdout().lock(), plan::HELP.as_bytes()) {
             Ok(()) => ExitCode::SUCCESS,

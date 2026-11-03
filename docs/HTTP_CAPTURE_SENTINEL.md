@@ -1,5 +1,8 @@
 # Capture an HTTP camera and retain native detector evidence
 
+For an ongoing response that does not end, use the separately approved
+[`sentinel-prefix` frame-count workflow](HTTP_PREFIX_CAPTURE_SENTINEL.md).
+
 `fss-capture-reconnect sentinel` combines one approved native HTTP acquisition with the
 existing motion-independent RGB detector and its retained replay owner. The operator supplies
 the camera route, source identities, every reserved generation's sensor and time assumptions,

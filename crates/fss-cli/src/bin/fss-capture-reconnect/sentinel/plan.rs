@@ -5,8 +5,13 @@ use std::collections::BTreeSet;
 use std::ffi::OsString;
 
 use fss_cli::agent_json::{array, object, string};
+use fss_codec_mjpeg::stream::StreamBasis;
 use fss_core::{CanonicalEncoder, ContentDigest, DigestAlgorithm};
 use fss_reference::http_reconnect_history::ReconnectHistoryPin;
+use fss_reference::ingest::http_archive::{HttpWirePin, HttpWireScope};
+use fss_reference::ingest::http_import::{HttpImportRequest, MAX_FRAMES};
+use fss_reference::ingest::http_prefix_sentinel::HttpPrefixSentinelPlan;
+use fss_reference::ingest::long_sentinel::LongSentinelConfig;
 use fss_reference::ingest::recorded_decode::ComponentInterpretation;
 use fss_reference::ingest::rgb_package::MAX_RGB_PACKAGE_BYTES;
 
@@ -14,6 +19,11 @@ use super::analysis_plan;
 
 pub(crate) const MAX_ARGUMENTS: usize = 272;
 pub(super) const FORMAT: &str = "fss.http_capture_sentinel.v1";
+pub(super) const PREFIX_FORMAT: &str = "fss.http_prefix_capture_sentinel.v1";
+const PREFIX_POLICY: &str = "one-owned-http-generation:explicit-requested-frame-stop:\
+typed-original-prefix:no-ended-history:all-read-ahead-retained:first-acknowledged-n-only:\
+pinned-model-before-camera:root-last-native-sentinel-retention:\
+cooperative-analysis-deadline:exact-offline-continuations:no-recapture:no-effects:v1";
 const POLICY: &str = "one-owned-http-capture:typed-settled-history:explicit-generation-bindings:\
 pinned-model-before-camera:whole-history-native-sentinel:root-last-retention:\
 cooperative-analysis-deadline:exact-offline-continuation:no-recapture:no-effects:v1";
@@ -62,12 +72,48 @@ A capture request ending in failure requires separate offline approval to analyz
 failed generations remain explicit when later approved retries satisfy the request.\n\
 No event/alert dispatch, absence or continuous coverage is authorized.\n";
 
+pub(super) const PREFIX_HELP: &str = "fss-capture-reconnect sentinel-prefix [ordinary capture options]\n\
+  --generations ONE_GENERATION --stop-after-frames N --durable-history yes\n\
+  --deployment-root ABSOLUTE_DEPLOYMENT --site SITE\n\
+  --binding GENERATION,SENSOR,STREAM,RECEIVE_NS,CAPTURE_START_NS,UNCERTAINTY_NS,FPS\n\
+  --interpretation gray|ycbcr --package ABSOLUTE_FMPK --package-digest sha256:HEX\n\
+  --read-originals yes --read-model yes --execute-perception yes --retain-analysis yes\n\
+  --sentinel-every-frames N --sentinel-burst-frames K --sentinel-max-inferences M\n\
+  [--approve sha256:OUTER_PLAN]\n\
+\n\
+Preview is pure. Approved execution validates the model and separate paths before camera\n\
+contact, acquires exactly the requested count of complete MIME-framed JPEGs, then closes\n\
+the socket without waiting for the camera to end its response. This is an explicit original\n\
+prefix, NOT EOF or an ended connection history. Exactly one generation is permitted.\n\
+\n\
+Every received original byte is retained, including complete read-ahead frames and a partial\n\
+tail. Inference selects ONLY the first acknowledged N frames. Import must fit all read-ahead\n\
+in --max-frames-per-generation (default 4096) and --max-bytes-per-generation (capture ceiling).\n\
+The ordinary capture --max-frames bounds delivered frames and must cover the stop target.\n\
+At most 64 model calls, whole bursts of1..8, and one shared native resource allowance.\n\
+\n\
+Analysis uses --analysis-timeout-ms 600000 --analysis-work 1000000000000\n\
+  --analysis-framing-work 10000000000 --analysis-report-bytes 33619968\n\
+  --archive-read-bytes 1073741824 --stream-read-bytes 536870912\n\
+  --stream-pixel-budget 1073741824 --sentinel-report-bytes 16777216\n\
+  --max-macs 8000000000 --max-tensor-bytes 268435456 --max-output-bytes 16777216\n\
+  [--max-frame-pixels N] [--minimum-score-ppm N] --kernels optimized-cpu|scalar-reference\n\
+  --threads 1..64. Capture retains its separate native deadline and optional storage grace.\n\
+The analysis timer includes capture and is checked at I/O/native phase boundaries.\n\
+\n\
+Save complete stdout JSONL. prefix_ready supplies exact approved offline import argv;\n\
+imported supplies exact offline analysis argv BEFORE inference. completed supplies native\n\
+retained replay argv. Failure can leave earlier originals/imports/analyses durable. Existing\n\
+archive paths refuse live recapture. Never reacquire the camera to repair analysis.\n\
+No scene coverage, absence, calibrated quality, event publication or alert authority is granted.\n";
+
 pub(super) struct Options {
     pub capture: super::super::plan::Options,
     /// Reservation template only. Its history root is a non-authoritative placeholder derived
     /// from the capture approval; it can never be sent to the native analysis owner.
     pub analysis: analysis_plan::Options,
     analysis_args: Vec<OsString>,
+    pub prefix_frames: Option<usize>,
     pub approve: Option<ContentDigest>,
 }
 
@@ -78,6 +124,14 @@ fn push(args: &mut Vec<OsString>, key: &str, value: impl Into<OsString>) {
 
 impl Options {
     pub fn parse(args: &[OsString]) -> Result<Self, &'static str> {
+        Self::parse_mode(args, false)
+    }
+
+    pub fn parse_prefix(args: &[OsString]) -> Result<Self, &'static str> {
+        Self::parse_mode(args, true)
+    }
+
+    fn parse_mode(args: &[OsString], prefix: bool) -> Result<Self, &'static str> {
         if args.is_empty()
             || args.len() > MAX_ARGUMENTS
             || !args.len().is_multiple_of(2)
@@ -159,13 +213,28 @@ impl Options {
         }
         let capture = super::super::plan::Options::parse(&capture_args)?;
         if capture.history_work.is_none()
-            || capture.stop_after.is_some()
+            || (!prefix && capture.stop_after.is_some())
             || capture.decode.is_some()
         {
             return Err(
                 "sentinel requires durable ended history without stop-after-frames or capture decode",
             );
         }
+        let prefix_frames = if prefix {
+            if capture.generations.len() != 1 {
+                return Err("sentinel-prefix requires exactly one reserved generation");
+            }
+            Some(
+                usize::try_from(
+                    capture
+                        .stop_after
+                        .ok_or("sentinel-prefix requires --stop-after-frames")?,
+                )
+                .map_err(|_| "frame count overflow")?,
+            )
+        } else {
+            None
+        };
         push(&mut analysis_args, "--archive", capture.root.as_os_str());
         push(&mut analysis_args, "--principal", &capture.principal);
         push(&mut analysis_args, "--owner-authorized", "yes");
@@ -185,7 +254,11 @@ impl Options {
             push(
                 &mut analysis_args,
                 "--max-frames-per-generation",
-                capture.per_slot_frames.to_string(),
+                if prefix {
+                    MAX_FRAMES.to_string()
+                } else {
+                    capture.per_slot_frames.to_string()
+                },
             );
         }
         if !keys.contains("--max-bytes-per-generation") {
@@ -221,23 +294,110 @@ impl Options {
             capture,
             analysis,
             analysis_args,
+            prefix_frames,
             approve: approval,
         };
+        if result.prefix_frames.is_some() {
+            result
+                .prefix_template()?
+                .reservation(&result.analysis.limits.sentinel)
+                .map_err(|error| error.stable_id())?;
+        }
         result.preview()?;
         Ok(result)
     }
 
     pub fn approval(&self) -> Result<ContentDigest, &'static str> {
         let mut e = CanonicalEncoder::new();
-        e.text("fss.http_capture_sentinel_plan.v1");
-        e.text(POLICY);
+        e.text(if self.prefix_frames.is_some() {
+            "fss.http_prefix_capture_sentinel_plan.v1"
+        } else {
+            "fss.http_capture_sentinel_plan.v1"
+        });
+        e.text(self.policy());
         e.digest(self.capture.approval());
         e.digest(self.analysis.approval()?);
+        if self.prefix_frames.is_some() {
+            e.digest(
+                self.prefix_template()?
+                    .digest(&self.analysis.limits.sentinel)
+                    .map_err(|error| error.stable_id())?,
+            );
+        }
         e.u64(MAX_ARGUMENTS as u64);
         e.u64(analysis_plan::MAX_PREVIEW_BYTES as u64);
         Ok(ContentDigest::sha256(
             &e.finish_checked().map_err(|_| "approval bound")?,
         ))
+    }
+
+    pub fn format(&self) -> &'static str {
+        if self.prefix_frames.is_some() {
+            PREFIX_FORMAT
+        } else {
+            FORMAT
+        }
+    }
+    fn policy(&self) -> &'static str {
+        if self.prefix_frames.is_some() {
+            PREFIX_POLICY
+        } else {
+            POLICY
+        }
+    }
+    pub fn prefix_plan(&self, pin: HttpWirePin) -> Result<HttpPrefixSentinelPlan, &'static str> {
+        let frames = self.prefix_frames.ok_or(super::SOURCE)?;
+        let [binding] = self.analysis.plan.bindings.as_slice() else {
+            return Err(super::SOURCE);
+        };
+        let source = HttpWireScope {
+            stream: StreamBasis {
+                source: self.capture.source.bytes(),
+                generation: binding.generation,
+            },
+            receive_clock: self.capture.receive_clock.bytes(),
+            retention_evidence: self.capture.retention_evidence.bytes(),
+        };
+        let p = &self.analysis.plan;
+        Ok(HttpPrefixSentinelPlan {
+            import: HttpImportRequest {
+                source,
+                pin,
+                sensor: binding.sensor.clone(),
+                stream: binding.stream.clone(),
+                receive_time: binding.receive_time,
+                capture_hint: Some(binding.capture_hint),
+                max_frames: self.analysis.limits.maximum_frames_per_generation,
+                max_bytes: self.analysis.limits.maximum_bytes_per_generation,
+            },
+            acknowledged_frames: frames,
+            interpretation: p.interpretation,
+            package_digest: p.package_digest,
+            backend: p.backend,
+            minimum_score_ppm: p.minimum_score_ppm,
+            sampling: LongSentinelConfig {
+                every_frames: p.sampling.every_frames,
+                burst_frames: p.sampling.burst_frames,
+                max_inferences: p.sampling.max_inferences,
+            },
+            retain: true,
+        })
+    }
+    fn prefix_template(&self) -> Result<HttpPrefixSentinelPlan, &'static str> {
+        let source = HttpWireScope {
+            stream: StreamBasis {
+                source: self.capture.source.bytes(),
+                generation: self.capture.generations[0],
+            },
+            receive_clock: self.capture.receive_clock.bytes(),
+            retention_evidence: self.capture.retention_evidence.bytes(),
+        };
+        self.prefix_plan(HttpWirePin {
+            scope: source.digest().map_err(|_| super::SOURCE)?,
+            head: self.capture.approval(),
+            reads: 1,
+            bytes: 1,
+        })
     }
 
     /// Only a typed settled receipt can supply the real history pin. Unused reserved
@@ -246,7 +406,8 @@ impl Options {
         &self,
         pin: ReconnectHistoryPin,
     ) -> Result<(analysis_plan::Options, Vec<String>), &'static str> {
-        if pin.session != self.capture.approval()
+        if self.prefix_frames.is_some()
+            || pin.session != self.capture.approval()
             || pin.connections == 0
             || pin.connections as usize > self.capture.generations.len()
         {
@@ -280,6 +441,13 @@ impl Options {
     pub fn preview(&self) -> Result<String, &'static str> {
         let a = &self.analysis;
         let r = a.plan.reservation(&a.limits).map_err(|e| e.stable_id())?;
+        let inference = if self.prefix_frames.is_some() {
+            self.prefix_template()?
+                .reservation(&a.limits.sentinel)
+                .map_err(|error| error.stable_id())?
+        } else {
+            r.inference
+        };
         let bindings = a
             .plan
             .bindings
@@ -303,9 +471,9 @@ impl Options {
             })
             .collect::<Vec<_>>();
         let output = object(&[
-            ("format", string(FORMAT)),
+            ("format", string(self.format())),
             ("kind", string("plan")),
-            ("policy", string(POLICY)),
+            ("policy", string(self.policy())),
             ("approval_digest", string(&self.approval()?.to_text())),
             ("capture", self.capture.preview()),
             (
@@ -318,7 +486,11 @@ impl Options {
                     ("template_approval", string(&a.approval()?.to_text())),
                     (
                         "history_selection",
-                        string("exact_typed_settled_prefix_from_this_capture"),
+                        string(if self.prefix_frames.is_some() {
+                            "requested_frame_prefix_without_ended_history"
+                        } else {
+                            "exact_typed_settled_prefix_from_this_capture"
+                        }),
                     ),
                     ("bindings", array(&bindings)),
                     ("backend", string(a.plan.backend.stable_id())),
@@ -346,7 +518,7 @@ impl Options {
                             .map_or_else(|| "null".into(), |value| value.to_string()),
                     ),
                     ("retain_analysis", "true".into()),
-                    ("inferences", r.inference.inferences.to_string()),
+                    ("inferences", inference.inferences.to_string()),
                     (
                         "sampling",
                         object(&[
@@ -416,13 +588,13 @@ impl Options {
                                 "native_limits_digest",
                                 string(&a.limits.sentinel.digest().to_text()),
                             ),
-                            ("execution_macs", r.inference.execution_macs.to_string()),
-                            ("output_bytes", r.inference.output_bytes.to_string()),
+                            ("execution_macs", inference.execution_macs.to_string()),
+                            ("output_bytes", inference.output_bytes.to_string()),
                             (
                                 "source_chunk_bytes",
-                                r.inference.source_chunk_bytes.to_string(),
+                                inference.source_chunk_bytes.to_string(),
                             ),
-                            ("pixel_samples", r.inference.pixel_samples.to_string()),
+                            ("pixel_samples", inference.pixel_samples.to_string()),
                         ]),
                     ),
                 ]),

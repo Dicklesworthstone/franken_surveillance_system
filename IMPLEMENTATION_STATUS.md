@@ -10,6 +10,44 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Requested-count detection from continuous HTTP MJPEG (2026-11-03)
+
+`fss-capture-reconnect sentinel-prefix` now handles an HTTP camera that keeps its
+multipart response open. Under its separate exact outer approval it acquires one
+generation until the requested number of complete JPEG parts is acknowledged, then
+closes the socket and analyzes only the first N frames. It does not wait for peer EOF,
+manufacture an ended history, infer capture time or renew a source reservation.
+
+The new native `HttpPrefixSentinelPlan` composes the existing HTTP importer and
+long-sentinel detector/retention owners. Every received original byte remains in
+source custody, including additional complete read-ahead frames and a partial tail.
+The independent import ceiling covers all those originals; read-ahead is explicitly
+reported outside the selected range. Native framing completion, if already present
+in the pinned bytes, remains separate from acquisition completion or peer EOF.
+Release rechecks the original archive, every imported capsule, full destination source
+closure and current privacy. Native model calls remain capped at 64 with shared pools.
+
+A typed durable-import observer emits the exact import identity and offline analysis
+argv before the first model call. Sink refusal stops before analysis while preserving
+the cold-verifiable import. Source-prefix, import, analysis and retained replay handles
+support explicit offline continuation without camera reacquisition. These are new
+bounded invocations, not replenishment of the live process's remaining budget. The
+ordinary importer's pure parser/approval/preview is now reused without changing its
+existing bytes or execution behavior. `fss-infer package-detect` and `sentinel-replay`
+also accept the selected bounded model-output ceiling; default native limits remain
+unchanged and both cold continuations carry the original selection.
+
+Eight native core regressions, three real-process open-socket contracts, two parent
+admission/continuation cases and native CLI output-reservation regressions cover
+source/pending/count refusal, first-N/read-ahead separation, current authority/privacy,
+unsampled-tail corruption, progress sink failure, exact retries and replay after loose
+inputs disappear. Source/API reviews and pinned formatting passed; native execution of
+this new prefix composition remains pending. The full public schema catalog resolves
+134 schemas and 2200 references with no metadata/reference errors. This implements a
+bounded live-capture/perception slice of FSS-049/FSS-078, without qualifying detector
+quality, continuous coverage, event/effect authority or production operation.
+See `docs/HTTP_PREFIX_CAPTURE_SENTINEL.md`.
+
 ## Live ended HTTP capture into retained native detection (2026-11-03)
 
 `fss-capture-reconnect sentinel` now composes the actual native camera owner with
@@ -143,8 +181,12 @@ accepting its request. That gate now routes both preview and exact approval to t
 same native owner, with a server regression proving notifications cannot execute the
 operation. The real-process helper exposes transport refusals directly. The original
 authority, exclusive-target, retained-obligation and approval contracts remain intact.
-Evidence: run `41598188819`, job `125794756307`; the post-fix native rerun is pending.
-Independent source review and pinned formatting passed. See
+The post-fix native run at `6c876d2` passed all four journal contracts, all six
+CLI/MCP integration contracts (including the formerly failing parity case), and both
+MCP mapping/actual-dispatch contracts. Evidence: run `41651088223`, job `125969111863`.
+The overall workflow later timed out/cancelled in other groups; these are the exact
+completed cancellation results, not aggregate qualification. Independent source review
+and pinned formatting also passed. See
 `docs/session_cancellation.md` for the operator workflow and reference bounds.
 
 ## Exact learning recovery across handoff rebases (2026-11-03)

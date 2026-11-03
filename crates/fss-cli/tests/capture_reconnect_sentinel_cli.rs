@@ -24,6 +24,9 @@ const CAPTURE_FORMAT: &str = "fss.http_reconnect_capture.v1";
 const PACKAGE: &[u8] = include_bytes!("../../../models/yolox-nano/yolox_nano.fmpk");
 const FRAMES: usize = 4;
 
+#[path = "capture_reconnect_sentinel_cli/prefix.rs"]
+mod prefix;
+
 fn field<'a>(value: &'a Value, path: &[&str]) -> Test<&'a Value> {
     let mut value = value;
     for key in path {
