@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use fss_cli::agent_json::{array, evidence_anchor, object, string, strings};
 use fss_codec_mjpeg::ComponentInterpretation;
-use fss_core::{ContentDigest, DigestAlgorithm, SensorId, StreamId};
+use fss_core::{ContentDigest, DigestAlgorithm, EvidenceOrigin, SensorId, StreamId};
 use fss_object::HostSpoolIo;
 use fss_publication::SlotName;
 use fss_reference::activity_replay::ActivityReplayPlan;
@@ -17,17 +17,22 @@ use fss_reference::activity_replay::operator::{
     ActivityVerificationLimits, ActivityVerificationRequest, MAX_ACTIVITY_SOURCE_SLOTS,
     VerifiedActivityObservation, verify_retained_activity,
 };
+use fss_reference::activity_replay::provenance::{
+    ACTIVITY_KNOWLEDGE_PROJECTION_DOMAIN, ACTIVITY_PRODUCER_ORIGINS_PROFILE,
+    VerifiedActivityProjection,
+};
 use fss_reference::executor_activity::{ActivityThresholdPolicy, ExecutorModelOutcome};
 use fss_reference::{ExecBudget, ScalarExecCx};
 
 use super::{CommandError, MAX_ARG_BYTES, MAX_REPORT_BYTES, number, text};
 
-pub(super) const MAX_ARGS: usize = 81;
+pub(super) const MAX_ARGS: usize = 83;
 const HELP: &str = "fss-evidence verify-activity --root DIR --site SITE\n\
   --result sha256:HEX --reference-capsule sha256:HEX\n\
   --source-slot SLOT [--source-slot SLOT ...] --sensor ID --stream ID --job ID\n\
   --interpretation grayscale|ycbcr --execution-macs N --execution-bytes N\n\
   [--expected-ledger-root sha256:HEX] [--policy-generation N] [--threshold-bits HEX8]\n\
+  [--report-profile v1|producer-origins-v1]\n\
   [--max-journal-bytes N] [--max-custody-read-bytes N] [--max-object-bytes N]\n\
   [--max-objects N] [--max-retained-bytes N] [--max-deletion-bytes N]\n\
   [--max-decode-work N] [--max-report-bytes N] [--timeout-ms N]\n\
@@ -50,6 +55,12 @@ const HELP: &str = "fss-evidence verify-activity --root DIR --site SITE\n\
 \n\
   The optional --expected-ledger-root pins the complete authority history and anchor.\n\
   The report always returns this pin; a second read must observe the same head.\n\
+  The default v1 report is unchanged. Explicit producer-origins-v1 selects a v2\n\
+  report with a producer-bound KnowledgeCell, all eight origin/authority role\n\
+  bindings and their integrity digest. Raw retained bytes are Observed; native\n\
+  results, receipts and capsule metadata stay Derived. Retention does not verify\n\
+  capture-time assertions, calibration or scene authenticity. A report digest is\n\
+  not authentication: recipients must independently rerun native verification.\n\
   Defaults: 1 MiB per journal read, 512 MiB charged custody reads, 16 MiB per object,\n\
   16384 custody objects, 64 MiB captured bytes, 64 MiB deletion metadata, 20000000\n\
   JPEG work units, 2 MiB report, 30000 ms. History replay additionally admits at most\n\
@@ -78,6 +89,13 @@ struct Request {
     limits: ActivityVerificationLimits,
     report_limit: usize,
     timeout: Duration,
+    profile: ReportProfile,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum ReportProfile {
+    LegacyV1,
+    ProducerOriginsV1,
 }
 
 fn digest(value: &std::ffi::OsStr) -> Result<ContentDigest, CommandError> {
@@ -120,6 +138,7 @@ fn parse(args: &[OsString]) -> Result<Option<Request>, CommandError> {
     let mut threshold = 0.01_f32;
     let mut report_limit = MAX_REPORT_BYTES;
     let mut timeout = Duration::from_millis(30_000);
+    let mut profile = ReportProfile::LegacyV1;
     for pair in args[1..].as_chunks::<2>().0 {
         let key = text(&pair[0])?;
         let value = &pair[1];
@@ -143,6 +162,13 @@ fn parse(args: &[OsString]) -> Result<Option<Request>, CommandError> {
             "--result" => result = Some(digest(value)?),
             "--reference-capsule" => reference_capsule = Some(digest(value)?),
             "--expected-ledger-root" => expected = Some(digest(value)?),
+            "--report-profile" => {
+                profile = match text(value)? {
+                    "v1" => ReportProfile::LegacyV1,
+                    ACTIVITY_PRODUCER_ORIGINS_PROFILE => ReportProfile::ProducerOriginsV1,
+                    _ => return Err(CommandError::Usage("unsupported activity report profile")),
+                };
+            }
             "--source-slot" => {
                 let slot = SlotName::parse(text(value)?)
                     .map_err(|_| CommandError::Usage("invalid source slot"))?;
@@ -264,6 +290,7 @@ fn parse(args: &[OsString]) -> Result<Option<Request>, CommandError> {
         limits,
         report_limit,
         timeout,
+        profile,
     }))
 }
 
@@ -278,6 +305,130 @@ fn binding(role: &str, value: &ActivityEvidenceBinding) -> String {
         ),
         ("authorityGeneration", value.revision.generation.to_string()),
     ])
+}
+
+fn origin(value: EvidenceOrigin) -> String {
+    string(match value {
+        EvidenceOrigin::Produced(class) => class.as_str(),
+        EvidenceOrigin::Laboratory => "laboratory",
+    })
+}
+
+// This renderer only accepts the private native producer's proof type. Public claim fields and
+// a self-consistent integrity digest cannot construct a value accepted by this boundary.
+fn producer_origins(value: &VerifiedActivityProjection) -> Result<String, CommandError> {
+    let claim = value.claim();
+    let cell = &claim.cell;
+    if cell.hypothesis().is_some() || cell.state_basis().is_some() || cell.valid_until().is_some() {
+        return Err(CommandError::Activity(
+            "activity projection requires the exact native cell profile".to_owned(),
+        ));
+    }
+    let references = cell
+        .evidence()
+        .iter()
+        .map(|reference| {
+            object(&[
+                ("digest", string(&reference.digest.to_text())),
+                ("origin", origin(reference.origin)),
+            ])
+        })
+        .collect::<Vec<_>>();
+    let roles = claim
+        .roles
+        .iter()
+        .map(|binding| {
+            let revision = &binding.evidence.revision;
+            object(&[
+                ("role", string(binding.role.as_str())),
+                ("origin", origin(binding.origin)),
+                ("digest", string(&binding.evidence.digest.to_text())),
+                (
+                    "authorityObject",
+                    string(binding.evidence.authority.as_str()),
+                ),
+                (
+                    "authorityRevision",
+                    object(&[
+                        ("generation", revision.generation.to_string()),
+                        ("family", string(&revision.family)),
+                        ("plane", string(revision.plane.as_str())),
+                        ("payloadDigest", string(&revision.payload_digest.to_text())),
+                        (
+                            "validity",
+                            object(&[
+                                ("earliestNs", revision.validity.earliest.0.to_string()),
+                                ("latestNs", revision.validity.latest.0.to_string()),
+                            ]),
+                        ),
+                    ]),
+                ),
+            ])
+        })
+        .collect::<Vec<_>>();
+    Ok(object(&[
+        ("format", string(ACTIVITY_KNOWLEDGE_PROJECTION_DOMAIN)),
+        // The legacy agent anchor projection has no privacy-epoch slot. This explicit profile
+        // carries every LedgerAnchor coordinate so the producer binding survives interchange.
+        (
+            "anchor",
+            object(&[
+                ("siteLineage", string(&claim.anchor.site_lineage)),
+                ("ledgerEpoch", claim.anchor.ledger_epoch.to_string()),
+                ("commitSequence", claim.anchor.commit_sequence.to_string()),
+                (
+                    "adapterRegistryEpoch",
+                    claim.anchor.adapter_registry_epoch.to_string(),
+                ),
+                ("schemaEpoch", claim.anchor.schema_epoch.to_string()),
+                ("policyEpoch", claim.anchor.policy_epoch.to_string()),
+                ("privacyEpoch", claim.anchor.privacy_epoch.to_string()),
+                ("stateRoot", string(&claim.anchor.state_root.to_text())),
+            ]),
+        ),
+        ("ledgerRoot", string(&claim.ledger_root.to_text())),
+        (
+            "producer",
+            object(&[
+                ("algorithm", string(&claim.producer_algorithm)),
+                ("generation", claim.producer_generation.to_string()),
+                (
+                    "derivationReceipt",
+                    string(&claim.derivation_receipt.to_text()),
+                ),
+            ]),
+        ),
+        (
+            "cell",
+            object(&[
+                ("claimId", string(cell.claim_id())),
+                ("statement", string(cell.disclosable_statement())),
+                ("knowledgeState", string(cell.knowledge_state().as_str())),
+                ("provenanceClass", string(cell.provenance().as_str())),
+                ("hypothesis", "null".to_owned()),
+                ("supportingEvidence", array(&references)),
+                (
+                    "contradictingEvidence",
+                    array(
+                        &cell
+                            .contradictions()
+                            .iter()
+                            .map(|digest| string(&digest.to_text()))
+                            .collect::<Vec<_>>(),
+                    ),
+                ),
+                ("validUntilNs", "null".to_owned()),
+                ("stateBasis", "null".to_owned()),
+                ("cellDigest", string(&cell.cell_digest().to_text())),
+            ]),
+        ),
+        ("roles", array(&roles)),
+        (
+            "integrityDigest",
+            string(&value.integrity_digest().to_text()),
+        ),
+        ("requiresNativeReverification", "true".to_owned()),
+    ]))
 }
 
 fn render(request: &Request, value: &VerifiedActivityObservation) -> Result<String, CommandError> {
@@ -308,8 +459,11 @@ fn render(request: &Request, value: &VerifiedActivityObservation) -> Result<Stri
     let audit = value.custody();
     let preflight = value.result_custody();
     let limits = request.limits;
-    let report = object(&[
-        ("format", string("fss.activity_verification.v1")),
+    let mut fields = vec![
+        ("format", string(match request.profile {
+            ReportProfile::LegacyV1 => "fss.activity_verification.v1",
+            ReportProfile::ProducerOriginsV1 => "fss.activity_verification.v2",
+        })),
         ("verified", "true".to_owned()), ("site", string(&request.site)),
         ("anchor", evidence_anchor(belief.anchor())),
         ("ledger_root", string(&value.ledger_root().to_text())),
@@ -356,7 +510,15 @@ fn render(request: &Request, value: &VerifiedActivityObservation) -> Result<Stri
             "custody and unchanged authority are sequential observations, not a future availability lease".to_owned(),
             "operator-local metadata; no export privacy transform or agent-session authority".to_owned(),
         ])),
-    ]) + "\n";
+    ];
+    if request.profile == ReportProfile::ProducerOriginsV1 {
+        let projection = value
+            .knowledge_projection()
+            .map_err(|error| CommandError::Activity(error.to_string()))?;
+        fields.push(("reportProfile", string(ACTIVITY_PRODUCER_ORIGINS_PROFILE)));
+        fields.push(("producerOrigins", producer_origins(&projection)?));
+    }
+    let report = object(&fields) + "\n";
     if report.len() > request.report_limit {
         return Err(CommandError::OutputBound);
     }

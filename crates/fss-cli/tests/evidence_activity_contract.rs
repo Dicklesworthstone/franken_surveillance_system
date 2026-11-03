@@ -8,12 +8,14 @@ use std::process::{Command, Output};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use fss_cli::json_input::{Value, parse as parse_json};
 use fss_codec_mjpeg::color::{RgbDecodeLimits, decode_rgb};
 use fss_codec_mjpeg::{ComponentInterpretation, DecodeBudget};
 use fss_core::{
     BudgetVector, CanonicalEncode, CapsuleId, CaptureInterval, ClockBasis, ContentDigest,
-    ContextAuthority, OperationId, RootAuthoritySpec, SensorCapsule, SensorId,
-    SensorSourceBytesSpec, StreamId, TimestampNs,
+    ContextAuthority, EvidenceOrigin, KnowledgeCell, KnowledgeCellParams, KnowledgeState,
+    LedgerAnchor, ObjectId, ObjectRevision, OperationId, Plane, ProvenanceClass, RootAuthoritySpec,
+    SensorCapsule, SensorId, SensorSourceBytesSpec, StreamId, TimestampNs,
 };
 use fss_object::{HostSpoolIo, RecordingSpoolIo};
 use fss_publication::{SlotName, root_reachability_object_id};
@@ -22,6 +24,10 @@ use fss_reference::activity_replay::belief::{ActivityEvidenceBinding, ActivityEv
 use fss_reference::activity_replay::operator::{
     ActivityVerificationError, ActivityVerificationLimits, ActivityVerificationRequest,
     verify_retained_activity,
+};
+use fss_reference::activity_replay::provenance::{
+    ACTIVITY_KNOWLEDGE_PROJECTION_DOMAIN, ACTIVITY_PRODUCER_ORIGINS_PROFILE, ActivityEvidenceRole,
+    ActivityOriginBinding, ActivityProjectionClaim, ActivityProjectionError,
 };
 use fss_reference::executor_activity::{
     ActivityExecutorModel, ActivityFrameBinding, ActivityThresholdPolicy, ExecutorModelOutcome,
@@ -302,6 +308,136 @@ fn refused(output: Output) {
     assert!(!output.stderr.is_empty());
 }
 
+fn field<'a>(value: &'a Value, key: &str) -> TestResult<&'a Value> {
+    value
+        .object()
+        .and_then(|object| object.get(key))
+        .ok_or_else(|| format!("missing {key}").into())
+}
+fn text_field<'a>(value: &'a Value, key: &str) -> TestResult<&'a str> {
+    field(value, key)?
+        .text()
+        .ok_or_else(|| format!("invalid text {key}").into())
+}
+fn integer_field(value: &Value, key: &str) -> TestResult<i128> {
+    field(value, key)?
+        .integer()
+        .ok_or_else(|| format!("invalid integer {key}").into())
+}
+fn digest_field(value: &Value, key: &str) -> TestResult<ContentDigest> {
+    Ok(ContentDigest::parse(text_field(value, key)?)?)
+}
+fn origin_field(value: &Value) -> TestResult<EvidenceOrigin> {
+    match text_field(value, "origin")? {
+        "observed" => Ok(EvidenceOrigin::Produced(ProvenanceClass::Observed)),
+        "derived" => Ok(EvidenceOrigin::Produced(ProvenanceClass::Derived)),
+        _ => Err("unsupported native activity origin".into()),
+    }
+}
+
+// Independent wire reconstruction for the profile contract. This deliberately does not copy
+// missing coordinates from a local observation: every field needed by the native verifier must
+// survive the child process's JSON boundary, including privacy epoch and full role revisions.
+fn projection_from_report(report: &Value) -> TestResult<ActivityProjectionClaim> {
+    let projection = field(report, "producerOrigins")?;
+    assert_eq!(
+        text_field(projection, "format")?,
+        ACTIVITY_KNOWLEDGE_PROJECTION_DOMAIN
+    );
+    assert_eq!(
+        field(projection, "requiresNativeReverification")?.boolean(),
+        Some(true)
+    );
+    let anchor = field(projection, "anchor")?;
+    let producer = field(projection, "producer")?;
+    let value = field(projection, "cell")?;
+    assert_eq!(text_field(value, "knowledgeState")?, "estimated");
+    assert_eq!(text_field(value, "provenanceClass")?, "derived");
+    for key in ["hypothesis", "validUntilNs", "stateBasis"] {
+        assert_eq!(field(value, key)?, &Value::Null);
+    }
+    let mut evidence = Vec::new();
+    let mut origins = Vec::new();
+    for reference in field(value, "supportingEvidence")?
+        .array()
+        .ok_or("missing references")?
+    {
+        evidence.push(digest_field(reference, "digest")?);
+        origins.push(origin_field(reference)?);
+    }
+    let contradictions = field(value, "contradictingEvidence")?
+        .array()
+        .ok_or("missing contradictions")?
+        .iter()
+        .map(|entry| ContentDigest::parse(entry.text().unwrap_or_default()))
+        .collect::<Result<Vec<_>, _>>()?;
+    let cell = KnowledgeCell::new(KnowledgeCellParams {
+        claim_id: text_field(value, "claimId")?.to_owned(),
+        statement: text_field(value, "statement")?.to_owned(),
+        knowledge_state: KnowledgeState::Estimated,
+        provenance: ProvenanceClass::Derived,
+        hypothesis: None,
+        evidence,
+        contradictions,
+        valid_until: None,
+        state_basis: None,
+    })?
+    .with_evidence_origins(&origins)?;
+    assert_eq!(cell.cell_digest(), digest_field(value, "cellDigest")?);
+    let mut roles = Vec::new();
+    for value in field(projection, "roles")?.array().ok_or("missing roles")? {
+        let role_name = text_field(value, "role")?;
+        let role = ActivityEvidenceRole::ALL
+            .into_iter()
+            .find(|role| role.as_str() == role_name)
+            .ok_or("unknown role")?;
+        let revision = field(value, "authorityRevision")?;
+        let validity = field(revision, "validity")?;
+        assert_eq!(text_field(revision, "plane")?, "authority");
+        roles.push(ActivityOriginBinding {
+            role,
+            origin: origin_field(value)?,
+            evidence: ActivityEvidenceBinding {
+                digest: digest_field(value, "digest")?,
+                authority: ObjectId::parse(text_field(value, "authorityObject")?)?,
+                revision: ObjectRevision {
+                    generation: integer_field(revision, "generation")?.try_into()?,
+                    family: text_field(revision, "family")?.to_owned(),
+                    plane: Plane::Authority,
+                    payload_digest: digest_field(revision, "payloadDigest")?,
+                    validity: CaptureInterval::new(
+                        TimestampNs(integer_field(validity, "earliestNs")?),
+                        TimestampNs(integer_field(validity, "latestNs")?),
+                    )?,
+                },
+            },
+        });
+    }
+    let claim = ActivityProjectionClaim {
+        anchor: LedgerAnchor {
+            site_lineage: text_field(anchor, "siteLineage")?.to_owned(),
+            ledger_epoch: integer_field(anchor, "ledgerEpoch")?.try_into()?,
+            commit_sequence: integer_field(anchor, "commitSequence")?.try_into()?,
+            adapter_registry_epoch: integer_field(anchor, "adapterRegistryEpoch")?.try_into()?,
+            schema_epoch: integer_field(anchor, "schemaEpoch")?.try_into()?,
+            policy_epoch: integer_field(anchor, "policyEpoch")?.try_into()?,
+            privacy_epoch: integer_field(anchor, "privacyEpoch")?.try_into()?,
+            state_root: digest_field(anchor, "stateRoot")?,
+        },
+        ledger_root: digest_field(projection, "ledgerRoot")?,
+        producer_algorithm: text_field(producer, "algorithm")?.to_owned(),
+        producer_generation: integer_field(producer, "generation")?.try_into()?,
+        derivation_receipt: digest_field(producer, "derivationReceipt")?,
+        cell,
+        roles,
+    };
+    assert_eq!(
+        claim.integrity_digest()?,
+        digest_field(projection, "integrityDigest")?
+    );
+    Ok(claim)
+}
+
 fn retain_mask(f: &Fixture, sensor: &str) -> TestResult<PathBuf> {
     let cx = context(&f._scratch.0)?;
     let mut deployment = ReferenceDeployment::reopen(&f.root, "site:activity-belief", &cx)?;
@@ -373,6 +509,186 @@ fn quiet_identical_frames_keep_distinct_roles_without_claiming_absence() -> Test
     assert!(report.contains("\"supportsAbsenceClaim\":false"));
     assert!(report.contains("\"uncertainty\":{\"lowerPpm\":0,\"upperPpm\":1000000}"));
     assert!(report.contains("\"role\":\"reference_decode\""));
+    Ok(())
+}
+
+#[test]
+fn explicit_producer_origins_survive_json_and_verify_against_the_native_owner() -> TestResult {
+    let f = fixture(false, false)?;
+    let before = tree(&f.root)?;
+    let legacy = run(&f, &[])?;
+    let explicit_legacy = run(&f, &[("--report-profile", "v1".to_owned())])?;
+    assert!(legacy.status.success());
+    assert!(explicit_legacy.status.success());
+    assert_eq!(
+        legacy.stdout, explicit_legacy.stdout,
+        "default v1 bytes changed"
+    );
+    let legacy_text = String::from_utf8(legacy.stdout)?;
+    assert!(!legacy_text.contains("producerOrigins"));
+    assert!(!legacy_text.contains("reportProfile"));
+    let output = run(
+        &f,
+        &[(
+            "--report-profile",
+            ACTIVITY_PRODUCER_ORIGINS_PROFILE.to_owned(),
+        )],
+    )?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report_text = String::from_utf8(output.stdout)?;
+    let report = parse_json(&report_text)?;
+    assert_eq!(
+        text_field(&report, "format")?,
+        "fss.activity_verification.v2"
+    );
+    assert_eq!(
+        text_field(&report, "reportProfile")?,
+        ACTIVITY_PRODUCER_ORIGINS_PROFILE
+    );
+    let claim = projection_from_report(&report)?;
+
+    // The explicit version extends the default result without changing any existing conclusion,
+    // evidence role, uncertainty, allowance or usage field.
+    let mut prior_fields = report.object().ok_or("report is not an object")?.clone();
+    prior_fields.remove("producerOrigins");
+    prior_fields.remove("reportProfile");
+    prior_fields.insert(
+        "format".to_owned(),
+        Value::Text("fss.activity_verification.v1".to_owned()),
+    );
+    assert_eq!(Value::Object(prior_fields), parse_json(&legacy_text)?);
+
+    let slots = [SlotName::parse("activity-originals")?];
+    let verified = verify_retained_activity(
+        ActivityVerificationRequest {
+            root: &f.root,
+            site: "site:activity-belief",
+            expected_ledger_root: Some(claim.ledger_root),
+            result: f.result.object_digest(),
+            reference_capsule: f.evidence.reference_capsule.digest,
+            source_slots: &slots,
+            plan: f.plan.clone(),
+        },
+        &HostSpoolIo,
+        ActivityVerificationLimits::default(),
+        &ScalarExecCx::new(),
+        &|| false,
+    )?;
+    let accepted = verified.verify_knowledge_projection(&claim)?;
+    assert_eq!(accepted.integrity_digest(), claim.integrity_digest()?);
+    for index in [2, 3] {
+        assert_eq!(
+            claim.roles[index].origin,
+            EvidenceOrigin::Produced(ProvenanceClass::Observed)
+        );
+    }
+    for index in [0, 1, 4, 5, 6, 7] {
+        assert_eq!(
+            claim.roles[index].origin,
+            EvidenceOrigin::Produced(ProvenanceClass::Derived)
+        );
+    }
+    let mut relabelled = claim.clone();
+    relabelled.roles[0].origin = EvidenceOrigin::Produced(ProvenanceClass::Observed);
+    assert_ne!(relabelled.integrity_digest()?, accepted.integrity_digest());
+    assert_eq!(
+        verified.verify_knowledge_projection(&relabelled).err(),
+        Some(ActivityProjectionError::EvidenceClosureMismatch)
+    );
+    let pinned = run(
+        &f,
+        &[
+            (
+                "--report-profile",
+                ACTIVITY_PRODUCER_ORIGINS_PROFILE.to_owned(),
+            ),
+            ("--expected-ledger-root", claim.ledger_root.to_text()),
+        ],
+    )?;
+    assert!(pinned.status.success());
+    assert_eq!(String::from_utf8(pinned.stdout)?, report_text);
+    assert_eq!(before, tree(&f.root)?);
+    // Opt-in qualification artifact: preserve the actual successful child-process wire, after
+    // independent native re-verification, for the repository's JSON instance validator.
+    if let Some(directory) = std::env::var_os("FSS_ACTIVITY_ORIGINS_FIXTURE_DIR") {
+        let directory = PathBuf::from(directory);
+        fs::create_dir_all(&directory)?;
+        fs::write(
+            directory.join("activity_verification.v2.json"),
+            &report_text,
+        )?;
+    }
+    Ok(())
+}
+
+#[test]
+fn explicit_origin_profile_preserves_shared_byte_roles_and_output_custody_refusals() -> TestResult {
+    let f = fixture(true, false)?;
+    let profile = (
+        "--report-profile",
+        ACTIVITY_PRODUCER_ORIGINS_PROFILE.to_owned(),
+    );
+    let output = run(&f, std::slice::from_ref(&profile))?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report = parse_json(&String::from_utf8(output.stdout)?)?;
+    let claim = projection_from_report(&report)?;
+    assert_eq!(claim.roles.len(), 8);
+    assert_eq!(
+        claim.roles[2].evidence.digest,
+        claim.roles[3].evidence.digest
+    );
+    assert_eq!(
+        claim.roles[6].evidence.digest,
+        claim.roles[7].evidence.digest
+    );
+    assert_eq!(claim.cell.evidence().len(), 6);
+    assert_eq!(text_field(&report, "outcome")?, "no_activity");
+    assert_eq!(
+        field(&report, "supportsAbsenceClaim")?.boolean(),
+        Some(false)
+    );
+    assert_eq!(field(&report, "effectsAuthorized")?.boolean(), Some(false));
+    refused(run(
+        &f,
+        &[profile.clone(), ("--max-report-bytes", "1024".to_owned())],
+    )?);
+    fs::write(&f.source_object, b"corrupted original")?;
+    refused(run(&f, &[profile])?);
+    Ok(())
+}
+
+#[test]
+fn unknown_or_duplicate_origin_profiles_refuse_before_opening_deployment() -> TestResult {
+    let mut f = fixture(false, false)?;
+    f.root = f._scratch.0.join("must-not-be-created");
+    let output = run(
+        &f,
+        &[("--report-profile", "producer-origins-v99".to_owned())],
+    )?;
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("unsupported activity report profile")
+    );
+    refused(output);
+    assert!(!f.root.exists());
+    let output = Command::new(env!("CARGO_BIN_EXE_fss-evidence"))
+        .args([
+            "verify-activity",
+            "--report-profile",
+            "v1",
+            "--report-profile",
+            ACTIVITY_PRODUCER_ORIGINS_PROFILE,
+        ])
+        .output()?;
+    assert!(String::from_utf8_lossy(&output.stderr).contains("duplicate singleton option"));
+    refused(output);
     Ok(())
 }
 

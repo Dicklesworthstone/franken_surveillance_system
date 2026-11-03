@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/activity_verification.v2.json",
+  "title": "Retained native activity verification with producer origins",
+  "description": "Selected only by verify-activity --report-profile producer-origins-v1. Default v1 report bytes remain unchanged. Complete native authority/custody/replay checks precede the producer-bound knowledge projection. This operator-local metadata is neither an agent-session response nor a privacy-transformed export. Source-byte custody does not prove camera authenticity, physical timing, calibration, presence, absence or effect authority. JSON integrity is not authenticated custody; recipients rerun native verification against independently selected authority.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "verified", "site", "anchor", "ledger_root", "sourceSlots", "beliefId", "statement", "knowledgeState", "provenance", "uncertainty", "referenceOnly", "supportsAbsenceClaim", "effectsAuthorized", "outcome", "scoreBits", "modelGeneration", "modelDigest", "policyGeneration", "policyDigest", "derivationReceipt", "roles", "usage", "limits", "limitations", "reportProfile", "producerOrigins"],
+  "properties": {
+    "format": {"const": "fss.activity_verification.v2"},
+    "verified": {"const": true},
+    "site": {"type": "string", "minLength": 1, "maxLength": 256},
+    "anchor": {"$ref": "evidence_anchor.v1.json"},
+    "ledger_root": {"$ref": "#/$defs/digest"},
+    "sourceSlots": {"type": "array", "minItems": 1, "maxItems": 8, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 128}},
+    "beliefId": {"type": "string", "minLength": 1, "maxLength": 65536},
+    "statement": {"type": "string", "minLength": 1, "maxLength": 65536},
+    "knowledgeState": {"const": "estimated"},
+    "provenance": {"const": "derived"},
+    "uncertainty": {
+      "type": "object", "additionalProperties": false,
+      "required": ["lowerPpm", "upperPpm"],
+      "properties": {"lowerPpm": {"const": 0}, "upperPpm": {"const": 1000000}}
+    },
+    "referenceOnly": {"const": true},
+    "supportsAbsenceClaim": {"const": false},
+    "effectsAuthorized": {"const": false},
+    "outcome": {"enum": ["activity", "no_activity"]},
+    "scoreBits": {"type": "string", "pattern": "^[0-9a-f]{8}$"},
+    "modelGeneration": {"type": "string", "minLength": 1, "maxLength": 256},
+    "modelDigest": {"$ref": "#/$defs/digest"},
+    "policyGeneration": {"type": "integer", "minimum": 1, "maximum": 18446744073709551615},
+    "policyDigest": {"$ref": "#/$defs/digest"},
+    "derivationReceipt": {"$ref": "#/$defs/digest"},
+    "roles": {
+      "type": "array", "minItems": 8, "maxItems": 8,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["role", "digest", "authorityObject", "authorityRoot", "authorityGeneration"],
+        "properties": {
+          "role": {"enum": ["result", "invocation", "frame_source", "reference_source", "frame_capsule", "reference_capsule", "frame_decode", "reference_decode"]},
+          "digest": {"$ref": "#/$defs/digest"},
+          "authorityObject": {"type": "string", "minLength": 1, "maxLength": 256},
+          "authorityRoot": {"$ref": "#/$defs/digest"},
+          "authorityGeneration": {"const": 1}
+        }
+      }
+    },
+    "usage": {
+      "type": "object", "additionalProperties": false,
+      "required": ["historyObservations", "historyBatches", "deletionRecordReads", "deletionRecordBytes", "resultPreflightReadBytes", "custodyReadBytes", "custodyPeakReservedReadBytes", "custodyIoCalls", "custodyObjects", "custodyObjectVisits", "custodyEdgeVisits", "graphReadAttempts", "graphInputBytes", "graphVisits", "derivations", "decodeWork"],
+      "properties": {
+        "historyObservations": {"const": 2},
+        "historyBatches": {"$ref": "#/$defs/u64"},
+        "deletionRecordReads": {"$ref": "#/$defs/u64"},
+        "deletionRecordBytes": {"$ref": "#/$defs/u64"},
+        "resultPreflightReadBytes": {"$ref": "#/$defs/u64"},
+        "custodyReadBytes": {"$ref": "#/$defs/u64"},
+        "custodyPeakReservedReadBytes": {"$ref": "#/$defs/u64"},
+        "custodyIoCalls": {"$ref": "#/$defs/u64"},
+        "custodyObjects": {"$ref": "#/$defs/u64"},
+        "custodyObjectVisits": {"$ref": "#/$defs/u64"},
+        "custodyEdgeVisits": {"$ref": "#/$defs/u64"},
+        "graphReadAttempts": {"$ref": "#/$defs/u64"},
+        "graphInputBytes": {"$ref": "#/$defs/u64"},
+        "graphVisits": {"$ref": "#/$defs/u64"},
+        "derivations": {"const": 1},
+        "decodeWork": {"$ref": "#/$defs/u64"}
+      }
+    },
+    "limits": {
+      "type": "object", "additionalProperties": false,
+      "required": ["journalBytesPerRead", "deletionRecordBytes", "custodyReadBytes", "objectBytes", "custodyObjects", "capturedBytes", "graphInputBytes", "decodeWork", "reportBytes"],
+      "properties": {
+        "journalBytesPerRead": {"$ref": "#/$defs/u64"},
+        "deletionRecordBytes": {"$ref": "#/$defs/u64"},
+        "custodyReadBytes": {"$ref": "#/$defs/u64"},
+        "objectBytes": {"$ref": "#/$defs/u64"},
+        "custodyObjects": {"$ref": "#/$defs/u64"},
+        "capturedBytes": {"$ref": "#/$defs/u64"},
+        "graphInputBytes": {"$ref": "#/$defs/u64"},
+        "decodeWork": {"$ref": "#/$defs/u64"},
+        "reportBytes": {"type": "integer", "minimum": 1024, "maximum": 2097152}
+      }
+    },
+    "limitations": {"const": [
+      "computation verification is not physical truth, calibration, coverage, independence or absence",
+      "custody and unchanged authority are sequential observations, not a future availability lease",
+      "operator-local metadata; no export privacy transform or agent-session authority"
+    ]},
+    "reportProfile": {"const": "producer-origins-v1"},
+    "producerOrigins": {"$ref": "activity_knowledge_projection.v1.json"}
+  },
+  "$defs": {
+    "digest": {"$ref": "activity_knowledge_projection.v1.json#/$defs/digest"},
+    "u64": {"$ref": "activity_knowledge_projection.v1.json#/$defs/u64"}
+  }
+}

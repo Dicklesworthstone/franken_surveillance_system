@@ -6,7 +6,7 @@
 mod tests;
 
 use fss_cli::agent_json::{object, string};
-use fss_cli::clock_alignment::{self, MAX_INPUT_BYTES, Result, failure, input};
+use fss_cli::clock_alignment::{self, MAX_INPUT_BYTES, MAX_REPORT_BYTES, Result, failure, input};
 #[cfg(test)]
 use fss_cli::json_input::parse;
 use fss_core::{BudgetVector, ContentDigest, ContextAuthority, OperationId, RootAuthoritySpec};
@@ -133,7 +133,11 @@ fn execute(options: &Options, out: &mut impl Write) -> Result<bool> {
         generation: 1,
     })
     .map_err(|_| failure("authority", "local authority refused"))?;
-    let cx = ReplayCx::from_context_authority_read_only(&authority, PathBuf::from("."))
+    // The inspection owner requires an exact absolute root. Resolving the existing
+    // working directory preserves this standalone reader's scope without creating a store.
+    let root = std::env::current_dir()
+        .map_err(|_| failure("authority", "local working directory unavailable"))?;
+    let cx = ReplayCx::from_context_authority_read_only(&authority, root)
         .map_err(|_| failure("authority", "local file context refused"))?;
     let result = (|| {
         let bytes = read_input(&options.input, &cx)?;

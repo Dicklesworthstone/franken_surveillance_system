@@ -56,6 +56,57 @@ No outcome authorizes an effect. These are sequential custody/head observations,
 on future file availability. The report contains local operator metadata; it is not a privacy
 transformed export or an agent-session response, and it never includes original media bytes.
 
+## Preserve producer origins in the knowledge projection
+
+Add `--report-profile producer-origins-v1` to the same command to select the explicit
+`fss.activity_verification.v2` report. The default and explicit `--report-profile v1` preserve
+the existing v1 bytes. Unknown or duplicate profile selections refuse before deployment reads.
+This is an operator report profile; it does not negotiate a new `fss/1` agent-session contract.
+
+The new `producerOrigins` object carries an exact `KnowledgeCell`, the independently reproduced
+belief's algorithm/generation/receipt, the complete ledger anchor **including privacy epoch**,
+the committed journal root, and all eight evidence roles with their full authority revisions.
+The native decoder/replayer establishes the computational role; a publication container's
+family alone cannot establish an evidence origin.
+
+| Native role | Origin | What the classification establishes |
+|---|---|---|
+| `frame_source`, `reference_source` | `observed` | Custody of the exact original JPEG bytes consumed by this computation. It does not authenticate a live camera or the physical scene. |
+| `result`, `invocation` | `derived` | Exact native model result and invocation receipt independently reproduced from the original inputs. |
+| `frame_decode`, `reference_decode` | `derived` | Exact native JPEG decode records reproduced from those inputs. |
+| `frame_capsule`, `reference_capsule` | `derived` | Bound source metadata checked by the replay. Operator-supplied capture-time assertions, device clocks and calibration are not promoted to physically observed facts. |
+
+The knowledge cell stays **Estimated / Derived**, with no effect authority. Its evidence list
+retains every distinct `(digest, origin)` pair. The role closure always retains eight entries:
+equal source bytes or identical decode records do not erase either role, and a content identity
+with multiple origins cannot be reduced to the first matching origin.
+
+Only the successful `VerifiedActivityObservation` owner can create a
+`VerifiedActivityProjection`. The ordinary public `ActivityProjectionClaim` is an untrusted
+interchange description. A recipient first obtains its own observation by rerunning
+`verify_retained_activity` with independently selected deployment, history pin, source slots and
+original invocation. It then calls `verify_knowledge_projection` on that observation. The check
+refuses a relabeled, shortened or substituted cell; a missing, reordered or altered role; changed
+authority revision coordinates; and mismatched anchor, history, producer or receipt. A copied
+model result cannot substitute for the exact earlier capsule and source publication.
+
+The `integrityDigest` uses the checked canonical `fss.activity_knowledge_projection.v1` domain;
+`cellDigest` uses the existing `fss.agent_knowledge_cell.v2` domain. These are integrity identities,
+**not signatures or authentication**. Anyone can hash a forged JSON claim. The report explicitly
+sets `requiresNativeReverification: true`; JSON validity, matching checksums and copied custody
+fields cannot recreate the private verified type. Large integer coordinates must be preserved
+exactly when reading JSON, without conversion through a binary floating-point number.
+
+The wire contracts are `schemas/activity_verification.v2.json` and
+`schemas/activity_knowledge_projection.v1.json`. All legacy conclusion, uncertainty, usage and
+limit fields remain present in the explicit report. The same output ceiling applies to the
+complete enlarged report; no roles or warnings are truncated to make it fit.
+
+This closes the producer-origin loss for one real retained native activity consumer. The broader
+`fss-gefi6` stage B work remains open: other producer families, generic effect-premise consumers,
+laboratory-origin authentication across unrelated imports, and negotiated agent/session wire
+schemas are not implemented by this profile.
+
 ## Bounds and failures
 
 `--help` lists explicit custody read, per-object, object-count, captured-byte, deletion metadata,
@@ -73,6 +124,8 @@ The fresh-process regression target is:
 
 ```sh
 CARGO_BUILD_JOBS=1 cargo test --locked --offline -p fss-cli --test evidence_activity_contract
+CARGO_BUILD_JOBS=1 cargo test --locked --offline -p fss-reference --test recorded_activity_contract
+CARGO_BUILD_JOBS=1 cargo test --locked --offline -p fss-reference --lib activity_replay::provenance::tests
 ```
 
 It uses real source JPEGs, native model receipts and the existing retention writer. The tests
@@ -82,3 +135,11 @@ publication records, real unrelated deletion and corrupt deletion metadata. This
 integration advances the concrete retained-evidence portion of `fss-s1gcl`; it does not claim
 production model activation, calibration, a remote authorization service or full release
 qualification.
+
+Producer-origin contracts additionally use real `produce_recorded_activity` imports, remove the
+original input file, cold-replay retained custody, and exercise origin relabeling, changed
+statements/sources, omitted shared-byte roles, full revision changes, privacy/head/producer swaps,
+and observations sharing one model result. The fresh-process wire test reconstructs the entire
+claim from emitted JSON and checks it against an independently rerun native owner. Synthetic
+same-content/multiple-origin accounting tests establish only set preservation, never native
+custody or a successful verified observation.

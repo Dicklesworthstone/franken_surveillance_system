@@ -1,0 +1,127 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/activity_knowledge_projection.v1.json",
+  "title": "Producer-bound retained native activity knowledge projection",
+  "description": "Explicit producer-origins-v1 operator profile. Only the successful native custody/replay owner creates the verified in-process type. JSON schema validity and a recomputed integrity digest authenticate neither custody nor producer identity. A recipient must independently rerun verify_retained_activity and check the complete claim against its private VerifiedActivityObservation. Original bytes are observed as retained content, not authenticated physical scenes. Capsules remain derived metadata; their capture-time or calibration assertions are not verified physical observations. No effect authority or continuing custody lease is conveyed.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "anchor", "ledgerRoot", "producer", "cell", "roles", "integrityDigest", "requiresNativeReverification"],
+  "properties": {
+    "format": {"const": "fss.activity_knowledge_projection.v1"},
+    "anchor": {"$ref": "#/$defs/anchor"},
+    "ledgerRoot": {"$ref": "#/$defs/digest"},
+    "producer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "generation", "derivationReceipt"],
+      "properties": {
+        "algorithm": {"const": "alg:fss-activity-replay:v1"},
+        "generation": {"const": 1},
+        "derivationReceipt": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "cell": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["claimId", "statement", "knowledgeState", "provenanceClass", "hypothesis", "supportingEvidence", "contradictingEvidence", "validUntilNs", "stateBasis", "cellDigest"],
+      "properties": {
+        "claimId": {"type": "string", "minLength": 1, "maxLength": 65536},
+        "statement": {"type": "string", "minLength": 1, "maxLength": 65536},
+        "knowledgeState": {"const": "estimated"},
+        "provenanceClass": {"const": "derived"},
+        "hypothesis": {"type": "null"},
+        "supportingEvidence": {
+          "description": "Canonical unique content/origin pairs. Equal digests with distinct origins remain separate. Every producing role remains in roles even when this compound reference deduplicates.",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["digest", "origin"],
+            "properties": {
+              "digest": {"$ref": "#/$defs/digest"},
+              "origin": {"enum": ["observed", "derived"]}
+            }
+          }
+        },
+        "contradictingEvidence": {"type": "array", "maxItems": 0},
+        "validUntilNs": {"type": "null"},
+        "stateBasis": {"type": "null"},
+        "cellDigest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "roles": {
+      "description": "All eight native roles in stable order, including repeated payload digests. Full revisions and origins are checked against the native owner, never inferred from the root container family.",
+      "type": "array",
+      "minItems": 8,
+      "maxItems": 8,
+      "prefixItems": [
+        {"allOf": [{"$ref": "#/$defs/role"}, {"properties": {"role": {"const": "result"}, "origin": {"const": "derived"}}}]},
+        {"allOf": [{"$ref": "#/$defs/role"}, {"properties": {"role": {"const": "invocation"}, "origin": {"const": "derived"}}}]},
+        {"allOf": [{"$ref": "#/$defs/role"}, {"properties": {"role": {"const": "frame_source"}, "origin": {"const": "observed"}}}]},
+        {"allOf": [{"$ref": "#/$defs/role"}, {"properties": {"role": {"const": "reference_source"}, "origin": {"const": "observed"}}}]},
+        {"allOf": [{"$ref": "#/$defs/role"}, {"properties": {"role": {"const": "frame_capsule"}, "origin": {"const": "derived"}}}]},
+        {"allOf": [{"$ref": "#/$defs/role"}, {"properties": {"role": {"const": "reference_capsule"}, "origin": {"const": "derived"}}}]},
+        {"allOf": [{"$ref": "#/$defs/role"}, {"properties": {"role": {"const": "frame_decode"}, "origin": {"const": "derived"}}}]},
+        {"allOf": [{"$ref": "#/$defs/role"}, {"properties": {"role": {"const": "reference_decode"}, "origin": {"const": "derived"}}}]}
+      ],
+      "items": false
+    },
+    "integrityDigest": {"$ref": "#/$defs/digest"},
+    "requiresNativeReverification": {"const": true}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "u64": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615},
+    "i128": {"type": "integer", "minimum": -170141183460469231731687303715884105728, "maximum": 170141183460469231731687303715884105727},
+    "anchor": {
+      "description": "Every LedgerAnchor coordinate, including privacyEpoch which is absent from the legacy agent EvidenceAnchor JSON projection.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["siteLineage", "ledgerEpoch", "commitSequence", "adapterRegistryEpoch", "schemaEpoch", "policyEpoch", "privacyEpoch", "stateRoot"],
+      "properties": {
+        "siteLineage": {"type": "string", "minLength": 1, "maxLength": 256},
+        "ledgerEpoch": {"$ref": "#/$defs/u64"},
+        "commitSequence": {"$ref": "#/$defs/u64"},
+        "adapterRegistryEpoch": {"$ref": "#/$defs/u64"},
+        "schemaEpoch": {"$ref": "#/$defs/u64"},
+        "policyEpoch": {"$ref": "#/$defs/u64"},
+        "privacyEpoch": {"$ref": "#/$defs/u64"},
+        "stateRoot": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "role": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "origin", "digest", "authorityObject", "authorityRevision"],
+      "properties": {
+        "role": {"enum": ["result", "invocation", "frame_source", "reference_source", "frame_capsule", "reference_capsule", "frame_decode", "reference_decode"]},
+        "origin": {"enum": ["observed", "derived"]},
+        "digest": {"$ref": "#/$defs/digest"},
+        "authorityObject": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^object:local-root:"},
+        "authorityRevision": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["generation", "family", "plane", "payloadDigest", "validity"],
+          "properties": {
+            "generation": {"const": 1},
+            "family": {"const": "local_root_reachability"},
+            "plane": {"const": "authority"},
+            "payloadDigest": {"$ref": "#/$defs/digest"},
+            "validity": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["earliestNs", "latestNs"],
+              "properties": {
+                "earliestNs": {"$ref": "#/$defs/i128"},
+                "latestNs": {"$ref": "#/$defs/i128"}
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -28,6 +28,62 @@ noncanonical inventories, full 4096-source capacity and a frozen v1 golden ident
 covered. See [the format and recovery contract](docs/FUSION_CHECKPOINT.md).
 This advances `fss-x4a.16.9`; retained-source and statistical qualification remain open.
 
+## Standalone clock admission and native runtime verification (2026-11-03)
+
+Real process execution exposed two defects in the standalone `fss-clock-align`
+entrypoint: its shared output-limit constant was not imported, and its read-only
+runtime context rejected the relative `.` root before any input analysis. The
+command now imports the exact existing limit and supplies the absolute current
+working directory to the unchanged read-only constructor. It creates no deployment
+store and grants no additional capabilities or write authority.
+
+All five clock-entrypoint unit tests, eleven real alignment/drift/validation process
+tests and sixteen shared clock-owner tests pass. A relative input in a directory
+with read-only permissions produces the exact historical response hash while leaving
+the directory, source bytes and permissions unchanged. Negative process tests assert
+the intended input-pin or work-exhaustion error, so an earlier authority failure
+cannot falsely satisfy them. Five supervisor E2E contracts and all thirty-six
+retained temporal command/input/report tests also pass on the actual native runtime.
+These targeted executions resolve the earlier compile-memory block for these paths;
+they are not aggregate release qualification.
+
+## Producer-bound origins for retained native activity (2026-11-03)
+
+`fss-evidence verify-activity --report-profile producer-origins-v1` selects the
+separate `fss.activity_verification.v2` report. Only a successful native
+`VerifiedActivityObservation` can construct its private verified projection, after
+the existing original-source custody, deletion/privacy authority, exact role
+membership, independent JPEG/model replay and unchanged-ledger checks. Public
+claims, origin maps, deserialization and self-consistent hashes cannot construct
+that verified type.
+
+The projection carries the exact Estimated/Derived KnowledgeCell, native producer
+algorithm/generation/receipt, every anchor coordinate including privacy epoch,
+committed journal root and all eight payload/authority/full-revision roles. Original
+retained JPEG bytes are Observed content; capsule metadata, decodes, model results
+and invocation receipts remain Derived. Same-content roles survive independently,
+and the cell preserves every distinct content/origin pair. A recipient checks an
+untrusted claim against an independently obtained native observation; all role,
+origin, cell, producer, anchor and history coordinates must match. Canonical bounds
+and encoding failures return an error before hashing.
+
+Default and explicit v1 reports retain their existing bytes. This opt-in projection
+does not authenticate physical scenes, capture-time or calibration assertions, grant
+an effect premise or future custody lease, or replace negotiated agent-session
+protocols. The broader producer-origin bead remains open for other producer families,
+effect consumers and cross-import laboratory trust.
+
+All nine native recorded-activity contract tests pass, including real retained JPEG
+imports, equal-byte role preservation, changed authority revisions and producer
+coordinates, relabeled or structurally stripped cells, omitted roles, and bounded
+canonical refusal. Existing cancellation, cold retry and custody failures also pass.
+All fourteen fresh-process activity CLI tests pass, including independent reconstruction
+of the transferred claim and re-verification against the actual native owner, deterministic
+pinned repeats, unchanged default/explicit-v1 bytes and custody/output/profile refusals.
+The actual emitted report and nested projection pass full Draft 2020-12 validation;
+sixteen malformed projection controls are rejected by both schemas. Structurally valid
+forgeries still require the native owner's exact comparison; a schema is not authentication.
+
 ## Clock replay with currently adopted camera calibration (2026-11-03)
 
 `fss-scene-fuse retained-calibrated-match` now accepts the explicit retained-motion
@@ -87,10 +143,11 @@ three shared-owner replay regressions. It executes strict input admission, actua
 native scans, full retained-view binding, temporal matching and rendering. Scope
 substitution, narrowed original intervals, unsupported-candidate hull widening,
 uncertainty refusal, shared-work exhaustion and live cancellation are covered.
-Two real retained-owner regressions were also authored for successful replay and
-pre-derivative pin/interval refusals. Their runtime/source I/O execution remains
-pending behind the Asupersync memory limit; the limited harness does not qualify
-deployment authority, command dispatch, retained custody or filesystem export.
+The subsequent thirty-six-test native temporal run includes the two real
+retained-owner regressions for successful replay and pre-derivative pin/interval
+refusals, plus source/privacy, cancellation, work and complete-output checks. These
+now execute the actual runtime and source owners; the original limited harness
+alone did not qualify those boundaries.
 
 ## Source-once fusion in the supervisor (2026-11-03)
 
@@ -120,10 +177,10 @@ pass. Default and transcript-only bytes exactly match the prior original rendere
 Eight emitted new wrappers, eleven nested source receipts, eleven nested fusion
 transcripts and both legacy transcript wrappers pass full Draft 2020-12 validation,
 with five negative mutation controls. Authored CLI/E2E contracts cover selector
-errors and refusal after an accepted prefix without report export. Those process
-contracts remain unexecuted behind the recorded Asupersync memory limit; the limited
-harness excludes outer authority, work/cancellation, deployment, CLI dispatch and
-filesystem export and is not full runtime qualification.
+errors and refusal after an accepted prefix without report export. The subsequent
+five-test native supervisor E2E run now passes, including source-once replay and
+reinterpretation refusal, selector admission, cancellation/drain and actual CLI
+report parity. The original limited harness excluded those outer runtime boundaries.
 
 ## Bounded source-once sequential fusion (2026-11-03)
 
