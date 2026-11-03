@@ -36,6 +36,8 @@ check session-cancellation-operator cargo "+$channel" test --locked --offline --
     -p fss-cli --test session_cancel_cli_contract
 check session-cancellation-mcp cargo "+$channel" test --locked --offline --no-fail-fast \
     -p fss-cli --bin fss-mcp session_cancellation_
+check selected-historical-learning cargo "+$channel" test --locked --offline --no-fail-fast \
+    -p fss-cli --test agent_effect_cli_contract learning_explain::
 check http-history-sentinel cargo "+$channel" test --locked --offline --no-fail-fast \
     -p fss-reference --test http_history_sentinel_contract --test http_history_watch_contract \
     --test rtsp_campaign_sentinel_contract --test rtsp_campaign_sentinel_hevc_contract \

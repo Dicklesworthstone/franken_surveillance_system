@@ -10,6 +10,32 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Explicit learning recovery by replacement sessions (2026-11-03)
+
+`fss explain --learning-root` and the equivalent MCP request now make a retained
+learning capture accessible to a currently admitted replacement session of the same
+principal and immutable mission. The original session may be cancelled or expired.
+Both complete mission publications must agree on principal, stable mission identity,
+site, mission statement and objective. Possession of a learning root or a matching
+mission label supplies no authority.
+
+The existing selected-source reader verifies the original session, workspace, plan,
+episode, feedback and learning custody under fresh current explanation/read/privacy
+admission. It preserves the original captured session and evidence position separately
+from the current response session and anchor. Reads do not reopen the original owner,
+write or rebase a workspace, refill budgets, promote learning, or broaden automatic
+orientation/handoff discovery into other sessions.
+
+Three real-process regressions cover cancelled and expired original owners, exact
+CLI/MCP parity and byte-stable cold retries, current-vs-historical provenance, immutable
+read-only stores, same-label/wrong-objective and foreign-principal refusal, revoked
+grants/privacy, closed or expired replacement sessions, and missing current mission
+custody. The existing selected-learning regression retains missing/corrupt historical
+closure checks. Source review, pinned formatting and staged manifest checks passed;
+native execution of these new replacement-session cases remains pending. This is the
+explicit historical-read slice of FSS-232, not automatic discovery or learning promotion.
+See `docs/historical_learning.md` for exact commands and admission requirements.
+
 ## Motion-independent trained detection across HTTP histories (2026-11-03)
 
 `fss-sentinel-http-history` now connects an exact ended HTTP reconnect history to the
