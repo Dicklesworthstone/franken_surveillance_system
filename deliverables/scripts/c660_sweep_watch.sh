@@ -61,11 +61,6 @@ log "watch armed for $MAC from $(printf 0x%x "$ADDR") down to $END, $STEP steps,
 
 while :; do
   case "$(cat "$PHASE_FILE" 2>/dev/null)" in DONE|EXHAUSTED) break;; esac
-  if [ "$MAX_WAIT" -gt 0 ] && [ "$(cat "$PHASE_FILE" 2>/dev/null)" = WAITING ] \
-     && [ $(( $(date +%s) - armed )) -ge "$MAX_WAIT" ]; then
-    log "unit did not appear within ${MAX_WAIT}s — watcher exits, nothing fired"
-    exit 2
-  fi
   ip="${HOST_OVERRIDE:-$(lookup)}"
   if present "$ip"; then
     # a cold sudo timestamp would make every batch a silent no-op *and* advance the walk
@@ -98,8 +93,13 @@ while :; do
       exit 1
     fi
     log "batch done rc=$rc — resuming at $ADDR"
-    armed=$(date +%s)          # MAX_WAIT restarts: it bounds idleness, not total runtime
     phase WAITING
+    continue
+  fi
+  # MAX_WAIT bounds *absence* only: while the unit answers, batches may take as long as they take
+  if [ "$MAX_WAIT" -gt 0 ] && [ $(( $(date +%s) - armed )) -ge "$MAX_WAIT" ]; then
+    log "unit did not appear within ${MAX_WAIT}s — watcher exits, nothing fired"
+    exit 2
   fi
   sleep "$POLL"
 done
