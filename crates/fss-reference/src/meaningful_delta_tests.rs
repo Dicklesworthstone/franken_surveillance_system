@@ -3968,3 +3968,71 @@ fn classification_refuses_cell_and_origin_relabel_fss_gefi6() -> Result<(), Box<
     }
     Ok(())
 }
+
+#[test]
+fn canonical_identity_refusal_reaches_situation_seals_and_projection() -> Result<(), Box<dyn Error>>
+{
+    let baseline = publication(&Variant::baseline()?)?;
+    let mut situation = ReferenceSituation::new(
+        baseline.situation.capsule.clone(),
+        baseline.situation.proof_roots.clone(),
+    );
+    situation
+        .capsule
+        .frame
+        .why
+        .push("x".repeat(fss_core::MAX_CANONICAL_TEXT_BYTES + 1));
+    assert!(matches!(
+        situation.seal_effect_bindings(),
+        Err(crate::ReferenceError::Contract(
+            fss_core::ContractError::InvalidIdentifier
+        ))
+    ));
+    assert!(!situation.is_sealed());
+    assert!(matches!(
+        situation.verify(),
+        Err(crate::ReferenceError::Contract(
+            fss_core::ContractError::InvalidIdentifier
+        ))
+    ));
+    assert!(matches!(
+        project_reference_situation(situation, &nominal_spec()?),
+        Err(crate::ReferenceError::Contract(
+            fss_core::ContractError::InvalidIdentifier
+        ))
+    ));
+    Ok(())
+}
+
+#[test]
+fn canonical_identity_refusal_prevents_publication_and_delta_aliases() -> Result<(), Box<dyn Error>>
+{
+    let baseline = publication(&Variant::baseline()?)?;
+    let mut malformed = baseline.clone();
+    malformed
+        .situation
+        .capsule
+        .frame
+        .now
+        .push("x".repeat(fss_core::MAX_CANONICAL_TEXT_BYTES + 1));
+    malformed.situation.capsule.mission_state = Some(fss_core::MissionLifecycleState::Resolved);
+    assert!(matches!(
+        malformed.computed_digest(),
+        Err(crate::ReferenceError::Contract(
+            fss_core::ContractError::InvalidIdentifier
+        ))
+    ));
+    for result in [
+        classify_reference_meaningful_delta(&baseline, &malformed),
+        classify_reference_meaningful_delta(&malformed, &baseline),
+    ] {
+        assert!(matches!(
+            result,
+            Err(crate::ReferenceError::Contract(
+                fss_core::ContractError::InvalidIdentifier
+            ))
+        ));
+    }
+    assert!(baseline.verify().is_ok());
+    Ok(())
+}

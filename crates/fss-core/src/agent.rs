@@ -852,8 +852,10 @@ impl KnowledgeCell {
     /// never refused for lacking the support it reports it does not have.
     ///
     /// Quarantined laboratory outputs may NEVER claim authority or the `known` knowledge state.
+    /// Every disclosed field must also fit its canonical encoding. A withheld statement is
+    /// represented only by its fixed redaction marker, so its private length is not inspected.
     pub fn validate(&self) -> Result<(), ContractError> {
-        if self.is_laboratory_tainted() && self.knowledge_state == KnowledgeState::Known {
+        if self.knowledge_state == KnowledgeState::Known && self.is_laboratory_tainted() {
             return Err(ContractError::DerivedLayerAuthorityForbidden);
         }
         if self.provenance == ProvenanceClass::Predicted
@@ -878,7 +880,18 @@ impl KnowledgeCell {
             (Some(basis), _) if basis.knowledge_state() == self.knowledge_state => basis.validate(),
             (Some(_), Some(error)) => Err(error),
             (Some(_), None) => Err(ContractError::KnowledgeStateBasisMismatch),
+        }?;
+        if self.claim_id.len() > crate::MAX_CANONICAL_TEXT_BYTES
+            || self.disclosable_statement().len() > crate::MAX_CANONICAL_TEXT_BYTES
+        {
+            return Err(ContractError::InvalidIdentifier);
         }
+        // State bases can carry nested text, notably the site lineage of older anchors.
+        // Validate their actual encoding without allocating or sorting the evidence inventory.
+        if let Some(basis) = &self.state_basis {
+            basis.try_canonical_bytes().map(|_| ())?;
+        }
+        Ok(())
     }
 
     /// Verifies that evidence from `prior` is not being laundered into `self`
@@ -1223,10 +1236,9 @@ impl WorldEnvelope {
     /// it is evidence that the envelope validated.
     pub fn envelope_digest(&self) -> Result<ContentDigest, ContractError> {
         self.validate()?;
-        Ok(domain_separated_digest(
-            "fss.agent_world_envelope.v1",
-            |encoder| self.encode_fields(encoder),
-        ))
+        domain_separated_digest("fss.agent_world_envelope.v1", |encoder| {
+            self.encode_fields(encoder)
+        })
     }
 
     /// Returns all retained world identities in deterministic order.
@@ -1425,10 +1437,9 @@ impl SituationFrame {
     /// not implement [`CanonicalEncode`], so this is the only public way to hash a frame.
     pub fn frame_digest(&self) -> Result<ContentDigest, ContractError> {
         self.validate()?;
-        Ok(domain_separated_digest(
-            "fss.agent_situation_frame.v1",
-            |encoder| self.encode_fields(encoder),
-        ))
+        domain_separated_digest("fss.agent_situation_frame.v1", |encoder| {
+            self.encode_fields(encoder)
+        })
     }
 
     /// Appends the frame's canonical representation. Callers validate first.
@@ -1601,9 +1612,9 @@ impl SituationCapsule {
     /// capsule: a capsule refused by [`Self::validate`] has no digest under any domain.
     pub fn validated_digest(&self, domain: &str) -> Result<ContentDigest, ContractError> {
         self.validate()?;
-        Ok(domain_separated_digest(domain, |encoder| {
+        domain_separated_digest(domain, |encoder| {
             self.encode_fields(encoder);
-        }))
+        })
     }
 
     /// Appends the capsule's canonical representation. Callers validate first.
@@ -1838,15 +1849,17 @@ fn completeness_code(value: Completeness) -> u8 {
 
 /// Computes the same domain-separated digest as [`CanonicalEncode::canonical_digest`] for a
 /// value whose canonical encoding is private because it must be validated before hashing.
+/// Encoding refusal must propagate: hashing the legacy empty-vector fallback would give
+/// unrelated worlds, frames and capsules the same successful decision identity.
 fn domain_separated_digest(
     domain: &str,
     encode: impl FnOnce(&mut CanonicalEncoder),
-) -> ContentDigest {
+) -> Result<ContentDigest, ContractError> {
     let mut encoder = CanonicalEncoder::new();
     encoder.text("fss.canonical.v1");
     encoder.text(domain);
     encode(&mut encoder);
-    ContentDigest::sha256(&encoder.finish())
+    Ok(ContentDigest::sha256(&encoder.finish_checked()?))
 }
 
 #[cfg(test)]
@@ -1961,6 +1974,151 @@ mod tests {
         };
         capsule.validate()?;
         Ok(capsule)
+    }
+
+    #[test]
+    fn canonical_identity_refuses_unencodable_cells() -> Result<(), ContractError> {
+        let overlong = "x".repeat(crate::MAX_CANONICAL_TEXT_BYTES + 1);
+        for claim in [false, true] {
+            let mut params = known_cell()?.to_params();
+            if claim {
+                params.claim_id = overlong.clone();
+            } else {
+                params.statement = overlong.clone();
+            }
+            assert_eq!(
+                KnowledgeCell::new(params).err(),
+                Some(ContractError::InvalidIdentifier)
+            );
+        }
+
+        // The limit is UTF-8 bytes, not a count of displayed characters.
+        let mut params = known_cell()?.to_params();
+        params.statement = "é".repeat(crate::MAX_CANONICAL_TEXT_BYTES / 2 + 1);
+        assert_eq!(
+            KnowledgeCell::new(params).err(),
+            Some(ContractError::InvalidIdentifier)
+        );
+
+        // Nested stale anchors are encoded too. Structural age alone cannot make their
+        // unrepresentable lineage a usable component identity.
+        let older = LedgerAnchor::genesis(&overlong);
+        let mut newer = older.clone();
+        newer.commit_sequence += 1;
+        let mut params = known_cell()?.to_params();
+        params.knowledge_state = KnowledgeState::Stale;
+        params.state_basis = Some(KnowledgeStateBasis::Stale(StaleBasis::OlderAnchor {
+            valid_at: Box::new(older),
+            current: Box::new(newer),
+        }));
+        assert_eq!(
+            KnowledgeCell::new(params).err(),
+            Some(ContractError::InvalidIdentifier)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn canonical_identity_keeps_exact_boundaries_and_redaction() -> Result<(), ContractError> {
+        let mut params = known_cell()?.to_params();
+        params.claim_id = "c".repeat(crate::MAX_CANONICAL_TEXT_BYTES);
+        params.statement = "a".repeat(crate::MAX_CANONICAL_TEXT_BYTES);
+        let first = KnowledgeCell::new(params.clone())?;
+        params.statement = "b".repeat(crate::MAX_CANONICAL_TEXT_BYTES);
+        let second = KnowledgeCell::new(params.clone())?;
+        assert_ne!(first.cell_digest(), second.cell_digest());
+        assert_ne!(first.cell_digest(), ContentDigest::sha256(b""));
+
+        params.knowledge_state = KnowledgeState::Redacted;
+        params.state_basis = Some(KnowledgeStateBasis::Redaction(RedactionMarker {
+            reason: RedactionReason::PrivacyProjection,
+            privacy_generation: PrivacyGeneration::parse("privacy:hidden:v1")?,
+        }));
+        params.statement = "first private text".repeat(crate::MAX_CANONICAL_TEXT_BYTES);
+        let hidden = KnowledgeCell::new(params.clone())?;
+        params.statement = "other private text".repeat(crate::MAX_CANONICAL_TEXT_BYTES + 1);
+        let other_hidden = KnowledgeCell::new(params)?;
+        assert_eq!(hidden.cell_digest(), other_hidden.cell_digest());
+        assert_eq!(hidden.disclosable_statement(), REDACTED_STATEMENT_MARKER);
+        assert!(!hidden.is_irreversible_effect_premise(TimestampNs(1)));
+        Ok(())
+    }
+
+    #[test]
+    fn canonical_identity_refuses_unencodable_worlds_frames_and_capsules()
+    -> Result<(), ContractError> {
+        let overlong = "x".repeat(crate::MAX_CANONICAL_TEXT_BYTES + 1);
+        let mut worlds = capsule()?.frame.world_envelope;
+        worlds.adversarial_residuals.push(PossibleWorld {
+            world_id: "world:critical".to_owned(),
+            description: overlong.clone(),
+            claim_ids: BTreeSet::from(["claim:critical".to_owned()]),
+            evidence: vec![ContentDigest::sha256(b"critical-evidence")],
+            consequence_severity: 9,
+            protected: true,
+        });
+        assert_eq!(
+            worlds.envelope_digest(),
+            Err(ContractError::InvalidIdentifier)
+        );
+        assert_eq!(
+            crate::ControlEnvelope::from_affordances(&worlds, &[]).err(),
+            Some(ContractError::InvalidIdentifier),
+        );
+
+        let mut frame = capsule()?.frame;
+        frame.why.push(overlong.clone());
+        assert_eq!(frame.frame_digest(), Err(ContractError::InvalidIdentifier));
+        let mut framed = capsule()?;
+        framed.frame = frame;
+        assert_eq!(
+            framed.decision_fingerprint(),
+            Err(ContractError::InvalidIdentifier)
+        );
+
+        let mut named = capsule()?;
+        named.capsule_id = overlong.clone();
+        assert_eq!(
+            named.decision_fingerprint(),
+            Err(ContractError::InvalidIdentifier)
+        );
+        assert_eq!(
+            named.validated_digest("fss.other_identity.v1"),
+            Err(ContractError::InvalidIdentifier)
+        );
+        let mut basis = capsule()?;
+        basis.contract_basis.accepted_nightly = Some(overlong.clone());
+        assert_eq!(
+            basis.decision_fingerprint(),
+            Err(ContractError::InvalidIdentifier)
+        );
+        assert_eq!(
+            capsule()?.validated_digest(&overlong),
+            Err(ContractError::InvalidIdentifier)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn canonical_identity_large_valid_aggregates_do_not_collapse() -> Result<(), ContractError> {
+        let mut frame = capsule()?.frame;
+        let count = crate::MAX_CANONICAL_BYTES_LEN / crate::MAX_CANONICAL_TEXT_BYTES + 1;
+        frame.knowledge_cells.clear();
+        for index in 0..count {
+            let mut params = known_cell()?.to_params();
+            params.claim_id = format!("claim:large:{index}");
+            params.statement = "a".repeat(crate::MAX_CANONICAL_TEXT_BYTES);
+            frame.knowledge_cells.push(KnowledgeCell::new(params)?);
+        }
+        // The encoder's byte-slice ceiling is not a total-document ceiling. A complete
+        // aggregate of individually encodable fields must still bind every cell.
+        let before = frame.frame_digest()?;
+        let mut changed = frame.knowledge_cells[0].to_params();
+        changed.statement = "b".repeat(crate::MAX_CANONICAL_TEXT_BYTES);
+        frame.knowledge_cells[0] = KnowledgeCell::new(changed)?;
+        assert_ne!(before, frame.frame_digest()?);
+        assert_ne!(before, ContentDigest::sha256(b""));
+        Ok(())
     }
 
     #[test]

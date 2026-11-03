@@ -10,6 +10,26 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Fail-closed agent decision identities (2026-11-03)
+
+World envelopes, situation frames and situation capsules now propagate canonical
+encoding refusal through their already-fallible digest APIs. Previously an oversized
+text field could make distinct validated-looking objects return the successful
+SHA-256 identity of an empty byte string. These identities feed control plans,
+situation seals and meaningful deltas. Knowledge-cell admission now also verifies
+that disclosed claim/statement and nested state-basis text can be encoded before
+its infallible component digest becomes available.
+
+Valid canonical bytes and domains remain unchanged. Exact text-size boundaries and
+large aggregates of individually valid cells remain admitted and identity-distinct.
+Withheld statements retain their fixed redaction marker without inspecting their
+private content or length. Two native baseline regressions reproduced the old
+failures; after the fix all 182 core library tests and 186 tests across six affected
+core contract targets pass. Two reference regressions cover effect seals, projection,
+publication and meaningful-delta refusal, but remain unexecuted behind the previously
+recorded Asupersync build limit. This hardens live decision identities; it does not
+complete producer-origin authentication in `fss-gefi6`.
+
 ## Cross-session clock validation through the operator CLI (2026-11-03)
 
 `fss-clock-align` now accepts the additive `fss.clock_validation_query.v1` profile
