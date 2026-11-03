@@ -32,7 +32,7 @@ import subprocess
 import sys
 
 INS = re.compile(r"^\s*([0-9a-f]+):\s+([0-9a-f]{8})\s+(\S+)\s*(.*)$")
-PUSH = re.compile(r"^push\s*\{([^}]*)\}")
+PUSH = re.compile(r"^push\s*(?:sp!,\s*)?\{([^}]*)\}")
 SUB = re.compile(r"^sub\s+sp,\s*sp,\s*#(\d+)")
 ADDSP = re.compile(r"^add\s+(r\d+|fp|sl|ip|lr),\s*sp,\s*#(\d+)")
 POP_PC = re.compile(r"^pop\s*\{([^}]*\bpc\b[^}]*)\}")
@@ -71,8 +71,23 @@ def disasm(path: str, objdump: str) -> tuple[list[tuple[int, str, str]], dict[in
             continue
         m = re.match(r"^\s*([0-9a-f]+):\s+(\S+)\s*(.*)$", line)
         if m:
-            rows.append((int(m.group(1), 16), m.group(2), m.group(3).strip()))
+            rows.append((int(m.group(1), 16), norm_mnem(m.group(2), m.group(3)),
+                         m.group(3).strip()))
     return rows, symbols
+
+
+# The same frame op appears as `push`/`stmdb sp!` and `sub`/`subw`/`subs` depending on
+# which way this build's compiler felt that day. Normalise instead of teaching every
+# regex every spelling: a missed prologue silently yields a negative pc offset.
+MNEMONIC = {"subw": "sub", "addw": "add", "subs": "sub", "adds": "add",
+            "stmdb": "push", "stmfd": "push", "push.w": "push", "sub.w": "sub",
+            "add.w": "add", "sub.n": "sub", "add.n": "add"}
+
+
+def norm_mnem(mnem: str, ops: str) -> str:
+    if mnem in ("stmdb", "stmfd") and not ops.lstrip().startswith("sp!"):
+        return mnem
+    return MNEMONIC.get(mnem, mnem)
 
 
 def find_pivots(rows) -> list[dict]:
@@ -197,12 +212,19 @@ def find_sink(rows):
             continue
         if int(target, 16) not in wrappers:
             continue
-        # walk back for `add rX, sp, #imm` used as the destination (r2)
+        # walk back for `add rX, sp, #imm` that is then moved into r2 (the decode
+        # destination). An add that never reaches r2 is an unrelated temporary.
         dest = None
         for j in range(i - 1, max(-1, i - 40), -1):
             m = ADDSP.match("%s %s" % (rows[j][1], rows[j][2]))
-            if m:
-                dest = (m.group(1), int(m.group(2)))
+            if not m:
+                continue
+            reg = m.group(1)
+            if reg == "r2" or any(
+                    re.match(r"^mov\s+r2,\s*%s$" % re.escape(reg),
+                             "%s %s" % (rows[k][1], rows[k][2]))
+                    for k in range(j + 1, i + 1)):
+                dest = (reg, int(m.group(2)))
                 break
         if dest is None:
             continue
@@ -210,9 +232,13 @@ def find_sink(rows):
         frame = 0
         pushed = 0
         for j in range(i, max(-1, i - 400), -1):
-            m = PUSH.match("%s %s" % (rows[j][1], rows[j][2]))
+            text = "%s %s" % (rows[j][1], rows[j][2])
+            # a pop that restores pc ends a function: a push beyond it is not ours
+            if text.startswith("pop") and "pc" in text:
+                break
+            m = PUSH.match(text)
             if m and "lr" in m.group(1):
-                pushed = 4 * (len([r for r in m.group(1).split(",") if r.strip()]) )
+                pushed = 4 * len([r for r in m.group(1).split(",") if r.strip()])
                 for k in range(j + 1, i):
                     s = SUB.match("%s %s" % (rows[k][1], rows[k][2]))
                     if s:
