@@ -21,6 +21,9 @@ use fss_ledger::{
 /// Work claims sharing this journal's exact session authority and durable root.
 pub mod coordination;
 
+/// Exactly approved session revocation witnesses, atomic with retained tombstones.
+pub mod cancellation;
+
 /// Joint durable disclosure accounting and hydration replay protection.
 pub mod disclosure;
 
@@ -781,6 +784,7 @@ fn replay_all(
     let mut follows = follow::FollowState::default();
     let mut supervisions = supervision::SupervisionState::default();
     let mut missions = crate::agent_session::mission::ReferenceMissionStore::default();
+    let mut predecessor = ContentDigest::new(fss_core::DigestAlgorithm::Sha256, [0; 32]);
     for record in report.records() {
         match record.kind() {
             SESSION_CHECKPOINT_RECORD_KIND => {
@@ -858,8 +862,19 @@ fn replay_all(
                     limits,
                 )?;
             }
+            cancellation::SESSION_CANCELLATION_RECORD_KIND => {
+                let sessions = memory.as_mut().ok_or(DurableSessionError::InvalidHistory)?;
+                cancellation::replay_command(
+                    record.payload(),
+                    sessions,
+                    predecessor,
+                    record.root(),
+                    limits,
+                )?;
+            }
             _ => return Err(DurableSessionError::InvalidHistory),
         }
+        predecessor = record.root();
     }
     Ok(ReplayedSessionState {
         memory: memory.ok_or(DurableSessionError::InvalidHistory)?,

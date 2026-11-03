@@ -10,6 +10,35 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Durable operator cancellation of agent sessions (2026-11-03)
+
+`fss cancel --session` and the MCP `cancel` session target now expose AOP-010 session
+revocation under fresh owner authority and an exact preview approval. The bounded
+preview preserves clocks, journals, pins and spent allowances. Approval atomically
+retains the complete original request and the session's closure tombstone in one
+private journal command, clearing aliases and preventing old handoffs from reopening
+the identity. Existing prepared-operation cancellation remains a separate target.
+
+An exact cold retry recovers the original approval and cancellation receipt even after
+later journal entries, without appending a new tombstone. A verified lagging ROOT pin
+can be repaired only by an approved invocation. Expiry does not substitute for an
+owner-approved cancellation. Current owner, capability, contract basis, site lineage,
+source custody and exclusive writer admission remain mandatory.
+
+Plans, pending external obligations, follow progress, coordination and work history
+remain retained. The response identifies the outstanding inventory at the original
+approval position; session revocation does not settle an effect or prove delivery.
+An admitted same-mission replacement session can reclaim a closed owner's live work
+claim with a new fencing incarnation and the existing progress intact.
+
+Eleven focused journal, native-owner, real-process CLI and MCP regressions cover
+atomic journal cut points, cold retries, stale approvals, current authority, active
+writers, lagging-pin recovery, expiry, unresolved effects and claim reclamation.
+Independent source review and pinned formatting passed; native compilation/execution
+remains pending because the shared host lacks memory headroom for the unchanged
+dependency build. See `docs/session_cancellation.md` for the operator workflow and
+the explicit bounds of this reference implementation.
+
 ## Exact learning recovery across handoff rebases (2026-11-03)
 
 An exact plan-targeted `create_learning_proposal` retry now recovers its original

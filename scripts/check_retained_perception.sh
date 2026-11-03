@@ -30,6 +30,12 @@ check alert-reconciliation-custody cargo "+$channel" test --locked --offline --n
     -p fss-reference --test alert_reconciliation_contract --test alert_operation_status_contract
 check alert-lifecycle-operator cargo "+$channel" test --locked --offline --no-fail-fast \
     -p fss-cli --test alert_lifecycle_cli
+check session-cancellation-journal cargo "+$channel" test --locked --offline --no-fail-fast \
+    -p fss-reference --lib agent_session::checkpoint::journal::cancellation::tests
+check session-cancellation-operator cargo "+$channel" test --locked --offline --no-fail-fast \
+    -p fss-cli --test session_cancel_cli_contract
+check session-cancellation-mcp cargo "+$channel" test --locked --offline --no-fail-fast \
+    -p fss-cli --bin fss-mcp session_cancellation_uses_fixed_principal_and_exclusive_target
 check retained-localization cargo "+$channel" test --locked --offline --no-fail-fast \
     -p fss-reference --test recorded_twin_localization_contract
 check retained-scene-calibration cargo "+$channel" test --locked --offline --no-fail-fast \

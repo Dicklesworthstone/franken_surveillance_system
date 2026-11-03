@@ -57,6 +57,8 @@ pub mod query_cmd;
 pub mod redact;
 /// Import explicitly bound camera poses from an authored property scene.
 pub mod scene_rig;
+/// Exact owner-approved session authority revocation through AOP-010.
+pub mod session_cancel_cmd;
 /// Durable agent sessions: `session open` (AOP-001), `session handoff` (AOP-012), and
 /// `session resume` (AOP-002); agent-plane writes only.
 pub mod session_cmd;

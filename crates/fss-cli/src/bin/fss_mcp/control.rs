@@ -17,7 +17,7 @@ pub(super) const PLAN_TOOL: &str = r#"{"name":"plan","description":"AOP-007: pub
 
 pub(super) const COMMIT_TOOL: &str = r#"{"name":"commit","description":"AOP-008: dispatch or reconcile through the existing durable native alert owner. intent=dispatch requires a retained plan and its exact prepared dispatch approval; it revalidates before durably committing and makes at most one bounded relay attempt. An already-dispatched operation is never resent. Relay acceptance is not human delivery. intent=reconcile previews or records an exactly approved owner attestation with explicit operator_asserted provenance and no network I/O. After response loss inspect with wait and reconcile indeterminacy; never invent an approval or blindly resend.","inputSchema":{"type":"object","oneOf":[{"type":"object","properties":{"intent":{"const":"dispatch"},"plan":{"type":"string","minLength":1,"maxLength":128},"approve":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71}},"required":["intent","plan","approve"],"additionalProperties":false},{"type":"object","properties":{"intent":{"const":"reconcile"},"operation_id":{"type":"string","minLength":1,"maxLength":128},"outcome":{"type":"string","enum":["delivered","not_delivered"]},"evidence":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71},"statement":{"type":"string","minLength":1,"maxLength":1024,"description":"Literal owner attestation, at most 1024 UTF-8 bytes; never a file path to read."},"approve":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71}},"required":["intent","operation_id","outcome","evidence","statement"],"additionalProperties":false}]},"annotations":{"readOnlyHint":false,"destructiveHint":true,"idempotentHint":false,"openWorldHint":true}}"#;
 
-pub(super) const CANCEL_TOOL: &str = r#"{"name":"cancel","description":"AOP-010: preview cancellation of a still-prepared native alert, then record it only with its exact returned cancellation approval. A dispatched operation cannot be turned into a not-sent cancellation; inspect and reconcile it. Exact completed cancellation retries preserve the original receipt. No network I/O, background task or implicit retry.","inputSchema":{"type":"object","properties":{"operation_id":{"type":"string","minLength":1,"maxLength":128},"approve":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71}},"required":["operation_id"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":true,"idempotentHint":true,"openWorldHint":false}}"#;
+pub(super) const CANCEL_TOOL: &str = r#"{"name":"cancel","description":"AOP-010: preview then exactly approve cancellation of one prepared native alert or revocation of one owned session. Choose exactly one of operation_id or session. Session revocation drains the existing session lock, retains a durable tombstone and original approval, clears aliases and prevents future session use. Plans, pending deliveries, claims and external obligations remain retained; live claims can be explicitly reclaimed by an admitted same-mission session. It never cancels a dispatched effect or proves delivery. Exact completed retries recover the original receipt. No network I/O or implicit retry.","inputSchema":{"type":"object","oneOf":[{"type":"object","properties":{"operation_id":{"type":"string","minLength":1,"maxLength":128},"approve":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71}},"required":["operation_id"],"additionalProperties":false},{"type":"object","properties":{"session":{"type":"string","minLength":1,"maxLength":128},"approve":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71}},"required":["session"],"additionalProperties":false}]},"annotations":{"readOnlyHint":false,"destructiveHint":true,"idempotentHint":true,"openWorldHint":false}}"#;
 
 fn only(args: &BTreeMap<String, Value>, names: &[&str]) -> Result<(), Refusal> {
     if args.keys().all(|key| names.contains(&key.as_str())) {
@@ -207,8 +207,13 @@ pub(super) fn command(
             _ => return Err((-32602, "Unsupported commit intent")),
         },
         "cancel" => {
-            only(args, &["operation_id", "approve"])?;
-            put(&mut argv, args, "operation_id", "--operation", 128)?;
+            if args.contains_key("session") {
+                only(args, &["session", "approve"])?;
+                put(&mut argv, args, "session", "--session", 128)?;
+            } else {
+                only(args, &["operation_id", "approve"])?;
+                put(&mut argv, args, "operation_id", "--operation", 128)?;
+            }
             optional_approval(&mut argv, args)?;
         }
         _ => return Err((-32602, "Unsupported control tool")),
@@ -224,7 +229,10 @@ pub(super) fn command(
             ) | (
                 "commit",
                 EffectCommand::Commit(_) | EffectCommand::Reconcile(_)
-            ) | ("cancel", EffectCommand::Cancel(_))
+            ) | (
+                "cancel",
+                EffectCommand::Cancel(_) | EffectCommand::CancelSession(_)
+            )
         ),
         _ => false,
     };
@@ -356,6 +364,31 @@ mod tests {
             cancel.approve.map(|digest| digest.to_text()).as_deref(),
             Some(DIGEST)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn session_cancellation_uses_fixed_principal_and_exclusive_target() -> Result<(), &'static str>
+    {
+        let EffectCommand::CancelSession(cancel) = mapped(
+            "cancel",
+            &format!(r#"{{"session":"session:one","approve":"{DIGEST}"}}"#),
+        )?
+        else {
+            return Err("not a session cancellation");
+        };
+        assert_eq!(cancel.session.as_str(), "session:one");
+        assert_eq!(cancel.principal.as_str(), PRINCIPAL);
+        assert_eq!(cancel.root, std::path::PathBuf::from(ROOT));
+        for raw in [
+            r#"{"session":"session:one","operation_id":"operation:one"}"#,
+            r#"{"session":"session:one","principal":"principal:other"}"#,
+            r#"{"session":"session:one","root":"/other"}"#,
+            r#"{"session":"session:one","approve":"invented"}"#,
+            r#"{"approve":"invented"}"#,
+        ] {
+            assert!(mapped("cancel", raw).is_err());
+        }
         Ok(())
     }
 
