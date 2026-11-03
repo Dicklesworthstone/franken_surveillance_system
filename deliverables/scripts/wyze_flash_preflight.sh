@@ -104,9 +104,9 @@ check_md5() { # path expected-md5 label
   if [ ! -s "$1" ]; then warn "$3 missing ($1)"; return; fi
   if [ "$(md5 -q "$1")" = "$2" ]; then pass "$3 md5 $2"; else fail "$3 md5 $(md5 -q "$1") != $2"; fi
 }
-check_md5 "$CAP_DIR/wuv2/upgrade/HL_CAM4/firmware/4.52.17.31.tar" bf0535f59515f71a04ba00bd2176ffd2 "capsule .31 (published)"
-check_md5 "$CAP_DIR/wuv2/upgrade/HL_CAM4/firmware/4.52.17.32.tar" c642a2ca9f80b03c7ee5e05795f5822b "capsule .32 (armed)"
-check_md5 "$CAP_DIR/wuv2/upgrade/HL_CAM4/firmware/4.52.17.33.tar" c642a2ca9f80b03c7ee5e05795f5822b "capsule .33 (mirror of .32)"
+check_md5 "$CAP_DIR/wuv2/upgrade/HL_CAM4/firmware/4.52.17.31.tar" ef2d38a3ba07f05b2557cddd9fd21923 "capsule .31 (published)"
+check_md5 "$CAP_DIR/wuv2/upgrade/HL_CAM4/firmware/4.52.17.32.tar" ef2d38a3ba07f05b2557cddd9fd21923 "capsule .32 (armed)"
+check_md5 "$CAP_DIR/wuv2/upgrade/HL_CAM4/firmware/4.52.17.33.tar" ef2d38a3ba07f05b2557cddd9fd21923 "capsule .33 (mirror of .32)"
 
 SERVED="$CAP_DIR/$CAP_PATH"
 if [ ! -s "$SERVED" ]; then
