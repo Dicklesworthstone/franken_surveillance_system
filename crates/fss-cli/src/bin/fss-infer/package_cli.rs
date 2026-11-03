@@ -29,7 +29,7 @@ const HELP: &str = "fss-infer package-detect [options]\n\
   --root DIR --site SITE --import-id sha256:HEX --first-segment N --frames N (1..64)\n\
   --package FILE --package-digest sha256:HEX --interpretation gray|ycbcr\n\
   [--minimum-score-ppm N] [--max-macs N] [--max-tensor-bytes N] [--report-out FILE] [--principal ID]\n\
-  [--retain yes]\n\
+  [--retain yes] [--max-output-bytes N (1..16777216; default 16777216)]\n\
   [--sentinel-every-frames N --sentinel-max-inferences M [--sentinel-burst-frames K]]\n\
   [--stream-sentinel yes --stream-read-bytes N --stream-pixel-budget N --max-report-bytes N]\n\
   [--max-frame-pixels N (stream-sentinel only)]\n\
@@ -121,6 +121,7 @@ fn parse(args: &[OsString]) -> Result<Option<Options>, String> {
         "--minimum-score-ppm",
         "--max-macs",
         "--max-tensor-bytes",
+        "--max-output-bytes",
         "--report-out",
         "--retain",
         "--kernels",
@@ -221,6 +222,8 @@ fn parse(args: &[OsString]) -> Result<Option<Options>, String> {
         number(&values, "--max-macs", Some(limits.run.execution.max_macs))?,
         max_bytes,
     );
+    limits.run.maximum_output_bytes =
+        long_sentinel_cli::output_ceiling(&values, limits.run.maximum_output_bytes)?;
     let stream_sentinel = long_sentinel_cli::parse_run(&values, first_segment, frames, limits)?;
     Ok(Some(Options {
         root: PathBuf::from(value(&values, "--root")?),
@@ -519,6 +522,8 @@ mod tests {
             ["--minimum-score-ppm", "1000001"],
             ["--max-tensor-bytes", "0"],
             ["--max-tensor-bytes", "268435457"],
+            ["--max-output-bytes", "0"],
+            ["--max-output-bytes", "16777217"],
             ["--model", "x"],
             ["--retain", "true"],
         ] {
@@ -785,6 +790,8 @@ mod tests {
                 "2000",
                 "--max-tensor-bytes",
                 "1048576",
+                "--max-output-bytes",
+                "4096",
                 "--retain",
                 "yes",
             ]
@@ -806,11 +813,65 @@ mod tests {
         assert_eq!(reservation.pixel_samples, 262144);
         assert_eq!(reservation.report_bytes, 524288);
         assert_eq!(reservation.execution_macs, 12000);
+        assert_eq!(reservation.output_bytes, 6 * 4096);
+        assert_eq!(stream.limits.package.run.maximum_output_bytes, 4096);
+        assert_eq!(parsed.limits.run.maximum_output_bytes, 4096);
         assert_eq!(stream.limits.package.run.execution.max_bytes, 1048576);
         assert_eq!(stream.limits.package.jpeg.frame.maximum_pixels, 512);
         assert_eq!(stream.limits.package.h264.max_macroblocks, 2);
         assert_eq!(stream.limits.package.h265.max_luma_samples, 512);
         assert_eq!(stream.request(&parsed.request).segment_count, 170);
+        Ok(())
+    }
+
+    #[test]
+    fn output_ceiling_is_an_exact_native_bound_for_short_and_stream_inference() -> Result<(), String>
+    {
+        let default = PackageDetectLimits::default().run.maximum_output_bytes;
+        assert_eq!(
+            parse(&args())?
+                .ok_or("ordinary request")?
+                .limits
+                .run
+                .maximum_output_bytes,
+            default
+        );
+        for maximum in [1, 4096, 16 * 1024 * 1024] {
+            let mut ordinary = args();
+            ordinary.extend([
+                OsString::from("--max-output-bytes"),
+                maximum.to_string().into(),
+            ]);
+            assert_eq!(
+                parse(&ordinary)?
+                    .ok_or("ordinary request")?
+                    .limits
+                    .run
+                    .maximum_output_bytes,
+                maximum
+            );
+            let mut stream_args = stream_args();
+            stream_args.extend([
+                OsString::from("--max-output-bytes"),
+                maximum.to_string().into(),
+            ]);
+            let parsed = parse(&stream_args)?.ok_or("stream request")?;
+            let stream = parsed.stream_sentinel.ok_or("stream mode")?;
+            assert_eq!(stream.limits.package.run.maximum_output_bytes, maximum);
+            let plan = fss_reference::ingest::long_sentinel::LongSentinelPlan::new(
+                parsed.request.first_segment,
+                parsed.request.segment_count,
+                stream.config,
+            )
+            .map_err(|error| error.to_string())?;
+            let reservation = plan
+                .reservation(&stream.limits)
+                .map_err(|error| error.to_string())?;
+            assert_eq!(
+                reservation.output_bytes,
+                reservation.inferences as u64 * maximum as u64
+            );
+        }
         Ok(())
     }
 

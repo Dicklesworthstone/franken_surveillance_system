@@ -10,7 +10,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
-use fss_codec_mjpeg::{DecodeBudget, decode_luma};
+// Existing durable dwell/health recipes name the original baseline generation explicitly.
+use fss_codec_mjpeg::{DecodeBudget, decode_luma_v1 as decode_luma};
 use fss_core::{
     CanonicalEncode, CanonicalEncoder, CaptureInterval, ContentDigest, DecisionPath, EventEvidence,
     EventHypothesis, EventId, EventKind, EventState, EvidenceClass, EvidenceEdgeRelation,
@@ -21,8 +22,8 @@ use fss_publication::SlotName;
 
 use super::foreground::{ForegroundConfig, ForegroundDetector};
 use super::privacy_mask::{MaskBinding, current_mask};
-use super::recorded_decode::h264::{RecordedH264Range, RecordedH264Request};
-use super::recorded_decode::h265::{RecordedH265Range, RecordedH265Request};
+use super::recorded_decode::h264::{RecordedH264RangeV2 as RecordedH264Range, RecordedH264Request};
+use super::recorded_decode::h265::{RecordedH265RangeV1 as RecordedH265Range, RecordedH265Request};
 use super::recorded_decode::{RecordedDecodeError, source_capsule, validate_limits};
 use super::recorded_watch::{
     SourcePublicationGuard, WatchError, WatchLimits, WatchOptions, WatchPlan, WatchStatus,

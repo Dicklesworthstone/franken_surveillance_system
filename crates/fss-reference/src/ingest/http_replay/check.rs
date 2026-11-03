@@ -435,30 +435,34 @@ pub fn check_http_recording(
                     let decoded = match request.decode {
                         HttpCheckDecode::None => None,
                         mode => Some(
-                            frame
-                                .decode(
-                                    match mode {
-                                        HttpCheckDecode::Grayscale => {
-                                            ComponentInterpretation::Grayscale
-                                        }
-                                        _ => ComponentInterpretation::YCbCr,
-                                    },
-                                    DecodeLimits {
-                                        maximum_bytes: limits.maximum_frame_bytes,
-                                        maximum_dimension: limits.maximum_dimension,
-                                        maximum_pixels: limits.maximum_pixels,
-                                        ..Default::default()
-                                    },
-                                    &mut decoding,
-                                )
-                                .map_err(|error| HttpCheckError::Decode {
-                                    ordinal: receipt.ordinal,
-                                    error,
-                                })
-                                .and_then(|image| {
-                                    mask.mask_luma(image)
-                                        .map_err(|e| HttpCheckError::Privacy(MaskRefusal::from(e)))
-                                })?,
+                            // v1 check chains name the baseline decoder. Keep their historical
+                            // admission and frame-chain bytes; progressive RGB/custody decoding
+                            // uses its separately identified current-generation entrypoints.
+                            fss_codec_mjpeg::decode_luma_v1(
+                                frame.part().bytes(),
+                                receipt.encoded_sha256,
+                                match mode {
+                                    HttpCheckDecode::Grayscale => {
+                                        ComponentInterpretation::Grayscale
+                                    }
+                                    _ => ComponentInterpretation::YCbCr,
+                                },
+                                DecodeLimits {
+                                    maximum_bytes: limits.maximum_frame_bytes,
+                                    maximum_dimension: limits.maximum_dimension,
+                                    maximum_pixels: limits.maximum_pixels,
+                                    ..Default::default()
+                                },
+                                &mut decoding,
+                            )
+                            .map_err(|error| HttpCheckError::Decode {
+                                ordinal: receipt.ordinal,
+                                error,
+                            })
+                            .and_then(|image| {
+                                mask.mask_luma(image)
+                                    .map_err(|e| HttpCheckError::Privacy(MaskRefusal::from(e)))
+                            })?,
                         ),
                     };
                     let row = HttpCheckedFrame {

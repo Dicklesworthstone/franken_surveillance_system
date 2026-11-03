@@ -38,7 +38,7 @@
 //! rule, coverage-retention or alert authority. The same explicit detector-package options
 //! select native RGB inference at entries and following actual track matches; the complete
 //! recording shares one inference allowance and retains the verified package for cold replay.
-//! `--dwell-step-frames N` advances a bounded MJPEG prefix and retains an immutable source-bound
+//! `--dwell-step-frames N` advances a bounded native recording prefix and retains a source-bound
 //! checkpoint. Its emitted continuation names both exact checkpoint pins and explicitly admits
 //! the cold prefix reconstruction with `--dwell-restore-max-frames`. A partial prefix emits no
 //! completed dwell event. Optional conservative health screening preserves its findings and

@@ -173,6 +173,11 @@ if [ "$(same_pictures "$LTR_TMP/ltr_qcif_ref1.h265")" != "$(same_pictures "$OUT/
 fi
 rm -rf "$LTR_TMP"
 
+# ----- Stage 5: authored dependent slice segments and inherited CABAC state -----
+# libx265 cannot encode these. This generator writes real arithmetic streams,
+# verifies strict FFmpeg output and checks coalesced-boundary pixel equivalence.
+python3 scripts/generate_h265_dependent_fixtures.py "$OUT"
+
 # ----- Negative fixtures: must be refused, never decoded -----
 # Range-extensions "Main Intra" profile (libx265 with keyint=1).
 encode unsupported_rext_main_intra "testsrc2=size=64x64:rate=10" 1 \

@@ -363,14 +363,17 @@
       "tieBreakPolicyId": "tie:distance-then-node-heap-strict-improvement-canonical-residual-edges:v1",
       "policyId": "graph-policy:directed:simple-strict:paired-cost-and-capacity-projections:numeric:u64-exact:checked:unit-bound:v1:tie:distance-then-node-heap-strict-improvement-canonical-residual-edges:v1",
       "complexityBoundId": "bound:alg-mcf-001:ssp-demand-augmentations-plus-bellman-ford-certificate:v1",
-      "projectionBinding": "caller-built paired directed cost and capacity WeightedGraph projections over the same nodes and arcs; the witness bound depends on the requested demand bound into its inputDigest",
+      "projectionBinding": "caller-built paired directed cost and capacity WeightedGraph projections over the same nodes and arcs; the witness bound depends on the requested demand bound into its inputDigest; additive stream_capacity_composition mode binds explicit camera demands, directed named links, recorder limits and node/link failures under architecture/stream_capacity_reference.json, retaining every demand and complete certified maximum-flow/minimum-cost proofs",
       "qualification": "not_qualified: certified only against the in-tree brute-force oracle (crates/fss-graph-algorithms/src/oracles.rs) on seeded small graphs; the INT-FNX-001 FrankenNetworkX differential, snapshot invalidation, capability noninterference and incremental/full lanes do not exist",
       "evidence": [
         "crates/fss-graph-algorithms/src/min_cost_flow.rs",
         "crates/fss-graph-algorithms/src/weighted.rs",
         "crates/fss-graph-algorithms/src/certified.rs",
         "crates/fss-graph-algorithms/src/oracles.rs",
-        "crates/fss-graph-algorithms/tests/optimization_certification.rs"
+        "crates/fss-graph-algorithms/tests/optimization_certification.rs",
+        "crates/fss-graph-algorithms/src/stream_capacity.rs",
+        "crates/fss-graph-algorithms/tests/stream_capacity_contract.rs",
+        "architecture/stream_capacity_reference.json"
       ]
     },
     {
@@ -422,13 +425,16 @@
       "tieBreakPolicyId": "tie:objective-then-lexicographic-assignment-tuple-unassigned-last:v1",
       "policyId": "graph-policy:bipartite:allowed-pairs-only:nonassignment-maximum-cardinality-or-priced:numeric:u64-exact:checked:unit-bound:v1:tie:objective-then-lexicographic-assignment-tuple-unassigned-last:v1",
       "complexityBoundId": "bound:alg-multimatch-001:murty-1-plus-k-n-solves:v1",
-      "projectionBinding": "caller-built canonical AssignmentProblem (fss.graph.assignment_projection.v1: left items, right items, allowed pairs with u64 costs) named in the witness projectionId; witness nodeCount is L + R and edgeCount the allowed pairs; no retained-record projection builder yet",
+      "projectionBinding": "caller-built canonical AssignmentProblem (fss.graph.assignment_projection.v1: left items, right items, allowed pairs with u64 costs) named in the witness projectionId; witness nodeCount is L + R and edgeCount the allowed pairs; additive anonymous handoff path-cover mode is specified by architecture/continuity_reference.json with owner-declared source/scope pins, full-interval DAG gates, complete implicit alternatives and an exact displayed prefix; no authenticated retained-record projection builder yet",
       "qualification": "not_qualified: certified only against the in-tree brute-force oracle (crates/fss-graph-algorithms/src/oracles.rs) on seeded small graphs; the INT-FNX-001 FrankenNetworkX differential, snapshot invalidation, capability noninterference and incremental/full lanes do not exist",
       "evidence": [
         "crates/fss-graph-algorithms/src/assignment.rs",
         "crates/fss-graph-algorithms/src/certified.rs",
         "crates/fss-graph-algorithms/src/oracles.rs",
-        "crates/fss-graph-algorithms/tests/optimization_certification.rs"
+        "crates/fss-graph-algorithms/tests/optimization_certification.rs",
+        "architecture/continuity_reference.json",
+        "crates/fss-graph-algorithms/src/continuity.rs",
+        "crates/fss-graph-algorithms/tests/continuity_contract.rs"
       ]
     },
     {
@@ -712,13 +718,16 @@
       "tieBreakPolicyId": "tie:cost-then-cardinality-then-lexicographic-sensor-tuple:v1",
       "policyId": "graph-policy:directed-or-undirected:zones-observed-by-sensors:unobserved-walk-entry-to-target:sensor-disable-cost:numeric:u64-exact:checked:v1:tie:cost-then-cardinality-then-lexicographic-sensor-tuple:v1",
       "complexityBoundId": "bound:alg-interdict-001:2-pow-s-branch-nodes-times-linear-search:v1",
-      "projectionBinding": "caller-built movement WeightedGraph over zones plus an InterdictionQuery (zone observers, sensor disable costs, entry and target zones); exact up to 20 relevant sensors, an explicitly approximate feasible upper bound beyond; robust placement is not implemented",
-      "qualification": "not_qualified: certified against brute-force sensor-subset enumeration with witness-walk validity checks on seeded sites; the robust-placement half of the row is not implemented; no INT-FNX-001 differential exists",
+      "projectionBinding": "caller-built movement WeightedGraph over zones plus an InterdictionQuery; the original removal mode remains exact up to 20 relevant sensors and explicitly approximate beyond. The additive exact_robust_placement mode chooses affordable declared additions under architecture/robust_placement_reference.json, with distinct identities, 16 candidate/20 total-sensor limits and one cumulative work budget",
+      "qualification": "not_qualified: removal is certified against brute-force sensor-subset enumeration; exact placement is compared against exhaustive candidate enumeration and the original interdiction owner, including budget/cancellation and input-binding cases. No INT-FNX-001 or physical-coverage qualification is claimed",
       "evidence": [
         "crates/fss-graph-algorithms/src/interdiction.rs",
+        "crates/fss-graph-algorithms/src/robust_placement.rs",
+        "architecture/robust_placement_reference.json",
         "crates/fss-graph-algorithms/src/weighted.rs",
         "crates/fss-graph-algorithms/src/certified.rs",
-        "crates/fss-graph-algorithms/tests/resilience_certification.rs"
+        "crates/fss-graph-algorithms/tests/resilience_certification.rs",
+        "crates/fss-graph-algorithms/tests/robust_placement_contract.rs"
       ]
     },
     {

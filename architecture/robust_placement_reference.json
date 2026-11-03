@@ -1,0 +1,69 @@
+{
+  "schema": "fss.robust_placement_reference_contract.v1",
+  "id": "ALG-INTERDICT-001",
+  "name": "network_interdiction_and_robust_placement",
+  "bead": "fss-x4a.23.50",
+  "mode": "exact_robust_placement",
+  "status": "implemented",
+  "qualification": "not_qualified: bounded deterministic reference and focused native tests, not INT-FNX-001 or physical coverage qualification",
+  "implementationId": "fss-graph-algorithms:alg-interdict-001:exact-robust-placement:v1",
+  "tieBreak": "maximum minimum disable cost, then installation cost, cardinality and sensor tuple",
+  "tieBreakPolicyId": "tie:maximum-minimum-disable-cost-then-install-cost-count-sensor-tuple:v1",
+  "policyId": "placement-policy:exact-only:declared-observers:independent-sensor-removals:separate-u64-install-disable-costs:v1",
+  "complexityBoundId": "bound:alg-interdict-001:placement-subsets-times-removal-subsets-times-linear-search:v1",
+  "complexityWitness": "placement branches, removal branches, path searches and adjacency scans",
+  "outputSizeWitness": "selected additions plus baseline and selected exact removal sets and witness paths",
+  "exactness": "bounded_exact",
+  "inputDomain": "fss.graph.robust_placement_input.v1",
+  "outputDomain": "fss.graph.robust_placement_output.v1",
+  "decisionDomain": "fss.graph.robust_placement_decision_summary.v1",
+  "objective": "maximize the minimum sensor-disable cost opening an unobserved entry-to-target walk, subject to installation and addition-count ceilings",
+  "limits": {
+    "zones": 256,
+    "movementArcs": 4096,
+    "candidates": 16,
+    "allDeclaredSensors": 20,
+    "identityBytes": 512,
+    "costUnitBytes": 64,
+    "workUnits": 50000000,
+    "outputEntries": 8192
+  },
+  "numericPolicy": "separate named u64 installation and disable-cost units; zero costs allowed; sum of every declared disable cost must fit u64; unaffordable installation subsets are rejected by checked subtraction, never wrapped",
+  "constraints": [
+    "candidate identities are distinct from every baseline sensor and each other",
+    "every observed baseline sensor has an explicit disable cost",
+    "all observer, entry and target zones exist in the movement projection",
+    "empty candidate support is retained as an explicit no-benefit assumption",
+    "the empty placement is always considered",
+    "one work budget and cancellation source covers all nested searches",
+    "no partial answer or heuristic fallback on refusal",
+    "a disconnected movement graph remains unreachable, never infinite robustness"
+  ],
+  "counterVariables": "n=zones,m=movement arcs,s=all declared sensors,p=candidates,P=2^p,R=2^s,Q=1+P*(1+R)",
+  "dominantCounterBounds": {
+    "input_entries": "5*n+m+n*s+s+p",
+    "placement_branches": "P",
+    "inner_solves": "P",
+    "removal_branches": "P*R",
+    "sensor_checks": "P*(p+s+R*s)",
+    "path_searches": "Q",
+    "entry_checks": "Q*n",
+    "observer_masks": "P*n",
+    "zone_visits": "Q*n",
+    "arc_scans": "Q*2*m",
+    "path_entries": "Q*n",
+    "output_entries": "p+2*(n+s)+8"
+  },
+  "compatibility": "additive placement mode; existing interdiction input, output, decision and implementation identities remain unchanged",
+  "noClaims": [
+    "current physical coverage",
+    "independence or failure probabilities",
+    "optimality outside the complete supplied catalog and declared movement/observer model",
+    "camera control or effect authority",
+    "INT-FNX-001 qualification"
+  ],
+  "sources": [
+    "crates/fss-graph-algorithms/src/robust_placement.rs",
+    "crates/fss-graph-algorithms/tests/robust_placement_contract.rs"
+  ]
+}

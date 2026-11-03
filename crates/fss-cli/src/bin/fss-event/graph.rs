@@ -9,6 +9,8 @@ use std::process::ExitCode;
 mod analyze;
 #[path = "graph_blind_paths.rs"]
 mod blind_paths;
+#[path = "graph_capacity.rs"]
+mod capacity;
 #[path = "graph_cuts.rs"]
 mod cuts;
 #[path = "graph_legacy.rs"]
@@ -17,6 +19,9 @@ mod legacy;
 mod reliability;
 
 pub(super) fn main(args: &[OsString]) -> ExitCode {
+    if args.first().and_then(|arg| arg.to_str()) == Some("capacity") {
+        return capacity::main(args);
+    }
     if args.first().and_then(|arg| arg.to_str()) == Some("analyze") {
         return analyze::main(args);
     }
@@ -35,7 +40,8 @@ pub(super) fn main(args: &[OsString]) -> ExitCode {
             "Retained deployment graph analysis: fss-event graph analyze --help\n\
              Joint dependency failures: fss-event graph failure-cuts --help\n\
              Blindness probability bounds: fss-event graph reliability --help\n\
-             Adversarial blind paths: fss-event graph blind-paths --help"
+             Adversarial blind paths: fss-event graph blind-paths --help\n\
+             Camera stream capacity and failover: fss-event graph capacity --help"
         )
         .is_err()
     {

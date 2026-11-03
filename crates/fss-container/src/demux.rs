@@ -6,6 +6,10 @@
 //! description. Decode/composition ticks, edit lists and the track matrix are
 //! preserved, not interpreted as capture time or silently applied to an elementary stream.
 //! Other tracks are explicitly outside the selection. No decoder, filesystem or effect runs.
+//!
+//! The historical `parse*` entrypoints preserve that profile. Explicit `parse_inband*`
+//! entrypoints additionally admit bounded `avc3`/`hev1` parameter updates, source-linked
+//! per-sample configurations and self-contained random-access extraction.
 
 use std::ops::Range;
 mod reader;
@@ -13,6 +17,11 @@ use reader::{Reader, full, one, optional};
 mod tables;
 use tables::*;
 mod fragments;
+mod inband;
+pub use inband::{
+    InbandBootstrap, InbandConfiguration, InbandSampleEntry, InbandSampleParameters,
+    ParameterSetSource, SampleConfiguration,
+};
 mod matroska;
 pub use matroska::{MatroskaElement, MatroskaSample, MatroskaTrack, MatroskaVideo};
 
@@ -181,6 +190,10 @@ pub struct AvcMp4<'a> {
     boxes_visited: usize,
     table_entries: usize,
     nals_inspected: usize,
+    sample_entry: [u8; 4],
+    sample_entry_range: Range<usize>,
+    configuration_record: Range<usize>,
+    inband: Option<Vec<SampleConfiguration>>,
 }
 
 impl<'a> AvcMp4<'a> {
@@ -199,7 +212,7 @@ impl<'a> AvcMp4<'a> {
         limits: DemuxLimits,
         check: &mut dyn FnMut() -> Result<(), DemuxError>,
     ) -> Result<Self, DemuxError> {
-        Self::parse_inner(source, track, limits, check, false)
+        Self::parse_inner(source, track, limits, check, false, false)
     }
     /// Like [`Self::parse_with_checkpoint`], but a fragmented movie its writer never finished
     /// (power loss, a crashed recorder) is admitted up to its last complete movie fragment: the
@@ -213,7 +226,37 @@ impl<'a> AvcMp4<'a> {
         limits: DemuxLimits,
         check: &mut dyn FnMut() -> Result<(), DemuxError>,
     ) -> Result<Self, DemuxError> {
-        Self::parse_inner(source, track, limits, check, true)
+        Self::parse_inner(source, track, limits, check, true, false)
+    }
+    /// Admit source-linked `avc3`/`hev1` in-band configuration in addition to the historical
+    /// profile. Parameter replacements are identified by their bitstream IDs, each sample's
+    /// referenced configuration is bound, and random access must be self-contained against
+    /// the sample entry plus that sample. No pixels or capture timestamps are inferred.
+    pub fn parse_inband(
+        source: &'a [u8],
+        track: Option<u32>,
+        limits: DemuxLimits,
+    ) -> Result<Self, DemuxError> {
+        Self::parse_inband_with_checkpoint(source, track, limits, &mut || Ok(()))
+    }
+    /// In-band-aware parsing with cancellation at bounded syntax and sample boundaries.
+    pub fn parse_inband_with_checkpoint(
+        source: &'a [u8],
+        track: Option<u32>,
+        limits: DemuxLimits,
+        check: &mut dyn FnMut() -> Result<(), DemuxError>,
+    ) -> Result<Self, DemuxError> {
+        Self::parse_inner(source, track, limits, check, false, true)
+    }
+    /// In-band-aware parsing with the same complete-fragment recovery policy as
+    /// [`Self::parse_recovering_tail`]. No malformed configuration is recovered or concealed.
+    pub fn parse_inband_recovering_tail(
+        source: &'a [u8],
+        track: Option<u32>,
+        limits: DemuxLimits,
+        check: &mut dyn FnMut() -> Result<(), DemuxError>,
+    ) -> Result<Self, DemuxError> {
+        Self::parse_inner(source, track, limits, check, true, true)
     }
     fn parse_inner(
         source: &'a [u8],
@@ -221,6 +264,7 @@ impl<'a> AvcMp4<'a> {
         limits: DemuxLimits,
         check: &mut dyn FnMut() -> Result<(), DemuxError>,
         recover: bool,
+        admit_inband: bool,
     ) -> Result<Self, DemuxError> {
         limits.validate()?;
         if source.len() > limits.maximum_input_bytes {
@@ -260,7 +304,7 @@ impl<'a> AvcMp4<'a> {
                     | b"mp42"
                     | b"avc1"
                     | b"qt  "
-            )
+            ) || (admit_inband && b == b"avc3")
         };
         if !supported(&brands[..4]) && !brands[8..].as_chunks::<4>().0.iter().any(|b| supported(b))
         {
@@ -358,7 +402,25 @@ impl<'a> AvcMp4<'a> {
             return Err(DemuxError::Unsupported);
         }
         let stsd = one(&tables, b"stsd")?;
-        let (codec, dimensions, length_bytes, parameter_sets) = configuration(&mut r, &stsd)?;
+        let Configuration {
+            codec,
+            dimensions,
+            length: length_bytes,
+            parameters: parameter_sets,
+            entry: sample_entry,
+            entry_range: sample_entry_range,
+            record: configuration_record,
+            complete,
+        } = configuration(&mut r, &stsd, admit_inband)?;
+        let may_change = admit_inband && matches!(&sample_entry, b"avc3" | b"hev1");
+        let mut needs_inband = sample_entry == *b"avc3";
+        if may_change && codec == VideoCodec::Hevc {
+            for kind in 32..=34 {
+                needs_inband |= !parameter_sets
+                    .iter()
+                    .any(|p| hevc_nal_kind(&source[p.clone()]).is_ok_and(|value| value == kind));
+            }
+        }
         let sizes = sizes(&mut r, &one(&tables, b"stsz")?)?;
         let entries: Vec<fragments::FragmentSample> = if let Some(mvex) = mvex {
             // A fragmented movie keeps its samples in moof/trun, never in the moov tables.
@@ -396,14 +458,16 @@ impl<'a> AvcMp4<'a> {
         for (index, (range, decode_time, duration, composition_offset, sync_sample)) in
             entries.into_iter().enumerate()
         {
-            let contains_idr = validate_sample(
+            let (contains_idr, changed) = sample_framing(
                 &mut r,
                 source,
                 codec,
                 length_bytes,
                 &parameter_sets,
                 range.clone(),
+                may_change,
             )?;
+            needs_inband |= changed;
             samples.push(AvcSample {
                 index,
                 source: range,
@@ -414,6 +478,18 @@ impl<'a> AvcMp4<'a> {
                 contains_idr,
             });
         }
+        let inband = if needs_inband {
+            Some(inband::index(
+                &mut r,
+                codec,
+                length_bytes,
+                &parameter_sets,
+                &samples,
+                complete,
+            )?)
+        } else {
+            None
+        };
         r.checkpoint()?;
         Ok(Self {
             source,
@@ -433,6 +509,10 @@ impl<'a> AvcMp4<'a> {
             boxes_visited: r.boxes,
             table_entries: r.entries,
             nals_inspected: r.nals,
+            sample_entry,
+            sample_entry_range,
+            configuration_record,
+            inband,
         })
     }
     /// Exact borrowed original container bytes, not normalized media.
@@ -442,6 +522,31 @@ impl<'a> AvcMp4<'a> {
     /// Video coding of the selected track.
     pub const fn codec(&self) -> VideoCodec {
         self.codec
+    }
+    /// Original four-byte video sample-entry type; never normalized from `avc3` to `avc1`.
+    pub const fn sample_entry(&self) -> [u8; 4] {
+        self.sample_entry
+    }
+    /// Complete original sample-entry box. A retained in-band importer can preserve this one
+    /// metadata span and later validate it through [`InbandSampleEntry`] without reopening a
+    /// mutable original file or inventing an initialization NAL.
+    pub fn sample_entry_range(&self) -> Range<usize> {
+        self.sample_entry_range.clone()
+    }
+    /// Original `avcC`/`hvcC` payload, including its NAL-length field and completeness flags.
+    /// This remains available when all parameter sets occur only in media samples.
+    pub fn configuration_record(&self) -> Range<usize> {
+        self.configuration_record.clone()
+    }
+    /// True only when admission used the added in-band reconstruction profile. A historically
+    /// admitted `hev1` with unchanged out-of-band parameters retains its original profile.
+    pub const fn uses_inband_configuration(&self) -> bool {
+        self.inband.is_some()
+    }
+    /// Source-linked parameter closure actually referenced by an in-band sample. Static legacy
+    /// configurations return `None`; use [`Self::parameter_sets`] for those.
+    pub fn sample_configuration(&self, index: usize) -> Option<&SampleConfiguration> {
+        self.inband.as_ref()?.get(index)
     }
     /// Selected video track identity.
     pub const fn track_id(&self) -> u32 {
@@ -517,13 +622,29 @@ impl<'a> AvcMp4<'a> {
         if !initial.sync_sample || !initial.contains_idr {
             return Err(DemuxError::RandomAccessRequired);
         }
-        let mut selected: Vec<(Option<usize>, Range<usize>)> = self
-            .parameter_sets
-            .iter()
-            .cloned()
-            .map(|p| (None, p))
-            .collect();
+        let mut selected: Vec<(Option<usize>, Range<usize>)> = if self.inband.is_none() {
+            self.parameter_sets
+                .iter()
+                .cloned()
+                .map(|p| (None, p))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let mut generation = None;
         for sample in &self.samples[first..end] {
+            if let Some(configuration) = self.sample_configuration(sample.index)
+                && generation != Some(configuration.generation())
+            {
+                for parameter in configuration.parameter_sets() {
+                    check()?;
+                    if selected.len() == self.limits.maximum_nals {
+                        return Err(DemuxError::Limit);
+                    }
+                    selected.push((parameter.sample, parameter.source.clone()));
+                }
+                generation = Some(configuration.generation());
+            }
             nals(
                 self.source,
                 sample.source.clone(),
@@ -583,9 +704,24 @@ fn validate_sample(
     parameter_sets: &[Range<usize>],
     range: Range<usize>,
 ) -> Result<bool, DemuxError> {
+    sample_framing(r, source, codec, length_bytes, parameter_sets, range, false)
+        .map(|(random_access, _)| random_access)
+}
+/// Framing pass shared with the legacy parser. Only the explicitly opted-in profile may
+/// retain a changed parameter for the second, ID-aware configuration/picture-identity pass.
+fn sample_framing(
+    r: &mut Reader<'_, '_>,
+    source: &[u8],
+    codec: VideoCodec,
+    length_bytes: usize,
+    parameter_sets: &[Range<usize>],
+    range: Range<usize>,
+    allow_changes: bool,
+) -> Result<(bool, bool), DemuxError> {
     let maximum_nals = r.limits.maximum_nals;
     let mut idr = false;
     let mut vcl = false;
+    let mut changed = false;
     nals(source, range, length_bytes, &mut |nal| {
         r.checkpoint()?;
         r.nals = r
@@ -613,7 +749,10 @@ fn validate_sample(
                 .iter()
                 .any(|p| source[p.clone()] == source[nal.clone()])
         {
-            return Err(DemuxError::Nal);
+            if !allow_changes {
+                return Err(DemuxError::Nal);
+            }
+            changed = true;
         }
         idr |= random_access;
         vcl |= picture;
@@ -622,7 +761,7 @@ fn validate_sample(
     if !vcl {
         return Err(DemuxError::Nal);
     }
-    Ok(idr)
+    Ok((idr, changed))
 }
 
 /// Validated NAL payload ranges of one length-prefixed sample, relative to `sample`.

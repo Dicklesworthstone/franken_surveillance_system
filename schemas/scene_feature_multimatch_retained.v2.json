@@ -1,0 +1,2116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "report_digest",
+    "report"
+  ],
+  "$id": "schemas/scene_feature_multimatch_retained.v2.json",
+  "title": "fss.scene_feature_multimatch_retained.v2",
+  "description": "Version 2 retains all original source custody, camera and geometry evidence and adds each view complete image_processing record. Original codec luma/dimensions remain in source; actual feature pixels/domain/dimensions appear in image_processing output. Corrected records bind the full declared raw/target model, original exposure/storage/mask/layout/range, actual sampling map, corrected output/mask and complete geometric/privacy sample accounting. The original exposure is preserved; output correction creates neither independent evidence nor measured calibration. Source/current-privacy revalidation still follows complete analysis and final read costs include those checks. SHA-256 hashes exact UTF-8 report-body bytes. All v1 pair/component semantics, complete inventory bounds and output caps remain unchanged.",
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "u64": {
+      "oneOf": [
+        {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,19})$"
+        }
+      ]
+    },
+    "identity": {
+      "oneOf": [
+        {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,19}$"
+        }
+      ]
+    },
+    "metric": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "value"
+          ],
+          "properties": {
+            "state": {
+              "const": "available"
+            },
+            "value": {
+              "type": "number"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "reason"
+          ],
+          "properties": {
+            "state": {
+              "const": "unavailable"
+            },
+            "reason": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          }
+        }
+      ]
+    },
+    "hypothesis": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "index"
+          ],
+          "properties": {
+            "state": {
+              "const": "attempted"
+            },
+            "index": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 127
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state"
+          ],
+          "properties": {
+            "state": {
+              "const": "not_selected"
+            }
+          }
+        }
+      ]
+    },
+    "signed128": {
+      "type": "string",
+      "pattern": "^(0|-?[1-9][0-9]{0,38})$",
+      "description": "Exact original signed i128 nanoseconds, never rounded through a JSON floating-point number."
+    },
+    "anchor": {
+      "$ref": "scene_handoffs_retained.v1.json#/$defs/anchor"
+    },
+    "optional_digest": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "digest"
+          ],
+          "properties": {
+            "state": {
+              "const": "available"
+            },
+            "digest": {
+              "$ref": "#/$defs/digest"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state"
+          ],
+          "properties": {
+            "state": {
+              "enum": [
+                "not_published",
+                "no_current_policy"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "import_identity",
+        "import_root",
+        "manifest_digest",
+        "completion_anchor",
+        "capsule_digest",
+        "encoded_source_digest",
+        "exposure_digest",
+        "pixel_digest",
+        "segment",
+        "range_start",
+        "range_count",
+        "codec",
+        "dimensions",
+        "capsule",
+        "decode_receipt_digest",
+        "decode_publication_root",
+        "native_receipt_hex",
+        "mask_binding_digest",
+        "mask_policy"
+      ],
+      "properties": {
+        "import_identity": {
+          "$ref": "#/$defs/digest"
+        },
+        "import_root": {
+          "$ref": "#/$defs/digest"
+        },
+        "manifest_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "completion_anchor": {
+          "$ref": "#/$defs/anchor"
+        },
+        "capsule_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "encoded_source_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "exposure_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "pixel_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "segment": {
+          "$ref": "#/$defs/u64"
+        },
+        "range_start": {
+          "$ref": "#/$defs/u64"
+        },
+        "range_count": {
+          "$ref": "#/$defs/u64"
+        },
+        "codec": {
+          "enum": [
+            "jpeg",
+            "h264",
+            "h265"
+          ]
+        },
+        "dimensions": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 4096
+          }
+        },
+        "capsule": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "capsule_id",
+            "sensor_id",
+            "stream_id",
+            "sequence",
+            "capture_ns",
+            "receive_time_ns",
+            "clock_basis",
+            "source_bytes",
+            "frame_count",
+            "gap_before"
+          ],
+          "properties": {
+            "capsule_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "sensor_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "stream_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "sequence": {
+              "$ref": "#/$defs/u64"
+            },
+            "capture_ns": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "items": {
+                "$ref": "#/$defs/signed128"
+              }
+            },
+            "receive_time_ns": {
+              "$ref": "#/$defs/signed128"
+            },
+            "clock_basis": {
+              "enum": [
+                "utc_disciplined",
+                "device_monotonic",
+                "host_monotonic",
+                "estimated"
+              ]
+            },
+            "source_bytes": {
+              "$ref": "#/$defs/u64"
+            },
+            "frame_count": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4294967295
+            },
+            "gap_before": {
+              "type": "boolean"
+            }
+          }
+        },
+        "decode_receipt_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "decode_publication_root": {
+          "$ref": "#/$defs/optional_digest"
+        },
+        "native_receipt_hex": {
+          "type": "string",
+          "maxLength": 32768,
+          "pattern": "^([0-9a-f]{2})*$"
+        },
+        "mask_binding_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "mask_policy": {
+          "$ref": "#/$defs/optional_digest"
+        }
+      }
+    },
+    "analysis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "authority",
+        "source_provenance",
+        "physical_identity_established",
+        "query_digest",
+        "entry_anchor_digest",
+        "entry_anchor",
+        "anchor_digest",
+        "anchor",
+        "clock",
+        "clock_evidence",
+        "privacy_domain",
+        "basis",
+        "declarations",
+        "assumptions",
+        "views",
+        "geometry"
+      ],
+      "properties": {
+        "authority": {
+          "const": "derived_cognition_no_effect_authority"
+        },
+        "source_provenance": {
+          "const": "verified_retained_native_frames"
+        },
+        "physical_identity_established": {
+          "const": false
+        },
+        "query_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "entry_anchor_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "entry_anchor": {
+          "$ref": "#/$defs/anchor"
+        },
+        "anchor_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "anchor": {
+          "$ref": "#/$defs/anchor"
+        },
+        "clock": {
+          "$ref": "#/$defs/identity"
+        },
+        "clock_evidence": {
+          "$ref": "#/$defs/digest"
+        },
+        "privacy_domain": {
+          "$ref": "#/$defs/identity"
+        },
+        "basis": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "twin_digest",
+            "source_scene_digest",
+            "camera_rig_digest",
+            "camera_rig_semantic_digest",
+            "geometry_basis",
+            "coordinate_frame",
+            "evaluation_scope",
+            "observation_epoch",
+            "scale",
+            "map_error"
+          ],
+          "properties": {
+            "twin_digest": {
+              "$ref": "#/$defs/digest"
+            },
+            "source_scene_digest": {
+              "$ref": "#/$defs/digest"
+            },
+            "camera_rig_digest": {
+              "$ref": "#/$defs/digest"
+            },
+            "camera_rig_semantic_digest": {
+              "$ref": "#/$defs/digest"
+            },
+            "geometry_basis": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "property",
+                "revision"
+              ],
+              "properties": {
+                "property": {
+                  "$ref": "#/$defs/identity"
+                },
+                "revision": {
+                  "$ref": "#/$defs/identity"
+                }
+              }
+            },
+            "coordinate_frame": {
+              "const": "RH_Z_UP"
+            },
+            "evaluation_scope": {
+              "type": "string",
+              "maxLength": 2048
+            },
+            "observation_epoch": {
+              "type": "string",
+              "maxLength": 256
+            },
+            "scale": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "metres_per_unit",
+                "error",
+                "coordinates"
+              ],
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "relative",
+                    "estimated",
+                    "measured_anchor"
+                  ]
+                },
+                "metres_per_unit": {
+                  "$ref": "#/$defs/metric"
+                },
+                "error": {
+                  "$ref": "#/$defs/metric"
+                },
+                "coordinates": {
+                  "const": "source_world_units_unchanged"
+                }
+              }
+            },
+            "map_error": {
+              "$ref": "#/$defs/metric"
+            }
+          }
+        },
+        "declarations": {
+          "$ref": "scene_feature_multimatch_retained_query.v2.json"
+        },
+        "assumptions": {
+          "const": [
+            "source_to_rig_mapping_and_image_models_are_operator_declarations",
+            "lens_basis_and_luma_transfer_do_not_establish_measured_calibration",
+            "rectified_target_intrinsics_come_from_the_exact_camera_rig",
+            "native_rectification_derives_output_domain_and_preserves_original_exposure",
+            "all_positive_weight_source_privacy_taps_and_full_descriptor_footprints_are_required",
+            "camera_rig_is_authored_nominal_not_activated_or_physically_validated",
+            "additive_clock_alignment_is_declared_and_preserves_full_source_uncertainty",
+            "common_scene_features_are_stationary_over_the_full_capture_hull",
+            "appearance_and_epipolar_correspondences_are_hypotheses_not_physical_identity",
+            "subset_solve_time_is_requested_scene_time_clamped_to_subset_capture_hull",
+            "complete_direct_pair_support_is_required_for_joint_components",
+            "unresolved_components_preserve_pair_alternatives_without_identity_assignment",
+            "all_participating_component_views_are_required_with_no_outlier_removal",
+            "sigma_pixels_is_declared_on_the_actual_output_grid",
+            "pixel_noise_covariance_excludes_interpolation_correlations_and_lens_parameter_error",
+            "pixel_noise_covariance_excludes_camera_map_clock_motion_and_correspondence_error",
+            "retained_custody_does_not_establish_live_coverage_or_calibration_quality"
+          ]
+        },
+        "views": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "camera",
+              "source_object_id",
+              "calibration",
+              "image_domain",
+              "clock",
+              "privacy_domain",
+              "validity_ns",
+              "capture_ns",
+              "sigma_pixels",
+              "status",
+              "calibration_error",
+              "world_to_camera",
+              "intrinsics",
+              "image_domain_digest",
+              "mapping_basis",
+              "allowed_mask_digest",
+              "descriptor_domain",
+              "selection",
+              "features",
+              "source",
+              "feature_owner_digest",
+              "image_processing"
+            ],
+            "properties": {
+              "camera": {
+                "$ref": "#/$defs/identity"
+              },
+              "source_object_id": {
+                "type": "string",
+                "maxLength": 256
+              },
+              "calibration": {
+                "$ref": "#/$defs/identity"
+              },
+              "image_domain": {
+                "$ref": "#/$defs/identity"
+              },
+              "clock": {
+                "$ref": "#/$defs/identity"
+              },
+              "privacy_domain": {
+                "$ref": "#/$defs/identity"
+              },
+              "validity_ns": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/u64"
+                },
+                "minItems": 2,
+                "maxItems": 2
+              },
+              "capture_ns": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/u64"
+                },
+                "minItems": 2,
+                "maxItems": 2
+              },
+              "sigma_pixels": {
+                "type": "number",
+                "minimum": 0.001,
+                "maximum": 1000
+              },
+              "status": {
+                "const": "authored_nominal"
+              },
+              "calibration_error": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "state"
+                ],
+                "properties": {
+                  "state": {
+                    "const": "unknown"
+                  }
+                }
+              },
+              "world_to_camera": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "rotation",
+                  "translation"
+                ],
+                "properties": {
+                  "rotation": {
+                    "type": "array",
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "type": "number"
+                      },
+                      "minItems": 3,
+                      "maxItems": 3
+                    },
+                    "minItems": 3,
+                    "maxItems": 3
+                  },
+                  "translation": {
+                    "type": "array",
+                    "items": {
+                      "type": "number"
+                    },
+                    "minItems": 3,
+                    "maxItems": 3
+                  }
+                }
+              },
+              "intrinsics": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "width",
+                  "height",
+                  "fx",
+                  "fy",
+                  "cx",
+                  "cy",
+                  "image_model"
+                ],
+                "properties": {
+                  "width": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 4096
+                  },
+                  "height": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 4096
+                  },
+                  "fx": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "fy": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "cx": {
+                    "type": "number"
+                  },
+                  "cy": {
+                    "type": "number"
+                  },
+                  "image_model": {
+                    "const": "undistorted_pinhole"
+                  }
+                }
+              },
+              "image_domain_digest": {
+                "$ref": "#/$defs/digest"
+              },
+              "mapping_basis": {
+                "$ref": "#/$defs/digest"
+              },
+              "allowed_mask_digest": {
+                "$ref": "#/$defs/digest"
+              },
+              "descriptor_domain": {
+                "$ref": "#/$defs/digest"
+              },
+              "selection": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "threshold",
+                  "maximum_features",
+                  "separation",
+                  "tested_centers",
+                  "local_maxima",
+                  "selected",
+                  "omitted"
+                ],
+                "properties": {
+                  "threshold": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 4194304
+                  },
+                  "maximum_features": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 4194304
+                  },
+                  "separation": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 4194304
+                  },
+                  "tested_centers": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 4194304
+                  },
+                  "local_maxima": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 4194304
+                  },
+                  "selected": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 4194304
+                  },
+                  "omitted": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 4194304
+                  }
+                }
+              },
+              "features": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "feature",
+                    "pixel",
+                    "descriptor_digest"
+                  ],
+                  "properties": {
+                    "feature": {
+                      "$ref": "#/$defs/identity"
+                    },
+                    "pixel": {
+                      "type": "array",
+                      "items": {
+                        "type": "number"
+                      },
+                      "minItems": 2,
+                      "maxItems": 2
+                    },
+                    "descriptor_digest": {
+                      "$ref": "#/$defs/digest"
+                    }
+                  }
+                },
+                "minItems": 0,
+                "maxItems": 128
+              },
+              "source": {
+                "$ref": "#/$defs/source"
+              },
+              "feature_owner_digest": {
+                "$ref": "#/$defs/digest"
+              },
+              "image_processing": {
+                "$ref": "#/$defs/image_processing"
+              }
+            }
+          },
+          "minItems": 3,
+          "maxItems": 8
+        },
+        "geometry": {
+          "$ref": "#/$defs/geometry"
+        }
+      }
+    },
+    "cost": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "geometry_work",
+        "source_bytes",
+        "jpeg_work",
+        "video_admission",
+        "unmeasured"
+      ],
+      "properties": {
+        "geometry_work": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "allowance",
+            "used"
+          ],
+          "properties": {
+            "allowance": {
+              "$ref": "#/$defs/u64"
+            },
+            "used": {
+              "$ref": "#/$defs/u64"
+            }
+          }
+        },
+        "source_bytes": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "allowance",
+            "used",
+            "includes_final_revalidation"
+          ],
+          "properties": {
+            "allowance": {
+              "const": "4294967296"
+            },
+            "used": {
+              "$ref": "#/$defs/u64"
+            },
+            "includes_final_revalidation": {
+              "const": true
+            }
+          }
+        },
+        "jpeg_work": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "allowance",
+            "used"
+          ],
+          "properties": {
+            "allowance": {
+              "const": "2000000000"
+            },
+            "used": {
+              "$ref": "#/$defs/u64"
+            }
+          }
+        },
+        "video_admission": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "model",
+            "axis_policy",
+            "encoded_bytes_allowance",
+            "encoded_bytes_used",
+            "coded_luma_allowance",
+            "coded_luma_used"
+          ],
+          "properties": {
+            "model": {
+              "const": "encoded_bytes_plus_coded_luma_capacity.v1"
+            },
+            "axis_policy": {
+              "const": "encoded_bytes_and_coded_luma_capacity_independent_ceilings.v1"
+            },
+            "encoded_bytes_allowance": {
+              "const": "536870912"
+            },
+            "encoded_bytes_used": {
+              "$ref": "#/$defs/u64"
+            },
+            "coded_luma_allowance": {
+              "const": "2147483648"
+            },
+            "coded_luma_used": {
+              "$ref": "#/$defs/u64"
+            }
+          }
+        },
+        "unmeasured": {
+          "const": [
+            "cpu_time",
+            "energy",
+            "peak_memory"
+          ]
+        }
+      }
+    },
+    "pair_reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pair",
+        "decision"
+      ],
+      "properties": {
+        "pair": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 27
+        },
+        "decision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 16383
+        }
+      }
+    },
+    "camera_pair": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "index",
+        "cameras",
+        "requested_scene_time_ns",
+        "solve_time_ns",
+        "capture_hull_ns",
+        "evidence_digest",
+        "pairs",
+        "feature_outcomes",
+        "hypotheses",
+        "counts"
+      ],
+      "properties": {
+        "index": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 27
+        },
+        "cameras": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/identity"
+          },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "requested_scene_time_ns": {
+          "$ref": "#/$defs/u64"
+        },
+        "solve_time_ns": {
+          "$ref": "#/$defs/u64"
+        },
+        "capture_hull_ns": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/u64"
+          },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "evidence_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "pairs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "features",
+              "hamming_distance",
+              "descriptor",
+              "epipolar",
+              "epipolar_distance_pixels",
+              "hypothesis"
+            ],
+            "properties": {
+              "features": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/identity"
+                },
+                "minItems": 2,
+                "maxItems": 2
+              },
+              "hamming_distance": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 256
+              },
+              "descriptor": {
+                "enum": [
+                  "too_distant",
+                  "ambiguous",
+                  "non_mutual",
+                  "candidate"
+                ]
+              },
+              "epipolar": {
+                "enum": [
+                  "passed",
+                  "outside_gate",
+                  "unobservable"
+                ]
+              },
+              "epipolar_distance_pixels": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "state",
+                      "values"
+                    ],
+                    "properties": {
+                      "state": {
+                        "const": "available"
+                      },
+                      "values": {
+                        "type": "array",
+                        "items": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "minItems": 2,
+                        "maxItems": 2
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "state"
+                    ],
+                    "properties": {
+                      "state": {
+                        "const": "unobservable"
+                      }
+                    }
+                  }
+                ]
+              },
+              "hypothesis": {
+                "$ref": "#/$defs/hypothesis"
+              }
+            }
+          },
+          "minItems": 0,
+          "maxItems": 16384
+        },
+        "feature_outcomes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "camera",
+              "feature",
+              "nearest_features",
+              "best_hamming_distance",
+              "runner_up_hamming_distance",
+              "disposition",
+              "hypothesis"
+            ],
+            "properties": {
+              "camera": {
+                "$ref": "#/$defs/identity"
+              },
+              "feature": {
+                "$ref": "#/$defs/identity"
+              },
+              "nearest_features": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/identity"
+                },
+                "minItems": 0,
+                "maxItems": 128
+              },
+              "best_hamming_distance": {
+                "$ref": "#/$defs/metric"
+              },
+              "runner_up_hamming_distance": {
+                "$ref": "#/$defs/metric"
+              },
+              "disposition": {
+                "enum": [
+                  "no_counterpart",
+                  "too_distant",
+                  "ambiguous",
+                  "non_mutual",
+                  "epipolar_rejected",
+                  "epipolar_unobservable",
+                  "selected"
+                ]
+              },
+              "hypothesis": {
+                "$ref": "#/$defs/hypothesis"
+              }
+            }
+          },
+          "minItems": 0,
+          "maxItems": 256
+        },
+        "hypotheses": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "index",
+              "features",
+              "evidence_digest",
+              "estimate"
+            ],
+            "properties": {
+              "index": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 127
+              },
+              "features": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/identity"
+                },
+                "minItems": 2,
+                "maxItems": 2
+              },
+              "evidence_digest": {
+                "$ref": "#/$defs/digest"
+              },
+              "estimate": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "state",
+                      "reason"
+                    ],
+                    "properties": {
+                      "state": {
+                        "const": "refused"
+                      },
+                      "reason": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 512
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "state",
+                      "position",
+                      "reference_time_ns",
+                      "pixel_noise_covariance",
+                      "covariance_coordinates",
+                      "condition_number",
+                      "rms_reprojection_pixels",
+                      "max_ray_angle_radians",
+                      "capture_hull_ns",
+                      "nominal_occlusion_conflict",
+                      "views"
+                    ],
+                    "properties": {
+                      "state": {
+                        "const": "estimated"
+                      },
+                      "position": {
+                        "type": "array",
+                        "items": {
+                          "type": "number"
+                        },
+                        "minItems": 3,
+                        "maxItems": 3
+                      },
+                      "reference_time_ns": {
+                        "$ref": "#/$defs/u64"
+                      },
+                      "pixel_noise_covariance": {
+                        "type": "array",
+                        "items": {
+                          "type": "array",
+                          "items": {
+                            "type": "number"
+                          },
+                          "minItems": 3,
+                          "maxItems": 3
+                        },
+                        "minItems": 3,
+                        "maxItems": 3
+                      },
+                      "covariance_coordinates": {
+                        "const": "x_y_z_in_source_world_units"
+                      },
+                      "condition_number": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "rms_reprojection_pixels": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "max_ray_angle_radians": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "capture_hull_ns": {
+                        "type": "array",
+                        "items": {
+                          "$ref": "#/$defs/u64"
+                        },
+                        "minItems": 2,
+                        "maxItems": 2
+                      },
+                      "nominal_occlusion_conflict": {
+                        "type": "boolean"
+                      },
+                      "views": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "required": [
+                            "camera",
+                            "evidence_digest",
+                            "capture_ns",
+                            "pixel_min",
+                            "pixel_max",
+                            "inlier",
+                            "residual_pixels",
+                            "visibility"
+                          ],
+                          "properties": {
+                            "camera": {
+                              "$ref": "#/$defs/identity"
+                            },
+                            "evidence_digest": {
+                              "$ref": "#/$defs/digest"
+                            },
+                            "capture_ns": {
+                              "type": "array",
+                              "items": {
+                                "$ref": "#/$defs/u64"
+                              },
+                              "minItems": 2,
+                              "maxItems": 2
+                            },
+                            "pixel_min": {
+                              "type": "array",
+                              "items": {
+                                "type": "number"
+                              },
+                              "minItems": 2,
+                              "maxItems": 2
+                            },
+                            "pixel_max": {
+                              "type": "array",
+                              "items": {
+                                "type": "number"
+                              },
+                              "minItems": 2,
+                              "maxItems": 2
+                            },
+                            "inlier": {
+                              "type": "boolean"
+                            },
+                            "residual_pixels": {
+                              "$ref": "#/$defs/metric"
+                            },
+                            "visibility": {
+                              "enum": [
+                                "nominally_occluded",
+                                "nominal_segment_clear",
+                                "projection_unavailable"
+                              ]
+                            }
+                          }
+                        },
+                        "minItems": 2,
+                        "maxItems": 2
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          "minItems": 0,
+          "maxItems": 128
+        },
+        "counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "features",
+            "pairs",
+            "selected",
+            "solved",
+            "refused"
+          ],
+          "properties": {
+            "features": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 16384
+            },
+            "pairs": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 16384
+            },
+            "selected": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 16384
+            },
+            "solved": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 16384
+            },
+            "refused": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 16384
+            }
+          }
+        }
+      }
+    },
+    "joint_point": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state",
+        "position",
+        "reference_time_ns",
+        "pixel_noise_covariance",
+        "covariance_coordinates",
+        "condition_number",
+        "rms_reprojection_pixels",
+        "max_ray_angle_radians",
+        "capture_hull_ns",
+        "nominal_occlusion_conflict",
+        "views"
+      ],
+      "properties": {
+        "state": {
+          "const": "estimated"
+        },
+        "position": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "reference_time_ns": {
+          "$ref": "#/$defs/u64"
+        },
+        "pixel_noise_covariance": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 3,
+            "maxItems": 3
+          },
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "covariance_coordinates": {
+          "const": "x_y_z_in_source_world_units"
+        },
+        "condition_number": {
+          "type": "number",
+          "minimum": 0
+        },
+        "rms_reprojection_pixels": {
+          "type": "number",
+          "minimum": 0
+        },
+        "max_ray_angle_radians": {
+          "type": "number",
+          "minimum": 0
+        },
+        "capture_hull_ns": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/u64"
+          },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "nominal_occlusion_conflict": {
+          "type": "boolean"
+        },
+        "views": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "camera",
+              "evidence_digest",
+              "capture_ns",
+              "pixel_min",
+              "pixel_max",
+              "inlier",
+              "residual_pixels",
+              "visibility"
+            ],
+            "properties": {
+              "camera": {
+                "$ref": "#/$defs/identity"
+              },
+              "evidence_digest": {
+                "$ref": "#/$defs/digest"
+              },
+              "capture_ns": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/u64"
+                },
+                "minItems": 2,
+                "maxItems": 2
+              },
+              "pixel_min": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "minItems": 2,
+                "maxItems": 2
+              },
+              "pixel_max": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "minItems": 2,
+                "maxItems": 2
+              },
+              "inlier": {
+                "type": "boolean"
+              },
+              "residual_pixels": {
+                "$ref": "#/$defs/metric"
+              },
+              "visibility": {
+                "enum": [
+                  "nominally_occluded",
+                  "nominal_segment_clear",
+                  "projection_unavailable"
+                ]
+              }
+            }
+          },
+          "minItems": 2,
+          "maxItems": 8
+        }
+      }
+    },
+    "component": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "index",
+        "members",
+        "links",
+        "evidence_digest",
+        "requested_scene_time_ns",
+        "solve_time_ns",
+        "capture_hull_ns",
+        "outcome"
+      ],
+      "properties": {
+        "index": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "members": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "camera",
+              "feature"
+            ],
+            "properties": {
+              "camera": {
+                "$ref": "#/$defs/identity"
+              },
+              "feature": {
+                "$ref": "#/$defs/identity"
+              }
+            }
+          },
+          "minItems": 1,
+          "maxItems": 256
+        },
+        "links": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/pair_reference"
+          },
+          "minItems": 0,
+          "maxItems": 896
+        },
+        "evidence_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "requested_scene_time_ns": {
+          "$ref": "#/$defs/u64"
+        },
+        "solve_time_ns": {
+          "$ref": "#/$defs/u64"
+        },
+        "capture_hull_ns": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/u64"
+          },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "outcome": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "state"
+              ],
+              "properties": {
+                "state": {
+                  "const": "unmatched"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "state",
+                "cameras"
+              ],
+              "properties": {
+                "state": {
+                  "const": "camera_conflict"
+                },
+                "cameras": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/identity"
+                  },
+                  "minItems": 1,
+                  "maxItems": 8
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "state",
+                "missing_pairs"
+              ],
+              "properties": {
+                "state": {
+                  "const": "incomplete_cycle_support"
+                },
+                "missing_pairs": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/pair_reference"
+                  },
+                  "minItems": 1,
+                  "maxItems": 28
+                }
+              }
+            },
+            {
+              "$ref": "#/$defs/joint_point"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "state",
+                "reason"
+              ],
+              "properties": {
+                "state": {
+                  "const": "refused"
+                },
+                "reason": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 512
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "geometry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "outcome",
+        "scene_evidence",
+        "requested_scene_time_ns",
+        "capture_hull_ns",
+        "subset_time_policy",
+        "camera_pairs",
+        "components",
+        "counts"
+      ],
+      "properties": {
+        "outcome": {
+          "enum": [
+            "no_reconstruction",
+            "reconstructed",
+            "reconstructed_with_refusals"
+          ]
+        },
+        "scene_evidence": {
+          "$ref": "#/$defs/digest"
+        },
+        "requested_scene_time_ns": {
+          "$ref": "#/$defs/u64"
+        },
+        "capture_hull_ns": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/u64"
+          },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "subset_time_policy": {
+          "const": "requested_scene_time_clamped_to_subset_full_capture_hull_under_static_assumption"
+        },
+        "camera_pairs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/camera_pair"
+          },
+          "minItems": 3,
+          "maxItems": 28
+        },
+        "components": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/component"
+          },
+          "minItems": 0,
+          "maxItems": 256
+        },
+        "counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "cameras",
+            "camera_pairs",
+            "features",
+            "pair_rows",
+            "pair_feature_outcomes",
+            "pair_hypotheses",
+            "pair_solved",
+            "pair_refused",
+            "components",
+            "links",
+            "missing_links",
+            "solved",
+            "unmatched",
+            "camera_conflicts",
+            "incomplete_cycles",
+            "refused",
+            "unresolved"
+          ],
+          "properties": {
+            "cameras": {
+              "type": "integer",
+              "minimum": 3,
+              "maximum": 8
+            },
+            "camera_pairs": {
+              "type": "integer",
+              "minimum": 3,
+              "maximum": 28
+            },
+            "features": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 256
+            },
+            "pair_rows": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 28672
+            },
+            "pair_feature_outcomes": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1792
+            },
+            "pair_hypotheses": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 896
+            },
+            "pair_solved": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 896
+            },
+            "pair_refused": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 896
+            },
+            "components": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 256
+            },
+            "links": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 896
+            },
+            "missing_links": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 896
+            },
+            "solved": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 128
+            },
+            "unmatched": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 256
+            },
+            "camera_conflicts": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 256
+            },
+            "incomplete_cycles": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 256
+            },
+            "refused": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 128
+            },
+            "unresolved": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 256
+            }
+          }
+        }
+      }
+    },
+    "output_image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "exposure_digest",
+        "pixel_digest",
+        "image_domain_digest",
+        "dimensions"
+      ],
+      "properties": {
+        "exposure_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "pixel_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "image_domain_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "dimensions": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 4096
+          },
+          "minItems": 2,
+          "maxItems": 2
+        }
+      }
+    },
+    "distortion": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "pinhole"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "radial",
+            "tangential"
+          ],
+          "properties": {
+            "kind": {
+              "const": "brown_conrady"
+            },
+            "radial": {
+              "type": "array",
+              "items": {
+                "type": "number",
+                "minimum": -100,
+                "maximum": 100
+              },
+              "minItems": 3,
+              "maxItems": 3
+            },
+            "tangential": {
+              "type": "array",
+              "items": {
+                "type": "number",
+                "minimum": -100,
+                "maximum": 100
+              },
+              "minItems": 2,
+              "maxItems": 2
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "coefficients"
+          ],
+          "properties": {
+            "kind": {
+              "const": "fisheye"
+            },
+            "coefficients": {
+              "type": "array",
+              "items": {
+                "type": "number",
+                "minimum": -100,
+                "maximum": 100
+              },
+              "minItems": 4,
+              "maxItems": 4
+            }
+          }
+        }
+      ]
+    },
+    "reported_intrinsics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "width",
+        "height",
+        "fx",
+        "fy",
+        "cx",
+        "cy"
+      ],
+      "properties": {
+        "width": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4096
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4096
+        },
+        "fx": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "fy": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "cx": {
+          "type": "number"
+        },
+        "cy": {
+          "type": "number"
+        }
+      }
+    },
+    "image_processing": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "output",
+            "allowed_mask_digest"
+          ],
+          "properties": {
+            "kind": {
+              "const": "native_pinhole"
+            },
+            "output": {
+              "$ref": "#/$defs/output_image"
+            },
+            "allowed_mask_digest": {
+              "$ref": "#/$defs/digest"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "model",
+            "source",
+            "output",
+            "map_digest",
+            "allowed_mask_digest",
+            "coverage",
+            "sampling",
+            "range_expansion",
+            "output_luma_range",
+            "source_exposure_preserved",
+            "calibration_established"
+          ],
+          "properties": {
+            "kind": {
+              "const": "native_rectified"
+            },
+            "model": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "source_intrinsics",
+                "target_intrinsics",
+                "source_domain_digest",
+                "lens_basis",
+                "distortion",
+                "maximum_radius",
+                "luma_range"
+              ],
+              "properties": {
+                "source_intrinsics": {
+                  "$ref": "#/$defs/reported_intrinsics"
+                },
+                "target_intrinsics": {
+                  "$ref": "#/$defs/reported_intrinsics"
+                },
+                "source_domain_digest": {
+                  "$ref": "#/$defs/digest"
+                },
+                "lens_basis": {
+                  "$ref": "#/$defs/digest"
+                },
+                "distortion": {
+                  "$ref": "#/$defs/distortion"
+                },
+                "maximum_radius": {
+                  "type": "number",
+                  "minimum": 1e-06,
+                  "maximum": 64
+                },
+                "luma_range": {
+                  "enum": [
+                    "full",
+                    "video"
+                  ]
+                }
+              }
+            },
+            "source": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "exposure_digest",
+                "storage_digest",
+                "allowed_mask_digest",
+                "image_domain_digest",
+                "lens_basis",
+                "dimensions",
+                "row_stride",
+                "luma_range"
+              ],
+              "properties": {
+                "exposure_digest": {
+                  "$ref": "#/$defs/digest"
+                },
+                "storage_digest": {
+                  "$ref": "#/$defs/digest"
+                },
+                "allowed_mask_digest": {
+                  "$ref": "#/$defs/digest"
+                },
+                "image_domain_digest": {
+                  "$ref": "#/$defs/digest"
+                },
+                "lens_basis": {
+                  "$ref": "#/$defs/digest"
+                },
+                "dimensions": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 4096
+                  },
+                  "minItems": 2,
+                  "maxItems": 2
+                },
+                "row_stride": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 4096
+                },
+                "luma_range": {
+                  "enum": [
+                    "full",
+                    "video"
+                  ]
+                }
+              }
+            },
+            "output": {
+              "$ref": "#/$defs/output_image"
+            },
+            "map_digest": {
+              "$ref": "#/$defs/digest"
+            },
+            "allowed_mask_digest": {
+              "$ref": "#/$defs/digest"
+            },
+            "coverage": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "mapped",
+                "outside_lens_domain",
+                "outside_source",
+                "allowed_pixels",
+                "privacy_rejected"
+              ],
+              "properties": {
+                "mapped": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 4194304
+                },
+                "outside_lens_domain": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 4194304
+                },
+                "outside_source": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 4194304
+                },
+                "allowed_pixels": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 4194304
+                },
+                "privacy_rejected": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 4194304
+                }
+              }
+            },
+            "sampling": {
+              "const": "native_backward_q16_bilinear_q32_half_up"
+            },
+            "range_expansion": {
+              "const": "before_interpolation"
+            },
+            "output_luma_range": {
+              "const": "full"
+            },
+            "source_exposure_preserved": {
+              "const": true
+            },
+            "calibration_established": {
+              "const": false
+            }
+          }
+        }
+      ]
+    }
+  },
+  "properties": {
+    "schema": {
+      "const": "fss.scene_feature_multimatch_retained.v2"
+    },
+    "report_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "report": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "analysis",
+        "cost"
+      ],
+      "properties": {
+        "schema": {
+          "const": "fss.scene_feature_multimatch_retained_report.v2"
+        },
+        "analysis": {
+          "$ref": "#/$defs/analysis"
+        },
+        "cost": {
+          "$ref": "#/$defs/cost"
+        }
+      }
+    }
+  }
+}

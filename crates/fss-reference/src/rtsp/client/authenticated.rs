@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 //! Opt-in Digest lifecycle on the existing scoped RTSP session.
 
+#[path = "authenticated/offers.rs"]
 mod offers;
 
 use offers::ChallengeOffers;

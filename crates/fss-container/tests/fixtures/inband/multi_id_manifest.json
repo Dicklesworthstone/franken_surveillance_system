@@ -1,0 +1,83 @@
+{
+  "generator": "scripts/generate_mp4_inband_multi_id_fixtures.py",
+  "oracle": "ffmpeg version 6.1.1-3ubuntu5 Copyright (c) 2000-2023 the FFmpeg developers",
+  "fixtures": [
+    {
+      "name": "avc3_later_pps_entry",
+      "entry": "avc3",
+      "nal_length_bytes": 4,
+      "fragmented": true,
+      "sha256": "b800eff027f1346694777d299699c3e0ada441da80d13d3824293dba1d21c3fd",
+      "bytes": 2071,
+      "dimensions": [
+        64,
+        48
+      ],
+      "frames": [
+        "a8fcc70773109184c0832ce0a46df23c1635ac7eef76cefc78ec48f40a74225e",
+        "ac6b0b56cdf50fef126a2a0d794334d0f40fc72603d0b2aeba417c0785ebd0e4",
+        "0beaa206191b6b9ee165d7ea7bfdcb129e4c74d93b6d6729e69c97fb6e96cf4b",
+        "e1abdddbd405e97b316ed0da45dea7955a59ff7ca6828a6caa3f9feee92ed061"
+      ],
+      "samples": 4,
+      "entry_only_pps_removal_rejected": true,
+      "entry_ids": {
+        "sps": [
+          0
+        ],
+        "pps": [
+          0,
+          1
+        ]
+      },
+      "sample_pps_ids": [
+        0,
+        1,
+        1,
+        1
+      ],
+      "inband_parameter_ids": [],
+      "pixel_oracle": "two constant-QP libx264 encodes; exact equal pixels"
+    },
+    {
+      "name": "hev1_later_pps_entry",
+      "entry": "hev1",
+      "nal_length_bytes": 4,
+      "fragmented": true,
+      "sha256": "79839ac5e79003f98114eed66265407cd02588f06cc1412288d22ed04f2ed350",
+      "bytes": 1672,
+      "dimensions": [
+        48,
+        16
+      ],
+      "frames": [
+        "085802419bab58efe28d6d166d9ebc51097e216cbcf140254972c950c2c58135",
+        "085802419bab58efe28d6d166d9ebc51097e216cbcf140254972c950c2c58135"
+      ],
+      "samples": 2,
+      "entry_only_pps_removal_rejected": true,
+      "entry_ids": {
+        "vps": [
+          0
+        ],
+        "sps": [
+          0
+        ],
+        "pps": [
+          1
+        ]
+      },
+      "sample_pps_ids": [
+        0,
+        1
+      ],
+      "inband_parameter_ids": [
+        {
+          "sample": 0,
+          "pps": 0
+        }
+      ],
+      "pixel_oracle": "mathematical PCM seed and inherited-reference P-skip; strict FFmpeg"
+    }
+  ]
+}

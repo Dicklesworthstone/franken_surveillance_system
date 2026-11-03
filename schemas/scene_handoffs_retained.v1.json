@@ -1,0 +1,364 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/scene_handoffs_retained.v1.json",
+  "title": "Retained package-track handoff report",
+  "description": "Complete read-only source-owner projection and unchanged conditional native handoff analysis. Source custody is verified against the exact deployment anchor and current privacy, while physical identity, model accuracy, calibration and shared-clock alignment remain unestablished. Every selected original observation and its conservative aligned interval is preserved, including tentative samples. Maximum complete report is 4 MiB including newline; native checks additionally enforce cross-row and canonical binding semantics.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "outcome",
+    "authority",
+    "source_provenance",
+    "source_scope",
+    "physical_identity_established",
+    "input_document_digest",
+    "projection_digest",
+    "anchor_digest",
+    "anchor",
+    "assumptions",
+    "bindings",
+    "conditional_analysis"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.scene_handoffs_retained.v1"
+    },
+    "outcome": {
+      "const": "completed"
+    },
+    "authority": {
+      "const": "derived_cognition_no_effect_authority"
+    },
+    "source_provenance": {
+      "const": "verified_retained_package_observations"
+    },
+    "source_scope": {
+      "const": "selected_tracks_in_one_deployment"
+    },
+    "physical_identity_established": {
+      "const": false
+    },
+    "input_document_digest": {
+      "$ref": "scene_handoffs_query.v1.json#/$defs/digest"
+    },
+    "projection_digest": {
+      "$ref": "scene_handoffs_query.v1.json#/$defs/digest"
+    },
+    "anchor_digest": {
+      "$ref": "scene_handoffs_query.v1.json#/$defs/digest"
+    },
+    "anchor": {
+      "$ref": "#/$defs/anchor"
+    },
+    "assumptions": {
+      "type": "array",
+      "minItems": 5,
+      "maxItems": 5,
+      "const": [
+        "clock_alignment_and_common_clock_are_operator_declarations",
+        "calibration_handles_do_not_certify_geometry",
+        "transition_costs_and_transit_bounds_are_operator_declarations",
+        "source_custody_does_not_establish_detector_accuracy_or_physical_identity",
+        "complete_alternative_family_is_only_for_selected_tracks_and_admitted_robust_edges"
+      ]
+    },
+    "bindings": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "items": {
+        "$ref": "#/$defs/binding"
+      }
+    },
+    "conditional_analysis": {
+      "$ref": "scene_handoffs.v1.json"
+    }
+  },
+  "$defs": {
+    "anchor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "site_lineage",
+        "ledger_epoch",
+        "commit_sequence",
+        "adapter_registry_epoch",
+        "schema_epoch",
+        "policy_epoch",
+        "privacy_epoch",
+        "state_root"
+      ],
+      "properties": {
+        "site_lineage": {
+          "$ref": "scene_handoffs_query.v1.json#/$defs/id"
+        },
+        "ledger_epoch": {
+          "$ref": "scene_handoffs_query.v1.json#/$defs/u64"
+        },
+        "commit_sequence": {
+          "$ref": "scene_handoffs_query.v1.json#/$defs/u64"
+        },
+        "adapter_registry_epoch": {
+          "$ref": "scene_handoffs_query.v1.json#/$defs/u64"
+        },
+        "schema_epoch": {
+          "$ref": "scene_handoffs_query.v1.json#/$defs/u64"
+        },
+        "policy_epoch": {
+          "$ref": "scene_handoffs_query.v1.json#/$defs/u64"
+        },
+        "privacy_epoch": {
+          "$ref": "scene_handoffs_query.v1.json#/$defs/u64"
+        },
+        "state_root": {
+          "$ref": "scene_handoffs_query.v1.json#/$defs/digest"
+        }
+      }
+    },
+    "observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "segment",
+        "capsule_digest",
+        "source_digest",
+        "capture",
+        "aligned_capture",
+        "detection_row",
+        "class_index",
+        "score_bits",
+        "bounds",
+        "confirmed",
+        "inference_identity",
+        "output_digest",
+        "detection_report_digest"
+      ],
+      "properties": {
+        "segment": {
+          "$ref": "scene_handoffs_query.v1.json#/$defs/u64"
+        },
+        "capsule_digest": {
+          "$ref": "scene_handoffs_query.v1.json#/$defs/digest"
+        },
+        "source_digest": {
+          "$ref": "scene_handoffs_query.v1.json#/$defs/digest"
+        },
+        "capture": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": {
+            "type": "integer",
+            "minimum": -170141183460469231731687303715884105728,
+            "maximum": 170141183460469231731687303715884105727
+          }
+        },
+        "aligned_capture": {
+          "$ref": "scene_handoffs_query.v1.json#/$defs/clock_interval"
+        },
+        "detection_row": {
+          "$ref": "scene_handoffs_query.v1.json#/$defs/u64"
+        },
+        "class_index": {
+          "$ref": "scene_handoffs_query.v1.json#/$defs/u64"
+        },
+        "score_bits": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "bounds": {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4294967295
+          }
+        },
+        "confirmed": {
+          "type": "boolean"
+        },
+        "inference_identity": {
+          "$ref": "scene_handoffs_query.v1.json#/$defs/digest"
+        },
+        "output_digest": {
+          "$ref": "scene_handoffs_query.v1.json#/$defs/digest"
+        },
+        "detection_report_digest": {
+          "$ref": "scene_handoffs_query.v1.json#/$defs/digest"
+        }
+      }
+    },
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "report_digest",
+        "analysis_digest",
+        "record_digest",
+        "retained_root",
+        "import_identity",
+        "import_root",
+        "retained_anchor",
+        "track",
+        "confirmed",
+        "sensor_id",
+        "stream_id",
+        "clock_basis",
+        "capture_time_label",
+        "dimensions",
+        "camera_generation",
+        "calibration",
+        "model",
+        "package_digest",
+        "manifest_digest",
+        "model_digest",
+        "graph_digest",
+        "contract_digest",
+        "model_id",
+        "model_generation",
+        "label",
+        "class_index",
+        "tracking",
+        "privacy_binding",
+        "privacy_policy",
+        "alignment",
+        "observations"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "scene_handoffs_query.v1.json#/$defs/id"
+        },
+        "report_digest": {
+          "$ref": "scene_handoffs_query.v1.json#/$defs/digest"
+        },
+        "analysis_digest": {
+          "$ref": "scene_handoffs_query.v1.json#/$defs/digest"
+        },
+        "record_digest": {
+          "$ref": "scene_handoffs_query.v1.json#/$defs/digest"
+        },
+        "retained_root": {
+          "$ref": "scene_handoffs_query.v1.json#/$defs/digest"
+        },
+        "import_identity": {
+          "$ref": "scene_handoffs_query.v1.json#/$defs/digest"
+        },
+        "import_root": {
+          "$ref": "scene_handoffs_query.v1.json#/$defs/digest"
+        },
+        "retained_anchor": {
+          "$ref": "#/$defs/anchor"
+        },
+        "track": {
+          "$ref": "scene_handoffs_query.v1.json#/$defs/digest"
+        },
+        "confirmed": {
+          "type": "boolean"
+        },
+        "sensor_id": {
+          "$ref": "scene_handoffs_query.v1.json#/$defs/id"
+        },
+        "stream_id": {
+          "$ref": "scene_handoffs_query.v1.json#/$defs/id"
+        },
+        "clock_basis": {
+          "enum": [
+            "utc_disciplined",
+            "device_monotonic",
+            "host_monotonic",
+            "estimated"
+          ]
+        },
+        "capture_time_label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "dimensions": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 4294967295
+          }
+        },
+        "camera_generation": {
+          "$ref": "scene_handoffs_query.v1.json#/$defs/digest"
+        },
+        "calibration": {
+          "$ref": "scene_handoffs_query.v1.json#/$defs/digest"
+        },
+        "model": {
+          "$ref": "scene_handoffs_query.v1.json#/$defs/digest"
+        },
+        "package_digest": {
+          "$ref": "scene_handoffs_query.v1.json#/$defs/digest"
+        },
+        "manifest_digest": {
+          "$ref": "scene_handoffs_query.v1.json#/$defs/digest"
+        },
+        "model_digest": {
+          "$ref": "scene_handoffs_query.v1.json#/$defs/digest"
+        },
+        "graph_digest": {
+          "$ref": "scene_handoffs_query.v1.json#/$defs/digest"
+        },
+        "contract_digest": {
+          "$ref": "scene_handoffs_query.v1.json#/$defs/digest"
+        },
+        "model_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "model_generation": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "class_index": {
+          "$ref": "scene_handoffs_query.v1.json#/$defs/u64"
+        },
+        "tracking": {
+          "$ref": "scene_handoffs_retained_query.v1.json#/$defs/tracking"
+        },
+        "privacy_binding": {
+          "$ref": "scene_handoffs_query.v1.json#/$defs/digest"
+        },
+        "privacy_policy": {
+          "anyOf": [
+            {
+              "$ref": "scene_handoffs_query.v1.json#/$defs/digest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "alignment": {
+          "$ref": "scene_handoffs_retained_query.v1.json#/$defs/alignment"
+        },
+        "observations": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "items": {
+            "$ref": "#/$defs/observation"
+          }
+        }
+      }
+    }
+  }
+}

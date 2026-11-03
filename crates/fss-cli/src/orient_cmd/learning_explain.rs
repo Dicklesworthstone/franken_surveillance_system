@@ -82,8 +82,9 @@ fn refuse(
             reason:
                 "The selected learning is unavailable under this session or its retained custody."
                     .to_owned(),
-            guidance: "Use a captured learning root owned by this session with a complete retained \
-                       source closure; no private candidate detail is disclosed by this refusal.",
+            guidance: "Use an exact captured learning root from this principal and immutable \
+                       mission, with a complete retained source closure and a currently admitted \
+                       session; no private candidate detail is disclosed by this refusal.",
             recovery_class: "never_unchanged",
             safe_retry: ResponseSafeRetry::No,
         },
@@ -397,6 +398,10 @@ fn propositions(read: &LearningInspection) -> Vec<EnvelopeProposition> {
                     agent_json::string(&read.captured_workspace_digest.to_text()),
                 ),
                 (
+                    "capturedSessionId",
+                    agent_json::string(read.captured_session_id.as_str()),
+                ),
+                (
                     "missingEvidenceCount",
                     learning.missing_evidence.len().to_string(),
                 ),
@@ -570,6 +575,10 @@ fn render(
             assumptions: vec![
                 "Retained fields describe the original capture; their attribution is not a new \
                  assertion of present-world truth.".to_owned(),
+                "An explicitly selected historical capture may come from another session of \
+                 the same principal and immutable mission. Its source session supplies \
+                 provenance only; this read neither revives it nor changes automatic session inventories."
+                    .to_owned(),
             ],
             invalidators: vec![
                 "Current authority, session ownership, expiry, private scope, workspace/journal \
@@ -578,14 +587,14 @@ fn render(
             ],
         },
         EnvelopeCoverage {
-            authorized_domain: vec!["Exact selected learning and its owned retained metadata closure.".to_owned()],
+            authorized_domain: vec!["Exact selected learning from the current principal and immutable mission, with its complete historical metadata closure.".to_owned()],
             observed_domain: vec![
                 "Complete retained proposal and experience fields, original episode resource-use, \
                  all source identities, and mandatory uncertainty.".to_owned(),
             ],
             not_observable_domain: vec![
                 "Current causal effectiveness, unrecorded counterexamples, and unmeasured costs.".to_owned(),
-                "Source media and other sessions' private candidates.".to_owned(),
+                "Source media, unselected candidates, and private candidates from other principals or missions.".to_owned(),
             ],
             omitted_count: 0,
             omission_reasons: Vec::new(),

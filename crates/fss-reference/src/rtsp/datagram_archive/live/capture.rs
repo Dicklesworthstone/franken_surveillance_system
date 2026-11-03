@@ -292,7 +292,7 @@ impl RetainedAvcRecording {
             let guard = SourceGuard {
                 authority,
                 cancel,
-                binding: self.archive.scope.binding.clone(),
+                binding: self.archive.scope().binding.clone(),
                 now,
                 deadline: self.deadline_ns,
             };
@@ -354,7 +354,7 @@ impl RetainedAvcRecording {
         probe(cancel).map_err(RetainedRecordingError::Custody)?;
         authority
             .checkpoint(
-                &self.archive.scope.binding,
+                &self.archive.scope().binding,
                 TcpOperation::Poll,
                 now,
                 self.deadline_ns,

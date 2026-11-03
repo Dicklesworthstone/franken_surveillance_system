@@ -362,8 +362,12 @@ Protocol reference: `modelcontextprotocol/modelcontextprotocol`, specification
 ## Read one captured learning proposal
 
 After feedback captures an experience, its learning publication root is also retained in
-session orientation and handoff. Recover the complete selected candidate with its owning
-session and root; the original feedback statement and request are unnecessary:
+session orientation and handoff. Recover the complete selected candidate with its exact
+root and a currently admitted session of the same principal and immutable mission. The
+source session may be cancelled or expired; its complete historical custody must still
+verify. The original feedback statement and request are unnecessary. Automatic orientation
+and handoff discovery remain session-scoped; see [historical learning](historical_learning.md)
+for replacement-session admission and provenance:
 
 ```sh
 fss explain --json --root DEPLOYMENT --session SESSION \

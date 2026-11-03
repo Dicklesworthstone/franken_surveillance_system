@@ -12,3 +12,8 @@ workspace = true
 
 [dependencies]
 fss-packet = { path = "../fss-packet" }
+
+[dev-dependencies]
+fss-codec-h264 = { path = "../fss-codec-h264" }
+fss-codec-h265 = { path = "../fss-codec-h265" }
+fss-core = { path = "../fss-core" }

@@ -104,10 +104,12 @@ fn legacy_digest(p: &Plan) -> Result<ContentDigest> {
 }
 
 #[test]
-fn selected_plan_keeps_legacy_approvals_exact_and_binds_the_display_position() -> Result<()> {
+fn selected_plan_versions_inband_admission_and_binds_the_display_position() -> Result<()> {
     let legacy = Plan::parse(&args())?;
     assert_eq!(legacy.output_index, None);
-    assert_eq!(legacy.digest()?, legacy_digest(&legacy)?);
+    // The selected-output encoding stays additive, but broader avc3/hev1 reconstruction
+    // deliberately requires a current-generation approval before any source work.
+    assert_ne!(legacy.digest()?, legacy_digest(&legacy)?);
     assert!(!legacy.preview()?.contains("selection_policy"));
     let mut seen = std::collections::BTreeSet::new();
     for index in 0..3 {
@@ -128,6 +130,27 @@ fn selected_plan_keeps_legacy_approvals_exact_and_binds_the_display_position() -
         approved.extend(["--approve".into(), plan.digest()?.to_text().into()]);
         assert_eq!(Plan::parse(&approved)?.digest()?, plan.digest()?);
     }
+    Ok(())
+}
+
+#[test]
+fn tiled_hevc_admission_requires_a_new_operator_plan_identity() -> Result<()> {
+    let mut input = args();
+    let position = input
+        .iter()
+        .position(|value| value == "avc")
+        .ok_or_else(|| fail("codec fixture"))?;
+    input[position] = "hevc".into();
+    let mut plan = Plan::parse(&input)?;
+    let old = legacy_digest(&plan)?;
+    assert_ne!(plan.digest()?, old);
+    plan.approval = Some(old);
+    let mut output = Vec::new();
+    assert!(crate::operation::run(&plan, &mut output).is_err());
+    assert!(
+        output.is_empty(),
+        "old admission approval must fail before storage or publication"
+    );
     Ok(())
 }
 

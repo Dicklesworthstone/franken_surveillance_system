@@ -186,11 +186,18 @@ impl Decoder {
         permit: impl FnMut() -> Result<(), HttpCameraDenial>,
     ) -> Result<MaskedLuma, Failure> {
         // This private worker also allows fixture tests to supply exact native JPEG bytes without
-        // inventing a live HTTP receipt. Production always uses HttpJpegFrame::decode.
+        // inventing a live HTTP receipt. The v1 reconnect policy pins the baseline decoder;
+        // use its exact source digest instead of upgrading that immutable policy implicitly.
         let interpretation = self.interpretation;
         let limits = self.limits;
         self.masked(sensor, permit, |work| {
-            frame.decode(interpretation, limits, work)
+            fss_codec_mjpeg::decode_luma_v1(
+                frame.part().bytes(),
+                frame.part().receipt().encoded_sha256,
+                interpretation,
+                limits,
+                work,
+            )
         })
     }
     fn masked(

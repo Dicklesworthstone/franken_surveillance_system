@@ -177,9 +177,10 @@ fn invalid_suffix_truncated_chroma_and_interpretation_refuse_whole_frame() -> Te
         .position(|w| w == [255, 192])
         .ok_or("missing SOF")?;
     progressive[at + 1] = 194;
+    // A sequential SOS is invalid in a progressive frame; changing only SOF cannot recode it.
     assert!(matches!(
         decode(&progressive, Color::YCbCr),
-        Err(DecodeError::Unsupported)
+        Err(DecodeError::Malformed)
     ));
     Ok(())
 }

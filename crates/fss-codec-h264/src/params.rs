@@ -88,10 +88,18 @@ pub struct SeqParams {
     pub level_idc: u8,
     /// Width of `frame_num` in bits (4..=16).
     pub log2_max_frame_num: u8,
-    /// `pic_order_cnt_type` (0 or 2 admitted; 1 is refused).
+    /// `pic_order_cnt_type` (0, 1 or 2).
     pub poc_type: u8,
     /// Width of `pic_order_cnt_lsb` in bits (POC type 0 only).
     pub log2_max_poc_lsb: u8,
+    /// Type 1 `delta_pic_order_always_zero_flag`; no per-slice deltas when true.
+    pub delta_pic_order_always_zero: bool,
+    /// Type 1 offset added to a non-reference picture's expected POC.
+    pub offset_for_non_ref_pic: i32,
+    /// Type 1 bottom-field offset for a progressive coded frame.
+    pub offset_for_top_to_bottom_field: i32,
+    /// Type 1 reference-picture POC cycle, at most 255 signed offsets.
+    pub offset_for_ref_frame: Vec<i32>,
     /// `max_num_ref_frames` (0..=16).
     pub max_num_ref_frames: u32,
     /// `gaps_in_frame_num_value_allowed_flag`.
@@ -435,11 +443,26 @@ pub fn parse_sps(rbsp: &[u8]) -> Result<SeqParams, DecodeError> {
     let log2_max_frame_num = u8::try_from(r.ue(12)? + 4).map_err(|_| DecodeError::Malformed)?;
     let poc_type = u8::try_from(r.ue(2)?).map_err(|_| DecodeError::Malformed)?;
     let mut log2_max_poc_lsb = 0;
+    let mut delta_pic_order_always_zero = false;
+    let mut offset_for_non_ref_pic = 0;
+    let mut offset_for_top_to_bottom_field = 0;
+    let mut offset_for_ref_frame = Vec::new();
     match poc_type {
         0 => {
             log2_max_poc_lsb = u8::try_from(r.ue(12)? + 4).map_err(|_| DecodeError::Malformed)?;
         }
-        1 => return Err(refuse(UnsupportedFeature::PocType1)),
+        1 => {
+            delta_pic_order_always_zero = r.flag()?;
+            offset_for_non_ref_pic = r.se_range(i32::MIN + 1, i32::MAX)?;
+            offset_for_top_to_bottom_field = r.se_range(i32::MIN + 1, i32::MAX)?;
+            let count = usize::try_from(r.ue(255)?).map_err(|_| DecodeError::Limit)?;
+            offset_for_ref_frame
+                .try_reserve_exact(count)
+                .map_err(|_| DecodeError::Limit)?;
+            for _ in 0..count {
+                offset_for_ref_frame.push(r.se_range(i32::MIN + 1, i32::MAX)?);
+            }
+        }
         _ => {}
     }
     let max_num_ref_frames = r.ue(16)?;
@@ -476,6 +499,10 @@ pub fn parse_sps(rbsp: &[u8]) -> Result<SeqParams, DecodeError> {
         log2_max_frame_num,
         poc_type,
         log2_max_poc_lsb,
+        delta_pic_order_always_zero,
+        offset_for_non_ref_pic,
+        offset_for_top_to_bottom_field,
+        offset_for_ref_frame,
         max_num_ref_frames,
         gaps_in_frame_num_allowed,
         width_mbs,
@@ -566,6 +593,10 @@ mod tests {
             log2_max_frame_num: 4,
             poc_type: 2,
             log2_max_poc_lsb: 0,
+            delta_pic_order_always_zero: false,
+            offset_for_non_ref_pic: 0,
+            offset_for_top_to_bottom_field: 0,
+            offset_for_ref_frame: Vec::new(),
             max_num_ref_frames: 1,
             gaps_in_frame_num_allowed: false,
             width_mbs: 11,

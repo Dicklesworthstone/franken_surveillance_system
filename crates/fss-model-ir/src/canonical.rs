@@ -114,6 +114,93 @@ pub fn encode_canonical_model_ir(graph: &ModelIrGraph) -> Result<Vec<u8>, ModelI
     Ok(buf)
 }
 
+/// Exact output-size preflight for the bounded ONNX artifact exporter. Reuses the
+/// canonical encoder's attribute normalization; it never allocates an output buffer.
+pub(crate) fn canonical_model_ir_size(graph: &ModelIrGraph) -> Result<usize, ModelIrError> {
+    fn add(total: &mut usize, count: usize) -> Result<(), ModelIrError> {
+        *total = total
+            .checked_add(count)
+            .ok_or(ModelIrError::ArithmeticOverflow {
+                operation: "canonical model output size",
+            })?;
+        Ok(())
+    }
+    fn text(total: &mut usize, value: &str) -> Result<(), ModelIrError> {
+        add(total, 4)?;
+        add(total, value.len())
+    }
+    fn list(total: &mut usize, count: usize) -> Result<(), ModelIrError> {
+        add(total, 4)?;
+        add(
+            total,
+            count
+                .checked_mul(8)
+                .ok_or(ModelIrError::ArithmeticOverflow {
+                    operation: "canonical model list size",
+                })?,
+        )
+    }
+    let mut size = MODEL_IR_DIGEST_DOMAIN.len() + 5 + 32 + 8 + 12;
+    text(&mut size, graph.id())?;
+    for port in graph.inputs().iter().chain(graph.outputs()) {
+        text(&mut size, port.name())?;
+        add(&mut size, 1 + 8)?;
+        list(&mut size, port.rank())?;
+    }
+    let mut producers = BTreeMap::new();
+    let mut known = BTreeMap::new();
+    for input in graph.inputs() {
+        producers.insert(input.name(), crate::validator::ProducerId::GraphInput);
+        known.insert(input.name().to_owned(), input.clone());
+    }
+    for node in graph.nodes() {
+        for output in node.outputs() {
+            producers.insert(
+                output.as_str(),
+                crate::validator::ProducerId::Node(node.id()),
+            );
+        }
+    }
+    for node in GraphValidator::topological_sort(graph, &producers)? {
+        let inputs: Vec<_> = node
+            .inputs()
+            .iter()
+            .filter_map(|name| known.get(name).cloned())
+            .collect();
+        for value in [node.id(), node.op().stable_id(), node.name()] {
+            text(&mut size, value)?;
+        }
+        add(&mut size, 12)?;
+        for value in node.inputs().iter().chain(node.outputs()) {
+            text(&mut size, value)?;
+        }
+        for (key, value) in normalize_attributes(node.op(), node.attributes(), &inputs) {
+            text(&mut size, &key)?;
+            add(&mut size, 1)?;
+            match value {
+                AttrValue::Bool(_) | AttrValue::DType(_) => add(&mut size, 1)?,
+                AttrValue::Int(_) | AttrValue::Float(_) => add(&mut size, 8)?,
+                AttrValue::String(value) => text(&mut size, &value)?,
+                AttrValue::IntList(values) => list(&mut size, values.len())?,
+                AttrValue::FloatList(values) => list(&mut size, values.len())?,
+                AttrValue::Shape(shape) => list(&mut size, shape.rank())?,
+            }
+        }
+        let refs: Vec<_> = inputs.iter().collect();
+        for output in crate::shape_inference::infer_operator_outputs(
+            node.id(),
+            node.op(),
+            &refs,
+            node.outputs(),
+            node.attributes(),
+            graph.generation(),
+        )? {
+            known.insert(output.name().to_owned(), output);
+        }
+    }
+    Ok(size)
+}
+
 /// Computes the deterministic SHA-256 content digest for a `ModelIrGraph`.
 ///
 /// # Errors

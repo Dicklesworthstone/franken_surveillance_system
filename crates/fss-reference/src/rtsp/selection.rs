@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! Bounded, payload-exact AVC, HEVC and ONVIF metadata SDP selection.
+//! Bounded, payload-exact AVC, HEVC, JPEG and ONVIF metadata SDP selection.
 //!
 //! This is a derived description, not replacement source evidence. The caller retains
 //! the original DESCRIBE response. Selection does not authorize a different media
@@ -107,6 +107,24 @@ pub fn select_onvif_metadata_description(
     parse_sdp_bytes(derived.as_bytes()).map_err(|_| SelectionError::Description)
 }
 
+/// Select exactly one RFC 2435 JPEG transport while preserving media ordinals.
+///
+/// Static payload 26 needs no rtpmap; an explicitly conflicting mapping refuses.
+/// Dynamic payloads require exactly JPEG/90000. Multiple JPEG offers need an exact
+/// owner payload pin. Selected fmtp fields have no admitted JPEG interpretation.
+/// Dimensions, sampling and quantizers are bounded by the packet owner, not SDP.
+pub fn select_jpeg_description(
+    body: &[u8],
+    media_index: usize,
+    payload_type: Option<u8>,
+) -> Result<SdpSession, SelectionError> {
+    if payload_type.is_some_and(|pt| !matches!(pt, 26 | 96..=127)) {
+        return Err(SelectionError::Payload);
+    }
+    let derived = select_media_text(body, media_index, payload_type, "video", "JPEG/90000")?;
+    parse_sdp_bytes(derived.as_bytes()).map_err(|_| SelectionError::Description)
+}
+
 fn select_media_text(
     body: &[u8],
     media_index: usize,
@@ -207,6 +225,11 @@ fn select_media_text(
     }
 
     let (port, protocol) = selected_header.ok_or(SelectionError::Media)?;
+    // The RTP/AVP static assignment is authoritative only when no explicit
+    // mapping was supplied. Never repair a contradictory rtpmap for payload 26.
+    if encoding == "JPEG/90000" && offered[26] && maps[26].is_none() {
+        maps[26] = Some(encoding);
+    }
     let selected = if let Some(pt) = payload_type {
         if !offered[usize::from(pt)] {
             return Err(SelectionError::Payload);
@@ -227,8 +250,11 @@ fn select_media_text(
         }
         selected.ok_or(SelectionError::Unsupported)?
     };
+    if encoding == "JPEG/90000" && !matches!(selected, 26 | 96..=127) {
+        return Err(SelectionError::Payload);
+    }
     if let Some(format) = formats[usize::from(selected)] {
-        if media_type == "application" {
+        if media_type == "application" || encoding == "JPEG/90000" {
             return Err(SelectionError::Unsupported);
         }
         validate_format(format)?;

@@ -77,7 +77,17 @@ fn complete_and_truncated_connections_publish_cold_verified_history_before_recon
             NO_STALL,
         );
         let mut out = Vec::new();
-        assert_eq!(capture_with(&options, &mut out, || &clock), Ok(true));
+        let receipt = capture_receipt_with(&options, &mut out, || &clock)?;
+        assert!(receipt.request_satisfied);
+        assert!(receipt.terminal_observed);
+        assert_eq!(receipt.error_code, None);
+        assert_eq!(receipt.pending_history, None);
+        assert_eq!(receipt.pending_wire, None);
+        assert_eq!(receipt.connections_started, 2);
+        assert_eq!(receipt.prefixes.len(), 2);
+        assert_eq!(receipt.boundaries.len(), 2);
+        assert!(receipt.boundaries.iter().all(|boundary| boundary.released));
+        assert_eq!(receipt.unpublished_received_bytes, 0);
         assert_eq!(joined(server)?, 2);
         let text = String::from_utf8(out)?;
         let prepared: Vec<_> = text
@@ -94,6 +104,8 @@ fn complete_and_truncated_connections_publish_cold_verified_history_before_recon
         assert_eq!(saved.len(), 2);
         assert_eq!(saved[1].connections, 2);
         assert_eq!(saved[1].session, options.approval());
+        assert_eq!(receipt.history_pin, Some(saved[1]));
+        assert_eq!(receipt.settled_history(), Some(saved[1]));
         let first_prepared = text
             .find("\"kind\":\"history_prepared\"")
             .ok_or("prepared")?;
@@ -112,6 +124,14 @@ fn complete_and_truncated_connections_publish_cold_verified_history_before_recon
             &mut WorkBudget::new(1_000_000_000_000),
         )?;
         assert_eq!(history.boundaries().len(), 2);
+        assert_eq!(
+            receipt
+                .boundaries
+                .iter()
+                .map(|boundary| &boundary.observation)
+                .collect::<Vec<_>>(),
+            history.boundaries().iter().collect::<Vec<_>>()
+        );
         assert_eq!(history.boundaries()[0].scope().stream.generation, 40);
         assert_eq!(history.boundaries()[1].scope().stream.generation, 50);
         assert_eq!(
@@ -172,10 +192,10 @@ fn refused_prepared_or_durable_output_never_releases_the_next_generation() -> Te
             kind,
             bytes: Vec::new(),
         };
-        assert_eq!(
-            capture_with(&options, &mut out, || &clock),
+        assert!(matches!(
+            capture_receipt_with(&options, &mut out, || &clock),
             Err("ERR-CAPTURE-RECONNECT-OUTPUT-001")
-        );
+        ));
         assert_eq!(joined(server)?, 1);
         let text = String::from_utf8(out.bytes)?;
         assert_eq!(text.matches("\"kind\":\"connected\"").count(), 1);
@@ -200,6 +220,49 @@ fn refused_prepared_or_durable_output_never_releases_the_next_generation() -> Te
         }
         assert!(publisher.root(&slot(&options, 2)?).is_none());
     }
+    Ok(())
+}
+
+#[test]
+fn terminal_output_refusal_never_returns_a_consumable_capture_receipt() -> TestResult {
+    let directory = Directory::new("history-finish-output")?;
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let mut options = options(
+        &directory.0.join("archive"),
+        listener.local_addr()?,
+        "10",
+        "no",
+    )?;
+    durable(&mut options);
+    let (server, clock) = serve(listener, vec![response()], NO_STALL);
+    let mut out = RefusingSink {
+        kind: "finish",
+        bytes: Vec::new(),
+    };
+    assert!(matches!(
+        capture_receipt_with(&options, &mut out, || &clock),
+        Err("ERR-CAPTURE-RECONNECT-OUTPUT-001")
+    ));
+    assert_eq!(joined(server)?, 1);
+    let text = String::from_utf8(out.bytes)?;
+    assert!(!text.contains("\"kind\":\"finish\""));
+    let expected = pin(text
+        .lines()
+        .find(|row| row.contains("\"kind\":\"history_durable\""))
+        .ok_or("durable pin before refused terminal output")?)?;
+    let publisher = LocalRootPublisher::open(&options.root, storage_limits(&options))?;
+    let history = VerifiedReconnectHistory::load(
+        &publisher,
+        expected,
+        limits(&options),
+        &NeverCancel,
+        &mut WorkBudget::new(1_000_000_000_000),
+    )?;
+    assert_eq!(history.boundaries().len(), 1);
+    assert_eq!(
+        history.boundaries()[0].outcome(),
+        BoundaryOutcome::NativeComplete
+    );
     Ok(())
 }
 
@@ -290,7 +353,16 @@ fn original_damage_after_durable_output_prevents_reconnect_and_preserves_pending
         bytes: Vec::new(),
         damaged: false,
     };
-    assert_eq!(capture_with(&options, &mut out, || &clock), Ok(false));
+    let receipt = capture_receipt_with(&options, &mut out, || &clock)?;
+    assert!(!receipt.request_satisfied);
+    assert!(!receipt.terminal_observed);
+    assert_eq!(receipt.settled_history(), None);
+    let (pending, published) = receipt.pending_history.ok_or("pending typed history")?;
+    assert!(published);
+    assert_eq!(receipt.history_pin, Some(pending));
+    assert_eq!(receipt.boundaries.len(), 1);
+    assert!(!receipt.boundaries[0].released);
+    assert_eq!(receipt.boundaries[0].pin, pending);
     assert_eq!(joined(server)?, 1);
     assert!(out.damaged);
     let text = String::from_utf8(out.bytes)?;
@@ -316,7 +388,13 @@ fn exhausted_history_allowance_refuses_before_tcp_and_cannot_refill_on_a_new_slo
     options.history_work = Some(1);
     options.approve = Some(options.approval());
     let mut out = Vec::new();
-    assert_eq!(capture(&options, &mut out), Ok(false));
+    let receipt = capture_receipt(&options, &mut out)?;
+    assert!(!receipt.request_satisfied);
+    assert!(!receipt.terminal_observed);
+    assert_eq!(receipt.history_pin, None);
+    assert_eq!(receipt.settled_history(), None);
+    assert_eq!(receipt.connections_started, 0);
+    assert!(receipt.boundaries.is_empty());
     assert!(matches!(listener.accept(), Err(e) if e.kind() == io::ErrorKind::WouldBlock));
     let text = String::from_utf8(out)?;
     assert!(text.contains("\"connect_attempts\":0"));
@@ -340,7 +418,14 @@ fn requested_frame_stop_keeps_current_prefix_separate_from_ended_connection_hist
     durable(&mut options);
     let (server, clock) = serve(listener, vec![response(), response()], NO_STALL);
     let mut out = Vec::new();
-    assert_eq!(capture_with(&options, &mut out, || &clock), Ok(true));
+    let receipt = capture_receipt_with(&options, &mut out, || &clock)?;
+    assert!(receipt.request_satisfied);
+    assert!(!receipt.terminal_observed);
+    assert_eq!(receipt.history_pin, None);
+    assert_eq!(receipt.settled_history(), None);
+    assert_eq!(receipt.frames_taken, 1);
+    assert_eq!(receipt.prefixes.len(), 1);
+    assert!(receipt.prefixes[0].pin.bytes > 0);
     assert_eq!(joined(server)?, 1);
     let text = String::from_utf8(out)?;
     assert!(!text.contains("\"kind\":\"history_prepared\""));
@@ -425,13 +510,20 @@ fn early_eof_or_exhausted_slots_leave_a_frame_shortfall_and_recoverable_history(
             // Keep another response available: the frame target must NOT authorize its GET.
             let (server, clock) = serve(
                 listener,
-                vec![if truncate { truncated() } else { response() }, response(), response()],
+                vec![
+                    if truncate { truncated() } else { response() },
+                    response(),
+                    response(),
+                ],
                 NO_STALL,
             );
             let mut out = Vec::new();
-            let result = capture_with(&options, &mut out, || &clock);
+            let receipt = capture_receipt_with(&options, &mut out, || &clock)?;
             assert_eq!(joined(server)?, connections);
-            assert_eq!(result, Ok(false));
+            assert!(!receipt.request_satisfied);
+            assert!(receipt.terminal_observed);
+            assert_eq!(receipt.error_code, Some("ERR-CAPTURE-RECONNECT-LIMIT-001"));
+            assert_eq!(receipt.settled_history().is_some(), history_enabled);
             let text = String::from_utf8(out)?;
             let finish = text.lines().last().ok_or("terminal row")?;
             assert!(finish.contains("\"kind\":\"finish\""));
@@ -460,6 +552,7 @@ fn early_eof_or_exhausted_slots_leave_a_frame_shortfall_and_recoverable_history(
                     .collect::<Result<_, _>>()?;
                 assert_eq!(saved.len(), connections);
                 let expected = *saved.last().ok_or("last durable history")?;
+                assert_eq!(receipt.settled_history(), Some(expected));
                 let publisher = LocalRootPublisher::open(&options.root, storage_limits(&options))?;
                 let history = VerifiedReconnectHistory::load(
                     &publisher,
@@ -497,9 +590,13 @@ fn exact_target_stops_without_consuming_another_generation() -> TestResult {
         }
         let (server, clock) = serve(listener, vec![response(); 3], NO_STALL);
         let mut out = Vec::new();
-        let result = capture_with(&options, &mut out, || &clock);
+        let receipt = capture_receipt_with(&options, &mut out, || &clock)?;
         assert_eq!(joined(server)?, 2);
-        assert_eq!(result, Ok(true));
+        assert!(receipt.request_satisfied);
+        assert!(!receipt.terminal_observed);
+        assert_eq!(receipt.settled_history(), None);
+        assert_eq!(receipt.connections_started, 2);
+        assert_eq!(receipt.prefixes.len(), 2);
         let text = String::from_utf8(out)?;
         let finish = text.lines().last().ok_or("terminal row")?;
         assert!(finish.contains("\"status\":\"requested_count_reached\""));
@@ -513,6 +610,19 @@ fn exact_target_stops_without_consuming_another_generation() -> TestResult {
         assert_eq!(text.matches("\"kind\":\"connected\"").count(), 2);
         if history_enabled {
             // Only the first connection ended; the current prefix is not a completion root.
+            assert_eq!(
+                receipt
+                    .history_pin
+                    .ok_or("prior typed history")?
+                    .connections,
+                1
+            );
+            assert_eq!(receipt.boundaries.len(), 1);
+            assert!(receipt.boundaries[0].released);
+            assert_ne!(
+                receipt.prefixes[1].pin,
+                receipt.boundaries[0].observation.prefix()
+            );
             assert_eq!(text.matches("\"kind\":\"history_durable\"").count(), 1);
             assert!(finish.contains("\"current_prefix_separate\":true"));
         }
@@ -540,9 +650,19 @@ fn unmet_target_never_replaces_a_native_refusal_or_enables_a_retry() -> TestResu
         let denied = b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n".to_vec();
         let (server, clock) = serve(listener, vec![denied, response()], NO_STALL);
         let mut out = Vec::new();
-        let result = capture_with(&options, &mut out, || &clock);
+        let receipt = capture_receipt_with(&options, &mut out, || &clock)?;
         assert_eq!(joined(server)?, 1);
-        assert_eq!(result, Ok(false));
+        assert!(!receipt.request_satisfied);
+        assert!(receipt.terminal_observed);
+        assert_eq!(receipt.settled_history().is_some(), history_enabled);
+        if history_enabled {
+            assert_eq!(receipt.boundaries.len(), 1);
+            assert_eq!(
+                receipt.boundaries[0].observation.outcome(),
+                BoundaryOutcome::SourceFailed
+            );
+            assert_eq!(receipt.settled_history(), receipt.history_pin);
+        }
         let text = String::from_utf8(out)?;
         let finish = text.lines().last().ok_or("terminal row")?;
         assert!(finish.contains("NotRetryable"));

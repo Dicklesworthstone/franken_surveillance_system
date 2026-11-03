@@ -104,11 +104,22 @@ check_md5() { # path expected-md5 label
   if [ ! -s "$1" ]; then warn "$3 missing ($1)"; return; fi
   if [ "$(md5 -q "$1")" = "$2" ]; then pass "$3 md5 $2"; else fail "$3 md5 $(md5 -q "$1") != $2"; fi
 }
-# These are the digests of the armed bytes. Rebuilding the capsule invalidates all three, so the
-# responder picks the digest up from the file (mitm_up) while this gate has to be re-pinned.
-check_md5 "$CAP_DIR/wuv2/upgrade/HL_CAM4/firmware/4.52.17.31.tar" ef2d38a3ba07f05b2557cddd9fd21923 "capsule .31 (published)"
-check_md5 "$CAP_DIR/wuv2/upgrade/HL_CAM4/firmware/4.52.17.32.tar" ef2d38a3ba07f05b2557cddd9fd21923 "capsule .32 (armed)"
-check_md5 "$CAP_DIR/wuv2/upgrade/HL_CAM4/firmware/4.52.17.33.tar" ef2d38a3ba07f05b2557cddd9fd21923 "capsule .33 (mirror of .32)"
+# The Oct-28 18:26 /tmp capsule (c642a2ca…) died with /tmp and is not byte-reproducible (its
+# exact render set was never recorded; six installer revisions × port/hostname/sensor combos
+# were tried 2026-11-03 and none match). The canonical armed capsule is now the REPRODUCIBLE
+# build from committed inputs (HEAD upgraderun.sh, committed busybox, committed tailnet image
+# pin 033eb364…, HOST=192.168.4.160 PORT=443 IMG_PORT=8080 IMAGE=img.bin SENSOR=os04d10):
+#   build_ota_tar.py --script deliverables/scripts/upgraderun.sh \
+#     --file deliverables/firmware/busybox-mipsel-static:busybox \
+#     --render HOST=192.168.4.160 --render PORT=443 --render IMG_PORT=8080 \
+#     --render IMAGE=img.bin \
+#     --render SHA256=033eb3643fdb2d2b26112c92d594a4366f23e073114c85b6a528407164f48e21 \
+#     --render SENSOR=os04d10 --no-aes
+CAPSULE_MD5="${CAPSULE_MD5:-ef2d38a3ba07f05b2557cddd9fd21923}"
+check_md5 "$CAP_DIR/wuv2/upgrade/HL_CAM4/firmware/4.52.17.32.tar" "$CAPSULE_MD5" "capsule .32 (armed)"
+check_md5 "$CAP_DIR/wuv2/upgrade/HL_CAM4/firmware/4.52.17.33.tar" "$CAPSULE_MD5" "capsule .33 (mirror of .32)"
+
+
 
 SERVED="$CAP_DIR/$CAP_PATH"
 if [ ! -s "$SERVED" ]; then

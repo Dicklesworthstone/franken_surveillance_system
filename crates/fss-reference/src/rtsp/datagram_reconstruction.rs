@@ -19,6 +19,8 @@ use fss_publication::{LocalRootPublisher, PublishCancellation, PublishCutPoint};
 
 /// Cold source-verified HEVC transport reconstruction without invented picture or EOF claims.
 pub mod hevc;
+/// Native JPEG reconstruction and exact source provenance from a verified complete prefix.
+pub mod jpeg;
 mod profile;
 /// Source-verified recording reconstruction with explicit per-picture media timing.
 pub mod recording;

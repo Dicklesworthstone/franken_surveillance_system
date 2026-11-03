@@ -1,0 +1,65 @@
+{
+  "schema": "fss.stream_capacity_reference_contract.v1",
+  "id": "ALG-MCF-001",
+  "name": "min_cost_flow",
+  "bead": "fss-x4a.23.69.3",
+  "mode": "stream_capacity_composition",
+  "status": "implemented",
+  "qualification": "not_qualified: bounded native composition and independent integral-flow oracle, not live throughput, camera transport or INT-FNX-001 qualification",
+  "implementationId": "fss-graph-algorithms:alg-mcf-001:stream-capacity-composition:v1",
+  "tieBreak": "maximum total delivery then minimum total cost; existing canonical residual and heap order over typed stable endpoint identities",
+  "tieBreakPolicyId": "tie:typed-source-node-link-camera-recorder-sink:stable-id:existing-flow-and-mcf-order:v1",
+  "policyId": "capacity-policy:declared-directed-links:integer-splittable-routing:maximum-delivery-then-minimum-cost:all-demands-retained:explicit-node-link-failures:no-fairness-or-priority:v1",
+  "complexityBoundId": "bound:alg-mcf-001:typed-capacity-reduction-plus-certified-maxflow-and-mincost-plus-linear-certificate:v1",
+  "complexityWitness": "input bytes, preparation steps, both certified solver operation totals and final certificate checks",
+  "outputSizeWitness": "all camera/link/recorder rows, failed identities, typed cut/partition and both complete certified flow outputs",
+  "exactness": "bounded_exact",
+  "inputDomain": "fss.graph.stream_capacity_input.v1",
+  "outputDomain": "fss.graph.stream_capacity_output.v1",
+  "decisionDomain": "fss.graph.stream_capacity_decision_path.v1",
+  "objective": "maximize aggregate delivered camera rate, then minimize total declared nonnegative link cost; every original demand remains present under failures",
+  "limits": {
+    "infrastructureNodes": 256,
+    "links": 1024,
+    "cameras": 128,
+    "recorders": 32,
+    "identityBytes": 256,
+    "unitBytes": 64,
+    "workUnits": 50000000,
+    "outputEntries": 32768
+  },
+  "reduction": "type-distinct source/node/link/camera/recorder/sink vertices; named links are split through private vertices to preserve parallel physical links in simple solver projections; failed components retain declarations with zero effective capacity",
+  "numericPolicy": "explicit common integer rate unit and separate cost per rate unit; positive capacities/demands, nonnegative costs; checked u64 totals and checked signed i128 cost arithmetic; no wrap, saturation or approximation",
+  "constraints": [
+    "all endpoints and failures name known declarations",
+    "each camera sensor has exactly one demand; failed attachments retain that demand",
+    "aggregate integral flow may split across routes",
+    "maximum-flow and min-cost-flow owners share the composition operation and output allowance",
+    "final cost-optimal flow satisfies conservation, every demand/recorder/link limit and the same minimum cut",
+    "complete rows include unused and failed components; both full certified solver runs are bound",
+    "cancellation and exhaustion return no answer or witness"
+  ],
+  "counterVariables": "n and m are the typed reduced graph node/arc counts; D is the total requested rate; S=n+m+1",
+  "dominantCounterBounds": {
+    "input_bytes": "4096*S",
+    "preparation_steps": "128*S",
+    "max_flow_operations": "sum of unchanged flow::bound(n,m) operation rows",
+    "min_cost_flow_operations": "sum of unchanged min_cost_flow::bound(n,m,D) operation rows",
+    "certificate_checks": "64*S",
+    "output_entries": "64+8*S"
+  },
+  "compatibility": "additive ALG-MCF-001 mode; uncancelled successful legacy solver identities, counters, outputs and witness bytes are unchanged; cancellation has an explicit refusal identity",
+  "noClaims": [
+    "measured link or recorder throughput",
+    "current camera health or coverage",
+    "individual session multipath support",
+    "fairness or priority of partial camera allocations",
+    "spare capacity beyond the declared demand",
+    "routing changes, stream activation or effect authority",
+    "INT-FNX-001 production qualification"
+  ],
+  "sources": [
+    "crates/fss-graph-algorithms/src/stream_capacity.rs",
+    "crates/fss-graph-algorithms/tests/stream_capacity_contract.rs"
+  ]
+}

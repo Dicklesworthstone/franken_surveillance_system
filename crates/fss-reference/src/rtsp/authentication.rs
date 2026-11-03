@@ -2,6 +2,7 @@
 //! Bounded Digest authentication for explicitly authorized RTSP credential owners.
 //! No I/O, credential discovery, automatic downgrade, or source-authenticity claim.
 
+#[path = "authentication/md5.rs"]
 mod md5;
 
 use fss_core::ContentDigest;

@@ -86,9 +86,9 @@ A complete final Renew response is retained under its own `renewed` identity, in
 
 Capture reports `maximum_renewals`, `completed_renewals`, `retained_renewal_intents` and `retained_renewal_outcomes`, plus hash-only `renewal_intent.N` and `renewal_outcome.N` identities/roots. Confirmed lease responses remain historical vendor claims: they do not prove a subscription is active now, complete event coverage or physical absence. Known durable handles survive later refusal and output failure. Each metadata batch continues to retain its original Create source; renewal custody uses separate records without changing existing batch recipe bytes.
 
-The result reports every definitely retained `batch.N.import_identity` and `batch.N.publication_root`, the stop reason and observed cleanup state. It also reports separate `create_intent`, `created_subscription`, `unsubscribe_intent`, `unsubscribe_outcome` and `unsubscribe` identities/roots when those publications commit. Before any Create connection admission, the command commits the intent; before the first poll, it commits the exact Create response, scoped endpoint reference and original intent closure. Before Unsubscribe, it commits an exact cleanup intent; every complete final cleanup response reaches raw custody before interpretation. A complete successful Unsubscribe response can additionally receive its existing terminal receipt. Each live metadata batch retains its original Create source as before, so existing recipe bytes stay compatible.
+The result reports every definitely retained `batch.N.import_identity` and `batch.N.publication_root`, the stop reason and observed cleanup state. It also reports separate `create_intent`, `create_outcome`, `created_subscription`, `unsubscribe_intent`, `unsubscribe_outcome` and `unsubscribe` identities/roots when those publications commit. Before any Create connection admission, the command commits the intent. Every admitted complete final Create response reaches raw custody before HTTP/SOAP, reply-correlation, endpoint or later clock checks; only a usable scoped response can produce the successful Created marker required before the first poll. Before Unsubscribe, it commits an exact cleanup intent; every complete final cleanup response likewise reaches raw custody before interpretation. A complete successful Unsubscribe response can additionally receive its existing terminal receipt. Each live metadata batch retains its original Create source as before, so existing recipe bytes stay compatible.
 
-The command reports `subscription_source_received` and `subscription_source_retained` separately. A Create response can now be durable even when no polls succeed. A storage refusal after a commit preserves the receipt and stops additional polling; independently authorized network cleanup may still run. A genuine successful cleanup response remains an observation even if terminal storage later refuses, and the command reports incomplete custody with a nonzero exit. Missing cleanup correlation prevents a successful-cleanup observation. Late cancellation, deadline, request retirement and stdout failure preserve known hash-only handles.
+The command reports `subscription_source_received` and `subscription_source_retained` separately. A Create response can be durable even when it is malformed, refused or no polls succeed. Raw custody covers the exact transfer-decoded final body and HTTP/status/content-type/authentication/timing observations, not every HTTP wire header. Raw custody alone never permits polling, cleanup or another Create. A storage refusal after a commit preserves the receipt and stops additional polling; cleanup requires a usable Created record and its separate current authority. A genuine successful cleanup response remains an observation even if terminal storage later refuses, and the command reports incomplete custody with a nonzero exit. Missing cleanup correlation prevents a successful-cleanup observation. Late cancellation, deadline, request retirement and stdout failure preserve known hash-only handles.
 
 Capture, import, inspection and control commands attach a borrowed live-owner admission gate to their replay I/O context. Cancellation, deadline, capability and budget refusals are checked at cooperative replay and publication boundaries, including direct I/O-authority validation. The first refusal is sticky; no later successful callback revives the context. Known durable receipts survive post-commit refusal, while optional private values are suppressed. This does not preempt an operating-system syscall already in progress or add a check inside every internal filesystem call.
 
@@ -113,12 +113,52 @@ Select the `created` record's exact identity/root from the list, or use the orig
 | Retained record | What is known | Recovery meaning |
 |---|---|---|
 | `intent` | The original request was durably prepared before dispatch admission. | Dispatch and result can remain unknown after a crash. Never automatically replay Create from this record. |
+| `create-outcome` | The complete final Create body, HTTP observations and exact original intent are in verified custody, even if the response was unusable. | Inspect `scoped_response_observed`. Explicit local recovery can reconstruct a missing Created marker from a usable response; it never sends another Create. |
 | `created` | The exact scoped Create response and parent intent are in verified custody. | The subscription may have expired or been removed. Explicit cleanup can use its retained endpoint under fresh authority. |
 | `unsubscribed` | A complete explicitly correlated Unsubscribe success and exact parent closure were retained. | This proves a historical response, not current device state or future absence. |
 | `renew-intent` | A finite Renew request and original Create closure were committed before dispatch admission. | Dispatch and result can remain unknown after a crash. Never replay Renew automatically from this record. |
 | `renewed` | A complete Renew response and exact parent intent were retained, even when the response was unusable. | Inspect `lease_confirmed`; a retained response never grants another Renew or proves current remote state. |
 | `unsubscribe-intent` | The exact cleanup request and original Created closure were committed before dispatch. | A lost response leaves the attempt unresolved. Inspect current history and obtain fresh owner approval before another attempt. |
 | `unsubscribe-outcome` | A complete final cleanup body and its intent were retained, including refused or malformed replies. | Inspect `success_observed`. A verified success prevents redispatch even if the separate `unsubscribed` marker was interrupted. |
+
+### Recover an interrupted Created marker
+
+When capture retained a `create-outcome` but stopped before publishing `created`, inspect
+the exact raw identity and root from the catalog or capture receipt:
+
+```sh
+target/debug/fss-onvif-metadata control inspect \
+  --root /srv/fss/site --site site:home \
+  --kind create-outcome --control-id "$CREATE_OUTCOME_ID" \
+  --expected-root "$CREATE_OUTCOME_ROOT"
+
+target/debug/fss-onvif-metadata control recover-created \
+  --root /srv/fss/site --site site:home \
+  --control-id "$CREATE_OUTCOME_ID" --expected-root "$CREATE_OUTCOME_ROOT" \
+  --owner-authorized yes --recover yes
+```
+
+Recovery requires `scoped_response_observed=true`: a completion time, HTTP 200, SOAP
+content type, an explicit matching RelatesTo, valid Create SOAP and an endpoint inside
+the original approved peer/origin/subtree. It independently reopens the exact raw
+response, original intent, manifests, ledger and current deletion/access state before
+publishing the unchanged Created v1 record. Missing, corrupt, deleted, uncorrelated or
+unscoped evidence refuses. A repeated exact recovery returns the same identity/root.
+It requires no credentials, opens no network connection and does not change the capture
+operation fence. Existing Created records continue to work without a raw-outcome retrofit.
+
+The recovered `identity` and `publication_root` can then be used with `control inspect
+--kind created`; review its current `cleanup_control_witness` and obtain separate fresh
+approval before cleanup. A post-commit refusal returns `phase=recovered_with_error`,
+preserves those durable handles and exits nonzero. Output failure uses the same hash-only
+stderr fallback. Neither a recovered marker nor a usable historical reply establishes
+that the remote subscription is active now.
+
+If the raw response is unusable, reconcile with the owner/device. If transport stopped
+before an admitted complete response, only the original intent may exist and the remote
+result remains unknown. Neither case grants an automatic Create retry.
+
+### Review renewal and cleanup custody
 
 Use `control inspect --kind renew-intent` or `control inspect --kind renewed` with the exact identity/root returned by capture or the catalog. Renewal outcomes name their original subscription and renewal intent separately. Inspection does not reconnect, renew or create a subscription. If a renewal result is unresolved, fresh explicitly approved `control unsubscribe` can still target the original retained Created record; the command never replays the unresolved renewal.
 
@@ -383,7 +423,7 @@ response. Metadata deleted as another import's derivative is likewise denied and
 rediscovered from its old publication batch. Deletion completion remains crash-resumable through
 the existing owner.
 
-The parent intent/Created/Renew-intent/Renewed/Unsubscribe closure follows the existing derivative rules: selecting an intent reaches its dependent observations; selecting a later observation does not absorb its ancestors. Renewal intents retain the original Create closure, and renewal outcomes additionally retain the exact renewal intent and complete response. Active holds and shared custody remain authoritative, and a different owner binding cannot resurrect tombstoned control bytes.
+The parent intent/raw Create/Created/Renew-intent/Renewed/Unsubscribe closure follows the existing derivative rules: selecting an intent reaches its dependent observations; selecting a later observation does not absorb its ancestors. Raw Create outcomes retain the original intent and complete response. A recovered Created marker keeps its original v1 closure; it does not add a raw-outcome parent or rewrite old bytes. Shared source objects remain protected by their remaining owners. Renewal intents retain the original Create closure, and renewal outcomes additionally retain the exact renewal intent and complete response. Active holds and shared custody remain authoritative, and a different owner binding cannot resurrect tombstoned control bytes.
 
 This uses local filesystem unlink and the existing deletion-plan scope; it does not send Unsubscribe or erase device-side subscriptions. Original input files,
 external exports, device storage and unrecorded remote copies remain outside that scope.
@@ -393,6 +433,11 @@ external exports, device storage and unrecorded remote copies remain outside tha
 Live captures use the separate `fss.onvif_vendor_event_pullpoint.v1` custody domain and the frozen event-only projection; the analytics-v2 file-import default is unchanged. The live recipe additionally binds the capture approval, event/subscription route digests, poll occurrence, both request IDs and ordered monotonic Create/poll intervals. Cold verification validates reply correlations when present and the fourth source object's exact digest. The standalone successful Create/Unsubscribe receipts require explicit reply correlations. Renewal adds `fss.onvif_pullpoint_renew_intent.v1` and `fss.onvif_pullpoint_renewed.v1`; cold verification reproduces whether the retained response supports a lease without discarding unusable response bytes. Existing file, live-batch and Create/Unsubscribe encodings receive no new bytes.
 
 Camera labels and timestamps always remain vendor-claimed cognition. Retention proves which bytes were supplied under the operator's attribution; it does not authenticate the camera or establish physical truth, coverage, absence, identity or permission to send alerts or move a camera.
+
+Raw Create responses use the additive `fss.onvif_pullpoint_create_outcome.v1` domain and
+the existing control parser generation. They preserve unusable complete replies and
+support explicit local reconstruction of the existing Created encoding. The new format
+does not alter old successful-control or metadata-batch bytes.
 
 Exact retries revalidate immutable custody. A valid durable root that was interrupted before ledger linkage may complete that linkage. Missing or corrupted previously published source, projection or root custody is refused rather than repaired by import. Inspect commands open the deployment's existing exclusive owner and may finish its normal recovery; they are not a forensic no-write mount.
 
@@ -415,6 +460,7 @@ cargo test --locked -p fss-reference \
   --test onvif_pullpoint_capture_contract \
   --test onvif_metadata_custody \
   --test onvif_control_custody \
+  --test onvif_create_outcome_custody \
   --test onvif_control_termination \
   --test onvif_control_deletion \
   --test onvif_capture_operation \

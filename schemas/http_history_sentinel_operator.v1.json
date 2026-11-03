@@ -1,0 +1,766 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/http_history_sentinel_operator.v1.json",
+  "title": "Exact HTTP history trained-detector operator plan and completed result",
+  "description": "Strict public CLI projection. Plan preview is pure and authorizes no I/O. Approved native execution validates complete generation/source/model identity, current permission, physical path separation, cross-field reservation arithmetic and full bounded output. The completed report references the native HTTP history wrapper; retained replay commands grant no event or effect permission. Native owners enforce UTF-8 byte ceilings and exact recipes beyond JSON shape.",
+  "type": "object",
+  "required": [
+    "format",
+    "kind"
+  ],
+  "properties": {
+    "format": {
+      "const": "fss.http_history_sentinel_operator.v1"
+    },
+    "kind": {
+      "enum": [
+        "plan",
+        "completed"
+      ]
+    }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "not": {
+        "const": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    },
+    "identity": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_.:-]+$"
+    },
+    "timestamp_ns": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 39,
+      "pattern": "^(0|[1-9][0-9]*)$",
+      "description": "Canonical nonnegative signed-128-bit nanoseconds. Native admission checks the exact integer ceiling, capture interval and receive-time ordering."
+    },
+    "backend": {
+      "enum": [
+        "optimized-cpu.v1",
+        "scalar-reference.v1"
+      ]
+    },
+    "history": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "session",
+        "root",
+        "connections"
+      ],
+      "properties": {
+        "session": {
+          "$ref": "#/$defs/digest"
+        },
+        "root": {
+          "$ref": "#/$defs/digest"
+        },
+        "connections": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 32
+        }
+      }
+    },
+    "path": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 4096,
+      "description": "Absolute non-root path without dot components. Native pure admission checks path syntax and UTF-8 byte bounds; approved execution checks current physical aliases, overlap and object kind."
+    },
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "generation",
+        "sensor_id",
+        "stream_id",
+        "receive_time_ns",
+        "capture_start_ns",
+        "capture_uncertainty_ns",
+        "assumed_fps"
+      ],
+      "properties": {
+        "generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "sensor_id": {
+          "$ref": "#/$defs/identity"
+        },
+        "stream_id": {
+          "$ref": "#/$defs/identity"
+        },
+        "receive_time_ns": {
+          "$ref": "#/$defs/timestamp_ns"
+        },
+        "capture_start_ns": {
+          "$ref": "#/$defs/timestamp_ns"
+        },
+        "capture_uncertainty_ns": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "assumed_fps": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        }
+      }
+    },
+    "sampling": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "motion_independent",
+        "allocation",
+        "every_frames",
+        "burst_frames",
+        "max_inferences"
+      ],
+      "properties": {
+        "motion_independent": {
+          "const": true
+        },
+        "allocation": {
+          "const": "connection_round_robin_whole_bursts"
+        },
+        "every_frames": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65536
+        },
+        "burst_frames": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8
+        },
+        "max_inferences": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2048
+        }
+      }
+    },
+    "reserved_whole_history": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "connections",
+        "maximum_frames",
+        "history_verification_bytes",
+        "import_original_bytes",
+        "import_media_bytes",
+        "destination_verification_bytes",
+        "inferences",
+        "execution_macs",
+        "output_bytes",
+        "source_chunk_bytes",
+        "pixel_samples"
+      ],
+      "properties": {
+        "connections": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 32
+        },
+        "maximum_frames": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 131072
+        },
+        "history_verification_bytes": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 1073741824
+        },
+        "import_original_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 536870912
+        },
+        "import_media_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2147483648
+        },
+        "destination_verification_bytes": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 2684354560
+        },
+        "inferences": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2048
+        },
+        "execution_macs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "output_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1073741824
+        },
+        "source_chunk_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 536870912
+        },
+        "pixel_samples": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 68719476736
+        }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "maximum_frames_per_generation",
+        "maximum_bytes_per_generation",
+        "maximum_history_reads",
+        "maximum_history_bytes",
+        "maximum_archive_read_bytes",
+        "maximum_archive_operations",
+        "source_chunk_bytes",
+        "pixel_samples",
+        "per_inference_macs",
+        "per_inference_tensor_bytes",
+        "per_inference_output_bytes",
+        "sentinel_report_bytes",
+        "native_limits_digest",
+        "maximum_report_bytes",
+        "maximum_work",
+        "maximum_framing_work",
+        "timeout_ms",
+        "jpeg_frame_pixels",
+        "avc_macroblocks",
+        "hevc_luma_samples"
+      ],
+      "properties": {
+        "maximum_frames_per_generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4096
+        },
+        "maximum_bytes_per_generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 67108864
+        },
+        "maximum_history_reads": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8192
+        },
+        "maximum_history_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 536870912
+        },
+        "maximum_archive_read_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 68719476736
+        },
+        "maximum_archive_operations": {
+          "const": 1000000
+        },
+        "source_chunk_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 536870912
+        },
+        "pixel_samples": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 68719476736
+        },
+        "per_inference_macs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "per_inference_tensor_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 268435456
+        },
+        "per_inference_output_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16777216
+        },
+        "sentinel_report_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16777216
+        },
+        "native_limits_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "maximum_report_bytes": {
+          "type": "integer",
+          "minimum": 1024,
+          "maximum": 33619968
+        },
+        "maximum_work": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000000000000
+        },
+        "maximum_framing_work": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000000000000
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 600000
+        },
+        "jpeg_frame_pixels": {
+          "type": "integer",
+          "minimum": 256,
+          "maximum": 4194304
+        },
+        "avc_macroblocks": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 36864
+        },
+        "hevc_luma_samples": {
+          "type": "integer",
+          "minimum": 256,
+          "maximum": 9437184
+        }
+      }
+    },
+    "plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "format",
+        "kind",
+        "policy",
+        "approval_digest",
+        "plan_digest",
+        "archive",
+        "root",
+        "site",
+        "principal",
+        "history_pin",
+        "bindings",
+        "package",
+        "package_digest",
+        "backend",
+        "threads",
+        "minimum_score_ppm",
+        "retain_analysis",
+        "sampling",
+        "reserved_whole_history",
+        "limits",
+        "capture_time_label",
+        "writes",
+        "approved_writes",
+        "network",
+        "event_publication_authorized",
+        "capture_resume_authorized",
+        "absence_certifiable",
+        "interpretation",
+        "backend_generation",
+        "frame_pixels"
+      ],
+      "properties": {
+        "format": {
+          "const": "fss.http_history_sentinel_operator.v1"
+        },
+        "kind": {
+          "const": "plan"
+        },
+        "policy": {
+          "const": "exact-http-history:explicit-generation-capture-bindings:owner-original-read:source-closed-retention:pinned-local-native-rgb-package:motion-independent:round-robin-whole-bursts:shared-history-pools:optional-cognition-retention:no-network:no-event:no-continuity:no-absence:v1"
+        },
+        "approval_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "plan_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "archive": {
+          "$ref": "#/$defs/path"
+        },
+        "root": {
+          "$ref": "#/$defs/path"
+        },
+        "site": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "principal": {
+          "$ref": "#/$defs/identity"
+        },
+        "history_pin": {
+          "$ref": "#/$defs/history"
+        },
+        "bindings": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": {
+            "$ref": "#/$defs/binding"
+          }
+        },
+        "package": {
+          "$ref": "#/$defs/path"
+        },
+        "package_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "backend": {
+          "$ref": "#/$defs/backend"
+        },
+        "threads": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 64
+        },
+        "minimum_score_ppm": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1000000
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "retain_analysis": {
+          "type": "boolean"
+        },
+        "sampling": {
+          "$ref": "#/$defs/sampling"
+        },
+        "reserved_whole_history": {
+          "$ref": "#/$defs/reserved_whole_history"
+        },
+        "limits": {
+          "$ref": "#/$defs/limits"
+        },
+        "capture_time_label": {
+          "const": "operator_assumptions_per_generation"
+        },
+        "writes": {
+          "const": "none"
+        },
+        "approved_writes": {
+          "enum": [
+            "source_closed_imports_and_native_sentinel_cognition",
+            "source_closed_recording_imports"
+          ]
+        },
+        "network": {
+          "const": "none"
+        },
+        "event_publication_authorized": {
+          "const": false
+        },
+        "capture_resume_authorized": {
+          "const": false
+        },
+        "absence_certifiable": {
+          "const": false
+        },
+        "interpretation": {
+          "enum": [
+            "gray",
+            "ycbcr"
+          ]
+        },
+        "backend_generation": {
+          "$ref": "#/$defs/digest"
+        },
+        "frame_pixels": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 256,
+              "maximum": 9437184
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "retain_analysis": {
+                "const": true
+              }
+            },
+            "required": [
+              "retain_analysis"
+            ]
+          },
+          "then": {
+            "properties": {
+              "approved_writes": {
+                "const": "source_closed_imports_and_native_sentinel_cognition"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "retain_analysis": {
+                "const": false
+              }
+            },
+            "required": [
+              "retain_analysis"
+            ]
+          },
+          "then": {
+            "properties": {
+              "approved_writes": {
+                "const": "source_closed_recording_imports"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "work": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "used",
+        "remaining"
+      ],
+      "properties": {
+        "used": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000000000000
+        },
+        "remaining": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000000000000
+        }
+      }
+    },
+    "archive_io": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "startup_read_bytes",
+        "startup_operations",
+        "total_read_bytes",
+        "total_operations",
+        "maximum_read_bytes",
+        "maximum_operations"
+      ],
+      "properties": {
+        "startup_read_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 68719476736
+        },
+        "startup_operations": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000
+        },
+        "total_read_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 68719476736
+        },
+        "total_operations": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000
+        },
+        "maximum_read_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 68719476736
+        },
+        "maximum_operations": {
+          "const": 1000000
+        }
+      }
+    },
+    "rerun": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "connection",
+        "generation",
+        "command",
+        "analysis_retained",
+        "event_publication_authorized"
+      ],
+      "properties": {
+        "connection": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 32
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "command": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 8192,
+              "pattern": "^fss-infer sentinel-replay "
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "analysis_retained": {
+          "type": "boolean"
+        },
+        "event_publication_authorized": {
+          "const": false
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "analysis_retained": {
+                "const": true
+              }
+            },
+            "required": [
+              "analysis_retained"
+            ]
+          },
+          "then": {
+            "properties": {
+              "command": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 8192,
+                "pattern": "^fss-infer sentinel-replay "
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "analysis_retained": {
+                "const": false
+              }
+            },
+            "required": [
+              "analysis_retained"
+            ]
+          },
+          "then": {
+            "properties": {
+              "command": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "completed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "format",
+        "kind",
+        "approval_digest",
+        "report",
+        "native_sentinel_reruns",
+        "history_import_model_work",
+        "framing_work",
+        "model_read_bytes",
+        "archive_io",
+        "event_publication_authorized",
+        "capture_resume_authorized"
+      ],
+      "properties": {
+        "format": {
+          "const": "fss.http_history_sentinel_operator.v1"
+        },
+        "kind": {
+          "const": "completed"
+        },
+        "approval_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "report": {
+          "$ref": "http_history_sentinel_report.v1.json"
+        },
+        "native_sentinel_reruns": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": {
+            "$ref": "#/$defs/rerun"
+          }
+        },
+        "history_import_model_work": {
+          "$ref": "#/$defs/work"
+        },
+        "framing_work": {
+          "$ref": "#/$defs/work"
+        },
+        "model_read_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 33554432
+        },
+        "archive_io": {
+          "$ref": "#/$defs/archive_io"
+        },
+        "event_publication_authorized": {
+          "const": false
+        },
+        "capture_resume_authorized": {
+          "const": false
+        }
+      }
+    }
+  },
+  "anyOf": [
+    {
+      "$ref": "#/$defs/plan"
+    },
+    {
+      "$ref": "#/$defs/completed"
+    }
+  ]
+}

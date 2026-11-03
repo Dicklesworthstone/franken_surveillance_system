@@ -1,0 +1,819 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/scene_handoffs.v1.json",
+  "title": "Complete owner-declared anonymous tracklet handoff report",
+  "description": "Read-only scene handoff analysis over caller-declared property, session, privacy, generation, clock, camera, model, calibration, evidence and transit assumptions. All input tracklets, all ordered pair dispositions, the exact implicit admitted family, explicit all-singletons and complete certified ranked prefix remain present. Handles are assertions, not authenticated custody; costs are assumptions, not probabilities; paths do not establish physical identity or grant effects. The writer refuses the whole result above its byte allowance (hard maximum 2 MiB including newline). Native checks additionally enforce cross-row membership, ordering, complete cardinalities, cost arithmetic, matching/path equivalence and certificate bindings. This schema validates their structural contract without proving those semantic relationships.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "outcome",
+    "authority",
+    "source_provenance",
+    "association_semantics",
+    "physical_identity_established",
+    "cost_semantics",
+    "temporal_semantics",
+    "input_document_digest",
+    "scope",
+    "time_unit",
+    "cost_unit",
+    "birth_cost",
+    "end_cost",
+    "tracklets",
+    "transitions",
+    "alternative_family",
+    "alternatives",
+    "requested_alternatives",
+    "displayed_prefix_complete",
+    "continuity_certificate",
+    "matching_certificate",
+    "matching_output",
+    "budget"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.scene_handoffs.v1"
+    },
+    "outcome": {
+      "const": "completed"
+    },
+    "authority": {
+      "const": "derived_cognition_no_effect_authority"
+    },
+    "source_provenance": {
+      "const": "owner_declared_handles_not_authenticated_custody"
+    },
+    "association_semantics": {
+      "const": "conditional_anonymous_hypotheses"
+    },
+    "physical_identity_established": {
+      "const": false
+    },
+    "cost_semantics": {
+      "const": "declared_integer_costs_not_probabilities"
+    },
+    "temporal_semantics": {
+      "const": "strictly_forward_robust_over_all_declared_endpoint_times"
+    },
+    "input_document_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "scope": {
+      "$ref": "#/$defs/scope"
+    },
+    "time_unit": {
+      "$ref": "#/$defs/unit"
+    },
+    "cost_unit": {
+      "$ref": "#/$defs/unit"
+    },
+    "birth_cost": {
+      "$ref": "#/$defs/u64"
+    },
+    "end_cost": {
+      "$ref": "#/$defs/u64"
+    },
+    "tracklets": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "items": {
+        "$ref": "#/$defs/tracklet"
+      },
+      "uniqueItems": true
+    },
+    "transitions": {
+      "type": "array",
+      "minItems": 0,
+      "maxItems": 992,
+      "items": {
+        "$ref": "#/$defs/disposition"
+      },
+      "uniqueItems": true
+    },
+    "alternative_family": {
+      "$ref": "#/$defs/alternative_family"
+    },
+    "alternatives": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "items": {
+        "$ref": "#/$defs/path_cover"
+      },
+      "uniqueItems": true
+    },
+    "requested_alternatives": {
+      "$ref": "#/$defs/k"
+    },
+    "displayed_prefix_complete": {
+      "type": "boolean"
+    },
+    "continuity_certificate": {
+      "$ref": "#/$defs/continuity_certificate"
+    },
+    "matching_certificate": {
+      "$ref": "#/$defs/matching_certificate"
+    },
+    "matching_output": {
+      "$ref": "#/$defs/matching_output"
+    },
+    "budget": {
+      "$ref": "#/$defs/budget"
+    }
+  },
+  "$defs": {
+    "id": {
+      "$ref": "scene_handoffs_query.v1.json#/$defs/id"
+    },
+    "unit": {
+      "$ref": "scene_handoffs_query.v1.json#/$defs/unit"
+    },
+    "u64": {
+      "$ref": "scene_handoffs_query.v1.json#/$defs/u64"
+    },
+    "scope": {
+      "$ref": "scene_handoffs_query.v1.json#/$defs/scope"
+    },
+    "tracklet": {
+      "$ref": "scene_handoffs_query.v1.json#/$defs/tracklet"
+    },
+    "transition": {
+      "$ref": "scene_handoffs_query.v1.json#/$defs/transition"
+    },
+    "sha256": {
+      "type": "string",
+      "minLength": 71,
+      "maxLength": 71,
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "ids": {
+      "type": "array",
+      "minItems": 0,
+      "maxItems": 32,
+      "items": {
+        "$ref": "#/$defs/id"
+      },
+      "uniqueItems": true
+    },
+    "members": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "items": {
+        "$ref": "#/$defs/id"
+      },
+      "uniqueItems": true
+    },
+    "k": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 32
+    },
+    "operations": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 50000000
+    },
+    "edge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "from",
+        "to",
+        "cost"
+      ],
+      "properties": {
+        "from": {
+          "$ref": "#/$defs/id"
+        },
+        "to": {
+          "$ref": "#/$defs/id"
+        },
+        "cost": {
+          "$ref": "#/$defs/u64"
+        }
+      }
+    },
+    "disposition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "from",
+        "to",
+        "declared",
+        "gap",
+        "reasons",
+        "admitted"
+      ],
+      "properties": {
+        "from": {
+          "$ref": "#/$defs/id"
+        },
+        "to": {
+          "$ref": "#/$defs/id"
+        },
+        "declared": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/transition"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "gap": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": {
+            "type": "integer",
+            "minimum": -18446744073709551615,
+            "maximum": 18446744073709551615
+          }
+        },
+        "reasons": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 8,
+          "items": {
+            "enum": [
+              "undeclared",
+              "source_unavailable",
+              "target_unavailable",
+              "model_generation_mismatch",
+              "camera_generation_mismatch",
+              "calibration_mismatch",
+              "not_strictly_forward",
+              "transit_not_robust"
+            ]
+          },
+          "uniqueItems": true
+        },
+        "admitted": {
+          "type": "boolean"
+        }
+      },
+      "description": "Every ordered non-self pair is retained. Gap is [target.start.min - source.end.max, target.start.max - source.end.min], calculated exactly beyond i64. A failed robust gate means the declarations do not prove all valid endpoint choices, not that a handoff is physically impossible.",
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "admitted": {
+                "const": true
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "declared": {
+                "$ref": "#/$defs/transition"
+              },
+              "reasons": {
+                "maxItems": 0
+              },
+              "gap": {
+                "items": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 18446744073709551615
+                }
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "reasons": {
+                "minItems": 1
+              }
+            }
+          }
+        }
+      ]
+    },
+    "path_cover": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "paths",
+        "links",
+        "starts",
+        "ends",
+        "link_cost",
+        "birth_cost",
+        "end_cost",
+        "total_cost"
+      ],
+      "properties": {
+        "paths": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": {
+            "$ref": "#/$defs/members"
+          },
+          "uniqueItems": true
+        },
+        "links": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 31,
+          "items": {
+            "$ref": "#/$defs/edge"
+          },
+          "uniqueItems": true
+        },
+        "starts": {
+          "$ref": "#/$defs/members"
+        },
+        "ends": {
+          "$ref": "#/$defs/members"
+        },
+        "link_cost": {
+          "$ref": "#/$defs/u64"
+        },
+        "birth_cost": {
+          "$ref": "#/$defs/u64"
+        },
+        "end_cost": {
+          "$ref": "#/$defs/u64"
+        },
+        "total_cost": {
+          "$ref": "#/$defs/u64"
+        }
+      },
+      "description": "Canonical anonymous paths partition every input tracklet, including isolated or unsupported members. Link, path-birth and path-end totals are checked u64 costs in the declared cost unit; they establish neither identity nor probability."
+    },
+    "all_singletons": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/path_cover"
+        },
+        {
+          "properties": {
+            "paths": {
+              "items": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 1,
+                "items": {
+                  "$ref": "#/$defs/id"
+                }
+              }
+            },
+            "links": {
+              "const": []
+            },
+            "link_cost": {
+              "const": 0
+            }
+          }
+        }
+      ]
+    },
+    "alternative_family": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "representation",
+        "complete_for_declared_domain",
+        "members",
+        "edges",
+        "all_singletons"
+      ],
+      "properties": {
+        "representation": {
+          "const": "all_subsets_of_forward_edges_with_at_most_one_predecessor_and_successor_per_member"
+        },
+        "complete_for_declared_domain": {
+          "const": true
+        },
+        "members": {
+          "$ref": "#/$defs/members"
+        },
+        "edges": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 496,
+          "items": {
+            "$ref": "#/$defs/edge"
+          },
+          "uniqueItems": true
+        },
+        "all_singletons": {
+          "$ref": "#/$defs/all_singletons"
+        }
+      },
+      "description": "Exact implicit family over the admitted robust forward DAG, with at most one incoming and one outgoing edge per member and every member retained as a path member or singleton. Completeness is conditional on those admission rules and declared assumptions; it is not completeness over all physically possible identities or handoffs."
+    },
+    "assignment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pairs",
+        "unassigned_left",
+        "unassigned_right",
+        "matched_cost",
+        "non_assignment_cost",
+        "objective"
+      ],
+      "properties": {
+        "pairs": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 31,
+          "items": {
+            "$ref": "#/$defs/edge"
+          },
+          "uniqueItems": true
+        },
+        "unassigned_left": {
+          "$ref": "#/$defs/ids"
+        },
+        "unassigned_right": {
+          "$ref": "#/$defs/ids"
+        },
+        "matched_cost": {
+          "$ref": "#/$defs/u64"
+        },
+        "non_assignment_cost": {
+          "$ref": "#/$defs/u64"
+        },
+        "objective": {
+          "$ref": "#/$defs/u64"
+        }
+      }
+    },
+    "matching_output": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "policy",
+        "left_price",
+        "right_price",
+        "requested",
+        "exhausted",
+        "assignments"
+      ],
+      "properties": {
+        "policy": {
+          "const": "priced_non_assignment"
+        },
+        "left_price": {
+          "$ref": "#/$defs/u64"
+        },
+        "right_price": {
+          "$ref": "#/$defs/u64"
+        },
+        "requested": {
+          "$ref": "#/$defs/k"
+        },
+        "exhausted": {
+          "type": "boolean"
+        },
+        "assignments": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": {
+            "$ref": "#/$defs/assignment"
+          },
+          "uniqueItems": true
+        }
+      },
+      "description": "Complete certified Murty output: outgoing left non-assignment costs the declared end price; incoming right non-assignment costs the declared birth price. Exhausted is true only when fewer than requested assignments were returned; exactly k alternatives conservatively leaves completeness false."
+    },
+    "continuity_counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "input_bytes",
+        "preparation_steps",
+        "assignment_operations",
+        "certificate_checks"
+      ],
+      "properties": {
+        "input_bytes": {
+          "$ref": "#/$defs/operations"
+        },
+        "preparation_steps": {
+          "$ref": "#/$defs/operations"
+        },
+        "assignment_operations": {
+          "$ref": "#/$defs/operations"
+        },
+        "certificate_checks": {
+          "$ref": "#/$defs/operations"
+        }
+      }
+    },
+    "matching_counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "solves",
+        "heap_operations",
+        "column_scans",
+        "potential_updates",
+        "swap_checks",
+        "alternating_scans",
+        "certificate_checks"
+      ],
+      "properties": {
+        "solves": {
+          "$ref": "#/$defs/operations"
+        },
+        "heap_operations": {
+          "$ref": "#/$defs/operations"
+        },
+        "column_scans": {
+          "$ref": "#/$defs/operations"
+        },
+        "potential_updates": {
+          "$ref": "#/$defs/operations"
+        },
+        "swap_checks": {
+          "$ref": "#/$defs/operations"
+        },
+        "alternating_scans": {
+          "$ref": "#/$defs/operations"
+        },
+        "certificate_checks": {
+          "$ref": "#/$defs/operations"
+        }
+      }
+    },
+    "certificate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "algorithm_id",
+        "algorithm_name",
+        "tie_break_rule",
+        "complexity_witness",
+        "output_size_witness",
+        "exactness",
+        "implementation_id",
+        "tie_break_policy_id",
+        "policy_id",
+        "complexity_bound_id",
+        "output_domain",
+        "decision_path_domain",
+        "node_count",
+        "edge_count",
+        "input_digest",
+        "output_digest",
+        "decision_path_digest",
+        "operation_counts",
+        "operations",
+        "output_entries",
+        "peak_working_bytes",
+        "stop_reason"
+      ],
+      "properties": {
+        "algorithm_id": {
+          "const": "ALG-MULTIMATCH-001"
+        },
+        "algorithm_name": {
+          "const": "k_best_global_assignment"
+        },
+        "tie_break_rule": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "complexity_witness": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "output_size_witness": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "exactness": {
+          "const": "bounded_exact"
+        },
+        "implementation_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "tie_break_policy_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "policy_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "complexity_bound_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "output_domain": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "decision_path_domain": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "node_count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 64
+        },
+        "edge_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 992
+        },
+        "input_digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "output_digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "decision_path_digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "operation_counts": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/continuity_counts"
+            },
+            {
+              "$ref": "#/$defs/matching_counts"
+            }
+          ]
+        },
+        "operations": {
+          "$ref": "#/$defs/operations"
+        },
+        "output_entries": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 32768
+        },
+        "peak_working_bytes": {
+          "$ref": "#/$defs/u64"
+        },
+        "stop_reason": {
+          "const": "completed"
+        }
+      },
+      "description": "All certified-run fields rendered by production, including literal algorithm identity and policy text, three content digests, the complete named counter map, resource accounting and completed stop reason. Structural validation does not recompute hashes or verify optimality, counters, budget relationships or provenance."
+    },
+    "continuity_certificate": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/certificate"
+        },
+        {
+          "properties": {
+            "algorithm_id": {
+              "const": "ALG-MULTIMATCH-001"
+            },
+            "algorithm_name": {
+              "const": "k_best_global_assignment"
+            },
+            "tie_break_rule": {
+              "const": "declared link plus birth/end cost then canonical outgoing-to-incoming assignment tuple, unassigned last"
+            },
+            "complexity_witness": {
+              "const": "input bytes, complete pair dispositions, certified Murty operations and complete path-cover checks"
+            },
+            "output_size_witness": {
+              "const": "all tracklets and pair dispositions, exact implicit family, all-singletons, displayed prefix and complete certified assignment output"
+            },
+            "exactness": {
+              "const": "bounded_exact"
+            },
+            "implementation_id": {
+              "const": "fss-graph-algorithms:alg-multimatch-001:anonymous-handoff-path-cover:v1"
+            },
+            "tie_break_policy_id": {
+              "const": "tie:declared-objective-then-canonical-assignment-tuple-unassigned-last:v1"
+            },
+            "policy_id": {
+              "const": "continuity-policy:owner-declared-anonymous-tracklets:single-scope:full-interval-robust-forward-dag:compatible-generations:priced-birth-end:exact-implicit-family:explicit-prefix:no-identity-or-confidence:v1"
+            },
+            "complexity_bound_id": {
+              "const": "bound:alg-multimatch-001:complete-pairs-plus-murty-plus-path-cover-certificates:v1"
+            },
+            "output_domain": {
+              "const": "fss.graph.continuity_output.v1"
+            },
+            "decision_path_domain": {
+              "const": "fss.graph.continuity_decision_path.v1"
+            },
+            "node_count": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 32
+            },
+            "edge_count": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 992
+            },
+            "operation_counts": {
+              "$ref": "#/$defs/continuity_counts"
+            }
+          }
+        }
+      ]
+    },
+    "matching_certificate": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/certificate"
+        },
+        {
+          "properties": {
+            "algorithm_id": {
+              "const": "ALG-MULTIMATCH-001"
+            },
+            "algorithm_name": {
+              "const": "k_best_global_assignment"
+            },
+            "tie_break_rule": {
+              "const": "score then canonical assignment tuple"
+            },
+            "complexity_witness": {
+              "const": "branch nodes and matching solves"
+            },
+            "output_size_witness": {
+              "const": "<= k * (|V| / 2) matched pairs"
+            },
+            "exactness": {
+              "const": "bounded_exact"
+            },
+            "implementation_id": {
+              "const": "fss-graph-algorithms:alg-multimatch-001:murty-best-first-lexmin-subproblems:v1"
+            },
+            "tie_break_policy_id": {
+              "const": "tie:objective-then-lexicographic-assignment-tuple-unassigned-last:v1"
+            },
+            "policy_id": {
+              "const": "graph-policy:bipartite:allowed-pairs-only:nonassignment-maximum-cardinality-or-priced:numeric:u64-exact:checked:unit-bound:v1:tie:objective-then-lexicographic-assignment-tuple-unassigned-last:v1"
+            },
+            "complexity_bound_id": {
+              "const": "bound:alg-multimatch-001:murty-1-plus-k-n-solves:v1"
+            },
+            "output_domain": {
+              "const": "fss.graph.multimatch_output.v1"
+            },
+            "decision_path_domain": {
+              "const": "fss.graph.multimatch_decision_path.v1"
+            },
+            "node_count": {
+              "type": "integer",
+              "minimum": 2,
+              "maximum": 64,
+              "multipleOf": 2
+            },
+            "edge_count": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 496
+            },
+            "operation_counts": {
+              "$ref": "#/$defs/matching_counts"
+            }
+          }
+        }
+      ]
+    },
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_operations",
+        "max_output_entries"
+      ],
+      "properties": {
+        "max_operations": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 50000000
+        },
+        "max_output_entries": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 32768
+        }
+      },
+      "description": "One shared allowance: outer preparation and certificate checks plus inner assignment work, and all complete outer and inner output entries. No partial or truncated result is admitted."
+    }
+  }
+}

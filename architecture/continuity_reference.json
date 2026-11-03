@@ -1,0 +1,69 @@
+{
+  "schema": "fss.continuity_reference_contract.v1",
+  "id": "ALG-MULTIMATCH-001",
+  "name": "k_best_global_assignment",
+  "bead": "fss-x4a.19.1",
+  "mode": "anonymous_handoff_path_cover",
+  "status": "implemented",
+  "qualification": "not_qualified: bounded native owner-declared path-cover composition and independent tiny edge-subset oracle; no retained-source custody, identity accuracy or INT-FNX-001 qualification",
+  "implementationId": "fss-graph-algorithms:alg-multimatch-001:anonymous-handoff-path-cover:v1",
+  "tieBreak": "declared link plus birth/end cost then canonical outgoing-to-incoming assignment tuple, unassigned last",
+  "tieBreakPolicyId": "tie:declared-objective-then-canonical-assignment-tuple-unassigned-last:v1",
+  "policyId": "continuity-policy:owner-declared-anonymous-tracklets:single-scope:full-interval-robust-forward-dag:compatible-generations:priced-birth-end:exact-implicit-family:explicit-prefix:no-identity-or-confidence:v1",
+  "complexityBoundId": "bound:alg-multimatch-001:complete-pairs-plus-murty-plus-path-cover-certificates:v1",
+  "complexityWitness": "input bytes, complete pair dispositions, certified Murty operations and complete path-cover checks",
+  "outputSizeWitness": "all tracklets and pair dispositions, exact implicit family, all-singletons, displayed prefix and complete certified assignment output",
+  "exactness": "bounded_exact",
+  "inputDomain": "fss.graph.continuity_input.v1",
+  "outputDomain": "fss.graph.continuity_output.v1",
+  "decisionDomain": "fss.graph.continuity_decision_path.v1",
+  "objective": "minimize declared chosen-link cost plus a birth price per path start and an end price per path end; preserve every tracklet exactly once, including unsupported singletons",
+  "limits": {
+    "tracklets": 32,
+    "declaredTransitions": 992,
+    "sourceHandlesPerTracklet": 16,
+    "displayedAlternatives": 32,
+    "identityBytes": 256,
+    "unitBytes": 64,
+    "workUnits": 50000000,
+    "outputEntries": 32768
+  },
+  "reduction": "each tracklet supplies one outgoing left item and one incoming right item; full-interval strictly forward admitted edges form a DAG; priced unassigned left/right items are path ends/starts; unchanged certified Hungarian/Murty kernels produce the ordered prefix",
+  "numericPolicy": "signed i64 inclusive capture endpoints in a declared common clock/time unit; exact i128 gap subtraction; nonnegative u64 inclusive transit bounds and costs in a separate explicit unit; checked u64 materialized path totals; any overflow refuses the complete result",
+  "timeRule": "require 0 < target.start.min - source.end.max, that minimum >= transit.min, and target.start.max - source.end.min <= transit.max; this conservative Cartesian endpoint test covers every locally valid start<=end choice and makes wider intervals only remove edges",
+  "familyRule": "all subsets of the complete admitted DAG with at most one incoming and one outgoing edge per original member; this is an exact implicit family of disjoint paths covering every member, including the explicitly materialized all-singleton cover",
+  "prefixRule": "displayed alternatives are exactly the requested first k assignments in objective/canonical tuple order; displayed_prefix_complete is true only when fewer than k exist; equality at k is not an exhaustion certificate",
+  "constraints": [
+    "one owner-declared property/session/privacy/analysis-generation/clock scope, not authenticated permission or custody",
+    "all source, camera, calibration, model and transition-basis handles are nonzero ordinary content digests and remain input-bound",
+    "different model generations cannot be joined; same-camera handoffs also require identical camera and calibration generations",
+    "missing, invalidated and redacted support disables incident edges while preserving the original tracklet as a singleton",
+    "every ordered non-self pair receives a complete disposition with all applicable reasons; undeclared pairs are forbidden",
+    "every displayed path cover is checked for all-member coverage, admitted links, in/out uniqueness, boundaries and exact objective components",
+    "preparation, all certified assignment operations, full solver proof and complete result rows share the declared budget",
+    "cancellation and exhaustion return no prefix, truncated family or partial witness"
+  ],
+  "counterVariables": "n is the original tracklet count, m the complete declared transition count, k the requested prefix; the child assignment has 2*n items and no more than m allowed pairs",
+  "dominantCounterBounds": {
+    "input_bytes": "4096*(n+m+1)",
+    "preparation_steps": "128*(n*n+m+1)",
+    "assignment_operations": "sum of unchanged assignment::multimatch_bound(2*n,m,k) operation rows",
+    "certificate_checks": "64*(k+1)*(n*n+1)",
+    "output_entries": "128+24*n+12*n*n+k*(8*n+8)"
+  },
+  "compatibility": "additive ALG-MULTIMATCH-001 mode; uncancelled successful legacy optimal_assignment and k_best_assignments identities, counters, outputs and witness bytes are unchanged by the borrowed cancellation wrappers",
+  "noClaims": [
+    "confirmed physical person or persistent identity",
+    "probability, calibrated confidence or measured objective cost",
+    "source custody, source content validation or owner authority from a digest alone",
+    "per-exposure duplication detection or multi-view simultaneous visibility fusion",
+    "cross-property or cross-session identity linkage",
+    "permission to change tracks, activate a camera, disclose evidence or perform an effect",
+    "INT-FNX-001 production qualification"
+  ],
+  "sources": [
+    "crates/fss-graph-algorithms/src/continuity.rs",
+    "crates/fss-graph-algorithms/src/assignment.rs",
+    "crates/fss-graph-algorithms/tests/continuity_contract.rs"
+  ]
+}

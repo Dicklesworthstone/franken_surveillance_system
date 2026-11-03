@@ -845,6 +845,390 @@ fn quiet_scene_coverage_is_approval_gated_orients_complete_and_follow_certifies_
 }
 
 #[test]
+fn robust_placement_uses_cold_whole_window_custody_without_writing_or_claiming_live_coverage()
+-> TestResult {
+    let directory = OwnedDirectory::new("placement")?;
+    let root = directory.root();
+    let id = import(
+        &directory,
+        "placement",
+        &scene(Scene::Quiet(40), None)?,
+        "sensor:quiet",
+        Some("1000000000"),
+    )?;
+    let preview = report(&watch(&root, &id, &[])?)?;
+    let approval = preview.get("coverage")?.get("approval_digest")?.text()?;
+    success(&watch(&root, &id, &["--retain-coverage", approval])?);
+    let original = tree_digest(&root)?;
+    let run = |during: &str, extra: &[&str]| -> TestResult<Output> {
+        Ok(Command::new(env!("CARGO_BIN_EXE_fss-cover"))
+            .arg("placement")
+            .arg("--root")
+            .arg(&root)
+            .args([
+                "--site",
+                SITE,
+                "--during",
+                during,
+                "--zone",
+                "zone:entry",
+                "--zone",
+                "zone:door",
+                "--entry",
+                "zone:entry",
+                "--target",
+                "zone:door",
+                "--move",
+                "zone:entry=zone:door",
+                "--candidate",
+                "sensor:proposed=5:1:zone:entry",
+                "--installation-budget",
+                "5",
+                "--installation-cost-unit",
+                "installation-points",
+                "--sensor-loss-cost-unit",
+                "sensor-count",
+            ])
+            .args(extra)
+            .output()?)
+    };
+    let first = run("1401000000:2099000000", &[])?;
+    success(&first);
+    let text = std::str::from_utf8(&first.stdout)?;
+    let result = Json::parse(text)?;
+    assert_conforms(
+        "coverage_robust_placement.v1.json",
+        text,
+        &directory.0,
+        "retained camera placement",
+    )?;
+    // The original removal-mode witness shares the algorithm ID, but cannot stand in for
+    // this exact placement certificate. The wire schema must reject that substitution.
+    for (key, replacement) in [
+        ("implementationId", Json::Text("fss-graph-algorithms:alg-interdict-001:exact-sensor-subset-enumeration-or-node-weighted-path-bound:v1".into())),
+        ("exactness", Json::Text("bounded_exact_or_approximate".into())),
+        ("stopReason", Json::Text("budget_exhausted".into())),
+        ("errorBound", Json::Number("0.1".into())),
+    ] {
+        let mut foreign = result.clone();
+        let Json::Object(fields) = &mut foreign else { return Err("report is not an object".into()); };
+        let witness = fields.iter_mut().find(|(name, _)| name == "witness").ok_or("witness missing")?;
+        let Json::Object(fields) = &mut witness.1 else { return Err("witness is not an object".into()); };
+        fields.iter_mut().find(|(name, _)| name == key).ok_or("witness field missing")?.1 = replacement;
+        let instance = directory.0.join("foreign-placement-witness.json");
+        fs::write(&instance, render(&foreign))?;
+        let checked = Command::new("python3").arg("-B")
+            .arg(repository_root().join("scripts/json_instance_validate.py"))
+            .arg(repository_root().join("schemas/coverage_robust_placement.v1.json"))
+            .arg(&instance).output()?;
+        assert!(!checked.status.success(), "foreign {key} witness accepted");
+        fs::remove_file(instance)?;
+    }
+    assert_eq!(
+        result.get("selected_sensors")?.texts()?,
+        vec!["sensor:proposed"]
+    );
+    assert_eq!(
+        result
+            .get("baseline")?
+            .get("sensor_loss_cost_units")?
+            .number()?,
+        1
+    );
+    assert_eq!(
+        result
+            .get("defended")?
+            .get("sensor_loss_cost_units")?
+            .number()?,
+        2
+    );
+    assert_eq!(
+        result.get("declared_problem")?.get("provenance")?.text()?,
+        "operator_asserted_hypothetical"
+    );
+    assert_eq!(
+        result.get("authority")?.text()?,
+        "derived_cognition_no_effect_authority"
+    );
+    let pin = result.get("source_coverage_witness_digest")?.text()?;
+    let again = run("1401000000:2099000000", &["--expected-coverage", pin])?;
+    success(&again);
+    assert_eq!(
+        first.stdout, again.stdout,
+        "cold reads produce exactly the same report"
+    );
+    let shared = run(
+        "1401000000:2099000000",
+        &[
+            "--expected-coverage",
+            pin,
+            "--candidate",
+            "sensor:isolated=5:1:zone:entry",
+            "--failure-action",
+            "power:poe=1=sensor:quiet,sensor:proposed",
+        ],
+    )?;
+    success(&shared);
+    let shared_text = std::str::from_utf8(&shared.stdout)?;
+    let shared_result = Json::parse(shared_text)?;
+    assert_conforms(
+        "coverage_shared_failure_placement.v1.json",
+        shared_text,
+        &directory.0,
+        "retained shared-failure camera placement",
+    )?;
+    assert_eq!(
+        shared_result.get("selected_sensors")?.texts()?,
+        vec!["sensor:isolated"]
+    );
+    assert_eq!(
+        shared_result
+            .get("baseline")?
+            .get("failure_action_loss_cost_units")?
+            .number()?,
+        1
+    );
+    assert_eq!(
+        shared_result
+            .get("defended")?
+            .get("failure_action_loss_cost_units")?
+            .number()?,
+        2
+    );
+    assert_eq!(
+        shared_result
+            .get("source_coverage_witness_digest")?
+            .text()?,
+        pin
+    );
+    let shared_again = run(
+        "1401000000:2099000000",
+        &[
+            "--failure-action",
+            "power:poe=1=sensor:proposed,sensor:quiet",
+            "--candidate",
+            "sensor:isolated=5:1:zone:entry",
+            "--expected-coverage",
+            pin,
+        ],
+    )?;
+    success(&shared_again);
+    assert_eq!(
+        shared.stdout, shared_again.stdout,
+        "shared declaration ordering is canonical"
+    );
+    let same_switch = run(
+        "1401000000:2099000000",
+        &[
+            "--failure-action",
+            "power:poe=1=sensor:quiet,sensor:proposed",
+        ],
+    )?;
+    success(&same_switch);
+    let same_switch = Json::parse(std::str::from_utf8(&same_switch.stdout)?)?;
+    assert!(same_switch.get("selected_sensors")?.texts()?.is_empty());
+    for options in [
+        vec![
+            "--failure-action",
+            "power:poe=1=sensor:quiet,sensor:missing",
+        ],
+        vec![
+            "--failure-action",
+            "power:poe=1=sensor:quiet,sensor:proposed",
+            "--work-units",
+            "1",
+        ],
+        vec![
+            "--failure-action",
+            "power:poe=1=sensor:quiet,sensor:proposed",
+            "--max-report-bytes",
+            "1024",
+        ],
+    ] {
+        let refused = run("1401000000:2099000000", &options)?;
+        assert!(!refused.status.success());
+        assert!(
+            refused.stdout.is_empty(),
+            "shared failure refusal cannot emit a partial optimum"
+        );
+    }
+    let outside = run("1000000000:2099000000", &[])?;
+    success(&outside);
+    let outside_report = Json::parse(std::str::from_utf8(&outside.stdout)?)?;
+    assert_eq!(
+        outside_report.get("baseline")?.get("status")?.text()?,
+        "blind_path"
+    );
+    assert_eq!(
+        outside_report
+            .get("baseline")?
+            .get("sensor_loss_cost_units")?
+            .number()?,
+        0
+    );
+    assert_eq!(
+        outside_report
+            .get("zones_without_retained_support")?
+            .texts()?,
+        vec!["zone:door", "zone:entry"]
+    );
+    assert_conforms(
+        "coverage_robust_placement.v1.json",
+        std::str::from_utf8(&outside.stdout)?,
+        &directory.0,
+        "explicit missing whole-window support",
+    )?;
+    let stale = ContentDigest::sha256(b"stale coverage").to_text();
+    for options in [
+        vec!["--expected-coverage", stale.as_str()],
+        vec!["--work-units", "1"],
+        vec!["--max-report-bytes", "1024"],
+    ] {
+        let refused = run("1401000000:2099000000", &options)?;
+        assert!(!refused.status.success());
+        assert!(refused.stdout.is_empty(), "no partial optimum on refusal");
+    }
+    assert_eq!(
+        tree_digest(&root)?,
+        original,
+        "every placement read leaves durable custody unchanged"
+    );
+    Ok(())
+}
+
+#[test]
+fn stream_capacity_uses_cold_custody_and_reports_routing_failures_without_changing_demands()
+-> TestResult {
+    let directory = OwnedDirectory::new("capacity")?;
+    let root = directory.root();
+    let id = import(
+        &directory,
+        "capacity",
+        &scene(Scene::Quiet(40), None)?,
+        "sensor:quiet",
+        Some("1000000000"),
+    )?;
+    let preview = report(&watch(&root, &id, &[])?)?;
+    let approval = preview.get("coverage")?.get("approval_digest")?.text()?;
+    success(&watch(&root, &id, &["--retain-coverage", approval])?);
+    // Cold queries must use retained custody after the original import path disappears.
+    fs::remove_file(directory.0.join("capacity.mjpeg"))?;
+    let original = tree_digest(&root)?;
+    let run = |during: &str, extra: &[&str]| -> TestResult<Output> {
+        Ok(Command::new(env!("CARGO_BIN_EXE_fss-event"))
+            .args(["graph", "capacity", "--root"])
+            .arg(&root)
+            .args([
+                "--site",
+                SITE,
+                "--during",
+                during,
+                "--rate-unit",
+                "megabits-per-second",
+                "--cost-unit",
+                "routing-points",
+                "--node",
+                "camera",
+                "--node",
+                "archive",
+                "--camera",
+                "sensor:quiet=camera=3",
+                "--recorder",
+                "disk=archive=3",
+                "--link",
+                "primary=camera=archive=2=1",
+                "--link",
+                "backup=camera=archive=1=5",
+            ])
+            .args(extra)
+            .output()?)
+    };
+    let first = run("1401000000:2099000000", &[])?;
+    success(&first);
+    let text = std::str::from_utf8(&first.stdout)?;
+    let result = Json::parse(text)?;
+    assert_conforms(
+        "stream_capacity.v1.json",
+        text,
+        &directory.0,
+        "retained capacity planning",
+    )?;
+    assert_eq!(result.get("status")?.text()?, "fully_routed");
+    assert_eq!(result.get("requested")?.number()?, 3);
+    assert_eq!(result.get("delivered")?.number()?, 3);
+    assert_eq!(result.get("total_cost")?.number()?, 7);
+    let pin = result.get("source_coverage_witness_digest")?.text()?;
+    let replay = run("1401000000:2099000000", &["--expected-coverage", pin])?;
+    success(&replay);
+    assert_eq!(
+        first.stdout, replay.stdout,
+        "same source and topology replay byte-for-byte"
+    );
+
+    for (extra, delivered, shortfall) in [
+        (vec!["--failed-link", "primary"], 1, 2),
+        (vec!["--failed-node", "camera"], 0, 3),
+    ] {
+        let output = run("1401000000:2099000000", &extra)?;
+        success(&output);
+        let text = std::str::from_utf8(&output.stdout)?;
+        assert_conforms(
+            "stream_capacity.v1.json",
+            text,
+            &directory.0,
+            "declared capacity failure",
+        )?;
+        let failed = Json::parse(text)?;
+        assert_eq!(failed.get("status")?.text()?, "capacity_shortfall");
+        assert_eq!(
+            failed.get("requested")?.number()?,
+            3,
+            "failure does not erase demand"
+        );
+        assert_eq!(failed.get("delivered")?.number()?, delivered);
+        assert_eq!(failed.get("shortfall")?.number()?, shortfall);
+        assert_ne!(failed.get("witness_digest")?, result.get("witness_digest")?);
+        assert_eq!(failed.get("source_coverage_witness_digest")?.text()?, pin);
+    }
+    let outside = run("1000000000:2099000000", &[])?;
+    success(&outside);
+    let outside = Json::parse(std::str::from_utf8(&outside.stdout)?)?;
+    assert_eq!(
+        outside.get("delivered")?.number()?,
+        3,
+        "declared rates are independent of historical coverage"
+    );
+    let Json::Array(support) = outside.get("retained_sensor_support")? else {
+        return Err("support rows missing".into());
+    };
+    assert_eq!(support.len(), 1);
+    assert_eq!(support[0].get("qualifying_witness_count")?.number()?, 0);
+    assert!(support[0].get("qualifying_zones")?.texts()?.is_empty());
+    assert_ne!(outside.get("source_coverage_witness_digest")?.text()?, pin);
+    let stale = ContentDigest::sha256(b"stale capacity source").to_text();
+    for extra in [
+        vec!["--expected-coverage", stale.as_str()],
+        vec!["--work-units", "1"],
+        vec!["--max-report-bytes", "1024"],
+        vec!["--camera", "sensor:unknown=camera=1"],
+        vec!["--link", "primary=camera=archive=2=1"],
+    ] {
+        let refused = run("1401000000:2099000000", &extra)?;
+        assert!(!refused.status.success());
+        assert!(
+            refused.stdout.is_empty(),
+            "no partial routing report on refusal"
+        );
+    }
+    assert_eq!(
+        tree_digest(&root)?,
+        original,
+        "capacity and failure queries leave custody unchanged"
+    );
+    Ok(())
+}
+
+#[test]
 fn unknown_capture_time_yields_no_witness_and_no_silence() -> TestResult {
     let directory = OwnedDirectory::new("unknown")?;
     let root = directory.root();

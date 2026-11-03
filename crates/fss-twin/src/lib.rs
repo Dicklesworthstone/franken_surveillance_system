@@ -262,3 +262,15 @@ pub mod multiview;
 
 /// Source-linked position and velocity reconstruction from staggered camera feeds.
 pub mod multiview_motion;
+
+/// Source-pinned native feature correspondence, nominal epipolar gates and scene-point hypotheses.
+pub mod feature_association;
+
+/// Complete multi-camera feature graphs, unresolved cycles and conditional joint scene points.
+pub mod multiview_feature_association;
+
+/// Complete cross-exposure feature graphs and conditional joint moving-scene reconstruction.
+pub mod temporal_feature_association;
+
+/// Explicit native reconstructed-point admission into reusable localization atlases.
+pub mod reconstruction_atlas;

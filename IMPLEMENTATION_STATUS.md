@@ -1,6 +1,6 @@
 # Implementation status
 
-**As of:** 2026-10-14 (reality check; earlier sections written 2026-09-03 and 2026-09-23)
+**As of:** 2026-11-03 (dated feature sections retain their original verification scope)
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
@@ -9,6 +9,1752 @@
 Franken Surveillance System now has a coherent, dependency-light Rust reference spine from immutable source evidence through canonical authority state, guarded external effects, agent situation projection, meaningful deltas, exact continuation, and progressive semantic hydration. The repository is no longer merely an architecture corpus or crate skeleton.
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
+
+## Requested-count detection from continuous HTTP MJPEG (2026-11-03)
+
+`fss-capture-reconnect sentinel-prefix` now handles an HTTP camera that keeps its
+multipart response open. Under its separate exact outer approval it acquires one
+generation until the requested number of complete JPEG parts is acknowledged, then
+closes the socket and analyzes only the first N frames. It does not wait for peer EOF,
+manufacture an ended history, infer capture time or renew a source reservation.
+
+The new native `HttpPrefixSentinelPlan` composes the existing HTTP importer and
+long-sentinel detector/retention owners. Every received original byte remains in
+source custody, including additional complete read-ahead frames and a partial tail.
+The independent import ceiling covers all those originals; read-ahead is explicitly
+reported outside the selected range. Native framing completion, if already present
+in the pinned bytes, remains separate from acquisition completion or peer EOF.
+Release rechecks the original archive, every imported capsule, full destination source
+closure and current privacy. Native model calls remain capped at 64 with shared pools.
+
+A typed durable-import observer emits the exact import identity and offline analysis
+argv before the first model call. Sink refusal stops before analysis while preserving
+the cold-verifiable import. Source-prefix, import, analysis and retained replay handles
+support explicit offline continuation without camera reacquisition. These are new
+bounded invocations, not replenishment of the live process's remaining budget. The
+ordinary importer's pure parser/approval/preview is now reused without changing its
+existing bytes or execution behavior. `fss-infer package-detect` and `sentinel-replay`
+also accept the selected bounded model-output ceiling; default native limits remain
+unchanged and both cold continuations carry the original selection.
+
+Eight native core regressions, three real-process open-socket contracts, two parent
+admission/continuation cases and native CLI output-reservation regressions cover
+source/pending/count refusal, first-N/read-ahead separation, current authority/privacy,
+unsampled-tail corruption, progress sink failure, exact retries and replay after loose
+inputs disappear. Source/API reviews and pinned formatting passed; native execution of
+this new prefix composition remains pending. The full public schema catalog resolves
+134 schemas and 2200 references with no metadata/reference errors. This implements a
+bounded live-capture/perception slice of FSS-049/FSS-078, without qualifying detector
+quality, continuous coverage, event/effect authority or production operation.
+See `docs/HTTP_PREFIX_CAPTURE_SENTINEL.md`.
+
+## Live ended HTTP capture into retained native detection (2026-11-03)
+
+`fss-capture-reconnect sentinel` now composes the actual native camera owner with
+HTTP-history trained detection and retained cold replay. One exact outer approval
+binds the original capture plan, explicit camera/time assumptions for every reserved
+generation, pinned model, destination, sampling and effective resource bounds. Model
+and selected contract validation and canonical path admission precede camera contact.
+The deployment is not created during model preflight. Existing archive paths refuse
+live recapture; no transcript parser or subprocess joins the native owners.
+
+A typed capture receipt authenticates every started connection, exact original prefix,
+durable/released history boundary, source/clock/retention/generation inventory and
+terminal state. Pending publication, unpublished bytes, an unfinished prefix or failed
+output cannot produce a consumable history. Only satisfied settled capture advances
+automatically. Earlier failed generations stay explicit when a later native retry
+satisfies the request; a terminal failed request instead emits unapproved offline argv.
+Unused reserved generations are omitted without refilling any analysis allowance.
+
+The command publishes exact offline-history continuation argv before imports and
+per-generation retained `fss-infer sentinel-replay` argv after complete analysis. Its
+model/preflight/import work, framing and archive-read accounts remain nonrenewing
+across capture and processing. The native capture still owns its independent network
+deadline and any approved storage-only grace. Parent deadlines are cooperative at
+phase/I/O boundaries, not preemption of native work.
+
+Five parent admission/continuation/output tests, extended typed-receipt cut-point
+contracts and three real-process loopback contracts cover complete stationary capture,
+wrong approval/model before I/O, partial source refusal with durable continuation,
+no-recapture admission, retained replay without loose inputs and CLI JSON schemas.
+Source/API review and pinned formatting passed; native execution of this new composed
+path remains pending. The existing failed-prefix HTTP sentinel fixture now expects
+three fully delimited originals, preserving the native importer's truncation behavior.
+This is a finite ended-response slice of FSS-049/FSS-078; it does not claim continuous
+camera coverage, detector quality, event/effect permission or production qualification.
+See `docs/HTTP_CAPTURE_SENTINEL.md` for commands and recovery boundaries.
+
+## Explicit learning recovery by replacement sessions (2026-11-03)
+
+`fss explain --learning-root` and the equivalent MCP request now make a retained
+learning capture accessible to a currently admitted replacement session of the same
+principal and immutable mission. The original session may be cancelled or expired.
+Both complete mission publications must agree on principal, stable mission identity,
+site, mission statement and objective. Possession of a learning root or a matching
+mission label supplies no authority.
+
+The existing selected-source reader verifies the original session, workspace, plan,
+episode, feedback and learning custody under fresh current explanation/read/privacy
+admission. It preserves the original captured session and evidence position separately
+from the current response session and anchor. Reads do not reopen the original owner,
+write or rebase a workspace, refill budgets, promote learning, or broaden automatic
+orientation/handoff discovery into other sessions.
+
+Three real-process regressions cover cancelled and expired original owners, exact
+CLI/MCP parity and byte-stable cold retries, current-vs-historical provenance, immutable
+read-only stores, same-label/wrong-objective and foreign-principal refusal, revoked
+grants/privacy, closed or expired replacement sessions, and missing current mission
+custody. The existing selected-learning regression retains missing/corrupt historical
+closure checks. Native execution at `3348842` passed the expired-original recovery,
+current owner/mission/grant/custody refusal, existing exact selected-learning explanation
+and cold captured-learning CLI/MCP recovery cases. The cancelled-original regression
+successfully read its selected capture, then failed because the fixture asked for a
+nonexistent `anchor` field. That fixture now checks the registered `inputAnchor` and
+`basisAnchor`, including equality with the authenticated retained experience basis;
+its full native rerun remains pending. Evidence: run `41655137973`, job `125983315450`.
+The broader agent-effects target had 27 passes and three failures, including that fixture;
+these scoped results are not a complete gate pass. Source review, pinned formatting and
+staged manifest checks passed. This is the explicit historical-read slice of FSS-232,
+not automatic discovery or learning promotion.
+See `docs/historical_learning.md` for exact commands and admission requirements.
+
+## Motion-independent trained detection across HTTP histories (2026-11-03)
+
+`fss-sentinel-http-history` now connects an exact ended HTTP reconnect history to the
+native RGB detector without requiring a foreground-motion candidate. It imports every
+complete original JPEG first, then allocates whole detection bursts round-robin across
+actual imported recordings under one whole-history inference allowance. Separate
+bursts and reconnects retain independent tracking; stationary images can reach the
+model, while class scores remain uncalibrated.
+
+Every selected connection stays visible, including empty and failed responses,
+incomplete JPEG prefixes, recordings too short for a burst and recordings skipped by
+the inference ceiling. Source, pixel, JPEG, detection-head and native report resources
+share one residual pool; no reconnect refills it. All imports precede model work and
+all computations precede optional retention. Current original HTTP, destination media,
+source capsules and privacy are rechecked before the complete result is released,
+including entirely unsampled recordings and suffixes.
+
+The pure CLI preview binds exact source/model pins, explicit sensor/capture assumptions,
+paths, principal, sampling, retention, native backend and resource limits. Approved
+retention uses the existing complete native report/model/recipe owner and emits cold
+`fss-infer sentinel-replay` commands that work from verified destination custody after
+the capture archive and loose model go offline. Interrupted imports and retentions
+reconcile through those existing owners on exact retry. The motion-based HTTP watch
+formats and existing RTSP sentinel resource semantics are preserved.
+
+The pinned native run at `6ff59b8` compiled this implementation and passed all 13
+sentinel binary contracts, the real-process capture/import/inference/cold-replay
+contract, both shared-pool contracts, all eight legacy HTTP-watch core contracts and
+its CLI contract, and all 17 RTSP campaign sentinel/HEVC/plan contracts. Nine of ten
+new core contracts passed; the remaining assertion expected a fourth frame after a
+truncated MIME delimiter, while the native importer correctly released only the three
+fully delimited frames. That fixture expectation is now corrected without changing
+the importer; its native rerun is pending. Evidence: run `41598188819`, job `125794756307`. The workflow was
+cancelled after these groups completed; these are scoped results, not a full gate pass.
+Independent source reviews, pinned formatting and a narrow pinned-rustc report-format
+check also passed. No live-camera, detector-quality, event, absence,
+continuous-coverage or production qualification is claimed.
+The two strict public projection schemas match the actual source renderers; the
+offline catalog resolves 132 schemas and 2077 references with zero metadata/reference
+errors. Representative positive/negative shape checks passed. The separate schema
+constitution gate still reports existing registry drift.
+See `docs/HTTP_HISTORY_SENTINEL.md` for the complete operator workflow and limits.
+
+## Durable operator cancellation of agent sessions (2026-11-03)
+
+`fss cancel --session` and the MCP `cancel` session target now expose AOP-010 session
+revocation under fresh owner authority and an exact preview approval. The bounded
+preview preserves clocks, journals, pins and spent allowances. Approval atomically
+retains the complete original request and the session's closure tombstone in one
+private journal command, clearing aliases and preventing old handoffs from reopening
+the identity. Existing prepared-operation cancellation remains a separate target.
+
+An exact cold retry recovers the original approval and cancellation receipt even after
+later journal entries, without appending a new tombstone. A verified lagging ROOT pin
+can be repaired only by an approved invocation. Expiry does not substitute for an
+owner-approved cancellation. Current owner, capability, contract basis, site lineage,
+source custody and exclusive writer admission remain mandatory.
+
+Plans, pending external obligations, follow progress, coordination and work history
+remain retained. The response identifies the outstanding inventory at the original
+approval position; session revocation does not settle an effect or prove delivery.
+An admitted same-mission replacement session can reclaim a closed owner's live work
+claim with a new fencing incarnation and the existing progress intact.
+
+The pinned native run at `6ff59b8` passed all four journal contracts, the MCP request
+mapping contract and five of six real-process owner contracts. The remaining contract
+exposed a separate MCP server dispatch gate that omitted `CancelSession`, despite
+accepting its request. That gate now routes both preview and exact approval to the
+same native owner, with a server regression proving notifications cannot execute the
+operation. The real-process helper exposes transport refusals directly. The original
+authority, exclusive-target, retained-obligation and approval contracts remain intact.
+The post-fix native run at `6c876d2` passed all four journal contracts, all six
+CLI/MCP integration contracts (including the formerly failing parity case), and both
+MCP mapping/actual-dispatch contracts. Evidence: run `41651088223`, job `125969111863`.
+The overall workflow later timed out/cancelled in other groups; these are the exact
+completed cancellation results, not aggregate qualification. Independent source review
+and pinned formatting also passed. See
+`docs/session_cancellation.md` for the operator workflow and reference bounds.
+
+## Exact learning recovery across handoff rebases (2026-11-03)
+
+An exact plan-targeted `create_learning_proposal` retry now recovers its original
+feedback, experience and learning roots after a handoff advances the session anchor.
+Recovery searches only the bounded, currently admitted native learning inventory and
+this session's retained workspace anchors. It authenticates the original source closure,
+principal, mission and contract basis; changed statements, evidence or dispositions
+remain distinct requests with the current anchor.
+
+Missing or corrupt historical custody cannot cause a replacement publication. Missing
+learning custody reports the original retained feedback as partial; missing feedback
+custody refuses. Current session, feedback capability and private-scope checks still
+apply before discovery or disclosure. Captured learning remains advisory and grants
+no effect or policy-promotion authority.
+
+The existing real-process CLI/MCP learning contract now covers normalized evidence,
+exact root stability after rebase, missing feedback/learning slots, revoked current
+admission, and materially different requests. Two independent source reviews and the
+pinned formatter passed. Native reference and CLI targets compiled in hosted run
+`41596340186`, job `125784472561`, with custody, cold-supervision, event-recovery and
+multipart-upload groups passing. The expanded learning-specific regression passed
+in the subsequent native run at `6ff59b8` (`41598188819`, job `125794756307`, 12.12s).
+The earlier local Asupersync dependency build exceeded this shared host's available
+memory headroom and was stopped before project diagnostics. The prior main revision's
+native run reproduced the exact-retry defect; no production qualification is claimed.
+
+## Multipart recording continuation (2026-11-03)
+
+Incremental dwell now accepts completed partitioned MJPEG, AVC and HEVC imports.
+A version-four checkpoint binds a bounded canonical inventory of the exact original
+import identity, aggregate root, metadata and ordered part roots. Each part remains an
+independently ledgered publication; the inventory adds one checkpoint child without
+combining a long recording into an oversized publication batch. Flat-source v1/v2/v3
+recipe and checkpoint bytes remain unchanged.
+
+Hot steps and cold process continuations preserve the original cumulative source,
+pixel, tracking and optional health allowances. Native video completion still requires
+validated decoder drain. Cold opening reconstructs the exact inventory from current
+retained source authority, and missing or changed inventory, source parts, original
+principal or recipe refuse. Cached owners cannot reconstruct deleted custody. The
+existing deletion closure reaches the inventory, checkpoints and original part roots.
+
+Eight native regressions and two real-process CLI contracts cover codec continuation,
+whole-recording report/proposal identity, delayed output, temporal gaps, exact retries,
+resource and authority refusal, forged inventories, missing custody and deletion.
+All ten new regressions passed in the pinned native hosted run, together with all
+82 long-dwell and 34 watch-stream CLI contracts. The core implementation also passed
+independent code review and the pinned formatter. The overall workflow failed in
+other existing ONVIF, learning and policy checks; these scoped results do not establish
+production qualification. Evidence: GitHub Actions run `41563222067`, job `125695702425`.
+See `docs/incremental_dwell.md` for formats and operator commands.
+
+## Alert reconciliation after source loss (2026-11-02)
+
+`fss-alert reconcile` exposes the existing operation-addressed owner-attestation contract
+without rebuilding an agent orientation from old media. An intact preparation and durable
+effect/obligation journals can now be reconciled after the original event source is missing or
+corrupt. Preview returns the exact plan and approval command; approval retains the attestation
+root-last before settling the existing obligation. Exact cold retries append no duplicate
+transition, and changed actor, statement, evidence or outcome cannot reuse the approval.
+
+The output preserves `operator_asserted` provenance, reports that cited evidence custody was
+not inspected, and does not claim independent provider verification. It performs no network
+dispatch. Prepared operations, stale or missing authority, corrupted journals and unavailable
+retained reconciliation proof still refuse. The prior canonical agent command and its approval
+identity remain unchanged. See `docs/alert_lifecycle.md` for the operator workflow.
+
+All seven new real-process contracts passed in the pinned native hosted run, as did the
+complete 16-test alert CLI group and three owner-contract tests. Source formatting and
+independent review also passed. Evidence: GitHub Actions run `41563222178`, job
+`125700093921`. Other workflow checks failed; these scoped results do not qualify a
+provider or production release.
+
+## Retained RTP/JPEG imports for native analysis (2026-11-02)
+
+`fss-import-rtsp jpeg` connects an independently pinned native datagram prefix to
+the ordinary retained MJPEG, pixel, feature and scene owners. The destination
+retains every selected original root, metadata record and payload alongside the
+reconstructed images, exact native frame source maps and replay diagnostics.
+Current retained reads recover that original chain and reproduce the native
+JPEG stream; an intact derived image cannot replace missing or damaged original
+packet evidence. Completed imports remain usable with the source archive offline.
+
+The request explicitly binds the physical sensor/stream and mapping evidence,
+complete source prefix, configuration and replay interpretation, destination
+receive time and independent operation bounds. Capture time remains unknown.
+Packet gaps, discarded images, cached quantizer ancestry and incomplete tails
+remain visible. Prefix exhaustion grants no EOF or coverage claim, and JPEG
+entropy validity remains the downstream decoder's responsibility. Existing
+AVC/HEVC and HTTP contracts are unchanged.
+
+Publication uses the existing ledgered root-last file owner, including typed
+multipart publication and exact interrupted retries. Source and current import
+authority revalidate before publication; exact retries verify committed custody
+without repairing damaged originals. Preview is pure and opens no storage or
+network. Approved execution requires the exact plan digest, an existing source
+store and a distinct destination store. Current destination privacy still governs pixels.
+
+All **11/11** genuine public-owner integration tests pass with the pinned runtime.
+The import command passes **27/27** tests (six new JPEG cases and 21 existing
+regressions), all **5/5** new actual-process JPEG tests, and all **3/3** existing
+RTSP import process regressions. They execute actual packet publication, cold
+retained verification and native
+pixel decoding, including independent luma-oracle comparison after source archive
+removal, current masks, quantizer ancestry, gap/tail accounting, limits and
+cancellation, source corruption, and forced multipart interruption/recovery.
+The production importer command and new CLI integration test pass strict scoped
+Clippy against the actual compiled dependencies. The full importer bin test
+configuration retains five unrelated existing test lint findings.
+Initial import and later cold verification share the same intrinsic replay-work
+ceiling. Read reservations describe import-managed original/custody payloads,
+not total filesystem I/O or a calibrated memory/latency measurement.
+
+All four actual plan/import/retry/partial-tail JSON outputs pass the strict
+Draft 2020-12 operator schema. Exact retry root, manifest, origin proof and
+interpretation identities agree, as do plan-to-receipt request and approval pins.
+The offline catalog resolves **130 schemas and 1,995 references with zero
+errors**; the separate constitution scan retains the same 43 existing findings.
+See `docs/RTSP_JPEG_IMPORT.md` for the complete workflow and operational limits.
+
+## Native JPEG replay from copied original custody (2026-11-02)
+
+`DetachedDatagramPrefix` verifies an independently pinned complete datagram
+chain from original objects retained outside the capture publisher. Every
+canonical root, metadata record, payload, predecessor coordinate, channel and
+receive ordering is checked under explicit reader authority and finite bounds.
+The sealed owner caches only metadata; subsequent original reads revisit
+current custody. `DatagramJpegReplay::new_detached` and `step_detached` use the
+existing native scheduler, receiver and provenance binding without changing
+source or interpretation identities. Cached quantizers, duplicates, timers and
+incomplete-prefix accounting remain exact. Canonical frame source-map bytes can
+also be exported through the existing encoder with frame/hash/work checks.
+
+The complete native JPEG target passes **118/118 tests**, including nineteen
+new detached/source-map cases. The genuine reference datagram-archive suite also
+passes **55/55 tests** with the pinned runtime. Publisher-backed and detached
+replay agree on
+all native events, reconstructed images and provenance, including cached
+quantizers, sequence wrap, reordering, duplicate originals, RTCP and partial
+tails. Missing or modified original objects, malicious reader returns, exhausted
+work, cancellation, deadlines and wrong pins refuse. Strict scoped Clippy reports
+one preexisting `explicit_counter_loop` finding in unchanged `rtsp/message.rs`;
+the new source has no reported lint findings. This primitive verifies selected
+copied bytes, not original publication durability, later capture observations,
+physical camera identity or calibrated time. The retained MJPEG command bridge
+uses this sealed owner; see `docs/RTSP_JPEG_IMPORT.md` and
+`docs/jpeg_datagram_reconstruction.md`.
+
+## Adopted radial reconstruction and atlas export (2026-11-02, command integration)
+
+The adopted-camera commands now execute native radial correction before stereo,
+multi-camera and moving-feature reconstruction, and before static localization
+atlas export. An explicit `fss.scene_camera_rig_adopted.v2` selects this profile;
+every declared source matrix, original domain, semantic lens basis and two-term
+Brown coefficient vector must match the sealed current calibration exactly.
+All maps compile before decoding. Actual corrected domains, dimensions, maps,
+exposures and privacy receipts bind back to those plans before geometry runs.
+The target grid remains the refined original camera grid. Mixed rigs may retain
+direct images only for zero-radial cameras. Original v1 contracts and FSATLAS1
+remain unchanged.
+
+New v2 reports and atlas manifests preserve original and corrected provenance,
+conditional camera covariance, coverage exclusions, all native alternatives and
+unresolved components. Full interpolation and descriptor support must be allowed
+by current privacy. Original-source, current-privacy and adoption/withdrawal
+checks still precede publication under the exclusive deployment owner. Absolute
+camera and landmark error remain unknown; these outputs activate no calibration,
+twin revision, identity or effect.
+
+Genuine pinned-runtime execution now passes **267 tests** across the reference
+calibration owner (**20**), adopted rig library (**4**) and complete scene command
+binary (**243**). This closes the earlier execution gap for retained adopted
+matching and atlas command owners. The final report-helper source also passes
+its **14-test** focused rerun, a subset of the scene suite, and scoped strict
+Clippy passes. The new command cases exercise real retained JPEG/adoption paths,
+model mismatch and folding refusals, privacy, changed authority, source
+corruption, bounded work/output, cancellation and exclusive publication.
+
+Independent distorted JPEG fixtures produce 49 solved stereo points, 56 solved
+multi-camera components (40 complete triples, one unresolved component), and
+49 solved stationary trajectories (30 unresolved components). Unresolved cases
+retain the existing non-success analysis outcome. At authored depth 10, maximum
+nominal depth error is 0.666667 source units; maximum absolute stationary velocity
+component is below `1.46e-13`. These fixture measurements do not establish physical
+accuracy. The static atlas contains 49 landmarks, two references and 98 bindings
+in 13,841 bytes and passes native decode and exact re-encoding. Privacy controls
+exclude 640 interpolated output pixels while retaining original exposures.
+
+All four complete actual command reports and the exact atlas manifest validate
+against the new schemas, including exact serialized body/manifest digest checks.
+The catalog resolves **129 schemas and 1,958 references with zero errors**;
+all v1 schemas remain unchanged. See `docs/ADOPTED_LENS_RECONSTRUCTION.md` for
+the complete model declarations, compatibility and reconstruction/export workflow.
+
+## Adopted radial camera geometry (native integration)
+
+The sealed calibration owner now has an explicit
+`NativeRadialRectification` image profile. The new
+`resolve_scene_calibration_for_rectification` entrypoint verifies the same exact
+FSSCAL01/02 bytes, original camera inputs, physical sensors, current adoptions
+and withdrawal history as the existing pinhole resolver. Its
+`rectification_spec` derives the two-term Brown model `[k1, k2, 0]`, zero
+tangential terms, original source image domain and semantic calibration pin.
+Both source and target matrices/grids are the refined original camera values;
+radius and luma interpretation remain explicit owner declarations.
+
+`SceneRig::from_retained_rectified_calibration` projects that matching profile
+into fixed virtual pinhole geometry. The original resolver, rig constructor and
+semantic identity bytes remain strict original-pinhole contracts. Cross-profile
+use refuses even for zero-radial coefficients. Native map compilation, actual
+pixel/privacy receipt binding and final source/adoption revalidation remain the
+caller's responsibility; this API does not certify raw pixels as corrected.
+Local covariance stays conditional and absolute camera error remains unknown.
+
+The genuine reference owner suite executes successfully: **20/20 tests pass**,
+including all six new radial controls and fourteen prior original-profile
+regressions. These cover exact model derivation against independent scalar
+projection, native folding/radius admission, current authority and withdrawal,
+original-input/receipt custody, profile separation, cumulative allowances and
+cancellation. The genuine CLI library also executes all **4/4 typed-rig
+regressions** successfully, covering virtual geometry, mode handles, basis and
+full-inventory checks. Both suites use the pinned compiler and real runtime;
+no substituted dependency or authority owner is involved. The command-level v2
+integration above binds this owner to actual corrected pixels. See
+`docs/RETAINED_SCENE_CALIBRATION_API.md` for the native ownership contract.
+
+## Localization atlas from adopted cameras (2026-11-02, command integration)
+
+`fss-scene-fuse retained-calibrated-atlas` connects currently adopted FSSCAL01/02
+camera geometry to the existing native reconstruction-atlas producer and
+FSATLAS1 localization consumer. Static pair and 3–8-camera queries can export
+explicitly selected points and actual reference descriptors without an authored
+pose rig. The exact adopted-rig and static selection contracts are reused;
+moving-feature queries and invalid twin feature ordinals refuse before decoding.
+The original calibrated pinhole image profile remains required.
+
+The new strict report and exact-byte manifest retain complete current calibration
+and covariance provenance, original camera inputs, source/privacy records, all
+native scene alternatives, static eligibility declarations and member bindings.
+Absolute camera/landmark error remains unknown. Original source, current privacy
+and adoption/withdrawal custody revalidate after construction; the exclusive
+deployment owner stays alive through archive, report and stdout publication.
+Final independent cost axes include revalidation and final report serialization.
+The archive format, existing consumer and nominal atlas command remain unchanged.
+
+Ten new pure production serializer contracts pass, including exact manifest/body
+hashes, archive inventory pins, complete diagnostics, final cost accounting,
+output bounds and cancellation; their scoped strict Clippy gate also passes.
+Five genuine native reconstruction/archive/localization contracts pass again.
+An additional actual JPEG oracle executes native decoding, extraction, stereo
+and three-camera reconstruction, FSATLAS1 encoding/decoding and localization
+from newly generated pixels: both atlases supply 26 matches and recover the
+synthetic fresh camera center `[0.5, 0, 0]` within `7.3e-12` source units, with
+RMS below `4.9e-12` pixels. These deterministic fixtures qualify the native
+computation, not real-world camera accuracy or retained custody.
+
+Ten real command-owner contracts are added for actual retained JPEG/adoption
+exports and fresh-image consumption, changed adoption/privacy, corrupt or missing
+custody, exact selection pins, temporal refusal, resource limits, cancellation
+and deployment ownership through successful/failing stdout. Genuine
+`cargo check --locked --offline -p fss-cli --bin fss-scene-fuse --tests` passes
+with the pinned compiler and real runtime, including the new command and all
+new owner tests. Runtime execution of these owner contracts remains pending.
+The offline schema catalog resolves 125 schemas and 1,771 references with zero
+errors; the two new schemas pass Draft 2020-12 validation. Six actual native
+pair/multi-camera geometry fixtures validate in the manifest, while all three
+temporal fixtures correctly refuse its static-only contract. Existing
+constitution findings remain unchanged. See
+`docs/ADOPTED_RECONSTRUCTION_ATLAS.md` for the complete preview, selection,
+export and localization workflow.
+
+## Reconstruction from adopted calibration (2026-11-01, command integration)
+
+`fss-scene-fuse retained-calibrated-match` connects existing FSSCAL01/02 site
+calibration and retained adoption to stereo, multi-camera and moving-feature
+reconstruction. It accepts the established five retained query schemas and a
+strict adopted-rig document. Intrinsics and poses come exclusively from the
+exact current calibration; selected source sensors, original camera inputs,
+image domains and decoded grids must agree with that authority. The first
+profile requires original pinhole images and explicitly refuses nonzero radial
+distortion or rectification declarations.
+
+The complete native correspondence graph, fitted points/trajectories, alternatives,
+refusals and nominal visibility remain in the report. Calibration identities,
+atlas/control/tie provenance, original image modes, all joint camera generations,
+current receipts and full conditional camera covariance are retained. Absolute
+camera error remains unknown; calibration covariance is never substituted for
+physical accuracy or silently folded into the native pixel-noise covariance.
+The new report's strict outcome consistently includes nominal occlusion conflicts
+across all three modes; existing nominal report contracts remain unchanged.
+
+All source-dependent analysis precedes final original-source/current-privacy and
+adoption/withdrawal revalidation. The exclusive deployment owner remains alive
+through report file/stdout release. Calibration input bytes, authority-read
+reservations, verified authority bytes, original reads and decoder axes are
+separately bounded and reported, including final revalidation. A generic FSSCAL
+hash algorithm cannot be relabeled as SHA-256 image provenance. Outputs remain
+private, create-only and complete; no calibration, world revision, persistent
+track, event or effect is activated.
+
+Twenty-three new exact-production contracts execute successfully: thirteen
+adopted-rig/query parser tests and ten native geometry/envelope tests. Eight
+shared JSON-reader regressions also pass, and the scoped native geometry harness
+passes strict Clippy. The parser harness uses unchanged production readers with
+only the unrelated adopted-owner extension omitted; it substitutes no custody
+or calibration authority. Nine real retained-command contracts are also added,
+covering actual JPEG stereo, multi-camera and repeated-exposure geometry, current
+adoption/withdrawal, original mode/pins, privacy/corrupt custody, resource and
+publication limits, cancellation and the deployment guard through stdout.
+Genuine `cargo check --locked --offline -p fss-cli --bin fss-scene-fuse --tests`
+passes with the pinned compiler and real runtime, including every new command,
+parser and native test. Genuine `cargo check --locked --offline -p fss-reference
+--tests` also passes, including all fourteen resolver owner contracts. A missing
+JPEG arm in an existing RTSP keepalive fixture was repaired after that broad gate
+reported the non-exhaustive match; runtime behavior and gates are unchanged.
+The new schemas pass standard Draft 2020-12 validation; the complete offline
+catalog resolves 123 schemas and 1,739 references with zero errors. Nine actual
+native geometry fixtures (pair/multi/temporal, each clear/occluded/empty) validate
+against the strict new geometry schema and its existing diagnostic references.
+These are actual native solver/serializer outputs, not fabricated owner reports.
+Runtime execution of the nine new command-owner tests remains pending at this checkpoint.
+See `docs/ADOPTED_CALIBRATION_RECONSTRUCTION.md` for exact inputs, report
+interpretation, limits and operational failures.
+
+## Retained adopted camera geometry (2026-11-01, native integration)
+
+`fss_reference::ingest::scene_calibration` now resolves the existing FSSCAL01/02
+records and retained camera adoptions into a sealed owner for scene reconstruction.
+It checks exact twin package/source, original camera-input bytes and image mode,
+physical sensor, camera handle/name, both calibration generations and the selected
+current adoption. Missing, superseded, withdrawn or corrupt authority refuses;
+sensor aliases cannot bypass another camera's adoption. The initial profile
+requires the original calibrated pinhole image domain.
+
+The owner preserves complete calibration/covariance provenance and revalidates
+current adoption/withdrawal custody after analysis. Unrelated ledger descendants
+are allowed; changed lineage, divergent prefixes or selected receipts refuse.
+Input, complete authority traversal, source reads and final revalidation have
+cumulative byte/work limits and cancellation checkpoints. The CLI library's
+`SceneRig::from_retained_calibration` derives native camera poses and intrinsics
+from this sealed owner while leaving clock/privacy/validity declarations explicit.
+Local covariance never becomes a deterministic projection bound or physical
+accuracy claim; absolute camera error remains unknown.
+
+Fourteen real deployment owner contracts are added, covering adoption, native
+stereo geometry, original image lineage, supersession/withdrawal, corrupt custody,
+aliases, hash-algorithm provenance, exact work/read limits and cancellation.
+The genuine reference test configuration and scene-fuse production/test
+configuration pass with the pinned compiler and real Asupersync. These new
+owner tests remain unexecuted at this checkpoint: initial full-codegen and
+default metadata attempts exceeded this environment's memory; serializing the
+compiler frontend/backend completed the genuine metadata checks. Subsequent
+available headroom remained below the measured heavy compiler requirement,
+so no doomed full-codegen retry was started. The existing native check script
+includes this owner target; no runtime substitute or weakened gate was used.
+The retained command integration is described above.
+See `docs/RETAINED_SCENE_CALIBRATION_API.md`.
+
+## Retained moving-feature reconstruction (2026-11-01, command integration)
+
+`fss-scene-fuse retained-motion-match` now connects the native temporal feature
+associator to authenticated retained JPEG/AVC/HEVC sources. Four through sixteen
+original exposures from two through eight fixed cameras produce common-time
+3D positions and constant velocities in the imported property twin. This closes
+the automatic-correspondence gap between static retained image matching and
+moving-scene fusion with manually supplied correspondences. Native direct and
+lens-corrected image paths use the existing sealed source/privacy owners.
+
+The strict query binds each exposure's original custody, camera mapping, image
+model and clock alignment. Repeated cameras keep fixed sensor/stream, geometry
+and image declarations; aliases cannot multiply original exposure support.
+Capture hull, interval uncertainty, actual feature inventory and numerical fit
+limits are bounded. Source rows map to the exact original exposure rather than
+the first observation of a camera. Full descriptor tables, every nearest tie,
+incomplete/conflicting components, native motion refusals, all 36 covariance
+terms and nominal per-exposure mesh visibility remain in the report. The one
+requested scene time is preserved; unsupported components never extrapolate.
+
+Every image plan is admitted before decoding. Complete source-dependent analysis
+serialization precedes final original-source/current-privacy revalidation and
+the authority-anchor check. Work includes final revalidation, complete reports
+are bounded without truncating alternatives, and file output is private and
+create-only. Deadline/cancellation checks cover report construction and file
+publication. Exit 3 preserves a complete analysis with no fit or unresolved
+nontrivial components. No persistent track, calibration or landmark is activated.
+
+**59 exact-production parser/image/binding tests pass**, including 14 new
+temporal contracts and a six-exposure, two-moving-point native reconstruction
+with unchanged geometry under source/query permutations. **5 exact-production
+renderer tests pass**, covering all component/descriptor states, complete maximum
+inventories, high-epoch times, covariance, byte/work limits and cancellation.
+Both scoped harnesses pass strict Clippy. Nine emitted production geometry
+fixtures validate against the new standard Draft 2020-12 schema; the catalog
+resolves 121 schemas and 1,585 references with zero errors.
+
+An independent genuine native JPEG decode/extract/associate/render execution
+recovers 26 stationary depth-10 trajectories across four original-grid exposures
+and 16 with the repeated left camera cropped and the right camera direct. Maximum
+depth error is below 3e-13 and absolute velocity components below 1.3e-13 in these
+synthetic fixtures. Their 12/32 unresolved components and all 6,144 Cartesian
+descriptor rows remain explicit. This is pure native pipeline execution, not
+execution of the retained deployment owner or physical field qualification.
+
+Eight real retained-command owner tests cover original custody, exact
+exposure mapping, native image correction, permutations, current privacy,
+corrupt/missing sources, admission/work/cancellation/output limits and private
+publication. Subsequent [hosted execution of exact commit 03d1b97](https://github.com/Dicklesworthstone/franken_surveillance_system/actions/runs/41319017296/job/124892258104)
+compiled the real source-owner runtime and passed **all 177 scene-fuse tests**,
+including **all eight temporal owner tests and all ten atlas owner tests**.
+The overall workflow failed in other ONVIF/agent-learning/policy checks; this
+focused execution does not establish whole-workspace or release qualification.
+No runtime substitute or weakened gate was used. See
+`docs/RETAINED_TEMPORAL_MATCHING.md` for input/report fields and operational limits.
+
+## Native temporal feature association (2026-11-01, moving-scene bridge)
+
+`fss_twin::temporal_feature_association` now automatically connects native image
+features across repeated camera exposures and feeds complete supported groups
+to the existing joint 3D position/velocity solver. Four through sixteen original
+exposures, two through eight fixed logical cameras and at most 256 actual selected
+features produce a complete bounded descriptor graph. Static epipolar screening
+is not applied to staggered moving observations. Every Cartesian descriptor row,
+nearest alternative, selected link and unresolved component remains available.
+
+Repeated cameras retain their fixed calibration/mode and original exposures.
+Direct support from every member pair and one feature per exposure are required;
+open chains and conflicting cycles never become transitive identity assertions.
+Each successful fit uses every observation, the exact global requested scene time
+and the original capture-time midpoints; unsupported reference times refuse instead
+of silently clamping or extrapolating. Full capture intervals, source masks,
+camera/map/clock assumptions, all 6x6 covariance terms and nominal occlusion
+conflicts remain explicit. No persistent track, static landmark or calibration
+is activated. See `docs/TEMPORAL_FEATURE_ASSOCIATION.md`.
+
+**22 new native tests execute successfully**: 17 source/graph/admission/resource
+contracts and 5 independent reconstruction pipelines. Native grayscale feature
+extraction across four staggered exposures reconstructs depth 10 and velocity
+[1, 0.5, 0], while the stationary epipolar matcher rejects those moving pairs.
+Independent crossing trajectories, descriptor aliases, incompatible acceleration,
+exact times near u64::MAX, full covariance propagation, permutations, all bounded
+inventories, budget-minus-one and terminal cancellation pass. Strict Clippy for
+the library and both new test targets also passes. These are synthetic contract
+results, not physical field accuracy, identity confirmation or release authority.
+
+The direct retained-perception check now executes the actual scene-fuse test
+binary after retained localization. Two missing imports in an existing RTSP test
+module, observed as compiler errors in hosted checks, are repaired without runtime
+behavior changes. Existing qualification lanes and release authority are unchanged.
+
+## Retained reconstruction atlas export (2026-11-01, command integration)
+
+`fss-scene-fuse retained-atlas` now reconstructs an existing exact retained pair
+or multi-camera v1/v2 query and exports explicitly selected points/descriptors
+as the unchanged FSATLAS1 format. The existing `fss-file localize` consumer
+accepts the resulting archive and report-provided package/provenance pins.
+The selection pins the entire original association and requires distinct
+landmark/physical-group IDs, existing twin feature ordinals and enduring-static
+support. It cannot override coordinates, descriptors, source facts or error bounds.
+
+Every original source, including unused views, remains in the complete manifest
+along with original/rectified image lineage, camera/clock/privacy declarations,
+all native pair/component alternatives and the producer admission receipt.
+Exact source-record bytes are hashed independently. The manifest includes the
+semantic atlas, excludes the final package hash, and is itself pinned by the
+archive. The final report embeds the exact manifest UTF-8 string plus archive
+and report-body identities, avoiding recanonicalization and circular hashing.
+A dedicated bounded report reader handles that long string without changing
+ordinary intent or supervisor-report limits.
+
+Complete geometry, manifest and archive serialization precedes final original
+source/current-privacy revalidation. Analysis failures create no atlas/report.
+Output is private and create-only; archive synchronization precedes report
+publication. Cancellation is checked after the archive commit and before stdout.
+Publication I/O failures can leave newly created files for explicit inspection.
+No calibration or canonical world revision is activated, and unknown absolute
+landmark error remains separate from conditional pixel covariance.
+
+**45 exact-source adapter/image tests pass**, including 12 new selection,
+dispatch and actual binding contracts. **8 strict JSON reader tests pass**,
+including 3 new report-capacity/identity tests. **4 actual production atlas
+serializer tests pass**, covering all six eligibility dispositions, complete
+alternatives, unused views, source/receipt identities, exact output/work bounds
+and initial/terminal cancellation. Eight emitted receipt/geometry fixtures and
+their actual selection rows pass standard Draft 2020-12 validation. The catalog
+resolves 119 schemas and 1,521 references with zero errors. Strict adapter/reader
+Clippy passes. The separate renderer harness's strict lint check reports two
+existing unchanged helper warnings; it reports none in the new renderer/tests.
+
+Ten real retained CLI tests are added for stereo and three-camera export,
+archive/provenance roundtrip, v2 cropping, source corruption, current privacy,
+preflight, resource/cancellation refusal and private/exclusive publication.
+At initial publication, these owner tests and the current CLI had not completed
+genuine typechecking or execution because shared memory pressure killed the
+local reference build and ordinary disk capacity was exhausted. Subsequent
+[hosted checks of exact commit 6a85bb0](https://github.com/Dicklesworthstone/franken_surveillance_system/actions/runs/41279511798/job/124770256145)
+**compiled the production scene-fuse binary** and executed all **33 retained
+localization owner tests**, including the 12 rectified-feature contracts, plus
+the existing retained-localization CLI integration test. Those jobs did not run
+the scene-fuse test binary, so the ten atlas owner tests remain unexecuted at
+this checkpoint. The overall hosted workflow failed on other test/qualification
+issues and is not release authority. No runtime substitute or weakened gate was
+used. See `docs/RECONSTRUCTED_LOCALIZATION_ATLAS.md` for selection/report fields,
+consumer handoff and publication recovery.
+
+## Native reconstructed localization atlas (2026-11-01, producer/consumer bridge)
+
+`fss-twin::reconstruction_atlas` now turns actual native pair or multi-camera
+reconstruction into the existing `LocalizationAtlas` and `FSATLAS1` archive
+contract. This closes the missing native producer between reconstructed image
+features and image-to-map camera registration; the existing localizer consumes
+its output unchanged.
+
+The bounded producer requires the exact entire association, complete original
+source-record pins and explicit per-point landmark/physical-group/twin-feature/
+enduring-static declarations. It copies actual solved positions and native
+descriptors, retains every member-view binding and complete participating frames,
+and preserves all unused sources and candidate dispositions in its receipt.
+Unknown, refused, unresolved, aliased or nominally occluded selections fail
+atomically. A capture-window stationarity assertion does not establish enduring
+landmark eligibility. Conditional pixel covariance remains diagnostic; absolute
+landmark error is always unknown, including when the twin has a declared map
+error. No calibration, source-access authority or physical identity is activated.
+
+**21 new native tests execute successfully:** 16 admission/lineage/ordering/
+work/cancellation contracts and 5 independent reconstruction/archive/localization
+contracts. Both pair and three-camera cases reconstruct twelve independently
+authored nonplanar points, round-trip the real archive and recover a fresh
+rotated/translated camera within the explicit 1e-7 center/reprojection fixture
+tolerance. A separate real masked-grayscale pipeline executes extraction,
+stereo/multi-view reconstruction, archival and fresh-image localization; it
+recovers the expected depth-10 plane and camera center [0.5, 0, 0] while preserving
+planar alternatives. Replay-exposure laundering and descriptor-alias support
+controls pass. All 59 existing library tests and strict Clippy for the library
+and both new targets also pass. These are synthetic contract results, not field
+accuracy or production qualification.
+
+The pure API performs no source reopening or publication. Retained integration
+must bind complete original source/rig/image/clock records and revalidate custody
+and current privacy after serialization. `docs/RECONSTRUCTED_ATLAS_API.md`
+documents this ownership boundary, unknown-error semantics and archive handoff.
+The native API is compiled and executed; the earlier resource limitation for
+current retained-owner/CLI integration checks remains separate. Broad FSS-097
+and geometry qualification remain open.
+
+## Retained scene matching with lens correction (2026-11-01, command integration)
+
+`fss-scene-fuse retained-match` and `retained-multimatch` now accept exact v2
+queries that explicitly select direct pinhole input or native lens correction
+per retained camera. Brown–Conrady, central fisheye and pinhole crop/resize use
+the sealed rectified-feature owner below. Mixed corrected/direct cameras are
+supported. The source grid and lens/range declaration come from the query; the
+target pinhole intrinsics come only from the pinned rig. The native plan computes
+the actual corrected image domain. All selected lens plans are admitted before
+any native source decode can publish a JPEG derivative. Existing v1 wire fields,
+direct feature identities and successful report shapes remain unchanged.
+
+V2 reports preserve original retained capsule, decoder, native dimensions and
+pixel identities and add separate corrected-image lineage. Each view exposes
+its actual output grid, full model, sampling-map digest, propagated mask and
+complete mapping/privacy accounting. Original exposure remains unchanged.
+Current privacy is applied to positive-weight source interpolation taps and the
+full corrected descriptor footprint; complete original custody/current privacy
+is revalidated before releasing the analysis. Compilation, resampling and report
+work share the existing cumulative geometry allowance. All maps are released
+after extraction. Output-pixel noise and omitted interpolation/lens/camera error
+remain explicit assumptions rather than calibrated accuracy claims.
+
+**33 exact-source native adapter/report tests execute successfully:** 18 existing
+pair/multi-camera cases, 12 new v2 declaration/model/receipt-binding cases and
+3 production image-report cases. Strict scoped Clippy passes. Actual direct,
+pinhole-corrected, Brown and fisheye image-processing outputs each pass standard
+Draft 2020-12 validation against both v2 report schemas. The complete schema
+catalog resolves 116 schemas and 1,439 references with zero errors.
+
+Separate original-JPEG native geometry controls execute decoding, rectification,
+extraction, matching and geometry reporting: two corrected sources recover
+24 stereo points at depth 10; mixed corrected/direct sources recover 16; a
+three-camera scene with only its third camera corrected recovers 13 complete
+triples and 14 pairs, with no unresolved components. These zero-distortion crop
+controls have maximum depth error below 2e-14. The independently rendered
+nonzero-lens controls and their looser integer-feature tolerance are described
+in the native section below; these fixture results do not establish field accuracy.
+
+Five new real pair-command tests and two multi-camera command tests cover source
+composition, corrected/native identity separation, current privacy, later-view
+lens preflight, source-grid mismatch, cancellation and work/output limits.
+**The current new reference/CLI integration has not completed genuine metadata
+checking or runtime execution:** the updated reference metadata build was killed
+by shared memory pressure before owner tests, so a dependent CLI build was not
+repeated. Earlier dated typecheck results below cover their earlier revisions,
+not these new owner or command changes. No substitute runtime or weakened gate
+was used. `docs/RETAINED_LENS_MATCHING.md` documents exact v2 declarations,
+resource limits and remaining calibration/motion boundaries. Aggregate FSS-097
+and FSS-099 qualification remains open.
+
+## Retained raw-lens feature extraction (2026-11-01, native composition)
+
+The sealed retained feature owner now exposes
+`extract_recorded_rectified_features` alongside the unchanged direct-pinhole
+entry point. A caller compiles an exact native `RectificationPlan`, then the
+owner authenticates retained JPEG/AVC/HEVC, applies the current source privacy
+mask, corrects lens/crop/resize geometry and extracts actual target-grid features.
+The small native `extract_raw_features` composition is independently executable.
+Both entry points return the same sealed source owner and require final original
+custody/current-privacy revalidation before downstream release.
+
+Source luma/dimensions/native decoder receipts retain their original meaning.
+Corrected pixel/domain/dimensions/mask identities and complete native mapping
+receipts are separate. Original exposure is preserved. Brown–Conrady, central
+fisheye, explicit pinhole crop/resize and declared full/video luma transfer reuse
+the existing native rectifier. Every positive-weight source interpolation tap
+must be allowed before the full descriptor-footprint check. Folded or unsupported
+models refuse. No lens estimation, measured calibration or effect activation is
+implied. Direct feature v1 digest/work behavior and existing localization receipt
+encoding remain unchanged; corrected features have a separate versioned identity.
+
+**61 native tests execute successfully:** 8 new rectified-feature contracts plus
+13 rectification, 6 rectified-localization, 17 pair-association and 17 multi-camera
+association regressions. Independently rendered Brown, fisheye and mixed-lens
+images each recover at least 12 stereo and 8 three-view points on a known z=10
+plane within the explicit integer-feature/resampling fixture tolerance. Exact
+crop/resize feature equality, source-mask noninterference, full footprint privacy,
+exposure/domain binding and early/late resource cancellation also pass. Strict
+scoped native Clippy passes.
+
+Twelve new real retained-source owner tests cover JPEG/AVC/HEVC lineage, cropping,
+replay, later JPEG publications, raw/native custody corruption, privacy withdrawal,
+invalid modes, work/source limits, cancellation and frozen direct-v1 compatibility.
+The new genuine pinned Cargo check was SIGKILLed while compiling reference-library
+metadata under shared memory pressure, before reaching these test bodies. Thus
+current owner metadata/typechecking and runtime execution remain unverified;
+the executed native tests above do not substitute for those integration checks.
+Cleanup of an obsolete task-owned build cache recovered disk space, but measured
+reclaimable-adjusted memory headroom remained below the retry threshold.
+`docs/RETAINED_FEATURE_EXTRACTION.md` documents the public
+API, complete source/derived distinction and independent resource axes. This
+advances the imaging-model contract; broader calibration and association gates
+remain open.
+
+## Joint reconstruction across retained cameras (2026-10-31, static-feature integration)
+
+`fss-scene-fuse retained-multimatch` now connects **3–8 authenticated retained
+JPEG/AVC/HEVC views** to a complete native correspondence graph and joint static
+point reconstruction. Each original source uses the sealed feature owner and
+strict source/rig/image/clock/privacy contract introduced by `retained-match`.
+The shared parser preserves the pair interface. Actual selected features are
+bounded to 128 per view and 256 total before complete pair expansion; excess
+inventory refuses without hidden truncation.
+
+Every camera pair retains all descriptor and epipolar decisions, feature outcomes,
+point estimates and refusals. Connected selected links become explicit components.
+A joint solve requires one feature per camera, complete direct support between
+every pair of members and all participating views with zero outlier removal.
+Repeated-camera conflicts and incomplete cycles preserve the entire component
+without greedy reassignment. A third view can resolve weak pair geometry while
+the original pair refusal remains visible. Unmatched singleton features remain
+diagnostics. Components can use only two views; the report names their actual
+support rather than crediting every selected camera.
+
+Full scene and subset capture hulls remain intact. Original requested scene time
+and the time clamped into each subset hull are explicit and evidence-bound under
+the declared static-scene assumption. No clock synchronization or motion is
+inferred. The complete source-dependent analysis is serialized before all owners
+revalidate original custody and current privacy. Entry/final anchors distinguish
+ordinary JPEG publications. The report includes every source capsule/native
+receipt, current masks, all alternatives and final resource counters. No camera
+calibration, physical identity, world revision, event or effect is activated.
+
+Native association passes **17 new and 17 existing pair contracts**. Coverage
+includes independent 3/4/8-camera coordinates, actual extracted image crops,
+conflicting/incomplete cycles, joint inconsistency despite pair solutions,
+third-view recovery, exact maximum inventory, empty-view validation, staggered
+times near u64 limits, budget/cancellation and evidence sensitivity. The shared
+retained binding passes **18 executed tests**: 11 unchanged pair and 7 new
+multi-camera cases. The new renderer passes **11 executed tests**, preserving
+all 28,672 pair decisions and 1,792 pair-specific feature outcomes at the
+maximum inventory. Strict scoped native/parser/renderer Clippy passes; scratch
+harness exclusions apply only to previously existing unrelated helper warnings.
+
+An original synthetic three-camera JPEG oracle executed native decoding,
+feature extraction, association and reporting: **26 three-camera points and
+6 two-camera points**, all at independently specified depth 10, with 6 unmatched
+features. Its third source explicitly models a different camera center and
+principal point over the authored plane; it makes no physical-independence claim.
+Ten actual production geometry reports, including conflict/refusal/empty/time
+and maximum-inventory cases, pass standard Draft 2020-12 JSON Schema validation.
+The complete catalog resolves **112 schemas and 1,142 references** without errors.
+
+The production scene/file commands and complete CLI test configuration pass
+genuine pinned, locked/offline Cargo check, including **eight new real retained
+owner tests** for source pins/custody, privacy, permutation, complete timing,
+budgets/cancellation and private exclusive output. These owner tests are
+typechecked, **not runtime-executed**: the earlier genuine Asupersync object
+build exceeded the shared memory ceiling, and no substitute runtime or repeated
+object attempt was used. See `docs/RETAINED_MULTICAMERA_MATCHING.md` for exact
+inputs, component outcomes, 32 MiB complete output and cumulative resource bounds.
+Field association quality, moving-object identity and aggregate FSS-099
+qualification remain open.
+
+## Automatic matching of retained native camera frames (2026-10-31, integration)
+
+`fss-scene-fuse retained-match` now connects authenticated retained JPEG, AVC
+and HEVC frames to automatic masked native feature extraction and existing
+cross-camera static-point reconstruction. It closes the gap between local-JPEG
+matching and retained fusion that still required supplied pixel correspondences.
+No exported frame or detector package is required. The existing `fss-file decode`
+output now exposes exact capsule/source/sensor/stream selection pins for this path.
+
+The strict query pins original import/capsule/encoded bytes/sensor/stream and
+native coding-segment selection. All pins are checked before decoding. Complete
+video ranges are bounded to 64 segments; a later malformed or skipped selected
+picture cannot produce a partial successful result. The sealed native feature
+owner reuses the existing decoders and derives dimensions, exposure, source
+capture interval and current privacy from retained custody. Full descriptor
+footprints must be allowed; the query cannot substitute pixels, timestamps,
+dimensions or masks. Camera/source mapping, an undistorted pinhole image domain,
+additive interval clock alignment and stationary common features remain explicit
+assumptions. Distinct retained sensor IDs do not independently certify a physical
+camera placement.
+
+The complete report preserves every candidate pair and selected feature, source
+capsule and native decoder receipt, successful 3D estimate and geometric refusal.
+Source owners revalidate original ranges and current privacy after analysis;
+JPEG also reopens its exact retained pixels/receipt without regenerating damaged
+custody. Ordinary JPEG derivative publication can advance the ledger, so entry
+and final anchors remain separate and the second valid decode does not stale
+the first source. No event, identity, camera calibration or world revision is
+activated. Shared original-read accounting includes final validation and original
+HTTP/RTSP provenance. JPEG work, video byte/luma admission and geometry work are
+separate bounded axes, with final costs in the report.
+
+The exact-source pure parser/binding suite passes **11 tests**, including full
+interval/offset propagation, source/camera/privacy/clock mismatch refusals and
+native geometry recovering an independent expected depth of 5. The existing
+matching parser/pipeline/report harness passes its **16 production tests** plus
+one fixture emitter; all five original emitted report hashes remain unchanged
+after sharing the complete pair/feature/hypothesis serializer. Seven genuine
+reference-owner tests and nine real CLI-owner tests cover source removal,
+JPEG/AVC/HEVC custody, privacy withdrawal, later decode publications, corruption,
+budgets/cancellation and private exclusive output. The seven reference tests,
+production scene/file commands and all current CLI test configurations pass
+genuine pinned Cargo check. Runtime owner tests have not executed: the prior
+Asupersync object build hit the shared 8 GiB ceiling, and no substitute runtime
+or repeated object-build attempt was used. The 110-schema catalog resolves all
+1,006 references without errors.
+
+See `docs/RETAINED_SCENE_MATCHING.md` for source discovery, exact input examples,
+limits, original/declared timing and report interpretation. This implements a
+bounded static-feature portion of FSS-099; field association quality, moving
+object identity and aggregate qualification remain open.
+
+## Native raw DFL detector-head conversion (2026-10-31, detector compatibility)
+
+`fss-infer import-onnx` recipe version 3 now converts an explicitly declared
+static anchor-free DFL distance head into decoded pixel-corner boxes. This
+closes a detector-package gap that previously required predecoded coordinates.
+The new output uses the existing package detector's source projection, privacy,
+score/objectness interpretation, candidate bounds and NMS. The original raw
+output, unrelated source outputs, source weights and complete ONNX bytes remain
+retained; no foreign inference runtime, new operator or FMPK wire format appears.
+
+The profile requires batch one, explicit rows/channels layout, 2–32 bins per
+left/top/right/bottom side, and 1–8 ordered unique feature strides. Exact grid
+rows derive from the declared divisible image dimensions, with fixed half-cell
+centers. Native Softmax and ascending-bin MatMul compute expected distances;
+F32 multiplication by stride precedes pixel-center subtraction/addition. Scores
+are copied unchanged and sigmoid is not silently applied twice. The converted
+output has a new explicit name, rows layout and pixel-corner semantics. Invalid
+shapes, names, grid counts, vocabulary or unsupported conventions refuse.
+
+The original import quotas continue to cover all added work, nodes, tensors,
+parameters and retained compile-time controls, including preceding normalization.
+Rows are bounded to 32,768 and the explicit head allowance. The decoder adds
+13 native nodes, or 14 for channel-layout input, and three parameter arrays
+containing exactly `4 * (3 * rows + bins)` bytes. Cancellation cannot yield a
+partially converted graph. V1/v2 recipes retain their original semantics.
+
+The complete model regression passed **253 tests**. The focused DFL target
+passed **14 tests**, including 12 independent new numerical/artifact/resource
+contracts and two included scalar-executor smoke tests. Final-source focused
+tests and strict scoped Clippy passed after the name-length preflight adjustment.
+Independent F64 oracles cover uniform, asymmetric and extreme logits, both
+layouts, rectangular multilevel grids, unsorted stride order, maximum score
+fields, exact raw/source/score preservation and actual graph/Safetensors reload.
+The original 1,900-byte RGB-dependent raw-head fixture also has real package
+projection/privacy/NMS tests; the seven-test reference target passes genuine
+Cargo typechecking. Production inference and the complete CLI test configurations
+also pass genuine Cargo check against the pinned runtime. The 108-schema
+catalog resolves all 893 references without errors.
+
+The matching, retained-fusion and ONNX package command tests remain separately
+tracked from native numeric execution. A single serialized runtime object build
+was killed by SIGKILL while compiling genuine Asupersync at the shared 8 GiB
+memory ceiling; no command tests executed in that attempt. The full production
+and CLI test configurations do typecheck against the real pinned runtime.
+See `docs/ONNX_PACKAGE_IMPORT.md` for the exact recipe and arithmetic boundary.
+
+## Automatic native JPEG correspondences and 3D scene points (2026-10-31, integration)
+
+`fss-scene-fuse match` now connects two exact local JPEG sources to native masked
+FAST/BRIEF extraction, automatic symmetric descriptor association, nominal
+bidirectional epipolar gates and existing twin-based static-point fusion. It
+removes the need to supply individual pixel correspondences for this profile.
+The complete inventory includes every Cartesian pair and selected feature,
+all equal nearest alternatives, native 3D estimates and geometric refusals.
+Appearance ambiguity is evaluated before geometry, and a missing runner-up or
+tied best descriptor cannot become a unique match by discarding competitors.
+
+The strict query binds original JPEG bytes, exact rig, image-domain mapping,
+explicit full-pixel or pinned exclusion-mask policy, shared clock/privacy and
+complete capture intervals. Full 33×33 descriptor footprints must be allowed.
+Decoded grids must match the authored nominal undistorted rig. Stationary common
+features, camera placement, capture-clock alignment and physical mapping remain
+explicit assumptions; local byte verification does not claim retained custody
+or physical identity. Unknown calibration error and mesh occlusion conflicts
+remain visible beside conditional pixel-noise covariance.
+
+Both baseline and progressive JPEG use the existing native decoder. One bounded
+work allowance and borrowed cancellation/deadline probe cover decoding, feature
+extraction, geometry and complete-report construction. The match-specific default
+is 2 billion units and maximum 5 billion: paired fully allowed 1080p feature detection
+alone needs over 1.27 billion. Previous supplied-point fusion limits stay unchanged.
+At most 128 features/view produce 16,384 pair rows; the complete report stays within
+8 MiB or refuses without trimming rows. Existing outputs are refused, new reports
+are private, and stdout/file bytes agree. No scene activation or effect occurs.
+
+The native kernel passes **17 actual Cargo tests** and strict scoped Clippy.
+The exact production parser/JPEG-pipeline/report source passes **16 tests**, and
+**three** decoder-probe contracts pass. Original separately encoded JPEG crops
+recover the independent expected depth 10 without manual correspondences. Five
+actual emitted query/report profiles cover complete/empty/geometry-refused/
+epipolar-unobservable/maximum-inventory outcomes; the maximum 128/view example
+retains 16,384 pairs and 112 points in a 3,783,946-byte complete report. Every profile
+passes a labeled local structural comparison to the schemas; no independent
+JSON Schema standards validator was available. The 107-schema catalog resolves
+all 880 references without errors.
+
+The genuine production scene and inference commands and all current CLI test
+configurations pass Cargo check against the pinned Asupersync runtime; the
+previous retained-fusion custody tests now typecheck too. Actual command-owner
+execution remains unverified: the runtime object build was killed at the shared
+8 GiB memory ceiling before executing tests.
+This is a bounded static-feature slice of FSS-099, not field association-quality
+qualification or closure of the broader cross-camera association bead.
+See `docs/SCENE_FEATURE_MATCHING.md` for exact semantics and an example query.
+
+## Explicit detector channel order and normalization (2026-10-31, native provisioning)
+
+ONNX RGB package recipes now have an explicit version2 for models requiring BGR
+input or channel-specific mean/standard-deviation normalization. Native image
+masking, resizing and optional unit scaling still run first. The converter then
+freezes the declared channel reorder and separate F32 `(x - mean) / std` operations
+into the immutable graph through existing Slice/Concat/Sub/Div operators. Means
+and divisors are in model-input channel order. No external inference runtime or
+new operator encoding is introduced; original source bytes, parameters and output
+names remain available for provenance. Version1 stays strict and unchanged.
+
+Finite-value and full RGB-range checks reject invalid or overflowing transforms.
+Generated nodes, tensors and parameters share the original import ceilings,
+including consumed compile-time controls. Every source branch consuming the image
+is rewired; a directly exported image input refuses rather than aliasing names.
+The privacy mask is applied before normalization, including nonzero normalized
+masked values. Decoder head interpretation and class labels remain explicit.
+
+The complete native model suite passed **239 tests**. Its new focused target
+passed **12 tests**, covering independent RGB/BGR and raw/unit pixel oracles,
+nonzero detector-head values, resize, canonical graph/Safetensors reload, source
+provenance, exact F32 division order, name collisions, quota exhaustion and
+cancellation. Strict scoped Clippy passed. The real package integration test target also
+passed Cargo check against the pinned runtime. Command and package execution
+remain unverified after a serialized Asupersync object build was killed at the
+shared 8 GiB memory ceiling; the additional integration tests are present.
+See `docs/ONNX_PACKAGE_IMPORT.md` for recipe versions and conversion examples.
+
+## Retained native detections in the property scene (2026-10-31, integration)
+
+`fss-scene-fuse retained-fuse` connects actual retained package detections and
+native tracks to the existing property twin, camera rig and multi-view solvers.
+It reconstructs static points, points with supplied velocity, or position and
+constant velocity inferred from staggered observations. The strict selection
+names exact native track/segment/detector-row/capsule identities; feature
+rectangles must remain inside their actual source detector bounds.
+
+The source owner authenticates complete retained custody and current privacy.
+Source-derived sensor identity, image dimensions, model comparison generation
+and full conservative capture intervals cannot be replaced by query fields.
+Explicit source-to-rig, undistorted-image, additive-clock and common-feature
+declarations remain assumptions. One physical source cannot masquerade as
+multiple scene cameras. Query-local aliases preserve original full identities
+without truncating content digests into synthetic persistent identities.
+
+The complete bounded report retains every original selected observation, full
+authority anchor, exact declarations, native geometric results and individual
+refusals. The sealed source owner revalidates all retained source bytes and
+privacy after geometry and report construction, before any report is released.
+A borrowed cancellation/deadline probe now reaches every geometry work charge
+without a detached timer. No event, calibration certificate or effect is activated.
+
+An exact-source native harness passed **14 tests**: eleven adapter/geometry
+contracts and three cancellation/Send+Sync contracts. It reconstructs a known
+point from three cameras and position/velocity from six staggered observations,
+and covers pins, image bounds, full timing uncertainty, source-camera consistency,
+visibility refusals, deterministic aliases and assumption-sensitive evidence.
+The complete current-source Cargo geometry/fusion suites passed **201 tests**;
+all **23** parser/rig/adapter tests also passed in the exact-source harness.
+The seven real-custody CLI tests now typecheck against genuine pinned
+Asupersync metadata, together with the full current CLI test configuration.
+Earlier metadata builds were killed under shared host pressure; a later
+serialized metadata build succeeded. A later object build was killed at the
+shared 8 GiB memory ceiling, so command execution remains unverified. The pure
+harness does not substitute for deployment recovery,
+custody or output tests.
+The 104-schema catalog resolves all 801 references without errors; the broader
+constitution scan retains 43 existing findings and none for this feature.
+See `docs/RETAINED_SCENE_FUSION.md` for the command, schema and validation boundary.
+
+## ONNX average pooling through native execution (2026-10-31, native model import)
+
+The opset-13 importer now admits static F32 `AveragePool-11` and
+`GlobalAveragePool-1` through the existing native graph executor. Two-dimensional
+AveragePool supports positive kernels/strides, explicit bounded padding and both
+padding divisor rules. GlobalAveragePool preserves output rank for ranks three
+through eight. Unsupported automatic padding, ceiling mode, dilation and dynamic
+shapes refuse explicitly.
+
+The lowering uses depthwise Conv2d with exact one weights followed by Div with
+exact integer counts, preserving native row-major F32 accumulation before the
+mean. It avoids reciprocal-weight rounding changes and introduces no new operator
+IDs, graph encoding, runtime dependency or execution backend. Generated tensors,
+parameters and nodes are admitted against cumulative limits before allocation;
+cancellation reaches generated-value construction and ordinary graph admission.
+
+The complete `fss-model-ir` suite passed **227 tests**, including **12** new
+pooling execution/artifact tests. The numeric checks use an independent coordinate
+oracle across 84 pooling profiles, rank-three-through-eight global pooling and
+subnormal/overflow/reduction-order cases. An immutable 830-byte synthetic Conv →
+AveragePool → GlobalAveragePool → Flatten → Gemm → Sigmoid fixture reproduces
+its output after canonical graph/Safetensors export and reload. Existing operator
+ID, graph-byte and other importer regressions passed. This qualifies bounded
+import and native execution, not trained detector quality or universal ONNX support.
+See `docs/onnx_import.md` for the exact admitted schema and numeric contract.
+
+## Unfused ONNX inference BatchNormalization (2026-10-31, native model import)
+
+The opset-13 importer now accepts the one-output inference form of
+BatchNormalization-9 with static F32 data and immutable channel parameters.
+This closes a concrete import gap for convolutional backbones and detector
+exports that retain their normalization nodes. The lowering uses the existing
+native Sub, Div, Mul and Add operators in declared F32 order; only the constant
+`sqrt(variance + epsilon)` denominator is evaluated at import. Immutable channel
+views avoid extra runtime reshapes or spatial weight replication. No foreign
+runtime, new operator ID or canonical graph byte format is introduced.
+
+Ranks one through eight, shared initializer/Constant parameters, source-output
+preservation and channel-specific broadcasting are admitted under the existing
+cumulative tensor, parameter, node and work quotas. Training, dynamic statistics,
+unsupported attributes, nonfinite values and invalid denominators refuse.
+Cancellation reaches every channel calculation and ordinary graph admission.
+
+The complete `fss-model-ir` suite passed **215 tests**, including the new native
+execution/artifact target's **10 tests** and its 66 numeric profiles. The retained
+857-byte synthetic Conv → BatchNormalization → detector-head fixture matches
+independent formulas before and after actual canonical graph/Safetensors reload.
+Strict targeted Clippy and changed-file formatting passed. Existing operator-ID
+and legacy graph-byte regressions also passed. This qualifies the import/execution
+seam, not trained detector accuracy or the full asynchronous package/CLI matrix.
+See `docs/onnx_import.md` for the exact admitted schema and numeric contract.
+
+## Live native RTSP/JPEG reception and image output (2026-10-31, reference)
+
+The JPEG lane now composes the existing RTSP session, Digest authentication,
+exact TCP framing and native socket owner with the new RTP/JPEG receiver and
+actual native luma/RGB decoder. Negotiation preserves the selected media ordinal,
+URI subtree, CSeq, Session, channels and expected SSRC. Static payload 26 may omit
+rtpmap; dynamic payloads require an exact JPEG/90000 offer. Conflicting mappings,
+unsupported selected parameters and ambiguous selection refuse.
+
+`LiveJpegConnection` owns one explicitly authorized, caller-resolved TCP route.
+Every operation probes live authority and independent transport/protocol/media
+bounds. Original accepted TCP chunks transfer before interpreted events; original
+RTP/RTCP frames remain available through failures, reordering and cancellation.
+Those frames fit the existing `DatagramArchive::prepare_frame` publication path
+without a JPEG-specific archive format. Complete reconstructed images pass through
+the actual digest-checking, cancellable native pixel decoder. A decode refusal
+returns the intact reconstruction and source maps without partial pixels.
+
+The focused exact-production-source target passed **67 native tests**: ten new
+JPEG protocol/pixel contracts, five new real TCP contracts, six existing ONVIF
+metadata-selection cases and 46 existing authentication, AVC/HEVC session, SDP
+and native TCP cases. Real loopback checks exercise one-byte/17-byte/4096-byte
+delivery, partial writes, original-wire ordering, Digest challenge and unsent-request
+ownership on queue refusal, complete pixels, actual socket EOF and exactly one
+terminal retirement. Final scoped Clippy passed with only the independently
+identified unchanged `message.rs` counter-loop lint isolated; all new code remained
+subject to fatal warnings, with no source/configuration allowance added.
+
+`fss-capture-rtsp jpeg` now supplies one bounded native connection, original
+RTP/RTCP publication before further media progress, complete native luma
+validation, and exact cold replay. Frame provenance binds actual source packets
+and earlier cached quantizers. Capture time stays unknown; saved-prefix
+exhaustion never invents EOF.
+
+Production and test targets typecheck against genuine runtime/storage. The earlier
+67 protocol tests ran before these additions; the new custody, replay and
+CLI/runtime tests have not executed because shared host capacity blocked native
+code generation. No dependency or qualification gate was replaced. Physical-camera
+and full release qualification remain open.
+See `docs/rtsp_jpeg_capture_cli.md` and `docs/jpeg_datagram_reconstruction.md`.
+
+## Handoffs from authenticated retained package tracks (2026-10-31, integration)
+
+`fss-scene-fuse retained-handoffs` now joins existing retained detector custody,
+native tracking and the conditional anonymous continuity planner. An exact
+selection names at most 32 tracks across four report/label/tracker recipes.
+The source owner reconstructs actual native assignments and verifies retained
+records, reports, manifests, capsules, original source bytes and current privacy.
+Camera generations and model comparison keys come from those source facts;
+the input cannot inject replacement sensors, detections or capture endpoints.
+
+Every assigned observation remains present with its original signed 128-bit
+capture interval, clock basis, score bits, source-grid bounds, inference/head
+identities and confirmation state. First/last actual observations supply track
+endpoints in native display order. Declared clock offsets use conservative
+checked interval addition and cannot upgrade an estimated clock. Calibration,
+common-clock identity, transit and costs remain explicit assumptions.
+
+The command binds the complete current authority anchor and every retained
+source binding around the unchanged complete planner report. Duplicate native
+aliases, reused assigned observations, incompatible generations, missing or
+damaged custody and privacy withdrawal refuse rather than omitting evidence.
+The sealed owner reopens the selected analyses before release and compares
+the full projection, anchor, root and principal. One shared 4 GiB original-byte
+allowance spans all recipes, clones and revalidations, including original
+HTTP/RTSP provenance reads. Cancellation, arithmetic and complete-output bounds
+remain explicit. Existing deployment startup retains its normal recovery behavior;
+the handoff operation creates no identity, event or effect authority.
+
+The exact production contract, parser, planner adapter and renderer passed
+**13 native tests**; all **12 existing handoff-adapter tests** passed again.
+The emitted 15,858-byte typed-fixture report passed the scoped instance checker,
+and 16 invalid mutations refused. Four schemas resolve 168 references with no
+findings under the repository's offline validator. Scoped Clippy passed with
+only the four independently established pre-existing graph lint categories
+isolated; no source or configuration allowance was added.
+
+Six real retained-owner integration cases and five command/context cases were
+added and independently source-reviewed, but **have not executed**: the full
+asynchronous reference build still exceeds this shared host's memory allowance.
+The native transform fixture does not establish authenticated I/O execution,
+trained-detector quality, physical identity accuracy or release qualification.
+See `docs/RETAINED_HANDOFFS.md` for the executable command, exact source contract,
+assumptions and these verification boundaries.
+
+## Native RTP/JPEG reconstruction and pixels (2026-10-31, reference)
+
+The first-party packet owner now reconstructs complete RFC 2435 baseline JPEG
+images from ordered RTP, including 4:2:2/4:2:0 sampling, restart intervals,
+computed quality tables, immutable cached Q=128..254 tables and fresh Q=255
+tables. It composes with the existing sequence/reorder owner and preserves the
+original datagram, exact copied image spans, interpreted header dependencies
+and generated JPEG ranges. Reused tables keep their original packet provenance.
+
+Bounds cover derived image bytes, fragments, cache entries, dimensions and an
+unrenewable pending-image lifetime. Gaps, malformed offsets, parameter drift,
+expiration, cancellation and end of input retire incomplete images without
+publishing a prefix. Transport completion is separate from entropy validity:
+the actual native JPEG decoder must validate the reconstructed image before
+releasing luma or RGB. No foreign production dependency or new runtime is added.
+
+The focused native verification passed **45 tests**: 20 packet contracts,
+eight new actual RTP/JPEG pixel cases and 17 existing baseline JPEG cases. The
+final 28 new cases passed again after completing output ownership. Six retained
+synthetic images cover both sampling layouts, extreme quantizers, restart
+markers and edge blocks; native luma agrees with independent retained FFmpeg
+6.1.1 reference output within the existing one-sample tolerance, and native
+luma/RGB agree with native decode of the original JPEG. Scoped Clippy passed
+with only the independently identified existing `result_large_err` category
+isolated; no allowance was added to repository configuration or source.
+
+This checkpoint qualifies the bounded packet reconstruction and native pixel
+path, not a physical camera, live transport, capture synchronization, durable
+custody or the release matrix. See `docs/RTP_JPEG_REFERENCE.md`.
+
+## Static ONNX detector shape programs (2026-10-31, reference)
+
+The native importer now evaluates source-authored static shape programs instead of
+requiring an external graph simplifier for these bounded detector heads. `Shape-13`
+reads validated dimensions; constant INT64 `Gather`, `Squeeze`, `Unsqueeze`, `Concat`,
+`Identity`, `Add`, `Sub`, `Mul` and `Div` build exact scalar/vector controls for existing
+reshape and split lowering. Negative indices, scalar-versus-vector broadcasting and
+truncation toward zero retain their ONNX semantics. Overflow, division by zero, dynamic
+integer data and unsupported schema attributes refuse. The profile admits at most eight
+control elements and charges every generated value to the cumulative import allowances.
+
+No runtime integer operator, new frozen IR encoding or foreign production dependency is
+introduced. Metadata-only parameter uses can disappear from runtime weights; simultaneous
+data uses and all runtime input bindings remain. A retained 1,416-byte synthetic Conv/head
+fixture computes its reshape and channel partitions from the original shape subgraph,
+lowers to seven existing data operators and two F32 weights, and executes through the
+actual scalar executor before and after canonical graph/Safetensors artifact reload.
+
+The focused native target passed **19 tests** (17 new cases and two executor smoke tests),
+including independent output oracles, exact 328-byte aggregate admission, values above
+2^53, signed division, negative/repeated indices, malformed/unused controls, source-name
+collisions, all truncated prefixes and cancellation checkpoints. Strict scoped library,
+shape-target and previous detector-target Clippy passed without allowances. The full model
+package regression was not rerun for this checkpoint; no full CLI, trained-detector or
+release qualification is claimed. See `docs/onnx_import.md` and `docs/ONNX_PACKAGE_IMPORT.md`.
+
+## Retained in-band recording replay (2026-10-31, integration)
+
+File ingestion and codec sniffing now select the added native `avc3`/`hev1` profile.
+An explicit versioned omission marker retains the complete original sample entry,
+while every sample and all remaining source bytes keep their exact custody tiling.
+Current H.264/H.265 ranges bootstrap from that retained entry and the selected IDR/IRAP,
+then carry bounded parameter state through later samples. Cold replay can therefore
+recover a later configuration generation without reopening the original input path or
+silently substituting first-GOP parameters.
+
+New in-band reconstructions bind distinct `mp4-inband-bootstrap:v3` decoder identities
+in the existing frame-receipt slot. Native publication/cold reads, pixel-change output,
+direct file/video decoding and video approval plans carry the actual reconstruction
+generation. Conforming historical static-source receipt bytes remain unchanged.
+Fixed watch/corroboration/long-dwell/cascade/health/tolerant recipes select historical
+range aliases and explicitly refuse the added import marker. Malformed multi-picture
+or incomplete-picture samples now refuse in both generations; no compatibility promise
+preserves incorrect source attribution. Any range failure clears staged outputs and
+makes the range terminal, including cancellation and source-read failure.
+
+The shared sample-boundary implementation is the exact production code exercised by
+the native media tests, whose full **413-case** regression passed. Scoped container and
+codec Clippy passed without allowances; the final model detector target also passed
+16 cases and strict scoped Clippy. The new retained-custody/publication and complete
+CLI tests are authored and source-reviewed but **have not executed**: building the full
+asynchronous reference dependency exceeded this shared host's memory limit. Native
+boundary verification does not establish end-to-end retained-runtime qualification.
+See `docs/RETAINED_DECODE_WORKFLOW.md` and `docs/MP4_INBAND_CONFIGURATION.md`.
+
+## Native in-band MP4 configuration and atomic sample boundaries (2026-10-31, reference)
+
+The opt-in `AvcMp4::parse_inband*` entrypoints now admit bounded `avc3` and actual
+in-band `hev1` configuration, including empty/partial sample entries, same-ID SPS/PPS
+replacement and later entry-only PPS activation. Indexed and fragmented recordings share
+the checked sample/configuration join. Exact referenced parameter bytes, original spans,
+sample ticks and configuration generations survive extraction. Every selected random-access
+range and following GOP must obtain each definition from the original entry or within that
+range; an earlier GOP cannot silently supply a missing dependency. The historical parser
+entrypoints and conforming static-source extraction bytes retain their existing behavior.
+
+`InbandSampleEntry` provides cold bootstrap from the original entry and selected sample.
+Its bounded owned streaming configuration handles subsequent tuple changes, accumulates
+input/NAL/table/sample allowances and becomes terminal after failure or cancellation.
+The shared native access-unit driver stages output until exactly one complete picture is
+validated, with a precise leading-RASL exception for HEVC. Non-flushing pending-picture
+queries catch a complete picture followed by an incomplete second picture. Early refusal
+of a second picture also bounds temporary surfaces. Display-order reordering remains intact.
+
+All **413 native media tests passed**: 88 container, 165 H.264 and 160 H.265, including 27
+in-band configuration tests, nine tests of the exact production sample-boundary driver
+and six codec boundary tests. Sixteen synthetic recordings match strict independent
+FFmpeg 6.1.1 pixel oracles across resolution changes, multiple parameter IDs, B ordering,
+multiple/dependent slices, fragmented/indexed layouts and 1/2/4-byte NAL lengths.
+Removing the required entry-only PPS makes both dedicated oracle recordings fail.
+The Rust tests invoke only native implementations. Main10 metadata admission does not
+upgrade the native HEVC pixel profile. See `docs/MP4_INBAND_CONFIGURATION.md`.
+
+## Executable anonymous handoff query (2026-10-31, reference)
+
+`fss-scene-fuse handoffs` now exposes the native continuity planner through a strict,
+bounded owner-local JSON query. It retains every declared tracklet and ordered-pair
+disposition, ranked globally consistent path covers, the complete admitted implicit
+family, the all-singleton explanation and both full native certificates. Source, clock,
+calibration and model handles remain explicit caller assertions; this standalone path
+does not fabricate source authentication or a deployment ledger anchor.
+
+The command accepts an exact input-document SHA-256 pin, shared solver-work allowance,
+deadline and complete-report byte limit. Cancellation and native budget errors preserve
+their typed stable codes. A requested report is exclusively created as a private file
+after complete computation; its newline-terminated bytes match stdout. Existing paths,
+symlinks, unknown/duplicate fields, coercive integer spellings and truncated answers
+refuse. The existing simultaneous scene-reconstruction interface remains available.
+
+The complete graph package passed **238 tests** (208 prior, 18 continuity and 12 actual
+production parser/adapter/renderer tests). The final 12 adapter cases and scoped graph
+lint passed again after typed-error integration. A real native invocation produced the
+9,270-byte three-camera report with two cost-22 alternatives, five admitted links, twelve
+pair dispositions and the cost-40 all-singleton cover. Both schemas pass the offline
+reference validator (102 references, zero new findings); the exact report passes the
+scoped instance checker and all twelve invalid report mutations refuse. The four CLI
+file/context tests are authored but not executed: full CLI/reference compilation remains
+blocked by the asynchronous dependency's shared-host memory demand. See
+`docs/SCENE_HANDOFFS.md`; this is not release or authenticated-association qualification.
+
+## Global anonymous tracklet handoff paths (2026-10-31, reference)
+
+The native `continuity` planner composes up to 32 camera-local tracklets into globally
+consistent anonymous paths using the existing certified Hungarian/Murty assignment
+implementation. It prices declared links and path births/ends, retains every original
+tracklet, and returns all ordered-pair dispositions with complete source/generation pins.
+Missing, invalidated and redacted support disables incident links while retaining the
+member as a singleton. A shared property/session/privacy/clock scope and compatible
+model generations are mandatory; same-camera links also preserve camera/calibration
+generations. These inputs remain owner declarations, not authenticated source custody.
+
+Full capture intervals must prove strictly forward order and satisfy the transit window
+for every locally valid endpoint choice. Widening uncertainty cannot add an admitted
+link. Failure of this conservative gate means a link is not established by this profile;
+it does not prove physical impossibility. The complete admitted DAG and in/out-degree
+constraints preserve the exact implicit family, including an explicit all-singleton
+explanation. Displayed alternatives are an exact ordered prefix with conservative
+exhaustion reporting. No path or cost becomes a physical identity or probability.
+
+Eighteen native continuity contracts and all 208 prior graph tests passed. The new tests
+include 256 exhaustive small edge-subset cases/permutations, 96 interval-widening cases,
+every cancellation checkpoint, exact shared operation/output budgets, numeric extremes,
+and the maximum 32-tracklet/992-declaration input. The actual paired query adapter also
+passed 12 native tests. Scoped kernel/test Clippy passed with only four independently
+confirmed pre-existing graph lint categories; the full strict baseline remains unchanged.
+The additive assignment cancellation wrappers preserve successful legacy outputs and
+counters. See `architecture/continuity_reference.json`; source authentication, simultaneous
+multiview fusion, identity accuracy and full association qualification remain open.
+
+## ONNX detector branches and padded spatial pooling (2026-10-31, reference)
+
+The source-preserving ONNX importer now admits static opset-13 `Split` with up to
+eight outputs, including equal and explicit positive partitions and negative axes.
+Each branch lowers to the frozen native `Slice` operator and preserves source output
+order and exact F32 bits. Embedded partition controls remain import-only; all emitted
+nodes, tensors and copied controls consume the existing cumulative admission budgets.
+Other operators retain their one-output restriction. The importer also admits explicit
+nonzero `MaxPool` padding under the existing floor-mode, dilation-one native geometry
+contract. Every admitted window overlaps real input, so padding cannot inject zeros
+into negative-valued feature maps.
+
+This supplies detector channel branches and spatial-pyramid pooling without adding
+runtime operators, changing the frozen IR or acquiring a foreign production runtime.
+A retained synthetic Conv/Split/three-pool/Concat/head fixture executes through the
+actual native scalar executor both before export and after canonical graph/Safetensors
+reload. Independent array oracles cover partitions, signed-zero/extreme bits, asymmetric
+padding, strides and negative-only pooling. Malformed controls, source collisions,
+unsupported profiles, cancellation and exact aggregate limits refuse without a graph.
+The complete model-IR package passed **186 native tests**, including the 16-test detector
+block target and the unchanged canonical baseline fixture. This verifies the admitted
+blocks, not a newly qualified trained detector or full asynchronous package CLI.
+See `docs/onnx_import.md` for the precise profile and fixture identity.
+
+## Retained-source stream capacity and failover command (2026-10-30, reference)
+
+`fss-event graph capacity` now exposes the native capacity planner against one retained
+site/window snapshot. Operators declare camera rates, directed named links, recorder
+acceptance limits, rate/cost units and failed nodes/links. Every selected sensor must be
+known in the retained projection; positive whole-window coverage is reported separately
+and never creates or suppresses a declared demand. An optional expected coverage digest
+rejects stale source selection before solving. The complete strict JSON report carries
+every camera shortfall, link/recorder flow, typed cut, source witness, composition witness
+and both full certified solver proofs. Reordering declarations preserves the report;
+changing a topology or failure assumption changes its bound identity.
+
+The command is bounded and read-only. Source support is selected in one cancellable pass;
+source read/projection bounds remain independent of the shared native solver allowance.
+Unknown declarations, stale source, cancellation, overflow or oversized complete output
+refuse without a partial report. Schema/reference validation passed with zero new findings;
+the catalog retains its 39 unrelated existing findings. Six CLI adapter tests and one cold
+retained-custody process test cover replay, source-path deletion, changed windows, failover,
+zero-support sensors, stale pins and unchanged storage, but are **authored and unexecuted**
+under the existing asynchronous dependency build limit. Independent API/source review and
+scoped formatting passed; the underlying graph package's 208 native tests passed separately.
+This command plans aggregate splittable capacity and does not measure throughput or activate
+streams. See `docs/STREAM_CAPACITY_PLANNING.md` and `schemas/stream_capacity.v1.json`.
+
+## Native HEVC Main tile decoding and retained generations (2026-10-30, reference)
+
+The native H.265 decoder now admits bounded uniform and explicit tile layouts for Main
+and Main Still Picture 8-bit 4:2:0. Raster/tile-scan conversion, escaped substream entry
+offsets, CABAC/QP resets, spatial predictor isolation and independent deblock/SAO tile
+boundaries are implemented. Logical slices and every dependent segment must separately
+satisfy tile-containment rules. Minimum tile geometry counts padded final CTBs, admitting
+partial picture edges correctly. Tiles with WPP and unsupported profiles still refuse;
+incomplete pictures never publish partial surfaces and recover only through the existing
+IRAP boundary.
+
+Current recorded/media/container owners reach the tile-capable decoder. An explicit v1
+constructor/range alias preserves historical tile refusals for fixed watch, tolerant,
+whole-recording/incremental dwell, cascade and health recipes. Untiled input histories keep
+their exact receipt bytes; accepting a tiled PPS selects the new generation for subsequent
+frames. Publication, pixel-change and reports bind actual frame identities; current video
+plans bind the expanded admission generation.
+
+The complete native HEVC package passed **157 tests**, including 29 new tile contracts.
+Nineteen positive authored streams match independent strict FFmpeg I420 digests, covering
+nonzero residuals/QP, nonzero P motion, two-dimensional/unequal tiles, partial CTBs,
+dependent slices, emulation prevention and visibly active deblock/SAO boundaries. A separate
+nonconforming segment fixture verifies normative refusal even though FFmpeg tolerates it.
+Strict all-target Clippy passed without allowances. Independent core/specification and
+retained-caller review passed after correcting two conformance defects. Cold-publication,
+legacy-byte and operator-plan regressions are authored and reviewed but unexecuted under
+the existing reference/CLI dependency memory limit. See `docs/hevc_tiles.md` for the exact
+profile, bounds, generation behavior and oracle provenance; no Main10 or production
+qualification is claimed.
+
+## Native ONNX detector feature-map upsampling (2026-10-30, reference)
+
+The generic importer now lowers static Resize-13 nearest-neighbor upsampling of rank-four
+NCHW feature maps into the existing frozen Reshape/Concat operators. Spatial integer scales
+1..64 may be supplied as exact F32 scales or INT64 output sizes; batch/channel dimensions
+remain fixed. Both asymmetric/floor and the default half-pixel/round-prefer-floor profiles
+produce the mathematically identical repeated samples under this restriction. Exporter
+Constant nodes, empty optional ROI/scales and shared control/data values are handled without
+creating empty runtime tensors or dropping execution parameters. Unsupported interpolation,
+coordinate profiles, fractional/downsampling scales and dynamic controls explicitly refuse.
+
+All **170 native model-IR tests** passed. The new nine-test target includes 100 combinations
+checked against an independent coordinate-formula oracle after actual canonical graph and
+Safetensors reload through production scalar execution. A convolution/upsampling/dense-head
+case, exact F32 bit preservation, naming collisions, quota boundaries and cancellation are
+also covered. Strict library/Resize-target Clippy passed without allowances. Source bytes,
+frozen operator IDs and prior canonical graph encodings are preserved; the distinct importer
+identity commits the new lowering. No claim of arbitrary Resize or trained-detector quality
+is made. See `docs/onnx_import.md` for the precise profile.
+
+## Native camera-stream capacity and failover planning (2026-10-30, reference)
+
+`fss_graph_algorithms::stream_capacity` now composes the existing certified maximum-flow
+and minimum-cost-flow owners into an exact operational planning query: maximize aggregate
+camera delivery, then minimize declared routing cost. Inputs explicitly name directed links,
+parallel-link identities, positive camera demands, recorder acceptance limits, rate/cost units
+and failed nodes/links. Every camera demand remains present even when its attachment fails.
+Complete camera, link and recorder rows retain delivery/shortfall, inactive declarations,
+the typed limiting cut and both full solver proofs. Final conservation and cut saturation are
+checked against the cost-optimal flow under one work/output allowance and cancellation probe.
+
+All **208 native graph tests** passed, including 18 new capacity contracts. Independent integral
+flow enumeration checks 256 tiny networks and failure variants on 64 seeded networks; further
+cases verify parallel routes, recorder bottlenecks, zero-cost cycles, permutation identities,
+numeric extremes, every cancellation checkpoint and exact shared budget boundaries. Existing
+successful solver outputs, counters and identities are preserved by additive cancellation
+wrappers; signed intermediate cost arithmetic is checked. Focused Clippy passed with only four
+unchanged baseline lint categories allowed. Strict all-target Clippy still reports those same
+existing findings. The bounded composition contract is `architecture/stream_capacity_reference.json`.
+This is conditional aggregate splittable routing, without measured throughput, per-camera
+fairness, individual-session multipath support, stream activation or production qualification.
+
+## Static ONNX constants and detector-head shape operations (2026-10-30, reference)
+
+The general opset-13 importer now admits finite F32 Constant nodes and exact embedded
+INT64 controls for Reshape, Squeeze, Unsqueeze and positive-stride Slice. Controls support
+negative axes, inferred/copied reshape dimensions, clamped Slice endpoints and empty vectors
+where the operator permits them. Compile-time integers and empty vectors never become
+runtime tensors; control-only values are excluded from exported parameters. Runtime data
+uses remain bound, and the complete original ONNX source remains available for provenance.
+Source ordering, namespace collisions, aggregate byte/work quotas and cancellation are
+enforced across initializers, constants and generated native nodes. Existing frozen operator
+IDs and canonical graph encodings are unchanged.
+
+The full native model-IR package passed **161 tests**. A frozen convolution-to-dense-head
+fixture executes through the unchanged production scalar executor and exports its native
+graph/weights; additional tests cover raw/typed constants, scalar/empty controls, negative
+axes, extreme slice indices/steps, malformed fields, source order, truncation and limits.
+Strict library and structural/export-target Clippy passed without allowances. This extends
+the existing package import profile; runtime integer/dynamic shapes, reverse-stride Slice,
+other ONNX opsets and trained-model qualification remain outside the admitted contract.
+The full asynchronous reference/CLI build remains subject to its existing memory limit.
+See `docs/onnx_import.md` for the precise conversion and execution scope.
+
+## Native progressive JPEG and generation-aware retained replay (2026-10-31, reference)
+
+The existing native JPEG luma/RGB entrypoints now decode self-contained 8-bit Huffman SOF2
+grayscale and YCbCr 4:4:4/4:2:2/4:2:0, including spectral scans, DC/AC refinement, EOB runs,
+restart intervals and odd dimensions. Coefficients are bounded to 32 MiB, scans to 256, and
+all work is cancellable and charged before complete-image publication. Progressive decoding
+reaches retained file decode, direct package/RGB inference and direct HTTP RGB capture.
+
+Baseline entropy/parser/transform sources, pixels, actual work, keys and decoder identities
+remain unchanged. Progressive outcomes have distinct source-bound generations; retained
+success/refusal keys use their actual receipt identity. Historical unsupported-SOF2 refusals
+can reopen/replay explicitly while a new progressive success coexists. Existing temporal,
+detector/sentinel/cascade, calibration and HTTP/reconnect recipes retain explicit baseline
+entrypoints, preserving old refusal-as-gap behavior without silently changing their generations.
+The lab command reports actual completed generations and explicit uncompleted work.
+
+The full native codec package passed **99 tests**, including 12 progressive contracts; strict
+all-target Clippy passed. All eight independently encoded progressive fixtures reproduce their
+baseline partners' native luma and RGB exactly, with separately retained FFmpeg luma within
+one sample value. Existing malformed-media gauntlets still pass. Native twin MJPEG and HTTP
+pipeline contracts also passed **11 tests**. Reference cold-replay and lab-report regressions
+are authored but unexecuted under the existing asynchronous dependency build limit. No
+arithmetic/12-bit/hierarchical JPEG support or production qualification is claimed. Generation
+preimages and the exact supported scope are in `crates/fss-codec-mjpeg/BASELINE_GENERATION.md`.
+
+## ONNX-to-detector-package provisioning command (2026-10-31, reference)
+
+`fss-infer import-onnx` now connects the admitted general ONNX profile to the existing FMPK
+RGB detector package format used by `package-detect` and its sampling workflows. Independently
+pinned local source, recipe, license and notice inputs produce a deterministic archive retaining
+the complete original ONNX. Explicit NCHW input, preprocessing, decoded-head layout, class labels,
+generations and license decisions are required. Shape/field mismatches, unapproved licenses,
+oversized metadata, wrong pins and exhausted bounds refuse. The existing package/license/CPU
+loader verifies the archive before an exclusive new output file is opened; nothing is activated.
+
+The conversion path is supported by the **139 passing native model-IR tests** described below,
+including actual production Safetensors parsing and scalar execution of a rank-four RGB input
+through a batched dense head. Six package/CLI tests additionally cover archive round trips,
+retained-JPEG inference, refusals, output pins and overwrite protection, but remain **unexecuted**:
+the locked Asupersync dependency exceeds this environment's build memory limit. Independent
+source review and scoped formatting passed; schemas have no new validator findings. The native
+artifact tests do not establish full CLI/runtime qualification or trained-model quality. Existing
+opset-11 YOLOX conversion is unchanged. See `docs/ONNX_PACKAGE_IMPORT.md` for the exact command,
+recipe, supported profile, source-retention contract and remaining limits.
+
+## Camera placement under shared dependency failures (2026-10-31, reference)
+
+`fss-cover placement --failure-action ID=COST=SENSOR[,SENSOR...]` now evaluates camera
+additions against declared common power, network, host or other dependency losses alongside
+individual sensor losses. Each selected action is charged once and overlapping memberships
+are unioned. Proposed cameras participate only when installed. The exact optimum returns
+typed failure actions, affected sensors and an unseen-path witness under explicit cost units,
+one cumulative work budget and cooperative cancellation. Unknown members and partial optima
+refuse. Existing individual-loss mode and canonical bytes remain unchanged.
+
+The full native graph package passed **190 tests**, including 11 new shared-failure contracts
+and 160 seeded tiny cases checked against independent simple-path/set-cover enumeration.
+Focused Clippy passed with four unchanged baseline lint categories allowed; strict all-target
+Clippy still reports those existing findings. Six CLI unit cases and a retained-custody process
+extension are authored but unexecuted because of the existing asynchronous dependency build
+limit. Required schema/domain registrations remove all new-feature scanner findings; 39
+unrelated existing findings remain. This is exact conditional advice about declared failures,
+not measured reliability, installation authority or production qualification. See
+`docs/robust_camera_placement.md` and `architecture/shared_failure_placement_reference.json`.
+
+## Source-preserving native ONNX artifact export (2026-10-30, reference)
+
+The general ONNX importer now exports its validated graph and exact finite F32 parameters
+to the existing canonical Model IR and Safetensors formats, retaining the complete original
+ONNX bytes and their independent source pin. Generated Gemm parameters remain bound; tensor
+names are escaped losslessly; graph/header/weights/aggregate byte limits are checked before
+output allocation. Cumulative work includes the original import, and cancellation never
+returns partial artifacts. Existing graph/operator identities and canonical bytes are unchanged.
+
+The pinned native `fss-model-ir` suite passed all **139 tests**, including 12 new export cases
+and two included production executor tests. New cases read exported weights through the actual
+production Safetensors parser and execute the decoded graph through the actual production scalar
+executor, including an RGB-shaped dense-head graph. Exact quotas, cancellation, generated weights,
+escaped names and signed-zero/subnormal bits are covered; the frozen legacy Add bytes still match.
+Scoped Clippy passed with only the pre-existing parser `chunks_exact_to_as_chunks` allowance.
+This validates conversion artifacts, not the full asynchronous reference runtime, package CLI,
+model quality, activation or release qualification. See `docs/onnx_import.md`.
+
+## Native HEVC dependent slice segments (2026-10-30, reference)
+
+The Main-profile 8-bit 4:2:0 decoder now reconstructs dependent slice segments.
+Picture-local header inheritance, CABAC probability and QP continuation, wavefront
+snapshot precedence and shared logical slice tags preserve prediction, reference maps
+and filtering across segment cuts. Every segment consumes the existing bound. Active
+parameter and picture-identity fences reject mixed contexts; identical parameter
+retransmissions remain valid. Early malformed NALs now clear unfinished state so the
+next good IRAP can recover immediately. Skipped RASL headers retain only bounded
+inheritance and never become decoded pixels. Receipt formats and labels are unchanged.
+
+All 128 native H.265 tests pass on pinned `nightly-2026-08-31`, including all 48 old
+pixel-conformance cases, 20 dependent-segment cases, six skipped-RASL contracts and
+the existing hostile/malformed-media gauntlets. Ten authentic encoded fixtures yield
+11 independently frozen FFmpeg frames; coalesced controls, QP changes, deblocking,
+wavefront cuts and a real IDR-to-P-skip sequence all match. Weighted P/B header fields
+are checked separately; a dependent B-picture pixel oracle is not claimed. Fixture
+regeneration is byte-exact. This advances WP-060's native media path; Main 10, tiles,
+physical-device interoperability and full release qualification remain open. See
+[HEVC dependent segments](docs/hevc_dependent_segments.md).
+
+## Native ONNX Gemm import and execution (2026-10-30, reference)
+
+The offline digest-pinned ONNX importer now lowers Gemm-13 into the frozen native
+Transpose, MatMul, Mul and Add operators. It admits rank-two matrices, any nonzero
+signed transpose flags, finite F32 alpha/beta and an optional bias that broadcasts
+into the fixed result shape. Matrix multiplication precedes alpha scaling to retain
+F32 evaluation order. All source names are reserved before expansion, and generated
+nodes, intermediates and scalar parameters consume the existing import allowances.
+No operator, dependency, source initializer or Model IR v1 encoding changes.
+
+All 125 native Model IR tests pass on pinned `nightly-2026-08-31`. Fourteen added
+feature cases execute the actual unchanged production scalar executor, including
+dense-head replay, 25 transpose combinations, seven bias forms, exact rounding,
+collision/forward-reference refusals, expansion budgets and cancellation. A literal
+legacy Add graph remains byte-exact. Scoped formatting and the narrow new-target
+lint check pass; strict all-target Clippy retains its existing parser/test findings.
+This advances FSS-138 / WP-080's offline library importer, not an ONNX CLI workflow,
+model activation or full runtime qualification. See [ONNX import](docs/onnx_import.md).
+
+## Native H.264 type-1 picture ordering (2026-10-30, reference)
+
+The pure-Rust AVC decoder now admits picture-order-count type 1 within its existing
+progressive 8-bit 4:2:0 profile. Bounded reference-offset cycles, signed slice deltas,
+non-reference pictures, frame-number wrap and IDR/MMCO 5 reset feed the existing
+reference-picture and display-order machinery. Inconsistent multi-slice identity,
+overflow and invalid headers refuse without a partial successful picture. Retained
+file and native RTSP consumers use this same decoder; existing type-0/type-2 pixels,
+receipt encodings and decoder labels remain unchanged.
+
+All 162 native codec tests pass on pinned `nightly-2026-08-31`, including three new
+real encoded streams with 19 independently frozen FFmpeg frame hashes, eleven
+focused ordering/bounds tests, and two actual RTP-to-decoder integrations covering
+fragmentation, packet reordering, sequence wrap and exact source byte spans. The
+previous pixel corpus and 2,000-mutant malformed-media gauntlet also pass. This closes
+the specific FSS-124 decoder admission gap, not its aggregate physical-device or
+release qualification. See [native H.264 picture ordering](docs/h264_picture_order.md).
+
+## Durable ONVIF Create responses and cold recovery (2026-10-30, reference)
+
+Native PullPoint capture now commits every admitted complete final Create response
+before HTTP/SOAP, correlation, endpoint or later clock refusal can discard it. The
+additive `create-outcome` record keeps the exact body, transport observations and
+original intent closure, including malformed, refused and empty replies. A raw response
+alone grants no poll, cleanup or retry authority. Transport loss before a complete
+response still leaves an unresolved intent and an unknown camera result.
+
+`fss-onvif-metadata control recover-created` explicitly reconstructs the unchanged
+successful Created v1 marker from exact usable raw custody after restart. It verifies
+the original source/root/intent, current access and deletion state, strict correlation
+and approved endpoint scope before local publication. It sends no network requests and
+cannot reset the existing operation fence. Exact retries preserve identities; known
+receipts survive post-commit refusal and output failure. Catalog, holds and deletion
+include raw outcomes without rewriting legacy control or batch encodings. See
+[ONVIF metadata recovery](docs/onvif-metadata.md#recover-an-interrupted-created-marker).
+
+Eighteen new named regressions cover raw-custody refusal/corruption matrices, crash and
+cancellation cuts, exact legacy Created reconstruction, real TCP ordering, cold native
+recovery, operation-fence preservation and strict CLI approval parsing. Independent
+source review and scoped formatting pass. Native execution remains pending because the
+shared environment killed pinned compilation of the unchanged Asupersync dependency.
+Physical-device/Profile M interoperability, the FSS-046 aggregate and release
+qualification remain open.
+
+## Exact robust camera-placement analysis (2026-10-30, reference)
+
+The registered `ALG-INTERDICT-001` now includes a bounded exact camera-addition mode.
+It chooses among explicitly declared candidates to maximize the minimum sensor-loss
+cost needed to open an unobserved entry-to-target route, subject to separate named
+installation units, cost and count limits. Baseline and defended paths, removal sets,
+canonical ties and work/output witnesses remain visible. Every nested search shares
+one cancellable allowance; an exhausted request refuses without an approximate optimum.
+Existing interdiction formats and identities remain unchanged.
+
+`fss-cover placement` exposes the same solver over committed deployment coverage.
+Baseline support requires one positive retained witness spanning the whole requested
+window; proposed camera coverage, directed movement and both cost scales remain explicit
+hypothetical declarations. Complete JSON reports include the original anchor and source
+witness, unsupported zones, selected additions and baseline/defended removal paths.
+Stale source pins, exhausted work, cancellation and insufficient output bounds refuse
+without a partial optimum. Six focused command cases and a native cold-custody/schema
+contract are added. Their execution remains pending: the pinned native CLI build was
+killed by the shared environment's memory limit in the unchanged Asupersync dependency.
+All 94 JSON schemas and 453 references validate; this is not full qualification.
+
+All 11 focused native tests passed on pinned `nightly-2026-08-31`, including 180 seeded
+comparisons with independent exhaustive placement using the existing interdiction
+oracle, cancellation, budgets, output limits and numeric/input failures. The result is
+advice under explicit coverage and movement assumptions; physical sight lines, current
+health, shared-failure independence and effect authority are not established. The
+aggregate bead and qualification remain open. See [robust camera placement](docs/robust_camera_placement.md).
 
 ## Health-screened trained-package zones (reference)
 
@@ -787,6 +2533,15 @@ existing health-gated CLI (6), watch-entry CLI (8), whole-recording watch (16),
 whole-recording corroboration (16), and cold native event replay (16). These cover quiet and
 all-refused recordings, exact retries, privacy changes, damaged custody, graph-complete
 deletion, cancellation, old canonical replay identities and the unchanged Pulse budget.
+
+The additional agent-surface run at `3348842` (run `41655137973`, job `125983315450`)
+passed native frozen/incomplete refusal, post-preparation refusal with explicit cancellation,
+and carried-forward privacy support. Two fixtures reached valid refusals but expected the wrong
+contract: unrelated canonical writes made the original event receipt stale, and damaged diagnostic
+custody prevented constructing an admitted agent envelope. The corrected fixtures preserve both
+refusals, require read-only source-health checks, explicitly publish unchanged native support in a
+successor event before dispatch, and validate the strict pre-admission execution diagnostic with
+unchanged authority, effect and session journals. Their native rerun remains pending.
 
 This is a retained reference slice of NS-3 / DOC-059. Live outage supervision, physical camera
 movement attribution, authorized restoration and measured field accuracy remain open.

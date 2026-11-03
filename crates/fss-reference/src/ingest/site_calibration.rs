@@ -53,7 +53,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use fss_codec_mjpeg::{
-    ComponentInterpretation, DecodeBudget, DecodeLimits, decode_luma, decoder_identity,
+    ComponentInterpretation, DecodeBudget, DecodeLimits, decode_luma_v1 as decode_luma,
+    decoder_identity,
 };
 use fss_core::{CanonicalDecoder, CanonicalEncoder, ContentDigest, DigestAlgorithm};
 use fss_geometry::{

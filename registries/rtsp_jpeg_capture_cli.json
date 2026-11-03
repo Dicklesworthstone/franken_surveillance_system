@@ -1,0 +1,104 @@
+{
+  "schema": "fss.rtsp_jpeg_capture_cli_contract.v1",
+  "status": "implemented_not_production_qualified",
+  "owner": "crates/fss-cli/src/bin/fss-capture-rtsp/jpeg.rs",
+  "commands": [
+    "fss-capture-rtsp jpeg",
+    "fss-capture-rtsp jpeg replay"
+  ],
+  "presentation": "explicit_local_operator",
+  "report_schema": "fss.rtsp_jpeg_capture_cli.v1",
+  "approval_domain": "fss.rtsp_jpeg_capture_plan.v1",
+  "semantic_owners": [
+    "crates/fss-reference/src/rtsp/live_jpeg.rs",
+    "crates/fss-reference/src/rtsp/datagram_archive/source.rs",
+    "crates/fss-reference/src/rtsp/datagram_reconstruction/jpeg.rs",
+    "crates/fss-reference/src/rtsp/jpeg_client/pictures.rs",
+    "crates/fss-codec-mjpeg/src/lib.rs"
+  ],
+  "approval_binds": [
+    "exact_mode_root_principal_anchor_sensor_stream",
+    "literal_peer_authority_ingress_generation_ssrc_channels_receive_clock_retention_evidence",
+    "presentation_control_subtree_media_index_payload_selection",
+    "every_effective_transport_packet_reorder_image_decoder_storage_work_deadline_report_bound",
+    "credential_locator_exact_realm_and_explicit_digest_policy_without_secrets",
+    "exact_replay_head_count_bytes_configuration_evidence_rtcp_mode",
+    "fixed_original_retention_recovery_and_no_reconnect_policy"
+  ],
+  "required_acknowledgements": [
+    "owner_authorized",
+    "plaintext",
+    "retain_originals"
+  ],
+  "capture": {
+    "root": "new_exclusive_private_directory",
+    "transport": "one_native_literal_IP_TCP_connection",
+    "authentication": "plain_default_or_explicit_Linux_private_file_Digest_lease",
+    "publication": "original_typed_RTP_RTCP_root_last_before_further_media_poll",
+    "includes": [
+      "probation",
+      "duplicates",
+      "malformed_selected_datagrams_when_current_authority_allows"
+    ],
+    "success": "requested_complete_native_luma_validations_and_closed_local_owner",
+    "image_provenance": "live_reconstruction_and_current_prefix_only_cold_replay_supplies_stronger_source_map"
+  },
+  "replay": {
+    "root": "existing_verified_source_only_missing_root_refuses",
+    "source": "exact_complete_independently_pinned_prefix_from_ordinal_one",
+    "source_map": "actual_admitted_originals_including_earlier_cached_quantizers",
+    "network_granted": false,
+    "credentials_granted": false,
+    "source_append": false,
+    "prefix_exhaustion_is_EOF": false,
+    "success": "selected_observations_examined_and_final_custody_verified_with_explicit_picture_refusal_discard_counts"
+  },
+  "storage_recovery_effects": [
+    "locks",
+    "verification_holds",
+    "temporary_metadata_cleanup",
+    "fsync"
+  ],
+  "excludes": [
+    "RTSP_control_authentication_messages",
+    "opaque_TCP",
+    "unprocessed_wire_tails",
+    "pixel_storage",
+    "audio"
+  ],
+  "runtime": "actual_Process_Property_Sensor_AuthorityCx_run_owned_custody_obligation_drain_finalize",
+  "uncertain_publication": "preserve_last_durable_prefix_and_exact_candidate_unresolved_obligation_blocks_quiescence",
+  "capture_clock": "unknown",
+  "bounds": {
+    "max_option_arguments": 120,
+    "max_argument_bytes": 4096,
+    "max_datagrams": 65536,
+    "max_source_bytes": 1073741824,
+    "max_storage_bytes": 1073741824,
+    "max_image_bytes": 16777216,
+    "max_dimension": 2040,
+    "max_image_fragments": 4096,
+    "max_steps": 10000000,
+    "max_pictures_requested": 256,
+    "max_report_bytes": 67108864,
+    "minimum_report_bytes": 16384,
+    "terminal_report_reserve_bytes": 8192
+  },
+  "tests": [
+    "crates/fss-cli/src/bin/fss-capture-rtsp/jpeg/tests.rs",
+    "crates/fss-cli/src/bin/fss-capture-rtsp/jpeg/runtime.rs",
+    "crates/fss-codec-mjpeg/tests/rtsp_jpeg_retained/mod.rs",
+    "crates/fss-codec-mjpeg/tests/rtsp_jpeg_contract.rs"
+  ],
+  "out_of_scope": [
+    "physical_camera_qualification",
+    "server_identity_authentication",
+    "archive_encryption",
+    "hard_realtime_syscall_preemption",
+    "automatic_discovery_reconnect_retention_rollover",
+    "calibrated_capture_time",
+    "scene_coverage_absence",
+    "image_export_live_detector",
+    "full_release_qualification"
+  ]
+}

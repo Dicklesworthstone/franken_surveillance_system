@@ -1,0 +1,884 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/scene_feature_motion_match_retained.v1.json",
+  "title": "fss.scene_feature_motion_match_retained.v1",
+  "description": "Complete retained temporal feature scene with all exact original/rectified source records, every descriptor row and nearest alternative, all selected-link components and conditional 3D position/velocity fits or explicit refusals. Source views are canonical camera/capture/exposure order, and exposure handles are index+1, not physical identities. Motion uses original nominal capture times and an unchanged common requested scene time with no extrapolation. Full capture uncertainty, shared camera basis and unknown error survive. All source/current-privacy owners revalidate after complete analysis; final read costs include revalidation. The report digest hashes exact UTF-8 report-body bytes. Output <=32MiB including newline, no inventory truncation.",
+  "$defs": {
+    "digest": {
+      "$ref": "scene_feature_multimatch_retained.v2.json#/$defs/digest"
+    },
+    "u64": {
+      "$ref": "scene_feature_multimatch_retained.v2.json#/$defs/u64"
+    },
+    "identity": {
+      "$ref": "scene_feature_multimatch_retained.v2.json#/$defs/identity"
+    },
+    "anchor": {
+      "$ref": "scene_feature_multimatch_retained.v2.json#/$defs/anchor"
+    },
+    "cost": {
+      "$ref": "scene_feature_multimatch_retained.v2.json#/$defs/cost"
+    },
+    "basis": {
+      "$ref": "scene_feature_multimatch_retained.v2.json#/$defs/analysis/properties/basis"
+    },
+    "source_view": {
+      "$ref": "scene_feature_multimatch_retained.v2.json#/$defs/analysis/properties/views/items"
+    },
+    "capture": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/u64"
+      },
+      "minItems": 2,
+      "maxItems": 2
+    },
+    "pair_reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pair",
+        "decision"
+      ],
+      "properties": {
+        "pair": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 119
+        },
+        "decision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 16383
+        }
+      }
+    },
+    "distance": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "value"
+          ],
+          "properties": {
+            "state": {
+              "const": "available"
+            },
+            "value": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 256
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "reason"
+          ],
+          "properties": {
+            "state": {
+              "const": "unavailable"
+            },
+            "reason": {
+              "enum": [
+                "no_counterpart",
+                "no_runner_up"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "pair_decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "features",
+        "hamming_distance",
+        "descriptor"
+      ],
+      "properties": {
+        "features": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/identity"
+          },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "hamming_distance": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 256
+        },
+        "descriptor": {
+          "enum": [
+            "too_distant",
+            "ambiguous",
+            "non_mutual",
+            "candidate"
+          ]
+        }
+      }
+    },
+    "feature_outcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "view",
+        "feature",
+        "nearest_features",
+        "best_hamming_distance",
+        "runner_up_hamming_distance",
+        "disposition",
+        "selected_pair"
+      ],
+      "properties": {
+        "view": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 15
+        },
+        "feature": {
+          "$ref": "#/$defs/identity"
+        },
+        "nearest_features": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/identity"
+          },
+          "minItems": 0,
+          "maxItems": 128
+        },
+        "best_hamming_distance": {
+          "$ref": "#/$defs/distance"
+        },
+        "runner_up_hamming_distance": {
+          "$ref": "#/$defs/distance"
+        },
+        "disposition": {
+          "enum": [
+            "no_counterpart",
+            "too_distant",
+            "ambiguous",
+            "non_mutual",
+            "selected"
+          ]
+        },
+        "selected_pair": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "state",
+                "decision"
+              ],
+              "properties": {
+                "state": {
+                  "const": "selected"
+                },
+                "decision": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 16383
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "state"
+              ],
+              "properties": {
+                "state": {
+                  "const": "not_selected"
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "exposure_pair": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "index",
+        "views",
+        "evidence_digest",
+        "pairs",
+        "feature_outcomes"
+      ],
+      "properties": {
+        "index": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 119
+        },
+        "views": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 15
+          },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "evidence_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "pairs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/pair_decision"
+          },
+          "minItems": 0,
+          "maxItems": 16384
+        },
+        "feature_outcomes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/feature_outcome"
+          },
+          "minItems": 0,
+          "maxItems": 256
+        }
+      }
+    },
+    "member": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "view",
+        "camera",
+        "feature"
+      ],
+      "properties": {
+        "view": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 15
+        },
+        "camera": {
+          "$ref": "#/$defs/identity"
+        },
+        "feature": {
+          "$ref": "#/$defs/identity"
+        }
+      }
+    },
+    "trajectory_view": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "camera",
+        "exposure",
+        "evidence_digest",
+        "capture_ns",
+        "nominal_capture_time_ns",
+        "residual_pixels",
+        "visibility"
+      ],
+      "properties": {
+        "camera": {
+          "$ref": "#/$defs/identity"
+        },
+        "exposure": {
+          "$ref": "#/$defs/identity"
+        },
+        "evidence_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "capture_ns": {
+          "$ref": "#/$defs/capture"
+        },
+        "nominal_capture_time_ns": {
+          "$ref": "#/$defs/u64"
+        },
+        "residual_pixels": {
+          "type": "number",
+          "minimum": 0
+        },
+        "visibility": {
+          "enum": [
+            "nominal_segment_occluded",
+            "nominal_segment_clear",
+            "outside_image_or_range"
+          ]
+        }
+      }
+    },
+    "trajectory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state",
+        "kind",
+        "reference_time_ns",
+        "position",
+        "velocity_per_second",
+        "pixel_noise_covariance",
+        "covariance_coordinates",
+        "normalized_condition_number",
+        "rms_reprojection_pixels",
+        "observed_nominal_time_range_ns",
+        "capture_hull_ns",
+        "extrapolation",
+        "nominal_occlusion_conflict",
+        "views"
+      ],
+      "properties": {
+        "state": {
+          "const": "estimated"
+        },
+        "kind": {
+          "const": "constant_velocity_trajectory"
+        },
+        "reference_time_ns": {
+          "$ref": "#/$defs/u64"
+        },
+        "position": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "velocity_per_second": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "pixel_noise_covariance": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 6,
+            "maxItems": 6
+          },
+          "minItems": 6,
+          "maxItems": 6
+        },
+        "covariance_coordinates": {
+          "const": "x_y_z_vx_vy_vz_in_source_units_and_seconds"
+        },
+        "normalized_condition_number": {
+          "type": "number",
+          "minimum": 0
+        },
+        "rms_reprojection_pixels": {
+          "type": "number",
+          "minimum": 0
+        },
+        "observed_nominal_time_range_ns": {
+          "$ref": "#/$defs/capture"
+        },
+        "capture_hull_ns": {
+          "$ref": "#/$defs/capture"
+        },
+        "extrapolation": {
+          "const": "not_supported"
+        },
+        "nominal_occlusion_conflict": {
+          "type": "boolean"
+        },
+        "views": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/trajectory_view"
+          },
+          "minItems": 4,
+          "maxItems": 16
+        }
+      }
+    },
+    "component": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "index",
+        "members",
+        "links",
+        "evidence_digest",
+        "requested_scene_time_ns",
+        "capture_hull_ns",
+        "nominal_time_range_ns",
+        "outcome"
+      ],
+      "properties": {
+        "index": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "members": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/member"
+          },
+          "minItems": 1,
+          "maxItems": 256
+        },
+        "links": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/pair_reference"
+          },
+          "minItems": 0,
+          "maxItems": 1920
+        },
+        "evidence_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "requested_scene_time_ns": {
+          "$ref": "#/$defs/u64"
+        },
+        "capture_hull_ns": {
+          "$ref": "#/$defs/capture"
+        },
+        "nominal_time_range_ns": {
+          "$ref": "#/$defs/capture"
+        },
+        "outcome": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "state"
+              ],
+              "properties": {
+                "state": {
+                  "const": "unmatched"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "state",
+                "views"
+              ],
+              "properties": {
+                "state": {
+                  "const": "exposure_conflict"
+                },
+                "views": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 15
+                  },
+                  "minItems": 1,
+                  "maxItems": 16
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "state",
+                "missing_pairs"
+              ],
+              "properties": {
+                "state": {
+                  "const": "incomplete_pair_support"
+                },
+                "missing_pairs": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/pair_reference"
+                  },
+                  "minItems": 1,
+                  "maxItems": 120
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "state"
+              ],
+              "properties": {
+                "state": {
+                  "const": "insufficient_observations"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "state"
+              ],
+              "properties": {
+                "state": {
+                  "const": "insufficient_cameras"
+                }
+              }
+            },
+            {
+              "$ref": "#/$defs/trajectory"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "state",
+                "reason"
+              ],
+              "properties": {
+                "state": {
+                  "const": "refused"
+                },
+                "reason": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 512
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "geometry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "outcome",
+        "scene_evidence",
+        "requested_scene_time_ns",
+        "capture_hull_ns",
+        "time_policy",
+        "pair_geometry",
+        "exposure_pairs",
+        "components",
+        "counts"
+      ],
+      "properties": {
+        "outcome": {
+          "enum": [
+            "no_reconstruction",
+            "reconstructed",
+            "reconstructed_with_refusals"
+          ]
+        },
+        "scene_evidence": {
+          "$ref": "#/$defs/digest"
+        },
+        "requested_scene_time_ns": {
+          "$ref": "#/$defs/u64"
+        },
+        "capture_hull_ns": {
+          "$ref": "#/$defs/capture"
+        },
+        "time_policy": {
+          "const": "exact_requested_scene_time_within_each_fitted_component_nominal_support"
+        },
+        "pair_geometry": {
+          "const": "not_applied_to_staggered_moving_observations"
+        },
+        "exposure_pairs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/exposure_pair"
+          },
+          "minItems": 6,
+          "maxItems": 120
+        },
+        "components": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/component"
+          },
+          "minItems": 0,
+          "maxItems": 256
+        },
+        "counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "cameras",
+            "exposures",
+            "exposure_pairs",
+            "features",
+            "pair_rows",
+            "pair_feature_outcomes",
+            "components",
+            "links",
+            "missing_links",
+            "solved",
+            "unmatched",
+            "exposure_conflicts",
+            "incomplete_support",
+            "insufficient_observations",
+            "insufficient_cameras",
+            "refused",
+            "nominal_occlusion_conflicts",
+            "unresolved"
+          ],
+          "properties": {
+            "cameras": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 8
+            },
+            "exposures": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 16
+            },
+            "exposure_pairs": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 120
+            },
+            "features": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 256
+            },
+            "pair_rows": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 30720
+            },
+            "pair_feature_outcomes": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 3840
+            },
+            "components": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 256
+            },
+            "links": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1920
+            },
+            "missing_links": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 30720
+            },
+            "solved": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 64
+            },
+            "unmatched": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 256
+            },
+            "exposure_conflicts": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 256
+            },
+            "incomplete_support": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 256
+            },
+            "insufficient_observations": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 128
+            },
+            "insufficient_cameras": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 64
+            },
+            "refused": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 64
+            },
+            "nominal_occlusion_conflicts": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 64
+            },
+            "unresolved": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 256
+            }
+          }
+        }
+      }
+    },
+    "analysis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "authority",
+        "source_provenance",
+        "physical_identity_established",
+        "query_digest",
+        "entry_anchor_digest",
+        "entry_anchor",
+        "anchor_digest",
+        "anchor",
+        "clock",
+        "clock_evidence",
+        "privacy_domain",
+        "basis",
+        "declarations",
+        "assumptions",
+        "views",
+        "geometry"
+      ],
+      "properties": {
+        "authority": {
+          "const": "derived_cognition_no_effect_authority"
+        },
+        "source_provenance": {
+          "const": "verified_retained_native_frames"
+        },
+        "physical_identity_established": {
+          "const": false
+        },
+        "query_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "entry_anchor_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "entry_anchor": {
+          "$ref": "#/$defs/anchor"
+        },
+        "anchor_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "anchor": {
+          "$ref": "#/$defs/anchor"
+        },
+        "clock": {
+          "$ref": "#/$defs/identity"
+        },
+        "clock_evidence": {
+          "$ref": "#/$defs/digest"
+        },
+        "privacy_domain": {
+          "$ref": "#/$defs/identity"
+        },
+        "basis": {
+          "$ref": "#/$defs/basis"
+        },
+        "declarations": {
+          "$ref": "scene_feature_motion_match_retained_query.v1.json"
+        },
+        "assumptions": {
+          "const": [
+            "source_to_rig_mapping_and_raw_lens_parameters_are_operator_declarations",
+            "native_rectification_preserves_original_exposure_and_source_mask_support",
+            "camera_rig_is_authored_nominal_not_activated_or_physically_validated",
+            "one_fixed_camera_mode_per_sensor_over_the_complete_capture_hull",
+            "additive_clock_alignment_preserves_full_original_capture_intervals",
+            "constant_world_velocity_is_a_conditional_model_over_each_component",
+            "descriptor_correspondence_is_a_hypothesis_not_physical_identity",
+            "full_descriptor_competition_precedes_geometry_without_static_epipolar_gating",
+            "complete_direct_pair_support_and_one_feature_per_exposure_are_required",
+            "repeated_camera_observations_share_camera_calibration_and_failure_domains",
+            "requested_scene_time_is_not_clamped_or_extrapolated",
+            "all_component_observations_are_retained_without_outlier_removal",
+            "pixel_covariance_excludes_interpolation_correlations_and_lens_parameter_error",
+            "pixel_covariance_excludes_map_camera_clock_acceleration_and_correspondence_errors",
+            "nominal_mesh_visibility_is_not_physical_coverage_or_evidence_of_absence",
+            "current_privacy_and_original_source_custody_revalidate_after_complete_analysis"
+          ]
+        },
+        "views": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "index",
+              "exposure",
+              "view"
+            ],
+            "properties": {
+              "index": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 15
+              },
+              "exposure": {
+                "$ref": "#/$defs/identity"
+              },
+              "view": {
+                "$ref": "#/$defs/source_view"
+              }
+            }
+          },
+          "minItems": 4,
+          "maxItems": 16
+        },
+        "geometry": {
+          "$ref": "#/$defs/geometry"
+        }
+      }
+    }
+  },
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "report_digest",
+    "report"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.scene_feature_motion_match_retained.v1"
+    },
+    "report_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "report": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "analysis",
+        "cost"
+      ],
+      "properties": {
+        "schema": {
+          "const": "fss.scene_feature_motion_match_retained_report.v1"
+        },
+        "analysis": {
+          "$ref": "#/$defs/analysis"
+        },
+        "cost": {
+          "$ref": "#/$defs/cost"
+        }
+      }
+    }
+  }
+}

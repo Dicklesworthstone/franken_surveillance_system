@@ -19,6 +19,8 @@ use fss_graph_algorithms::set_cover::{
 };
 use fss_reference::coverage_graph::{CoverageGraphReport, read_coverage_single_points_during};
 
+#[path = "fss-cover/placement.rs"]
+mod placement;
 #[path = "fss-cover/resilient.rs"]
 mod resilient;
 
@@ -59,6 +61,7 @@ const HELP: &str = "fss-cover select --root DIR --site SITE --during START_NS:EN
   Deadline checks bracket the existing source reader (filesystem reads are not preemptible)\n\
   and occur at every charged selection step. No partial report on an error.\n\
   Shared-failure selection: fss-cover select-resilient --help.\n\
+  Proposed camera additions: fss-cover placement --help.\n\
   Reference candidate: Rust tests and production qualification have not been run.\n";
 
 #[derive(Clone, Debug)]
@@ -470,7 +473,9 @@ fn emit(writer: &mut impl Write, mut bytes: &[u8]) -> io::Result<()> {
 }
 fn main() -> ExitCode {
     let args: Vec<OsString> = std::env::args_os().skip(1).take(MAX_ARGS + 1).collect();
-    let result = if args.first().and_then(|value| value.to_str()) == Some("select-resilient") {
+    let result = if args.first().and_then(|value| value.to_str()) == Some("placement") {
+        placement::run(&args)
+    } else if args.first().and_then(|value| value.to_str()) == Some("select-resilient") {
         resilient::run(&args)
     } else {
         match parse(&args) {

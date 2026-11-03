@@ -278,13 +278,6 @@ fn unsupported_sps_features_are_typed() {
     let cases = [
         (
             SpsSpec {
-                poc_type: 1,
-                ..TINY
-            },
-            UnsupportedFeature::PocType1,
-        ),
-        (
-            SpsSpec {
                 frame_mbs_only: false,
                 ..TINY
             },

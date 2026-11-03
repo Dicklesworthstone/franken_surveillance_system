@@ -20,9 +20,11 @@ use fss_publication::SlotName;
 use super::privacy_mask::{MaskBinding, PrivacyMaskError, current_mask, decode_marker};
 use super::recorded_decode::h264::{
     H264_FRAME_RECEIPT_DOMAIN, RecordedH264Frame, h264_decoder_identity,
+    h264_inband_decoder_identity,
 };
 use super::recorded_decode::h265::{
     H265_FRAME_RECEIPT_DOMAIN, RecordedH265Frame, h265_decoder_identity,
+    h265_inband_decoder_identity, h265_tiles_decoder_identity,
 };
 use super::recorded_decode::{RecordedDecodeError, source_capsule};
 use super::{RetainedFileImport, RetainedReadLimits};
@@ -144,13 +146,19 @@ impl Binding {
         let luma = sha(&mut d)?;
         let i420 = sha(&mut d)?;
         let decoder = sha(&mut d)?;
-        let expected = match codec {
-            PublishedVideoCodec::H264 => h264_decoder_identity(),
-            PublishedVideoCodec::H265 => h265_decoder_identity(),
+        let known_decoder = match codec {
+            PublishedVideoCodec::H264 => {
+                decoder == h264_decoder_identity() || decoder == h264_inband_decoder_identity()
+            }
+            PublishedVideoCodec::H265 => {
+                decoder == h265_decoder_identity()
+                    || decoder == h265_tiles_decoder_identity()
+                    || decoder == h265_inband_decoder_identity()
+            }
         };
         let mask_policy = decode_marker(&mut d)?;
         d.ensure_finished()?;
-        if decoder != expected
+        if !known_decoder
             || capsule_digest != ContentDigest::sha256(&capsule.try_canonical_bytes()?)
             || mask_policy.is_some_and(|p| p.algorithm() != DigestAlgorithm::Sha256)
         {

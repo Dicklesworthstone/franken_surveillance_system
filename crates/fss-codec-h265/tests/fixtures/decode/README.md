@@ -12,8 +12,10 @@ expected value is derived from this crate's output.
 Only synthetic `testsrc2` / `mandelbrot` / `smptebars` scenes and
 hand-assembled bitstreams are used. No camera footage.
 
-Oracle / encoder: `ffmpeg version 8.0.1-3ubuntu2` with libx265. Other
-FFmpeg/x265 versions may encode different bytes; the committed bytes and
+Original libx265 corpus oracle / encoder: `ffmpeg version 8.0.1-3ubuntu2`.
+The authored Stage 5 dependent-segment corpus uses the offline pixel oracle
+`ffmpeg version 6.1.1-3ubuntu5`. Each `.sha256` header records the exact oracle.
+Other FFmpeg/x265 versions may encode different bytes; the committed bytes and
 digests are the reference.
 
 Regenerate everything (streams and digests) with:
@@ -110,6 +112,92 @@ is unchanged. The oracle digests are FFmpeg's decode of the rewritten streams.
 | `ltr_qcif_ref1` | 176x144 | 8 | every P picture predicts from one long-term picture (LSB match); the generator checks it decodes to the original pictures |
 | `ltr_qcif_ref3_filters_msb` | 176x144 | 10 | two short-term plus one long-term reference, long-term MV predictor rules, deblocking + SAO, full-POC (`delta_poc_msb_present_flag`) matching on odd pictures |
 
+## Stage 5: dependent slice segments
+
+`scripts/generate_h265_dependent_fixtures.py` authors these small Main-profile
+streams using the existing arithmetic encoder and the normative slice-segment,
+QP and CABAC syntax. The encoder carries probability contexts across dependent
+segments and restarts the arithmetic engine for each segment. It preserves the
+separate WPP snapshot taken after column 1 and restores it at the next row.
+Independent slices initialize fresh contexts using their own QP. These are
+actual dependent CABAC streams; rewriting an independent slice's header would
+not produce the required context continuation.
+
+| Stream | Size | Frames | Exercises |
+| --- | --- | --- | --- |
+| `dependent_midrow` | 32x16 | 1 | PCM seed followed by intra prediction across a dependent boundary |
+| `dependent_context_chain` | 64x16 | 1 | Three segments, adapted contexts, intra modes and DC residuals |
+| `dependent_qp_carry` | 48x16 | 1 | QP 26→30 in the first CTU, then QP 30 carried into dependent residual blocks |
+| `dependent_independent_reset` | 64x16 | 1 | Independent→dependent→independent→dependent, independent QP 26/20 and neighbor/context reset |
+| `dependent_deblock` | 64x16 | 1 | Deblocking crosses the dependent seam while filtering across independent slices is disabled |
+| `dependent_wpp_before_save` | 48x32 | 1 | Segment ends before column 1; a later dependent segment saves the row snapshot |
+| `dependent_wpp_after_save` | 48x32 | 1 | Segment ends after column 1; the row snapshot survives the next mid-row segment |
+| `dependent_wpp_midrow` | 48x32 | 1 | Row synchronization, QP row reset and subsequent mid-row dependent continuation |
+| `dependent_wpp_one_column` | 16x48 | 1 | No above-right CTU: each WPP row initializes contexts instead of inheriting final segment state |
+| `dependent_p_skip` | 48x16 | 2 | IDR PCM seed then a P skip/merge picture with three segments, inherited reference list and P CABAC contexts |
+
+All streams use 16x16 CTUs, no tiles and synthetic samples. FFmpeg runs offline
+with `-xerror -err_detect explode -threads 1`; any diagnostic, wrong frame count
+or wrong I420 byte count fails generation. The generator additionally checks:
+
+- PCM samples against their mathematical pattern, independent of any decoder.
+- Every sample is unchanged when dependent cuts within a row are coalesced.
+- The three WPP partition variants have the same pixel output.
+- Deblocking visibly changes pixels at the dependent seam compared with an
+  unfiltered control stream.
+- The zero-motion P picture exactly reproduces its preceding IDR seed.
+
+The committed hashes come only from FFmpeg. The Rust
+`tests/dependent_segments.rs` target checks those hashes, dimensions, frame/POC
+order and deterministic replay, plus missing predecessors, gaps, overlaps,
+reordering, truncation at every dependent-NAL byte, parameter/NAL identity
+changes, identical parameter retransmission, segment budgets and fresh-IDR
+recovery. The generated inter-prediction fixture is P-only; additional B-slice
+header inheritance checks do not claim a new B dependent-segment pixel oracle.
+
+Regenerate only this group, including all independent checks, with:
+
+```sh
+python3 scripts/generate_h265_dependent_fixtures.py crates/fss-codec-h265/tests/fixtures/decode
+```
+
+## Main tiles
+
+`scripts/generate_h265_tile_fixtures.py` authors conforming Main level-4 tile
+substreams with fresh arithmetic/CABAC/QP state at each tile. Each tile spans at
+least 256 luma samples horizontally and 64 vertically in padded CTB units. These
+are genuine entropy streams, not independent-slice headers patched into tiles.
+The sealed offline oracle is FFmpeg 6.1.1 (`-xerror -err_detect explode -threads 1`).
+Every positive fixture has exact I420 frame hashes; Rust never runs the oracle.
+
+| Fixture | Coded dimensions | Functional evidence |
+|---|---|---|
+| `tiles_uniform_p` | 512×64, 2 frames | Nonzero intra residuals, different per-tile QP deltas, P merge/skip prediction |
+| `tiles_emulation` | 512×64 | A zero-valued PCM seed forces many emulation-prevention bytes inside an entry-point extent |
+| `tiles_grid`, `tiles_grid_dependent` | 512×128 | Uniform 2×2 grid, tile-scan/raster divergence, conforming dependent cuts and whole-tile substreams |
+| `tiles_explicit`, `tiles_explicit_dependent` | 576×160 | Unequal 16/20-CTB columns and 4/6-CTB rows; dependent partition preserves every sample |
+| `tiles_partial_ctbs` | 504×120 | Legal padded tile dimensions with partial final CTBs and directly checked 8×8 PCM samples |
+| `tiles_independent` | 512×64 | Independent QP reset between tiles and dependent continuation inside each tile |
+| `tiles_motion` | 512×64, 2 frames | Explicit ±4 quarter-sample MVD followed by merge propagation; every P luma sample independently matches a ±1-pixel source translation |
+| `tiles_deblock_closed`, `tiles_deblock_across` | 512×128 | Visible filtering changes at tile boundaries |
+| `tiles_horizontal_*`, `tiles_vertical_*`, `tiles_diagonal_*` | 512×128 | Active edge SAO with cross-tile filtering enabled/disabled; boundary pixels differ |
+| `tiles_band_closed`, `tiles_band_across` | 512×128 | Band SAO has no neighbor-boundary dependence; both outputs agree |
+
+The generator requires strict oracle success and exact frame sizes, and checks
+the independent PCM/motion expectations and filter/partition contrasts before it
+writes a successful result. The separate `tiles_invalid_partial_segment.h265`
+has no positive oracle hash: it deliberately violates H.265 6.3.1 by spanning two
+partial tiles within one dependent segment, even though FFmpeg can decode it.
+The native decoder must refuse it without publishing partial pixels and recover
+on a fresh IDR.
+
+```sh
+python3 scripts/generate_h265_tile_fixtures.py crates/fss-codec-h265/tests/fixtures/decode
+```
+
+See `docs/hevc_tiles.md` for admission bounds, legacy replay and retained receipt
+generation behavior.
+
 ## Negative fixtures (refused, never decoded)
 
 | Stream | Expected refusal |
@@ -120,8 +208,9 @@ is unchanged. The oracle digests are FFmpeg's decode of the rewritten streams.
 
 ## Coverage gaps the encoder cannot produce
 
-- Tiles and dependent slice segments: libx265 cannot emit them; the decoder
-  refuses both (`Unsupported(Tiles)`, `Unsupported(DependentSlices)`).
+- Tiles: libx265 cannot emit them; the decoder refuses `Unsupported(Tiles)`.
+- Dependent slice segments cannot be emitted by libx265; the authored Stage 5
+  fixtures cover them instead.
 - PPS scaling lists: libx265 writes lists in the SPS only; the shared
   `scaling_list_data()` parser is unit-tested in `src/params.rs`.
 - `cabac_init_flag`, initType 1/2 context values: checked against

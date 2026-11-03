@@ -295,6 +295,17 @@ revalidation; authentication is disabled by default. Its exact durable window/ca
 feed the [retained RTSP importer](docs/rtsp_recording_import.md) and native decode/analysis,
 including cold use after the original capture archive is offline.
 
+For JPEG cameras, [`fss-capture-rtsp jpeg`](docs/rtsp_jpeg_capture_cli.md) retains
+original selected RTP and RTCP through the same root-last store, validates complete
+images with the native luma decoder, and stops under explicit independent bounds.
+`jpeg replay` reopens an exact saved prefix without network or credentials and binds
+reconstructed images to their actual original packets, including cached quantizer
+definitions. Capture time stays unknown, and prefix exhaustion never invents media EOF.
+[`fss-import-rtsp jpeg`](docs/RTSP_JPEG_IMPORT.md) then connects that exact prefix
+to ordinary retained MJPEG decoding and analysis, preserving every original
+datagram and native image source map in destination custody. Physical camera
+mapping remains explicit; packet gaps and incomplete tails remain visible.
+
 FSS separates source evidence, live delivery, and analysis:
 
 - source bytes and packet/timing maps are immutable custody objects;
@@ -327,6 +338,12 @@ interpret arbitrary framework graphs or download models at runtime.
 
 See [`PURE_RUST_MODEL_RUNTIME.md`](PURE_RUST_MODEL_RUNTIME.md) and
 [`docs/deep-dives/FRANKENTORCH.md`](docs/deep-dives/FRANKENTORCH.md).
+
+`fss-infer import-onnx` now supports strict recipes for RGB/BGR channel normalization
+and static anchor-free DFL raw-head decoding. Both transformations become immutable native
+graph operations, preserving original ONNX bytes and source outputs. The decoded boxes feed
+the existing privacy, score and NMS pipeline. See
+[`docs/ONNX_PACKAGE_IMPORT.md`](docs/ONNX_PACKAGE_IMPORT.md) for the exact supported profiles.
 
 ## Detection is a cascade, not a monolith
 
@@ -385,6 +402,76 @@ A moved camera, crop/zoom/firmware change, seasonal occlusion, or residual drift
 invalidates the certificate. NeRF/Gaussian-splat renderings are useful views, not metric authority.
 
 See [`DIGITAL_TWIN_AND_CALIBRATION.md`](DIGITAL_TWIN_AND_CALIBRATION.md).
+
+`fss-scene-fuse retained-fuse` now connects retained native detector tracks to the
+property scene and declared camera rig for 3D point and constant-velocity reconstruction.
+It authenticates original observations, preserves full capture intervals, checks explicit
+feature selections against detector bounds, and revalidates custody after solving. Reports
+retain camera/clock/correspondence assumptions and every geometric refusal. See
+[`docs/RETAINED_SCENE_FUSION.md`](docs/RETAINED_SCENE_FUSION.md) for the command and input contract.
+
+`fss-scene-fuse match` takes two exact JPEGs through native masked feature extraction,
+automatic symmetric descriptor/epipolar matching and 3D point reconstruction. It discovers
+pixel correspondences and preserves the complete candidate inventory, ambiguous features,
+source hashes and geometric refusals. Camera, clock and stationary-feature declarations stay
+explicit. See [`docs/SCENE_FEATURE_MATCHING.md`](docs/SCENE_FEATURE_MATCHING.md) for the query,
+mask policy, image-resolution work bounds and report interpretation.
+
+`fss-scene-fuse retained-match` runs automatic feature matching directly on two retained
+JPEG, AVC or HEVC camera frames. It authenticates original custody and source clocks,
+uses current deployment privacy masks, and revalidates the source ranges before releasing
+3D hypotheses. The existing `fss-file decode` output supplies the exact selection pins.
+See [`docs/RETAINED_SCENE_MATCHING.md`](docs/RETAINED_SCENE_MATCHING.md).
+
+`fss-scene-fuse retained-multimatch` extends that workflow to **3–8 retained cameras**.
+Every camera pair retains its complete correspondence evidence; supported components
+fit joint static points using all participating views. Conflicting cycles, incomplete
+chains and geometric refusals remain visible, with explicit source revalidation and
+full capture intervals. See
+[`docs/RETAINED_MULTICAMERA_MATCHING.md`](docs/RETAINED_MULTICAMERA_MATCHING.md).
+
+Both retained matching commands also accept **v2 image declarations** for native
+Brown–Conrady/fisheye correction and explicit pinhole crop/resize. The target grid
+comes from the camera rig; original source pixels, corrected feature pixels and
+privacy footprints retain separate provenance. See
+[`docs/RETAINED_LENS_MATCHING.md`](docs/RETAINED_LENS_MATCHING.md).
+
+`fss-scene-fuse retained-atlas` exports explicitly selected reconstructed static
+landmarks and actual reference descriptors as **FSATLAS1**, which the existing
+`fss-file localize` command can use to register another camera into the same twin.
+The export retains complete source/lens/privacy provenance and unresolved scene
+alternatives; static eligibility is declared and absolute landmark error remains
+unknown. See [`docs/RECONSTRUCTED_LOCALIZATION_ATLAS.md`](docs/RECONSTRUCTED_LOCALIZATION_ATLAS.md).
+
+`fss-scene-fuse retained-motion-match` automatically connects features across
+**4–16 retained exposures from 2–8 fixed cameras** and estimates common-time
+3D position and velocity. Repeated-camera observations keep their original
+source and timing; complete descriptor alternatives, incomplete groups and
+geometric refusals remain visible. The native moving-point fit uses each
+observation's own capture time and does not apply stationary epipolar gating
+or extrapolate unsupported components. Direct and lens-corrected inputs share
+the existing retained source/privacy owners. See
+[`docs/RETAINED_TEMPORAL_MATCHING.md`](docs/RETAINED_TEMPORAL_MATCHING.md).
+
+`fss-scene-fuse retained-calibrated-match` uses **currently adopted site-calibration
+geometry** for any of those stereo, multi-camera or moving-feature queries.
+The exact calibration, original camera inputs, physical sensors and retained
+adoption receipts determine the intrinsics and poses. Current adoption/withdrawal
+and source/privacy custody are revalidated before release. Reports preserve
+calibration provenance and conditional covariance while keeping absolute camera
+error unknown. Rig v1 uses the original calibrated pinhole image domain;
+**rig v2 supports the adopted radial lens model through native correction**,
+binding exact source intrinsics, original domain and calibration identity before
+decoding. See [adopted lens reconstruction](docs/ADOPTED_LENS_RECONSTRUCTION.md) and
+[`docs/ADOPTED_CALIBRATION_RECONSTRUCTION.md`](docs/ADOPTED_CALIBRATION_RECONSTRUCTION.md).
+
+`fss-scene-fuse retained-calibrated-atlas` exports selected static points from
+that **current adopted geometry** as a portable FSATLAS1 localization atlas.
+The existing `fss-file localize` consumer can register a fresh camera from its
+actual reference descriptors. Complete calibration, source/privacy provenance
+and scene alternatives remain in the manifest; final adoption/withdrawal checks
+stay protected through publication. See
+[`docs/ADOPTED_RECONSTRUCTION_ATLAS.md`](docs/ADOPTED_RECONSTRUCTION_ATLAS.md).
 
 ## ATP archive, repair, and deletion
 
@@ -570,6 +657,15 @@ Implemented (reference, unqualified):
 - a model-free single-camera pipeline, decode -> foreground -> Kalman tracking -> zone candidates
   -> approval-gated publication (`fss-event watch`), plus H.264/H.265/MJPEG/RTP pixel-change
   motion analysis (`fss-file motion`, `fss-decode-rtp motion`);
+- [HTTP camera capture into retained native detection](docs/HTTP_CAPTURE_SENTINEL.md)
+  (`fss-capture-reconnect sentinel`): one approved acquisition carries its exact ended-history
+  pins into motion-independent model bursts, retained source/model/recipe custody and cold
+  replay. Package validation precedes camera contact; analysis failure supplies exact offline
+  continuation instead of camera reacquisition;
+- [bounded capture from continuous HTTP MJPEG](docs/HTTP_PREFIX_CAPTURE_SENTINEL.md)
+  (`fss-capture-reconnect sentinel-prefix`): stop at an approved frame count without peer EOF,
+  retain received read-ahead and partial-tail custody, analyze only the acknowledged first N
+  frames, and resume import/inference or replay offline from exact typed receipts;
 - [exact saved RTSP campaign watch](docs/rtsp_campaign_watch.md) across independent retained
   AVC/HEVC archives (`fss-watch-rtsp-campaign`), preserving failed, empty and unknown attempts,
   with separate tracking per attempt and native reruns from destination custody;

@@ -13,6 +13,8 @@ pub mod cadence;
 /// Bounded H.265 access-unit/VPS/SPS/PPS parser (FSS-114).
 pub mod h265_access_unit;
 pub mod hevc;
+/// Bounded RFC 2435 RTP/JPEG reconstruction with complete source-to-derived byte maps.
+pub mod jpeg;
 /// Bounded uncompressed ONVIF metadata documents over owner-scoped RTP.
 pub mod onvif_metadata;
 

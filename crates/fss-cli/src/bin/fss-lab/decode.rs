@@ -68,6 +68,8 @@ pub struct FrameRow {
     source_offset: u64,
     source_bytes: u64,
     source_digest: ContentDigest,
+    /// Actual receipt generation, absent when work stopped before producing an outcome.
+    decoder: Option<ContentDigest>,
     outcome: RowOutcome,
 }
 
@@ -163,6 +165,20 @@ impl DecodeReport {
     #[must_use]
     pub fn render_json(&self) -> String {
         let mut out = String::new();
+        let baseline = ContentDigest::new(DigestAlgorithm::Sha256, decoder_identity());
+        let per_frame_generations = self.frames.iter().any(|row| row.decoder != Some(baseline));
+        let generation = if per_frame_generations {
+            let first = self.frames.first().and_then(|row| row.decoder);
+            if first.is_some() && self.frames.iter().all(|row| row.decoder == first) {
+                first.map_or_else(String::new, |decoder| decoder.to_string())
+            } else if self.frames.iter().all(|row| row.decoder.is_none()) {
+                "not_completed".to_owned()
+            } else {
+                "mixed:see_per_frame_generation".to_owned()
+            }
+        } else {
+            baseline.to_string()
+        };
         let _ = write!(
             out,
             "{{\"schema\":\"{DECODE_REPORT_SCHEMA}\",\"input_sha256\":\"{}\",\"input_bytes\":{},\
@@ -177,7 +193,7 @@ impl DecodeReport {
             self.import_root,
             escape(&self.import_outcome),
             escape(&self.capture_time_class),
-            ContentDigest::new(DigestAlgorithm::Sha256, decoder_identity()),
+            generation,
             self.interpretation.as_str(),
         );
         for (index, row) in self.frames.iter().take(MAX_REPORTED_FRAMES).enumerate() {
@@ -194,6 +210,16 @@ impl DecodeReport {
                 row.source_bytes,
                 row.source_digest,
             );
+            // Completed baseline-only report bytes stay identical. Otherwise state each actual
+            // generation, without guessing which decoder uncompleted work would have produced.
+            if per_frame_generations {
+                let _ = write!(
+                    out,
+                    "\"decoder_generation\":\"{}\",",
+                    row.decoder
+                        .map_or_else(|| "not_completed".to_owned(), |d| d.to_string())
+                );
+            }
             match &row.outcome {
                 RowOutcome::Decoded {
                     width,
@@ -497,9 +523,14 @@ fn run_in(
             decode_limits: DecodeLimits::default(),
         };
         let mut budget = DecodeBudget::new(frame_budget);
+        let mut decoder = None;
         let outcome = match decode_capsule(&mut deployment, &request, &mut budget, cx) {
             Ok(CapsuleDecode::Decoded(frame)) => {
                 let receipt = frame.receipt();
+                decoder = Some(ContentDigest::new(
+                    DigestAlgorithm::Sha256,
+                    receipt.codec().decoder,
+                ));
                 let [width, height] = receipt.dimensions();
                 RowOutcome::Decoded {
                     width,
@@ -515,6 +546,10 @@ fn run_in(
             }
             Ok(CapsuleDecode::Refused(retained)) => {
                 let refusal = retained.refusal();
+                decoder = Some(ContentDigest::new(
+                    DigestAlgorithm::Sha256,
+                    refusal.decoder(),
+                ));
                 RowOutcome::Refused {
                     kind: refusal.kind().as_str(),
                     error_id: refusal.error_id(),
@@ -542,6 +577,7 @@ fn run_in(
             source_offset: span.offset,
             source_bytes: span.len,
             source_digest: span.segment_sha256,
+            decoder,
             outcome,
         });
     }
@@ -610,6 +646,58 @@ mod tests {
         assert!(report(Vec::new(), truncated).degraded());
         let json = report(Vec::new(), None).render_json();
         assert!(json.contains("\"acquisition_lost_dimensions\":\"not_recorded\""));
+    }
+
+    #[test]
+    fn progressive_and_mixed_reports_name_actual_generations_without_renaming_baseline_reports() {
+        let baseline = ContentDigest::new(DigestAlgorithm::Sha256, decoder_identity());
+        let progressive = ContentDigest::new(
+            DigestAlgorithm::Sha256,
+            fss_codec_mjpeg::progressive_decoder_identity(),
+        );
+        let row = |decoder| FrameRow {
+            segment: 0,
+            capsule_id: "capsule:generation-report".to_owned(),
+            source_offset: 0,
+            source_bytes: 10,
+            source_digest: ContentDigest::sha256(b"source"),
+            decoder,
+            outcome: RowOutcome::Refused {
+                kind: "malformed",
+                error_id: "ERR-DECODE-MALFORMED-001",
+                receipt_digest: ContentDigest::sha256(b"receipt"),
+                work_units: 100,
+                mask_policy: None,
+            },
+        };
+        let mut value = report(Vec::new(), None);
+        value.frames.push(row(Some(baseline)));
+        let json = value.render_json();
+        assert_eq!(json.matches("\"decoder_generation\"").count(), 1);
+        assert!(json.contains(&format!("\"decoder_generation\":\"{baseline}\"")));
+        value.frames = vec![row(Some(progressive))];
+        let json = value.render_json();
+        assert_eq!(json.matches("\"decoder_generation\"").count(), 2);
+        assert_eq!(
+            json.matches(&format!("\"decoder_generation\":\"{progressive}\""))
+                .count(),
+            2
+        );
+        value.frames.push(row(Some(baseline)));
+        value.frames.push(row(None));
+        let json = value.render_json();
+        assert!(json.contains("\"decoder_generation\":\"mixed:see_per_frame_generation\""));
+        assert!(json.contains(&format!("\"decoder_generation\":\"{progressive}\"")));
+        assert!(json.contains(&format!("\"decoder_generation\":\"{baseline}\"")));
+        assert!(json.contains("\"decoder_generation\":\"not_completed\""));
+        value.frames = vec![row(None)];
+        let json = value.render_json();
+        assert_eq!(
+            json.matches("\"decoder_generation\":\"not_completed\"")
+                .count(),
+            2
+        );
+        assert!(!json.contains(&format!("\"decoder_generation\":\"{baseline}\"")));
     }
 
     /// fss-2h5zq.43 D1: a capsule that exhausts its per-frame budget is a typed `not_decoded`

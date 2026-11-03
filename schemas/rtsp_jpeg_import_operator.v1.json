@@ -1,0 +1,873 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/rtsp_jpeg_import_operator.v1.json",
+  "title": "Exact native RTP/JPEG retained-import operator plan and receipt",
+  "description": "Strict bounded projection of one offline import. Native owners verify cross-field source hashes, complete packet ancestry, physical mapping declarations, cumulative bounds, canonical proof bytes and current custody; JSON shape alone grants no authority. Capture time remains unknown and image entropy is not validated by import. Read reservations cover import-managed custody payload verification, not every filesystem operation.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/plan"
+    },
+    {
+      "$ref": "#/$defs/imported"
+    }
+  ],
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "not": {
+        "const": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    },
+    "identity": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_.:-]+$"
+    },
+    "receive_time": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 39,
+      "pattern": "^(0|[1-9][0-9]*)$",
+      "description": "Canonical nonnegative signed-128-bit nanoseconds; native request admission enforces the exact integer ceiling. This is destination receive time, not capture time."
+    },
+    "source_scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "digest",
+        "peer",
+        "authority",
+        "ingress",
+        "generation",
+        "ssrc",
+        "rtp_channel",
+        "rtcp_channel",
+        "receive_clock",
+        "retention_evidence",
+        "transport_identity_proves_physical_camera"
+      ],
+      "properties": {
+        "digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "peer": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "authority": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "ingress": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 39,
+          "pattern": "^[1-9][0-9]*$"
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "ssrc": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "rtp_channel": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "rtcp_channel": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "receive_clock": {
+          "$ref": "#/$defs/digest"
+        },
+        "retention_evidence": {
+          "$ref": "#/$defs/digest"
+        },
+        "transport_identity_proves_physical_camera": {
+          "const": false
+        }
+      }
+    },
+    "prefix": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scope",
+        "head",
+        "datagrams",
+        "payload_bytes"
+      ],
+      "properties": {
+        "scope": {
+          "$ref": "#/$defs/digest"
+        },
+        "head": {
+          "$ref": "#/$defs/digest"
+        },
+        "datagrams": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8192
+        },
+        "payload_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 67108864
+        }
+      }
+    },
+    "physical_mapping": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sensor_id",
+        "stream_id",
+        "evidence",
+        "class"
+      ],
+      "properties": {
+        "sensor_id": {
+          "$ref": "#/$defs/identity"
+        },
+        "stream_id": {
+          "$ref": "#/$defs/identity"
+        },
+        "evidence": {
+          "$ref": "#/$defs/digest"
+        },
+        "class": {
+          "const": "explicit_operator_mapping"
+        }
+      }
+    },
+    "replay": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "configuration_evidence",
+        "payload_type",
+        "reduced_rtcp",
+        "profile",
+        "packet",
+        "reorder",
+        "jpeg"
+      ],
+      "properties": {
+        "configuration_evidence": {
+          "$ref": "#/$defs/digest"
+        },
+        "payload_type": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 127
+        },
+        "reduced_rtcp": {
+          "type": "boolean"
+        },
+        "profile": {
+          "const": "fss.rtp_jpeg.rfc2435.whole_frame.v1"
+        },
+        "packet": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "maximum_packet_bytes",
+            "maximum_extension_bytes",
+            "maximum_rtcp_packets"
+          ],
+          "properties": {
+            "maximum_packet_bytes": {
+              "const": 65535
+            },
+            "maximum_extension_bytes": {
+              "const": 16384
+            },
+            "maximum_rtcp_packets": {
+              "const": 64
+            }
+          }
+        },
+        "reorder": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "maximum_packets",
+            "maximum_bytes",
+            "maximum_delay_ns"
+          ],
+          "properties": {
+            "maximum_packets": {
+              "const": 128
+            },
+            "maximum_bytes": {
+              "const": 8388608
+            },
+            "maximum_delay_ns": {
+              "type": "integer",
+              "minimum": 1000000,
+              "maximum": 60000000000
+            }
+          }
+        },
+        "jpeg": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "maximum_frame_bytes",
+            "maximum_fragment_packets",
+            "maximum_pending_age_ns",
+            "maximum_cached_quantizers",
+            "maximum_dimension"
+          ],
+          "properties": {
+            "maximum_frame_bytes": {
+              "type": "integer",
+              "minimum": 1024,
+              "maximum": 16777216
+            },
+            "maximum_fragment_packets": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 4096
+            },
+            "maximum_pending_age_ns": {
+              "type": "integer",
+              "minimum": 1000000,
+              "maximum": 60000000000
+            },
+            "maximum_cached_quantizers": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 127
+            },
+            "maximum_dimension": {
+              "type": "integer",
+              "minimum": 8,
+              "maximum": 2040
+            }
+          }
+        }
+      }
+    },
+    "source_storage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "maximum_roots",
+        "maximum_children",
+        "maximum_tombstones",
+        "maximum_scan_entries",
+        "spool"
+      ],
+      "properties": {
+        "maximum_roots": {
+          "const": 65536
+        },
+        "maximum_children": {
+          "const": 2
+        },
+        "maximum_tombstones": {
+          "const": 65536
+        },
+        "maximum_scan_entries": {
+          "const": 131088
+        },
+        "spool": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "maximum_objects",
+            "maximum_total_bytes",
+            "maximum_object_bytes",
+            "maximum_scan_entries"
+          ],
+          "properties": {
+            "maximum_objects": {
+              "const": 196624
+            },
+            "maximum_total_bytes": {
+              "const": 1073741824
+            },
+            "maximum_object_bytes": {
+              "const": 65536
+            },
+            "maximum_scan_entries": {
+              "const": 196624
+            }
+          }
+        }
+      }
+    },
+    "bounds": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "maximum_datagrams",
+        "maximum_source_bytes",
+        "maximum_scan_roots",
+        "maximum_spool_object_bytes",
+        "maximum_original_bytes",
+        "maximum_media_bytes",
+        "maximum_read_bytes",
+        "maximum_frames",
+        "maximum_steps",
+        "maximum_work",
+        "timeout_ms",
+        "maximum_output_bytes",
+        "source_storage",
+        "authority_budget"
+      ],
+      "properties": {
+        "maximum_datagrams": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8192
+        },
+        "maximum_source_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 67108864
+        },
+        "maximum_scan_roots": {
+          "const": 32768
+        },
+        "maximum_spool_object_bytes": {
+          "const": 65536
+        },
+        "maximum_original_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 67108864
+        },
+        "maximum_media_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 67108864
+        },
+        "maximum_read_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 536870912
+        },
+        "maximum_frames": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4096
+        },
+        "maximum_steps": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 262144
+        },
+        "maximum_work": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000000000000
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 600000
+        },
+        "maximum_output_bytes": {
+          "const": 65536
+        },
+        "source_storage": {
+          "$ref": "#/$defs/source_storage"
+        },
+        "authority_budget": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "maximum_bytes",
+            "maximum_storage_operations"
+          ],
+          "properties": {
+            "maximum_bytes": {
+              "const": 4294967296
+            },
+            "maximum_storage_operations": {
+              "const": 1000000
+            }
+          }
+        }
+      }
+    },
+    "accounting": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "rtp_datagrams",
+        "rtcp_datagrams",
+        "invalid_rtcp_datagrams",
+        "ordered_packets",
+        "codec_refusals",
+        "gap_events",
+        "fragment_discards"
+      ],
+      "properties": {
+        "rtp_datagrams": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 8192
+        },
+        "rtcp_datagrams": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 8192
+        },
+        "invalid_rtcp_datagrams": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 8192
+        },
+        "ordered_packets": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 8192
+        },
+        "codec_refusals": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 262144
+        },
+        "gap_events": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 262144
+        },
+        "fragment_discards": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 262144
+        }
+      }
+    },
+    "fragment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reason",
+        "first_sequence",
+        "last_sequence",
+        "bytes",
+        "fragments"
+      ],
+      "properties": {
+        "reason": {
+          "type": "string",
+          "enum": [
+            "configuration",
+            "stream_mismatch",
+            "closed",
+            "clock_reversed",
+            "malformed",
+            "unsupported",
+            "limit",
+            "allocation",
+            "gap",
+            "missing_start",
+            "fragment_mismatch",
+            "missing_quantizers",
+            "quantizer_conflict",
+            "interrupted",
+            "deadline",
+            "cancelled",
+            "end_of_input"
+          ]
+        },
+        "first_sequence": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "last_sequence": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 16777216
+        },
+        "fragments": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4096
+        }
+      }
+    },
+    "terminal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "replay_ns",
+        "queue_packets",
+        "queue_bytes",
+        "queue_first_sequence",
+        "queue_last_sequence",
+        "gap_pending",
+        "fragment"
+      ],
+      "properties": {
+        "replay_ns": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "queue_packets": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 128
+        },
+        "queue_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 8388608
+        },
+        "queue_first_sequence": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "queue_last_sequence": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "gap_pending": {
+          "type": "boolean"
+        },
+        "fragment": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/fragment"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "queue_packets": {
+                "const": 0
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "queue_bytes": {
+                "const": 0
+              },
+              "queue_first_sequence": {
+                "type": "null"
+              },
+              "queue_last_sequence": {
+                "type": "null"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "queue_bytes": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 8388608
+              },
+              "queue_first_sequence": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 18446744073709551615
+              },
+              "queue_last_sequence": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 18446744073709551615
+              }
+            }
+          }
+        }
+      ]
+    },
+    "plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "format",
+        "approval_digest",
+        "request_digest",
+        "source_scope",
+        "prefix",
+        "replay",
+        "physical_mapping",
+        "receive_time_ns",
+        "capture_time_label",
+        "pixels_decoded",
+        "entropy_validated",
+        "absence_certifiable",
+        "bounds",
+        "network",
+        "kind",
+        "archive",
+        "root",
+        "site",
+        "principal",
+        "writes",
+        "retention"
+      ],
+      "properties": {
+        "format": {
+          "const": "fss.rtsp_jpeg_import_operator.v1"
+        },
+        "approval_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "request_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "source_scope": {
+          "$ref": "#/$defs/source_scope"
+        },
+        "prefix": {
+          "$ref": "#/$defs/prefix"
+        },
+        "replay": {
+          "$ref": "#/$defs/replay"
+        },
+        "physical_mapping": {
+          "$ref": "#/$defs/physical_mapping"
+        },
+        "receive_time_ns": {
+          "$ref": "#/$defs/receive_time"
+        },
+        "capture_time_label": {
+          "const": "unknown"
+        },
+        "pixels_decoded": {
+          "const": false
+        },
+        "entropy_validated": {
+          "const": false
+        },
+        "absence_certifiable": {
+          "const": false
+        },
+        "bounds": {
+          "$ref": "#/$defs/bounds"
+        },
+        "network": {
+          "const": "none"
+        },
+        "kind": {
+          "const": "plan"
+        },
+        "archive": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "root": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "site": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "principal": {
+          "$ref": "#/$defs/identity"
+        },
+        "writes": {
+          "const": "none"
+        },
+        "retention": {
+          "const": "complete_selected_original_datagram_graph_and_reconstructed_mjpeg_in_destination"
+        }
+      }
+    },
+    "imported": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "format",
+        "approval_digest",
+        "request_digest",
+        "source_scope",
+        "prefix",
+        "replay",
+        "physical_mapping",
+        "receive_time_ns",
+        "capture_time_label",
+        "pixels_decoded",
+        "entropy_validated",
+        "absence_certifiable",
+        "bounds",
+        "network",
+        "kind",
+        "import_identity",
+        "import_root",
+        "manifest_digest",
+        "origin_proof",
+        "interpretation",
+        "frames",
+        "original_bytes",
+        "media_bytes",
+        "read_bytes_reserved",
+        "replay_steps",
+        "ending",
+        "accounting",
+        "terminal",
+        "source_prefix_exhaustion_is_eof",
+        "destination_contains_original_datagrams",
+        "source_archive_retained_separately",
+        "reused",
+        "work_used"
+      ],
+      "properties": {
+        "format": {
+          "const": "fss.rtsp_jpeg_import_operator.v1"
+        },
+        "approval_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "request_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "source_scope": {
+          "$ref": "#/$defs/source_scope"
+        },
+        "prefix": {
+          "$ref": "#/$defs/prefix"
+        },
+        "replay": {
+          "$ref": "#/$defs/replay"
+        },
+        "physical_mapping": {
+          "$ref": "#/$defs/physical_mapping"
+        },
+        "receive_time_ns": {
+          "$ref": "#/$defs/receive_time"
+        },
+        "capture_time_label": {
+          "const": "unknown"
+        },
+        "pixels_decoded": {
+          "const": false
+        },
+        "entropy_validated": {
+          "const": false
+        },
+        "absence_certifiable": {
+          "const": false
+        },
+        "bounds": {
+          "$ref": "#/$defs/bounds"
+        },
+        "network": {
+          "const": "none"
+        },
+        "kind": {
+          "const": "imported"
+        },
+        "import_identity": {
+          "$ref": "#/$defs/digest"
+        },
+        "import_root": {
+          "$ref": "#/$defs/digest"
+        },
+        "manifest_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "origin_proof": {
+          "$ref": "#/$defs/digest"
+        },
+        "interpretation": {
+          "$ref": "#/$defs/digest"
+        },
+        "frames": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4096
+        },
+        "original_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 67108864
+        },
+        "media_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 67108864
+        },
+        "read_bytes_reserved": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 536870912
+        },
+        "replay_steps": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 262144
+        },
+        "ending": {
+          "const": "pinned_prefix"
+        },
+        "accounting": {
+          "$ref": "#/$defs/accounting"
+        },
+        "terminal": {
+          "$ref": "#/$defs/terminal"
+        },
+        "source_prefix_exhaustion_is_eof": {
+          "const": false
+        },
+        "destination_contains_original_datagrams": {
+          "const": true
+        },
+        "source_archive_retained_separately": {
+          "const": true
+        },
+        "reused": {
+          "type": "boolean"
+        },
+        "work_used": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000000000000
+        }
+      }
+    }
+  }
+}

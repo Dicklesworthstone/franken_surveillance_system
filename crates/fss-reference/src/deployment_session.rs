@@ -87,6 +87,8 @@ use crate::situation_sections::{
     ReferenceSituationPublication, seal_reference_publication_handoff,
 };
 
+/// Exact owner-approved revocation of retained session authority (AOP-010).
+pub mod cancellation;
 /// Explicit plan-outcome mission enrollment and evidence-derived lifecycle assessments.
 pub mod mission;
 mod opening_retry;
@@ -118,10 +120,10 @@ pub mod episode;
 /// Session-owned, restart-safe adjacent follow delivery with explicit acknowledgement.
 pub mod follow;
 
-/// Bounded retained-supervision polling, historical source checks and explicit ACK/discard.
-pub mod supervision;
 /// Exact live admission and case-facing retained-supervision probe semantics.
 pub mod probe;
+/// Bounded retained-supervision polling, historical source checks and explicit ACK/discard.
+pub mod supervision;
 
 /// Experiential operational memory and trauma-guard anti-pattern warning derivation (NS-13).
 pub mod trauma_guard;

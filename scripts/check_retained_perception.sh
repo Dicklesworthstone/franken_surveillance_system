@@ -26,8 +26,41 @@ check() {
     fi
 }
 
+check alert-reconciliation-custody cargo "+$channel" test --locked --offline --no-fail-fast \
+    -p fss-reference --test alert_reconciliation_contract --test alert_operation_status_contract
+check alert-lifecycle-operator cargo "+$channel" test --locked --offline --no-fail-fast \
+    -p fss-cli --test alert_lifecycle_cli
+check session-cancellation-journal cargo "+$channel" test --locked --offline --no-fail-fast \
+    -p fss-reference --lib agent_session::checkpoint::journal::cancellation::tests
+check session-cancellation-operator cargo "+$channel" test --locked --offline --no-fail-fast \
+    -p fss-cli --test session_cancel_cli_contract
+check session-cancellation-mcp cargo "+$channel" test --locked --offline --no-fail-fast \
+    -p fss-cli --bin fss-mcp session_cancellation_
+check selected-historical-learning cargo "+$channel" test --locked --offline --no-fail-fast \
+    -p fss-cli --test agent_effect_cli_contract learning_explain::
+check http-history-sentinel cargo "+$channel" test --locked --offline --no-fail-fast \
+    -p fss-reference --test http_history_sentinel_contract --test http_history_watch_contract \
+    --test rtsp_campaign_sentinel_contract --test rtsp_campaign_sentinel_hevc_contract \
+    --test rtsp_campaign_sentinel_plan_contract
+check history-sentinel-resource-pool cargo "+$channel" test --locked --offline --no-fail-fast \
+    -p fss-reference --lib ingest::long_sentinel::pool::tests
+check http-history-sentinel-operator cargo "+$channel" test --locked --offline --no-fail-fast \
+    -p fss-cli --bin fss-sentinel-http-history --test http_history_sentinel_cli \
+    --test http_history_watch_cli
+check http-capture-sentinel-operator cargo "+$channel" test --locked --offline --no-fail-fast \
+    -p fss-cli --bin fss-capture-reconnect --test capture_reconnect_sentinel_cli
+check http-prefix-sentinel cargo "+$channel" test --locked --offline --no-fail-fast \
+    -p fss-reference --test http_prefix_sentinel_contract
+check sentinel-output-reservation cargo "+$channel" test --locked --offline --no-fail-fast \
+    -p fss-cli --bin fss-infer output
+check sentinel-replay-admission cargo "+$channel" test --locked --offline --no-fail-fast \
+    -p fss-cli --bin fss-infer long_sentinel_cli::tests
 check retained-localization cargo "+$channel" test --locked --offline --no-fail-fast \
     -p fss-reference --test recorded_twin_localization_contract
+check retained-scene-calibration cargo "+$channel" test --locked --offline --no-fail-fast \
+    -p fss-reference --lib ingest::scene_calibration::
+check retained-scene-reconstruction cargo "+$channel" test --locked --offline --no-fail-fast \
+    -p fss-cli --bin fss-scene-fuse
 check incremental-dwell cargo "+$channel" test --locked --offline --no-fail-fast \
     -p fss-reference --lib ingest::long_dwell
 check package-detection-source-shape cargo "+$channel" test --locked --offline --no-fail-fast \

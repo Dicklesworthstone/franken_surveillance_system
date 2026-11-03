@@ -14,7 +14,7 @@ use crate::rectification::{
 use crate::redaction::{LumaRedaction, RedactionRefused};
 use fss_codec_mjpeg::{
     ComponentInterpretation, DecodeBudget, DecodeError, DecodeLimits, DecodeReceipt, DecodedLuma,
-    decode_luma, decoder_identity,
+    decode_luma_v1 as decode_luma, decoder_identity,
 };
 use fss_core::ContentDigest;
 use fss_geometry::{GeometryError, WorkBudget};

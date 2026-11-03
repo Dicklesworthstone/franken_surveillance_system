@@ -3,8 +3,10 @@
 //! estimator is implied. Imported pixels, masks and lens parameters need admission
 //! by their existing owners; this module performs no I/O or external effects.
 
+mod features;
 mod localize;
 mod model;
+pub use features::{RectifiedFeatures, extract_raw_features};
 pub use localize::{RawLocalizationError, RectifiedLocalization, localize_raw_frame};
 pub use model::LensDistortion;
 

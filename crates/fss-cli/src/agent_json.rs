@@ -16,7 +16,6 @@
 //! digest.
 
 use std::collections::BTreeSet;
-use std::fmt::Write as _;
 
 use fss_core::{
     ActionAffordance, AffordanceClass, AgentCognitiveEnvelope, AgentCognitiveEnvelopeV2,
@@ -27,35 +26,15 @@ use fss_core::{
     SemanticContextPack, SessionCapsule, StaleBasis, WorldEnvelope,
 };
 
-use crate::diagnostic::escape_json_str;
+pub use crate::json_output::{array, object, string, strings};
 
 mod supervision;
 pub use supervision::supervision_inventory_entry;
-
-/// A JSON string literal.
-#[must_use]
-pub fn string(value: &str) -> String {
-    format!("\"{}\"", escape_json_str(value))
-}
 
 /// A JSON string literal or `null`.
 #[must_use]
 pub fn optional_string(value: Option<&str>) -> String {
     value.map_or_else(|| "null".to_owned(), string)
-}
-
-/// A JSON array of string literals.
-#[must_use]
-pub fn strings<I, S>(values: I) -> String
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<str>,
-{
-    let items: Vec<String> = values
-        .into_iter()
-        .map(|value| string(value.as_ref()))
-        .collect();
-    format!("[{}]", items.join(","))
 }
 
 /// A JSON array of digest texts.
@@ -65,26 +44,6 @@ where
     I: IntoIterator<Item = &'a ContentDigest>,
 {
     strings(values.into_iter().map(|digest| digest.to_text()))
-}
-
-/// A JSON array of already-rendered values.
-#[must_use]
-pub fn array(items: &[String]) -> String {
-    format!("[{}]", items.join(","))
-}
-
-/// A JSON object from `(key, rendered value)` pairs, in the given order.
-#[must_use]
-pub fn object(fields: &[(&str, String)]) -> String {
-    let mut out = String::from("{");
-    for (index, (key, value)) in fields.iter().enumerate() {
-        if index > 0 {
-            out.push(',');
-        }
-        let _ = write!(out, "\"{key}\":{value}");
-    }
-    out.push('}');
-    out
 }
 
 fn digest(value: ContentDigest) -> String {

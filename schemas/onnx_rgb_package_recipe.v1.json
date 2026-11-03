@@ -1,0 +1,132 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/onnx_rgb_package_recipe.v1.json",
+  "title": "fss.onnx_rgb_package_recipe.v1",
+  "description": "Explicit operator input to fss-infer import-onnx, not retained authority, activation, calibration or a model-quality certificate. Every field is required. The native JSON parser also rejects duplicate keys, non-integer lexical number forms, invalid UTF-8 and trailing input and limits the complete recipe to one MiB. Native validation enforces UTF-8 byte lengths (JSON Schema lengths count characters), maximum_detections <= maximum_candidates, exact model input/output shapes, parameter bindings, immutable generations and the existing license-use policy. The recipe does not authenticate operator-supplied upstream or producer descriptions.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "format", "model_id", "model_generation", "tensor_generation",
+    "preprocess", "head", "labels", "source", "license"
+  ],
+  "properties": {
+    "format": {"const": "fss.onnx_rgb_package_recipe.v1"},
+    "model_id": {
+      "type": "string",
+      "minLength": 5,
+      "maxLength": 64,
+      "pattern": "^MOD-[A-Z0-9-]+$"
+    },
+    "model_generation": {
+      "type": "string",
+      "minLength": 8,
+      "maxLength": 256,
+      "pattern": "^(?!.*latest)[a-z0-9][a-z0-9:+._-]{7,255}$"
+    },
+    "tensor_generation": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 18446744073709551615
+    },
+    "preprocess": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "image_input", "height", "width", "resize", "letterbox_pad",
+        "masked_rgb", "scale_to_unit"
+      ],
+      "properties": {
+        "image_input": {"$ref": "#/$defs/text512"},
+        "height": {"type": "integer", "minimum": 1, "maximum": 4096},
+        "width": {"type": "integer", "minimum": 1, "maximum": 4096},
+        "resize": {"enum": ["nearest", "bilinear"]},
+        "letterbox_pad": {"$ref": "#/$defs/byte"},
+        "masked_rgb": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": {"$ref": "#/$defs/byte"}
+        },
+        "scale_to_unit": {"type": "boolean"}
+      }
+    },
+    "head": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "output_port", "layout", "boxes", "class_score", "objectness", "classes",
+        "minimum_score_ppm", "nms_iou_ppm", "maximum_rows",
+        "maximum_candidates", "maximum_detections"
+      ],
+      "properties": {
+        "output_port": {"$ref": "#/$defs/text128"},
+        "layout": {"enum": ["rows", "channels"]},
+        "boxes": {
+          "enum": [
+            "pixel-corners", "pixel-center-size",
+            "normalized-corners", "normalized-center-size"
+          ]
+        },
+        "class_score": {"enum": ["probability", "logit"]},
+        "objectness": {"enum": ["none", "probability", "logit"]},
+        "classes": {"enum": ["best", "multi-label"]},
+        "minimum_score_ppm": {"$ref": "#/$defs/ppm"},
+        "nms_iou_ppm": {"$ref": "#/$defs/ppm"},
+        "maximum_rows": {"type": "integer", "minimum": 1, "maximum": 32768},
+        "maximum_candidates": {"type": "integer", "minimum": 1, "maximum": 4096},
+        "maximum_detections": {"type": "integer", "minimum": 1, "maximum": 256}
+      }
+    },
+    "labels": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 256,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/text128"}
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["upstream", "revision", "producer"],
+      "properties": {
+        "upstream": {"$ref": "#/$defs/text256"},
+        "revision": {"$ref": "#/$defs/text128"},
+        "producer": {"$ref": "#/$defs/text512"}
+      }
+    },
+    "license": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "use_approved", "restrictions"],
+      "properties": {
+        "id": {"$ref": "#/$defs/text128"},
+        "use_approved": {
+          "type": "boolean",
+          "description": "Explicit operator decision; the existing surveillance-monitoring license policy still decides whether packaging is admitted."
+        },
+        "restrictions": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/text256"}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "byte": {"type": "integer", "minimum": 0, "maximum": 255},
+    "ppm": {"type": "integer", "minimum": 0, "maximum": 1000000},
+    "text128": {
+      "type": "string", "minLength": 1, "maxLength": 128,
+      "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+    },
+    "text256": {
+      "type": "string", "minLength": 1, "maxLength": 256,
+      "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+    },
+    "text512": {
+      "type": "string", "minLength": 1, "maxLength": 512,
+      "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+    }
+  }
+}

@@ -198,6 +198,16 @@ oracle_test!(
     "ip_qcif_slices3_idc2"
 );
 oracle_test!(poc_type0_bit_exact, "ip_100x60_poc0");
+oracle_test!(poc_type1_reference_cycle_bit_exact, "ip_100x60_poc1_cycle");
+oracle_test!(
+    poc_type1_multislice_signed_deltas_bit_exact,
+    "ip_qcif_slices3_poc1_deltas"
+);
+oracle_test!(
+    poc_type1_b_reordering_bit_exact,
+    "m_b_cavlc_poc1",
+    Order::Reordered
+);
 
 // ----- Main profile, stage 1: CABAC I and P slices -----
 oracle_test!(main_cabac_intra_bit_exact, "m_i_cabac_qp26");

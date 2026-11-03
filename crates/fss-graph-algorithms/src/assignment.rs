@@ -676,8 +676,32 @@ pub fn optimal_assignment(
     policy: NonAssignment,
     budget: Budget,
 ) -> Result<CertifiedRun<MatchOutput>, GraphError> {
+    optimal_assignment_run(problem, policy, budget, None)
+}
+
+/// The same certified optimum with a borrowed cooperative cancellation probe.
+/// Successful uncancelled runs preserve the legacy counters and canonical bytes.
+pub fn optimal_assignment_with_cancel(
+    problem: &AssignmentProblem,
+    policy: NonAssignment,
+    budget: Budget,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<CertifiedRun<MatchOutput>, GraphError> {
+    optimal_assignment_run(problem, policy, budget, Some(cancelled))
+}
+
+fn optimal_assignment_run(
+    problem: &AssignmentProblem,
+    policy: NonAssignment,
+    budget: Budget,
+    cancelled: Option<&dyn Fn() -> bool>,
+) -> Result<CertifiedRun<MatchOutput>, GraphError> {
+    let mut meter = match cancelled {
+        Some(probe) => Meter::new_cancellable(&MATCH_IDENTITY, budget, probe),
+        None => Meter::new(&MATCH_IDENTITY, budget),
+    };
+    meter.checkpoint()?;
     let square = Square::new(problem, policy)?;
-    let mut meter = Meter::new(&MATCH_IDENTITY, budget);
     let solved = solve(&square.cost, square.l, &mut meter)?.ok_or_else(|| {
         GraphError::Inconsistent("the unconstrained reduction is infeasible".to_owned())
     })?;
@@ -742,14 +766,40 @@ pub fn k_best_assignments(
     k: u32,
     budget: Budget,
 ) -> Result<CertifiedRun<KBestOutput>, GraphError> {
+    k_best_assignments_run(problem, policy, k, budget, None)
+}
+
+/// The same exact ordered prefix with cancellation across all Murty subproblem solves.
+/// Cancellation returns no prefix or witness; successful legacy output bytes are unchanged.
+pub fn k_best_assignments_with_cancel(
+    problem: &AssignmentProblem,
+    policy: NonAssignment,
+    k: u32,
+    budget: Budget,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<CertifiedRun<KBestOutput>, GraphError> {
+    k_best_assignments_run(problem, policy, k, budget, Some(cancelled))
+}
+
+fn k_best_assignments_run(
+    problem: &AssignmentProblem,
+    policy: NonAssignment,
+    k: u32,
+    budget: Budget,
+    cancelled: Option<&dyn Fn() -> bool>,
+) -> Result<CertifiedRun<KBestOutput>, GraphError> {
     if k == 0 || k > MAX_K {
         return Err(GraphError::PreconditionFailed(format!(
             "k must be within 1..={MAX_K}"
         )));
     }
+    let mut meter = match cancelled {
+        Some(probe) => Meter::new_cancellable(&MULTIMATCH_IDENTITY, budget, probe),
+        None => Meter::new(&MULTIMATCH_IDENTITY, budget),
+    };
+    meter.checkpoint()?;
     let square = Square::new(problem, policy)?;
     let (l, n) = (square.l, square.size());
-    let mut meter = Meter::new(&MULTIMATCH_IDENTITY, budget);
     let tuple = |solved: &Solved| -> Vec<usize> { solved.row_column[..l].to_vec() };
     let mut nodes: Vec<(Constraints, Solved)> = Vec::new();
     let mut heap: BinaryHeap<Reverse<(i128, Vec<usize>, usize)>> = BinaryHeap::new();

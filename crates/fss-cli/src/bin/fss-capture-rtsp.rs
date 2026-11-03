@@ -12,6 +12,8 @@ mod authentication;
 mod driver;
 #[path = "fss-capture-rtsp/from_onvif.rs"]
 mod from_onvif;
+#[path = "fss-capture-rtsp/jpeg.rs"]
+mod jpeg;
 #[path = "fss-capture-rtsp/plan.rs"]
 mod plan;
 #[path = "fss-capture-rtsp/reconnect.rs"]
@@ -30,6 +32,9 @@ fn main() -> ExitCode {
         .skip(1)
         .take(from_onvif::MAX_ARGUMENTS.max(sentinel::MAX_ARGUMENTS) + 2)
         .collect();
+    if args.first().and_then(|arg| arg.to_str()) == Some("jpeg") {
+        return jpeg_main(&args[1..]);
+    }
     if args.first().and_then(|arg| arg.to_str()) == Some("sentinel") {
         return sentinel_main(&args[1..]);
     }
@@ -48,7 +53,7 @@ fn main() -> ExitCode {
     if args.len() == 1 && matches!(args[0].to_str(), Some("help" | "--help" | "-h")) {
         return match write_bounded(plan::HELP.as_bytes()).and_then(|()| {
             write_bounded(single::HELP.as_bytes()).and_then(|()| {
-                write_bounded(b"\nBounded reconnects: fss-capture-rtsp reconnect --help\nSource-first retention: fss-capture-rtsp retain-source --help\nPrivate ONVIF handoff: fss-capture-rtsp from-onvif --help\nLive trained detection: fss-capture-rtsp sentinel --help\n")
+                write_bounded(b"\nBounded reconnects: fss-capture-rtsp reconnect --help\nSource-first retention: fss-capture-rtsp retain-source --help\nNative JPEG capture/cold replay: fss-capture-rtsp jpeg --help\nPrivate ONVIF handoff: fss-capture-rtsp from-onvif --help\nLive trained detection: fss-capture-rtsp sentinel --help\n")
             })
         }) {
             Ok(()) => ExitCode::SUCCESS,
@@ -70,6 +75,25 @@ fn main() -> ExitCode {
             .and_then(|preview| write_bounded((preview + "\n").as_bytes()))
     };
     finish(result)
+}
+
+fn jpeg_main(args: &[std::ffi::OsString]) -> ExitCode {
+    let help_args = if args.first().is_some_and(|arg| arg == "replay") {
+        &args[1..]
+    } else {
+        args
+    };
+    if help_args.len() == 1 && matches!(help_args[0].to_str(), Some("help" | "--help" | "-h")) {
+        return finish(write_bounded(jpeg::HELP.as_bytes()));
+    }
+    let options = match jpeg::plan::Options::parse(args) {
+        Ok(options) => options,
+        Err(reason) => {
+            eprintln!("ERR-CAPTURE-RTSP-ARGUMENT-001: {reason}; use jpeg --help");
+            return ExitCode::from(ExitIdentity::MALFORMED_VALUE.code);
+        }
+    };
+    finish(jpeg::run(&options))
 }
 
 fn sentinel_main(args: &[std::ffi::OsString]) -> ExitCode {

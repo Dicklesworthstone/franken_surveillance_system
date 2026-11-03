@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! Native baseline JPEG to packed RGB, sharing the exact luma parser and entropy decoder.
+//! Native baseline and progressive JPEG to packed RGB, sharing each generation's luma engine.
 //!
 //! All Y/Cb/Cr blocks are reconstructed. Subsampled chroma uses nearest-cell replication;
 //! the full-range color matrix is fixed Q16 with half-up rounding and saturation. This is
@@ -32,24 +32,19 @@ impl Default for RgbDecodeLimits {
 /// Exact source-to-RGB transform identity. No independent model admission is implied.
 #[must_use]
 pub fn rgb_decoder_identity() -> [u8; 32] {
-    let mut bytes = [0_u8; 192];
-    bytes[..32].copy_from_slice(
-        &ContentDigest::sha256(b"fss/jpeg-rgb/reference/1;nearest-chroma;q16-half-up;rgb-hwc")
-            .bytes(),
-    );
-    for (i, source) in [
-        include_bytes!("color.rs").as_slice(),
-        include_bytes!("image.rs").as_slice(),
-        include_bytes!("entropy.rs").as_slice(),
-        include_bytes!("transform.rs").as_slice(),
-        include_bytes!("lib.rs").as_slice(),
+    // Frozen at 309ecc6. See BASELINE_GENERATION.md for the five original source preimages.
+    // New progressive dispatch must not rename existing pixels, receipts, or model generations.
+    [
+        0x71, 0xe2, 0xb7, 0x80, 0x82, 0xd9, 0xc8, 0xd4, 0xf1, 0x6b, 0x6f, 0x26, 0x3a, 0xbe, 0xaa,
+        0xda, 0x4e, 0xab, 0x0f, 0x23, 0x13, 0x80, 0xce, 0x1b, 0x85, 0xe2, 0x66, 0x81, 0x48, 0x13,
+        0x8e, 0xdc,
     ]
-    .iter()
-    .enumerate()
-    {
-        bytes[(i + 1) * 32..(i + 2) * 32].copy_from_slice(&ContentDigest::sha256(source).bytes());
-    }
-    ContentDigest::sha256(&bytes).bytes()
+}
+
+/// Source-bound progressive entropy generation plus the same nearest-chroma/Q16 RGB transform.
+#[must_use]
+pub fn progressive_rgb_decoder_identity() -> [u8; 32] {
+    crate::progressive::identity(true)
 }
 
 /// Complete decode receipt; metadata stays in the unchanged compressed source.
@@ -65,9 +60,9 @@ pub struct RgbDecodeReceipt {
     pub interpretation: ComponentInterpretation,
     /// Coded raster dimensions; no rotation, lens correction or implicit crop.
     pub dimensions: [u32; 2],
-    /// Complete number of coded MCUs, including boundary padding.
+    /// Coded MCUs consumed, including boundary padding; summed over progressive scans.
     pub mcus: usize,
-    /// All entropy blocks validated and reconstructed, including chroma and edge padding.
+    /// All entropy block visits, including chroma, padding, and progressive refinements.
     pub entropy_blocks: usize,
     /// Verified restart markers.
     pub restarts: usize,
@@ -79,8 +74,8 @@ pub struct RgbDecodeReceipt {
 
 /// Immutable RGB pixels available only after whole-frame validation succeeds.
 pub struct DecodedRgb {
-    pixels: Vec<u8>,
-    receipt: RgbDecodeReceipt,
+    pub(crate) pixels: Vec<u8>,
+    pub(crate) receipt: RgbDecodeReceipt,
 }
 impl std::fmt::Debug for DecodedRgb {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -104,13 +99,48 @@ impl DecodedRgb {
     }
 }
 
-/// Decode one complete baseline JPEG with grayscale or YCbCr 4:4:4/4:2:2/4:2:0.
+/// Decode one complete baseline or progressive JPEG as grayscale or YCbCr 4:4:4/4:2:2/4:2:0.
+pub fn decode_rgb(
+    bytes: &[u8],
+    expected_sha256: [u8; 32],
+    interpretation: ComponentInterpretation,
+    limits: RgbDecodeLimits,
+    budget: &mut DecodeBudget<'_>,
+) -> Result<DecodedRgb, DecodeError> {
+    budget.charge(0)?;
+    if crate::progressive::is_progressive(bytes) {
+        crate::progressive::decode_rgb(bytes, expected_sha256, interpretation, limits, budget)
+    } else {
+        decode_rgb_v1(bytes, expected_sha256, interpretation, limits, budget)
+    }
+}
+
+/// Replay exactly the requested registered RGB generation.
+pub fn decode_rgb_for_identity(
+    decoder: [u8; 32],
+    bytes: &[u8],
+    expected_sha256: [u8; 32],
+    interpretation: ComponentInterpretation,
+    limits: RgbDecodeLimits,
+    budget: &mut DecodeBudget<'_>,
+) -> Result<DecodedRgb, DecodeError> {
+    budget.charge(0)?;
+    if decoder == rgb_decoder_identity() {
+        decode_rgb_v1(bytes, expected_sha256, interpretation, limits, budget)
+    } else if decoder == progressive_rgb_decoder_identity() {
+        crate::progressive::decode_rgb(bytes, expected_sha256, interpretation, limits, budget)
+    } else {
+        Err(DecodeError::Unsupported)
+    }
+}
+
+/// Replay the original baseline JPEG-to-RGB generation.
 ///
 /// No FFI, model server or camera I/O is involved. Reordered scan components, odd image
 /// dimensions and restart intervals reuse the native parser. Malformed chroma, truncated
 /// entropy, progressive scans, absent EOI, incompatible interpretation and trailing bytes
 /// refuse the entire result. The existing decode_luma API and its pixels remain unchanged.
-pub fn decode_rgb(
+pub fn decode_rgb_v1(
     bytes: &[u8],
     expected_sha256: [u8; 32],
     interpretation: ComponentInterpretation,
@@ -147,11 +177,7 @@ pub fn decode_rgb(
         budget,
     )?;
     // Source-profile hashing is explicit work too, rather than an unpriced post-decode pass.
-    let profile_bytes = include_bytes!("color.rs").len()
-        + include_bytes!("image.rs").len()
-        + include_bytes!("entropy.rs").len()
-        + include_bytes!("transform.rs").len()
-        + include_bytes!("lib.rs").len();
+    let profile_bytes = 41_545; // Exact v1 source-byte charge, frozen with its identity.
     budget.charge(pixels.len() as u64 + profile_bytes as u64 + 2048)?;
     let receipt = RgbDecodeReceipt {
         encoded_sha256: expected_sha256,

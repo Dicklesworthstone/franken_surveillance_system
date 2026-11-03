@@ -7,7 +7,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use fss_codec_mjpeg::DecodeBudget;
-use fss_codec_mjpeg::color::{MAX_RGB_BYTES, RgbDecodeLimits, decode_rgb};
+// Retained v1 detector recipes pin the original RGB generation, including format refusals.
+use fss_codec_mjpeg::color::{MAX_RGB_BYTES, RgbDecodeLimits, decode_rgb_v1 as decode_rgb};
 use fss_core::{CanonicalDecoder, CanonicalEncoder, ContentDigest};
 
 use super::{LongWatchEntry, LongWatchLimits, MAX_LONG_WATCH_CANDIDATES, Result};

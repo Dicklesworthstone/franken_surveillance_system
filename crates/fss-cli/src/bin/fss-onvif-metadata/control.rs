@@ -15,8 +15,9 @@ use fss_core::{
 use fss_reference::onvif::capture_operation;
 use fss_reference::onvif::control::{
     CleanupStatus, ControlDescriptor, ControlKind, MAX_CATALOG_RECORDS, RetainedCreateIntent,
-    RetainedRenewIntent, RetainedRenewal, RetainedSubscription, RetainedUnsubscribe,
-    RetainedUnsubscribeIntent, RetainedUnsubscribeOutcome, inspect_cleanup, list_control,
+    RetainedCreateOutcome, RetainedRenewIntent, RetainedRenewal, RetainedSubscription,
+    RetainedUnsubscribe, RetainedUnsubscribeIntent, RetainedUnsubscribeOutcome, inspect_cleanup,
+    list_control, recover_created,
 };
 use fss_reference::onvif::pullpoint::{self, CaptureReport, SubscriptionState};
 use fss_reference::{ReferenceDeployment, ReplayCx};
@@ -28,12 +29,15 @@ use super::{
     optional_digest, runtime, text,
 };
 
-const HELP: &str = "fss-onvif-metadata control <list|inspect|operation|reconcile-operation|unsubscribe> [options]
+const HELP: &str = "fss-onvif-metadata control <list|inspect|recover-created|operation|reconcile-operation|unsubscribe> [options]
   list: --root ABSOLUTE_DIR --site SITE [--principal ID] [--max-records 64]
   inspect: --root ABSOLUTE_DIR --site SITE [--principal ID]
-           --kind intent|created|unsubscribed|renew-intent|renewed|unsubscribe-intent|unsubscribe-outcome
+           --kind intent|create-outcome|created|unsubscribed|renew-intent|renewed|unsubscribe-intent|unsubscribe-outcome
            --control-id sha256:HEX
            [--expected-root sha256:HEX]
+  recover-created: --root ABSOLUTE_DIR --site SITE [--principal ID]
+           --control-id sha256:HEX --expected-root sha256:HEX
+           --owner-authorized yes --recover yes
   operation: --root ABSOLUTE_DIR --site SITE [--principal ID]
            --operation-id OPERATION_ID [--minimum-journal-root sha256:HEX]
   reconcile-operation: --root ABSOLUTE_DIR --site SITE [--principal ID]
@@ -59,6 +63,9 @@ Verified native deletions are omitted. Empty output proves no remote absence.
 An intent alone leaves dispatch and result unknown; it never authorizes Create retry.
 A renewal or cleanup intent alone leaves its remote result unknown; it never authorizes retry.
 Retained responses are historical observations, not current remote state.
+recover-created explicitly reconstructs the unchanged Created marker from an exact retained
+usable Create outcome. Malformed, uncorrelated, unscoped or untimed replies refuse. It performs
+no network work and grants no retry or cleanup authority; use separate fresh cleanup approval.
 operation inspects the source-free capture fence by the stable owner ID, without camera
 credentials or network access. Every recorded state consumes that ID. An independently
 saved --minimum-journal-root must occur in the verified history, detecting rollback past
@@ -81,6 +88,10 @@ Known terminal receipts survive late refusal and output failure; incomplete clea
 ";
 
 enum ColdAction {
+    RecoverCreated {
+        identity: ContentDigest,
+        root: ContentDigest,
+    },
     Operation {
         operation_id: OperationId,
         minimum_journal_root: Option<ContentDigest>,
@@ -120,19 +131,25 @@ fn parse_cold(args: &[OsString]) -> Result<ColdOptions, &'static str> {
     let command = args[0].to_str().ok_or(ARGUMENT_ERROR)?;
     if !matches!(
         command,
-        "list" | "inspect" | "operation" | "reconcile-operation"
+        "list" | "inspect" | "recover-created" | "operation" | "reconcile-operation"
     ) {
         return Err(ARGUMENT_ERROR);
     }
     let listing = command == "list";
     let operation = command == "operation";
     let reconcile = command == "reconcile-operation";
+    let recovery = command == "recover-created";
     let mut values = BTreeMap::new();
     for pair in args[1..].chunks_exact(2) {
         let key = pair[0].to_str().ok_or(ARGUMENT_ERROR)?;
         let common = matches!(key, "--root" | "--site" | "--principal");
         let specific = if listing {
             key == "--max-records"
+        } else if recovery {
+            matches!(
+                key,
+                "--control-id" | "--expected-root" | "--owner-authorized" | "--recover"
+            )
         } else if operation {
             matches!(key, "--operation-id" | "--minimum-journal-root")
         } else if reconcile {
@@ -184,6 +201,16 @@ fn parse_cold(args: &[OsString]) -> Result<ColdOptions, &'static str> {
             return Err(ARGUMENT_ERROR);
         }
         ColdAction::List { max_records }
+    } else if recovery {
+        if text(&values, "--owner-authorized")? != "yes" || text(&values, "--recover")? != "yes" {
+            return Err(ARGUMENT_ERROR);
+        }
+        let identity = digest(text(&values, "--control-id")?)?;
+        let root = digest(text(&values, "--expected-root")?)?;
+        if identity.bytes() == [0; 32] || root.bytes() == [0; 32] {
+            return Err(ARGUMENT_ERROR);
+        }
+        ColdAction::RecoverCreated { identity, root }
     } else if operation || reconcile {
         let minimum_journal_root = optional_digest(&values, "--minimum-journal-root")?;
         if minimum_journal_root.is_some_and(|digest| digest.bytes() == [0; 32]) {
@@ -229,6 +256,7 @@ fn parse_cold(args: &[OsString]) -> Result<ColdOptions, &'static str> {
     } else {
         let kind = match text(&values, "--kind")? {
             "intent" => ControlKind::CreateIntent,
+            "create-outcome" => ControlKind::CreateOutcome,
             "created" => ControlKind::Created,
             "unsubscribed" => ControlKind::Unsubscribed,
             "renew-intent" => ControlKind::RenewIntent,
@@ -301,6 +329,7 @@ fn cleanup_report(status: &CleanupStatus) -> String {
 enum ColdResult {
     Report(String),
     Reconciled(Box<capture_operation::CaptureOperationInspection>),
+    Recovered(Box<RetainedSubscription>),
 }
 
 pub(super) fn cold(
@@ -311,6 +340,7 @@ pub(super) fn cold(
     let records = match options.action {
         ColdAction::List { max_records } => max_records as u64,
         ColdAction::Inspect { .. }
+        | ColdAction::RecoverCreated { .. }
         | ColdAction::Operation { .. }
         | ColdAction::ReconcileOperation { .. } => 1,
     };
@@ -326,6 +356,7 @@ pub(super) fn cold(
         ColdAction::Operation { .. } | ColdAction::ReconcileOperation { .. }
     );
     let reconciliation = matches!(&options.action, ColdAction::ReconcileOperation { .. });
+    let recovery = matches!(&options.action, ColdAction::RecoverCreated { .. });
     let bytes = (records + 1) * 4 * 1024 * 1024
         + if operation_history {
             4 * capture_operation::MAX_JOURNAL_BYTES
@@ -345,7 +376,8 @@ pub(super) fn cold(
             } else {
                 0
             }
-            + if reconciliation { 32 } else { 0 },
+            + if reconciliation { 32 } else { 0 }
+            + if recovery { 8 } else { 0 },
     );
     let request = runtime::Request {
         approval: options.approval,
@@ -398,6 +430,14 @@ pub(super) fn cold(
             line!("current_remote_state=unknown");
             line!("automatic_create_retry_safe=false");
             match &options.action {
+                ColdAction::RecoverCreated { identity, root } => {
+                    let outcome =
+                        RetainedCreateOutcome::open(&deployment, *identity, Some(*root), &cx)
+                            .map_err(|error| error.code())?;
+                    let value = recover_created(&mut deployment, &outcome, &cx)
+                        .map_err(|error| error.code())?;
+                    return Ok(ColdResult::Recovered(Box::new(value)));
+                }
                 ColdAction::Operation {
                     operation_id,
                     minimum_journal_root,
@@ -480,6 +520,41 @@ pub(super) fn cold(
                     line!("kind={}", kind_name(*kind));
                     line!("identity={identity}");
                     match kind {
+                        ControlKind::CreateOutcome => {
+                            let value = RetainedCreateOutcome::open(
+                                &deployment,
+                                *identity,
+                                *expected_root,
+                                &cx,
+                            )
+                            .map_err(|error| error.code())?;
+                            line!("publication_root={}", value.publication_root());
+                            line!("intent_identity={}", value.intent().identity());
+                            line!("source_sha256={}", value.source_digest());
+                            line!("source_bytes={}", value.source_bytes());
+                            line!(
+                                "authority_sequence={}",
+                                value.authority_anchor().commit_sequence
+                            );
+                            line!("historical_observation=create_response_retained");
+                            line!(
+                                "scoped_response_observed={}",
+                                value.scoped_subscription().is_some()
+                            );
+                            line!("http_status={}", value.binding().http_status);
+                            line!(
+                                "completion_time_observed={}",
+                                value.binding().completed_ns.is_some()
+                            );
+                            line!(
+                                "safe_next={}",
+                                if value.scoped_subscription().is_some() {
+                                    "explicit_recover_created_then_review_cleanup"
+                                } else {
+                                    "owner_device_reconciliation_no_create_retry"
+                                }
+                            );
+                        }
                         ControlKind::CreateIntent => {
                             let value = RetainedCreateIntent::open(
                                 &deployment,
@@ -649,7 +724,7 @@ pub(super) fn cold(
             let (value, refusal) = work(scope)?;
             match value {
                 ColdResult::Reconciled(value) => Ok(runtime::Committed::new((*value, refusal))),
-                ColdResult::Report(_) => Err(ARGUMENT_ERROR),
+                ColdResult::Report(_) | ColdResult::Recovered(_) => Err(ARGUMENT_ERROR),
             }
         })?;
         let minimum_checked = matches!(
@@ -660,6 +735,35 @@ pub(super) fn cold(
             }
         );
         Ok(reconciliation_report(completed, minimum_checked))
+    } else if recovery {
+        let completed = runtime::run_committing(request, |scope| {
+            let (value, refusal) = work(scope)?;
+            match value {
+                ColdResult::Recovered(value) => Ok(runtime::Committed::new((*value, refusal))),
+                ColdResult::Report(_) | ColdResult::Reconciled(_) => Err(ARGUMENT_ERROR),
+            }
+        })?;
+        let (value, owner_error) = completed.value;
+        let post_commit_error = owner_error.or(completed.post_commit_error);
+        let complete = post_commit_error.is_none() && completed.finalization_error.is_none();
+        Ok((
+            format!(
+                "operation=control_recover_created\nphase={}\nidentity={}\npublication_root={}\nintent_identity={}\nsource_sha256={}\nauthority_sequence={}\ncustody_verified=true\nhttp_exchanges=0\ncreate_dispatched=false\npolls_dispatched=0\nunsubscribe_dispatched=false\nvalues_disclosed=false\ncurrent_remote_state=unknown\nautomatic_create_retry_safe=false\npost_commit_error={}\nfinalization_error={}\nsafe_next=inspect_created_then_separately_approve_cleanup\n",
+                if complete {
+                    "recovered"
+                } else {
+                    "recovered_with_error"
+                },
+                value.identity(),
+                value.publication_root(),
+                value.intent_identity(),
+                value.source_digest(),
+                value.authority_anchor().commit_sequence,
+                post_commit_error.unwrap_or("none"),
+                completed.finalization_error.unwrap_or("none"),
+            ),
+            complete,
+        ))
     } else {
         let (value, refusal) = runtime::run(request, work)?;
         if let Some(error) = refusal {
@@ -667,7 +771,7 @@ pub(super) fn cold(
         }
         match value {
             ColdResult::Report(out) => Ok((out, true)),
-            ColdResult::Reconciled(_) => Err(ARGUMENT_ERROR),
+            ColdResult::Reconciled(_) | ColdResult::Recovered(_) => Err(ARGUMENT_ERROR),
         }
     }
 }
@@ -700,6 +804,7 @@ pub(super) fn reconciliation_report(
 fn kind_name(kind: ControlKind) -> &'static str {
     match kind {
         ControlKind::CreateIntent => "intent",
+        ControlKind::CreateOutcome => "create-outcome",
         ControlKind::Created => "created",
         ControlKind::Unsubscribed => "unsubscribed",
         ControlKind::RenewIntent => "renew-intent",
@@ -927,7 +1032,9 @@ pub(super) fn run_args(args: &[OsString]) -> Result<(String, bool), &'static str
     }
     match args[0].to_str() {
         Some("unsubscribe") => unsubscribe(&args[1..]),
-        Some("list" | "inspect" | "operation" | "reconcile-operation") => cold(args, |_| Ok(())),
+        Some("list" | "inspect" | "recover-created" | "operation" | "reconcile-operation") => {
+            cold(args, |_| Ok(()))
+        }
         _ => Err(ARGUMENT_ERROR),
     }
 }
@@ -938,6 +1045,94 @@ mod tests {
 
     fn args(parts: &[&str]) -> Vec<OsString> {
         parts.iter().map(OsString::from).collect()
+    }
+
+    #[test]
+    fn created_recovery_requires_exact_raw_custody_and_explicit_local_approval() {
+        let identity = ContentDigest::sha256(b"raw-create-outcome").to_text();
+        let root = ContentDigest::sha256(b"raw-create-root").to_text();
+        let valid = args(&[
+            "recover-created",
+            "--root",
+            "/owner",
+            "--site",
+            "site:test",
+            "--control-id",
+            &identity,
+            "--expected-root",
+            &root,
+            "--owner-authorized",
+            "yes",
+            "--recover",
+            "yes",
+        ]);
+        assert!(matches!(
+            parse_cold(&valid).map(|options| options.action),
+            Ok(ColdAction::RecoverCreated { identity: actual, root: actual_root })
+                if actual.to_text() == identity && actual_root.to_text() == root
+        ));
+        for missing in [
+            "--control-id",
+            "--expected-root",
+            "--owner-authorized",
+            "--recover",
+        ] {
+            let mut changed = vec![valid[0].clone()];
+            for pair in valid[1..].chunks_exact(2) {
+                if pair[0] != missing {
+                    changed.extend_from_slice(pair);
+                }
+            }
+            assert!(parse_cold(&changed).is_err(), "accepted missing {missing}");
+        }
+        for (flag, value) in [
+            ("--owner-authorized", "no"),
+            ("--recover", "no"),
+            (
+                "--control-id",
+                "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            ),
+            (
+                "--expected-root",
+                "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            ),
+        ] {
+            let mut changed = valid.clone();
+            let index = changed
+                .iter()
+                .position(|argument| argument == flag)
+                .unwrap();
+            changed[index + 1] = value.into();
+            assert!(parse_cold(&changed).is_err(), "accepted {flag} {value}");
+        }
+        for flag in [
+            "--peer",
+            "--credential-file",
+            "--subscribe",
+            "--unsubscribe",
+            "--kind",
+            "--receive-origin-ns",
+        ] {
+            let mut changed = valid.clone();
+            changed.extend(args(&[flag, "not-authorized"]));
+            assert!(
+                parse_cold(&changed).is_err(),
+                "accepted unrelated field {flag}"
+            );
+        }
+        let mut duplicate = valid.clone();
+        duplicate.extend(args(&["--expected-root", &root]));
+        assert!(parse_cold(&duplicate).is_err());
+        let mut changed = valid.clone();
+        let index = changed
+            .iter()
+            .position(|argument| argument == "--expected-root")
+            .unwrap();
+        changed[index + 1] = ContentDigest::sha256(b"different-root").to_text().into();
+        assert_ne!(
+            parse_cold(&valid).unwrap().approval,
+            parse_cold(&changed).unwrap().approval
+        );
     }
 
     #[test]
@@ -1104,6 +1299,7 @@ mod tests {
     fn cold_attempt_kinds_are_exact_and_do_not_grant_network_authority() {
         let identity = ContentDigest::sha256(b"renewal-receipt").to_string();
         for (name, expected) in [
+            ("create-outcome", ControlKind::CreateOutcome),
             ("renew-intent", ControlKind::RenewIntent),
             ("renewed", ControlKind::Renewed),
             ("unsubscribe-intent", ControlKind::UnsubscribeIntent),

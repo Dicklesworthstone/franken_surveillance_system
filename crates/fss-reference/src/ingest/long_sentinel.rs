@@ -15,6 +15,7 @@
 
 mod execution;
 mod plan;
+pub(crate) mod pool;
 mod recipe;
 mod report;
 /// Source-closed aggregate retention and exact native recomputation.

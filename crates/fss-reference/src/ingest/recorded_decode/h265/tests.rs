@@ -189,6 +189,84 @@ fn whole_range(imported: &Imported) -> Result<Vec<RecordedH265Frame>, RecordedDe
 }
 
 #[test]
+fn retained_tiles_reach_native_pixels_new_receipts_and_cold_publication() -> TestResult {
+    use crate::ingest::video_publication::{
+        NativeVideoFrame, PublishedVideoFrame, VideoPublicationLimits,
+    };
+    let (stream, expected) = codec_fixture!("tiles_motion");
+    let mut imported = import("tiles-motion", stream)?;
+    let mut old = RecordedH265RangeV1::open(
+        &imported.deployment,
+        request(imported.identity, 0, imported.segments),
+        &imported.cx,
+    )?;
+    assert!(matches!(
+        old.next_frame(&imported.deployment, &imported.cx),
+        Err(RecordedDecodeError::H265(H265DecodeError::Unsupported(
+            UnsupportedFeature::Tiles
+        )))
+    ));
+    let frames = whole_range(&imported)?;
+    let hashes = oracle(expected);
+    assert_eq!(frames.len(), 2);
+    for (frame, expected) in frames.iter().zip(hashes) {
+        assert_eq!(
+            frame.receipt().decoder_identity(),
+            h265_tiles_decoder_identity()
+        );
+        assert_eq!(frame.receipt().i420_sha256().to_text(), expected);
+        assert_eq!(frame.to_rgb()?.len(), 512 * 64 * 3);
+    }
+    let published = PublishedVideoFrame::publish(
+        &mut imported.deployment,
+        NativeVideoFrame::H265(&frames[1]),
+        VideoPublicationLimits::default(),
+        &imported.cx,
+    )?;
+    let root = published.publication_root();
+    let receipt = frames[1].receipt().encoded();
+    assert_eq!(published.codec_receipt(), receipt);
+    drop(imported.deployment);
+    let deployment = ReferenceDeployment::open(
+        &imported._directory.0.join("deployment"),
+        "site:recorded-h265",
+        &imported.cx,
+    )?;
+    let reopened = PublishedVideoFrame::open(
+        &deployment,
+        root,
+        VideoPublicationLimits::default(),
+        &imported.cx,
+    )?;
+    assert_eq!(reopened.codec_receipt(), receipt);
+    assert_eq!(reopened.i420(), published.i420());
+    Ok(())
+}
+
+#[test]
+fn legacy_and_current_untiled_range_receipts_remain_byte_identical() -> TestResult {
+    let (stream, _) = codec_fixture!("dependent_midrow");
+    let imported = import("untiled-profile-compatibility", stream)?;
+    let current = whole_range(&imported)?;
+    let mut old = RecordedH265RangeV1::open(
+        &imported.deployment,
+        request(imported.identity, 0, imported.segments),
+        &imported.cx,
+    )?;
+    let mut legacy = Vec::new();
+    while let Some(frame) = old.next_frame(&imported.deployment, &imported.cx)? {
+        legacy.push(frame);
+    }
+    assert_eq!(legacy.len(), current.len());
+    for (old, new) in legacy.iter().zip(&current) {
+        assert_eq!(old, new);
+        assert_eq!(old.receipt().encoded(), new.receipt().encoded());
+        assert_eq!(new.receipt().decoder_identity(), h265_decoder_identity());
+    }
+    Ok(())
+}
+
+#[test]
 fn auto_detected_hevc_imports_decode_to_the_ffmpeg_oracle_in_display_order() -> TestResult {
     for (name, (stream, oracle_text)) in [
         ("default", DEFAULT),
@@ -400,6 +478,14 @@ fn truncated_slice_is_a_typed_refusal_after_earlier_frames() -> TestResult {
     );
     assert_eq!(returned, 2);
     assert_eq!(range.decoded(), 2);
+    for _ in 0..3 {
+        assert!(
+            range
+                .next_frame(&imported.deployment, &imported.cx)
+                .is_err()
+        );
+        assert_eq!(range.decoded(), 2);
+    }
     Ok(())
 }
 
@@ -566,6 +652,110 @@ const MP4_FRAGMENTED: &[u8] =
 
 /// The same H.265 encode (video only) as a QuickTime movie.
 const MOV: &[u8] = include_bytes!("../../../../../fss-container/tests/fixtures/qt_hevc.mov");
+
+#[test]
+fn inband_hevc_selected_generation_replays_from_cold_custody_and_publishes() -> TestResult {
+    use crate::ingest::video_publication::{
+        NativeVideoFrame, PublishedVideoFrame, VideoPublicationLimits,
+    };
+    const SOURCE: &[u8] = include_bytes!(
+        "../../../../../fss-container/tests/fixtures/inband/hev1_partial_change.mp4"
+    );
+    const EXPECTED: &str = include_str!(
+        "../../../../../fss-container/tests/fixtures/inband/hev1_partial_change.oracle"
+    );
+    let expected: Vec<_> = EXPECTED
+        .lines()
+        .filter_map(|line| {
+            let fields: Vec<_> = line.split_whitespace().collect();
+            match fields.as_slice() {
+                ["frame", _, _, hash] => Some(format!("sha256:{hash}")),
+                _ => None,
+            }
+        })
+        .collect();
+    let mut imported = import("hev1-cold", SOURCE)?;
+    assert_eq!(imported.segments, 8);
+    let retained = RetainedFileImport::open(
+        &imported.deployment,
+        imported.identity,
+        RetainedReadLimits::default(),
+        &imported.cx,
+    )?;
+    let entries: Vec<_> = retained
+        .manifest()
+        .omission_spans
+        .iter()
+        .enumerate()
+        .filter(|(_, span)| span.reason.starts_with(MP4_HEVC_INBAND_ENTRY_REASON_PREFIX))
+        .collect();
+    assert_eq!(entries.len(), 1);
+    let movie = fss_container::demux::AvcMp4::parse_inband(
+        SOURCE,
+        None,
+        fss_container::demux::DemuxLimits::default(),
+    )?;
+    assert_eq!(
+        retained.read_omission_span(
+            &imported.deployment,
+            entries[0].0,
+            RetainedReadLimits::default(),
+            &imported.cx
+        )?,
+        SOURCE[movie.sample_entry_range()]
+    );
+    assert!(matches!(
+        RecordedH265RangeV1::open(
+            &imported.deployment,
+            request(imported.identity, 4, 4),
+            &imported.cx
+        ),
+        Err(RecordedDecodeError::UnsupportedMedia)
+    ));
+    let warm = decode_h265_range(
+        &imported.deployment,
+        request(imported.identity, 4, 4),
+        &imported.cx,
+    )?;
+    assert_eq!(warm.len(), 4);
+    for (offset, frame) in warm.iter().enumerate() {
+        assert_eq!(frame.receipt().dimensions(), [96, 64]);
+        assert_eq!(
+            frame.receipt().i420_sha256().to_text(),
+            expected[4 + offset]
+        );
+        assert_eq!(
+            frame.receipt().decoder_identity(),
+            h265_inband_decoder_identity()
+        );
+        assert_eq!(frame.segment_index(), 4 + frame.receipt().decode_index());
+    }
+    let published = PublishedVideoFrame::publish(
+        &mut imported.deployment,
+        NativeVideoFrame::H265(&warm[0]),
+        VideoPublicationLimits::default(),
+        &imported.cx,
+    )?;
+    let publication_root = published.publication_root();
+    let receipt_bytes = warm[0].receipt().encoded();
+    drop(imported.deployment);
+    let deployment = ReferenceDeployment::open(
+        &imported._directory.0.join("deployment"),
+        "site:recorded-h265",
+        &imported.cx,
+    )?;
+    let cold = decode_h265_range(&deployment, request(imported.identity, 4, 4), &imported.cx)?;
+    assert_eq!(cold, warm);
+    let reopened = PublishedVideoFrame::open(
+        &deployment,
+        publication_root,
+        VideoPublicationLimits::default(),
+        &imported.cx,
+    )?;
+    assert_eq!(reopened.codec_receipt(), receipt_bytes);
+    assert_eq!(reopened.i420(), published.i420());
+    Ok(())
+}
 
 #[test]
 fn quicktime_hevc_movie_decodes_like_the_mp4() -> TestResult {

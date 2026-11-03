@@ -42,6 +42,8 @@ pub enum GraphError {
         /// Declared limit.
         limit: u64,
     },
+    /// The owner cancelled a cooperative run; no partial answer or witness is returned.
+    Cancelled,
     /// An observed counter exceeded the registered complexity or output bound.
     ComplexityBoundViolated {
         /// Counter name.
@@ -74,6 +76,7 @@ impl GraphError {
             | Self::ParallelEdge(_, _)
             | Self::TooLarge => "ERR-GRAPH-INPUT-INVALID-001",
             Self::BudgetExhausted { .. } => "ERR-GRAPH-BUDGET-EXHAUSTED-001",
+            Self::Cancelled => "ERR-GRAPH-CANCELLED-001",
             Self::ComplexityBoundViolated { .. } => "ERR-GRAPH-COMPLEXITY-BOUND-001",
             Self::Inconsistent(_) => "ERR-GRAPH-RESULT-INCONSISTENT-001",
             Self::PreconditionFailed(_) => "ERR-GRAPH-PRECONDITION-001",
@@ -93,6 +96,9 @@ impl fmt::Display for GraphError {
             Self::TooLarge => formatter.write_str("graph exceeds the node or edge limit"),
             Self::BudgetExhausted { dimension, limit } => {
                 write!(formatter, "budget {dimension} exhausted at {limit}")
+            }
+            Self::Cancelled => {
+                formatter.write_str("graph operation cancelled; no answer or witness")
             }
             Self::ComplexityBoundViolated {
                 counter,

@@ -22,6 +22,7 @@ use crate::residual::{ResidualParams, Scans, residual_coding};
 use crate::sao::{SAO_BAND, SAO_EDGE, SAO_NONE, SaoParams};
 use crate::slice::{SliceHeader, SliceType};
 use crate::tables::chroma_qp;
+use crate::tiles::TileLayout;
 use crate::transform::{inverse_transform, scale, transform_skip};
 
 /// Flat scaling factors (`m[x][y] = 16`).
@@ -66,10 +67,15 @@ pub(crate) struct PicState {
     pub info: Vec<BlockInfo>,
     /// Slice tag per CTB (raster order); 0 = not decoded.
     pub ctb_slice: Vec<u16>,
-    /// Number of slice segments started in this picture.
+    /// Number of independent slices started in this picture. Dependent
+    /// segments reuse their independent slice's tag and filter/ref maps.
     pub slice_count: u16,
-    /// Next CTB address (raster) a slice segment must start at.
+    /// Next CTB address in tile-scan order (raster order when untiled).
     pub next_ctb: u32,
+    /// No allocation for the historical untiled profile.
+    pub tiles: Option<TileLayout>,
+    /// First CTB of the current logical slice, in tile-scan order.
+    pub logical_slice_start: usize,
     /// Reference picture order counts and long-term flags of each slice
     /// (by slice tag - 1), for the motion stored with the picture.
     pub slice_refs: Vec<[Vec<(i32, bool)>; 2]>,
@@ -80,7 +86,7 @@ pub(crate) struct PicState {
 }
 
 impl PicState {
-    pub fn new(sps: &Sps) -> Result<Self, DecodeError> {
+    pub fn new(sps: &Sps, pps: &Pps) -> Result<Self, DecodeError> {
         let width = sps.width as usize;
         let height = sps.height as usize;
         let frame = Frame::new(width, height)?;
@@ -98,6 +104,8 @@ impl PicState {
             ctb_slice: vec![0; ctbs],
             slice_count: 0,
             next_ctb: 0,
+            tiles: TileLayout::new(pps, sps)?,
+            logical_slice_start: 0,
             slice_refs: Vec::new(),
             slice_filters: Vec::new(),
             sao: vec![SaoParams::default(); ctbs],
@@ -137,6 +145,34 @@ impl PicState {
     /// Whether every CTB has been decoded.
     pub fn complete(&self) -> bool {
         self.ctb_slice.iter().all(|&tag| tag != 0)
+    }
+
+    /// A logical slice occupies part of one tile or whole tiles (7.4.7.1).
+    /// Dependent segment cuts inside that slice do not create new boundaries.
+    fn validate_slice_end(&self) -> Result<(), DecodeError> {
+        self.validate_tile_span(self.logical_slice_start, self.next_ctb as usize)
+    }
+
+    /// Clause 6.3.1 applies containment separately to each slice AND segment.
+    fn validate_tile_span(&self, start: usize, end: usize) -> Result<(), DecodeError> {
+        let Some(tiles) = &self.tiles else {
+            return Ok(());
+        };
+        if end <= start {
+            return Ok(());
+        }
+        let first = tiles.raster(start);
+        let last = tiles.raster(end - 1);
+        if tiles.id(first) != tiles.id(last) && (!tiles.is_start(first) || tiles.end(last) != end) {
+            return Err(DecodeError::Malformed);
+        }
+        Ok(())
+    }
+
+    pub fn filter_across(&self, x: usize, y: usize, nx: usize, ny: usize) -> bool {
+        self.tiles
+            .as_ref()
+            .is_none_or(|tiles| tiles.loop_filter_across || tiles.same_pixels(x, y, nx, ny))
     }
 
     fn at(&self, x: usize, y: usize) -> &BlockInfo {
@@ -231,6 +267,17 @@ pub(crate) struct SliceInputs<'a> {
     pub col: Option<&'a ColPic>,
 }
 
+/// State saved only after a complete, validated slice segment. CABAC's
+/// arithmetic engine restarts for every segment, but its context variables
+/// and the logical slice's QP/neighbor state continue (clauses 8.6.1, 9.3.1).
+/// The WPP snapshot is separate from the final dependent-segment contexts.
+pub(crate) struct SegmentContinuation {
+    contexts: Box<Contexts>,
+    last_qp: i32,
+    wpp_saved: Option<(usize, Box<Contexts>)>,
+    slice_tag: u16,
+}
+
 /// Decodes one slice segment's CTUs into `pic`.
 pub(crate) struct SliceDecoder<'a, 'b> {
     sps: &'a Sps,
@@ -243,6 +290,12 @@ pub(crate) struct SliceDecoder<'a, 'b> {
     col: Option<&'a ColPic>,
     pic: &'b mut PicState,
     cabac: SliceCabac<'a>,
+    rbsp: &'a [u8],
+    data_bit_limit: usize,
+    /// RBSP byte positions converted from the escaped tile entry offsets.
+    entry_boundaries: Vec<usize>,
+    next_entry: usize,
+    tile_id: u16,
     init_type: usize,
     scaling: Option<&'a ScalingList>,
     slice_tag: u16,
@@ -270,6 +323,8 @@ impl<'a, 'b> SliceDecoder<'a, 'b> {
         pic: &'b mut PicState,
         rbsp: &'a [u8],
         data_bit_limit: usize,
+        entry_boundaries: Vec<usize>,
+        continuation: Option<SegmentContinuation>,
     ) -> Result<Self, DecodeError> {
         let header = inputs.header;
         let init_type = match (header.slice_type, header.cabac_init) {
@@ -277,9 +332,56 @@ impl<'a, 'b> SliceDecoder<'a, 'b> {
             (SliceType::P, false) | (SliceType::B, true) => 1,
             (SliceType::P, true) | (SliceType::B, false) => 2,
         };
-        let mut reader = BitReader::new(rbsp, data_bit_limit);
+        let first_limit = entry_boundaries.first().map_or(data_bit_limit, |p| p * 8);
+        if first_limit > data_bit_limit {
+            return Err(DecodeError::Malformed);
+        }
+        let mut reader = BitReader::new(rbsp, first_limit);
         reader.skip(header.data_bit_offset)?;
-        let cabac = SliceCabac::new(reader, init_contexts(init_type, header.slice_qp)?)?;
+        let (contexts, last_qp, wpp_saved, slice_tag) = if header.dependent {
+            let previous = continuation.ok_or(DecodeError::IncompletePicture)?;
+            if previous.slice_tag == 0 || previous.slice_tag != pic.slice_count {
+                return Err(DecodeError::Malformed);
+            }
+            (
+                *previous.contexts,
+                previous.last_qp,
+                previous.wpp_saved,
+                previous.slice_tag,
+            )
+        } else {
+            pic.validate_slice_end()?;
+            pic.logical_slice_start = pic
+                .tiles
+                .as_ref()
+                .map_or(header.segment_address as usize, |tiles| {
+                    tiles.scan(header.segment_address as usize)
+                });
+            pic.slice_count = pic.slice_count.checked_add(1).ok_or(DecodeError::Limit)?;
+            pic.slice_filters.push(SliceFilter {
+                deblocking_disabled: header.deblocking_disabled,
+                beta_offset: header.beta_offset,
+                tc_offset: header.tc_offset,
+                loop_filter_across_slices: header.loop_filter_across_slices,
+            });
+            pic.slice_refs.push(std::array::from_fn(|list| {
+                let refs = &inputs.refs[list];
+                refs.pocs
+                    .iter()
+                    .copied()
+                    .zip(refs.long_term.iter().copied())
+                    .collect()
+            }));
+            (
+                init_contexts(init_type, header.slice_qp)?,
+                header.slice_qp,
+                None,
+                pic.slice_count,
+            )
+        };
+        // The arithmetic engine always starts from the new segment's
+        // byte-aligned payload, even when context probabilities continue.
+        let cabac = SliceCabac::new(reader, contexts)?;
         let scaling = if inputs.sps.scaling_list_enabled {
             inputs
                 .pps
@@ -289,22 +391,6 @@ impl<'a, 'b> SliceDecoder<'a, 'b> {
         } else {
             None
         };
-        pic.slice_count = pic.slice_count.checked_add(1).ok_or(DecodeError::Limit)?;
-        let slice_tag = pic.slice_count;
-        pic.slice_filters.push(SliceFilter {
-            deblocking_disabled: header.deblocking_disabled,
-            beta_offset: header.beta_offset,
-            tc_offset: header.tc_offset,
-            loop_filter_across_slices: header.loop_filter_across_slices,
-        });
-        pic.slice_refs.push(std::array::from_fn(|list| {
-            let refs = &inputs.refs[list];
-            refs.pocs
-                .iter()
-                .copied()
-                .zip(refs.long_term.iter().copied())
-                .collect()
-        }));
         Ok(Self {
             sps: inputs.sps,
             pps: inputs.pps,
@@ -316,27 +402,39 @@ impl<'a, 'b> SliceDecoder<'a, 'b> {
             col: inputs.col,
             pic,
             cabac,
+            rbsp,
+            data_bit_limit,
+            entry_boundaries,
+            next_entry: 0,
+            tile_id: 0,
             init_type,
             scaling,
             slice_tag,
             qp_y: header.slice_qp,
-            last_qp: header.slice_qp,
+            last_qp,
             qg_pred: header.slice_qp,
+            // CuQpDeltaVal resets per segment (7.3.6.1). Quantization
+            // groups never cross a CTB boundary, so only last_qp carries.
             is_cu_qp_delta_coded: false,
             cu_qp_delta: 0,
-            wpp_saved: None,
+            wpp_saved,
             levels: vec![0; 32 * 32],
             cu: CuState::default(),
         })
     }
 
     /// `slice_segment_data()` (clause 7.3.8.1).
-    pub fn decode(mut self) -> Result<(), DecodeError> {
+    pub fn decode(mut self) -> Result<Option<SegmentContinuation>, DecodeError> {
         let ctb_w = self.sps.ctb_width() as usize;
         let total = ctb_w * self.sps.ctb_height() as usize;
         let start = self.header.segment_address as usize;
-        if start != self.pic.next_ctb as usize {
-            return Err(if start > self.pic.next_ctb as usize {
+        let start_scan = self
+            .pic
+            .tiles
+            .as_ref()
+            .map_or(start, |tiles| tiles.scan(start));
+        if start_scan != self.pic.next_ctb as usize {
+            return Err(if start_scan > self.pic.next_ctb as usize {
                 DecodeError::IncompletePicture
             } else {
                 DecodeError::Malformed
@@ -344,14 +442,38 @@ impl<'a, 'b> SliceDecoder<'a, 'b> {
         }
         let log2 = self.sps.ctb_log2;
         let wpp = self.pps.entropy_coding_sync;
-        let mut addr = start;
+        let mut scan = start_scan;
         loop {
+            let addr = self
+                .pic
+                .tiles
+                .as_ref()
+                .map_or(scan, |tiles| tiles.raster(scan));
+            let tile_start = self
+                .pic
+                .tiles
+                .as_ref()
+                .is_some_and(|tiles| tiles.is_start(addr));
+            self.tile_id = self.pic.tiles.as_ref().map_or(0, |tiles| tiles.id(addr));
+            if tile_start {
+                // Tile initialization has priority over dependent context restore.
+                // The constructor already initialized the arithmetic engine at
+                // a segment start; only internal tile boundaries restart it here.
+                if scan != start_scan {
+                    self.advance_tile_substream()?;
+                }
+                self.cabac.ctx = init_contexts(self.init_type, self.header.slice_qp)?;
+                self.last_qp = self.header.slice_qp;
+            }
             let (cx, cy) = (addr % ctb_w, addr / ctb_w);
-            if wpp && cx == 0 && addr != start {
-                self.cabac.restart_engine()?;
+            if wpp && cx == 0 && (addr != start || self.header.dependent) {
+                if addr != start {
+                    self.cabac.restart_engine()?;
+                }
                 // Synchronise from the CTU above-right when it lies in this
-                // slice (clause 9.3.1); otherwise start from the initial
-                // context values.
+                // logical slice (9.3.2.1). WPP row-start synchronization
+                // takes priority over dependent-segment restoration; at a
+                // segment start the engine has already initialized once.
                 let above_right =
                     cy > 0 && ctb_w > 1 && self.pic.ctb_slice[addr + 1 - ctb_w] == self.slice_tag;
                 match self.wpp_saved.take() {
@@ -372,37 +494,91 @@ impl<'a, 'b> SliceDecoder<'a, 'b> {
             if wpp && cx == 1 {
                 self.wpp_saved = Some((cy, Box::new(self.cabac.ctx)));
             }
-            addr += 1;
+            scan += 1;
             if end_of_slice {
                 break;
             }
-            if addr >= total {
+            if scan >= total {
                 return Err(DecodeError::Malformed);
             }
-            if wpp && addr.is_multiple_of(ctb_w) && self.cabac.terminate()? != 1 {
+            let next_tile = self
+                .pic
+                .tiles
+                .as_ref()
+                .is_some_and(|tiles| tiles.id(tiles.raster(scan)) != self.tile_id);
+            if ((wpp && scan.is_multiple_of(ctb_w)) || next_tile) && self.cabac.terminate()? != 1 {
                 // end_of_subset_one_bit must be 1.
                 return Err(DecodeError::Malformed);
             }
         }
         // The terminating bin consumed the rbsp_stop_one_bit: nothing of
         // the slice data may remain.
-        if !self.cabac.reader.exhausted() {
+        if !self.cabac.reader.exhausted() || self.next_entry != self.entry_boundaries.len() {
             return Err(DecodeError::Malformed);
         }
-        self.pic.next_ctb = u32::try_from(addr).map_err(|_| DecodeError::Limit)?;
-        Ok(())
+        self.pic.validate_tile_span(start_scan, scan)?;
+        self.pic.next_ctb = u32::try_from(scan).map_err(|_| DecodeError::Limit)?;
+        if scan == total {
+            self.pic.validate_slice_end()?;
+        }
+        Ok(self
+            .pps
+            .dependent_slices_enabled
+            .then(|| SegmentContinuation {
+                contexts: Box::new(self.cabac.ctx),
+                last_qp: self.last_qp,
+                wpp_saved: self.wpp_saved,
+                slice_tag: self.slice_tag,
+            }))
+    }
+
+    fn advance_tile_substream(&mut self) -> Result<(), DecodeError> {
+        let boundary = *self
+            .entry_boundaries
+            .get(self.next_entry)
+            .ok_or(DecodeError::Malformed)?;
+        if self.cabac.reader.position().next_multiple_of(8) != boundary * 8 {
+            return Err(DecodeError::Malformed);
+        }
+        // Only the zero alignment bits may remain before the signaled entry.
+        while !self.cabac.reader.exhausted() {
+            if self.cabac.reader.flag()? {
+                return Err(DecodeError::Malformed);
+            }
+        }
+        self.next_entry += 1;
+        let limit = self
+            .entry_boundaries
+            .get(self.next_entry)
+            .map_or(self.data_bit_limit, |p| p * 8);
+        if limit > self.data_bit_limit || limit <= boundary * 8 {
+            return Err(DecodeError::Malformed);
+        }
+        self.cabac.reader = BitReader::new(self.rbsp, limit);
+        self.cabac.reader.skip(boundary * 8)?;
+        self.cabac.restart_engine()
     }
 
     /// `sao()` (clause 7.3.8.3) for the CTB at raster address `addr`.
     fn sao_syntax(&mut self, addr: usize, ctb_w: usize) -> Result<SaoParams, DecodeError> {
         let tag = self.slice_tag;
         if !addr.is_multiple_of(ctb_w)
+            && self
+                .pic
+                .tiles
+                .as_ref()
+                .is_none_or(|tiles| tiles.id(addr - 1) == self.tile_id)
             && self.pic.ctb_slice[addr - 1] == tag
             && self.cabac.flag(SAO_MERGE_FLAG)?
         {
             return Ok(self.pic.sao[addr - 1]);
         }
         if addr >= ctb_w
+            && self
+                .pic
+                .tiles
+                .as_ref()
+                .is_none_or(|tiles| tiles.id(addr - ctb_w) == self.tile_id)
             && self.pic.ctb_slice[addr - ctb_w] == tag
             && self.cabac.flag(SAO_MERGE_FLAG)?
         {
@@ -468,7 +644,11 @@ impl<'a, 'b> SliceDecoder<'a, 'b> {
         let across = self.header.loop_filter_across_slices;
         let tag = self.slice_tag;
         let w4 = self.pic.w4;
-        if y0 > 0 && y0.is_multiple_of(8) && (across || self.pic.at(x0, y0 - 1).slice == tag) {
+        if y0 > 0
+            && y0.is_multiple_of(8)
+            && self.pic.filter_across(x0, y0, x0, y0 - 1)
+            && (across || self.pic.at(x0, y0 - 1).slice == tag)
+        {
             for x in (x0..(x0 + size).min(width)).step_by(4) {
                 let q = *self.pic.at(x, y0);
                 let p = *self.pic.at(x, y0 - 1);
@@ -476,7 +656,11 @@ impl<'a, 'b> SliceDecoder<'a, 'b> {
                 self.pic.info[(y0 >> 2) * w4 + (x >> 2)].bs_h = bs;
             }
         }
-        if x0 > 0 && x0.is_multiple_of(8) && (across || self.pic.at(x0 - 1, y0).slice == tag) {
+        if x0 > 0
+            && x0.is_multiple_of(8)
+            && self.pic.filter_across(x0, y0, x0 - 1, y0)
+            && (across || self.pic.at(x0 - 1, y0).slice == tag)
+        {
             for y in (y0..(y0 + size).min(height)).step_by(4) {
                 let q = *self.pic.at(x0, y);
                 let p = *self.pic.at(x0 - 1, y);
@@ -518,6 +702,11 @@ impl<'a, 'b> SliceDecoder<'a, 'b> {
         let log2 = self.sps.ctb_log2;
         let ctb = (y as usize >> log2) * self.sps.ctb_width() as usize + (x as usize >> log2);
         self.pic.ctb_slice[ctb] == self.slice_tag
+            && self
+                .pic
+                .tiles
+                .as_ref()
+                .is_none_or(|tiles| tiles.id(ctb) == self.tile_id)
     }
 
     fn log2_min_cu_qp_delta(&self) -> u32 {
@@ -732,7 +921,7 @@ impl<'a, 'b> SliceDecoder<'a, 'b> {
     /// Motion of a neighbouring prediction block, when it is available
     /// (inside the picture, already decoded, in this slice) and inter coded.
     fn pu_neighbour(&self, x: isize, y: isize) -> Option<MvField> {
-        if x < 0 || y < 0 || x >= self.sps.width as isize || y >= self.sps.height as isize {
+        if !self.available(x, y) {
             return None;
         }
         let info = self.pic.at(x as usize, y as usize);
@@ -1300,7 +1489,10 @@ impl<'a, 'b> SliceDecoder<'a, 'b> {
                 continue;
             }
             let info = self.pic.at((px as usize) << shift, (py as usize) << shift);
-            if info.slice == self.slice_tag && (!constrained || info.intra) {
+            if self.available(px << shift, py << shift)
+                && info.slice == self.slice_tag
+                && (!constrained || info.intra)
+            {
                 available[i] = true;
                 samples[i] = self.pic.frame.planes[c][py as usize * stride + px as usize];
             }

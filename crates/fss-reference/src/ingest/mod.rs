@@ -36,6 +36,9 @@ pub mod ground_visibility;
 pub mod hevc_annexb;
 /// Independently retained historical whole-recording visual-health diagnostics.
 pub mod historical_health;
+/// Motion-independent trained detector bursts across exact retained HTTP histories.
+pub mod http_history_sentinel;
+mod http_history_sources;
 /// Restartable exact durable HTTP history → retained imports → native streaming watch reports.
 pub mod http_history_watch;
 /// Exact frozen-model execution on retained decoded frames and durable model outputs.
@@ -53,6 +56,8 @@ pub mod long_watch;
 pub mod mjpeg;
 /// Offline source-preserving conversion of exact tensor weights into recorded models.
 pub mod model_import;
+/// Source-preserving offline ONNX import into verified RGB detector packages.
+pub mod onnx_package;
 /// Bounded, source-gap-aware pixel-change measurements over recorded frames.
 pub mod pixel_change;
 /// Owner-declared, approval-gated per-sensor privacy masks applied at retained decode.
@@ -88,8 +93,12 @@ mod rtsp_campaign_sources;
 pub mod rtsp_campaign_watch;
 /// Source-preserving offline import of exact native AVC/HEVC recording windows.
 pub mod rtsp_import;
+/// Source-closed finite RTP/JPEG prefix imports for existing retained image consumers.
+pub mod rtsp_jpeg_import;
 /// Selected independent RTSP recordings through retained imports and whole-recording watch.
 pub mod rtsp_selected_watch;
+/// Exact current adopted calibration geometry for retained scene reconstruction.
+pub mod scene_calibration;
 /// Owner site calibration: atlas localization, joint refinement, digest-bound record.
 pub mod site_calibration;
 /// Retained continuity witnesses of live or virtual sources and the stored-witness absence rule.
@@ -125,7 +134,8 @@ pub use file_adapter::{
     FileImport, FileImportManifest, FileIngestAdapter, FileIngestError, FileIngestFailure,
     FileIngestLimits, FileIngestOutcome, FileIngestReceipt, FileIngestRequest, FileOmissionSpan,
     MAX_BATCH_DELTAS, MKV_HEVC_PARAMETER_SET_REASON_PREFIX, MKV_PARAMETER_SET_REASON_PREFIX,
-    MKV_STRUCTURE_REASON_PREFIX, MP4_HEVC_PARAMETER_SET_REASON_PREFIX,
+    MKV_STRUCTURE_REASON_PREFIX, MP4_AVC_INBAND_ENTRY_REASON_PREFIX,
+    MP4_HEVC_INBAND_ENTRY_REASON_PREFIX, MP4_HEVC_PARAMETER_SET_REASON_PREFIX,
     MP4_PARAMETER_SET_REASON_PREFIX, MP4_STRUCTURE_REASON_PREFIX, SegmentSpan,
     compute_import_identity, default_adapter_identity, fetch_segment_bytes, sniff_format,
     sniff_format_with_hint,
@@ -155,6 +165,8 @@ pub mod http_archive;
 
 /// Exact archived HTTP/MJPEG originals into source-closed retained recording imports.
 pub mod http_import;
+/// Native trained detection over an exact, explicitly selected HTTP response prefix.
+pub mod http_prefix_sentinel;
 
 /// Source-closed RGB perception evidence with actual native replay after restart.
 pub mod rgb_evidence;
@@ -187,6 +199,8 @@ mod detector_cascade_engine;
 
 /// Retained package detections tracked into unresolved recorded events (report/prepare/publish).
 pub mod package_event;
+/// Source-authenticated package tracks projected into conditional anonymous handoff queries.
+pub mod package_handoffs;
 /// Retained class-selected package tracks, observed image-zone transitions and sampled dwell.
 pub mod package_zones;
 

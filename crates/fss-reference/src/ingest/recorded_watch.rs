@@ -53,7 +53,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
-use fss_codec_mjpeg::{DecodeBudget, decode_luma};
+// Preserve the decoder generation of existing watch/corroboration recipes and coverage.
+use fss_codec_mjpeg::{DecodeBudget, decode_luma_v1 as decode_luma};
 use fss_core::abstraction::runtime_authority::RuntimeGrant;
 use fss_core::event::EventDecodeError;
 use fss_core::{
@@ -80,9 +81,12 @@ use super::recorded_coverage::{
     CoverageSource, CoverageStatus, CoverageZoneInput, approval_digest, build_coverage_with,
     check_approval, coverage_status, pipeline_generation, retain_coverage,
 };
-use super::recorded_decode::h264::{DecoderLimits, RecordedH264Range, RecordedH264Request};
+use super::recorded_decode::h264::{
+    DecoderLimits, RecordedH264RangeV2 as RecordedH264Range, RecordedH264Request,
+};
 use super::recorded_decode::h265::{
-    DecoderLimits as H265DecoderLimits, RecordedH265Range, RecordedH265Request,
+    DecoderLimits as H265DecoderLimits, RecordedH265RangeV1 as RecordedH265Range,
+    RecordedH265Request,
 };
 use super::recorded_decode::{
     ComponentInterpretation, DecodeLimits, RecordedDecodeError, source_capsule, validate_limits,

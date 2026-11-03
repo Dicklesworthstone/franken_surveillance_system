@@ -13,6 +13,12 @@ pub mod alert_effect;
 pub mod archive_cmd;
 /// Work claims (FSS-226): the work-claiming intent family of `fss investigate` (AOP-006).
 pub mod claim_cmd;
+/// Pure bounded anonymous multi-camera handoff query with complete alternatives.
+pub mod continuity_query;
+/// Bounded selection and complete projection report for retained package-track handoffs.
+pub mod retained_continuity_query;
+/// The source owner's pure retained-handoff contract, shared with the query adapter.
+pub use fss_reference::ingest::package_handoffs::contract as retained_handoff_contract;
 pub mod crosswalk;
 /// Checked custody observations over verified local event authority; no effect or export grant.
 pub mod custody_review;
@@ -36,19 +42,23 @@ pub mod hydration_cmd;
 pub mod investigate_cmd;
 /// Bounded strict JSON reading for intent files.
 pub mod json_input;
+/// Deterministic JSON primitives for pure bounded query adapters.
+pub mod json_output;
 pub mod lab_cmd;
 /// Explicit, proof-backed plan-outcome mission contracts under AOP-007.
 pub mod mission_cmd;
 pub mod negative_evidence_cmd;
 /// Read-only `orient` (AOP-003) and `explain` (AOP-011) over a deployment root.
 pub mod orient_cmd;
-/// Read-only AOP-005 projection of the verified event-record query engine.
-pub mod query_cmd;
 /// AOP-006 bounded retained-source probes over existing owned subscriptions.
 pub mod probe_cmd;
+/// Read-only AOP-005 projection of the verified event-record query engine.
+pub mod query_cmd;
 pub mod redact;
 /// Import explicitly bound camera poses from an authored property scene.
 pub mod scene_rig;
+/// Exact owner-approved session authority revocation through AOP-010.
+pub mod session_cancel_cmd;
 /// Durable agent sessions: `session open` (AOP-001), `session handoff` (AOP-012), and
 /// `session resume` (AOP-002); agent-plane writes only.
 pub mod session_cmd;

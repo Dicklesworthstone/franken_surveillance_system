@@ -9,30 +9,7 @@ use crate::redact::{redact_argument, redact_value_or_digest};
 const CONTRACT_BASIS: &str = "fss/1";
 const PROOF_HANDLE: &str = "fss://proof/cli/parse-failure";
 
-/// Escapes a string slice for safe inclusion inside a JSON string literal according to RFC 8259.
-#[must_use]
-pub fn escape_json_str(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    for ch in input.chars() {
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            '\x08' => out.push_str("\\b"),
-            '\x0C' => out.push_str("\\f"),
-            '\u{2028}' => out.push_str("\\u2028"),
-            '\u{2029}' => out.push_str("\\u2029"),
-            '\x7f' => out.push_str("\\u007f"),
-            c if (c as u32) < 0x20 || (0x80..=0x9F).contains(&(c as u32)) => {
-                out.push_str(&format!("\\u{:04x}", c as u32));
-            }
-            c => out.push(c),
-        }
-    }
-    out
-}
+pub use crate::json_output::escape_json_str;
 
 /// Formats the human-readable diagnostic message and the machine-readable JSON log.
 #[must_use]

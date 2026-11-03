@@ -110,6 +110,8 @@ pub struct SliceHeader {
     pub poc_lsb: u32,
     /// `delta_pic_order_cnt_bottom` (POC type 0 with the PPS flag).
     pub delta_poc_bottom: i32,
+    /// Type 1 `delta_pic_order_cnt[0..2]`; absent values are inferred zero.
+    pub delta_poc: [i32; 2],
     /// `redundant_pic_cnt`.
     pub redundant_pic_cnt: u32,
     /// `direct_spatial_mv_pred_flag` (B slices).
@@ -297,10 +299,16 @@ pub fn parse_slice_header(
     let idr_pic_id = if idr { reader.ue(65_535)? } else { 0 };
     let mut poc_lsb = 0;
     let mut delta_poc_bottom = 0;
+    let mut delta_poc = [0; 2];
     if sps.poc_type == 0 {
         poc_lsb = reader.uint(sps.log2_max_poc_lsb)?;
         if pps.bottom_field_pic_order_present {
             delta_poc_bottom = reader.se_range(-(1 << 30), 1 << 30)?;
+        }
+    } else if sps.poc_type == 1 && !sps.delta_pic_order_always_zero {
+        delta_poc[0] = reader.se_range(i32::MIN + 1, i32::MAX)?;
+        if pps.bottom_field_pic_order_present {
+            delta_poc[1] = reader.se_range(i32::MIN + 1, i32::MAX)?;
         }
     }
     let redundant_pic_cnt = if pps.redundant_pic_cnt_present {
@@ -378,6 +386,7 @@ pub fn parse_slice_header(
         idr_pic_id,
         poc_lsb,
         delta_poc_bottom,
+        delta_poc,
         redundant_pic_cnt,
         direct_spatial,
         num_ref_idx_l0_active,

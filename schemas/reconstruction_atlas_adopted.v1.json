@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/reconstruction_atlas_adopted.v1.json",
+  "title": "fss.reconstruction_atlas_adopted.v1",
+  "description": "Complete private create-only localization-atlas candidate export using current retained camera calibration authority. report_digest is SHA-256 of the exact compact UTF-8 report object bytes, without recanonicalization. The manifest string contains full adopted calibration, source, query/selection and native geometry provenance; validate its decoded JSON separately. FSATLAS1 remains unchanged and bounds archive bytes to 8 MiB; the complete final JSON including newline is bounded to 32 MiB. All original sources/current privacy and current adoption/withdrawal are revalidated before publication under the held deployment owner. No calibration, twin, identity or source access is activated. Output I/O failures can leave newly created partial files; existing files are never overwritten.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "report_digest",
+    "report"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.reconstruction_atlas_adopted.v1"
+    },
+    "report_digest": {
+      "$ref": "reconstruction_atlas_retained.v1.json#/$defs/digest"
+    },
+    "report": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "outcome",
+        "archive",
+        "provenance_manifest_utf8",
+        "cost"
+      ],
+      "properties": {
+        "schema": {
+          "const": "fss.reconstruction_atlas_adopted_report.v1"
+        },
+        "outcome": {
+          "const": "candidate_export"
+        },
+        "archive": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "format",
+            "package_digest",
+            "provenance_digest",
+            "atlas_digest",
+            "descriptor_digest",
+            "bytes",
+            "landmarks",
+            "references",
+            "bindings"
+          ],
+          "properties": {
+            "format": {
+              "const": "FSATLAS1"
+            },
+            "package_digest": {
+              "$ref": "reconstruction_atlas_retained.v1.json#/$defs/digest"
+            },
+            "provenance_digest": {
+              "$ref": "reconstruction_atlas_retained.v1.json#/$defs/digest"
+            },
+            "atlas_digest": {
+              "$ref": "reconstruction_atlas_retained.v1.json#/$defs/digest"
+            },
+            "descriptor_digest": {
+              "$ref": "reconstruction_atlas_retained.v1.json#/$defs/digest"
+            },
+            "bytes": {
+              "type": "integer",
+              "minimum": 188,
+              "maximum": 8388608
+            },
+            "landmarks": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 128
+            },
+            "references": {
+              "type": "integer",
+              "minimum": 2,
+              "maximum": 8
+            },
+            "bindings": {
+              "type": "integer",
+              "minimum": 2,
+              "maximum": 256
+            }
+          }
+        },
+        "provenance_manifest_utf8": {
+          "type": "string",
+          "maxLength": 33554432,
+          "contentMediaType": "application/json",
+          "contentSchema": {
+            "$ref": "reconstruction_atlas_adopted_provenance.v1.json"
+          },
+          "description": "Exact original UTF-8 provenance manifest. SHA-256 of these UTF-8 bytes equals archive.provenance_digest and the unchanged FSATLAS1 provenance pin. Validate decoded JSON against reconstruction_atlas_adopted_provenance.v1.json; contentSchema is annotation-only in some validators. Whitespace/key-order changes change the digest."
+        },
+        "cost": {
+          "$ref": "scene_feature_match_adopted.v1.json#/$defs/cost"
+        }
+      }
+    }
+  }
+}
