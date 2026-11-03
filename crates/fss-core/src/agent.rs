@@ -1,6 +1,6 @@
 //! Agent-facing situation, possible-world, affordance, and handoff contracts.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use crate::{
@@ -894,30 +894,47 @@ impl KnowledgeCell {
         &self,
         prior: &KnowledgeCell,
     ) -> Result<(), ContractError> {
-        if prior.provenance.may_launder_evidence_into(self.provenance)
-            && self.evidence.iter().any(|e| prior.evidence.contains(e))
-        {
-            return Err(ContractError::EvidenceLaunderingDetected);
-        }
-        // fss-gefi6: where both cells cite the SAME digest, their recorded origins must agree
-        // wherever the prior origin may launder into the recorded one. A relabel — a digest
-        // produced under one class cited under another, even by a lone cell in a lineage — is
-        // refused from the references themselves.
-        for reference in &self.evidence {
-            if let Some(prior_reference) = prior
-                .evidence
-                .iter()
-                .find(|candidate| candidate.digest == reference.digest)
-            {
-                let laundered = match (prior_reference.origin, reference.origin) {
-                    (EvidenceOrigin::Produced(source), EvidenceOrigin::Produced(target)) => {
-                        source.may_launder_evidence_into(target)
+        // Attribute every recorded origin of the same canonical content identity. The legacy
+        // digest laboratory flag is not encoded, so toggling it must not hide content reuse.
+        // Sets also make duplicate copies and reference order immaterial, as in cell_digest.
+        let origins_by_content = |references: &[EvidenceReference]| {
+            let mut origins: BTreeMap<_, BTreeSet<_>> = BTreeMap::new();
+            for reference in references {
+                origins
+                    .entry((reference.digest.algorithm(), reference.digest.bytes()))
+                    .or_default()
+                    .insert(reference.origin);
+            }
+            origins
+        };
+        let prior_origins = origins_by_content(&prior.evidence);
+        for (content, current_origins) in origins_by_content(&self.evidence) {
+            let Some(recorded_origins) = prior_origins.get(&content) else {
+                continue;
+            };
+            // Cell-class restrictions apply to shared bytes even when the caller also changes
+            // the reference's origin label. Full EvidenceReference equality would miss that.
+            if prior.provenance.may_launder_evidence_into(self.provenance) {
+                return Err(ContractError::EvidenceLaunderingDetected);
+            }
+            if recorded_origins == &current_origins {
+                // An unchanged mixed-origin set preserves its restrictions; it is not a relabel.
+                continue;
+            }
+            // fss-gefi6: no first matching reference can conceal another restrictive origin.
+            // Compare every known origin when the set changes, without guessing a producer.
+            for source in recorded_origins {
+                for target in &current_origins {
+                    let laundered = match (*source, *target) {
+                        (EvidenceOrigin::Produced(source), EvidenceOrigin::Produced(target)) => {
+                            source.may_launder_evidence_into(target)
+                        }
+                        (EvidenceOrigin::Laboratory, EvidenceOrigin::Laboratory) => false,
+                        (EvidenceOrigin::Laboratory, _) | (_, EvidenceOrigin::Laboratory) => true,
+                    };
+                    if laundered {
+                        return Err(ContractError::EvidenceLaunderingDetected);
                     }
-                    (EvidenceOrigin::Laboratory, EvidenceOrigin::Laboratory) => false,
-                    (EvidenceOrigin::Laboratory, _) | (_, EvidenceOrigin::Laboratory) => true,
-                };
-                if laundered {
-                    return Err(ContractError::EvidenceLaunderingDetected);
                 }
             }
         }

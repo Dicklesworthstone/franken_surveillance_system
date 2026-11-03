@@ -10,6 +10,23 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Order-independent provenance transition checks (2026-11-03)
+
+`KnowledgeCell::verify_no_evidence_laundering` now checks every recorded origin of
+each shared canonical content identity. Reordering duplicate digest references,
+dropping a restrictive origin, changing both the cell class and its origin label,
+or toggling the legacy noncanonical laboratory flag can no longer conceal reuse.
+Unchanged origin sets, ordinary derivation, fresh evidence and distinct digest
+algorithms retain their previous meanings. Existing canonical bytes are unchanged.
+
+The three original exploit regressions failed against the previous implementation;
+the complete native `provenance_contract` target now passes all 79 tests. Two further
+regressions cover both production delta-classification entry points; their native
+execution remains pending after the shared environment killed the larger
+Asupersync dependency build. The provenance registry checker and pinned formatting
+also pass. This advances `fss-gefi6` without closing it: producer-authenticated
+origin catalogs and negotiated wire propagation remain separate unfinished work.
+
 ## Requested-count detection from continuous HTTP MJPEG (2026-11-03)
 
 `fss-capture-reconnect sentinel-prefix` now handles an HTTP camera that keeps its

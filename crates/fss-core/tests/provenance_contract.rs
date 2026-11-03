@@ -3798,3 +3798,148 @@ fn with_evidence_origins_refuses_misaligned_slice_fss_gefi6() -> Result<(), Box<
     );
     Ok(())
 }
+
+/// Reusing one digest cannot discard a restrictive origin just because another matching
+/// reference appears first. Both prior orders have exactly the same canonical identity.
+#[test]
+fn repeated_digest_cannot_hide_a_restrictive_origin_fss_gefi6() -> Result<(), Box<dyn Error>> {
+    let shared = ContentDigest::sha256(b"gefi6-repeated-origin");
+    let fresh = ContentDigest::sha256(b"gefi6-fresh-origin");
+    let observed = EvidenceOrigin::Produced(ProvenanceClass::Observed);
+    for restrictive in [
+        EvidenceOrigin::Produced(ProvenanceClass::Derived),
+        EvidenceOrigin::Produced(ProvenanceClass::Predicted),
+        EvidenceOrigin::Produced(ProvenanceClass::Remembered),
+        EvidenceOrigin::Produced(ProvenanceClass::VendorClaimed),
+        EvidenceOrigin::Laboratory,
+    ] {
+        let prior = class_cell(
+            "claim:gefi6:repeated-origin",
+            ProvenanceClass::Observed,
+            vec![shared, shared],
+        )?;
+        let first = prior
+            .clone()
+            .with_evidence_origins(&[observed, restrictive])?;
+        let reversed = prior.with_evidence_origins(&[restrictive, observed])?;
+        assert_eq!(first.cell_digest(), reversed.cell_digest());
+        for prior in [first, reversed] {
+            for evidence in [vec![shared], vec![fresh, shared]] {
+                let current = class_cell(prior.claim_id(), ProvenanceClass::Observed, evidence)?;
+                assert!(current.is_irreversible_effect_premise(TimestampNs(1)));
+                assert_eq!(
+                    current.verify_no_evidence_laundering(&prior),
+                    Err(ContractError::EvidenceLaunderingDetected),
+                    "discarded origin {restrictive:?} must not depend on reference order"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Carrying the complete existing origin set is not a relabel. Reordering, duplicate copies,
+/// and independently sourced new evidence must not turn an unchanged set into a refusal.
+#[test]
+fn preserved_origin_sets_are_order_independent_fss_gefi6() -> Result<(), Box<dyn Error>> {
+    let shared = ContentDigest::sha256(b"gefi6-preserved-origins");
+    let fresh = ContentDigest::sha256(b"gefi6-independent-evidence");
+    let observed = EvidenceOrigin::Produced(ProvenanceClass::Observed);
+    for other in ALL_CLASSES
+        .map(EvidenceOrigin::Produced)
+        .into_iter()
+        .chain([EvidenceOrigin::Laboratory])
+    {
+        for origins in [[observed, other], [other, observed]] {
+            let prior = class_cell(
+                "claim:gefi6:preserved-origins",
+                ProvenanceClass::Observed,
+                vec![shared, shared],
+            )?
+            .with_evidence_origins(&origins)?;
+            let reordered = class_cell(
+                prior.claim_id(),
+                ProvenanceClass::Observed,
+                vec![shared, shared, shared],
+            )?
+            .with_evidence_origins(&[origins[1], origins[0], origins[1]])?;
+            assert_eq!(prior.cell_digest(), reordered.cell_digest());
+            assert_eq!(reordered.verify_no_evidence_laundering(&prior), Ok(()));
+            let extended = class_cell(
+                prior.claim_id(),
+                ProvenanceClass::Observed,
+                vec![shared, fresh, shared],
+            )?
+            .with_evidence_origins(&[origins[1], observed, origins[0]])?;
+            assert_eq!(extended.verify_no_evidence_laundering(&prior), Ok(()));
+            let replacement = class_cell(prior.claim_id(), ProvenanceClass::Observed, vec![fresh])?;
+            assert_eq!(replacement.verify_no_evidence_laundering(&prior), Ok(()));
+        }
+    }
+    Ok(())
+}
+
+/// Cell-class provenance rules compare content identity, even if a caller changes the origin
+/// label at the same time. Observed -> Derived origins alone do not forbid this transition.
+#[test]
+fn origin_changes_cannot_hide_cell_class_laundering_fss_gefi6() -> Result<(), Box<dyn Error>> {
+    let shared = ContentDigest::sha256(b"gefi6-cell-class-shared");
+    let fresh = ContentDigest::sha256(b"gefi6-cell-class-fresh");
+    for source in ALL_CLASSES {
+        for target in registered_launder_targets(source) {
+            let prior = class_cell("claim:gefi6:class-origin", source, vec![shared])?
+                .with_evidence_origins(&[EvidenceOrigin::Produced(ProvenanceClass::Observed)])?;
+            let current = class_cell(prior.claim_id(), *target, vec![shared, fresh])?
+                .with_evidence_origins(&[EvidenceOrigin::Produced(ProvenanceClass::Derived); 2])?;
+            assert_eq!(
+                current.verify_no_evidence_laundering(&prior),
+                Err(ContractError::EvidenceLaunderingDetected),
+                "{source:?} -> {target:?} still reuses the exact content digest"
+            );
+            let fresh_only = class_cell(prior.claim_id(), *target, vec![fresh])?;
+            assert_eq!(fresh_only.verify_no_evidence_laundering(&prior), Ok(()));
+        }
+    }
+    Ok(())
+}
+
+/// The in-memory laboratory flag is absent from canonical digest encoding. A consumer cannot
+/// change that flag to make retained predicted/laboratory content look like fresh evidence.
+#[test]
+fn canonical_content_identity_controls_laundering_fss_gefi6() -> Result<(), Box<dyn Error>> {
+    let shared = ContentDigest::sha256(b"gefi6-canonical-content-identity");
+    let marked = shared.with_laboratory(true);
+    let other_algorithm = ContentDigest::new(fss_core::DigestAlgorithm::Blake3, shared.bytes());
+    for origin in [
+        EvidenceOrigin::Produced(ProvenanceClass::Predicted),
+        EvidenceOrigin::Laboratory,
+    ] {
+        let prior = class_cell(
+            "claim:gefi6:canonical-content",
+            ProvenanceClass::Observed,
+            vec![shared],
+        )?
+        .with_evidence_origins(&[origin])?;
+        let marked_prior = class_cell(prior.claim_id(), ProvenanceClass::Observed, vec![marked])?
+            .with_evidence_origins(&[origin])?;
+        assert_eq!(prior.cell_digest(), marked_prior.cell_digest());
+        for prior in [prior, marked_prior] {
+            for content in [shared, marked] {
+                let current =
+                    class_cell(prior.claim_id(), ProvenanceClass::Observed, vec![content])?;
+                assert_eq!(
+                    current.verify_no_evidence_laundering(&prior),
+                    Err(ContractError::EvidenceLaunderingDetected),
+                    "the noncanonical marker cannot change content identity"
+                );
+            }
+            let distinct = class_cell(
+                prior.claim_id(),
+                ProvenanceClass::Observed,
+                vec![other_algorithm],
+            )?;
+            assert_eq!(distinct.verify_no_evidence_laundering(&prior), Ok(()));
+        }
+    }
+    Ok(())
+}

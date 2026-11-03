@@ -3890,3 +3890,81 @@ fn classification_refuses_a_laundered_effect_premise_fss_2nwxm() -> Result<(), B
     }
     Ok(())
 }
+
+/// The live delta paths must not admit an effect premise after dropping one of a reused
+/// digest's restrictive origins, regardless of which equally hashed prior ordering is read.
+#[test]
+fn classification_refuses_dropped_evidence_origins_fss_gefi6() -> Result<(), Box<dyn Error>> {
+    use fss_core::EvidenceOrigin;
+
+    let shared = ContentDigest::sha256(b"delta-gefi6-shared-origin");
+    let fresh = ContentDigest::sha256(b"delta-gefi6-fresh-origin");
+    let observed = EvidenceOrigin::Produced(ProvenanceClass::Observed);
+    for restrictive in [
+        EvidenceOrigin::Produced(ProvenanceClass::Predicted),
+        EvidenceOrigin::Produced(ProvenanceClass::Remembered),
+        EvidenceOrigin::Produced(ProvenanceClass::VendorClaimed),
+        EvidenceOrigin::Laboratory,
+    ] {
+        let prior = supersession_cell(
+            "claim:supersede:origin-set",
+            ProvenanceClass::Observed,
+            vec![shared, shared],
+        )?;
+        let first = prior
+            .clone()
+            .with_evidence_origins(&[observed, restrictive])?;
+        let reversed = prior.with_evidence_origins(&[restrictive, observed])?;
+        assert_eq!(first.cell_digest(), reversed.cell_digest());
+        for prior in [first, reversed] {
+            assert!(!prior.is_irreversible_effect_premise(TimestampNs(1)));
+            let current = supersession_cell(
+                prior.claim_id(),
+                ProvenanceClass::Observed,
+                vec![shared, fresh],
+            )?;
+            assert!(current.is_irreversible_effect_premise(TimestampNs(1)));
+            for verdict in classify_supersession(prior.clone(), current)? {
+                assert!(
+                    is_laundering_refusal(&verdict),
+                    "{restrictive:?}: {verdict:?}"
+                );
+            }
+
+            // Preserving every existing origin while adding fresh evidence is admissible.
+            let preserved = supersession_cell(
+                prior.claim_id(),
+                ProvenanceClass::Observed,
+                vec![shared, fresh, shared, shared],
+            )?
+            .with_evidence_origins(&[restrictive, observed, observed, restrictive])?;
+            assert!(!preserved.is_irreversible_effect_premise(TimestampNs(1)));
+            for verdict in classify_supersession(prior, preserved)? {
+                assert!(verdict.is_ok(), "preserved {restrictive:?}: {verdict:?}");
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Changing both the cell class and its evidence-origin label cannot hide content reuse from
+/// either the plain or lineage-bound production classifier.
+#[test]
+fn classification_refuses_cell_and_origin_relabel_fss_gefi6() -> Result<(), Box<dyn Error>> {
+    use fss_core::EvidenceOrigin;
+
+    let shared = ContentDigest::sha256(b"delta-gefi6-class-origin-relabel");
+    let prior = supersession_cell(
+        "claim:supersede:class-origin",
+        ProvenanceClass::Predicted,
+        vec![shared],
+    )?
+    .with_evidence_origins(&[EvidenceOrigin::Produced(ProvenanceClass::Observed)])?;
+    let current = supersession_cell(prior.claim_id(), ProvenanceClass::Observed, vec![shared])?
+        .with_evidence_origins(&[EvidenceOrigin::Produced(ProvenanceClass::Derived)])?;
+    assert!(current.is_irreversible_effect_premise(TimestampNs(1)));
+    for verdict in classify_supersession(prior, current)? {
+        assert!(is_laundering_refusal(&verdict), "{verdict:?}");
+    }
+    Ok(())
+}
