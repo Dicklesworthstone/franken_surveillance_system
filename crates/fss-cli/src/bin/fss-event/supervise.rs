@@ -10,12 +10,12 @@ use std::process::ExitCode;
 use fss_cli::json_input::{Value, read_document};
 use fss_cli::supervisor::{
     SupervisorCameraSpec, SupervisorError, SupervisorPlan, SupervisorWindowObservation,
-    SupervisorWindowSpec, run_supervisor,
+    SupervisorWindowSpec, run_supervisor, run_unique_source_supervisor,
 };
 use fss_cli::{ERR_CLI_MALFORMED_VALUE, ERR_CLI_RUNTIME_FAILURE, ExitIdentity};
 use fss_core::region::{ContextAuthority, RootAuthoritySpec};
 use fss_core::{BudgetVector, ContentDigest, OperationId, PrincipalId};
-use fss_fusion::{EProcessConfig, ScoreCalibration};
+use fss_fusion::{EProcessConfig, MAX_UNIQUE_SOURCES, ScoreCalibration};
 use fss_reference::{ReferenceDeployment, ReplayCx};
 
 #[path = "supervise/retained.rs"]
@@ -25,7 +25,7 @@ const HELP: &str = "fss-event supervise --root DIR --site SITE\n\
   (--retained-plan FILE --retained-digest sha256:HEX |\n\
    --discover-plan FILE --discover-digest sha256:HEX |\n\
    --detection-plan FILE --detection-digest sha256:HEX | --plan FILE)\n\
-  [--principal ID] [--report-out FILE] [--transcript yes]\n\
+  [--principal ID] [--report-out FILE] [--transcript yes | --unique-sources N]\n\
 \n\
   Retained mode reads a digest-pinned fss.retained_supervisor_plan.v1 from a regular file\n\
   and reopens exact published package events from an existing deployment. Camera bindings\n\
@@ -95,7 +95,14 @@ const HELP: &str = "fss-event supervise --root DIR --site SITE\n\
   assumptions. Its numeric Ville fields do not establish an anytime false-alarm guarantee.\n\
   With --plan, explicitly select --transcript yes for fss.supervisor_transcript_report.v1:\n\
   the unchanged report plus evidence-bound fusion/reset transitions and their chained digest.\n\
-  Default v1 report bytes and numerical receipt identities remain unchanged.\n";
+  Default v1 report bytes and numerical receipt identities remain unchanged.\n\
+  With --plan, --unique-sources N (1..4096) explicitly selects a source-once profile.\n\
+  Each supplied detector evidence digest contributes its signed likelihood at most once,\n\
+  including across numerical resets. Reused source keys with changed sensor, label, score,\n\
+  calibration or observability refuse; the lifetime allowance never evicts or refills.\n\
+  fss.unique_source_supervisor_report.v1 includes the complete accounting and configuration.\n\
+  Keys remain caller declarations: no native custody or physical independence is established.\n\
+  --unique-sources cannot be combined with --transcript or retained/discovery modes.\n";
 
 fn field<'a>(map: &'a BTreeMap<String, Value>, key: &str) -> Result<&'a Value, String> {
     map.get(key)
@@ -396,6 +403,7 @@ pub(super) fn main(args: &[OsString]) -> ExitCode {
                 | "--list"
                 | "--report-out"
                 | "--transcript"
+                | "--unique-sources"
         ) {
             eprintln!("{ERR_CLI_MALFORMED_VALUE}: unknown supervise option {flag}");
             return ExitCode::from(ExitIdentity::MALFORMED_VALUE.code);
@@ -433,8 +441,10 @@ pub(super) fn main(args: &[OsString]) -> ExitCode {
         || values.contains_key("--resume")
         || values.contains_key("--list")
     {
-        if values.contains_key("--transcript") {
-            eprintln!("{ERR_CLI_MALFORMED_VALUE}: --transcript is supported only with --plan");
+        if values.contains_key("--transcript") || values.contains_key("--unique-sources") {
+            eprintln!(
+                "{ERR_CLI_MALFORMED_VALUE}: --transcript and --unique-sources are supported only with --plan"
+            );
             return ExitCode::from(ExitIdentity::MALFORMED_VALUE.code);
         }
         return retained::main(&values);
@@ -446,6 +456,30 @@ pub(super) fn main(args: &[OsString]) -> ExitCode {
         Some(_) => {
             eprintln!("{ERR_CLI_MALFORMED_VALUE}: --transcript must be yes");
             return ExitCode::from(ExitIdentity::MALFORMED_VALUE.code);
+        }
+    };
+
+    let source_limit = match values.get("--unique-sources") {
+        None => None,
+        Some(_) if values.contains_key("--transcript") => {
+            eprintln!(
+                "{ERR_CLI_MALFORMED_VALUE}: --unique-sources and --transcript are separate profiles"
+            );
+            return ExitCode::from(ExitIdentity::MALFORMED_VALUE.code);
+        }
+        Some(value) => {
+            let parsed = value
+                .to_str()
+                .filter(|text| !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit()))
+                .and_then(|text| text.parse::<usize>().ok())
+                .filter(|limit| (1..=MAX_UNIQUE_SOURCES).contains(limit));
+            let Some(limit) = parsed else {
+                eprintln!(
+                    "{ERR_CLI_MALFORMED_VALUE}: --unique-sources must be in 1..={MAX_UNIQUE_SOURCES}"
+                );
+                return ExitCode::from(ExitIdentity::MALFORMED_VALUE.code);
+            };
+            Some(limit)
         }
     };
 
@@ -512,16 +546,21 @@ pub(super) fn main(args: &[OsString]) -> ExitCode {
         }
     };
 
-    match run_supervisor(&deployment, Some(&root), &cx, &plan) {
+    let result = if let Some(limit) = source_limit {
+        run_unique_source_supervisor(&deployment, Some(&root), &cx, &plan, limit)
+            .map(|report| report.to_json())
+    } else {
+        run_supervisor(&deployment, Some(&root), &cx, &plan).map(|report| {
+            if include_transcript {
+                report.to_transcript_json()
+            } else {
+                report.to_json()
+            }
+        })
+    };
+    match result {
         Ok(report) => {
-            let rendered = format!(
-                "{}\n",
-                if include_transcript {
-                    report.to_transcript_json()
-                } else {
-                    report.to_json()
-                }
-            );
+            let rendered = format!("{report}\n");
             if let Some(out_os) = values.get("--report-out") {
                 let out_path = PathBuf::from(out_os);
                 if let Err(e) = super::export(&out_path, rendered.as_bytes(), &root, &cx) {

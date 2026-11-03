@@ -113,6 +113,71 @@ cancellation and window metadata. Wall-clock `elapsed_ns` is excluded. Without t
 the original v1 JSON and numerical receipt behavior remain unchanged. The retained native
 supervisor has its own custody and receipt owner; this selector does not alter that path.
 
+## Explicit source-once sequential profile
+
+The historical `SequentialEProcess` sums each submitted window. Its common-cause bookkeeping
+prevents a repeated camera from becoming an additional independent cluster, but does not prevent
+the same source from adding its likelihood again. Once two supporting clusters exist, repeatedly
+submitting the same two observations can therefore cross a numerical threshold. Its default
+behavior and existing receipts remain unchanged for compatibility.
+
+`UniqueSourceEProcess` is a separate, explicitly selected profile. Its constructor takes the
+original numerical configuration and a nonrefillable lifetime allowance of 1–4,096 numeric
+sources. Every original evidence ID must have a binding to an optional declared source digest;
+an observed calibrated row requires a digest, while nonnumeric diagnostics may explicitly have
+no source. No source identity is invented for missing observations. Canonical source equality
+uses digest algorithm and bytes, so the nonencoded laboratory marker cannot manufacture another
+source slot.
+
+Before changing any state, the profile validates the complete original query and exact binding
+inventory. It then processes aliases in canonical order. A newly declared numeric source adds
+its signed likelihood once; later identical aliases, retries and repeated windows add zero.
+This applies to supporting, refuting and zero likelihoods. The original query, effective query
+and every alias disposition remain in the new receipt, including steps with no new evidence.
+All nonnumeric rows and query-wide coverage survive filtering, preserving missing-data and
+absence semantics.
+
+After numeric admission, a source's sensor, domains, calibration generation/likelihood,
+observability and event kind are immutable within this process. A conflicting interpretation,
+including conflicting aliases in one query, refuses the complete step. Query-wide coverage may
+change because of other cameras; it is bound by the original/effective query receipts rather
+than frozen into an individual source. A first nonnumeric sighting consumes no lifetime slot
+and may later become a calibrated observation. Capacity exhaustion never accepts a valid prefix
+or evicts old identities. Numerical resets clear active accumulation while retaining the source
+inventory, first-admission indices and both transcript chains, so a reset cannot re-admit old
+evidence or replenish the allowance.
+
+The new `fss.fusion_unique_source_step.v1` interchange schema has a separate canonical receipt
+domain, `fss.fusion.unique_source_step.v1`. Its digest binds capacity, complete lifetime inventory,
+original input, all alias/source/disposition rows and the existing inner transcript, which binds
+the exact effective query, decision, configuration and numerical state. Callers verify it by
+replaying their ordered original queries, bindings and resets. Source keys are declarations:
+changing a key declares a new source, and this profile does not independently establish custody,
+physical deduplication, temporal independence, calibrated field quality or an anytime guarantee.
+The native retained supervisor already owns source-row verification and cumulative deduplication;
+its behavior is separate from this profile.
+
+The explicit legacy-plan entry point is
+`fss-event supervise --root DIR --site SITE --plan PLAN --unique-sources N`, with `N` in
+1–4,096; the corresponding typed API is `run_unique_source_supervisor`. This selector is separate
+from `--transcript yes` and is refused with retained/discovery modes. Default invocation and
+transcript-only output retain their original behavior and bytes.
+
+Each calibrated plan observation uses its supplied `evidence_digest` directly as the declared
+source key. The supervisor also remembers a bounded digest of the original sensor, class label
+and exact unbinned score. Reusing a source with a changed label or a different score in the same
+calibration bin therefore refuses the complete run. These raw facts are committed separately
+from the core likelihood interpretation. Observations discarded by a clock/health reset window
+are not consumed; later actual observations may still admit those sources. Missing-source
+diagnostics retain explicit null keys.
+
+`fss.unique_source_supervisor_report.v1` contains the numerical report, every source-once step,
+per-window raw-input commitments, complete core/raw lifetime inventory digests and the full
+numerical configuration/source allowance. Configuration and empty inventories remain independently
+bound even when cancellation occurs before the first transition. Failed runs produce no accepted
+report or report export. These are still caller-score simulation results, with source custody,
+statistical qualification and effects authorization explicitly unverified.
+
 ## Assumptions and remaining qualification
 
 The hull rule is a simple reference model: a dependency cluster contributes one member's
@@ -147,5 +212,8 @@ coverage and calibration requirements for rejection, bounded waits, counterfactu
 deterministic digests. Sequential regressions additionally cover no-mutation hypothesis refusal,
 source/policy/history separation, canonical input order, reset ancestry, historical numerical
 goldens and oversized reset reasons/sensors preserving complete context and subsequent state.
+Source-once regressions cover repeated-source threshold inflation, alias/reordering equivalence,
+mixed new/replayed/neutral steps, signed and zero increments, transactional conflicts and
+capacity exhaustion, source-marker normalization and lifetime inventory preservation across resets.
 This is focused deterministic reference evidence; it is not the full local
 release or deployment-quality qualification lane.

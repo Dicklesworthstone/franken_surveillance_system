@@ -22,15 +22,298 @@ use fss_cli::json_input::parse;
 use fss_cli::supervisor::{
     ERR_SUPERVISOR_BUDGET_EXCEEDED, ERR_SUPERVISOR_CORRUPT_INPUT, ERR_SUPERVISOR_DUPLICATE_SENSOR,
     ERR_SUPERVISOR_INSUFFICIENT_CAMERAS, ERR_SUPERVISOR_STALE_ANCHOR, SupervisorCameraSpec,
-    SupervisorPlan, SupervisorWindowObservation, SupervisorWindowSpec, run_supervisor,
+    SupervisorError, SupervisorPlan, SupervisorWindowObservation, SupervisorWindowSpec,
+    run_supervisor, run_unique_source_supervisor,
 };
 use fss_core::region::{ContextAuthority, RootAuthoritySpec};
 use fss_core::{BudgetVector, ContentDigest, OperationId};
-use fss_fusion::{EProcessConfig, ScoreCalibration};
+use fss_fusion::{EProcessConfig, ScoreCalibration, SourceDisposition, UniqueSourceError};
 use fss_reference::media_fixture::jpeg::{JpegConfig, Subsampling, encode_jpeg};
 use fss_reference::{ReferenceDeployment, ReplayCx};
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
+
+#[test]
+fn explicit_source_once_profile_prevents_replay_alerts_and_refuses_reinterpretation() -> TestResult
+{
+    let dir = OwnedDirectory::new("unique-source-profile")?;
+    let deployment = initialize_deployment(&dir)?;
+    let calibration = sample_calibration();
+    let bin = calibration.bin(900_000).ok_or("score bin")?;
+    assert_eq!(
+        bin.llr,
+        calibration.bin(900_001).ok_or("neighbor score bin")?.llr
+    );
+    let first_lo = bin.llr.lo().checked_mul(2).ok_or("first interval")?;
+    assert!(first_lo > 0 && first_lo * 2 < 100_000);
+    let threshold = first_lo + 1;
+    let east = ContentDigest::sha256(b"declared-east-source");
+    let west = ContentDigest::sha256(b"declared-west-source");
+    let observations: BTreeMap<_, _> = [("east", east), ("west", west)]
+        .into_iter()
+        .map(|(camera, evidence_digest)| {
+            (
+                camera.to_owned(),
+                SupervisorWindowObservation::CalibratedDetection {
+                    score_ppm: 900_000,
+                    label: "person".to_owned(),
+                    evidence_digest,
+                },
+            )
+        })
+        .collect();
+    let plan = SupervisorPlan {
+        site_lineage: SITE.to_owned(),
+        hypothesis_id: "hyp:source-once".to_owned(),
+        expected_authority_root: Some(deployment.current_anchor().state_root),
+        cameras: three_cameras(),
+        windows: (0..2)
+            .map(|window_index| SupervisorWindowSpec {
+                window_index,
+                timestamp_ns: 1_000_000_000 + window_index * 100_000_000,
+                observations: observations.clone(),
+            })
+            .collect(),
+        calibration: calibration.clone(),
+        eprocess_config: EProcessConfig {
+            alert_threshold_mban: threshold,
+            ceiling_mban: 100_000,
+            ..EProcessConfig::default()
+        },
+        max_work_units: 1_000,
+        work_units_per_camera_window: 10,
+        tolerate_corrupt_segments: false,
+        cancel_after_window: None,
+        stop_on_corroborated_alert: true,
+    };
+    let legacy = run_supervisor(&deployment, Some(&dir.root()), &make_cx(&dir)?, &plan)?;
+    assert_eq!(legacy.status, "corroborated_alert_warranted");
+    let unique =
+        run_unique_source_supervisor(&deployment, Some(&dir.root()), &make_cx(&dir)?, &plan, 2)?;
+    assert_eq!(unique.report().status, "completed_monitoring");
+    assert_eq!(unique.sources_seen(), 2);
+    assert_eq!(unique.steps().len(), 2);
+    assert_eq!(unique.report().final_accumulated_llr.lo(), first_lo);
+    assert_eq!(unique.steps()[1].outcome().step().step_delta_llr.lo(), 0);
+    assert!(
+        unique.steps()[1]
+            .outcome()
+            .admissions()
+            .iter()
+            .all(|row| row.disposition() == SourceDisposition::AlreadyAdmitted)
+    );
+
+    for change_label in [false, true] {
+        let mut conflicting = plan.clone();
+        let Some(SupervisorWindowObservation::CalibratedDetection {
+            score_ppm, label, ..
+        }) = conflicting.windows[1].observations.get_mut("east")
+        else {
+            return Err("missing east observation".into());
+        };
+        if change_label {
+            *label = "vehicle".to_owned();
+        } else {
+            *score_ppm = 900_001;
+        }
+        assert!(matches!(
+            run_unique_source_supervisor(
+                &deployment,
+                Some(&dir.root()),
+                &make_cx(&dir)?,
+                &conflicting,
+                2
+            ),
+            Err(SupervisorError::UniqueSource(
+                UniqueSourceError::ConflictingSource { .. }
+            ))
+        ));
+    }
+
+    let mut reset_plan = plan.clone();
+    reset_plan.windows.insert(
+        1,
+        SupervisorWindowSpec {
+            window_index: 1,
+            timestamp_ns: 1_050_000_000,
+            observations: [(
+                "east".to_owned(),
+                SupervisorWindowObservation::ClockDiscontinuity { gap_ns: 10_000 },
+            )]
+            .into_iter()
+            .collect(),
+        },
+    );
+    reset_plan.windows[2].window_index = 2;
+    let reset = run_unique_source_supervisor(
+        &deployment,
+        Some(&dir.root()),
+        &make_cx(&dir)?,
+        &reset_plan,
+        2,
+    )?;
+    assert_eq!(reset.sources_seen(), 2);
+    assert_eq!(reset.report().final_accumulated_llr.lo(), 0);
+    assert_eq!(reset.steps()[1].raw_input_digest(), None);
+    assert_eq!(
+        reset.steps()[0].outcome().inventory_digest(),
+        reset.steps()[2].outcome().inventory_digest()
+    );
+
+    let mut cancelled = plan.clone();
+    cancelled.cancel_after_window = Some(0);
+    let before = run_unique_source_supervisor(
+        &deployment,
+        Some(&dir.root()),
+        &make_cx(&dir)?,
+        &cancelled,
+        2,
+    )?;
+    cancelled.eprocess_config.ceiling_mban -= 1;
+    let changed = run_unique_source_supervisor(
+        &deployment,
+        Some(&dir.root()),
+        &make_cx(&dir)?,
+        &cancelled,
+        2,
+    )?;
+    assert!(before.steps().is_empty() && changed.steps().is_empty());
+    assert_eq!(before.sources_seen(), 0);
+    assert_ne!(
+        before.configuration_digest(),
+        changed.configuration_digest()
+    );
+    assert_ne!(before.receipt_digest(), changed.receipt_digest());
+
+    let source_json = |camera: &str, digest: ContentDigest| {
+        format!(
+            r#""{camera}":{{"kind":"calibrated_detection","score_ppm":900000,"label":"person","evidence_digest":"{digest}"}}"#
+        )
+    };
+    let observations_json = format!(
+        "{},{}",
+        source_json("east", east),
+        source_json("west", west)
+    );
+    let plan_json = format!(
+        r#"{{"schema":"fss.supervisor_plan.v1","hypothesis_id":"hyp:source-once","expected_authority_root":"{}","max_work_units":1000,"work_units_per_camera_window":10,"tolerate_corrupt_segments":false,"stop_on_corroborated_alert":true,"eprocess":{{"alert_threshold_mban":{threshold},"floor_mban":0,"ceiling_mban":100000,"min_independent_clusters":2}},"score_calibration":{{"schema":"fss.score_calibration.v1","generation":"{}","digest":"{}","bins":[{{"lo_ppm":0,"true_positives":5,"false_positives":500}},{{"lo_ppm":500000,"true_positives":20,"false_positives":80}},{{"lo_ppm":850000,"true_positives":180,"false_positives":2}}]}},"cameras":[{{"camera_id":"east","sensor_id":"sensor:east","failure_domains":[]}},{{"camera_id":"west","sensor_id":"sensor:west","failure_domains":[]}},{{"camera_id":"south","sensor_id":"sensor:south","failure_domains":[]}}],"windows":[{{"window_index":0,"timestamp_ns":1000000000,"observations":{{{observations_json}}}}},{{"window_index":1,"timestamp_ns":1100000000,"observations":{{{observations_json}}}}}]}}"#,
+        deployment.current_anchor().state_root,
+        calibration.generation,
+        calibration.digest,
+    );
+    let plan_file = dir.0.join("unique-plan.json");
+    fs::write(&plan_file, &plan_json)?;
+    drop(deployment);
+    let output = Command::new(env!("CARGO_BIN_EXE_fss-event"))
+        .args(["supervise", "--root"])
+        .arg(dir.root())
+        .args(["--site", SITE, "--plan"])
+        .arg(&plan_file)
+        .args(["--unique-sources", "2"])
+        .output()?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let parsed = parse(String::from_utf8(output.stdout)?.trim_end())?;
+    let report = parsed.object().ok_or("source-once wrapper")?;
+    assert_eq!(
+        report.get("schema").and_then(|v| v.text()),
+        Some("fss.unique_source_supervisor_report.v1")
+    );
+    assert_eq!(
+        report.get("receipt_digest").and_then(|v| v.text()),
+        Some(unique.receipt_digest().to_text().as_str())
+    );
+    assert_eq!(
+        report.get("sources_seen").and_then(|v| v.integer()),
+        Some(2)
+    );
+    assert_eq!(
+        report
+            .get("unique_source_steps")
+            .and_then(|v| v.array())
+            .map(|rows| rows.len()),
+        Some(2)
+    );
+    let refused_path = dir.0.join("refused-report.json");
+    let refused = Command::new(env!("CARGO_BIN_EXE_fss-event"))
+        .args(["supervise", "--root"])
+        .arg(dir.root())
+        .args(["--site", SITE, "--plan"])
+        .arg(&plan_file)
+        .args(["--unique-sources", "1", "--report-out"])
+        .arg(&refused_path)
+        .output()?;
+    assert!(!refused.status.success());
+    assert!(refused.stdout.is_empty() && !refused_path.exists());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("ERR-FUSION-SOURCE-CAPACITY-001"));
+    let mut conflict_json = plan_json;
+    let score = "\"score_ppm\":900000";
+    let position = conflict_json.rfind(score).ok_or("last window score")?;
+    conflict_json.replace_range(position..position + score.len(), "\"score_ppm\":900001");
+    let conflict_plan = dir.0.join("conflicting-source-plan.json");
+    fs::write(&conflict_plan, conflict_json)?;
+    let conflict_path = dir.0.join("conflicting-source-report.json");
+    let conflict = Command::new(env!("CARGO_BIN_EXE_fss-event"))
+        .args(["supervise", "--root"])
+        .arg(dir.root())
+        .args(["--site", SITE, "--plan"])
+        .arg(&conflict_plan)
+        .args(["--unique-sources", "2", "--report-out"])
+        .arg(&conflict_path)
+        .output()?;
+    assert!(!conflict.status.success());
+    assert!(conflict.stdout.is_empty() && !conflict_path.exists());
+    assert!(String::from_utf8_lossy(&conflict.stderr).contains("ERR-FUSION-SOURCE-CONFLICT-001"));
+    emit_log(
+        "unique_source",
+        "replay_threshold_raw_conflict_reset_cancel_cli",
+        "ok",
+    );
+    Ok(())
+}
+
+#[test]
+fn unique_source_cli_rejects_ambiguous_and_incompatible_selectors_before_io() -> TestResult {
+    for (arguments, diagnostic) in [
+        (
+            vec!["--unique-sources", "0"],
+            "--unique-sources must be in 1..=4096",
+        ),
+        (
+            vec!["--unique-sources", "4097"],
+            "--unique-sources must be in 1..=4096",
+        ),
+        (
+            vec!["--unique-sources", "+1"],
+            "--unique-sources must be in 1..=4096",
+        ),
+        (
+            vec!["--unique-sources", "2", "--transcript", "yes"],
+            "--unique-sources and --transcript are separate profiles",
+        ),
+        (
+            vec![
+                "--unique-sources",
+                "2",
+                "--retained-plan",
+                "not-opened.json",
+            ],
+            "--transcript and --unique-sources are supported only with --plan",
+        ),
+    ] {
+        let result = Command::new(env!("CARGO_BIN_EXE_fss-event"))
+            .arg("supervise")
+            .args(arguments)
+            .output()?;
+        assert!(!result.status.success());
+        assert!(result.stdout.is_empty());
+        assert!(String::from_utf8_lossy(&result.stderr).contains(diagnostic));
+    }
+    Ok(())
+}
 
 const SITE: &str = "site:supervisor-e2e";
 

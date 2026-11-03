@@ -10,6 +10,39 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Source-once fusion in the supervisor (2026-11-03)
+
+`fss-event supervise --root DIR --site SITE --plan PLAN --unique-sources N`
+now selects the explicit bounded source-once profile, with one through 4096 declared
+source identities over the complete process lifetime. The typed
+`run_unique_source_supervisor` API uses the same execution path. Repeated or renamed
+calibrated evidence contributes no second signed likelihood increment, including
+after resets. Exact original sensor, label and unbinned score commitments prevent a
+source from being reinterpreted even when two scores occupy the same calibration bin.
+Raw and numerical inventories commit together after complete admission, survive
+resets and refuse capacity overflow without exporting an accepted prefix.
+
+The separately versioned output includes complete source accounting, every original
+and effective query commitment, inner fusion history, raw detector commitments and
+configuration. Empty runs and immediate cancellation still bind the configuration
+and source allowance. Nonnumeric diagnostics retain explicit absent source keys;
+reset windows do not consume observations they never execute. Default and existing
+transcript-only output remain unchanged. This mode consumes caller declarations;
+retained source custody and qualified statistical independence remain separate.
+
+A limited harness compiled the actual private strategy, verbatim pure per-window
+transformation and original report/serializer code against native core/fusion.
+Replay, same-bin reinterpretation, transactional conflict/capacity refusal, resets,
+neutral diagnostics, zero-transition configuration and receipt substitution checks
+pass. Default and transcript-only bytes exactly match the prior original renderers.
+Eight emitted new wrappers, eleven nested source receipts, eleven nested fusion
+transcripts and both legacy transcript wrappers pass full Draft 2020-12 validation,
+with five negative mutation controls. Authored CLI/E2E contracts cover selector
+errors and refusal after an accepted prefix without report export. Those process
+contracts remain unexecuted behind the recorded Asupersync memory limit; the limited
+harness excludes outer authority, work/cancellation, deployment, CLI dispatch and
+filesystem export and is not full runtime qualification.
+
 ## Bounded source-once sequential fusion (2026-11-03)
 
 The opt-in native `UniqueSourceEProcess` prevents a declared source from adding a

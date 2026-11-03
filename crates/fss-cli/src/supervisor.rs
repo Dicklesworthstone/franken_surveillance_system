@@ -10,6 +10,12 @@
 
 pub mod retained;
 mod transcript;
+mod unique_source;
+pub use unique_source::{
+    UNIQUE_SOURCE_SUPERVISOR_CONFIG_DOMAIN, UNIQUE_SOURCE_SUPERVISOR_RAW_DOMAIN,
+    UNIQUE_SOURCE_SUPERVISOR_RECEIPT_DOMAIN, UNIQUE_SOURCE_SUPERVISOR_SCHEMA,
+    UniqueSourceSupervisorReport, UniqueSourceSupervisorStep,
+};
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -21,7 +27,7 @@ use fss_core::{CanonicalEncoder, ContentDigest, EffectState};
 use fss_fusion::{
     Calibration, Coverage, Decision, EProcessConfig, EProcessStepOutcome, EvidenceItem,
     FusionError, FusionPolicy, FusionQuery, LlrInterval, Observability, RegimeResetReason,
-    ScoreCalibration, SequentialEProcess, Severity, ville_false_alarm_bound_ppm,
+    ScoreCalibration, Severity, UniqueSourceError, ville_false_alarm_bound_ppm,
 };
 use fss_geometry::WorkBudget;
 use fss_reference::{ReferenceDeployment, ReplayCx};
@@ -194,6 +200,8 @@ pub enum SupervisorError {
     InvalidCalibration(String),
     /// Underlying `fss-fusion` error.
     Fusion(FusionError),
+    /// Explicit source-once profile refused a binding, reinterpretation or lifetime capacity.
+    UniqueSource(UniqueSourceError),
 }
 
 impl SupervisorError {
@@ -208,6 +216,7 @@ impl SupervisorError {
             Self::CorruptInput { .. } => ERR_SUPERVISOR_CORRUPT_INPUT,
             Self::InvalidCalibration(_) => ERR_SUPERVISOR_CALIBRATION_INVALID,
             Self::Fusion(err) => err.stable_id(),
+            Self::UniqueSource(err) => err.stable_id(),
         }
     }
 }
@@ -243,6 +252,7 @@ impl fmt::Display for SupervisorError {
                 write!(f, "{ERR_SUPERVISOR_CALIBRATION_INVALID}: {msg}")
             }
             Self::Fusion(err) => write!(f, "{}: {err}", err.stable_id()),
+            Self::UniqueSource(err) => write!(f, "{}: {err}", err.stable_id()),
         }
     }
 }
@@ -572,6 +582,39 @@ pub fn run_supervisor(
     cx: &ReplayCx,
     plan: &SupervisorPlan,
 ) -> Result<SupervisorReport, SupervisorError> {
+    run_supervisor_profile(deployment, root_path, cx, plan, None).map(|(report, _)| report)
+}
+
+/// Executes the explicitly selected caller-declared source-once supervisor profile.
+///
+/// The supplied calibrated observation digest is the source key. Exact raw sensor, class label
+/// and score remain immutable for each consumed key, including when scores occupy the same bin.
+/// Nonnumeric diagnostics have no invented source key. Neither this profile nor its receipts
+/// verify source custody, physical uniqueness, temporal independence or an anytime guarantee.
+///
+/// # Errors
+///
+/// In addition to the default supervisor refusals, rejects invalid/missing/conflicting source
+/// bindings or exhausted lifetime source capacity. No accepted prefix is returned on failure.
+pub fn run_unique_source_supervisor(
+    deployment: &ReferenceDeployment,
+    root_path: Option<&Path>,
+    cx: &ReplayCx,
+    plan: &SupervisorPlan,
+    source_limit: usize,
+) -> Result<UniqueSourceSupervisorReport, SupervisorError> {
+    let (report, process) =
+        run_supervisor_profile(deployment, root_path, cx, plan, Some(source_limit))?;
+    process.finish_unique(report)
+}
+
+fn run_supervisor_profile(
+    deployment: &ReferenceDeployment,
+    root_path: Option<&Path>,
+    cx: &ReplayCx,
+    plan: &SupervisorPlan,
+    source_limit: Option<usize>,
+) -> Result<(SupervisorReport, unique_source::Accumulator), SupervisorError> {
     let started = Instant::now();
 
     if plan.cameras.len() < 2 {
@@ -601,8 +644,8 @@ pub fn run_supervisor(
     }
 
     let mut budget = WorkBudget::new(plan.max_work_units);
-    let mut eprocess = SequentialEProcess::new(plan.hypothesis_id.clone(), plan.eprocess_config)
-        .map_err(SupervisorError::Fusion)?;
+    let mut eprocess =
+        unique_source::Accumulator::new(&plan.hypothesis_id, plan.eprocess_config, source_limit)?;
     let step_unit = plan.work_units_per_camera_window.max(1);
 
     let mut window_records = Vec::with_capacity(plan.windows.len());
@@ -638,6 +681,8 @@ pub fn run_supervisor(
 
         // 3. Evaluate per-camera observations in canonical camera order.
         let mut evidence = Vec::with_capacity(plan.cameras.len());
+        let mut source_bindings = unique_source::Bindings::new();
+        let mut raw_inputs = unique_source::RawInputs::new();
         let mut degraded_cameras = Vec::new();
         let mut occluded_cameras = Vec::new();
         let mut clock_reset: Option<(String, u64)> = None;
@@ -660,14 +705,22 @@ pub fn run_supervisor(
                             "score lookup failed for {score_ppm} ppm: outside calibrated bins"
                         ))
                     })?;
+                    let id = format!(
+                        "obs:{}:{}:{}:{}",
+                        window.window_index,
+                        cam_id,
+                        label,
+                        evidence_digest.to_text()
+                    );
+                    if eprocess.is_unique() {
+                        source_bindings.insert(id.clone(), Some(*evidence_digest));
+                        raw_inputs.insert(
+                            id.clone(),
+                            unique_source::raw_item_digest(&cam_spec.sensor_id, label, *score_ppm),
+                        );
+                    }
                     evidence.push(EvidenceItem {
-                        id: format!(
-                            "obs:{}:{}:{}:{}",
-                            window.window_index,
-                            cam_id,
-                            label,
-                            evidence_digest.to_text()
-                        ),
+                        id,
                         sensor: cam_spec.sensor_id.clone(),
                         failure_domains: cam_domains,
                         calibration: Calibration::Calibrated {
@@ -730,6 +783,12 @@ pub fn run_supervisor(
                         },
                     });
                 }
+            }
+        }
+
+        if eprocess.is_unique() {
+            for item in &evidence {
+                source_bindings.entry(item.id.clone()).or_insert(None);
             }
         }
 
@@ -807,9 +866,8 @@ pub fn run_supervisor(
             now_ns: window.timestamp_ns,
         };
 
-        let (fusion_outcome, step_outcome) = eprocess
-            .observe_step(&query)
-            .map_err(SupervisorError::Fusion)?;
+        let (fusion_outcome, step_outcome) =
+            eprocess.observe_step(&query, &source_bindings, &raw_inputs)?;
         let crossed = step_outcome.crossed_alert_threshold;
         if crossed && corroborated_at_window.is_none() {
             corroborated_at_window = Some(window.window_index);
@@ -831,7 +889,7 @@ pub fn run_supervisor(
     }
 
     let elapsed_ns = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
-    let final_llr = eprocess.accumulated_llr();
+    let final_llr = eprocess.numerical().accumulated_llr();
     let supremum_lo_mban = window_records
         .last()
         .map_or(0, |r| r.step_outcome.supremum_lo_mban);
@@ -843,30 +901,33 @@ pub fn run_supervisor(
         "completed_monitoring"
     };
 
-    Ok(SupervisorReport {
-        schema: SUPERVISOR_REPORT_SCHEMA,
-        site_lineage: plan.site_lineage.clone(),
-        hypothesis_id: plan.hypothesis_id.clone(),
-        authority_root_at_start: current_root,
-        calibration_generation: plan.calibration.generation.clone(),
-        calibration_digest: plan.calibration.digest,
-        status,
-        windows_evaluated: window_records.len() as u64,
-        work_units_consumed: budget.used(),
-        work_units_limit: plan.max_work_units,
-        corroborated_at_window,
-        final_accumulated_llr: final_llr,
-        supremum_lo_mban,
-        ville_false_alarm_bound_ppm: ville_false_alarm_bound_ppm(supremum_lo_mban),
-        threshold_ville_bound_ppm: ville_false_alarm_bound_ppm(
-            plan.eprocess_config.alert_threshold_mban,
-        ),
-        independent_supporting_clusters: eprocess.independent_supporting_clusters(),
-        elapsed_ns,
-        cancellation: cancellation_receipt,
-        window_records,
-        receipt_digest: ContentDigest::sha256(b""),
-        transcript_digest: ContentDigest::sha256(b""),
-    }
-    .seal())
+    Ok((
+        SupervisorReport {
+            schema: SUPERVISOR_REPORT_SCHEMA,
+            site_lineage: plan.site_lineage.clone(),
+            hypothesis_id: plan.hypothesis_id.clone(),
+            authority_root_at_start: current_root,
+            calibration_generation: plan.calibration.generation.clone(),
+            calibration_digest: plan.calibration.digest,
+            status,
+            windows_evaluated: window_records.len() as u64,
+            work_units_consumed: budget.used(),
+            work_units_limit: plan.max_work_units,
+            corroborated_at_window,
+            final_accumulated_llr: final_llr,
+            supremum_lo_mban,
+            ville_false_alarm_bound_ppm: ville_false_alarm_bound_ppm(supremum_lo_mban),
+            threshold_ville_bound_ppm: ville_false_alarm_bound_ppm(
+                plan.eprocess_config.alert_threshold_mban,
+            ),
+            independent_supporting_clusters: eprocess.numerical().independent_supporting_clusters(),
+            elapsed_ns,
+            cancellation: cancellation_receipt,
+            window_records,
+            receipt_digest: ContentDigest::sha256(b""),
+            transcript_digest: ContentDigest::sha256(b""),
+        }
+        .seal(),
+        eprocess,
+    ))
 }

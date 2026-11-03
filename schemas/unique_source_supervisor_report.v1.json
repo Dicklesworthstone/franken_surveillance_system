@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/unique_source_supervisor_report.v1.json",
+  "title": "fss.unique_source_supervisor_report.v1",
+  "description": "Explicit --plan --unique-sources N supervisor profile. Each caller-declared calibrated observation evidence digest contributes its signed likelihood at most once per process lifetime, including across numeric resets. Source keys bind immutable raw sensor, class label and exact score as well as the core calibration/observability semantics, so aliases and score-bin collisions cannot reinterpret an admitted source. Missing-source diagnostics retain null keys. Complete original/effective queries, all source dispositions, raw input commitments, configuration, lifetime inventories and accepted windows remain visible. The nested report retains the historical representation of the actual profile trajectory. No source custody, physical uniqueness, independent errors, field calibration, anytime statistical guarantee or effect authority is established. Replaying the original plan and selected source limit is necessary to verify receipts; structural schema validation alone is insufficient.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "source_identity_basis", "report", "eprocess_config", "configuration_digest", "source_limit", "sources_seen", "source_inventory_digest", "raw_source_inventory_digest", "unique_source_steps", "receipt_digest"],
+  "properties": {
+    "schema": { "const": "fss.unique_source_supervisor_report.v1" },
+    "source_identity_basis": { "const": "caller_declared_digest" },
+    "report": { "$ref": "supervisor_transcript_report.v1.json#/properties/report" },
+    "eprocess_config": {
+      "description": "Actual numerical configuration, independently bound even if cancellation occurs before the first transition.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["alert_threshold_mban", "floor_mban", "ceiling_mban", "min_independent_clusters"],
+      "properties": {
+        "alert_threshold_mban": { "type": "integer", "minimum": 1, "maximum": 100000 },
+        "floor_mban": { "type": "integer", "minimum": -100000, "maximum": 0 },
+        "ceiling_mban": { "type": "integer", "minimum": 1, "maximum": 100000 },
+        "min_independent_clusters": { "type": "integer", "minimum": 1, "maximum": 4294967295 }
+      }
+    },
+    "configuration_digest": { "$ref": "#/$defs/digest" },
+    "source_limit": { "type": "integer", "minimum": 1, "maximum": 4096 },
+    "sources_seen": { "type": "integer", "minimum": 0, "maximum": 4096 },
+    "source_inventory_digest": {
+      "$ref": "#/$defs/digest",
+      "description": "Complete core lifetime source inventory, including the configured empty inventory before any transition."
+    },
+    "raw_source_inventory_digest": {
+      "$ref": "#/$defs/digest",
+      "description": "Complete bounded canonical-source-key inventory of exact raw sensor/label/score commitments. Numeric resets retain it and do not admit unexecuted detector rows from reset windows."
+    },
+    "unique_source_steps": {
+      "description": "Exactly one row per executed report window in the same order. Cancellation before the first window leaves this empty without losing configuration/capacity identity.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["window_index", "timestamp_ns", "raw_input_digest", "source_receipt"],
+        "properties": {
+          "window_index": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 },
+          "timestamp_ns": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 },
+          "raw_input_digest": {
+            "description": "Exact alias/source/raw-input binding for an executed observation step; null for a reset that did not execute those observations.",
+            "anyOf": [{ "$ref": "#/$defs/digest" }, { "type": "null" }]
+          },
+          "source_receipt": { "$ref": "fusion_unique_source_step.v1.json" }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": { "source_receipt": { "properties": { "submitted_query_digest": { "type": "null" } }, "required": ["submitted_query_digest"] } },
+              "required": ["source_receipt"]
+            },
+            "then": { "properties": { "raw_input_digest": { "type": "null" } } },
+            "else": { "properties": { "raw_input_digest": { "$ref": "#/$defs/digest" } } }
+          }
+        ]
+      }
+    },
+    "receipt_digest": { "$ref": "#/$defs/digest" }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+  }
+}

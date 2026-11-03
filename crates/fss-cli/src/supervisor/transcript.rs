@@ -9,7 +9,7 @@ use super::{
     nullable, object, string, unsigned,
 };
 
-fn fusion_transcript_json(transcript: &EProcessTranscript) -> String {
+pub(super) fn fusion_transcript_json(transcript: &EProcessTranscript) -> String {
     let input = match transcript.input() {
         EProcessStepInput::Observation {
             query_digest,
