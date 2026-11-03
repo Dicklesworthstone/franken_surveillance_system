@@ -105,9 +105,17 @@ CLI/MCP parity and byte-stable cold retries, current-vs-historical provenance, i
 read-only stores, same-label/wrong-objective and foreign-principal refusal, revoked
 grants/privacy, closed or expired replacement sessions, and missing current mission
 custody. The existing selected-learning regression retains missing/corrupt historical
-closure checks. Source review, pinned formatting and staged manifest checks passed;
-native execution of these new replacement-session cases remains pending. This is the
-explicit historical-read slice of FSS-232, not automatic discovery or learning promotion.
+closure checks. Native execution at `3348842` passed the expired-original recovery,
+current owner/mission/grant/custody refusal, existing exact selected-learning explanation
+and cold captured-learning CLI/MCP recovery cases. The cancelled-original regression
+successfully read its selected capture, then failed because the fixture asked for a
+nonexistent `anchor` field. That fixture now checks the registered `inputAnchor` and
+`basisAnchor`, including equality with the authenticated retained experience basis;
+its full native rerun remains pending. Evidence: run `41655137973`, job `125983315450`.
+The broader agent-effects target had 27 passes and three failures, including that fixture;
+these scoped results are not a complete gate pass. Source review, pinned formatting and
+staged manifest checks passed. This is the explicit historical-read slice of FSS-232,
+not automatic discovery or learning promotion.
 See `docs/historical_learning.md` for exact commands and admission requirements.
 
 ## Motion-independent trained detection across HTTP histories (2026-11-03)
@@ -2525,6 +2533,15 @@ existing health-gated CLI (6), watch-entry CLI (8), whole-recording watch (16),
 whole-recording corroboration (16), and cold native event replay (16). These cover quiet and
 all-refused recordings, exact retries, privacy changes, damaged custody, graph-complete
 deletion, cancellation, old canonical replay identities and the unchanged Pulse budget.
+
+The additional agent-surface run at `3348842` (run `41655137973`, job `125983315450`)
+passed native frozen/incomplete refusal, post-preparation refusal with explicit cancellation,
+and carried-forward privacy support. Two fixtures reached valid refusals but expected the wrong
+contract: unrelated canonical writes made the original event receipt stale, and damaged diagnostic
+custody prevented constructing an admitted agent envelope. The corrected fixtures preserve both
+refusals, require read-only source-health checks, explicitly publish unchanged native support in a
+successor event before dispatch, and validate the strict pre-admission execution diagnostic with
+unchanged authority, effect and session journals. Their native rerun remains pending.
 
 This is a retained reference slice of NS-3 / DOC-059. Live outage supervision, physical camera
 movement attribution, authorized restoration and measured field accuracy remain open.

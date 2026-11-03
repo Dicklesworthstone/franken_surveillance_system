@@ -73,9 +73,11 @@ learning root or the old session's grants supplies no current authority.
 
 ## Read the two provenance positions
 
-The response envelope's session and anchor identify the replacement and the currently observed
-deployment. The `current:authority` proposition records its workspace, journal and remaining
-token allowance. The learning payload retains the original evidence anchor.
+The response envelope's `sessionId` and `inputAnchor` identify the replacement and the currently
+observed deployment. The `current:authority` proposition records its workspace, journal and
+remaining token allowance; its `anchor` agrees with the envelope's current `inputAnchor`.
+The learning payload's `basisAnchor` retains the original evidence anchor and agrees with the
+`experience:basis` proposition, even when the current deployment has advanced.
 
 The `capture:custody` proposition carries the unchanged learning, experience, proposal, episode,
 feedback and plan digests, the captured workspace digest, and `capturedSessionId`. These fields

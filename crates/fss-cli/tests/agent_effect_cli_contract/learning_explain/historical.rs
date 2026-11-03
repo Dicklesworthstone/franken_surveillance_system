@@ -108,13 +108,27 @@ fn selected_learning_replacement_recovers_cancelled_owners_exact_capture() -> Te
         field(&original, &["missionId"])?
     );
     assert_ne!(
-        field(&selected, &["anchor"])?,
-        field(&original, &["anchor"])?
+        field(&selected, &["inputAnchor"])?,
+        field(&original, &["inputAnchor"])?
     );
     assert_eq!(
-        field(&selected, &["payload", "anchor"])?,
-        field(&original, &["payload", "anchor"])?,
+        field(&selected, &["payload", "basisAnchor"])?,
+        field(&original, &["payload", "basisAnchor"])?,
         "the historical learning basis is not rebased to the replacement session"
+    );
+    let remembered_basis = parse(text(
+        proposition(&selected, "experience:basis")?,
+        &["statement"],
+    )?)?;
+    assert_eq!(
+        field(&selected, &["payload", "basisAnchor"])?,
+        &remembered_basis,
+        "the cognitive basis remains the authenticated historical experience basis"
+    );
+    assert_ne!(
+        field(&selected, &["inputAnchor"])?,
+        &remembered_basis,
+        "current read authority must not be presented as the historical learning basis"
     );
     assert_eq!(
         proposition(&selected, "capture:custody")?,
@@ -128,7 +142,7 @@ fn selected_learning_replacement_recovers_cancelled_owners_exact_capture() -> Te
     assert_eq!(text(&current_authority, &["sessionId"])?, current.session);
     assert_eq!(
         field(&current_authority, &["anchor"])?,
-        field(&selected, &["anchor"])?
+        field(&selected, &["inputAnchor"])?
     );
     let (code, retry) = run_fss(&selected_args)?;
     assert_eq!(code, Some(0), "{retry}");
