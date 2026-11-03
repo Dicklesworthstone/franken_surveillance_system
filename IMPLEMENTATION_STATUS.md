@@ -10,6 +10,34 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Clock replay with currently adopted camera calibration (2026-11-03)
+
+`fss-scene-fuse retained-calibrated-match` now accepts the explicit retained-motion
+query v2 profile. It independently replays the pinned original clock query against
+the semantic FSSCAL identity, currently adopted sensors, actual poses and intrinsics,
+and prepared pinhole or native radial-rectification image domain. Every original
+clock candidate remains in the complete mapped capture intervals. Source identity,
+interval inventory, uncertainty, validity, span and requested time are checked before
+JPEG decoding; final source, privacy and adoption/withdrawal revalidation remains
+mandatory and the deployment guard survives actual report publication.
+
+The separate `fss.scene_feature_match_adopted.v3` report retains the complete clock
+replay, exact original query text and source mappings alongside the adopted
+calibration, native motion geometry and read/work accounting. The 1 MiB sidecar
+reserve comes from the existing 4 GiB source allowance. Existing adopted v1/v2
+inputs retain their previous reports and semantics. Temporal features remain
+ineligible for static atlas publication. Replaying clock observations does not
+authenticate their source custody or associations, establish physical synchronization,
+or activate a camera clock, calibration, identity or effect.
+
+Five new tests execute the actual retained-import, calibration-adoption, source-owner,
+runtime and publication paths. They pass pinhole/radial success, exact scope binding,
+altered sidecar and full-interval refusal, unsupported-hypothesis hull widening,
+current adoption/source custody, shared work, cancellation and complete-output limits.
+Both emitted native report variants also pass full Draft 2020-12 schema validation.
+The complete focused calibrated command/input/report/atlas regression run passes
+71 tests, including the five new clock tests and the temporal atlas refusal.
+
 ## Validated clock hypotheses in retained motion reconstruction (2026-11-03)
 
 The explicit `fss.scene_feature_motion_match_retained_query.v2` profile now bridges

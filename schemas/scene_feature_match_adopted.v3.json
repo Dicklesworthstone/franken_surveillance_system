@@ -1,0 +1,386 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/scene_feature_match_adopted.v3.json",
+  "title": "fss.scene_feature_match_adopted.v3",
+  "description": "Explicit currently adopted camera temporal reconstruction with original finite clock-query replay. Accepts only retained-motion query v2 and exact adopted rig v1/v2. Original clock cameras must bind the semantic FSSCAL digest, current adopted sensors, actual poses/intrinsics and prepared image domains. Every declared offset/skew hypothesis remains in mapped exposure envelopes, including conditionally unsupported alternatives; exact original retained intervals, uncertainty, validity, span and requested time are checked before source decode. Complete adopted calibration, source receipts, native geometry, original clock query and replay remain visible. Shared work/cancellation and existing aggregate source-byte authority are preserved; source/privacy and adoption/withdrawal custody revalidate before release. Clock-search/validation observations remain declarations with unverified source custody. No clock, calibration, world revision, identity or effect is activated; absolute error remains unknown. Report digest is SHA-256 over the exact nested report UTF-8 bytes; the complete response plus newline is limited to 32 MiB. Existing adopted report v1/v2 contracts remain unchanged.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "report_digest",
+    "report"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.scene_feature_match_adopted.v3"
+    },
+    "report_digest": {
+      "$ref": "scene_feature_match_adopted.v2.json#/$defs/digest"
+    },
+    "report": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "analysis",
+        "cost"
+      ],
+      "properties": {
+        "schema": {
+          "const": "fss.scene_feature_match_adopted_report.v3"
+        },
+        "analysis": {
+          "$ref": "#/$defs/analysis"
+        },
+        "cost": {
+          "$ref": "#/$defs/cost"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "analysis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "outcome",
+        "authority",
+        "physical_identity_established",
+        "query_digest",
+        "rig_digest",
+        "reference_time_ns",
+        "capture_hull_ns",
+        "entry_anchor_digest",
+        "entry_anchor",
+        "anchor_digest",
+        "anchor",
+        "basis",
+        "calibration",
+        "declarations",
+        "rig_declarations",
+        "assumptions",
+        "views",
+        "geometry",
+        "counts",
+        "clock_validation"
+      ],
+      "properties": {
+        "kind": {
+          "const": "temporal"
+        },
+        "outcome": {
+          "$ref": "scene_feature_match_adopted.v2.json#/$defs/analysis/properties/outcome"
+        },
+        "authority": {
+          "$ref": "scene_feature_match_adopted.v2.json#/$defs/analysis/properties/authority"
+        },
+        "physical_identity_established": {
+          "$ref": "scene_feature_match_adopted.v2.json#/$defs/analysis/properties/physical_identity_established"
+        },
+        "query_digest": {
+          "$ref": "scene_feature_match_adopted.v2.json#/$defs/analysis/properties/query_digest"
+        },
+        "rig_digest": {
+          "$ref": "scene_feature_match_adopted.v2.json#/$defs/analysis/properties/rig_digest"
+        },
+        "reference_time_ns": {
+          "$ref": "scene_feature_match_adopted.v2.json#/$defs/analysis/properties/reference_time_ns"
+        },
+        "capture_hull_ns": {
+          "$ref": "scene_feature_match_adopted.v2.json#/$defs/analysis/properties/capture_hull_ns"
+        },
+        "entry_anchor_digest": {
+          "$ref": "scene_feature_match_adopted.v2.json#/$defs/analysis/properties/entry_anchor_digest"
+        },
+        "entry_anchor": {
+          "$ref": "scene_feature_match_adopted.v2.json#/$defs/analysis/properties/entry_anchor"
+        },
+        "anchor_digest": {
+          "$ref": "scene_feature_match_adopted.v2.json#/$defs/analysis/properties/anchor_digest"
+        },
+        "anchor": {
+          "$ref": "scene_feature_match_adopted.v2.json#/$defs/analysis/properties/anchor"
+        },
+        "basis": {
+          "$ref": "scene_feature_match_adopted.v2.json#/$defs/analysis/properties/basis"
+        },
+        "calibration": {
+          "$ref": "scene_feature_match_adopted.v2.json#/$defs/analysis/properties/calibration"
+        },
+        "declarations": {
+          "$ref": "scene_feature_motion_match_retained_query.v2.json"
+        },
+        "rig_declarations": {
+          "oneOf": [
+            {
+              "$ref": "scene_camera_rig_adopted.v1.json"
+            },
+            {
+              "$ref": "scene_camera_rig_adopted.v2.json"
+            }
+          ]
+        },
+        "assumptions": {
+          "oneOf": [
+            {
+              "const": [
+                "retained_adoption_is_owner_authority_not_a_physical_measurement_of_camera_currency",
+                "current_calibration_adoption_and_withdrawal_are_revalidated_before_report_release",
+                "all_original_source_ranges_and_current_privacy_are_revalidated_before_report_release",
+                "camera_sensor_binding_and_both_calibration_generations_are_exact_retained_dependencies",
+                "direct_pinhole_pixels_must_match_the_exact_original_calibration_image_domain_and_grid",
+                "source_object_binding_privacy_namespace_and_validity_interval_are_owner_declarations",
+                "camera_absolute_error_is_unknown_and_never_inferred_from_fit_rms_or_covariance",
+                "calibration_covariance_is_a_conditional_local_marginal_without_cross_camera_blocks",
+                "scene_covariance_covers_declared_pixel_noise_not_calibration_map_lens_clock_or_motion_model_error",
+                "shared_calibration_and_camera_errors_are_not_cancelled_or_counted_as_independent_evidence",
+                "appearance_correspondences_are_conditional_hypotheses_not_physical_identity",
+                "nominal_mesh_occlusion_conflicts_are_preserved_and_preclude_strict_success",
+                "unmatched_isolated_features_remain_diagnostics_and_all_nontrivial_alternatives_remain_visible",
+                "no_calibration_world_revision_event_identity_or_effect_is_activated_by_this_report",
+                "motion_is_constant_velocity_over_the_complete_capture_hull",
+                "nominal_exposure_times_are_midpoints_of_complete_clock_hypothesis_envelopes_without_rolling_shutter_estimation",
+                "every_fitted_component_uses_the_requested_global_scene_time_and_must_bracket_it",
+                "repeated_source_bytes_across_distinct_exposures_do_not_establish_independent_sensors",
+                "replayed_frozen_clock_inventory_preserves_all_hypotheses_and_original_capture_intervals_without_activation",
+                "clock_query_cameras_bind_the_exact_current_calibration_digest_sensor_pose_intrinsics_and_prepared_image_domain",
+                "conditionally_unsupported_clock_hypotheses_remain_in_every_mapped_capture_envelope",
+                "clock_search_and_validation_observation_sources_are_declarations_without_verified_custody",
+                "conditional_clock_support_does_not_establish_physical_synchronization_or_upgrade_source_clock_basis",
+                "mapped_capture_uncertainty_validity_span_and_reference_time_are_checked_before_source_decode"
+              ]
+            },
+            {
+              "const": [
+                "retained_adoption_is_owner_authority_not_a_physical_measurement_of_camera_currency",
+                "current_calibration_adoption_and_withdrawal_are_revalidated_before_report_release",
+                "all_original_source_ranges_and_current_privacy_are_revalidated_before_report_release",
+                "camera_sensor_binding_and_both_calibration_generations_are_exact_retained_dependencies",
+                "source_domain_refined_intrinsics_and_two_term_radial_model_come_only_from_the_exact_current_calibration",
+                "native_rectification_target_is_the_exact_refined_original_camera_grid_without_crop_zoom_or_rotation_override",
+                "nonzero_radial_sources_require_native_rectification_and_zero_radial_direct_sources_preserve_the_original_domain",
+                "rectified_views_use_declared_radius_and_luma_transfer_not_calibration_measurements",
+                "every_requested_lens_plan_is_admitted_before_source_decode_and_full_model_map_mask_and_image_receipts_are_preserved",
+                "native_rectification_preserves_original_exposure_and_requires_all_positive_weight_privacy_taps_and_descriptor_support",
+                "sigma_pixels_is_declared_on_the_actual_output_grid_and_excludes_interpolation_correlations_and_lens_parameter_error",
+                "source_object_binding_privacy_namespace_and_validity_interval_are_owner_declarations",
+                "camera_absolute_error_is_unknown_and_never_inferred_from_fit_rms_or_covariance",
+                "calibration_covariance_is_a_conditional_local_marginal_without_cross_camera_blocks",
+                "scene_covariance_covers_declared_pixel_noise_not_calibration_map_lens_clock_or_motion_model_error",
+                "shared_calibration_and_camera_errors_are_not_cancelled_or_counted_as_independent_evidence",
+                "appearance_correspondences_are_conditional_hypotheses_not_physical_identity",
+                "nominal_mesh_occlusion_conflicts_are_preserved_and_preclude_strict_success",
+                "unmatched_isolated_features_remain_diagnostics_and_all_nontrivial_alternatives_remain_visible",
+                "no_calibration_world_revision_event_identity_or_effect_is_activated_by_this_report",
+                "motion_is_constant_velocity_over_the_complete_capture_hull",
+                "nominal_exposure_times_are_midpoints_of_complete_clock_hypothesis_envelopes_without_rolling_shutter_estimation",
+                "every_fitted_component_uses_the_requested_global_scene_time_and_must_bracket_it",
+                "repeated_source_bytes_across_distinct_exposures_do_not_establish_independent_sensors",
+                "replayed_frozen_clock_inventory_preserves_all_hypotheses_and_original_capture_intervals_without_activation",
+                "clock_query_cameras_bind_the_exact_current_calibration_digest_sensor_pose_intrinsics_and_prepared_image_domain",
+                "conditionally_unsupported_clock_hypotheses_remain_in_every_mapped_capture_envelope",
+                "clock_search_and_validation_observation_sources_are_declarations_without_verified_custody",
+                "conditional_clock_support_does_not_establish_physical_synchronization_or_upgrade_source_clock_basis",
+                "mapped_capture_uncertainty_validity_span_and_reference_time_are_checked_before_source_decode"
+              ]
+            }
+          ]
+        },
+        "views": {
+          "allOf": [
+            {
+              "$ref": "scene_feature_match_adopted.v2.json#/$defs/analysis/properties/views"
+            },
+            {
+              "minItems": 4,
+              "maxItems": 16
+            }
+          ]
+        },
+        "geometry": {
+          "allOf": [
+            {
+              "$ref": "scene_feature_match_adopted.v2.json#/$defs/geometry"
+            },
+            {
+              "properties": {
+                "kind": {
+                  "const": "temporal"
+                }
+              }
+            }
+          ]
+        },
+        "counts": {
+          "$ref": "scene_feature_match_adopted.v2.json#/$defs/analysis/properties/counts"
+        },
+        "clock_validation": {
+          "$ref": "scene_feature_motion_match_retained_report.v2.json#/$defs/clock_validation"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "rig_declarations": {
+                "properties": {
+                  "schema": {
+                    "const": "fss.scene_camera_rig_adopted.v1"
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "assumptions": {
+                "const": [
+                  "retained_adoption_is_owner_authority_not_a_physical_measurement_of_camera_currency",
+                  "current_calibration_adoption_and_withdrawal_are_revalidated_before_report_release",
+                  "all_original_source_ranges_and_current_privacy_are_revalidated_before_report_release",
+                  "camera_sensor_binding_and_both_calibration_generations_are_exact_retained_dependencies",
+                  "direct_pinhole_pixels_must_match_the_exact_original_calibration_image_domain_and_grid",
+                  "source_object_binding_privacy_namespace_and_validity_interval_are_owner_declarations",
+                  "camera_absolute_error_is_unknown_and_never_inferred_from_fit_rms_or_covariance",
+                  "calibration_covariance_is_a_conditional_local_marginal_without_cross_camera_blocks",
+                  "scene_covariance_covers_declared_pixel_noise_not_calibration_map_lens_clock_or_motion_model_error",
+                  "shared_calibration_and_camera_errors_are_not_cancelled_or_counted_as_independent_evidence",
+                  "appearance_correspondences_are_conditional_hypotheses_not_physical_identity",
+                  "nominal_mesh_occlusion_conflicts_are_preserved_and_preclude_strict_success",
+                  "unmatched_isolated_features_remain_diagnostics_and_all_nontrivial_alternatives_remain_visible",
+                  "no_calibration_world_revision_event_identity_or_effect_is_activated_by_this_report",
+                  "motion_is_constant_velocity_over_the_complete_capture_hull",
+                  "nominal_exposure_times_are_midpoints_of_complete_clock_hypothesis_envelopes_without_rolling_shutter_estimation",
+                  "every_fitted_component_uses_the_requested_global_scene_time_and_must_bracket_it",
+                  "repeated_source_bytes_across_distinct_exposures_do_not_establish_independent_sensors",
+                  "replayed_frozen_clock_inventory_preserves_all_hypotheses_and_original_capture_intervals_without_activation",
+                  "clock_query_cameras_bind_the_exact_current_calibration_digest_sensor_pose_intrinsics_and_prepared_image_domain",
+                  "conditionally_unsupported_clock_hypotheses_remain_in_every_mapped_capture_envelope",
+                  "clock_search_and_validation_observation_sources_are_declarations_without_verified_custody",
+                  "conditional_clock_support_does_not_establish_physical_synchronization_or_upgrade_source_clock_basis",
+                  "mapped_capture_uncertainty_validity_span_and_reference_time_are_checked_before_source_decode"
+                ]
+              },
+              "views": {
+                "$ref": "scene_feature_match_adopted.v1.json#/$defs/analysis/properties/views"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "rig_declarations": {
+                "properties": {
+                  "schema": {
+                    "const": "fss.scene_camera_rig_adopted.v2"
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "assumptions": {
+                "const": [
+                  "retained_adoption_is_owner_authority_not_a_physical_measurement_of_camera_currency",
+                  "current_calibration_adoption_and_withdrawal_are_revalidated_before_report_release",
+                  "all_original_source_ranges_and_current_privacy_are_revalidated_before_report_release",
+                  "camera_sensor_binding_and_both_calibration_generations_are_exact_retained_dependencies",
+                  "source_domain_refined_intrinsics_and_two_term_radial_model_come_only_from_the_exact_current_calibration",
+                  "native_rectification_target_is_the_exact_refined_original_camera_grid_without_crop_zoom_or_rotation_override",
+                  "nonzero_radial_sources_require_native_rectification_and_zero_radial_direct_sources_preserve_the_original_domain",
+                  "rectified_views_use_declared_radius_and_luma_transfer_not_calibration_measurements",
+                  "every_requested_lens_plan_is_admitted_before_source_decode_and_full_model_map_mask_and_image_receipts_are_preserved",
+                  "native_rectification_preserves_original_exposure_and_requires_all_positive_weight_privacy_taps_and_descriptor_support",
+                  "sigma_pixels_is_declared_on_the_actual_output_grid_and_excludes_interpolation_correlations_and_lens_parameter_error",
+                  "source_object_binding_privacy_namespace_and_validity_interval_are_owner_declarations",
+                  "camera_absolute_error_is_unknown_and_never_inferred_from_fit_rms_or_covariance",
+                  "calibration_covariance_is_a_conditional_local_marginal_without_cross_camera_blocks",
+                  "scene_covariance_covers_declared_pixel_noise_not_calibration_map_lens_clock_or_motion_model_error",
+                  "shared_calibration_and_camera_errors_are_not_cancelled_or_counted_as_independent_evidence",
+                  "appearance_correspondences_are_conditional_hypotheses_not_physical_identity",
+                  "nominal_mesh_occlusion_conflicts_are_preserved_and_preclude_strict_success",
+                  "unmatched_isolated_features_remain_diagnostics_and_all_nontrivial_alternatives_remain_visible",
+                  "no_calibration_world_revision_event_identity_or_effect_is_activated_by_this_report",
+                  "motion_is_constant_velocity_over_the_complete_capture_hull",
+                  "nominal_exposure_times_are_midpoints_of_complete_clock_hypothesis_envelopes_without_rolling_shutter_estimation",
+                  "every_fitted_component_uses_the_requested_global_scene_time_and_must_bracket_it",
+                  "repeated_source_bytes_across_distinct_exposures_do_not_establish_independent_sensors",
+                  "replayed_frozen_clock_inventory_preserves_all_hypotheses_and_original_capture_intervals_without_activation",
+                  "clock_query_cameras_bind_the_exact_current_calibration_digest_sensor_pose_intrinsics_and_prepared_image_domain",
+                  "conditionally_unsupported_clock_hypotheses_remain_in_every_mapped_capture_envelope",
+                  "clock_search_and_validation_observation_sources_are_declarations_without_verified_custody",
+                  "conditional_clock_support_does_not_establish_physical_synchronization_or_upgrade_source_clock_basis",
+                  "mapped_capture_uncertainty_validity_span_and_reference_time_are_checked_before_source_decode"
+                ]
+              },
+              "views": {
+                "$ref": "scene_feature_match_adopted.v2.json#/$defs/analysis/properties/views"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "cost": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "geometry_work",
+        "source_bytes",
+        "jpeg_work",
+        "video_admission",
+        "unmeasured",
+        "calibration_input_bytes",
+        "calibration_authority_bytes",
+        "clock_query_bytes"
+      ],
+      "properties": {
+        "geometry_work": {
+          "$ref": "scene_feature_match_adopted.v2.json#/$defs/cost/properties/geometry_work"
+        },
+        "source_bytes": {
+          "$ref": "scene_feature_motion_match_retained_report.v2.json#/$defs/cost/properties/source_bytes"
+        },
+        "jpeg_work": {
+          "$ref": "scene_feature_match_adopted.v2.json#/$defs/cost/properties/jpeg_work"
+        },
+        "video_admission": {
+          "$ref": "scene_feature_match_adopted.v2.json#/$defs/cost/properties/video_admission"
+        },
+        "unmeasured": {
+          "$ref": "scene_feature_match_adopted.v2.json#/$defs/cost/properties/unmeasured"
+        },
+        "calibration_input_bytes": {
+          "$ref": "scene_feature_match_adopted.v2.json#/$defs/cost/properties/calibration_input_bytes"
+        },
+        "calibration_authority_bytes": {
+          "$ref": "scene_feature_match_adopted.v2.json#/$defs/cost/properties/calibration_authority_bytes"
+        },
+        "clock_query_bytes": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "allowance",
+            "used",
+            "reserved_from_source_bytes"
+          ],
+          "properties": {
+            "allowance": {
+              "const": "1048576"
+            },
+            "used": {
+              "$ref": "scene_feature_match_adopted.v2.json#/$defs/u64"
+            },
+            "reserved_from_source_bytes": {
+              "const": true
+            }
+          },
+          "description": "Complete original clock sidecar bytes read once under the same authority; its entire 1 MiB maximum is reserved from original source reads, whose remaining allowance also includes final revalidation."
+        }
+      }
+    }
+  }
+}

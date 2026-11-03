@@ -7,6 +7,8 @@ mod calibrated;
 mod calibrated_atlas;
 #[path = "retained_matching/calibrated_atlas_report.rs"]
 mod calibrated_atlas_report;
+#[path = "retained_matching/calibrated_clock.rs"]
+mod calibrated_clock;
 #[path = "retained_matching/calibrated_input.rs"]
 mod calibrated_input;
 #[path = "retained_matching/calibrated_report.rs"]
@@ -377,12 +379,12 @@ fn preflight_views(
 }
 
 /// Reuse the original owner preflight with an already native-validated clock mapping.
-fn preflight_views_with_clock(
+fn preflight_views_with_clock<T>(
     deployment: &ReferenceDeployment,
     views: &[input::View],
     cx: &ReplayCx,
-    mut capture: impl FnMut(&input::View, &fss_core::SensorCapsule) -> Result<[u64; 2]>,
-) -> Result<Vec<[u64; 2]>> {
+    mut capture: impl FnMut(&input::View, &fss_core::SensorCapsule) -> Result<T>,
+) -> Result<Vec<T>> {
     let mut captures = Vec::with_capacity(views.len());
     for view in views {
         checkpoint(cx, "retained_scene_match:source_preflight")?;

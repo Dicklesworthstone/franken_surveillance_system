@@ -34,6 +34,7 @@ The command reuses these exact query contracts:
 | `fss.scene_feature_match_retained_query.v1` or `.v2` | Static stereo points | Two cameras, one exposure each |
 | `fss.scene_feature_multimatch_retained_query.v1` or `.v2` | Joint static points | Three through eight cameras, one exposure each |
 | `fss.scene_feature_motion_match_retained_query.v1` | Common-time position and constant velocity | Four through sixteen exposures from two through eight fixed cameras |
+| `fss.scene_feature_motion_match_retained_query.v2` | Common-time position and constant velocity using original clock-query replay | Four through sixteen exposures from exactly the two frozen clock cameras |
 
 See [retained stereo matching](RETAINED_SCENE_MATCHING.md),
 [multi-camera matching](RETAINED_MULTICAMERA_MATCHING.md) and
@@ -131,6 +132,8 @@ current calibration, supports mixed zero-radial direct and corrected sources,
 and returns v2 reports. See [adopted lens reconstruction](ADOPTED_LENS_RECONSTRUCTION.md)
 for exact source-model declarations and compatibility behavior.
 
+The explicit clock replay below returns adopted report v3 for either rig profile.
+
 Each selected retained source must name the physical sensor bound by the
 current adoption. The receipt must agree on calibration identity, camera
 handle/name, twin package and both intrinsics and extrinsics generations.
@@ -145,9 +148,54 @@ guard remains held through file and stdout publication. The report preserves
 both entry and final anchors; ordinary retained JPEG derivative publication can
 advance the latter. A later withdrawal requires a new analysis.
 
+## Replay original clock evidence with current adopted geometry
+
+Use `fss.scene_feature_motion_match_retained_query.v2` to connect the original
+`fss.clock_validation_query.v1` to currently adopted cameras. The complete
+`clock_validation` declaration is described in
+[moving-feature matching](RETAINED_TEMPORAL_MATCHING.md). Its `query_path` names
+the original clock query, resolved as supplied from the command's working
+directory; `query_digest` and the motion query's `clock_evidence` pin those exact
+bytes. Supplying a rendered clock report cannot substitute for the original query.
+
+The reference and target bindings must name the selected retained sensor and
+stream generations, original clock bases, distinct original clock handles,
+current calibration/image generations and exact semantic FSSCAL identity. Both
+bindings' `calibration_digest` must equal the adopted rig's `calibration.digest`,
+and the corresponding original clock-camera record must carry the same digest.
+The frozen camera poses, intrinsics, prepared image domains and world basis must
+also equal the actual retained calibration and imported twin. Numeric generation
+handles or matching dimensions alone cannot satisfy this check. Rig v2 can use
+the exact adopted radial correction; the clock camera must then pin its actual
+prepared pinhole output domain.
+
+All selected sensors are authenticated before calibration resolution. The native
+clock search and validation then run under the caller's existing work allowance
+and cancellation probe. Every declared offset/skew hypothesis contributes to each
+mapped capture envelope, including hypotheses unsupported in one or all validation
+sessions. Every target projection must bind the complete original retained capture
+interval. Additional additive offsets, narrower intervals or missing target
+exposures refuse. The command checks mapped uncertainty, complete span, camera
+validity and requested scene time **before decoding selected images**. The final
+feature binding repeats the checks against the exact decoded source owners.
+
+The output schema is `fss.scene_feature_match_adopted.v3`, with nested
+`fss.scene_feature_match_adopted_report.v3`. `analysis.clock_validation` includes
+the exact original query text, native finite-hypothesis replay and every mapped
+exposure. Both pinhole and radial variants preserve complete adopted calibration
+provenance and the final original-source/privacy and adoption/withdrawal checks.
+Existing query profiles keep their v1/v2 output contracts and additive alignment.
+
+The clock query's search/validation observations remain declarations whose source
+custody has not been verified by this command. Conditional hypothesis support does
+not establish physical synchronization, upgrade the source clock basis or activate
+a clock generation. Temporal fits remain moving-feature hypotheses and are still
+refused by `retained-calibrated-atlas`, including when clock replay is present.
+
 ## Interpret the report
 
-The outer schema is `fss.scene_feature_match_adopted.v1`. `report_digest` hashes
+The original pinhole outer schema is `fss.scene_feature_match_adopted.v1`, the
+radial profile uses `.v2`, and original clock replay uses `.v3`. `report_digest` hashes
 the exact compact UTF-8 `report` object bytes. Parsing and reserializing may
 change those bytes. `report.analysis` includes:
 
@@ -193,6 +241,7 @@ own evidence. Results remain derived cognition and establish no physical identit
 | Authority batches / deltas traversed | 65,536 each |
 | Cumulative authority-read reservations, including revalidation | 64 MiB |
 | Cumulative original source reads, including revalidation | 4 GiB |
+| Original clock query when explicitly requested | 1 MiB reserved from the same 4 GiB allowance |
 | Geometry, extraction and report work | 8 billion default; 16 billion maximum |
 | JPEG decoder work | 2 billion |
 | Video encoded bytes / coded-luma admission units | 512 MiB / 2,147,483,648 |
@@ -203,6 +252,12 @@ The query keeps its narrower mode-specific limits. The cost object separately
 reports geometry work, original reads, calibration input bytes, reserved and
 verified authority bytes, JPEG work and video admission. Final revalidation is
 included. CPU time, energy and peak memory are explicitly unmeasured.
+
+Clock replay reserves its entire 1 MiB input maximum from source reads, leaving
+4,293,918,720 bytes for extraction and final source revalidation. The v3 cost
+object reports `clock_query_bytes` separately, including its actual input length
+and `reserved_from_source_bytes: true`. Clock evaluation and report rendering use
+the same geometry work account; they do not create another allowance.
 
 Exit **0** means at least one fit and no nontrivial unresolved, refused or
 nominally occluded component. Exit **3** preserves a complete analysis with no

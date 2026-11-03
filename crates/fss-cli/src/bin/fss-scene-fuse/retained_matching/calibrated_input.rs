@@ -247,7 +247,7 @@ impl MatchingQuery {
             match text(get(top, "schema")?)? {
                 shared::SCHEMA | shared::SCHEMA_V2 => 0,
                 multiview::input::SCHEMA | multiview::input::SCHEMA_V2 => 1,
-                temporal_input::SCHEMA => 2,
+                temporal_input::SCHEMA | temporal_input::SCHEMA_V2 => 2,
                 _ => {
                     return Err(input_error(
                         "unsupported exact calibrated matching query schema",
@@ -278,6 +278,13 @@ impl MatchingQuery {
             Self::Pair(query) => &query.views,
             Self::Multi(query) => &query.views,
             Self::Temporal(query) => &query.views,
+        }
+    }
+
+    pub(super) fn clock_validation(&self) -> Option<&super::temporal_clock::Spec> {
+        match self {
+            Self::Temporal(query) => query.clock_validation.as_ref(),
+            Self::Pair(_) | Self::Multi(_) => None,
         }
     }
 

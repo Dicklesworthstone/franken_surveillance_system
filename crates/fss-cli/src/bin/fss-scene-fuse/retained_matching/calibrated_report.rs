@@ -379,6 +379,15 @@ pub(super) fn calibration(
 }
 
 pub(super) fn assumptions(kind: &str) -> String {
+    array(
+        &pinhole_assumptions(kind)
+            .into_iter()
+            .map(string)
+            .collect::<Vec<_>>(),
+    )
+}
+
+fn pinhole_assumptions(kind: &str) -> Vec<&'static str> {
     let mut values = vec![
         "retained_adoption_is_owner_authority_not_a_physical_measurement_of_camera_currency",
         "current_calibration_adoption_and_withdrawal_are_revalidated_before_report_release",
@@ -408,11 +417,20 @@ pub(super) fn assumptions(kind: &str) -> String {
             values.push("each_static_subset_solve_time_is_explicitly_clamped_to_its_capture_hull_under_the_full_hull_stationarity_assumption");
         }
     }
-    array(&values.into_iter().map(string).collect::<Vec<_>>())
+    values
 }
 
 /// Explicit adopted-radial profile; the original pinhole assumption bytes remain unchanged.
 pub(super) fn rectified_assumptions(kind: &str) -> String {
+    array(
+        &radial_assumptions(kind)
+            .into_iter()
+            .map(string)
+            .collect::<Vec<_>>(),
+    )
+}
+
+fn radial_assumptions(kind: &str) -> Vec<&'static str> {
     let mut values = vec![
         "retained_adoption_is_owner_authority_not_a_physical_measurement_of_camera_currency",
         "current_calibration_adoption_and_withdrawal_are_revalidated_before_report_release",
@@ -448,5 +466,34 @@ pub(super) fn rectified_assumptions(kind: &str) -> String {
             values.push("each_static_subset_solve_time_is_explicitly_clamped_to_its_capture_hull_under_the_full_hull_stationarity_assumption");
         }
     }
+    values
+}
+
+/// Explicit clock-replay output profile; legacy additive profiles retain exact assumption bytes.
+pub(super) fn clock_assumptions(rectified: bool) -> String {
+    let mut values = if rectified {
+        radial_assumptions("temporal")
+    } else {
+        pinhole_assumptions("temporal")
+    };
+    for value in &mut values {
+        *value = match *value {
+            "source_object_binding_clock_alignment_privacy_namespace_and_validity_interval_are_owner_declarations" => {
+                "source_object_binding_privacy_namespace_and_validity_interval_are_owner_declarations"
+            }
+            "nominal_exposure_times_are_interval_midpoints_without_clock_or_rolling_shutter_estimation" => {
+                "nominal_exposure_times_are_midpoints_of_complete_clock_hypothesis_envelopes_without_rolling_shutter_estimation"
+            }
+            unchanged => unchanged,
+        };
+    }
+    values.extend([
+        "replayed_frozen_clock_inventory_preserves_all_hypotheses_and_original_capture_intervals_without_activation",
+        "clock_query_cameras_bind_the_exact_current_calibration_digest_sensor_pose_intrinsics_and_prepared_image_domain",
+        "conditionally_unsupported_clock_hypotheses_remain_in_every_mapped_capture_envelope",
+        "clock_search_and_validation_observation_sources_are_declarations_without_verified_custody",
+        "conditional_clock_support_does_not_establish_physical_synchronization_or_upgrade_source_clock_basis",
+        "mapped_capture_uncertainty_validity_span_and_reference_time_are_checked_before_source_decode",
+    ]);
     array(&values.into_iter().map(string).collect::<Vec<_>>())
 }

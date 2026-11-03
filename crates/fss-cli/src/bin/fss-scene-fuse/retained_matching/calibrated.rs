@@ -30,14 +30,15 @@ use fss_twin::feature_association::FeatureView;
 use fss_twin::{ImportExpectation, ImportLimits, PropertyTwin, import_twin};
 
 use super::super::matching::report::scale;
+use super::calibrated_clock;
 use super::calibrated_input::{AdoptedRig, MatchingQuery};
 use super::images::{ImageDeclaration, PreparedImage};
 use super::input::{ResolvedFrame, Source};
 use super::{
     FeatureInput, MAX_JSON_BYTES, MAX_TWIN_BYTES, Options, Result, SOURCE_BYTES,
     calibrated_input as input, calibrated_report as report, check_cancel, checkpoint,
-    extract_features, fail, input_error, options_profile, preflight_views, prepare_images,
-    read_input, resolved, retained_handoffs, write_report,
+    extract_features, fail, input_error, options_profile, prepare_images, read_input, resolved,
+    retained_handoffs, write_report,
 };
 
 const DEFAULT_WORK: u64 = 8_000_000_000;
@@ -55,13 +56,19 @@ Reconstruct static 3D points or moving trajectories with exact currently adopted
 calibrations. The rig schema fss.scene_camera_rig_adopted.v1 pins an FSSCAL01/02 file, each\n\
 original camera input, each current adoption receipt and physical sensor. Intrinsics and\n\
 poses come exclusively from that verified calibration. No caller geometry override is allowed.\n\n\
-Use an existing retained-match v1/v2, retained-multimatch v1/v2 or retained-motion-match v1\n\
+Use an existing retained-match v1/v2, retained-multimatch v1/v2 or retained-motion-match v1/v2\n\
 query. All rig cameras must participate. Rig v1 requires the original calibrated pinhole\n\
 domain. Rig fss.scene_camera_rig_adopted.v2 explicitly admits native radial rectification: the\n\
 query source K/grid/domain, Brown[k1,k2,0]/zero tangential terms and semantic FSSCAL lens_basis\n\
 must match adopted calibration exactly. Target K/grid remain the refined calibration values.\n\
 Every map compiles before decoding. Direct images require zero radial terms. Camera clock,\n\
 privacy, source-object mapping and use interval remain explicit owner declarations.\n\n\
+Motion query v2 replays the exact original clock-validation query against the currently\n\
+adopted calibration digest, sensor, pose, intrinsics and prepared image domain. Every\n\
+declared clock hypothesis remains in the complete mapped exposure hull, including those\n\
+without conditional support. It emits adopted report v3 without activating a clock or\n\
+authenticating the clock query's declared observation sources. The 1MiB original clock\n\
+query reserve comes from the existing 4GiB source-read allowance.\n\n\
 Every original source and the current adoption/withdrawal history are revalidated after\n\
 complete analysis. Missing, superseded, withdrawn or mismatched calibration refuses output.\n\
 The report retains every correspondence alternative, conditional covariance and nominal\n\
@@ -295,6 +302,20 @@ pub(super) fn bind(
     snapshots: &[ResolvedFrame<'_>],
     rig: &SceneRig,
 ) -> Result<Vec<FeatureView>> {
+    bind_with_clock(query, snapshots, rig, None)
+}
+
+fn bind_with_clock(
+    query: &MatchingQuery,
+    snapshots: &[ResolvedFrame<'_>],
+    rig: &SceneRig,
+    clock: Option<&super::temporal_clock::Ready>,
+) -> Result<Vec<FeatureView>> {
+    if clock.is_some() && !matches!(query, MatchingQuery::Temporal(_)) {
+        return Err(input_error(
+            "clock replay requires the explicit temporal query profile",
+        ));
+    }
     match query {
         MatchingQuery::Pair(query) => {
             let [left, right] = snapshots else {
@@ -305,7 +326,9 @@ pub(super) fn bind(
             super::input::bind(query, [snapshot(left), snapshot(right)], rig).map(Vec::from)
         }
         MatchingQuery::Multi(query) => super::multiview::input::bind(query, snapshots, rig),
-        MatchingQuery::Temporal(query) => super::temporal_input::bind(query, snapshots, rig),
+        MatchingQuery::Temporal(query) => {
+            super::temporal_input::bind_with_clock(query, snapshots, rig, clock)
+        }
     }
 }
 
@@ -483,14 +506,24 @@ fn analyze(options: &Options, root: &Path, cx: &ReplayCx) -> Result<Report> {
     }
     // Original capsule/source pins authenticate every selected sensor before it
     // can become a calibration binding. No image decode has taken place yet.
-    preflight_views(&deployment, query.views(), cx)?;
+    calibrated_clock::preflight_sources(&query, &deployment, cx)?;
     check_cancel(cx, &cancelled)?;
     let calibration = load_calibration(options, &declaration, &deployment, &twin, &mut work, cx)?;
     declared_modes(&query, &calibration)?;
     let rig = project_rig(&twin, &calibration, &declaration, &mut work)?;
     let images = prepare_images(query.views(), &rig, &mut work)?;
+    let clock = calibrated_clock::replay(
+        &query,
+        &calibration,
+        &rig,
+        &images,
+        &deployment,
+        &mut work,
+        cx,
+    )?;
+    let source_bytes = calibrated_clock::source_allowance(clock.is_some());
     let reads = RecordedFeatureReadBudget::with_cancellation_probe(
-        SOURCE_BYTES,
+        source_bytes,
         Arc::new(move || started.elapsed() >= timeout),
     );
     let mut jpeg = DecodeBudget::with_cancellation_probe(JPEG_WORK, &cancelled);
@@ -515,10 +548,14 @@ fn analyze(options: &Options, root: &Path, cx: &ReplayCx) -> Result<Report> {
     }
     let final_anchor = deployment.current_anchor().clone();
     let snapshots = owners.iter().map(resolved).collect::<Vec<_>>();
-    let views = bind(&query, &snapshots, &rig)?;
+    let views = bind_with_clock(&query, &snapshots, &rig, clock.as_ref().map(|c| &c.ready))?;
     actual_modes(&views, &calibration, &images)?;
     drop(images);
     let geometry = report::geometry(&query, &twin, &views, options.report_bytes, &mut work)?;
+    let clock_json = clock
+        .as_ref()
+        .map(|clock| clock.ready.render(query.views(), &snapshots, &mut work))
+        .transpose()?;
     let calibration_json = report::calibration(&calibration, &mut work)?;
     let native_bytes = owners
         .iter()
@@ -563,7 +600,7 @@ fn analyze(options: &Options, root: &Path, cx: &ReplayCx) -> Result<Report> {
         ]));
     }
     let (property, revision) = rig.geometry_basis();
-    let analysis = object(&[
+    let mut analysis_fields = vec![
         ("kind", string(query.kind())),
         (
             "outcome",
@@ -631,7 +668,9 @@ fn analyze(options: &Options, root: &Path, cx: &ReplayCx) -> Result<Report> {
         ),
         (
             "assumptions",
-            if declaration.rectification {
+            if clock.is_some() {
+                report::clock_assumptions(declaration.rectification)
+            } else if declaration.rectification {
                 report::rectified_assumptions(query.kind())
             } else {
                 report::assumptions(query.kind())
@@ -650,7 +689,11 @@ fn analyze(options: &Options, root: &Path, cx: &ReplayCx) -> Result<Report> {
                 ),
             ]),
         ),
-    ]);
+    ];
+    if let Some(clock_json) = clock_json {
+        analysis_fields.push(("clock_validation", clock_json));
+    }
+    let analysis = object(&analysis_fields);
     if analysis
         .len()
         .checked_add(1)
@@ -681,16 +724,17 @@ fn analyze(options: &Options, root: &Path, cx: &ReplayCx) -> Result<Report> {
     let body = object(&[
         (
             "schema",
-            string(if declaration.rectification {
+            string(if clock.is_some() {
+                "fss.scene_feature_match_adopted_report.v3"
+            } else if declaration.rectification {
                 "fss.scene_feature_match_adopted_report.v2"
             } else {
                 "fss.scene_feature_match_adopted_report.v1"
             }),
         ),
         ("analysis", analysis),
-        (
-            "cost",
-            object(&[
+        ("cost", {
+            let mut fields = vec![
                 (
                     "geometry_work",
                     object(&[
@@ -701,7 +745,7 @@ fn analyze(options: &Options, root: &Path, cx: &ReplayCx) -> Result<Report> {
                 (
                     "source_bytes",
                     object(&[
-                        ("allowance", count(SOURCE_BYTES)),
+                        ("allowance", count(source_bytes)),
                         ("used", count(reads.used())),
                         ("includes_final_revalidation", "true".into()),
                     ]),
@@ -744,13 +788,29 @@ fn analyze(options: &Options, root: &Path, cx: &ReplayCx) -> Result<Report> {
                     "unmeasured",
                     array(&["cpu_time", "energy", "peak_memory"].map(string)),
                 ),
-            ]),
-        ),
+            ];
+            if let Some(clock) = &clock {
+                fields.push((
+                    "clock_query_bytes",
+                    object(&[
+                        (
+                            "allowance",
+                            count(fss_cli::clock_alignment::MAX_INPUT_BYTES as u64),
+                        ),
+                        ("used", count(clock.input_bytes as u64)),
+                        ("reserved_from_source_bytes", "true".into()),
+                    ]),
+                ));
+            }
+            object(&fields)
+        }),
     ]);
     let json = object(&[
         (
             "schema",
-            string(if declaration.rectification {
+            string(if clock.is_some() {
+                "fss.scene_feature_match_adopted.v3"
+            } else if declaration.rectification {
                 "fss.scene_feature_match_adopted.v2"
             } else {
                 "fss.scene_feature_match_adopted.v1"

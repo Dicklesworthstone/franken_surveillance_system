@@ -865,6 +865,15 @@ fn temporal_reconstruction_is_not_silently_promoted_to_an_enduring_static_atlas(
         f.base.head,
         "temporal refusal precedes source decode"
     );
+    let (f, _, _) =
+        super::super::calibrated::tests::clock::fixture("adopted-atlas-clock-temporal", false)?;
+    let options = dummy_options(&f)?;
+    refused(&options);
+    assert_eq!(
+        f.base.head()?,
+        f.base.head,
+        "clock replay does not authorize temporal fits as static atlas landmarks"
+    );
     Ok(())
 }
 
