@@ -27,3 +27,20 @@ export CAP_DIR CAP_PATH="${CAP_PATH:-wuv2/upgrade/HL_CAM4/firmware/4.52.17.32.ta
 export FOREGROUND=1
 echo "arm: cam=$CAM_MAC path=$CAP_PATH md5=${OTA_MD5:-<from file>}" >>/tmp/ota/arm.log
 exec "$HERE/wyze_mitm_up.sh"
+
+# 8. forge on :443 (idempotent: kill any previous instance first — including ones
+#    launched from deleted worktrees, whose stale code serves a bare rootCA and
+#    breaks broker-leaf validation; the repo copy carries the bundle fix).
+FORGE_LOG="${FORGE_LOG:-/tmp/ota/forge.log}"
+OLD_FORGE=$(pgrep -f "wyze_forge_serve.py" | head -1)
+[ -n "$OLD_FORGE" ] && kill "$OLD_FORGE" 2>/dev/null && sleep 2
+if ! lsof -nP -iTCP:443 -sTCP:LISTEN 2>/dev/null | grep -q Python; then
+  echo "arm: launching repo forge on :443 (bundle fix)"
+  nohup "$PY" "$HERE/wyze_forge_serve.py" --dir "$CAP_DIR" --port 443 \
+    --cert /tmp/iot2.pem --key /tmp/iot2.key \
+    --intermediate "$HERE/../certs/emudhra/ev-ca-aaa-cross.pem" \
+    --sni s3-us-west-2.amazonaws.com --firmware-detail --iot-cert \
+    --iot-cert-dir "$HERE/../certs/iot" \
+    >> "$FORGE_LOG" 2>&1 &
+  sleep 4
+fi
