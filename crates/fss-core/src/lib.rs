@@ -42,6 +42,8 @@ pub mod graph_witness;
 pub mod hydration;
 pub mod identity;
 mod ids;
+/// Shared bounded pure JSON parsing for control, integration, and report input.
+pub mod json_input;
 /// Cross-kernel media contracts and limits (FSS-052).
 pub mod media_kernel;
 pub mod negative_evidence;

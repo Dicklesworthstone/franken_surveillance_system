@@ -107,6 +107,8 @@ mod situation_guard;
 mod situation_sections;
 mod source;
 pub mod time_tolerance;
+/// Model-independent parsing of private owner-supplied UniFi Protect camera and stream exports.
+pub mod unifi;
 
 #[cfg(test)]
 mod adapter_replay_tests;
