@@ -58,6 +58,15 @@ ARP_CMD="${ARP_CMD:-sudo -n /usr/sbin/arp}"
 # --- prerequisites -------------------------------------------------------------------------
 [ -x /tmp/sp/bin/python ] || { python3 -m venv /tmp/sp && /tmp/sp/bin/pip -q install scapy; }
 
+# /tmp state is shared between a root run (sudo, dry runs) and the launchd LaunchAgent, which
+# runs as the user: a root-owned log makes the agent's plain redirections fail and the plane
+# silently never starts (measured: dns/arp/tls dead, only :443 up). Hand these files back to
+# the invoking user instead of teaching every writer to pipe through sudo.
+for f in /tmp/ota/chain.pem /tmp/serve443.pem /tmp/iot2.pem /tmp/iot2.key \
+         /tmp/dns.log /tmp/arp.log /tmp/tls.log /tmp/mqproxy.log; do
+  sudo -n install -m 0644 -o "$(id -un)" -g "$(id -gn)" /dev/null "$f" 2>/dev/null || true
+done
+
 # camera address: arp is the authority, and a sweep is the only way to find a moved unit
 CAM=""
 for _ in 1 2; do
@@ -139,7 +148,20 @@ free_port() {
   done
   return 1
 }
+# The launchd com.jeffreyemanuel.wyze-forge daemon also serves 443/8443 with the same contract
+# and KeepAlive=true, so killing a live holder here makes the two supervisors fight forever
+# (measured 2026-11-03: 219 launchd events in 3 min, planes flapping under every preflight run).
+# Rule: a holder whose command line already carries the iot-cert contract is adopted, not killed;
+# only a stale/bare forge (the liberation2-worktree failure mode) is replaced.
+forge_ok() {
+  [ -n "$(sudo lsof -nP -tiTCP:"$1" -sTCP:LISTEN 2>/dev/null)" ] || return 1
+  sudo ps -o command= -p "$(sudo lsof -nP -tiTCP:"$1" -sTCP:LISTEN 2>/dev/null)" 2>/dev/null \
+    | grep -q -- '--iot-cert'
+}
 for port in 443 8443 8883 8080 9101; do
+  # same adoption rule as the TLS loop below: never kill a contract-complete forge — the
+  # wyze-forge launchd daemon would just respawn it and the two supervisors would fight
+  if { [ "$port" = 443 ] || [ "$port" = 8443 ]; } && forge_ok "$port"; then continue; fi
   free_port "$port" || echo "WARN: port $port still held after 5 s"
 done
 sudo pkill -f 'wyze_dns_redirect.py' 2>/dev/null
@@ -158,8 +180,12 @@ done
 
 sudo "$PY" "$HERE/wyze_dns_redirect.py" "$UP" "$GW" > /tmp/dns.log 2>&1 &
 sudo /tmp/sp/bin/python "$HERE/wyze_arp_spoof.py" "$CAM" "$CAM_MAC" "$GW" "$GWMAC" "$IFACE" > /tmp/arp.log 2>&1 &
-# forged TLS on 443 (device API/S3) and 8443 (the alternate port the device also validated)
+# forged TLS on 443 (device API/S3) and 8443 (the alternate port the device also validated).
 for port in 443 8443; do
+  if forge_ok "$port"; then
+    echo "tls: port $port already served by a contract-complete forge — adopting it"
+    continue
+  fi
   for attempt in 1 2 3; do
     extra=""
     if [ "$port" = 443 ]; then
@@ -172,7 +198,7 @@ for port in 443 8443; do
       --cert /tmp/iot2.pem --key /tmp/iot2.key --intermediate "$CERTS/emudhra/ev-ca-aaa-cross.pem" \
       --sni s3-us-west-2.amazonaws.com $extra >> /tmp/tls.log 2>&1 &
     sleep 1
-    sudo lsof -nP -tiTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1 && break
+    forge_ok "$port" && break
     free_port "$port"
   done
 done
