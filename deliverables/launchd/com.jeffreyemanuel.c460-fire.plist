@@ -10,6 +10,10 @@
     <key>MAC</key><string>50:3d:d1:e3:e2:07</string>
     <key>ADDR</key><string>0xbef8b000</string>
     <key>PY</key><string>/opt/homebrew/bin/python3</string>
+    <!-- launchd gives /usr/bin:/bin:/usr/sbin:/sbin only. The guard assembles the payload
+         with arm-none-eabi-as and the chain disassembles /bin/main with arm-none-eabi-objdump;
+         both are homebrew, so without this the shot dies right after the pull. -->
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     <key>FORCE</key><string>1</string>
   </dict>
   <key>RunAtLoad</key><true/>

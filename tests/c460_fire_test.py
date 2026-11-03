@@ -403,6 +403,33 @@ def test_chain_scripts_under_stock_python(td):
               (r.stderr.strip().splitlines() or [""])[-1])
 
 
+def test_plist_environment(td):
+    """launchd gives a minimal PATH: the job must supply the one its tools live on."""
+    print("launchd job environment:")
+    plist = os.path.join(HERE, "..", "deliverables", "launchd",
+                         "com.jeffreyemanuel.c460-fire.plist")
+    get = lambda key: subprocess.run(  # noqa: E731
+        ["plutil", "-extract", "EnvironmentVariables." + key, "raw", "-o", "-", plist],
+        capture_output=True, text=True).stdout.strip()
+
+    path = get("PATH")
+    py = get("PY")
+    check("plist sets a PATH", bool(path), repr(path))
+    check("PY is absolute and executable", py.startswith("/") and os.access(py, os.X_OK), repr(py))
+    # launchd's own default plus whatever the plist adds is what the process really sees
+    launchd_default = "/usr/bin:/bin:/usr/sbin:/sbin"
+    for tool in ("python3", "arm-none-eabi-as", "arm-none-eabi-objdump", "nc", "curl"):
+        r = subprocess.run(["bash", "-c", "command -v " + tool], env={"PATH": path + ":" + launchd_default},
+                           capture_output=True, text=True)
+        check("%s resolves under the job PATH" % tool, r.returncode == 0 and r.stdout.strip(),
+              r.stdout.strip() or "not found")
+    prog = subprocess.run(["plutil", "-extract", "ProgramArguments.1", "raw", "-o", "-", plist],
+                          capture_output=True, text=True).stdout.strip()
+    check("job runs the watcher in this checkout",
+          prog.endswith("deliverables/scripts/c460_fire.sh") and prog.startswith(HERE.rsplit("/tests", 1)[0]),
+          prog)
+
+
 def main():
     for name, fn in (("presence/one-shot", test_presence_and_one_shot),
                      ("chain order", test_chain_order),
@@ -412,7 +439,8 @@ def main():
                      ("probe retry bounded", lambda td: test_rtsp_probe_retry(td, False)),
                      ("shell fallback", test_shell_fallback),
                      ("guard crash", test_guard_crash),
-                     ("stock interpreter", test_chain_scripts_under_stock_python)):
+                     ("stock interpreter", test_chain_scripts_under_stock_python),
+                     ("plist environment", test_plist_environment)):
         with tempfile.TemporaryDirectory() as td:
             try:
                 fn(td)
