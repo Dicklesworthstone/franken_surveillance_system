@@ -9,7 +9,13 @@ saved return address. Bytes after the offset are the shellcode (bind shell on 44
 
 Assembly lives next to this file as `tapo_bind4444.S`; it is assembled with arm-none-eabi-as and
 checked for size. Everything is verified under qemu-arm before sending.
+
+launchd runs this with `/usr/bin/python3` (3.9) — the plist's PATH is minimal — so the PEP 604
+annotations below need `from __future__ import annotations` or the module dies at import before a
+single probe is sent (measured 2026-11-03: the one shot was lost on a TypeError).
 """
+from __future__ import annotations
+
 import argparse
 import base64
 import hashlib

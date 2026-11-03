@@ -17,6 +17,10 @@ Usage:
   tapo_post.py <host> --rtsp-enable [--rtsp-user U] [--rtsp-pass P] [--rtsp-reset]
   tapo_post.py <host> --rtsp-verify [--rtsp-user U] [--rtsp-pass P]
 """
+# launchd is a minimal-PATH environment: the scripts run under /usr/bin/python3 (3.9), so the
+# PEP 604 annotations here need postponed evaluation or the module dies at import.
+from __future__ import annotations
+
 import argparse
 import base64
 import hashlib
