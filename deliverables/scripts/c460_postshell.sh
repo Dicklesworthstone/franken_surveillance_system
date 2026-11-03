@@ -103,7 +103,7 @@ log "repeatable root shell up via: $SHELL_CMD"
 [ "$SKIP_RTSP" = 1 ] && { log "RTSP skipped (--skip-rtsp)"; exit 0; }
 
 # --- 4. RTSP provisioning (the FSS ingest account) -------------------------------------------
-PASS=$(python3 -c 'import secrets; print(secrets.token_urlsafe(12))')
+PASS=$("$PY" -c 'import secrets; print(secrets.token_urlsafe(12))')
 umask 077
 printf '%s %s\n' fssuser "$PASS" > "$OUT/rtsp_cred.txt"
 umask 022
