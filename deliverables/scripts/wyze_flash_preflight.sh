@@ -104,9 +104,11 @@ check_md5() { # path expected-md5 label
   if [ ! -s "$1" ]; then warn "$3 missing ($1)"; return; fi
   if [ "$(md5 -q "$1")" = "$2" ]; then pass "$3 md5 $2"; else fail "$3 md5 $(md5 -q "$1") != $2"; fi
 }
-check_md5 "$CAP_DIR/wuv2/upgrade/HL_CAM4/firmware/4.52.17.31.tar" bf0535f59515f71a04ba00bd2176ffd2 "capsule .31 (published)"
-check_md5 "$CAP_DIR/wuv2/upgrade/HL_CAM4/firmware/4.52.17.32.tar" c642a2ca9f80b03c7ee5e05795f5822b "capsule .32 (armed)"
-check_md5 "$CAP_DIR/wuv2/upgrade/HL_CAM4/firmware/4.52.17.33.tar" c642a2ca9f80b03c7ee5e05795f5822b "capsule .33 (mirror of .32)"
+# These are the digests of the armed bytes. Rebuilding the capsule invalidates all three, so the
+# responder picks the digest up from the file (mitm_up) while this gate has to be re-pinned.
+check_md5 "$CAP_DIR/wuv2/upgrade/HL_CAM4/firmware/4.52.17.31.tar" ef2d38a3ba07f05b2557cddd9fd21923 "capsule .31 (published)"
+check_md5 "$CAP_DIR/wuv2/upgrade/HL_CAM4/firmware/4.52.17.32.tar" ef2d38a3ba07f05b2557cddd9fd21923 "capsule .32 (armed)"
+check_md5 "$CAP_DIR/wuv2/upgrade/HL_CAM4/firmware/4.52.17.33.tar" ef2d38a3ba07f05b2557cddd9fd21923 "capsule .33 (mirror of .32)"
 
 SERVED="$CAP_DIR/$CAP_PATH"
 if [ ! -s "$SERVED" ]; then
@@ -168,6 +170,30 @@ for probe in "udp 53" "tcp 443" "tcp 8443" "tcp 8883" "tcp 8080" "tcp 9101"; do
 done
 
 # --- 7b. the planes end to end, exactly as the device would use them --------------------------
+# The anchor the device installs must validate our broker leaf, for the broker hostname. Served
+# without the forged chain's anchor the device parks at TLS after a successful handoff (fss-79b89).
+# store dirs are keyed by the MAC in uppercase hex, not by the arp decimal form
+DEVROOT="$CERTS/iot/$(echo "$CAM_MAC" | tr -d ':' | tr 'a-f' 'A-F')/rootCA.crt"
+if [ -s "$DEVROOT" ] && [ -s "$CERTS/emudhra/aaa-root.pem" ]; then
+  { cat "$DEVROOT"; echo; cat "$CERTS/emudhra/aaa-root.pem"; } > "$TMPCAP/rootCA.crt"
+  if openssl verify -CAfile "$TMPCAP/rootCA.crt" -untrusted "$INT" \
+       -verify_hostname a24rq1e5m4mtei.iot.us-west-2.amazonaws.com "$LEAF" >/dev/null 2>&1; then
+    pass "served rootCA bundle validates the broker leaf for the broker host"
+  else
+    fail "served rootCA (store root + anchor) does NOT validate the broker leaf"
+  fi
+  code=$(curl -sSL --max-time 8 --cacert "$BUNDLE" -o "$TMPCAP/live-rootCA.crt" -w '%{http_code}' \
+    --resolve "s3-us-west-2.amazonaws.com:443:127.0.0.1" \
+    "https://s3-us-west-2.amazonaws.com/fss/rootCA.crt" 2>/dev/null)
+  if [ "$code" != 200 ]; then
+    fail "TLS plane GET /fss/rootCA.crt -> ${code:-no answer} (the device cannot install an anchor)"
+  elif openssl verify -CAfile "$TMPCAP/live-rootCA.crt" -untrusted "$INT" \
+       -verify_hostname a24rq1e5m4mtei.iot.us-west-2.amazonaws.com "$LEAF" >/dev/null 2>&1; then
+    pass "the live TLS plane serves that bundle at /fss/rootCA.crt"
+  else
+    fail "the live /fss/rootCA.crt does not validate the broker leaf (stale file on the plane)"
+  fi
+fi
 # TLS: the forged chain must satisfy the device's own bundle, and the served bytes must be the
 # capsule the responder advertises. This is the check that catches a stale/wrong file under the
 # advertised name, which a bare md5 of a different path cannot.

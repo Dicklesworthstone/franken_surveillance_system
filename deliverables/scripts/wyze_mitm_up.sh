@@ -73,7 +73,14 @@ cp "$CERTS/emudhra/leaf.key" /tmp/iot2.key
 
 # served tree: capsule + the three IoT files + the image plane
 mkdir -p "$CAP_DIR/wuv2/upgrade/HL_CAM4/firmware" "$CAP_DIR/fss" "$CAP_DIR/img"
-for f in rootCA.crt cert.pem privkey.pem; do sudo cp "$CERTDIR/$f" "$CAP_DIR/fss/$f"; done
+for f in cert.pem privkey.pem; do sudo cp "$CERTDIR/$f" "$CAP_DIR/fss/$f"; done
+# rootCA.crt is the broker's trust anchor: the store root validates the DEVICE cert and the
+# forged chain's anchor (AAA) validates our broker leaf. Served alone the store root makes the
+# device park at TLS after the handoff ("unable to get local issuer certificate"). The forge
+# builds the same bundle in memory; this copy covers a static /fss/ serve. A PEM needs its
+# trailing newline or the next header glues on (BAD_END_LINE).
+{ cat "$CERTDIR/rootCA.crt"; echo; cat "$CERTS/emudhra/aaa-root.pem"; } \
+  | sudo tee "$CAP_DIR/fss/rootCA.crt" >/dev/null
 SERVED="$CAP_DIR/$CAP_PATH"
 if [ ! -s "$SERVED" ]; then
   # zero-write dispatch probe: platform_upgrade never checks the exit status, so extra uptime proves
