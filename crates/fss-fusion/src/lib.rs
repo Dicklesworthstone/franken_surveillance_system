@@ -42,6 +42,7 @@
 pub mod calibration;
 pub mod eprocess;
 pub mod probability;
+pub mod unique_source;
 
 mod decide;
 mod log_table;
@@ -60,6 +61,11 @@ pub use model::{
     FusionError, FusionOutcome, FusionPolicy, FusionQuery, LlrInterval, MAX_ABS_LLR,
     MAX_DOMAINS_PER_ITEM, MAX_EVIDENCE, MAX_OPPORTUNITIES, MAX_PROBES, Observability, Opportunity,
     Probe, Reason, Severity,
+};
+pub use unique_source::{
+    MAX_UNIQUE_SOURCES, SourceAdmission, SourceDisposition, UNIQUE_SOURCE_INVENTORY_DOMAIN,
+    UNIQUE_SOURCE_ITEM_DOMAIN, UNIQUE_SOURCE_STEP_DOMAIN, UNIQUE_SOURCE_STEP_SCHEMA,
+    UniqueSourceEProcess, UniqueSourceError, UniqueSourceStepOutcome,
 };
 
 /// Fusion query digest domain (`SCHEMA-DOMAIN-FUSION-QUERY-001`).

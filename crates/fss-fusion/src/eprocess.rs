@@ -298,6 +298,12 @@ impl SequentialEProcess {
         &self.config
     }
 
+    /// Number of accepted observation/reset transitions (saturating at `u64::MAX`).
+    #[must_use]
+    pub const fn step_index(&self) -> u64 {
+        self.step_index
+    }
+
     /// Returns the current clamped milliban interval.
     #[must_use]
     pub const fn accumulated_llr(&self) -> LlrInterval {

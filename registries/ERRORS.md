@@ -6,6 +6,9 @@ operation states rather than generic errors.
 
 | ID | Meaning | Retry policy |
 |---|---|---|
+| `ERR-FUSION-SOURCE-BINDING-INVALID-001` | The explicit source-once profile did not receive exactly one binding for every original evidence identity, or an observed calibrated item lacks a source key | Correct the complete binding inventory; no accumulator, source inventory or receipt state changed. |
+| `ERR-FUSION-SOURCE-CONFLICT-001` | A canonical declared source key was reused with incompatible immutable item semantics, including conflicting aliases within the same query | Inspect original source and interpretation; a relabel, retry or reset cannot reinterpret consumed evidence. The whole step was refused. |
+| `ERR-FUSION-SOURCE-CAPACITY-001` | The complete new numeric-source inventory would exceed the selected nonrefillable lifetime allowance | Select a sufficient complete allowance for a new explicit invocation; no prefix was consumed, identity evicted or capacity refunded. |
 | `ERR-CLOCK-ALIGNMENT-CANCELLED-001` | Cooperative cancellation interrupted the selected clock-validation profile during native fitting or bounded report construction; outcome is cancelled and no successful report is emitted | Retry only as a new bounded invocation with the intended complete input; no partial validation or clock activation can be inferred. |
 | `ERR-SCENE-CALIBRATION-INPUT-001` | Adopted-scene calibration selection, exact FSSCAL bytes or original camera input is malformed, duplicated, numerically invalid or inconsistent with its pin | Correct the complete input and pins; do not retry unchanged. |
 | `ERR-SCENE-CALIBRATION-BASIS-001` | Exact twin/source, original camera input, physical sensor, camera tuple, selected adoption or deployment lineage/prefix differs | Reopen the intended deployment and select its exact current calibration; no nominal fallback. |

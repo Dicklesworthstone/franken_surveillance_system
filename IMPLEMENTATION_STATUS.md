@@ -10,6 +10,30 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Bounded source-once sequential fusion (2026-11-03)
+
+The opt-in native `UniqueSourceEProcess` prevents a declared source from adding a
+second signed likelihood increment under a new observation alias or after a numeric
+regime reset. It validates the complete original query and exact binding inventory
+before filtering. Positive, negative and zero calibrated observations each consume
+one canonical source identity; neutral diagnostics may explicitly lack a source.
+Conflicting immutable source semantics or an exhausted lifetime allowance refuse
+the whole step without changing numerical state, either receipt chain, or inventory.
+
+The selected allowance is one through 4096 sources and is never evicted or refunded.
+Every original alias receives explicit admitted, already-admitted or nonnumeric
+accounting. Receipts bind original/effective queries, all bindings/dispositions,
+complete inventory, capacity and independently bounded inner state. Empty inventories
+also have an inspectable capacity-bound identity. Historical `SequentialEProcess`
+constructors and numerical bytes are unchanged. This is declared-source replay
+control, not physical custody, independent errors or statistical qualification.
+
+All 32 native fusion unit tests and 16 contract tests pass, including twelve new
+source-once regressions for renamed/repeated evidence, signed increments, conflicting
+aliases, neutral observations, source limits, resets, marker aliases and receipt
+identity. The new receipt meta-schema also passes full Draft 2020-12 validation.
+This advances the sequential fusion work in `fss-x4a.16.9` without closing it.
+
 ## Fail-closed agent decision identities (2026-11-03)
 
 World envelopes, situation frames and situation capsules now propagate canonical

@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/fusion_unique_source_step.v1.json",
+  "title": "fss.fusion_unique_source_step.v1",
+  "description": "Explicit bounded UniqueSourceEProcess profile receipt. The complete original query and one optional declared source key per evidence alias are validated before filtering. Observed calibrated rows require a source key and each canonical algorithm-plus-bytes identity contributes a signed likelihood increment at most once per process lifetime. Identical aliases/retries remain explicit; conflicting consumed-source semantics and capacity exhaustion refuse the whole step without mutation. Nonnumeric rows may have no key and consume no capacity. Numeric resets retain the full lifetime inventory. The profile binds caller declarations and processing only, never native custody, physical uniqueness, calibrated field quality, independent errors, anytime statistical validity or effect authority. Original queries, bindings and resets must be replayed to verify identity; structural schema validation is insufficient.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "previous_receipt_digest", "submitted_query_digest", "effective_query_digest", "source_limit", "sources_seen", "inventory_digest", "admissions", "fusion_transcript", "receipt_digest"],
+  "properties": {
+    "schema": { "const": "fss.fusion_unique_source_step.v1" },
+    "previous_receipt_digest": {
+      "description": "Previous accepted source-once receipt, including resets. Refusals do not advance this chain.",
+      "anyOf": [{ "$ref": "#/$defs/digest" }, { "type": "null" }]
+    },
+    "submitted_query_digest": {
+      "description": "Complete original validated query before replay filtering; null only for a numerical reset.",
+      "anyOf": [{ "$ref": "#/$defs/digest" }, { "type": "null" }]
+    },
+    "effective_query_digest": {
+      "description": "Exact incremental query actually fused, retaining global coverage and all nonnumeric rows. The embedded fusion transcript binds its decision. Null only for a numerical reset.",
+      "anyOf": [{ "$ref": "#/$defs/digest" }, { "type": "null" }]
+    },
+    "source_limit": { "type": "integer", "minimum": 1, "maximum": 4096 },
+    "sources_seen": { "type": "integer", "minimum": 0, "maximum": 4096 },
+    "inventory_digest": {
+      "$ref": "#/$defs/digest",
+      "description": "Complete sorted lifetime source inventory including immutable item fingerprints and first-admission step indices; capacity is bound and is never refunded or silently evicted."
+    },
+    "admissions": {
+      "description": "Exactly one row per original evidence alias in canonical alias order, including every replay and nonnumeric diagnostic. A reset has no rows.",
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["evidence_id", "source_digest", "item_digest", "disposition", "first_admitted_step"],
+        "properties": {
+          "evidence_id": { "type": "string", "minLength": 1, "maxLength": 256 },
+          "source_digest": {
+            "description": "Optional declared canonical source identity. Algorithm and bytes define equality; the nonencoded laboratory marker never creates a new source. Null is allowed only for nonnumeric evidence.",
+            "anyOf": [{ "$ref": "#/$defs/sourceDigest" }, { "type": "null" }]
+          },
+          "item_digest": {
+            "$ref": "#/$defs/digest",
+            "description": "Complete per-item semantics excluding only its alias, plus event kind: sensor, declared domains, calibration generation/likelihood or uncalibrated reason, and observability. Query-wide coverage is bound by both query digests rather than frozen into one source."
+          },
+          "disposition": { "enum": ["admitted", "already_admitted", "non_numeric"] },
+          "first_admitted_step": {
+            "anyOf": [{ "type": "integer", "minimum": 1, "maximum": 18446744073709551615 }, { "type": "null" }]
+          }
+        },
+        "allOf": [
+          {
+            "if": { "properties": { "disposition": { "const": "non_numeric" } }, "required": ["disposition"] },
+            "then": { "properties": { "first_admitted_step": { "type": "null" } } },
+            "else": { "properties": { "source_digest": { "$ref": "#/$defs/sourceDigest" }, "first_admitted_step": { "type": "integer", "minimum": 1, "maximum": 18446744073709551615 } } }
+          }
+        ]
+      }
+    },
+    "fusion_transcript": { "$ref": "fusion_eprocess_transcript.v1.json" },
+    "receipt_digest": { "$ref": "#/$defs/digest" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "submitted_query_digest": { "type": "null" } }, "required": ["submitted_query_digest"] },
+      "then": { "properties": { "effective_query_digest": { "type": "null" }, "admissions": { "maxItems": 0 } } },
+      "else": { "properties": { "effective_query_digest": { "$ref": "#/$defs/digest" } } }
+    }
+  ],
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "sourceDigest": { "type": "string", "pattern": "^(sha256|blake3):[0-9a-f]{64}$" }
+  }
+}
