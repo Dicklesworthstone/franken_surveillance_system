@@ -99,7 +99,38 @@ def firmware_detail_response(target_version, capsule_url, capsule_md5, trace_id=
 #
 #   client_username/client_password are empty in the real answer (EV-pack-H-002d §2,
 #   "mutual TLS only") but MUST be present as JSON strings.
+#
+#   rootCA.crt is the broker's trust anchor, not decoration: the device writes it
+#   to /tmp/aws_iot/rootCA.crt and verifies the 8883 leaf against exactly that file.
+#   The store copy is the real AWS IoT root and validates the DEVICE certificate,
+#   while the broker leaf is forged under the eMudhra intermediate. Served alone,
+#   the forged leaf fails with "unable to get local issuer certificate" and the
+#   camera parks at TLS after a successful certificate handoff (fss-79b89). The
+#   served file is therefore a bundle: store root first, then the forged chain's
+#   anchor (AAA Certificate Services). See iot_root_bundle().
 # ---------------------------------------------------------------------------
+
+
+def iot_root_bundle(root_bytes, anchors):
+    """Trust anchors the device installs, store root first and never substituted.
+
+    Both directions of the mutual-TLS session have to verify: the store root
+    validates the device cert (broker client side), the appended anchor validates
+    the forged broker leaf (device client side). Anchors are newline-separated — a
+    PEM without a trailing newline glues the next header on and OpenSSL answers
+    "PEM: BAD_END_LINE".
+    """
+    out = root_bytes if root_bytes.endswith(b"\n") else root_bytes + b"\n"
+    for path in anchors:
+        try:
+            with open(path, "rb") as fh:
+                blob = fh.read()
+        except OSError as exc:
+            print(f"  ! iot-root anchor {path} unreadable: {exc} — broker TLS hostname "
+                  f"verification will fail", flush=True)
+            continue
+        out += blob if blob.endswith(b"\n") else blob + b"\n"
+    return out
 
 
 def iot_certificate_response(cert_dir, mac, broker_host="a24rq1e5m4mtei.iot.us-west-2.amazonaws.com",
@@ -203,7 +234,12 @@ def main() -> int:
     ap.add_argument("--iot-cert-variants", action="store_true",
                     default=bool(os.environ.get("IOT_CERT_VARIANTS")),
                     help="legacy: cycle the 8 envelope variants on every retry (§18)")
+    ap.add_argument("--iot-extra-anchor", action="append", default=None,
+                    help="PEM trust anchor appended to the served rootCA.crt (repeatable); "
+                         "default certs/emudhra/aaa-root.pem, the anchor of the forged broker leaf")
     a = ap.parse_args()
+    if a.iot_extra_anchor is None:
+        a.iot_extra_anchor = [os.path.join(CERTDIR, "aaa-root.pem")]
 
     chain = os.path.join(CERTDIR, "serve.pem")
     # leaf FIRST: load_cert_chain treats the first certificate as the subject, the rest as chain
@@ -248,8 +284,14 @@ def main() -> int:
                     if cand:
                         src = os.path.join(cand[0], name)
                         data = open(src, "rb").read()
+                        if name == "rootCA.crt" and a.iot_extra_anchor:
+                            # store root first (device-cert validation), forged-chain anchor
+                            # after it (broker-leaf validation); see iot_root_bundle()
+                            data = iot_root_bundle(data, a.iot_extra_anchor)
                         print(f"{self.address_string()} ua={self.headers.get('User-Agent','-')!r} "
-                              f"GET {self.path} -> {src} ({len(data)} B)", flush=True)
+                              f"GET {self.path} -> {src} ({len(data)} B"
+                              f"{', +anchor' if name == 'rootCA.crt' and a.iot_extra_anchor else ''})",
+                              flush=True)
                         self.send_response(200)
                         self.send_header("Content-Type",
                                          "application/x-pem-file" if name.endswith(".pem") else "application/x-x509-ca-cert")
