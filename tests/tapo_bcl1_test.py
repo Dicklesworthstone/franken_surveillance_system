@@ -104,6 +104,30 @@ def main():
     check("root entry is a directory", names and names[0] == ".")
     check("/bin/main present", "bin/main" in names)
 
+    print("loader block 0 (short size field)")
+    # the block declares 7,267 compressed but its stream needs 34,994: the field cannot be
+    # trusted for every block, so the reader needs --span. 0xa6 is the header's escape and is
+    # the only reading that yields loader strings; 0x5b also reaches the declared size but
+    # garbles the content (2 long ASCII runs against 59), which is why both are pinned.
+    c0 = mod.scan(data)[0]
+    body = data[c0["payload_offset"]:c0["payload_offset"] + c0["compressed_size"] + 0x8000]
+    good, _used, err = mod.decode(body, c0["uncompressed_size"], c0["escape"])
+    check("0xa6 decodes the loader block to its declared size with a wider window",
+          err is None and len(good) == c0["uncompressed_size"], str(len(good)))
+    longs = [b for b in good.split(b"\0") if len(b) >= 8 and all(32 <= x < 127 for x in b)]
+    check("loader content reads as strings", len(longs) > 40, str(len(longs)))
+    tight, _tused, _terr = mod.decode(
+        data[c0["payload_offset"]:c0["payload_offset"] + c0["compressed_size"]],
+        c0["uncompressed_size"], c0["escape"])
+    check("the declared compressed size alone is short", len(tight) < len(good) // 2,
+          "%d vs %d" % (len(tight), len(good)))
+    other, _u2, err2 = mod.decode(body, c0["uncompressed_size"], 0x5B)
+    other_long = [b for b in other.split(b"\0")
+                  if len(b) >= 8 and all(32 <= x < 127 for x in b)]
+    check("0x5b reaches the size but garbles the content",
+          err2 is None and len(other_long) < len(longs) // 10,
+          "%d vs %d" % (len(other_long), len(longs)))
+
     print("/bin/main")
     # carve the member: the walk above already validated every header
     i = 0

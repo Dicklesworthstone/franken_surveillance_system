@@ -108,12 +108,17 @@ def decode(body: bytes, want: int, esc: int) -> tuple[bytes, int, str | None]:
         start = len(out) - dist
         for k in range(length):
             out.append(out[start + k])
+            if len(out) >= want:      # a bounded decode must stop inside a long match
+                break
     return bytes(out), i, None
 
 
-def decode_container(data: bytes, c: dict) -> tuple[bytes, int, str | None]:
-    body = data[c["payload_offset"]:c["payload_offset"] + c["compressed_size"]]
-    return decode(body, c["uncompressed_size"], c["escape"])
+def decode_container(data: bytes, c: dict, span: int = 0) -> tuple[bytes, int, str | None]:
+    """Decode one container. `span` widens the input past the declared compressed size:
+    the 0x16e50 block declares 7,267 bytes but its stream needs 34,994, so the field cannot
+    be trusted for every block."""
+    end = c["payload_offset"] + c["compressed_size"] + max(0, span)
+    return decode(data[c["payload_offset"]:end], c["uncompressed_size"], c["escape"])
 
 
 def encode(data: bytes, esc: int = 0xde, min_match: int = 4, window: int = 256) -> bytes:
@@ -201,6 +206,8 @@ def main() -> int:
     ap.add_argument("--scan", action="store_true")
     ap.add_argument("--extract", type=int, metavar="N")
     ap.add_argument("--out")
+    ap.add_argument("--span", type=lambda v: int(v, 0), default=0,
+                    help="read this many bytes past the declared compressed size")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args()
@@ -219,7 +226,7 @@ def main() -> int:
         if not c["valid"]:
             sys.exit("container at 0x%x is not valid: %s"
                      % (c["magic_offset"], c.get("error")))
-        out, used, err = decode_container(data, c)
+        out, used, err = decode_container(data, c, a.span)
         if err:
             sys.exit("desync after %d bytes: %s" % (len(out), err))
         if len(out) != c["uncompressed_size"]:
