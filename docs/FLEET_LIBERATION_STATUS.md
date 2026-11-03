@@ -216,17 +216,18 @@ streamed, digest verified, all six partitions written with the exact sizes, **hi
 first and `uboot` last**, then reboot. The 13.5 MiB fake map was correctly refused first, so the
 guard works.
 
-Staged now:
+Staged now (2026-11-03 revision; capsule rebuilt reproducibly from committed inputs after the
+/tmp-built 10-28 capsule and its unrecorded render set were lost — FLASH-DAY-RUNBOOK.md §1):
 
 | Artefact | URL | MD5 |
 |---|---|---|
 | negative (20 B, no tar, no write) | `.../4.52.17.30.tar` | `6909e9ca42b912662c04e6e98d7c5821` |
-| real capsule (busybox + installer) | `.../4.52.17.31.tar` | `bf0535f59515f71a04ba00bd2176ffd2` |
-| image (tailnet build) | `http://192.168.4.160:8080/img.bin` | sha256 `546c24f8…` |
+| real capsule (busybox + installer) | `.../4.52.17.32.tar` | `ef2d38a3ba07f05b2557cddd9fd21923` |
+| image (tailnet build, committed) | `http://192.168.4.160:8080/img.bin` | sha256 `033eb364…` |
 
 `desired` currently holds the **negative**. Sequence is two power cycles: cycle 1 proves delivery
-and the MD5 gate with zero writes; then publish the capsule (`pub.py …/4.52.17.31.tar
-bf0535f5…`) and cycle 2 flashes.
+and the MD5 gate with zero writes; then publish the capsule (`pub.py …/4.52.17.32.tar
+ef2d38a3…`) and cycle 2 flashes.
 
 Also checked and negative: **no `paracfg` item reboots the box.** All 157 entries of the table at
 `0x8c5da8` were scanned for a reference to the `"reboot -f"` string (`0x834840`) — none. The only

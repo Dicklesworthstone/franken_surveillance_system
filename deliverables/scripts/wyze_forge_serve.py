@@ -193,7 +193,7 @@ def main() -> int:
                         "https://s3-us-west-2.amazonaws.com/wuv2/upgrade/HL_CAM4/firmware/4.52.17.32.tar"),
                     help="capsule URL served to the device (host must be cert-covered)")
     ap.add_argument("--capsule-md5", default=os.environ.get("FIRMWARE_MD5",
-                                                            "c642a2ca9f80b03c7ee5e05795f5822b"),
+                                                            "ef2d38a3ba07f05b2557cddd9fd21923"),
                     help="md5 of the capsule bytes; assis verifies it before exec (§22.2)")
     ap.add_argument("--iot-cert", action="store_true", default=bool(os.environ.get("IOT_CERT")),
                     help="answer /device/system/get_iot_certificate with the §18 schema")
