@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/fusion_eprocess_transcript.v1.json",
+  "title": "fss.fusion_eprocess_transcript.v1",
+  "description": "Additive immutable commitment to one hypothesis-bound sequential fusion transition. The historical numerical v1 step digest is preserved; this transcript independently binds complete bounded state, the actual validated fusion query and decision or an exact reset-input digest, the canonical supporting-domain inventory and the previous transcript. Resetting the numerical regime never erases transcript ancestry. Replaying the exact ordered queries/resets reconstructs the digest. This proves neither source custody nor statistical independence, test-supermartingale validity, calibration qualification or effect authority.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "previous_transcript_digest", "input", "numerical_step_digest", "state_digest", "supporting_domains_digest", "transcript_digest"],
+  "properties": {
+    "schema": { "const": "fss.fusion_eprocess_transcript.v1" },
+    "previous_transcript_digest": {
+      "description": "Null only before the first accepted transition. Observations and resets both advance this chain.",
+      "anyOf": [{ "$ref": "#/$defs/digest" }, { "type": "null" }]
+    },
+    "input": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "query_digest", "decision_digest"],
+          "properties": {
+            "kind": { "const": "observation" },
+            "query_digest": { "$ref": "#/$defs/digest" },
+            "decision_digest": { "$ref": "#/$defs/digest" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "reason_digest"],
+          "properties": {
+            "kind": { "const": "regime_reset" },
+            "reason_digest": { "$ref": "#/$defs/digest" }
+          }
+        }
+      ]
+    },
+    "numerical_step_digest": {
+      "$ref": "#/$defs/digest",
+      "description": "Unchanged historical fss.fusion.eprocess_step.v1 digest. Its original text limits remain; the separate state_digest preserves complete binding when legacy encoding exceeds those limits. Alone it is not an evidence receipt."
+    },
+    "state_digest": {
+      "$ref": "#/$defs/digest",
+      "description": "fss.fusion.eprocess_state.v1 commitment to exact hypothesis bytes, configuration, step/regime, full numerical state and optional exact last-reset digest. All variable text is hashed to fixed-size fields, independently of historical v1 text limits."
+    },
+    "supporting_domains_digest": {
+      "$ref": "#/$defs/digest",
+      "description": "fss.fusion.eprocess_support.v1 commitment to the complete lexicographically ordered failure-domain components after this transition. Constant-size tagged folds bind component boundaries and exact UTF-8 domain hashes."
+    },
+    "transcript_digest": { "$ref": "#/$defs/digest" }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+  }
+}

@@ -10,6 +10,27 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Evidence-bound sequential fusion transcripts (2026-11-03)
+
+`SequentialEProcess` now refuses an observation for another hypothesis before any
+state change. Every accepted observation or explicit reset publishes an immutable
+transcript binding its predecessor, actual fusion query/decision or reset arguments,
+full hypothesis/configuration/numerical state, and complete supporting-domain
+inventory. Reset clears the active numerical regime while retaining history.
+
+Historical numerical step digests retain their original bytes. The separate state
+and transcript domains use fixed-width fields, exact text hashes and constant-size
+inventory folds, preserving context even when an oversized reset exceeds the old
+encoder's text ceiling. Exact ordered input replay reconstructs the transcript.
+This advances `fss-x4a.16.9`; it establishes neither source custody nor a qualified
+test-supermartingale, and supplies no effect authority. The Ville formula remains
+conditional on its separately established statistical assumptions.
+
+All 20 native fusion unit tests and 16 contract tests pass. Eleven new regressions
+cover hypothesis/refusal isolation, source and policy substitution, ordering and
+replay, reset ancestry, historical numeric golden hashes, and oversized reset
+arguments preserving hypothesis, configuration and subsequent numerical state.
+
 ## Order-independent provenance transition checks (2026-11-03)
 
 `KnowledgeCell::verify_no_evidence_laundering` now checks every recorded origin of

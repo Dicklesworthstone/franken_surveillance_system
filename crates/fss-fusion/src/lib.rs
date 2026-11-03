@@ -50,8 +50,10 @@ mod model;
 pub use calibration::{ScoreBin, ScoreCalibration};
 pub use decide::fuse;
 pub use eprocess::{
-    EPROCESS_STEP_DOMAIN, EProcessConfig, EProcessStepOutcome, RegimeResetReason,
-    SequentialEProcess, ville_false_alarm_bound_ppm,
+    EPROCESS_RESET_DOMAIN, EPROCESS_STATE_DOMAIN, EPROCESS_STEP_DOMAIN, EPROCESS_SUPPORT_DOMAIN,
+    EPROCESS_TRANSCRIPT_DOMAIN, EPROCESS_TRANSCRIPT_SCHEMA, EProcessConfig, EProcessStepInput,
+    EProcessStepOutcome, EProcessTranscript, RegimeResetReason, SequentialEProcess,
+    ville_false_alarm_bound_ppm,
 };
 pub use model::{
     Calibration, Cluster, ClusterDirection, Counterfactual, Coverage, Decision, EvidenceItem,

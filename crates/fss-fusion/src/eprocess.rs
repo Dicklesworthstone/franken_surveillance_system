@@ -1,7 +1,7 @@
-//! Anytime-valid sequential milliban e-process accumulator (`fss-becce`, plan §16.10, §17.5).
+//! Hypothesis-bound sequential milliban accumulator (`fss-becce`, plan §16.10, §17.5).
 //!
 //! Tracks sequential evidence across windows for one event hypothesis using exact integer
-//! millibans (`1000 * log10` odds), enforcing:
+//! millibans (`1000 * log10` odds), with these explicit semantics:
 //!
 //! * **Ville's maximal inequality:** under the null hypothesis $H_0$, a nonnegative test
 //!   supermartingale $E_t = 10^{M_t / 1000}$ satisfies
@@ -17,6 +17,11 @@
 //! * **CUSUM floor clamping and regime reset:** configurable floor clamping (`floor_mban = 0` for
 //!   Page-Lorden sequential change detection) and explicit [`SequentialEProcess::reset_regime`]
 //!   when sensor health degrades or clock continuity breaks.
+//!
+//! The numerical Ville formula is conditional on a valid test supermartingale. Arbitrary caller
+//! likelihoods, repeated observations, floor clamping and restarts do not establish that property.
+//! A transcript binds the exact supplied queries and transitions; it does not verify source custody,
+//! qualify statistical independence or grant effect authority.
 
 use std::collections::BTreeSet;
 
@@ -27,6 +32,12 @@ use crate::model::{
     ClusterDirection, FusionError, FusionOutcome, FusionQuery, LlrInterval, MAX_ABS_LLR, valid_text,
 };
 use crate::probability::PPM;
+
+mod transcript;
+pub use transcript::{
+    EPROCESS_RESET_DOMAIN, EPROCESS_STATE_DOMAIN, EPROCESS_SUPPORT_DOMAIN,
+    EPROCESS_TRANSCRIPT_DOMAIN, EPROCESS_TRANSCRIPT_SCHEMA, EProcessStepInput, EProcessTranscript,
+};
 
 /// Sequential e-process step digest domain (`SCHEMA-DOMAIN-FUSION-EPROCESS-STEP-001`).
 pub const EPROCESS_STEP_DOMAIN: &str = "fss.fusion.eprocess_step.v1";
@@ -45,8 +56,9 @@ const DECIBAN_MANTISSA_NANOS: [u64; 10] = [
     125_892_542,
 ];
 
-/// Outward-rounded upper bound in parts per million (`0..=1_000_000`) on the anytime false-alarm
-/// probability $\mathbb{P}_{H_0}(\sup_{t \ge 1} M_t \ge \tau_{\text{mban}}) \le 10^{-\tau_{\text{mban}} / 1000}$.
+/// Outward-rounded numerical Ville expression in parts per million (`0..=1_000_000`).
+/// It is a false-alarm bound only under a separately established test-supermartingale assumption;
+/// evaluating this expression does not qualify supplied likelihoods, dependence, clamps or resets.
 #[must_use]
 pub fn ville_false_alarm_bound_ppm(threshold_mban: i64) -> u32 {
     if threshold_mban <= 0 {
@@ -162,7 +174,7 @@ impl RegimeResetReason {
     }
 }
 
-/// Signed outcome of one sequential e-process step or regime reset.
+/// Digest-bearing outcome of one sequential step or regime reset; not a signature or effect grant.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EProcessStepOutcome {
     /// Monotone step index (`1..`).
@@ -175,9 +187,9 @@ pub struct EProcessStepOutcome {
     pub accumulated_llr: LlrInterval,
     /// Running supremum $\sup_{s \le t} M_{s,\text{lo}}$ within the active regime.
     pub supremum_lo_mban: i64,
-    /// Anytime Ville false-alarm upper bound (ppm) at `supremum_lo_mban`.
+    /// Conditional Ville formula (ppm) at `supremum_lo_mban`; no statistical qualification.
     pub ville_false_alarm_bound_ppm: u32,
-    /// Anytime Ville false-alarm upper bound (ppm) at `config.alert_threshold_mban`.
+    /// Conditional Ville formula (ppm) at `config.alert_threshold_mban`.
     pub threshold_ville_bound_ppm: u32,
     /// Count of mutually disjoint supporting failure-domain clusters in the active regime.
     pub independent_supporting_clusters: u32,
@@ -185,12 +197,20 @@ pub struct EProcessStepOutcome {
     pub crossed_alert_threshold: bool,
     /// Most recent regime reset reason, if any.
     pub last_reset: Option<RegimeResetReason>,
-    /// Domain-separated digest (`SCHEMA-DOMAIN-FUSION-EPROCESS-STEP-001`).
+    /// Historical numerical v1 digest (`SCHEMA-DOMAIN-FUSION-EPROCESS-STEP-001`).
+    /// It deliberately retains its original bytes and does not bind the evidence history.
     pub step_digest: ContentDigest,
+    /// Separate evidence-bound transition receipt, chained across observations and resets.
+    pub transcript: EProcessTranscript,
 }
 
 impl EProcessStepOutcome {
-    fn seal(mut self, hypothesis_id: &str, config: &EProcessConfig) -> Self {
+    fn seal(
+        mut self,
+        hypothesis_id: &str,
+        config: &EProcessConfig,
+        supporting_domains: &[BTreeSet<String>],
+    ) -> Self {
         let mut encoder = CanonicalEncoder::new();
         encoder.text(EPROCESS_STEP_DOMAIN);
         encoder.text(hypothesis_id);
@@ -215,6 +235,9 @@ impl EProcessStepOutcome {
             None => encoder.bool(false),
         }
         self.step_digest = ContentDigest::sha256(&encoder.finish());
+        let state_digest = transcript::state_digest(hypothesis_id, config, &self);
+        self.transcript
+            .seal(self.step_digest, state_digest, supporting_domains);
         self
     }
 }
@@ -230,6 +253,7 @@ pub struct SequentialEProcess {
     supremum_lo_mban: i64,
     supporting_domain_components: Vec<BTreeSet<String>>,
     last_reset: Option<RegimeResetReason>,
+    last_transcript: Option<ContentDigest>,
 }
 
 impl SequentialEProcess {
@@ -238,7 +262,10 @@ impl SequentialEProcess {
     /// # Errors
     ///
     /// Returns [`FusionError`] if `hypothesis_id` is invalid or `config` violates policy bounds.
-    pub fn new(hypothesis_id: impl Into<String>, config: EProcessConfig) -> Result<Self, FusionError> {
+    pub fn new(
+        hypothesis_id: impl Into<String>,
+        config: EProcessConfig,
+    ) -> Result<Self, FusionError> {
         let hypothesis_id = hypothesis_id.into();
         if !valid_text(&hypothesis_id) {
             return Err(FusionError::InvalidInput(format!(
@@ -255,6 +282,7 @@ impl SequentialEProcess {
             supremum_lo_mban: 0,
             supporting_domain_components: Vec::new(),
             last_reset: None,
+            last_transcript: None,
         })
     }
 
@@ -282,6 +310,13 @@ impl SequentialEProcess {
         self.supporting_domain_components.len() as u32
     }
 
+    /// Digest of the last accepted transition, including a reset, or `None` before any step.
+    /// A reset clears numerical evidence while retaining this complete transcript ancestry.
+    #[must_use]
+    pub const fn transcript_head(&self) -> Option<ContentDigest> {
+        self.last_transcript
+    }
+
     /// Merges a supporting cluster's failure domains into the connected components of supporting
     /// domains across the active regime so repeated observations from the same camera or shared
     /// failure domain never inflate `independent_supporting_clusters`.
@@ -296,6 +331,9 @@ impl SequentialEProcess {
             }
         }
         retained.push(merged);
+        // Canonicalize in the existing state allocation so transcript construction never needs
+        // an additional inventory-sized buffer just to normalize component ordering.
+        retained.sort();
         self.supporting_domain_components = retained;
     }
 
@@ -303,11 +341,17 @@ impl SequentialEProcess {
     ///
     /// # Errors
     ///
-    /// Propagates [`FusionError`] if `query` fails validation or arithmetic overflows.
+    /// Refuses a different hypothesis before any mutation. Propagates [`FusionError`] if `query`
+    /// fails validation or arithmetic overflows. A refusal does not advance the transcript.
     pub fn observe_step(
         &mut self,
         query: &FusionQuery,
     ) -> Result<(FusionOutcome, EProcessStepOutcome), FusionError> {
+        if query.hypothesis != self.hypothesis_id {
+            return Err(FusionError::InvalidInput(
+                "sequential observation belongs to a different hypothesis".to_owned(),
+            ));
+        }
         let outcome = fuse(query)?;
         let delta_lo = outcome
             .posterior
@@ -367,8 +411,20 @@ impl SequentialEProcess {
             crossed_alert_threshold,
             last_reset: self.last_reset.clone(),
             step_digest: ContentDigest::sha256(b""),
+            transcript: EProcessTranscript::pending(
+                self.last_transcript,
+                EProcessStepInput::Observation {
+                    query_digest: outcome.query_digest,
+                    decision_digest: outcome.decision_digest,
+                },
+            ),
         }
-        .seal(&self.hypothesis_id, &self.config);
+        .seal(
+            &self.hypothesis_id,
+            &self.config,
+            &self.supporting_domain_components,
+        );
+        self.last_transcript = Some(step_outcome.transcript.digest());
 
         Ok((outcome, step_outcome))
     }
@@ -376,13 +432,14 @@ impl SequentialEProcess {
     /// Resets the sequential e-process to `[0, 0]` millibans upon a camera-health or clock-continuity
     /// regime break, advancing `regime_epoch`.
     pub fn reset_regime(&mut self, reason: RegimeResetReason) -> EProcessStepOutcome {
+        let reason_digest = transcript::reset_reason_digest(&reason);
         self.step_index = self.step_index.saturating_add(1);
         self.regime_epoch = self.regime_epoch.saturating_add(1);
         self.accumulated_llr = LlrInterval::unchecked(0, 0);
         self.supremum_lo_mban = 0;
         self.supporting_domain_components.clear();
         self.last_reset = Some(reason);
-        EProcessStepOutcome {
+        let step_outcome = EProcessStepOutcome {
             step_index: self.step_index,
             regime_epoch: self.regime_epoch,
             step_delta_llr: LlrInterval::unchecked(0, 0),
@@ -396,10 +453,23 @@ impl SequentialEProcess {
             crossed_alert_threshold: false,
             last_reset: self.last_reset.clone(),
             step_digest: ContentDigest::sha256(b""),
+            transcript: EProcessTranscript::pending(
+                self.last_transcript,
+                EProcessStepInput::RegimeReset { reason_digest },
+            ),
         }
-        .seal(&self.hypothesis_id, &self.config)
+        .seal(
+            &self.hypothesis_id,
+            &self.config,
+            &self.supporting_domain_components,
+        );
+        self.last_transcript = Some(step_outcome.transcript.digest());
+        step_outcome
     }
 }
+
+#[cfg(test)]
+mod transcript_tests;
 
 #[cfg(test)]
 mod tests {
@@ -469,8 +539,7 @@ mod tests {
 
     #[test]
     fn single_camera_repeated_windows_never_corroborate_neg_004() {
-        let mut ep =
-            SequentialEProcess::new("hyp:entry-door", EProcessConfig::default()).unwrap();
+        let mut ep = SequentialEProcess::new("hyp:entry-door", EProcessConfig::default()).unwrap();
         for step in 0..4 {
             let q = base_query(vec![calibrated_item(
                 &format!("obs:east:{step}"),
@@ -490,8 +559,7 @@ mod tests {
 
     #[test]
     fn two_independent_cameras_corroborate_while_occluded_camera_is_neutral_neg_005() {
-        let mut ep =
-            SequentialEProcess::new("hyp:entry-door", EProcessConfig::default()).unwrap();
+        let mut ep = SequentialEProcess::new("hyp:entry-door", EProcessConfig::default()).unwrap();
         // Step 1: east camera + occluded south camera
         let occluded_south = EvidenceItem {
             id: "obs:south:0".to_owned(),
@@ -532,8 +600,7 @@ mod tests {
 
     #[test]
     fn regime_reset_clears_accumulator_and_increments_epoch() {
-        let mut ep =
-            SequentialEProcess::new("hyp:entry-door", EProcessConfig::default()).unwrap();
+        let mut ep = SequentialEProcess::new("hyp:entry-door", EProcessConfig::default()).unwrap();
         let (_, s1) = ep
             .observe_step(&base_query(vec![calibrated_item(
                 "obs:east:0",
