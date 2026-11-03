@@ -36,6 +36,15 @@ check session-cancellation-operator cargo "+$channel" test --locked --offline --
     -p fss-cli --test session_cancel_cli_contract
 check session-cancellation-mcp cargo "+$channel" test --locked --offline --no-fail-fast \
     -p fss-cli --bin fss-mcp session_cancellation_uses_fixed_principal_and_exclusive_target
+check http-history-sentinel cargo "+$channel" test --locked --offline --no-fail-fast \
+    -p fss-reference --test http_history_sentinel_contract --test http_history_watch_contract \
+    --test rtsp_campaign_sentinel_contract --test rtsp_campaign_sentinel_hevc_contract \
+    --test rtsp_campaign_sentinel_plan_contract
+check history-sentinel-resource-pool cargo "+$channel" test --locked --offline --no-fail-fast \
+    -p fss-reference --lib ingest::long_sentinel::pool::tests
+check http-history-sentinel-operator cargo "+$channel" test --locked --offline --no-fail-fast \
+    -p fss-cli --bin fss-sentinel-http-history --test http_history_sentinel_cli \
+    --test http_history_watch_cli
 check retained-localization cargo "+$channel" test --locked --offline --no-fail-fast \
     -p fss-reference --test recorded_twin_localization_contract
 check retained-scene-calibration cargo "+$channel" test --locked --offline --no-fail-fast \

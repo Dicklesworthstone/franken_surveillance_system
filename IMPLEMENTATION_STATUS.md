@@ -10,6 +10,45 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Motion-independent trained detection across HTTP histories (2026-11-03)
+
+`fss-sentinel-http-history` now connects an exact ended HTTP reconnect history to the
+native RGB detector without requiring a foreground-motion candidate. It imports every
+complete original JPEG first, then allocates whole detection bursts round-robin across
+actual imported recordings under one whole-history inference allowance. Separate
+bursts and reconnects retain independent tracking; stationary images can reach the
+model, while class scores remain uncalibrated.
+
+Every selected connection stays visible, including empty and failed responses,
+incomplete JPEG prefixes, recordings too short for a burst and recordings skipped by
+the inference ceiling. Source, pixel, JPEG, detection-head and native report resources
+share one residual pool; no reconnect refills it. All imports precede model work and
+all computations precede optional retention. Current original HTTP, destination media,
+source capsules and privacy are rechecked before the complete result is released,
+including entirely unsampled recordings and suffixes.
+
+The pure CLI preview binds exact source/model pins, explicit sensor/capture assumptions,
+paths, principal, sampling, retention, native backend and resource limits. Approved
+retention uses the existing complete native report/model/recipe owner and emits cold
+`fss-infer sentinel-replay` commands that work from verified destination custody after
+the capture archive and loose model go offline. Interrupted imports and retentions
+reconcile through those existing owners on exact retry. The motion-based HTTP watch
+formats and existing RTSP sentinel resource semantics are preserved.
+
+Ten native core contracts, seven focused CLI unit contracts and one real-process
+capture/import/inference/replay contract cover the new behavior. Existing HTTP-watch
+and RTSP-sentinel contracts are included in the focused validation gate because their
+source and resource owners are shared. Independent source reviews, pinned formatting,
+and a narrow pinned-rustc report-format check passed. Native crate/test execution is
+pending because the shared host cannot currently build the unchanged dependency
+closure within available memory headroom. No live-camera, detector-quality, event,
+absence, continuous-coverage or production qualification is claimed.
+The two strict public projection schemas match the actual source renderers; the
+offline catalog resolves 132 schemas and 2077 references with zero metadata/reference
+errors. Representative positive/negative shape checks passed. The separate schema
+constitution gate still reports existing registry drift.
+See `docs/HTTP_HISTORY_SENTINEL.md` for the complete operator workflow and limits.
+
 ## Durable operator cancellation of agent sessions (2026-11-03)
 
 `fss cancel --session` and the MCP `cancel` session target now expose AOP-010 session
@@ -57,10 +96,12 @@ no effect or policy-promotion authority.
 The existing real-process CLI/MCP learning contract now covers normalized evidence,
 exact root stability after rebase, missing feedback/learning slots, revoked current
 admission, and materially different requests. Two independent source reviews and the
-pinned formatter passed. Native execution of this change is pending: the unchanged
-Asupersync dependency build exceeded this shared host's available memory headroom and
-was stopped before project diagnostics. The prior main revision's hosted native run
-reproduced the exact-retry defect; no production qualification is claimed by this fix.
+pinned formatter passed. Native reference and CLI targets compiled in hosted run
+`41596340186`, job `125784472561`, with custody, cold-supervision, event-recovery and
+multipart-upload groups passing. The expanded learning-specific regression remains
+pending. The local Asupersync dependency build exceeded this shared host's available
+memory headroom and was stopped before project diagnostics. The prior main revision's
+native run reproduced the exact-retry defect; no production qualification is claimed.
 
 ## Multipart recording continuation (2026-11-03)
 

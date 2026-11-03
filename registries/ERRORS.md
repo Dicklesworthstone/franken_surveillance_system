@@ -692,3 +692,16 @@ Native transport, authentication, authority and metadata custody refusals retain
 | `ERR-ONVIF-STORAGE-PANIC-001` | A replay admission callback unwound and its context is permanently closed | Preserve partial receipts and investigate the owning callback; do not reopen the same authority. |
 
 Native metadata storage retains the original cancellation/deadline/budget/authority identity from the owner. Post-commit refusal preserves the exact publication receipt and suppresses optional private values. The bridge checks cooperative replay/publication boundaries, not preemption inside an operating-system syscall.
+
+## Motion-independent HTTP history detector processing
+
+| Error | Meaning | Operator action |
+|---|---|---|
+| `ERR-HTTP-HISTORY-SENTINEL-REQUEST-001` | Exact history/model/backend, ordered source/camera/capture bindings, sampling, paths or resource configuration is invalid | Review the complete pure preview and correct the declared plan; no implicit latest history, model or capture timing is selected. |
+| `ERR-HTTP-HISTORY-SENTINEL-AUTHORITY-001` | Exact owner approval, current source/import/model/retention authority, cancellation or cooperative deadline refused processing | Inspect durable imports and retained analyses, restore current authority and retry the exact intended plan; a refusal does not erase earlier progress. |
+| `ERR-HTTP-HISTORY-SENTINEL-LIMIT-001` | Whole-history source/decode/model/report admission, resident output reservation, checked arithmetic or complete output exceeded its ceiling | Select a smaller exact history or explicitly review new bounds; resources never refill per connection and no connection/report is silently truncated. |
+| `ERR-HTTP-HISTORY-SENTINEL-PACKAGE-001` | The explicitly selected local native model could not be read as bounded ordinary verified custody | Supply the intended readable local archive and independent digest outside both stores; no download or inferred replacement is attempted. |
+
+Native HTTP source/import, model, decoder, privacy and retained-sentinel refusals keep their
+existing owner identities. Known completed imports and analyses remain durable after a later
+refusal; an exact retry revalidates custody rather than reconstructing missing evidence.

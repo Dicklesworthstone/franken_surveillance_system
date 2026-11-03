@@ -36,6 +36,9 @@ pub mod ground_visibility;
 pub mod hevc_annexb;
 /// Independently retained historical whole-recording visual-health diagnostics.
 pub mod historical_health;
+/// Motion-independent trained detector bursts across exact retained HTTP histories.
+pub mod http_history_sentinel;
+mod http_history_sources;
 /// Restartable exact durable HTTP history → retained imports → native streaming watch reports.
 pub mod http_history_watch;
 /// Exact frozen-model execution on retained decoded frames and durable model outputs.

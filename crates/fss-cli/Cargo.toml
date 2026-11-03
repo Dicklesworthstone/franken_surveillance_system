@@ -117,6 +117,10 @@ name = "fss-watch-http-history"
 path = "src/bin/fss-watch-http-history.rs"
 
 [[bin]]
+name = "fss-sentinel-http-history"
+path = "src/bin/fss-sentinel-http-history.rs"
+
+[[bin]]
 name = "fss-watch-rtsp-selected"
 path = "src/bin/fss-watch-rtsp-selected.rs"
 

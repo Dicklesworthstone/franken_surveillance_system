@@ -124,6 +124,14 @@ impl From<RtspCampaignWatchError> for RtspCampaignSentinelError {
         }
     }
 }
+impl From<super::long_sentinel::pool::Error> for RtspCampaignSentinelError {
+    fn from(error: super::long_sentinel::pool::Error) -> Self {
+        match error {
+            super::long_sentinel::pool::Error::Invalid(reason) => Self::Invalid(reason),
+            super::long_sentinel::pool::Error::Limit => Self::Limit,
+        }
+    }
+}
 impl From<PackageDetectError> for RtspCampaignSentinelError {
     fn from(error: PackageDetectError) -> Self {
         Self::Detection(error)
