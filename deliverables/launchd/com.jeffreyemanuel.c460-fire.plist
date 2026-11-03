@@ -9,6 +9,8 @@
   <key>EnvironmentVariables</key><dict>
     <key>MAC</key><string>50:3d:d1:e3:e2:07</string>
     <key>ADDR</key><string>0xbef8b000</string>
+    <key>PY</key><string>/opt/homebrew/bin/python3</string>
+    <key>FORCE</key><string>1</string>
   </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><false/>

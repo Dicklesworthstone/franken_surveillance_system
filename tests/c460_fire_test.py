@@ -369,6 +369,40 @@ print("tapo_connectap_rop.py <host> --offset 0x424 --pop 0x1 --pivot 0x2 --syste
           all(ln.startswith("rop") for ln in open(order).read().splitlines()[1:]))
 
 
+def test_guard_crash(td):
+    """A guard that dies must not be reported as a payload miss (that sends the operator sweeping)."""
+    print("watcher: a guard crash is distinguished from a decode-buffer miss:")
+    guard = exe(os.path.join(td, "guard_crash.py"), r"""#!/usr/bin/env python3
+import sys
+sys.stderr.write("Traceback (most recent call last):\n"
+                 "TypeError: unsupported operand type(s) for |: 'type' and 'NoneType'\n")
+sys.exit(1)
+""")
+    postshell = exe(os.path.join(td, "post_never.sh"), "#!/bin/bash\nexit 0\n")
+    r = run_fire(td, arp_fixture(td, MAC, "192.168.4.33"), guard, postshell)
+    state = open(os.path.join(td, "fire.state")).read()
+    log = open(os.path.join(td, "fire.log")).read()
+    check("crash exits 1", r.returncode == 1, "rc=%d" % r.returncode)
+    check("state says crash, not noshell", state.startswith("crash"), repr(state))
+    check("log says the guard crashed", "GUARD CRASHED" in log, log[-200:])
+    check("no sweep advice on a crash", "DECODE-BUFFER" not in log, log[-200:])
+
+
+def test_chain_scripts_under_stock_python(td):
+    """launchd's PATH resolves /usr/bin/python3 (3.9): every chain script must at least import."""
+    print("chain scripts import under the interpreter launchd actually resolves:")
+    stock = "/usr/bin/python3"
+    if not os.path.exists(stock):
+        print("  [skip] %s absent" % stock)
+        return
+    for rel in ("deliverables/scripts/tapo_connectap_sc.py", "deliverables/scripts/tapo_post.py",
+                "deliverables/scripts/tapo_connectap_rop.py", "tools/tapo_oracle/find_chain.py"):
+        path = os.path.join(HERE, "..", rel)
+        r = subprocess.run([stock, path, "--help"], capture_output=True, text=True, timeout=60)
+        check("%s imports+parses args" % os.path.basename(rel), r.returncode == 0,
+              (r.stderr.strip().splitlines() or [""])[-1])
+
+
 def main():
     for name, fn in (("presence/one-shot", test_presence_and_one_shot),
                      ("chain order", test_chain_order),
@@ -376,7 +410,9 @@ def main():
                      ("empty pull", test_chain_empty_pull),
                      ("probe retry", lambda td: test_rtsp_probe_retry(td, True)),
                      ("probe retry bounded", lambda td: test_rtsp_probe_retry(td, False)),
-                     ("shell fallback", test_shell_fallback)):
+                     ("shell fallback", test_shell_fallback),
+                     ("guard crash", test_guard_crash),
+                     ("stock interpreter", test_chain_scripts_under_stock_python)):
         with tempfile.TemporaryDirectory() as td:
             try:
                 fn(td)

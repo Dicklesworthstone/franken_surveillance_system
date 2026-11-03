@@ -24,6 +24,10 @@ with no pivot at all is reported as such rather than silently guessed.
 
 Prints a shell-ready argument line, or names what it could not find.
 """
+# launchd is a minimal-PATH environment: the scripts run under /usr/bin/python3 (3.9), so the
+# PEP 604 annotations here need postponed evaluation or the module dies at import.
+from __future__ import annotations
+
 import argparse
 import json
 import re
