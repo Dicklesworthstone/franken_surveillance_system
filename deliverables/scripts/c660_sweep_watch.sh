@@ -36,16 +36,29 @@ HARNESS="${HARNESS:-$HERE/tapo_connectap_sc.py}"
 ARP_CMD="${ARP_CMD:-sudo -n /usr/sbin/arp}"   # overridable for the self-test
 PING_CMD="${PING_CMD:-ping}"
 NC_CMD="${NC_CMD:-nc}"
+GW="${GW:-192.168.4.1}"
+ROUTE_CMD="${ROUTE_CMD:-sudo -n route add}"   # pre-fire route fix (§1), overridable for the test
 
 log() { printf '%s %s\n' "$(date +%H:%M:%S)" "$*" | tee -a "$LOG"; }
 phase() { echo "$1" >"$PHASE_FILE"; }
-norm() { echo "$1" | tr 'A-F' 'a-f'; }
+# One canonical form: lowercase hex, every octet zero-padded, separators stripped. Both sides go
+# through it, so arp's unpadded print (`…:0:22:e3:2c` for 00:22) and a colonless MAC compare equal.
+# The old `tolower($4) == want` only worked while every octet of the target MAC happened to be
+# two digits — change the MAC to one with a low octet and the watcher silently never fires.
+norm() {
+  local f out=
+  for f in $(echo "$1" | tr 'A-F' 'a-f' | tr ':-.' '   '); do
+    out="$out$(printf '%2s' "$f" | tr ' ' 0)"
+  done
+  echo "$out"
+}
 
 lookup() {
-  # plain lowercase compare: `arp -an` prints zero-padded octets and awk's `$4 + 0`
-  # truncates a hex octet at its first non-digit.
-  $ARP_CMD -an 2>/dev/null | awk -v want="$(norm "$MAC")" '
-    tolower($4) == want { ip = $2; gsub(/[()]/, "", ip); print ip; exit }'
+  $ARP_CMD -an 2>/dev/null | awk '{ gsub(/[()]/, "", $2); print $2, $4 }' \
+    | while read -r ip mac; do
+        [ -n "$ip" ] || continue
+        [ "$(norm "$mac")" = "$(norm "$MAC")" ] && { echo "$ip"; break; }
+      done
 }
 
 present() {
@@ -70,6 +83,11 @@ while :; do
       continue
     fi
     phase RUNNING
+    # The 192.168.4/22 link route returns EHOSTUNREACH for LAN hosts on this subnet (the LAN is
+    # en1, the route resolves to en0), so `login()` dies before any payload ships. A static host
+    # route via the gateway fixes it; an existing one makes `route add` print "File exists", which
+    # is not an error. The route is per-boot, so it is re-asserted, never assumed.
+    $ROUTE_CMD -host "$ip" "$GW" >/dev/null 2>&1 || true
     # the index is per host and survives the process: clear it or the next batch resumes
     # past its own length and fires nothing
     mkdir -p /tmp/pane1 && echo 0 >"/tmp/pane1/brute.$ip.idx"

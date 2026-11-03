@@ -29,13 +29,22 @@ log() {
   [ -t 1 ] && printf '%s\n' "$line"
 }
 
-norm_mac() { echo "$1" | tr A-F a-f | awk -F: '{ for (i = 1; i <= NF; i++) $i = $i + 0; print }' OFS=:; }
+# One canonical form, identical to the sweep's: lowercase hex, every octet zero-padded, separators
+# stripped. arp prints octets without leading zeros, so a raw or arithmetically-collapsed compare
+# both lose information (`d1` and `0b` both become 0) and can match a foreign unit.
+norm_mac() {
+  local f out=
+  for f in $(echo "$1" | tr 'A-F' 'a-f' | tr ':-.' '   '); do
+    out="$out$(printf '%2s' "$f" | tr ' ' 0)"
+  done
+  echo "$out"
+}
 resolve_ip() {
-  $ARP_CMD 2>/dev/null | awk -v m="$(norm_mac "$MAC")" '
-    /\(incomplete\)/ { next }
-    { gsub(/[()]/, "", $2); mac = $4; n = split(mac, o, ":"); out = ""
-      for (i = 1; i <= n; i++) out = out (i > 1 ? ":" : "") (o[i] + 0)
-      if (out == m) { print $2; exit } }'
+  $ARP_CMD 2>/dev/null | awk '/\(incomplete\)/ { next }{ gsub(/[()]/, "", $2); print $2, $4 }' \
+    | while read -r ip mac; do
+        [ -n "$ip" ] || continue
+        [ "$(norm_mac "$mac")" = "$(norm_mac "$MAC")" ] && { echo "$ip"; break; }
+      done
 }
 # a shell implies presence, but ICMP is still required so a stale IP held by another box cannot
 # hand us a foreign :4444
