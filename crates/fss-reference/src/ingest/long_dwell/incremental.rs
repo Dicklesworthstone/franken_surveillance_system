@@ -12,6 +12,8 @@ use fss_core::{CanonicalDecode, CanonicalDecoder, DigestAlgorithm, Plane, Princi
 use fss_publication::ROOT_REACHABILITY_FAMILY;
 use std::cell::Cell;
 
+mod source_closure;
+use source_closure::SourceClosure;
 mod video;
 pub use video::DwellVideoProgress;
 use video::NativeVideo;
@@ -22,6 +24,13 @@ pub const CHECKPOINT_DOMAIN: &str = "fss.incremental_dwell_checkpoint.v1";
 pub const CHECKPOINT_DOMAIN_V2: &str = "fss.incremental_dwell_checkpoint.v2";
 /// Inter-coded checkpoint: separate coding/display progress and verified native drain.
 pub const CHECKPOINT_DOMAIN_V3: &str = "fss.incremental_dwell_checkpoint.v3";
+/// Partitioned-source checkpoint with independently verified typed part custody.
+pub const CHECKPOINT_DOMAIN_V4: &str = "fss.incremental_dwell_checkpoint.v4";
+/// Canonical ordered source-part inventory, retained without flattening its object graphs.
+pub const SOURCE_CLOSURE_DOMAIN: &str = "fss.incremental-dwell.source-closure.v1";
+/// Hard bound on the typed inventory; the original file publication part limit is unchanged.
+pub const MAX_SOURCE_CLOSURE_BYTES: usize =
+    1024 + 33 * crate::ingest::file_publication::MAX_FILE_PUBLICATION_PARTS;
 /// Maximum checkpoint body, including its complete bounded native trace and original recipe.
 pub const MAX_CHECKPOINT_BYTES: usize =
     MAX_LONG_DWELL_TRACE_BYTES + 16 * 1024 + MAX_LONG_DWELL_FRAMES * 8;
@@ -31,6 +40,9 @@ pub const CHECKPOINT_MANIFEST_KIND: &str = "recorded-incremental-dwell-checkpoin
 pub const CHECKPOINT_MANIFEST_KIND_V2: &str = "recorded-incremental-dwell-checkpoint-v2";
 /// Source-closed native video continuation graph, with optional exact health policy.
 pub const CHECKPOINT_MANIFEST_KIND_V3: &str = "recorded-incremental-dwell-checkpoint-v3";
+/// Partitioned MJPEG/AVC/HEVC continuation with the complete typed source-part inventory.
+pub const CHECKPOINT_MANIFEST_KIND_V4: &str = "recorded-incremental-dwell-checkpoint-v4";
+const RECIPE_DOMAIN_V4: &str = "fss.incremental-dwell.recipe.v4";
 const RECIPE_DOMAIN_V3: &str = "fss.incremental-dwell.recipe.v3";
 const RECIPE_DOMAIN: &str = "fss.incremental-dwell.recipe.v1";
 const RECIPE_DOMAIN_V2: &str = "fss.incremental-dwell.recipe.v2";
@@ -153,6 +165,7 @@ pub struct PreparedIncrementalDwell {
     limits: LongDwellLimits,
     screened: bool,
     source: ScanPreparation,
+    source_closure: Option<SourceClosure>,
     root: PathBuf,
     site: String,
     principal: String,
@@ -171,7 +184,8 @@ impl std::fmt::Debug for PreparedIncrementalDwell {
 impl PreparedIncrementalDwell {
     /// Admit one full native range and temporal rule without decoding or creating a checkpoint.
     /// Original MJPEG v1/v2 checkpoint bytes remain unchanged. Inter-coded sources use v3;
-    /// trained classification belongs to the completed native report.
+    /// trained classification belongs to the completed native report. Partitioned sources use
+    /// v4 and retain a bounded typed inventory of their independently published source parts.
     pub fn new(
         deployment: &ReferenceDeployment,
         plan: WatchPlan,
@@ -221,14 +235,10 @@ impl PreparedIncrementalDwell {
         if source.inter {
             video::codec(&source.retained.manifest().format)?;
         }
-        // A partitioned aggregate pins typed part roots in its metadata, rather than adding
-        // them as graph children. Until this checkpoint format has a bounded part-closure
-        // representation, linking only that aggregate would not retain all source custody.
-        if !source.retained.manifest().part_roots.is_empty() {
-            return Err(WatchError::InvalidPlan(
-                "incremental dwell currently requires a flat retained import",
-            ));
-        }
+        // Source opening already resolves every exact ledgered part. Retain their typed
+        // inventory separately: native graph edges would flatten the full recording into
+        // one oversized publication batch and undo the import owner's partitioning.
+        let source_closure = SourceClosure::for_import(&source.retained, cx)?;
         PrincipalId::parse(cx.io_authority().principal())?;
         Ok(Self {
             plan,
@@ -237,6 +247,7 @@ impl PreparedIncrementalDwell {
             limits,
             screened,
             source,
+            source_closure,
             root: deployment.root().to_path_buf(),
             site: deployment.site_lineage().to_owned(),
             principal: cx.io_authority().principal().to_owned(),
@@ -289,6 +300,7 @@ impl PreparedIncrementalDwell {
             restoration_work: DwellWork::default(),
             restoration_health_work: self.screened.then_some(DwellHealthWork::default()),
             retained_health_policy: Cell::new(false),
+            retained_source_closure: Cell::new(false),
         })
     }
 
@@ -342,16 +354,21 @@ impl PreparedIncrementalDwell {
 
     fn recipe(&self) -> Result<Vec<u8>> {
         let mut e = CanonicalEncoder::new();
-        e.text(if self.source.inter {
+        e.text(if self.source_closure.is_some() {
+            RECIPE_DOMAIN_V4
+        } else if self.source.inter {
             RECIPE_DOMAIN_V3
         } else if self.screened {
             RECIPE_DOMAIN_V2
         } else {
             RECIPE_DOMAIN
         });
-        if self.source.inter {
+        if self.source.inter || self.source_closure.is_some() {
             e.text(&self.source.retained.manifest().format);
             e.bool(self.screened);
+        }
+        if let Some(closure) = &self.source_closure {
+            e.digest(closure.digest());
         }
         e.digest(ContentDigest::sha256(self.policy()));
         e.digest(if self.source.inter {
@@ -416,8 +433,13 @@ impl PreparedIncrementalDwell {
         if self.screened {
             children.insert(health_policy_digest());
         }
+        if let Some(closure) = &self.source_closure {
+            children.insert(closure.digest());
+        }
         Ok(ObjectManifest::new(
-            if self.source.inter {
+            if self.source_closure.is_some() {
+                CHECKPOINT_MANIFEST_KIND_V4
+            } else if self.source.inter {
                 CHECKPOINT_MANIFEST_KIND_V3
             } else if self.screened {
                 CHECKPOINT_MANIFEST_KIND_V2
@@ -443,6 +465,7 @@ pub struct IncrementalDwell<'a> {
     restoration_work: DwellWork,
     restoration_health_work: Option<DwellHealthWork>,
     retained_health_policy: Cell<bool>,
+    retained_source_closure: Cell<bool>,
 }
 
 impl std::fmt::Debug for IncrementalDwell<'_> {
@@ -455,13 +478,20 @@ impl std::fmt::Debug for IncrementalDwell<'_> {
 }
 
 impl IncrementalDwell<'_> {
-    fn revalidate_retained_health_policy(
+    fn revalidate_retained_dependencies(
         &self,
         deployment: &ReferenceDeployment,
         cx: &ReplayCx,
     ) -> Result<()> {
         if self.retained_health_policy.get() {
             verify_health_policy(deployment, cx)?;
+        }
+        if self.retained_source_closure.get() {
+            self.prepared
+                .source_closure
+                .as_ref()
+                .ok_or(WatchError::Conflict)?
+                .verify(deployment, cx)?;
         }
         Ok(())
     }
@@ -487,8 +517,8 @@ impl IncrementalDwell<'_> {
         // Set before any authority check or mutable work; an error cannot leave a reusable
         // partially advanced foreground model, cursor, tracker or decoder allowance.
         self.poisoned = true;
-        self.revalidate_retained_health_policy(deployment, cx)?;
         self.prepared.check(deployment, cx)?;
+        self.revalidate_retained_dependencies(deployment, cx)?;
         checkpoint(cx, "incremental_dwell:advance")?;
         let end = self.prepared.plan.first_segment + self.prepared.plan.segment_count;
         let stop = self.next.saturating_add(maximum_frames).min(end);
@@ -614,7 +644,9 @@ impl IncrementalDwell<'_> {
             ));
         }
         let mut e = CanonicalEncoder::new();
-        e.text(if self.prepared.source.inter {
+        e.text(if self.prepared.source_closure.is_some() {
+            CHECKPOINT_DOMAIN_V4
+        } else if self.prepared.source.inter {
             CHECKPOINT_DOMAIN_V3
         } else if self.prepared.screened {
             CHECKPOINT_DOMAIN_V2
@@ -644,8 +676,8 @@ impl IncrementalDwell<'_> {
         deployment: &mut ReferenceDeployment,
         cx: &ReplayCx,
     ) -> Result<DwellCheckpointPin> {
-        self.revalidate_retained_health_policy(deployment, cx)?;
         self.prepared.check(deployment, cx)?;
+        self.revalidate_retained_dependencies(deployment, cx)?;
         let bytes = self.record()?;
         let record_digest = ContentDigest::sha256(&bytes);
         let manifest = self.prepared.manifest(record_digest)?;
@@ -666,6 +698,9 @@ impl IncrementalDwell<'_> {
             if self.prepared.screened {
                 verify_health_policy(deployment, cx)?;
             }
+            if let Some(closure) = &self.prepared.source_closure {
+                closure.verify(deployment, cx)?;
+            }
         } else {
             for body in [bytes.as_slice(), self.prepared.policy()] {
                 let digest = deployment.stage_payload(body)?;
@@ -673,6 +708,10 @@ impl IncrementalDwell<'_> {
             }
             if self.prepared.screened {
                 let digest = deployment.stage_payload(health_policy_bytes())?;
+                deployment.publisher_mut().verify_object(digest)?;
+            }
+            if let Some(closure) = &self.prepared.source_closure {
+                let digest = deployment.stage_payload(closure.bytes())?;
                 deployment.publisher_mut().verify_object(digest)?;
             }
             if let Some(policy) = self.prepared.source.privacy.policy() {
@@ -703,6 +742,8 @@ impl IncrementalDwell<'_> {
         }
         super::publish_manifest(deployment, &target, &manifest, validity, cx)?;
         self.retained_health_policy.set(self.prepared.screened);
+        self.retained_source_closure
+            .set(self.prepared.source_closure.is_some());
         Ok(DwellCheckpointPin {
             record_digest,
             provenance_root: manifest.root(),
@@ -721,8 +762,8 @@ impl IncrementalDwell<'_> {
                 "incremental dwell range is incomplete",
             ));
         }
-        self.revalidate_retained_health_policy(deployment, cx)?;
         self.prepared.check(deployment, cx)?;
+        self.revalidate_retained_dependencies(deployment, cx)?;
         self.prepared
             .source
             .publication_guard
@@ -814,13 +855,22 @@ impl RetainedDwellCheckpoint {
             .spool()
             .read_bounded(pin.provenance_root, 1024)?;
         let manifest = ObjectManifest::from_canonical_bytes(&manifest_bytes)?;
-        let video = manifest.kind() == CHECKPOINT_MANIFEST_KIND_V3;
+        let video_v3 = manifest.kind() == CHECKPOINT_MANIFEST_KIND_V3;
+        let partitioned = manifest.kind() == CHECKPOINT_MANIFEST_KIND_V4;
         let screened_v2 = match manifest.kind() {
-            CHECKPOINT_MANIFEST_KIND | CHECKPOINT_MANIFEST_KIND_V3 => false,
+            CHECKPOINT_MANIFEST_KIND
+            | CHECKPOINT_MANIFEST_KIND_V3
+            | CHECKPOINT_MANIFEST_KIND_V4 => false,
             CHECKPOINT_MANIFEST_KIND_V2 => true,
             _ => return Err(WatchError::Conflict),
         };
-        let maximum_children = if screened_v2 || video { 5 } else { 4 };
+        let maximum_children = if partitioned {
+            6
+        } else if screened_v2 || video_v3 {
+            5
+        } else {
+            4
+        };
         if manifest.root() != pin.provenance_root
             || manifest.metadata_digest().is_some()
             || manifest.children().len() > maximum_children
@@ -830,7 +880,14 @@ impl RetainedDwellCheckpoint {
         let maximum = allowed
             .execution
             .maximum_trace_bytes
-            .checked_add(16 * 1024 + if video { MAX_LONG_DWELL_FRAMES * 8 } else { 0 })
+            .checked_add(
+                16 * 1024
+                    + if video_v3 || partitioned {
+                        MAX_LONG_DWELL_FRAMES * 8
+                    } else {
+                        0
+                    },
+            )
             .ok_or(WatchError::Limit)?;
         let bytes = deployment
             .publisher()
@@ -840,7 +897,9 @@ impl RetainedDwellCheckpoint {
             return Err(WatchError::Conflict);
         }
         let mut d = CanonicalDecoder::new(&bytes);
-        let domain = if video {
+        let domain = if partitioned {
+            CHECKPOINT_DOMAIN_V4
+        } else if video_v3 {
             CHECKPOINT_DOMAIN_V3
         } else if screened_v2 {
             CHECKPOINT_DOMAIN_V2
@@ -858,7 +917,10 @@ impl RetainedDwellCheckpoint {
         }
         let decoded = decode_recipe(recipe)?;
         let screened = decoded.screened;
-        if decoded.video_format.is_some() != video || (!video && screened != screened_v2) {
+        let video = decoded.video_format.is_some();
+        if decoded.partitioned != partitioned
+            || (!partitioned && (video != video_v3 || (!video && screened != screened_v2)))
+        {
             return Err(WatchError::Conflict);
         }
         super::limits::validate_within(&decoded.limits, &allowed.execution)?;
@@ -910,6 +972,9 @@ impl RetainedDwellCheckpoint {
         // implementation identities, current privacy and complete compatibility bytes.
         if prepared.recipe()? != recipe || prepared.manifest(pin.record_digest)? != manifest {
             return Err(WatchError::Conflict);
+        }
+        if let Some(closure) = &prepared.source_closure {
+            closure.verify(deployment, cx)?;
         }
         prepared
             .source
@@ -968,9 +1033,15 @@ impl RetainedDwellCheckpoint {
         }
         super::limits::validate_within(&self.prepared.limits, &allowed.execution)?;
         checkpoint(cx, "incremental_dwell:restore")?;
+        self.prepared.check(deployment, cx)?;
         if self.prepared.screened {
             // Cached metadata must not reconstruct against a missing or replaced policy object.
             verify_health_policy(deployment, cx)?;
+        }
+        if let Some(closure) = &self.prepared.source_closure {
+            // A cached opened checkpoint cannot recreate a deleted or damaged inventory.
+            // Refuse before paying native replay cost; the source owner checks each part too.
+            closure.verify(deployment, cx)?;
         }
         let mut running = self.prepared.start()?;
         let prefix = if self.expected_video.is_some() {
@@ -1017,6 +1088,9 @@ impl RetainedDwellCheckpoint {
         running.restoration_health_work = running.health_work();
         checkpoint(cx, "incremental_dwell:restored")?;
         running.retained_health_policy.set(self.prepared.screened);
+        running
+            .retained_source_closure
+            .set(self.prepared.source_closure.is_some());
         Ok(running)
     }
 }
@@ -1028,6 +1102,7 @@ struct DecodedRecipe {
     limits: LongDwellLimits,
     screened: bool,
     video_format: Option<String>,
+    partitioned: bool,
 }
 
 fn verify_health_policy(deployment: &ReferenceDeployment, cx: &ReplayCx) -> Result<()> {
@@ -1064,6 +1139,7 @@ fn decode_recipe(bytes: &[u8]) -> Result<DecodedRecipe> {
     use super::super::recorded_watch::{WatchDetectorConfig, WatchTrackerConfig};
     let mut d = CanonicalDecoder::new(bytes);
     let mut video_format = None;
+    let mut partitioned = false;
     let screened = match d.text()? {
         RECIPE_DOMAIN => false,
         RECIPE_DOMAIN_V2 => true,
@@ -1072,6 +1148,17 @@ fn decode_recipe(bytes: &[u8]) -> Result<DecodedRecipe> {
             video::codec(format)?;
             video_format = Some(format.to_owned());
             d.bool()?
+        }
+        RECIPE_DOMAIN_V4 => {
+            partitioned = true;
+            let format = d.text()?;
+            if format != "mjpeg" {
+                video::codec(format)?;
+                video_format = Some(format.to_owned());
+            }
+            let screened = d.bool()?;
+            validate_digest(d.digest()?)?;
+            screened
         }
         _ => {
             return Err(WatchError::InvalidPlan(
@@ -1198,5 +1285,6 @@ fn decode_recipe(bytes: &[u8]) -> Result<DecodedRecipe> {
         limits,
         screened,
         video_format,
+        partitioned,
     })
 }

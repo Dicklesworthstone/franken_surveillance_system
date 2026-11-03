@@ -1,6 +1,6 @@
 # Implementation status
 
-**As of:** 2026-11-02 (dated feature sections retain their original verification scope)
+**As of:** 2026-11-03 (dated feature sections retain their original verification scope)
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
@@ -9,6 +9,31 @@
 Franken Surveillance System now has a coherent, dependency-light Rust reference spine from immutable source evidence through canonical authority state, guarded external effects, agent situation projection, meaningful deltas, exact continuation, and progressive semantic hydration. The repository is no longer merely an architecture corpus or crate skeleton.
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
+
+## Multipart recording continuation (2026-11-03)
+
+Incremental dwell now accepts completed partitioned MJPEG, AVC and HEVC imports.
+A version-four checkpoint binds a bounded canonical inventory of the exact original
+import identity, aggregate root, metadata and ordered part roots. Each part remains an
+independently ledgered publication; the inventory adds one checkpoint child without
+combining a long recording into an oversized publication batch. Flat-source v1/v2/v3
+recipe and checkpoint bytes remain unchanged.
+
+Hot steps and cold process continuations preserve the original cumulative source,
+pixel, tracking and optional health allowances. Native video completion still requires
+validated decoder drain. Cold opening reconstructs the exact inventory from current
+retained source authority, and missing or changed inventory, source parts, original
+principal or recipe refuse. Cached owners cannot reconstruct deleted custody. The
+existing deletion closure reaches the inventory, checkpoints and original part roots.
+
+Eight native regressions and two real-process CLI contracts cover codec continuation,
+whole-recording report/proposal identity, delayed output, temporal gaps, exact retries,
+resource and authority refusal, forged inventories, missing custody and deletion.
+The core implementation passed independent code review and the pinned formatter.
+Native execution remains unverified: dependency compilation exhausted shared memory
+and storage; the execution environment was also temporarily unavailable. The same
+native tests remain required; this feature does not establish production qualification.
+See `docs/incremental_dwell.md` for formats and operator commands.
 
 ## Alert reconciliation after source loss (2026-11-02)
 

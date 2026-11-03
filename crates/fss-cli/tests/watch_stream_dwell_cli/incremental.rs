@@ -3,6 +3,9 @@
 
 use super::*;
 
+#[path = "incremental/partitioned.rs"]
+mod partitioned;
+
 #[path = "incremental/video.rs"]
 mod video;
 use fss_cli::json_input::{Value, parse};

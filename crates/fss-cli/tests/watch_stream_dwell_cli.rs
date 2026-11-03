@@ -60,6 +60,15 @@ impl Fixture {
         moving: bool,
         changing: bool,
     ) -> Test<Self> {
+        Self::with_source_frames(label, known_time, moving, changing, FRAMES)
+    }
+    fn with_source_frames(
+        label: &str,
+        known_time: bool,
+        moving: bool,
+        changing: bool,
+        source_frames: usize,
+    ) -> Test<Self> {
         let directory = Directory::new(label)?;
         let root = directory.0.join("deployment with spaces");
         let input = directory.0.join("source.mjpeg");
@@ -70,7 +79,7 @@ impl Fixture {
             custom_markers: Vec::new(),
         };
         let mut bytes = Vec::new();
-        for frame in 0..FRAMES {
+        for frame in 0..source_frames {
             // Small exposure variation prevents an exact-frame freeze finding while
             // preserving the same foreground object and sampled dwell trajectory.
             let background = 40 + if changing { (frame % 2) as u8 * 8 } else { 0 };
@@ -105,7 +114,8 @@ impl Fixture {
         let cx = ReplayCx::from_context_authority(&authority, root.clone())?;
         let mut deployment = ReferenceDeployment::open(&root, SITE, &cx)?;
         let mut limits = FileIngestLimits::standard();
-        limits.max_segments = FRAMES + 1;
+        limits.max_segments = source_frames + 1;
+        limits.mjpeg_limits.max_frames = limits.mjpeg_limits.max_frames.max(source_frames);
         limits.chunk_bytes = 4096;
         let mut request = FileIngestRequest::new(
             &input,
@@ -113,11 +123,17 @@ impl Fixture {
             StreamId::parse("stream:stream-dwell")?,
         )
         .with_limits(limits)
-        .with_receive_time(TimestampNs(1_000_000_000_000));
+        .with_receive_time(TimestampNs(
+            1_000_000_000_000.max((source_frames as i128 + 1) * 100_000_000),
+        ));
         if known_time {
             request = request.with_capture_hint(CaptureHint::new(TimestampNs(0), 0, 10.0)?);
         }
-        let identity = FileIngestAdapter::ingest(request, &cx, &mut deployment)?.import_identity;
+        let imported = FileIngestAdapter::ingest(request, &cx, &mut deployment)?;
+        if source_frames > fss_reference::DeploymentLimits::STANDARD_MANIFEST_CHILDREN_MAX {
+            assert!(imported.manifest.part_roots.len() > 1);
+        }
+        let identity = imported.import_identity;
         drop(deployment);
         cx.drain_and_finalize();
         fs::remove_file(input)?;
