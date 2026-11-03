@@ -522,6 +522,7 @@ fn execute_admitted(
                     | fss_cli::effect_cmd::EffectCommand::Commit(_)
                     | fss_cli::effect_cmd::EffectCommand::Reconcile(_)
                     | fss_cli::effect_cmd::EffectCommand::Cancel(_)
+                    | fss_cli::effect_cmd::EffectCommand::CancelSession(_)
                     | fss_cli::effect_cmd::EffectCommand::Wait(_)
             )
     ) && !matches!(
@@ -1519,6 +1520,51 @@ mod tests {
             );
         }
         assert_eq!(calls, 5);
+    }
+
+    #[test]
+    fn session_cancellation_reaches_native_owner_and_notifications_cannot_execute() {
+        use fss_cli::effect_cmd::EffectCommand;
+
+        let mut server = ready();
+        let digest = "sha256:1111111111111111111111111111111111111111111111111111111111111111";
+        let expected = r#"{"operationId":"AOP-010","outcome":"ok"}"#;
+        let mut calls = 0;
+        for approval in [None, Some(digest)] {
+            let approved =
+                approval.map_or_else(String::new, |digest| format!(r#", "approve":"{digest}""#));
+            let request = format!(
+                r#"{{"jsonrpc":"2.0","id":43,"method":"tools/call","params":{{"name":"cancel","arguments":{{"session":"session:owner"{approved}}}}}}}"#
+            );
+            let response = server.handle_with(&request, |command| {
+                let FssCommand::Effect(effect) = command else {
+                    unreachable!("session cancellation must retain its native effect owner");
+                };
+                let EffectCommand::CancelSession(args) = effect.as_ref() else {
+                    unreachable!("session cancellation cannot change its native target");
+                };
+                assert_eq!(args.session.as_str(), "session:owner");
+                assert_eq!(args.root, std::path::Path::new("/owner/deployment"));
+                assert_eq!(args.principal.as_str(), "principal:local-operator");
+                assert_eq!(
+                    args.approve.map(|digest| digest.to_text()).as_deref(),
+                    approval
+                );
+                calls += 1;
+                (expected.to_owned(), ExitIdentity::SUCCESS)
+            });
+            assert!(response.is_some_and(|reply| {
+                reply.contains(&quote(expected)) && reply.contains("\"isError\":false")
+            }));
+            assert_eq!(
+                server.handle_with(&request.replace("\"id\":43,", ""), |_| {
+                    calls += 1;
+                    (String::new(), ExitIdentity::SUCCESS)
+                }),
+                None,
+            );
+        }
+        assert_eq!(calls, 2);
     }
 
     #[test]

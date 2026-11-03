@@ -35,14 +35,18 @@ the capture archive and loose model go offline. Interrupted imports and retentio
 reconcile through those existing owners on exact retry. The motion-based HTTP watch
 formats and existing RTSP sentinel resource semantics are preserved.
 
-Ten native core contracts, seven focused CLI unit contracts and one real-process
-capture/import/inference/replay contract cover the new behavior. Existing HTTP-watch
-and RTSP-sentinel contracts are included in the focused validation gate because their
-source and resource owners are shared. Independent source reviews, pinned formatting,
-and a narrow pinned-rustc report-format check passed. Native crate/test execution is
-pending because the shared host cannot currently build the unchanged dependency
-closure within available memory headroom. No live-camera, detector-quality, event,
-absence, continuous-coverage or production qualification is claimed.
+The pinned native run at `6ff59b8` compiled this implementation and passed all 13
+sentinel binary contracts, the real-process capture/import/inference/cold-replay
+contract, both shared-pool contracts, all eight legacy HTTP-watch core contracts and
+its CLI contract, and all 17 RTSP campaign sentinel/HEVC/plan contracts. Nine of ten
+new core contracts passed; the remaining assertion expected a fourth frame after a
+truncated MIME delimiter, while the native importer correctly released only the three
+fully delimited frames. That fixture expectation is being corrected without changing
+the importer. Evidence: run `41598188819`, job `125794756307`. The workflow was
+cancelled after these groups completed; these are scoped results, not a full gate pass.
+Independent source reviews, pinned formatting and a narrow pinned-rustc report-format
+check also passed. No live-camera, detector-quality, event, absence,
+continuous-coverage or production qualification is claimed.
 The two strict public projection schemas match the actual source renderers; the
 offline catalog resolves 132 schemas and 2077 references with zero metadata/reference
 errors. Representative positive/negative shape checks passed. The separate schema
@@ -70,13 +74,16 @@ approval position; session revocation does not settle an effect or prove deliver
 An admitted same-mission replacement session can reclaim a closed owner's live work
 claim with a new fencing incarnation and the existing progress intact.
 
-Eleven focused journal, native-owner, real-process CLI and MCP regressions cover
-atomic journal cut points, cold retries, stale approvals, current authority, active
-writers, lagging-pin recovery, expiry, unresolved effects and claim reclamation.
-Independent source review and pinned formatting passed; native compilation/execution
-remains pending because the shared host lacks memory headroom for the unchanged
-dependency build. See `docs/session_cancellation.md` for the operator workflow and
-the explicit bounds of this reference implementation.
+The pinned native run at `6ff59b8` passed all four journal contracts, the MCP request
+mapping contract and five of six real-process owner contracts. The remaining contract
+exposed a separate MCP server dispatch gate that omitted `CancelSession`, despite
+accepting its request. That gate now routes both preview and exact approval to the
+same native owner, with a server regression proving notifications cannot execute the
+operation. The real-process helper exposes transport refusals directly. The original
+authority, exclusive-target, retained-obligation and approval contracts remain intact.
+Evidence: run `41598188819`, job `125794756307`; the post-fix native rerun is pending.
+Independent source review and pinned formatting passed. See
+`docs/session_cancellation.md` for the operator workflow and reference bounds.
 
 ## Exact learning recovery across handoff rebases (2026-11-03)
 
@@ -98,8 +105,9 @@ exact root stability after rebase, missing feedback/learning slots, revoked curr
 admission, and materially different requests. Two independent source reviews and the
 pinned formatter passed. Native reference and CLI targets compiled in hosted run
 `41596340186`, job `125784472561`, with custody, cold-supervision, event-recovery and
-multipart-upload groups passing. The expanded learning-specific regression remains
-pending. The local Asupersync dependency build exceeded this shared host's available
+multipart-upload groups passing. The expanded learning-specific regression passed
+in the subsequent native run at `6ff59b8` (`41598188819`, job `125794756307`, 12.12s).
+The earlier local Asupersync dependency build exceeded this shared host's available
 memory headroom and was stopped before project diagnostics. The prior main revision's
 native run reproduced the exact-retry defect; no production qualification is claimed.
 

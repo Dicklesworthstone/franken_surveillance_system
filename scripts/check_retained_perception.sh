@@ -35,7 +35,7 @@ check session-cancellation-journal cargo "+$channel" test --locked --offline --n
 check session-cancellation-operator cargo "+$channel" test --locked --offline --no-fail-fast \
     -p fss-cli --test session_cancel_cli_contract
 check session-cancellation-mcp cargo "+$channel" test --locked --offline --no-fail-fast \
-    -p fss-cli --bin fss-mcp session_cancellation_uses_fixed_principal_and_exclusive_target
+    -p fss-cli --bin fss-mcp session_cancellation_
 check http-history-sentinel cargo "+$channel" test --locked --offline --no-fail-fast \
     -p fss-reference --test http_history_sentinel_contract --test http_history_watch_contract \
     --test rtsp_campaign_sentinel_contract --test rtsp_campaign_sentinel_hevc_contract \

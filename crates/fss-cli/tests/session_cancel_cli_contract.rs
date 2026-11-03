@@ -247,7 +247,19 @@ impl Fixture {
         let stdout = String::from_utf8(output.stdout)?;
         let lines: Vec<_> = stdout.lines().collect();
         assert_eq!(lines.len(), 2, "{stdout}");
+        let initialized = parse(lines[0])?;
+        assert_eq!(
+            text(&initialized, &["result", "protocolVersion"])?,
+            "2025-06-18",
+            "{stdout}"
+        );
         let wire = parse(lines[1])?;
+        assert!(
+            wire.object()
+                .is_some_and(|fields| !fields.contains_key("error")),
+            "MCP transport rejected the admitted cancellation: {stdout}"
+        );
+        assert_eq!(field(&wire, &["id"])?.integer(), Some(2), "{stdout}");
         let content = field(&wire, &["result", "content"])?
             .array()
             .ok_or("MCP content")?;
