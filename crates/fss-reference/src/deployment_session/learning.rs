@@ -482,7 +482,6 @@ pub(super) fn capture(
         || plan.principal != session.principal_id
         || feedback.proposal.session_id != session.session_id
         || feedback.proposal.principal_id != session.principal_id
-        || feedback.proposal.basis_anchor != session.current_anchor
     {
         return Err(refused(
             "the learning source plan and feedback must belong to this exact session, mission and principal",
@@ -623,6 +622,11 @@ pub(super) fn capture(
     ))
     .map_err(|_| invalid("the learning publication slot is invalid"))?;
     let existing = read_published(root, &slot)?;
+    if existing.is_none() && feedback.proposal.basis_anchor != session.current_anchor {
+        return Err(refused(
+            "historical feedback can only recover its original complete learning capture; a new capture requires the current session anchor",
+        ));
+    }
     if existing.is_none()
         && captured_inventory(root, store, session, super::evidence_now(head))?
             .briefs
@@ -667,6 +671,7 @@ pub(super) fn capture(
             .revision;
         if original.contract_basis() != &retained.contract_basis
             || original.contract_basis() != position.workspace.contract_basis()
+            || original.capsule().current_anchor != feedback.proposal.basis_anchor
             || mission_for_workspace(root, session, &original)?.digest() != mission.digest()
         {
             return Err(refused(

@@ -10,6 +10,29 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Exact learning recovery across handoff rebases (2026-11-03)
+
+An exact plan-targeted `create_learning_proposal` retry now recovers its original
+feedback, experience and learning roots after a handoff advances the session anchor.
+Recovery searches only the bounded, currently admitted native learning inventory and
+this session's retained workspace anchors. It authenticates the original source closure,
+principal, mission and contract basis; changed statements, evidence or dispositions
+remain distinct requests with the current anchor.
+
+Missing or corrupt historical custody cannot cause a replacement publication. Missing
+learning custody reports the original retained feedback as partial; missing feedback
+custody refuses. Current session, feedback capability and private-scope checks still
+apply before discovery or disclosure. Captured learning remains advisory and grants
+no effect or policy-promotion authority.
+
+The existing real-process CLI/MCP learning contract now covers normalized evidence,
+exact root stability after rebase, missing feedback/learning slots, revoked current
+admission, and materially different requests. Two independent source reviews and the
+pinned formatter passed. Native execution of this change is pending: the unchanged
+Asupersync dependency build exceeded this shared host's available memory headroom and
+was stopped before project diagnostics. The prior main revision's hosted native run
+reproduced the exact-retry defect; no production qualification is claimed by this fix.
+
 ## Multipart recording continuation (2026-11-03)
 
 Incremental dwell now accepts completed partitioned MJPEG, AVC and HEVC imports.
@@ -29,10 +52,11 @@ existing deletion closure reaches the inventory, checkpoints and original part r
 Eight native regressions and two real-process CLI contracts cover codec continuation,
 whole-recording report/proposal identity, delayed output, temporal gaps, exact retries,
 resource and authority refusal, forged inventories, missing custody and deletion.
-The core implementation passed independent code review and the pinned formatter.
-Native execution remains unverified: dependency compilation exhausted shared memory
-and storage; the execution environment was also temporarily unavailable. The same
-native tests remain required; this feature does not establish production qualification.
+All ten new regressions passed in the pinned native hosted run, together with all
+82 long-dwell and 34 watch-stream CLI contracts. The core implementation also passed
+independent code review and the pinned formatter. The overall workflow failed in
+other existing ONVIF, learning and policy checks; these scoped results do not establish
+production qualification. Evidence: GitHub Actions run `41563222067`, job `125695702425`.
 See `docs/incremental_dwell.md` for formats and operator commands.
 
 ## Alert reconciliation after source loss (2026-11-02)
@@ -50,11 +74,11 @@ dispatch. Prepared operations, stale or missing authority, corrupted journals an
 retained reconciliation proof still refuse. The prior canonical agent command and its approval
 identity remain unchanged. See `docs/alert_lifecycle.md` for the operator workflow.
 
-Seven new real-process contracts cover these success/refusal paths and native-owner approval
-equivalence. Source formatting and independent review are available; native execution remains
-pending because the shared validation host exhausted memory and storage while building the
-unchanged dependency closure. This is an implemented reference surface, not a newly qualified
-provider or production-release claim.
+All seven new real-process contracts passed in the pinned native hosted run, as did the
+complete 16-test alert CLI group and three owner-contract tests. Source formatting and
+independent review also passed. Evidence: GitHub Actions run `41563222178`, job
+`125700093921`. Other workflow checks failed; these scoped results do not qualify a
+provider or production release.
 
 ## Retained RTP/JPEG imports for native analysis (2026-11-02)
 

@@ -2352,6 +2352,88 @@ fn assert_learning_discovery(
     Ok(())
 }
 
+fn assert_learning_retry_requires_current_admission(
+    agent: &Agent,
+    args: &[OsString],
+    principal: &str,
+    statement: &str,
+) -> TestResult {
+    use fss_core::{PrincipalId, SessionId};
+    use fss_reference::agent_session::SessionRefresh;
+    use fss_reference::agent_session::checkpoint::journal::{
+        DurableSessionLimits, DurableSessionStore, inspect_session_bytes,
+    };
+    use fss_reference::agent_session::work_claims::WorkClaimLimits;
+
+    let directory = agent.root.join("agent/sessions");
+    let journal_path = directory.join("journal.fssj");
+    let pin_path = directory.join("ROOT");
+    let journal_bytes = fs::read(&journal_path)?;
+    let pin_bytes = fs::read(&pin_path)?;
+    let pinned = ContentDigest::parse(std::str::from_utf8(&pin_bytes)?.trim_end())?;
+    let limits = DurableSessionLimits::default();
+    let retained = inspect_session_bytes(&journal_bytes, limits, WorkClaimLimits::default())?;
+    let principal = PrincipalId::parse(principal)?;
+    let session_id = SessionId::parse(&agent.session)?;
+    let original = retained
+        .sessions
+        .iter()
+        .find(|entry| entry.session.session_id == session_id)
+        .ok_or("retained learning owner")?;
+
+    // Each independent fixture state is produced by the real durable owner. Historical
+    // capture membership never restores a revoked grant, private scope or closed session.
+    for revoked in ["feedback", "privacy", "closed"] {
+        let mut store = DurableSessionStore::open_existing_with_coordination(
+            &journal_path,
+            pinned,
+            limits,
+            WorkClaimLimits::default(),
+        )?;
+        if revoked == "closed" {
+            store.close(&principal, &session_id, original.last_observed_at)?;
+        } else {
+            let mut capabilities = original.session.capabilities.clone();
+            let mut privacy_scope = original.session.privacy_scope.clone();
+            if revoked == "feedback" {
+                assert!(capabilities.remove("CAP-AGENT-FEEDBACK-001"));
+            } else {
+                assert!(privacy_scope.remove("private:property"));
+            }
+            store.refresh(
+                &principal,
+                &session_id,
+                SessionRefresh {
+                    expected_session_digest: original.session.session_digest(),
+                    current_anchor: original.session.current_anchor.clone(),
+                    capabilities,
+                    privacy_scope,
+                },
+                original.last_observed_at,
+            )?;
+        }
+        fs::write(&pin_path, format!("{}\n", store.committed_root()))?;
+        drop(store);
+        let before = learning_tree(&agent.root, &[""])?;
+        let (code, stdout) = run_fss(args)?;
+        let (_, response) = agent.answer(code, &stdout)?;
+        assert_eq!(code, Some(5), "{revoked}: {stdout}");
+        assert_eq!(text(&response, &["outcome"])?, "refused");
+        assert!(
+            !stdout.contains(statement),
+            "{revoked} disclosed private feedback"
+        );
+        assert_eq!(
+            learning_tree(&agent.root, &[""])?,
+            before,
+            "{revoked} retry changed retained state"
+        );
+        fs::write(&journal_path, &journal_bytes)?;
+        fs::write(&pin_path, &pin_bytes)?;
+    }
+    Ok(())
+}
+
 #[test]
 fn closed_episode_feedback_publishes_captured_learning_with_cold_cli_mcp_recovery() -> TestResult {
     let (directory, event_id) = corroborated_event("episode-learning")?;
@@ -2784,6 +2866,80 @@ fn closed_episode_feedback_publishes_captured_learning_with_cold_cli_mcp_recover
     assert_eq!(learning_tree(&agent.root, &authority_paths)?, authority);
     assert_eq!(relay.connections(), 0);
 
+    // Request normalization and the current response anchor do not rebind the historical
+    // capture. Repeating an evidence handle is the same canonical evidence set.
+    let normalized_args = learning_args(
+        &agent,
+        &plan_id,
+        &format!("{supporting},{supporting}"),
+        statement,
+    );
+    let (code, normalized) = run_fss(&normalized_args)?;
+    assert_eq!(code, Some(0), "{normalized}");
+    assert_eq!(normalized, recovered_stdout);
+    assert_eq!(
+        field(&recovered, &["inputAnchor"])?,
+        field(&resumed, &["payload", "anchor"])?
+    );
+    assert_eq!(
+        field(&recovered, &["payload", "basisAnchor"])?,
+        field(&first, &["payload", "basisAnchor"])?
+    );
+    assert_eq!(
+        learning_tree(&agent.root, &["agent/publications"])?,
+        after_handoff
+    );
+
+    // Losing the visible learning slot must not turn the same retained old feedback request
+    // into a second feedback/experience at the rebased anchor. Preserve the original root in
+    // the partial refusal; no slot, source object or publication is recreated.
+    let experience_id = text(&first, &["payload", "experienceId"])?;
+    let slot_digest = ContentDigest::sha256(experience_id.as_bytes()).to_text();
+    let learning_slot = publication
+        .join(fss_publication::LOCAL_ROOTS_DIR)
+        .join(format!(
+            "learning-{}{}",
+            slot_digest
+                .strip_prefix("sha256:")
+                .ok_or("learning slot digest")?,
+            fss_publication::ROOT_RECORD_SUFFIX,
+        ));
+    let slot_bytes = fs::read(&learning_slot)?;
+    fs::remove_file(&learning_slot)?;
+    let missing_slot = learning_tree(&agent.root, &[""])?;
+    let (code, missing_stdout) = run_fss(&args)?;
+    let (_, missing) = agent.answer(code, &missing_stdout)?;
+    assert_eq!(code, Some(5), "{missing_stdout}");
+    assert_eq!(text(&missing, &["outcome"])?, "partial");
+    assert_eq!(text(&missing, &["payload", "feedbackId"])?, feedback_id);
+    assert_eq!(texts(&missing, &["proofPointers"])?[0], feedback_root);
+    assert_eq!(
+        learning_mcp(&agent, principal, &arguments, true)?,
+        missing_stdout.trim_end()
+    );
+    assert_eq!(learning_tree(&agent.root, &[""])?, missing_slot);
+    fs::write(&learning_slot, &slot_bytes)?;
+
+    let feedback_slot_digest = ContentDigest::sha256(feedback_id.as_bytes()).to_text();
+    let feedback_slot = publication
+        .join(fss_publication::LOCAL_ROOTS_DIR)
+        .join(format!(
+            "feedback-{}{}",
+            feedback_slot_digest
+                .strip_prefix("sha256:")
+                .ok_or("feedback slot digest")?,
+            fss_publication::ROOT_RECORD_SUFFIX,
+        ));
+    let feedback_slot_bytes = fs::read(&feedback_slot)?;
+    fs::remove_file(&feedback_slot)?;
+    let missing_feedback = learning_tree(&agent.root, &[""])?;
+    let (code, missing_stdout) = run_fss(&args)?;
+    let (_, missing) = agent.answer(code, &missing_stdout)?;
+    assert_eq!(code, Some(5), "{missing_stdout}");
+    assert_eq!(text(&missing, &["outcome"])?, "refused");
+    assert_eq!(learning_tree(&agent.root, &[""])?, missing_feedback);
+    fs::write(&feedback_slot, feedback_slot_bytes)?;
+
     // Retained learning never licenses a retry to recreate a lost source episode or ignore
     // corruption in its canonical candidate. Every call is a fresh process.
     for (digest, remove) in [(episode_rendering, true), (proposal_digest, false)] {
@@ -2834,6 +2990,60 @@ fn closed_episode_feedback_publishes_captured_learning_with_cold_cli_mcp_recover
         assert_eq!(relay.connections(), 0);
         fs::write(&path, original)?;
     }
+
+    assert_learning_retry_requires_current_admission(&agent, &args, principal, statement)?;
+
+    // A materially changed request still creates a distinct advisory candidate at the current
+    // session anchor. Returning the old request must not coalesce new evidence or prose.
+    use fss_reference::deployment_session::feedback::{
+        FeedbackRequest, FeedbackTarget, publish_feedback,
+    };
+    let original_request = FeedbackRequest {
+        session_id: fss_core::SessionId::parse(&agent.session)?,
+        principal: fss_core::PrincipalId::parse(principal)?,
+        target: FeedbackTarget::Plan(plan_id),
+        kind: fss_core::FeedbackProposalKind::PolicyCandidate,
+        statement: statement.to_owned(),
+        supporting: vec![ContentDigest::parse(&supporting)?],
+        contradicting: Vec::new(),
+        disposition: fss_core::RequestedDisposition::CreateLearningProposal,
+    };
+    let mut changed_evidence = original_request.clone();
+    changed_evidence.contradicting.push(ContentDigest::sha256(
+        b"outside the retained learning closure",
+    ));
+    let unsupported = publish_feedback(&agent.root, &changed_evidence)?;
+    assert_ne!(unsupported.root.to_text(), feedback_root);
+    assert!(unsupported.learning.is_none());
+    assert!(unsupported.learning_refusal.is_some());
+    let mut changed_disposition = original_request.clone();
+    changed_disposition.disposition = fss_core::RequestedDisposition::RecordOnly;
+    let recorded = publish_feedback(&agent.root, &changed_disposition)?;
+    assert_ne!(recorded.root.to_text(), feedback_root);
+    assert!(recorded.learning.is_none());
+    assert!(recorded.learning_refusal.is_none());
+    assert_eq!(
+        recorded.proposal.requested_disposition,
+        fss_core::RequestedDisposition::RecordOnly
+    );
+    let changed_statement = "Review a different procedure using the same original episode.";
+    let mut changed_request = original_request;
+    changed_request.statement = changed_statement.to_owned();
+    let changed = publish_feedback(&agent.root, &changed_request)?;
+    let changed_learning = changed.learning.as_ref().ok_or("changed request capture")?;
+    assert_ne!(changed.root.to_text(), feedback_root);
+    assert_ne!(changed_learning.root, learning_root);
+    assert_ne!(changed_learning.proposal_digest, proposal_digest);
+    assert_eq!(changed_learning.episode_root, episode_root);
+    assert_eq!(changed_learning.plan_root.to_text(), supporting);
+    assert_eq!(changed_learning.proposal.statement, changed_statement);
+    assert_eq!(
+        changed.proposal.basis_anchor,
+        changed.session.current_anchor
+    );
+    assert_eq!(fs::read(&learning_slot)?, slot_bytes);
+    assert_eq!(learning_tree(&agent.root, &authority_paths)?, authority);
+    assert_eq!(relay.connections(), 0);
     Ok(())
 }
 

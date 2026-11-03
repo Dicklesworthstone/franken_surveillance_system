@@ -15,7 +15,9 @@
 //! **Persistence.** The canonical proposal bytes are published root-last under
 //! `<root>/agent/publications/` in a `feedback-<digest>` slot with the rendered public JSON as the
 //! only child. The identity is derived from the exact content and anchor, so an identical
-//! proposal is an exact retry.
+//! proposal is an exact retry. A completed own-plan learning capture additionally preserves its
+//! exact original feedback across session rebases: current admission and source verification
+//! recover the retained request rather than publishing another observation at the new anchor.
 //!
 //! An explicit `open_case` disposition also asks the existing investigation owner to retain
 //! one evidence-linked draft. This creates review state, not a corrected fact or an active policy.
@@ -24,6 +26,7 @@
 /// Deterministic feedback-grounded drafts admitted by the native investigation owner.
 pub mod case;
 
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use fss_core::{
@@ -38,6 +41,7 @@ use super::{
     digest_of, evidence_now, hex, orient_bound, publish_record, read_published,
 };
 use crate::agent_session::checkpoint::journal::coordination::investigations::InvestigationError;
+use crate::agent_session::checkpoint::journal::projection::SessionProjection;
 
 /// Registered advisory-write grant every feedback proposal requires.
 pub const CAPABILITY_FEEDBACK: &str = "CAP-AGENT-FEEDBACK-001";
@@ -166,6 +170,144 @@ fn handles(digests: &[ContentDigest]) -> Vec<String> {
     out.sort();
     out.dedup();
     out
+}
+
+fn feedback_identity(request: &FeedbackRequest, anchor: &LedgerAnchor) -> String {
+    let supporting = handles(&request.supporting);
+    let contradicting = handles(&request.contradicting);
+    let identity = digest_of(FEEDBACK_IDENTITY_DOMAIN, |encoder| {
+        request.session_id.encode_canonical(encoder);
+        anchor.encode_canonical(encoder);
+        encoder.text(&target_json(&request.target));
+        encoder.text(request.kind.as_str());
+        encoder.text(&request.statement);
+        encoder.u32(supporting.len() as u32);
+        for handle in &supporting {
+            encoder.text(handle);
+        }
+        encoder.u32(contradicting.len() as u32);
+        for handle in &contradicting {
+            encoder.text(handle);
+        }
+        encoder.text(request.disposition.as_str());
+    });
+    format!(
+        "feedback:{}",
+        hex(identity).chars().take(32).collect::<String>()
+    )
+}
+
+fn matches_request(proposal: &AgentFeedbackProposal, request: &FeedbackRequest) -> bool {
+    proposal.session_id == request.session_id
+        && proposal.principal_id == request.principal
+        && proposal.target_json == target_json(&request.target)
+        && proposal.kind == request.kind
+        && proposal.statement == request.statement
+        && proposal.supporting_evidence == handles(&request.supporting)
+        && proposal.contradicting_evidence == handles(&request.contradicting)
+        && proposal.requested_disposition == request.disposition
+        && proposal.privacy_class == FeedbackPrivacyClass::Private
+}
+
+fn retain_match(
+    recovered: &mut Option<(AgentFeedbackProposal, ContentDigest)>,
+    proposal: AgentFeedbackProposal,
+    root: ContentDigest,
+) -> Result<(), DeploymentSessionError> {
+    if let Some((previous, previous_root)) = recovered {
+        if *previous_root != root || *previous != proposal {
+            return Err(DeploymentSessionError::FeedbackRefused(
+                "multiple retained proposals match this learning request; inspect their exact roots before proposing different feedback".to_owned(),
+            ));
+        }
+    } else {
+        *recovered = Some((proposal, root));
+    }
+    Ok(())
+}
+
+/// A captured request remains the same request after its session rebases. Discover it only
+/// through the bounded, currently admitted learning owner, whose closure verifier authenticates
+/// the original workspace, principal, mission, sources and proposal. The ordinary publication
+/// check below still requires its original feedback slot; no missing custody is recreated.
+fn captured_feedback(
+    root: &Path,
+    request: &FeedbackRequest,
+    session: &AgentSession,
+    store: &crate::agent_session::checkpoint::journal::DurableSessionStore,
+    now: fss_core::TimestampNs,
+) -> Result<Option<(AgentFeedbackProposal, ContentDigest)>, DeploymentSessionError> {
+    if request.disposition != RequestedDisposition::CreateLearningProposal
+        || !matches!(&request.target, FeedbackTarget::Plan(_))
+    {
+        return Ok(None);
+    }
+    let inventory = super::learning::captured_inventory(root, store, session, now)?;
+    let unavailable = || {
+        DeploymentSessionError::StoreInvalid(
+            "the captured feedback no longer has its exact authenticated source closure".to_owned(),
+        )
+    };
+    let mut recovered = None;
+    for brief in &inventory.briefs {
+        let manifest = inventory
+            .objects
+            .get(&brief.feedback_root)
+            .and_then(|bytes| fss_object::ObjectManifest::from_canonical_bytes(bytes).ok())
+            .ok_or_else(unavailable)?;
+        let proposal = manifest
+            .metadata_digest()
+            .and_then(|digest| inventory.objects.get(&digest))
+            .and_then(|bytes| decode_proposal(bytes).ok())
+            .ok_or_else(unavailable)?;
+        if !matches_request(&proposal, request) {
+            continue;
+        }
+        if proposal.feedback_id != feedback_identity(request, &proposal.basis_anchor) {
+            return Err(unavailable());
+        }
+        retain_match(&mut recovered, proposal, brief.feedback_root)?;
+    }
+
+    // A missing learning slot must not turn a retained old request into a fresh publication.
+    // Derive only this request's slots at this live session's retained workspace anchors. The
+    // native workspace owner bounds that history; no unrelated feedback contents are read.
+    let recovery = store.recovery_state_for_projection(session, now)?;
+    let inspection = fss_publication::inspect(
+        root.join(super::PUBLICATIONS_RELPATH),
+        super::publication_limits(),
+    )?;
+    let mut seen = BTreeSet::new();
+    for workspace in &recovery.workspace_revisions {
+        let capsule = workspace.capsule();
+        if capsule.session_id != session.session_id
+            || capsule.principal != session.principal_id.as_str()
+        {
+            continue;
+        }
+        let id = feedback_identity(request, &capsule.current_anchor);
+        if !seen.insert(id.clone()) {
+            continue;
+        }
+        let slot = slot(&id)?;
+        if inspection.is_broken_slot(&slot) {
+            return Err(unavailable());
+        }
+        if inspection.root(&slot).is_none() {
+            continue;
+        }
+        let published = read_published(root, &slot)?.ok_or_else(unavailable)?;
+        let proposal = decode_proposal(&published.record).map_err(|_| unavailable())?;
+        if !matches_request(&proposal, request)
+            || proposal.feedback_id != id
+            || proposal.basis_anchor != capsule.current_anchor
+            || published.children != [ContentDigest::sha256(render_json(&proposal).as_bytes())]
+        {
+            return Err(unavailable());
+        }
+        retain_match(&mut recovered, proposal, published.root)?;
+    }
+    Ok(recovered)
 }
 
 const KINDS: [FeedbackProposalKind; 12] = [
@@ -350,53 +492,46 @@ pub fn publish_feedback(
     )?;
     journal.commit_pin()?;
     // Hold the admitted session lock through source validation and any advisory capture.
-    let supporting = handles(&request.supporting);
-    let contradicting = handles(&request.contradicting);
-    let target = target_json(&request.target);
-    let anchor = session.current_anchor.clone();
-    let identity = digest_of(FEEDBACK_IDENTITY_DOMAIN, |encoder| {
-        session.session_id.encode_canonical(encoder);
-        anchor.encode_canonical(encoder);
-        encoder.text(&target);
-        encoder.text(request.kind.as_str());
-        encoder.text(&request.statement);
-        encoder.u32(supporting.len() as u32);
-        for handle in &supporting {
-            encoder.text(handle);
-        }
-        encoder.u32(contradicting.len() as u32);
-        for handle in &contradicting {
-            encoder.text(handle);
-        }
-        encoder.text(request.disposition.as_str());
-    });
-    let feedback_id = format!(
-        "feedback:{}",
-        hex(identity).chars().take(32).collect::<String>()
-    );
-    // Stamped with the anchor's situation time, so an identical proposal is an exact retry even
-    // after evidence advances.
-    let proposal = AgentFeedbackProposal::new(
-        feedback_id.clone(),
-        session.principal_id.clone(),
-        session.session_id.clone(),
-        anchor,
-        target,
-        request.kind,
-        request.statement.clone(),
-        supporting,
-        contradicting,
-        request.disposition,
-        FeedbackPrivacyClass::Private,
-        orientation.capsule().created_at.0.max(0),
-    )?;
+    let (proposal, retained_root) =
+        match captured_feedback(root, request, &session, &journal.store, now)? {
+            Some((proposal, retained_root)) => (proposal, Some(retained_root)),
+            None => (
+                // New proposals retain their original anchor-dependent identity and time.
+                AgentFeedbackProposal::new(
+                    feedback_identity(request, &session.current_anchor),
+                    session.principal_id.clone(),
+                    session.session_id.clone(),
+                    session.current_anchor.clone(),
+                    target_json(&request.target),
+                    request.kind,
+                    request.statement.clone(),
+                    handles(&request.supporting),
+                    handles(&request.contradicting),
+                    request.disposition,
+                    FeedbackPrivacyClass::Private,
+                    orientation.capsule().created_at.0.max(0),
+                )?,
+                None,
+            ),
+        };
+    let feedback_id = proposal.feedback_id.clone();
     let record = proposal.try_canonical_bytes()?;
     let slot = slot(&feedback_id)?;
     let published_root = match read_published(root, &slot)? {
-        Some(existing) if existing.record == record => existing.root,
+        Some(existing)
+            if existing.record == record
+                && retained_root.is_none_or(|expected| expected == existing.root) =>
+        {
+            existing.root
+        }
         Some(_) => {
             return Err(DeploymentSessionError::FeedbackRefused(
                 "a different proposal is already published under this identity".to_owned(),
+            ));
+        }
+        None if retained_root.is_some() => {
+            return Err(DeploymentSessionError::StoreInvalid(
+                "the captured request's original feedback publication is missing; no replacement was published".to_owned(),
             ));
         }
         None => {
