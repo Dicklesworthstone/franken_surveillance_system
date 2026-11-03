@@ -252,11 +252,61 @@ open(__import__("os").environ["ORDER"], "a").write("rop\\n")
     check("no ROP on an empty pull", "rop" not in open(order).read())
 
 
+def test_rtsp_probe_retry(td, succeed):
+    """554 comes up a beat after the unit returns; the probe retries, the final verdict decides."""
+    label = "verification retries until 554 answers" if succeed else "verification gives up bounded"
+    print("post-shell chain: %s:" % label)
+    shell = FakeShell()
+    outdir = os.path.join(td, "pane4")
+    order = os.path.join(td, "order4")
+    counter = os.path.join(td, "verify.calls")
+    post = exe(os.path.join(td, "post4.py"), r"""#!/usr/bin/env python3
+import os, sys
+args = sys.argv[1:]
+out = os.environ["OUTDIR"]
+open(os.environ["ORDER"], "a").write("post %s\n" % " ".join(args))
+if "--pull" in args:
+    open(os.path.join(out, "proc_mtd"), "w").write("mtd0: 00040000 00010000\n")
+    open(os.path.join(out, "bin_main"), "wb").write(b"\x7fELF" + b"\0" * 64)
+elif "--rtsp-verify" in args:
+    n = int(open(os.environ["COUNTER"]).read() or 0) + 1 if os.path.exists(os.environ["COUNTER"]) else 1
+    open(os.environ["COUNTER"], "w").write(str(n))
+    # closed for the first two attempts, then serving (or never, when succeed is False)
+    sys.exit(0 if __SUCCEED__ and n >= 3 else 1)
+""".replace("__SUCCEED__", repr(succeed)))
+    chain = exe(os.path.join(td, "chain4.py"), r"""#!/usr/bin/env python3
+print("tapo_connectap_rop.py <host> --offset 0x424 --pop 0x1 --pivot 0x2 --system 0x3")
+""")
+    rop = exe(os.path.join(td, "rop4.py"), "#!/usr/bin/env python3\n")
+
+    env = dict(os.environ)
+    env.update({"OUTDIR": outdir, "ORDER": order, "COUNTER": counter,
+                "SHELL_PORT": str(shell.port), "WAIT": "10", "CHAIN": chain,
+                "POST_TOOL": post, "ROP_TOOL": rop, "PY": sys.executable,
+                "OBJDUMP": "true", "RTSP_WAIT": "0",
+                "RTSP_PROBE_TRIES": "4", "RTSP_PROBE_GAP": "0"})
+    r = subprocess.run(["bash", POST, "127.0.0.1"], capture_output=True, text=True,
+                       timeout=60, env=env)
+    shell.close()
+    calls = int(open(counter).read()) if os.path.exists(counter) else 0
+    if succeed:
+        check("retry reaches a serving verdict", r.returncode == 0,
+              "rc=%d %s" % (r.returncode, r.stdout[-300:]))
+        check("stopped probing once it answered", calls == 3, "calls=%d" % calls)
+    else:
+        check("bounded retry exits 6", r.returncode == 6, "rc=%d %s" % (r.returncode, r.stdout[-300:]))
+        check("probe count is capped by RTSP_PROBE_TRIES", calls == 4, "calls=%d" % calls)
+    check("retry logged", "not serving yet" in r.stdout if succeed else "after 4 attempts" in r.stdout,
+          r.stdout[-300:])
+
+
 def main():
     for name, fn in (("presence/one-shot", test_presence_and_one_shot),
                      ("chain order", test_chain_order),
                      ("real derivation", test_chain_real_derivation),
-                     ("empty pull", test_chain_empty_pull)):
+                     ("empty pull", test_chain_empty_pull),
+                     ("probe retry", lambda td: test_rtsp_probe_retry(td, True)),
+                     ("probe retry bounded", lambda td: test_rtsp_probe_retry(td, False))):
         with tempfile.TemporaryDirectory() as td:
             try:
                 fn(td)

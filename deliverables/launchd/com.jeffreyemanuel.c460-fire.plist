@@ -4,7 +4,7 @@
   <key>Label</key><string>com.jeffreyemanuel.c460-fire</string>
   <key>ProgramArguments</key><array>
     <string>/bin/bash</string>
-    <string>/Users/jemanuel/projects/franken_surveillance_system/.ntm/worktrees/franken_surveillance_system--liberation3/omp_1/deliverables/scripts/c460_fire.sh</string>
+    <string>/Users/jemanuel/projects/franken_surveillance_system/deliverables/scripts/c460_fire.sh</string>
   </array>
   <key>EnvironmentVariables</key><dict>
     <key>MAC</key><string>50:3d:d1:e3:e2:07</string>
