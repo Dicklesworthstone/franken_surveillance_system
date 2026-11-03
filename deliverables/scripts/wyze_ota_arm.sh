@@ -19,28 +19,19 @@ for pair in "wyzeedgeai_cam_v4_test_protocol:14.9.50039.r" "kvsWebrtcClientMaste
   dst="$CAP_DIR/$name/${PROC_VER:-14.9.50040.r}"
   [ -d "$src" ] && [ "$src" != "$dst" ] || continue
   mkdir -p "$dst"
-  for f in "$src"/*; do [ -e "$dst/$(basename "$f")" ] || cp "$f" "$dst/"; done
+  # an empty source dir makes the glob a literal path and cp fails noisily on every boot
+  for f in "$src"/*; do [ -e "$f" ] || [ -e "$dst/$(basename "$f")" ] || cp "$f" "$dst/"; done
 done
 
 export CAM_MAC="${CAM_MAC:-${MAC:-80:48:2c:4b:cf:0b}}"
 export CAP_DIR CAP_PATH="${CAP_PATH:-wuv2/upgrade/HL_CAM4/firmware/4.52.17.32.tar}"
 export FOREGROUND=1
-echo "arm: cam=$CAM_MAC path=$CAP_PATH md5=${OTA_MD5:-<from file>}" >>/tmp/ota/arm.log
+echo "arm: cam=$CAM_MAC path=$CAP_PATH md5=${OTA_MD5:-<from file>}" 2>/dev/null \
+  | sudo -n tee -a /tmp/ota/arm.log >/dev/null || true
 exec "$HERE/wyze_mitm_up.sh"
 
-# 8. forge on :443 (idempotent: kill any previous instance first — including ones
-#    launched from deleted worktrees, whose stale code serves a bare rootCA and
-#    breaks broker-leaf validation; the repo copy carries the bundle fix).
-FORGE_LOG="${FORGE_LOG:-/tmp/ota/forge.log}"
-OLD_FORGE=$(pgrep -f "wyze_forge_serve.py" | head -1)
-[ -n "$OLD_FORGE" ] && kill "$OLD_FORGE" 2>/dev/null && sleep 2
-if ! lsof -nP -iTCP:443 -sTCP:LISTEN 2>/dev/null | grep -q Python; then
-  echo "arm: launching repo forge on :443 (bundle fix)"
-  nohup "$PY" "$HERE/wyze_forge_serve.py" --dir "$CAP_DIR" --port 443 \
-    --cert /tmp/iot2.pem --key /tmp/iot2.key \
-    --intermediate "$HERE/../certs/emudhra/ev-ca-aaa-cross.pem" \
-    --sni s3-us-west-2.amazonaws.com --firmware-detail --iot-cert \
-    --iot-cert-dir "$HERE/../certs/iot" \
-    >> "$FORGE_LOG" 2>&1 &
-  sleep 4
-fi
+# NOTE: everything below this line used to be the forge bring-up, and was dead code — `exec`
+# replaces the shell, so it never ran. The forge on :443 (with --iot-cert and --iot-cert-dir) is
+# now launched by wyze_mitm_up.sh itself, which also kills any stale listener first (including
+# copies launched from deleted worktrees, whose old code serves a bare rootCA and breaks
+# broker-leaf validation).
