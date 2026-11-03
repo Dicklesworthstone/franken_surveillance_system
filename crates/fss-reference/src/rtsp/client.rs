@@ -814,6 +814,7 @@ fn transport_binding(value: &str, offered: (u8, u8)) -> Result<Option<u32>, Clie
         return Err(ClientError::Transport);
     }
     let (mut unicast, mut channels, mut mode, mut ssrc) = (false, false, false, None);
+    let (mut source, mut destination) = (false, false);
     for part in parts {
         let part = part.trim();
         if part == "unicast" && !unicast {
@@ -832,6 +833,12 @@ fn transport_binding(value: &str, offered: (u8, u8)) -> Result<Option<u32>, Clie
                 channels = true;
             }
             "mode" if !mode && matches!(val, "PLAY" | "\"PLAY\"") => mode = true,
+            // RFC 2326 section 12.39 permits address metadata in SETUP. With
+            // interleaved TCP it grants no routing authority: media still arrives
+            // only on the existing owner-pinned connection and selected channels.
+            // Original header custody is unchanged; no address is resolved or used.
+            "source" if !source && transport_host(val) => source = true,
+            "destination" if !destination && transport_host(val) => destination = true,
             "ssrc"
                 if ssrc.is_none()
                     && !val.is_empty()
@@ -847,6 +854,108 @@ fn transport_binding(value: &str, offered: (u8, u8)) -> Result<Option<u32>, Clie
         return Err(ClientError::Transport);
     }
     Ok(ssrc)
+}
+
+fn transport_host(value: &str) -> bool {
+    if value.is_empty() || value.len() > 253 || !value.is_ascii() {
+        return false;
+    }
+    if value.parse::<std::net::IpAddr>().is_ok() {
+        return true;
+    }
+    if let Some(ipv6) = value.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+        return ipv6.parse::<std::net::Ipv6Addr>().is_ok();
+    }
+    // Reject ambiguous numeric addresses, ports, userinfo and URI syntax. DNS
+    // spelling is permitted as metadata only and never invokes a resolver.
+    let host = value.strip_suffix('.').unwrap_or(value);
+    if host.bytes().all(|b| b.is_ascii_digit() || b == b'.') {
+        return false;
+    }
+    host.split('.').all(|label| {
+        !label.is_empty()
+            && label.len() <= 63
+            && label.as_bytes()[0].is_ascii_alphanumeric()
+            && label.as_bytes()[label.len() - 1].is_ascii_alphanumeric()
+            && label
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    })
+}
+
+#[cfg(test)]
+mod transport_metadata_tests {
+    use super::*;
+
+    #[test]
+    fn tcp_address_metadata_preserves_exact_channels_and_sender() -> Result<(), ClientError> {
+        for host in [
+            "192.0.2.8",
+            "2001:db8::8",
+            "[2001:db8::8]",
+            "protect.local",
+            "console-01.example.test.",
+        ] {
+            let header = format!(
+                "RTP/AVP/TCP;unicast;source={host};destination=192.0.2.9;interleaved=4-5;ssrc=9ABCDEF0;mode=\"PLAY\""
+            );
+            assert_eq!(transport_binding(&header, (4, 5))?, Some(0x9abc_def0));
+            assert_eq!(
+                transport_binding(&header, (0, 1)),
+                Err(ClientError::Transport)
+            );
+        }
+        assert_eq!(
+            transport_binding(
+                "RTP/AVP/TCP;unicast;interleaved=0-1;source=protect.local",
+                (0, 1)
+            )?,
+            None
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn tcp_address_metadata_rejects_ambiguous_and_routing_directives() {
+        let prefix = "RTP/AVP/TCP;unicast;interleaved=0-1";
+        for suffix in [
+            "source=192.0.2.8;source=192.0.2.8",
+            "destination=192.0.2.9;destination=192.0.2.10",
+            "source=",
+            "destination=",
+            "source=010.0.0.1",
+            "source=192.0.2.999",
+            "source=alice@192.0.2.8",
+            "source=rtsp://192.0.2.8/live",
+            "source=192.0.2.8:7447",
+            "source=[2001:db8::8]:7447",
+            "source=[not-an-ip]",
+            "source=.local",
+            "source=console..local",
+            "source=-console.local",
+            "source=console_.local",
+            "source=console%2elocal",
+            "source=console\r\nInjected: value",
+            "source=console local",
+            "source=console\0local",
+            "source=192.0.2.8;client_port=8000-8001",
+            "source=192.0.2.8;server_port=8000-8001",
+            "source=192.0.2.8;multicast",
+            "source=192.0.2.8;mode=RECORD",
+            "source=192.0.2.8, RTP/AVP/TCP;unicast;interleaved=0-1",
+        ] {
+            assert_eq!(
+                transport_binding(&format!("{prefix};{suffix}"), (0, 1)),
+                Err(ClientError::Transport)
+            );
+        }
+        for host in [format!("{}.local", "x".repeat(64)), "x".repeat(254)] {
+            assert_eq!(
+                transport_binding(&format!("{prefix};source={host}"), (0, 1)),
+                Err(ClientError::Transport)
+            );
+        }
+    }
 }
 
 fn description(
