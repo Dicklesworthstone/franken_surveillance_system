@@ -28,10 +28,13 @@ use fss_reference::ingest::http_recording::HttpRecordingAccess;
 use super::plan::{FORMAT, Options, RESERVE, reservation_json};
 use super::{decode, privacy};
 
+#[path = "driver_receipt.rs"]
+mod receipt;
 #[path = "recording.rs"]
 mod recording;
 #[path = "storage_lease.rs"]
 mod storage_lease;
+pub(super) use receipt::CaptureReceipt;
 use recording::{Boundary, Recording, history_pin_json};
 
 const STORAGE_CAPS: [&str; 4] = [
@@ -235,10 +238,7 @@ enum Failure {
     Authority(HttpCameraDenial),
     Output,
     FrameLimit,
-    FrameShortfall {
-        requested: u64,
-        verified: u64,
-    },
+    FrameShortfall { requested: u64, verified: u64 },
     Inconsistent,
     Stopped(HttpReconnectStop),
     Decode(decode::Failure),
@@ -278,7 +278,10 @@ impl Failure {
             Self::Authority(e) => format!("owner authority refused: {e:?}"),
             Self::Output => "bounded transcript sink refused; preserve prior complete pins".into(),
             Self::FrameLimit => "per-generation frame allowance exhausted; not EOF".into(),
-            Self::FrameShortfall { requested, verified } => format!(
+            Self::FrameShortfall {
+                requested,
+                verified,
+            } => format!(
                 "requested {requested} verified frames but retained {verified}; \
 complete responses do not satisfy the frame target; no additional connection is authorized"
             ),
@@ -722,7 +725,10 @@ fn finish(
         fields.push((
             "storage_drain",
             object(&[
-                ("maximum_extra_storage_ns", options.storage_drain_ns.to_string()),
+                (
+                    "maximum_extra_storage_ns",
+                    options.storage_drain_ns.to_string(),
+                ),
                 ("network_deadline_ns", options.timeout_ns.to_string()),
                 ("network_extended", "false".into()),
                 ("decode_extended", "false".into()),
@@ -800,7 +806,17 @@ fn finish(
 }
 
 pub(super) fn capture<W: Write>(options: &Options, out: &mut W) -> Result<bool, &'static str> {
-    capture_with(options, out, WallClock::start)
+    capture_receipt(options, out).map(|receipt| receipt.request_satisfied)
+}
+
+/// Execute the same native capture and transcript with a typed, bounded final observation.
+/// The observation is available only after terminal output is acknowledged. It grants no
+/// read, decode, inference, retention, or new acquisition authority.
+pub(super) fn capture_receipt<W: Write>(
+    options: &Options,
+    out: &mut W,
+) -> Result<CaptureReceipt, &'static str> {
+    capture_receipt_with(options, out, WallClock::start)
 }
 
 fn storage_limits(options: &Options) -> LocalPublicationLimits {
@@ -821,11 +837,20 @@ fn storage_limits(options: &Options) -> LocalPublicationLimits {
 }
 
 /// [`capture`] with an explicit owner clock, started exactly where the lease begins.
+#[cfg(test)]
 fn capture_with<W: Write, C: CaptureClock>(
     options: &Options,
     out: &mut W,
     start_clock: impl FnOnce() -> C,
 ) -> Result<bool, &'static str> {
+    capture_receipt_with(options, out, start_clock).map(|receipt| receipt.request_satisfied)
+}
+
+fn capture_receipt_with<W: Write, C: CaptureClock>(
+    options: &Options,
+    out: &mut W,
+    start_clock: impl FnOnce() -> C,
+) -> Result<CaptureReceipt, &'static str> {
     // Exact approval BEFORE constructing clocks, filesystem owners, or network authority.
     if options.approve != Some(options.approval()) {
         return Err("ERR-CAPTURE-RECONNECT-APPROVAL-STALE-001");
@@ -927,7 +952,7 @@ fn capture_with<W: Write, C: CaptureClock>(
         let mut publisher = LocalRootPublisher::open(&options.root, storage_limits(options))
             .map_err(|_| "ERR-CAPTURE-RECONNECT-STORAGE-001")?;
         let mut stats = Statistics::default();
-        let outcome = drive(
+        let native_outcome = drive(
             options,
             recording.as_mut(),
             &mut publisher,
@@ -936,10 +961,17 @@ fn capture_with<W: Write, C: CaptureClock>(
             &mut stats,
             decoder.as_mut(),
             privacy.as_ref(),
-        )
+        );
+        // Only a native Stopped poll establishes that no active connection or future retry
+        // remains. A requested frame count can succeed while its current source is unfinished.
+        let terminal_observed = matches!(
+            native_outcome,
+            Ok(End::FinalResponseComplete) | Err(Failure::Stopped(_))
+        );
         // Do not turn an earlier source, decode, authority, storage, or output failure into
         // a count failure. Native completion remains intact in the retained boundary history.
-        .and_then(|end| validate_completion(end, options.stop_after, stats.frames));
+        let outcome = native_outcome
+            .and_then(|end| validate_completion(end, options.stop_after, stats.frames));
         let report = finish(
             options,
             recording.as_ref(),
@@ -947,7 +979,13 @@ fn capture_with<W: Write, C: CaptureClock>(
             &outcome,
             decoder.as_ref(),
         );
-        let success = outcome.is_ok();
+        let receipt = CaptureReceipt::from_native(
+            options,
+            recording.as_ref(),
+            &stats,
+            &outcome,
+            terminal_observed,
+        );
         // Retire closes the socket without a request. Only published prefix pins survive process
         // exit; report pending accepted bytes honestly instead of attempting unapproved rescue I/O.
         recording.retire_owner();
@@ -955,7 +993,7 @@ fn capture_with<W: Write, C: CaptureClock>(
             .emit("finish", report, true)
             .map_err(|_| "ERR-CAPTURE-RECONNECT-OUTPUT-001");
         emitted?;
-        Ok(success)
+        Ok(receipt)
     })();
     cx.drain_and_finalize();
     result

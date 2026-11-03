@@ -208,7 +208,9 @@ fn quiet_generations_reach_native_model_under_one_round_robin_allowance_without_
 fn empty_failed_short_and_quota_skipped_generations_preserve_exact_native_outcomes() -> Test {
     let incomplete = b"HTTP/1.1 200 OK\r\nContent-Type: multipart/x-mixed-replace; boundary=camera\r\nContent-Length: 9999\r\n\r\n--camera\r\n".to_vec();
     let mut failed = response(&scene(4, 4)?);
-    failed.truncate(failed.len() - 6); // Complete JPEGs followed by a truncated terminal delimiter.
+    // The fourth JPEG is intact, but its following MIME delimiter is not. Only the first
+    // three source-mapped parts are complete; JPEG EOI alone never releases the last part.
+    failed.truncate(failed.len() - 6);
     let mut f = Fixture::new(&[
         Vec::new(),
         incomplete,
@@ -242,7 +244,7 @@ fn empty_failed_short_and_quota_skipped_generations_preserve_exact_native_outcom
     }
     assert!(rows[..2].iter().all(|r| r.import().is_none()));
     assert!(rows[2].sentinel_report().is_none());
-    assert_eq!(rows[3].import().ok_or("failed-prefix originals")?.frames, 4);
+    assert_eq!(rows[3].import().ok_or("failed-prefix originals")?.frames, 3);
     assert_eq!(rows[3].allocation().admitted_inferences, 2);
     assert_eq!(rows[4].allocation().budget_skipped_bursts, 1);
     assert!(rows[4].import().is_some());

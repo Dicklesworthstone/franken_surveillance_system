@@ -18,12 +18,17 @@ mod driver;
 mod plan;
 #[path = "fss-capture/privacy.rs"]
 mod privacy;
+#[path = "fss-capture-reconnect/sentinel.rs"]
+mod sentinel;
 
 fn main() -> ExitCode {
     let args: Vec<_> = std::env::args_os()
         .skip(1)
-        .take(plan::MAX_ARGUMENTS + 1)
+        .take(sentinel::MAX_ARGUMENTS + 2)
         .collect();
+    if args.first().and_then(|arg| arg.to_str()) == Some("sentinel") {
+        return sentinel::main(&args[1..]);
+    }
     if args.len() == 1 && matches!(args[0].to_str(), Some("help" | "--help" | "-h")) {
         return match driver::write_bounded(&mut io::stdout().lock(), plan::HELP.as_bytes()) {
             Ok(()) => ExitCode::SUCCESS,

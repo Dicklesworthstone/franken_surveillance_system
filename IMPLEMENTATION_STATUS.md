@@ -10,6 +10,42 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Live ended HTTP capture into retained native detection (2026-11-03)
+
+`fss-capture-reconnect sentinel` now composes the actual native camera owner with
+HTTP-history trained detection and retained cold replay. One exact outer approval
+binds the original capture plan, explicit camera/time assumptions for every reserved
+generation, pinned model, destination, sampling and effective resource bounds. Model
+and selected contract validation and canonical path admission precede camera contact.
+The deployment is not created during model preflight. Existing archive paths refuse
+live recapture; no transcript parser or subprocess joins the native owners.
+
+A typed capture receipt authenticates every started connection, exact original prefix,
+durable/released history boundary, source/clock/retention/generation inventory and
+terminal state. Pending publication, unpublished bytes, an unfinished prefix or failed
+output cannot produce a consumable history. Only satisfied settled capture advances
+automatically. Earlier failed generations stay explicit when a later native retry
+satisfies the request; a terminal failed request instead emits unapproved offline argv.
+Unused reserved generations are omitted without refilling any analysis allowance.
+
+The command publishes exact offline-history continuation argv before imports and
+per-generation retained `fss-infer sentinel-replay` argv after complete analysis. Its
+model/preflight/import work, framing and archive-read accounts remain nonrenewing
+across capture and processing. The native capture still owns its independent network
+deadline and any approved storage-only grace. Parent deadlines are cooperative at
+phase/I/O boundaries, not preemption of native work.
+
+Five parent admission/continuation/output tests, extended typed-receipt cut-point
+contracts and three real-process loopback contracts cover complete stationary capture,
+wrong approval/model before I/O, partial source refusal with durable continuation,
+no-recapture admission, retained replay without loose inputs and CLI JSON schemas.
+Source/API review and pinned formatting passed; native execution of this new composed
+path remains pending. The existing failed-prefix HTTP sentinel fixture now expects
+three fully delimited originals, preserving the native importer's truncation behavior.
+This is a finite ended-response slice of FSS-049/FSS-078; it does not claim continuous
+camera coverage, detector quality, event/effect permission or production qualification.
+See `docs/HTTP_CAPTURE_SENTINEL.md` for commands and recovery boundaries.
+
 ## Explicit learning recovery by replacement sessions (2026-11-03)
 
 `fss explain --learning-root` and the equivalent MCP request now make a retained
@@ -67,8 +103,8 @@ contract, both shared-pool contracts, all eight legacy HTTP-watch core contracts
 its CLI contract, and all 17 RTSP campaign sentinel/HEVC/plan contracts. Nine of ten
 new core contracts passed; the remaining assertion expected a fourth frame after a
 truncated MIME delimiter, while the native importer correctly released only the three
-fully delimited frames. That fixture expectation is being corrected without changing
-the importer. Evidence: run `41598188819`, job `125794756307`. The workflow was
+fully delimited frames. That fixture expectation is now corrected without changing
+the importer; its native rerun is pending. Evidence: run `41598188819`, job `125794756307`. The workflow was
 cancelled after these groups completed; these are scoped results, not a full gate pass.
 Independent source reviews, pinned formatting and a narrow pinned-rustc report-format
 check also passed. No live-camera, detector-quality, event, absence,

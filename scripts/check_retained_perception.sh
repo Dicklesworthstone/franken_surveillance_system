@@ -47,6 +47,8 @@ check history-sentinel-resource-pool cargo "+$channel" test --locked --offline -
 check http-history-sentinel-operator cargo "+$channel" test --locked --offline --no-fail-fast \
     -p fss-cli --bin fss-sentinel-http-history --test http_history_sentinel_cli \
     --test http_history_watch_cli
+check http-capture-sentinel-operator cargo "+$channel" test --locked --offline --no-fail-fast \
+    -p fss-cli --bin fss-capture-reconnect --test capture_reconnect_sentinel_cli
 check retained-localization cargo "+$channel" test --locked --offline --no-fail-fast \
     -p fss-reference --test recorded_twin_localization_contract
 check retained-scene-calibration cargo "+$channel" test --locked --offline --no-fail-fast \
