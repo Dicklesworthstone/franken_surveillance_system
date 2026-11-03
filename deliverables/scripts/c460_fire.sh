@@ -27,7 +27,7 @@ POLL="${POLL:-5}"
 GUARD_GAP="${GUARD_GAP:-3}"
 WATCH_DEADLINE="${WATCH_DEADLINE:-0}"          # minutes of absence before giving up; 0 = forever
 ARP_CMD="${ARP_CMD:-sudo -n /usr/sbin/arp -an}"
-PY="${PY:-python3}"
+PY="${PY:-/opt/homebrew/bin/python3}"
 PING="${PING:-ping}"
 GUARD="${GUARD:-$HERE/tapo_connectap_sc.py}"
 POSTSHELL="${POSTSHELL:-$HERE/c460_postshell.sh}"
