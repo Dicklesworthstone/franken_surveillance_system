@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.jeffreyemanuel.wyze-forge</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/homebrew/bin/python3</string>
+        <string>/Users/jemanuel/projects/franken_surveillance_system/deliverables/scripts/wyze_forge_serve.py</string>
+        <string>--dir</string>
+        <string>/tmp/fwserve</string>
+        <string>--port</string>
+        <string>443</string>
+        <string>--cert</string>
+        <string>/tmp/iot2.pem</string>
+        <string>--key</string>
+        <string>/tmp/iot2.key</string>
+        <string>--intermediate</string>
+        <string>/Users/jemanuel/projects/franken_surveillance_system/deliverables/certs/emudhra/ev-ca-aaa-cross.pem</string>
+        <string>--sni</string>
+        <string>s3-us-west-2.amazonaws.com</string>
+        <string>--firmware-detail</string>
+        <string>--iot-cert</string>
+        <string>--iot-cert-dir</string>
+        <string>/Users/jemanuel/projects/franken_surveillance_system/deliverables/certs/iot</string>
+    </array>
+    <key>KeepAlive</key>
+    <true/>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/tmp/ota/forge.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/ota/forge.log</string>
+</dict>
+</plist>
