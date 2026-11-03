@@ -1,0 +1,94 @@
+{
+  "format": "engineering-session-handoff",
+  "date": "2026-11-03",
+  "mission": {
+    "goal": "Implement consequential remaining plan and bead functionality, with meaningful incremental commits directly to main.",
+    "inputs": ["COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md", ".beads/issues.jsonl", "AGENTS.md"],
+    "initial_source_commit": "35b4c32c577f1cf96e281de8a7baef204f72881a",
+    "source_head_before_this_commit": "a26d19541362a85077577cbd02ac17b2c22f44b8"
+  },
+  "authority": {
+    "git": "User explicitly authorized direct main commits, no pull requests.",
+    "deployment_authority_root": null,
+    "external_device_or_effect_execution": false,
+    "concurrent_main_updates": "Preserved the non-overlapping update at 56828031aca537f77b2e6060efc85a14907ad523 before publishing supervisor changes."
+  },
+  "published_checkpoints": [
+    {"commit": "e2eb5ce0b472faa20594bd6f7c0250bc0ada1f59", "change": "Order-independent canonical evidence-origin transition checks"},
+    {"commit": "8e6a7c40605c32d51b6e19c58ea630bee61af1f9", "change": "Hypothesis-bound fusion and complete evidence-history transcripts"},
+    {"commit": "a26d19541362a85077577cbd02ac17b2c22f44b8", "change": "Explicit supervisor transcript output preserving default v1 bytes"},
+    {"commit": "this_commit", "change": "Cross-session clock-validation CLI, schemas, fixture and compatibility regressions"}
+  ],
+  "cases": [
+    {
+      "bead": "fss-gefi6",
+      "finding": "First-match origin checks and noncanonical digest flags could conceal restrictive provenance or shared content.",
+      "resolution": "Group all origins by digest algorithm plus bytes; preserve unchanged sets and check every changed attribution.",
+      "remaining": "Authenticate producer-derived origins and propagate them through a negotiated wire profile.",
+      "bead_status_changed": false
+    },
+    {
+      "bead": "fss-x4a.16.9",
+      "finding": "Sequential numeric receipts admitted another hypothesis and did not identify exact evidence, predecessor history or all state after oversized reset text.",
+      "resolution": "Refuse foreign hypotheses and publish separately versioned, independently bounded state/history commitments; expose an explicit supervisor wrapper.",
+      "remaining": "Qualify calibration, repeated-observation handling and valid test-supermartingale assumptions; receipts alone do not establish source custody or effects.",
+      "bead_status_changed": false
+    },
+    {
+      "bead": "fss-x8j0v",
+      "finding": "Native cross-session clock validation had no executable operator input/report path.",
+      "resolution": "Add a strict frozen-session CLI profile, full diagnostics and all-hypothesis time hulls with shared work/cancellation/output limits.",
+      "remaining": "Connect authenticated observations and adopted clock calibration to retained multi-camera timelines without narrowing uncertainty.",
+      "bead_status_changed": false
+    }
+  ],
+  "verification": {
+    "native_cargo": [
+      {"command": "cargo test --locked --offline -p fss-core --test provenance_contract", "passed": 79},
+      {"command": "cargo test --locked --offline -p fss-fusion", "passed": 36},
+      {"command": "cargo test --locked --offline -p fss-geometry --test clock_validation_contract", "passed": 10}
+    ],
+    "baseline_reproduction": "Three provenance regressions failed before the implementation fix.",
+    "limited_original_source_checks": {
+      "clock": "26 original-source parser/analysis/rendering tests passed, including nine new validation cases. Runtime entrypoint and filesystem authority excluded; no replacement runtime.",
+      "supervisor": "Original report types/sealer/renderers and real fusion receipts passed source substitution, baseline byte parity, replay, reset, cancellation, oversized-context and output-field checks. Execution function and deployment excluded.",
+      "instances": "Nine clock query/report/response validations, three supervisor wrappers and nine nested fusion transcripts passed full Draft 2020-12 checks, with negative mutation controls.",
+      "compatibility": "Old offset/drift responses and default supervisor bytes matched their separately compiled original owners. Clock hashes are retained in unit tests."
+    },
+    "schema_catalog": {"schemas": 139, "resolved_references": 2290, "errors": 0},
+    "not_a_release_qualification": true
+  },
+  "obligations": [
+    {
+      "status": "blocked_by_environment",
+      "reason": "Shared 8 GiB cgroup killed Asupersync during both one-job no-debug test compilation and metadata-only CLI checking, before the changed CLI code was reached.",
+      "commands": [
+        "cargo test --locked --offline -p fss-reference --lib meaningful_delta_tests::classification_",
+        "cargo test --locked --offline -p fss-cli --bin fss-clock-align",
+        "cargo test --locked --offline -p fss-cli --test clock_alignment_cli --test clock_drift_cli --test clock_validation_cli",
+        "cargo test --locked --offline -p fss-cli --test supervisor_e2e_contract"
+      ],
+      "next_action": "Run the canonical targets with sufficient free memory. Limited original-source checks must not be reported as full CLI/process/runtime qualification."
+    },
+    {
+      "status": "preexisting_repository_debt",
+      "reason": "Full schema constitution still reports 47 pre-existing registry/schema findings; digest-registration policy reports eight existing missing domains outside this change. No new schema/domain findings remain.",
+      "next_action": "Treat whole-repository qualification as unresolved; do not infer production readiness from the focused passing tests."
+    }
+  ],
+  "budgets_and_boundaries": {
+    "clock_input_bytes": 1048576,
+    "clock_complete_output_bytes": 8388608,
+    "additional_sessions": [1, 8],
+    "interval_projections": [0, 128],
+    "work": "One native WorkBudget across all sessions, with cancellation checked through rendering.",
+    "git_safety": "Expected-head fast-forward updates, no force push; staged integrity-manifest checks accompany each checkpoint."
+  },
+  "next_affordances": [
+    "Complete the explicitly pending native CLI and reference tests.",
+    "Use the new validation profile on custody-verified observations before designing retained clock adoption.",
+    "Implement producer-authenticated provenance origins without changing frozen default wire bytes.",
+    "Qualify sequential likelihood/statistical assumptions separately from deterministic receipt identity."
+  ],
+  "documentation": ["IMPLEMENTATION_STATUS.md", "docs/FUSION_REFERENCE.md", "docs/MOVING_TARGET_CLOCK_ALIGNMENT.md"]
+}

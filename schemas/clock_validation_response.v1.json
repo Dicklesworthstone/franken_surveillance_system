@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/clock_validation_response.v1.json",
+  "title": "Clock validation response with exact report integrity digest",
+  "description": "The SHA-256 covers the exact compact UTF-8 report object, excluding this wrapper and final newline; it conveys integrity, never operational authority.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "report_digest",
+    "report"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.clock_validation_response.v1"
+    },
+    "report_digest": {
+      "$ref": "clock_validation_report.v1.json#/$defs/digest"
+    },
+    "report": {
+      "$ref": "clock_validation_report.v1.json"
+    }
+  }
+}

@@ -10,6 +10,36 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Cross-session clock validation through the operator CLI (2026-11-03)
+
+`fss-clock-align` now accepts the additive `fss.clock_validation_query.v1` profile
+and calls the existing native cross-session validator. One frozen camera/clock,
+world, fit and hypothesis inventory is evaluated against the original search and
+one through eight additional disjoint passages. Global source/evidence reuse,
+per-camera exposure reuse, scope overrides, overlapping passages and reversed
+clock ordering refuse the complete request.
+
+The report preserves every native trial, unresolved or unsupported alternative,
+per-session support and up to 128 requested interval projections. Every time hull
+includes all supplied hypotheses; favorable validation cannot prune uncertainty.
+Projections outside the declared capture windows remain explicitly marked. A single
+native work account and the real owner cancellation probe cover all sessions and
+bounded report construction. The complete wrapper and newline share the 8 MiB
+output ceiling; no partial successful report is emitted. Exit 0 requires shared
+support, exit 3 retains a complete unsupported inventory, and exit 2 is refusal.
+
+Native geometry clock-validation contracts pass 10/10. An exact-source harness
+compiling the original parsers, analysis/rendering functions and tests passes
+26/26, including nine new validation cases. Three actual supported, unsupported
+and unresolved response examples pass all nine full Draft 2020-12 query/report/
+response checks and exact digest checks. Both old offset/drift fixture responses
+match the previous owner bytes exactly; their hashes are now regression assertions.
+The four new process contracts and full CLI runtime execution remain pending after
+the Asupersync build was killed at the shared memory limit. This advances
+`fss-x8j0v` without closing operational calibration: input custody, associations and
+calibration remain caller assertions; physical clock activation, retained timeline
+integration, continuous coverage and effect authority are not established.
+
 ## Explicit supervisor transcript output (2026-11-03)
 
 `fss-event supervise --root DIR --site SITE --plan PLAN --transcript yes` selects

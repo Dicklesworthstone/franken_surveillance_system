@@ -1,0 +1,172 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/clock_validation_query.v1.json",
+  "title": "Frozen clock hypotheses across disjoint capture sessions",
+  "description": "Shape only. Native admission freezes the shared cameras, clock generations, fit policy and hypotheses; requires disjoint session windows with consistent ordering; rejects repeated sources, evidence and per-camera exposures across all observations; and applies one work/output bound. Pins remain caller assertions. Projected intervals include every supplied hypothesis, never only supported candidates.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "world_basis",
+    "association_evidence",
+    "reference_camera",
+    "target_camera",
+    "target_anchor_ns",
+    "hypotheses",
+    "fit_options",
+    "training",
+    "validation",
+    "sessions",
+    "projections"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.clock_validation_query.v1"
+    },
+    "world_basis": {
+      "$ref": "clock_drift_query.v1.json#/$defs/digest"
+    },
+    "association_evidence": {
+      "$ref": "clock_drift_query.v1.json#/$defs/digest"
+    },
+    "reference_camera": {
+      "$ref": "clock_drift_query.v1.json#/$defs/camera"
+    },
+    "target_camera": {
+      "$ref": "clock_drift_query.v1.json#/$defs/camera"
+    },
+    "target_anchor_ns": {
+      "$ref": "clock_drift_query.v1.json#/$defs/time"
+    },
+    "hypotheses": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "offset_ns",
+          "skew_ppb"
+        ],
+        "properties": {
+          "offset_ns": {
+            "$ref": "clock_drift_query.v1.json#/$defs/time"
+          },
+          "skew_ppb": {
+            "$ref": "clock_drift_query.v1.json#/$defs/time"
+          }
+        }
+      }
+    },
+    "fit_options": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_reprojection_pixels",
+        "max_distance",
+        "max_speed",
+        "max_condition_number",
+        "max_iterations"
+      ],
+      "properties": {
+        "max_reprojection_pixels": {
+          "type": "number"
+        },
+        "max_distance": {
+          "type": "number"
+        },
+        "max_speed": {
+          "type": "number"
+        },
+        "max_condition_number": {
+          "type": "number"
+        },
+        "max_iterations": {
+          "$ref": "clock_drift_query.v1.json#/$defs/positiveInteger"
+        }
+      }
+    },
+    "training": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 128,
+      "items": {
+        "$ref": "clock_drift_query.v1.json#/$defs/training"
+      }
+    },
+    "validation": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 128,
+      "items": {
+        "$ref": "clock_drift_query.v1.json#/$defs/validation"
+      }
+    },
+    "sessions": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "association_evidence",
+          "training",
+          "validation"
+        ],
+        "properties": {
+          "id": {
+            "$ref": "clock_drift_query.v1.json#/$defs/positiveInteger"
+          },
+          "association_evidence": {
+            "$ref": "clock_drift_query.v1.json#/$defs/digest"
+          },
+          "training": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 128,
+            "items": {
+              "$ref": "clock_drift_query.v1.json#/$defs/training"
+            }
+          },
+          "validation": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 128,
+            "items": {
+              "$ref": "clock_drift_query.v1.json#/$defs/validation"
+            }
+          }
+        }
+      }
+    },
+    "projections": {
+      "type": "array",
+      "maxItems": 128,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "target_interval_ns"
+        ],
+        "properties": {
+          "id": {
+            "$ref": "clock_drift_query.v1.json#/$defs/positiveInteger"
+          },
+          "target_interval_ns": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 2,
+            "items": {
+              "$ref": "clock_drift_query.v1.json#/$defs/time"
+            }
+          }
+        }
+      }
+    }
+  }
+}

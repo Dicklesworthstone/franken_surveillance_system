@@ -6,6 +6,7 @@ operation states rather than generic errors.
 
 | ID | Meaning | Retry policy |
 |---|---|---|
+| `ERR-CLOCK-ALIGNMENT-CANCELLED-001` | Cooperative cancellation interrupted the selected clock-validation profile during native fitting or bounded report construction; outcome is cancelled and no successful report is emitted | Retry only as a new bounded invocation with the intended complete input; no partial validation or clock activation can be inferred. |
 | `ERR-SCENE-CALIBRATION-INPUT-001` | Adopted-scene calibration selection, exact FSSCAL bytes or original camera input is malformed, duplicated, numerically invalid or inconsistent with its pin | Correct the complete input and pins; do not retry unchanged. |
 | `ERR-SCENE-CALIBRATION-BASIS-001` | Exact twin/source, original camera input, physical sensor, camera tuple, selected adoption or deployment lineage/prefix differs | Reopen the intended deployment and select its exact current calibration; no nominal fallback. |
 | `ERR-SCENE-CALIBRATION-UNSUPPORTED-001` | The calibrated image model or requested interpretation is outside the explicitly selected native profile, including nonzero radial terms in the original pinhole profile or unsupported native coefficients | Select the exact calibrated pinhole mode or explicitly opt into the native radial profile and bind its complete verified rectification model; never reinterpret raw distorted pixels as pinhole. |

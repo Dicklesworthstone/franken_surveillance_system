@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Reproduce synthetic clock inputs; these labels are not retained media custody.
 
-Default mode verifies exact checked-in bytes. --write replaces only these two
+Default mode verifies exact checked-in bytes. --write replaces only these three
 synthetic fixtures. This generator is not the production alignment implementation.
 """
 from __future__ import annotations
@@ -57,13 +57,64 @@ def fixture(drift: bool) -> dict:
     return value
 
 
+def validation_fixture() -> dict:
+    """Three disjoint passages; a static search alone cannot resolve clock drift.
+
+    Every time remains an exact decimal at an epoch too large for f64. Additional
+    moving passages use the same cameras and frozen rates. Their supported rate
+    never prunes the projections, one of which is outside every capture session.
+    """
+    value = fixture(True)
+    value["schema"] = "fss.clock_validation_query.v1"
+    epoch = 1 << 100
+    value["target_anchor_ns"] = str(epoch + OFFSET)
+    value["fit_options"]["max_reprojection_pixels"] = 0.0001
+
+    def local(camera: int, seconds: int) -> int:
+        return epoch + seconds * SCALE + (OFFSET + seconds * 500000 if camera == 2 else 0)
+
+    def passage(identity: int, start: int, stationary: bool) -> dict:
+        session = {"id": identity, "association_evidence": pin(f"validation:association:{identity}"),
+            "training": [], "validation": []}
+        for camera in [value["reference_camera"], value["target_camera"]]:
+            for step in range(5):
+                seconds = start + 2 * step
+                t = 0 if stationary else 2 * step - 4
+                world = [0.3 + 0.15 * t, 0.2 - 0.03 * t, 7.0 + 0.06 * t]
+                point = [p - c for p, c in zip(world, camera["center"])]
+                label = f"validation:{identity}:{camera['id']}:{seconds}"
+                row = {"camera": camera["id"], "clock": camera["clock"],
+                    "pixel": [640 + 640 * point[0] / point[2], 480 + 640 * point[1] / point[2]],
+                    "sigma_pixels": 1, "exposure": "synthetic:" + label,
+                    "source_digest": pin("source:" + label), "evidence_digest": pin("evidence:" + label)}
+                timestamp = str(local(camera["id"], seconds))
+                if step % 2 == 0:
+                    row["capture_ns"] = timestamp
+                    session["training"].append(row)
+                else:
+                    row["capture_interval_ns"] = [timestamp, timestamp]
+                    session["validation"].append(row)
+        return session
+
+    search = passage(0, -40, True)
+    for key in ["association_evidence", "training", "validation"]:
+        value[key] = search[key]
+    value["sessions"] = [passage(20, -8, False), passage(10, -24, False)]
+    value["projections"] = [
+        {"id": 2, "target_interval_ns": [str(local(2, 16)), str(local(2, 17))]},
+        {"id": 1, "target_interval_ns": [str(local(2, -20)), str(local(2, -19))]},
+    ]
+    return value
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--write", action="store_true")
     args = parser.parse_args()
     okay = True
-    for name, drift in [("moving_feature.json", False), ("drifting_feature.json", True)]:
-        data = (json.dumps(fixture(drift), sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n").encode()
+    for name, value in [("moving_feature.json", fixture(False)), ("drifting_feature.json", fixture(True)),
+        ("validated_sessions.json", validation_fixture())]:
+        data = (json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n").encode()
         path = ROOT / "fixtures" / "clock-alignment" / name
         if args.write:
             path.parent.mkdir(parents=True, exist_ok=True)
