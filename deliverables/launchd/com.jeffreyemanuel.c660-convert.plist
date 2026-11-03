@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.jeffreyemanuel.c660-convert</string>
+  <key>ProgramArguments</key><array>
+    <string>/bin/bash</string>
+    <string>/Users/jemanuel/projects/franken_surveillance_system/.ntm/worktrees/franken_surveillance_system--liberation3/omp_1/deliverables/scripts/c660_convert_watch.sh</string>
+  </array>
+  <key>EnvironmentVariables</key><dict>
+    <key>MAC</key><string>50:3d:d1:2f:49:b9</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><false/>
+  <key>ThrottleInterval</key><integer>30</integer>
+  <key>StandardOutPath</key><string>/tmp/c660_convert.log</string>
+  <key>StandardErrorPath</key><string>/tmp/c660_convert.log</string>
+</dict></plist>
