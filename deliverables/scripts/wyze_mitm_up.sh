@@ -14,6 +14,14 @@
 set -u
 PY=/opt/homebrew/bin/python3
 HERE="$(cd "$(dirname "$0")" && pwd)"
+# Everything privileged here runs under sudo, so the /tmp logs are root-owned and a launchd start
+# (as the user) cannot append to them: every plane came up with "Permission denied" instead of a
+# log. Re-own ours before anything writes.
+sudo -n mkdir -p /tmp/ota
+for f in /tmp/ota/arm.log /tmp/dns.log /tmp/arp.log /tmp/tls.log /tmp/img8080.log /tmp/img.log \
+         /tmp/mqproxy.log /tmp/ota/chain.pem /tmp/serve443.pem /tmp/iot2.pem /tmp/iot2.key; do
+  sudo -n touch "$f" 2>/dev/null && sudo -n chown "$(id -u)" "$f" 2>/dev/null
+done
 CERTS="$HERE/../certs"
 CAP_DIR="${CAP_DIR:-/tmp/fwserve}"
 CAP_PATH="${CAP_PATH:-wuv2/upgrade/HL_CAM4/firmware/4.52.17.32.tar}"
@@ -21,13 +29,6 @@ CAM_MAC="${1:-${CAM_MAC:-80:48:2c:4b:cf:0b}}"
 GW="${GW:-192.168.4.1}"
 GWMAC="${GWMAC:-48:dd:0c:c9:ec:0d}"
 UP="${UP:-192.168.4.160}"
-# Identity follows the target MAC. Both used to be hardcoded to the original demo unit, so arming
-# for the other camera silently ran the cloud session as the wrong thing: the proxy went upstream
-# with the wrong store certificate and every injected delta/command addressed the wrong shadow.
-DEV="${DEV:-$(norm_mac "$CAM_MAC" | tr 'a-f' 'A-F')}"
-THING="${THING:-$(norm_mac "$CAM_MAC" | tr 'A-F' 'a-f')}"
-OTA_URL="${OTA_URL:-https://s3-us-west-2.amazonaws.com/$CAP_PATH}"
-
 # One canonical form: lowercase hex with every octet zero-padded, separators stripped. Both sides go
 # through this, so a colonless MAC (what the launchd plist carries) and arp's unpadded print
 # (`…:52:59:5` for the octet 05) compare equal. Stripping separators alone is not enough — losing
@@ -39,6 +40,13 @@ norm_mac() {
   done
   echo "$out"
 }
+# Identity follows the target MAC. Both used to be hardcoded to the original demo unit, so arming
+# for the other camera silently ran the cloud session as the wrong thing: the proxy went upstream
+# with the wrong store certificate and every injected delta/command addressed the wrong shadow.
+DEV="${DEV:-$(norm_mac "$CAM_MAC" | tr 'a-f' 'A-F')}"
+THING="${THING:-$(norm_mac "$CAM_MAC" | tr 'A-F' 'a-f')}"
+OTA_URL="${OTA_URL:-https://s3-us-west-2.amazonaws.com/$CAP_PATH}"
+
 arp_lookup() {
   $ARP_CMD -an 2>/dev/null | awk '{ gsub(/[()]/, "", $2); print $2, $4 }' \
     | while read -r ip mac; do

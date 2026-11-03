@@ -20,7 +20,10 @@ for pair in "wyzeedgeai_cam_v4_test_protocol:14.9.50039.r" "kvsWebrtcClientMaste
   [ -d "$src" ] && [ "$src" != "$dst" ] || continue
   mkdir -p "$dst"
   # an empty source dir makes the glob a literal path and cp fails noisily on every boot
-  for f in "$src"/*; do [ -e "$f" ] || [ -e "$dst/$(basename "$f")" ] || cp "$f" "$dst/"; done
+  for f in "$src"/*; do
+    [ -f "$f" ] || continue
+    [ -e "$dst/$(basename "$f")" ] || cp "$f" "$dst/"
+  done
 done
 
 export CAM_MAC="${CAM_MAC:-${MAC:-80:48:2c:4b:cf:0b}}"

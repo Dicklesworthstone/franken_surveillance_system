@@ -15,7 +15,7 @@
  *
  *   owlet_auth_capture.py --pid <pid> --out /tmp/owlet_cap/x.log --seconds 120
  */
-const DUMP = 320;
+const DUMP = 704;   // 704 B covers the 576 B 0x2043 registration; 320 truncated it
 const PORTS = [36167, 63616];   // camera session socket, LAN-search listener
 const SELF_IP = "192.168.4.163";
 
