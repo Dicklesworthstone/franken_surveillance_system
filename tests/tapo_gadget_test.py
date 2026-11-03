@@ -32,7 +32,26 @@ ORACLES = {
     },
 }
 
+# The C660 build from the BCL1 initramfs (`tools/tapo_oracle/bcl1.py`). Its numbers are
+# the point of the C660 lane: 0x424 is the same sink the C460 carries, so the C660 needs
+# no sweep, only this binary.
+C660_IMAGE = os.path.expanduser("~/fss-exploit/c660_fw.bin.dec")
+C660_WANT = {"pc_offset": 0x424, "pop": 0x24462, "pivot": 0x28514e, "system": 0x15928}
+
 FAILURES = []
+
+
+def c660_main(td):
+    """Extract /bin/main from the C660 initramfs via the BCL1 reader, or None."""
+    if not os.path.exists(C660_IMAGE):
+        return None
+    bcl1 = os.path.join(HERE, "..", "tools", "tapo_oracle", "bcl1.py")
+    tar = os.path.join(td, "c660.cpio")
+    subprocess.run([sys.executable, bcl1, C660_IMAGE, "--extract", "5", "--out", tar],
+                   check=True, capture_output=True)
+    subprocess.run(["cpio", "-idm", "bin/main"], cwd=td, stdin=open(tar, "rb"),
+                   check=True, capture_output=True)
+    return os.path.join(td, "bin", "main")
 
 
 def check(name, cond, detail=""):
@@ -171,9 +190,26 @@ def test_oracles():
         check("%s system" % path, r.get("system") == want["system"], r.get("system"))
 
 
+def test_c660():
+    with tempfile.TemporaryDirectory() as td:
+        path = c660_main(td)
+        if not path:
+            print("  [skip] %s not on this host" % C660_IMAGE)
+            return
+        r = run_finder(path)
+    check("c660 pc offset", (r.get("sink") or {}).get("pc_offset") == C660_WANT["pc_offset"],
+          r.get("sink"))
+    check("c660 pop", r.get("pop") == C660_WANT["pop"], r.get("pop"))
+    check("c660 pivot", (r.get("pivot") or {}).get("addr") == C660_WANT["pivot"],
+          r.get("pivot"))
+    check("c660 system", r.get("system") == C660_WANT["system"], r.get("system"))
+
+
 def main():
     print("synthetic fixture")
     test_synthetic()
+    print("C660 build from the initramfs")
+    test_c660()
     print("C320WS oracles")
     test_oracles()
     if FAILURES:
