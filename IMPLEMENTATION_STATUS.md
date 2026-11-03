@@ -10,6 +10,27 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Alert reconciliation after source loss (2026-11-02)
+
+`fss-alert reconcile` exposes the existing operation-addressed owner-attestation contract
+without rebuilding an agent orientation from old media. An intact preparation and durable
+effect/obligation journals can now be reconciled after the original event source is missing or
+corrupt. Preview returns the exact plan and approval command; approval retains the attestation
+root-last before settling the existing obligation. Exact cold retries append no duplicate
+transition, and changed actor, statement, evidence or outcome cannot reuse the approval.
+
+The output preserves `operator_asserted` provenance, reports that cited evidence custody was
+not inspected, and does not claim independent provider verification. It performs no network
+dispatch. Prepared operations, stale or missing authority, corrupted journals and unavailable
+retained reconciliation proof still refuse. The prior canonical agent command and its approval
+identity remain unchanged. See `docs/alert_lifecycle.md` for the operator workflow.
+
+Seven new real-process contracts cover these success/refusal paths and native-owner approval
+equivalence. Source formatting and independent review are available; native execution remains
+pending because the shared validation host exhausted memory and storage while building the
+unchanged dependency closure. This is an implemented reference surface, not a newly qualified
+provider or production-release claim.
+
 ## Retained RTP/JPEG imports for native analysis (2026-11-02)
 
 `fss-import-rtsp jpeg` connects an independently pinned native datagram prefix to

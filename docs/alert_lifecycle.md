@@ -1,8 +1,10 @@
 # Operator alert lifecycle control
 
 `fss-alert` exposes the durable operation/obligation identities independently of the original
-`fss-event alert` dispatch arguments. It provides **read-only status** and **exact-approved
-cancellation before commitment**, not provider reconciliation, redelivery, or a delivery claim.
+`fss-event alert` dispatch arguments. It provides **read-only status**, **exact-approved
+cancellation before commitment**, and **owner-attested reconciliation after dispatch**.
+Reconciliation records an explicit operator assertion; independent provider verification remains
+a separate capability.
 
 ## Runtime-owned dispatch
 
@@ -142,7 +144,7 @@ The retained request is not itself a terminal outcome, nor is a model or human a
 of external delivery. The normal canonical alert-outcome publication remains a distinct owner.
 
 Once committed, accepted, observed or indeterminate, an alert is **not cancellable** through
-this path. It needs independent provider evidence and the appropriate reconciliation owner.
+this path. It needs the appropriate reconciliation owner and an explicit delivery observation.
 No `--force`, resend, fake failure, fake delivery or acknowledgement override exists here.
 The status report preserves the recorded uncertainty and never interprets HTTP acceptance as
 human delivery. This slice does not implement native independent-provider reconciliation.
@@ -151,7 +153,31 @@ human delivery. This slice does not implement native independent-provider reconc
 
 ### Owner-attested reconciliation
 
-The canonical operation-addressed reconciliation path is available separately:
+Use the source-independent operation command when old event or media custody is unavailable:
+
+```sh
+fss-alert reconcile --root /path/to/deployment --site site:home \
+  --operation-id operation:example --outcome delivered \
+  --evidence sha256:OWNER_EVIDENCE_DIGEST --statement 'Recipient confirmed receipt'
+```
+
+Inspect its `plan.approve_command`, then execute that exact command to retain the attestation
+and settle the existing obligation. The alternative outcome is `not_delivered`. The command
+opens the existing deployment under its exclusive owner and verifies the physical journals and
+original preparation. It does not orient through old events, read source media, open a session
+or plan file, resolve a relay route, or dispatch again. Preview may perform the existing
+conservative restart recovery; use `status` for strictly read-only inspection.
+
+The report explicitly labels `provenance: "operator_asserted"`,
+`provider_receipt_verified: false`, and `cited_evidence_custody: "not_inspected"`. The cited
+evidence digest is the operator's reference, not a claim that the command inspected those bytes.
+The newly retained attestation has its own verified record and root. A prepared, undispatched
+operation refuses reconciliation. Exact cold retries return `already_reconciled` without
+appending another effect transition; a different actor, statement, evidence or outcome cannot
+reuse the old approval.
+
+The canonical agent command remains available when its orientation inputs are intact and uses
+the same reconciliation plan and approval identity:
 
 ```sh
 fss commit --json --root /path/to/deployment \
@@ -159,8 +185,8 @@ fss commit --json --root /path/to/deployment \
   --evidence sha256:OWNER_EVIDENCE_DIGEST --statement 'Recipient confirmed receipt'
 ```
 
-Inspect the preview and repeat the exact request with its `--approve` digest. The alternative
-outcome is `not_delivered`. This is an explicit owner attestation with `operator_asserted`
+Inspect the preview and repeat the exact request with its `--approve` digest. This is an
+explicit owner attestation with `operator_asserted`
 provenance; it does not contact the provider, resend the alert, or turn relay acceptance into
 independent delivery evidence.
 
@@ -203,6 +229,14 @@ torn journals. Nine real-process tests exercise status, preview/commit/retry, co
 refusal, lost/corrupt event objects, missing cancellation evidence, journal corruption, absent
 journals, uncommitted-tail warnings, malformed requests and actor mismatch. Fixtures use
 durable local journals and synthetic reference events; no live provider or device is contacted.
+
+The source-independent reconciliation cases additionally exercise both attested outcomes after
+event-source loss/corruption, exact retries, changed attestations and actors, missing retained
+proof, malformed or missing journals, prepared/unknown operations, capability denial, and
+approval equivalence with the canonical library. Native execution of these added cases is
+pending: the session's pinned compiler attempts were stopped by shared-memory exhaustion and
+full storage before reaching the changed crate. Formatting and source review do not replace
+those tests.
 
 The implementation remains `implemented_not_qualified`; production qualification and native
 provider reconciliation remain open.

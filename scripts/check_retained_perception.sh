@@ -26,6 +26,10 @@ check() {
     fi
 }
 
+check alert-reconciliation-custody cargo "+$channel" test --locked --offline --no-fail-fast \
+    -p fss-reference --test alert_reconciliation_contract --test alert_operation_status_contract
+check alert-lifecycle-operator cargo "+$channel" test --locked --offline --no-fail-fast \
+    -p fss-cli --test alert_lifecycle_cli
 check retained-localization cargo "+$channel" test --locked --offline --no-fail-fast \
     -p fss-reference --test recorded_twin_localization_contract
 check retained-scene-calibration cargo "+$channel" test --locked --offline --no-fail-fast \
