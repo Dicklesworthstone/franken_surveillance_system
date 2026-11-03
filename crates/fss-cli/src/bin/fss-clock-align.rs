@@ -1,22 +1,15 @@
 #![forbid(unsafe_code)]
 //! Read-only, digest-pinned moving-feature clock hypothesis scans.
 
-#[path = "fss-clock-align/drift.rs"]
-mod drift;
-#[path = "fss-clock-align/input.rs"]
-mod input;
-#[path = "fss-clock-align/report.rs"]
-mod report;
 #[cfg(test)]
 #[path = "fss-clock-align/tests.rs"]
 mod tests;
-#[path = "fss-clock-align/validation.rs"]
-mod validation;
 
 use fss_cli::agent_json::{object, string};
+use fss_cli::clock_alignment::{self, MAX_INPUT_BYTES, Result, failure, input};
+#[cfg(test)]
 use fss_cli::json_input::parse;
 use fss_core::{BudgetVector, ContentDigest, ContextAuthority, OperationId, RootAuthoritySpec};
-use fss_geometry::{WorkBudget, temporal_alignment::scan_clock_offsets};
 use fss_reference::ReplayCx;
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -25,33 +18,10 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-const MAX_INPUT_BYTES: usize = 1024 * 1024;
-const MAX_REPORT_BYTES: usize = 8 * 1024 * 1024;
 const DEFAULT_WORK: u64 = 100_000_000;
 const MAX_WORK: u64 = 1_000_000_000;
 const HELP: &str = "fss-clock-align --input QUERY.json --input-digest sha256:HEX [--work-units N]\n\nRead one explicitly pinned local query and report EVERY supplied clock hypothesis over\nnative moving-feature fits. fss.clock_alignment_query.v1 searches constant offsets;\nfss.clock_drift_query.v1 searches explicit offset/rate pairs at a declared target anchor.\nfss.clock_validation_query.v1 checks the frozen inventory across disjoint capture sessions\nand projects time intervals with ALL supplied hypotheses, including unsupported ones.\nNo camera contact, source hydration, clock activation, coverage or effects. Source,\nassociation and calibration pins remain caller assertions. See docs/MOVING_TARGET_CLOCK_ALIGNMENT.md.\nExit 0: complete scan with at least one all-times-supported hypothesis (possibly ambiguous);\nfor clock validation, that hypothesis must pass the search and every additional session.\nExit 3: complete inventory without such support. Exit 2: refused/incomplete.\n";
 
-#[derive(Debug)]
-struct Failure {
-    code: &'static str,
-    detail: String,
-}
-type Result<T> = std::result::Result<T, Failure>;
-fn failure(code: &'static str, detail: impl Into<String>) -> Failure {
-    let code = match code {
-        "input" => "ERR-CLOCK-ALIGNMENT-INPUT-001",
-        "io" => "ERR-CLOCK-ALIGNMENT-IO-001",
-        "limit" => "ERR-CLOCK-ALIGNMENT-LIMIT-001",
-        "scan" => "ERR-CLOCK-ALIGNMENT-SCAN-001",
-        "output" => "ERR-CLOCK-ALIGNMENT-OUTPUT-001",
-        "cancelled" => "ERR-CLOCK-ALIGNMENT-CANCELLED-001",
-        _ => "ERR-CLOCK-ALIGNMENT-AUTHORITY-001",
-    };
-    Failure {
-        code,
-        detail: detail.into(),
-    }
-}
 #[derive(Debug)]
 struct Options {
     input: PathBuf,
@@ -141,55 +111,9 @@ fn read_input(path: &Path, cx: &ReplayCx) -> Result<Vec<u8>> {
 }
 #[cfg(test)]
 fn analyze(bytes: &[u8], expected: ContentDigest, work_limit: u64) -> Result<(String, bool)> {
-    analyze_with_probe(bytes, expected, work_limit, &|| false)
+    clock_alignment::analyze_with_probe(bytes, expected, work_limit, &|| false)
 }
-fn analyze_with_probe(
-    bytes: &[u8],
-    expected: ContentDigest,
-    work_limit: u64,
-    cancelled: &(dyn Fn() -> bool + Sync),
-) -> Result<(String, bool)> {
-    if bytes.len() > MAX_INPUT_BYTES || ContentDigest::sha256(bytes) != expected {
-        return Err(failure(
-            "input",
-            "input size or independent digest mismatch",
-        ));
-    }
-    let value =
-        parse(std::str::from_utf8(bytes).map_err(|_| failure("input", "input is not UTF-8"))?)
-            .map_err(|_| failure("input", "invalid or oversized JSON"))?;
-    match value
-        .object()
-        .and_then(|fields| fields.get("schema"))
-        .and_then(|value| value.text())
-    {
-        Some(drift::SCHEMA) => return drift::analyze(&value, expected, work_limit, bytes.len()),
-        Some(validation::SCHEMA) => {
-            return validation::analyze(&value, expected, work_limit, bytes.len(), cancelled);
-        }
-        _ => {}
-    }
-    let query = input::query(&value)?;
-    let mut budget = WorkBudget::new(work_limit);
-    let scan = scan_clock_offsets(
-        query.pair,
-        &query.training,
-        &query.validation,
-        &query.offsets,
-        query.options,
-        &mut budget,
-    )
-    .map_err(|e| failure("scan", e.to_string()))?;
-    let supported = scan
-        .trials
-        .iter()
-        .any(|trial| trial.consistent_for_all_capture_times());
-    let report = report::render(&query, &scan, expected, work_limit, bytes.len());
-    if report.len() >= MAX_REPORT_BYTES {
-        return Err(failure("limit", "complete report exceeds output bound"));
-    }
-    Ok((report, supported))
-}
+
 fn execute(options: &Options, out: &mut impl Write) -> Result<bool> {
     let authority = ContextAuthority::new_root(RootAuthoritySpec {
         trace_id: "trace:clock-alignment".into(),
@@ -216,7 +140,7 @@ fn execute(options: &Options, out: &mut impl Write) -> Result<bool> {
         checkpoint(&cx, "clock_alignment:before_scan")?;
         let cancelled = || cx.is_cancelled();
         let (report, supported) =
-            analyze_with_probe(&bytes, options.digest, options.work, &cancelled)?;
+            clock_alignment::analyze_with_probe(&bytes, options.digest, options.work, &cancelled)?;
         checkpoint(&cx, "clock_alignment:before_output")?;
         out.write_all(report.as_bytes())
             .and_then(|_| out.write_all(b"\n"))

@@ -31,8 +31,9 @@ file. Existing files and symlinks refuse before source decoding.
 
 ## Select repeated exposures
 
-The exact query schema is `fss.scene_feature_motion_match_retained_query.v1`.
-It has these top-level fields:
+The original query schema is `fss.scene_feature_motion_match_retained_query.v1`.
+Version 2 adds original clock-query replay, described below; version 1 keeps its
+existing additive clock declarations and report bytes. Both have these fields:
 
 | Field | Meaning |
 |---|---|
@@ -86,6 +87,73 @@ For example, two cameras with observations at two or three different capture
 times can supply enough constraints. Capture times need not coincide across
 cameras. All sources must share the declared common-clock mapping, and the
 whole selected inventory must fit the timing and feature allowances.
+
+## Replay clock uncertainty into the motion reconstruction
+
+Use `fss.scene_feature_motion_match_retained_query.v2` to map retained exposures
+through an exact original `fss.clock_validation_query.v1` document. The command
+repeats the native search and all fresh-session checks under the motion command's
+existing work allowance. A serialized validation report cannot substitute for
+the original observations and candidate inventory.
+
+The v2 query adds one closed `clock_validation` object:
+
+| Field | Required declaration |
+|---|---|
+| `query_path` | Path to a bounded regular UTF-8 clock-query file, resolved from the command's working directory. Maximum 1 MiB; control characters and surrounding whitespace refuse. |
+| `query_digest` | Nonzero SHA-256 of the exact original file bytes. The motion query's `clock_evidence` must equal this pin. |
+| `bindings` | Exactly two rows, ordered reference camera then target camera. Each row declares `camera`, `sensor_id`, `stream_id`, `clock_basis`, `clock_generation`, `calibration_generation`, `image_generation`, and `calibration_digest`. |
+| `projections` | One `{ "capsule_digest": "sha256:...", "projection_id": "1" }` row for every selected target-camera exposure. Capsule and projection IDs must be unique. |
+
+Version 2 currently admits the two cameras in that one original clock query,
+with four through sixteen retained exposures in total. The motion `clock` is
+the reference generation. Every view retains its exact original source and
+alignment membership, but its `alignment.offset_ns` must be `[0,0]` and its
+`alignment.basis` must equal `query_digest`. These fields cannot add another
+offset after native projection.
+
+The original clock query's `world_basis` must equal the imported twin digest.
+Its camera intrinsics and poses must exactly match the admitted scene rig.
+Declared calibration and image generations must equal the rig generations;
+the calibration digest must match the original clock camera declaration. The
+image-domain digest must equal the actual prepared pinhole or native rectified
+domain. Each source retains its independently checked sensor, stream and
+`ClockBasis`; the numeric clock generation is a declaration, since a source
+capsule does not itself contain that numeric generation.
+
+Every selected target capsule must match its original projection request's
+**entire** capture interval. A point, midpoint, subinterval or interval from
+another exposure refuses. Reference-camera exposures retain their full original
+interval. Target exposures use the conservative hull over **every supplied
+offset/skew hypothesis**, including hypotheses unsupported by fresh sessions or
+left unresolved. Validation support never silently prunes the timing inventory.
+The caller must explicitly author and pin a different original query to change
+that inventory.
+
+These mapped intervals feed the actual native motion association and fit. The
+full mapped inventory must pass camera validity, per-exposure uncertainty,
+capture-span and requested-scene-time checks before source decoding can publish
+a JPEG derivative. Binding repeats the source checks against the final sealed
+owner snapshots. A wide all-hypothesis hull can therefore refuse a reconstruction
+that a single favored candidate would have admitted.
+
+The v2 response/body schemas are `fss.scene_feature_motion_match_retained.v2`
+and `fss.scene_feature_motion_match_retained_report.v2`.
+`report.analysis.clock_validation` includes the exact original query text and
+digest, a complete `fss.clock_validation_replay_response.v1` native replay,
+and every original-to-common capture mapping. Its replay report retains every
+search/session trial, support status, candidate mapping and projection's
+inside/outside-declared-session label. Outside-session projections remain
+conditional extrapolations. Native replay `work_limit` is the parent's remaining
+allowance when evaluation began, not a separately granted budget.
+
+Clock support is diagnostic; the exit status retains the motion-component
+meaning described below. This path does not authenticate the original clock
+observations' custody, establish physical synchronization, upgrade a source's
+clock basis, or activate calibration. The report explicitly records those limits.
+Retained image-source custody and current privacy still pass the ordinary owner
+verification and final revalidation after the complete clock and geometry report
+has been serialized.
 
 ### Matching and solver policy
 
@@ -190,6 +258,13 @@ publication, before success output. No existing output is overwritten.
 | Complete report, including newline | 32 MiB |
 | Timeout | 30,000 ms default; 3,600,000 ms maximum |
 
+Version 2 reserves 1 MiB of the existing aggregate read allowance for the clock
+sidecar, leaving 4,293,918,720 bytes for retained source reads and revalidation.
+The native replay response is bounded to 8 MiB; the complete outer report still
+has the same 32 MiB ceiling. Parsing, hashing, native clock evaluation, geometry
+and additional report copying all consume the same work allowance and live
+cancellation probe. Complete alternatives are never truncated to fit a budget.
+
 These are admission ceilings, not throughput promises. In particular, sixteen
 full-resolution exposures may exceed the geometry allowance. Lower
 `--max-report-bytes` is allowed, but no feature, pair, source or alternative is
@@ -200,3 +275,30 @@ refused or nominally occluded component. Exit **3** preserves the complete repor
 when there is no motion reconstruction or some components remain unresolved.
 Isolated unmatched features remain diagnostics. Exit **2** covers invalid input,
 authority, source/privacy, resource/cancellation and publication failure.
+
+## Regression coverage
+
+The pure native adapter tests exercise a known moving trajectory with a target
+clock offset, three original skew candidates and only one candidate supported
+in every fresh session. They verify that all three candidates still widen the
+actual motion inputs; tightening uncertainty rejects the complete hull. They
+also reject substituted source intervals, sensors, streams, clock bases, camera
+models, image/calibration generations, rig, mapping inventory and evidence pins,
+and cover shared-work exhaustion and live cancellation. These tests use native
+capsule/frame snapshots and do not claim retained custody.
+
+The retained owner regression tests in `temporal_clock_owner_tests.rs` use actual
+retained JPEG imports and the production command to check the v2 report and
+pre-publication refusals. Run them with:
+
+```sh
+cargo test -p fss-cli --bin fss-scene-fuse temporal::tests::clock
+cargo test -p fss-cli --bin fss-scene-fuse temporal_input::tests::clock
+cargo test -p fss-cli --lib clock_alignment
+```
+
+During this implementation session, the exact-source native adapter harness
+passed 85 tests, including all seven new temporal-clock and three shared replay
+tests. The full retained owner/process tests were authored but could not execute
+because building the Asupersync dependency exceeded the workspace memory limit.
+That native adapter result does not qualify the runtime entrypoint or source I/O.

@@ -14,6 +14,8 @@ mod calibrated_report;
 
 #[path = "retained_matching/temporal.rs"]
 mod temporal;
+#[path = "retained_matching/temporal_clock.rs"]
+mod temporal_clock;
 #[path = "retained_matching/temporal_input.rs"]
 mod temporal_input;
 #[path = "retained_matching/temporal_report.rs"]
@@ -368,6 +370,20 @@ fn preflight_views(
     views: &[input::View],
     cx: &ReplayCx,
 ) -> Result<()> {
+    preflight_views_with_clock(deployment, views, cx, |view, capsule| {
+        input::validate_capsule(view, capsule)
+    })
+    .map(|_| ())
+}
+
+/// Reuse the original owner preflight with an already native-validated clock mapping.
+fn preflight_views_with_clock(
+    deployment: &ReferenceDeployment,
+    views: &[input::View],
+    cx: &ReplayCx,
+    mut capture: impl FnMut(&input::View, &fss_core::SensorCapsule) -> Result<[u64; 2]>,
+) -> Result<Vec<[u64; 2]>> {
+    let mut captures = Vec::with_capacity(views.len());
     for view in views {
         checkpoint(cx, "retained_scene_match:source_preflight")?;
         let pins = view.source.pins();
@@ -380,7 +396,7 @@ fn preflight_views(
         .map_err(|e| fail("ERR-SCENE-FUSION-INPUT-001", e.to_string()))?;
         let capsule = retained_source_capsule(deployment, &retained, pins.segment)
             .map_err(|e| fail(e.stable_id(), e.to_string()))?;
-        input::validate_capsule(view, &capsule)?;
+        captures.push(capture(view, &capsule)?);
         let admitted = match &view.source {
             input::Source::Jpeg { .. } => retained.manifest().format == "mjpeg",
             input::Source::H264 { .. } => matches!(
@@ -398,7 +414,7 @@ fn preflight_views(
             ));
         }
     }
-    Ok(())
+    Ok(captures)
 }
 
 fn resolved(owner: &RecordedFeatures) -> input::ResolvedFrame<'_> {

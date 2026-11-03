@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 //! Complete bounded diagnostics; unsupported hypotheses still widen every time hull.
 
-use fss_cli::agent_json::{object, string};
+use crate::agent_json::{object, string};
 use fss_core::ContentDigest;
 use fss_geometry::WorkBudget;
 use fss_geometry::temporal_alignment::drift::validation::ClockValidationReport;
@@ -161,6 +161,7 @@ pub(super) fn render(
         input_bytes,
         work,
         MAX_REPORT_BYTES,
+        false,
     )
 }
 
@@ -172,10 +173,21 @@ fn render_bounded(
     input_bytes: usize,
     work: &mut WorkBudget<'_>,
     output_limit: usize,
+    replay: bool,
 ) -> Result<String> {
+    let response_schema = if replay {
+        "fss.clock_validation_replay_response.v1"
+    } else {
+        RESPONSE_SCHEMA
+    };
+    let report_schema = if replay {
+        "fss.clock_validation_replay_report.v1"
+    } else {
+        "fss.clock_validation_report.v1"
+    };
     // Empty report measures just the wrapper punctuation and constant-sized integrity pin.
     let envelope_size = object(&[
-        ("schema", string(RESPONSE_SCHEMA)),
+        ("schema", string(response_schema)),
         (
             "report_digest",
             string(&ContentDigest::sha256(b"").to_text()),
@@ -194,7 +206,7 @@ fn render_bounded(
     let common = &query.search.common;
     out.raw("{", work)?;
     for (name, value) in [
-        ("schema", string("fss.clock_validation_report.v1")),
+        ("schema", string(report_schema)),
         ("input_digest", string(&digest.to_text())),
         ("input_bytes", input_bytes.to_string()),
         ("world_basis", string(&common.world.to_text())),
@@ -378,7 +390,7 @@ fn render_bounded(
     out.raw("}", work)?;
     checkpoint(work)?;
     let response = object(&[
-        ("schema", string(RESPONSE_SCHEMA)),
+        ("schema", string(response_schema)),
         (
             "report_digest",
             string(&ContentDigest::sha256(out.bytes.as_bytes()).to_text()),
@@ -410,5 +422,26 @@ pub(super) fn render_with_limit(
         input_bytes,
         work,
         output_limit,
+        false,
+    )
+}
+
+pub(super) fn render_replay(
+    query: &Query,
+    evaluated: &ClockValidationReport,
+    digest: ContentDigest,
+    available_work: u64,
+    input_bytes: usize,
+    work: &mut WorkBudget<'_>,
+) -> Result<String> {
+    render_bounded(
+        query,
+        evaluated,
+        digest,
+        available_work,
+        input_bytes,
+        work,
+        MAX_REPORT_BYTES,
+        true,
     )
 }

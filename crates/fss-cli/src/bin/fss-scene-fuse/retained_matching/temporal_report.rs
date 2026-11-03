@@ -423,13 +423,18 @@ pub(super) fn compute(
 }
 
 pub(super) fn assumptions() -> String {
+    assumptions_with_clock(false)
+}
+
+pub(super) fn assumptions_with_clock(replayed: bool) -> String {
     array(
         &[
             "source_to_rig_mapping_and_raw_lens_parameters_are_operator_declarations",
             "native_rectification_preserves_original_exposure_and_source_mask_support",
             "camera_rig_is_authored_nominal_not_activated_or_physically_validated",
             "one_fixed_camera_mode_per_sensor_over_the_complete_capture_hull",
-            "additive_clock_alignment_preserves_full_original_capture_intervals",
+            if replayed { "replayed_frozen_clock_inventory_preserves_all_hypotheses_and_original_capture_intervals_without_activation" }
+            else { "additive_clock_alignment_preserves_full_original_capture_intervals" },
             "constant_world_velocity_is_a_conditional_model_over_each_component",
             "descriptor_correspondence_is_a_hypothesis_not_physical_identity",
             "full_descriptor_competition_precedes_geometry_without_static_epipolar_gating",

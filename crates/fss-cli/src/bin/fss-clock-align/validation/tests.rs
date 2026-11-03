@@ -4,8 +4,8 @@
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use fss_cli::agent_json::{object, string};
-use fss_cli::json_input::{Value, parse};
+use crate::agent_json::{object, string};
+use crate::json_input::{Value, parse};
 
 use super::*;
 

@@ -31,8 +31,8 @@ use super::super::matching::report::scale;
 use super::{
     FeatureInput, MAX_JSON_BYTES, MAX_TWIN_BYTES, Options, Result, SOURCE_BYTES, authority,
     check_cancel, checkpoint, document, extract_features, fail, fusion_input, input_error,
-    options_profile, preflight_views, prepare_images, read_input, resolved, retained_handoffs,
-    write_report,
+    options_profile, preflight_views, preflight_views_with_clock, prepare_images, read_input,
+    resolved, retained_handoffs, write_report,
 };
 
 const DEFAULT_WORK: u64 = 8_000_000_000;
@@ -51,7 +51,10 @@ fixed cameras, then estimate common-time 3D position and constant velocity. Repe
 from one camera retain their exact source exposure and shared calibration. Every frame pair\n\
 keeps complete descriptor decisions; ambiguous, conflicting, incomplete and refused motion\n\
 hypotheses remain explicit. No static epipolar gate is applied to moving observations.\n\n\
-Query schema: fss.scene_feature_motion_match_retained_query.v1. Use views:[...] with the\n\
+Query schemas: fss.scene_feature_motion_match_retained_query.v1 and .v2. Version 2 replays\n\
+an independently pinned original clock-validation query under the SAME work allowance,\n\
+checks exact camera geometry and source generations, and preserves ALL hypothesis hulls.\n\
+Use views:[...] with the\n\
 existing retained v2 image declarations, including native lens correction. Motion must be\n\
 constant_velocity_during_capture_hull. Declare the full capture-span/uncertainty limits and\n\
 common scene time; a fitted component must bracket that time without extrapolation. Four\n\
@@ -148,10 +151,33 @@ fn analyze(options: &Options, root: &Path, cx: &ReplayCx) -> Result<Report> {
     {
         return Err(input_error("deployment differs from --expected-anchor"));
     }
-    preflight_views(&deployment, &query.views, cx)?;
-    let images = prepare_images(&query.views, &rig, &mut work)?;
+    let (images, clock) = if let Some(spec) = &query.clock_validation {
+        let bytes = read_input(
+            Path::new(&spec.path),
+            fss_cli::clock_alignment::MAX_INPUT_BYTES,
+            cx,
+        )?;
+        let images = prepare_images(&query.views, &rig, &mut work)?;
+        let clock = spec.replay(&bytes, &query.views, &rig, &images, &mut work)?;
+        let captures =
+            preflight_views_with_clock(&deployment, &query.views, cx, |view, capsule| {
+                clock.capture(view, capsule)
+            })?;
+        input::validate_capture_policy(&query, &captures, &rig)?;
+        (images, Some(clock))
+    } else {
+        preflight_views(&deployment, &query.views, cx)?;
+        (prepare_images(&query.views, &rig, &mut work)?, None)
+    };
+    // Keep the existing authority's aggregate byte ceiling. The v2 sidecar reserves its
+    // complete 1 MiB maximum from source reads, instead of silently widening authority.
+    let source_bytes = if clock.is_some() {
+        SOURCE_BYTES - fss_cli::clock_alignment::MAX_INPUT_BYTES as u64
+    } else {
+        SOURCE_BYTES
+    };
     let reads = RecordedFeatureReadBudget::with_cancellation_probe(
-        SOURCE_BYTES,
+        source_bytes,
         Arc::new(move || started.elapsed() >= timeout),
     );
     let mut jpeg = DecodeBudget::with_cancellation_probe(JPEG_WORK, &cancelled);
@@ -177,7 +203,7 @@ fn analyze(options: &Options, root: &Path, cx: &ReplayCx) -> Result<Report> {
     drop(images);
     let final_anchor = deployment.current_anchor().clone();
     let snapshots = owners.iter().map(resolved).collect::<Vec<_>>();
-    let views = input::bind(&query, &snapshots, &rig)?;
+    let views = input::bind_with_clock(&query, &snapshots, &rig, clock.as_ref())?;
     let association = associate_temporal_features(&twin, &views, query.matching, &mut work)
         .map_err(|error| {
             let code = match error {
@@ -228,7 +254,7 @@ fn analyze(options: &Options, root: &Path, cx: &ReplayCx) -> Result<Report> {
         ]));
     }
     let (property, revision) = rig.geometry_basis();
-    let analysis = object(&[
+    let mut analysis_fields = vec![
         ("authority", string("derived_cognition_no_effect_authority")),
         (
             "source_provenance",
@@ -285,10 +311,20 @@ fn analyze(options: &Options, root: &Path, cx: &ReplayCx) -> Result<Report> {
             ]),
         ),
         ("declarations", query.declarations.clone()),
-        ("assumptions", report::assumptions()),
+        (
+            "assumptions",
+            report::assumptions_with_clock(clock.is_some()),
+        ),
         ("views", array(&source_views)),
         ("geometry", geometry.json),
-    ]);
+    ];
+    if let Some(clock) = &clock {
+        analysis_fields.push((
+            "clock_validation",
+            clock.render(&query.views, &snapshots, &mut work)?,
+        ));
+    }
+    let analysis = object(&analysis_fields);
     if analysis
         .len()
         .checked_add(1)
@@ -316,7 +352,11 @@ fn analyze(options: &Options, root: &Path, cx: &ReplayCx) -> Result<Report> {
     let body = object(&[
         (
             "schema",
-            string("fss.scene_feature_motion_match_retained_report.v1"),
+            string(if query.version == 1 {
+                "fss.scene_feature_motion_match_retained_report.v1"
+            } else {
+                "fss.scene_feature_motion_match_retained_report.v2"
+            }),
         ),
         ("analysis", analysis),
         (
@@ -332,7 +372,7 @@ fn analyze(options: &Options, root: &Path, cx: &ReplayCx) -> Result<Report> {
                 (
                     "source_bytes",
                     object(&[
-                        ("allowance", count(SOURCE_BYTES)),
+                        ("allowance", count(source_bytes)),
                         ("used", count(reads.used())),
                         ("includes_final_revalidation", "true".into()),
                     ]),
@@ -365,7 +405,11 @@ fn analyze(options: &Options, root: &Path, cx: &ReplayCx) -> Result<Report> {
     let json = object(&[
         (
             "schema",
-            string("fss.scene_feature_motion_match_retained.v1"),
+            string(if query.version == 1 {
+                "fss.scene_feature_motion_match_retained.v1"
+            } else {
+                "fss.scene_feature_motion_match_retained.v2"
+            }),
         ),
         (
             "report_digest",

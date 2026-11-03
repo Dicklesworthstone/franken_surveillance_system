@@ -558,7 +558,7 @@ pub(super) fn parse(bytes: &[u8], rig_digest: ContentDigest) -> Result<Query> {
 
 /// Check exact metadata pins before decoding or publishing any derived JPEG.
 /// The owner must independently authenticate the capsule and its retained import.
-pub(super) fn validate_capsule(view: &View, capsule: &SensorCapsule) -> Result<[u64; 2]> {
+pub(super) fn validate_capsule_identity(view: &View, capsule: &SensorCapsule) -> Result<()> {
     let pins = view.source.pins();
     let capsule_bytes = capsule
         .try_canonical_bytes()
@@ -574,6 +574,12 @@ pub(super) fn validate_capsule(view: &View, capsule: &SensorCapsule) -> Result<[
             "retained frame does not match its exact source selection",
         ));
     }
+    Ok(())
+}
+
+/// Existing additive profile, unchanged; native replay callers supply a separately verified hull.
+pub(super) fn validate_capsule(view: &View, capsule: &SensorCapsule) -> Result<[u64; 2]> {
+    validate_capsule_identity(view, capsule)?;
     let aligned = view
         .alignment
         .align([capsule.capture.earliest.0, capsule.capture.latest.0])
@@ -621,10 +627,26 @@ pub(super) fn bind_source_view(
     resolved: &ResolvedFrame<'_>,
     rig: &SceneRig,
 ) -> Result<FeatureView> {
+    let capture = validate_capsule(view, resolved.capsule)?;
+    bind_source_view_at_capture(policy, view, resolved, rig, capture)
+}
+
+/// Bind the same complete source and image facts after an original-query replay has checked
+/// this exact capsule interval. Only the temporal clock owner supplies non-additive times.
+pub(super) fn bind_source_view_at_capture(
+    policy: ViewBindingPolicy,
+    view: &View,
+    resolved: &ResolvedFrame<'_>,
+    rig: &SceneRig,
+    capture: [u64; 2],
+) -> Result<FeatureView> {
+    validate_capsule_identity(view, resolved.capsule)?;
+    if capture[0] > capture[1] {
+        return Err(input_error("mapped capture interval is reversed"));
+    }
     let camera = rig
         .camera(view.camera)
         .ok_or_else(|| input_error("selected scene camera is unavailable"))?;
-    let capture = validate_capsule(view, resolved.capsule)?;
     if resolved.import_identity != view.source.pins().import_identity
         || resolved.segment != view.source.pins().segment as u64
         || view.source.range() != (resolved.codec, resolved.range_start, resolved.range_count)

@@ -19,6 +19,9 @@ use fss_reference::ingest::{
 use std::path::PathBuf;
 use std::time::Duration;
 
+#[path = "temporal_clock_owner_tests.rs"]
+mod clock;
+
 type Test<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 const LATE_TIME: i128 = 1_000_001_050;
 const REFERENCE_TIME: &str = "500001050";

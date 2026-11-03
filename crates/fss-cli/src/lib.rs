@@ -13,6 +13,8 @@ pub mod alert_effect;
 pub mod archive_cmd;
 /// Work claims (FSS-226): the work-claiming intent family of `fss investigate` (AOP-006).
 pub mod claim_cmd;
+/// Shared strict clock-query admission and native replay for retained scene timing.
+pub mod clock_alignment;
 /// Pure bounded anonymous multi-camera handoff query with complete alternatives.
 pub mod continuity_query;
 /// Bounded selection and complete projection report for retained package-track handoffs.

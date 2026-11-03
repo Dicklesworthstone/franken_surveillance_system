@@ -1,0 +1,722 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/clock_validation_replay_report.v1.json",
+  "title": "Complete original clock query replay under a shared caller work allowance",
+  "description": "The original digest-pinned strict clock validation query is evaluated by the native implementation under the caller's existing nonrefillable work budget. work_limit is the remaining caller allowance at native evaluation entry; work_consumed and work_remaining describe that evaluation, not earlier parsing or later caller work. Every supplied hypothesis, session and interval projection remains present. This report proves neither retained source custody nor clock activation, physical calibration, temporal independence, coverage or effect authority.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "input_digest",
+    "input_bytes",
+    "world_basis",
+    "reference_camera",
+    "target_camera",
+    "reference_clock",
+    "target_clock",
+    "target_anchor_ns",
+    "mapping",
+    "training_rounding",
+    "validation_rounding",
+    "projection_policy",
+    "hypotheses_complete",
+    "hypothesis_count",
+    "additional_session_count",
+    "supported_in_every_session_count",
+    "disjoint_session_membership_checked",
+    "work_limit",
+    "work_consumed",
+    "work_remaining",
+    "clock_activated",
+    "continuous_rate_or_offset_certified",
+    "source_custody_verified",
+    "physical_calibration_verified",
+    "independent_clock_validation",
+    "coverage_or_effect_authority",
+    "model",
+    "excluded_uncertainties",
+    "cameras",
+    "search",
+    "sessions",
+    "hypothesis_support",
+    "projections"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.clock_validation_replay_report.v1"
+    },
+    "input_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "input_bytes": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1048576
+    },
+    "world_basis": {
+      "$ref": "#/$defs/digest"
+    },
+    "reference_camera": {
+      "$ref": "#/$defs/positive"
+    },
+    "target_camera": {
+      "$ref": "#/$defs/positive"
+    },
+    "reference_clock": {
+      "$ref": "#/$defs/positive"
+    },
+    "target_clock": {
+      "$ref": "#/$defs/positive"
+    },
+    "target_anchor_ns": {
+      "$ref": "#/$defs/signed"
+    },
+    "mapping": {
+      "const": "reference = target_anchor - offset + (target - target_anchor) * 1000000000 / (1000000000 + skew_ppb)"
+    },
+    "training_rounding": {
+      "const": "nearest integer; half ties earlier; exact rational enclosure retained, not propagated into covariance"
+    },
+    "validation_rounding": {
+      "const": "earliest floor, latest ceiling; no inward rounding"
+    },
+    "projection_policy": {
+      "const": "outward-rounded hull of ALL supplied hypotheses, including unsupported and unresolved candidates; no clock selection"
+    },
+    "hypotheses_complete": {
+      "const": true
+    },
+    "hypothesis_count": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 64
+    },
+    "additional_session_count": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 8
+    },
+    "supported_in_every_session_count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 64
+    },
+    "disjoint_session_membership_checked": {
+      "const": true
+    },
+    "work_limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 18446744073709551615
+    },
+    "work_consumed": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615
+    },
+    "work_remaining": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615
+    },
+    "clock_activated": {
+      "const": false
+    },
+    "continuous_rate_or_offset_certified": {
+      "const": false
+    },
+    "source_custody_verified": {
+      "const": false
+    },
+    "physical_calibration_verified": {
+      "const": false
+    },
+    "independent_clock_validation": {
+      "const": false
+    },
+    "coverage_or_effect_authority": {
+      "const": false
+    },
+    "model": {
+      "const": "frozen affine clock hypotheses; separate constant-velocity feature per session; fixed pinhole cameras; nominal training times"
+    },
+    "excluded_uncertainties": {
+      "const": "clock-rate variation, training timestamp and rounding uncertainty, camera calibration, association, rolling shutter, acceleration and shared-mode errors"
+    },
+    "cameras": {
+      "type": "array",
+      "minItems": 2,
+      "items": {
+        "$ref": "#/$defs/camera"
+      },
+      "maxItems": 2
+    },
+    "search": {
+      "$ref": "#/$defs/scan"
+    },
+    "sessions": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/scan"
+      },
+      "maxItems": 8
+    },
+    "hypothesis_support": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/support"
+      },
+      "maxItems": 64
+    },
+    "projections": {
+      "type": "array",
+      "minItems": 0,
+      "items": {
+        "$ref": "#/$defs/projection"
+      },
+      "maxItems": 128
+    }
+  },
+  "$defs": {
+    "signed": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 40,
+      "pattern": "^-?(0|[1-9][0-9]*)$"
+    },
+    "positive": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 20,
+      "pattern": "^[1-9][0-9]*$"
+    },
+    "sessionId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 20,
+      "pattern": "^(0|[1-9][0-9]*)$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "interval": {
+      "type": "array",
+      "minItems": 2,
+      "items": {
+        "$ref": "#/$defs/signed"
+      },
+      "maxItems": 2
+    },
+    "pair": {
+      "type": "array",
+      "minItems": 2,
+      "items": {
+        "type": "number"
+      },
+      "maxItems": 2
+    },
+    "triple": {
+      "type": "array",
+      "minItems": 3,
+      "items": {
+        "type": "number"
+      },
+      "maxItems": 3
+    },
+    "hypothesis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "offset_ns",
+        "skew_ppb"
+      ],
+      "properties": {
+        "offset_ns": {
+          "$ref": "#/$defs/signed"
+        },
+        "skew_ppb": {
+          "$ref": "#/$defs/signed"
+        }
+      }
+    },
+    "camera": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "camera",
+        "clock",
+        "calibration_digest",
+        "image_domain"
+      ],
+      "properties": {
+        "camera": {
+          "$ref": "#/$defs/positive"
+        },
+        "clock": {
+          "$ref": "#/$defs/positive"
+        },
+        "calibration_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "image_domain": {
+          "$ref": "#/$defs/digest"
+        }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "camera",
+        "clock",
+        "role",
+        "original_local_capture_ns",
+        "exposure",
+        "source_digest",
+        "evidence_digest"
+      ],
+      "properties": {
+        "camera": {
+          "$ref": "#/$defs/positive"
+        },
+        "clock": {
+          "$ref": "#/$defs/positive"
+        },
+        "role": {
+          "enum": [
+            "nominal_training",
+            "validation_constraint"
+          ]
+        },
+        "original_local_capture_ns": {
+          "$ref": "#/$defs/interval"
+        },
+        "exposure": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "source_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "evidence_digest": {
+          "$ref": "#/$defs/digest"
+        }
+      }
+    },
+    "trainingMapping": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "camera",
+        "original_local_capture_ns",
+        "nominal_reference_capture_ns",
+        "exact_mapping_enclosure_ns"
+      ],
+      "properties": {
+        "camera": {
+          "$ref": "#/$defs/positive"
+        },
+        "original_local_capture_ns": {
+          "$ref": "#/$defs/signed"
+        },
+        "nominal_reference_capture_ns": {
+          "$ref": "#/$defs/signed"
+        },
+        "exact_mapping_enclosure_ns": {
+          "$ref": "#/$defs/interval"
+        }
+      }
+    },
+    "residual": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "camera",
+        "nominal_reference_capture_ns",
+        "pixels"
+      ],
+      "properties": {
+        "camera": {
+          "$ref": "#/$defs/positive"
+        },
+        "nominal_reference_capture_ns": {
+          "$ref": "#/$defs/signed"
+        },
+        "pixels": {
+          "type": "number"
+        }
+      }
+    },
+    "fit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reference_time_ns",
+        "observed_time_range_ns",
+        "position",
+        "velocity_per_second",
+        "conditional_pixel_noise_covariance",
+        "normalized_condition_number",
+        "rms_reprojection_pixels",
+        "training_residuals"
+      ],
+      "properties": {
+        "reference_time_ns": {
+          "$ref": "#/$defs/signed"
+        },
+        "observed_time_range_ns": {
+          "$ref": "#/$defs/interval"
+        },
+        "position": {
+          "$ref": "#/$defs/triple"
+        },
+        "velocity_per_second": {
+          "$ref": "#/$defs/triple"
+        },
+        "conditional_pixel_noise_covariance": {
+          "type": "array",
+          "minItems": 6,
+          "items": {
+            "type": "array",
+            "minItems": 6,
+            "items": {
+              "type": "number"
+            },
+            "maxItems": 6
+          },
+          "maxItems": 6
+        },
+        "normalized_condition_number": {
+          "type": "number"
+        },
+        "rms_reprojection_pixels": {
+          "type": "number"
+        },
+        "training_residuals": {
+          "type": "array",
+          "minItems": 6,
+          "items": {
+            "$ref": "#/$defs/residual"
+          },
+          "maxItems": 128
+        }
+      }
+    },
+    "validation": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "camera",
+            "mapped_capture_interval_ns",
+            "outcome",
+            "reason"
+          ],
+          "properties": {
+            "camera": {
+              "$ref": "#/$defs/positive"
+            },
+            "mapped_capture_interval_ns": {
+              "$ref": "#/$defs/interval"
+            },
+            "outcome": {
+              "const": "not_observable"
+            },
+            "reason": {
+              "type": "string",
+              "maxLength": 512
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "camera",
+            "mapped_capture_interval_ns",
+            "outcome",
+            "projected_endpoints",
+            "residual_bounds_pixels"
+          ],
+          "properties": {
+            "camera": {
+              "$ref": "#/$defs/positive"
+            },
+            "mapped_capture_interval_ns": {
+              "$ref": "#/$defs/interval"
+            },
+            "outcome": {
+              "enum": [
+                "consistent_for_all_times",
+                "timing_ambiguous",
+                "inconsistent"
+              ]
+            },
+            "projected_endpoints": {
+              "type": "array",
+              "minItems": 2,
+              "items": {
+                "$ref": "#/$defs/pair"
+              },
+              "maxItems": 2
+            },
+            "residual_bounds_pixels": {
+              "$ref": "#/$defs/pair"
+            }
+          }
+        }
+      ]
+    },
+    "trial": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "offset_ns",
+            "skew_ppb",
+            "work_units",
+            "consistent_for_all_validation_times",
+            "training_time_mappings",
+            "outcome",
+            "reason"
+          ],
+          "properties": {
+            "offset_ns": {
+              "$ref": "#/$defs/signed"
+            },
+            "skew_ppb": {
+              "$ref": "#/$defs/signed"
+            },
+            "work_units": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "consistent_for_all_validation_times": {
+              "type": "boolean"
+            },
+            "training_time_mappings": {
+              "type": "array",
+              "minItems": 6,
+              "items": {
+                "$ref": "#/$defs/trainingMapping"
+              },
+              "maxItems": 128
+            },
+            "outcome": {
+              "const": "unresolved"
+            },
+            "reason": {
+              "type": "string",
+              "maxLength": 1024
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "offset_ns",
+            "skew_ppb",
+            "work_units",
+            "consistent_for_all_validation_times",
+            "training_time_mappings",
+            "outcome",
+            "fit",
+            "validation"
+          ],
+          "properties": {
+            "offset_ns": {
+              "$ref": "#/$defs/signed"
+            },
+            "skew_ppb": {
+              "$ref": "#/$defs/signed"
+            },
+            "work_units": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "consistent_for_all_validation_times": {
+              "type": "boolean"
+            },
+            "training_time_mappings": {
+              "type": "array",
+              "minItems": 6,
+              "items": {
+                "$ref": "#/$defs/trainingMapping"
+              },
+              "maxItems": 128
+            },
+            "outcome": {
+              "const": "evaluated"
+            },
+            "fit": {
+              "$ref": "#/$defs/fit"
+            },
+            "validation": {
+              "type": "array",
+              "minItems": 2,
+              "items": {
+                "$ref": "#/$defs/validation"
+              },
+              "maxItems": 128
+            }
+          }
+        }
+      ]
+    },
+    "scan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "session_id",
+        "association_evidence",
+        "work_units",
+        "all_times_supported_count",
+        "sources",
+        "trials"
+      ],
+      "properties": {
+        "session_id": {
+          "$ref": "#/$defs/sessionId"
+        },
+        "association_evidence": {
+          "$ref": "#/$defs/digest"
+        },
+        "work_units": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "all_times_supported_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 64
+        },
+        "sources": {
+          "type": "array",
+          "minItems": 8,
+          "items": {
+            "$ref": "#/$defs/source"
+          },
+          "maxItems": 256
+        },
+        "trials": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/trial"
+          },
+          "maxItems": 64
+        }
+      }
+    },
+    "support": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "hypothesis",
+        "search_supported",
+        "supported_in_every_session",
+        "sessions"
+      ],
+      "properties": {
+        "hypothesis": {
+          "$ref": "#/$defs/hypothesis"
+        },
+        "search_supported": {
+          "type": "boolean"
+        },
+        "supported_in_every_session": {
+          "type": "boolean"
+        },
+        "sessions": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "session_id",
+              "supported"
+            ],
+            "properties": {
+              "session_id": {
+                "$ref": "#/$defs/positive"
+              },
+              "supported": {
+                "type": "boolean"
+              }
+            }
+          },
+          "maxItems": 8
+        }
+      }
+    },
+    "projection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "target_interval_ns",
+        "reference_envelope_ns",
+        "observation_window",
+        "containing_session_ids",
+        "mappings"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/positive"
+        },
+        "target_interval_ns": {
+          "$ref": "#/$defs/interval"
+        },
+        "reference_envelope_ns": {
+          "$ref": "#/$defs/interval"
+        },
+        "observation_window": {
+          "enum": [
+            "within_declared_session",
+            "outside_declared_sessions"
+          ]
+        },
+        "containing_session_ids": {
+          "type": "array",
+          "minItems": 0,
+          "items": {
+            "$ref": "#/$defs/sessionId"
+          },
+          "maxItems": 9
+        },
+        "mappings": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "hypothesis",
+              "reference_interval_ns"
+            ],
+            "properties": {
+              "hypothesis": {
+                "$ref": "#/$defs/hypothesis"
+              },
+              "reference_interval_ns": {
+                "$ref": "#/$defs/interval"
+              }
+            }
+          },
+          "maxItems": 64
+        }
+      }
+    }
+  }
+}

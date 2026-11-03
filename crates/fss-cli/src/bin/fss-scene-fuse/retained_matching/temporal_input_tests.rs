@@ -759,3 +759,6 @@ fn repeated_camera_rectification_preserves_each_actual_exposure_and_receipt() ->
     assert!(bind(&query, &sources, &f.rig).is_err());
     Ok(())
 }
+
+#[path = "temporal_clock_tests.rs"]
+mod clock;

@@ -3,60 +3,114 @@
   "date": "2026-11-03",
   "mission": {
     "goal": "Implement consequential remaining plan and bead functionality, with meaningful incremental commits directly to main.",
-    "inputs": ["COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md", ".beads/issues.jsonl", "AGENTS.md"],
+    "inputs": [
+      "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md",
+      ".beads/issues.jsonl",
+      "AGENTS.md"
+    ],
     "initial_source_commit": "35b4c32c577f1cf96e281de8a7baef204f72881a",
-    "source_head_before_this_commit": "a26d19541362a85077577cbd02ac17b2c22f44b8"
+    "source_head_before_this_commit": "581e94bea950a440b8b01a670554ddff77fe4283"
   },
   "authority": {
     "git": "User explicitly authorized direct main commits, no pull requests.",
     "deployment_authority_root": null,
     "external_device_or_effect_execution": false,
-    "concurrent_main_updates": "Preserved the non-overlapping update at 56828031aca537f77b2e6060efc85a14907ad523 before publishing supervisor changes."
+    "concurrent_main_updates": "Preserved every observed non-overlapping main update using expected-head fast-forward GitHub ref updates; no force push and no pull requests."
   },
   "published_checkpoints": [
-    {"commit": "e2eb5ce0b472faa20594bd6f7c0250bc0ada1f59", "change": "Order-independent canonical evidence-origin transition checks"},
-    {"commit": "8e6a7c40605c32d51b6e19c58ea630bee61af1f9", "change": "Hypothesis-bound fusion and complete evidence-history transcripts"},
-    {"commit": "a26d19541362a85077577cbd02ac17b2c22f44b8", "change": "Explicit supervisor transcript output preserving default v1 bytes"},
-    {"commit": "this_commit", "change": "Cross-session clock-validation CLI, schemas, fixture and compatibility regressions"}
+    {
+      "commit": "e2eb5ce0b472faa20594bd6f7c0250bc0ada1f59",
+      "change": "Order-independent canonical evidence-origin transition checks"
+    },
+    {
+      "commit": "8e6a7c40605c32d51b6e19c58ea630bee61af1f9",
+      "change": "Hypothesis-bound fusion and complete evidence-history transcripts"
+    },
+    {
+      "commit": "a26d19541362a85077577cbd02ac17b2c22f44b8",
+      "change": "Explicit supervisor transcript output preserving default v1 bytes"
+    },
+    {
+      "commit": "090f7147516538e669f7d9abe1d5ef1dc7666ee7",
+      "change": "Cross-session clock-validation CLI, schemas, fixture and compatibility regressions"
+    },
+    {
+      "commit": "13250383fc75a0af1b592337c6d2cda745a81ea5",
+      "change": "Fail-closed canonical agent decision identities, preserving valid bytes"
+    },
+    {
+      "commit": "c85bd08e494cf2bbe6a3229dff4add1c94879d5f",
+      "change": "Bounded lifetime source-once sequential fusion with transactional admission"
+    },
+    {
+      "commit": "581e94bea950a440b8b01a670554ddff77fe4283",
+      "change": "Explicit supervisor source-once mode, exact raw detector binding and complete receipts"
+    },
+    {
+      "commit": "this_commit",
+      "change": "Retained-motion v2 native clock-query replay and complete hypothesis time mapping"
+    }
   ],
   "cases": [
     {
       "bead": "fss-gefi6",
       "finding": "First-match origin checks and noncanonical digest flags could conceal restrictive provenance or shared content.",
-      "resolution": "Group all origins by digest algorithm plus bytes; preserve unchanged sets and check every changed attribution.",
+      "resolution": "Group all origins by canonical digest algorithm plus bytes, preserve unchanged sets and check every changed attribution. Reject unencodable disclosed knowledge/decision text before successful cell, envelope, frame or capsule identities can collapse to an empty encoding.",
       "remaining": "Authenticate producer-derived origins and propagate them through a negotiated wire profile.",
       "bead_status_changed": false
     },
     {
       "bead": "fss-x4a.16.9",
       "finding": "Sequential numeric receipts admitted another hypothesis and did not identify exact evidence, predecessor history or all state after oversized reset text.",
-      "resolution": "Refuse foreign hypotheses and publish separately versioned, independently bounded state/history commitments; expose an explicit supervisor wrapper.",
-      "remaining": "Qualify calibration, repeated-observation handling and valid test-supermartingale assumptions; receipts alone do not establish source custody or effects.",
+      "resolution": "Refuse foreign hypotheses, preserve complete bounded evidence/state/history commitments, add a bounded lifetime source-once numerical profile, and expose explicit supervisor modes. Exact raw sensor, class label and unbinned detector score remain immutable per consumed source. Resets preserve source inventory and refused steps or runs export no successful prefix.",
+      "remaining": "Qualify calibration and test-supermartingale assumptions, establish authenticated physical source identity and temporal dependence handling, and integrate source-once accounting with retained supervision. Declared digests and deterministic receipts do not establish custody, independence or effects.",
       "bead_status_changed": false
     },
     {
       "bead": "fss-x8j0v",
-      "finding": "Native cross-session clock validation had no executable operator input/report path.",
-      "resolution": "Add a strict frozen-session CLI profile, full diagnostics and all-hypothesis time hulls with shared work/cancellation/output limits.",
-      "remaining": "Connect authenticated observations and adopted clock calibration to retained multi-camera timelines without narrowing uncertainty.",
+      "finding": "Native cross-session clock validation had no operator input/report path or retained multi-camera motion consumer.",
+      "resolution": "Expose strict frozen-session CLI validation and a shared original-query replay owner. The retained-motion v2 adapter independently pins the original query, replays every native candidate under the parent work account, binds actual rig/image geometry and exact retained source/clock generations, and maps full original capture intervals using every candidate before native temporal association.",
+      "remaining": "Authenticate clock-query observation custody/associations and calibrations, qualify live deployment behavior, and separately authorize physical clock activation or durable calibration adoption. Replayed hypothesis hulls neither synchronize cameras nor certify continuous coverage.",
       "bead_status_changed": false
     }
   ],
   "verification": {
     "native_cargo": [
-      {"command": "cargo test --locked --offline -p fss-core --test provenance_contract", "passed": 79},
-      {"command": "cargo test --locked --offline -p fss-fusion", "passed": 36},
-      {"command": "cargo test --locked --offline -p fss-geometry --test clock_validation_contract", "passed": 10}
+      {
+        "command": "cargo test --locked --offline -p fss-core --lib",
+        "passed": 182
+      },
+      {
+        "command": "cargo test --locked --offline -p fss-core --test agent_abstraction_contract --test agent_contracts_contract --test knowledge_cell_decode_refusal_contract --test knowledge_cell_property_family --test knowledge_state_contract --test provenance_contract",
+        "passed": 186
+      },
+      {
+        "command": "cargo test --locked --offline -p fss-fusion",
+        "passed": 48
+      },
+      {
+        "command": "cargo test --locked --offline -p fss-geometry --test clock_validation_contract",
+        "passed": 10
+      }
     ],
-    "baseline_reproduction": "Three provenance regressions failed before the implementation fix.",
+    "baseline_reproduction": "Three provenance regressions and two canonical identity regressions failed against their original baseline implementations before the fixes.",
     "limited_original_source_checks": {
-      "clock": "26 original-source parser/analysis/rendering tests passed, including nine new validation cases. Runtime entrypoint and filesystem authority excluded; no replacement runtime.",
-      "supervisor": "Original report types/sealer/renderers and real fusion receipts passed source substitution, baseline byte parity, replay, reset, cancellation, oversized-context and output-field checks. Execution function and deployment excluded.",
-      "instances": "Nine clock query/report/response validations, three supervisor wrappers and nine nested fusion transcripts passed full Draft 2020-12 checks, with negative mutation controls.",
-      "compatibility": "Old offset/drift responses and default supervisor bytes matched their separately compiled original owners. Clock hashes are retained in unit tests."
+      "clock": "The shared strict owner retains the original parsers/math/renderers. Initial refactor checks passed26/26, preserving both historical offset/drift response hashes. The subsequent motion harness passed85/85, including seven new adapter and three shared-owner regressions against real native core/geometry/twin/graph/MJPEG libraries.",
+      "clock_motion_scope": "Actual source declarations, native clock replay, full retained-view binding and native temporal matching execute. Runtime/CLI entrypoints, deployment authority, retained source-owner I/O and filesystem export are excluded; no replacement runtime is used.",
+      "supervisor": "The actual source-once strategy, verbatim pure per-window observation-to-query computation and original report/serializer code execute against real native core/fusion. Default and transcript-only bytes match baseline b597d846. Replay, same-bin score/label/sensor conflicts after a prefix, transactional capacity refusal, reset lifetime, neutral diagnostics and zero-transition commitments pass.",
+      "supervisor_scope": "Outer authority, work/cancellation, deployment/runtime, command parsing and export are excluded. Native E2E contracts assert exact selector errors and second-window conflict with no stdout or exported report, but remain unexecuted.",
+      "instances": "Eight source-once wrappers, eleven nested source receipts, eleven nested fusion transcripts and both legacy transcript wrappers passed full Draft2020-12 validation with five negative mutation controls. Earlier validation passed nine clock query/report/response instances and three transcript wrappers with nine nested fusion transcripts.",
+      "compatibility": "Historical offset/drift byte hashes and default/transcript-only supervisor outputs are preserved; version2 retained motion selects separate schemas instead of changing version1 semantics.",
+      "clock_instances": "Five new meta-schemas and five actual native query/output shapes pass full Draft2020-12 validation: complete v2 input, clock mapping fragment, replay response/report and native motion geometry. Exact original query and embedded report digests match. Twenty negative controls pass, including invented authority, missing diagnostics, inward offsets, invalid bindings and enlarged read allowance. Full retained-owner report execution remains unverified.",
+      "source_assembly": "The motion harness compiles exact production modules and children plus extracted error definitions; its sole nominal SceneRig exclusion is the unrelated adopted-calibration module export. Explicit source hashes, reproduction scripts and omitted-owner boundaries accompany the scratch verification logs."
     },
-    "schema_catalog": {"schemas": 139, "resolved_references": 2290, "errors": 0},
-    "not_a_release_qualification": true
+    "schema_catalog": {
+      "schemas": 146,
+      "resolved_references": 2471,
+      "errors": 0
+    },
+    "not_a_release_qualification": true,
+    "native_test_total": 426
   },
   "obligations": [
     {
@@ -64,11 +118,12 @@
       "reason": "Shared 8 GiB cgroup killed Asupersync during both one-job no-debug test compilation and metadata-only CLI checking, before the changed CLI code was reached.",
       "commands": [
         "cargo test --locked --offline -p fss-reference --lib meaningful_delta_tests::classification_",
-        "cargo test --locked --offline -p fss-cli --bin fss-clock-align",
+        "cargo test --locked --offline -p fss-cli --lib clock_alignment::",
+        "cargo test --locked --offline -p fss-cli --bin fss-clock-align --bin fss-scene-fuse",
         "cargo test --locked --offline -p fss-cli --test clock_alignment_cli --test clock_drift_cli --test clock_validation_cli",
         "cargo test --locked --offline -p fss-cli --test supervisor_e2e_contract"
       ],
-      "next_action": "Run the canonical targets with sufficient free memory. Limited original-source checks must not be reported as full CLI/process/runtime qualification."
+      "next_action": "Run the canonical targets with sufficient free memory and disk. Reproducible private dependency caches were removed to recover space; fetch locked dependencies before an offline rerun if needed. Limited original-source checks must not be reported as full CLI/process/runtime qualification."
     },
     {
       "status": "preexisting_repository_debt",
@@ -79,16 +134,38 @@
   "budgets_and_boundaries": {
     "clock_input_bytes": 1048576,
     "clock_complete_output_bytes": 8388608,
-    "additional_sessions": [1, 8],
-    "interval_projections": [0, 128],
+    "additional_sessions": [
+      1,
+      8
+    ],
+    "interval_projections": [
+      0,
+      128
+    ],
     "work": "One native WorkBudget across all sessions, with cancellation checked through rendering.",
-    "git_safety": "Expected-head fast-forward updates, no force push; staged integrity-manifest checks accompany each checkpoint."
+    "git_safety": "Expected-head fast-forward updates, no force push; staged integrity-manifest checks accompany each checkpoint.",
+    "unique_source_capacity": [
+      1,
+      4096
+    ],
+    "unique_source_reset_policy": "Lifetime inventory and capacity are preserved; no eviction, refund or double consumption.",
+    "retained_motion_profile": "fss.scene_feature_motion_match_retained_query.v2",
+    "retained_clock_sidecar_bytes": 1048576,
+    "retained_source_read_bytes_with_clock": 4293918720,
+    "retained_clock_mapping": "Every target source must match a complete original projection interval. All declared candidate mappings remain in the envelope; zero extra offsets are mandatory.",
+    "retained_motion_complete_output_bytes": 33554432
   },
   "next_affordances": [
-    "Complete the explicitly pending native CLI and reference tests.",
-    "Use the new validation profile on custody-verified observations before designing retained clock adoption.",
-    "Implement producer-authenticated provenance origins without changing frozen default wire bytes.",
-    "Qualify sequential likelihood/statistical assumptions separately from deterministic receipt identity."
+    "Complete the explicitly pending native CLI/process/reference tests in a sufficiently provisioned environment.",
+    "Implement producer-authenticated provenance origins and negotiated wire propagation without changing frozen defaults.",
+    "Integrate declared-source replay accounting with custody-verified retained supervision.",
+    "Qualify calibration and sequential statistical assumptions separately from deterministic receipt identity.",
+    "Authenticate original clock observations and separately authorize operational clock calibration adoption; preserve the complete uncertainty inventory."
   ],
-  "documentation": ["IMPLEMENTATION_STATUS.md", "docs/FUSION_REFERENCE.md", "docs/MOVING_TARGET_CLOCK_ALIGNMENT.md"]
+  "documentation": [
+    "IMPLEMENTATION_STATUS.md",
+    "docs/FUSION_REFERENCE.md",
+    "docs/MOVING_TARGET_CLOCK_ALIGNMENT.md",
+    "docs/RETAINED_TEMPORAL_MATCHING.md"
+  ]
 }

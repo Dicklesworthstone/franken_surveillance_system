@@ -3,7 +3,7 @@
 
 use std::collections::BTreeSet;
 
-use fss_cli::json_input::Value;
+use crate::json_input::Value;
 use fss_core::ContentDigest;
 use fss_geometry::temporal_alignment::drift::validation::{
     ClockProjectionRequest, ClockValidationError, ClockValidationReport, ClockValidationSession,
@@ -26,10 +26,10 @@ struct Session {
     query: drift::Query,
 }
 
-struct Query {
-    search: drift::Query,
+pub(super) struct Query {
+    pub(super) search: drift::Query,
     sessions: Vec<Session>,
-    projections: Vec<ClockProjectionRequest>,
+    pub(super) projections: Vec<ClockProjectionRequest>,
 }
 
 fn positive(value: &Value) -> Result<u64> {
@@ -45,7 +45,7 @@ fn positive(value: &Value) -> Result<u64> {
         })
 }
 
-fn query(value: &Value) -> Result<Query> {
+pub(super) fn query(value: &Value) -> Result<Query> {
     let original = value
         .object()
         .ok_or_else(|| failure("input", "expected clock validation object"))?;
@@ -199,7 +199,7 @@ fn query(value: &Value) -> Result<Query> {
     })
 }
 
-fn evaluate(query: &Query, work: &mut WorkBudget<'_>) -> Result<ClockValidationReport> {
+pub(super) fn evaluate(query: &Query, work: &mut WorkBudget<'_>) -> Result<ClockValidationReport> {
     let mut sessions = Vec::new();
     sessions
         .try_reserve_exact(query.sessions.len())
@@ -251,7 +251,7 @@ fn native_failure(error: ClockValidationError) -> super::Failure {
     failure("scan", error.to_string())
 }
 
-fn checkpoint(work: &mut WorkBudget<'_>) -> Result<()> {
+pub(super) fn checkpoint(work: &mut WorkBudget<'_>) -> Result<()> {
     work.charge(0).map_err(|error| match error {
         GeometryError::Cancelled => failure(
             "cancelled",
@@ -285,4 +285,15 @@ pub fn analyze(
         &mut work,
     )?;
     Ok((report, supported))
+}
+
+pub(super) fn render_replay(
+    query: &Query,
+    report: &ClockValidationReport,
+    digest: ContentDigest,
+    available_work: u64,
+    input_bytes: usize,
+    work: &mut WorkBudget<'_>,
+) -> Result<String> {
+    report::render_replay(query, report, digest, available_work, input_bytes, work)
 }

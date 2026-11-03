@@ -2,8 +2,8 @@
 //! Explicit affine-rate input and complete diagnostics; v1 offset bytes stay unchanged.
 
 use super::{MAX_REPORT_BYTES, Result, failure, input};
-use fss_cli::agent_json::{object, string};
-use fss_cli::json_input::Value;
+use crate::agent_json::{object, string};
+use crate::json_input::Value;
 use fss_core::ContentDigest;
 use fss_geometry::WorkBudget;
 use fss_geometry::temporal_alignment::MAX_CLOCK_OFFSET_HYPOTHESES;
@@ -385,7 +385,7 @@ fn render(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fss_cli::json_input::parse;
+    use crate::json_input::parse;
     const FIXTURE: &[u8] = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../fixtures/clock-alignment/drifting_feature.json"

@@ -15,16 +15,19 @@ use fss_twin::localization::native::ExtractionOptions;
 use fss_twin::temporal_feature_association::TemporalAssociationOptions;
 
 use super::super::{Result, input as fusion_input, input_error};
-use super::fail;
 use super::input::{self as shared, ResolvedFrame, View, ViewBindingPolicy};
+use super::{fail, temporal_clock};
 
 pub(super) const SCHEMA: &str = "fss.scene_feature_motion_match_retained_query.v1";
+pub(super) const SCHEMA_V2: &str = "fss.scene_feature_motion_match_retained_query.v2";
 const MAX_EXPOSURES: usize = 16;
 const MAX_CAMERAS: usize = 8;
 const MAX_TOTAL_FEATURES: usize = 256;
 const MAX_CAPTURE_SPAN_NS: u64 = 60_000_000_000;
 
 pub(super) struct Query {
+    pub version: u8,
+    pub clock_validation: Option<temporal_clock::Spec>,
     pub views: Vec<View>,
     pub extraction: ExtractionOptions,
     pub matching: TemporalAssociationOptions,
@@ -38,28 +41,36 @@ pub(super) fn parse(bytes: &[u8], rig_digest: ContentDigest) -> Result<Query> {
             .map_err(|_| input_error("retained motion query must be UTF-8"))?,
     )
     .map_err(|_| input_error("malformed retained motion query"))?;
-    let top = shared::fields(
-        &document,
-        &[
-            "schema",
-            "camera_rig_digest",
-            "privacy_domain",
-            "clock",
-            "clock_evidence",
-            "association_basis",
-            "reference_time_ns",
-            "max_capture_span_ns",
-            "max_capture_uncertainty_ns",
-            "motion",
-            "views",
-            "extraction",
-            "matching",
-            "triangulation",
-        ],
-    )?;
-    if shared::text(shared::get(top, "schema")?)? != SCHEMA
-        || shared::digest(shared::get(top, "camera_rig_digest")?)? != rig_digest
+    let version = match document
+        .object()
+        .and_then(|f| f.get("schema"))
+        .and_then(Value::text)
     {
+        Some(SCHEMA) => 1,
+        Some(SCHEMA_V2) => 2,
+        _ => return Err(input_error("unsupported exact retained motion schema")),
+    };
+    let mut allowed = vec![
+        "schema",
+        "camera_rig_digest",
+        "privacy_domain",
+        "clock",
+        "clock_evidence",
+        "association_basis",
+        "reference_time_ns",
+        "max_capture_span_ns",
+        "max_capture_uncertainty_ns",
+        "motion",
+        "views",
+        "extraction",
+        "matching",
+        "triangulation",
+    ];
+    if version == 2 {
+        allowed.push("clock_validation");
+    }
+    let top = shared::fields(&document, &allowed)?;
+    if shared::digest(shared::get(top, "camera_rig_digest")?)? != rig_digest {
         return Err(input_error(
             "retained motion schema or exact rig pin differs",
         ));
@@ -166,7 +177,19 @@ pub(super) fn parse(bytes: &[u8], rig_digest: ContentDigest) -> Result<Query> {
         views.push(shared::parse_view(row, 2)?);
     }
     validate_declarations(&views)?;
+    let clock_validation = if version == 2 {
+        Some(temporal_clock::Spec::parse(
+            shared::get(top, "clock_validation")?,
+            &views,
+            matching.clock,
+            matching.clock_evidence,
+        )?)
+    } else {
+        None
+    };
     Ok(Query {
+        version,
+        clock_validation,
         views,
         extraction,
         matching,
@@ -228,6 +251,24 @@ pub(super) fn bind(
     resolved: &[ResolvedFrame<'_>],
     rig: &SceneRig,
 ) -> Result<Vec<FeatureView>> {
+    bind_with_clock(query, resolved, rig, None)
+}
+
+pub(super) fn bind_with_clock(
+    query: &Query,
+    resolved: &[ResolvedFrame<'_>],
+    rig: &SceneRig,
+    clock: Option<&temporal_clock::Ready>,
+) -> Result<Vec<FeatureView>> {
+    match (&query.clock_validation, clock) {
+        (None, None) => {}
+        (Some(spec), Some(ready)) if ready.matches(spec, rig, &query.views) => {}
+        _ => {
+            return Err(input_error(
+                "retained motion clock replay is missing or belongs to another query",
+            ));
+        }
+    }
     if !(4..=MAX_EXPOSURES).contains(&query.views.len()) || query.views.len() != resolved.len() {
         return Err(input_error(
             "temporal selection and complete owner exposure inventory differ",
@@ -272,7 +313,19 @@ pub(super) fn bind(
     })?;
     let mut hull = [u64::MAX, 0];
     for (view, source) in query.views.iter().zip(resolved) {
-        let bound = shared::bind_source_view(policy, view, source, rig)?;
+        let bound = match clock {
+            Some(clock) => shared::bind_source_view_at_capture(
+                policy,
+                view,
+                source,
+                rig,
+                clock.capture(view, source.capsule)?,
+            )?,
+            None => shared::bind_source_view(policy, view, source, rig)?,
+        };
+        if let Some(clock) = clock {
+            clock.validate_bound(&bound)?;
+        }
         if bound.capture[1] - bound.capture[0] > query.matching.max_capture_uncertainty_ns {
             return Err(input_error(
                 "complete aligned capture exceeds the temporal uncertainty allowance",
@@ -295,3 +348,41 @@ pub(super) fn bind(
 #[cfg(test)]
 #[path = "temporal_input_tests.rs"]
 mod tests;
+
+/// Admit the complete native time inventory before source decoding in the replay profile.
+pub(super) fn validate_capture_policy(
+    query: &Query,
+    captures: &[[u64; 2]],
+    rig: &SceneRig,
+) -> Result<()> {
+    if captures.len() != query.views.len() || captures.is_empty() {
+        return Err(input_error(
+            "clock replay capture inventory differs from selected exposures",
+        ));
+    }
+    let mut hull = [u64::MAX, 0];
+    for (view, capture) in query.views.iter().zip(captures) {
+        let camera = rig
+            .camera(view.camera)
+            .ok_or_else(|| input_error("clock replay rig camera is unavailable"))?;
+        if capture[0] > capture[1]
+            || capture[0] < camera.camera.validity[0]
+            || capture[1] > camera.camera.validity[1]
+            || capture[1] - capture[0] > query.matching.max_capture_uncertainty_ns
+        {
+            return Err(input_error(
+                "complete clock envelope exceeds camera validity or temporal uncertainty allowance",
+            ));
+        }
+        hull[0] = hull[0].min(capture[0]);
+        hull[1] = hull[1].max(capture[1]);
+    }
+    if hull[1] - hull[0] > query.matching.max_capture_span_ns
+        || !(hull[0]..=hull[1]).contains(&query.matching.reference_time_ns)
+    {
+        return Err(input_error(
+            "complete temporal capture hull exceeds the requested scene-time policy",
+        ));
+    }
+    Ok(())
+}

@@ -187,6 +187,27 @@ Additional disjoint passages do not remove those limitations: the new profile
 checks frozen hypotheses under additional asserted observations, without proving
 statistical independence or physical timing accuracy.
 
+## Use the complete clock hull in retained motion matching
+
+`fss-scene-fuse retained-motion-match` accepts an opt-in
+`fss.scene_feature_motion_match_retained_query.v2` consumer. It pins and replays
+the original validation query through the shared `clock_alignment` owner, under
+the scene command's same work allowance and cancellation probe. It verifies the
+actual scene rig, prepared image domains and source sensor/stream/clock bindings,
+then requires each original projection request to match one selected retained
+target capsule's complete interval. The resulting all-hypothesis hull becomes
+the actual input to native motion matching. Unsupported candidates are retained;
+overwide mapped intervals still fail the caller's uncertainty and span gates.
+
+The scene report embeds `fss.clock_validation_replay_response.v1` and its
+`fss.clock_validation_replay_report.v1` body. Those profiles have the same complete
+native diagnostic inventory; their work allowance is the remaining parent
+allowance at replay entry, which can exceed the standalone command's limit.
+The original query bytes and all selected exposure mappings are included. The
+existing standalone response profiles and bytes remain unchanged. See
+[retained temporal matching](RETAINED_TEMPORAL_MATCHING.md#replay-clock-uncertainty-into-the-motion-reconstruction)
+for the exact v2 declarations, limits and authority boundaries.
+
 ## Validation checkpoint
 
 The original offset path has twelve geometry, five command-unit and three process
@@ -210,6 +231,7 @@ cargo test --locked -p fss-geometry --test temporal_alignment_contract --test cl
 cargo test --locked -p fss-cli --bin fss-clock-align --test clock_alignment_cli --test clock_drift_cli
 cargo test --locked -p fss-geometry --test clock_validation_contract
 cargo test --locked -p fss-cli --bin fss-clock-align --test clock_validation_cli
+cargo test --locked -p fss-cli --lib clock_alignment
 ```
 
 The cross-session command adds native command tests for static-search ambiguity,

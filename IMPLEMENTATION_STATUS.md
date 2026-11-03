@@ -10,6 +10,42 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Validated clock hypotheses in retained motion reconstruction (2026-11-03)
+
+The explicit `fss.scene_feature_motion_match_retained_query.v2` profile now bridges
+native clock validation into actual retained multi-camera motion matching. A shared
+strict owner independently pins and replays the original clock-query document; a
+serialized success report cannot substitute for its observations. Every original
+candidate, including unsupported and unresolved alternatives, contributes to the
+conservative capture-time hull consumed by the native temporal association and fit.
+
+The adapter binds the original twin/world digest, exact camera pose and intrinsics,
+prepared image domain, rig calibration/image generations and declared sensor,
+stream and clock bases. Each selected target capsule must match a complete original
+projection interval. Zero additive offsets prevent a second timestamp adjustment.
+The full mapped inventory must satisfy camera validity, per-exposure uncertainty,
+capture-span and requested-time policy before source decoding. Final owner snapshots
+repeat the binding and current privacy/source checks after report serialization.
+
+One parent work account covers parsing, native replay and motion reconstruction.
+The clock sidecar reserves its 1 MiB maximum from the existing 4 GiB source-read
+allowance. Separate v2 motion and embedded-replay schemas preserve version1 bytes
+and standalone clock-report limits. Output includes the exact original clock-query
+text, every native trial and projection, and all original-to-common source interval
+mappings. The source-clock association remains declared; replay does not establish
+physical synchronization, authenticate clock-query observations or activate a clock.
+
+An exact-source harness linked native core, geometry, twin, graph and MJPEG libraries
+and passed 85 tests, including seven new clock-to-motion adapter regressions and
+three shared-owner replay regressions. It executes strict input admission, actual
+native scans, full retained-view binding, temporal matching and rendering. Scope
+substitution, narrowed original intervals, unsupported-candidate hull widening,
+uncertainty refusal, shared-work exhaustion and live cancellation are covered.
+Two real retained-owner regressions were also authored for successful replay and
+pre-derivative pin/interval refusals. Their runtime/source I/O execution remains
+pending behind the Asupersync memory limit; the limited harness does not qualify
+deployment authority, command dispatch, retained custody or filesystem export.
+
 ## Source-once fusion in the supervisor (2026-11-03)
 
 `fss-event supervise --root DIR --site SITE --plan PLAN --unique-sources N`

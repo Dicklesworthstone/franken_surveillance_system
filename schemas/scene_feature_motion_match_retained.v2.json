@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/scene_feature_motion_match_retained.v2.json",
+  "title": "fss.scene_feature_motion_match_retained.v2",
+  "description": "Explicit native-clock-replay retained-motion response. The SHA-256 covers the exact compact UTF-8 report object, excluding this wrapper and final newline. The complete response is bounded by the caller report allowance and never truncates clock candidates, source records or motion outcomes.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "report_digest",
+    "report"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.scene_feature_motion_match_retained.v2"
+    },
+    "report_digest": {
+      "$ref": "scene_feature_motion_match_retained_report.v2.json#/$defs/digest"
+    },
+    "report": {
+      "$ref": "scene_feature_motion_match_retained_report.v2.json"
+    }
+  }
+}
