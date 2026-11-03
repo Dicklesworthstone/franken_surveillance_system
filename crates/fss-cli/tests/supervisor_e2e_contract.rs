@@ -229,6 +229,34 @@ fn ns1_multi_camera_supervisor_corroborates_under_1500ms_and_cli_matches() -> Te
     let cx = make_cx(&dir)?;
     let report = run_supervisor(&deployment, Some(&dir.root()), &cx, &plan)?;
 
+    // Matching numeric likelihoods are not matching evidence. Preserve the historical receipt
+    // while requiring the new transcript to distinguish an otherwise identical source swap.
+    let mut changed_source = plan.clone();
+    if let Some(SupervisorWindowObservation::CalibratedDetection {
+        evidence_digest, ..
+    }) = changed_source.windows[0].observations.get_mut("east")
+    {
+        *evidence_digest = ContentDigest::sha256(b"different-east-window-0-detection");
+    } else {
+        return Err("missing expected east observation".into());
+    }
+    let changed = run_supervisor(
+        &deployment,
+        Some(&dir.root()),
+        &make_cx(&dir)?,
+        &changed_source,
+    )?;
+    assert_eq!(report.receipt_digest, changed.receipt_digest);
+    assert_ne!(report.transcript_digest, changed.transcript_digest);
+    assert_eq!(
+        report.window_records[0].step_outcome.transcript.previous(),
+        None
+    );
+    assert_eq!(
+        report.window_records[1].step_outcome.transcript.previous(),
+        Some(report.window_records[0].step_outcome.transcript.digest())
+    );
+
     assert_eq!(report.status, "corroborated_alert_warranted");
     assert_eq!(report.windows_evaluated, 2);
     assert_eq!(report.corroborated_at_window, Some(1));
@@ -278,7 +306,9 @@ fn ns1_multi_camera_supervisor_corroborates_under_1500ms_and_cli_matches() -> Te
     let parsed_cli = parse(String::from_utf8(cli_out.stdout)?.trim_end())?;
     let labels = parsed_cli.object().ok_or("report object")?;
     assert_eq!(
-        labels.get("observation_basis").and_then(|value| value.text()),
+        labels
+            .get("observation_basis")
+            .and_then(|value| value.text()),
         Some("caller_supplied_simulation")
     );
     for key in [
@@ -286,7 +316,10 @@ fn ns1_multi_camera_supervisor_corroborates_under_1500ms_and_cli_matches() -> Te
         "effects_authorized",
         "anytime_bound_verified",
     ] {
-        assert_eq!(labels.get(key).and_then(|value| value.boolean()), Some(false));
+        assert_eq!(
+            labels.get(key).and_then(|value| value.boolean()),
+            Some(false)
+        );
     }
     let cli_receipt = parsed_cli
         .object()
@@ -294,7 +327,51 @@ fn ns1_multi_camera_supervisor_corroborates_under_1500ms_and_cli_matches() -> Te
         .and_then(|v| v.text())
         .ok_or("missing receipt_digest")?;
     assert_eq!(cli_receipt, report.receipt_digest.to_text());
+    assert!(!labels.contains_key("transcript_digest"));
+    assert!(!labels.contains_key("fusion_transcripts"));
     assert!(report_out.is_file());
+
+    let transcript_out = Command::new(env!("CARGO_BIN_EXE_fss-event"))
+        .args(["supervise", "--root"])
+        .arg(dir.root())
+        .args(["--site", SITE, "--plan"])
+        .arg(&plan_file)
+        .args(["--transcript", "yes"])
+        .output()?;
+    assert!(
+        transcript_out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&transcript_out.stderr)
+    );
+    let parsed_transcript = parse(String::from_utf8(transcript_out.stdout)?.trim_end())?;
+    let wrapper = parsed_transcript.object().ok_or("transcript wrapper")?;
+    assert_eq!(
+        wrapper.get("schema").and_then(|v| v.text()),
+        Some("fss.supervisor_transcript_report.v1")
+    );
+    let cli_transcript = parsed_transcript
+        .object()
+        .and_then(|o| o.get("transcript_digest"))
+        .and_then(|v| v.text())
+        .ok_or("missing transcript_digest")?;
+    assert_eq!(cli_transcript, report.transcript_digest.to_text());
+    let nested = wrapper
+        .get("report")
+        .and_then(|v| v.object())
+        .ok_or("nested v1 report")?;
+    assert_eq!(
+        nested.get("schema").and_then(|v| v.text()),
+        Some("fss.supervisor_report.v1")
+    );
+    assert_eq!(
+        nested.get("receipt_digest").and_then(|v| v.text()),
+        Some(cli_receipt)
+    );
+    let transitions = wrapper
+        .get("fusion_transcripts")
+        .and_then(|v| v.array())
+        .ok_or("fusion transcripts")?;
+    assert_eq!(transitions.len(), report.window_records.len());
     emit_log("cli_supervise", "receipt_digest_parity", "ok");
 
     Ok(())
@@ -472,7 +549,11 @@ fn cooperative_cancellation_drains_cleanly_and_failure_cases_refuse() -> TestRes
     let stale_err = run_supervisor(&deployment, Some(&dir.root()), &cx, &stale_plan)
         .expect_err("must refuse stale authority anchor");
     assert_eq!(stale_err.stable_id(), ERR_SUPERVISOR_STALE_ANCHOR);
-    emit_log("failure_stale_anchor", "stale_contract_basis_refused", "error");
+    emit_log(
+        "failure_stale_anchor",
+        "stale_contract_basis_refused",
+        "error",
+    );
 
     // 5. Failure-first: InsufficientCameras & DuplicateSensor (NEG-004)
     let mut single_cam_plan = base_plan.clone();
@@ -486,7 +567,11 @@ fn cooperative_cancellation_drains_cleanly_and_failure_cases_refuse() -> TestRes
     let dup_err = run_supervisor(&deployment, Some(&dir.root()), &cx, &dup_sensor_plan)
         .expect_err("must refuse duplicate sensor binding");
     assert_eq!(dup_err.stable_id(), ERR_SUPERVISOR_DUPLICATE_SENSOR);
-    emit_log("failure_neg004", "single_or_duplicate_sensor_refused", "error");
+    emit_log(
+        "failure_neg004",
+        "single_or_duplicate_sensor_refused",
+        "error",
+    );
 
     Ok(())
 }

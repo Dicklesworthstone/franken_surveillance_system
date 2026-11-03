@@ -25,7 +25,7 @@ const HELP: &str = "fss-event supervise --root DIR --site SITE\n\
   (--retained-plan FILE --retained-digest sha256:HEX |\n\
    --discover-plan FILE --discover-digest sha256:HEX |\n\
    --detection-plan FILE --detection-digest sha256:HEX | --plan FILE)\n\
-  [--principal ID] [--report-out FILE]\n\
+  [--principal ID] [--report-out FILE] [--transcript yes]\n\
 \n\
   Retained mode reads a digest-pinned fss.retained_supervisor_plan.v1 from a regular file\n\
   and reopens exact published package events from an existing deployment. Camera bindings\n\
@@ -92,7 +92,10 @@ const HELP: &str = "fss-event supervise --root DIR --site SITE\n\
 \n\
   --plan selects the legacy fss.supervisor_plan.v1 caller-score simulation. Its\n\
   fss.supervisor_report.v1 explicitly labels unverified source custody and statistical\n\
-  assumptions. Its numeric Ville fields do not establish an anytime false-alarm guarantee.\n";
+  assumptions. Its numeric Ville fields do not establish an anytime false-alarm guarantee.\n\
+  With --plan, explicitly select --transcript yes for fss.supervisor_transcript_report.v1:\n\
+  the unchanged report plus evidence-bound fusion/reset transitions and their chained digest.\n\
+  Default v1 report bytes and numerical receipt identities remain unchanged.\n";
 
 fn field<'a>(map: &'a BTreeMap<String, Value>, key: &str) -> Result<&'a Value, String> {
     map.get(key)
@@ -392,6 +395,7 @@ pub(super) fn main(args: &[OsString]) -> ExitCode {
                 | "--resume"
                 | "--list"
                 | "--report-out"
+                | "--transcript"
         ) {
             eprintln!("{ERR_CLI_MALFORMED_VALUE}: unknown supervise option {flag}");
             return ExitCode::from(ExitIdentity::MALFORMED_VALUE.code);
@@ -429,8 +433,21 @@ pub(super) fn main(args: &[OsString]) -> ExitCode {
         || values.contains_key("--resume")
         || values.contains_key("--list")
     {
+        if values.contains_key("--transcript") {
+            eprintln!("{ERR_CLI_MALFORMED_VALUE}: --transcript is supported only with --plan");
+            return ExitCode::from(ExitIdentity::MALFORMED_VALUE.code);
+        }
         return retained::main(&values);
     }
+
+    let include_transcript = match values.get("--transcript") {
+        Some(value) if value.to_str() == Some("yes") => true,
+        None => false,
+        Some(_) => {
+            eprintln!("{ERR_CLI_MALFORMED_VALUE}: --transcript must be yes");
+            return ExitCode::from(ExitIdentity::MALFORMED_VALUE.code);
+        }
+    };
 
     let Some(root_os) = values.get("--root") else {
         eprintln!("{ERR_CLI_MALFORMED_VALUE}: required option --root");
@@ -497,7 +514,14 @@ pub(super) fn main(args: &[OsString]) -> ExitCode {
 
     match run_supervisor(&deployment, Some(&root), &cx, &plan) {
         Ok(report) => {
-            let rendered = format!("{}\n", report.to_json());
+            let rendered = format!(
+                "{}\n",
+                if include_transcript {
+                    report.to_transcript_json()
+                } else {
+                    report.to_json()
+                }
+            );
             if let Some(out_os) = values.get("--report-out") {
                 let out_path = PathBuf::from(out_os);
                 if let Err(e) = super::export(&out_path, rendered.as_bytes(), &root, &cx) {

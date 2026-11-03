@@ -10,6 +10,28 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Explicit supervisor transcript output (2026-11-03)
+
+`fss-event supervise --root DIR --site SITE --plan PLAN --transcript yes` selects
+`fss.supervisor_transcript_report.v1`: the unchanged historical report, ordered
+fusion/reset transcripts, and an independently bound deterministic supervisor
+receipt. The default JSON and numerical receipt bytes remain unchanged. The new
+receipt includes exact report context, window identity, degradation/occlusion and
+cancellation details while excluding wall latency. Other supervision modes refuse
+the selector. This remains the caller-score simulation, not retained source proof.
+
+A scratch harness compiled the exact original report types, complete sealer and
+renderers, JSON primitives and transcript module against native core/fusion. Source
+substitution, deterministic replay, reset ancestry, cancellation, oversized context
+and every serialized binding passed; default output exactly matches the baseline
+`e2eb5ce` renderer. Full Draft 2020-12 validation passed three emitted wrappers and
+nine nested transcripts, including negative schema cases. These checks exclude the
+execution function, deployment and CLI dispatch. The native supervisor E2E contract
+was extended, but remains unexecuted: both a one-job runtime test build and a
+one-job metadata-only CLI check were killed in the shared Asupersync dependency
+before reaching the changed CLI code. Full runtime/process qualification remains
+pending; no successful full build is claimed.
+
 ## Evidence-bound sequential fusion transcripts (2026-11-03)
 
 `SequentialEProcess` now refuses an observation for another hypothesis before any

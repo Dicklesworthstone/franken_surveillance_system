@@ -83,6 +83,36 @@ digest binds its query digest. The revised common-cause and terminal-decision ru
 produce a distinct identity even when the input and numerical result otherwise match an older
 run. Earlier reports retain their original identity; they must not be relabeled as v2 results.
 
+## Sequential hypothesis and transcript boundary
+
+`SequentialEProcess` owns exactly one hypothesis. A query for another hypothesis is refused
+before likelihoods, supporting-domain components, counters or transcript history can change.
+An invalid fusion query likewise leaves the accumulator untouched.
+
+The historical `fss.fusion.eprocess_step.v1` numerical digest retains its original bytes. It is
+not an evidence identity: different sources can produce identical numbers, and the original
+infallible reset API accepts text beyond the numerical encoder's historical limit. Each accepted
+observation or reset now also returns an immutable `fss.fusion.eprocess_transcript.v1` receipt.
+It binds the exact fusion query and decision, or exact reset arguments; the predecessor receipt;
+the canonical supporting-domain inventory; and a separate fixed-size state commitment covering
+the hypothesis, configuration, step/regime and all numerical state. Exact text hashes preserve
+this binding even when a historical v1 numerical encoding exceeds its text limit. Supporting-domain
+components use sorted, tagged digest folds without an additional inventory-sized encoding buffer.
+
+Replay the original ordered queries and reset reasons through the accumulator and compare
+transcript digests. Reordering evidence within one canonical query preserves identity; changing
+source identities, policy generations or execution history does not. Regime resets clear active
+numeric evidence and support while retaining transcript ancestry. Neither the digest nor replay
+establishes source custody, measured independence or a valid test supermartingale.
+
+The legacy caller-score CLI exposes this through the explicit selector
+`fss-event supervise --root DIR --site SITE --plan PLAN --transcript yes`. Its
+`fss.supervisor_transcript_report.v1` wrapper contains the unchanged v1 report, ordered fusion/reset
+transcripts and a separate supervisor transcript digest covering deterministic report fields,
+cancellation and window metadata. Wall-clock `elapsed_ns` is excluded. Without the selector,
+the original v1 JSON and numerical receipt behavior remain unchanged. The retained native
+supervisor has its own custody and receipt owner; this selector does not alter that path.
+
 ## Assumptions and remaining qualification
 
 The hull rule is a simple reference model: a dependency cluster contributes one member's
@@ -114,5 +144,8 @@ same-sensor future-observation rejection, empty and uncalibrated evidence, urgen
 support, numeric extremes, ordinary independent-camera decisions, and input-order equivalence.
 The 4,000-seed corpus checks posterior containment under the reference model, support thresholds,
 coverage and calibration requirements for rejection, bounded waits, counterfactuals, and
-deterministic digests. This is focused deterministic reference evidence; it is not the full local
+deterministic digests. Sequential regressions additionally cover no-mutation hypothesis refusal,
+source/policy/history separation, canonical input order, reset ancestry, historical numerical
+goldens and oversized reset reasons/sensors preserving complete context and subsequent state.
+This is focused deterministic reference evidence; it is not the full local
 release or deployment-quality qualification lane.

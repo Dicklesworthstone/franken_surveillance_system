@@ -9,6 +9,7 @@
 //! that property or an anytime false-alarm guarantee.
 
 pub mod retained;
+mod transcript;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -47,6 +48,10 @@ fn nullable(value: Option<String>) -> String {
 pub const SUPERVISOR_REPORT_SCHEMA: &str = "fss.supervisor_report.v1";
 /// Digest domain for [`SupervisorReport`] receipts (`SCHEMA-DOMAIN-SUPERVISOR-RECEIPT-001`).
 pub const SUPERVISOR_RECEIPT_DOMAIN: &str = "fss.supervisor_receipt.v1";
+/// Additive commitment to the numerical v1 receipt and executed fusion/reset transcript.
+pub const SUPERVISOR_TRANSCRIPT_DOMAIN: &str = "fss.supervisor_transcript.v1";
+/// Explicit wrapper selected by `--transcript yes`; the nested v1 report remains unchanged.
+pub const SUPERVISOR_TRANSCRIPT_REPORT_SCHEMA: &str = "fss.supervisor_transcript_report.v1";
 
 /// Stable error code when fewer than 2 distinct cameras are configured (`NEG-004`).
 pub const ERR_SUPERVISOR_INSUFFICIENT_CAMERAS: &str = "ERR-SUPERVISOR-INSUFFICIENT-CAMERAS-001";
@@ -319,8 +324,12 @@ pub struct SupervisorReport {
     pub cancellation: Option<SupervisorCancellationReceipt>,
     /// Per-window trajectory records.
     pub window_records: Vec<SupervisorWindowRecord>,
-    /// Domain-separated receipt digest (`SCHEMA-DOMAIN-SUPERVISOR-RECEIPT-001`).
+    /// Historical numerical v1 receipt (`SCHEMA-DOMAIN-SUPERVISOR-RECEIPT-001`).
+    /// Preserved for compatibility; this alone does not bind the supplied evidence identities.
     pub receipt_digest: ContentDigest,
+    /// Separate commitment to the numerical receipt, executed transition chain, displayed
+    /// decisions/degradation and cancellation receipt. Excludes nondeterministic wall latency.
+    pub transcript_digest: ContentDigest,
 }
 
 fn decision_str(decision: &Decision) -> &'static str {
@@ -388,7 +397,16 @@ impl SupervisorReport {
             encoder.text(&rec.step_outcome.step_digest.to_text());
         }
         self.receipt_digest = ContentDigest::sha256(&encoder.finish());
+
+        self.transcript_digest = transcript::report_digest(&self);
         self
+    }
+
+    /// Renders the explicitly selected transcript wrapper, retaining the original v1 report.
+    /// The transcript binds supplied inputs and execution; custody and statistics remain unverified.
+    #[must_use]
+    pub fn to_transcript_json(&self) -> String {
+        transcript::report_json(self)
     }
 
     /// Renders the canonical deterministic JSON representation of this report.
@@ -398,28 +416,41 @@ impl SupervisorReport {
             .window_records
             .iter()
             .map(|w| {
-                let degraded: Vec<String> =
-                    w.degraded_cameras.iter().map(|c| string(c)).collect();
-                let occluded: Vec<String> =
-                    w.occluded_cameras.iter().map(|c| string(c)).collect();
+                let degraded: Vec<String> = w.degraded_cameras.iter().map(|c| string(c)).collect();
+                let occluded: Vec<String> = w.occluded_cameras.iter().map(|c| string(c)).collect();
                 object(&[
                     ("window_index", unsigned(w.window_index)),
                     ("timestamp_ns", unsigned(w.timestamp_ns)),
                     ("decision", string(w.decision_label)),
                     ("knowledge_state", string(w.knowledge_state)),
-                    ("regime_epoch", unsigned(u64::from(w.step_outcome.regime_epoch))),
+                    (
+                        "regime_epoch",
+                        unsigned(u64::from(w.step_outcome.regime_epoch)),
+                    ),
                     (
                         "step_delta_mban",
                         object(&[
-                            ("lo", integer(i128::from(w.step_outcome.step_delta_llr.lo()))),
-                            ("hi", integer(i128::from(w.step_outcome.step_delta_llr.hi()))),
+                            (
+                                "lo",
+                                integer(i128::from(w.step_outcome.step_delta_llr.lo())),
+                            ),
+                            (
+                                "hi",
+                                integer(i128::from(w.step_outcome.step_delta_llr.hi())),
+                            ),
                         ]),
                     ),
                     (
                         "accumulated_llr_mban",
                         object(&[
-                            ("lo", integer(i128::from(w.step_outcome.accumulated_llr.lo()))),
-                            ("hi", integer(i128::from(w.step_outcome.accumulated_llr.hi()))),
+                            (
+                                "lo",
+                                integer(i128::from(w.step_outcome.accumulated_llr.lo())),
+                            ),
+                            (
+                                "hi",
+                                integer(i128::from(w.step_outcome.accumulated_llr.hi())),
+                            ),
                         ]),
                     ),
                     (
@@ -453,7 +484,10 @@ impl SupervisorReport {
                     unsigned(c.drained_in_flight_windows),
                 ),
                 ("finalized_cleanly", boolean(c.finalized_cleanly)),
-                ("zero_orphan_obligations", boolean(c.zero_orphan_obligations)),
+                (
+                    "zero_orphan_obligations",
+                    boolean(c.zero_orphan_obligations),
+                ),
                 ("zero_staging_artifacts", boolean(c.zero_staging_artifacts)),
             ])
         });
@@ -466,7 +500,9 @@ impl SupervisorReport {
             ("anytime_bound_verified", boolean(false)),
             (
                 "statistical_bound_assumption",
-                string("Ville bounds require a valid test-supermartingale; caller scores, repeated observations and floor-clamped accumulation do not establish that property"),
+                string(
+                    "Ville bounds require a valid test-supermartingale; caller scores, repeated observations and floor-clamped accumulation do not establish that property",
+                ),
             ),
             ("site_lineage", string(&self.site_lineage)),
             ("hypothesis_id", string(&self.hypothesis_id)),
@@ -474,8 +510,14 @@ impl SupervisorReport {
                 "authority_root_at_start",
                 string(&self.authority_root_at_start.to_text()),
             ),
-            ("calibration_generation", string(&self.calibration_generation)),
-            ("calibration_digest", string(&self.calibration_digest.to_text())),
+            (
+                "calibration_generation",
+                string(&self.calibration_generation),
+            ),
+            (
+                "calibration_digest",
+                string(&self.calibration_digest.to_text()),
+            ),
             ("status", string(self.status)),
             ("windows_evaluated", unsigned(self.windows_evaluated)),
             ("work_units_consumed", unsigned(self.work_units_consumed)),
@@ -491,7 +533,10 @@ impl SupervisorReport {
                     ("hi", integer(i128::from(self.final_accumulated_llr.hi()))),
                 ]),
             ),
-            ("supremum_lo_mban", integer(i128::from(self.supremum_lo_mban))),
+            (
+                "supremum_lo_mban",
+                integer(i128::from(self.supremum_lo_mban)),
+            ),
             (
                 "ville_false_alarm_bound_ppm",
                 unsigned(u64::from(self.ville_false_alarm_bound_ppm)),
@@ -556,9 +601,8 @@ pub fn run_supervisor(
     }
 
     let mut budget = WorkBudget::new(plan.max_work_units);
-    let mut eprocess =
-        SequentialEProcess::new(plan.hypothesis_id.clone(), plan.eprocess_config)
-            .map_err(SupervisorError::Fusion)?;
+    let mut eprocess = SequentialEProcess::new(plan.hypothesis_id.clone(), plan.eprocess_config)
+        .map_err(SupervisorError::Fusion)?;
     let step_unit = plan.work_units_per_camera_window.max(1);
 
     let mut window_records = Vec::with_capacity(plan.windows.len());
@@ -567,10 +611,8 @@ pub fn run_supervisor(
 
     for (idx, window) in plan.windows.iter().enumerate() {
         // 1. Check cooperative cancellation before starting a new window (`request -> drain -> finalize`).
-        let cancel_triggered = cx.is_cancelled()
-            || plan
-                .cancel_after_window
-                .is_some_and(|limit| idx >= limit);
+        let cancel_triggered =
+            cx.is_cancelled() || plan.cancel_after_window.is_some_and(|limit| idx >= limit);
         if cancel_triggered {
             let (zero_orphan_obligations, zero_staging_artifacts) =
                 verify_clean_drain(deployment, root_path);
@@ -824,6 +866,7 @@ pub fn run_supervisor(
         cancellation: cancellation_receipt,
         window_records,
         receipt_digest: ContentDigest::sha256(b""),
+        transcript_digest: ContentDigest::sha256(b""),
     }
     .seal())
 }

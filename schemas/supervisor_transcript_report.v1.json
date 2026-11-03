@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/supervisor_transcript_report.v1.json",
+  "title": "fss.supervisor_transcript_report.v1",
+  "description": "Explicit --transcript yes wrapper for the legacy caller-score supervisor simulation. The nested v1 report and historical numerical receipts retain their original fields and bytes. Ordered per-window transcripts bind actual fusion queries/decisions or resets, bounded state, supporting domains and predecessor history. The supervisor transcript independently binds deterministic report fields, cancellation and window metadata; elapsed_ns is excluded from digest identity. Source custody, calibration qualification, statistical independence, anytime false-alarm validity and effect authority remain unverified. Replay original inputs and compare receipts; structural schema validation alone does not verify them.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "report", "fusion_transcripts", "transcript_digest"],
+  "properties": {
+    "schema": { "const": "fss.supervisor_transcript_report.v1" },
+    "report": {
+      "description": "Unchanged fss.supervisor_report.v1 projection from SupervisorReport::to_json. Its existing owner supplies the complete numerical, window and cancellation fields.",
+      "type": "object",
+      "required": ["schema", "observation_basis", "source_custody_verified", "effects_authorized", "anytime_bound_verified", "windows", "receipt_digest"],
+      "properties": {
+        "schema": { "const": "fss.supervisor_report.v1" },
+        "observation_basis": { "const": "caller_supplied_simulation" },
+        "source_custody_verified": { "const": false },
+        "effects_authorized": { "const": false },
+        "anytime_bound_verified": { "const": false },
+        "windows": { "type": "array" },
+        "receipt_digest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "fusion_transcripts": {
+      "description": "Exactly one row for each report window, in execution order with identical window index and timestamp. The first transition has no predecessor; subsequent observation and reset receipts retain ancestry.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["window_index", "timestamp_ns", "fusion_transcript"],
+        "properties": {
+          "window_index": { "type": "integer", "minimum": 0 },
+          "timestamp_ns": { "type": "integer", "minimum": 0 },
+          "fusion_transcript": { "$ref": "fusion_eprocess_transcript.v1.json" }
+        }
+      }
+    },
+    "transcript_digest": { "$ref": "#/$defs/digest" }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+  }
+}
