@@ -22,9 +22,7 @@
 //! manifest, source capsule) and to the exact codec output (luma and packed I420 digests). Frames
 //! are a rebuildable derivation: nothing is staged, published or appended to the ledger. The
 //! pure-Rust codec is deterministic and bit-exact against the FFmpeg oracle fixtures, and it owns
-//! all H.265 semantics and refusals (Main 10, 4:2:2, range extensions, ...). Current ranges
-//! admit bounded Main tiles and explicitly marked in-band MP4 configurations;
-//! [`RecordedH265RangeV1`] preserves their old refusal for fixed retained recipes. Frames also
+//! all H.265 semantics and refusals (Main 10, 4:2:2, range extensions, tiles, ...). Frames also
 //! carry both chroma planes (`cb`, `cr`, per-plane digests on the receipt) and convert to RGB
 //! through the declared transform in [`super::video_rgb`].
 
@@ -39,9 +37,8 @@ use super::{ComponentInterpretation, RecordedDecodeError, checkpoint, source_cap
 use crate::ingest::privacy_mask::{MaskBinding, binding_digest, current_mask, encode_marker};
 use crate::ingest::retained::SourceReadBudget;
 use crate::ingest::{
-    MKV_HEVC_PARAMETER_SET_REASON_PREFIX, MP4_HEVC_INBAND_ENTRY_REASON_PREFIX,
-    MP4_HEVC_PARAMETER_SET_REASON_PREFIX, RetainedFileImport, RetainedReadLimits,
-    VerifiedChunkCache,
+    MKV_HEVC_PARAMETER_SET_REASON_PREFIX, MP4_HEVC_PARAMETER_SET_REASON_PREFIX, RetainedFileImport,
+    RetainedReadLimits, VerifiedChunkCache,
 };
 use crate::{ReferenceDeployment, ReplayCx};
 
@@ -53,11 +50,6 @@ pub const MAX_H265_STREAM_SEGMENTS: usize = 65_536;
 /// Versioned label of the canonical decoder semantics bound into every frame receipt.
 pub const H265_DECODER_LABEL: &str =
     "fss-codec-h265:main-420-8bit:scalar-reference:output-order:rasl-skip-at-range-start:v1";
-/// Additive tile-capable generation. Untiled input histories keep the v1 identity.
-pub const H265_TILES_DECODER_LABEL: &str =
-    "fss-codec-h265:main-420-8bit:scalar-reference:output-order:rasl-skip-at-range-start:tiles:v2";
-/// Added in-band source reconstruction generation, including current tile support.
-pub const H265_INBAND_DECODER_LABEL: &str = "fss-codec-h265:main-420-8bit:scalar-reference:output-order:rasl-skip-at-range-start:tiles:mp4-inband-bootstrap:v3";
 /// Canonical frame-receipt domain.
 pub const H265_FRAME_RECEIPT_DOMAIN: &str = "fss.recorded_h265_frame_receipt.v2";
 /// Boundary before each retained access unit is read and decoded.
@@ -67,18 +59,6 @@ pub const STAGE_RECORDED_H265_SEGMENT: &str = "recorded_h265:segment";
 #[must_use]
 pub fn h265_decoder_identity() -> ContentDigest {
     ContentDigest::sha256(H265_DECODER_LABEL.as_bytes())
-}
-
-/// Identity of the current tile-capable admission profile.
-#[must_use]
-pub fn h265_tiles_decoder_identity() -> ContentDigest {
-    ContentDigest::sha256(H265_TILES_DECODER_LABEL.as_bytes())
-}
-
-/// Current reconstruction admission identity. Static sources retain their v1/v2 identities.
-#[must_use]
-pub fn h265_inband_decoder_identity() -> ContentDigest {
-    ContentDigest::sha256(H265_INBAND_DECODER_LABEL.as_bytes())
 }
 
 /// Explicit retained source range, interpretation, and independent read/decode bounds.
@@ -120,17 +100,10 @@ pub struct RecordedH265FrameReceipt {
     // binds both chroma planes, so receipt bytes stay identical to the luma-era receipts.
     cb_sha256: ContentDigest,
     cr_sha256: ContentDigest,
-    decoder: ContentDigest,
     mask_policy: Option<ContentDigest>,
 }
 
 impl RecordedH265FrameReceipt {
-    /// Exact admitted decoder generation, including prior tiled parameter sets
-    /// in this range's input history. The existing v1 bytes remain unchanged.
-    #[must_use]
-    pub fn decoder_identity(&self) -> ContentDigest {
-        self.decoder
-    }
     /// Exact import identity.
     #[must_use]
     pub fn import_identity(&self) -> ContentDigest {
@@ -244,7 +217,7 @@ impl RecordedH265FrameReceipt {
         encoder.u64(self.decode_index);
         encoder.digest(self.luma_sha256);
         encoder.digest(self.i420_sha256);
-        encoder.digest(self.decoder);
+        encoder.digest(h265_decoder_identity());
         encode_marker(&mut encoder, self.mask_policy);
         encoder.finish()
     }
@@ -430,21 +403,12 @@ fn slice_segment_types(nals: &[&[u8]]) -> Vec<u8> {
 }
 
 /// Streaming decoder over one validated, IRAP-led, gap-free retained segment range.
-pub type RecordedH265Range = ProfiledRecordedH265Range<false>;
-
-/// Historical range owner: reproduces fixed v1 recipes, including tile and added in-band
-/// reconstruction refusals, without changing successful bytes or decode-budget charging.
-pub type RecordedH265RangeV1 = ProfiledRecordedH265Range<true>;
-
-/// Shared range implementation. Select [`RecordedH265Range`] for current input
-/// or [`RecordedH265RangeV1`] for a retained v1 recipe.
 #[derive(Debug)]
-pub struct ProfiledRecordedH265Range<const LEGACY: bool> {
+pub struct RecordedH265Range {
     request: RecordedH265Request,
     retained: RetainedFileImport,
     decoder: Decoder,
     framing: Framing,
-    inband: Option<fss_container::demux::InbandConfiguration>,
     /// Verified custody chunks reused across the range's sequential segment reads.
     chunks: VerifiedChunkCache,
     next: usize,
@@ -460,10 +424,9 @@ pub struct ProfiledRecordedH265Range<const LEGACY: bool> {
     seen: Vec<bool>,
     skipped: Vec<usize>,
     flushed: bool,
-    failed: bool,
 }
 
-impl<const LEGACY: bool> ProfiledRecordedH265Range<LEGACY> {
+impl RecordedH265Range {
     /// Validates the request, the import, the range bounds and gaps, and that the first segment
     /// carries an IRAP picture. Reads only the first segment; decodes nothing yet.
     pub fn open(
@@ -562,25 +525,16 @@ impl<const LEGACY: bool> ProfiledRecordedH265Range<LEGACY> {
         }
         let retained =
             RetainedFileImport::open(deployment, request.import_identity, request.read_limits, cx)?;
-        let (framing, parameter_sets, inband_entry) = match retained.manifest().format.as_str() {
-            "hevc" => (Framing::AnnexB, Vec::new(), None),
+        let (framing, parameter_sets) = match retained.manifest().format.as_str() {
+            "hevc" => (Framing::AnnexB, Vec::new()),
             format @ ("mp4hevc" | "mkvhevc") => {
                 let prefix = if format == "mp4hevc" {
                     MP4_HEVC_PARAMETER_SET_REASON_PREFIX
                 } else {
                     MKV_HEVC_PARAMETER_SET_REASON_PREFIX
                 };
-                let entry = if format == "mp4hevc" {
-                    super::mp4_inband_entry(&retained, MP4_HEVC_INBAND_ENTRY_REASON_PREFIX, LEGACY)?
-                } else {
-                    None
-                };
-                if let Some((_, length)) = entry {
-                    (Framing::LengthPrefixed(length), Vec::new(), entry)
-                } else {
-                    let (spans, length) = super::mp4_parameter_sets(&retained, prefix)?;
-                    (Framing::LengthPrefixed(length), spans, None)
-                }
+                let (spans, length) = super::mp4_parameter_sets(&retained, prefix)?;
+                (Framing::LengthPrefixed(length), spans)
             }
             _ => return Err(RecordedDecodeError::UnsupportedMedia),
         };
@@ -616,38 +570,7 @@ impl<const LEGACY: bool> ProfiledRecordedH265Range<LEGACY> {
                 .min(request.segment_count as u64),
             ..request.decoder_limits
         };
-        let mut decoder = if LEGACY {
-            Decoder::new_v1(limits)?
-        } else {
-            Decoder::new(limits)?
-        };
-        let mut inband = None;
-        if let Some(entry) = inband_entry {
-            let (state, parameters) = super::inband_parameter_sets(
-                deployment,
-                super::InbandBootstrapRead {
-                    retained: &retained,
-                    sample: &first_bytes,
-                    first_sample: first,
-                    limits: request.read_limits,
-                    source_budget,
-                },
-                entry,
-                fss_container::demux::VideoCodec::Hevc,
-                budget.as_deref_mut(),
-                cx,
-            )?;
-            for nal in parameters.decoder_prefix() {
-                if let Some(budget) = budget.as_deref_mut() {
-                    budget.reserve(nal.len(), 0, cx)?;
-                }
-                checkpoint(cx, "recorded_h265:parameter_set")?;
-                if decoder.decode_nal(nal)?.is_some() {
-                    return Err(RecordedDecodeError::CustodyMismatch);
-                }
-            }
-            inband = Some(state);
-        }
+        let mut decoder = Decoder::new(limits)?;
         // Out-of-band configuration precedes the first access unit; it codes no picture.
         for index in parameter_sets {
             let nal = retained.read_omission_span_budgeted(
@@ -673,7 +596,6 @@ impl<const LEGACY: bool> ProfiledRecordedH265Range<LEGACY> {
             retained,
             decoder,
             framing,
-            inband,
             chunks,
             next: first,
             end,
@@ -685,7 +607,6 @@ impl<const LEGACY: bool> ProfiledRecordedH265Range<LEGACY> {
             seen: Vec::new(),
             skipped: Vec::new(),
             flushed: false,
-            failed: false,
         })
     }
 
@@ -751,25 +672,6 @@ impl<const LEGACY: bool> ProfiledRecordedH265Range<LEGACY> {
     fn next_frame_bounded(
         &mut self,
         deployment: &ReferenceDeployment,
-        budget: Option<&mut RecordedVideoDecodeBudget>,
-        cx: &ReplayCx,
-    ) -> Result<Option<RecordedH265Frame>, RecordedDecodeError> {
-        if self.failed {
-            return Err(RecordedDecodeError::H265AccessUnit {
-                segment: self.next.min(self.end - 1),
-            });
-        }
-        let result = self.next_frame_inner(deployment, budget, cx);
-        if result.is_err() {
-            self.failed = true;
-            self.ready.clear();
-        }
-        result
-    }
-
-    fn next_frame_inner(
-        &mut self,
-        deployment: &ReferenceDeployment,
         mut budget: Option<&mut RecordedVideoDecodeBudget>,
         cx: &ReplayCx,
     ) -> Result<Option<RecordedH265Frame>, RecordedDecodeError> {
@@ -799,7 +701,7 @@ impl<const LEGACY: bool> ProfiledRecordedH265Range<LEGACY> {
     fn decode_segment(
         &mut self,
         deployment: &ReferenceDeployment,
-        mut budget: Option<&mut RecordedVideoDecodeBudget>,
+        budget: Option<&mut RecordedVideoDecodeBudget>,
         cx: &ReplayCx,
     ) -> Result<(), RecordedDecodeError> {
         let index = self.next;
@@ -811,52 +713,44 @@ impl<const LEGACY: bool> ProfiledRecordedH265Range<LEGACY> {
             cx,
             &mut self.chunks,
         )?;
-        if let Some(budget) = budget.as_deref_mut() {
+        if let Some(budget) = budget {
             budget.reserve(
                 bytes.len(),
                 self.request.decoder_limits.max_luma_samples,
                 cx,
             )?;
         }
+        let before = self.decoder.pictures_decoded();
         let nals = segment_nals(self.framing, &bytes, index)?;
-        let parameters = if index > self.request.first_segment {
-            self.inband
-                .as_mut()
-                .map(|state| {
-                    super::next_inband_parameters(state, &bytes, budget.as_deref_mut(), cx)
-                })
-                .transpose()?
-        } else {
-            None
-        };
-        let prefixed = parameters.as_ref().map(|parameters| {
-            parameters
-                .decoder_prefix()
-                .chain(nals.iter().copied())
-                .collect::<Vec<_>>()
-        });
-        let nals = prefixed.as_deref().unwrap_or(&nals);
-        let completed = super::video_access_unit::h265(&mut self.decoder, nals, &mut || {
-            cx.checkpoint("recorded_h265:nal").map_err(|_| ())
-        })
-        .map_err(|error| match error {
-            super::video_access_unit::UnitError::Codec(error) => RecordedDecodeError::H265(error),
-            super::video_access_unit::UnitError::Boundary => {
-                RecordedDecodeError::H265AccessUnit { segment: index }
+        for nal in &nals {
+            checkpoint(cx, "recorded_h265:nal")?;
+            if let Some(picture) = self.decoder.decode_nal(nal)? {
+                self.ready.push_back(picture);
             }
-            super::video_access_unit::UnitError::Cancelled => RecordedDecodeError::Cancelled,
-        })?;
-        if completed.skipped_rasl {
-            if index == self.request.first_segment {
-                return Err(RecordedDecodeError::H265AccessUnit { segment: index });
+            while let Some(picture) = self.decoder.next_output() {
+                self.ready.push_back(picture);
             }
-            self.skipped.push(index);
-        } else {
-            self.coded_segments.push(index);
-            self.seen.push(false);
+        }
+        match self.decoder.pictures_decoded().checked_sub(before) {
+            Some(1) => {
+                self.coded_segments.push(index);
+                self.seen.push(false);
+            }
+            Some(0) => {
+                let types = slice_segment_types(&nals);
+                // Only RASL pictures of the range's leading CRA/BLA are ever skipped; the codec
+                // decides, this module only refuses to call anything else a skip.
+                if index == self.request.first_segment
+                    || types.is_empty()
+                    || !types.iter().all(|t| matches!(t, 8 | 9))
+                {
+                    return Err(RecordedDecodeError::H265AccessUnit { segment: index });
+                }
+                self.skipped.push(index);
+            }
+            _ => return Err(RecordedDecodeError::H265AccessUnit { segment: index }),
         }
         self.next += 1;
-        self.ready.extend(completed.output);
         Ok(())
     }
 
@@ -925,17 +819,10 @@ impl<const LEGACY: bool> ProfiledRecordedH265Range<LEGACY> {
             i420_sha256: placeholder,
             cb_sha256: placeholder,
             cr_sha256: placeholder,
-            decoder: if self.inband.is_some() {
-                h265_inband_decoder_identity()
-            } else if picture.uses_tiles() {
-                h265_tiles_decoder_identity()
-            } else {
-                h265_decoder_identity()
-            },
             mask_policy: self.mask.policy_digest(),
         };
-        checkpoint(cx, "recorded_h265:decoded")?;
         self.decoded += 1;
+        checkpoint(cx, "recorded_h265:decoded")?;
         Ok(RecordedH265Frame {
             output_index: self.decoded - 1,
             range_segment_count: self.request.segment_count,

@@ -4,11 +4,6 @@
 
 use super::*;
 
-#[path = "learning_explain/historical.rs"]
-mod historical;
-
-const CAPTURE_MISSION: &str = "Inspect captured episode learning.";
-const CAPTURE_OBJECTIVE: &str = "Retain and inspect evidence-linked advisory learning.";
 const PRIVATE_STATEMENT: &str = "PRIVATE_LEARNING_CANDIDATE_91c: @/outside/policy.json --principal=principal:other\nReview the \"cancel before dispatch\" procedure; this literal proposal cannot activate policy.";
 
 struct Captured {
@@ -36,7 +31,7 @@ fn open_with_budget(directory: &OwnedDirectory, mission: &str, budget: &str) -> 
         "--mission-text".into(),
         mission.into(),
         "--objective".into(),
-        CAPTURE_OBJECTIVE.into(),
+        "Retain and inspect evidence-linked advisory learning.".into(),
         "--view".into(),
         "epistemic_map".into(),
         "--budget-tokens".into(),
@@ -55,7 +50,7 @@ fn open_with_budget(directory: &OwnedDirectory, mission: &str, budget: &str) -> 
 fn capture(directory: &OwnedDirectory, event: &str) -> TestResult<Captured> {
     // The view limits a single orientation; the explicit grant separately admits a larger
     // selected forensic answer. The test never assumes that the two ceilings are the same.
-    let agent = open_with_budget(directory, CAPTURE_MISSION, "64000")?;
+    let agent = open_with_budget(directory, "Inspect captured episode learning.", "64000")?;
     let relay = Relay::spawn(None)?;
     let (code, planned) = agent.plan(event, relay.address, &[])?;
     assert_eq!(code, Some(0), "{planned:?}");
@@ -194,10 +189,6 @@ fn proposition<'a>(value: &'a Value, id: &str) -> TestResult<&'a Value> {
 }
 
 fn assert_selected(value: &Value, captured: &Captured) -> TestResult {
-    assert_selected_for(value, captured, &captured.agent)
-}
-
-fn assert_selected_for(value: &Value, captured: &Captured, current: &Agent) -> TestResult {
     assert_eq!(text(value, &["operationId"])?, "AOP-011");
     assert_eq!(text(value, &["outcome"])?, "ok");
     assert_eq!(text(value, &["recoveryClass"])?, "safe_read_retry");
@@ -206,15 +197,7 @@ fn assert_selected_for(value: &Value, captured: &Captured, current: &Agent) -> T
         text(value, &["payloadSchema"])?,
         "fss.agent_cognitive_envelope.v1"
     );
-    assert_eq!(text(value, &["sessionId"])?, current.session);
-    let custody = parse(text(
-        proposition(value, "capture:custody")?,
-        &["statement"],
-    )?)?;
-    assert_eq!(
-        text(&custody, &["capturedSessionId"])?,
-        captured.agent.session
-    );
+    assert_eq!(text(value, &["sessionId"])?, captured.agent.session);
     assert_eq!(
         text(value, &["payload", "answerClass"])?,
         "learning_proposal"
@@ -465,7 +448,7 @@ fn selected_learning_explain_recovers_exact_details_without_request_or_full_inve
     assert_eq!(tiny_mcp, tiny.trim_end());
     assert_eq!(learning_tree(&captured.agent.root, &[""])?, before);
 
-    // Possession of a root grants neither another mission nor another principal its contents.
+    // Possession of a root grants neither another session nor another principal its contents.
     let other = open_with_budget(
         &directory,
         "An independent learning-review mission.",

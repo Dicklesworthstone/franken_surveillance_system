@@ -179,8 +179,6 @@ pub enum EffectCommand {
     Wait(WaitArgs),
     /// AOP-010 `cancel`.
     Cancel(CancelArgs),
-    /// AOP-010 `cancel` with an explicit retained session target.
-    CancelSession(crate::session_cancel_cmd::SessionCancelArgs),
     /// AOP-007 `plan`, close intent family: record a terminal plan's execution episode.
     Close(crate::episode_cmd::CloseArgs),
 }
@@ -2272,9 +2270,6 @@ pub fn execute_effect(command: &EffectCommand) -> (String, ExitIdentity) {
         EffectCommand::Reconcile(args) => execute_reconcile(args),
         EffectCommand::Wait(args) => execute_wait(args),
         EffectCommand::Cancel(args) => execute_cancel(args),
-        EffectCommand::CancelSession(args) => {
-            crate::session_cancel_cmd::execute_session_cancel(args)
-        }
         EffectCommand::Close(args) => crate::episode_cmd::execute_close(args),
         EffectCommand::Mission(args) => crate::mission_cmd::execute_mission(args),
     }

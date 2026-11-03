@@ -23,9 +23,6 @@ type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 const SITE: &str = "site:alert-lifecycle-cli";
 const OPERATION: &str = "operation:alert:cli";
 
-#[path = "alert_lifecycle_cli/reconcile.rs"]
-mod reconcile;
-
 struct Directory(PathBuf);
 impl Directory {
     fn new(label: &str) -> TestResult<Self> {
@@ -394,9 +391,10 @@ fn committed_alert_cannot_be_forced_cancelled_and_remains_unresolved() -> TestRe
     assert!(status.contains("\"state\":\"indeterminate\""));
     assert!(status.contains("restart_reconciliation_pending_observation"));
     assert!(!status.contains("\"state\":\"cancelled\""));
-    assert!(status.contains(
-        "obtain_independent_delivery_evidence_and_preview_exact_reconciliation_do_not_resend"
-    ));
+    assert!(
+        status
+            .contains("obtain_independent_provider_evidence_do_not_resend_or_force_terminal_state")
+    );
     Ok(())
 }
 

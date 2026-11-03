@@ -9,7 +9,6 @@ See `DEVICE_ADAPTER_MATRIX.md` for research details.
 | `ADP-UVC-001` | UVC/UAC | T1 | specified | `GATE-020` |
 | `ADP-INSTA-LINK-001` | Insta360 Link via UVC/UAC | T1 | researched, unimplemented | `GATE-020` |
 | `ADP-RTSP-001` | RTSP/RTP | T1 | specified | `GATE-030` |
-| `ADP-RTSP-JPEG-ARCHIVE-001` | exact retained RTP/JPEG prefix to source-closed MJPEG import | T4 | finite native reference profile; independent physical mapping and unknown capture time | `GATE-040` |
 | `ADP-ONVIF-T-001` | ONVIF Profile T | T1 | specified | `GATE-030` |
 | `ADP-ONVIF-M-001` | ONVIF Profile M metadata | T1 | specified | `GATE-030` |
 | `ADP-WYZE-V4-LAB-001` | Wyze Cam v4 owner-auth lab | T3 | research target | `GATE-090` |

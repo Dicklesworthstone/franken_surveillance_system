@@ -27,17 +27,13 @@
 
 use std::collections::{BTreeSet, VecDeque};
 
-// This source belongs to the baseline-pinned temporal recipes; old refusals remain gaps.
-use fss_codec_mjpeg::{DecodeBudget, DecodeError as JpegError, decode_luma_v1 as decode_luma};
+use fss_codec_mjpeg::{DecodeBudget, DecodeError as JpegError, decode_luma};
 use fss_core::{ContentDigest, SensorCapsule};
 
 use super::privacy_mask::{MaskBinding, current_mask};
-use super::recorded_decode::h264::{
-    DecoderLimits, RecordedH264RangeV2 as RecordedH264Range, RecordedH264Request,
-};
+use super::recorded_decode::h264::{DecoderLimits, RecordedH264Range, RecordedH264Request};
 use super::recorded_decode::h265::{
-    DecoderLimits as H265DecoderLimits, RecordedH265RangeV1 as RecordedH265Range,
-    RecordedH265Request,
+    DecoderLimits as H265DecoderLimits, RecordedH265Range, RecordedH265Request,
 };
 use super::recorded_decode::video_budget::RecordedVideoDecodeBudget;
 use super::recorded_decode::{

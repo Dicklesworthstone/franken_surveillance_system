@@ -10,9 +10,3 @@ fss-core = { path = "../fss-core" }
 
 [lints]
 workspace = true
-
-[dev-dependencies]
-fss-geometry = { path = "../fss-geometry" }
-fss-object = { path = "../fss-object" }
-fss-packet = { path = "../fss-packet" }
-fss-publication = { path = "../fss-publication" }

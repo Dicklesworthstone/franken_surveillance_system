@@ -8,11 +8,11 @@ use fss_publication::{LocalPublicationLimits, NeverCancel, PublishOutcome};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-pub(crate) type Test<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
+type Test<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 static NEXT: AtomicU64 = AtomicU64::new(0);
-pub(crate) struct Directory(PathBuf);
+struct Directory(PathBuf);
 impl Directory {
-    pub(crate) fn new() -> Test<Self> {
+    fn new() -> Test<Self> {
         for _ in 0..256 {
             let path = std::env::temp_dir().join(format!(
                 "fss-datagrams-{}-{}",
@@ -27,7 +27,7 @@ impl Directory {
         }
         Err("fixture directory bound".into())
     }
-    pub(crate) fn open(&self) -> Test<LocalRootPublisher> {
+    fn open(&self) -> Test<LocalRootPublisher> {
         Ok(LocalRootPublisher::open(
             &self.0,
             LocalPublicationLimits::new(
@@ -45,7 +45,7 @@ impl Drop for Directory {
         let _ = std::fs::remove_dir_all(&self.0);
     }
 }
-pub(crate) fn scope() -> Test<DatagramScope> {
+fn scope() -> Test<DatagramScope> {
     Ok(DatagramScope {
         binding: TcpBinding::new(
             StreamKey {
@@ -62,7 +62,7 @@ pub(crate) fn scope() -> Test<DatagramScope> {
         retention_evidence: ContentDigest::sha256(b"authorized media and RTCP custody"),
     })
 }
-pub(crate) fn limits() -> DatagramArchiveLimits {
+fn limits() -> DatagramArchiveLimits {
     DatagramArchiveLimits {
         max_datagrams: 16,
         max_payload_bytes: 1024 * 1024,
@@ -70,10 +70,10 @@ pub(crate) fn limits() -> DatagramArchiveLimits {
         max_spool_object_bytes: 65_536,
     }
 }
-pub(crate) fn work() -> WorkBudget<'static> {
+fn work() -> WorkBudget<'static> {
     WorkBudget::new(100_000_000)
 }
-pub(crate) fn add(
+fn add(
     a: &mut DatagramArchive,
     p: &mut LocalRootPublisher,
     channel: u8,
@@ -83,7 +83,7 @@ pub(crate) fn add(
     let plan = a.prepare_bytes(channel, time, bytes, &mut work())?;
     Ok(a.publish(&plan, p, &NeverCancel, &mut work())?)
 }
-pub(crate) struct Cancel;
+struct Cancel;
 impl PublishCancellation for Cancel {
     fn cancel_requested(&self, _: PublishCutPoint) -> bool {
         true
@@ -482,3 +482,6 @@ fn foreign_families_extra_children_and_noncanonical_source_metadata_are_refused(
     }
     Ok(())
 }
+
+#[path = "tests/live.rs"]
+mod live;

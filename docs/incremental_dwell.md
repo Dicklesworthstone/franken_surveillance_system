@@ -70,14 +70,13 @@ the exact request to recover the same durable result.
 
 ## Native H.264 and H.265 continuation
 
-Supported flat and partitioned AVC/HEVC imports use the existing native `RecordedH264Range`
-or `RecordedH265Range` owner across hot slices: decoded-picture buffers, delayed output, codec
-limits, source-read allowance, foreground, tracker and screening state are not reset at
-scheduling boundaries. No decoder state is imported from an untrusted checkpoint.
+Supported flat AVC/HEVC imports use the existing native `RecordedH264Range` or `RecordedH265Range`
+owner across hot slices: decoded-picture buffers, delayed output, codec limits, source-read
+allowance, foreground, tracker and screening state are not reset at scheduling boundaries.
+No decoder state is imported from an untrusted checkpoint.
 
-Inter-coded commands return `fss.incremental_dwell_progress.v2`: flat sources retain checkpoint
-version 3 and partitioned sources use version 4. MJPEG continues to return progress v1, with
-unchanged v1/v2 checkpoints for flat sources and v4 for partitioned sources. Existing
+Inter-coded commands return `fss.incremental_dwell_progress.v2` and retain checkpoint version 3.
+MJPEG continues to return progress v1 and keeps its v1/v2 canonical checkpoint bytes. Existing
 whole-recording analysis, proposal, event and publication identities are unchanged.
 
 For video, `--dwell-step-frames` admits display-order pictures. The codec may need to consume
@@ -113,48 +112,10 @@ Checkpoint publication computes the capture hull of every consumed coding input,
 endpoints alone do not bound B-picture presentation times. This bounded custody-metadata pass
 belongs to retention and does not replay pixels or turn the hull into observed coverage.
 
-Inter-coded continuation requires strict decoding. `--tolerate-decode-refusals` with an AVC/HEVC
-incremental request is refused before native decoding for both flat and partitioned sources.
-Whole-recording tolerant decoding retains its existing behavior.
-
-## Continue a partitioned recording
-
-A completed recording whose import exceeds one publication's child bound can now use the same
-bounded-step commands. Version 4 checkpoints retain an exact ordered source inventory alongside
-the original import aggregate. No additional CLI option is required.
-
-| Retained source | Checkpoint format | Progress schema |
-|---|---|---|
-| Flat MJPEG, unscreened | v1 (FMT-010) | v1 |
-| Flat MJPEG, screened | v2 (FMT-012) | v1 |
-| Flat AVC/HEVC, with optional screening | v3 (FMT-018) | v2 |
-| Partitioned MJPEG, with optional screening | v4 (FMT-021) | v1 |
-| Partitioned AVC/HEVC, with optional screening | v4 (FMT-021) | v2 |
-
-The inventory binds the original import identity, aggregate root, metadata digest and every
-part root in its original ordinal order. It is one native checkpoint child; part roots remain
-typed references to independent durable, ledgered publications. Each part is resolved against
-the original source owner's exact slot, root, membership and publication order. The checkpoint
-does not combine all media payloads into one publication batch.
-
-The existing 16,384-part limit remains in force. The inventory is bounded to 541,696 bytes and
-the checkpoint manifest has at most six direct children, including optional privacy and health
-policies. Existing recipe, trace, source, codec, spool and per-publication ceilings are unchanged.
-The existing hold/deletion closure follows the inventory's digest references, so source deletion
-also reaches dependent checkpoint custody.
-
-Cold open reconstructs the expected inventory from the independently validated retained import
-and requires exact bytes. Retention and cold open retain the existing full-source and selected
-capsule verification; hot continuation and cold recovery recheck original authority, current
-privacy and exact part custody. Missing, damaged or deleted inventory/parts refuse, including
-when a live owner or previously opened checkpoint is cached. A retry cannot substitute parts
-or reconstruct missing published inventory from cached state.
-
-Partition boundaries create no observations, continuity claims or budget refills. The same
-native source cursor, codec, foreground, tracker and health owners preserve their original
-allowances. Source holes, missing matches, excessive sampling gaps and tolerated MJPEG decode
-refusals retain the existing reset semantics. AVC/HEVC still requires strict decoding and
-validated native drain; the source inventory grants no broader codec support.
+This first inter-coded continuation path requires strict decoding. `--tolerate-decode-refusals`
+with an AVC/HEVC incremental request is refused before native decoding. Partitioned imports still
+require a future checkpoint format that explicitly closes every typed part root; a source aggregate
+alone is insufficient. Whole-recording tolerant decoding retains its existing behavior.
 
 ## Finish with trained classification
 
@@ -246,9 +207,8 @@ if the temporal scan found a qualifying dwell episode and the caller supplies it
 approval. An empty candidate inventory still returns the complete diagnostic. A no-findings
 screen certifies neither current camera health nor physical absence.
 
-Screening selects checkpoint v2 for flat MJPEG, v3 for flat AVC/HEVC and v4 for partitioned
-sources, each retaining the exact health policy. Historical flat v1–v3 checkpoint bytes remain
-unchanged and readable.
+The initial option selects a version-two screened checkpoint, including custody of the exact
+health policy. Version-one unscreened checkpoints keep their original bytes and remain readable.
 Adding or removing screening while resuming changes the request identity and is refused before
 native reconstruction. A missing or damaged retained health policy cannot be repaired by a
 retry. Trained classification remains a separate terminal stage and is subject to the completed
@@ -422,17 +382,17 @@ automatic unbounded checkpoint history.
 
 Completed **flat MJPEG imports** retain their v1/v2 formats, explicit capture-time hints and
 the existing supported `gray` or `ycbcr` interpretation. Supported **flat AVC/HEVC imports**
-use checkpoint v3, strict native decoding and `ycbcr`. **Partitioned MJPEG/AVC/HEVC imports**
-use checkpoint v4 with the same native interpretation and timing requirements and the exact
-source inventory described above.
+use checkpoint v3, strict native decoding and `ycbcr`. The loose original input can be
+removed after import; the retained source chunks, selected capsules, import root and checkpoint
+body/manifest must remain intact. Missing, deleted, stale or damaged custody refuses. A cached
+native owner or cached metadata never repairs a missing published checkpoint body.
 
-The loose original input can be removed after import; retained source chunks, selected capsules,
-import root, checkpoint body/manifest and any source inventory and part roots must remain intact.
-Missing, deleted, stale or damaged custody refuses. A cached native owner or cached metadata
-never repairs a missing published checkpoint body or source inventory.
-
-Coverage retention remains refused in incremental mode. Independent health retention requires
-an already complete screened checkpoint. Trained packages run only at the completed temporal
+Partitioned imports are explicitly refused before native decoding. Their aggregate metadata
+names typed part roots which are not graph children; the first checkpoint format deliberately
+does not claim that retaining only the aggregate closes all part custody. Coverage retention
+remains refused in incremental mode. Independent
+health retention requires an already complete screened checkpoint. Explicit conservative
+sensor-health screening uses version-two MJPEG or version-three video checkpoints. Trained packages run only at the completed temporal
 boundary described above. Calibrated fusion requires an already complete, exactly pinned
 checkpoint and uses the separate read-only path; partial checkpoint advice is refused.
 Existing whole-recording paths retain their supported codec, health and fusion capabilities.
@@ -464,22 +424,8 @@ Inter-coded checkpoints use `fss.incremental_dwell_checkpoint.v3` (FMT-018),
 the exact native media format, screening flag, inter-coded analysis policy and actual AVC/HEVC
 decoder identity. The record adds native drain state and the bounded count
 and complete strictly ordered skipped-RASL source coordinates before the original full trace.
-Existing flat MJPEG recipes and record layouts remain byte-identical. A v3 reader accepts
-v1/v2; an older reader refuses v3 rather than silently treating read-ahead as completed analysis.
-
-Partitioned checkpoints use `fss.incremental_dwell_checkpoint.v4` (FMT-021),
-`fss.incremental-dwell.recipe.v4` and `recorded-incremental-dwell-checkpoint-v4`. After its domain, the recipe
-contains the exact media format, screening flag and source-inventory digest, followed by
-the existing policy, decoder, optional health policy and complete original execution bindings.
-The record keeps seven cumulative work counters, optional health counters, native video
-progress only for AVC/HEVC, and the complete trace. Recipe and trace bounds remain 16 KiB and
-8 MiB; the hard record ceiling remains 8 MiB plus 16 KiB plus 65,536 × 8 bytes.
-
-The inventory domain is `fss.incremental-dwell.source-closure.v1` (FMT-022): canonical domain
-text, three SHA-256 digests for import identity/root/metadata, a u64 part count, then exact
-ordered part digests. Readers reconstruct its expected canonical bytes from verified source
-custody; a caller-supplied replacement list is never authoritative. The v4 reader also accepts
-historical v1–v3 records unchanged. Old readers refuse v4 explicitly.
+Existing MJPEG recipes and record layouts remain byte-identical. A v3 reader accepts v1/v2;
+an older reader refuses v3 rather than silently treating read-ahead as completed analysis.
 
 The native library regressions exercise multiple hot chunkings, cold prefix equality, one-shot
 analysis/proposal/event identity, misses/gaps/refusals across boundaries, original allowance
@@ -508,32 +454,6 @@ cargo test -p fss-reference --lib ingest::long_dwell::tests::classify
 cargo test -p fss-reference --lib ingest::long_dwell::health_tests::incremental
 cargo test -p fss-cli --bin fss-event watch::incremental
 cargo test -p fss-cli --test watch_stream_dwell_cli incremental
-```
-
-### Partitioned source regression targets
-
-Eight native tests in `tests/incremental/partitioned.rs` cover actual cold MJPEG reopening with
-and without screening, AVC delayed output after coding EOF, HEVC continuation, holes/misses/
-decode refusals across durable boundaries, missing inventory or part custody, original actor
-and cumulative budget checks, a self-consistent reordered-inventory forgery, and actual
-deletion planning and execution over checkpoints and independent part roots. Complete reports
-are compared with the existing whole-recording native owner.
-
-Two CLI process regressions use a 16,385-frame source that forces the default multipart import
-layout, then analyze its first 300 frames. They execute 128/128/44-position continuations after
-the loose file is removed, compare whole-scan analysis/proposal identities, check exact checkpoint
-and event retries, and refuse insufficient restoration admission or a changed dwell recipe
-without journal changes. Continuations run in fresh processes with paths containing spaces.
-
-Execution status for this change (2026-11-03): the eight native tests and two CLI cases were
-authored and reviewed, but their native execution has not yet been verified. The pinned
-formatter parsed the core changes before the execution host became temporarily unavailable.
-Local dependency compilation had already been blocked by shared memory and disk exhaustion.
-Source review and formatting are not test passes.
-
-```sh
-cargo test --locked --offline -p fss-reference --lib ingest::long_dwell::tests::incremental::partitioned
-cargo test --locked --offline -p fss-cli --test watch_stream_dwell_cli incremental::partitioned::
 ```
 
 ### Native video regression targets

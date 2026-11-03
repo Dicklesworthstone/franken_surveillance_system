@@ -2,7 +2,7 @@
 //! Operator commands using the same retained-source and canonical codec path as the library.
 
 use super::{ParseResult, RunResult, Values, malformed, number, text, value, write_new};
-use fss_core::{CanonicalEncode, ContentDigest, SensorCapsule};
+use fss_core::ContentDigest;
 use fss_reference::ingest::pixel_change::{
     PixelChangeConfig, PixelChangeDetector, PixelChangeError, PixelChangeObservation,
     PixelChangeStatistics, VideoPixelChangeObservation,
@@ -208,13 +208,8 @@ pub(super) fn parse(
         }
         let maximum_output_bytes = if values.contains_key("--max-output-bytes") {
             let maximum: u64 = number(values, "--max-output-bytes", None)?;
-            if !values.contains_key("--output")
-                || maximum == 0
-                || maximum > pgm_stream::MAX_OUTPUT_BYTES
-            {
-                return Err(malformed(
-                    "--max-output-bytes requires --output and a value in 1..268435456",
-                ));
+            if !values.contains_key("--output") || maximum == 0 || maximum > pgm_stream::MAX_OUTPUT_BYTES {
+                return Err(malformed("--max-output-bytes requires --output and a value in 1..268435456"));
             }
             Some(maximum)
         } else {
@@ -262,25 +257,6 @@ pub(super) fn run(
     }
 }
 
-/// Exact retained selection pins for downstream scene matching. This exposes metadata,
-/// not source pixels, and never changes the source clock or sensor identity.
-fn source_selection_lines(
-    out: &mut impl Write,
-    import: ContentDigest,
-    segment: u64,
-    capsule: &SensorCapsule,
-) -> RunResult<()> {
-    let capsule_digest = ContentDigest::sha256(&capsule.try_canonical_bytes()?);
-    writeln!(out, "source_import_identity={import}")?;
-    writeln!(out, "source_segment={segment}")?;
-    writeln!(out, "source_capsule_digest={capsule_digest}")?;
-    writeln!(out, "source_encoded_digest={}", capsule.source_digest)?;
-    writeln!(out, "source_sensor_id={}", capsule.sensor_id)?;
-    writeln!(out, "source_stream_id={}", capsule.stream_id)?;
-    writeln!(out, "source_clock_basis={}", capsule.clock_basis)?;
-    Ok(())
-}
-
 fn run_frame(
     action: &FrameAction,
     deployment: &mut ReferenceDeployment,
@@ -289,10 +265,7 @@ fn run_frame(
     out: &mut impl Write,
 ) -> RunResult<()> {
     if action.maximum_output_bytes.is_some() {
-        return Err(std::io::Error::other(
-            "--max-output-bytes applies only to native video decoding",
-        )
-        .into());
+        return Err(std::io::Error::other("--max-output-bytes applies only to native video decoding").into());
     }
     if action.segment_count != 1 {
         return Err(std::io::Error::other("--segment-count applies only to H.264 and H.265 imports; JPEG frames decode one segment").into());
@@ -326,12 +299,6 @@ fn run_frame(
         out,
         "decode_authority_sequence={}",
         frame.authority_anchor().commit_sequence
-    )?;
-    source_selection_lines(
-        out,
-        action.request.import_identity,
-        action.request.segment_index as u64,
-        receipt.capsule(),
     )?;
     writeln!(out, "source_capsule={}", receipt.capsule().capsule_id)?;
     writeln!(
@@ -388,10 +355,7 @@ fn run_video_decode(
         return Err(RecordedDecodeError::UnsupportedMedia.into());
     }
     if action.receipt_output.is_some() {
-        return Err(std::io::Error::other(
-            "--receipt-out applies to published JPEG decode receipts only",
-        )
-        .into());
+        return Err(std::io::Error::other("--receipt-out applies to published JPEG decode receipts only").into());
     }
     let mut budget = RecordedVideoDecodeBudget::new(action.work_units);
     let result = if hevc {
@@ -407,42 +371,20 @@ fn run_video_decode(
     result
 }
 
-fn prepare_video_export(
-    action: &FrameAction,
-    root: &Path,
-    cx: &ReplayCx,
-) -> RunResult<Option<pgm_stream::PgmExport>> {
+fn prepare_video_export(action: &FrameAction, root: &Path, cx: &ReplayCx) -> RunResult<Option<pgm_stream::PgmExport>> {
     // With no export requested there is no output buffer, destination, or output hash.
-    Ok(action
-        .output
-        .as_deref()
-        .map(|path| {
-            pgm_stream::PgmExport::prepare(
-                path,
-                root,
-                action
-                    .maximum_output_bytes
-                    .unwrap_or(pgm_stream::DEFAULT_OUTPUT_BYTES),
-                action.segment_count,
-                cx,
-            )
-        })
-        .transpose()?)
+    Ok(action.output.as_deref().map(|path| {
+        pgm_stream::PgmExport::prepare(path, root,
+            action.maximum_output_bytes.unwrap_or(pgm_stream::DEFAULT_OUTPUT_BYTES),
+            action.segment_count, cx)
+    }).transpose()?)
 }
 
-fn finish_video_export(
-    export: Option<pgm_stream::PgmExport>,
-    cx: &ReplayCx,
-    out: &mut impl Write,
-) -> RunResult<()> {
+fn finish_video_export(export: Option<pgm_stream::PgmExport>, cx: &ReplayCx, out: &mut impl Write) -> RunResult<()> {
     if let Some(export) = export {
         let receipt = export.finish(cx)?;
         writeln!(out, "pgm_sha256={}", receipt.digest)?;
-        writeln!(
-            out,
-            "pgm_bytes={}\npgm_frames={}",
-            receipt.bytes, receipt.frames
-        )?;
+        writeln!(out, "pgm_bytes={}\npgm_frames={}", receipt.bytes, receipt.frames)?;
     }
     Ok(())
 }
@@ -492,12 +434,6 @@ fn run_h264(
             export.frame(frame.dimensions(), frame.pixels(), cx)?;
         }
         let receipt = frame.receipt();
-        source_selection_lines(
-            out,
-            action.request.import_identity,
-            receipt.segment_index(),
-            receipt.capsule(),
-        )?;
         writeln!(out, "frame_output_index={}", frame.output_index())?;
         let [width, height] = receipt.dimensions();
         writeln!(
@@ -524,7 +460,7 @@ fn run_h264(
     writeln!(
         out,
         "pixel_format=h264_yuv420p_luma\ndecoder_identity={}",
-        range.decoder_identity()
+        fss_reference::ingest::recorded_decode::h264::h264_decoder_identity()
     )?;
     writeln!(
         out,
@@ -567,8 +503,6 @@ fn run_h265(
         decoder_limits,
     };
     let mut range = RecordedH265Range::open_with_budget(deployment, request, budget, cx)?;
-    let mut decoder_identity =
-        fss_reference::ingest::recorded_decode::h265::h265_decoder_identity();
     privacy_lines(out, range.mask().policy_digest(), range.mask().digest())?;
     writeln!(
         out,
@@ -580,12 +514,6 @@ fn run_h265(
             export.frame(frame.dimensions(), frame.pixels(), cx)?;
         }
         let receipt = frame.receipt();
-        source_selection_lines(
-            out,
-            action.request.import_identity,
-            receipt.segment_index(),
-            receipt.capsule(),
-        )?;
         writeln!(out, "frame_output_index={}", frame.output_index())?;
         let [width, height] = receipt.dimensions();
         writeln!(
@@ -596,12 +524,6 @@ fn run_h265(
             receipt.is_irap(),
             receipt.is_idr()
         )?;
-        if receipt.decoder_identity()
-            != fss_reference::ingest::recorded_decode::h265::h265_decoder_identity()
-        {
-            decoder_identity = receipt.decoder_identity();
-            writeln!(out, "frame_decoder_identity={}", receipt.decoder_identity())?;
-        }
         writeln!(
             out,
             "frame_luma_sha256={}\nframe_i420_sha256={}\nframe_receipt_digest={}",
@@ -623,7 +545,7 @@ fn run_h265(
     writeln!(
         out,
         "pixel_format=h265_yuv420p_luma\ndecoder_identity={}",
-        decoder_identity
+        fss_reference::ingest::recorded_decode::h265::h265_decoder_identity()
     )?;
     writeln!(
         out,
@@ -937,7 +859,7 @@ impl MotionVideoFrame {
                         receipt.luma_sha256(),
                         receipt.import_root(),
                         receipt.capsule_digest(),
-                        receipt.decoder_identity(),
+                        fss_reference::ingest::recorded_decode::h264::h264_decoder_identity(),
                         receipt.mask_binding(),
                         receipt.mask_policy(),
                         receipt.dimensions(),
@@ -950,7 +872,7 @@ impl MotionVideoFrame {
                         receipt.luma_sha256(),
                         receipt.import_root(),
                         receipt.capsule_digest(),
-                        receipt.decoder_identity(),
+                        fss_reference::ingest::recorded_decode::h265::h265_decoder_identity(),
                         receipt.mask_binding(),
                         receipt.mask_policy(),
                         receipt.dimensions(),

@@ -134,5 +134,4 @@ impl DatagramPrefix {
 }
 
 #[cfg(test)]
-#[path = "prefix/tests.rs"]
 mod tests;

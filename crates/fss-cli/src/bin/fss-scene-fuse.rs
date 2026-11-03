@@ -2,26 +2,13 @@
 //! Bounded, owner-local reconstruction of source-linked multi-camera scene hypotheses.
 //!
 //! This command composes the imported twin, camera-rig reader and native geometry solvers.
-//! Retained subcommands authenticate original source and privacy custody; the adopted
-//! calibration profile also binds current owner authority. Reports remain derived advice,
-//! and neither nominal camera declarations nor adoption establish physical accuracy.
+//! Its report is derived advice: input handles are retained, not authenticated source custody,
+//! and authored camera placements do not become accepted physical calibration.
 
-#[path = "fss-scene-fuse/handoffs.rs"]
-mod handoffs;
 #[path = "fss-scene-fuse/input.rs"]
 mod input;
-#[path = "fss-scene-fuse/matching.rs"]
-mod matching;
 #[path = "fss-scene-fuse/report.rs"]
 mod report;
-#[path = "fss-scene-fuse/retained_fusion.rs"]
-mod retained_fusion;
-#[path = "fss-scene-fuse/retained_fusion_input.rs"]
-mod retained_fusion_input;
-#[path = "fss-scene-fuse/retained_handoffs.rs"]
-mod retained_handoffs;
-#[path = "fss-scene-fuse/retained_matching.rs"]
-mod retained_matching;
 #[cfg(test)]
 #[path = "fss-scene-fuse/tests.rs"]
 mod tests;
@@ -64,17 +51,7 @@ visible_contact, sigma_pixels, evidence_digest and source_digest. See docs/SCENE
 Every hypothesis is reported, including refusals. Exit 0: all solved; 3: some/all refused;\n\
 2: invalid input, I/O, authority or report failure. --report-out exclusively creates a new\n\
 private file after the complete report is computed; existing files are never overwritten.\n\
-The stdout JSON is identical to that file. Default work allowance: 100000000 units.\n\n\
-For automatic ordered anonymous tracklet association, use fss-scene-fuse handoffs --help.\n\
-For authenticated retained package tracks, use fss-scene-fuse retained-handoffs --help.\n\
-For 3D reconstruction from retained tracks, use fss-scene-fuse retained-fuse --help.\n\
-For automatic native JPEG feature matching and 3D points, use fss-scene-fuse match --help.\n\
-For automatic matching of retained camera frames, use fss-scene-fuse retained-match --help.\n\
-For joint matching across 3-8 retained cameras, use fss-scene-fuse retained-multimatch --help.\n\
-For a reusable localization atlas from retained scene matches, use fss-scene-fuse retained-atlas --help.\n\
-For automatic moving-feature reconstruction across frames, use fss-scene-fuse retained-motion-match --help.\n\
-For reconstruction using currently adopted camera geometry, use fss-scene-fuse retained-calibrated-match --help.\n\
-For localization atlases built with adopted cameras, use fss-scene-fuse retained-calibrated-atlas --help.\n";
+The stdout JSON is identical to that file. Default work allowance: 100000000 units.\n";
 
 #[derive(Debug)]
 struct Failure {
@@ -263,7 +240,7 @@ fn analyze(options: &Options, cx: &ReplayCx) -> Result<report::Report> {
         &rig,
         &query,
         rig_digest,
-        report::SourceProvenance::CallerSupplied(ContentDigest::sha256(&query_bytes)),
+        ContentDigest::sha256(&query_bytes),
         &mut work,
         cx,
     )?;
@@ -362,36 +339,13 @@ fn execute(options: &Options, out: &mut impl Write) -> Result<bool> {
 }
 
 fn main() -> ExitCode {
-    let args: Vec<_> = std::env::args_os().skip(1).collect();
-    let result = if args.first().and_then(|arg| arg.to_str()) == Some("handoffs") {
-        handoffs::run(&args[1..], &mut io::stdout().lock())
-    } else if args.first().and_then(|arg| arg.to_str()) == Some("retained-handoffs") {
-        retained_handoffs::run(&args[1..], &mut io::stdout().lock())
-    } else if args.first().and_then(|arg| arg.to_str()) == Some("retained-fuse") {
-        retained_fusion::run(&args[1..], &mut io::stdout().lock())
-    } else if args.first().and_then(|arg| arg.to_str()) == Some("retained-multimatch") {
-        retained_matching::run_multi(&args[1..], &mut io::stdout().lock())
-    } else if args.first().and_then(|arg| arg.to_str()) == Some("retained-motion-match") {
-        retained_matching::run_temporal(&args[1..], &mut io::stdout().lock())
-    } else if args.first().and_then(|arg| arg.to_str()) == Some("retained-calibrated-match") {
-        retained_matching::run_calibrated(&args[1..], &mut io::stdout().lock())
-    } else if args.first().and_then(|arg| arg.to_str()) == Some("retained-calibrated-atlas") {
-        retained_matching::run_calibrated_atlas(&args[1..], &mut io::stdout().lock())
-    } else if args.first().and_then(|arg| arg.to_str()) == Some("retained-atlas") {
-        retained_matching::run_atlas(&args[1..], &mut io::stdout().lock())
-    } else if args.first().and_then(|arg| arg.to_str()) == Some("retained-match") {
-        retained_matching::run(&args[1..], &mut io::stdout().lock())
-    } else if args.first().and_then(|arg| arg.to_str()) == Some("match") {
-        matching::run(&args[1..], &mut io::stdout().lock())
-    } else {
-        options(args).and_then(|value| match value {
-            None => {
-                print!("{HELP}");
-                Ok(true)
-            }
-            Some(options) => execute(&options, &mut io::stdout().lock()),
-        })
-    };
+    let result = options(std::env::args_os().skip(1)).and_then(|value| match value {
+        None => {
+            print!("{HELP}");
+            Ok(true)
+        }
+        Some(options) => execute(&options, &mut io::stdout().lock()),
+    });
     match result {
         Ok(true) => ExitCode::SUCCESS,
         Ok(false) => ExitCode::from(3),

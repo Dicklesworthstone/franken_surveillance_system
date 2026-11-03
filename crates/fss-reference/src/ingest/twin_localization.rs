@@ -6,7 +6,6 @@
 //! privacy policy excludes descriptor support, including rectification footprints. Results are
 //! reproducible candidate receipts, not calibration certificates, coverage, or activation.
 
-pub mod features;
 mod receipt;
 pub mod retained;
 
@@ -32,7 +31,6 @@ use super::recorded_decode::{
     DecodeBudget, RecordedDecodeError, RecordedDecodeRequest, RecordedFrame,
     retained_source_capsule,
 };
-use super::retained::SourceReadBudget;
 use super::{RetainedFileImport, RetainedReadLimits};
 use crate::{ReferenceDeployment, ReplayCx};
 
@@ -464,11 +462,6 @@ fn validate_options(options: ImageLocalizationOptions) -> Result<()> {
     Ok(())
 }
 
-struct DecodeAccess<'a> {
-    replay_jpeg: bool,
-    source_budget: Option<&'a SourceReadBudget>,
-}
-
 fn decode(
     deployment: &mut ReferenceDeployment,
     source: &RecordedLocalizationSource,
@@ -476,28 +469,16 @@ fn decode(
     video: &mut RecordedVideoDecodeBudget,
     geometry: &mut WorkBudget<'_>,
     cx: &ReplayCx,
-    access: DecodeAccess<'_>,
+    replay_jpeg: bool,
 ) -> Result<Frame> {
-    if access.replay_jpeg && access.source_budget.is_some() {
-        return Err(RecordedLocalizationError::InvalidRequest);
-    }
-    if let Some(budget) = access.source_budget {
-        budget.checkpoint().map_err(RecordedDecodeError::from)?;
-    }
     match source {
         RecordedLocalizationSource::Jpeg(request) => {
-            let frame = if access.replay_jpeg {
+            let frame = if replay_jpeg {
                 let frame = RecordedFrame::open(deployment, request, cx)?;
                 frame.verify_by_replay(deployment, request, jpeg, cx)?;
                 frame
             } else {
-                RecordedFrame::decode_and_publish_with_source_budget(
-                    deployment,
-                    request,
-                    jpeg,
-                    cx,
-                    access.source_budget,
-                )?
+                RecordedFrame::decode_and_publish(deployment, request, jpeg, cx)?
             };
             Ok(Frame::Jpeg(frame))
         }
@@ -508,21 +489,9 @@ fn decode(
             request.decoder_limits.max_height = request.decoder_limits.max_height.min(4096);
             request.decoder_limits.max_macroblocks =
                 request.decoder_limits.max_macroblocks.min(16_384);
-            let mut range = match access.source_budget {
-                Some(source_budget) => RecordedH264Range::open_stream_with_budgets(
-                    deployment,
-                    request,
-                    source_budget,
-                    video,
-                    cx,
-                )?,
-                None => RecordedH264Range::open_with_budget(deployment, request, video, cx)?,
-            };
+            let mut range = RecordedH264Range::open_with_budget(deployment, request, video, cx)?;
             let mut selected = None;
             loop {
-                if let Some(budget) = access.source_budget {
-                    budget.checkpoint().map_err(RecordedDecodeError::from)?;
-                }
                 geometry.charge(0)?;
                 let Some(frame) = range.next_frame_with_budget(deployment, video, cx)? else {
                     break;
@@ -544,21 +513,9 @@ fn decode(
             request.decoder_limits.max_height = request.decoder_limits.max_height.min(4096);
             request.decoder_limits.max_luma_samples =
                 request.decoder_limits.max_luma_samples.min(4_194_304);
-            let mut range = match access.source_budget {
-                Some(source_budget) => RecordedH265Range::open_stream_with_budgets(
-                    deployment,
-                    request,
-                    source_budget,
-                    video,
-                    cx,
-                )?,
-                None => RecordedH265Range::open_with_budget(deployment, request, video, cx)?,
-            };
+            let mut range = RecordedH265Range::open_with_budget(deployment, request, video, cx)?;
             let mut selected = None;
             loop {
-                if let Some(budget) = access.source_budget {
-                    budget.checkpoint().map_err(RecordedDecodeError::from)?;
-                }
                 geometry.charge(0)?;
                 let Some(frame) = range.next_frame_with_budget(deployment, video, cx)? else {
                     break;
@@ -666,10 +623,7 @@ fn localize_inner(
         video_budget,
         geometry_budget,
         cx,
-        DecodeAccess {
-            replay_jpeg,
-            source_budget: None,
-        },
+        replay_jpeg,
     )?;
     let retained =
         RetainedFileImport::open(deployment, source.import_identity(), source.limits(), cx)

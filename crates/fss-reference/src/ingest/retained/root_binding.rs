@@ -189,9 +189,6 @@ pub(super) fn verify(
     super::super::rtsp_import::verify_catalog_membership(
         deployment, manifest, &held, &capsules, import_hex, cx,
     )?;
-    super::super::rtsp_jpeg_import::verify_membership(
-        deployment, manifest, &held, &capsules, import_hex, cx,
-    )?;
     checkpoint(cx, STAGE)?;
     Ok(())
 }

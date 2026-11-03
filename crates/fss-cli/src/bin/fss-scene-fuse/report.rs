@@ -30,14 +30,6 @@ pub(super) struct Report {
     pub json: String,
     pub all_solved: bool,
 }
-
-/// The enclosing command supplies authentication only after the retained owner succeeds.
-/// Geometric fit cannot change the provenance of caller-declared observations.
-#[derive(Clone, Copy)]
-pub(super) enum SourceProvenance {
-    CallerSupplied(ContentDigest),
-    RetainedPackage(ContentDigest),
-}
 fn number(v: f64) -> String {
     v.to_string()
 }
@@ -294,22 +286,10 @@ pub(super) fn compute(
     rig: &SceneRig,
     query: &Query,
     rig_digest: ContentDigest,
-    provenance: SourceProvenance,
+    observations_digest: ContentDigest,
     work: &mut WorkBudget<'_>,
     cx: &ReplayCx,
 ) -> Result<Report> {
-    let (observations_digest, custody, time_basis) = match provenance {
-        SourceProvenance::CallerSupplied(digest) => (
-            digest,
-            "caller_supplied_handles_not_fetched_or_authenticated",
-            "caller_supplied_capture_clock_mapping_and_intervals_not_receive_times",
-        ),
-        SourceProvenance::RetainedPackage(digest) => (
-            digest,
-            "retained_package_projection_verified_and_revalidated_by_enclosing_owner",
-            "retained_capture_intervals_with_caller_declared_additive_clock_mapping",
-        ),
-    };
     let total_work = work.used() + work.remaining();
     let mut results = Vec::new();
     let mut solved = 0;
@@ -505,7 +485,10 @@ pub(super) fn compute(
         (
             "assumptions",
             object(&[
-                ("source_custody", string(custody)),
+                (
+                    "source_custody",
+                    string("caller_supplied_handles_not_fetched_or_authenticated"),
+                ),
                 (
                     "correspondence",
                     string("caller_supplied_common_feature_hypotheses_not_person_identity"),
@@ -514,7 +497,10 @@ pub(super) fn compute(
                     "calibration",
                     string("authored_nominal_camera_rig_not_activated_or_physically_validated"),
                 ),
-                ("time", string(time_basis)),
+                (
+                    "time",
+                    string("caller_supplied_capture_clock_mapping_and_intervals_not_receive_times"),
+                ),
                 (
                     "covariance_scope",
                     string("conditional_independent_isotropic_pixel_noise_only"),

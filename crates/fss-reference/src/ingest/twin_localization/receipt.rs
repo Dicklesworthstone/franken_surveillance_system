@@ -98,35 +98,6 @@ pub(super) fn options(e: &mut CanonicalEncoder, o: ImageLocalizationOptions) {
     number(e, o.solving.minimum_image_span);
 }
 
-/// Existing canonical raw-to-pinhole lineage, shared without changing localization v1 bytes.
-pub(super) fn rectified(e: &mut CanonicalEncoder, r: &RectificationReceipt) {
-    hash(e, r.source.exposure);
-    hash(e, r.source.storage);
-    hash(e, r.source.allowed_mask);
-    hash(e, r.source.image_domain);
-    hash(e, r.source.calibration);
-    for n in r.source.dimensions {
-        e.u32(n);
-    }
-    e.u32(r.source.row_stride);
-    e.u8(match r.source.range {
-        LumaRange::Full => 0,
-        LumaRange::Video => 1,
-    });
-    image(e, r.output);
-    hash(e, r.map_digest);
-    hash(e, r.allowed_mask);
-    for n in [
-        r.coverage.mapped,
-        r.coverage.outside_source,
-        r.coverage.outside_lens_domain,
-        r.allowed_pixels,
-        r.privacy_rejected,
-    ] {
-        e.u64(n as u64);
-    }
-}
-
 /// Stable v1 outcome tokens, independent of human-readable error wording.
 pub(super) fn geometry_reason(error: GeometryError) -> &'static str {
     match error {
@@ -202,7 +173,31 @@ pub(super) fn encode(
     options(&mut e, plan.options);
     e.bool(rectification.is_some());
     if let Some(r) = rectification {
-        self::rectified(&mut e, r);
+        hash(&mut e, r.source.exposure);
+        hash(&mut e, r.source.storage);
+        hash(&mut e, r.source.allowed_mask);
+        hash(&mut e, r.source.image_domain);
+        hash(&mut e, r.source.calibration);
+        for n in r.source.dimensions {
+            e.u32(n);
+        }
+        e.u32(r.source.row_stride);
+        e.u8(match r.source.range {
+            LumaRange::Full => 0,
+            LumaRange::Video => 1,
+        });
+        image(&mut e, r.output);
+        hash(&mut e, r.map_digest);
+        hash(&mut e, r.allowed_mask);
+        for n in [
+            r.coverage.mapped,
+            r.coverage.outside_source,
+            r.coverage.outside_lens_domain,
+            r.allowed_pixels,
+            r.privacy_rejected,
+        ] {
+            e.u64(n as u64);
+        }
     }
     let selection = result.selection;
     hash(&mut e, selection.mask_digest);

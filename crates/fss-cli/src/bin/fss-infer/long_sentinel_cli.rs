@@ -33,16 +33,6 @@ pub(super) const RUN_OPTIONS: &[&str] = &[
 // option only narrows native capacities; it never raises an existing codec ceiling.
 const MAX_FRAME_PIXELS: u64 = 4096 * 2304;
 
-/// One model output has the same explicit ceiling in fresh inference and cold replay.
-/// An omitted flag preserves the native default and every historical recipe identity.
-pub(super) fn output_ceiling(values: &Values, default: usize) -> Result<usize, String> {
-    let maximum = number(values, "--max-output-bytes", Some(default))?;
-    if !(1..=16 * 1024 * 1024).contains(&maximum) {
-        return Err("model output ceiling must be 1..16777216 bytes".into());
-    }
-    Ok(maximum)
-}
-
 #[derive(Debug)]
 pub(super) struct StreamOptions {
     pub config: LongSentinelConfig,
@@ -170,7 +160,6 @@ const REPLAY_HELP: &str = "fss-infer sentinel-replay [options]\n\
   --root DIR --site SITE --report-digest sha256:HEX [--principal ID] [--report-out FILE]\n\
   Independent current ceilings: --stream-read-bytes N --stream-pixel-budget N\n\
     --max-report-bytes N --max-frame-pixels N --max-macs N --max-tensor-bytes N\n\
-    --max-output-bytes N (1..16777216; default 16777216)\n\
     --max-metadata-bytes N\n\
   Reopens one retained whole-recording sentinel aggregate and reruns its exact native\n\
   source range, sample schedule, package, threshold and saved execution backend. No loose\n\
@@ -213,7 +202,7 @@ fn parse_replay(args: &[OsString]) -> Result<Option<ReplayOptions>, String> {
             Err("help takes no other arguments".into())
         };
     }
-    if args.len() > 26 || !args.len().is_multiple_of(2) {
+    if args.len() > 24 || !args.len().is_multiple_of(2) {
         return Err("bounded option/value pairs required".into());
     }
     let mut values = Values::new();
@@ -231,7 +220,6 @@ fn parse_replay(args: &[OsString]) -> Result<Option<ReplayOptions>, String> {
             "--max-frame-pixels",
             "--max-macs",
             "--max-tensor-bytes",
-            "--max-output-bytes",
             "--max-metadata-bytes",
         ]
         .contains(&key)
@@ -272,7 +260,6 @@ fn parse_replay(args: &[OsString]) -> Result<Option<ReplayOptions>, String> {
         number(&values, "--max-macs", Some(package.run.execution.max_macs))?,
         maximum_tensor_bytes,
     );
-    package.run.maximum_output_bytes = output_ceiling(&values, package.run.maximum_output_bytes)?;
     let maximum_metadata_bytes = number(&values, "--max-metadata-bytes", Some(64 * 1024 * 1024))?;
     if !(1..=128 * 1024 * 1024).contains(&maximum_metadata_bytes) {
         return Err("metadata ceiling must be 1..134217728 bytes".into());
@@ -422,8 +409,6 @@ mod tests {
             ["--max-report-bytes", "16777217"],
             ["--max-tensor-bytes", "0"],
             ["--max-tensor-bytes", "268435457"],
-            ["--max-output-bytes", "0"],
-            ["--max-output-bytes", "16777217"],
             ["--max-metadata-bytes", "0"],
             ["--max-metadata-bytes", "134217729"],
             ["--max-frame-pixels", "255"],
@@ -461,34 +446,19 @@ mod tests {
                 "2000",
                 "--max-tensor-bytes",
                 "1048576",
-                "--max-output-bytes",
-                "4096",
                 "--max-metadata-bytes",
                 "2097152",
                 "--max-frame-pixels",
                 "511",
-                "--principal",
-                "principal:replay-output-bound",
-                "--report-out",
-                "/missing/exported-report.json",
             ]
             .map(OsString::from),
         );
-        assert_eq!(
-            input.len(),
-            26,
-            "all independently supported options fit the finite argument bound"
-        );
-        let mut excess = input.clone();
-        excess.extend([OsString::from("--max-output-bytes"), OsString::from("4096")]);
-        assert!(parse_replay(&excess).is_err());
         let limits = parse_replay(&input)?.ok_or("replay request")?.limits;
         assert_eq!(limits.execution.maximum_source_chunk_bytes, 1048576);
         assert_eq!(limits.execution.maximum_pixel_samples, 262144);
         assert_eq!(limits.execution.maximum_report_bytes, 524288);
         assert_eq!(limits.execution.package.run.execution.max_macs, 2000);
         assert_eq!(limits.execution.package.run.execution.max_bytes, 1048576);
-        assert_eq!(limits.execution.package.run.maximum_output_bytes, 4096);
         assert_eq!(limits.execution.package.jpeg.frame.maximum_pixels, 511);
         assert_eq!(limits.execution.package.h264.max_macroblocks, 1);
         assert_eq!(limits.execution.package.h265.max_luma_samples, 511);

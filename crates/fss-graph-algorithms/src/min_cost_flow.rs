@@ -140,46 +140,6 @@ pub fn min_cost_flow(
     demand: u64,
     budget: Budget,
 ) -> Result<CertifiedRun<MinCostFlowOutput>, GraphError> {
-    run(costs, capacities, source, sink, demand, budget, None)
-}
-
-/// The same exact minimum-cost flow with cooperative owner cancellation.
-/// Cancellation exposes no partial optimum; successful bytes and counters are unchanged.
-#[allow(clippy::too_many_arguments)]
-pub fn min_cost_flow_with_cancel(
-    costs: &WeightedGraph,
-    capacities: &WeightedGraph,
-    source: &str,
-    sink: &str,
-    demand: u64,
-    budget: Budget,
-    cancelled: &dyn Fn() -> bool,
-) -> Result<CertifiedRun<MinCostFlowOutput>, GraphError> {
-    run(
-        costs,
-        capacities,
-        source,
-        sink,
-        demand,
-        budget,
-        Some(cancelled),
-    )
-}
-
-fn run(
-    costs: &WeightedGraph,
-    capacities: &WeightedGraph,
-    source: &str,
-    sink: &str,
-    demand: u64,
-    budget: Budget,
-    cancelled: Option<&dyn Fn() -> bool>,
-) -> Result<CertifiedRun<MinCostFlowOutput>, GraphError> {
-    let mut meter = match cancelled {
-        Some(probe) => Meter::new_cancellable(&IDENTITY, budget, probe),
-        None => Meter::new(&IDENTITY, budget),
-    };
-    meter.checkpoint()?;
     paired(costs, capacities)?;
     let s = costs.require(source)?;
     let t = costs.require(sink)?;
@@ -190,13 +150,13 @@ fn run(
     }
     let n = costs.node_count();
     let m = costs.arc_count();
+    let mut meter = Meter::new(&IDENTITY, budget);
     // Residual edge 2i is arc i forward, 2i + 1 its reverse.
     let mut to = Vec::with_capacity(2 * m);
     let mut capacity = Vec::with_capacity(2 * m);
     let mut cost: Vec<i128> = Vec::with_capacity(2 * m);
     let mut adjacency: Vec<Vec<u32>> = vec![Vec::new(); n];
     for (index, arc) in costs.arcs().iter().enumerate() {
-        meter.checkpoint()?;
         let forward = (2 * index) as u32;
         to.push(arc.head);
         capacity.push(capacities.arc(index as u32).weight);
@@ -231,18 +191,13 @@ fn run(
                     continue;
                 }
                 let v = to[edge as usize];
-                let reduced = cost[edge as usize]
-                    .checked_add(potential[u as usize])
-                    .and_then(|value| value.checked_sub(potential[v as usize]))
-                    .ok_or(GraphError::ArithmeticOverflow("reduced flow cost"))?;
+                let reduced = cost[edge as usize] + potential[u as usize] - potential[v as usize];
                 if reduced < 0 {
                     return Err(GraphError::Inconsistent(
                         "a residual edge has negative reduced cost".to_owned(),
                     ));
                 }
-                let candidate = d
-                    .checked_add(reduced)
-                    .ok_or(GraphError::ArithmeticOverflow("flow path cost"))?;
+                let candidate = d + reduced;
                 if distance[v as usize].is_none_or(|current| candidate < current) {
                     distance[v as usize] = Some(candidate);
                     parent_edge[v as usize] = edge;
@@ -255,11 +210,8 @@ fn run(
             break;
         }
         for node in 0..n {
-            meter.checkpoint()?;
             if let Some(d) = distance[node] {
-                potential[node] = potential[node]
-                    .checked_add(d)
-                    .ok_or(GraphError::ArithmeticOverflow("flow potential"))?;
+                potential[node] += d;
             }
         }
         meter.tick("augmentations")?;
@@ -288,7 +240,6 @@ fn run(
     let mut flows = Vec::new();
     let mut total_cost: i128 = 0;
     for (index, arc) in costs.arcs().iter().enumerate() {
-        meter.checkpoint()?;
         let limit = capacities.arc(index as u32).weight;
         let amount = limit - capacity[2 * index];
         if amount != capacity[2 * index + 1] {
@@ -299,10 +250,7 @@ fn run(
         if amount > 0 {
             balance[arc.tail as usize] -= i128::from(amount);
             balance[arc.head as usize] += i128::from(amount);
-            total_cost = i128::from(amount)
-                .checked_mul(i128::from(arc.weight))
-                .and_then(|value| total_cost.checked_add(value))
-                .ok_or(GraphError::ArithmeticOverflow("total flow cost"))?;
+            total_cost += i128::from(amount) * i128::from(arc.weight);
             flows.push((
                 costs.id(arc.tail).to_owned(),
                 costs.id(arc.head).to_owned(),
@@ -312,7 +260,6 @@ fn run(
         }
     }
     for node in 0..n as u32 {
-        meter.checkpoint()?;
         let expected = if node == s {
             -i128::from(delivered)
         } else if node == t {
@@ -345,9 +292,7 @@ fn run(
                 meter.tick("certificate_relaxations")?;
                 if capacity[edge as usize] > 0 {
                     let v = to[edge as usize] as usize;
-                    let candidate = label[u]
-                        .checked_add(cost[edge as usize])
-                        .ok_or(GraphError::ArithmeticOverflow("flow certificate cost"))?;
+                    let candidate = label[u] + cost[edge as usize];
                     if candidate < label[v] {
                         label[v] = candidate;
                         relaxed = true;

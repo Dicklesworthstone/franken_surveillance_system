@@ -22,12 +22,11 @@ use fss_reference::onvif::capture_operation::{
 };
 use fss_reference::onvif::client::{ClientError, OnvifContext};
 use fss_reference::onvif::control::{
-    CreateIntentBinding, CreateOutcomeBinding, MAX_CATALOG_RECORDS, RenewIntentBinding,
-    RenewOutcomeBinding, RetainedCreateIntent, RetainedCreateOutcome, RetainedRenewIntent,
-    RetainedRenewal, RetainedSubscription, RetainedUnsubscribe, RetainedUnsubscribeIntent,
-    RetainedUnsubscribeOutcome, UnsubscribeBinding, UnsubscribeIntentBinding,
-    UnsubscribeOutcomeBinding, inspect_cleanup, prepare_create, prepare_renew, prepare_unsubscribe,
-    recover_created, retain_create_outcome, retain_renewal, retain_unsubscribe_outcome,
+    CreateIntentBinding, MAX_CATALOG_RECORDS, RenewIntentBinding, RenewOutcomeBinding,
+    RetainedCreateIntent, RetainedRenewIntent, RetainedRenewal, RetainedSubscription,
+    RetainedUnsubscribe, RetainedUnsubscribeIntent, RetainedUnsubscribeOutcome, UnsubscribeBinding,
+    UnsubscribeIntentBinding, UnsubscribeOutcomeBinding, inspect_cleanup, prepare_create,
+    prepare_renew, prepare_unsubscribe, retain_created, retain_renewal, retain_unsubscribe_outcome,
     retain_unsubscribed,
 };
 use fss_reference::onvif::http::{HttpAuthority, HttpDenial, HttpOperation, HttpRoute};
@@ -213,7 +212,6 @@ pub(super) struct ControlReceipts {
     pub(super) operation: Option<CaptureOperationInspection>,
     pub(super) operation_error: Option<&'static str>,
     pub(super) intent: Option<RetainedCreateIntent>,
-    pub(super) create_outcome: Option<RetainedCreateOutcome>,
     pub(super) created: Option<RetainedSubscription>,
     pub(super) unsubscribed: Option<RetainedUnsubscribe>,
     pub(super) unsubscribe_intent: Option<RetainedUnsubscribeIntent>,
@@ -287,12 +285,6 @@ impl ControlReceipts {
                     .map(|r| (r.identity(), r.publication_root())),
             ),
             (
-                "create_outcome",
-                self.create_outcome
-                    .as_ref()
-                    .map(|r| (r.identity(), r.publication_root())),
-            ),
-            (
                 "created_subscription",
                 self.created
                     .as_ref()
@@ -320,13 +312,6 @@ impl ControlReceipts {
             if let Some((identity, root)) = receipt {
                 out.push_str(&format!("{name}.identity={identity}\n{name}.publication_root={root}\n{name}.durable_publication=true\n"));
             }
-        }
-        if let Some(value) = &self.create_outcome {
-            out.push_str(&format!(
-                "create_outcome.intent_identity={}\ncreate_outcome.scoped_response_observed={}\ncreate_outcome.http_status={}\ncreate_outcome.completion_time_observed={}\n",
-                value.intent().identity(), value.scoped_subscription().is_some(),
-                value.binding().http_status, value.binding().completed_ns.is_some()
-            ));
         }
         if let Some(value) = &self.unsubscribe_outcome {
             out.push_str(&format!(
@@ -462,64 +447,20 @@ pub(super) fn retain_control<G: ReplayAdmission>(
             }
             (receipt, dispatch_allowed)
         }
-        PullPointControl::CreateOutcome {
+        PullPointControl::Created {
             source,
-            message_id,
-            started_ns,
             completed_ns,
             authenticated,
-            http_status,
-            soap_content_type,
+            ..
         } => {
-            let intent = receipts.intent.as_ref().ok_or(MetadataError::Custody)?;
-            if intent.binding().message_id != message_id
-                || intent.binding().started_ns != started_ns
-            {
-                return Err(MetadataError::Custody);
-            }
-            let value = retain_create_outcome(
+            let value = retain_created(
                 &mut deployment,
-                intent,
-                CreateOutcomeBinding {
-                    completed_ns,
-                    client_authenticated: authenticated,
-                    http_status,
-                    soap_content_type,
-                },
+                receipts.intent.as_ref().ok_or(MetadataError::Custody)?,
+                completed_ns,
+                authenticated,
                 source,
                 cx,
             )?;
-            let receipt = RetainedBatch {
-                identity: value.identity(),
-                root: value.publication_root(),
-            };
-            receipts.create_outcome = Some(value);
-            (receipt, true)
-        }
-        PullPointControl::Created {
-            source,
-            message_id,
-            started_ns,
-            completed_ns,
-            authenticated,
-        } => {
-            let outcome = receipts
-                .create_outcome
-                .as_ref()
-                .ok_or(MetadataError::Custody)?;
-            let intent = receipts.intent.as_ref().ok_or(MetadataError::Custody)?;
-            if outcome.intent().identity() != intent.identity()
-                || outcome.intent().publication_root() != intent.publication_root()
-                || outcome.intent().binding().message_id != message_id
-                || outcome.intent().binding().started_ns != started_ns
-                || outcome.binding().completed_ns != Some(completed_ns)
-                || outcome.binding().client_authenticated != authenticated
-                || outcome.source() != source
-                || outcome.scoped_subscription().is_none()
-            {
-                return Err(MetadataError::Custody);
-            }
-            let value = recover_created(&mut deployment, outcome, cx)?;
             let receipt = RetainedBatch {
                 identity: value.identity(),
                 root: value.publication_root(),
@@ -764,7 +705,7 @@ pub(super) fn run_args(args: &[OsString]) -> Result<(String, bool), &'static str
     let network =
         exchanges * (plan.config.limits.request_bytes + plan.config.limits.wire_bytes) as u64;
     let publications =
-        u64::from(plan.config.max_pulls) + 2 * u64::from(plan.config.max_renewals) + 6;
+        u64::from(plan.config.max_pulls) + 2 * u64::from(plan.config.max_renewals) + 5;
     let operations =
         publications + CLEANUP_READ_OPERATIONS + if plan.operation.is_some() { 16 } else { 0 };
     let retained_allowance = publications * 4 * 1024 * 1024
@@ -981,7 +922,7 @@ fn render(
         );
         line!(
             "subscription_source_retained={}",
-            controls.create_outcome.is_some() || controls.created.is_some() || !retained.is_empty()
+            controls.created.is_some() || !retained.is_empty()
         );
         if let Some(source) = report.subscription_response() {
             line!(
@@ -1047,18 +988,7 @@ fn render(
     });
     if !complete && cleanup_unconfirmed {
         line!("subscription_reconciliation_required=true");
-        let next = if controls.created.is_some() {
-            "control_list_then_inspect_then_explicit_unsubscribe"
-        } else if let Some(outcome) = &controls.create_outcome {
-            if outcome.scoped_subscription().is_some() {
-                "control_inspect_create_outcome_then_explicit_recover_created"
-            } else {
-                "control_inspect_create_outcome_then_owner_device_reconciliation"
-            }
-        } else {
-            "control_inspect_intent_then_owner_device_reconciliation_no_create_retry"
-        };
-        line!("safe_next={next}");
+        line!("safe_next=control_list_then_inspect_then_explicit_unsubscribe");
     }
     if out.len() > 65536 {
         return Err(LIMIT_ERROR);

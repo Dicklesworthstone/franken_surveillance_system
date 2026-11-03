@@ -1,8 +1,6 @@
 #![forbid(unsafe_code)]
 //! Retained source/privacy -> native pixels -> actual twin poses, including native raw differential.
 
-#[path = "recorded_twin_localization/features.rs"]
-mod feature_contract;
 #[path = "recorded_twin_localization/retained.rs"]
 mod retained_contract;
 #[path = "../../fss-twin/tests/common/mod.rs"]

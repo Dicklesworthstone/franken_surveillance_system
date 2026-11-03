@@ -20,10 +20,7 @@ use std::collections::BTreeSet;
 use std::fmt;
 
 pub use fss_codec_mjpeg::{ComponentInterpretation, DecodeBudget, DecodeLimits};
-use fss_codec_mjpeg::{
-    DecodeError, DecodeReceipt, decode_luma, decode_luma_for_identity, decoder_identity,
-    decoder_identity_for_frame, progressive_decoder_identity,
-};
+use fss_codec_mjpeg::{DecodeError, DecodeReceipt, decode_luma, decoder_identity};
 use fss_core::{
     BatchId, CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder, ContentDigest,
     ContractError, DigestAlgorithm, EvidenceDelta, LedgerAnchor, ObjectId, Plane, SensorCapsule,
@@ -35,7 +32,6 @@ use super::privacy_mask::{
     MaskBinding, PrivacyMaskError, binding_digest, current_mask, decode_marker, encode_marker,
     superseded_bindings,
 };
-use super::retained::SourceReadBudget;
 use super::{FileIngestError, RetainedFileImport, RetainedReadLimits};
 use crate::{ReferenceDeployment, ReferenceError, ReplayCx};
 
@@ -273,7 +269,6 @@ fn interpretation_tag(value: ComponentInterpretation) -> u8 {
 fn key(
     import_root: ContentDigest,
     segment: u64,
-    decoder: [u8; 32],
     interpretation: ComponentInterpretation,
     mask: ContentDigest,
 ) -> ContentDigest {
@@ -281,7 +276,7 @@ fn key(
     e.text("fss.recorded_luma_key.v2");
     e.digest(import_root);
     e.u64(segment);
-    e.digest(sha(decoder));
+    e.digest(sha(decoder_identity()));
     e.u8(interpretation_tag(interpretation));
     e.digest(mask);
     ContentDigest::sha256(&e.finish())
@@ -322,7 +317,6 @@ impl RecordedDecodeReceipt {
         key(
             self.import_root,
             self.segment_index,
-            self.codec.decoder,
             self.codec.interpretation,
             binding_digest(self.mask_policy),
         )
@@ -471,7 +465,7 @@ impl RecordedDecodeReceipt {
         {
             return Err(RecordedDecodeError::Limit);
         }
-        if ![decoder_identity(), progressive_decoder_identity()].contains(&self.codec.decoder)
+        if self.codec.decoder != decoder_identity()
             || self.capsule.source_digest != sha(self.codec.encoded_sha256)
             || ContentDigest::sha256(&self.capsule.try_canonical_bytes()?) != self.capsule_digest
             || self.capsule.capture.earliest > self.capsule.capture.latest
@@ -662,18 +656,6 @@ fn source(
     request: &RecordedDecodeRequest,
     cx: &ReplayCx,
 ) -> Result<(RetainedFileImport, SensorCapsule, ContentDigest, Vec<u8>), RecordedDecodeError> {
-    source_with_budget(deployment, request, cx, None)
-}
-
-fn source_with_budget(
-    deployment: &ReferenceDeployment,
-    request: &RecordedDecodeRequest,
-    cx: &ReplayCx,
-    source_budget: Option<&SourceReadBudget>,
-) -> Result<(RetainedFileImport, SensorCapsule, ContentDigest, Vec<u8>), RecordedDecodeError> {
-    if let Some(budget) = source_budget {
-        budget.checkpoint()?;
-    }
     checkpoint(cx, "recorded_decode:source")?;
     validate_limits(request.decode_limits)?;
     let retained =
@@ -690,14 +672,8 @@ fn source_with_budget(
         return Err(RecordedDecodeError::Limit);
     }
     let (capsule, digest) = source_capsule(deployment, &retained, request.segment_index)?;
-    let mut chunks = super::VerifiedChunkCache::with_source_budget(source_budget);
-    let bytes = retained.read_segment_cached(
-        deployment,
-        request.segment_index,
-        request.read_limits,
-        cx,
-        &mut chunks,
-    )?;
+    let bytes =
+        retained.read_segment(deployment, request.segment_index, request.read_limits, cx)?;
     // Defence in depth, not a reachable branch of this composition (fss-2h5zq.42 D5): the gate
     // is implied by two earlier checks on the same span. `source_capsule` refused a capsule whose
     // `source_digest`/`source_bytes` differ from the span's `segment_sha256`/`len`
@@ -710,9 +686,6 @@ fn source_with_budget(
     // The gate itself is proven directly by
     // `decode_receipt_contract::custody_gate_refuses_bytes_that_disagree_with_the_capsule`.
     verify_custody(&capsule, &bytes)?;
-    if let Some(budget) = source_budget {
-        budget.checkpoint()?;
-    }
     Ok((retained, capsule, digest, bytes))
 }
 
@@ -744,24 +717,11 @@ impl RecordedFrame {
         budget: &mut DecodeBudget<'_>,
         cx: &ReplayCx,
     ) -> Result<Self, RecordedDecodeError> {
-        Self::decode_and_publish_with_source_budget(deployment, request, budget, cx, None)
-    }
-
-    /// The native owner path with a caller-owned, nonrenewable original-source allowance.
-    pub(crate) fn decode_and_publish_with_source_budget(
-        deployment: &mut ReferenceDeployment,
-        request: &RecordedDecodeRequest,
-        budget: &mut DecodeBudget<'_>,
-        cx: &ReplayCx,
-        source_budget: Option<&SourceReadBudget>,
-    ) -> Result<Self, RecordedDecodeError> {
-        let (retained, capsule, capsule_digest, encoded) =
-            source_with_budget(deployment, request, cx, source_budget)?;
+        let (retained, capsule, capsule_digest, encoded) = source(deployment, request, cx)?;
         let mask = current_mask(deployment, &capsule.sensor_id)?;
         let identity = key(
             retained.import_root(),
             request.segment_index as u64,
-            decoder_identity_for_frame(&encoded),
             request.interpretation,
             mask.digest(),
         );
@@ -792,7 +752,7 @@ impl RecordedFrame {
                     budget,
                 )?;
             }
-            return Self::open_with_source_budget(deployment, request, cx, source_budget);
+            return Self::open(deployment, request, cx);
         }
         let used_before = budget.used();
         let image = decode_luma(
@@ -840,9 +800,6 @@ impl RecordedFrame {
             pixels.as_slice(),
             receipt_bytes.as_slice(),
         ] {
-            if let Some(budget) = source_budget {
-                budget.checkpoint()?;
-            }
             checkpoint(cx, "recorded_decode:stage")?;
             let digest = deployment.publisher_mut().stage_object(bytes)?;
             deployment.publisher_mut().verify_object(digest)?;
@@ -882,24 +839,12 @@ impl RecordedFrame {
         request: &RecordedDecodeRequest,
         cx: &ReplayCx,
     ) -> Result<Self, RecordedDecodeError> {
-        Self::open_with_source_budget(deployment, request, cx, None)
-    }
-
-    pub(crate) fn open_with_source_budget(
-        deployment: &ReferenceDeployment,
-        request: &RecordedDecodeRequest,
-        cx: &ReplayCx,
-        source_budget: Option<&SourceReadBudget>,
-    ) -> Result<Self, RecordedDecodeError> {
-        let (retained, capsule, capsule_digest, encoded) =
-            source_with_budget(deployment, request, cx, source_budget)?;
-        let decoder = decoder_identity_for_frame(&encoded);
+        let (retained, capsule, capsule_digest, _encoded) = source(deployment, request, cx)?;
         let mask = current_mask(deployment, &capsule.sensor_id)?;
         let lineage = |binding: ContentDigest| {
             batch_id(key(
                 retained.import_root(),
                 request.segment_index as u64,
-                decoder,
                 request.interpretation,
                 binding,
             ))
@@ -908,7 +853,6 @@ impl RecordedFrame {
         let identity = key(
             retained.import_root(),
             request.segment_index as u64,
-            decoder,
             request.interpretation,
             mask.digest(),
         );
@@ -983,9 +927,6 @@ impl RecordedFrame {
             return Err(RecordedDecodeError::InvalidReceipt);
         }
         checkpoint(cx, "recorded_decode:read_complete")?;
-        if let Some(budget) = source_budget {
-            budget.checkpoint()?;
-        }
         Ok(Self {
             receipt,
             pixels,
@@ -1008,8 +949,7 @@ impl RecordedFrame {
         let (_, capsule, _, bytes) = source(deployment, request, cx)?;
         let mask = current_mask(deployment, &capsule.sensor_id)?;
         let before = budget.used();
-        let image = decode_luma_for_identity(
-            self.receipt.codec.decoder,
+        let image = decode_luma(
             &bytes,
             capsule.source_digest.bytes(),
             request.interpretation,
@@ -1108,161 +1048,12 @@ fn mp4_parameter_sets(
     Ok((indexes, length))
 }
 
-/// An added in-band import retains one whole original sample entry instead of the historical
-/// parameter-only omission spans. The explicit marker prevents reinterpreting older imports.
-fn mp4_inband_entry(
-    retained: &RetainedFileImport,
-    expected: &str,
-    legacy: bool,
-) -> Result<Option<(usize, usize)>, RecordedDecodeError> {
-    use super::{MP4_AVC_INBAND_ENTRY_REASON_PREFIX, MP4_HEVC_INBAND_ENTRY_REASON_PREFIX};
-    let mut present = false;
-    for span in &retained.manifest().omission_spans {
-        if [
-            MP4_AVC_INBAND_ENTRY_REASON_PREFIX,
-            MP4_HEVC_INBAND_ENTRY_REASON_PREFIX,
-        ]
-        .iter()
-        .any(|prefix| span.reason.starts_with(prefix))
-        {
-            if !span.reason.starts_with(expected) {
-                return Err(RecordedDecodeError::CustodyMismatch);
-            }
-            present = true;
-        }
-    }
-    if !present {
-        return Ok(None);
-    }
-    if legacy {
-        return Err(RecordedDecodeError::UnsupportedMedia);
-    }
-    let (entries, length) = mp4_parameter_sets(retained, expected)?;
-    if entries.len() != 1
-        || retained.manifest().omission_spans.iter().any(|span| {
-            [
-                super::MP4_PARAMETER_SET_REASON_PREFIX,
-                super::MP4_HEVC_PARAMETER_SET_REASON_PREFIX,
-            ]
-            .iter()
-            .any(|prefix| span.reason.starts_with(prefix))
-        })
-    {
-        return Err(RecordedDecodeError::CustodyMismatch);
-    }
-    Ok(Some((entries[0], length)))
-}
-
-struct InbandBootstrapRead<'a> {
-    retained: &'a RetainedFileImport,
-    sample: &'a [u8],
-    first_sample: usize,
-    limits: RetainedReadLimits,
-    source_budget: Option<&'a super::retained::SourceReadBudget>,
-}
-
-/// Cold bootstrap reads only the retained original sample entry and selected sample. The
-/// container helper validates the actual referenced tuple and random-access self-containment;
-/// earlier samples can neither substitute a missing definition nor charge unbounded reads.
-fn inband_parameter_sets(
-    deployment: &ReferenceDeployment,
-    source: InbandBootstrapRead<'_>,
-    entry: (usize, usize),
-    codec: fss_container::demux::VideoCodec,
-    mut budget: Option<&mut video_budget::RecordedVideoDecodeBudget>,
-    cx: &ReplayCx,
-) -> Result<
-    (
-        fss_container::demux::InbandConfiguration,
-        fss_container::demux::InbandSampleParameters,
-    ),
-    RecordedDecodeError,
-> {
-    use fss_container::demux::{DemuxError, DemuxLimits, InbandSampleEntry, MAX_MP4_INPUT_BYTES};
-    let bytes = source.retained.read_omission_span_budgeted(
-        deployment,
-        entry.0,
-        source.limits,
-        cx,
-        source.source_budget,
-    )?;
-    if let Some(budget) = budget.as_deref_mut() {
-        // The new profile parses both byte sets at open, before feeding the bounded tuple to
-        // the codec. Existing static imports retain their previous reservation behavior.
-        budget.reserve(
-            bytes
-                .len()
-                .checked_add(source.sample.len())
-                .ok_or(RecordedDecodeError::Limit)?,
-            0,
-            cx,
-        )?;
-    }
-    let mut check = || {
-        cx.checkpoint("recorded_video:inband_bootstrap")
-            .map_err(|_| DemuxError::Cancelled)
-    };
-    let error = |error| match error {
-        DemuxError::Cancelled => RecordedDecodeError::Cancelled,
-        DemuxError::Limit => RecordedDecodeError::Limit,
-        _ => RecordedDecodeError::CustodyMismatch,
-    };
-    let configuration_limits = DemuxLimits {
-        maximum_input_bytes: usize::try_from(
-            source
-                .limits
-                .max_source_bytes
-                .min(MAX_MP4_INPUT_BYTES as u64),
-        )
-        .map_err(|_| RecordedDecodeError::Limit)?,
-        ..DemuxLimits::default()
-    };
-    let parsed = InbandSampleEntry::parse_with_checkpoint(&bytes, configuration_limits, &mut check)
-        .map_err(error)?;
-    if parsed.codec() != codec || parsed.nal_length_bytes() != entry.1 {
-        return Err(RecordedDecodeError::CustodyMismatch);
-    }
-    let mut state = parsed
-        .stream_with_checkpoint(source.first_sample, &mut check)
-        .map_err(error)?;
-    let parameters = state
-        .sample_with_checkpoint(source.sample, &mut check)
-        .map_err(error)?;
-    Ok((state, parameters))
-}
-
-fn next_inband_parameters(
-    state: &mut fss_container::demux::InbandConfiguration,
-    sample: &[u8],
-    mut budget: Option<&mut video_budget::RecordedVideoDecodeBudget>,
-    cx: &ReplayCx,
-) -> Result<fss_container::demux::InbandSampleParameters, RecordedDecodeError> {
-    use fss_container::demux::DemuxError;
-    let parameters = state
-        .sample_with_checkpoint(sample, &mut || {
-            cx.checkpoint("recorded_video:inband_sample")
-                .map_err(|_| DemuxError::Cancelled)
-        })
-        .map_err(|error| match error {
-            DemuxError::Cancelled => RecordedDecodeError::Cancelled,
-            DemuxError::Limit => RecordedDecodeError::Limit,
-            _ => RecordedDecodeError::CustodyMismatch,
-        })?;
-    for nal in parameters.decoder_prefix() {
-        if let Some(budget) = budget.as_deref_mut() {
-            budget.reserve(nal.len(), 0, cx)?;
-        }
-    }
-    Ok(parameters)
-}
-
 pub mod h264;
 /// Retained H.265/HEVC Annex-B range decoding bound to the same source custody.
 pub mod h265;
 /// Retained receipts of source-determined decode refusals, and the per-capsule outcome
 /// composition (fss-2h5zq.41).
 pub mod refusal;
-mod video_access_unit;
 /// Conservative cumulative admission accounting for retained H.264/H.265 range decoding.
 pub mod video_budget;
 /// Declared BT.601 limited-range conversion of retained H.264/H.265 4:2:0 pictures to RGB.

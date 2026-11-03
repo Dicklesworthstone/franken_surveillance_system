@@ -62,7 +62,6 @@ fn ready(codec: ClientCodec, digest: bool) -> Test<RtspClientSession> {
             "a=rtpmap:96 H264/90000\r\na=fmtp:96 packetization-mode=1;sprop-parameter-sets=Z0IAHw==,aAA=\r\n"
         }
         ClientCodec::H265 => "a=rtpmap:96 H265/90000\r\n",
-        ClientCodec::Jpeg => "a=rtpmap:96 JPEG/90000\r\n",
         ClientCodec::OnvifMetadata => "a=rtpmap:96 vnd.onvif.metadata/90000\r\n",
     };
     let media_type = if codec == ClientCodec::OnvifMetadata {

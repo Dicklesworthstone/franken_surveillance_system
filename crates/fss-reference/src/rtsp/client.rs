@@ -3,21 +3,14 @@
 //! Opt-in Digest helpers borrow credentials from an explicit owner.
 
 /// Bounded credential-owner integration preserving this session's request lifecycle.
-#[path = "client/authenticated.rs"]
 pub mod authenticated;
 /// Bounded RFC 7798 negotiation without a decoder or codec fallback.
-#[path = "client/hevc.rs"]
 pub mod hevc;
-/// RFC 2435 JPEG transport on the shared session and exact payload selection.
-#[path = "client/jpeg.rs"]
-pub mod jpeg;
 /// Owner-selected uncompressed ONVIF application transport metadata.
-#[path = "client/metadata.rs"]
 pub mod metadata;
 
 use super::selection::{
-    select_h264_description, select_h265_description, select_jpeg_description,
-    select_onvif_metadata_description,
+    select_h264_description, select_h265_description, select_onvif_metadata_description,
 };
 use super::{AuthScheme, RtspHeaders, RtspResponse};
 use std::fmt;
@@ -186,8 +179,6 @@ pub enum ClientCodec {
     H264,
     /// RFC 7798 HEVC in single-stream transmission order with no DON fields.
     H265,
-    /// RFC 2435 baseline JPEG images on static payload 26 or a pinned dynamic payload.
-    Jpeg,
     /// Uncompressed ONVIF metadata with an explicitly pinned dynamic payload type.
     OnvifMetadata,
 }
@@ -196,7 +187,6 @@ pub enum ClientCodec {
 enum NegotiatedMedia {
     H264(ClientMedia),
     H265(hevc::HevcClientMedia),
-    Jpeg(jpeg::JpegClientMedia),
     OnvifMetadata(metadata::MetadataClientMedia),
 }
 
@@ -389,10 +379,7 @@ impl RtspClientSession {
         codec: ClientCodec,
         payload_type: u8,
     ) -> Result<Self, ClientError> {
-        if payload_type > 127
-            || (codec == ClientCodec::OnvifMetadata && payload_type < 96)
-            || (codec == ClientCodec::Jpeg && !matches!(payload_type, 26 | 96..=127))
-        {
+        if payload_type > 127 || (codec == ClientCodec::OnvifMetadata && payload_type < 96) {
             return Err(ClientError::Configuration);
         }
         let mut session = Self::new_for_codec(config, codec)?;
@@ -415,13 +402,6 @@ impl RtspClientSession {
     pub fn hevc_media(&self) -> Option<&hevc::HevcClientMedia> {
         match self.media.as_ref() {
             Some(NegotiatedMedia::H265(media)) => Some(media),
-            _ => None,
-        }
-    }
-    /// Exact JPEG transport signaling; per-image format and pixels remain unvalidated.
-    pub fn jpeg_media(&self) -> Option<&jpeg::JpegClientMedia> {
-        match self.media.as_ref() {
-            Some(NegotiatedMedia::Jpeg(media)) => Some(media),
             _ => None,
         }
     }
@@ -879,11 +859,6 @@ fn description(
                 .map_err(|_| ClientError::Description)?;
             (sdp, Some(text))
         }
-        ClientCodec::Jpeg => (
-            select_jpeg_description(&r.body, config.media_index, payload_type)
-                .map_err(|_| ClientError::Description)?,
-            None,
-        ),
         ClientCodec::OnvifMetadata => (
             select_onvif_metadata_description(
                 &r.body,
@@ -905,7 +880,6 @@ fn description(
             config.media_index,
             m,
         )?),
-        ClientCodec::Jpeg => NegotiatedMedia::Jpeg(jpeg::negotiate(m)?),
         ClientCodec::OnvifMetadata => NegotiatedMedia::OnvifMetadata(metadata::negotiate(m)?),
     };
     let content_base = singleton(&r.headers, "Content-Base")?;

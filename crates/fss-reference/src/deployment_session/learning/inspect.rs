@@ -4,9 +4,6 @@
 //! A retained root is a selection handle, never authority. Current session admission precedes
 //! all selected private reads. This path verifies only the chosen publication and the current
 //! mission; it does not compile an orientation or enumerate the captured-learning inventory.
-//! An explicitly selected capture may originate from an earlier session of the same principal
-//! and immutable mission. Its original session may be closed, but its historical custody must
-//! remain complete; only the currently admitted session supplies read authority.
 
 use std::collections::BTreeMap;
 use std::fs::{self, File, TryLockError};
@@ -71,8 +68,6 @@ pub struct LearningInspection {
     pub journal_root: ContentDigest,
     /// Original workspace digest authenticated by the retained capture binding.
     pub captured_workspace_digest: ContentDigest,
-    /// Original session authenticated by the capture; its past grants never admit this read.
-    pub captured_session_id: SessionId,
     /// Current deployment evidence time; never wall time or a renewed candidate deadline.
     pub observed_at_ns: i128,
     /// Remaining live session token allowance; this read does not spend or replenish it.
@@ -161,7 +156,7 @@ fn inspect_admitted(
         bytes_read: 0,
         files_read: 0,
     };
-    let current_mission = verify_current_mission(&mut reader, read)?;
+    verify_current_mission(&mut reader, read)?;
 
     let manifest_bytes = reader.object(request.publication_root, MAX_RECORD_BYTES)?;
     let manifest =
@@ -201,25 +196,9 @@ fn inspect_admitted(
     let verified = verify_recovery_closure(&experience, metadata, &objects, &sessions)
         .map_err(|_| unavailable())?;
     let binding = verified.binding;
-    if binding.mission_id != read.session.mission_id
+    if binding.session_id != read.session.session_id
+        || binding.mission_id != read.session.mission_id
         || binding.principal != read.session.principal_id
-    {
-        return Err(unavailable());
-    }
-    // A caller-supplied mission label is not a bridge between private sessions. Authenticate
-    // both immutable mission records and compare their entire stable scope. Session-specific
-    // views, opening anchors, times and budgets may differ; the mission and objective may not.
-    // Recovery above has already tied this historical mission to its original session,
-    // workspace, principal, plan, episode and feedback, even when that session is now closed.
-    let captured_mission = objects
-        .get(&binding.mission_digest)
-        .and_then(|bytes| MissionRecord::from_bytes(bytes).ok())
-        .ok_or_else(unavailable)?;
-    if captured_mission.mission_id != current_mission.mission_id
-        || captured_mission.principal != current_mission.principal
-        || captured_mission.site_lineage != current_mission.site_lineage
-        || captured_mission.mission != current_mission.mission
-        || captured_mission.objective != current_mission.objective
     {
         return Err(unavailable());
     }
@@ -243,11 +222,8 @@ fn inspect_admitted(
     for digest in objects.keys() {
         reader.not_tombstoned(*digest)?;
     }
-    if verify_current_mission(&mut reader, read)?.digest() != current_mission.digest() {
-        return Err(unavailable());
-    }
+    verify_current_mission(&mut reader, read)?;
     let captured_workspace_digest = binding.workspace_digest;
-    let captured_session_id = binding.session_id;
     let learning = PublishedLearning {
         contract_basis: binding.contract_basis,
         experience: verified.experience,
@@ -272,7 +248,6 @@ fn inspect_admitted(
         current_anchor_token: snapshot_anchor_token(read.head),
         journal_root: read.store.root(),
         captured_workspace_digest,
-        captured_session_id,
         observed_at_ns: now.0,
         remaining_tokens: read.remaining_tokens,
         effective_budget_tokens,
@@ -387,7 +362,7 @@ impl SelectedReader {
 fn verify_current_mission(
     reader: &mut SelectedReader,
     read: &AdmittedSessionRead<'_>,
-) -> Result<MissionRecord, DeploymentSessionError> {
+) -> Result<(), DeploymentSessionError> {
     let invalid = || {
         DeploymentSessionError::StoreInvalid(
             "the current workspace's mission publication is unavailable or inconsistent".to_owned(),
@@ -417,8 +392,7 @@ fn verify_current_mission(
         return Err(invalid());
     }
     let slot = MissionRecord::slot(metadata).map_err(|_| invalid())?;
-    reader.visible(&slot, &manifest).map_err(|_| invalid())?;
-    Ok(mission)
+    reader.visible(&slot, &manifest).map_err(|_| invalid())
 }
 
 /// A learning root retains its own complete historical graph, so a source slot need not still

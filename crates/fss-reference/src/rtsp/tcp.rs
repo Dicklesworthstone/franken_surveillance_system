@@ -732,5 +732,4 @@ impl RtspTcpLink {
 }
 
 #[cfg(test)]
-#[path = "tcp/tests.rs"]
 mod tests;

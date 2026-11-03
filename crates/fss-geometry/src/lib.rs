@@ -157,24 +157,11 @@ impl std::error::Error for GeometryError {}
 ///
 /// Operations charge integer units before doing work; exceeding `limit` fails with
 /// [`GeometryError::BudgetExhausted`], never by truncating results.
+#[derive(Debug)]
 pub struct WorkBudget<'a> {
     limit: u64,
     used: u64,
     cancellation: Option<&'a AtomicBool>,
-    cancellation_probe: Option<&'a (dyn Fn() -> bool + Sync)>,
-}
-impl std::fmt::Debug for WorkBudget<'_> {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("WorkBudget")
-            .field("limit", &self.limit)
-            .field("used", &self.used)
-            .field(
-                "cancellable",
-                &(self.cancellation.is_some() || self.cancellation_probe.is_some()),
-            )
-            .finish()
-    }
 }
 impl WorkBudget<'_> {
     /// Creates a budget admitting exactly `limit` chargeable units with no cancellation flag.
@@ -183,7 +170,6 @@ impl WorkBudget<'_> {
             limit,
             used: 0,
             cancellation: None,
-            cancellation_probe: None,
         }
     }
     /// Units already charged; never exceeds `limit`.
@@ -200,7 +186,6 @@ impl WorkBudget<'_> {
         if self
             .cancellation
             .is_some_and(|flag| flag.load(Ordering::Acquire))
-            || self.cancellation_probe.is_some_and(|probe| probe())
         {
             return Err(GeometryError::Cancelled);
         }
@@ -219,22 +204,6 @@ impl<'a> WorkBudget<'a> {
             limit,
             used: 0,
             cancellation: Some(cancellation),
-            cancellation_probe: None,
-        }
-    }
-
-    /// Creates a budget whose owner checks cancellation or a deadline before every charge.
-    ///
-    /// The borrowed probe owns no worker and must be cheap, synchronous and side-effect free
-    /// apart from observing the owner's cancellation state. A cancelled charge consumes no
-    /// additional units. This lets a request carry its existing context/deadline through long
-    /// geometry operations without a detached timer or a second cancellation tree.
-    pub fn with_cancellation_probe(limit: u64, probe: &'a (dyn Fn() -> bool + Sync)) -> Self {
-        Self {
-            limit,
-            used: 0,
-            cancellation: None,
-            cancellation_probe: Some(probe),
         }
     }
 }

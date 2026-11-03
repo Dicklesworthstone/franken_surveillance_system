@@ -7,7 +7,6 @@ use crate::ingest::long_dwell::incremental::{
     RetainedDwellCheckpoint,
 };
 
-mod partitioned;
 mod video;
 
 fn prepare(
@@ -389,5 +388,81 @@ fn unsupported_tolerant_video_empty_checkpoint_and_incomplete_finish_are_explici
     assert_eq!(running.work(), DwellWork::default());
     running.advance(&f.deployment, 1, &f.cx)?;
     assert!(running.finish(&f.deployment, &f.cx).is_err());
+    Ok(())
+}
+
+#[test]
+fn partitioned_source_refuses_before_decode_until_checkpoint_has_part_closure() -> Test {
+    let directory = Directory::new("incremental-partitioned")?;
+    let root = directory.0.join("deployment");
+    let path = directory.0.join("source.mjpeg");
+    fs::write(&path, scene(true, None, None, false)?)?;
+    let cx = context(&root, "principal:long-dwell-test")?;
+    let mut deployment = ReferenceDeployment::open_with_limits(
+        &root,
+        SITE,
+        crate::DeploymentLimits {
+            manifest_children_max: 64,
+            ..crate::DeploymentLimits::standard()
+        },
+        &cx,
+    )?;
+    let mut ingest_limits = FileIngestLimits::standard();
+    ingest_limits.max_segments = FRAMES + 1;
+    ingest_limits.chunk_bytes = 4096;
+    let receipt = FileIngestAdapter::ingest(
+        FileIngestRequest::new(
+            &path,
+            SensorId::parse("sensor:long-dwell")?,
+            StreamId::parse("stream:long-dwell")?,
+        )
+        .with_limits(ingest_limits)
+        .with_capture_hint(CaptureHint::new(TimestampNs(0), 0, 10.0)?)
+        .with_receive_time(TimestampNs(1_000_000_000_000)),
+        &cx,
+        &mut deployment,
+    )?;
+    fs::remove_file(path)?;
+    let limits = LongDwellLimits::default();
+    let retained = RetainedFileImport::open(
+        &deployment,
+        receipt.import_identity,
+        limits.decode.read_limits,
+        &cx,
+    )?;
+    assert!(!retained.manifest().part_roots.is_empty());
+    let before = deployment.current_anchor().clone();
+    let denied = context(&root, "principal:long-dwell-test")?;
+    denied.set_cancel_at_checkpoint("long_dwell:decoded");
+    let result = PreparedIncrementalDwell::new(
+        &deployment,
+        WatchPlan {
+            import_identity: receipt.import_identity,
+            interpretation: ComponentInterpretation::Grayscale,
+            first_segment: 0,
+            segment_count: FRAMES,
+            zones: vec![WatchZone {
+                zone_id: "porch".into(),
+                x: 0,
+                y: 0,
+                width: WIDTH,
+                height: HEIGHT,
+            }],
+            detector: WatchDetectorConfig::default(),
+            tracker: WatchTrackerConfig::default(),
+        },
+        rule(),
+        WatchOptions::default(),
+        limits,
+        &denied,
+    );
+    assert!(matches!(
+        result,
+        Err(WatchError::InvalidPlan(
+            "incremental dwell currently requires a flat retained import"
+        ))
+    ));
+    assert!(!denied.is_cancelled());
+    assert_eq!(deployment.current_anchor(), &before);
     Ok(())
 }

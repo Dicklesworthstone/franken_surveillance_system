@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! Local alert status, cancellation and owner-attested reconciliation without dispatch.
+//! Local alert status and exact-approved cancellation, without dispatch or provider access.
 
 use std::collections::BTreeMap;
 use std::error::Error;
@@ -24,21 +24,11 @@ use fss_reference::alert_control::{
     MAX_CANCEL_PRINCIPAL_BYTES, MAX_CONTROL_JOURNAL_BYTES, cancel_prepared_alert,
     preview_alert_cancellation,
 };
-use fss_reference::alert_reconcile::{
-    AlertAttestation, AlertReconcileError, AlertReconciliationOutcome,
-    MAX_RECONCILE_STATEMENT_BYTES,
-};
 use fss_reference::{DeploymentLayout, ReferenceDeployment, ReplayCx};
-
-#[path = "fss-alert/reconcile.rs"]
-mod reconcile;
 
 const MAX_REPORT_BYTES: usize = 8 * 1024 * 1024;
 const HELP: &str = "fss-alert status --root DIR --site SITE [--operation-id ID]\n\
   fss-alert cancel --root DIR --site SITE --operation-id ID\n\
-    [--principal ID] [--approve sha256:APPROVAL]\n\
-  fss-alert reconcile --root DIR --site SITE --operation-id ID\n\
-    --outcome delivered|not_delivered --evidence sha256:EVIDENCE --statement TEXT\n\
     [--principal ID] [--approve sha256:APPROVAL]\n\
   status reads a bounded committed snapshot without creating, locking, repairing or\n\
   changing the deployment. It includes durable operation and obligation identities,\n\
@@ -52,17 +42,11 @@ const HELP: &str = "fss-alert status --root DIR --site SITE [--operation-id ID]\
   append nothing. A different cancellation is not this request's successful retry.\n\
   Cancellation uses the locked deployment open path, which may conservatively mark\n\
   crash-interrupted committed operations indeterminate during restart recovery.\n\
-  reconcile previews an exact owner-attested delivery or non-delivery observation;\n\
-  --approve retains the attestation root-last, then settles the existing obligation.\n\
-  It needs intact journals and the original preparation, but not the old event,\n\
-  media, session, plan files or relay route. The attestation is operator_asserted,\n\
-  never a provider receipt or independent verification of the cited evidence bytes.\n\
-  The same locked-open restart recovery applies. Prepared alerts cannot be reconciled.\n\
-  Exact cold retries append nothing; changed actor, evidence, text or outcome refuse.\n\
-  No network access or resend. Relay acceptance alone is never human delivery.\n\
+  No network access, resend, forced failure, acknowledgement or delivery certification.\n\
+  Adapter acceptance is not human delivery. Indeterminate sends remain unresolved.\n\
   Requires an existing owner-authorized local deployment. --principal is an audit\n\
-  identity, not remote authentication. This process supplies the selected local\n\
-  cancellation or reconciliation capability; finite-deadline delegation needs a clock owner.\n\
+  identity, not remote authentication. This process supplies the local cancellation\n\
+  capability; the library refuses finite-deadline delegation without a clock owner.\n\
   Limits: 4096 operations/obligations, 64 MiB per journal, 8 MiB complete JSON output.\n\
   Reference implementation, not production-qualified.\n";
 
@@ -70,7 +54,7 @@ type RunResult<T> = Result<T, Box<dyn Error>>;
 
 #[derive(Debug)]
 struct Options {
-    action: Action,
+    cancel: bool,
     root: PathBuf,
     site: String,
     principal: String,
@@ -78,32 +62,21 @@ struct Options {
     approval: Option<ContentDigest>,
 }
 
-#[derive(Debug)]
-enum Action {
-    Status,
-    Cancel,
-    Reconcile(AlertAttestation),
-}
-
 fn parse(args: &[OsString]) -> Result<Options, String> {
     let command = args
         .first()
         .and_then(|s| s.to_str())
-        .ok_or("expected status, cancel or reconcile")?;
-    if !matches!(command, "status" | "cancel" | "reconcile")
-        || args.len() > if command == "reconcile" { 17 } else { 11 }
-    {
-        return Err("expected bounded status, cancel or reconcile arguments".into());
+        .ok_or("expected status or cancel")?;
+    if !matches!(command, "status" | "cancel") || args.len() > 11 {
+        return Err("expected bounded status or cancel arguments".into());
     }
-    let mutating = command != "status";
+    let cancel = command == "cancel";
     let mut values = BTreeMap::new();
     let mut index = 1;
     while index < args.len() {
         let key = args[index].to_str().ok_or("option names require UTF-8")?;
         if !matches!(key, "--root" | "--site" | "--operation-id")
-            && !(mutating && matches!(key, "--principal" | "--approve"))
-            && !(command == "reconcile"
-                && matches!(key, "--outcome" | "--evidence" | "--statement"))
+            && !(cancel && matches!(key, "--principal" | "--approve"))
         {
             return Err(format!("unknown or inapplicable option {key}"));
         }
@@ -146,7 +119,7 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
         return Err("principal exceeds its bound or contains whitespace/controls".into());
     }
     PrincipalId::parse(&principal).map_err(|_| "invalid principal")?;
-    let operation = if mutating || values.contains_key("--operation-id") {
+    let operation = if cancel || values.contains_key("--operation-id") {
         Some(OperationId::parse(text("--operation-id")?).map_err(|_| "invalid operation ID")?)
     } else {
         None
@@ -161,38 +134,8 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
     } else {
         None
     };
-    let action = match command {
-        "status" => Action::Status,
-        "cancel" => Action::Cancel,
-        _ => {
-            let outcome = match text("--outcome")? {
-                "delivered" => AlertReconciliationOutcome::Delivered,
-                "not_delivered" => AlertReconciliationOutcome::NotDelivered,
-                _ => return Err("outcome requires delivered or not_delivered".into()),
-            };
-            let evidence =
-                ContentDigest::parse(text("--evidence")?).map_err(|_| "invalid evidence digest")?;
-            if evidence.algorithm() != DigestAlgorithm::Sha256 {
-                return Err("evidence requires SHA-256".into());
-            }
-            let statement = text("--statement")?;
-            if statement.trim().is_empty()
-                || statement.len() > MAX_RECONCILE_STATEMENT_BYTES
-                || statement.chars().any(char::is_control)
-            {
-                return Err(
-                    "attestation statement is blank, exceeds its bound or contains controls".into(),
-                );
-            }
-            Action::Reconcile(AlertAttestation {
-                outcome,
-                evidence,
-                statement: statement.to_owned(),
-            })
-        }
-    };
     Ok(Options {
-        action,
+        cancel,
         root,
         site,
         principal,
@@ -260,17 +203,6 @@ fn operation_json(op: &OperationReceipt, obligation: &Obligation, complete: bool
             (complete && op.state == EffectState::Prepared).to_string(),
         ),
         (
-            "reconciliation_candidate",
-            (complete
-                && matches!(
-                    op.state,
-                    EffectState::Committed
-                        | EffectState::AdapterAccepted
-                        | EffectState::Indeterminate
-                ))
-            .to_string(),
-        ),
-        (
             "next_step",
             string(if !complete {
                 "inspect_uncommitted_history_before_any_mutation"
@@ -284,7 +216,7 @@ fn operation_json(op: &OperationReceipt, obligation: &Obligation, complete: bool
                         "inspect_existing_terminal_proof_do_not_resend"
                     }
                     _ => {
-                        "obtain_independent_delivery_evidence_and_preview_exact_reconciliation_do_not_resend"
+                        "obtain_independent_provider_evidence_do_not_resend_or_force_terminal_state"
                     }
                 }
             }),
@@ -566,7 +498,7 @@ fn cancel(options: &Options) -> RunResult<String> {
 fn main() -> ExitCode {
     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
     let help = matches!(args.as_slice(), [flag] if matches!(flag.to_str(), Some("--help" | "-h" | "help")))
-        || matches!(args.as_slice(), [command, flag] if matches!(command.to_str(), Some("status" | "cancel" | "reconcile")) && matches!(flag.to_str(), Some("--help" | "-h")));
+        || matches!(args.as_slice(), [command, flag] if matches!(command.to_str(), Some("status" | "cancel")) && matches!(flag.to_str(), Some("--help" | "-h")));
     if help {
         return if io::stdout().lock().write_all(HELP.as_bytes()).is_ok() {
             ExitCode::from(ExitIdentity::SUCCESS.code)
@@ -581,10 +513,10 @@ fn main() -> ExitCode {
             return ExitCode::from(ExitIdentity::MALFORMED_VALUE.code);
         }
     };
-    let result = match &options.action {
-        Action::Status => status(&options),
-        Action::Cancel => cancel(&options),
-        Action::Reconcile(attestation) => reconcile::run(&options, attestation),
+    let result = if options.cancel {
+        cancel(&options)
+    } else {
+        status(&options)
     };
     match result {
         Ok(json) if json.len() <= MAX_REPORT_BYTES => {
@@ -602,9 +534,6 @@ fn main() -> ExitCode {
             eprintln!("{ERR_CLI_RUNTIME_FAILURE}: {error}");
             if let Some(control) = error.downcast_ref::<AlertControlError>() {
                 eprintln!("refusal_id={}", control.stable_id());
-            }
-            if let Some(reconciliation) = error.downcast_ref::<AlertReconcileError>() {
-                eprintln!("refusal_id={}", reconciliation.stable_id());
             }
             ExitCode::from(ExitIdentity::RUNTIME_FAILURE.code)
         }

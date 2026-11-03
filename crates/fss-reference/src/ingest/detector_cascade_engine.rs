@@ -29,10 +29,7 @@ use std::fmt;
 use std::fmt::Write as _;
 
 use fss_codec_mjpeg::DecodeBudget;
-// v1 cascade identities bind baseline decoding for both successful and refused frames.
-use fss_codec_mjpeg::color::{
-    MAX_RGB_BYTES, RgbDecodeLimits, decode_rgb_v1 as decode_rgb, rgb_decoder_identity,
-};
+use fss_codec_mjpeg::color::{MAX_RGB_BYTES, RgbDecodeLimits, decode_rgb, rgb_decoder_identity};
 use fss_core::{CanonicalEncoder, ContentDigest};
 
 use super::RetainedFileImport;
@@ -41,8 +38,8 @@ use super::package_detect::{
     VideoPicture,
 };
 use super::privacy_mask::current_mask;
-use super::recorded_decode::h264::{RecordedH264RangeV2 as RecordedH264Range, RecordedH264Request};
-use super::recorded_decode::h265::{RecordedH265RangeV1 as RecordedH265Range, RecordedH265Request};
+use super::recorded_decode::h264::{RecordedH264Range, RecordedH264Request};
+use super::recorded_decode::h265::{RecordedH265Range, RecordedH265Request};
 use super::recorded_decode::video_rgb::video_rgb_transform_identity;
 use super::recorded_decode::{ComponentInterpretation, RecordedDecodeError, source_capsule};
 use super::recorded_watch::WatchLimits;

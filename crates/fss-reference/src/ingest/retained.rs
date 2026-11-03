@@ -199,7 +199,6 @@ impl FileImportManifest {
         if self.adapter_id == super::rtsp_import::ADAPTER
             || self.adapter_id == super::rtsp_import::catalog::ADAPTER
             || self.adapter_id == super::rtsp_import::pages::ADAPTER
-            || self.adapter_id == super::rtsp_jpeg_import::ADAPTER
         {
             return Err(invalid(
                 "RTSP recording needs explicit original-packet resolution",
@@ -250,17 +249,6 @@ impl FileImportManifest {
                 && self
                     .adapter_generation
                     .strip_prefix(super::http_import::GENERATION)
-                    .is_some_and(|hex| {
-                        hex.len() == 64
-                            && hex
-                                .bytes()
-                                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-                    })
-        } else if self.adapter_id == super::rtsp_jpeg_import::ADAPTER {
-            self.format == "mjpeg"
-                && self
-                    .adapter_generation
-                    .strip_prefix(super::rtsp_jpeg_import::GENERATION)
                     .is_some_and(|hex| {
                         hex.len() == 64
                             && hex
@@ -687,7 +675,6 @@ impl RetainedFileImport {
         super::http_import::verify_originals(deployment, &self.manifest, cx)?;
         super::rtsp_import::verify_originals(deployment, &self.manifest, cx)?;
         super::rtsp_import::verify_catalog_originals(deployment, &self.manifest, cx)?;
-        super::rtsp_jpeg_import::verify_originals(deployment, &self.manifest, cx)?;
         checkpoint(cx, STAGE_RETAINED_COMPLETE)?;
         Ok(result)
     }
@@ -757,21 +744,10 @@ fn verified_chunk(
 /// One source-read allowance shared by all decoder ranges and random-access recovery probes.
 /// Reservations happen before reads and are never refunded, including for invalid codec input.
 /// Cloning preserves the same allowance; it cannot reset accounting on a decoder restart.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(crate) struct SourceReadBudget {
     maximum: u64,
     used: Arc<AtomicU64>,
-    cancelled: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
-}
-
-impl std::fmt::Debug for SourceReadBudget {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SourceReadBudget")
-            .field("maximum", &self.maximum)
-            .field("used", &self.used())
-            .field("cancellable", &self.cancelled.is_some())
-            .finish()
-    }
 }
 
 impl SourceReadBudget {
@@ -779,27 +755,6 @@ impl SourceReadBudget {
         Self {
             maximum,
             used: Arc::new(AtomicU64::new(0)),
-            cancelled: None,
-        }
-    }
-
-    pub(crate) fn with_cancellation_probe(
-        maximum: u64,
-        cancelled: Arc<dyn Fn() -> bool + Send + Sync>,
-    ) -> Self {
-        Self {
-            cancelled: Some(cancelled),
-            ..Self::new(maximum)
-        }
-    }
-
-    pub(crate) fn checkpoint(&self) -> Result<(), FileIngestError> {
-        if self.cancelled.as_ref().is_some_and(|cancelled| cancelled()) {
-            Err(FileIngestError::CancellationRequested {
-                stage: "retained_source:admission",
-            })
-        } else {
-            Ok(())
         }
     }
 
@@ -808,7 +763,6 @@ impl SourceReadBudget {
     }
 
     fn reserve(&self, bytes: u64) -> Result<(), FileIngestError> {
-        self.checkpoint()?;
         self.used
             .try_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
                 used.checked_add(bytes).filter(|next| *next <= self.maximum)
@@ -828,9 +782,8 @@ impl SourceReadBudget {
 /// SHA-256 digest and exact length: a chunk is served again only to a manifest naming that same
 /// digest and length at the requested position, so a cache can never substitute other bytes.
 /// Memory is bounded by twice the import's chunk size. RTSP imports additionally keep one
-/// source-verified native recording window (at most 32 MiB), one complete catalog MP4, or one
-/// reconstructed JPEG stream (at most 64 MiB; original packets are dropped after native replay).
-/// Switching adapters drops the previous origin window. First reads charge the same
+/// source-verified native recording window (at most 32 MiB), or one complete catalog MP4 (at most
+/// 64 MiB; original packet packs are dropped after native replay). First reads charge the same
 /// optional whole-scan source allowance, and final publication re-reads original custody.
 #[derive(Debug, Default)]
 pub struct VerifiedChunkCache {
@@ -839,7 +792,6 @@ pub struct VerifiedChunkCache {
     source_budget: Option<SourceReadBudget>,
     rtsp_origin: Option<super::rtsp_import::OriginCache>,
     rtsp_catalog_origin: Option<super::rtsp_import::CatalogOriginCache>,
-    rtsp_jpeg_origin: Option<super::rtsp_jpeg_import::OriginCache>,
 }
 
 impl VerifiedChunkCache {
@@ -867,16 +819,12 @@ impl VerifiedChunkCache {
         cx: &ReplayCx,
     ) -> Result<(), FileIngestError> {
         let budget = self.source_budget.clone();
-        if manifest.adapter_id != super::rtsp_import::ADAPTER {
-            self.rtsp_origin = None;
-        }
-        if manifest.adapter_id != super::rtsp_import::catalog::ADAPTER
-            && manifest.adapter_id != super::rtsp_import::pages::ADAPTER
+        if manifest.adapter_id == super::rtsp_import::catalog::ADAPTER
+            || manifest.adapter_id == super::rtsp_import::pages::ADAPTER
         {
+            self.rtsp_origin = None;
+        } else {
             self.rtsp_catalog_origin = None;
-        }
-        if manifest.adapter_id != super::rtsp_jpeg_import::ADAPTER {
-            self.rtsp_jpeg_origin = None;
         }
         super::rtsp_import::verify_range_budgeted(
             deployment,
@@ -894,15 +842,6 @@ impl VerifiedChunkCache {
             bytes,
             cx,
             &mut self.rtsp_catalog_origin,
-            &mut |n| budget.as_ref().map_or(Ok(()), |b| b.reserve(n)),
-        )?;
-        super::rtsp_jpeg_import::verify_range_budgeted(
-            deployment,
-            manifest,
-            offset,
-            bytes,
-            cx,
-            &mut self.rtsp_jpeg_origin,
             &mut |n| budget.as_ref().map_or(Ok(()), |b| b.reserve(n)),
         )
     }

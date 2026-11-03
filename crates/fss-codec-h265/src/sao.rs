@@ -159,9 +159,6 @@ fn full_index(
             return None;
         }
         let (nx, ny) = (nx as usize, ny as usize);
-        if !pic.filter_across(lx, ly, nx << shift, ny << shift) {
-            return None;
-        }
         let neighbour = pic.info[((ny << shift) >> 2) * pic.w4 + ((nx << shift) >> 2)];
         if neighbour.slice != info.slice {
             // The slice decoded later owns the boundary.
@@ -333,8 +330,6 @@ mod tests {
                 ctb_slice: ctb_slice.clone(),
                 slice_count: tag,
                 next_ctb: 0,
-                tiles: None,
-                logical_slice_start: 0,
                 slice_refs: Vec::new(),
                 slice_filters: slices.clone(),
                 sao: sao.clone(),

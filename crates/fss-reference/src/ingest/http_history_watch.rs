@@ -17,15 +17,20 @@ mod report;
 use std::fmt;
 
 use fss_codec_mjpeg::DecodeBudget;
+use fss_core::ContentDigest;
 use fss_geometry::WorkBudget;
-use fss_publication::LocalRootPublisher;
+use fss_publication::{LocalRootPublisher, PublishCancellation, PublishCutPoint};
 
 use super::http_archive::{HttpWirePin, HttpWireScope};
-use super::http_history_sources::{self, SourceLimits, SourcePlan, Sources};
-use super::http_import::{HttpImportError, HttpImportReceipt};
+use super::http_import::{
+    HttpImportAuthority, HttpImportError, HttpImportReceipt, HttpImportRequest, import_http,
+};
 use super::long_watch::LongWatchReport;
 use super::recorded_watch::{WatchError, WatchPlan};
-use crate::http_reconnect_history::{ArchivedReconnectBoundary, BoundaryOutcome, HistoryError};
+use crate::http_reconnect_history::{
+    ArchivedReconnectBoundary, BoundaryOutcome, HistoryError, ReconnectHistoryPin,
+    VerifiedReconnectHistory,
+};
 use crate::{ReferenceDeployment, ReplayCx};
 
 pub use plan::{
@@ -181,15 +186,41 @@ impl HttpHistoryWatchGeneration {
 struct Access<'a> {
     authority: &'a dyn HttpHistoryWatchAuthority,
     plan: &'a HttpHistoryWatchPlan,
+    destination: &'a ReferenceDeployment,
+    cx: &'a ReplayCx,
 }
-impl http_history_sources::Authority for Access<'_> {
-    fn check(&self, destination: &ReferenceDeployment, cx: &ReplayCx) -> Result<()> {
-        if cx.checkpoint(STAGE_HTTP_HISTORY_WATCH).is_err()
-            || !self.authority.permit(self.plan, destination)
+impl Access<'_> {
+    fn check(&self) -> Result<()> {
+        if self.cx.checkpoint(STAGE_HTTP_HISTORY_WATCH).is_err()
+            || !self.authority.permit(self.plan, self.destination)
         {
             return Err(HttpHistoryWatchError::Denied);
         }
         Ok(())
+    }
+}
+impl PublishCancellation for Access<'_> {
+    fn cancel_requested(&self, _: PublishCutPoint) -> bool {
+        self.check().is_err()
+    }
+}
+struct ImportAccess<'a> {
+    authority: &'a dyn HttpHistoryWatchAuthority,
+    plan: &'a HttpHistoryWatchPlan,
+    request: ContentDigest,
+    cx: &'a ReplayCx,
+}
+impl HttpImportAuthority for ImportAccess<'_> {
+    fn permit(&self, request: &HttpImportRequest, destination: &ReferenceDeployment) -> bool {
+        request.digest().is_ok_and(|digest| digest == self.request)
+            && Access {
+                authority: self.authority,
+                plan: self.plan,
+                destination,
+                cx: self.cx,
+            }
+            .check()
+            .is_ok()
     }
 }
 
@@ -209,52 +240,95 @@ pub fn process_http_history<'cx>(
 ) -> Result<HttpHistoryWatchReport> {
     let reservation = plan.reservation(limits)?;
     let plan_digest = plan.digest(limits)?;
-    let access = Access { authority, plan };
-    let sources = Sources::prepare(
-        archive,
-        SourcePlan {
-            pin: plan.history,
-            bindings: &plan.bindings,
-        },
-        SourceLimits {
-            history: limits.history,
-            maximum_frames_per_generation: limits.maximum_frames_per_generation,
-            maximum_bytes_per_generation: limits.maximum_bytes_per_generation,
-        },
-        &access,
-        STAGE_HTTP_HISTORY_GENERATION,
-        destination,
-        cx,
-        work,
-    )?;
-    let mut generations: Vec<_> = sources
-        .import_all(destination, cx, work, framing)?
-        .into_iter()
-        .map(|source| {
-            let status = if source.import.is_some() {
-                HttpHistoryWatchStatus::Analyzed
-            } else if source.boundary.prefix().bytes == 0 {
-                HttpHistoryWatchStatus::EmptyResponse
-            } else {
-                HttpHistoryWatchStatus::NoCompleteJpeg
+    if cx.root_dir() != destination.root()
+        || archive.root_dir().starts_with(destination.root())
+        || destination.root().starts_with(archive.root_dir())
+    {
+        return Err(HttpHistoryWatchError::Invalid(
+            "source and destination roots",
+        ));
+    }
+    let history = {
+        let access = Access {
+            authority,
+            plan,
+            destination,
+            cx,
+        };
+        access.check()?;
+        VerifiedReconnectHistory::load(archive, plan.history, limits.history, &access, work)?
+    };
+    // Validate the entire mapping and known prefix bounds before the first destination mutation.
+    for (boundary, binding) in history.boundaries().iter().zip(&plan.bindings) {
+        if boundary.scope().stream.generation != binding.generation
+            || boundary.prefix().bytes > limits.maximum_bytes_per_generation
+            || boundary.totals().frames > limits.maximum_frames_per_generation as u64
+        {
+            return Err(HttpHistoryWatchError::Invalid(
+                "generation mapping or prefix bound",
+            ));
+        }
+    }
+    let mut generations = Vec::with_capacity(plan.bindings.len());
+    for (boundary, binding) in history.boundaries().iter().zip(&plan.bindings) {
+        cx.checkpoint(STAGE_HTTP_HISTORY_GENERATION)
+            .map_err(|_| HttpHistoryWatchError::Denied)?;
+        Access {
+            authority,
+            plan,
+            destination,
+            cx,
+        }
+        .check()?;
+        let mut result = HttpHistoryWatchGeneration {
+            boundary: boundary.clone(),
+            binding: binding.clone(),
+            status: HttpHistoryWatchStatus::EmptyResponse,
+            import: None,
+            watch_plan: None,
+            watch_report: None,
+        };
+        if boundary.prefix().bytes != 0 {
+            let request = HttpImportRequest {
+                source: boundary.scope(),
+                pin: boundary.prefix(),
+                sensor: binding.sensor.clone(),
+                stream: binding.stream.clone(),
+                receive_time: binding.receive_time,
+                capture_hint: Some(binding.capture_hint),
+                max_frames: limits.maximum_frames_per_generation,
+                max_bytes: limits.maximum_bytes_per_generation,
             };
-            let watch_plan = source
-                .import
-                .as_ref()
-                .map(|receipt| plan.watch_plan(receipt.import_identity, receipt.frames));
-            HttpHistoryWatchGeneration {
-                boundary: source.boundary,
-                binding: source.binding,
-                status,
-                import: source.import,
-                watch_plan,
-                watch_report: None,
+            let access = ImportAccess {
+                authority,
+                plan,
+                request: request.digest()?,
+                cx,
+            };
+            match import_http(archive, destination, &request, &access, cx, work, framing) {
+                Ok(receipt) => {
+                    result.watch_plan =
+                        Some(plan.watch_plan(receipt.import_identity, receipt.frames));
+                    result.import = Some(receipt);
+                    result.status = HttpHistoryWatchStatus::Analyzed;
+                }
+                Err(HttpImportError::NoCompleteFrames) => {
+                    result.status = HttpHistoryWatchStatus::NoCompleteJpeg;
+                }
+                Err(error) => return Err(error.into()),
             }
-        })
-        .collect();
+        }
+        generations.push(result);
+    }
     // All imports are complete first: every proposal is analyzed at the same deployment basis.
     for generation in &mut generations {
-        http_history_sources::Authority::check(&access, destination, cx)?;
+        Access {
+            authority,
+            plan,
+            destination,
+            cx,
+        }
+        .check()?;
         if let Some(watch_plan) = &generation.watch_plan {
             generation.watch_report = Some(if plan.screened {
                 LongWatchReport::analyze_screened(
@@ -269,9 +343,16 @@ pub fn process_http_history<'cx>(
             });
         }
     }
-    // A detached, cached history never blesses an archive damaged during processing.
-    sources.revalidate(destination, cx, work)?;
-    let history = sources.history();
+    let access = Access {
+        authority,
+        plan,
+        destination,
+        cx,
+    };
+    access.check()?;
+    // A detached, cached history is never allowed to bless an archive damaged during processing.
+    VerifiedReconnectHistory::load(archive, plan.history, limits.history, &access, work)?;
+    access.check()?;
     let report = HttpHistoryWatchReport {
         plan_digest,
         history: history.pin(),

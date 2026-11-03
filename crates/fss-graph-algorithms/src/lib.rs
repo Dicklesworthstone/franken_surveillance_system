@@ -29,8 +29,6 @@ pub mod bridges;
 pub mod centrality;
 pub mod certified;
 pub mod community;
-/// Source-pinned anonymous tracklet handoff paths with exact implicit alternatives.
-pub mod continuity;
 pub mod coverage;
 pub mod coverage_timeline;
 pub mod dominators;
@@ -57,16 +55,12 @@ pub mod reference;
 pub mod registry;
 pub mod reliability;
 pub mod resilient_cover;
-/// Exact budgeted placement advice over explicit movement and sensor-loss assumptions.
-pub mod robust_placement;
 pub mod scc;
 /// Bounded unit-cost set cover with exact-small and explicitly heuristic selection.
 pub mod set_cover;
 pub mod spanning;
 pub mod spectral;
 pub mod steiner;
-/// Exact aggregate camera-demand routing with shared capacity, failure, cost and cut proofs.
-pub mod stream_capacity;
 /// Budgeted positive-weight coverage with exact integer ratio ranking and explicit omissions.
 pub mod submodular;
 pub mod temporal;

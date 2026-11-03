@@ -117,21 +117,12 @@ pub(super) fn validate_data_reference(
     }
     Ok(())
 }
-/// Exact sample-entry/configuration-record locations, including the optional in-band policy.
-pub(super) struct Configuration {
-    pub codec: VideoCodec,
-    pub dimensions: [u16; 2],
-    pub length: usize,
-    pub parameters: Vec<Range<usize>>,
-    pub entry: [u8; 4],
-    pub entry_range: Range<usize>,
-    pub record: Range<usize>,
-    pub complete: [bool; 3],
-}
+/// Codec, coded dimensions, NAL length-field bytes and parameter-set byte ranges of one sample
+/// entry.
+pub(super) type Configuration = (VideoCodec, [u16; 2], usize, Vec<Range<usize>>);
 pub(super) fn configuration(
     r: &mut Reader<'_, '_>,
     stsd: &BoxRef,
-    admit_inband: bool,
 ) -> Result<Configuration, DemuxError> {
     let b = r.body(stsd);
     full(b, 0, 0)?;
@@ -142,20 +133,12 @@ pub(super) fn configuration(
     if entries.len() != 1 {
         return Err(DemuxError::Unsupported);
     }
-    sample_entry_configuration(r, &entries[0], admit_inband)
-}
-pub(super) fn sample_entry_configuration(
-    r: &mut Reader<'_, '_>,
-    entry: &BoxRef,
-    admit_inband: bool,
-) -> Result<Configuration, DemuxError> {
-    let codec = match &entry.kind {
+    let codec = match &entries[0].kind {
         b"avc1" => VideoCodec::Avc,
-        b"avc3" if admit_inband => VideoCodec::Avc,
         b"hvc1" | b"hev1" => VideoCodec::Hevc,
         _ => return Err(DemuxError::Unsupported),
     };
-    let avc = entry;
+    let avc = &entries[0];
     let data = r.body(avc);
     if data.len() < 78 || data[..6] != [0; 6] || be16(data, 6)? != 1 {
         return Err(DemuxError::Unsupported);
@@ -168,31 +151,12 @@ pub(super) fn sample_entry_configuration(
     if boxes.iter().any(|b| b.kind == *b"sinf") {
         return Err(DemuxError::Unsupported);
     }
-    let inband = admit_inband && matches!(&avc.kind, b"avc3" | b"hev1");
-    let config = one(
-        &boxes,
-        if codec == VideoCodec::Avc {
-            b"avcC"
-        } else {
-            b"hvcC"
-        },
-    )?;
-    let (length, parameters, complete) = if codec == VideoCodec::Hevc {
-        hevc_configuration_inner(r, &config, inband)?
-    } else {
-        let (length, parameters) = avc_configuration_inner(r, &config, inband)?;
-        (length, parameters, [false; 3])
-    };
-    Ok(Configuration {
-        codec,
-        dimensions,
-        length,
-        parameters,
-        entry: avc.kind,
-        entry_range: avc.start..avc.body.end,
-        record: config.body,
-        complete,
-    })
+    if codec == VideoCodec::Hevc {
+        let (length, parameters) = hevc_configuration(r, &one(&boxes, b"hvcC")?)?;
+        return Ok((codec, dimensions, length, parameters));
+    }
+    let (length, parameters) = avc_configuration(r, &one(&boxes, b"avcC")?)?;
+    Ok((codec, dimensions, length, parameters))
 }
 /// `avcC` (ISO/IEC 14496-15 5.3.3.1): NAL length-field bytes and the byte ranges of its SPS,
 /// PPS and (High profiles) SPS-extension NAL units in record order. A three-byte length field
@@ -200,13 +164,6 @@ pub(super) fn sample_entry_configuration(
 pub(super) fn avc_configuration(
     r: &mut Reader<'_, '_>,
     config: &BoxRef,
-) -> Result<(usize, Vec<Range<usize>>), DemuxError> {
-    avc_configuration_inner(r, config, false)
-}
-fn avc_configuration_inner(
-    r: &mut Reader<'_, '_>,
-    config: &BoxRef,
-    allow_partial: bool,
 ) -> Result<(usize, Vec<Range<usize>>), DemuxError> {
     let config = config.clone();
     let b = r.body(&config);
@@ -220,13 +177,13 @@ fn avc_configuration_inner(
     let mut position = 6;
     let mut parameters = Vec::new();
     let sps = usize::from(b[5] & 31);
-    if sps == 0 && !allow_partial {
+    if sps == 0 {
         return Err(DemuxError::Nal);
     }
     config_nals(r, &config, &mut position, sps, 7, &mut parameters)?;
     let pps = usize::from(*b.get(position).ok_or(DemuxError::Truncated)?);
     position += 1;
-    if pps == 0 && !allow_partial {
+    if pps == 0 {
         return Err(DemuxError::Nal);
     }
     config_nals(r, &config, &mut position, pps, 8, &mut parameters)?;
@@ -261,17 +218,6 @@ pub(super) fn hevc_configuration(
     r: &mut Reader<'_, '_>,
     config: &BoxRef,
 ) -> Result<(usize, Vec<Range<usize>>), DemuxError> {
-    let (length, parameters, _) = hevc_configuration_inner(r, config, false)?;
-    Ok((length, parameters))
-}
-/// NAL length-field size, source parameter ranges, and VPS/SPS/PPS completeness flags.
-type HevcConfigurationParts = (usize, Vec<Range<usize>>, [bool; 3]);
-
-fn hevc_configuration_inner(
-    r: &mut Reader<'_, '_>,
-    config: &BoxRef,
-    allow_partial: bool,
-) -> Result<HevcConfigurationParts, DemuxError> {
     let b = r.body(config);
     if b.len() < 23 || b[0] != 1 {
         return Err(DemuxError::Nal);
@@ -285,29 +231,13 @@ fn hevc_configuration_inner(
     let mut position = 23;
     let mut parameters = Vec::new();
     let mut present = [false; 3];
-    let mut complete = [false; 3];
-    let mut arrays_seen = [false; 3];
     for _ in 0..arrays {
         r.checkpoint()?;
-        let flags = *b.get(position).ok_or(DemuxError::Truncated)?;
-        let kind = flags & 0x3f;
+        let kind = *b.get(position).ok_or(DemuxError::Truncated)? & 0x3f;
         let count = usize::from(be16(b, position + 1)?);
         position += 3;
         if !matches!(kind, 32..=34 | 39 | 40) {
             return Err(DemuxError::Nal);
-        }
-        if allow_partial {
-            if flags & 0x40 != 0 {
-                return Err(DemuxError::Nal);
-            }
-            if (32..=34).contains(&kind) {
-                let index = usize::from(kind - 32);
-                if arrays_seen[index] {
-                    return Err(DemuxError::Nal);
-                }
-                arrays_seen[index] = true;
-                complete[index] = flags & 0x80 != 0;
-            }
         }
         r.entries(count)?;
         for _ in 0..count {
@@ -336,10 +266,10 @@ fn hevc_configuration_inner(
     if position != b.len() {
         return Err(DemuxError::Layout);
     }
-    if !allow_partial && !present.iter().all(|present| *present) {
+    if !present.iter().all(|present| *present) {
         return Err(DemuxError::Nal);
     }
-    Ok((length, parameters, complete))
+    Ok((length, parameters))
 }
 fn config_nals(
     r: &mut Reader<'_, '_>,

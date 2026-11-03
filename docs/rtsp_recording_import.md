@@ -6,11 +6,6 @@ source pack, packet-to-NAL-to-MP4 index, initialization segment and media fragme
 the combined MP4 and its native sample/timing metadata. Decode and analysis can therefore
 verify their source ancestry after the capture archive is offline.
 
-For captured RTP/JPEG sources, use the separate
-[`fss-import-rtsp jpeg` workflow](RTSP_JPEG_IMPORT.md). It reconstructs retained
-MJPEG from an exact datagram prefix, preserving original packet custody and
-unknown capture time without introducing AVC/HEVC recording windows.
-
 This is a bounded, offline reference composition. It opens no camera connection and does not
 resume capture. It neither publishes an event nor dispatches an alert. It is not a release or
 a live-camera qualification.

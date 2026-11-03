@@ -308,7 +308,7 @@ pub(super) fn query(value: &Value, rig_digest: ContentDigest, rig: &SceneRig) ->
     })
 }
 
-pub(super) fn motion(value: &Value, options: Option<&Value>) -> Result<Motion> {
+fn motion(value: &Value, options: Option<&Value>) -> Result<Motion> {
     let object = value
         .object()
         .ok_or_else(|| input_error("motion must be an object"))?;
