@@ -418,7 +418,7 @@ def test_plist_environment(td):
     check("PY is absolute and executable", py.startswith("/") and os.access(py, os.X_OK), repr(py))
     # launchd's own default plus whatever the plist adds is what the process really sees
     launchd_default = "/usr/bin:/bin:/usr/sbin:/sbin"
-    for tool in ("python3", "arm-none-eabi-as", "arm-none-eabi-objdump", "nc", "curl"):
+    for tool in ("python3", "arm-none-eabi-as", "arm-none-eabi-objdump", "nc", "curl", "ping", "sudo"):
         r = subprocess.run(["bash", "-c", "command -v " + tool], env={"PATH": path + ":" + launchd_default},
                            capture_output=True, text=True)
         check("%s resolves under the job PATH" % tool, r.returncode == 0 and r.stdout.strip(),

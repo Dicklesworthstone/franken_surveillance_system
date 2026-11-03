@@ -20,6 +20,10 @@ bytes are the app's.
 `--from/--to` slice the frame range (defaults 0..end). `--speed` scales the captured gaps
 (1.0 = original pacing, clamped at 0.5 s) — the sequence is a DTLS handshake, so pacing is
 part of the contract, not cosmetic. Exit 0 only on a `0x2041`.
+
+`--pcap` replays a host-side tcpdump of the emulator's relay uplink instead of a log: no
+frida on the device, and no dump cap — the 576 B `0x2043` registration frames arrive whole
+(the committed logs cap at 128 B and hand the camera truncated registrations).
 """
 import argparse
 import os
@@ -79,9 +83,37 @@ def parse(path):
     return [(t - t0, b, n) for t, b, n in frames]
 
 
+RELAY_PEERS = {"14.1.31.34", "64.74.160.146", "66.23.205.210"}
+
+
+def parse_pcap(path):
+    """[(t_seconds, bytes, len)] for app->relay datagrams in a pcap.
+
+    A host-side tcpdump of the emulator's uplink needs no frida on the device, and it has
+    no dump cap: the 576 B registration frames arrive whole. Direction is decided by the
+    destination (the relay peers are the app's only 3478 counterpart), so the camera's
+    answers never enter the slice.
+    """
+    from scapy.all import rdpcap, UDP
+    out, t0 = [], None
+    for pkt in rdpcap(path):
+        if not pkt.haslayer(UDP) or pkt[UDP].dport != 3478:
+            continue
+        if pkt["IP"].dst not in RELAY_PEERS:
+            continue
+        blob = bytes(pkt[UDP].payload)
+        if not blob:
+            continue
+        t = float(pkt.time)
+        t0 = t if t0 is None else t0
+        out.append((t - t0, blob, len(blob)))
+    return out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("mode", choices=["run"])
+    ap.add_argument("--pcap", help="pcap of the app's relay uplink (host tcpdump; untruncated)")
     ap.add_argument("--capture", default=LAN_CAPTURE,
                     help="capture log to replay (default: the LAN-direct one; the relay "
                          "capture carries 0x504 wrappers the camera does not see on LAN)")
@@ -91,12 +123,16 @@ def main() -> int:
     ap.add_argument("--wait", type=float, default=12.0, help="seconds to listen after the last frame")
     ap.add_argument("--gap", type=float, default=0.005,
                     help="floor between frames when the capture has no clock")
+    ap.add_argument("--then-lan", action="store_true",
+                    help="after the slice, replay the LAN capture from its ClientHello: it pairs the "
+                         "registration burst with the envelope type the camera sees on this path")
     ap.add_argument("--probe-tries", type=int, default=6)
     a = ap.parse_args()
 
-    frames = parse(a.capture)[a.lo:a.hi]
+    src = a.pcap or a.capture
+    frames = (parse_pcap(a.pcap) if a.pcap else parse(a.capture))[a.lo:a.hi]
     if not frames:
-        print(f"no frames in {a.capture}[{a.lo}:{a.hi}]", file=sys.stderr)
+        print(f"no frames in {src}[{a.lo}:{a.hi}]", file=sys.stderr)
         return 2
     dc.adopt_iface()
 
@@ -157,6 +193,16 @@ def main() -> int:
         last = off
         gl.l2_send_to(blob, sport, cam_addr)
         gl.log(f"cam-> {len(blob)}B {blob[:8].hex()}" + (" (truncated)" if len(blob) < declared else ""))
+
+    if a.then_lan:
+        lan = parse(LAN_CAPTURE)
+        start = next((i for i, (_, b, _) in enumerate(lan) if len(b) == 291), None)
+        if start is None:
+            gl.log("then-lan: no ClientHello in the LAN capture")
+        for _, blob, declared in lan[start or 0:]:
+            time.sleep(a.gap)
+            gl.l2_send_to(blob, sport, cam_addr)
+            gl.log(f"cam-> {len(blob)}B {blob[:8].hex()} (lan)")
 
     time.sleep(a.wait)
     gl.log(f"types seen: {sorted(set(got['types']))}"
