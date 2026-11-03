@@ -10,6 +10,24 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Restart-safe source-once fusion checkpoints (2026-11-03)
+
+`UniqueSourceEProcess` now exports a bounded handwritten canonical binary checkpoint and
+restores it only against an independently supplied SHA-256. Restoration preserves the
+full numerical configuration/state, active common-cause components, both transcript heads,
+last reset and lifetime source inventory. Repeated, renamed, negative and zero observations
+retain their original admission across restarts and resets; capacity is never refunded.
+Malformed, noncanonical, inconsistent, oversized or unsupported snapshots refuse without
+returning a partial owner. The codec performs no I/O and cannot grant source custody,
+statistical qualification, freshness/rollback protection or effect authority.
+
+Native pinned-toolchain validation passes all 42 fusion unit tests and 16 integration tests,
+including ten new checkpoint contracts. Every-cut continuation parity, all reset variants,
+common-cause bridging, signed evidence, independent pins, malformed/truncated envelopes,
+noncanonical inventories, full 4096-source capacity and a frozen v1 golden identity are
+covered. See [the format and recovery contract](docs/FUSION_CHECKPOINT.md).
+This advances `fss-x4a.16.9`; retained-source and statistical qualification remain open.
+
 ## Clock replay with currently adopted camera calibration (2026-11-03)
 
 `fss-scene-fuse retained-calibrated-match` now accepts the explicit retained-motion

@@ -19,6 +19,12 @@ use crate::{
 mod receipt;
 pub use receipt::{SourceAdmission, SourceDisposition, UniqueSourceStepOutcome};
 
+pub mod checkpoint;
+pub use checkpoint::{
+    MAX_UNIQUE_SOURCE_CHECKPOINT_BYTES, UNIQUE_SOURCE_CHECKPOINT_MAGIC,
+    UNIQUE_SOURCE_CHECKPOINT_VERSION, UniqueSourceCheckpoint, UniqueSourceCheckpointError,
+};
+
 /// Explicit profile receipt domain; historical e-process domains remain unchanged.
 pub const UNIQUE_SOURCE_STEP_DOMAIN: &str = "fss.fusion.unique_source_step.v1";
 /// Complete per-item source semantics excluding only its observation alias, plus event kind.
@@ -204,6 +210,20 @@ impl UniqueSourceEProcess {
     #[must_use]
     pub fn sources_seen(&self) -> usize {
         self.seen.len()
+    }
+
+    /// Complete immutable lifetime inventory in canonical source-key order.
+    ///
+    /// Each row contains the declared source digest, its immutable semantic item digest, and
+    /// the step of its first numeric admission. Callers can bind additional source-owner facts
+    /// to exactly these keys when retaining a checkpoint. These are caller-declared identities,
+    /// not source custody or independence certificates.
+    pub fn admitted_sources(
+        &self,
+    ) -> impl ExactSizeIterator<Item = (ContentDigest, ContentDigest, u64)> + '_ {
+        self.seen
+            .iter()
+            .map(|(source, entry)| (*source, entry.item_digest, entry.first_step))
     }
 
     /// Complete lifetime inventory commitment, including an empty inventory before any step.

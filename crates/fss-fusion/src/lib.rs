@@ -63,8 +63,10 @@ pub use model::{
     Probe, Reason, Severity,
 };
 pub use unique_source::{
-    MAX_UNIQUE_SOURCES, SourceAdmission, SourceDisposition, UNIQUE_SOURCE_INVENTORY_DOMAIN,
-    UNIQUE_SOURCE_ITEM_DOMAIN, UNIQUE_SOURCE_STEP_DOMAIN, UNIQUE_SOURCE_STEP_SCHEMA,
+    MAX_UNIQUE_SOURCE_CHECKPOINT_BYTES, MAX_UNIQUE_SOURCES, SourceAdmission, SourceDisposition,
+    UNIQUE_SOURCE_CHECKPOINT_MAGIC, UNIQUE_SOURCE_CHECKPOINT_VERSION,
+    UNIQUE_SOURCE_INVENTORY_DOMAIN, UNIQUE_SOURCE_ITEM_DOMAIN, UNIQUE_SOURCE_STEP_DOMAIN,
+    UNIQUE_SOURCE_STEP_SCHEMA, UniqueSourceCheckpoint, UniqueSourceCheckpointError,
     UniqueSourceEProcess, UniqueSourceError, UniqueSourceStepOutcome,
 };
 

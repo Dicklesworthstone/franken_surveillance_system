@@ -217,3 +217,11 @@ mixed new/replayed/neutral steps, signed and zero increments, transactional conf
 capacity exhaustion, source-marker normalization and lifetime inventory preservation across resets.
 This is focused deterministic reference evidence; it is not the full local
 release or deployment-quality qualification lane.
+
+## Source-once restart and continuation
+
+The explicit `UniqueSourceEProcess` profile now supports complete bounded checkpoint export
+and independently digest-pinned restoration. See [FUSION_CHECKPOINT.md](FUSION_CHECKPOINT.md)
+for the frozen binary format, lifetime replay/capacity rules and caller recovery contract.
+A checkpoint preserves derived state and transcript ancestry; current custody, freshness,
+statistical qualification and authority remain separate owner responsibilities.

@@ -33,6 +33,7 @@ use crate::model::{
 };
 use crate::probability::PPM;
 
+mod checkpoint;
 mod transcript;
 pub use transcript::{
     EPROCESS_RESET_DOMAIN, EPROCESS_STATE_DOMAIN, EPROCESS_SUPPORT_DOMAIN,

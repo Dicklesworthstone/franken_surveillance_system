@@ -6,6 +6,10 @@ operation states rather than generic errors.
 
 | ID | Meaning | Retry policy |
 |---|---|---|
+| `ERR-FUSION-CHECKPOINT-LIMIT-001` | Complete source-once checkpoint bytes, source/domain inventory or reset text exceed the frozen allowance | Retain the existing owner/checkpoint; do not truncate, evict sources or silently initialize a new process. |
+| `ERR-FUSION-CHECKPOINT-DIGEST-001` | Checkpoint bytes disagree with the independently supplied SHA-256 or embedded checksum | Obtain the exact originally pinned bytes; recomputing a pin from unknown input is not recovery. |
+| `ERR-FUSION-CHECKPOINT-VERSION-001` | Source-once checkpoint declares an unsupported version | Use its producing compatible reader; there is no implicit downgrade or migration. |
+| `ERR-FUSION-CHECKPOINT-INVALID-001` | Source-once checkpoint is truncated, noncanonical, duplicated, has trailing data or inconsistent numerical/source state | Repair from the exact retained checkpoint; no partial restoration or history certification is returned. |
 | `ERR-FUSION-SOURCE-BINDING-INVALID-001` | The explicit source-once profile did not receive exactly one binding for every original evidence identity, or an observed calibrated item lacks a source key | Correct the complete binding inventory; no accumulator, source inventory or receipt state changed. |
 | `ERR-FUSION-SOURCE-CONFLICT-001` | A canonical declared source key was reused with incompatible immutable item semantics, including conflicting aliases within the same query | Inspect original source and interpretation; a relabel, retry or reset cannot reinterpret consumed evidence. The whole step was refused. |
 | `ERR-FUSION-SOURCE-CAPACITY-001` | The complete new numeric-source inventory would exceed the selected nonrefillable lifetime allowance | Select a sufficient complete allowance for a new explicit invocation; no prefix was consumed, identity evicted or capacity refunded. |
