@@ -179,6 +179,11 @@ probe receipts to generate exact native RTSP/NVR AVC/HEVC capture plans, includi
 deterministic sensor/stream identities, per-source destinations and one enclosing site
 approval digest. Every source must pass; an invalid source produces no partial plan.
 
+`fss site probe-file` now derives receipts from independently pinned recorded
+DESCRIBE responses and RTPdump samples using native AVC/HEVC picture assembly.
+It measures media configuration, SSRC and constant cadence, and refuses unverified
+picture tails, lost packets or inconsistent timing. See [the recorded-probe example](docs/SITE_PROBE_MEASUREMENT.md).
+
 This is read-only planning: no device contact, credential reads, recording or signed
 rights verification. A site executor and live probe producer remain open. Unsupported
 sources and payment regions that require masking before original retention refuse.

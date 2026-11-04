@@ -6,6 +6,8 @@ operation states rather than generic errors.
 
 | ID | Meaning | Retry policy |
 |---|---|---|
+| `ERR-SITE-PROBE-INPUT-PIN-001` | A complete named manifest, DESCRIBE response or RTPdump differs from its independent raw SHA-256 pin | Restore the exact expected bytes or provide independently verified new evidence; never accept a partial match. |
+| `ERR-SITE-PROBE-MANIFEST-001` | The independently pinned probe manifest violates the strict site input contract | Correct the complete declaration and update its independent pin; no guessed or partial source inventory. |
 | `ERR-SITE-PROBE-LIMIT-001` | Complete recorded probe evidence exceeds a byte, record, picture or native bound | Provide a smaller complete evidence sample; no truncation. |
 | `ERR-SITE-PROBE-SELECTION-001` | Manifest/source or explicit codec/media/channel selection is invalid or unsupported | Correct the exact scope; no guessed source or codec fallback. |
 | `ERR-SITE-PROBE-DESCRIPTION-001` | Recorded DESCRIBE framing, native SDP/control route or Server identity is invalid or ambiguous | Provide one complete supported response; metadata is never silently selected. |

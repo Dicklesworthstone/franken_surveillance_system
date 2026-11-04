@@ -1,0 +1,139 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.dev/schemas/site_probe_observation.v1.json",
+  "title": "FSS measured offline site probe observation v1",
+  "description": "Measurements from exact pinned DESCRIBE response and RTPdump bytes. The evidence fingerprint binds supplied bytes and selection; it grants no origin, custody, current liveness, synchronization, rights or capture authority. Interleaved channels are operator-selected because RTPdump does not record them.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "status",
+    "measurement_basis",
+    "evidence_digest",
+    "manifest_digest",
+    "manifest_input_digest",
+    "describe_response_digest",
+    "rtp_dump_digest",
+    "sdp_digest",
+    "server_header_digest",
+    "source_id",
+    "rtp_packets",
+    "rtcp_packets",
+    "observed_frames",
+    "channel_basis",
+    "receipts",
+    "device_contacted",
+    "credentials_read",
+    "origin_authenticated",
+    "current_liveness_verified",
+    "custody_verified",
+    "clock_synchronized",
+    "rights_verdict_verified",
+    "capture_authorized",
+    "media_bytes_returned"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.site_probe_observation.v1"
+    },
+    "status": {
+      "const": "measured"
+    },
+    "measurement_basis": {
+      "const": "offline_describe_response_and_rtpdump"
+    },
+    "evidence_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "manifest_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "manifest_input_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "describe_response_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "rtp_dump_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "sdp_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "server_header_digest": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/digest"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "source_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+    },
+    "rtp_packets": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 32768
+    },
+    "rtcp_packets": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 32768
+    },
+    "observed_frames": {
+      "type": "integer",
+      "minimum": 3,
+      "maximum": 4096
+    },
+    "channel_basis": {
+      "const": "operator_selected_not_measured_from_rtpdump"
+    },
+    "receipts": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1,
+      "items": {
+        "$ref": "site_probe_receipt.v1.json"
+      }
+    },
+    "device_contacted": {
+      "const": false
+    },
+    "credentials_read": {
+      "const": false
+    },
+    "origin_authenticated": {
+      "const": false
+    },
+    "current_liveness_verified": {
+      "const": false
+    },
+    "custody_verified": {
+      "const": false
+    },
+    "clock_synchronized": {
+      "const": false
+    },
+    "rights_verdict_verified": {
+      "const": false
+    },
+    "capture_authorized": {
+      "const": false
+    },
+    "media_bytes_returned": {
+      "const": false
+    }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  }
+}

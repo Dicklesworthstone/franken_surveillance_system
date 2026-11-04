@@ -128,8 +128,11 @@ The parser establishes consistency of these claims. It does not authenticate
 their producer, inspect raw SDP or media, or establish current camera liveness.
 Changing the manifest, even only its policy references, invalidates its previous
 receipts. Replacing their manifest hashes without making fresh observations does
-not turn them into evidence of the changed source. A native bounded probe producer
-and authenticated/fresh receipt handling remain separate work.
+not turn them into evidence of the changed source. To derive receipts from recorded
+DESCRIBE responses and RTPdump samples, use
+[`fss site probe-file`](SITE_PROBE_MEASUREMENT.md). It measures native AVC/HEVC
+picture syntax and constant cadence under exact input pins. A live network probe
+producer and authenticated/fresh receipt handling remain separate work.
 
 ## What the plan binds
 

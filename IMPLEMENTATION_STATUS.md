@@ -10,6 +10,58 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Recorded native site probe measurement (2026-11-04)
+
+`fss site probe-file` derives site probe receipts from an exact manifest, complete
+recorded DESCRIBE response and RTPdump sample. Independent raw SHA-256 pins are
+required for all three files. Native RTSP framing and SDP/control-route admission,
+RTP/RTCP parsing, AVC/HEVC depacketization and picture assembly derive payload type,
+SSRC, ordered configuration hashes, syntax-grouped picture count and constant
+90 kHz cadence. Three through 4096 witnessed picture boundaries are required; sequence and timestamp
+wrapping are supported. The observer rejects loss, duplication, reordering,
+configuration drift, unfinished pictures, ambiguous responses and unsupported
+field-coded sequences. It does not infer picture boundaries from markers alone.
+
+The command reads only the named regular files under per-role byte ceilings,
+finite I/O operations and file-identity checks. The complete bounded result follows
+`fss.site_probe_observation.v1`; its `receipts` array has the existing site planner
+input shape. The evidence digest binds canonical source scope, raw protocol inputs,
+measurement bounds and derived output. Raw media and Server banners are omitted;
+successful receipts retain the declared private route needed for planning.
+
+This advances recorded-evidence measurement within VIT-003. A recorded response is
+not a correlated live RTSP transaction, and the manifest route and chosen channel
+remain declarations. Device contact, credentials, current liveness, authenticated
+origin, custody, synchronized time, rights and capture authorization remain false.
+Live probing with confirmed teardown, discovery adapters, site execution and
+always-on recording are still open. Pixel decoding is outside this observer;
+witnessed boundaries do not prove the presence of every slice or macroblock.
+See [SITE_PROBE_MEASUREMENT.md](docs/SITE_PROBE_MEASUREMENT.md) for the pinned
+AVC/HEVC fixtures, command example, exact bounds and refusal conditions.
+
+Pinned-toolchain focused validation passes **16 measured-probe backend tests**,
+including real AVC field/MBAFF and HEVC VUI field-sequence counterexamples, plus
+**4 existing observation-kernel regressions**. The build uses the complete native
+packet and HEVC codec crates, actual RTSP/site/probe modules and five exact core
+modules. All 85 recorded source/fixture hashes remained unchanged through the
+final build and run.
+
+**10 CLI workflow tests pass** through a scoped dispatcher compiling the exact
+production probe parser, bounded file authority, report and diagnostic helpers
+against those native libraries. They verify both codec receipts, independent byte
+pins, malformed/lossy/reordered/mixed streams, cadence drift, private-value
+redaction, file bounds and absence of camera/credential/output effects. Their 19
+recorded source hashes remained stable. The added full site-compiler round-trip
+test remains unexecuted because a complete production `fss` binary could not be
+built under shared resource pressure. No planner or validator was substituted to
+claim that integration passed.
+
+The observation, receipt and diagnostic schemas pass Draft 2020-12 meta-validation;
+both actual successful CLI reports validate with local reference resolution, and
+46 negative schema mutations refuse. Full Cargo attempts were killed under shared
+memory/resource exhaustion. These focused checks do not establish a complete
+workspace build, real-camera operation, pixel completeness or release qualification.
+
 ## Site manifests and exact native capture planning (2026-11-04)
 
 `fss site validate --manifest SITE.json --json` now admits a strict, bounded site
