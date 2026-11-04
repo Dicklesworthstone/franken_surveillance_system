@@ -4,6 +4,37 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Native RTSP site probe session owner
+
+`fss_reference::site::live_probe::LiveSiteProbe` now owns one bounded native
+RTSP/NVR probe from OPTIONS through DESCRIBE, SETUP, PLAY and acknowledged
+TEARDOWN. It composes the existing scoped client, Digest owner, exact wire intake,
+TCP transport and strict RTP observer. The same accepted SDP supplies negotiation
+and receipt parameter hashes. Explicit media/channel/payload selection, stable
+SSRC, sequence continuity and constant marked-picture cadence must agree; no raw
+SDP, media, session token or credential leaves the owner. RTCP and in-flight media
+while closing are explicitly omitted and counted. Each step rechecks supplied
+network authority and owner time. No clock, sleep, secret resolver, decoder,
+archive or automatic reconnect is hidden in the reference API.
+
+The native owner issues one existing site receipt only after matching successful
+TEARDOWN and local socket retirement. Authority loss, deadline, malformed input,
+shortfall or lost close acknowledgement returns no successful prefix and retains
+explicit possible remote-session state. Cancellation retires local resources once
+without sending a hidden cleanup request. Transport and omission counters remain
+available without exposing original bytes.
+
+**Validation:** 12 native loopback contracts pass with the pinned toolchain against
+the exact production site/RTSP modules, full native packet source and native core
+library. They exercise AVC/HEVC, Digest, foreign realms, seven-byte request writes,
+chunked responses, RTP faults, late media, close uncertainty, cancellation, clock
+regression and pre-connect authority denial. This focused module build uses no
+replacement implementation; it is not a complete workspace/runtime build. Full
+selected binary compilation was SIGKILLed in the existing Asupersync dependency
+under shared memory pressure and remains unqualified. This completes the native
+session-owner slice of VIT-003; the operator CLI, authenticated/fresh receipt
+handling, JPEG live probing and an always-on site recorder are separate work.
+
 ## Executive summary
 
 Franken Surveillance System now has a coherent, dependency-light Rust reference spine from immutable source evidence through canonical authority state, guarded external effects, agent situation projection, meaningful deltas, exact continuation, and progressive semantic hydration. The repository is no longer merely an architecture corpus or crate skeleton.

@@ -6,9 +6,22 @@ operation states rather than generic errors.
 
 | ID | Meaning | Retry policy |
 |---|---|---|
+| `ERR-SITE-PROBE-CONFIGURATION-001` | Native probe source, route, generation, authentication policy or finite limits disagree | Correct the exact scope and preview again; no network work for configuration refusal. |
+| `ERR-SITE-PROBE-TRANSPORT-001` | Native scoped probe transport or network authority refused | Inspect the explicit attempt/remote-session facts; never reconnect automatically. |
+| `ERR-SITE-PROBE-SESSION-001` | Native RTSP lifecycle, negotiation, correlation or deadline refused | Correct the supported protocol scope and request a new probe explicitly. |
+| `ERR-SITE-PROBE-AUTH-001` | Native Digest challenge, pinned realm or required credential borrow refused | Correct the exact credential policy; no Basic fallback or automatic downgrade. |
+| `ERR-SITE-PROBE-WIRE-001` | Exact native RTSP/interleaved message intake refused | Provide a supported complete protocol exchange; no resynchronization or successful prefix. |
+| `ERR-SITE-PROBE-RESPONSE-001` | A probe response has no completely sent matching request | Stop the connection; never reinterpret unsolicited or premature data as acknowledgement. |
+| `ERR-SITE-PROBE-INPUT-001` | An unexpected request, channel or pre-PLAY packet arrived during native probing | Stop this probe; no fallback channel or partial sample. |
+| `ERR-SITE-PROBE-INCOMPLETE-001` | Probe observation or matching remote TEARDOWN acknowledgement is incomplete | No successful receipt; preserve possible remote-session state and require an explicit new decision. |
+| `ERR-SITE-PROBE-CLOCK-001` | Owner-supplied native probe time moved backwards | Retire this generation before any further socket effect. |
+| `ERR-SITE-PROBE-CLOSED-001` | A retired native probe was stepped again | No reconnect or duplicate receipt; allocate a separately authorized owner for new work. |
+| `ERR-SITE-PROBE-SCOPE-001` | Strict RTP observer source/route scope is not admitted | Correct the exact manifest and negotiated selection; no observation claim. |
+| `ERR-SITE-PROBE-NEGOTIATION-001` | Strict RTP observer SDP and selected codec/configuration disagree | Use the same accepted native DESCRIBE/selection; do not substitute parameter claims. |
+| `ERR-SITE-PROBE-RECEIPT-001` | The complete native observation cannot produce a valid manifest-bound receipt | No successful prefix or replacement identity. |
 | `ERR-SITE-PROBE-INPUT-PIN-001` | A complete named manifest, DESCRIBE response or RTPdump differs from its independent raw SHA-256 pin | Restore the exact expected bytes or provide independently verified new evidence; never accept a partial match. |
 | `ERR-SITE-PROBE-MANIFEST-001` | The independently pinned probe manifest violates the strict site input contract | Correct the complete declaration and update its independent pin; no guessed or partial source inventory. |
-| `ERR-SITE-PROBE-LIMIT-001` | Complete recorded probe evidence exceeds a byte, record, picture or native bound | Provide a smaller complete evidence sample; no truncation. |
+| `ERR-SITE-PROBE-LIMIT-001` | Probe evidence or a native driver exceeds its fixed byte, record, picture or work bound | Provide a smaller complete evidence sample; no truncation. |
 | `ERR-SITE-PROBE-SELECTION-001` | Manifest/source or explicit codec/media/channel selection is invalid or unsupported | Correct the exact scope; no guessed source or codec fallback. |
 | `ERR-SITE-PROBE-DESCRIPTION-001` | Recorded DESCRIBE framing, native SDP/control route or Server identity is invalid or ambiguous | Provide one complete supported response; metadata is never silently selected. |
 | `ERR-SITE-PROBE-PACKET-001` | RTPdump or complete RTP/RTCP framing is malformed, truncated or capture-limited | Provide complete original datagrams; never pad missing bytes. |

@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! Bounded, sans-I/O site onboarding contracts (VIT-001).
+//! Bounded site onboarding contracts (VIT-001) and separately scoped native probes.
 //!
 //! A manifest is requested owner scope, not authenticated authority. A supplied probe receipt
 //! describes observations but does not authenticate the observer, establish freshness, grant
@@ -14,6 +14,9 @@ mod wire;
 
 /// Pure bounded observations for native RTSP site probe receipts.
 pub mod probe_observation;
+
+/// Session-owned native RTSP probing with explicit authority, bounds and remote-close evidence.
+pub mod live_probe;
 
 #[cfg(test)]
 mod tests;
