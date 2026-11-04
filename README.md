@@ -171,6 +171,19 @@ begins as manually piloted capture/import; FSS has no autonomous flight authorit
 See [`DEVICE_ADAPTER_MATRIX.md`](DEVICE_ADAPTER_MATRIX.md) and
 [`INTEROPERABILITY_LAB.md`](INTEROPERABILITY_LAB.md).
 
+## Site onboarding and capture planning
+
+`fss site validate --manifest SITE.json --json` validates a bounded camera inventory
+and reports its canonical identity. `fss site plan` combines that manifest with supplied
+probe receipts to generate exact native RTSP/NVR AVC/HEVC capture plans, including
+deterministic sensor/stream identities, per-source destinations and one enclosing site
+approval digest. Every source must pass; an invalid source produces no partial plan.
+
+This is read-only planning: no device contact, credential reads, recording or signed
+rights verification. A site executor and live probe producer remain open. Unsupported
+sources and payment regions that require masking before original retention refuse.
+See [the executable two-source example and contracts](docs/SITE_PLANNING.md).
+
 ## Architecture in one page
 
 ### Agent operating membrane

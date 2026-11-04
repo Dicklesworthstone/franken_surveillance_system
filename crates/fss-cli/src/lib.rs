@@ -5,12 +5,18 @@
 //! or unknown inputs with stable error and exit identities, structured diagnostic logging,
 //! and command execution for FSS binaries.
 
+// The native capture planner is also compiled as part of this library. Keep its existing
+// crate-qualified JSON imports identical in both the native binary and the pure adapter.
+extern crate self as fss_cli;
+
 /// Deterministic JSON rendering of the fss-core agent contract types.
 pub mod agent_json;
 /// The one alert-effect core shared by `fss-event alert`, `fss plan`, and `fss commit`.
 pub mod alert_effect;
 /// Explicit operator access to existing local AVC/HEVC archives; not an agent operation.
 pub mod archive_cmd;
+/// Pure planning through the same source used by the native RTSP capture command.
+pub mod capture_plan;
 /// Work claims (FSS-226): the work-claiming intent family of `fss investigate` (AOP-006).
 pub mod claim_cmd;
 /// Shared strict clock-query admission and native replay for retained scene timing.
@@ -68,6 +74,10 @@ pub mod session_cancel_cmd;
 /// Durable agent sessions: `session open` (AOP-001), `session handoff` (AOP-012), and
 /// `session resume` (AOP-002); agent-plane writes only.
 pub mod session_cmd;
+/// Read-only site manifests and exact native capture plans; no device or credential access.
+pub mod site_cmd;
+/// Atomic site-to-native capture planning with exact manifest and probe bindings.
+pub mod site_plan;
 /// `fss status --json [--root <dir>]`: read-only retained inventory (SCHEMA-STATUS-001).
 pub mod status_cmd;
 /// Bounded multi-camera supervisor coordinator with explicit sequential fusion (`fss-becce`).

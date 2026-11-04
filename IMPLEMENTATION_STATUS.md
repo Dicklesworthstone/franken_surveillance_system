@@ -10,6 +10,63 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Site manifests and exact native capture planning (2026-11-04)
+
+`fss site validate --manifest SITE.json --json` now admits a strict, bounded site
+inventory and reports its canonical identity. `fss site plan` consumes that inventory
+and an exact set of supplied probe receipts to produce one atomic site preview with
+the existing native RTSP/NVR AVC/HEVC capture commands. The shared planner compiles
+the same production source as `fss-capture-rtsp`; native approvals, effective defaults
+and preview bytes retain their existing semantics. Sensor/stream/ingress identities
+derive from the stable site/source pair. Destination, authority, receive-clock and
+journal coordinates bind the manifest and explicit operation epoch; timing also
+binds the complete probe receipt. Operators no longer invent these values per camera.
+
+The input contracts cover exact literal routes, optional Digest credential references,
+source generations, stream roles, retention/rights references, connection declarations,
+normalized zones and payment masks. Explicit typed validation precedes canonical
+hashing. Receipt inventory, source generation, route, selected codec/payload/SSRC,
+90 kHz cadence and parameter-set claims must be consistent. Missing, duplicate,
+foreign or stale receipts refuse the whole site. Output parents must be independent;
+credentials cannot overlap either complete output namespace. Sources with payment
+masks or payment/payment-terminal/payment-lane zones refuse because original capture
+cannot enforce masking before source retention. No accepted source prefix is emitted.
+
+Only the explicitly named regular input documents are read, under fixed byte and
+operation bounds with file-identity checks. Planning never opens credential files,
+contacts devices or creates archives. Validation and refusal reports omit private
+route/path values; successful plans are private operator material and retain exact
+native arguments. All five versioned input/output schemas and a complete synthetic
+two-source example are documented in [SITE_PLANNING.md](docs/SITE_PLANNING.md).
+
+Pinned-toolchain focused validation passes **16 manifest/probe contracts, 10 site
+command workflows, 2 shared native-planner API contracts and 41 native planner,
+authentication and CLI-helper unit tests**. The command tests compare exact native
+approval and preview bytes, verify no loopback connections or credential/output
+files, and exercise multi-source refusal, epoch separation, malformed inputs and
+unsupported kinds. All five schemas pass full Draft 2020-12 checks; input fixtures,
+actual success/refusal reports and the documented example validate, with 27 negative
+schema mutations refused. An outdated native route test was corrected to the already
+implemented exact query/repeated-slash behavior, with approval/redaction regressions;
+the production route policy is unchanged. Schema registration adds no new findings
+against the pre-existing constitution diagnostics.
+
+These builds use the actual production modules and first-party native libraries,
+with selected module roots and thin test dispatchers, without replacement validators
+or algorithms. They do not compile the complete effect-capable binaries. Both full
+Cargo attempts were SIGKILLed while compiling the existing Asupersync dependency
+under shared memory pressure, before project diagnostics. No complete workspace,
+runtime, hardware or release qualification is claimed.
+
+This advances the direct RTSP/NVR portion of VIT-001/VIT-002; it does not complete the
+footage-plane epic. ONVIF/UniFi source kinds and JPEG receipt claims are representable
+but unsupported by this compiler. A site executor, native live probe producer,
+authenticated/fresh receipt handling, signed rights-lease verification, TLS and
+retention scheduling remain open. SDP and parameter-set hashes identify supplied
+claims and are approval-bound; this implementation does not enforce their equality
+against a future live negotiation. A site digest grants no capture authority, and
+existing native captures still require their own independently reviewed approvals.
+
 ## Clock-backed retained camera handoffs (2026-11-04)
 
 `fss-scene-fuse retained-handoffs` now accepts the explicit

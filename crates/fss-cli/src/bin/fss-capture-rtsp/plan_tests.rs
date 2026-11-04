@@ -2,7 +2,7 @@
 
 use super::*;
 
-fn args() -> Vec<OsString> {
+pub(crate) fn args() -> Vec<OsString> {
     [
         "--root",
         "/owner/private/archive",
@@ -50,7 +50,7 @@ fn args() -> Vec<OsString> {
     .collect()
 }
 
-fn set(args: &mut Vec<OsString>, key: &str, value: &str) {
+pub(crate) fn set(args: &mut Vec<OsString>, key: &str, value: &str) {
     if let Some(index) = args.iter().position(|arg| arg == key) {
         args[index + 1] = OsString::from(value);
     } else {
@@ -90,35 +90,6 @@ fn automatic_ssrc_has_distinct_approval_clock_and_explicit_unobserved_state()
         }
     }
     Ok(())
-}
-
-#[test]
-fn automatic_ssrc_cannot_enter_unimplemented_source_retention_or_reconnect_identity_paths() {
-    let mut source = args();
-    set(&mut source, "--source-root", "/owner/private/datagrams");
-    set(
-        &mut source,
-        "--source-retention-evidence",
-        "sha256:5555555555555555555555555555555555555555555555555555555555555555",
-    );
-    assert!(super::super::source_mode::SourcePlan::parse(&source).is_ok());
-    set(&mut source, "--ssrc", "auto");
-    assert!(
-        super::super::source_mode::SourcePlan::parse(&source)
-            .err()
-            .is_some_and(|error| error.contains("automatic SSRC"))
-    );
-    let mut reconnect = args();
-    set(&mut reconnect, "--max-attempts", "2");
-    set(&mut reconnect, "--retry-delay-ms", "1");
-    set(&mut reconnect, "--retry-max-delay-ms", "2");
-    assert!(super::super::reconnect::ReconnectPlan::parse(&reconnect).is_ok());
-    set(&mut reconnect, "--ssrc", "auto");
-    assert!(
-        super::super::reconnect::ReconnectPlan::parse(&reconnect)
-            .err()
-            .is_some_and(|error| error.contains("automatic SSRC"))
-    );
 }
 
 #[test]
@@ -346,10 +317,8 @@ fn malformed_or_credential_bearing_routes_fail_before_effects() {
         ("--authority", "camera..test"),
         ("--authority", "[not-ipv6]:8554"),
         ("--presentation", "/outside"),
-        ("--presentation", "/camera?token=secret"),
         ("--presentation", "/camera/../elsewhere"),
         ("--presentation", "/camera/%2e%2e/elsewhere"),
-        ("--presentation", "/camera//main"),
         ("--presentation", "/camera/main\r\nAuthorization: secret"),
         ("--control-root", "/camera?token=secret"),
     ] {
@@ -357,6 +326,53 @@ fn malformed_or_credential_bearing_routes_fail_before_effects() {
         set(&mut input, key, value);
         assert!(Options::parse(&input).is_err(), "{key}");
     }
+}
+
+#[test]
+fn admitted_exact_presentation_routes_preserve_identity_and_private_query_redaction()
+-> Result<(), &'static str> {
+    for codec in ["avc", "hevc"] {
+        let mut query = args();
+        set(&mut query, "--codec", codec);
+        let original = Options::parse(&query)?.digest()?;
+        set(&mut query, "--presentation", "/camera?token=secret");
+        let plan = Options::parse(&query)?;
+        assert_eq!(
+            plan.protocol.presentation_uri,
+            "rtsp://camera.test:8554/camera?token=secret"
+        );
+        assert_ne!(plan.digest()?, original);
+        let preview = plan.preview()?;
+        assert!(preview.contains("\"presentation_uri\":\"[redacted]\""));
+        assert!(preview.contains("\"control_root_uri\":\"[redacted]\""));
+        assert!(!preview.contains("token=secret"));
+        assert!(
+            preview.contains(
+                &ContentDigest::sha256(plan.protocol.presentation_uri.as_bytes()).to_text()
+            )
+        );
+        set(&mut query, "--presentation", "/camera?token=different");
+        assert_ne!(Options::parse(&query)?.digest()?, plan.digest()?);
+
+        let mut repeated_separator = args();
+        set(&mut repeated_separator, "--codec", codec);
+        set(&mut repeated_separator, "--presentation", "/camera//main");
+        let plan = Options::parse(&repeated_separator)?;
+        assert_eq!(
+            plan.protocol.presentation_uri,
+            "rtsp://camera.test:8554/camera//main"
+        );
+        assert!(
+            plan.preview()?
+                .contains("rtsp://camera.test:8554/camera//main")
+        );
+        set(&mut repeated_separator, "--presentation", "/camera/main");
+        assert_ne!(
+            Options::parse(&repeated_separator)?.digest()?,
+            plan.digest()?
+        );
+    }
+    Ok(())
 }
 
 #[test]

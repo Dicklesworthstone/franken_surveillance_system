@@ -1,0 +1,1116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.dev/schemas/site_capture_plan.v1.json",
+  "title": "FSS atomic site capture plan v1",
+  "description": "Pure direct RTSP/NVR AVC/HEVC planning. The complete site digest binds canonical manifest and probe receipts plus exact native approvals. No site executor, rights-lease verification or current-liveness claim.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "phase",
+    "policy",
+    "site_id",
+    "manifest_generation",
+    "manifest_digest",
+    "epoch",
+    "approval",
+    "source_count",
+    "sources",
+    "effects_started",
+    "device_contacted",
+    "credentials_read",
+    "executor_available",
+    "rights_leases_verified",
+    "capture_authorized",
+    "probe_liveness_verified"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.site_capture_plan.v1"
+    },
+    "phase": {
+      "const": "planned"
+    },
+    "policy": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048
+    },
+    "site_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "manifest_generation": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 18446744073709551615
+    },
+    "manifest_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "epoch": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 18446744073709551615
+    },
+    "approval": {
+      "$ref": "#/$defs/digest"
+    },
+    "source_count": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 64
+    },
+    "sources": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": {
+        "$ref": "#/$defs/source"
+      }
+    },
+    "effects_started": {
+      "const": false
+    },
+    "device_contacted": {
+      "const": false
+    },
+    "credentials_read": {
+      "const": false
+    },
+    "executor_available": {
+      "const": false
+    },
+    "rights_leases_verified": {
+      "const": false
+    },
+    "capture_authorized": {
+      "const": false
+    },
+    "probe_liveness_verified": {
+      "const": false
+    }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "not": {
+        "const": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_index",
+        "source_id",
+        "source_generation",
+        "kind",
+        "stream_role",
+        "retention_class",
+        "probe_digest",
+        "command",
+        "argv",
+        "native_approval",
+        "native_plan"
+      ],
+      "properties": {
+        "source_index": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 63
+        },
+        "source_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "source_generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "kind": {
+          "enum": [
+            "rtsp",
+            "nvr_channel"
+          ]
+        },
+        "stream_role": {
+          "enum": [
+            "main",
+            "sub"
+          ]
+        },
+        "retention_class": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "probe_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "command": {
+          "const": "fss-capture-rtsp"
+        },
+        "argv": {
+          "description": "Exact native arguments as alternating option names and values. No --approve option is emitted. Treat successful plans as private operator material: paths and allowed exact route queries are retained.",
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 128,
+          "items": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        },
+        "native_approval": {
+          "$ref": "#/$defs/digest"
+        },
+        "native_plan": {
+          "$ref": "#/$defs/native_plan"
+        }
+      }
+    },
+    "native_plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "phase",
+        "approval",
+        "policy",
+        "codec",
+        "keepalive_method",
+        "keepalive_fallback",
+        "root",
+        "pins",
+        "peer",
+        "authority",
+        "presentation_uri",
+        "control_root_uri",
+        "principal",
+        "sensor",
+        "stream",
+        "ingress",
+        "anchor",
+        "receive_clock",
+        "timing_evidence",
+        "decode_clock",
+        "archive_namespace",
+        "journal_id",
+        "bounds",
+        "authentication",
+        "authentication_scope",
+        "timing",
+        "source_custody",
+        "wire_custody",
+        "capture_time",
+        "effects"
+      ],
+      "properties": {
+        "schema": {
+          "const": "fss.rtsp_capture_cli.v1"
+        },
+        "phase": {
+          "const": "planned"
+        },
+        "approval": {
+          "$ref": "#/$defs/digest"
+        },
+        "policy": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048
+        },
+        "codec": {
+          "enum": [
+            "avc",
+            "hevc"
+          ]
+        },
+        "keepalive_method": {
+          "const": "OPTIONS"
+        },
+        "keepalive_fallback": {
+          "const": false
+        },
+        "root": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "pins": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "peer": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "authority": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "presentation_uri": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "control_root_uri": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "principal": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "sensor": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "stream": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "ingress": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,38}$"
+        },
+        "anchor": {
+          "$ref": "#/$defs/digest"
+        },
+        "receive_clock": {
+          "$ref": "#/$defs/digest"
+        },
+        "timing_evidence": {
+          "$ref": "#/$defs/digest"
+        },
+        "decode_clock": {
+          "$ref": "#/$defs/digest"
+        },
+        "archive_namespace": {
+          "$ref": "#/$defs/digest"
+        },
+        "journal_id": {
+          "$ref": "#/$defs/digest"
+        },
+        "bounds": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "archive_max_steps",
+            "archive_pages",
+            "archive_scan_roots",
+            "archive_windows",
+            "assembly_age_ns",
+            "assembly_bytes",
+            "assembly_nals",
+            "cnonce_bytes_per_request",
+            "coded_height",
+            "coded_width",
+            "collector_age_ns",
+            "collector_nals",
+            "collector_packets",
+            "collector_picture_bytes",
+            "collector_pictures",
+            "collector_source_bytes",
+            "collector_source_spans",
+            "connect_timeout_ns",
+            "credential_file_bytes",
+            "default_session_timeout_seconds",
+            "drain_timeout_ns",
+            "extension_bytes",
+            "fragment_age_ns",
+            "fragment_packets",
+            "frame_duration_ticks",
+            "generation",
+            "luma_samples",
+            "max_io_calls",
+            "max_received_bytes",
+            "max_report_bytes",
+            "max_request_bytes",
+            "max_sent_bytes",
+            "max_steps",
+            "max_storage_pause_ns",
+            "media_index",
+            "nal_bytes",
+            "packet_bytes",
+            "packet_nals",
+            "parameter_set_bytes",
+            "payload_type",
+            "pin_bytes",
+            "pin_records",
+            "publication_children",
+            "publication_deadline_ns",
+            "publication_roots",
+            "publication_scan_entries",
+            "publication_tombstones",
+            "read_bytes",
+            "reorder_bytes",
+            "reorder_delay_ns",
+            "reorder_packets",
+            "response_timeout_ns",
+            "rtcp_channel",
+            "rtcp_packets",
+            "rtp_channel",
+            "secret_io_calls_per_read",
+            "spool_object_bytes",
+            "spool_objects",
+            "spool_scan_entries",
+            "spool_total_bytes",
+            "ssrc",
+            "stop_after_pictures",
+            "time_scale",
+            "timeout_ns",
+            "window_bytes",
+            "windows_per_page",
+            "wire_body_bytes",
+            "wire_buffer_bytes",
+            "wire_chunk_bytes",
+            "wire_header_bytes",
+            "wire_lifetime_ns",
+            "work_graph_objects",
+            "work_new_bytes",
+            "work_pending_bytes"
+          ],
+          "properties": {
+            "archive_max_steps": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "archive_pages": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "archive_scan_roots": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "archive_windows": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "assembly_age_ns": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "assembly_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "assembly_nals": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "assembly_source_spans": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "cnonce_bytes_per_request": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "coded_height": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "coded_width": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "collector_age_ns": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "collector_nals": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "collector_packets": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "collector_picture_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "collector_pictures": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "collector_source_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "collector_source_spans": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "connect_timeout_ns": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "credential_file_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "default_session_timeout_seconds": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "drain_timeout_ns": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "extension_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "fragment_age_ns": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "fragment_packets": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "frame_duration_ticks": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "generation": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "luma_samples": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "max_io_calls": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "max_received_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "max_report_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "max_request_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "max_sent_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "max_steps": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "max_storage_pause_ns": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "media_index": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "nal_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "packet_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "packet_nals": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "parameter_set_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "payload_type": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "pin_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "pin_records": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "publication_children": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "publication_deadline_ns": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "publication_roots": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "publication_scan_entries": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "publication_tombstones": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "read_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "reference_frames": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "reorder_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "reorder_delay_ns": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "reorder_packets": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "response_timeout_ns": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "rtcp_channel": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "rtcp_packets": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "rtp_channel": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "secret_io_calls_per_read": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "slice_identity_bits": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "source_only_lookahead_nals": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "spool_object_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "spool_objects": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "spool_scan_entries": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "spool_total_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "ssrc": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "stop_after_pictures": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "syntax_nal_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "time_scale": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "timeout_ns": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "window_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "windows_per_page": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "wire_body_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "wire_buffer_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "wire_chunk_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "wire_header_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "wire_lifetime_ns": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "work_graph_objects": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "work_new_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "work_pending_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            }
+          }
+        },
+        "authentication": {
+          "enum": [
+            "digest",
+            "challenge-refused"
+          ]
+        },
+        "authentication_scope": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "credential_file",
+                "realm_digest",
+                "allow_legacy_md5",
+                "allow_legacy_no_qop",
+                "credential_backend",
+                "entropy_backend",
+                "credentials_read",
+                "server_identity_verified",
+                "transport_encrypted"
+              ],
+              "properties": {
+                "credential_file": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4096
+                },
+                "realm_digest": {
+                  "$ref": "#/$defs/digest"
+                },
+                "allow_legacy_md5": {
+                  "type": "boolean"
+                },
+                "allow_legacy_no_qop": {
+                  "type": "boolean"
+                },
+                "credential_backend": {
+                  "const": "linux_private_regular_file"
+                },
+                "entropy_backend": {
+                  "const": "linux_urandom"
+                },
+                "credentials_read": {
+                  "const": false
+                },
+                "server_identity_verified": {
+                  "const": false
+                },
+                "transport_encrypted": {
+                  "const": false
+                }
+              }
+            }
+          ]
+        },
+        "timing": {
+          "const": "operator-asserted-fixed-cadence-relative-dts"
+        },
+        "source_custody": {
+          "const": "selected-original-rtp-local-unencrypted"
+        },
+        "wire_custody": {
+          "const": "raw-control-and-rtcp-not-retained"
+        },
+        "capture_time": {
+          "const": "unknown"
+        },
+        "effects": {
+          "const": "none-until-exact-approval"
+        },
+        "presentation_uri_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "control_root_uri_digest": {
+          "$ref": "#/$defs/digest"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "codec": {
+                "const": "avc"
+              }
+            },
+            "required": [
+              "codec"
+            ]
+          },
+          "then": {
+            "properties": {
+              "bounds": {
+                "required": [
+                  "archive_max_steps",
+                  "archive_pages",
+                  "archive_scan_roots",
+                  "archive_windows",
+                  "assembly_age_ns",
+                  "assembly_bytes",
+                  "assembly_nals",
+                  "cnonce_bytes_per_request",
+                  "coded_height",
+                  "coded_width",
+                  "collector_age_ns",
+                  "collector_nals",
+                  "collector_packets",
+                  "collector_picture_bytes",
+                  "collector_pictures",
+                  "collector_source_bytes",
+                  "collector_source_spans",
+                  "connect_timeout_ns",
+                  "credential_file_bytes",
+                  "default_session_timeout_seconds",
+                  "drain_timeout_ns",
+                  "extension_bytes",
+                  "fragment_age_ns",
+                  "fragment_packets",
+                  "frame_duration_ticks",
+                  "generation",
+                  "luma_samples",
+                  "max_io_calls",
+                  "max_received_bytes",
+                  "max_report_bytes",
+                  "max_request_bytes",
+                  "max_sent_bytes",
+                  "max_steps",
+                  "max_storage_pause_ns",
+                  "media_index",
+                  "nal_bytes",
+                  "packet_bytes",
+                  "packet_nals",
+                  "parameter_set_bytes",
+                  "payload_type",
+                  "pin_bytes",
+                  "pin_records",
+                  "publication_children",
+                  "publication_deadline_ns",
+                  "publication_roots",
+                  "publication_scan_entries",
+                  "publication_tombstones",
+                  "read_bytes",
+                  "reference_frames",
+                  "reorder_bytes",
+                  "reorder_delay_ns",
+                  "reorder_packets",
+                  "response_timeout_ns",
+                  "rtcp_channel",
+                  "rtcp_packets",
+                  "rtp_channel",
+                  "secret_io_calls_per_read",
+                  "slice_identity_bits",
+                  "spool_object_bytes",
+                  "spool_objects",
+                  "spool_scan_entries",
+                  "spool_total_bytes",
+                  "ssrc",
+                  "stop_after_pictures",
+                  "syntax_nal_bytes",
+                  "time_scale",
+                  "timeout_ns",
+                  "window_bytes",
+                  "windows_per_page",
+                  "wire_body_bytes",
+                  "wire_buffer_bytes",
+                  "wire_chunk_bytes",
+                  "wire_header_bytes",
+                  "wire_lifetime_ns",
+                  "work_graph_objects",
+                  "work_new_bytes",
+                  "work_pending_bytes"
+                ],
+                "not": {
+                  "anyOf": [
+                    {
+                      "required": [
+                        "assembly_source_spans"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "source_only_lookahead_nals"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "codec": {
+                "const": "hevc"
+              }
+            },
+            "required": [
+              "codec"
+            ]
+          },
+          "then": {
+            "properties": {
+              "bounds": {
+                "required": [
+                  "archive_max_steps",
+                  "archive_pages",
+                  "archive_scan_roots",
+                  "archive_windows",
+                  "assembly_age_ns",
+                  "assembly_bytes",
+                  "assembly_nals",
+                  "assembly_source_spans",
+                  "cnonce_bytes_per_request",
+                  "coded_height",
+                  "coded_width",
+                  "collector_age_ns",
+                  "collector_nals",
+                  "collector_packets",
+                  "collector_picture_bytes",
+                  "collector_pictures",
+                  "collector_source_bytes",
+                  "collector_source_spans",
+                  "connect_timeout_ns",
+                  "credential_file_bytes",
+                  "default_session_timeout_seconds",
+                  "drain_timeout_ns",
+                  "extension_bytes",
+                  "fragment_age_ns",
+                  "fragment_packets",
+                  "frame_duration_ticks",
+                  "generation",
+                  "luma_samples",
+                  "max_io_calls",
+                  "max_received_bytes",
+                  "max_report_bytes",
+                  "max_request_bytes",
+                  "max_sent_bytes",
+                  "max_steps",
+                  "max_storage_pause_ns",
+                  "media_index",
+                  "nal_bytes",
+                  "packet_bytes",
+                  "packet_nals",
+                  "parameter_set_bytes",
+                  "payload_type",
+                  "pin_bytes",
+                  "pin_records",
+                  "publication_children",
+                  "publication_deadline_ns",
+                  "publication_roots",
+                  "publication_scan_entries",
+                  "publication_tombstones",
+                  "read_bytes",
+                  "reorder_bytes",
+                  "reorder_delay_ns",
+                  "reorder_packets",
+                  "response_timeout_ns",
+                  "rtcp_channel",
+                  "rtcp_packets",
+                  "rtp_channel",
+                  "secret_io_calls_per_read",
+                  "source_only_lookahead_nals",
+                  "spool_object_bytes",
+                  "spool_objects",
+                  "spool_scan_entries",
+                  "spool_total_bytes",
+                  "ssrc",
+                  "stop_after_pictures",
+                  "time_scale",
+                  "timeout_ns",
+                  "window_bytes",
+                  "windows_per_page",
+                  "wire_body_bytes",
+                  "wire_buffer_bytes",
+                  "wire_chunk_bytes",
+                  "wire_header_bytes",
+                  "wire_lifetime_ns",
+                  "work_graph_objects",
+                  "work_new_bytes",
+                  "work_pending_bytes"
+                ],
+                "not": {
+                  "anyOf": [
+                    {
+                      "required": [
+                        "reference_frames"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "slice_identity_bits"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "syntax_nal_bytes"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "anyOf": [
+              {
+                "required": [
+                  "presentation_uri_digest"
+                ]
+              },
+              {
+                "required": [
+                  "control_root_uri_digest"
+                ]
+              }
+            ]
+          },
+          "then": {
+            "required": [
+              "control_root_uri_digest",
+              "presentation_uri_digest"
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

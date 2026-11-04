@@ -29,6 +29,10 @@ mod source_mode;
 #[path = "fss-capture-rtsp/timing.rs"]
 mod timing;
 
+#[cfg(test)]
+#[path = "fss-capture-rtsp/plan_mode_tests.rs"]
+mod plan_mode_tests;
+
 fn main() -> ExitCode {
     let args: Vec<_> = std::env::args_os()
         .skip(1)

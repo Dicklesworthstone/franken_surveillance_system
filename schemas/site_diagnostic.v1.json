@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "$id": "https://franken-surveillance-system.dev/schemas/site_diagnostic.v1.json",
+  "title": "FSS site planning refusal v1",
+  "required": [
+    "schema",
+    "phase",
+    "binary",
+    "command",
+    "error_id",
+    "exit_id",
+    "exit_code",
+    "reason",
+    "source_index",
+    "device_contacted",
+    "credentials_read",
+    "effect_started",
+    "partial_plan"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.site_diagnostic.v1"
+    },
+    "phase": {
+      "const": "execution"
+    },
+    "binary": {
+      "const": "fss"
+    },
+    "command": {
+      "const": "site"
+    },
+    "error_id": {
+      "type": "string",
+      "pattern": "^ERR-SITE-"
+    },
+    "exit_id": {
+      "const": "EXIT-CLI-MALFORMED-VALUE-002"
+    },
+    "exit_code": {
+      "const": 2
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "source_index": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0,
+      "maximum": 63
+    },
+    "device_contacted": {
+      "const": false
+    },
+    "credentials_read": {
+      "const": false
+    },
+    "effect_started": {
+      "const": false
+    },
+    "partial_plan": {
+      "const": false
+    }
+  }
+}

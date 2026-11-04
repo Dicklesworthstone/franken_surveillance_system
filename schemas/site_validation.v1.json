@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "$id": "https://franken-surveillance-system.dev/schemas/site_validation.v1.json",
+  "title": "FSS site manifest validation v1",
+  "required": [
+    "schema",
+    "status",
+    "site_id",
+    "generation",
+    "manifest_digest",
+    "source_count",
+    "sources",
+    "device_contacted",
+    "credentials_read",
+    "rights_verdict_verified",
+    "capture_authorized"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.site_validation.v1"
+    },
+    "status": {
+      "const": "validated"
+    },
+    "site_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "generation": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "manifest_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "source_count": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 64
+    },
+    "sources": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "source_id",
+          "kind",
+          "stream_role"
+        ],
+        "properties": {
+          "source_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "kind": {
+            "enum": [
+              "rtsp",
+              "onvif",
+              "unifi_protect",
+              "nvr_channel"
+            ]
+          },
+          "stream_role": {
+            "enum": [
+              "main",
+              "sub"
+            ]
+          }
+        }
+      }
+    },
+    "device_contacted": {
+      "const": false
+    },
+    "credentials_read": {
+      "const": false
+    },
+    "rights_verdict_verified": {
+      "const": false
+    },
+    "capture_authorized": {
+      "const": false
+    }
+  }
+}
