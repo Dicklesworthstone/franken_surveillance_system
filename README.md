@@ -175,9 +175,11 @@ See [`DEVICE_ADAPTER_MATRIX.md`](DEVICE_ADAPTER_MATRIX.md) and
 
 `fss site validate --manifest SITE.json --json` validates a bounded camera inventory
 and reports its canonical identity. `fss site plan` combines that manifest with supplied
-probe receipts to generate exact native RTSP/NVR AVC/HEVC capture plans, including
+probe receipts to generate exact native RTSP/NVR AVC/HEVC/JPEG capture plans, including
 deterministic sensor/stream identities, per-source destinations and one enclosing site
 approval digest. Every source must pass; an invalid source produces no partial plan.
+JPEG uses the existing datagram-capture command and its 256-picture limit; AVC/HEVC
+retain their existing native planning and approval behavior.
 
 `fss site probe-file` now derives receipts from independently pinned recorded
 DESCRIBE responses and RTPdump samples using native AVC/HEVC picture assembly.

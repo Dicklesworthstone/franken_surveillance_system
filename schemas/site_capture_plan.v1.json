@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://franken-surveillance-system.dev/schemas/site_capture_plan.v1.json",
   "title": "FSS atomic site capture plan v1",
-  "description": "Pure direct RTSP/NVR AVC/HEVC planning. The complete site digest binds canonical manifest and probe receipts plus exact native approvals. No site executor, rights-lease verification or current-liveness claim.",
+  "description": "Pure direct RTSP/NVR AVC/HEVC/JPEG planning. The complete site digest binds canonical manifest and probe receipts plus exact native approvals. No site executor, rights-lease verification or current-liveness claim. JPEG sources use the existing bounded datagram-capture planner and require at most 256 pictures; native JPEG plans contain no independent AVC/HEVC pin journal or cadence option.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -90,6 +90,12 @@
     },
     "probe_liveness_verified": {
       "const": false
+    },
+    "reserved_pins_root": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "description": "Independent journal parent reserved by the site request, displayed and approval-bound whenever the site contains JPEG. Native JPEG capture does not create or use an AVC/HEVC pin journal."
     }
   },
   "$defs": {
@@ -156,7 +162,7 @@
           "const": "fss-capture-rtsp"
         },
         "argv": {
-          "description": "Exact native arguments as alternating option names and values. No --approve option is emitted. Treat successful plans as private operator material: paths and allowed exact route queries are retained.",
+          "description": "Exact native arguments, with an initial jpeg subcommand for JPEG and alternating option names and values after it. No --approve option is emitted. Treat successful plans as private operator material: paths and allowed exact route queries are retained.",
           "type": "array",
           "minItems": 2,
           "maxItems": 128,
@@ -169,7 +175,14 @@
           "$ref": "#/$defs/digest"
         },
         "native_plan": {
-          "$ref": "#/$defs/native_plan"
+          "oneOf": [
+            {
+              "$ref": "#/$defs/native_plan"
+            },
+            {
+              "$ref": "#/$defs/native_jpeg_plan"
+            }
+          ]
         }
       }
     },
@@ -1111,6 +1124,532 @@
           }
         }
       ]
+    },
+    "native_jpeg_plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "phase",
+        "mode",
+        "approval",
+        "policy",
+        "root",
+        "principal",
+        "anchor",
+        "sensor",
+        "stream",
+        "scope",
+        "ingress",
+        "generation",
+        "ssrc",
+        "receive_clock",
+        "retention_evidence",
+        "peer",
+        "authority",
+        "presentation",
+        "control_root",
+        "media_index",
+        "rtp_channel",
+        "rtcp_channel",
+        "payload_type",
+        "stop_after_pictures",
+        "timeout_ns",
+        "max_steps",
+        "max_report_bytes",
+        "source_work",
+        "decode_work",
+        "transport",
+        "reorder",
+        "jpeg",
+        "decoder",
+        "archive",
+        "storage",
+        "replay",
+        "source_encrypted",
+        "capture_clock",
+        "control_messages_retained",
+        "automatic_reconnect",
+        "authentication",
+        "approved_storage_effects",
+        "effects"
+      ],
+      "properties": {
+        "schema": {
+          "const": "fss.rtsp_jpeg_capture_cli.v1"
+        },
+        "phase": {
+          "const": "planned"
+        },
+        "mode": {
+          "const": "capture"
+        },
+        "approval": {
+          "$ref": "#/$defs/digest"
+        },
+        "policy": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048
+        },
+        "root": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "principal": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "anchor": {
+          "$ref": "#/$defs/digest"
+        },
+        "sensor": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "stream": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "scope": {
+          "$ref": "#/$defs/digest"
+        },
+        "ingress": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,38}$"
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "ssrc": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "receive_clock": {
+          "$ref": "#/$defs/digest"
+        },
+        "retention_evidence": {
+          "$ref": "#/$defs/digest"
+        },
+        "peer": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "authority": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "presentation": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "control_root": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "media_index": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 15
+        },
+        "rtp_channel": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 254
+        },
+        "rtcp_channel": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 255
+        },
+        "payload_type": {
+          "type": "integer",
+          "anyOf": [
+            {
+              "const": 26
+            },
+            {
+              "minimum": 96,
+              "maximum": 127
+            }
+          ]
+        },
+        "stop_after_pictures": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 256
+        },
+        "timeout_ns": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 600000000000
+        },
+        "max_steps": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "max_report_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "source_work": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "decode_work": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "transport": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "max_received_bytes",
+            "max_sent_bytes",
+            "max_io_calls",
+            "max_request_bytes",
+            "read_bytes",
+            "connect_timeout_ns",
+            "response_timeout_ns",
+            "default_session_timeout_seconds"
+          ],
+          "properties": {
+            "max_received_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "max_sent_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "max_io_calls": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "max_request_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "read_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "connect_timeout_ns": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "response_timeout_ns": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "default_session_timeout_seconds": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            }
+          }
+        },
+        "reorder": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "max_packets",
+            "max_bytes",
+            "max_delay_ns",
+            "max_packet_bytes",
+            "max_extension_bytes",
+            "max_rtcp_packets"
+          ],
+          "properties": {
+            "max_packets": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "max_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "max_delay_ns": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "max_packet_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "max_extension_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "max_rtcp_packets": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            }
+          }
+        },
+        "jpeg": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "max_frame_bytes",
+            "max_fragment_packets",
+            "max_pending_age_ns",
+            "max_cached_quantizers",
+            "max_dimension"
+          ],
+          "properties": {
+            "max_frame_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "max_fragment_packets": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "max_pending_age_ns": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "max_cached_quantizers": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "max_dimension": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            }
+          }
+        },
+        "decoder": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "maximum_bytes",
+            "maximum_dimension",
+            "maximum_pixels",
+            "maximum_markers"
+          ],
+          "properties": {
+            "maximum_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "maximum_dimension": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "maximum_pixels": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "maximum_markers": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            }
+          }
+        },
+        "archive": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "max_datagrams",
+            "max_payload_bytes",
+            "max_scan_roots",
+            "max_spool_object_bytes"
+          ],
+          "properties": {
+            "max_datagrams": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "max_payload_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "max_scan_roots": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "max_spool_object_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            }
+          }
+        },
+        "storage": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "max_roots",
+            "max_children",
+            "max_tombstones",
+            "max_scan_entries",
+            "max_objects",
+            "max_total_bytes",
+            "max_object_bytes",
+            "max_spool_scan_entries"
+          ],
+          "properties": {
+            "max_roots": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "max_children": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "max_tombstones": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "max_scan_entries": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "max_objects": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "max_total_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "max_object_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "max_spool_scan_entries": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            }
+          }
+        },
+        "replay": {
+          "const": null
+        },
+        "source_encrypted": {
+          "const": false
+        },
+        "capture_clock": {
+          "const": null
+        },
+        "control_messages_retained": {
+          "const": false
+        },
+        "automatic_reconnect": {
+          "const": false
+        },
+        "authentication": {
+          "$ref": "#/$defs/native_plan/properties/authentication_scope"
+        },
+        "approved_storage_effects": {
+          "const": "native-locks-recovery-holds-temporary-metadata-cleanup-fsync"
+        },
+        "effects": {
+          "const": "none-until-exact-approval"
+        }
+      }
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "sources": {
+            "contains": {
+              "properties": {
+                "native_plan": {
+                  "properties": {
+                    "schema": {
+                      "const": "fss.rtsp_jpeg_capture_cli.v1"
+                    }
+                  },
+                  "required": [
+                    "schema"
+                  ]
+                }
+              },
+              "required": [
+                "native_plan"
+              ]
+            }
+          }
+        },
+        "required": [
+          "sources"
+        ]
+      },
+      "then": {
+        "required": [
+          "reserved_pins_root"
+        ],
+        "properties": {
+          "policy": {
+            "const": "site-capture-plan:v1:manifest-and-probe-pinned:all-sources-or-none:existing-native-avc-hevc-jpeg-planners:exact-ssrc:receipt-bound-cadence:receipt-bound-jpeg-retention:reserved-journal-parent-bound:no-executor:no-rights-grant"
+          }
+        }
+      },
+      "else": {
+        "not": {
+          "required": [
+            "reserved_pins_root"
+          ]
+        },
+        "properties": {
+          "policy": {
+            "const": "site-capture-plan:v1:manifest-and-probe-pinned:all-sources-or-none:existing-native-avc-hevc-planner:exact-ssrc-and-cadence:no-executor:no-rights-grant"
+          }
+        }
+      }
+    }
+  ]
 }

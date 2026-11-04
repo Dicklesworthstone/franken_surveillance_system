@@ -6,7 +6,7 @@ deterministic site preview containing the existing native RTSP capture plans.
 This removes the need to hand-invent sensor, stream, ingress, clock, authority,
 journal and destination identities for every camera and operation.
 
-This is the direct RTSP/NVR, AVC/HEVC portion of VIT-001 and VIT-002 in
+This is the direct RTSP/NVR, AVC/HEVC/JPEG portion of VIT-001 and VIT-002 in
 [the footage-plane plan](VITTLES_FOOTAGE_PLANE_PLAN.md). Planning reads the named
 control documents; it does not contact devices, read credentials, create archives,
 verify signed rights leases or start recording. No `site run`, `site probe` or
@@ -35,8 +35,35 @@ The output parents do not have to exist for planning. Their existence and native
 storage protections are checked only by a separately approved native capture.
 The planner will not inspect either directory. Use separate, nonnested absolute
 parents, with no `.` or `..` components. Credentials must be outside both output
-namespaces. One operation is limited to 1 through 4096 pictures per source and to
-the native deadline ceiling; slower cadence can lower the effective picture cap.
+namespaces. AVC/HEVC captures accept 1 through 4096 pictures per source; JPEG
+captures accept 1 through 256. The same requested count applies to every source,
+so a mixed site containing JPEG also has a 256-picture ceiling. A request above
+any source's limit refuses the whole plan; it is never silently reduced. The
+native deadline ceiling also applies, and slower cadence can lower the effective
+picture cap. The existing JPEG planner additionally requires a nonzero SSRC and
+media index 0 through 15. A supplied JPEG receipt outside those native limits
+refuses; the compiler does not replace its selected stream. AVC/HEVC retain their
+existing exact-zero SSRC behavior.
+
+For a mixed AVC/JPEG example, keep the same manifest and use the alternate
+synthetic receipt inventory:
+
+```sh
+cargo run --locked -p fss-cli --bin fss -- site plan \
+  --manifest fixtures/site/manifest.v1.json \
+  --probes fixtures/site/probes-avc-jpeg.v1.json \
+  --archive-root /srv/fss/footage \
+  --pins-root /srv/fss/pins \
+  --epoch 1 --stop-after-pictures 250 --json
+```
+
+JPEG plans emit the existing `fss-capture-rtsp jpeg` command. It retains original
+RTP/RTCP datagrams in its source archive and uses the native JPEG prefix custody
+contract. It does not use the AVC/HEVC independent pin journal. The site command
+still requires and binds `--pins-root` and shows it as `reserved_pins_root` for
+JPEG sites, so the complete destination declaration is reviewable, including for
+an all-JPEG site. Actual JPEG capture's prefix receipts must still be retained
+independently as documented in [the native JPEG guide](rtsp_jpeg_capture_cli.md).
 
 `--principal principal:local-operator` is the default audit label. An alternative
 principal must be explicit; a label does not authenticate its author. `--epoch`
@@ -67,12 +94,21 @@ Each source declares the following scope:
 | `authentication` | Optional private credential-file reference and exact Digest policy. No inline username or password. |
 | `retention_class`, `rights_verdict_ref` | Bounded opaque references, included in identity; neither activates retention nor grants rights. |
 | `zones`, `payment_masks` | Explicit image geometry. Empty arrays are allowed; masks are never silently dropped. |
-| `max_connections` | Declared device limit from 1 through 16, preserved in manifest identity. This planner does not schedule connections. |
+| `max_connections` | Declared device limit from 1 through 16, preserved in manifest identity. Sources sharing a canonical literal IP must declare the same ceiling, including across ports and IPv4-mapped IPv6 spellings. This planner does not schedule connections. |
 | `owner_authorized`, `plaintext`, `retain_originals` | Required booleans. Each must be true before compiling the current native capture path. They are declarations, not authenticated grants. |
 
 Optional route fields may be omitted or null. Unknown fields, duplicate JSON
-members, duplicate source/zone IDs, noncanonical numbers and inconsistent route
-fields refuse. Whole inputs are limited to 1 MiB. Stable identifiers are bounded
+members, duplicate source/zone IDs, duplicate RTSP/NVR routes, noncanonical
+numbers and inconsistent route fields refuse. Duplicate route checks bind the
+canonical peer IP, port, normalized authority host and validated presentation;
+changing a source ID, stream role or control subtree cannot create another
+acquisition of the same route. Unreserved percent escapes and escaped hex case
+are normalized only for comparison; reserved delimiters, query ordering, values
+and original wire spellings retain their meaning. Authority comparison normalizes
+DNS host case and IPv6 text while preserving port declarations. Distinct presentation paths
+and virtual-host authorities remain valid. Shared IP connection declarations are
+conservative limits, not an assertion that all sources belong to one physical
+camera. Whole inputs are limited to 1 MiB. Stable identifiers are bounded
 ASCII strings beginning with an alphanumeric character, with `._:-` also allowed.
 
 An authentication declaration has this shape:
@@ -114,8 +150,13 @@ A receipt binds the exact manifest digest and source generation, literal peer,
 authority, presentation/control subtree, selected SDP media index, RTP/RTCP
 channels, SDP digest, codec, payload type, SSRC and observed timing. It also
 contains ordered parameter-set digests and a bounded server-identity claim.
-AVC requires SPS/PPS hashes; HEVC requires VPS/SPS/PPS hashes. JPEG can be
-represented by the receipt contract but is refused by this compiler.
+AVC requires SPS/PPS hashes; HEVC requires VPS/SPS/PPS hashes. JPEG requires an
+empty parameter-set array and payload type 26 or an explicitly selected dynamic
+payload type. The exact receipt, including its cadence and SDP claims, contributes
+to the site approval and the JPEG retention-evidence identity. This identity does
+not grant retention rights or authenticate those claims. Native JPEG capture
+does not enforce a cadence pin; the supplied cadence sizes the timeout and stays
+bound to the declared receipt.
 
 Timing must use the native 90 kHz clock and a positive constant frame duration
 of at most 90,000 ticks. At least two picture observations are required. The
@@ -139,7 +180,9 @@ producer and authenticated/fresh receipt handling remain separate work.
 The complete output follows
 [`fss.site_capture_plan.v1`](../schemas/site_capture_plan.v1.json). Each source
 includes an `argv` array for `fss-capture-rtsp`, the exact native `native_approval`
-and the native `native_plan` JSON. The arguments contain no `--approve`. The
+and the native `native_plan` JSON. JPEG argument arrays start with `jpeg`; their
+native report uses `fss.rtsp_jpeg_capture_cli.v1`, while AVC/HEVC reports retain
+`fss.rtsp_capture_cli.v1`. The arguments contain no `--approve`. The
 compiler invokes the same production planning source as the native binary;
 defaults, resource limits and approval encoding have one implementation.
 
@@ -190,7 +233,7 @@ control-file admission checks, not cryptographic provenance or a trusted parent
 directory guarantee.
 
 No command infers success for an unsupported source. ONVIF/UniFi onboarding,
-RTP/JPEG site compilation, live probing, automatic discovery, TLS/RTSPS, signed
+live probing, automatic discovery, TLS/RTSPS, signed
 rights-lease verification, site execution, retention rings and agent footage
 queries remain outside this implementation. Existing standalone native tools
 retain their separately documented capabilities.
@@ -199,7 +242,8 @@ retain their separately documented capabilities.
 
 - `fss_reference::site` owns strict admission, typed validation and canonical
   manifest/source/receipt identities.
-- `fss_cli::capture_plan::prepare_rtsp` exposes the existing pure native planner.
+- `fss_cli::capture_plan::{prepare_rtsp, prepare_jpeg}` expose the existing pure
+  native planners. They refuse execution approval and JPEG replay requests.
 - `fss_cli::site_plan::compile` atomically compiles a whole site without I/O.
 - `fss_cli::site_cmd` owns CLI parsing, bounded input-file authority and reports.
 - `crates/fss-cli/tests/site_cli_contract.rs` exercises emitted native plans,

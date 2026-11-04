@@ -18,7 +18,7 @@ pub mod probe_observation;
 #[cfg(test)]
 mod tests;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::path::{Component, PathBuf};
@@ -65,7 +65,7 @@ pub enum SiteError {
     UnknownField,
     /// A known field has invalid syntax, type, bounds, or semantics.
     InvalidField(&'static str),
-    /// A site source identity occurs more than once.
+    /// A site source identity or normalized RTSP route occurs more than once.
     DuplicateSource,
     /// A source zone identity occurs more than once.
     DuplicateZone,
@@ -379,11 +379,40 @@ impl SiteManifest {
             return Err(SiteError::Limit);
         }
         let mut ids = BTreeSet::new();
+        let mut peer_limits = BTreeMap::new();
+        let mut routes = BTreeSet::new();
         let mut vertices = 0usize;
         for source in &self.sources {
             source.validate()?;
             if !ids.insert(&source.source_id) {
                 return Err(SiteError::DuplicateSource);
+            }
+            // This is a consistency rule for declarations, not a live scheduler. Ports
+            // and IPv4-mapped IPv6 aliases cannot create another ceiling for the same IP.
+            let ip = physical_peer_ip(source.peer);
+            if peer_limits
+                .insert(ip, source.max_connections)
+                .is_some_and(|limit| limit != source.max_connections)
+            {
+                return Err(SiteError::InvalidField("max_connections"));
+            }
+            if matches!(source.kind, SourceKind::Rtsp | SourceKind::NvrChannel) {
+                let presentation = source
+                    .presentation
+                    .as_deref()
+                    .ok_or(SiteError::MissingField("presentation"))?;
+                // Keep distinct authority hosts separate: one peer may host multiple
+                // virtual cameras. Normalize only host spelling, never path/query case.
+                // Source names, roles and control subtrees are not new footage.
+                let route = (
+                    ip,
+                    source.peer.port(),
+                    authority_identity(&source.authority)?,
+                    presentation_identity(presentation)?,
+                );
+                if !routes.insert(route) {
+                    return Err(SiteError::DuplicateSource);
+                }
             }
             for zone in &source.zones {
                 vertices = vertices
@@ -396,6 +425,61 @@ impl SiteManifest {
         }
         Ok(())
     }
+}
+
+fn physical_peer_ip(peer: SocketAddr) -> IpAddr {
+    match peer.ip() {
+        IpAddr::V6(ip) => ip.to_ipv4_mapped().map_or(IpAddr::V6(ip), IpAddr::V4),
+        ip => ip,
+    }
+}
+
+// Normalize only host identity for comparison. Preserve explicit versus absent port
+// declarations; the original spelling remains in canonical identity and wire requests.
+fn authority_identity(authority: &str) -> Result<String, SiteError> {
+    if let Some(rest) = authority.strip_prefix('[') {
+        let (address, suffix) = rest
+            .split_once(']')
+            .ok_or(SiteError::InvalidField("authority"))?;
+        let address = address
+            .parse::<Ipv6Addr>()
+            .map_err(|_| SiteError::InvalidField("authority"))?;
+        Ok(format!("[{address}]{suffix}"))
+    } else {
+        Ok(authority.to_ascii_lowercase())
+    }
+}
+
+// A comparison key only. The original spelling still participates in the canonical
+// manifest and native request, including Digest authentication. Normalize URI unreserved
+// escapes and hex case; preserve reserved separators, query order, values and letter case.
+// `source.validate()` has already bounded and admitted this ASCII presentation.
+fn presentation_identity(presentation: &str) -> Result<String, SiteError> {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut identity = String::with_capacity(presentation.len());
+    let bytes = presentation.as_bytes();
+    let mut at = 0usize;
+    while at < bytes.len() {
+        if bytes[at] != b'%' {
+            identity.push(char::from(bytes[at]));
+            at += 1;
+            continue;
+        }
+        let digits = presentation
+            .get(at + 1..at + 3)
+            .ok_or(SiteError::InvalidField("presentation"))?;
+        let decoded =
+            u8::from_str_radix(digits, 16).map_err(|_| SiteError::InvalidField("presentation"))?;
+        if decoded.is_ascii_alphanumeric() || b"-._~".contains(&decoded) {
+            identity.push(char::from(decoded));
+        } else {
+            identity.push('%');
+            identity.push(char::from(HEX[usize::from(decoded >> 4)]));
+            identity.push(char::from(HEX[usize::from(decoded & 15)]));
+        }
+        at += 3;
+    }
+    Ok(identity)
 }
 
 impl SiteSource {

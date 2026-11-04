@@ -375,6 +375,11 @@ fn multi_source_avc_and_hevc_plans_match_native_cli_without_contact_or_secret_re
     let bytes = output.stdout.clone();
     let site = good(output)?;
     assert_eq!(text(&site, "schema")?, "fss.site_capture_plan.v1");
+    assert!(
+        !site
+            .object()
+            .is_some_and(|fields| fields.contains_key("reserved_pins_root"))
+    );
     for key in [
         "effects_started",
         "executor_available",
@@ -545,8 +550,7 @@ fn one_bad_receipt_refuses_the_entire_multi_source_plan() -> Test {
 }
 
 #[test]
-fn source_permissions_payment_masks_and_unsupported_sources_cannot_fall_through_to_capture() -> Test
-{
+fn source_permissions_and_payment_masks_cannot_fall_through_to_capture() -> Test {
     let mut fixture = Fixture::new("source-refusals", "127.0.0.1:8554")?;
     let baseline = fixture.manifest.clone();
     for permission in ["owner_authorized", "plaintext", "retain_originals"] {
@@ -590,22 +594,6 @@ fn source_permissions_payment_masks_and_unsupported_sources_cannot_fall_through_
         refused(run(false, &fixture.args())?, Some("ERR-SITE-PLAN-001"), &[])?;
     }
 
-    // JPEG receipts may be described by the input contract, but this native site compiler
-    // must not reinterpret one as an AVC or HEVC source.
-    fixture.manifest = baseline;
-    fixture.rebind_manifest()?;
-    set(
-        fixture.probe_mut(1)?,
-        "codec",
-        Value::Text("jpeg".to_owned()),
-    )?;
-    set(
-        fixture.probe_mut(1)?,
-        "parameter_set_digests",
-        Value::Array(Vec::new()),
-    )?;
-    fixture.write()?;
-    refused(run(false, &fixture.args())?, Some("ERR-SITE-PLAN-001"), &[])?;
     fixture.untouched();
     Ok(())
 }
@@ -779,5 +767,241 @@ fn site_grammar_refuses_execution_unknown_actions_and_ambiguous_options() -> Tes
         assert!(output.stdout.is_empty(), "grammar refusal returned a plan");
         assert!(!output.stderr.is_empty());
     }
+    Ok(())
+}
+
+fn select_jpeg(fixture: &mut Fixture, index: usize) -> Test {
+    let receipt = fixture.probe_mut(index)?;
+    set(receipt, "codec", Value::Text("jpeg".to_owned()))?;
+    set(receipt, "payload_type", Value::Number("26".to_owned()))?;
+    set(receipt, "parameter_set_digests", Value::Array(Vec::new()))?;
+    set(
+        receipt,
+        "sdp_digest",
+        Value::Text(ContentDigest::sha256(b"synthetic-jpeg-sdp").to_text()),
+    )?;
+    Ok(())
+}
+
+#[test]
+fn mixed_avc_jpeg_fixture_matches_native_capture_with_and_without_unread_credentials() -> Test {
+    let mut fixture = Fixture {
+        directory: Directory::new("jpeg-native-equivalence")?,
+        manifest: json_input::parse(include_str!("../../../fixtures/site/manifest.v1.json"))?,
+        probes: json_input::parse(include_str!(
+            "../../../fixtures/site/probes-avc-jpeg.v1.json"
+        ))?,
+    };
+    for authenticated in [false, true] {
+        if authenticated {
+            let credential = fixture.directory.0.join("credentials-not-created");
+            set(
+                source_mut(&mut fixture.manifest, 1)?,
+                "authentication",
+                json_input::parse(&format!(
+                    r#"{{"credential_file":{},"realm":"jpeg-owner-realm","legacy_md5":true,"legacy_no_qop":false}}"#,
+                    string(credential.to_str().ok_or("UTF-8 credential path")?),
+                ))?,
+            )?;
+            fixture.rebind_manifest()?;
+        }
+        fixture.write()?;
+        let output = run(false, &fixture.args())?;
+        let report_text = String::from_utf8(output.stdout.clone())?;
+        let plan = good(output)?;
+        assert!(text(&plan, "policy")?.contains("receipt-bound-jpeg-retention"));
+        assert_eq!(
+            text(&plan, "reserved_pins_root")?,
+            fixture
+                .directory
+                .0
+                .join("pins-not-created")
+                .to_str()
+                .ok_or("UTF-8 pin parent")?,
+        );
+        for flag in [
+            "effects_started",
+            "device_contacted",
+            "credentials_read",
+            "executor_available",
+            "rights_leases_verified",
+            "capture_authorized",
+        ] {
+            assert!(!boolean(&plan, flag)?);
+        }
+        let sources = items(&plan, "sources")?;
+        assert_eq!(sources.len(), 2);
+        for (index, source) in sources.iter().enumerate() {
+            let args = argv(source)?;
+            assert!(!args.iter().any(|arg| arg == "--approve"));
+            if index == 1 {
+                assert_eq!(args.first(), Some(&OsString::from("jpeg")));
+                assert_eq!(native_value(&args[1..], "--payload-type")?, "26");
+                assert_eq!(native_value(&args[1..], "--ssrc")?, "43");
+                let _ = ContentDigest::parse(native_value(&args[1..], "--retention-evidence")?)?;
+                for excluded in [
+                    "--pins",
+                    "--journal-id",
+                    "--timing-evidence",
+                    "--frame-duration-ticks",
+                    "--codec",
+                ] {
+                    assert!(!args.iter().any(|arg| arg == excluded));
+                }
+                assert_eq!(text(source, "kind")?, "nvr_channel");
+            } else {
+                assert_eq!(native_value(&args, "--codec")?, "avc");
+                assert_eq!(native_value(&args, "--frame-duration-ticks")?, "3600");
+            }
+            let native_output = run(true, &args)?;
+            let native_text = String::from_utf8(native_output.stdout.clone())?;
+            let native = good(native_output)?;
+            assert_eq!(field(source, "native_plan")?, &native);
+            assert_eq!(text(source, "native_approval")?, text(&native, "approval")?);
+            assert!(report_text.contains(&format!("\"native_plan\":{}", native_text.trim_end())));
+            if index == 1 {
+                assert_eq!(text(&native, "schema")?, "fss.rtsp_jpeg_capture_cli.v1");
+                assert_eq!(text(&native, "mode")?, "capture");
+                assert!(!native_text.contains("jpeg-owner-realm"));
+            }
+        }
+        fixture.untouched();
+    }
+    Ok(())
+}
+
+#[test]
+fn jpeg_native_limits_refuse_the_complete_site_without_substituting_probe_observations() -> Test {
+    let mut fixture = Fixture::new("jpeg-native-limits", "127.0.0.1:8554")?;
+    select_jpeg(&mut fixture, 1)?;
+    let baseline = fixture.probes.clone();
+    for (key, replacement) in [("ssrc", "0"), ("media_index", "16")] {
+        fixture.probes = baseline.clone();
+        set(
+            fixture.probe_mut(1)?,
+            key,
+            Value::Number(replacement.to_owned()),
+        )?;
+        fixture.write()?;
+        let diagnostic = refused(run(false, &fixture.args())?, Some("ERR-SITE-PLAN-001"), &[])?;
+        assert_eq!(field(&diagnostic, "source_index")?.integer(), Some(1));
+        assert!(
+            !diagnostic
+                .object()
+                .is_some_and(|fields| fields.contains_key("approval"))
+        );
+        fixture.untouched();
+    }
+    fixture.probes = baseline;
+    for (key, replacement) in [
+        ("ssrc", "1"),
+        ("media_index", "15"),
+        ("payload_type", "127"),
+        ("rtp_channel", "254"),
+        ("rtcp_channel", "255"),
+    ] {
+        set(
+            fixture.probe_mut(1)?,
+            key,
+            Value::Number(replacement.to_owned()),
+        )?;
+    }
+    fixture.write()?;
+    let mut args = fixture.args();
+    replace_arg(&mut args, "--stop-after-pictures", "256")?;
+    let plan = good(run(false, &args)?)?;
+    let jpeg_args = argv(&items(&plan, "sources")?[1])?;
+    assert_eq!(
+        native_value(&jpeg_args[1..], "--stop-after-pictures")?,
+        "256"
+    );
+    assert_eq!(native_value(&jpeg_args[1..], "--media-index")?, "15");
+    assert_eq!(native_value(&jpeg_args[1..], "--ssrc")?, "1");
+    assert_eq!(native_value(&jpeg_args[1..], "--rtp-channel")?, "254");
+    assert_eq!(native_value(&jpeg_args[1..], "--payload-type")?, "127");
+    replace_arg(&mut args, "--stop-after-pictures", "257")?;
+    let diagnostic = refused(run(false, &args)?, Some("ERR-SITE-PLAN-001"), &[])?;
+    assert_eq!(field(&diagnostic, "source_index")?.integer(), Some(1));
+
+    // Adding JPEG support cannot bypass the common original-retention gates.
+    set(
+        source_mut(&mut fixture.manifest, 1)?,
+        "retain_originals",
+        Value::Bool(false),
+    )?;
+    fixture.rebind_manifest()?;
+    fixture.write()?;
+    refused(run(false, &fixture.args())?, Some("ERR-SITE-PLAN-001"), &[])?;
+    fixture.untouched();
+    Ok(())
+}
+
+#[test]
+fn all_jpeg_site_binds_reserved_pin_parent_and_exact_retention_receipts() -> Test {
+    let mut fixture = Fixture::new("jpeg-retention-binding", "127.0.0.1:8554")?;
+    select_jpeg(&mut fixture, 0)?;
+    select_jpeg(&mut fixture, 1)?;
+    fixture.write()?;
+    let original = good(run(false, &fixture.args())?)?;
+    assert_eq!(
+        text(&original, "reserved_pins_root")?,
+        fixture
+            .directory
+            .0
+            .join("pins-not-created")
+            .to_str()
+            .ok_or("UTF-8 pin parent")?,
+    );
+
+    array_mut(&mut fixture.probes)?.reverse();
+    fixture.write()?;
+    assert_eq!(good(run(false, &fixture.args())?)?, original);
+    array_mut(&mut fixture.probes)?.reverse();
+    fixture.write()?;
+
+    let unused_pin_parent = fixture.directory.0.join("different-reserved-pins");
+    let mut moved_args = fixture.args();
+    replace_arg(
+        &mut moved_args,
+        "--pins-root",
+        unused_pin_parent.as_os_str(),
+    )?;
+    let moved = good(run(false, &moved_args)?)?;
+    assert_ne!(text(&original, "approval")?, text(&moved, "approval")?);
+    assert_eq!(
+        text(&moved, "reserved_pins_root")?,
+        unused_pin_parent.to_str().ok_or("UTF-8 pin parent")?,
+    );
+    // JPEG has no independent AVC/HEVC journal. This declaration is bound only
+    // by the enclosing JPEG site policy, not invented as a native JPEG argument.
+    assert_eq!(items(&original, "sources")?, items(&moved, "sources")?);
+    assert!(!unused_pin_parent.exists());
+
+    set(
+        fixture.probe_mut(1)?,
+        "server_identity",
+        Value::Text("different-synthetic-jpeg-server".to_owned()),
+    )?;
+    fixture.write()?;
+    let changed = good(run(false, &fixture.args())?)?;
+    assert_ne!(text(&original, "approval")?, text(&changed, "approval")?);
+    assert_eq!(
+        items(&original, "sources")?[0],
+        items(&changed, "sources")?[0]
+    );
+    let old = &items(&original, "sources")?[1];
+    let new = &items(&changed, "sources")?[1];
+    assert_ne!(text(old, "native_approval")?, text(new, "native_approval")?);
+    let old_args = argv(old)?;
+    let new_args = argv(new)?;
+    assert_ne!(
+        native_value(&old_args[1..], "--retention-evidence")?,
+        native_value(&new_args[1..], "--retention-evidence")?,
+    );
+    assert_eq!(
+        native_value(&old_args[1..], "--root")?,
+        native_value(&new_args[1..], "--root")?,
+    );
+    fixture.untouched();
     Ok(())
 }

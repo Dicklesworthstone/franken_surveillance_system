@@ -11,7 +11,7 @@ use std::path::{Component, Path, PathBuf};
 use fss_core::{CanonicalEncoder, ContentDigest, PrincipalId};
 use fss_reference::site::{ProbeCodec, SiteManifest, SiteProbeReceipt, SourceKind};
 
-use crate::capture_plan::prepare_rtsp;
+use crate::capture_plan::{prepare_jpeg, prepare_rtsp};
 use crate::json_output::{array, object, string, strings};
 
 /// Versioned site plan report schema.
@@ -23,6 +23,9 @@ pub const ERR_SITE_PLAN: &str = "ERR-SITE-PLAN-001";
 
 const POLICY: &str = "site-capture-plan:v1:manifest-and-probe-pinned:all-sources-or-none:\
 existing-native-avc-hevc-planner:exact-ssrc-and-cadence:no-executor:no-rights-grant";
+const JPEG_POLICY: &str = "site-capture-plan:v1:manifest-and-probe-pinned:all-sources-or-none:\
+existing-native-avc-hevc-jpeg-planners:exact-ssrc:receipt-bound-cadence:receipt-bound-jpeg-retention:\
+reserved-journal-parent-bound:no-executor:no-rights-grant";
 
 /// Explicit operation coordinates supplied separately from the site manifest.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -283,7 +286,7 @@ fn capture_timeout(pictures: u64, cadence: u32) -> Result<u64, SitePlanError> {
     Ok(timeout)
 }
 
-/// Compile an entire validated site into native AVC/HEVC capture previews.
+/// Compile an entire validated site into native AVC/HEVC/JPEG capture previews.
 ///
 /// Manifest and receipt validation is repeated for typed callers. Receipts must form an
 /// exact one-to-one inventory of the manifest, with the same site, manifest generation,
@@ -399,6 +402,11 @@ pub fn compile(
         }
     }
 
+    // Keep existing AVC/HEVC approvals byte-for-byte stable. JPEG source capture
+    // has a different custody format and no pin-journal argument, so its site
+    // policy explicitly binds the still-reserved independent journal parent.
+    let includes_jpeg = probes.values().any(|probe| probe.codec == ProbeCodec::Jpeg);
+    let policy = if includes_jpeg { JPEG_POLICY } else { POLICY };
     let mut sources = Vec::with_capacity(manifest.sources.len());
     let mut source_reports = Vec::with_capacity(manifest.sources.len());
     let mut ingress_ids = BTreeSet::new();
@@ -406,21 +414,19 @@ pub fn compile(
     let mut report_bytes = 0usize;
     let mut approval = CanonicalEncoder::new();
     approval.text(SITE_PLAN_SCHEMA);
-    approval.text(POLICY);
+    approval.text(policy);
     approval.digest(manifest_digest);
     approval.u64(options.epoch);
     approval.u64(manifest.sources.len() as u64);
+    if includes_jpeg {
+        approval.text(checked_base(&options.pins_root)?);
+    }
 
     for (index, source) in manifest.sources.iter().enumerate() {
         let probe = probes
             .get(&index)
             .ok_or_else(|| source_refused(index, "source has no exact probe receipt"))?;
-        if !matches!(probe.codec, ProbeCodec::Avc | ProbeCodec::Hevc) {
-            return Err(source_refused(
-                index,
-                "observed codec is not supported by the site AVC/HEVC compiler",
-            ));
-        }
+        let is_jpeg = probe.codec == ProbeCodec::Jpeg;
         if probe.rtp_channel.checked_add(1) != Some(probe.rtcp_channel) {
             return Err(source_refused(
                 index,
@@ -457,21 +463,39 @@ pub fn compile(
                 options.epoch,
             )
         };
-        let mut timing = CanonicalEncoder::new();
-        timing.text("fss.site_probe_timing.v1");
-        timing.digest(coordinate("timing-evidence")?);
-        timing.digest(probe_digest);
-        let timing = ContentDigest::sha256(
-            &timing
-                .finish_checked()
-                .map_err(|_| source_refused(index, "timing evidence encoding refused"))?,
-        );
+        // The JPEG retention reference binds this declared source scope and exact
+        // receipt. It is evidence identity only, never a verified rights verdict.
+        let mut evidence = CanonicalEncoder::new();
+        evidence.text(if is_jpeg {
+            "fss.site_probe_retention.v1"
+        } else {
+            "fss.site_probe_timing.v1"
+        });
+        evidence.digest(coordinate(if is_jpeg {
+            "retention-evidence"
+        } else {
+            "timing-evidence"
+        })?);
+        evidence.digest(probe_digest);
+        let evidence = ContentDigest::sha256(&evidence.finish_checked().map_err(|_| {
+            source_refused(
+                index,
+                if is_jpeg {
+                    "retention evidence encoding refused"
+                } else {
+                    "timing evidence encoding refused"
+                },
+            )
+        })?);
         let archive = options.archive_root.join(hex(scope));
         let pins = options.pins_root.join(hex(scope));
         let timeout = capture_timeout(options.stop_after_pictures, probe.frame_duration_ticks)
             .map_err(|error| source_refused(index, error.reason))?;
 
         let mut argv = Vec::with_capacity(64);
+        if is_jpeg {
+            argv.push("jpeg".to_owned());
+        }
         add(
             &mut argv,
             "--root",
@@ -479,12 +503,14 @@ pub fn compile(
                 .to_str()
                 .ok_or_else(|| source_refused(index, "UTF-8 archive path required"))?,
         );
-        add(
-            &mut argv,
-            "--pins",
-            pins.to_str()
-                .ok_or_else(|| source_refused(index, "UTF-8 journal path required"))?,
-        );
+        if !is_jpeg {
+            add(
+                &mut argv,
+                "--pins",
+                pins.to_str()
+                    .ok_or_else(|| source_refused(index, "UTF-8 journal path required"))?,
+            );
+        }
         add(&mut argv, "--peer", source.peer);
         add(&mut argv, "--authority", &source.authority);
         add(
@@ -526,17 +552,23 @@ pub fn compile(
             "--receive-clock",
             coordinate("receive-clock")?.to_text(),
         );
-        add(&mut argv, "--timing-evidence", timing.to_text());
-        add(&mut argv, "--journal-id", coordinate("journal")?.to_text());
-        add(&mut argv, "--codec", probe.codec.as_str());
+        if is_jpeg {
+            add(&mut argv, "--retention-evidence", evidence.to_text());
+        } else {
+            add(&mut argv, "--timing-evidence", evidence.to_text());
+            add(&mut argv, "--journal-id", coordinate("journal")?.to_text());
+            add(&mut argv, "--codec", probe.codec.as_str());
+        }
         add(&mut argv, "--payload-type", probe.payload_type);
         add(&mut argv, "--media-index", probe.media_index);
         add(&mut argv, "--rtp-channel", probe.rtp_channel);
-        add(
-            &mut argv,
-            "--frame-duration-ticks",
-            probe.frame_duration_ticks,
-        );
+        if !is_jpeg {
+            add(
+                &mut argv,
+                "--frame-duration-ticks",
+                probe.frame_duration_ticks,
+            );
+        }
         add(
             &mut argv,
             "--stop-after-pictures",
@@ -564,8 +596,17 @@ pub fn compile(
                 add(&mut argv, "--legacy-no-qop", "yes");
             }
         }
-        let os_args: Vec<OsString> = argv.iter().map(OsString::from).collect();
-        let native = prepare_rtsp(&os_args).map_err(|reason| source_refused(index, reason))?;
+        let os_args: Vec<OsString> = argv
+            .iter()
+            .skip(if is_jpeg { 1 } else { 0 })
+            .map(OsString::from)
+            .collect();
+        let native = if is_jpeg {
+            prepare_jpeg(&os_args)
+        } else {
+            prepare_rtsp(&os_args)
+        }
+        .map_err(|reason| source_refused(index, reason))?;
         approval.u64(index as u64);
         approval.text(&source.source_id);
         approval.digest(probe_digest);
@@ -606,10 +647,10 @@ pub fn compile(
             .finish_checked()
             .map_err(|_| refused("site approval encoding refused"))?,
     );
-    let report = object(&[
+    let mut report_fields = vec![
         ("schema", string(SITE_PLAN_SCHEMA)),
         ("phase", string("planned")),
-        ("policy", string(POLICY)),
+        ("policy", string(policy)),
         ("site_id", string(&manifest.site_id)),
         ("manifest_generation", manifest.generation.to_string()),
         ("manifest_digest", string(&manifest_digest.to_text())),
@@ -624,7 +665,14 @@ pub fn compile(
         ("rights_leases_verified", "false".to_owned()),
         ("capture_authorized", "false".to_owned()),
         ("probe_liveness_verified", "false".to_owned()),
-    ]);
+    ];
+    if includes_jpeg {
+        report_fields.push((
+            "reserved_pins_root",
+            string(checked_base(&options.pins_root)?),
+        ));
+    }
+    let report = object(&report_fields);
     if report.len() > MAX_SITE_PLAN_BYTES {
         return Err(refused("complete site report exceeds its bound"));
     }

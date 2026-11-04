@@ -138,6 +138,7 @@ fn complete_document_bounds_and_utf8_are_enforced() -> Test {
         .map(|index| {
             let mut source = source.clone();
             source.source_id = format!("source:{index}");
+            source.presentation = Some(format!("/live/source-{index}"));
             source
         })
         .collect();
@@ -454,6 +455,7 @@ fn aggregate_polygon_work_budget_is_independent_of_source_bounds() -> Test {
         .map(|index| {
             let mut s = source.clone();
             s.source_id = format!("source:{index}");
+            s.presentation = Some(format!("/live/source-{index}"));
             s.zones = (0..32)
                 .map(|z| SiteZone {
                     zone_id: format!("zone:{z}"),
@@ -465,5 +467,180 @@ fn aggregate_polygon_work_budget_is_independent_of_source_bounds() -> Test {
         })
         .collect();
     assert_eq!(value.validate(), Err(SiteError::Limit));
+    Ok(())
+}
+
+#[test]
+fn physical_peer_connection_limits_are_consistent_across_ports_and_ip_forms() -> Test {
+    let mut value = manifest()?;
+    value.sources[1].peer = value.sources[0].peer;
+    value.sources[1].authority = value.sources[0].authority.clone();
+    value.sources[1].presentation = Some("/live/sub".into());
+    // Multiple channels with a one-connection declaration are valid. A future owner
+    // may sequence them; admission does not pretend that a scheduler already exists.
+    value.validate()?;
+    let digest = value.digest()?;
+    value.sources[1].max_connections = 2;
+    assert_eq!(
+        value.validate(),
+        Err(SiteError::InvalidField("max_connections"))
+    );
+    assert_eq!(
+        value.digest(),
+        Err(SiteError::InvalidField("max_connections"))
+    );
+    value.sources[1].peer = "192.0.2.10:8554".parse()?;
+    value.sources[1].authority = "camera-10.example:8554".into();
+    assert_eq!(
+        value.validate(),
+        Err(SiteError::InvalidField("max_connections"))
+    );
+    value.sources[1].peer = "[::ffff:192.0.2.10]:554".parse()?;
+    value.sources[1].authority = value.sources[0].authority.clone();
+    assert_eq!(
+        value.validate(),
+        Err(SiteError::InvalidField("max_connections"))
+    );
+    value.sources[1].max_connections = 1;
+    value.validate()?;
+    assert_ne!(value.digest()?, digest); // Exact declared route still determines identity.
+    value.sources[1].max_connections = 2;
+    value.sources[1].peer = "192.0.2.11:554".parse()?;
+    value.validate()?; // Distinct physical peers may declare different ceilings.
+    Ok(())
+}
+
+#[test]
+fn duplicate_rtsp_routes_refuse_aliases_before_manifest_identity() -> Test {
+    let original = manifest()?;
+    let first = original.sources[0].clone();
+    for variant in 0..6 {
+        let mut value = original.clone();
+        let mut alias = first.clone();
+        alias.source_id = "source:alias".into();
+        match variant {
+            0 => {}
+            1 => alias.kind = SourceKind::NvrChannel,
+            2 => alias.stream_role = StreamRole::Sub,
+            3 => alias.control_root = Some("/".into()),
+            4 => alias.peer = "[::ffff:192.0.2.10]:554".parse()?,
+            5 => alias.presentation = Some("/live/%6dain".into()),
+            _ => return Err("unexpected route alias test variant".into()),
+        }
+        alias.validate()?;
+        value.sources = vec![first.clone(), alias];
+        assert_eq!(value.validate(), Err(SiteError::DuplicateSource));
+        assert_eq!(value.digest(), Err(SiteError::DuplicateSource));
+    }
+    let input = MANIFEST
+        .replace("192.0.2.11:554", "192.0.2.10:554")
+        .replace("camera-11.example:554", "camera-10.example:554");
+    assert_eq!(
+        parse_manifest(input.as_bytes()),
+        Err(SiteError::DuplicateSource)
+    );
+    Ok(())
+}
+
+#[test]
+fn distinct_virtual_hosts_and_presentations_retain_declared_shared_limits() -> Test {
+    let mut value = manifest()?;
+    value.sources[1].peer = value.sources[0].peer;
+    // Equal paths at distinct, explicit authority labels can be separate virtual hosts.
+    value.validate()?;
+    value.sources[1].authority = value.sources[0].authority.clone();
+    value.sources[1].presentation = Some("/live/sub".into());
+    value.validate()?;
+    value.sources[1].presentation = Some("/live/main?channel=1".into());
+    value.validate()?;
+    value.sources[0].presentation = Some("/live/main?channel=2".into());
+    value.validate()?;
+    value.sources[1].peer = "192.0.2.10:8554".parse()?;
+    value.sources[1].authority = "camera-10.example:8554".into();
+    value.sources[1].presentation = value.sources[0].presentation.clone();
+    value.validate()?;
+    Ok(())
+}
+
+#[test]
+fn uri_identity_preserves_reserved_delimiters_and_query_semantics() -> Test {
+    assert_eq!(
+        presentation_identity("/live/%6dain?channel=%31")?,
+        presentation_identity("/live/main?channel=1")?
+    );
+    assert_eq!(
+        presentation_identity("/live/main?view=a%3ab")?,
+        presentation_identity("/live/main?view=a%3Ab")?
+    );
+    for (first, second) in [
+        ("/live/main?view=a%3db", "/live/main?view=a=b"),
+        ("/live/main?a=1&b=2", "/live/main?b=2&a=1"),
+        ("/live/Main", "/live/main"),
+        ("/live/main?view=A", "/live/main?view=a"),
+    ] {
+        assert_ne!(
+            presentation_identity(first)?,
+            presentation_identity(second)?
+        );
+    }
+    assert!(presentation_identity("/live/%").is_err());
+    Ok(())
+}
+
+#[test]
+fn authority_spelling_aliases_refuse_before_manifest_identity() -> Test {
+    for (peer, first, second) in [
+        (
+            "192.0.2.10:554",
+            "camera-10.example:554",
+            "CAMERA-10.EXAMPLE:554",
+        ),
+        (
+            "[2001:db8::1]:554",
+            "[2001:db8::1]:554",
+            "[2001:0DB8:0000:0000:0000:0000:0000:0001]:554",
+        ),
+        (
+            "[::ffff:192.0.2.10]:554",
+            "[::ffff:192.0.2.10]:554",
+            "[0:0:0:0:0:ffff:c000:20a]:554",
+        ),
+    ] {
+        let mut value = manifest()?;
+        value.sources[0].peer = peer.parse()?;
+        value.sources[0].authority = first.into();
+        value.sources[1].peer = peer.parse()?;
+        value.sources[1].authority = second.into();
+        assert_eq!(value.validate(), Err(SiteError::DuplicateSource));
+        assert_eq!(value.digest(), Err(SiteError::DuplicateSource));
+    }
+    let mut value = manifest()?;
+    let original = value.digest()?;
+    value.sources[0].authority = value.sources[0].authority.to_ascii_uppercase();
+    // Comparison normalization never rewrites the declared authority or its digest.
+    assert_ne!(value.digest()?, original);
+    Ok(())
+}
+
+#[test]
+fn authority_comparison_preserves_virtual_hosts_and_port_declarations() -> Test {
+    assert_eq!(
+        authority_identity("CAMERA.EXAMPLE:554")?,
+        authority_identity("camera.example:554")?
+    );
+    assert_eq!(
+        authority_identity("[2001:0DB8:0:0:0:0:0:1]:554")?,
+        authority_identity("[2001:db8::1]:554")?
+    );
+    for (first, second) in [
+        ("camera.example:554", "other.example:554"),
+        ("camera.example", "camera.example:554"),
+        ("camera.example", "camera.example:8554"),
+        ("camera.example:554", "camera.example:8554"),
+        ("[2001:db8::1]", "[2001:db8::1]:554"),
+        ("[2001:db8::1]:554", "[2001:db8::2]:554"),
+    ] {
+        assert_ne!(authority_identity(first)?, authority_identity(second)?);
+    }
     Ok(())
 }

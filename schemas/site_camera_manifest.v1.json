@@ -290,7 +290,8 @@
           "max_connections": {
             "type": "integer",
             "minimum": 1,
-            "maximum": 16
+            "maximum": 16,
+            "description": "All sources sharing a canonical literal IP must declare the same ceiling. This is a declared device budget, not a running concurrency scheduler or proof of physical device identity."
           },
           "owner_authorized": {
             "type": "boolean"
@@ -408,7 +409,8 @@
           }
         ],
         "description": "Requested immutable source scope. Owner/plaintext/retention booleans are explicit attestations, not authenticated rights or capture authority. Unsupported source kinds remain typed inputs and must be refused by an unqualified compiler."
-      }
+      },
+      "description": "Ordered source inventory. The native validator rejects duplicate RTSP/NVR routes using canonical peer IP, port, normalized authority host and validated presentation. Distinct paths and virtual hosts remain legal. Shared literal IPs use one conservative connection declaration, including across ports and IPv4-mapped IPv6 spellings."
     }
   },
   "description": "VIT-001 pure input; <=1 MiB, unique source IDs, <=8192 total polygon vertices plus strict shared JSON depth/node/string bounds. No filesystem/network/secret reads, rights verification, masking or recording. Canonical typed field encoding, not JSON spelling, defines the manifest digest."

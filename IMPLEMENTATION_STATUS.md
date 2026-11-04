@@ -10,6 +10,72 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## JPEG site planning and shared-route admission (2026-11-04)
+
+The site compiler now also accepts native RTP/JPEG sources, including mixed
+AVC/HEVC/JPEG inventories. It emits the exact existing `fss-capture-rtsp jpeg`
+plan through the new pure `capture_plan::prepare_jpeg` API. Native JPEG capture
+remains the owner of its datagram custody, Digest policy, payload/channel
+selection and limits: SSRC must be nonzero, SDP media index is at most 15, and
+one capture is limited to 256 pictures. These observations are forwarded without
+substitution; an unsupported value refuses the entire site instead of reducing
+the request or emitting an accepted prefix.
+
+JPEG plans use receipt-bound retention evidence and omit AVC/HEVC-only cadence
+and independent-journal arguments. The JPEG site policy binds the reserved pins
+parent and displays it as `reserved_pins_root`, including for an all-JPEG site.
+Cadence remains a supplied receipt claim used for timeout sizing, not a new
+native JPEG cadence-enforcement promise. AVC/HEVC-only plans retain their
+existing policy, canonical field order, evidence bytes, native arguments and
+report fields by direct production-source comparison.
+
+Pure Digest reference parsing is now separate from credential-file and entropy
+owners. The new adapter compiles only that pure module with the actual native
+planners. Byte comparison verifies that the extracted AuthPlan body, native
+credential I/O remainder, existing prepare_rtsp function, and native JPEG
+parser/approval/preview code retain their original behavior apart from module
+visibility/imports. Planning still reads no credentials, creates no output
+directories and contacts no cameras.
+
+Manifest admission additionally rejects duplicate RTSP/NVR routes across renamed
+sources, source kinds, roles, control roots, IPv4-mapped aliases, URI unreserved
+escapes, hostname case and equivalent IPv6 host spellings. Original declarations
+remain in canonical identity and wire requests. Distinct virtual hosts, paths,
+reserved query semantics and port declarations remain distinct. Sources sharing
+a canonical literal IP must declare one consistent max_connections ceiling.
+This is conservative declaration validation; it neither schedules connections
+nor proves physical device identity.
+
+Added regression coverage comprises six route/declaration tests, two native JPEG
+API contracts and three site command workflows. They cover native preview
+equivalence, unread Digest references, inherited admission limits, atomic
+multi-source refusal, receipt order, retention-evidence changes and reserved
+destination visibility/binding. The mixed AVC/JPEG fixture and strict output
+schema are documented in [SITE_PLANNING.md](docs/SITE_PLANNING.md).
+
+Focused pinned-toolchain verification passes **26 tests: all 22 site parser and
+contract tests plus all four concurrent RTP probe-observer tests**. The scratch
+crate roots import the exact production modules, including real RTP parsing and
+SDP selection; no validators or algorithms are substituted. Exact tested-source
+hashes were recorded. All five site-planning schemas pass full Draft 2020-12 checks, and
+the manifest plus four supplied receipt fixture instances validate. Pinned
+formatting, source-equivalence review and changed-file integrity checks also pass.
+Independent review corrected the JPEG authentication projection and checked all
+88 native JPEG/resource/authentication report fields.
+
+Native JPEG API/CLI equivalence tests are added but remain unexecuted. The shared
+executor repeatedly exhausted memory and disconnected during broader build
+attempts; existing GitHub Actions workflows were queued when this change was
+prepared. The repository-wide manifest audit also reports existing stale base
+entries outside this increment; changed paths carry exact delta hashes. No full
+Cargo/workspace pass, rch result, hardware measurement or release qualification
+is claimed. The focused pass above does not exercise the complete capture or
+site command binaries.
+
+This advances VIT-001/VIT-002 without closing their full acceptance criteria.
+Live probe production, signed rights leases, ONVIF/UniFi site onboarding,
+site execution, continuous recording and retention scheduling remain open.
+
 ## Recorded native site probe measurement (2026-11-04)
 
 `fss site probe-file` derives site probe receipts from an exact manifest, complete
@@ -111,8 +177,8 @@ under shared memory pressure, before project diagnostics. No complete workspace,
 runtime, hardware or release qualification is claimed.
 
 This advances the direct RTSP/NVR portion of VIT-001/VIT-002; it does not complete the
-footage-plane epic. ONVIF/UniFi source kinds and JPEG receipt claims are representable
-but unsupported by this compiler. A site executor, native live probe producer,
+footage-plane epic. ONVIF/UniFi source kinds remain representable but unsupported
+by this compiler. JPEG planning is covered by the extension above. A site executor, native live probe producer,
 authenticated/fresh receipt handling, signed rights-lease verification, TLS and
 retention scheduling remain open. SDP and parameter-set hashes identify supplied
 claims and are approval-bound; this implementation does not enforce their equality
