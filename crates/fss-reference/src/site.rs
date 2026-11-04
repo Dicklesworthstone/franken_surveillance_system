@@ -12,6 +12,9 @@
 mod parse;
 mod wire;
 
+/// Pure bounded observations for native RTSP site probe receipts.
+pub mod probe_observation;
+
 #[cfg(test)]
 mod tests;
 

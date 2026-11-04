@@ -212,3 +212,21 @@ cargo test --locked -p fss-cli --test site_cli_contract
 
 Consult the dated [implementation status](../IMPLEMENTATION_STATUS.md) for the
 tests actually executed in this environment and its full-build limitations.
+
+
+## Native RTP probe observation component (VIT-003)
+
+The pure fss_reference::site::probe_observation::RtspProbeObserver API accepts one
+already-negotiated AVC or HEVC SDP selection, verifies its exact parameter NALs,
+then derives SSRC, fixed 90-kHz cadence and wrap-aware timestamp boundaries from
+bounded RTP packets. A missing packet, foreign sender, changed payload, incomplete
+marker sequence or cadence drift refuses the whole observation. No raw packet or SDP
+bytes are returned. Returned values satisfy the existing site probe receipt v1
+contract and can feed the current site plan compiler.
+
+This is **not** a live camera probe. The RTSP session owner still needs to bind its
+DESCRIBE/SETUP/PLAY transcript to this observer, independently receive and confirm
+TEARDOWN, and enforce explicit network and credential authority. This pure API does
+not authenticate the caller or source, prove freshness, or certify decoded pictures.
+The v1 receipt remains an untrusted observational claim until its provenance and
+subsequent live capture pins are established.
