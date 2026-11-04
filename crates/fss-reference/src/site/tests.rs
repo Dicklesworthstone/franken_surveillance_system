@@ -644,3 +644,141 @@ fn authority_comparison_preserves_virtual_hosts_and_port_declarations() -> Test 
     }
     Ok(())
 }
+
+const VALID_CLOCK_EVIDENCE: &str = "\"clock_evidence\": {\
+    \"wall_clock_unix_ns\": 1800000000000000000, \
+    \"monotonic_ns\": 123456789, \
+    \"ntp_offset_ns\": 250000, \
+    \"ntp_offset_direction\": \"behind\", \
+    \"ntp_uncertainty_ns\": 2000000\
+}";
+
+fn with_clock_evidence(value: &str) -> String {
+    PROBES.replacen(
+        "\"server_identity\": \"synthetic-example-server\"",
+        &format!("\"server_identity\": \"synthetic-example-server\", {value}"),
+        1,
+    )
+}
+
+#[test]
+fn clock_evidence_is_optional_and_absence_is_not_an_error() -> Test {
+    let receipts = probes()?;
+    assert_eq!(receipts[0].clock_evidence, None);
+    assert_eq!(receipts[1].clock_evidence, None);
+    // An explicit null is accepted identically to omitting the field entirely.
+    let explicit_null = with_clock_evidence("\"clock_evidence\": null");
+    assert_eq!(parse_probe_receipts(explicit_null.as_bytes())?, receipts);
+    Ok(())
+}
+
+#[test]
+fn valid_clock_evidence_parses_validates_and_changes_the_receipt_digest() -> Test {
+    let manifest = manifest()?;
+    let baseline = probes()?;
+    let with_evidence = with_clock_evidence(VALID_CLOCK_EVIDENCE);
+    let receipts = parse_probe_receipts(with_evidence.as_bytes())?;
+    let witness = receipts[0]
+        .clock_evidence
+        .expect("clock_evidence should parse");
+    assert_eq!(witness.wall_clock_unix_ns, 1_800_000_000_000_000_000);
+    assert_eq!(witness.monotonic_ns, 123_456_789);
+    assert_eq!(witness.ntp_offset_ns, 250_000);
+    assert_eq!(witness.ntp_offset_direction, ClockOffsetDirection::Behind);
+    assert_eq!(witness.ntp_uncertainty_ns, 2_000_000);
+    receipts[0].validate_for(&manifest)?;
+    assert_ne!(receipts[0].digest()?, baseline[0].digest()?);
+    // Key/whitespace order around the injected object does not change identity.
+    let reordered = with_clock_evidence(
+        "\"clock_evidence\": {\
+            \"ntp_uncertainty_ns\": 2000000, \
+            \"ntp_offset_direction\": \"behind\", \
+            \"ntp_offset_ns\": 250000, \
+            \"monotonic_ns\": 123456789, \
+            \"wall_clock_unix_ns\": 1800000000000000000\
+        }",
+    );
+    let reparsed = parse_probe_receipts(reordered.as_bytes())?;
+    assert_eq!(receipts[0].digest()?, reparsed[0].digest()?);
+    Ok(())
+}
+
+#[test]
+fn implausible_clock_evidence_is_refused() {
+    for value in [
+        // Zero uncertainty is an implausible claim, not perfect precision.
+        "\"clock_evidence\": {\"wall_clock_unix_ns\": 1800000000000000000, \
+            \"monotonic_ns\": 1, \"ntp_offset_ns\": 0, \
+            \"ntp_offset_direction\": \"ahead\", \"ntp_uncertainty_ns\": 0}",
+        // Beyond the 10-second ceiling the clock is effectively unsynchronized.
+        "\"clock_evidence\": {\"wall_clock_unix_ns\": 1800000000000000000, \
+            \"monotonic_ns\": 1, \"ntp_offset_ns\": 0, \
+            \"ntp_offset_direction\": \"ahead\", \"ntp_uncertainty_ns\": 10000000001}",
+        // Below the plausibility floor (before 2023-11-14T22:13:20Z), including zero.
+        "\"clock_evidence\": {\"wall_clock_unix_ns\": 0, \
+            \"monotonic_ns\": 1, \"ntp_offset_ns\": 0, \
+            \"ntp_offset_direction\": \"ahead\", \"ntp_uncertainty_ns\": 1000}",
+        // An unknown direction spelling is refused, not coerced.
+        "\"clock_evidence\": {\"wall_clock_unix_ns\": 1800000000000000000, \
+            \"monotonic_ns\": 1, \"ntp_offset_ns\": 0, \
+            \"ntp_offset_direction\": \"sideways\", \"ntp_uncertainty_ns\": 1000}",
+        // A negative offset magnitude is not a valid unsigned field.
+        "\"clock_evidence\": {\"wall_clock_unix_ns\": 1800000000000000000, \
+            \"monotonic_ns\": 1, \"ntp_offset_ns\": -5, \
+            \"ntp_offset_direction\": \"ahead\", \"ntp_uncertainty_ns\": 1000}",
+        // An unknown nested field is refused, matching every other object in this schema.
+        "\"clock_evidence\": {\"wall_clock_unix_ns\": 1800000000000000000, \
+            \"monotonic_ns\": 1, \"ntp_offset_ns\": 0, \
+            \"ntp_offset_direction\": \"ahead\", \"ntp_uncertainty_ns\": 1000, \"extra\": 1}",
+    ] {
+        let input = with_clock_evidence(value);
+        assert!(
+            parse_probe_receipts(input.as_bytes()).is_err(),
+            "expected refusal for: {value}"
+        );
+    }
+}
+
+#[test]
+fn utc_window_is_none_without_a_witness() -> Test {
+    let receipts = probes()?;
+    assert_eq!(receipts[0].clock_evidence, None);
+    assert_eq!(receipts[0].utc_window(), None);
+    Ok(())
+}
+
+#[test]
+fn utc_window_maps_the_observed_span_and_widens_by_uncertainty() -> Test {
+    let with_evidence = with_clock_evidence(VALID_CLOCK_EVIDENCE);
+    let receipts = parse_probe_receipts(with_evidence.as_bytes())?;
+    let receipt = &receipts[0];
+    // Fixture values: frame_duration_ticks=3600, observed_frames=4, so the
+    // span is 3600 * 3 = 10_800 ticks at 90 kHz, exactly 120_000_000 ns.
+    assert_eq!(receipt.frame_duration_ticks, 3600);
+    assert_eq!(receipt.observed_frames, 4);
+    assert_eq!(receipt.clock_rate_hz, 90_000);
+    let witness = receipt.clock_evidence.expect("evidence should parse");
+    assert_eq!(witness.wall_clock_unix_ns, 1_800_000_000_000_000_000);
+    assert_eq!(witness.ntp_uncertainty_ns, 2_000_000);
+    let (start, end) = receipt.utc_window().expect("a witness is attached");
+    assert_eq!(start, 1_799_999_999_998_000_000); // wall_clock - uncertainty
+    assert_eq!(end, 1_800_000_000_122_000_000); // wall_clock + 120ms span + uncertainty
+    assert!(start < witness.wall_clock_unix_ns);
+    assert!(end > witness.wall_clock_unix_ns);
+    Ok(())
+}
+
+#[test]
+fn utc_window_at_the_minimum_observed_frames_is_a_single_frame_duration() -> Test {
+    // observed_frames=2 is the schema minimum (validate() requires >= 2), so
+    // the span is exactly one frame_duration_ticks interval, not zero.
+    let narrowed = with_clock_evidence(VALID_CLOCK_EVIDENCE)
+        .replacen("\"observed_frames\": 4", "\"observed_frames\": 2", 1)
+        .replacen("\"last_rtp_timestamp\": 11800", "\"last_rtp_timestamp\": 4600", 1);
+    let receipts = parse_probe_receipts(narrowed.as_bytes())?;
+    let (start, end) = receipts[0].utc_window().expect("a witness is attached");
+    // 1 * 3600 ticks at 90 kHz = 40_000_000 ns, plus the 2_000_000 ns uncertainty
+    // on each side.
+    assert_eq!(end - start, 40_000_000 + 2 * 2_000_000);
+    Ok(())
+}
