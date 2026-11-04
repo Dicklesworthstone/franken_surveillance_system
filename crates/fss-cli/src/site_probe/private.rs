@@ -55,36 +55,17 @@ impl PrivateProbe {
         }
     }
 
-    fn output_schema(&self) -> &'static str {
+    fn publication_selection(&self) -> PublicationSelection {
         match self {
-            Self::Unifi(_) => "fss.site_unifi_probe_result.v1",
-            Self::Onvif(_) => "fss.site_onvif_probe_result.v1",
-        }
-    }
-
-    fn contact_field(&self) -> &'static str {
-        match self {
-            Self::Unifi(_) => "console_contacted",
-            Self::Onvif(_) => "onvif_http_contacted",
-        }
-    }
-
-    fn result_fields(&self) -> Vec<(&'static str, String)> {
-        match self {
-            Self::Unifi(value) => vec![
-                ("camera_ref", string(&value.camera_ref.to_text())),
-                ("view", string(value.view)),
-                ("quality", string(value.spec.quality.as_str())),
-            ],
-            Self::Onvif(value) => vec![
-                ("onboarding_plan", string(&value.onboarding_plan.to_text())),
-                ("profile_digest", string(&value.profile_digest.to_text())),
-                (
-                    "binding_basis",
-                    string("operator-bound-historical-consistency"),
-                ),
-                ("onvif_http_origin_verified", "false".to_owned()),
-            ],
+            Self::Unifi(value) => PublicationSelection::Unifi {
+                camera_ref: value.camera_ref,
+                view: value.view,
+                quality: value.spec.quality.as_str(),
+            },
+            Self::Onvif(value) => PublicationSelection::Onvif {
+                onboarding_plan: value.onboarding_plan,
+                profile_digest: value.profile_digest,
+            },
         }
     }
 
@@ -110,6 +91,85 @@ impl PrivateProbe {
             Self::Onvif(value) => ("onvif", value.preview()),
         }
     }
+}
+
+/// Published selection coordinates only; no protected source path, profile token or RTSP URI.
+#[derive(Clone, Copy)]
+enum PublicationSelection {
+    Unifi {
+        camera_ref: ContentDigest,
+        view: &'static str,
+        quality: &'static str,
+    },
+    Onvif {
+        onboarding_plan: ContentDigest,
+        profile_digest: ContentDigest,
+    },
+}
+
+impl PublicationSelection {
+    fn schema(self) -> &'static str {
+        match self {
+            Self::Unifi { .. } => "fss.site_unifi_probe_result.v1",
+            Self::Onvif { .. } => "fss.site_onvif_probe_result.v1",
+        }
+    }
+
+    fn contact_field(self) -> &'static str {
+        match self {
+            Self::Unifi { .. } => "console_contacted",
+            Self::Onvif { .. } => "onvif_http_contacted",
+        }
+    }
+
+    fn fields(self) -> Vec<(&'static str, String)> {
+        match self {
+            Self::Unifi {
+                camera_ref,
+                view,
+                quality,
+            } => vec![
+                ("camera_ref", string(&camera_ref.to_text())),
+                ("view", string(view)),
+                ("quality", string(quality)),
+            ],
+            Self::Onvif {
+                onboarding_plan,
+                profile_digest,
+            } => vec![
+                ("onboarding_plan", string(&onboarding_plan.to_text())),
+                ("profile_digest", string(&profile_digest.to_text())),
+                (
+                    "binding_basis",
+                    string("operator-bound-historical-consistency"),
+                ),
+                ("onvif_http_origin_verified", "false".to_owned()),
+            ],
+        }
+    }
+}
+
+/// Observed writer outcome, after the actual committing request has returned.
+/// Late owner errors preserve a completed write; a failed write only reports possible existence.
+#[derive(Clone, Copy)]
+struct PublicationOutcome {
+    receipt_saved: bool,
+    receipt_file_may_exist: bool,
+    error: Option<&'static str>,
+    post_commit_error: Option<&'static str>,
+    finalization_error: Option<&'static str>,
+}
+
+/// Private receipt bytes remain separate from the public result projection.
+struct PublicationContext<'a> {
+    approval: ContentDigest,
+    site_id: &'a str,
+    source_id: &'a str,
+    selection: PublicationSelection,
+    receipt_file: &'a Path,
+    receipt: &'a SiteProbeReceipt,
+    receipt_digest: ContentDigest,
+    file_digest: ContentDigest,
 }
 
 /// The native request has finalized before publication begins. Only a fully
@@ -173,14 +233,46 @@ pub(super) fn save_receipt(
         ),
         Err(code) => (false, Some(code), None, None),
     };
-    let exit = if receipt_saved && post_commit.is_none() && finalization.is_none() {
+    render_publication(
+        PublicationContext {
+            approval: plan.approval,
+            site_id: &plan.manifest.site_id,
+            source_id: &plan.options.source,
+            selection: private.publication_selection(),
+            receipt_file: private.receipt_file(),
+            receipt,
+            receipt_digest,
+            file_digest,
+        },
+        facts,
+        PublicationOutcome {
+            receipt_saved,
+            receipt_file_may_exist: may_exist.get(),
+            error,
+            post_commit_error: post_commit,
+            finalization_error: finalization,
+        },
+    )
+}
+
+/// Pure public projection of an already observed publication outcome. This function performs
+/// no write, grants no authority and cannot establish that the supplied receipt was acquired.
+fn render_publication(
+    context: PublicationContext<'_>,
+    facts: Facts,
+    outcome: PublicationOutcome,
+) -> (String, ExitIdentity) {
+    let exit = if outcome.receipt_saved
+        && outcome.post_commit_error.is_none()
+        && outcome.finalization_error.is_none()
+    {
         ExitIdentity::SUCCESS
     } else {
         ExitIdentity::RUNTIME_FAILURE
     };
     let optional = |value: Option<&str>| value.map_or_else(|| "null".to_owned(), string);
     let mut fields = vec![
-        ("schema", string(private.output_schema())),
+        ("schema", string(context.selection.schema())),
         (
             "status",
             string(if exit == ExitIdentity::SUCCESS {
@@ -189,38 +281,41 @@ pub(super) fn save_receipt(
                 "refused"
             }),
         ),
-        ("approval", string(&plan.approval.to_text())),
+        ("approval", string(&context.approval.to_text())),
         (
             "manifest_digest",
-            string(&receipt.manifest_digest.to_text()),
+            string(&context.receipt.manifest_digest.to_text()),
         ),
-        ("site_id", string(&plan.manifest.site_id)),
-        ("source_id", string(&plan.options.source)),
+        ("site_id", string(context.site_id)),
+        ("source_id", string(context.source_id)),
     ];
-    fields.extend(private.result_fields());
+    fields.extend(context.selection.fields());
     fields.extend([
         (
             "receipt_file",
-            string(private.receipt_file().to_str().unwrap_or("")),
+            string(context.receipt_file.to_str().unwrap_or("")),
         ),
         (
             "receipt_digest",
-            if receipt_saved {
-                string(&receipt_digest.to_text())
+            if outcome.receipt_saved {
+                string(&context.receipt_digest.to_text())
             } else {
                 "null".to_owned()
             },
         ),
         (
             "receipt_file_digest",
-            if receipt_saved {
-                string(&file_digest.to_text())
+            if outcome.receipt_saved {
+                string(&context.file_digest.to_text())
             } else {
                 "null".to_owned()
             },
         ),
-        ("receipt_saved", receipt_saved.to_string()),
-        ("receipt_file_may_exist", may_exist.get().to_string()),
+        ("receipt_saved", outcome.receipt_saved.to_string()),
+        (
+            "receipt_file_may_exist",
+            outcome.receipt_file_may_exist.to_string(),
+        ),
         (
             "connection_attempted",
             facts.connection_attempted.to_string(),
@@ -238,13 +333,17 @@ pub(super) fn save_receipt(
             facts.remote_session_may_exist.to_string(),
         ),
         ("source_retained", "false".to_owned()),
-        (private.contact_field(), "false".to_owned()),
+        (context.selection.contact_field(), "false".to_owned()),
         ("retry_automatically", "false".to_owned()),
-        ("error_id", optional(error)),
-        ("post_commit_error", optional(post_commit)),
-        ("finalization_error", optional(finalization)),
+        ("error_id", optional(outcome.error)),
+        ("post_commit_error", optional(outcome.post_commit_error)),
+        ("finalization_error", optional(outcome.finalization_error)),
         ("exit_id", string(exit.identifier)),
         ("exit_code", exit.code.to_string()),
     ]);
     (object(&fields), exit)
 }
+
+#[cfg(test)]
+#[path = "private_tests.rs"]
+mod tests;

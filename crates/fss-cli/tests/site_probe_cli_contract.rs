@@ -29,6 +29,10 @@ use fss_reference::site::{parse_manifest, parse_probe_receipts};
 #[path = "site_probe_cli_contract/unifi.rs"]
 mod unifi;
 
+#[cfg(target_os = "linux")]
+#[path = "site_probe_cli_contract/onvif.rs"]
+mod onvif;
+
 type Test<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 const USERNAME: &str = "FSS_SITE_PROBE_SYNTHETIC_USER_CANARY";

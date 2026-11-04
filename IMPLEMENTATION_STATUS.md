@@ -6,6 +6,43 @@
 
 
 
+
+## Protected receipt outcome projection and ONVIF workflow contracts (2026-11-04)
+
+The protected probe writer now passes its already observed publication outcome
+to a pure renderer. The actual source/destination checks, create-only write,
+sync/readback, possible-file-existence updates and runtime outcome classification
+remain unchanged. Committed receipts retain their digest/addressability after a
+late writer error; unsuccessful writes preserve possible partial-file presence
+without reporting a saved receipt or suggesting retry. Private paths, queries,
+profile tokens and raw server metadata remain absent from public results.
+
+This was reconciled onto the concurrently published ONVIF command at `1b38ca9`;
+its canonical approvals, preview and result interfaces remain intact, including
+`binding_basis`, `onvif_http_origin_verified` and `onvif_http_contacted`. Exact
+legacy UniFi and published ONVIF JSON parity is tested across six legitimate
+publication outcomes with and without credential access. Existing canonical
+encoding and preview dispatch are unchanged.
+
+**Executed validation:** 204 repository CLI tests plus four scratch artifact/
+compatibility checks pass. These include all 16 published ONVIF tests through the
+real protected-file owner, five publication tests, and old-versus-current UniFi
+approval/preview parity across eight codec/quality/transport combinations. All
+25 actual rendered fixtures pass the published schemas; 34 contradictory
+mutations refuse and ten direct/UniFi previews also pass the legacy schema.
+The already verified native core remains unchanged (131 executed tests).
+
+Eight new process contracts use the existing actual subprocess/TCP fixture to
+cover protected receipt-to-plan flow, Digest, no HTTP endpoint contact, privacy,
+independent-pin drift, stale input/destination approvals, file protections,
+media/TEARDOWN faults and parent replacement. The complete target compiled and
+linked with zero diagnostics, but was **not executed**: the earlier full
+Asupersync-backed binary build exceeded the available memory, and the separate
+metadata attempt was stopped under sustained pressure. Pure result fixtures do
+not claim that publication occurred. No runtime, protocol or successful I/O
+substitute was introduced, and no full hardware or release qualification is
+claimed.
+
 ## Tracker-backed QSR observations from retained evidence (2026-11-04)
 
 `fss-event qsr --root ... --site ... --report-digest ...` now produces a usable
