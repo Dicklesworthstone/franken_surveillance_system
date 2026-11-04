@@ -21,7 +21,7 @@ use fss_reference::rtsp::datagram_archive::{
 use fss_reference::rtsp::live_jpeg::LiveJpegConfig;
 use fss_reference::rtsp::tcp::{TcpBinding, TcpLimits, TcpSecurityPolicy};
 
-use crate::authentication::AuthPlan;
+use super::authentication::AuthPlan;
 
 pub(crate) const SCHEMA: &str = "fss.rtsp_jpeg_capture_cli.v1";
 pub(crate) const POLICY: &str = "jpeg:exact-native-route:original-datagrams-before-pixels:full-pinned-prefix:native-storage-recovery:unknown-capture-clock:no-reconnect:v1";

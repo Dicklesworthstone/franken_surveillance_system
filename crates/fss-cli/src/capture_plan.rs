@@ -9,11 +9,14 @@ use std::ffi::OsString;
 
 use fss_core::ContentDigest;
 
-// Execution-only methods of the original modules are deliberately private here. The
-// public surface below returns values, never an executor or credential capability.
-#[allow(dead_code, unused_imports)]
-#[path = "bin/fss-capture-rtsp/authentication.rs"]
+// Share only the credential-reference planner, never the credential or entropy
+// owners. The public surface returns values, not an executor or I/O capability.
+#[allow(dead_code)]
+#[path = "bin/fss-capture-rtsp/authentication_plan.rs"]
 mod authentication;
+#[allow(dead_code)]
+#[path = "bin/fss-capture-rtsp/jpeg/plan.rs"]
+mod jpeg;
 #[allow(dead_code)]
 #[path = "bin/fss-capture-rtsp/plan.rs"]
 mod plan;
@@ -37,6 +40,26 @@ pub fn prepare_rtsp(args: &[OsString]) -> Result<PreparedRtspPlan, &'static str>
         return Err("approval is not accepted by the pure planning adapter");
     }
     let native = plan::Options::parse(args)?;
+    Ok(PreparedRtspPlan {
+        approval: native.digest()?,
+        preview: native.preview()?,
+    })
+}
+
+/// Validate and prepare a native JPEG capture request without any I/O.
+///
+/// Supply the option/value pairs following `fss-capture-rtsp jpeg`. Approval and
+/// cold replay are refused: this boundary prepares a new bounded source capture.
+/// The exact native JPEG parser owns all limits, including its 256-picture ceiling,
+/// selected RTP payload and channels, retention evidence, and Digest policy.
+pub fn prepare_jpeg(args: &[OsString]) -> Result<PreparedRtspPlan, &'static str> {
+    if args.first().is_some_and(|arg| arg == "replay") {
+        return Err("cold replay is not accepted by the pure capture planning adapter");
+    }
+    if args.chunks_exact(2).any(|pair| pair[0] == "--approve") {
+        return Err("approval is not accepted by the pure planning adapter");
+    }
+    let native = jpeg::Options::parse(args)?;
     Ok(PreparedRtspPlan {
         approval: native.digest()?,
         preview: native.preview()?,

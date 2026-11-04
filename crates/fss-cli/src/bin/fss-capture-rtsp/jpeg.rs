@@ -1,6 +1,8 @@
 #![forbid(unsafe_code)]
 //! Explicit JPEG capture and cold reconstruction through existing native source owners.
 
+use super::authentication;
+
 #[path = "jpeg/operation.rs"]
 pub(crate) mod operation;
 #[path = "jpeg/plan.rs"]
