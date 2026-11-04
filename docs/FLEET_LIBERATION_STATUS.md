@@ -449,3 +449,26 @@ cycles), wyze forge/spoof/broker + watchdogs, fss-fwserve, fss-backup-recv.
 
 Blocking set is exactly: camera wake events (Tapo recon bytes, Wyze OTA poll) and two
 operator-physical gates (Owlet power cycle, Yi AP toggle). Nothing else is missing.
+
+## 2026-11-04 13:45 - full chain coherence pass; everything automated
+
+Root-caused and fixed this pass (evidence in .brenner_incident_20261104/):
+
+1. C660 busybox has NO nc applet - all earlier fires used an impossible payload.
+   telnetd (verified present) + tftp exfil chain now deployed in every C660 fire path.
+2. Wyze fetch gap: forged 0-signature presigned URLs. get_download_location now
+   passthroughs to the real cloud (valid SigV4). Cameras fetched launch.sh 2x each.
+3. Wyze install stall: advertised checksums didn't match served bytes (cloud md5s for
+   unmirrored components). Runtime md5 fix (988a7bcf) + component stubs at 50041/50042:
+   every advertised md5 now equals the md5 of the bytes we serve.
+4. Version coherence: advertised version must match what the real cloud dl-location
+   answer says (50041), else the install aborts on mismatch. Aligned (ed29a25c).
+5. Route ambiguity (en0/en1 dual-home): all camera-facing tools bound to en1.
+6. Sweep efficiency: v4 burst (one login, 12 shots/window, in-band grab, auto-postshell).
+
+Execution evidence so far: launch.sh fetched 2x per camera; 268+ get_processes polls
+answered; cameras adopted our versions (50040 then 50041 asks). Pending observables:
+fss-ran beacon (loop_closer watching, captures telnetd:9999 root on sight);
+C460 recon_sweep.txt + postshell (burst waits inside login loop for the wake);
+C660 telnetd:4444 or tftp artifact (sweep fires on presence, timing probe answers
+the system() question on next full wake).

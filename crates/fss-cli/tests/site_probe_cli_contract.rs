@@ -25,6 +25,10 @@ use fss_reference::ingest::rtpdump::{RtpDumpKind, RtpDumpLimits, RtpDumpReader};
 use fss_reference::rtsp::decode_base64;
 use fss_reference::site::{parse_manifest, parse_probe_receipts};
 
+#[cfg(target_os = "linux")]
+#[path = "site_probe_cli_contract/unifi.rs"]
+mod unifi;
+
 type Test<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 const USERNAME: &str = "FSS_SITE_PROBE_SYNTHETIC_USER_CANARY";
@@ -536,6 +540,10 @@ fn signed_request(request: &Request, count: u32) -> Test {
 #[derive(Clone, Debug)]
 enum Behavior {
     Complete,
+    PrivateRoute {
+        acknowledge_teardown: bool,
+        replace_parent: Option<PathBuf>,
+    },
     LostTeardownAck,
     RejectedTeardown,
     WrongTeardownCseq,
@@ -560,6 +568,7 @@ enum Behavior {
 #[derive(Default, Debug)]
 struct Transcript {
     methods: Vec<String>,
+    target_digests: Vec<ContentDigest>,
     signed: u32,
     client_closed: bool,
 }
@@ -700,6 +709,9 @@ fn serve(listener: TcpListener, codec: Codec, behavior: Behavior) -> Test<Transc
             return Ok(transcript);
         };
         transcript.methods.push(request.method.clone());
+        transcript
+            .target_digests
+            .push(ContentDigest::sha256(request.target.as_bytes()));
         if !challenged
             && matches!(
                 behavior,
@@ -737,12 +749,17 @@ fn serve(listener: TcpListener, codec: Codec, behavior: Behavior) -> Test<Transc
             )?,
             "DESCRIBE" => {
                 let sdp = description(codec, &behavior);
-                reply(
-                    &mut peer,
-                    request.cseq,
-                    "Content-Type: application/sdp\r\n",
-                    &sdp,
-                )?;
+                let headers = if matches!(behavior, Behavior::PrivateRoute { .. }) {
+                    // This export ends at a capability, not a directory.
+                    // The camera's explicit Content-Base defines relative track resolution;
+                    // the client must retain the original presentation query in its receipt.
+                    let base = request.target.split('?').next().ok_or("fixture base")?;
+                    assert!(!base.ends_with('/'));
+                    format!("Content-Type: application/sdp\r\nContent-Base: {base}/\r\n")
+                } else {
+                    "Content-Type: application/sdp\r\n".to_owned()
+                };
+                reply(&mut peer, request.cseq, &headers, &sdp)?;
             }
             "SETUP" => reply(
                 &mut peer,
@@ -761,6 +778,16 @@ fn serve(listener: TcpListener, codec: Codec, behavior: Behavior) -> Test<Transc
                     let _ = reply(&mut peer, request.cseq, "Session: fixture\r\n", "");
                     continue;
                 }
+                if let Behavior::PrivateRoute {
+                    replace_parent: Some(path),
+                    ..
+                } = &behavior
+                {
+                    // Keep the protected export intact while replacing only the safe output
+                    // parent. The path stays canonical and unwritable by other users.
+                    fs::rename(path, path.with_extension("original"))?;
+                    fs::create_dir(path)?;
+                }
                 reply(&mut peer, request.cseq, "Session: fixture\r\n", "")?;
                 peer.write_all(&media(codec, &behavior)?)?;
                 if matches!(behavior, Behavior::EofBeforeTarget) {
@@ -768,7 +795,14 @@ fn serve(listener: TcpListener, codec: Codec, behavior: Behavior) -> Test<Transc
                 }
             }
             "TEARDOWN" => {
-                if matches!(behavior, Behavior::LostTeardownAck) {
+                if matches!(
+                    behavior,
+                    Behavior::LostTeardownAck
+                        | Behavior::PrivateRoute {
+                            acknowledge_teardown: false,
+                            ..
+                        }
+                ) {
                     // The fixture accepts the close, but the response never reaches the client.
                     // TCP closure is deliberately not an RTSP acknowledgment.
                     peer.shutdown(Shutdown::Write)?;

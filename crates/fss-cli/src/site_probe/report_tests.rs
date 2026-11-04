@@ -16,6 +16,8 @@ fn fixture() -> TestResult<(SiteManifest, SiteProbeReceipt, SiteProbeOptions, Fa
     .next()
     .ok_or("receipt fixture absent")?;
     let options = SiteProbeOptions {
+        unifi_bindings: None,
+        receipt_file: None,
         source: receipt.source_id.clone(),
         codec: receipt.codec,
         media_index: receipt.media_index,

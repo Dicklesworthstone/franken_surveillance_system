@@ -10,6 +10,8 @@ fn manifest() -> Result<SiteManifest, Box<dyn std::error::Error>> {
 
 fn options(manifest: &SiteManifest) -> SiteProbeOptions {
     SiteProbeOptions {
+        unifi_bindings: None,
+        receipt_file: None,
         source: manifest.sources[0].source_id.clone(),
         codec: ProbeCodec::Avc,
         media_index: 0,

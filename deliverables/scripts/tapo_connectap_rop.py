@@ -51,7 +51,7 @@ def payload(cmd: str, t: dict, prefix: bytes = b"") -> tuple[str, int]:
 
 
 def post(host: str, path: str, body: dict, timeout: int = 8) -> str:
-    r = subprocess.run(["curl", "-sk", "-m", str(timeout), "-H", "Content-Type: application/json",
+    r = subprocess.run(["curl", "-sk", "--interface", "en1", "-m", str(timeout), "-H", "Content-Type: application/json",
                         "-H", "User-Agent: Tapo CameraClient Android", "-X", "POST",
                         "-d", json.dumps(body), "https://%s%s" % (host, path)],
                        capture_output=True, text=True)

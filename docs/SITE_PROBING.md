@@ -1,16 +1,18 @@
 # Approved native site probing
 
 `fss site probe` obtains one bounded AVC, HEVC or JPEG observation from an explicitly
-selected RTSP camera or NVR channel. It uses the manifest's exact literal peer,
-authority and permitted RTSP control subtree. By default, successful stdout is a
-one-element array of `fss.site_probe_receipt.v1` objects, ready for
+selected RTSP camera or NVR channel, or an AVC/HEVC observation from a protected
+UniFi Protect selection. It uses the manifest's exact literal peer, authority and
+permitted RTSP control subtree. For direct RTSP/NVR sources, successful stdout is
+a one-element array of `fss.site_probe_receipt.v1` objects, ready for
 `fss site plan --probes`. Select `--output session` for the same receipt plus
-native transport and exclusion evidence.
+native transport and exclusion evidence. UniFi receipts go to a new private file,
+with a redacted result on stdout, as described below.
 
 ## Preview, review, then probe
 
-First request a preview. This reads the manifest only; it opens no socket or
-credential file.
+First request a preview for a direct RTSP/NVR source. This reads the manifest
+only; it opens no socket or credential file.
 
 ```sh
 fss site probe --manifest /etc/fss/site.json \
@@ -50,6 +52,76 @@ array. Preserve their source and manifest identities. A failed command returns a
 object, never a partial successful receipt array. Save stdout only when the command
 exits successfully, and handle both previews and receipts as private deployment
 metadata because they include exact routing information.
+
+## Probe a UniFi Protect source
+
+Use the existing [site bindings](SITE_PLANNING.md#unifi-protect-site-bindings)
+and [private Protect export](UNIFI_PROTECT.md). The manifest source keeps
+`kind: "unifi_protect"`, its exact `unifi_camera_id`, peer and authority, with
+no direct `presentation` or `control_root` fields. The binding selects the exact
+quality and `published` or `operator-rtsp` endpoint. The selected endpoint must
+be plaintext RTSP, and the source must explicitly allow owner-authorized
+plaintext access. AVC and HEVC are supported; select the codec explicitly.
+
+On Linux, preview one source with both `--unifi-bindings` and `--receipt-file`:
+
+```sh
+fss site probe --manifest /etc/fss/site.json \
+  --unifi-bindings /etc/fss/site-unifi-bindings.json \
+  --source source:front --codec avc --observe-frames 6 \
+  --receipt-file /etc/fss/private/front-probe.json \
+  --timeout-ms 10000 --json
+```
+
+The receipt path must be absolute, absent, and have an existing parent without
+group or other write permission. It must be separate from the bindings, selected
+export and credential files. Preview
+reads and validates the bindings and selected protected export, checks the
+destination, and creates no file. It contacts neither the camera nor the Protect
+console and reads no credentials. The export uses the existing private-file
+checks: a bounded regular file with owner-read permission, no group/other access,
+one hard link, stable identity, and no symlink path.
+
+The `fss.site_probe_plan.v1` preview's `presentation` and `control_root` fields
+contain SHA-256 digests of the exact selected resource and control subtree.
+Its `unifi` object reports the export digest and file fingerprint, camera
+reference digest, view, quality, transport and private output destination.
+`receipt_parent_identity` hashes the actual destination parent's device/inode
+identity selected before camera contact. Replacing that parent while the probe
+runs refuses receipt publication.
+Stream capability paths and query strings stay out of stdout and command
+arguments. The approval binds the complete original manifest, exact bindings
+bytes, selected export bytes and file identity, camera/view/quality/transport,
+unchanged route, codec and observation options, and receipt destination.
+The destination parent's identity is part of that same approval.
+Replacing an export with identical bytes requires a fresh preview because its
+file identity changes.
+
+Review that preview and repeat the same command with
+`--approve sha256:<digest-from-preview>`. The export lease is revalidated before
+network effects, throughout the bounded observation, and before receipt
+publication. The default `--output receipts` is the only UniFi output mode;
+`--output session` is refused. The file preflight and final writer each have a
+separate five-second allowance. `--timeout-ms` bounds the native observation,
+including its input and credential checks, connection, negotiation and TEARDOWN.
+It does not include those separate file stages.
+
+After successful native observation and acknowledged TEARDOWN, the command
+creates a `0600` file containing the ordinary one-element receipt array. The
+receipt retains the complete original UniFi manifest digest and exact selected
+route. It can be passed directly to `site plan --probes` with the same manifest
+and bindings; a site with several sources still needs one receipt per source in
+its private combined array. There is no source-kind conversion or manual receipt
+construction between probing and planning.
+
+Stdout is `fss.site_unifi_probe_result.v1`, with the receipt path, receipt and
+file digests, close facts and `receipt_saved`. The writer synchronizes and reads
+back the created file and never overwrites an existing destination. A failed
+write can leave a partial file, reported by `receipt_file_may_exist`; preserve
+and inspect that outcome before choosing another destination. A completed write
+followed by a late request-finalization failure retains `receipt_saved: true`
+while returning a failure exit code. The result distinguishes that committed
+file from an unsuccessful write; neither condition triggers an automatic retry.
 
 ## What a successful probe establishes
 
@@ -100,7 +172,8 @@ device configuration, PTZ operation or parallel source scheduler is invoked.
 
 ## Session evidence and integration
 
-Request the evidence projection in both the preview and the approved invocation:
+For direct RTSP/NVR sources, request the evidence projection in both the preview
+and the approved invocation:
 
 ```sh
 fss site probe --manifest /etc/fss/site.json \
@@ -187,10 +260,11 @@ closure from EOF or silently reacquire the stream.
 
 ## Scope and remaining work
 
-This supplies the native RTSP/NVR producer portion of VIT-003. It is a short
+This supplies the native RTSP/NVR and protected UniFi producer portions of VIT-003. It is a short
 observation, not continuous recording, decoded-picture validation or a liveness
 certificate. Plaintext LAN/VPN routes and explicit AVC/HEVC/JPEG selections are the
-supported profile. ONVIF/UniFi route resolution, TLS, automatic
+direct profile; UniFi supports explicit AVC/HEVC over the selected plaintext route.
+ONVIF site-route resolution, automatic Protect export acquisition, TLS/RTSPS, automatic
 all-source probing, authenticated/fresh receipt envelopes and a site recorder
 remain separate work. Native and recorded JPEG probes now supply receipts
 accepted by the existing JPEG capture planner.

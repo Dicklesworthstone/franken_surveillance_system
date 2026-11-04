@@ -8,6 +8,7 @@ use fss_reference::rtsp::authentication::DigestPolicy;
 use fss_reference::rtsp::tcp::{
     SocketReadiness, TcpAuthority, TcpBinding, TcpDenial, TcpOperation, TcpTotals,
 };
+use fss_reference::site::SiteProbeReceipt;
 use fss_reference::site::live_probe::{
     LiveSiteProbe, LiveSiteProbeConfig, ProbeAccounting, ProbeDigestConfig, ProbeRetirement,
     ProbeStep,
@@ -144,6 +145,7 @@ struct Owner<'owner, 'scope, 'task> {
     binding: &'owner TcpBinding,
     deadline_ns: u64,
     credentials: Option<&'owner CredentialLease>,
+    private_source: Option<&'owner super::unifi::private_file::InputLease>,
 }
 impl TcpAuthority for Owner<'_, '_, '_> {
     fn checkpoint(
@@ -164,6 +166,15 @@ impl TcpAuthority for Owner<'_, '_, '_> {
         let observed = admit()?;
         if now_ns > observed || observed >= deadline_ns {
             return Err(TcpDenial::Deadline);
+        }
+        if let Some(source) = self.private_source {
+            source
+                .revalidate(&|| self.scope.input())
+                .map_err(|code| match code {
+                    "ERR-ONVIF-DEADLINE-001" => TcpDenial::Deadline,
+                    "ERR-ONVIF-CANCELLED-001" => TcpDenial::Cancelled,
+                    _ => TcpDenial::Revoked,
+                })?;
         }
         if let Some(credentials) = self.credentials {
             credentials
@@ -189,11 +200,23 @@ fn run_native(
     plan: &ProbePlan<'_>,
     scope: &runtime::Scope<'_, '_>,
     facts: &Cell<Facts>,
-) -> Result<String, &'static str> {
+) -> Result<SiteProbeReceipt, &'static str> {
     let source = &plan.manifest.sources[plan.source_index];
     let timeout_ns = plan.options.timeout_ms * 1_000_000;
     // Refusal before the first live admission must not imply a credential read.
     scope.now().map_err(runtime_error)?;
+    let private_source = plan
+        .private
+        .as_ref()
+        .map(|private| {
+            let input =
+                super::unifi::private_file::InputLease::open(&private.spec.source, &|| {
+                    scope.input()
+                })?;
+            private.verify(&input)?;
+            Ok::<_, &'static str>(input)
+        })
+        .transpose()?;
     let credentials = source
         .authentication
         .as_ref()
@@ -202,9 +225,8 @@ fn run_native(
             let mut current = facts.get();
             current.credential_access_attempted = true;
             facts.set(current);
-            let credentials =
-                CredentialLease::load(&auth.credential_file, &|| secret_check(scope))
-                    .map_err(secret_error)?;
+            let credentials = CredentialLease::load(&auth.credential_file, &|| secret_check(scope))
+                .map_err(secret_error)?;
             let mut current = facts.get();
             current.credentials_loaded = true;
             facts.set(current);
@@ -221,6 +243,7 @@ fn run_native(
         binding: &plan.binding,
         deadline_ns: timeout_ns,
         credentials: credentials.as_ref(),
+        private_source: private_source.as_ref(),
     };
     let config = LiveSiteProbeConfig {
         source_index: plan.source_index,
@@ -232,16 +255,25 @@ fn run_native(
         deadline_ns: timeout_ns,
         max_steps: MAX_STEPS,
         stop_after_pictures: plan.options.observe_frames,
-        digest: source.authentication.as_ref().map(|auth| ProbeDigestConfig {
-            realm: auth.realm.clone(),
-            policy: DigestPolicy {
-                allow_legacy_md5: auth.legacy_md5,
-                allow_legacy_no_qop: auth.legacy_no_qop,
-            },
-        }),
+        digest: source
+            .authentication
+            .as_ref()
+            .map(|auth| ProbeDigestConfig {
+                realm: auth.realm.clone(),
+                policy: DigestPolicy {
+                    allow_legacy_md5: auth.legacy_md5,
+                    allow_legacy_no_qop: auth.legacy_no_qop,
+                },
+            }),
     };
     let now = scope.now().map_err(runtime_error)?;
-    let mut probe = match LiveSiteProbe::connect(plan.manifest, config, now, &owner) {
+    let mut probe = match LiveSiteProbe::connect_with_route(
+        plan.manifest,
+        config,
+        plan.route.clone(),
+        now,
+        &owner,
+    ) {
         Ok(probe) => {
             let mut current = facts.get();
             current.connection_attempted = true;
@@ -259,8 +291,12 @@ fn run_native(
         for _ in 0..MAX_STEPS {
             scope.now().map_err(runtime_error)?;
             let borrowed = if probe.needs_credentials() {
-                let lease = credentials.as_ref().ok_or("ERR-SITE-PROBE-CREDENTIAL-001")?;
-                lease.revalidate(&|| secret_check(scope)).map_err(secret_error)?;
+                let lease = credentials
+                    .as_ref()
+                    .ok_or("ERR-SITE-PROBE-CREDENTIAL-001")?;
+                lease
+                    .revalidate(&|| secret_check(scope))
+                    .map_err(secret_error)?;
                 Some(lease.credentials().map_err(secret_error)?)
             } else {
                 None
@@ -305,7 +341,12 @@ fn run_native(
                         scope.wait(wake).map_err(runtime_error)?;
                     }
                 }
-                ProbeStep::Complete { receipt, totals, close, accounting } => {
+                ProbeStep::Complete {
+                    receipt,
+                    totals,
+                    close,
+                    accounting,
+                } => {
                     let mut current = facts.get();
                     current.remote_session_may_exist = close.remote_session_may_exist;
                     current.pending_cseq = close.pending_cseq;
@@ -327,16 +368,12 @@ fn run_native(
                     receipt
                         .validate_for(plan.manifest)
                         .map_err(|_| "ERR-SITE-PROBE-RECEIPT-001")?;
+                    if let Some(input) = &private_source {
+                        input.revalidate(&|| scope.input())?;
+                    }
                     current.last_observed_ns = scope.now().map_err(runtime_error)?;
                     facts.set(current);
-                    let output = match plan.options.output {
-                        ProbeOutput::Receipts => array(&[receipt_json(&receipt)]),
-                        ProbeOutput::Session => super::report::success(plan, &receipt, current)?,
-                    };
-                    if output.len() > crate::site_cmd::MAX_SITE_OUTPUT_BYTES {
-                        return Err("ERR-SITE-PROBE-OUTPUT-001");
-                    }
-                    return Ok(output);
+                    return Ok(receipt);
                 }
             }
         }
@@ -356,31 +393,53 @@ pub(super) fn execute(plan: &ProbePlan<'_>) -> (String, ExitIdentity) {
     let facts = Cell::new(Facts::default());
     let source = &plan.manifest.sources[plan.source_index];
     let timeout_ns = plan.options.timeout_ms * 1_000_000;
-    let result = runtime::run_site_probe(
-        runtime::Request {
-            approval: plan.approval,
-            principal: plan.options.principal.clone(),
-            timeout_ns,
-            bytes: plan.allowance.bytes,
-            network_bytes: plan.allowance.network_bytes,
-            storage_operations: plan.allowance.storage_operations,
-            network: true,
-            write: false,
-            secrets: source.authentication.is_some(),
-        },
-        |scope| {
-            let result = run_native(plan, scope, &facts);
-            let mut current = facts.get();
-            current.last_observed_ns = scope.observed_ns();
-            facts.set(current);
-            result
-        },
-    )
+    let request = runtime::Request {
+        approval: plan.approval,
+        principal: plan.options.principal.clone(),
+        timeout_ns,
+        bytes: plan.allowance.bytes,
+        network_bytes: plan.allowance.network_bytes,
+        storage_operations: plan.allowance.storage_operations,
+        network: true,
+        write: false,
+        secrets: source.authentication.is_some(),
+    };
+    let work = |scope: &runtime::Scope<'_, '_>| {
+        let result = run_native(plan, scope, &facts);
+        let mut current = facts.get();
+        current.last_observed_ns = scope.observed_ns();
+        facts.set(current);
+        result
+    };
+    let result = if plan.private.is_some() {
+        runtime::run_private_site_probe(request, work)
+    } else {
+        runtime::run_site_probe(request, work)
+    }
     .map_err(runtime_error);
     match result {
         // The shared owner rechecks cancellation, the actual final deadline, task
         // retirement and region closure before it releases either output format.
-        Ok(output) => (output, ExitIdentity::SUCCESS),
+        Ok(receipt) if plan.private.is_some() => {
+            super::unifi::save_receipt(plan, &receipt, facts.get())
+        }
+        Ok(receipt) => {
+            let output = match plan.options.output {
+                ProbeOutput::Receipts => Ok(array(&[receipt_json(&receipt)])),
+                ProbeOutput::Session => super::report::success(plan, &receipt, facts.get()),
+            };
+            match output {
+                Ok(output) if output.len() <= crate::site_cmd::MAX_SITE_OUTPUT_BYTES => {
+                    (output, ExitIdentity::SUCCESS)
+                }
+                Ok(_) => refusal(
+                    "ERR-SITE-PROBE-OUTPUT-001",
+                    facts.get(),
+                    ExitIdentity::RUNTIME_FAILURE,
+                ),
+                Err(code) => refusal(code, facts.get(), ExitIdentity::RUNTIME_FAILURE),
+            }
+        }
         Err(code) if plan.options.output == ProbeOutput::Session => (
             super::report::refusal(plan, code, facts.get(), ExitIdentity::RUNTIME_FAILURE),
             ExitIdentity::RUNTIME_FAILURE,

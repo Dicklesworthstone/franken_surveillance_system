@@ -235,6 +235,20 @@ mod native {
             Ok(result)
         }
 
+        /// Identity of the pinned destination parent, for an approval that spans
+        /// separately owned requests. Metadata is not itself a publication grant;
+        /// the next owner must prepare again and compare before writing.
+        #[allow(
+            dead_code,
+            reason = "Only multi-stage protected outputs bind parent identity"
+        )]
+        pub(crate) fn fingerprint(&self) -> [u8; 16] {
+            let mut fingerprint = [0; 16];
+            fingerprint[..8].copy_from_slice(&self.identity.0.to_be_bytes());
+            fingerprint[8..].copy_from_slice(&self.identity.1.to_be_bytes());
+            fingerprint
+        }
+
         fn check(&self, check: &impl Fn() -> Result<(), &'static str>) -> Result<(), &'static str> {
             check()?;
             let meta = fs::symlink_metadata(&self.parent_path).map_err(|_| FILE)?;
@@ -371,6 +385,13 @@ mod native {
         ) -> Result<Self, &'static str> {
             check()?;
             Err(FILE)
+        }
+        #[allow(
+            dead_code,
+            reason = "Output preparation refuses on unsupported targets"
+        )]
+        pub(crate) fn fingerprint(&self) -> [u8; 16] {
+            [0; 16]
         }
         pub(crate) fn write(
             &self,

@@ -4,7 +4,8 @@
 #[path = "authenticated/offers.rs"]
 mod offers;
 
-use offers::ChallengeOffers;
+// HTTP ONVIF authentication shares the same bounded offer and policy semantics.
+pub(crate) use offers::ChallengeOffers;
 
 use super::*;
 use crate::rtsp::authentication::{

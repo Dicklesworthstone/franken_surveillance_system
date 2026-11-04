@@ -1,14 +1,16 @@
 #![forbid(unsafe_code)]
 //! An exact, separately approved native RTSP probe for one manifest source.
 //!
-//! Previewing reads only the manifest. Execution borrows the existing private
-//! credential lease and request-owned runtime; it retains no media or raw wire.
-//! Successful stdout is a receipt array directly usable by `fss site plan`, or an
-//! explicitly selected session report with native evidence and omission accounting.
+//! Direct previews read only the manifest; UniFi previews additionally validate
+//! one exact protected export and private receipt destination. Execution borrows
+//! the existing credential lease and request-owned runtime and retains no media.
+//! Direct stdout contains receipts or selected session evidence. UniFi receipts
+//! are saved privately for `fss site plan`, with safe result metadata on stdout.
 
 mod native;
 mod plan;
 mod report;
+mod unifi;
 
 use std::path::PathBuf;
 
@@ -40,6 +42,8 @@ pub fn parse_probe_args(tokens: &[ArgToken]) -> Result<(PathBuf, SiteProbeOption
             "--principal",
             "--output",
             "--approve",
+            "--unifi-bindings",
+            "--receipt-file",
         ],
     )?;
     let required = |name: &str| -> Result<String, CliError> {
@@ -119,6 +123,8 @@ pub fn parse_probe_args(tokens: &[ArgToken]) -> Result<(PathBuf, SiteProbeOption
         }
     };
     let options = SiteProbeOptions {
+        unifi_bindings: take(&values, "--unifi-bindings").map(|(_, value, _)| PathBuf::from(value)),
+        receipt_file: take(&values, "--receipt-file").map(|(_, value, _)| PathBuf::from(value)),
         source: required("--source")?,
         codec,
         media_index,
@@ -144,11 +150,15 @@ fn empty_public_probe_parse_refuses_without_panicking() {
 }
 
 /// Preview or perform one bounded probe. Only an exact preview digest opens the
-/// native boundary. Receipt arrays and successful session reports contain private route metadata.
+/// network boundary. Direct receipt/session output contains private route metadata;
+/// UniFi capability-bearing receipts require the protected file owner instead.
 pub fn execute_probe(
     manifest: &SiteManifest,
     options: &SiteProbeOptions,
 ) -> (String, ExitIdentity) {
+    if options.unifi_bindings.is_some() || options.receipt_file.is_some() {
+        return unifi::execute(manifest, options);
+    }
     let plan = match ProbePlan::new(manifest, options) {
         Ok(plan) => plan,
         Err(code) => {

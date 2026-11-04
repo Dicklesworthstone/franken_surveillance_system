@@ -30,10 +30,41 @@ agreement, keeps capability tokens out of arguments/reports, and separates main
 and package source identities. Direct RTSP/NVR and JPEG sources can coexist in
 the same atomic plan. Follow [the site binding workflow](SITE_PLANNING.md#unifi-protect-site-bindings).
 
-The site command does not acquire Protect exports or UniFi probe receipts,
-verify signed rights, contact devices or execute a site approval. The standalone
-capture and reconnect capabilities below retain their existing independent
-approval and private-file revalidation.
+Before planning capture, `fss site probe` can measure the selected stream using
+the same manifest and bindings:
+
+```sh
+fss site probe --manifest /etc/fss/site.json \
+  --unifi-bindings /etc/fss/site-unifi-bindings.json \
+  --source source:front --codec avc --observe-frames 6 \
+  --receipt-file /etc/fss/private/front-probe.json \
+  --timeout-ms 10000 --json
+```
+
+Preview reads the selected protected export and checks the absent absolute
+receipt destination, without network or credential access. Review the exact
+plan and repeat with its `--approve sha256:HEX`. The native probe measures SDP,
+parameter sets, RTP sender and cadence, then requires successful TEARDOWN before
+saving a `0600` one-element receipt array. Its original manifest identity passes
+directly into `site plan --probes` with the same bindings. This removes the need
+to construct UniFi probe receipts by hand.
+
+Both preview and stdout keep the selected capability route private: preview
+route fields are SHA-256 digests, and success returns
+`fss.site_unifi_probe_result.v1` with file/receipt digests. The exact export bytes,
+file fingerprint, selection, route, output path and observation options are
+approval-bound. UniFi probes support explicit AVC/HEVC and `--output receipts`;
+`--output session` is refused. The writer never replaces an existing file, and a
+failure can leave a partial file or an already committed receipt. Follow
+[the live probing guide](SITE_PROBING.md#probe-a-unifi-protect-source) for the
+result flags and separate five-second file-stage budgets.
+
+Site planning consumes those receipts without device contact. Neither command
+acquires Protect exports automatically, enables a stream, verifies signed rights
+or executes a site-wide capture approval. RTSPS and ONVIF site probing remain
+unsupported, and sources are probed one at a time. The standalone capture and
+reconnect capabilities below retain their existing independent approval and
+private-file revalidation.
 
 ## Export the selected camera and its existing streams
 

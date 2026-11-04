@@ -74,6 +74,24 @@ fn output_roundtrip_is_exact_private_and_revalidated() -> Test {
 }
 
 #[test]
+fn output_parent_identity_survives_reopening_but_not_replacement() -> Test {
+    let fixture = Fixture::new()?;
+    let parent = fixture.path("receipts");
+    private_directory(&parent)?;
+    let path = parent.join("probe.json");
+    // Separate request owners exchange metadata only, never a live file handle.
+    let reviewed = Output::prepare(&path, &allowed)?.fingerprint();
+    assert_eq!(Output::prepare(&path, &allowed)?.fingerprint(), reviewed);
+    fs::rename(&parent, fixture.path("original-receipts"))?;
+    private_directory(&parent)?;
+    let current = Output::prepare(&path, &allowed)?;
+    assert_ne!(current.fingerprint(), reviewed);
+    assert!(!path.exists());
+    assert!(!fixture.path("original-receipts/probe.json").exists());
+    Ok(())
+}
+
+#[test]
 fn existing_or_raced_output_is_never_overwritten() -> Test {
     let fixture = Fixture::new()?;
     let existing = fixture.file("existing.json", b"existing operator data")?;

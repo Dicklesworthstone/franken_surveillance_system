@@ -358,6 +358,22 @@ fn real_http_retains_duplicates_and_empty_batches_before_confirmed_cleanup() {
 
 #[test]
 fn digest_retries_reuse_logical_message_ids_and_sign_exact_query_targets() {
+    for mixed in [false, true] {
+        digest_retry_roundtrip(mixed);
+    }
+}
+
+fn digest_retry_roundtrip(mixed: bool) {
+    let challenge = |realm: &str| {
+        if mixed {
+            let prefix = format!(
+                "WWW-Authenticate: Basic realm=\"fixture-basic\"\r\nWWW-Authenticate: Digest realm=\"{realm}\", nonce=\"fixture-legacy\", algorithm=MD5, qop=\"auth\"\r\n"
+            );
+            challenge(realm).replace("WWW-Authenticate:", &format!("{prefix}WWW-Authenticate:"))
+        } else {
+            challenge(realm)
+        }
+    };
     let server = Server::start(|peer| {
         vec![
             challenge(REALM),
@@ -381,12 +397,16 @@ fn digest_retries_reuse_logical_message_ids_and_sign_exact_query_targets() {
     })
     .unwrap();
     assert_eq!(report.exchanges, 6);
+    assert_eq!(report.subscription_state, SubscriptionState::Unsubscribed);
     assert_eq!(cx.auth_calls.load(Ordering::SeqCst), 3);
     let requests = server.requests();
     for pair in requests.chunks_exact(2) {
         assert_eq!(message_id(&pair[0]), message_id(&pair[1]));
         assert!(!pair[0].contains("Authorization: Digest "));
         assert!(pair[1].contains("Authorization: Digest "));
+        assert!(pair[1].contains("algorithm=SHA-256"));
+        assert!(!pair[1].contains("Authorization: Basic"));
+        assert!(!pair[1].contains("fixture-legacy"));
         assert!(!pair[1].contains("fixture-password"));
     }
     assert!(requests[3].contains(&format!("uri=\"{SUBSCRIPTION}\"")));

@@ -17,6 +17,7 @@ use fss_packet::{PacketLimits, RtpPacket};
 use super::probe_observation::{
     MAX_PROBE_PICTURES, NegotiatedProbe, ObservationError, RtspProbeObserver,
 };
+use super::probe_route::ProbeRoute;
 use super::{ProbeCodec, SiteManifest, SiteProbeReceipt, SourceKind};
 use crate::rtsp::authentication::{DigestCredentials, DigestPolicy};
 use crate::rtsp::client::authenticated::DigestClientError;
@@ -60,7 +61,7 @@ impl fmt::Debug for ProbeDigestConfig {
 pub struct LiveSiteProbeConfig {
     /// Source ordinal in the complete pinned manifest.
     pub source_index: usize,
-    /// Exact manifest route and explicitly selected media/channel pair.
+    /// Exact manifest-bound route and explicitly selected media/channel pair.
     pub protocol: ClientConfig,
     /// Caller-approved literal peer, ingress/generation and optional pinned SSRC.
     pub binding: TcpBinding,
@@ -268,6 +269,7 @@ struct Outstanding {
 pub struct LiveSiteProbe<'a> {
     manifest: &'a SiteManifest,
     source_index: usize,
+    route: ProbeRoute,
     media_index: usize,
     codec: ProbeCodec,
     digest_enabled: bool,
@@ -313,11 +315,29 @@ impl<'a> LiveSiteProbe<'a> {
         now_ns: u64,
         authority: &dyn TcpAuthority,
     ) -> Result<Self, ProbeConnectFailure> {
+        let route =
+            ProbeRoute::direct(manifest, config.source_index).map_err(|_| ProbeConnectFailure {
+                reason: ProbeError::Configuration,
+                connection_attempted: false,
+            })?;
+        Self::connect_with_route(manifest, config, route, now_ns, authority)
+    }
+
+    /// Validate an exact preselected direct or UniFi route, then attempt one connection.
+    /// The original complete manifest remains the receipt's identity. Route, media, scope and
+    /// budgets are checked before network authority is consulted or a socket is opened.
+    pub fn connect_with_route(
+        manifest: &'a SiteManifest,
+        config: LiveSiteProbeConfig,
+        route: ProbeRoute,
+        now_ns: u64,
+        authority: &dyn TcpAuthority,
+    ) -> Result<Self, ProbeConnectFailure> {
         let fail = |reason| ProbeConnectFailure {
             reason,
             connection_attempted: false,
         };
-        validate_config(manifest, &config, now_ns).map_err(fail)?;
+        validate_config(manifest, &config, &route, now_ns).map_err(fail)?;
         let codec = match config.codec {
             ProbeCodec::Avc => ClientCodec::H264,
             ProbeCodec::Hevc => ClientCodec::H265,
@@ -353,6 +373,7 @@ impl<'a> LiveSiteProbe<'a> {
         Ok(Self {
             manifest,
             source_index: config.source_index,
+            route,
             media_index,
             codec: config.codec,
             digest_enabled,
@@ -651,9 +672,10 @@ impl<'a> LiveSiteProbe<'a> {
                 (media.payload_type(), Vec::new())
             }
         };
-        RtspProbeObserver::new(
+        RtspProbeObserver::new_with_route(
             self.manifest,
             self.source_index,
+            self.route.clone(),
             NegotiatedProbe {
                 sdp: &response.body,
                 media_index: self.media_index,
@@ -814,37 +836,24 @@ impl<'a> LiveSiteProbe<'a> {
 fn validate_config(
     manifest: &SiteManifest,
     config: &LiveSiteProbeConfig,
+    route: &ProbeRoute,
     now: u64,
 ) -> Result<(), ProbeError> {
-    manifest.validate().map_err(|_| ProbeError::Configuration)?;
+    route
+        .validate_for(manifest, config.source_index)
+        .map_err(|_| ProbeError::Configuration)?;
     let source = manifest
         .sources
         .get(config.source_index)
         .ok_or(ProbeError::Configuration)?;
-    if !matches!(source.kind, SourceKind::Rtsp | SourceKind::NvrChannel)
-        || !source.owner_authorized
-        || !source.plaintext
+    if (source.kind == SourceKind::UnifiProtect && config.codec == ProbeCodec::Jpeg)
         || config.binding.peer() != source.peer
         || config.binding.authority() != source.authority
         || config.binding.key().generation != source.generation
         || config.protocol.presentation_uri
-            != format!(
-                "rtsp://{}{}",
-                source.authority,
-                source
-                    .presentation
-                    .as_deref()
-                    .ok_or(ProbeError::Configuration)?
-            )
+            != format!("rtsp://{}{}", source.authority, route.presentation())
         || config.protocol.control_root_uri
-            != format!(
-                "rtsp://{}{}",
-                source.authority,
-                source
-                    .control_root
-                    .as_deref()
-                    .ok_or(ProbeError::Configuration)?
-            )
+            != format!("rtsp://{}{}", source.authority, route.control_root())
         || config.protocol.channels.0 % 2 != 0
         || config.payload_type.is_some_and(|value| {
             !(96..=127).contains(&value) && !(config.codec == ProbeCodec::Jpeg && value == 26)

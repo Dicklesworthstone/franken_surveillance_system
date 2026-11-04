@@ -4,6 +4,60 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Local camera onboarding: protected live UniFi receipts and ONVIF Digest offers
+
+The native probe owner now accepts an exact UniFi selection while preserving the
+original site manifest, source generation and camera/view identity. It validates
+camera ID, authority, literal peer and explicitly selected plaintext endpoint
+before the first network admission. Existing direct RTSP/NVR constructors and
+observation contracts remain available. Token-bearing resources retain their
+exact path/query spelling; there is no source-kind rewrite or guessed receipt.
+
+The CLI adds `site probe --unifi-bindings BINDINGS.json --receipt-file FILE` for
+AVC/HEVC. It uses the same protected export bindings as site planning. Preview
+binds export content and actual file identity, original manifest, quality/view,
+route and the new private destination's parent identity. The live owner keeps
+revalidating the export. A matching acknowledged TEARDOWN and finalized native
+request precede the separate create-only `0600` receipt publication. The ordinary
+receipt array feeds `site plan --probes` with the same manifest and bindings.
+Stdout contains safe selection/file/receipt digests; capability URLs remain in
+private files. UniFi session output is refused. Partial write and durable receipt
+with late writer failure have distinct reported outcomes and never auto-retry.
+
+ONVIF HTTP parsing and all Digest exchange owners now accept repeated fields and
+combined authentication offers, including Basic beside Digest and several Digest
+algorithms. They share RTSP's bounded strongest-permitted selector, preserving
+pinned realm, exact signed target, explicit legacy policy and one retry. Basic,
+malformed or ambiguous challenges cannot acquire credentials.
+
+**Scoped validation:** exact production modules passed 53 HTTP, native ONVIF
+onboarding and RTSP Digest tests, plus 79 site/observer/native-loopback probe
+contracts and 10 protected-file contracts, including destination identity across
+separately owned requests. The focused harnesses include the production source
+directories and actual first-party dependencies, with no protocol stubs or
+repository manifest changes. The complete CLI process-test fixture, including
+seven new UniFi tests, compiles against those actual protocol modules and the
+actual JSON renderer; its subprocesses remain unexecuted. Both schemas pass the
+repository schema validator.
+
+**Build limit:** full workspace test compilation and even metadata-only
+`cargo check` were SIGKILLed inside `asupersync` at the environment's 8 GiB memory
+ceiling before FSS source diagnostics. CLI/runtime and PullPoint compilation and
+execution therefore remain unverified by a full production build. The isolated
+checks above do not substitute for that build or claim hardware, continuous
+recording, authenticated freshness or release qualification.
+
+The hosted dashboard workflow for reference commit `58a45a0` also stopped in the
+repository-owned qualification lane before compilation, on existing dependency
+constitution/allowlist and schema-registration failures. No dependency manifest,
+lockfile, approval rule or qualification gate was changed for this work.
+
+This closes the private live-receipt handoff gap for UniFi sources in the existing
+site planning workflow. Automatic Protect export acquisition, TLS/RTSPS, ONVIF
+site-source resolution, all-source probing, signed rights verification and a site
+executor remain separate work. See [live probing](docs/SITE_PROBING.md) and
+[ONVIF onboarding](docs/ONVIF_ONBOARDING.md).
+
 ## Protected UniFi site capture compilation
 
 `fss site plan --unifi-bindings BINDINGS.json` now compiles UniFi Protect
@@ -50,13 +104,12 @@ the protected adapter's final runtime wrapper remain unexecuted because the
 serialized full build was SIGKILLed in Asupersync before FSS diagnostics. Native
 hardware and release qualification remain unclaimed.
 
-This advances the site compiler portion of VIT-004. UniFi-specific receipt
-production is still missing: current live/recorded producers admit direct
-RTSP/NVR sources, and the v1 receipt includes private route fields. Supplied
-UniFi receipts remain historical consistency claims. A future producer needs a
-protected receipt artifact or a separately versioned redacted contract. Protect
-API acquisition, TLS/RTSPS, signed rights verification and a site executor remain
-separate work; no such authority is inferred by a successful plan.
+This advances the site compiler portion of VIT-004. The subsequently added
+protected live UniFi producer described above supplies private receipt artifacts;
+recorded producers remain direct RTSP/NVR only. Supplied receipts remain historical
+consistency claims. Protect API acquisition, TLS/RTSPS, signed rights verification
+and a site executor remain separate work; no such authority is inferred by a
+successful plan.
 
 ## Native and recorded JPEG site probing
 

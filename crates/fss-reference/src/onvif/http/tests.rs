@@ -324,7 +324,7 @@ fn ambiguous_truncated_and_extra_responses_never_release() {
 }
 
 #[test]
-fn digest_challenge_is_single_bounded_and_redacted() -> TestResult {
+fn digest_challenge_is_bounded_and_redacted() -> TestResult {
     let challenge = "Digest realm=\"test-realm\", nonce=\"private-test-nonce\", algorithm=SHA-256, qop=\"auth\"";
     let bytes = format!(
         "HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: {challenge}\r\nContent-Length: 0\r\n\r\n"
@@ -336,9 +336,13 @@ fn digest_challenge_is_single_bounded_and_redacted() -> TestResult {
     let duplicated = format!(
         "HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: {challenge}\r\nwww-authenticate: {challenge}\r\nContent-Length: 0\r\n\r\n"
     );
+    let response = decode(duplicated.as_bytes(), 0, false)?;
+    assert!(response.digest_challenge().is_none());
     assert_eq!(
-        decode(duplicated.as_bytes(), 0, false).err(),
-        Some(HttpError::Malformed)
+        response
+            .select_digest_challenge("test-realm", DigestPolicy::default())
+            .err(),
+        Some(AuthenticationError::Malformed)
     );
     let oversized = format!(
         "HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Digest {}\r\nContent-Length: 0\r\n\r\n",
@@ -349,6 +353,157 @@ fn digest_challenge_is_single_bounded_and_redacted() -> TestResult {
         Some(HttpError::Limit)
     );
     Ok(())
+}
+
+fn authentication_response(fields: &[&str]) -> String {
+    let mut wire = "HTTP/1.1 401 Unauthorized\r\n".to_owned();
+    for value in fields {
+        wire.push_str(&format!("WWW-Authenticate: {value}\r\n"));
+    }
+    wire.push_str("Content-Length: 0\r\n\r\n");
+    wire
+}
+
+#[test]
+fn mixed_digest_offers_preserve_exact_challenges_across_every_http_split() -> TestResult {
+    let basic = r#"Basic realm="private-basic""#;
+    let md5 = r#"Digest realm="test-realm", nonce="private-md5", algorithm=MD5, qop="auth""#;
+    let sha = r#"Digest realm="test-realm", nonce="private,quoted\"nonce", opaque="a,b", algorithm=SHA-256, qop="auth-int, auth""#;
+    let combined = format!("{basic}, {md5}, {sha}");
+    let reverse = format!("{sha}, {basic}, {md5}");
+    let credentials = DigestCredentials::new("fixture-user", "fixture-password")?;
+    let expected = DigestChallenge::parse(sha, "test-realm", DigestPolicy::default())?.authorize(
+        "POST",
+        "/onvif/media",
+        &credentials,
+        [9; 16],
+        1,
+    )?;
+    for fields in [
+        vec![basic, md5, sha],
+        vec![sha, basic, md5],
+        vec![combined.as_str()],
+        vec![reverse.as_str()],
+    ] {
+        let wire = authentication_response(&fields);
+        for split in 0..=wire.len() {
+            let response = decode(wire.as_bytes(), split, false)?;
+            assert!(response.digest_challenge().is_none());
+            for allow_legacy_md5 in [false, true] {
+                let challenge = response
+                    .select_digest_challenge(
+                        "test-realm",
+                        DigestPolicy {
+                            allow_legacy_md5,
+                            allow_legacy_no_qop: false,
+                        },
+                    )?
+                    .ok_or("Digest offer missing")?;
+                let answer =
+                    challenge.authorize("POST", "/onvif/media", &credentials, [9; 16], 1)?;
+                assert_eq!(answer.expose(), expected.expose());
+                assert!(!format!("{response:?} {challenge:?}").contains("private"));
+            }
+        }
+    }
+    let single = format!("{basic}, {sha}, Bearer ignored-token");
+    let response = decode(authentication_response(&[&single]).as_bytes(), 0, false)?;
+    assert_eq!(response.digest_challenge(), Some(sha));
+    let absent = decode(authentication_response(&[]).as_bytes(), 0, false)?;
+    assert!(
+        absent
+            .select_digest_challenge("test-realm", DigestPolicy::default())?
+            .is_none()
+    );
+    Ok(())
+}
+
+#[test]
+fn mixed_digest_policy_and_ambiguity_never_select_a_weaker_offer() -> TestResult {
+    let sha = r#"Digest realm="test-realm", nonce="sha", algorithm=SHA-256, qop="auth""#;
+    let md5 = r#"Digest realm="test-realm", nonce="md5", algorithm=MD5, qop="auth""#;
+    let other_nonce = sha.replace("nonce=\"sha\"", "nonce=\"second\"");
+    let wrong_realm = md5.replace("test-realm", "foreign-realm");
+    let malformed = format!("{md5}, nonce=\"duplicate\"");
+    let policy = DigestPolicy {
+        allow_legacy_md5: true,
+        allow_legacy_no_qop: true,
+    };
+    for (fields, expected) in [
+        (
+            vec![sha, other_nonce.as_str()],
+            AuthenticationError::Malformed,
+        ),
+        (vec![sha, wrong_realm.as_str()], AuthenticationError::Realm),
+        (
+            vec![sha, malformed.as_str()],
+            AuthenticationError::Malformed,
+        ),
+    ] {
+        let response = decode(authentication_response(&fields).as_bytes(), 0, false)?;
+        assert_eq!(
+            response.select_digest_challenge("test-realm", policy).err(),
+            Some(expected)
+        );
+    }
+    let response = decode(authentication_response(&[md5]).as_bytes(), 0, false)?;
+    assert_eq!(
+        response
+            .select_digest_challenge("test-realm", DigestPolicy::default())
+            .err(),
+        Some(AuthenticationError::Unsupported)
+    );
+    assert_eq!(
+        response
+            .select_digest_challenge("test-realm", policy)?
+            .ok_or("legacy Digest missing")?
+            .algorithm(),
+        crate::rtsp::authentication::DigestAlgorithm::LegacyMd5,
+    );
+    let private_md5 = format!("{md5}, userhash=true");
+    let response = decode(
+        authentication_response(&[sha, &private_md5]).as_bytes(),
+        0,
+        false,
+    )?;
+    assert_eq!(
+        response.select_digest_challenge("test-realm", policy).err(),
+        Some(AuthenticationError::Unsupported),
+        "incomparable hash strength and username privacy must not be silently weakened",
+    );
+    Ok(())
+}
+
+#[test]
+fn mixed_digest_headers_keep_offer_count_byte_and_syntax_bounds() {
+    let basic = r#"Basic realm="private-basic""#;
+    let sha = r#"Digest realm="test-realm", nonce="sha", algorithm=SHA-256, qop="auth""#;
+    let large = format!("Basic realm=\"{}\"", "p".repeat(1800));
+    let mut many = vec![basic; 8];
+    many.push(sha);
+    let combined = many.join(", ");
+    for fields in [
+        many,
+        vec![combined.as_str()],
+        vec![&large, &large, &large, &large, &large, sha],
+    ] {
+        let wire = authentication_response(&fields);
+        assert_eq!(
+            decode(wire.as_bytes(), 0, false).err(),
+            Some(HttpError::Limit)
+        );
+    }
+    for malformed in [
+        format!("{sha}, Basic realm=\"unterminated"),
+        format!("{sha}, Basic realm=\"escaped\\\""),
+        format!("{sha},, {basic}"),
+    ] {
+        let wire = authentication_response(&[&malformed]);
+        assert_eq!(
+            decode(wire.as_bytes(), 0, false).err(),
+            Some(HttpError::Malformed)
+        );
+    }
 }
 
 #[test]

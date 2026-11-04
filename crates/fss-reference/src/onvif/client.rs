@@ -574,10 +574,9 @@ fn exchange(
         }
         None => return Err(ClientError::AuthenticationRequired),
     };
-    let header = first
-        .digest_challenge()
+    let challenge = first
+        .select_digest_challenge(&auth.expected_realm, auth.policy)?
         .ok_or(ClientError::AuthenticationRefused)?;
-    let challenge = DigestChallenge::parse(header, &auth.expected_realm, auth.policy)?;
     let now = budget.now(config, cx)?;
     cx.checkpoint(route, HttpOperation::Write, now, config.deadline_ns)
         .map_err(|_| ClientError::Authority)?;

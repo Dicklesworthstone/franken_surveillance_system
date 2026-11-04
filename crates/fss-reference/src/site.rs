@@ -15,6 +15,9 @@ mod wire;
 /// Pure bounded observations for native RTSP site probe receipts.
 pub mod probe_observation;
 
+/// Exact private RTSP routing bound to the original direct or UniFi site source.
+pub mod probe_route;
+
 /// Session-owned native RTSP probing with explicit authority, bounds and remote-close evidence.
 pub mod live_probe;
 
