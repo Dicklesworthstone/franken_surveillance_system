@@ -1,0 +1,207 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/scene_handoffs_retained_query.v2.json",
+  "title": "Retained two-stream handoffs with original clock-query replay",
+  "description": "Explicit v2 profile; v1 stays unchanged. Native admission binds both declared cameras/clocks/world/calibration/image domains to the pinned original clock query and exact retained imports/sensors/streams/ClockBasis. Every selected target capsule must match one complete original projection interval, with no unused declared projections. Every clock candidate remains in each derived time envelope. Source custody is verified by the existing owner; clock observation custody, camera association and physical calibration remain declarations.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "session",
+    "generation",
+    "cost_unit",
+    "birth_cost",
+    "end_cost",
+    "k",
+    "selections",
+    "transitions",
+    "clock_validation"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.scene_handoffs_retained_query.v2"
+    },
+    "session": {
+      "$ref": "scene_handoffs_query.v1.json#/$defs/id"
+    },
+    "generation": {
+      "$ref": "scene_handoffs_query.v1.json#/$defs/digest"
+    },
+    "cost_unit": {
+      "$ref": "scene_handoffs_query.v1.json#/$defs/unit"
+    },
+    "birth_cost": {
+      "$ref": "scene_handoffs_query.v1.json#/$defs/u64"
+    },
+    "end_cost": {
+      "$ref": "scene_handoffs_query.v1.json#/$defs/u64"
+    },
+    "k": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 32
+    },
+    "selections": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 32,
+      "items": {
+        "$ref": "#/$defs/selection"
+      }
+    },
+    "transitions": {
+      "type": "array",
+      "minItems": 0,
+      "maxItems": 992,
+      "items": {
+        "$ref": "scene_handoffs_query.v1.json#/$defs/transition"
+      }
+    },
+    "clock_validation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "query_path",
+        "query_digest",
+        "world_basis",
+        "reference",
+        "target",
+        "projections"
+      ],
+      "properties": {
+        "query_path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+        },
+        "query_digest": {
+          "$ref": "scene_handoffs_query.v1.json#/$defs/digest"
+        },
+        "world_basis": {
+          "$ref": "scene_handoffs_query.v1.json#/$defs/digest"
+        },
+        "reference": {
+          "$ref": "#/$defs/stream"
+        },
+        "target": {
+          "$ref": "#/$defs/stream"
+        },
+        "projections": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 128,
+          "items": {
+            "$ref": "#/$defs/projection"
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "stream": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "camera",
+        "clock_generation",
+        "import_identity",
+        "sensor_id",
+        "stream_id",
+        "clock_basis",
+        "calibration_digest",
+        "image_domain"
+      ],
+      "properties": {
+        "camera": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "clock_generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "import_identity": {
+          "$ref": "scene_handoffs_query.v1.json#/$defs/digest"
+        },
+        "sensor_id": {
+          "$ref": "scene_handoffs_query.v1.json#/$defs/id"
+        },
+        "stream_id": {
+          "$ref": "scene_handoffs_query.v1.json#/$defs/id"
+        },
+        "clock_basis": {
+          "enum": [
+            "utc_disciplined",
+            "device_monotonic",
+            "host_monotonic",
+            "estimated"
+          ]
+        },
+        "calibration_digest": {
+          "$ref": "scene_handoffs_query.v1.json#/$defs/digest"
+        },
+        "image_domain": {
+          "$ref": "scene_handoffs_query.v1.json#/$defs/digest"
+        }
+      }
+    },
+    "projection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "capsule_digest",
+        "projection_id"
+      ],
+      "properties": {
+        "capsule_digest": {
+          "$ref": "scene_handoffs_query.v1.json#/$defs/digest"
+        },
+        "projection_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        }
+      }
+    },
+    "selection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "report_digest",
+        "label",
+        "tracking",
+        "track",
+        "source"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "scene_handoffs_query.v1.json#/$defs/id"
+        },
+        "report_digest": {
+          "$ref": "scene_handoffs_query.v1.json#/$defs/digest"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "tracking": {
+          "$ref": "scene_handoffs_retained_query.v1.json#/$defs/tracking"
+        },
+        "track": {
+          "$ref": "scene_handoffs_query.v1.json#/$defs/digest"
+        },
+        "source": {
+          "enum": [
+            "reference",
+            "target"
+          ]
+        }
+      }
+    }
+  }
+}

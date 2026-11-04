@@ -17,6 +17,8 @@ pub mod claim_cmd;
 pub mod clock_alignment;
 /// Pure bounded anonymous multi-camera handoff query with complete alternatives.
 pub mod continuity_query;
+/// Native clock replay bound to complete retained package-track handoff observations.
+pub mod retained_clock_handoffs;
 /// Bounded selection and complete projection report for retained package-track handoffs.
 pub mod retained_continuity_query;
 /// The source owner's pure retained-handoff contract, shared with the query adapter.
@@ -38,9 +40,9 @@ pub mod feedback_cmd;
 pub mod finding_cmd;
 /// Read-only `follow` (AOP-004 `session.follow`) since an earlier committed anchor.
 pub mod follow_cmd;
+pub mod fss_cmd;
 /// Pure canonical JSON rendering of numerical and source-once fusion receipts.
 pub mod fusion_json;
-pub mod fss_cmd;
 pub mod hydration_cmd;
 /// `fss investigate` (AOP-006): durable mission-scoped investigation cases; agent-plane writes.
 pub mod investigate_cmd;

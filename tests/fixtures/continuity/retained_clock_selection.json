@@ -1,0 +1,86 @@
+{
+  "schema": "fss.scene_handoffs_retained_query.v2",
+  "session": "session:synthetic-selection-parser-fixture",
+  "generation": "sha256:1153d4dfcd203960faf3223459a5f9d3f04b341a52fa77ef6102bbddb28dd6e6",
+  "cost_unit": "declared_integer_cost",
+  "birth_cost": 5,
+  "end_cost": 5,
+  "k": 2,
+  "selections": [
+    {
+      "id": "a",
+      "report_digest": "sha256:205e0eb59596cbc0da1fde43aae0512395f763d0036c2d915b9f9a54a62f7fa4",
+      "label": "person",
+      "tracking": {
+        "confirmation_hits": 2,
+        "maximum_missed_frames": 3,
+        "minimum_iou_ppm": 300000
+      },
+      "track": "sha256:c34d35541de86851607f1d7b0264bfdb0bdeeef221fb9f7c8010a35f7f11dbb8",
+      "source": "reference"
+    },
+    {
+      "id": "b",
+      "report_digest": "sha256:2047dcaa671ee692136aa016bcbf4b22b2c7a11396f6c6362c29ce744897af4b",
+      "label": "person",
+      "tracking": {
+        "confirmation_hits": 2,
+        "maximum_missed_frames": 3,
+        "minimum_iou_ppm": 300000
+      },
+      "track": "sha256:0e90094f2a968459a14ad76de280ed5c957ef6bc4e18037d4344574fecd12eb0",
+      "source": "target"
+    }
+  ],
+  "transitions": [
+    {
+      "from": "a",
+      "to": "b",
+      "transit": [
+        1,
+        100
+      ],
+      "cost": 1,
+      "basis": "sha256:0d80bcc2abc922a98137fc87d5dc3d89f55e4f54b338d01ec5535d70339790e7"
+    }
+  ],
+  "clock_validation": {
+    "query_path": "clock.json",
+    "query_digest": "sha256:5742f72eee22edff8c58db1da0d5332b6abf43b922d441ae91e9d7d8a5910460",
+    "world_basis": "sha256:dbd8fff30b14c13d7e63663409d112e81fbd94f8cde37911b2caf0f4fe9f5921",
+    "reference": {
+      "camera": 1,
+      "clock_generation": 10,
+      "import_identity": "sha256:64dd2f14845123086339bd559054c565f8415ac0aade9712c34896d31fa78321",
+      "sensor_id": "sensor:fixture-a",
+      "stream_id": "stream:fixture-a",
+      "clock_basis": "estimated",
+      "calibration_digest": "sha256:429f0d694b6460b0fdda7e59c04c8e22343af99a3f1cce7d1c09d0e49f683c21",
+      "image_domain": "sha256:77ebe5d37465d6a9016b484f759a5311b74f4ab7d864da9e69de4ae240847437"
+    },
+    "target": {
+      "camera": 2,
+      "clock_generation": 20,
+      "import_identity": "sha256:818e92e35959590262b7b9bd77b855afc71eb6dfbedc2113830830e8d291b7d2",
+      "sensor_id": "sensor:fixture-b",
+      "stream_id": "stream:fixture-b",
+      "clock_basis": "estimated",
+      "calibration_digest": "sha256:774581d9823f146940e6326de76474f8487d36c25542c76091ecc0fd492e9d38",
+      "image_domain": "sha256:73fdf4bc01eb4025d0c5c18f843ec92da0f0a2c85b325dc51f9ce501c5292cac"
+    },
+    "projections": [
+      {
+        "capsule_digest": "sha256:f75877e309b53cad3dd7b2d16f715cc663e9035f8bc8ddc0b86a7a0cb16a2317",
+        "projection_id": 1
+      },
+      {
+        "capsule_digest": "sha256:4fd028b21198cf7617eda4f9b0056e9c9996e34930a709be647e9c086b5640a4",
+        "projection_id": 2
+      },
+      {
+        "capsule_digest": "sha256:77cdc11ba906f3617824bb29ded2048edc12676f0863b69e2179670f5db8f4f3",
+        "projection_id": 3
+      }
+    ]
+  }
+}

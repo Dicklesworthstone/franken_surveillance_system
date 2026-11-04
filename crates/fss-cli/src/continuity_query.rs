@@ -442,7 +442,7 @@ fn assignment(value: &Assignment) -> String {
     ])
 }
 
-fn render(
+pub(crate) fn render(
     run: &CertifiedRun<ContinuityOutput>,
     input: ContentDigest,
     budget: Budget,

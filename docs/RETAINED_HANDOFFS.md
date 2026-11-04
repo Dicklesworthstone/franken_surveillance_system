@@ -5,6 +5,11 @@ to the conditional anonymous continuity planner. It reconstructs selected native
 their real package-detection custody, preserves every actually assigned observation, and
 supplies the planner with the first and last capture intervals from each selected track.
 
+For two streams with an original cross-session clock-validation query, the explicit
+[v2 clock-replay profile](RETAINED_HANDOFF_CLOCKS.md) binds every target capture to that query
+and uses the complete clock-candidate envelope in the native handoff solver. The v1 profile
+documented below retains its declared-offset behavior and report bytes.
+
 ```sh
 fss-scene-fuse retained-handoffs \
   --root /path/to/existing/deployment --site site:example \

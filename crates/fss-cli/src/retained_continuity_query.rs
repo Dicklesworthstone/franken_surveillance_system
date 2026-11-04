@@ -34,7 +34,7 @@ fn u32_value(value: &Value) -> Result<u32, String> {
     u32::try_from(unsigned(value)?).map_err(|_| "integer is outside u32".into())
 }
 
-fn tracking(value: &Value) -> Result<PackageHandoffTracking, String> {
+pub(crate) fn tracking(value: &Value) -> Result<PackageHandoffTracking, String> {
     let row = fields(
         value,
         &[

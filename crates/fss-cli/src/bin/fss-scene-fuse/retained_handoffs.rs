@@ -9,13 +9,20 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use fss_cli::continuity_query::{MAX_OUTPUT_ENTRIES, MAX_WORK};
+use fss_cli::retained_clock_handoffs::{self as clock_query, ClockReportInput};
 use fss_cli::retained_continuity_query::{self as query, RetainedReportInput};
 use fss_core::{BudgetVector, ContentDigest, ContextAuthority, OperationId, RootAuthoritySpec};
+use fss_geometry::WorkBudget;
 use fss_graph_algorithms::certified::Budget;
 use fss_reference::ingest::package_handoffs::PackageHandoffProjection;
 use fss_reference::{DeploymentLayout, ReferenceDeployment, ReplayCx};
 
 use super::{Result, checkpoint, fail, input_error, read_input, write_report};
+
+// Reserve both complete control-file ceilings before any retained original-source reads.
+// The existing opaque owner shares the remaining original-byte allowance with final replay.
+const CLOCK_CONTROL_RESERVATION: u64 =
+    (query::MAX_INPUT_BYTES + fss_cli::clock_alignment::MAX_INPUT_BYTES) as u64;
 
 const HELP: &str = "fss-scene-fuse retained-handoffs --root DEPLOYMENT --site SITE --selection QUERY.json\n\
     [--principal PRINCIPAL] [--report-out REPORT.json]\n\
@@ -33,6 +40,13 @@ operator assumptions. Original clock basis and tentative observations remain vis
 The full report contains source bindings, every selected observation, exact authority\n\
 anchor, both solver certificates, ranked paths and the complete admitted alternative family.\n\
 This does not establish physical identity, detector accuracy or authenticated calibration.\n\n\
+The explicit fss.scene_handoffs_retained_query.v2 profile replays an independently pinned\n\
+original clock-validation query for exactly two retained source streams. Every target\n\
+observation must match its complete original projection interval; all clock hypotheses\n\
+remain in the time envelope used by the handoff solver. Camera/clock associations and\n\
+clock-observation custody remain declarations. Relative query paths resolve beside QUERY.json.\n\
+The v2 source projection preserves local captures separately from derived common times;\n\
+the command reserves 2 MiB for its control files within the same 4 GiB source-read ceiling.\n\n\
 Input is a bounded regular file of at most 1 MiB. Default work: 2000000; maximum: 50000000.\n\
 Default timeout: 30000 ms; maximum: 3600000. Complete report: at most 4 MiB.\n\
 All recipes and revalidation share one 4 GiB original-source read allowance. Deadline\n\
@@ -54,6 +68,14 @@ struct Options {
     work: u64,
     timeout: Duration,
     report_bytes: usize,
+}
+
+struct Report {
+    json: String,
+    started: Instant,
+    // Keep legitimate authority/privacy/deletion writers excluded until actual report
+    // file and stdout publication finish, rather than only until analysis returns.
+    _deployment: ReferenceDeployment,
 }
 
 fn options(args: &[OsString]) -> Result<Option<Options>> {
@@ -238,7 +260,7 @@ pub(super) fn preflight(root: &Path, site: &str, authority: &ContextAuthority) -
     check().map_err(|e| fail("ERR-SCENE-FUSION-INPUT-001", e.to_string()))
 }
 
-fn analyze(options: &Options, root: &Path, cx: &ReplayCx) -> Result<String> {
+fn analyze(options: &Options, root: &Path, cx: &ReplayCx) -> Result<Report> {
     checkpoint(cx, "retained_handoffs:begin")?;
     let started = Instant::now();
     let cancelled = || cx.is_cancelled() || started.elapsed() >= options.timeout;
@@ -264,7 +286,41 @@ fn analyze(options: &Options, root: &Path, cx: &ReplayCx) -> Result<String> {
     if options.expected_input.is_some_and(|p| p != input_document) {
         return Err(input_error("selection bytes differ from --expected-input"));
     }
-    let request = query::parse_query(&bytes).map_err(input_error)?;
+    let value = fss_cli::json_input::parse(
+        std::str::from_utf8(&bytes).map_err(|_| input_error("selection must be UTF-8"))?,
+    )
+    .map_err(|e| input_error(e.to_string()))?;
+    let is_clock = value
+        .object()
+        .and_then(|row| row.get("schema"))
+        .and_then(|schema| schema.text())
+        == Some(clock_query::QUERY_SCHEMA);
+    let clock = if is_clock {
+        let request = clock_query::parse_query(&bytes).map_err(input_error)?;
+        let declared = Path::new(request.clock_query_path());
+        let path = if declared.is_absolute() {
+            declared.to_path_buf()
+        } else {
+            options
+                .selection
+                .parent()
+                .unwrap_or(Path::new("."))
+                .join(declared)
+        };
+        let original = read_input(&path, fss_cli::clock_alignment::MAX_INPUT_BYTES, cx)?;
+        if ContentDigest::sha256(&original) != request.clock_query_digest() {
+            return Err(input_error(
+                "original clock query differs from its independent byte pin",
+            ));
+        }
+        Some((request, original))
+    } else {
+        None
+    };
+    let request = match &clock {
+        Some((request, _)) => request.source_request().clone(),
+        None => query::parse_query(&bytes).map_err(input_error)?,
+    };
     if cancelled() {
         return Err(fail(
             "ERR-GRAPH-CANCELLED-001",
@@ -279,21 +335,48 @@ fn analyze(options: &Options, root: &Path, cx: &ReplayCx) -> Result<String> {
     {
         return Err(input_error("deployment differs from --expected-anchor"));
     }
-    let projection =
-        PackageHandoffProjection::read_with_cancel(&deployment, &request, cx, &cancelled)
-            .map_err(|e| fail(e.stable_id(), e.to_string()))?;
-    let report = query::analyze(
-        RetainedReportInput {
-            input_document,
-            projection_digest: projection.digest(),
-            anchor: projection.anchor(),
-            bindings: projection.bindings(),
-            query: projection.query(),
-        },
-        Budget::new(options.work, MAX_OUTPUT_ENTRIES),
-        options.report_bytes,
+    let source_limit =
+        fss_reference::ingest::package_handoffs::contract::MAX_PACKAGE_HANDOFF_SOURCE_BYTES
+            - if clock.is_some() {
+                CLOCK_CONTROL_RESERVATION
+            } else {
+                0
+            };
+    let projection = PackageHandoffProjection::read_with_source_limit(
+        &deployment,
+        &request,
+        cx,
         &cancelled,
+        source_limit,
     )
+    .map_err(|e| fail(e.stable_id(), e.to_string()))?;
+    let report = match &clock {
+        Some((request, original)) => {
+            let mut work = WorkBudget::with_cancellation_probe(options.work, &cancelled);
+            clock_query::analyze(
+                ClockReportInput {
+                    request,
+                    projection: &projection,
+                    clock_query: original,
+                },
+                &mut work,
+                options.report_bytes,
+                &cancelled,
+            )
+        }
+        None => query::analyze(
+            RetainedReportInput {
+                input_document,
+                projection_digest: projection.digest(),
+                anchor: projection.anchor(),
+                bindings: projection.bindings(),
+                query: projection.query(),
+            },
+            Budget::new(options.work, MAX_OUTPUT_ENTRIES),
+            options.report_bytes,
+            &cancelled,
+        ),
+    }
     .map_err(|e| fail(e.code(), e.to_string()))?;
     projection
         .revalidate_with_cancel(&deployment, cx, &cancelled)
@@ -305,7 +388,37 @@ fn analyze(options: &Options, root: &Path, cx: &ReplayCx) -> Result<String> {
         ));
     }
     checkpoint(cx, "retained_handoffs:complete")?;
-    Ok(report)
+    Ok(Report {
+        json: report,
+        started,
+        _deployment: deployment,
+    })
+}
+
+fn publish(options: &Options, report: Report, cx: &ReplayCx, out: &mut impl Write) -> Result<bool> {
+    let check = || -> Result<()> {
+        if cx.is_cancelled() || report.started.elapsed() >= options.timeout {
+            return Err(fail(
+                "ERR-GRAPH-CANCELLED-001",
+                "handoff deadline or cancellation reached before publication",
+            ));
+        }
+        Ok(())
+    };
+    check()?;
+    if let Some(path) = &options.report_out {
+        write_report(path, report.json.as_bytes(), cx)?;
+    } else {
+        checkpoint(cx, "retained_handoffs:stdout")?;
+    }
+    check()?;
+    writeln!(out, "{}", report.json).map_err(|_| {
+        fail(
+            "ERR-SCENE-FUSION-OUTPUT-001",
+            "stdout failed; any completed report file remains available",
+        )
+    })?;
+    Ok(true)
 }
 
 fn execute(options: &Options, out: &mut impl Write) -> Result<bool> {
@@ -316,18 +429,7 @@ fn execute(options: &Options, out: &mut impl Write) -> Result<bool> {
         .map_err(|e| fail("ERR-SCENE-FUSION-AUTHORITY-001", e.to_string()))?;
     let result = (|| {
         let report = analyze(options, &root, &cx)?;
-        if let Some(path) = &options.report_out {
-            write_report(path, report.as_bytes(), &cx)?;
-        } else {
-            checkpoint(&cx, "retained_handoffs:stdout")?;
-        }
-        writeln!(out, "{report}").map_err(|_| {
-            fail(
-                "ERR-SCENE-FUSION-OUTPUT-001",
-                "stdout failed; any completed report file remains available",
-            )
-        })?;
-        Ok(true)
+        publish(options, report, &cx, out)
     })();
     cx.drain_and_finalize();
     result

@@ -10,6 +10,42 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Clock-backed retained camera handoffs (2026-11-04)
+
+`fss-scene-fuse retained-handoffs` now accepts the explicit
+`fss.scene_handoffs_retained_query.v2` profile for two retained streams. It consumes
+the existing opaque custody-verified package-track projection and independently
+replays the pinned original clock-validation query. Exact source imports, sensors,
+streams, clock bases, image dimensions and declared world/camera/calibration scope
+must agree. Every target observation, including interior and tentative samples,
+requires a projection of its entire original capture interval. Missing, duplicated,
+unused or reordered inventories refuse the complete result.
+
+The original source projection remains unchanged and explicitly local time. A
+separate derived query supplies full common-time envelopes to the native handoff
+solver. Every supplied clock candidate remains in those envelopes, even when only
+one has conditional support; an optimistic single-candidate transit cannot survive
+by dropping alternatives. The report includes all source/derived mappings, native
+clock and solver results, and exact original query text recoverable byte for byte.
+
+The two 1 MiB control-file reserves come from the existing 4 GiB aggregate allowance.
+Initial source reads and final custody revalidation share one remaining counter;
+clock parsing/replay, mapping and native solver work share one work allowance. The
+deployment guard survives actual file/stdout publication, with the original deadline
+and cancellation checked before each release. Clock observations and camera/clock
+associations remain declared; no physical clock, identity, coverage or effect is
+activated. Existing v1 additive-alignment behavior remains available.
+
+Seven native retained-custody/replay/solver tests and nine command/publication tests
+pass. The actual emitted report, selection and original clock query pass full Draft
+2020-12 validation, with twenty malformed controls refused. Independent checks bind
+every original/derived observation, full projection interval, hypothesis hull,
+solver endpoint, byte pin and complete shared-work account. These are deterministic
+native integration results, not field calibration or release qualification.
+The seven library tests were rebuilt and rerun after the shared parser and fusion
+continuation updates at `9c54f327`; all three newly emitted instances also validate.
+The later independent RTSP/UniFi update is preserved without another full-tree test.
+
 ## Executable source-once fusion continuation (2026-11-04)
 
 `fss-fuse --sequence` now runs up to 64 ordered observation/reset transitions and writes
