@@ -855,7 +855,15 @@
     "crates/fss-core/src/json_input.rs": "support",
     "crates/fss-reference/src/unifi.rs": "support",
     "crates/fss-reference/src/unifi/endpoint.rs": "support",
-    "crates/fss-reference/src/unifi/tests.rs": "support"
+    "crates/fss-reference/src/unifi/tests.rs": "support",
+    "crates/fss-fusion/src/eprocess/checkpoint.rs": "cognition",
+    "crates/fss-fusion/src/unique_source/checkpoint.rs": "cognition",
+    "crates/fss-fusion/src/unique_source/checkpoint/tests.rs": "support",
+    "crates/fss-cli/src/bin/fss-fuse/sequence.rs": "cognition",
+    "crates/fss-cli/src/bin/fss-fuse/sequence_tests.rs": "support",
+    "crates/fss-cli/src/fusion_json.rs": "cognition",
+    "crates/fss-cli/src/supervisor/tests.rs": "support",
+    "crates/fss-cli/tests/fusion_sequence_cli.rs": "support"
   },
   "types": {
     "AlertEffectRecord": {

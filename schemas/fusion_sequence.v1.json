@@ -1,0 +1,373 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/fusion_sequence.v1.json",
+  "title": "fss.fusion_sequence.v1",
+  "description": "Bounded offline source-once fusion continuation request. The sequence, configuration, step and reset envelopes reject unknown fields. Embedded ordinary queries retain their existing parser semantics. Input is at most 1 MiB, depth 32 and 65536 JSON nodes; duplicate keys, decimal/exponent number tokens and invalid UTF-8 refuse. Integer fields accept exact integer tokens or decimal strings, including the parser-compatible -0. Runtime validation additionally enforces UTF-8 byte limits, cross-field/source relations and continuation compatibility. Schema validation does not establish calibration qualification, source custody, statistical validity or authority.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "hypothesis", "config", "source_limit", "steps"],
+  "properties": {
+    "schema": {"const": "fss.fusion_sequence.v1"},
+    "hypothesis": {"$ref": "#/$defs/text"},
+    "config": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["alert_threshold_mban", "floor_mban", "ceiling_mban", "min_independent_clusters"],
+      "properties": {
+        "alert_threshold_mban": {
+          "anyOf": [
+            {"type": "integer", "minimum": 1, "maximum": 100000},
+            {"type": "string", "pattern": "^(?:(?:[1-9][0-9]{0,4}|100000))$"}
+          ]
+        },
+        "floor_mban": {
+          "anyOf": [
+            {"type": "integer", "minimum": -100000, "maximum": 0},
+            {"type": "string", "pattern": "^(?:-?0|-(?:[1-9][0-9]{0,4}|100000))$"}
+          ]
+        },
+        "ceiling_mban": {
+          "anyOf": [
+            {"type": "integer", "minimum": 1, "maximum": 100000},
+            {"type": "string", "pattern": "^(?:(?:[1-9][0-9]{0,4}|100000))$"}
+          ]
+        },
+        "min_independent_clusters": {"$ref": "#/$defs/positiveU32"}
+      },
+      "description": "ceiling_mban must be at least alert_threshold_mban. Every field must exactly match restored configuration."
+    },
+    "source_limit": {
+      "anyOf": [
+        {"type": "integer", "minimum": 1, "maximum": 4096},
+        {"type": "string", "pattern": "^(?:(?:[1-9][0-9]{0,2}|[1-3][0-9]{3}|40[0-8][0-9]|409[0-5]|4096))$"}
+      ]
+    },
+    "steps": {"type": "array", "items": {"$ref": "#/$defs/step"}, "maxItems": 64}
+  },
+  "$defs": {
+    "text": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$",
+      "description": "The native reader additionally enforces a maximum of 256 UTF-8 bytes, rather than 256 Unicode code points."
+    },
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "sourceDigest": {"type": "string", "pattern": "^(sha256|blake3):[0-9a-f]{64}$"},
+    "u64": {
+      "anyOf": [
+        {"type": "integer", "minimum": 0, "maximum": 18446744073709551615},
+        {
+          "type": "string",
+          "pattern": "^(?:-?0|(?:[1-9][0-9]{0,18}|1[0-7][0-9]{18}|18[0-3][0-9]{17}|184[0-3][0-9]{16}|1844[0-5][0-9]{15}|18446[0-6][0-9]{14}|184467[0-3][0-9]{13}|1844674[0-3][0-9]{12}|184467440[0-6][0-9]{10}|1844674407[0-2][0-9]{9}|18446744073[0-6][0-9]{8}|1844674407370[0-8][0-9]{6}|18446744073709[0-4][0-9]{5}|184467440737095[0-4][0-9]{4}|18446744073709550[0-9]{3}|18446744073709551[0-5][0-9]{2}|1844674407370955160[0-9]|1844674407370955161[0-4]|18446744073709551615))$"
+        }
+      ]
+    },
+    "positiveU32": {
+      "anyOf": [
+        {"type": "integer", "minimum": 1, "maximum": 4294967295},
+        {
+          "type": "string",
+          "pattern": "^(?:(?:[1-9][0-9]{0,8}|[1-3][0-9]{9}|4[0-1][0-9]{8}|42[0-8][0-9]{7}|429[0-3][0-9]{6}|4294[0-8][0-9]{5}|42949[0-5][0-9]{4}|429496[0-6][0-9]{3}|4294967[0-1][0-9]{2}|42949672[0-8][0-9]|429496729[0-4]|4294967295))$"
+        }
+      ]
+    },
+    "llr": {
+      "anyOf": [
+        {"type": "integer", "minimum": -100000, "maximum": 100000},
+        {"type": "string", "pattern": "^(?:-?0|(?:[1-9][0-9]{0,4}|100000)|-(?:[1-9][0-9]{0,4}|100000))$"}
+      ]
+    },
+    "policyThreshold": {
+      "anyOf": [
+        {"type": "integer", "minimum": -100000000, "maximum": 100000000},
+        {"type": "string", "pattern": "^(?:-?0|(?:[1-9][0-9]{0,7}|100000000)|-(?:[1-9][0-9]{0,7}|100000000))$"}
+      ]
+    },
+    "interval": {"type": "array", "items": {"$ref": "#/$defs/llr"}, "maxItems": 2, "minItems": 2},
+    "domains": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/text"},
+      "description": "The parser deduplicates declarations. Native validation requires 1..16 distinct domains after any intrinsic calibration-artifact domain is added; raw-score rows may therefore begin with an empty array. Duplicates are not rejected by the JSON parser."
+    },
+    "calibrationIdentity": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["generation", "digest"],
+      "properties": {"generation": {"$ref": "#/$defs/text"}, "digest": {"$ref": "#/$defs/digest"}}
+    },
+    "prior": {"anyOf": [{"$ref": "#/$defs/interval"}, {"const": "calibration"}, {"$ref": "#/$defs/calibrationIdentity"}]},
+    "calibration": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": true,
+          "required": ["generation", "llr"],
+          "properties": {"generation": {"$ref": "#/$defs/text"}, "llr": {"$ref": "#/$defs/interval"}},
+          "not": {"anyOf": [{"required": ["score_ppm"]}, {"required": ["uncalibrated"]}]}
+        },
+        {
+          "type": "object",
+          "additionalProperties": true,
+          "required": ["score_ppm", "generation", "digest"],
+          "properties": {
+            "score_ppm": {
+              "anyOf": [
+                {"type": "integer", "minimum": 0, "maximum": 1000000},
+                {"type": "string", "pattern": "^(?:-?0|(?:[1-9][0-9]{0,5}|1000000))$"}
+              ]
+            },
+            "generation": {"$ref": "#/$defs/text"},
+            "digest": {"$ref": "#/$defs/digest"}
+          },
+          "not": {"anyOf": [{"required": ["llr"]}, {"required": ["uncalibrated"]}]}
+        },
+        {
+          "type": "object",
+          "additionalProperties": true,
+          "required": ["uncalibrated"],
+          "properties": {"uncalibrated": {"$ref": "#/$defs/text"}},
+          "not": {"anyOf": [{"required": ["llr"]}, {"required": ["score_ppm"]}]}
+        }
+      ]
+    },
+    "observability": {
+      "anyOf": [
+        {"enum": ["observed", "redacted", "stale"]},
+        {
+          "type": "object",
+          "additionalProperties": true,
+          "required": ["not_observable"],
+          "properties": {"not_observable": {"$ref": "#/$defs/text"}}
+        }
+      ]
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["id", "sensor", "failure_domains", "observability", "calibration"],
+      "properties": {
+        "id": {"$ref": "#/$defs/text"},
+        "sensor": {"$ref": "#/$defs/text"},
+        "failure_domains": {"$ref": "#/$defs/domains"},
+        "observability": {"$ref": "#/$defs/observability"},
+        "calibration": {"$ref": "#/$defs/calibration"}
+      }
+    },
+    "coverage": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": true,
+          "required": ["state"],
+          "properties": {"state": {"const": "complete"}}
+        },
+        {
+          "type": "object",
+          "additionalProperties": true,
+          "required": ["state", "reason"],
+          "properties": {"state": {"enum": ["degraded", "gap"]}, "reason": {"$ref": "#/$defs/text"}}
+        }
+      ]
+    },
+    "severity": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["expected_harm", "false_alert_cost", "delay_cost_per_second", "reversible"],
+      "properties": {
+        "expected_harm": {"$ref": "#/$defs/u64"},
+        "false_alert_cost": {"$ref": "#/$defs/u64"},
+        "delay_cost_per_second": {"$ref": "#/$defs/u64"},
+        "reversible": {"type": "boolean"}
+      }
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "generation",
+        "alert_threshold",
+        "retain_threshold",
+        "reject_threshold",
+        "min_independent_support",
+        "max_wait_ns",
+        "look_penalty_per_doubling",
+        "operator_confirmation_available"
+      ],
+      "properties": {
+        "generation": {"$ref": "#/$defs/text"},
+        "alert_threshold": {"$ref": "#/$defs/policyThreshold"},
+        "retain_threshold": {"$ref": "#/$defs/policyThreshold"},
+        "reject_threshold": {"$ref": "#/$defs/policyThreshold"},
+        "min_independent_support": {"$ref": "#/$defs/positiveU32"},
+        "urgent_single_domain_threshold": {"anyOf": [{"$ref": "#/$defs/policyThreshold"}, {"type": "null"}]},
+        "max_wait_ns": {"$ref": "#/$defs/u64"},
+        "look_penalty_per_doubling": {
+          "anyOf": [
+            {"type": "integer", "minimum": 0, "maximum": 100000},
+            {"type": "string", "pattern": "^(?:-?0|(?:[1-9][0-9]{0,4}|100000))$"}
+          ]
+        },
+        "operator_confirmation_available": {"type": "boolean"}
+      },
+      "description": "Native validation requires reject_threshold < retain_threshold <= alert_threshold and an urgent threshold, when present, at least retain_threshold. This per-query decision policy is distinct from the sequence accumulator configuration."
+    },
+    "opportunity": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["id", "sensor", "failure_domains", "window_start_ns", "window_end_ns", "positive", "negative"],
+      "properties": {
+        "id": {"$ref": "#/$defs/text"},
+        "sensor": {"$ref": "#/$defs/text"},
+        "failure_domains": {"$ref": "#/$defs/domains"},
+        "window_start_ns": {"$ref": "#/$defs/u64"},
+        "window_end_ns": {"$ref": "#/$defs/u64"},
+        "positive": {"$ref": "#/$defs/interval"},
+        "negative": {"$ref": "#/$defs/interval"}
+      }
+    },
+    "probe": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["id", "kind", "failure_domains", "cost", "latency_ns", "positive", "negative"],
+      "properties": {
+        "id": {"$ref": "#/$defs/text"},
+        "kind": {"$ref": "#/$defs/text"},
+        "failure_domains": {"$ref": "#/$defs/domains"},
+        "cost": {"$ref": "#/$defs/u64"},
+        "latency_ns": {"$ref": "#/$defs/u64"},
+        "positive": {"$ref": "#/$defs/interval"},
+        "negative": {"$ref": "#/$defs/interval"}
+      }
+    },
+    "transit": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["origin"],
+      "properties": {
+        "origin": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": ["zone", "earliest_ns", "latest_ns"],
+          "properties": {
+            "zone": {"type": "string"},
+            "earliest_ns": {"$ref": "#/$defs/u64"},
+            "latest_ns": {"$ref": "#/$defs/u64"}
+          }
+        },
+        "zones": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["id", "max_wait_ns"],
+            "properties": {"id": {"type": "string"}, "max_wait_ns": {"$ref": "#/$defs/u64"}}
+          }
+        },
+        "transits": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["from", "to", "open_ns", "close_ns", "min_travel_ns", "max_travel_ns"],
+            "properties": {
+              "from": {"type": "string"},
+              "to": {"type": "string"},
+              "open_ns": {"$ref": "#/$defs/u64"},
+              "close_ns": {"$ref": "#/$defs/u64"},
+              "min_travel_ns": {"$ref": "#/$defs/u64"},
+              "max_travel_ns": {"$ref": "#/$defs/u64"}
+            }
+          }
+        },
+        "observers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["zone", "sensor"],
+            "properties": {"zone": {"type": "string"}, "sensor": {"type": "string"}},
+            "description": "For an observer with a reachable future window, the native parser additionally requires failure_domains, positive and negative, using the ordinary opportunity types. These fields are deliberately not constrained here because the existing parser does not read them for an unreachable observer."
+          }
+        }
+      },
+      "description": "Optional ordinary-query temporal-reachability input. Graph consistency, horizon arithmetic, reachable-observer declarations and combined opportunity bounds are enforced by the existing parser/owner. Unknown fields remain accepted."
+    },
+    "query": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["schema", "hypothesis", "kind", "prior", "coverage", "looks", "now_ns", "severity", "policy"],
+      "properties": {
+        "schema": {"enum": ["fss.fusion_query.v1", "fss.fusion_query.v2"]},
+        "hypothesis": {"$ref": "#/$defs/text"},
+        "kind": {"$ref": "#/$defs/text"},
+        "prior": {"$ref": "#/$defs/prior"},
+        "coverage": {"$ref": "#/$defs/coverage"},
+        "looks": {"$ref": "#/$defs/positiveU32"},
+        "now_ns": {"$ref": "#/$defs/u64"},
+        "severity": {"$ref": "#/$defs/severity"},
+        "policy": {"$ref": "#/$defs/policy"},
+        "evidence": {"type": "array", "items": {"$ref": "#/$defs/evidence"}, "maxItems": 256},
+        "opportunities": {"type": "array", "items": {"$ref": "#/$defs/opportunity"}, "maxItems": 64},
+        "probes": {"type": "array", "items": {"$ref": "#/$defs/probe"}, "maxItems": 64},
+        "transit": {"$ref": "#/$defs/transit"}
+      },
+      "description": "Existing ordinary query parser, with its existing open objects. The native owner enforces unique evidence IDs, hypothesis equality, ordered intervals, distinct effective-domain bounds and all remaining cross-field constraints; this schema does not introduce unknown-field refusals into ordinary queries."
+    },
+    "reset": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "reason"],
+          "properties": {"kind": {"const": "operator_reset"}, "reason": {"$ref": "#/$defs/text"}}
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "sensor", "reason"],
+          "properties": {
+            "kind": {"const": "sensor_health_degraded"},
+            "sensor": {"$ref": "#/$defs/text"},
+            "reason": {"$ref": "#/$defs/text"}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "sensor", "gap_ns"],
+          "properties": {
+            "kind": {"const": "clock_continuity_broken"},
+            "sensor": {"$ref": "#/$defs/text"},
+            "gap_ns": {"$ref": "#/$defs/u64"}
+          }
+        }
+      ]
+    },
+    "step": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "query", "sources"],
+          "properties": {
+            "kind": {"const": "observe"},
+            "query": {"$ref": "#/$defs/query"},
+            "sources": {
+              "type": "object",
+              "maxProperties": 256,
+              "additionalProperties": {"anyOf": [{"$ref": "#/$defs/sourceDigest"}, {"type": "null"}]},
+              "description": "Exactly the original evidence IDs, including nonnumeric rows. Calibrated observed rows require a digest; null is permitted only for nonnumeric rows. Equality and complete membership are checked by the native owner."
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "reason"],
+          "properties": {"kind": {"const": "reset"}, "reason": {"$ref": "#/$defs/reset"}}
+        }
+      ]
+    }
+  }
+}

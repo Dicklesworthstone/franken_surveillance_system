@@ -14,7 +14,7 @@ mod unique_source;
 pub use unique_source::{
     UNIQUE_SOURCE_SUPERVISOR_CONFIG_DOMAIN, UNIQUE_SOURCE_SUPERVISOR_RAW_DOMAIN,
     UNIQUE_SOURCE_SUPERVISOR_RECEIPT_DOMAIN, UNIQUE_SOURCE_SUPERVISOR_SCHEMA,
-    UniqueSourceSupervisorReport, UniqueSourceSupervisorStep,
+    UniqueSourceSupervisorReport, UniqueSourceSupervisorStep, unique_source_step_json,
 };
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -69,7 +69,7 @@ pub const ERR_SUPERVISOR_STALE_ANCHOR: &str = "ERR-SUPERVISOR-STALE-ANCHOR-001";
 pub const ERR_SUPERVISOR_BUDGET_EXCEEDED: &str = "ERR-SUPERVISOR-BUDGET-EXCEEDED-001";
 /// Stable error code when a camera window supplies corrupt or truncated media/detection input.
 pub const ERR_SUPERVISOR_CORRUPT_INPUT: &str = "ERR-SUPERVISOR-CORRUPT-INPUT-001";
-/// Stable error code when the score calibration or policy is invalid.
+/// Stable error code when score calibration, policy or plan bindings are invalid.
 pub const ERR_SUPERVISOR_CALIBRATION_INVALID: &str = "ERR-SUPERVISOR-CALIBRATION-INVALID-001";
 
 /// Specification of one supervised camera in a multi-camera deployment.
@@ -196,7 +196,7 @@ pub enum SupervisorError {
         /// Corruption reason.
         reason: String,
     },
-    /// Score calibration or policy validation failed.
+    /// Score calibration, policy or plan binding validation failed.
     InvalidCalibration(String),
     /// Underlying `fss-fusion` error.
     Fusion(FusionError),
@@ -574,7 +574,8 @@ impl SupervisorReport {
 ///
 /// # Errors
 ///
-/// Returns [`SupervisorError`] on camera-count/sensor-uniqueness violations (`NEG-004`),
+/// Returns [`SupervisorError`] on camera-count, sensor/alias uniqueness or unknown observation
+/// bindings (`NEG-004`),
 /// stale authority root (`ContractBasis` drift), `WorkBudget` exhaustion, or strict corrupt input.
 pub fn run_supervisor(
     deployment: &ReferenceDeployment,
@@ -630,7 +631,23 @@ fn run_supervisor_profile(
                 sensor_id: cam.sensor_id.clone(),
             });
         }
-        camera_map.insert(cam.camera_id.clone(), cam);
+        if camera_map.insert(cam.camera_id.clone(), cam).is_some() {
+            return Err(SupervisorError::InvalidCalibration(
+                "camera_id aliases must be unique".to_owned(),
+            ));
+        }
+    }
+    // Validate the entire plan before cancellation, budget checks or early threshold exits.
+    // Otherwise a misspelled alias silently discards supplied evidence as if no row existed.
+    if plan.windows.iter().any(|window| {
+        window
+            .observations
+            .keys()
+            .any(|alias| !camera_map.contains_key(alias))
+    }) {
+        return Err(SupervisorError::InvalidCalibration(
+            "observation camera_id must name a configured camera".to_owned(),
+        ));
     }
 
     let current_root = deployment.current_anchor().state_root;
@@ -931,3 +948,6 @@ fn run_supervisor_profile(
         eprocess,
     ))
 }
+
+#[cfg(test)]
+mod tests;

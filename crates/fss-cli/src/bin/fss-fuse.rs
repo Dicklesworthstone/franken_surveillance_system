@@ -1,11 +1,12 @@
 #![forbid(unsafe_code)]
-//! Offline, read-only adapter for the reference evidence fusion rule (`fss-fusion`).
+//! Offline adapter for the reference evidence fusion rule (`fss-fusion`).
 //!
 //! Reads one fusion query (JSON) and up to sixteen score calibrations (the `fss-evaluate
 //! --calibration-bins` reports, rebuilt from their per-bin counts and refused unless their
 //! digests match). Every raw score names its exact calibration generation and digest. It
-//! prints a decision and the selected calibration provenance as JSON, with no durable effect:
-//! no event is published, no threshold is activated, no alert is prepared or sent.
+//! prints a decision and the selected calibration provenance as JSON. Explicit sequence mode
+//! writes one new digest-pinned derived checkpoint for continuation. Neither mode publishes
+//! events, activates thresholds, or prepares or sends alerts.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
@@ -24,6 +25,9 @@ use fss_graph_algorithms::temporal::{
     self, Reachability, TemporalNetworkBuilder, TemporalOutput, Transit,
 };
 
+#[path = "fss-fuse/sequence.rs"]
+mod sequence;
+
 /// Operation budget of one transit reachability run (fails closed beyond it).
 const TRANSIT_OPERATIONS: u64 = 20_000_000;
 /// Interval cap of one transit presence set.
@@ -31,9 +35,13 @@ const TRANSIT_INTERVALS: u32 = 4_096;
 /// Maximum independently named calibration artifacts accepted by one invocation.
 const MAX_CALIBRATIONS: usize = 16;
 
-const HELP: &str = "fss-fuse --query QUERY.json|- [--calibration EVALUATION.json]...\n\n\
-Read-only evidence fusion; prints a fss.fusion_outcome.v1 JSON decision to stdout. Nothing is\n\
-published, activated or sent; a decision grants no effect authority.\n\n\
+const HELP: &str = "fss-fuse --query QUERY.json|- [--calibration EVALUATION.json]...\n\
+fss-fuse --sequence STEPS.json|- --checkpoint-out NEW_FILE [--calibration EVALUATION.json]...\n\
+  [--checkpoint-in PRIOR_FILE --checkpoint-digest sha256:HEX]\n\
+Use fss-fuse --sequence-help for bounded source-once continuation and checkpoint semantics.\n\n\
+--query is read-only and prints a fss.fusion_outcome.v1 JSON decision to stdout.\n\
+--sequence writes one new derived checkpoint and a fss.fusion_sequence_report.v1 report.\n\
+Neither mode publishes events, activates thresholds or sends alerts; advice grants no effect authority.\n\n\
 Query (schema fss.fusion_query.v2; v1 remains readable): hypothesis, kind, prior ([lo, hi]\n\
 millibans, {generation, digest}, or\n\
 \"calibration\" with exactly one loaded artifact), coverage ({state: complete|degraded|gap, reason}), looks, now_ns,\n\
@@ -195,6 +203,7 @@ impl CalibrationIdentity {
     }
 }
 
+#[derive(Clone)]
 struct ScoreBinding {
     evidence_id: String,
     score_ppm: u32,
@@ -824,6 +833,9 @@ fn outcome_json(
 }
 
 fn run(args: Vec<OsString>) -> Result<String> {
+    if sequence::selected(&args) {
+        return sequence::run(args);
+    }
     if args.len() > 2 * (MAX_CALIBRATIONS + 1) {
         return Err(fail("fusion.cli.arguments_limit", "too many arguments"));
     }
@@ -905,7 +917,11 @@ fn run(args: Vec<OsString>) -> Result<String> {
 }
 
 fn main() -> ExitCode {
-    match run(std::env::args_os().skip(1).collect()) {
+    let args = std::env::args_os()
+        .skip(1)
+        .take(2 * (MAX_CALIBRATIONS + 5) + 1)
+        .collect();
+    match run(args) {
         Ok(output) => {
             if writeln!(io::stdout().lock(), "{output}").is_ok() {
                 ExitCode::SUCCESS

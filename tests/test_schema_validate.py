@@ -912,7 +912,8 @@ class TestSchemaConstitution(unittest.TestCase):
         # Current registry, including three event-health inventory, selected-row and delivery domains.
         # Current registry, including five evidence-bound fusion and supervisor transcript domains.
         # Three explicit source-once fusion and three supervisor accounting domains.
-        self.assertEqual(result["digestDomainCount"], 632)
+        # Three offline fusion sequence checkpoint/raw/transcript domains.
+        self.assertEqual(result["digestDomainCount"], 635)
 
         # Continuation cursor is verified implemented
         implemented_names = {s["name"] for s in result["schemas"] if s["status"] == "implemented"}
@@ -1473,7 +1474,8 @@ class TestSchemaConstitutionCrossReviewRegressions(unittest.TestCase):
         # Current registry, including three event-health inventory, selected-row and delivery domains.
         # Current registry, including five evidence-bound fusion and supervisor transcript domains.
         # Three explicit source-once fusion and three supervisor accounting domains.
-        self.assertEqual(result["digestDomainCount"], 632)
+        # Three offline fusion sequence checkpoint/raw/transcript domains.
+        self.assertEqual(result["digestDomainCount"], 635)
         # 36 = 28 + fss.sensor_tamper_status.v1 (owner SensorTamperStatus, fss-2uftm)
         # + fss.agent_operations.v1 / fss.agent_views.v1 / fss.agent_request_envelope.v1
         #   (owners AgentOperation / AgentView / AgentRequestEnvelope, fss-x4a.30.83.17-40)

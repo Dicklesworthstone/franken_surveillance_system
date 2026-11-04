@@ -675,7 +675,8 @@ Implemented (reference, unqualified):
   corroborated event with a durable prepare/commit/observe/reconcile record (`fss-event alert`);
 - calibrated evidence fusion (`fss-fusion`, `fss-fuse`) with integer milliban log-likelihood ratios,
   common-cause failure-domain cluster hulls, Wilson score calibration intervals, and counterfactual
-  attribution;
+  attribution; [restartable source-once sequences](docs/FUSION_SEQUENCE.md) preserve consumed
+  evidence and exact calibration inputs across process restarts (`fss-fuse --sequence`);
 - opt-in `--sensor-health conservative-v1` for recorded `watch` and `corroborate`, screening
   privacy-masked pixels for repetition, persistent dark/bright fields and contrast loss before
   those runs can support candidates or coverage witnesses; reports retain bounded measurements,

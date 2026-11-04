@@ -38,6 +38,8 @@ pub mod feedback_cmd;
 pub mod finding_cmd;
 /// Read-only `follow` (AOP-004 `session.follow`) since an earlier committed anchor.
 pub mod follow_cmd;
+/// Pure canonical JSON rendering of numerical and source-once fusion receipts.
+pub mod fusion_json;
 pub mod fss_cmd;
 pub mod hydration_cmd;
 /// `fss investigate` (AOP-006): durable mission-scoped investigation cases; agent-plane writes.
@@ -66,7 +68,7 @@ pub mod session_cancel_cmd;
 pub mod session_cmd;
 /// `fss status --json [--root <dir>]`: read-only retained inventory (SCHEMA-STATUS-001).
 pub mod status_cmd;
-/// Bounded multi-camera supervisor coordinator with anytime-valid sequential Ville e-process (`fss-becce`).
+/// Bounded multi-camera supervisor coordinator with explicit sequential fusion (`fss-becce`).
 pub mod supervisor;
 pub mod token;
 

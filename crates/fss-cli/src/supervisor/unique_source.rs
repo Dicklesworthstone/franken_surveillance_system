@@ -3,11 +3,13 @@
 
 use std::collections::BTreeMap;
 
+pub use crate::fusion_json::unique_source_step_json;
+
 use fss_core::{CanonicalEncoder, ContentDigest};
 use fss_fusion::{
     Calibration, EProcessConfig, EProcessStepOutcome, FusionError, FusionOutcome, FusionQuery,
-    MAX_EVIDENCE, Observability, RegimeResetReason, SequentialEProcess, SourceDisposition,
-    UNIQUE_SOURCE_STEP_SCHEMA, UniqueSourceEProcess, UniqueSourceError, UniqueSourceStepOutcome,
+    MAX_EVIDENCE, Observability, RegimeResetReason, SequentialEProcess,
+    UniqueSourceEProcess, UniqueSourceError, UniqueSourceStepOutcome,
 };
 
 use super::{
@@ -380,7 +382,7 @@ impl UniqueSourceSupervisorReport {
                                 .map(|digest| string(&digest.to_text())),
                         ),
                     ),
-                    ("source_receipt", step_json(&step.outcome)),
+                    ("source_receipt", unique_source_step_json(&step.outcome)),
                 ])
             })
             .collect();
@@ -424,66 +426,4 @@ impl UniqueSourceSupervisorReport {
             ("receipt_digest", string(&self.receipt_digest.to_text())),
         ])
     }
-}
-
-fn step_json(step: &UniqueSourceStepOutcome) -> String {
-    let rows: Vec<_> = step
-        .admissions()
-        .iter()
-        .map(|row| {
-            object(&[
-                ("evidence_id", string(row.evidence_id())),
-                (
-                    "source_digest",
-                    nullable(row.source_digest().map(|digest| string(&digest.to_text()))),
-                ),
-                ("item_digest", string(&row.item_digest().to_text())),
-                (
-                    "disposition",
-                    string(match row.disposition() {
-                        SourceDisposition::Admitted => "admitted",
-                        SourceDisposition::AlreadyAdmitted => "already_admitted",
-                        SourceDisposition::NonNumeric => "non_numeric",
-                    }),
-                ),
-                (
-                    "first_admitted_step",
-                    nullable(row.first_admitted_step().map(unsigned)),
-                ),
-            ])
-        })
-        .collect();
-    object(&[
-        ("schema", string(UNIQUE_SOURCE_STEP_SCHEMA)),
-        (
-            "previous_receipt_digest",
-            nullable(step.previous().map(|digest| string(&digest.to_text()))),
-        ),
-        (
-            "submitted_query_digest",
-            nullable(
-                step.submitted_query_digest()
-                    .map(|digest| string(&digest.to_text())),
-            ),
-        ),
-        (
-            "effective_query_digest",
-            nullable(
-                step.effective_query_digest()
-                    .map(|digest| string(&digest.to_text())),
-            ),
-        ),
-        ("source_limit", unsigned(step.source_limit() as u64)),
-        ("sources_seen", unsigned(step.sources_seen() as u64)),
-        (
-            "inventory_digest",
-            string(&step.inventory_digest().to_text()),
-        ),
-        ("admissions", array(&rows)),
-        (
-            "fusion_transcript",
-            super::transcript::fusion_transcript_json(&step.step().transcript),
-        ),
-        ("receipt_digest", string(&step.digest().to_text())),
-    ])
 }

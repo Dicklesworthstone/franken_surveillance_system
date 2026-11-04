@@ -1,0 +1,361 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/fusion_sequence_report.v1.json",
+  "title": "fss.fusion_sequence_report.v1",
+  "description": "Complete successful offline source-once continuation report, at most 16 MiB. The new checkpoint has been published before this JSON is returned. Digests commit derived caller-declared state and ordered processing, not authenticated source custody, freshness, rollback protection, statistical validity or effect authority. Cross-field equality, transcript reconstruction and checkpoint verification remain native checks. No standalone fusion_outcome schema exists; its exact CLI projection is defined in $defs/effectiveFusion.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "source_identity_basis",
+    "hypothesis",
+    "initial_step_index",
+    "final_step_index",
+    "source_limit",
+    "sources_seen",
+    "source_inventory_digest",
+    "raw_source_inventory_digest",
+    "sequence_transcript_digest",
+    "previous_checkpoint_digest",
+    "checkpoint_digest",
+    "checkpoint_bytes",
+    "accumulated_millibans",
+    "steps",
+    "effect_authority",
+    "statistical_validity"
+  ],
+  "properties": {
+    "schema": {"const": "fss.fusion_sequence_report.v1"},
+    "source_identity_basis": {"const": "caller_declared_unverified"},
+    "hypothesis": {"$ref": "#/$defs/text"},
+    "initial_step_index": {"$ref": "#/$defs/u64Text"},
+    "final_step_index": {"$ref": "#/$defs/u64Text"},
+    "source_limit": {"type": "integer", "minimum": 1, "maximum": 4096},
+    "sources_seen": {"type": "integer", "minimum": 0, "maximum": 4096},
+    "source_inventory_digest": {"$ref": "#/$defs/digest"},
+    "raw_source_inventory_digest": {"$ref": "#/$defs/digest"},
+    "sequence_transcript_digest": {"anyOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}]},
+    "previous_checkpoint_digest": {"anyOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}]},
+    "checkpoint_digest": {"$ref": "#/$defs/digest"},
+    "checkpoint_bytes": {"type": "integer", "minimum": 1, "maximum": 16777216},
+    "accumulated_millibans": {"$ref": "#/$defs/interval"},
+    "steps": {"type": "array", "items": {"$ref": "#/$defs/step"}, "maxItems": 64},
+    "effect_authority": {"const": false},
+    "statistical_validity": {"const": "not_established"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"final_step_index": {"const": "0"}}, "required": ["final_step_index"]},
+      "then": {
+        "properties": {"sequence_transcript_digest": {"type": "null"}, "steps": {"maxItems": 0}, "sources_seen": {"const": 0}}
+      },
+      "else": {"properties": {"sequence_transcript_digest": {"$ref": "#/$defs/digest"}}}
+    }
+  ],
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "sourceDigest": {"type": "string", "pattern": "^(sha256|blake3):[0-9a-f]{64}$"},
+    "text": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$",
+      "description": "The native reader additionally enforces a maximum of 256 UTF-8 bytes, rather than 256 Unicode code points."
+    },
+    "u64Text": {
+      "type": "string",
+      "pattern": "^(?:0|(?:[1-9][0-9]{0,18}|1[0-7][0-9]{18}|18[0-3][0-9]{17}|184[0-3][0-9]{16}|1844[0-5][0-9]{15}|18446[0-6][0-9]{14}|184467[0-3][0-9]{13}|1844674[0-3][0-9]{12}|184467440[0-6][0-9]{10}|1844674407[0-2][0-9]{9}|18446744073[0-6][0-9]{8}|1844674407370[0-8][0-9]{6}|18446744073709[0-4][0-9]{5}|184467440737095[0-4][0-9]{4}|18446744073709550[0-9]{3}|18446744073709551[0-5][0-9]{2}|1844674407370955160[0-9]|1844674407370955161[0-4]|18446744073709551615))$"
+    },
+    "interval": {
+      "type": "array",
+      "items": {"type": "integer", "minimum": -9223372036854775808, "maximum": 9223372036854775807},
+      "maxItems": 2,
+      "minItems": 2
+    },
+    "timeInterval": {"type": "array", "items": {"$ref": "#/$defs/u64Text"}, "maxItems": 2, "minItems": 2},
+    "calibrationIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["generation", "digest"],
+      "properties": {"generation": {"$ref": "#/$defs/text"}, "digest": {"$ref": "#/$defs/digest"}}
+    },
+    "decision": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": {
+            "kind": {
+              "enum": [
+                "alert",
+                "alert_degraded_coverage",
+                "alert_single_domain_unconfirmed",
+                "request_operator_confirmation",
+                "retain_silently",
+                "reject",
+                "hold_indeterminate"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "opportunity", "deadline_ns", "value_bound"],
+          "properties": {
+            "kind": {"const": "wait_for_corroboration"},
+            "opportunity": {"$ref": "#/$defs/text"},
+            "deadline_ns": {"$ref": "#/$defs/u64Text"},
+            "value_bound": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "probe", "value_bound"],
+          "properties": {
+            "kind": {"const": "request_observation"},
+            "probe": {"$ref": "#/$defs/text"},
+            "value_bound": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615}
+          }
+        }
+      ]
+    },
+    "transit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "algorithm",
+        "implementation",
+        "origin",
+        "origin_interval_ns",
+        "horizon_ns",
+        "output_digest",
+        "decision_path_digest",
+        "observers"
+      ],
+      "properties": {
+        "algorithm": {"type": "string"},
+        "implementation": {"type": "string"},
+        "origin": {"type": "string"},
+        "origin_interval_ns": {"$ref": "#/$defs/timeInterval"},
+        "horizon_ns": {"$ref": "#/$defs/u64Text"},
+        "output_digest": {"$ref": "#/$defs/sourceDigest"},
+        "decision_path_digest": {"$ref": "#/$defs/sourceDigest"},
+        "observers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["zone", "sensor", "reachability", "presence_ns", "opportunity_window_ns"],
+            "properties": {
+              "zone": {"type": "string"},
+              "sensor": {"type": "string"},
+              "reachability": {"enum": ["reachable", "temporally_infeasible", "no_path"]},
+              "presence_ns": {"type": "array", "items": {"$ref": "#/$defs/timeInterval"}, "maxItems": 4096},
+              "opportunity_window_ns": {"anyOf": [{"$ref": "#/$defs/timeInterval"}, {"type": "null"}]}
+            }
+          }
+        }
+      }
+    },
+    "effectiveFusion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "implementation",
+        "query_digest",
+        "decision_digest",
+        "policy_generation",
+        "score_calibration_digest",
+        "score_calibrations",
+        "prior_calibration",
+        "score_calibration_bindings",
+        "input_binding_digest",
+        "decision",
+        "reasons",
+        "knowledge_state",
+        "provenance_class",
+        "posterior_log_odds_millibans",
+        "probability_ppm",
+        "sequential_alert_threshold",
+        "supporting_clusters",
+        "contradicting_clusters",
+        "support_to_alert",
+        "reduction_to_retain",
+        "clusters",
+        "excluded",
+        "uncalibrated",
+        "counterfactuals",
+        "transit",
+        "effect_authority"
+      ],
+      "properties": {
+        "schema": {"const": "fss.fusion_outcome.v1"},
+        "implementation": {"type": "string"},
+        "query_digest": {"$ref": "#/$defs/digest"},
+        "decision_digest": {"$ref": "#/$defs/digest"},
+        "policy_generation": {"$ref": "#/$defs/text"},
+        "score_calibration_digest": {"anyOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}]},
+        "score_calibrations": {"type": "array", "items": {"$ref": "#/$defs/calibrationIdentity"}, "maxItems": 16},
+        "prior_calibration": {"anyOf": [{"$ref": "#/$defs/calibrationIdentity"}, {"type": "null"}]},
+        "score_calibration_bindings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["evidence_id", "score_ppm", "calibration"],
+            "properties": {
+              "evidence_id": {"$ref": "#/$defs/text"},
+              "score_ppm": {"type": "integer", "minimum": 0, "maximum": 1000000},
+              "calibration": {"$ref": "#/$defs/calibrationIdentity"}
+            }
+          },
+          "maxItems": 256
+        },
+        "input_binding_digest": {"$ref": "#/$defs/digest"},
+        "decision": {"$ref": "#/$defs/decision"},
+        "reasons": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "above_alert_threshold",
+              "insufficient_independent_support",
+              "coverage_not_complete",
+              "below_reject_threshold",
+              "absence_not_certified",
+              "below_retain_threshold",
+              "undecided",
+              "conflicting_evidence",
+              "missing_observations",
+              "uncalibrated_evidence_ignored",
+              "optional_stopping_correction",
+              "no_decision_relevant_observation"
+            ]
+          },
+          "maxItems": 12
+        },
+        "knowledge_state": {"enum": ["not_observable", "unknown", "conflicted", "estimated"]},
+        "provenance_class": {"const": "derived"},
+        "posterior_log_odds_millibans": {"$ref": "#/$defs/interval"},
+        "probability_ppm": {
+          "type": "array",
+          "items": {"type": "integer", "minimum": 0, "maximum": 1000000},
+          "maxItems": 2,
+          "minItems": 2
+        },
+        "sequential_alert_threshold": {"type": "integer", "minimum": -9223372036854775808, "maximum": 9223372036854775807},
+        "supporting_clusters": {"type": "integer", "minimum": 0, "maximum": 256},
+        "contradicting_clusters": {"type": "integer", "minimum": 0, "maximum": 256},
+        "support_to_alert": {
+          "anyOf": [
+            {"type": "integer", "minimum": -9223372036854775808, "maximum": 9223372036854775807},
+            {"type": "null"}
+          ]
+        },
+        "reduction_to_retain": {
+          "anyOf": [
+            {"type": "integer", "minimum": -9223372036854775808, "maximum": 9223372036854775807},
+            {"type": "null"}
+          ]
+        },
+        "clusters": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["label", "members", "failure_domains", "llr_millibans", "direction"],
+            "properties": {
+              "label": {"type": "integer", "minimum": 0, "maximum": 255},
+              "members": {"type": "array", "items": {"$ref": "#/$defs/text"}, "maxItems": 256, "minItems": 1},
+              "failure_domains": {
+                "type": "array",
+                "items": {"type": "string", "minLength": 1, "maxLength": 263},
+                "maxItems": 4352,
+                "minItems": 1
+              },
+              "llr_millibans": {"$ref": "#/$defs/interval"},
+              "direction": {"enum": ["supports", "contradicts", "conflicted", "neutral"]}
+            }
+          },
+          "maxItems": 256
+        },
+        "excluded": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "reason"],
+            "properties": {"id": {"$ref": "#/$defs/text"}, "reason": {"type": "string"}}
+          },
+          "maxItems": 256
+        },
+        "uncalibrated": {"type": "array", "items": {"$ref": "#/$defs/text"}, "maxItems": 256},
+        "counterfactuals": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["removed_cluster", "posterior_log_odds_millibans", "decision"],
+            "properties": {
+              "removed_cluster": {"type": "integer", "minimum": 0, "maximum": 255},
+              "posterior_log_odds_millibans": {"$ref": "#/$defs/interval"},
+              "decision": {"$ref": "#/$defs/decision"}
+            }
+          },
+          "maxItems": 256
+        },
+        "transit": {"anyOf": [{"$ref": "#/$defs/transit"}, {"type": "null"}]},
+        "effect_authority": {"const": false}
+      },
+      "description": "Exact JSON projection emitted by fss-fuse for the effective incremental query after already-admitted numeric sources are removed. Its posterior and decision describe this query, not the accumulated sequence. score_calibrations lists loaded artifacts; score_calibration_bindings lists only effective raw-score rows."
+    },
+    "step": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "step_index",
+        "regime_epoch",
+        "input_binding_digest",
+        "source_receipt",
+        "step_delta_millibans",
+        "accumulated_millibans",
+        "independent_supporting_clusters",
+        "crossed_alert_threshold",
+        "effective_fusion",
+        "sequence_transcript_digest"
+      ],
+      "properties": {
+        "step_index": {"$ref": "#/$defs/u64Text"},
+        "regime_epoch": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+        "input_binding_digest": {"anyOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}]},
+        "source_receipt": {"$ref": "fusion_unique_source_step.v1.json"},
+        "step_delta_millibans": {"$ref": "#/$defs/interval"},
+        "accumulated_millibans": {"$ref": "#/$defs/interval"},
+        "independent_supporting_clusters": {"type": "integer", "minimum": 0, "maximum": 4096},
+        "crossed_alert_threshold": {"type": "boolean"},
+        "effective_fusion": {"anyOf": [{"$ref": "#/$defs/effectiveFusion"}, {"type": "null"}]},
+        "sequence_transcript_digest": {"$ref": "#/$defs/digest"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"input_binding_digest": {"type": "null"}}, "required": ["input_binding_digest"]},
+          "then": {
+            "properties": {
+              "effective_fusion": {"type": "null"},
+              "source_receipt": {"properties": {"submitted_query_digest": {"type": "null"}}}
+            }
+          },
+          "else": {
+            "properties": {
+              "effective_fusion": {"$ref": "#/$defs/effectiveFusion"},
+              "source_receipt": {"properties": {"submitted_query_digest": {"$ref": "#/$defs/digest"}}}
+            }
+          }
+        }
+      ]
+    }
+  }
+}

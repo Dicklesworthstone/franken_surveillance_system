@@ -6,6 +6,15 @@ operation states rather than generic errors.
 
 | ID | Meaning | Retry policy |
 |---|---|---|
+| `fusion.cli.sequence_invalid` | Offline sequence fields, transition kind, explicit binding or bounded configuration/time contract are invalid | Correct the complete input; no checkpoint for an accepted prefix is published. |
+| `fusion.cli.sequence_unreadable` | The bounded sequence input cannot be read or strictly parsed | Supply a complete regular UTF-8 JSON request or one explicit stdin input. |
+| `fusion.cli.checkpoint_identity` | CLI checkpoint exceeds its bound, has a non-SHA-256 pin or disagrees with its independently supplied pin | Recover exact previously accepted bytes and pin; do not derive a replacement pin from untrusted input. |
+| `fusion.cli.checkpoint_configuration` | A resumed hypothesis, numerical configuration or lifetime source limit changed | Continue the exact original process; a new configuration requires an explicitly separate process. |
+| `fusion.cli.checkpoint_invalid` | Embedded native source-once checkpoint export or restoration refused | Inspect the native format/state refusal; no partial continuation is available. |
+| `fusion.cli.checkpoint_limit` | Complete CLI checkpoint exceeds its 16 MiB ceiling | Retain the previous checkpoint and reduce the new request; never evict consumed sources or truncate their semantics. |
+| `fusion.cli.checkpoint_unreadable` | CLI checkpoint is not a readable bounded regular file | Recover the original file in a stable local namespace before retrying with its independent pin. |
+| `fusion.cli.checkpoint_publication` | A new checkpoint destination already exists or durable publication could not be confirmed | Existing paths are never overwritten. An I/O failure may leave a new incomplete file; verify it before selecting any next head. |
+| `fusion.cli.sequence_output_limit` | Complete sequence report would exceed 16 MiB | Use a smaller complete transition batch; no prefix checkpoint or success report was published. |
 | `ERR-FUSION-CHECKPOINT-LIMIT-001` | Complete source-once checkpoint bytes, source/domain inventory or reset text exceed the frozen allowance | Retain the existing owner/checkpoint; do not truncate, evict sources or silently initialize a new process. |
 | `ERR-FUSION-CHECKPOINT-DIGEST-001` | Checkpoint bytes disagree with the independently supplied SHA-256 or embedded checksum | Obtain the exact originally pinned bytes; recomputing a pin from unknown input is not recovery. |
 | `ERR-FUSION-CHECKPOINT-VERSION-001` | Source-once checkpoint declares an unsupported version | Use its producing compatible reader; there is no implicit downgrade or migration. |

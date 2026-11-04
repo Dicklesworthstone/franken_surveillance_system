@@ -2,47 +2,13 @@
 //! Explicit evidence-transcript projection without changing historical supervisor JSON or hashes.
 
 use fss_core::{CanonicalEncoder, ContentDigest};
-use fss_fusion::{EPROCESS_TRANSCRIPT_SCHEMA, EProcessStepInput, EProcessTranscript};
 
 use super::{
     SUPERVISOR_TRANSCRIPT_DOMAIN, SUPERVISOR_TRANSCRIPT_REPORT_SCHEMA, SupervisorReport, array,
     nullable, object, string, unsigned,
 };
 
-pub(super) fn fusion_transcript_json(transcript: &EProcessTranscript) -> String {
-    let input = match transcript.input() {
-        EProcessStepInput::Observation {
-            query_digest,
-            decision_digest,
-        } => object(&[
-            ("kind", string("observation")),
-            ("query_digest", string(&query_digest.to_text())),
-            ("decision_digest", string(&decision_digest.to_text())),
-        ]),
-        EProcessStepInput::RegimeReset { reason_digest } => object(&[
-            ("kind", string("regime_reset")),
-            ("reason_digest", string(&reason_digest.to_text())),
-        ]),
-    };
-    object(&[
-        ("schema", string(EPROCESS_TRANSCRIPT_SCHEMA)),
-        (
-            "previous_transcript_digest",
-            nullable(transcript.previous().map(|d| string(&d.to_text()))),
-        ),
-        ("input", input),
-        (
-            "numerical_step_digest",
-            string(&transcript.numerical_step_digest().to_text()),
-        ),
-        ("state_digest", string(&transcript.state_digest().to_text())),
-        (
-            "supporting_domains_digest",
-            string(&transcript.supporting_domains_digest().to_text()),
-        ),
-        ("transcript_digest", string(&transcript.digest().to_text())),
-    ])
-}
+use crate::fusion_json::fusion_transcript_json;
 
 // Constant-size folding avoids another report-sized receipt buffer. Tags separate the two
 // ordered camera inventories; hashes bind exact text without a canonical-text overflow path.

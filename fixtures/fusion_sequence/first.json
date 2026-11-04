@@ -1,0 +1,42 @@
+{
+  "schema": "fss.fusion_sequence.v1",
+  "hypothesis": "event:entry",
+  "config": {"alert_threshold_mban": 1000, "floor_mban": -10000, "ceiling_mban": 10000, "min_independent_clusters": 2},
+  "source_limit": 4,
+  "steps": [
+    {
+      "kind": "observe",
+      "query": {
+        "schema": "fss.fusion_query.v2",
+        "hypothesis": "event:entry",
+        "kind": "unknown_presence",
+        "prior": [-1000, -1000],
+        "coverage": {"state": "complete"},
+        "looks": 1,
+        "now_ns": "1",
+        "severity": {"expected_harm": 10000, "false_alert_cost": 200, "delay_cost_per_second": 5, "reversible": false},
+        "policy": {
+          "generation": "policy:example-v1",
+          "alert_threshold": 1000,
+          "retain_threshold": -500,
+          "reject_threshold": -2000,
+          "min_independent_support": 2,
+          "urgent_single_domain_threshold": null,
+          "max_wait_ns": "30000000000",
+          "look_penalty_per_doubling": 301,
+          "operator_confirmation_available": true
+        },
+        "evidence": [
+          {
+            "id": "east-original",
+            "sensor": "camera:east",
+            "failure_domains": ["device:camera:east"],
+            "observability": "observed",
+            "calibration": {"generation": "example:manual-llr-v1", "llr": [600, 600]}
+          }
+        ]
+      },
+      "sources": {"east-original": "sha256:d5418f5a9615d5b2cebfa73ceebe302421173c4471bc648163cec0e55af54945"}
+    }
+  ]
+}

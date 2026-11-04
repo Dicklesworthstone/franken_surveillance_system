@@ -1,6 +1,6 @@
 # Implementation status
 
-**As of:** 2026-11-03 (dated feature sections retain their original verification scope)
+**As of:** 2026-11-04 (dated feature sections retain their original verification scope)
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
@@ -9,6 +9,48 @@
 Franken Surveillance System now has a coherent, dependency-light Rust reference spine from immutable source evidence through canonical authority state, guarded external effects, agent situation projection, meaningful deltas, exact continuation, and progressive semantic hydration. The repository is no longer merely an architecture corpus or crate skeleton.
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
+
+## Executable source-once fusion continuation (2026-11-04)
+
+`fss-fuse --sequence` now runs up to 64 ordered observation/reset transitions and writes
+one new complete canonical checkpoint. A later process resumes only with the independently
+retained SHA-256 and unchanged hypothesis, numerical settings and lifetime source limit.
+Exact unbinned scores, calibration artifact identities and direct-LLR representations remain
+committed separately from the native accumulator, so same-bin source reinterpretation also
+refuses after restart. Original input provenance and effective decision provenance are distinct;
+replayed rows retain explicit accounting and contribute no second likelihood increment.
+
+Complete batch admission, checkpoint encoding and report bounds precede new-file publication.
+A rejected later transition publishes no accepted prefix and leaves the old checkpoint intact.
+New checkpoint paths never overwrite existing files; file and Unix parent-directory syncing
+precede the success report. A late filesystem/stdout failure can leave a new file without a
+confirmed successful report. Both checkpoint and full output are capped at 16 MiB, which can
+be reached before the 4096-source inventory limit. Observation time cannot move backwards.
+The separate request/report schemas, complete receipts and executable first/resume examples
+are documented in [FUSION_SEQUENCE.md](docs/FUSION_SEQUENCE.md).
+
+Focused exact-source validation compiles the actual binary and pure parser/renderer modules
+against native core/fusion/graph libraries, without replacement algorithms or owner stubs.
+Eleven new sequence unit tests and eight existing executable fusion/calibration regressions
+pass. Separate actual subprocesses produce byte-identical final checkpoints for resumed and
+uninterrupted processing. Eight emitted request/report cases pass full Draft 2020-12 validation
+through the unchanged nested receipt/transcript schemas; 21 malformed schema mutations refuse.
+This lane exercises pure input, actual CLI dispatch, filesystem checkpoint publication and
+process restart; it does not qualify the full runtime or DSR workspace. Two additional
+real-process regressions are retained in `tests/fusion_sequence_cli.rs`. Their final execution
+and the integrated test rerun after a concurrent shared-JSON-parser relocation could not finish
+under shared memory pressure; the native core/fusion/graph libraries did rebuild successfully.
+The earlier 27 focused tests (including eight parser tests before their relocation) and actual
+separate-process checks are the executed command evidence, not a final full-tree qualification.
+
+The shared supervisor also now refuses duplicate camera aliases and observations naming an
+unconfigured alias before cancellation, budget charging or early threshold stops can conceal
+invalid input. Three public-profile regressions cover both legacy and source-once admission
+and valid two-camera ordering. Those runtime-dependent tests remain unexecuted: Asupersync
+dependency compilation was SIGKILLed under shared memory contention. No full supervisor or
+runtime qualification is claimed. The sequence remains caller-declared derived cognition,
+with no native source-custody, authentication, rollback protection, statistical-validity or
+effect-authority grant; `fss-x4a.16.9` remains open.
 
 ## Restart-safe source-once fusion checkpoints (2026-11-03)
 
