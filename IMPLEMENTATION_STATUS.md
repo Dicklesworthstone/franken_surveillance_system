@@ -4,6 +4,34 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Native picture measurement in live site probes
+
+Live RTSP observations now share the recorded-probe AVC/HEVC configuration,
+depacketization, picture assembly and cadence owners. RTP markers alone no longer
+increment the live picture count. Unsupported field/MBAFF AVC and HEVC field
+sequences refuse through the same native SPS admission, and owner monotonic time
+reaches native fragment and picture lifetime checks.
+
+A live sample freezes only a prefix with witnessed native picture boundaries.
+The next unverified group or unfinished fragment is explicitly discarded and
+accounted in derivative-byte counters; it is never counted as another picture,
+promoted through fabricated EOS, or added again to original-wire omissions.
+An RTP aggregation datagram is processed atomically, so the requested picture
+count is a minimum subject to the hard 64-picture ceiling. Existing exact
+DESCRIBE/SETUP/PLAY, scoped TCP, Digest, and acknowledged TEARDOWN ownership is
+preserved. No usable receipt leaves the live owner before matching remote close.
+
+The revised sources include 11 real-fixture observer contracts and 17 real TCP
+loopback contracts, replacing the earlier 4 marker-observer and 12 session tests.
+Positive paths use retained AVC/HEVC codec bytes; negative paths include forged
+markers, missing syntax boundaries, field sequences, configuration changes,
+strict source continuity, expiry, authority loss and remote-close uncertainty.
+These revised tests have **not been compiled or executed**: the pinned formatter
+parsed the seven changed backend/test files, but the shared executor disconnected
+before any compiler invocation. Earlier test results below apply to their prior
+source versions, not this changed measurement path. The required new loopback,
+observer and recorded-probe regression runs remain pending.
+
 ## Approved native RTSP site probing
 
 `fss_reference::site::live_probe::LiveSiteProbe` now owns one bounded native
@@ -11,7 +39,7 @@ RTSP/NVR probe from OPTIONS through DESCRIBE, SETUP, PLAY and acknowledged
 TEARDOWN. It composes the existing scoped client, Digest owner, exact wire intake,
 TCP transport and strict RTP observer. The same accepted SDP supplies negotiation
 and receipt parameter hashes. Explicit media/channel/payload selection, stable
-SSRC, sequence continuity and constant marked-picture cadence must agree; no raw
+SSRC, sequence continuity and constant native-picture cadence must agree; no raw
 SDP, media, session token or credential leaves the owner. RTCP and in-flight media
 while closing are explicitly omitted and counted. Each step rechecks supplied
 network authority and owner time. No clock, sleep, secret resolver, decoder,
@@ -36,7 +64,8 @@ credential-access and remote-close facts. No media archive or automatic retry is
 introduced. Existing `probe-file` and JPEG site planning remain available.
 See [SITE_PROBING.md](docs/SITE_PROBING.md) for the command and scope.
 
-**Validation:** 12 native loopback contracts pass with the pinned toolchain against
+**Prior validation, before the native-picture measurement revision above:** 12 native
+loopback contracts passed with the pinned toolchain against
 the exact production site/RTSP modules, full native packet source and native core
 library. They exercise AVC/HEVC, Digest, foreign realms, seven-byte request writes,
 chunked responses, RTP faults, late media, close uncertainty, cancellation, clock

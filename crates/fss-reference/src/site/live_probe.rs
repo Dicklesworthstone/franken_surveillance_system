@@ -74,7 +74,8 @@ pub struct LiveSiteProbeConfig {
     pub deadline_ns: u64,
     /// Driver-step ceiling, at most [`MAX_PROBE_STEPS`].
     pub max_steps: u64,
-    /// Number of consecutive marked RTP boundaries to observe, from three through sixty-four.
+    /// Minimum native syntax-grouped pictures to observe, from three through sixty-four.
+    /// Each RTP datagram is processed atomically and can confirm more than one group.
     pub stop_after_pictures: u32,
     /// Optional existing manifest-bound credential policy.
     pub digest: Option<ProbeDigestConfig>,
@@ -100,6 +101,11 @@ pub struct ProbeAccounting {
     pub rtp_packets: u64,
     /// Whole accepted RTP datagram bytes, including headers.
     pub rtp_bytes: u64,
+    /// Complete reconstructed NAL bytes excluded at the explicit sample cut.
+    /// These derivative bytes are not additional original-wire omissions or frame counts.
+    pub unverified_nal_bytes_excluded: u64,
+    /// Unfinished reconstructed fragment bytes excluded at the explicit sample cut.
+    pub unfinished_fragment_bytes_excluded: u64,
     /// Interleaved RTCP-channel frames deliberately excluded, without claiming packet validity.
     pub rtcp_frames_excluded: u64,
     /// Omitted RTCP-channel bytes; no sender-report time is inferred from them.
@@ -237,7 +243,7 @@ pub enum ProbeStep {
         /// Earliest absolute owner-clock wake.
         wake_at_ns: Option<u64>,
     },
-    /// One complete sample released only after acknowledged TEARDOWN and local socket closure.
+    /// One frozen, witnessed-picture prefix released after acknowledged TEARDOWN and local closure.
     Complete {
         /// Existing manifest-bound observation schema, with no liveness/freshness grant.
         receipt: SiteProbeReceipt,
@@ -689,20 +695,25 @@ impl<'a> LiveSiteProbe<'a> {
                 {
                     return Err(ProbeError::Observation(ObservationError::Continuity));
                 }
-                self.observer
-                    .as_mut()
-                    .ok_or(ProbeError::Incomplete)?
-                    .observe_rtp(channel, span)
+                let observer = self.observer.as_mut().ok_or(ProbeError::Incomplete)?;
+                observer
+                    .observe_rtp_at(channel, span, now)
                     .map_err(ProbeError::Observation)?;
                 self.accounting.rtp_packets += 1;
                 self.accounting.rtp_bytes += span.len() as u64;
-                if packet.marker() {
-                    self.observed_pictures += 1;
-                    if self.observed_pictures == self.target_pictures {
-                        self.sample_complete = true;
-                        if self.outstanding.is_none() {
-                            self.next_request = Some(ClientCommand::Teardown);
-                        }
+                self.observed_pictures = observer.confirmed_pictures();
+                if self.observed_pictures >= self.target_pictures {
+                    // A native boundary can retain the start of the next group.
+                    // Explicitly omit that unverified tail; never invent EOS or
+                    // count the RTP marker as independent picture evidence.
+                    let tail = observer.freeze_prefix().map_err(ProbeError::Observation)?;
+                    self.accounting.unverified_nal_bytes_excluded =
+                        tail.unverified_nal_bytes_excluded;
+                    self.accounting.unfinished_fragment_bytes_excluded =
+                        tail.unfinished_fragment_bytes_excluded;
+                    self.sample_complete = true;
+                    if self.outstanding.is_none() {
+                        self.next_request = Some(ClientCommand::Teardown);
                     }
                 }
             }
@@ -719,7 +730,7 @@ impl<'a> LiveSiteProbe<'a> {
             .observer
             .take()
             .ok_or(ProbeError::Incomplete)?
-            .finish()
+            .finish_prefix()
             .map_err(ProbeError::Observation)?;
         let retirement = self.cancel().ok_or(ProbeError::Closed)?;
         if retirement.close.remote_session_may_exist || retirement.close.pending_cseq.is_some() {

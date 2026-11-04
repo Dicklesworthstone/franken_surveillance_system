@@ -264,18 +264,31 @@ tests actually executed in this environment and its full-build limitations.
 
 ## Native RTP probe observation component (VIT-003)
 
-The pure fss_reference::site::probe_observation::RtspProbeObserver API accepts one
-already-negotiated AVC or HEVC SDP selection, verifies its exact parameter NALs,
-then derives SSRC, fixed 90-kHz cadence and wrap-aware timestamp boundaries from
-bounded RTP packets. A missing packet, foreign sender, changed payload, incomplete
-marker sequence or cadence drift refuses the whole observation. No raw packet or SDP
-bytes are returned. Returned values satisfy the existing site probe receipt v1
-contract and can feed the current site plan compiler.
+The pure `fss_reference::site::probe_observation::RtspProbeObserver` API accepts one
+already-negotiated AVC/HEVC SDP selection and validates the complete native codec
+configuration. It shares the recorded-probe depacketizers, picture assemblers and
+cadence measurement. SSRC, payload, packet order, immutable parameter sets and
+constant 90 kHz picture timing must agree. RTP markers alone cannot create an
+observation. Field-coded configurations, malformed media, discontinuities and
+variable cadence refuse the sample.
 
-The observer itself performs no network I/O. The
-[`site probe` owner](SITE_PROBING.md) now binds its native DESCRIBE/SETUP/PLAY
-transcript to this observer, independently confirms TEARDOWN, and enforces explicit
-network and credential authority. This pure API does
-not authenticate the caller or source, prove freshness, or certify decoded pictures.
-The v1 receipt remains an untrusted observational claim until its provenance and
-subsequent live capture pins are established.
+A strict `finish()` requires witnessed boundaries for the supplied sample.
+Live callers use `freeze_prefix()` followed by `finish_prefix()` to deliberately
+exclude the unverified next group or fragment without fabricating EOF/EOS.
+Excluded reconstructed NAL/fragment bytes are reported separately from original
+wire omissions; they do not assert an omitted-frame count or pixel completeness.
+One RTP aggregation packet is processed atomically, so a minimum picture target
+may be exceeded, subject to the hard 64-picture bound.
+
+The [`site probe`](SITE_PROBING.md) command and its
+`site::live_probe::LiveSiteProbe` owner feeds this observer from its actual
+accepted DESCRIBE/SETUP/PLAY session, supplies current scoped TCP authority and
+monotonic time, freezes the measured prefix, and releases its receipt only after
+the matching successful TEARDOWN response. Local cancellation or EOF cannot
+substitute for that acknowledgement. Close uncertainty remains explicit.
+
+Neither the pure observer nor a matching remote close authenticates the physical
+camera, proves current scene freshness, certifies every slice/macroblock, grants
+rights, or establishes source custody. The returned metadata uses the existing
+site probe receipt contract. See the implementation status for the exact
+qualification limits of the changed observer and real-media loopback tests.
