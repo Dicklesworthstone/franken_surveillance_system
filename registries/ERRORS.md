@@ -17,6 +17,7 @@ operation states rather than generic errors.
 | `ERR-SITE-PROBE-ENTROPY-001` | Scoped native cnonce entropy could not be obtained | Do not substitute deterministic entropy or weaken Digest. |
 | `ERR-SITE-PROBE-CLOSE-001` | A native completion lacks a settled matching remote close | No receipt; preserve remote uncertainty. |
 | `ERR-SITE-PROBE-OUTPUT-001` | The complete native probe result exceeds its output allowance | No truncated or partial receipt. |
+| `ERR-SITE-PROBE-SESSION-EVIDENCE-001` | A purported native completion lacks consistent settled receipt, transport or exclusion evidence, or its canonical witness cannot be encoded | Preserve observed attempt/retirement facts; issue no receipt or completion witness and do not synthesize missing counters. |
 | `ERR-SITE-PROBE-CONFIGURATION-001` | Native probe source, route, generation, authentication policy or finite limits disagree | Correct the exact scope and preview again; no network work for configuration refusal. |
 | `ERR-SITE-PROBE-TRANSPORT-001` | Native scoped probe transport or network authority refused | Inspect the explicit attempt/remote-session facts; never reconnect automatically. |
 | `ERR-SITE-PROBE-SESSION-001` | Native RTSP lifecycle, negotiation, correlation or deadline refused | Correct the supported protocol scope and request a new probe explicitly. |

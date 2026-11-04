@@ -4,6 +4,43 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Native probe session evidence and source isolation
+
+`fss site probe --output session` now exposes native transport work, confirmed
+picture receipts, explicit unverified-tail exclusions and remote-close uncertainty.
+Default receipt-array output remains compatible with site planning. The session
+completion digest binds canonical approval, receipt and native counters rather
+than JSON bytes. Failed or indeterminate sessions emit no receipt or completion
+witness, including failures after acknowledged TEARDOWN during final runtime
+retirement. Unobserved counters remain null; derivative tail bytes are not added
+again to original-wire omissions or labelled as omitted pictures.
+
+The native plan now uses stable site/source stream identities, so distinct
+same-generation cameras cannot accidentally share one ingress. Exact approvals
+bind the requested output projection, native syntax/prefix policy, actual
+selected codec/parser/assembly limits, transport/credential/wait limits and the
+complete runtime allowance. The working reservation is 64 MiB of declared logical
+capacity, not measured RSS. Existing tighter wire ceilings remain unchanged.
+
+The adapter reuses the existing request-owned runtime and private credential
+owner. It refreshes network authority and time after credential metadata work,
+passes fresh owner time after nonce reads, and retains all native retirement
+facts. The site-probe scope now grants only network and optional credential
+access; retained-media and publication capabilities are absent. No new async
+runtime, package dependency, decoder, archive or automatic reconnect is introduced.
+
+**Validation limits:** the changed sources include ten pure plan tests, four
+new evidence-rendering/canonical-witness tests, one new runtime capability test,
+and fifteen command-process contracts. The command tests retain the original
+nine workflows and use the repository's complete AVC/HEVC fixtures; added
+cases cover markerless confirmed prefixes, forged metadata/slices, missing native
+EOS, field-coded descriptions, parameter drift and missing/rejected/mismatched
+TEARDOWN. These changed/new tests have **not been compiled or executed** because
+the shared execution environment is unavailable. Cross-module source/API review
+and schema-shape checks are not substitutes for those runs. The earlier focused
+passes below apply only to their original bytes. Full CLI/runtime, rch, hardware
+and release qualification remain unclaimed.
+
 ## Native picture measurement in live site probes
 
 Live RTSP observations now share the recorded-probe AVC/HEVC configuration,

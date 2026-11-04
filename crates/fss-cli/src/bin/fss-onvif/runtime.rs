@@ -17,6 +17,9 @@ const DEADLINE: &str = "ERR-ONVIF-DEADLINE-001";
 const BUDGET: &str = "ERR-ONVIF-BUDGET-001";
 const CANCELLED: &str = "ERR-ONVIF-CANCELLED-001";
 
+/// Maximum native wait per admission; the original request deadline never renews.
+pub(crate) const WAIT_QUANTUM_NS: u64 = 1_000_000;
+
 fn execution_error(error: &ExecutionError) -> &'static str {
     match error {
         ExecutionError::Deadline { .. } | ExecutionError::ClockRegression { .. } => DEADLINE,
@@ -138,7 +141,7 @@ impl Scope<'_, '_> {
         if deadline > self.deadline || now >= deadline {
             return Err(DEADLINE);
         }
-        let delay = (deadline - now).min(1_000_000);
+        let delay = (deadline - now).min(WAIT_QUANTUM_NS);
         std::thread::sleep(Duration::from_nanos(delay));
         self.admit(RuntimeGrant::AdapterNet, false).map(|_| ())
     }
@@ -301,7 +304,13 @@ fn run_with_clock_domain<T, C: Clock>(
         .latency_ms(request.timeout_ns.div_ceil(1_000_000))
         .build()
         .map_err(|_| BUDGET)?;
-    let mut grants = vec![RuntimeGrant::ReadMedia];
+    // Site probes acquire framing evidence only. Retained-media read authority
+    // belongs to the ONVIF/handoff owners and must not leak into this route.
+    let mut grants = if domain == "site-probe" {
+        Vec::new()
+    } else {
+        vec![RuntimeGrant::ReadMedia]
+    };
     if request.network {
         grants.push(RuntimeGrant::AdapterNet);
     }
@@ -524,6 +533,36 @@ mod tests {
             Ok(())
         });
         assert_eq!(result, Err(CANCELLED));
+    }
+
+    #[test]
+    fn site_probe_grants_exclude_retained_reads_and_publication() {
+        for secrets in [false, true] {
+            let mut request = writing_request();
+            request.network = true;
+            request.write = false;
+            request.secrets = secrets;
+            let clock = Cell::new(0_u64);
+            let result = run_with_clock_domain(
+                request,
+                |scope| {
+                    scope.admit(RuntimeGrant::AdapterNet, false)?;
+                    assert_eq!(scope.input(), Err(AUTHORITY));
+                    assert_eq!(scope.output(), Err(AUTHORITY));
+                    assert_eq!(
+                        scope.admit(RuntimeGrant::AdapterAuth, false).is_ok(),
+                        secrets,
+                    );
+                    Ok(WorkValue {
+                        value: (),
+                        committed: false,
+                    })
+                },
+                || TestClock(&clock),
+                "site-probe",
+            );
+            assert_eq!(result.map(|completion| completion.value), Ok(()));
+        }
     }
 
     struct TestClock<'a>(&'a Cell<u64>);

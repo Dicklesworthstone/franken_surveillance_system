@@ -3,10 +3,12 @@
 //!
 //! Previewing reads only the manifest. Execution borrows the existing private
 //! credential lease and request-owned runtime; it retains no media or raw wire.
-//! Successful stdout is a receipt array directly usable by `fss site plan`.
+//! Successful stdout is a receipt array directly usable by `fss site plan`, or an
+//! explicitly selected session report with native evidence and omission accounting.
 
 mod native;
 mod plan;
+mod report;
 
 use std::path::PathBuf;
 
@@ -18,7 +20,7 @@ use crate::orient_cmd::{collect_options, take};
 use crate::token::ArgToken;
 
 pub(crate) use plan::ProbePlan;
-pub use plan::SiteProbeOptions;
+pub use plan::{ProbeOutput, SiteProbeOptions};
 
 /// Parse the exact operator grammar without opening any path or socket.
 pub fn parse_probe_args(tokens: &[ArgToken]) -> Result<(PathBuf, SiteProbeOptions), CliError> {
@@ -36,6 +38,7 @@ pub fn parse_probe_args(tokens: &[ArgToken]) -> Result<(PathBuf, SiteProbeOption
             "--observe-frames",
             "--timeout-ms",
             "--principal",
+            "--output",
             "--approve",
         ],
     )?;
@@ -107,6 +110,16 @@ pub fn parse_probe_args(tokens: &[ArgToken]) -> Result<(PathBuf, SiteProbeOption
             Ok(digest)
         })
         .transpose()?;
+    let output = match take(&values, "--output").map(|(_, value, _)| value.as_str()) {
+        None | Some("receipts") => ProbeOutput::Receipts,
+        Some("session") => ProbeOutput::Session,
+        Some(_) => {
+            return Err(malformed(
+                "--output",
+                "expected receipts or session",
+            ));
+        }
+    };
     let options = SiteProbeOptions {
         source: required("--source")?,
         codec,
@@ -120,6 +133,7 @@ pub fn parse_probe_args(tokens: &[ArgToken]) -> Result<(PathBuf, SiteProbeOption
             |(_, value, _)| value.clone(),
         ),
         approve,
+        output,
     };
     options.validate().map_err(|_| malformed("site probe", "bounded source, codec, media, channel, frame, timeout and principal selection required"))?;
     Ok((PathBuf::from(required("--manifest")?), options))
@@ -132,7 +146,7 @@ fn empty_public_probe_parse_refuses_without_panicking() {
 }
 
 /// Preview or perform one bounded probe. Only an exact preview digest opens the
-/// native boundary. Successful receipt arrays contain private route metadata.
+/// native boundary. Receipt arrays and successful session reports contain private route metadata.
 pub fn execute_probe(
     manifest: &SiteManifest,
     options: &SiteProbeOptions,

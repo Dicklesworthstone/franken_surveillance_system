@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://franken-surveillance-system.dev/schemas/site_probe_plan.v1.json",
   "title": "FSS separately approved native site probe plan",
-  "description": "Private operator preview for one exact manifest source and explicit AVC/HEVC selection. Its approval binds the complete manifest and all selections/limits. Preview performs no network or credential access; it grants no capture, rights or freshness authority.",
+  "description": "Private operator preview for one exact manifest source and native AVC/HEVC syntax measurement. Approval binds source-specific ingress, the minimum confirmed-picture prefix and tail policy, output projection, actual native limit profile and exact runtime reservation. No network or secret access occurs during preview. The working-byte reservation is logical, not measured RSS; no capture, rights or freshness authority is granted.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -36,7 +36,27 @@
     "source_retained",
     "capture_authorized",
     "rights_verdict_verified",
-    "teardown_ack_required"
+    "teardown_ack_required",
+    "source_generation",
+    "ingress",
+    "ssrc_policy",
+    "observe_frames_meaning",
+    "max_observed_frames",
+    "unverified_tail_policy",
+    "output",
+    "max_request_bytes",
+    "chunk_bytes",
+    "connect_timeout_ns",
+    "response_timeout_ns",
+    "default_session_timeout_seconds",
+    "max_rtp_packets",
+    "max_rtp_bytes",
+    "wait_quantum_ns",
+    "max_credential_bytes",
+    "max_secret_io_calls",
+    "observer_limits_digest",
+    "runtime_allowance",
+    "reservation_basis"
   ],
   "properties": {
     "schema": {
@@ -128,7 +148,7 @@
     "principal": {
       "type": "string",
       "minLength": 1,
-      "maxLength": 256
+      "maxLength": 128
     },
     "authentication": {
       "oneOf": [
@@ -180,7 +200,76 @@
       "const": true
     },
     "policy": {
-      "const": "site-native-probe:v1:one-source:rtsp-nvr:explicit-avc-hevc:exact-route:options-describe-setup-play:strict-rtp-cadence:teardown-ack-required:no-source-retention:no-rights-grant:no-retry"
+      "const": "site-native-probe:v1:one-source:rtsp-nvr:explicit-avc-hevc:exact-plaintext-route:source-specific-ingress:learn-one-ssrc:options-describe-setup-play:native-syntax-confirmed-prefix:minimum-picture-target:explicit-unverified-tail-omission:progressive-only:constant-90khz-cadence:teardown-ack-required:declared-working-reservation:no-decoded-pixels:no-source-retention:no-archive:no-rights-grant:no-retry:no-redirect"
+    },
+    "source_generation": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "ingress": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]{0,38}$"
+    },
+    "ssrc_policy": {
+      "const": "learn_once"
+    },
+    "observe_frames_meaning": {
+      "const": "minimum_native_picture_groups"
+    },
+    "max_observed_frames": {
+      "const": 64
+    },
+    "unverified_tail_policy": {
+      "const": "count_and_omit_after_confirmed_prefix"
+    },
+    "output": {
+      "enum": [
+        "receipts",
+        "session"
+      ]
+    },
+    "max_request_bytes": {
+      "const": 16384
+    },
+    "chunk_bytes": {
+      "const": 4096
+    },
+    "connect_timeout_ns": {
+      "type": "integer",
+      "minimum": 100000000,
+      "maximum": 5000000000
+    },
+    "response_timeout_ns": {
+      "type": "integer",
+      "minimum": 100000000,
+      "maximum": 5000000000
+    },
+    "default_session_timeout_seconds": {
+      "const": 60
+    },
+    "max_rtp_packets": {
+      "const": 4096
+    },
+    "max_rtp_bytes": {
+      "const": 8388608
+    },
+    "wait_quantum_ns": {
+      "const": 1000000
+    },
+    "max_credential_bytes": {
+      "const": 1282
+    },
+    "max_secret_io_calls": {
+      "const": 16
+    },
+    "observer_limits_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "runtime_allowance": {
+      "$ref": "#/$defs/runtime_allowance"
+    },
+    "reservation_basis": {
+      "const": "declared_logical_working_bound_not_measured_rss"
     }
   },
   "$defs": {
@@ -214,6 +303,78 @@
         },
         "legacy_no_qop": {
           "type": "boolean"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "legacy_no_qop": {
+                "const": true
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "legacy_md5": {
+                "const": true
+              }
+            }
+          }
+        }
+      ]
+    },
+    "runtime_allowance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "latencyMs",
+        "tokens",
+        "bytes",
+        "modelCalls",
+        "cpuMillis",
+        "acceleratorMillis",
+        "energyMilliJoules",
+        "networkBytes",
+        "storageOperations",
+        "privacyExposure",
+        "operatorAttentionSeconds"
+      ],
+      "properties": {
+        "latencyMs": {
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 60000
+        },
+        "tokens": {
+          "const": 0
+        },
+        "bytes": {
+          "const": 67108864
+        },
+        "modelCalls": {
+          "const": 0
+        },
+        "cpuMillis": {
+          "const": 0
+        },
+        "acceleratorMillis": {
+          "const": 0
+        },
+        "energyMilliJoules": {
+          "const": 0
+        },
+        "networkBytes": {
+          "const": 8716288
+        },
+        "storageOperations": {
+          "const": 4194304
+        },
+        "privacyExposure": {
+          "const": 0
+        },
+        "operatorAttentionSeconds": {
+          "const": 0
         }
       }
     }

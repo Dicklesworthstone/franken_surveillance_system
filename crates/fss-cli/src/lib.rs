@@ -78,7 +78,7 @@ pub mod session_cmd;
 pub mod site_cmd;
 /// Atomic site-to-native capture planning with exact manifest and probe bindings.
 pub mod site_plan;
-/// Exact approval-gated native RTSP probing with receipt-only output.
+/// Exact approval-gated native RTSP probing with receipts or session evidence.
 pub mod site_probe;
 /// Measure pinned recorded RTSP/RTP evidence into native site probe receipts.
 pub mod site_probe_cmd;

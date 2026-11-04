@@ -2,8 +2,10 @@
 
 `fss site probe` obtains one bounded AVC or HEVC observation from an explicitly
 selected RTSP camera or NVR channel. It uses the manifest's exact literal peer,
-authority and permitted RTSP control subtree. Successful stdout is a one-element
-array of `fss.site_probe_receipt.v1` objects, ready for `fss site plan --probes`.
+authority and permitted RTSP control subtree. By default, successful stdout is a
+one-element array of `fss.site_probe_receipt.v1` objects, ready for
+`fss site plan --probes`. Select `--output session` for the same receipt plus
+native transport and exclusion evidence.
 
 ## Preview, review, then probe
 
@@ -31,15 +33,15 @@ fss site probe --manifest /etc/fss/site.json \
 
 The placeholder must be replaced with the complete reviewed digest. A different
 manifest, source, codec, media selection, payload, channel, observation count,
-deadline or principal invalidates the approval before network or credential work.
+deadline, output selection or principal invalidates the approval before network or credential work.
 The command never approves itself or retries the camera automatically.
 
 `--codec avc|hevc` and `--source` are required. Defaults are media index 0, RTP
-channel 0 with RTCP channel 1, six marked picture boundaries, ten seconds, and
+channel 0 with RTCP channel 1, a minimum of six native picture groups, ten seconds, and
 `principal:local-operator`. `--payload-type 96..127` optionally selects an exact
 dynamic payload when SDP offers more than one. Media indices are 0 through 63;
-RTP channels are even values from 0 through 254. Samples allow 3 through 64
-marked boundaries and 100 through 60000 milliseconds for the whole operation,
+RTP channels are even values from 0 through 254. Samples allow a requested minimum of 3 through 64
+native syntax-confirmed picture groups and 100 through 60000 milliseconds for the whole operation,
 including connection, negotiation, authentication and remote close.
 
 Probe sources one at a time. A multi-source site plan requires one receipt for
@@ -57,8 +59,16 @@ the existing RTSP client, exact-message intake, native TCP transport and strict 
 observer. The same accepted DESCRIBE body supplies both media negotiation and the
 receipt's SDP and parameter-set digests. Selected channels, payload and advertised
 SSRC must agree with received RTP. The observed SSRC stays fixed; sequence numbers
-must remain contiguous, marker boundaries complete, and timestamp increments
-constant under explicit RTP wrapping.
+must remain contiguous, the native AVC/HEVC assemblers must witness picture
+boundaries, and timestamp increments must remain constant under explicit RTP
+wrapping. Markers alone cannot create a picture. Field-coded configurations,
+unsupported sequence syntax and changed parameter sets refuse the observation.
+
+The picture target is a minimum: one RTP aggregation packet is processed
+atomically and may confirm several groups, subject to the hard 64-picture ceiling.
+The observer freezes only the confirmed prefix. A following unverified NAL group
+or unfinished fragment is explicitly omitted and counted, without fabricated
+EOS or an inferred omitted-frame count.
 
 A receipt is released only after the matching successful TEARDOWN response and
 local socket retirement. In-flight media on negotiated channels while closing is
@@ -71,8 +81,69 @@ Server identity is an optional header digest, not an authenticated device identi
 The limits are fixed and approval-bound: at most 65536 driver steps and socket
 calls, 8 MiB plus 256 KiB of total received wire bytes, and 64 KiB of sent requests.
 The strict observer also limits selected RTP to 4096 packets and 8 MiB. Limits
-never renew during negotiation or progress. No decoder, archive, discovery scan,
+never renew during negotiation or progress. The plan also binds the actual
+codec/parser/assembly limit profile, exact request/chunk/connect/response limits,
+credential bounds, one-millisecond maximum wait, and the complete runtime
+allowance. The runtime reserves 64 MiB of logical native working capacity and
+4,194,304 metadata operations before effects; this is not a measured allocator or
+RSS ceiling. Stable stream identities include the site and selected source, so
+same-generation cameras do not share an ingress. No decoder, archive, discovery scan,
 device configuration, PTZ operation or parallel source scheduler is invoked.
+
+## Session evidence and integration
+
+Request the evidence projection in both the preview and the approved invocation:
+
+```sh
+fss site probe --manifest /etc/fss/site.json \
+  --source camera:front --codec avc --observe-frames 6 \
+  --timeout-ms 10000 --output session --json
+```
+
+Review the returned approval, then repeat those exact selections with
+`--approve sha256:<digest-from-preview>`. The output selector is approval-bound;
+a digest reviewed for `receipts` cannot authorize `session`, or vice versa.
+The stronger native policy also invalidates previews from the earlier
+marker-observation implementation.
+
+An approved session returns
+[`fss.site_probe_session.v1`](../schemas/site_probe_session.v1.json).
+Successful output has `status: "measured"`, one element in `receipts`,
+the exact receipt digest, and a canonical `completion_digest`. Its
+`receipts` member can be saved as the existing `site plan --probes` input.
+The default `--output receipts` continues to provide that array directly.
+
+The report records actual received/sent bytes, read/write calls, last sent CSeq,
+and native observation/exclusion counters. The following counts have different
+meanings and must not be summed as if they were independent originals:
+
+| Field | Meaning |
+|---|---|
+| `discarded_wire_bytes` | Every received wire byte deliberately not retained, including control and unread suffixes. |
+| `rtp_bytes` | Whole selected RTP datagrams accepted into the native observation. |
+| `rtcp_bytes_excluded` / `closing_bytes_excluded` | Payloads deliberately excluded from observation or received while closing. |
+| `unverified_nal_bytes_excluded` | Reconstructed complete NAL bytes in the unverified next group at the cutoff. |
+| `unfinished_fragment_bytes_excluded` | Reconstructed bytes from an unfinished fragment at the cutoff. |
+
+Reconstructed tail counts overlap received originals. They do not establish how
+many pictures were omitted or whether every pixel in a confirmed group can be
+decoded. `last_observed_ns` is the last admitted elapsed owner clock, not camera
+capture time, synchronized wall time, or total runtime-retirement duration.
+
+The completion digest uses canonical typed fields, not JSON text. It binds the
+approved operation, full receipt claim, native transport/cutoff counts and owner
+observation time. It is an integrity witness; it supplies no signature,
+authenticated camera identity, freshness proof, source-custody root, rights
+decision or later capture authority.
+
+If a session fails after admission, the same envelope has `status: "refused"`
+or, when the remote session may survive, `status: "indeterminate"`.
+Both have empty `receipts`, null receipt/completion digests, and exit code 1.
+Known attempt, credential, pending-request and omission facts remain visible.
+Unobserved transport or accounting is null, never a fabricated set of zero
+measurements. Even an acknowledged TEARDOWN cannot release a receipt after a
+late deadline, cancellation or runtime-finalization failure. Invalid scope or
+approval still returns the existing preflight diagnostic and exit code 2.
 
 ## Credentials and failure behavior
 
@@ -82,11 +153,14 @@ lease and Digest implementation. The file format and protections are those of
 stable identity and continuing revalidation. Credentials and OS cnonce entropy are
 accessed only after exact approval. Replacing or modifying the credential file
 revokes the operation at the next authority checkpoint. The lease is checked again
-before releasing a successful result. The manifest pins the realm and any explicit
+before releasing a successful result. The network grant and original deadline
+are rechecked after credential metadata work, so a stale admission cannot cover
+a later socket effect. The manifest pins the realm and any explicit
 legacy MD5/no-qop opt-in; there is no Basic fallback or automatic downgrade.
 
-Failures after probe admission use
+With default receipt output, failures after probe admission use
 [`fss.site_probe_diagnostic.v1`](../schemas/site_probe_diagnostic.v1.json).
+Session output uses the richer failure envelope described above.
 Diagnostics contain static error identities and explicit facts about connection
 and credential access attempts, remote-session uncertainty and acknowledged close.
 They contain no peer, URI, credential path, password, session token or wire payload.

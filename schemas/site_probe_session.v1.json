@@ -1,0 +1,581 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.dev/schemas/site_probe_session.v1.json",
+  "title": "FSS native site probe session evidence",
+  "description": "Optional approved live probe output. Successful output is released only after acknowledged native TEARDOWN and request finalization. A canonical completion digest binds receipt claims, exact approval, transport and omission facts; it is not a signature, authenticated camera identity, freshness proof, source-custody root or capture grant. Failures preserve possible remote session state and emit no receipt. Private route metadata appears only inside successful receipts.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "status",
+    "approval",
+    "site_id",
+    "source_id",
+    "source_generation",
+    "codec",
+    "requested_minimum_pictures",
+    "measurement_basis",
+    "cutoff_policy",
+    "receipt_digest",
+    "completion_digest",
+    "receipts",
+    "error_id",
+    "exit_id",
+    "exit_code",
+    "connection_attempted",
+    "credential_access_attempted",
+    "credentials_loaded",
+    "teardown_acknowledged",
+    "remote_session_may_exist",
+    "pending_cseq",
+    "request_sent_bytes",
+    "unsent_request_bytes",
+    "last_observed_ns",
+    "transport",
+    "accounting",
+    "runtime_allowance",
+    "receipt_issued",
+    "source_retained",
+    "raw_media_returned",
+    "pixels_decoded",
+    "source_freshness_verified",
+    "source_origin_authenticated",
+    "rights_verdict_verified",
+    "capture_authorized",
+    "retry_automatically",
+    "reconciliation"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.site_probe_session.v1"
+    },
+    "status": {
+      "enum": [
+        "measured",
+        "refused",
+        "indeterminate"
+      ]
+    },
+    "approval": {
+      "$ref": "#/$defs/digest"
+    },
+    "site_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "source_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "source_generation": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "codec": {
+      "enum": [
+        "avc",
+        "hevc"
+      ]
+    },
+    "requested_minimum_pictures": {
+      "type": "integer",
+      "minimum": 3,
+      "maximum": 64
+    },
+    "measurement_basis": {
+      "const": "native_rtsp_picture_syntax"
+    },
+    "cutoff_policy": {
+      "const": "minimum_confirmed_prefix_with_explicit_tail_omission"
+    },
+    "receipt_digest": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/digest"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "completion_digest": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/digest"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "receipts": {
+      "type": "array",
+      "maxItems": 1,
+      "items": {
+        "allOf": [
+          {
+            "$ref": "site_probe_receipt.v1.json"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "codec": {
+                "enum": [
+                  "avc",
+                  "hevc"
+                ]
+              },
+              "observed_frames": {
+                "type": "integer",
+                "minimum": 3,
+                "maximum": 64
+              }
+            }
+          }
+        ]
+      }
+    },
+    "error_id": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/error"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "exit_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "exit_code": {
+      "enum": [
+        0,
+        1
+      ]
+    },
+    "connection_attempted": {
+      "type": "boolean"
+    },
+    "credential_access_attempted": {
+      "type": "boolean"
+    },
+    "credentials_loaded": {
+      "type": "boolean"
+    },
+    "teardown_acknowledged": {
+      "type": "boolean"
+    },
+    "remote_session_may_exist": {
+      "type": "boolean"
+    },
+    "pending_cseq": {
+      "oneOf": [
+        {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "request_sent_bytes": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 16384
+    },
+    "unsent_request_bytes": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 32768
+    },
+    "last_observed_ns": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 60000000000,
+      "description": "Last admitted elapsed owner clock in nanoseconds. This is not camera capture time, clock synchronization, or total runtime-retirement duration."
+    },
+    "transport": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/transport"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "accounting": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/accounting"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "runtime_allowance": {
+      "$ref": "#/$defs/runtime_allowance"
+    },
+    "receipt_issued": {
+      "type": "boolean"
+    },
+    "source_retained": {
+      "const": false
+    },
+    "raw_media_returned": {
+      "const": false
+    },
+    "pixels_decoded": {
+      "const": false
+    },
+    "source_freshness_verified": {
+      "const": false
+    },
+    "source_origin_authenticated": {
+      "const": false
+    },
+    "rights_verdict_verified": {
+      "const": false
+    },
+    "capture_authorized": {
+      "const": false
+    },
+    "retry_automatically": {
+      "const": false
+    },
+    "reconciliation": {
+      "oneOf": [
+        {
+          "const": "Remote session closure is unconfirmed. Local socket retirement is not a TEARDOWN acknowledgement; no reconnect was attempted."
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "measured"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "receipts": {
+            "minItems": 1,
+            "maxItems": 1
+          },
+          "receipt_digest": {
+            "$ref": "#/$defs/digest"
+          },
+          "completion_digest": {
+            "$ref": "#/$defs/digest"
+          },
+          "error_id": {
+            "type": "null"
+          },
+          "exit_code": {
+            "const": 0
+          },
+          "receipt_issued": {
+            "const": true
+          },
+          "connection_attempted": {
+            "const": true
+          },
+          "teardown_acknowledged": {
+            "const": true
+          },
+          "remote_session_may_exist": {
+            "const": false
+          },
+          "pending_cseq": {
+            "type": "null"
+          },
+          "request_sent_bytes": {
+            "const": 0
+          },
+          "unsent_request_bytes": {
+            "const": 0
+          },
+          "transport": {
+            "$ref": "#/$defs/transport"
+          },
+          "accounting": {
+            "$ref": "#/$defs/accounting"
+          },
+          "reconciliation": {
+            "type": "null"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "receipts": {
+            "maxItems": 0
+          },
+          "receipt_digest": {
+            "type": "null"
+          },
+          "completion_digest": {
+            "type": "null"
+          },
+          "error_id": {
+            "$ref": "#/$defs/error"
+          },
+          "exit_code": {
+            "const": 1
+          },
+          "receipt_issued": {
+            "const": false
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "indeterminate"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "remote_session_may_exist": {
+            "const": true
+          },
+          "connection_attempted": {
+            "const": true
+          },
+          "teardown_acknowledged": {
+            "const": false
+          },
+          "reconciliation": {
+            "const": "Remote session closure is unconfirmed. Local socket retirement is not a TEARDOWN acknowledgement; no reconnect was attempted."
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "remote_session_may_exist": {
+            "const": false
+          },
+          "reconciliation": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "credentials_loaded": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "credential_access_attempted": {
+            "const": true
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "not": {
+        "const": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    },
+    "error": {
+      "type": "string",
+      "pattern": "^ERR-[A-Z0-9-]+$",
+      "maxLength": 128
+    },
+    "transport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "received_bytes",
+        "sent_bytes",
+        "read_calls",
+        "write_calls",
+        "last_sent_cseq",
+        "peer_eof"
+      ],
+      "properties": {
+        "received_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 8650752
+        },
+        "sent_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65536
+        },
+        "read_calls": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65536
+        },
+        "write_calls": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65536
+        },
+        "last_sent_cseq": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 4294967295
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "peer_eof": {
+          "type": "boolean"
+        }
+      }
+    },
+    "accounting": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "rtp_packets",
+        "rtp_bytes",
+        "unverified_nal_bytes_excluded",
+        "unfinished_fragment_bytes_excluded",
+        "rtcp_frames_excluded",
+        "rtcp_bytes_excluded",
+        "closing_frames_excluded",
+        "closing_bytes_excluded",
+        "control_responses",
+        "discarded_wire_bytes"
+      ],
+      "properties": {
+        "rtp_packets": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4096
+        },
+        "rtp_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 8388608
+        },
+        "unverified_nal_bytes_excluded": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unfinished_fragment_bytes_excluded": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "rtcp_frames_excluded": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "rtcp_bytes_excluded": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 8650752
+        },
+        "closing_frames_excluded": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "closing_bytes_excluded": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 8650752
+        },
+        "control_responses": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65536
+        },
+        "discarded_wire_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 8650752
+        }
+      },
+      "description": "Original wire bytes and classified RTP/RTCP/closing payload counts are distinct from reconstructed tail bytes. Tail counts overlap originals and assert no omitted-frame or decoded-pixel count."
+    },
+    "runtime_allowance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "latencyMs",
+        "tokens",
+        "bytes",
+        "modelCalls",
+        "cpuMillis",
+        "acceleratorMillis",
+        "energyMilliJoules",
+        "networkBytes",
+        "storageOperations",
+        "privacyExposure",
+        "operatorAttentionSeconds"
+      ],
+      "properties": {
+        "latencyMs": {
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 60000
+        },
+        "tokens": {
+          "const": 0
+        },
+        "bytes": {
+          "const": 67108864
+        },
+        "modelCalls": {
+          "const": 0
+        },
+        "cpuMillis": {
+          "const": 0
+        },
+        "acceleratorMillis": {
+          "const": 0
+        },
+        "energyMilliJoules": {
+          "const": 0
+        },
+        "networkBytes": {
+          "const": 8716288
+        },
+        "storageOperations": {
+          "const": 4194304
+        },
+        "privacyExposure": {
+          "const": 0
+        },
+        "operatorAttentionSeconds": {
+          "const": 0
+        }
+      }
+    }
+  }
+}

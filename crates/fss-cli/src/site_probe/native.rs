@@ -6,15 +6,14 @@ use std::cell::Cell;
 use fss_core::RuntimeGrant;
 use fss_reference::rtsp::authentication::DigestPolicy;
 use fss_reference::rtsp::tcp::{
-    SocketReadiness, TcpAuthority, TcpBinding, TcpDenial, TcpOperation,
+    SocketReadiness, TcpAuthority, TcpBinding, TcpDenial, TcpOperation, TcpTotals,
 };
 use fss_reference::site::live_probe::{
-    LiveSiteProbe, LiveSiteProbeConfig, ProbeDigestConfig, ProbeStep,
+    LiveSiteProbe, LiveSiteProbeConfig, ProbeAccounting, ProbeDigestConfig, ProbeRetirement,
+    ProbeStep,
 };
 
-use super::plan::{
-    MAX_IO_CALLS, MAX_RECEIVED_BYTES, MAX_SENT_BYTES, MAX_STEPS, ProbePlan, receipt_json,
-};
+use super::plan::{MAX_STEPS, ProbeOutput, ProbePlan, WAIT_QUANTUM_NS, receipt_json};
 use crate::error::ExitIdentity;
 use crate::json_output::{array, object, string};
 
@@ -36,12 +35,37 @@ mod runtime;
 
 use authentication::{CredentialLease, Entropy, SecretError};
 
+// The approval must name the limits of the actual included credential owner.
+const _: () = assert!(authentication::MAX_CREDENTIAL_BYTES == super::plan::MAX_CREDENTIAL_BYTES);
+const _: () = assert!(authentication::MAX_SECRET_IO_CALLS == super::plan::MAX_SECRET_IO_CALLS);
+const _: () = assert!(runtime::WAIT_QUANTUM_NS == WAIT_QUANTUM_NS);
+
 #[derive(Clone, Copy, Default)]
 pub(super) struct Facts {
-    connection_attempted: bool,
-    credential_access_attempted: bool,
-    remote_session_may_exist: bool,
-    teardown_acknowledged: bool,
+    pub(super) connection_attempted: bool,
+    pub(super) credential_access_attempted: bool,
+    pub(super) credentials_loaded: bool,
+    pub(super) remote_session_may_exist: bool,
+    pub(super) teardown_acknowledged: bool,
+    pub(super) pending_cseq: Option<u32>,
+    pub(super) totals: Option<TcpTotals>,
+    pub(super) accounting: Option<ProbeAccounting>,
+    pub(super) request_sent_bytes: usize,
+    pub(super) unsent_request_bytes: usize,
+    /// Last admitted owner elapsed time, not the later runtime-retirement duration.
+    pub(super) last_observed_ns: u64,
+}
+
+impl Facts {
+    fn retired(&mut self, retirement: &ProbeRetirement) {
+        self.remote_session_may_exist = retirement.close.remote_session_may_exist;
+        self.teardown_acknowledged = retirement.teardown_acknowledged;
+        self.pending_cseq = retirement.close.pending_cseq;
+        self.totals = Some(retirement.totals);
+        self.accounting = Some(retirement.accounting);
+        self.request_sent_bytes = retirement.request_sent_bytes;
+        self.unsent_request_bytes = retirement.unsent_request_bytes;
+    }
 }
 
 pub(super) fn refusal(code: &str, facts: Facts, exit: ExitIdentity) -> (String, ExitIdentity) {
@@ -106,6 +130,15 @@ fn secret_check(scope: &runtime::Scope<'_, '_>) -> Result<(), SecretError> {
         })
 }
 
+fn network_denial(code: &'static str) -> TcpDenial {
+    match code {
+        "ERR-ONVIF-DEADLINE-001" => TcpDenial::Deadline,
+        "ERR-ONVIF-CANCELLED-001" => TcpDenial::Cancelled,
+        "ERR-ONVIF-BUDGET-001" => TcpDenial::Budget,
+        _ => TcpDenial::Unauthorized,
+    }
+}
+
 struct Owner<'owner, 'scope, 'task> {
     scope: &'owner runtime::Scope<'scope, 'task>,
     binding: &'owner TcpBinding,
@@ -123,15 +156,12 @@ impl TcpAuthority for Owner<'_, '_, '_> {
         if binding != self.binding || deadline_ns != self.deadline_ns {
             return Err(TcpDenial::Unauthorized);
         }
-        let observed =
+        let admit = || {
             self.scope
                 .admit(RuntimeGrant::AdapterNet, false)
-                .map_err(|code| match code {
-                    "ERR-ONVIF-DEADLINE-001" => TcpDenial::Deadline,
-                    "ERR-ONVIF-CANCELLED-001" => TcpDenial::Cancelled,
-                    "ERR-ONVIF-BUDGET-001" => TcpDenial::Budget,
-                    _ => TcpDenial::Unauthorized,
-                })?;
+                .map_err(network_denial)
+        };
+        let observed = admit()?;
         if now_ns > observed || observed >= deadline_ns {
             return Err(TcpDenial::Deadline);
         }
@@ -140,12 +170,186 @@ impl TcpAuthority for Owner<'_, '_, '_> {
                 .revalidate(&|| secret_check(self.scope))
                 .map_err(|error| match error {
                     SecretError::Deadline => TcpDenial::Deadline,
-                    SecretError::Revoked => TcpDenial::Revoked,
+                    SecretError::Revoked | SecretError::Credentials => TcpDenial::Revoked,
                     _ => TcpDenial::Unauthorized,
                 })?;
         }
+        // Credential metadata operations may block or observe changed authority.
+        // Re-admit the exact network grant and actual time after those operations,
+        // rather than allowing an earlier network checkpoint to authorize I/O.
+        let observed = admit()?;
+        if now_ns > observed || observed >= deadline_ns {
+            return Err(TcpDenial::Deadline);
+        }
         Ok(())
     }
+}
+
+fn run_native(
+    plan: &ProbePlan<'_>,
+    scope: &runtime::Scope<'_, '_>,
+    facts: &Cell<Facts>,
+) -> Result<String, &'static str> {
+    let source = &plan.manifest.sources[plan.source_index];
+    let timeout_ns = plan.options.timeout_ms * 1_000_000;
+    // Refusal before the first live admission must not imply a credential read.
+    scope.now().map_err(runtime_error)?;
+    let credentials = source
+        .authentication
+        .as_ref()
+        .map(|auth| {
+            secret_check(scope).map_err(secret_error)?;
+            let mut current = facts.get();
+            current.credential_access_attempted = true;
+            facts.set(current);
+            let credentials =
+                CredentialLease::load(&auth.credential_file, &|| secret_check(scope))
+                    .map_err(secret_error)?;
+            let mut current = facts.get();
+            current.credentials_loaded = true;
+            facts.set(current);
+            Ok::<_, &'static str>(credentials)
+        })
+        .transpose()?;
+    let mut entropy = if credentials.is_some() {
+        Some(Entropy::open(&|| secret_check(scope)).map_err(secret_error)?)
+    } else {
+        None
+    };
+    let owner = Owner {
+        scope,
+        binding: &plan.binding,
+        deadline_ns: timeout_ns,
+        credentials: credentials.as_ref(),
+    };
+    let config = LiveSiteProbeConfig {
+        source_index: plan.source_index,
+        protocol: plan.protocol.clone(),
+        binding: plan.binding.clone(),
+        transport: plan.transport,
+        codec: plan.options.codec,
+        payload_type: plan.options.payload_type,
+        deadline_ns: timeout_ns,
+        max_steps: MAX_STEPS,
+        stop_after_pictures: plan.options.observe_frames,
+        digest: source.authentication.as_ref().map(|auth| ProbeDigestConfig {
+            realm: auth.realm.clone(),
+            policy: DigestPolicy {
+                allow_legacy_md5: auth.legacy_md5,
+                allow_legacy_no_qop: auth.legacy_no_qop,
+            },
+        }),
+    };
+    let now = scope.now().map_err(runtime_error)?;
+    let mut probe = match LiveSiteProbe::connect(plan.manifest, config, now, &owner) {
+        Ok(probe) => {
+            let mut current = facts.get();
+            current.connection_attempted = true;
+            facts.set(current);
+            probe
+        }
+        Err(failure) => {
+            let mut current = facts.get();
+            current.connection_attempted = failure.connection_attempted;
+            facts.set(current);
+            return Err(failure.reason.code());
+        }
+    };
+    let result = (|| {
+        for _ in 0..MAX_STEPS {
+            scope.now().map_err(runtime_error)?;
+            let borrowed = if probe.needs_credentials() {
+                let lease = credentials.as_ref().ok_or("ERR-SITE-PROBE-CREDENTIAL-001")?;
+                lease.revalidate(&|| secret_check(scope)).map_err(secret_error)?;
+                Some(lease.credentials().map_err(secret_error)?)
+            } else {
+                None
+            };
+            let cnonce = if borrowed.is_some() {
+                entropy
+                    .as_mut()
+                    .ok_or("ERR-SITE-PROBE-ENTROPY-001")?
+                    .next(&|| secret_check(scope))
+                    .map_err(secret_error)?
+            } else {
+                [0; 16]
+            };
+            // Secret/entropy boundaries must not leave the protocol using a
+            // caller timestamp sampled before those potentially blocking reads.
+            let now = scope.now().map_err(runtime_error)?;
+            let step = probe
+                .step(
+                    SocketReadiness {
+                        readable: true,
+                        writable: true,
+                    },
+                    now,
+                    borrowed.as_ref(),
+                    cnonce,
+                    &owner,
+                )
+                .map_err(|failure| {
+                    if let Some(retirement) = &failure.retirement {
+                        let mut current = facts.get();
+                        current.retired(retirement);
+                        facts.set(current);
+                    }
+                    failure.reason.code()
+                })?;
+            match step {
+                ProbeStep::Progress => {}
+                ProbeStep::Pending { wake_at_ns, .. } => {
+                    let now = scope.now().map_err(runtime_error)?;
+                    let wake = wake_at_ns.unwrap_or(timeout_ns).min(timeout_ns);
+                    if wake > now {
+                        scope.wait(wake).map_err(runtime_error)?;
+                    }
+                }
+                ProbeStep::Complete { receipt, totals, close, accounting } => {
+                    let mut current = facts.get();
+                    current.remote_session_may_exist = close.remote_session_may_exist;
+                    current.pending_cseq = close.pending_cseq;
+                    current.teardown_acknowledged =
+                        !close.remote_session_may_exist && close.pending_cseq.is_none();
+                    current.totals = Some(totals);
+                    current.accounting = Some(accounting);
+                    current.request_sent_bytes = 0;
+                    current.unsent_request_bytes = 0;
+                    facts.set(current);
+                    if !current.teardown_acknowledged {
+                        return Err("ERR-SITE-PROBE-CLOSE-001");
+                    }
+                    if let Some(credentials) = &credentials {
+                        credentials
+                            .revalidate(&|| secret_check(scope))
+                            .map_err(secret_error)?;
+                    }
+                    receipt
+                        .validate_for(plan.manifest)
+                        .map_err(|_| "ERR-SITE-PROBE-RECEIPT-001")?;
+                    current.last_observed_ns = scope.now().map_err(runtime_error)?;
+                    facts.set(current);
+                    let output = match plan.options.output {
+                        ProbeOutput::Receipts => array(&[receipt_json(&receipt)]),
+                        ProbeOutput::Session => super::report::success(plan, &receipt, current)?,
+                    };
+                    if output.len() > crate::site_cmd::MAX_SITE_OUTPUT_BYTES {
+                        return Err("ERR-SITE-PROBE-OUTPUT-001");
+                    }
+                    return Ok(output);
+                }
+            }
+        }
+        Err("ERR-SITE-PROBE-BUDGET-001")
+    })();
+    // Preserve exact local/remote retirement facts even if an outer clock, secret
+    // or wait check refused before the native connection could return an event.
+    if let Some(retirement) = probe.cancel() {
+        let mut current = facts.get();
+        current.retired(&retirement);
+        facts.set(current);
+    }
+    result
 }
 
 pub(super) fn execute(plan: &ProbePlan<'_>) -> (String, ExitIdentity) {
@@ -157,162 +361,30 @@ pub(super) fn execute(plan: &ProbePlan<'_>) -> (String, ExitIdentity) {
             approval: plan.approval,
             principal: plan.options.principal.clone(),
             timeout_ns,
-            bytes: MAX_RECEIVED_BYTES + MAX_SENT_BYTES + 2 * 1024 * 1024,
-            network_bytes: MAX_RECEIVED_BYTES + MAX_SENT_BYTES,
-            storage_operations: MAX_IO_CALLS * 8 + 1024,
+            bytes: plan.allowance.bytes,
+            network_bytes: plan.allowance.network_bytes,
+            storage_operations: plan.allowance.storage_operations,
             network: true,
             write: false,
             secrets: source.authentication.is_some(),
         },
         |scope| {
-            let credentials = source
-                .authentication
-                .as_ref()
-                .map(|auth| {
-                    let mut current = facts.get();
-                    current.credential_access_attempted = true;
-                    facts.set(current);
-                    CredentialLease::load(&auth.credential_file, &|| secret_check(scope))
-                        .map_err(secret_error)
-                })
-                .transpose()?;
-            let mut entropy = if credentials.is_some() {
-                Some(Entropy::open(&|| secret_check(scope)).map_err(secret_error)?)
-            } else {
-                None
-            };
-            let owner = Owner {
-                scope,
-                binding: &plan.binding,
-                deadline_ns: timeout_ns,
-                credentials: credentials.as_ref(),
-            };
-            let config = LiveSiteProbeConfig {
-                source_index: plan.source_index,
-                protocol: plan.protocol.clone(),
-                binding: plan.binding.clone(),
-                transport: plan.transport,
-                codec: plan.options.codec,
-                payload_type: plan.options.payload_type,
-                deadline_ns: timeout_ns,
-                max_steps: MAX_STEPS,
-                stop_after_pictures: plan.options.observe_frames,
-                digest: source
-                    .authentication
-                    .as_ref()
-                    .map(|auth| ProbeDigestConfig {
-                        realm: auth.realm.clone(),
-                        policy: DigestPolicy {
-                            allow_legacy_md5: auth.legacy_md5,
-                            allow_legacy_no_qop: auth.legacy_no_qop,
-                        },
-                    }),
-            };
-            let now = scope.now().map_err(runtime_error)?;
-            let mut probe = match LiveSiteProbe::connect(plan.manifest, config, now, &owner) {
-                Ok(probe) => {
-                    let mut current = facts.get();
-                    current.connection_attempted = true;
-                    facts.set(current);
-                    probe
-                }
-                Err(failure) => {
-                    let mut current = facts.get();
-                    current.connection_attempted = failure.connection_attempted;
-                    facts.set(current);
-                    return Err(failure.reason.code());
-                }
-            };
-            let result = (|| {
-                for _ in 0..MAX_STEPS {
-                    let now = scope.now().map_err(runtime_error)?;
-                    let borrowed = if probe.needs_credentials() {
-                        credentials
-                            .as_ref()
-                            .map(CredentialLease::credentials)
-                            .transpose()
-                            .map_err(secret_error)?
-                    } else {
-                        None
-                    };
-                    let cnonce = if borrowed.is_some() {
-                        entropy
-                            .as_mut()
-                            .ok_or("ERR-SITE-PROBE-ENTROPY-001")?
-                            .next(&|| secret_check(scope))
-                            .map_err(secret_error)?
-                    } else {
-                        [0; 16]
-                    };
-                    let step = probe
-                        .step(
-                            SocketReadiness {
-                                readable: true,
-                                writable: true,
-                            },
-                            now,
-                            borrowed.as_ref(),
-                            cnonce,
-                            &owner,
-                        )
-                        .map_err(|failure| {
-                            if let Some(retirement) = &failure.retirement {
-                                let mut current = facts.get();
-                                current.remote_session_may_exist =
-                                    retirement.close.remote_session_may_exist;
-                                current.teardown_acknowledged = retirement.teardown_acknowledged;
-                                facts.set(current);
-                            }
-                            failure.reason.code()
-                        })?;
-                    match step {
-                        ProbeStep::Progress => {}
-                        ProbeStep::Pending { wake_at_ns, .. } => {
-                            let now = scope.now().map_err(runtime_error)?;
-                            let wake = wake_at_ns.unwrap_or(timeout_ns).min(timeout_ns);
-                            if wake > now {
-                                scope.wait(wake).map_err(runtime_error)?;
-                            }
-                        }
-                        ProbeStep::Complete { receipt, close, .. } => {
-                            let mut current = facts.get();
-                            current.remote_session_may_exist = close.remote_session_may_exist;
-                            current.teardown_acknowledged =
-                                !close.remote_session_may_exist && close.pending_cseq.is_none();
-                            facts.set(current);
-                            if !current.teardown_acknowledged {
-                                return Err("ERR-SITE-PROBE-CLOSE-001");
-                            }
-                            if let Some(credentials) = &credentials {
-                                credentials
-                                    .revalidate(&|| secret_check(scope))
-                                    .map_err(secret_error)?;
-                            }
-                            receipt
-                                .validate_for(plan.manifest)
-                                .map_err(|_| "ERR-SITE-PROBE-RECEIPT-001")?;
-                            let output = array(&[receipt_json(&receipt)]);
-                            if output.len() > crate::site_cmd::MAX_SITE_OUTPUT_BYTES {
-                                return Err("ERR-SITE-PROBE-OUTPUT-001");
-                            }
-                            return Ok(output);
-                        }
-                    }
-                }
-                Err("ERR-SITE-PROBE-BUDGET-001")
-            })();
-            if let Some(retirement) = probe.cancel() {
-                let mut current = facts.get();
-                current.remote_session_may_exist = retirement.close.remote_session_may_exist;
-                current.teardown_acknowledged = retirement.teardown_acknowledged;
-                facts.set(current);
-            }
+            let result = run_native(plan, scope, &facts);
+            let mut current = facts.get();
+            current.last_observed_ns = scope.observed_ns();
+            facts.set(current);
             result
         },
     )
     .map_err(runtime_error);
     match result {
+        // The shared owner rechecks cancellation, the actual final deadline, task
+        // retirement and region closure before it releases either output format.
         Ok(output) => (output, ExitIdentity::SUCCESS),
+        Err(code) if plan.options.output == ProbeOutput::Session => (
+            super::report::refusal(plan, code, facts.get(), ExitIdentity::RUNTIME_FAILURE),
+            ExitIdentity::RUNTIME_FAILURE,
+        ),
         Err(code) => refusal(code, facts.get(), ExitIdentity::RUNTIME_FAILURE),
     }
 }
