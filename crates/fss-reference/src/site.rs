@@ -18,6 +18,9 @@ pub mod probe_observation;
 /// Session-owned native RTSP probing with explicit authority, bounds and remote-close evidence.
 pub mod live_probe;
 
+/// Pure zone containment and dwell-interval reduction (VIT-012, smallest slice).
+pub mod zone_dwell;
+
 #[cfg(test)]
 mod tests;
 
