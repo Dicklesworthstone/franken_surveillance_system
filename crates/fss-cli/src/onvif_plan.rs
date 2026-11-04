@@ -120,6 +120,20 @@ impl PreparedOnvifSelection {
                 .is_ok_and(|path| path == presentation)
     }
 
+    /// Borrow the exact historical endpoint for a separately approved native probe.
+    /// The private URI remains within the caller's protected-input scope; this
+    /// accessor grants no network authority or proof of the ONVIF HTTP origin.
+    pub(crate) fn with_route<T>(
+        &self,
+        use_route: impl FnOnce(SocketAddr, &str, &str) -> T,
+    ) -> Result<T, &'static str> {
+        Ok(use_route(
+            self.handoff.peer,
+            &self.handoff.authority,
+            self.handoff.presentation()?,
+        ))
+    }
+
     /// Borrow private route-bearing arguments only for the existing native owner.
     pub fn with_capture_arguments<T>(&self, prepare: impl FnOnce(&[OsString]) -> T) -> T {
         prepare(&self.arguments)

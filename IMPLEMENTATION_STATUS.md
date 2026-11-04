@@ -5,6 +5,54 @@
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
 
+## Protected ONVIF probe-to-plan command workflow (2026-11-04)
+
+`fss site probe --onvif-bindings FILE --receipt-file ABSOLUTE_NEW_FILE` now
+connects a protected historical ONVIF handoff to the existing approved native
+probe and private receipt writer. Stable Media1 AVC and indefinite Media2
+AVC/HEVC are admitted only when exact handoff bytes/file identity, historical
+onboarding/profile, explicit codec and independently pinned RTSP scope agree.
+The source keeps its original ONVIF HTTP endpoint and complete manifest identity.
+The private receipt array can be passed directly to `fss site plan` with matching
+bindings, including explicit source selection in a larger unchanged manifest.
+
+Preview checks only the selected protected handoff and absent output destination;
+it opens no network or credential lease and writes no output. The approval binds
+the original source ordinal, stable profile stream identity, complete bindings,
+actual file fingerprint, RTSP route and destination-parent identity. Capabilities
+and private control paths remain digest-only in stdout. Mixed binding variants,
+session output, JPEG, unsafe private inputs, path overlap, stale handoff/profile
+selection and known actual-route inventory conflicts refuse. Handoff ownership
+is revalidated at native boundaries and again before the create-only `0600`
+writer. Acknowledged TEARDOWN and finalized native work precede publication;
+committed output remains explicitly reported after late writer retirement errors.
+The result distinguishes ONVIF HTTP contact from RTSP contact and does not claim
+authenticated HTTP origin, decoded pixels, retained footage or capture authority.
+
+**Scoped validation:** 104 focused production-source CLI tests pass with compiler
+warnings denied, including all 16 new ONVIF protected-owner/command-guard tests,
+the actual argument parser, existing handoff/private-file and report contracts,
+and byte-identical direct/UniFi approvals and previews against initial main
+`738838c` across 48 direct and eight UniFi cases. The reconciled native closure
+separately passes 211 tests, including real AVC/HEVC/Digest loopback sessions.
+Both affected schemas pass the repository and Draft 2020-12 meta-schema checks.
+All 76 instance checks pass: five actual emitted previews, 34 rejected preview
+mutations, six constructed result-state fixtures and 31 rejected result mutations.
+Result-state fixtures verify the schema contract, not runtime publication.
+The broad schema-constitution audit has the same 49 existing findings as the
+starting commit; this change adds none. Changed Rust passes pinned formatting.
+All changed paths pass the staged integrity-manifest gate; the full worktree
+audit still reports unrelated existing catalog drift.
+
+The focused harnesses use actual source owners without protocol or runtime
+substitutes. Full CLI subprocesses, outer Asupersync execution/publication
+wrappers and hardware remain unverified here: the complete build was stopped
+under sustained shared 8 GiB memory pressure before FSS diagnostics. No dependency,
+lockfile or qualification gate was weakened. This advances VIT-003's ONVIF
+probe-to-plan workflow; automatic HTTP onboarding, all-source scheduling,
+continuous recording, TLS and signed-rights verification remain separate work.
+See [native site probing](docs/SITE_PROBING.md#probe-an-onvif-source).
+
 ## ONVIF probe admission across the original site inventory (2026-11-04)
 
 Native ONVIF probe selection now checks its independently bound RTSP route

@@ -417,10 +417,12 @@ fss site plan --manifest /etc/fss/site.json \
   --epoch 1 --stop-after-pictures 250 --json
 ```
 
-The current site probe and recorded-probe producers do not yet acquire ONVIF
-receipts. This command consumes an independently supplied historical receipt
-inventory and checks its consistency; it does not claim to authenticate those
-observations or the HTTP origin of the handoff. The handoff format does not
+The separately approved [`site probe --onvif-bindings`](SITE_PROBING.md#probe-an-onvif-source)
+produces a native AVC/HEVC receipt from the exact protected handoff's independently
+pinned RTSP endpoint and saves it to a private file for this planner. The recorded
+`probe-file` producer remains direct RTSP/NVR only. Planning checks the supplied
+receipt inventory's consistency; it does not claim to authenticate the HTTP origin
+of the handoff. The handoff format does not
 record the HTTP device path or current site generation. The report therefore
 states `onvif_selection_provenance: "operator-bound-historical-consistency"` and
 `onvif_http_origin_verified: false`. Matching digests do not establish current
@@ -524,7 +526,7 @@ final-component symlink and avoid blocking on a replacement FIFO. These are
 control-file admission checks, not cryptographic provenance or a trusted parent
 directory guarantee.
 
-No command infers success for an unsupported source. Native ONVIF site probing,
+No command infers success for an unsupported source. Automatic ONVIF HTTP onboarding,
 automatic UniFi export acquisition, automatic all-source probing, TLS/RTSPS, signed
 rights-lease verification, site execution, retention rings and agent footage
 queries remain outside this implementation. Existing standalone native tools

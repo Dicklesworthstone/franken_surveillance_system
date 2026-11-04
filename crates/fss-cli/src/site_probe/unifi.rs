@@ -5,18 +5,17 @@
 //! private-file owner checks every native file boundary, while the probe retains
 //! the original manifest and uses the ordinary native RTSP observation owner.
 
-use std::cell::Cell;
 use std::path::{Path, PathBuf};
 
 use fss_core::{CanonicalEncoder, ContentDigest};
 use fss_reference::site::probe_route::ProbeRoute;
-use fss_reference::site::{ProbeCodec, SiteManifest, SiteProbeReceipt, SourceKind};
+use fss_reference::site::{ProbeCodec, SiteManifest, SourceKind};
 use fss_reference::unifi::ProtectSource;
 
 use super::native::{self, Facts};
-use super::plan::{ProbeOutput, ProbePlan, SiteProbeOptions, receipt_json};
+use super::plan::{ProbeOutput, ProbePlan, SiteProbeOptions};
 use crate::error::ExitIdentity;
-use crate::json_output::{array, object, string};
+use crate::json_output::{object, string};
 use crate::site_cmd::InputAuthority;
 use crate::site_unifi::{MAX_SITE_UNIFI_BINDINGS_BYTES, probe_source_spec};
 use crate::unifi_plan::UnifiSourceSpec;
@@ -26,14 +25,14 @@ use crate::unifi_plan::UnifiSourceSpec;
 pub(super) use crate::site_unifi::private_file;
 #[allow(dead_code, reason = "Shared bounded request and durable output owner")]
 #[path = "../bin/fss-onvif/runtime.rs"]
-mod runtime;
+pub(super) mod runtime;
 
 const INPUT: &str = "ERR-SITE-UNIFI-PROBE-INPUT-001";
-const OUTPUT: &str = "ERR-SITE-UNIFI-PROBE-OUTPUT-001";
+pub(super) const OUTPUT: &str = "ERR-SITE-UNIFI-PROBE-OUTPUT-001";
 const SELECTION: &str = "ERR-SITE-UNIFI-PROBE-SELECTION-001";
-const FILE_TIMEOUT_NS: u64 = 5_000_000_000;
-const FILE_WORKING_BYTES: u64 = 32 * 1024 * 1024;
-const FILE_OPERATIONS: u64 = 16_384;
+pub(super) const FILE_TIMEOUT_NS: u64 = 5_000_000_000;
+pub(super) const FILE_WORKING_BYTES: u64 = 32 * 1024 * 1024;
+pub(super) const FILE_OPERATIONS: u64 = 16_384;
 
 /// Private selection coordinates are immutable after the bounded preview read.
 /// Diagnostic formatting is deliberately absent: export paths and routes are private.
@@ -44,8 +43,8 @@ pub(super) struct PrivateProbe {
     pub(super) view: &'static str,
     file_identity: ContentDigest,
     bindings_digest: ContentDigest,
-    receipt_file: PathBuf,
-    receipt_parent_identity: ContentDigest,
+    pub(super) receipt_file: PathBuf,
+    pub(super) receipt_parent_identity: ContentDigest,
 }
 
 impl PrivateProbe {
@@ -115,7 +114,7 @@ fn overlaps(left: &Path, right: &Path) -> bool {
     left.starts_with(right) || right.starts_with(left)
 }
 
-fn request(approval: ContentDigest, principal: &str, write: bool) -> runtime::Request {
+pub(super) fn request(approval: ContentDigest, principal: &str, write: bool) -> runtime::Request {
     runtime::Request {
         approval,
         principal: principal.to_owned(),
@@ -217,136 +216,4 @@ pub(super) fn execute(
     result.unwrap_or_else(|code| {
         native::refusal(code, Facts::default(), ExitIdentity::MALFORMED_VALUE)
     })
-}
-
-/// The native request has finalized before publication begins. Only a fully
-/// acknowledged observation is saved, and the durable outcome survives a late
-/// writer cancellation or request-retirement failure.
-pub(super) fn save_receipt(
-    plan: &ProbePlan<'_>,
-    receipt: &SiteProbeReceipt,
-    facts: Facts,
-) -> (String, ExitIdentity) {
-    let Some(private) = &plan.private else {
-        return native::refusal(OUTPUT, facts, ExitIdentity::RUNTIME_FAILURE);
-    };
-    // Reuse the session owner's complete accounting and close-evidence checks.
-    // Its private rendering is never emitted for a UniFi source.
-    if super::report::success(plan, receipt, facts).is_err()
-        || receipt.presentation != plan.route.presentation()
-        || receipt.control_root != plan.route.control_root()
-    {
-        return native::refusal(OUTPUT, facts, ExitIdentity::RUNTIME_FAILURE);
-    }
-    let receipt_digest = match receipt.digest() {
-        Ok(digest) => digest,
-        Err(_) => return native::refusal(OUTPUT, facts, ExitIdentity::RUNTIME_FAILURE),
-    };
-    let bytes = array(&[receipt_json(receipt)]).into_bytes();
-    if bytes.is_empty() || bytes.len() > private_file::MAX_FILE_BYTES {
-        return native::refusal(OUTPUT, facts, ExitIdentity::RUNTIME_FAILURE);
-    }
-    let file_digest = ContentDigest::sha256(&bytes);
-    let may_exist = Cell::new(false);
-    let saved = runtime::run_committing(
-        request(plan.approval, &plan.options.principal, true),
-        |scope| {
-            let input = private_file::InputLease::open(&private.spec.source, &|| scope.input())?;
-            private.verify(&input)?;
-            let checkpoint = || {
-                scope.output()?;
-                input.revalidate(&|| scope.input())
-            };
-            let output = private_file::Output::prepare(&private.receipt_file, &checkpoint)?;
-            if ContentDigest::sha256(&output.fingerprint()) != private.receipt_parent_identity {
-                return Err(OUTPUT);
-            }
-            may_exist.set(true);
-            output.write(&bytes, &checkpoint)?;
-            Ok(runtime::Committed::new(()))
-        },
-    );
-    let (receipt_saved, error, post_commit, finalization) = match saved {
-        Ok(completed) => (
-            true,
-            None,
-            completed.post_commit_error,
-            completed.finalization_error,
-        ),
-        Err(code) => (false, Some(code), None, None),
-    };
-    let exit = if receipt_saved && post_commit.is_none() && finalization.is_none() {
-        ExitIdentity::SUCCESS
-    } else {
-        ExitIdentity::RUNTIME_FAILURE
-    };
-    let optional = |value: Option<&str>| value.map_or_else(|| "null".to_owned(), string);
-    let output = object(&[
-        ("schema", string("fss.site_unifi_probe_result.v1")),
-        (
-            "status",
-            string(if exit == ExitIdentity::SUCCESS {
-                "ok"
-            } else {
-                "refused"
-            }),
-        ),
-        ("approval", string(&plan.approval.to_text())),
-        (
-            "manifest_digest",
-            string(&receipt.manifest_digest.to_text()),
-        ),
-        ("site_id", string(&plan.manifest.site_id)),
-        ("source_id", string(&plan.options.source)),
-        ("camera_ref", string(&private.camera_ref.to_text())),
-        ("view", string(private.view)),
-        ("quality", string(private.spec.quality.as_str())),
-        (
-            "receipt_file",
-            string(private.receipt_file.to_str().unwrap_or("")),
-        ),
-        (
-            "receipt_digest",
-            if receipt_saved {
-                string(&receipt_digest.to_text())
-            } else {
-                "null".to_owned()
-            },
-        ),
-        (
-            "receipt_file_digest",
-            if receipt_saved {
-                string(&file_digest.to_text())
-            } else {
-                "null".to_owned()
-            },
-        ),
-        ("receipt_saved", receipt_saved.to_string()),
-        ("receipt_file_may_exist", may_exist.get().to_string()),
-        (
-            "connection_attempted",
-            facts.connection_attempted.to_string(),
-        ),
-        (
-            "credential_access_attempted",
-            facts.credential_access_attempted.to_string(),
-        ),
-        (
-            "teardown_acknowledged",
-            facts.teardown_acknowledged.to_string(),
-        ),
-        (
-            "remote_session_may_exist",
-            facts.remote_session_may_exist.to_string(),
-        ),
-        ("source_retained", "false".to_owned()),
-        ("console_contacted", "false".to_owned()),
-        ("retry_automatically", "false".to_owned()),
-        ("error_id", optional(error)),
-        ("post_commit_error", optional(post_commit)),
-        ("finalization_error", optional(finalization)),
-        ("exit_id", string(exit.identifier)),
-        ("exit_code", exit.code.to_string()),
-    ]);
-    (output, exit)
 }

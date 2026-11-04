@@ -1,0 +1,243 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.dev/schemas/site_onvif_probe_result.v1.json",
+  "title": "FSS protected ONVIF probe receipt publication result",
+  "description": "Safe stdout metadata for a completed ONVIF probe and its separate bounded private receipt publication. Capability-bearing route fields appear only in the create-only mode-0600 receipt array. A late writer runtime failure can coexist with receipt_saved=true; an unsuccessful write can leave a private partial file. No automatic retry or overwrite occurs. The historical handoff and independent RTSP endpoint binding do not authenticate the ONVIF management origin. No ONVIF HTTP request is performed.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "status",
+    "approval",
+    "manifest_digest",
+    "site_id",
+    "source_id",
+    "receipt_file",
+    "receipt_digest",
+    "receipt_file_digest",
+    "receipt_saved",
+    "receipt_file_may_exist",
+    "connection_attempted",
+    "credential_access_attempted",
+    "teardown_acknowledged",
+    "remote_session_may_exist",
+    "source_retained",
+    "retry_automatically",
+    "error_id",
+    "post_commit_error",
+    "finalization_error",
+    "exit_id",
+    "exit_code",
+    "onboarding_plan",
+    "profile_digest",
+    "binding_basis",
+    "onvif_http_origin_verified",
+    "onvif_http_contacted"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.site_onvif_probe_result.v1"
+    },
+    "status": {
+      "enum": [
+        "ok",
+        "refused"
+      ]
+    },
+    "approval": {
+      "$ref": "#/$defs/digest"
+    },
+    "manifest_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "site_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "source_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "receipt_file": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 4096,
+      "pattern": "^/"
+    },
+    "receipt_digest": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/digest"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "receipt_file_digest": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/digest"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "receipt_saved": {
+      "type": "boolean"
+    },
+    "receipt_file_may_exist": {
+      "type": "boolean"
+    },
+    "connection_attempted": {
+      "const": true
+    },
+    "credential_access_attempted": {
+      "type": "boolean"
+    },
+    "teardown_acknowledged": {
+      "const": true
+    },
+    "remote_session_may_exist": {
+      "const": false
+    },
+    "source_retained": {
+      "const": false
+    },
+    "retry_automatically": {
+      "const": false
+    },
+    "error_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "post_commit_error": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "finalization_error": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "exit_id": {
+      "type": "string"
+    },
+    "exit_code": {
+      "enum": [
+        0,
+        1
+      ]
+    },
+    "onboarding_plan": {
+      "$ref": "#/$defs/digest"
+    },
+    "profile_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "binding_basis": {
+      "const": "operator-bound-historical-consistency"
+    },
+    "onvif_http_origin_verified": {
+      "const": false
+    },
+    "onvif_http_contacted": {
+      "const": false
+    }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "not": {
+        "const": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "receipt_saved": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "receipt_digest": {
+            "$ref": "#/$defs/digest"
+          },
+          "receipt_file_digest": {
+            "$ref": "#/$defs/digest"
+          },
+          "receipt_file_may_exist": {
+            "const": true
+          },
+          "error_id": {
+            "type": "null"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "receipt_digest": {
+            "type": "null"
+          },
+          "receipt_file_digest": {
+            "type": "null"
+          },
+          "status": {
+            "const": "refused"
+          },
+          "exit_code": {
+            "const": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "ok"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "receipt_saved": {
+            "const": true
+          },
+          "exit_code": {
+            "const": 0
+          },
+          "error_id": {
+            "type": "null"
+          },
+          "post_commit_error": {
+            "type": "null"
+          },
+          "finalization_error": {
+            "type": "null"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "exit_code": {
+            "const": 1
+          }
+        }
+      }
+    }
+  ]
+}

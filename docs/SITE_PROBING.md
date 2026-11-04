@@ -2,11 +2,13 @@
 
 `fss site probe` obtains one bounded AVC, HEVC or JPEG observation from an explicitly
 selected RTSP camera or NVR channel, or an AVC/HEVC observation from a protected
-UniFi Protect selection. It uses the manifest's exact literal peer, authority and
-permitted RTSP control subtree. For direct RTSP/NVR sources, successful stdout is
+UniFi Protect selection or protected historical ONVIF handoff. It uses the exact
+selected literal peer, authority and permitted RTSP control subtree. An ONVIF
+source keeps its management endpoint in the original manifest and independently
+pins the RTSP endpoint in its binding. For direct RTSP/NVR sources, successful stdout is
 a one-element array of `fss.site_probe_receipt.v1` objects, ready for
 `fss site plan --probes`. Select `--output session` for the same receipt plus
-native transport and exclusion evidence. UniFi receipts go to a new private file,
+native transport and exclusion evidence. UniFi and ONVIF receipts go to a new private file,
 with a redacted result on stdout, as described below.
 
 ## Preview, review, then probe
@@ -127,6 +129,73 @@ and inspect that outcome before choosing another destination. A completed write
 followed by a late request-finalization failure retains `receipt_saved: true`
 while returning a failure exit code. The result distinguishes that committed
 file from an unsuccessful write; neither condition triggers an automatic retry.
+
+## Probe an ONVIF source
+
+Use an existing [protected ONVIF handoff and site binding](SITE_PLANNING.md#onvif-site-bindings).
+The source retains `kind: "onvif"`, its original HTTP peer, authority and
+`onvif_service_path`. The binding independently supplies the literal RTSP peer,
+exact authority and permitted control subtree, plus the expected historical
+onboarding-plan and profile digests. Stable Media1 AVC and indefinite Media2
+AVC/HEVC handoffs are supported. The explicitly selected codec must agree with
+the handoff and the subsequently observed native SDP and media syntax.
+
+On Linux, preview one source:
+
+```sh
+fss site probe --manifest /etc/fss/site.json \
+  --onvif-bindings /etc/fss/private/site-onvif-bindings.json \
+  --source source:front --codec avc --observe-frames 6 \
+  --receipt-file /etc/fss/private/front-probe.json \
+  --timeout-ms 10000 --json
+```
+
+The binding inventory may contain only the selected source or other valid ONVIF
+rows from the same manifest. Every supplied row is validated, but only the
+selected handoff is opened. Duplicate, foreign, stale or non-ONVIF rows refuse.
+`--onvif-bindings` and `--unifi-bindings` are mutually exclusive. A private
+`--receipt-file` is required; `--output session` and JPEG are refused.
+
+Preview reads the protected handoff and checks the absent receipt destination.
+It contacts neither endpoint, reads no credential and creates no file. The
+`onvif` preview section reports the handoff content and file-identity digests,
+expected onboarding/profile, binding digest and destination-parent identity.
+`presentation` and `control_root` contain only SHA-256 digests. The actual RTSP
+peer and authority are visible for review and may differ from the ONVIF HTTP
+endpoint. Known direct-route collisions and inconsistent physical-peer connection
+limits refuse before any network admission; other ONVIF media endpoints remain
+unknown until independently selected.
+
+Review the preview and repeat the same command with its exact `--approve` digest.
+Approval binds the complete unchanged manifest, original source ordinal, selected
+profile, handoff content and actual file fingerprint, independent RTSP route,
+codec, bounded observation and protected destination. Replacing a handoff with
+identical bytes still requires a new approval. The handoff lease is revalidated
+before and throughout native I/O and again before publication. The existing
+manifest credential policy applies only within the separately approved native
+RTSP request. There is no fallback to another endpoint or profile.
+
+The same file-stage limits, acknowledged TEARDOWN requirement, create-only
+`0600` writer and late-failure reporting described for UniFi apply. Successful
+stdout uses [`fss.site_onvif_probe_result.v1`](../schemas/site_onvif_probe_result.v1.json);
+the ordinary receipt array is written only to the private file. Feed that file
+directly into the existing planner, retaining the original manifest and binding:
+
+```sh
+fss site plan --manifest /etc/fss/site.json \
+  --source source:front --probes /etc/fss/private/front-probe.json \
+  --onvif-bindings /etc/fss/private/front-onvif-binding.json \
+  --archive-root /srv/fss/footage --pins-root /srv/fss/pins \
+  --epoch 1 --stop-after-pictures 250 --json
+```
+
+For selected planning, the binding file contains exactly the selected source
+rows; their original source and handoff values stay unchanged. This native probe
+observes the approved RTSP endpoint. It does not repeat ONVIF HTTP discovery or
+authenticate the historical handoff's HTTP origin. Both preview and result say
+`binding_basis: "operator-bound-historical-consistency"` and
+`onvif_http_origin_verified: false`. It grants no subsequent capture authority,
+scene-liveness assurance, signed footage rights or continuous recording claim.
 
 ## What a successful probe establishes
 

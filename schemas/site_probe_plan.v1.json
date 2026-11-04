@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://franken-surveillance-system.dev/schemas/site_probe_plan.v1.json",
   "title": "FSS separately approved native site probe plan",
-  "description": "Private operator preview for one exact manifest source and native AVC/HEVC syntax or RFC2435 JPEG whole-frame measurement. Approval binds source-specific ingress, the minimum confirmed-picture prefix and tail policy, output projection, actual native limit profile and exact runtime reservation. No network or credential access occurs during preview. The working-byte reservation is logical, not measured RSS; no capture, rights or freshness authority is granted. UniFi selections read a protected export during preview, show route digests and require a create-only private receipt destination; the private source identity and separate bounded file stages are approval-bound.",
+  "description": "Private operator preview for one exact manifest source and native AVC/HEVC syntax or RFC2435 JPEG whole-frame measurement. Approval binds source-specific ingress, the minimum confirmed-picture prefix and tail policy, output projection, actual native limit profile and exact runtime reservation. No network or credential access occurs during preview. The working-byte reservation is logical, not measured RSS; no capture, rights or freshness authority is granted. UniFi selections read a protected export during preview, show route digests and require a create-only private receipt destination; the private source identity and separate bounded file stages are approval-bound. ONVIF selections independently bind the original management source to a protected historical handoff, expected onboarding/profile and explicit RTSP endpoint; this does not authenticate the HTTP origin. ONVIF and UniFi binding variants are mutually exclusive.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -207,7 +207,8 @@
       "enum": [
         "site-native-probe:v1:one-source:rtsp-nvr:explicit-avc-hevc:exact-plaintext-route:source-specific-ingress:learn-one-ssrc:options-describe-setup-play:native-syntax-confirmed-prefix:minimum-picture-target:explicit-unverified-tail-omission:progressive-only:constant-90khz-cadence:teardown-ack-required:declared-working-reservation:no-decoded-pixels:no-source-retention:no-archive:no-rights-grant:no-retry:no-redirect",
         "site-native-probe:v1:one-source:rtsp-nvr:explicit-jpeg:exact-plaintext-route:source-specific-ingress:learn-one-ssrc:options-describe-setup-play:native-rfc2435-whole-frame-prefix:minimum-picture-target:explicit-unfinished-fragment-omission:constant-90khz-cadence:teardown-ack-required:declared-working-reservation:no-entropy-decode:no-decoded-pixels:no-source-retention:no-archive:no-rights-grant:no-retry:no-redirect",
-        "site-native-unifi-probe:v1:private-export-file-identity:exact-camera-view-quality-and-plaintext-route:no-quality-fallback:no-tls-downgrade:original-manifest-receipt:revalidate-source-at-network-boundaries:native-syntax-confirmed-prefix:teardown-ack-required:private-create-only-receipt:no-console-contact:no-decoded-pixels:no-media-retention:no-rights-grant:no-retry"
+        "site-native-unifi-probe:v1:private-export-file-identity:exact-camera-view-quality-and-plaintext-route:no-quality-fallback:no-tls-downgrade:original-manifest-receipt:revalidate-source-at-network-boundaries:native-syntax-confirmed-prefix:teardown-ack-required:private-create-only-receipt:no-console-contact:no-decoded-pixels:no-media-retention:no-rights-grant:no-retry",
+        "site-native-onvif-probe:v1:private-handoff-file-identity:exact-historical-onboarding-profile-codec-and-independent-rtsp-route:no-origin-authentication:original-manifest-receipt:revalidate-source-at-network-boundaries:native-syntax-confirmed-prefix:teardown-ack-required:private-create-only-receipt:no-onvif-http-contact:no-decoded-pixels:no-media-retention:no-rights-grant:no-retry:no-redirect"
       ]
     },
     "source_generation": {
@@ -397,6 +398,89 @@
           }
         }
       ]
+    },
+    "onvif": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "bindings_digest",
+        "source_digest",
+        "file_identity",
+        "route_projection",
+        "receipt_file",
+        "receipt_file_mode",
+        "receipt_file_create_only",
+        "file_timeout_ns",
+        "file_working_bytes",
+        "file_operations",
+        "max_receipt_bytes",
+        "receipt_parent_identity",
+        "onboarding_plan",
+        "profile_digest",
+        "binding_basis",
+        "onvif_http_origin_verified",
+        "onvif_http_contacted",
+        "private_handoff_read"
+      ],
+      "properties": {
+        "bindings_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "source_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "file_identity": {
+          "$ref": "#/$defs/digest"
+        },
+        "route_projection": {
+          "const": "sha256_digests"
+        },
+        "receipt_file": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 4096,
+          "pattern": "^/"
+        },
+        "receipt_file_mode": {
+          "const": "0600"
+        },
+        "receipt_file_create_only": {
+          "const": true
+        },
+        "file_timeout_ns": {
+          "const": 5000000000
+        },
+        "file_working_bytes": {
+          "const": 33554432
+        },
+        "file_operations": {
+          "const": 16384
+        },
+        "max_receipt_bytes": {
+          "const": 262144
+        },
+        "receipt_parent_identity": {
+          "$ref": "#/$defs/digest"
+        },
+        "onboarding_plan": {
+          "$ref": "#/$defs/digest"
+        },
+        "profile_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "binding_basis": {
+          "const": "operator-bound-historical-consistency"
+        },
+        "onvif_http_origin_verified": {
+          "const": false
+        },
+        "onvif_http_contacted": {
+          "const": false
+        },
+        "private_handoff_read": {
+          "const": true
+        }
+      }
     }
   },
   "$defs": {
@@ -541,35 +625,77 @@
         }
       },
       "else": {
-        "allOf": [
-          {
-            "if": {
-              "properties": {
-                "codec": {
-                  "const": "jpeg"
-                }
-              }
+        "if": {
+          "required": [
+            "onvif"
+          ]
+        },
+        "then": {
+          "properties": {
+            "policy": {
+              "const": "site-native-onvif-probe:v1:private-handoff-file-identity:exact-historical-onboarding-profile-codec-and-independent-rtsp-route:no-origin-authentication:original-manifest-receipt:revalidate-source-at-network-boundaries:native-syntax-confirmed-prefix:teardown-ack-required:private-create-only-receipt:no-onvif-http-contact:no-decoded-pixels:no-media-retention:no-rights-grant:no-retry:no-redirect"
             },
-            "then": {
-              "properties": {
-                "policy": {
-                  "const": "site-native-probe:v1:one-source:rtsp-nvr:explicit-jpeg:exact-plaintext-route:source-specific-ingress:learn-one-ssrc:options-describe-setup-play:native-rfc2435-whole-frame-prefix:minimum-picture-target:explicit-unfinished-fragment-omission:constant-90khz-cadence:teardown-ack-required:declared-working-reservation:no-entropy-decode:no-decoded-pixels:no-source-retention:no-archive:no-rights-grant:no-retry:no-redirect"
-                }
-              }
+            "codec": {
+              "enum": [
+                "avc",
+                "hevc"
+              ]
             },
-            "else": {
-              "properties": {
-                "policy": {
-                  "const": "site-native-probe:v1:one-source:rtsp-nvr:explicit-avc-hevc:exact-plaintext-route:source-specific-ingress:learn-one-ssrc:options-describe-setup-play:native-syntax-confirmed-prefix:minimum-picture-target:explicit-unverified-tail-omission:progressive-only:constant-90khz-cadence:teardown-ack-required:declared-working-reservation:no-decoded-pixels:no-source-retention:no-archive:no-rights-grant:no-retry:no-redirect"
-                },
-                "payload_type": {
-                  "not": {
-                    "const": 26
+            "output": {
+              "const": "receipts"
+            },
+            "presentation": {
+              "$ref": "#/$defs/digest"
+            },
+            "control_root": {
+              "$ref": "#/$defs/digest"
+            },
+            "payload_type": {
+              "not": {
+                "const": 26
+              }
+            }
+          }
+        },
+        "else": {
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "codec": {
+                    "const": "jpeg"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "policy": {
+                    "const": "site-native-probe:v1:one-source:rtsp-nvr:explicit-jpeg:exact-plaintext-route:source-specific-ingress:learn-one-ssrc:options-describe-setup-play:native-rfc2435-whole-frame-prefix:minimum-picture-target:explicit-unfinished-fragment-omission:constant-90khz-cadence:teardown-ack-required:declared-working-reservation:no-entropy-decode:no-decoded-pixels:no-source-retention:no-archive:no-rights-grant:no-retry:no-redirect"
+                  }
+                }
+              },
+              "else": {
+                "properties": {
+                  "policy": {
+                    "const": "site-native-probe:v1:one-source:rtsp-nvr:explicit-avc-hevc:exact-plaintext-route:source-specific-ingress:learn-one-ssrc:options-describe-setup-play:native-syntax-confirmed-prefix:minimum-picture-target:explicit-unverified-tail-omission:progressive-only:constant-90khz-cadence:teardown-ack-required:declared-working-reservation:no-decoded-pixels:no-source-retention:no-archive:no-rights-grant:no-retry:no-redirect"
+                  },
+                  "payload_type": {
+                    "not": {
+                      "const": 26
+                    }
                   }
                 }
               }
             }
-          }
+          ]
+        }
+      }
+    },
+    {
+      "not": {
+        "required": [
+          "unifi",
+          "onvif"
         ]
       }
     }

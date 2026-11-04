@@ -88,7 +88,9 @@ pub(super) fn success(
     receipt: &SiteProbeReceipt,
     facts: Facts,
 ) -> Result<String, &'static str> {
-    receipt.validate_for(plan.manifest).map_err(|_| ENCODING)?;
+    plan.route
+        .validate_receipt(plan.manifest, receipt)
+        .map_err(|_| ENCODING)?;
     let totals = facts.totals.ok_or(ENCODING)?;
     let measured = facts.accounting.ok_or(ENCODING)?;
     let classified_wire_bytes = measured

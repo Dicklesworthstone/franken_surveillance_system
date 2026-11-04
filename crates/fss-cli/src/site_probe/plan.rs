@@ -21,14 +21,15 @@ use fss_reference::site::probe_observation::{
     MAX_PROBE_PICTURES, MAX_PROBE_RTP_BYTES, MAX_PROBE_RTP_PACKETS,
 };
 use fss_reference::site::probe_route::ProbeRoute;
-use fss_reference::site::{ProbeCodec, SiteManifest, SiteProbeReceipt, SourceKind};
+use fss_reference::site::{ProbeCodec, SiteManifest, SiteProbeReceipt};
 
+use super::private::PrivateProbe;
 use crate::json_output::{array, object, string};
 
 /// Successful output projection. Neither form includes raw media or credential bytes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ProbeOutput {
-    /// Existing receipt array accepted directly by site planning. UniFi writes
+    /// Existing receipt array accepted directly by site planning. Protected sources write
     /// this array to a protected file and emits safe publication metadata instead.
     Receipts,
     /// Receipt array plus explicit native session accounting and omissions.
@@ -51,7 +52,9 @@ impl ProbeOutput {
 pub struct SiteProbeOptions {
     /// Existing site bindings for exactly selected private UniFi exports.
     pub unifi_bindings: Option<std::path::PathBuf>,
-    /// Create-only private receipt destination, required for UniFi stream capabilities.
+    /// Exact protected historical ONVIF handoff bindings; exclusive with UniFi bindings.
+    pub onvif_bindings: Option<std::path::PathBuf>,
+    /// Create-only private receipt destination, required for protected stream capabilities.
     pub receipt_file: Option<std::path::PathBuf>,
     /// Exact source identifier from the manifest.
     pub source: String,
@@ -93,6 +96,11 @@ exact-camera-view-quality-and-plaintext-route:no-quality-fallback:no-tls-downgra
 original-manifest-receipt:revalidate-source-at-network-boundaries:\
 native-syntax-confirmed-prefix:teardown-ack-required:private-create-only-receipt:\
 no-console-contact:no-decoded-pixels:no-media-retention:no-rights-grant:no-retry";
+const ONVIF_POLICY: &str = "site-native-onvif-probe:v1:private-handoff-file-identity:\
+exact-historical-onboarding-profile-codec-and-independent-rtsp-route:no-origin-authentication:\
+original-manifest-receipt:revalidate-source-at-network-boundaries:\
+native-syntax-confirmed-prefix:teardown-ack-required:private-create-only-receipt:\
+no-onvif-http-contact:no-decoded-pixels:no-media-retention:no-rights-grant:no-retry:no-redirect";
 pub(crate) const MAX_STEPS: u64 = fss_reference::site::live_probe::MAX_PROBE_STEPS;
 pub(crate) const MAX_IO_CALLS: u64 = MAX_STEPS;
 pub(crate) const MAX_RECEIVED_BYTES: u64 = MAX_PROBE_RTP_BYTES + 256 * 1024;
@@ -117,7 +125,8 @@ fn policy(codec: ProbeCodec) -> &'static str {
 
 impl SiteProbeOptions {
     pub(super) fn validate(&self) -> Result<(), &'static str> {
-        if self.source.is_empty()
+        if (self.unifi_bindings.is_some() && self.onvif_bindings.is_some())
+            || self.source.is_empty()
             || self.source.len() > 128
             || !self
                 .source
@@ -149,7 +158,7 @@ pub(crate) struct ProbePlan<'a> {
     pub(super) transport: TcpLimits,
     pub(super) allowance: BudgetVector,
     pub(super) route: ProbeRoute,
-    pub(super) private: Option<super::unifi::PrivateProbe>,
+    pub(super) private: Option<PrivateProbe>,
     observer_limits_digest: ContentDigest,
 }
 
@@ -158,7 +167,10 @@ impl<'a> ProbePlan<'a> {
         manifest: &'a SiteManifest,
         options: &'a SiteProbeOptions,
     ) -> Result<Self, &'static str> {
-        if options.unifi_bindings.is_some() || options.receipt_file.is_some() {
+        if options.unifi_bindings.is_some()
+            || options.onvif_bindings.is_some()
+            || options.receipt_file.is_some()
+        {
             return Err(PLAN_ERROR);
         }
         Self::build(manifest, options, None)
@@ -170,13 +182,30 @@ impl<'a> ProbePlan<'a> {
         private: super::unifi::PrivateProbe,
         route: ProbeRoute,
     ) -> Result<Self, &'static str> {
-        Self::build(manifest, options, Some((private, route)))
+        Self::build(
+            manifest,
+            options,
+            Some((PrivateProbe::Unifi(private), route)),
+        )
+    }
+
+    pub(super) fn with_onvif(
+        manifest: &'a SiteManifest,
+        options: &'a SiteProbeOptions,
+        private: super::onvif::PrivateProbe,
+        route: ProbeRoute,
+    ) -> Result<Self, &'static str> {
+        Self::build(
+            manifest,
+            options,
+            Some((PrivateProbe::Onvif(private), route)),
+        )
     }
 
     fn build(
         manifest: &'a SiteManifest,
         options: &'a SiteProbeOptions,
-        selected: Option<(super::unifi::PrivateProbe, ProbeRoute)>,
+        selected: Option<(PrivateProbe, ProbeRoute)>,
     ) -> Result<Self, &'static str> {
         manifest.validate().map_err(|_| PLAN_ERROR)?;
         options.validate()?;
@@ -191,7 +220,7 @@ impl<'a> ProbePlan<'a> {
         }
         let (private, route) = match selected {
             Some((private, route)) => {
-                if source.kind != SourceKind::UnifiProtect || options.codec == ProbeCodec::Jpeg {
+                if source.kind != private.kind() || options.codec == ProbeCodec::Jpeg {
                     return Err(PLAN_ERROR);
                 }
                 route
@@ -208,17 +237,21 @@ impl<'a> ProbePlan<'a> {
         // Use the same stable stream/site/source identity as the site capture compiler.
         // Distinct cameras must not inherit one ingress merely because they share a manifest.
         let mut identity = CanonicalEncoder::new();
-        identity.text(if private.is_some() {
-            "fss.site_unifi_source_identity.v1"
-        } else {
-            "fss.site_source_identity.v1"
+        identity.text(match &private {
+            Some(PrivateProbe::Unifi(_)) => "fss.site_unifi_source_identity.v1",
+            Some(PrivateProbe::Onvif(_)) => "fss.site_onvif_source_identity.v1",
+            None => "fss.site_source_identity.v1",
         });
         identity.text("stream");
         identity.text(&manifest.site_id);
         identity.text(&source.source_id);
-        if let Some(private) = &private {
-            identity.digest(private.camera_ref);
-            identity.text(private.view);
+        match &private {
+            Some(PrivateProbe::Unifi(private)) => {
+                identity.digest(private.camera_ref);
+                identity.text(private.view);
+            }
+            Some(PrivateProbe::Onvif(private)) => identity.digest(private.profile_digest),
+            None => {}
         }
         let stream = ContentDigest::sha256(&identity.finish_checked().map_err(|_| PLAN_ERROR)?);
         let ingress = u128::from_be_bytes(stream.bytes()[..16].try_into().map_err(|_| PLAN_ERROR)?);
@@ -231,8 +264,8 @@ impl<'a> ProbePlan<'a> {
                 generation: source.generation,
                 ssrc: 0,
             },
-            source.peer,
-            &source.authority,
+            route.peer(),
+            route.authority(),
             TcpSecurityPolicy::OwnerApprovedPlaintext,
         )
         .map_err(|_| PLAN_ERROR)?
@@ -242,8 +275,8 @@ impl<'a> ProbePlan<'a> {
             .checked_mul(1_000_000)
             .ok_or(PLAN_ERROR)?;
         let protocol = ClientConfig {
-            presentation_uri: format!("rtsp://{}{}", source.authority, route.presentation()),
-            control_root_uri: format!("rtsp://{}{}", source.authority, route.control_root()),
+            presentation_uri: format!("rtsp://{}{}", route.authority(), route.presentation()),
+            control_root_uri: format!("rtsp://{}{}", route.authority(), route.control_root()),
             media_index: options.media_index,
             channels: (options.rtp_channel, options.rtp_channel + 1),
             response_timeout_ns: timeout_ns.min(REQUEST_TIMEOUT_NS),
@@ -291,10 +324,10 @@ impl<'a> ProbePlan<'a> {
         let observer_limits_digest = observer_limits_digest(options.codec)?;
         let mut encoder = CanonicalEncoder::new();
         encoder.text("fss.site_probe_plan.v1");
-        encoder.text(if private.is_some() {
-            UNIFI_POLICY
-        } else {
-            policy(options.codec)
+        encoder.text(match &private {
+            Some(PrivateProbe::Unifi(_)) => UNIFI_POLICY,
+            Some(PrivateProbe::Onvif(_)) => ONVIF_POLICY,
+            None => policy(options.codec),
         });
         encoder.digest(manifest_digest);
         encoder.u64(source_index as u64);
@@ -335,6 +368,10 @@ impl<'a> ProbePlan<'a> {
         allowance.encode_canonical(&mut encoder);
         if let Some(private) = &private {
             private.encode(&mut encoder)?;
+            if matches!(private, PrivateProbe::Onvif(_)) {
+                encoder.text(&route.peer().to_string());
+                encoder.text(route.authority());
+            }
             encoder.text(route.presentation());
             encoder.text(route.control_root());
         }
@@ -388,10 +425,10 @@ impl<'a> ProbePlan<'a> {
             ("status", string("requires_approval")),
             (
                 "policy",
-                string(if self.private.is_some() {
-                    UNIFI_POLICY
-                } else {
-                    policy(self.options.codec)
+                string(match &self.private {
+                    Some(PrivateProbe::Unifi(_)) => UNIFI_POLICY,
+                    Some(PrivateProbe::Onvif(_)) => ONVIF_POLICY,
+                    None => policy(self.options.codec),
                 }),
             ),
             ("approval", string(&self.approval.to_text())),
@@ -405,8 +442,8 @@ impl<'a> ProbePlan<'a> {
             ("source_generation", source.generation.to_string()),
             ("ingress", string(&self.binding.key().ingress.to_string())),
             ("ssrc_policy", string("learn_once")),
-            ("peer", string(&source.peer.to_string())),
-            ("authority", string(&source.authority)),
+            ("peer", string(&self.route.peer().to_string())),
+            ("authority", string(self.route.authority())),
             (
                 "presentation",
                 string(&self.private.as_ref().map_or_else(
@@ -494,7 +531,7 @@ impl<'a> ProbePlan<'a> {
             ("teardown_ack_required", "true".to_owned()),
         ];
         if let Some(private) = &self.private {
-            fields.push(("unifi", private.preview()));
+            fields.push(private.preview());
         }
         Ok(object(&fields))
     }

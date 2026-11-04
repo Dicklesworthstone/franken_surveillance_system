@@ -1,14 +1,16 @@
 #![forbid(unsafe_code)]
 //! An exact, separately approved native RTSP probe for one manifest source.
 //!
-//! Direct previews read only the manifest; UniFi previews additionally validate
-//! one exact protected export and private receipt destination. Execution borrows
+//! Direct previews read only the manifest; protected-source previews also validate
+//! one exact UniFi export or ONVIF handoff and private receipt destination. Execution borrows
 //! the existing credential lease and request-owned runtime and retains no media.
-//! Direct stdout contains receipts or selected session evidence. UniFi receipts
+//! Direct stdout contains receipts or selected session evidence. Protected receipts
 //! are saved privately for `fss site plan`, with safe result metadata on stdout.
 
 mod native;
+mod onvif;
 mod plan;
+mod private;
 mod report;
 mod unifi;
 
@@ -43,6 +45,7 @@ pub fn parse_probe_args(tokens: &[ArgToken]) -> Result<(PathBuf, SiteProbeOption
             "--output",
             "--approve",
             "--unifi-bindings",
+            "--onvif-bindings",
             "--receipt-file",
         ],
     )?;
@@ -124,6 +127,7 @@ pub fn parse_probe_args(tokens: &[ArgToken]) -> Result<(PathBuf, SiteProbeOption
     };
     let options = SiteProbeOptions {
         unifi_bindings: take(&values, "--unifi-bindings").map(|(_, value, _)| PathBuf::from(value)),
+        onvif_bindings: take(&values, "--onvif-bindings").map(|(_, value, _)| PathBuf::from(value)),
         receipt_file: take(&values, "--receipt-file").map(|(_, value, _)| PathBuf::from(value)),
         source: required("--source")?,
         codec,
@@ -151,11 +155,14 @@ fn empty_public_probe_parse_refuses_without_panicking() {
 
 /// Preview or perform one bounded probe. Only an exact preview digest opens the
 /// network boundary. Direct receipt/session output contains private route metadata;
-/// UniFi capability-bearing receipts require the protected file owner instead.
+/// UniFi/ONVIF capability-bearing receipts require the protected file owner instead.
 pub fn execute_probe(
     manifest: &SiteManifest,
     options: &SiteProbeOptions,
 ) -> (String, ExitIdentity) {
+    if options.onvif_bindings.is_some() {
+        return onvif::execute(manifest, options);
+    }
     if options.unifi_bindings.is_some() || options.receipt_file.is_some() {
         return unifi::execute(manifest, options);
     }

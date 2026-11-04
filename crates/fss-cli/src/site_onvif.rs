@@ -33,15 +33,15 @@ pub const MAX_SITE_ONVIF_HANDOFF_BYTES: usize = 64 * MAX_ONVIF_HANDOFF_BYTES;
 /// Stable refusal identity without private paths, profile tokens or capability URLs.
 pub const ERR_SITE_ONVIF_INPUT: &str = "ERR-SITE-ONVIF-INPUT-001";
 
-struct Binding {
-    source_index: usize,
-    source_id: String,
-    spec: OnvifSourceSpec,
-    onboarding_plan: ContentDigest,
-    profile_digest: ContentDigest,
-    peer: SocketAddr,
-    authority: String,
-    control_root: String,
+pub(crate) struct Binding {
+    pub(crate) source_index: usize,
+    pub(crate) source_id: String,
+    pub(crate) spec: OnvifSourceSpec,
+    pub(crate) onboarding_plan: ContentDigest,
+    pub(crate) profile_digest: ContentDigest,
+    pub(crate) peer: SocketAddr,
+    pub(crate) authority: String,
+    pub(crate) control_root: String,
 }
 
 pub(crate) struct Bindings {
@@ -98,7 +98,7 @@ pub(crate) fn parse_bindings(
     manifest: &SiteManifest,
     bytes: &[u8],
 ) -> Result<Bindings, SitePlanError> {
-    parse_bindings_scoped(manifest, bytes, None)
+    parse_bindings_scoped(manifest, bytes, None, false)
 }
 
 /// Exact selected inventory using validated original-manifest source ordinals.
@@ -107,13 +107,39 @@ pub(crate) fn parse_selected_bindings(
     bytes: &[u8],
     selected: &[usize],
 ) -> Result<Bindings, SitePlanError> {
-    parse_bindings_scoped(manifest, bytes, Some(selected))
+    parse_bindings_scoped(manifest, bytes, Some(selected), false)
+}
+
+/// Select one source for probing from either its own or the complete site's
+/// binding inventory. Every supplied row is validated, but unselected handoffs
+/// are never opened and need not have a row in a single-source probe request.
+pub(crate) fn probe_binding(
+    manifest: &SiteManifest,
+    bytes: &[u8],
+    source_id: &str,
+) -> Result<Binding, SitePlanError> {
+    let index = manifest
+        .sources
+        .iter()
+        .position(|source| source.source_id == source_id)
+        .ok_or_else(|| refused(None, "selected probe source is unknown"))?;
+    parse_bindings_scoped(manifest, bytes, Some(&[index]), true)?
+        .sources
+        .into_iter()
+        .find(|binding| binding.source_index == index)
+        .ok_or_else(|| {
+            refused(
+                Some(index),
+                "selected source has no protected ONVIF binding",
+            )
+        })
 }
 
 fn parse_bindings_scoped(
     manifest: &SiteManifest,
     bytes: &[u8],
     selected: Option<&[usize]>,
+    allow_unselected: bool,
 ) -> Result<Bindings, SitePlanError> {
     let manifest_digest = manifest
         .digest()
@@ -156,7 +182,7 @@ fn parse_bindings_scoped(
             .ok_or_else(|| refused(None, "binding names an unknown site source"))?;
         let index = Some(source_index);
         let source = &manifest.sources[source_index];
-        if selected.is_some_and(|indices| !indices.contains(&source_index)) {
+        if !allow_unselected && selected.is_some_and(|indices| !indices.contains(&source_index)) {
             return Err(refused(index, "binding names an unselected site source"));
         }
         if source.kind != SourceKind::Onvif || !seen.insert(source_index) {

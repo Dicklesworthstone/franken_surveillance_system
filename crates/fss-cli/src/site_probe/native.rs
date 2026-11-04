@@ -210,9 +210,7 @@ fn run_native(
         .as_ref()
         .map(|private| {
             let input =
-                super::unifi::private_file::InputLease::open(&private.spec.source, &|| {
-                    scope.input()
-                })?;
+                super::unifi::private_file::InputLease::open(private.source(), &|| scope.input())?;
             private.verify(&input)?;
             Ok::<_, &'static str>(input)
         })
@@ -365,8 +363,8 @@ fn run_native(
                             .revalidate(&|| secret_check(scope))
                             .map_err(secret_error)?;
                     }
-                    receipt
-                        .validate_for(plan.manifest)
+                    plan.route
+                        .validate_receipt(plan.manifest, &receipt)
                         .map_err(|_| "ERR-SITE-PROBE-RECEIPT-001")?;
                     if let Some(input) = &private_source {
                         input.revalidate(&|| scope.input())?;
@@ -421,7 +419,7 @@ pub(super) fn execute(plan: &ProbePlan<'_>) -> (String, ExitIdentity) {
         // The shared owner rechecks cancellation, the actual final deadline, task
         // retirement and region closure before it releases either output format.
         Ok(receipt) if plan.private.is_some() => {
-            super::unifi::save_receipt(plan, &receipt, facts.get())
+            super::private::save_receipt(plan, &receipt, facts.get())
         }
         Ok(receipt) => {
             let output = match plan.options.output {
