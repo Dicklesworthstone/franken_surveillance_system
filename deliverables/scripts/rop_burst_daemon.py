@@ -21,7 +21,7 @@ def log(m):
         f.write(time.strftime("%H:%M:%S ") + m + "\n")
 
 def login_once():
-    r = T.post(HOST, "/", {"method": "login", "params": {"cnonce": "", "encrypt_type": "3", "username": "admin"}}, timeout=3)
+    r = T.post(HOST, "/", {"method": "login", "params": {"cnonce": "", "encrypt_type": "3", "username": "admin"}}, timeout=1)
     try:
         j = json.loads(r)
         if "stok" in j:
