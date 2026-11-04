@@ -4,6 +4,29 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Lease renewal preserves controller ownership (2026-11-04)
+
+`LeaseRegistry::renew` now extends a finite deadline monotonically. Shorter
+requests, exact retries and delayed retries cannot erase an already-granted
+extension or make a competing controller eligible early. Renewal retains the
+same lease identity and fence, updates both registry indexes, and cannot revive
+an expiry already observed. Existing unbounded leases can still receive their
+first finite deadline.
+
+Acquisition and renewal reject unrepresentable `now + ttl_ns` through the typed
+`LeaseError::ExpiryOverflow`. Arithmetic is checked before any lifecycle mutation,
+so a refused request cannot consume a fence, create a resource, shorten a deadline
+or partially expire the previous holder. Time remains explicitly caller-supplied;
+this adds no ambient clock or new effect authority.
+
+**Scoped validation:** all 20 focused lease contracts pass on the pinned nightly,
+using the production lease module and complete actual `fss-core`. Eleven
+regressions fail against the previous implementation. Coverage includes competing
+controllers, both indexes, terminal states, delayed retries, signed timestamp and
+duration extremes, and exact representable expiry boundaries. The existing
+unbounded-to-finite behavior used by effect-authority tests is preserved. This
+focused test is not full runtime/effect integration or release qualification.
+
 ## Exact zone membership and sampling-gap dwell limits (2026-11-04)
 
 Site zones now use exact integer cross products for strict-interior membership.

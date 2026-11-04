@@ -12,7 +12,12 @@
 //!   is named). Expired leases are taken over lazily at the next acquire —
 //!   expiry is evaluated against caller-supplied time; there is no ambient
 //!   clock and no background reaper.
-//! - `renew` extends the SAME lease's expiry; the fence token is unchanged.
+//! - `renew` extends the SAME lease's finite expiry, or assigns its first expiry
+//!   when previously unbounded; the fence token is unchanged. A shorter request,
+//!   including a delayed retry with earlier caller time, never shortens an
+//!   existing finite expiry. Observed expiry is irreversible.
+//! - An unrepresentable `now + ttl_ns` is refused before any state change;
+//!   invalid expiry arithmetic does not consume a fence or evaluate lifecycle time.
 //! - `release` ends a lease cooperatively; the token stays valid historically
 //!   but the resource becomes acquirable.
 //! - `revoke` forcibly ends a lease and invalidates its fence immediately.
@@ -121,6 +126,15 @@ pub enum LeaseError {
     /// The monotone fence source is exhausted (u64::MAX leases issued);
     /// no token may ever be reused, so acquisition is refused permanently.
     FenceSourceExhausted,
+    /// The requested expiry cannot be represented; no registry state changed.
+    ExpiryOverflow {
+        /// The resource whose lease was requested or renewed.
+        resource: String,
+        /// Caller-supplied start of the requested duration.
+        now: TimestampNs,
+        /// Requested duration in nanoseconds.
+        ttl_ns: u64,
+    },
 }
 
 impl std::fmt::Display for LeaseError {
@@ -155,6 +169,14 @@ impl std::fmt::Display for LeaseError {
             Self::FenceSourceExhausted => {
                 write!(f, "fence source exhausted: no further leases can be issued")
             }
+            Self::ExpiryOverflow {
+                resource,
+                now,
+                ttl_ns,
+            } => write!(
+                f,
+                "lease expiry overflow on '{resource}': {now:?} + {ttl_ns} ns"
+            ),
         }
     }
 }
@@ -229,11 +251,27 @@ impl LeaseRegistry {
         }
     }
 
+    fn checked_expiry(
+        resource: &str,
+        ttl_ns: u64,
+        now: TimestampNs,
+    ) -> Result<TimestampNs, LeaseError> {
+        now.0
+            .checked_add(i128::from(ttl_ns))
+            .map(TimestampNs)
+            .ok_or_else(|| LeaseError::ExpiryOverflow {
+                resource: resource.to_string(),
+                now,
+                ttl_ns,
+            })
+    }
+
     /// Acquires a lease on `resource` for `holder`, valid until
     /// `now + ttl_ns` (or without expiry when `ttl_ns` is `None`). Refuses
     /// while another live lease holds the resource; expired holders are
     /// taken over lazily. The new lease carries a fresh fence token,
-    /// immediately staling the previous holder's token.
+    /// immediately staling the previous holder's token. An unrepresentable expiry
+    /// is refused before evaluating the old holder or consuming a fence token.
     pub fn acquire(
         &mut self,
         resource: &str,
@@ -241,6 +279,9 @@ impl LeaseRegistry {
         ttl_ns: Option<u64>,
         now: TimestampNs,
     ) -> Result<Lease, LeaseError> {
+        let expires_at = ttl_ns
+            .map(|ttl| Self::checked_expiry(resource, ttl, now))
+            .transpose()?;
         // Lazily expire the current holder, then enforce exclusivity.
         let resource_key = resource.to_string();
         if let Some(fence_state) = self.resources.get_mut(&resource_key)
@@ -277,7 +318,7 @@ impl LeaseRegistry {
             resource: resource_key.clone(),
             holder: holder.to_string(),
             fence,
-            expires_at: ttl_ns.map(|ttl| TimestampNs(now.0.saturating_add(i128::from(ttl)))),
+            expires_at,
             state: LeaseState::Active,
         };
         self.leases.insert(lease.id.clone(), lease.clone());
@@ -291,8 +332,15 @@ impl LeaseRegistry {
         Ok(lease)
     }
 
-    /// Renews a lease's expiry. The fence token is unchanged — renewal never
-    /// stales the holder's own token.
+    /// Extends a live finite lease to the later of its current expiry and
+    /// `now + ttl_ns`. Shorter requests and exact retries are no-ops. A lease
+    /// without an expiry receives `now + ttl_ns` as its first deadline.
+    ///
+    /// The caller owns the time domain; earlier caller time cannot shorten an
+    /// existing finite lease or revive one whose expiry was already observed.
+    /// The fence token is unchanged. An unrepresentable expiry is refused before
+    /// any lifecycle or expiry mutation; a valid request at or after the current
+    /// deadline records irreversible expiry and returns `NotActive`.
     pub fn renew(
         &mut self,
         lease_id: &str,
@@ -305,6 +353,7 @@ impl LeaseRegistry {
             .ok_or_else(|| LeaseError::UnknownLease {
                 lease: lease_id.to_string(),
             })?;
+        let requested_expiry = Self::checked_expiry(&lease.resource, ttl_ns, now)?;
         Self::evaluate_expiry(lease, now);
         if lease.state != LeaseState::Active {
             // Expiry is irreversible once observed. Keep the effect gate's copy
@@ -320,7 +369,11 @@ impl LeaseRegistry {
                 state: lease.state,
             });
         }
-        lease.expires_at = Some(TimestampNs(now.0.saturating_add(i128::from(ttl_ns))));
+        lease.expires_at = Some(
+            lease
+                .expires_at
+                .map_or(requested_expiry, |current| current.max(requested_expiry)),
+        );
         // Mirror into the per-resource copy.
         if let Some(fence_state) = self.resources.get_mut(&lease.resource)
             && let Some(current) = &mut fence_state.lease
