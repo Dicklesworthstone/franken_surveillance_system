@@ -10,6 +10,7 @@
 use fss_core::ContentDigest;
 use fss_packet::{PacketLimits, RtpPacket, StreamKey};
 
+use super::probe_route::ProbeRoute;
 use super::{ProbeCodec, SiteManifest, SiteProbeReceipt, SourceKind};
 use crate::rtsp::client::observed::ObservedVideoDescription;
 use crate::rtsp::client::{hevc, jpeg};
@@ -102,6 +103,7 @@ pub struct ProbeTail {
 pub struct RtspProbeObserver<'a> {
     manifest: &'a SiteManifest,
     source_index: usize,
+    route: ProbeRoute,
     media_index: usize,
     rtp_channel: u8,
     codec: ProbeCodec,
@@ -138,16 +140,29 @@ impl<'a> RtspProbeObserver<'a> {
         source_index: usize,
         negotiated: NegotiatedProbe<'_>,
     ) -> Result<Self, ObservationError> {
-        manifest.validate().map_err(|_| ObservationError::Scope)?;
+        let route =
+            ProbeRoute::direct(manifest, source_index).map_err(|_| ObservationError::Scope)?;
+        Self::new_with_route(manifest, source_index, route, negotiated)
+    }
+
+    /// Begin with an exact preselected direct or UniFi route under the original manifest.
+    /// The route is consistency evidence only; the caller still owns network authority and
+    /// must supply codec/session observations rather than infer them from an export.
+    pub fn new_with_route(
+        manifest: &'a SiteManifest,
+        source_index: usize,
+        route: ProbeRoute,
+        negotiated: NegotiatedProbe<'_>,
+    ) -> Result<Self, ObservationError> {
+        route
+            .validate_for(manifest, source_index)
+            .map_err(|_| ObservationError::Scope)?;
         let source = manifest
             .sources
             .get(source_index)
             .ok_or(ObservationError::Scope)?;
-        if !matches!(source.kind, SourceKind::Rtsp | SourceKind::NvrChannel)
-            || !source.owner_authorized
-            || !source.plaintext
-        {
-            return Err(ObservationError::Scope);
+        if source.kind == SourceKind::UnifiProtect && negotiated.codec == ProbeCodec::Jpeg {
+            return Err(ObservationError::Negotiation);
         }
         if negotiated.sdp.is_empty() || negotiated.sdp.len() > MAX_SELECTION_BYTES {
             return Err(ObservationError::Limit);
@@ -244,6 +259,7 @@ impl<'a> RtspProbeObserver<'a> {
         Ok(Self {
             manifest,
             source_index,
+            route,
             media_index: negotiated.media_index,
             rtp_channel: negotiated.rtp_channel,
             codec: negotiated.codec,
@@ -432,21 +448,12 @@ impl<'a> RtspProbeObserver<'a> {
         let receipt = SiteProbeReceipt {
             site_id: self.manifest.site_id.clone(),
             source_id: source.source_id.clone(),
-            manifest_digest: self
-                .manifest
-                .digest()
-                .map_err(|_| ObservationError::Receipt)?,
+            manifest_digest: self.route.manifest_digest(),
             source_generation: source.generation,
             peer: source.peer,
             authority: source.authority.clone(),
-            presentation: source
-                .presentation
-                .clone()
-                .ok_or(ObservationError::Receipt)?,
-            control_root: source
-                .control_root
-                .clone()
-                .ok_or(ObservationError::Receipt)?,
+            presentation: self.route.presentation().to_owned(),
+            control_root: self.route.control_root().to_owned(),
             media_index: self.media_index,
             rtp_channel: self.rtp_channel,
             rtcp_channel: self.rtp_channel + 1,

@@ -103,6 +103,7 @@ struct ServerLog {
     methods: Vec<String>,
     cseqs: Vec<u32>,
     signed_requests: usize,
+    request_target_digests: Vec<ContentDigest>,
 }
 
 struct Permit {
@@ -232,6 +233,12 @@ fn read_request(socket: &mut TcpStream, log: &mut ServerLog) -> io::Result<Optio
     log.methods.push(method.to_owned());
     log.cseqs.push(cseq);
     log.signed_requests += usize::from(signed);
+    let target = text
+        .split_whitespace()
+        .nth(1)
+        .ok_or_else(|| io::Error::other("fixture request target"))?;
+    log.request_target_digests
+        .push(ContentDigest::sha256(target.as_bytes()));
     // The fixture inspects header presence without returning credentials, URIs or session IDs.
     if text.contains(PASSWORD) {
         return Err(io::Error::other("plaintext credential escaped"));
@@ -438,8 +445,16 @@ fn interleaved(channel: u8, payload: &[u8]) -> Vec<u8> {
 }
 
 fn serve(listener: TcpListener, scenario: Scenario) -> io::Result<ServerLog> {
-    let packets = scenario_packets(scenario)?;
     let description = scenario_sdp(scenario)?;
+    serve_description(listener, scenario, description)
+}
+
+fn serve_description(
+    listener: TcpListener,
+    scenario: Scenario,
+    description: Vec<u8>,
+) -> io::Result<ServerLog> {
+    let packets = scenario_packets(scenario)?;
     let late_packet = fixture_packets(scenario.codec)?
         .into_iter()
         .next()
@@ -1284,4 +1299,216 @@ fn deadline_and_clock_regression_are_terminal_before_next_socket_effect() -> Tes
         assert_eq!(peer.read(&mut byte)?, 0);
     }
     Ok(())
+}
+
+mod unifi {
+    use super::*;
+    use fss_reference::site::SourceKind;
+    use fss_reference::site::probe_route::ProbeRoute;
+    use fss_reference::unifi::{ProtectQuality, ProtectSource, TransportChoice};
+
+    const RESOURCE: &str = "/PRIVATE_PROTECT_LIVE/?variant=%41%2b&quality=high";
+
+    fn selection(
+        peer: SocketAddr,
+    ) -> Result<(SiteManifest, ProbeRoute), Box<dyn std::error::Error>> {
+        selection_resource(peer, RESOURCE)
+    }
+
+    fn selection_resource(
+        peer: SocketAddr,
+        resource: &str,
+    ) -> Result<(SiteManifest, ProbeRoute), Box<dyn std::error::Error>> {
+        // Retain an unrelated source so a successful receipt proves the whole original
+        // manifest was used, rather than a manufactured single-source RTSP manifest.
+        let mut manifest = SiteManifest::parse(MANIFEST)?;
+        let source = &mut manifest.sources[0];
+        source.peer = peer;
+        source.authority = peer.to_string();
+        source.kind = SourceKind::UnifiProtect;
+        source.presentation = None;
+        source.control_root = None;
+        source.unifi_camera_id = Some("camera:front".into());
+        let export = ProtectSource::parse(
+            format!(r#"{{"camera":{{"id":"camera:front"}},"streams":{{"high":"rtsp://{peer}{resource}"}}}}"#)
+                .as_bytes(),
+        )?;
+        let selected = export.select(ProtectQuality::High, TransportChoice::Published)?;
+        let route = ProbeRoute::from_unifi(&manifest, 0, &selected)?;
+        Ok((manifest, route))
+    }
+
+    fn options(
+        manifest: &SiteManifest,
+        route: &ProbeRoute,
+        codec: ProbeCodec,
+    ) -> Result<LiveSiteProbeConfig, TcpError> {
+        let mut options = config(manifest, codec)?;
+        let authority = &manifest.sources[0].authority;
+        options.protocol.presentation_uri = format!("rtsp://{authority}{}", route.presentation());
+        options.protocol.control_root_uri = format!("rtsp://{authority}{}", route.control_root());
+        Ok(options)
+    }
+
+    #[test]
+    fn native_unifi_avc_and_hevc_keep_original_identity_and_exact_request_targets() -> Test {
+        for codec in [ProbeCodec::Avc, ProbeCodec::Hevc] {
+            let listener = TcpListener::bind("127.0.0.1:0")?;
+            let (manifest, route) = selection(listener.local_addr()?)?;
+            let original = manifest.clone();
+            let options = options(&manifest, &route, codec)?;
+            let uri = options.protocol.presentation_uri.clone();
+            let track = format!("{}trackID=0", options.protocol.control_root_uri);
+            let permit = Permit {
+                binding: options.binding.clone(),
+                denial: Cell::new(None),
+                calls: Cell::new(0),
+            };
+            thread::scope(|scope| -> Test {
+                let server = scope.spawn(move || {
+                    serve(
+                        listener,
+                        Scenario {
+                            codec,
+                            ..Scenario::default()
+                        },
+                    )
+                });
+                let mut probe =
+                    LiveSiteProbe::connect_with_route(&manifest, options, route, 0, &permit)?;
+                let completed = drive(&mut probe, &permit, false)??;
+                assert_fixture_measurement(&completed, codec, false)?;
+                assert_eq!(completed.receipt.manifest_digest, original.digest()?);
+                assert_eq!(completed.receipt.presentation, RESOURCE);
+                assert_eq!(completed.receipt.control_root, "/PRIVATE_PROTECT_LIVE/");
+                completed.receipt.validate_for(&original)?;
+                assert!(!completed.close.remote_session_may_exist);
+                assert!(!format!("{completed:?}").contains("PRIVATE_PROTECT_LIVE"));
+                let log = server
+                    .join()
+                    .map_err(|_| io::Error::other("fixture server panic"))??;
+                assert_eq!(
+                    log.methods,
+                    ["OPTIONS", "DESCRIBE", "SETUP", "PLAY", "TEARDOWN"]
+                );
+                assert_eq!(
+                    log.request_target_digests,
+                    [&uri, &uri, &track, &uri, &uri]
+                        .map(|target| ContentDigest::sha256(target.as_bytes()))
+                );
+                Ok(())
+            })?;
+            assert_eq!(manifest, original);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn published_token_without_trailing_slash_accepts_exact_in_scope_absolute_track() -> Test {
+        const RESOURCE: &str = "/PRIVATE_PROTECT_LIVE?quality=high&variant=%41%2b";
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let (manifest, route) = selection_resource(listener.local_addr()?, RESOURCE)?;
+        let options = options(&manifest, &route, ProbeCodec::Avc)?;
+        let uri = options.protocol.presentation_uri.clone();
+        let track = format!("{}/trackID=0", options.protocol.control_root_uri);
+        let description = std::str::from_utf8(sdp(ProbeCodec::Avc))?
+            .replace("a=control:trackID=0", &format!("a=control:{track}"))
+            .into_bytes();
+        assert_ne!(description.as_slice(), sdp(ProbeCodec::Avc));
+        let description_digest = ContentDigest::sha256(&description);
+        let permit = Permit {
+            binding: options.binding.clone(),
+            denial: Cell::new(None),
+            calls: Cell::new(0),
+        };
+        thread::scope(|scope| -> Test {
+            let server =
+                scope.spawn(move || serve_description(listener, Scenario::default(), description));
+            let mut probe =
+                LiveSiteProbe::connect_with_route(&manifest, options, route, 0, &permit)?;
+            let completed = drive(&mut probe, &permit, false)??;
+            assert_eq!(completed.receipt.sdp_digest, description_digest);
+            assert_eq!(completed.receipt.codec, ProbeCodec::Avc);
+            assert_eq!(completed.receipt.observed_frames, 3);
+            assert_eq!(completed.receipt.frame_duration_ticks, FRAME_TICKS);
+            assert_eq!(completed.receipt.presentation, RESOURCE);
+            assert_eq!(completed.receipt.control_root, "/PRIVATE_PROTECT_LIVE");
+            assert!(!completed.close.remote_session_may_exist);
+            completed.receipt.validate_for(&manifest)?;
+            let log = server
+                .join()
+                .map_err(|_| io::Error::other("fixture server panic"))??;
+            assert_eq!(
+                log.request_target_digests,
+                [&uri, &uri, &track, &uri, &uri]
+                    .map(|target| ContentDigest::sha256(target.as_bytes()))
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn unifi_route_and_configuration_are_revalidated_before_authority_or_connect() -> Test {
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        listener.set_nonblocking(true)?;
+        let (manifest, route) = selection(listener.local_addr()?)?;
+        for change in 0..7 {
+            let mut manifest = manifest.clone();
+            let mut options = options(&manifest, &route, ProbeCodec::Avc)?;
+            let permit = Permit {
+                binding: options.binding.clone(),
+                denial: Cell::new(None),
+                calls: Cell::new(0),
+            };
+            match change {
+                0 => {} // Existing direct constructor must not accept an implicit UniFi route.
+                1 => options.source_index = 1,
+                2 => options.protocol.presentation_uri.push_str("&extra=1"),
+                3 => {
+                    options.protocol.control_root_uri =
+                        format!("rtsp://{}/", manifest.sources[0].authority)
+                }
+                4 => {
+                    options.codec = ProbeCodec::Jpeg;
+                    options.payload_type = Some(26);
+                }
+                5 => manifest.generation += 1,
+                _ => manifest.sources[0].unifi_camera_id = Some("other-camera".into()),
+            }
+            let result = if change == 0 {
+                LiveSiteProbe::connect(&manifest, options, 0, &permit)
+            } else {
+                LiveSiteProbe::connect_with_route(&manifest, options, route.clone(), 0, &permit)
+            };
+            let error = result.expect_err("unapproved route or media change must not connect");
+            assert_eq!(error.reason, ProbeError::Configuration);
+            assert!(!error.connection_attempted);
+            assert_eq!(permit.calls.get(), 0);
+            assert_eq!(
+                listener.accept().err().map(|error| error.kind()),
+                Some(io::ErrorKind::WouldBlock)
+            );
+        }
+
+        // Even a valid, original-manifest-bound selection still requires live authority.
+        let options = options(&manifest, &route, ProbeCodec::Avc)?;
+        let permit = Permit {
+            binding: options.binding.clone(),
+            denial: Cell::new(Some(TcpDenial::Unauthorized)),
+            calls: Cell::new(0),
+        };
+        let error = LiveSiteProbe::connect_with_route(&manifest, options, route, 0, &permit)
+            .expect_err("route selection grants no network authority");
+        assert_eq!(
+            error.reason,
+            ProbeError::Transport(TcpError::Denied(TcpDenial::Unauthorized))
+        );
+        assert!(!error.connection_attempted);
+        assert_eq!(permit.calls.get(), 1);
+        assert_eq!(
+            listener.accept().err().map(|error| error.kind()),
+            Some(io::ErrorKind::WouldBlock)
+        );
+        Ok(())
+    }
 }
