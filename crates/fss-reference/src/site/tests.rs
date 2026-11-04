@@ -886,3 +886,59 @@ fn utc_window_refuses_unrepresentable_uncertainty_instead_of_saturating() -> Tes
     assert_eq!(receipt.utc_window(), None);
     Ok(())
 }
+
+#[test]
+fn utc_window_preserves_full_elapsed_time_across_rtp_timestamp_wraps() -> Test {
+    let mut receipt =
+        parse_probe_receipts(with_clock_evidence(VALID_CLOCK_EVIDENCE).as_bytes())?.remove(0);
+    let unwrapped = receipt.utc_window();
+    // First timestamp is 3,600 ticks before the rollover; the last is 7,200 after it.
+    receipt.first_rtp_timestamp = u32::MAX - 3_599;
+    receipt.last_rtp_timestamp = 7_200;
+    receipt.validate()?;
+    assert_eq!(receipt.utc_window(), unwrapped);
+
+    // The maximum supported span crosses the 32-bit timestamp space twenty times.
+    // 999,999 one-second intervals total 89,999,910,000 ticks; the low 32 bits alone
+    // would discard almost the entire observation window.
+    receipt.frame_duration_ticks = 90_000;
+    receipt.observed_frames = MAX_PROBE_FRAMES;
+    receipt.first_rtp_timestamp = 0;
+    receipt.last_rtp_timestamp = 4_100_564_080;
+    receipt.validate()?;
+    assert_eq!(
+        receipt.utc_window(),
+        Some((1_799_999_999_998_000_000, 1_800_999_999_002_000_000))
+    );
+    Ok(())
+}
+
+#[test]
+fn utc_window_uncertainty_only_widens_the_already_corrected_anchor() -> Test {
+    let mut receipt =
+        parse_probe_receipts(with_clock_evidence(VALID_CLOCK_EVIDENCE).as_bytes())?.remove(0);
+    let mut previous = None;
+    for uncertainty in [1, 2, 1_000, 2_000_000, MAX_CLOCK_UNCERTAINTY_NS] {
+        receipt
+            .clock_evidence
+            .as_mut()
+            .ok_or("missing witness")?
+            .ntp_uncertainty_ns = uncertainty;
+        let window = receipt.utc_window().ok_or("missing UTC window")?;
+        if let Some((start, end)) = previous {
+            assert!(window.0 < start);
+            assert!(window.1 > end);
+        }
+        previous = Some(window);
+
+        // Offset metadata describes a correction already applied to the anchor.
+        // Applying its magnitude or sign again would shift the whole interval.
+        for direction in [ClockOffsetDirection::Ahead, ClockOffsetDirection::Behind] {
+            let witness = receipt.clock_evidence.as_mut().ok_or("missing witness")?;
+            witness.ntp_offset_direction = direction;
+            witness.ntp_offset_ns = u64::MAX;
+            assert_eq!(receipt.utc_window(), Some(window));
+        }
+    }
+    Ok(())
+}

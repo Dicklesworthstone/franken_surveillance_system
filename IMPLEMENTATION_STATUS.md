@@ -4,6 +4,34 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Exact zone membership and sampling-gap dwell limits (2026-11-04)
+
+Site zones now use exact integer cross products for strict-interior membership.
+Fractional edge intersections no longer change membership when vertices are
+reversed or rotated. Every edge and vertex is excluded consistently; malformed,
+self-intersecting or out-of-bounds polygons are refused by the shared validator.
+
+`SiteZone::dwell_intervals_with_max_gap` adds an explicit maximum sampling gap.
+An interruption longer than that limit separates visits, while an outside or
+boundary sample always ends the current span. The existing reducer retains its
+unrestricted-gap behavior. Both validate the complete input before reducing,
+validate the polygon once per sequence, and enforce the one-million-sample bound.
+These intervals describe supplied samples; they do not prove continuous presence
+or coverage during unobserved time.
+
+**Scoped validation:** 52 exact-source site and zone contracts pass on the pinned
+nightly with the complete actual `fss-core` and production URI, parser and encoding
+modules. New coverage includes independent shape oracles under every winding and
+starting vertex, coordinate and polygon limits, malformed input tails, exact gap
+boundaries, and the maximum sample/output count. Two additional clock regressions
+preserve full elapsed time across repeated RTP wraps and verify that uncertainty
+only widens the already-corrected UTC anchor. Live probe modules are excluded from
+this focused build; it does not qualify the full CLI or runtime.
+
+This advances the geometric/temporal primitive of VIT-012. Observation vocabulary,
+track/model/policy provenance, eligibility and coverage witnesses, and integration
+into QSR queries remain open.
+
 ## Alert dispatch timing before commitment (2026-11-04)
 
 The shared reference alert-dispatch path now requires strict preparation,
