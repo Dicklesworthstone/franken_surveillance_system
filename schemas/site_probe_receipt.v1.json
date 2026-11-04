@@ -293,54 +293,6 @@
       "minLength": 1,
       "maxLength": 256,
       "pattern": "^[ -~]+$"
-    },
-    "clock_evidence": {
-      "description": "Optional wall-clock correlation for this probe window (VIT-019). Absent or null until a capturing session populates it; this is a claim about the node's own clock, never an authenticated fact or a camera-side timestamp.",
-      "anyOf": [
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "wall_clock_unix_ns",
-            "monotonic_ns",
-            "ntp_offset_ns",
-            "ntp_offset_direction",
-            "ntp_uncertainty_ns"
-          ],
-          "properties": {
-            "wall_clock_unix_ns": {
-              "type": "integer",
-              "minimum": 1700000000000000000,
-              "maximum": 18446744073709551615,
-              "description": "CLOCK_REALTIME sample, nanoseconds since the Unix epoch, after the NTP/chrony correction below has already been applied. The floor is 2023-11-14T22:13:20Z; a sample at or before it is a clearly wrong clock, not evidence."
-            },
-            "monotonic_ns": {
-              "type": "integer",
-              "minimum": 0,
-              "maximum": 18446744073709551615,
-              "description": "CLOCK_MONOTONIC sample taken at the same instant as wall_clock_unix_ns."
-            },
-            "ntp_offset_ns": {
-              "type": "integer",
-              "minimum": 0,
-              "maximum": 18446744073709551615,
-              "description": "Magnitude of the NTP/chrony correction already folded into wall_clock_unix_ns."
-            },
-            "ntp_offset_direction": {
-              "enum": ["ahead", "behind"]
-            },
-            "ntp_uncertainty_ns": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 10000000000,
-              "description": "Bound on the correction's own uncertainty, in nanoseconds. Never zero (an exact-zero uncertainty is refused as implausible) and never more than 10 seconds (beyond that the clock is effectively unsynchronized and must not be reported as a witness at all)."
-            }
-          }
-        },
-        {
-          "type": "null"
-        }
-      ]
     }
   },
   "description": "One supplied observation claim, not authenticated or fresh evidence. Files contain an array of 0..64 receipts (no duplicate site/source pair, <=1 MiB). Exact site/manifest/source generation/peer/authority/presentation/control scope checked before compilation. rtcp_channel=rtp_channel+1. The modular timestamp difference must equal frame_duration_ticks*(observed_frames-1); this checks supplied claims, not intermediate RTP packets. SPS/PPS or VPS/SPS/PPS hashes have fixed order. No media bytes, secrets or rights grant.",

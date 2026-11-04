@@ -3,9 +3,7 @@
 
 use fss_core::{CanonicalEncoder, ContentDigest};
 
-use super::{
-    ClockWitness, MAX_SITE_INPUT_BYTES, SiteError, SiteManifest, SiteProbeReceipt, SiteSource,
-};
+use super::{MAX_SITE_INPUT_BYTES, SiteError, SiteManifest, SiteProbeReceipt, SiteSource};
 
 fn finish(encoder: CanonicalEncoder) -> Result<ContentDigest, SiteError> {
     let bytes = encoder.finish_checked().map_err(|_| SiteError::Limit)?;
@@ -21,20 +19,6 @@ fn optional_text(encoder: &mut CanonicalEncoder, value: Option<&str>) {
         Some(value) => {
             encoder.tag(1);
             encoder.text(value);
-        }
-    }
-}
-
-fn optional_clock_witness(encoder: &mut CanonicalEncoder, value: Option<&ClockWitness>) {
-    match value {
-        None => encoder.tag(0),
-        Some(witness) => {
-            encoder.tag(1);
-            encoder.u64(witness.wall_clock_unix_ns);
-            encoder.u64(witness.monotonic_ns);
-            encoder.u64(witness.ntp_offset_ns);
-            encoder.text(witness.ntp_offset_direction.as_str());
-            encoder.u64(witness.ntp_uncertainty_ns);
         }
     }
 }
@@ -146,7 +130,6 @@ impl SiteProbeReceipt {
             encoder.digest(*digest);
         }
         encoder.text(&self.server_identity);
-        optional_clock_witness(&mut encoder, self.clock_evidence.as_ref());
         finish(encoder)
     }
 }

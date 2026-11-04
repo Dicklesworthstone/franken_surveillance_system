@@ -9,10 +9,10 @@ use fss_core::ContentDigest;
 use fss_core::json_input::{self, Value};
 
 use super::{
-    ClockOffsetDirection, ClockWitness, MAX_PAYMENT_MASKS, MAX_PROBE_FRAMES, MAX_SITE_INPUT_BYTES,
-    MAX_SITE_SOURCES, MAX_SOURCE_ZONES, MAX_ZONE_VERTICES, NetworkRoute, PaymentMask, ProbeCodec,
-    SITE_MANIFEST_SCHEMA, SITE_PROBE_RECEIPT_SCHEMA, SiteAuthentication, SiteError, SiteManifest,
-    SiteProbeReceipt, SiteSource, SiteZone, SourceKind, StreamRole,
+    MAX_PAYMENT_MASKS, MAX_PROBE_FRAMES, MAX_SITE_INPUT_BYTES, MAX_SITE_SOURCES, MAX_SOURCE_ZONES,
+    MAX_ZONE_VERTICES, NetworkRoute, PaymentMask, ProbeCodec, SITE_MANIFEST_SCHEMA,
+    SITE_PROBE_RECEIPT_SCHEMA, SiteAuthentication, SiteError, SiteManifest, SiteProbeReceipt,
+    SiteSource, SiteZone, SourceKind, StreamRole,
 };
 
 type Fields = BTreeMap<String, Value>;
@@ -316,7 +316,6 @@ fn receipt(value: &Value) -> Result<SiteProbeReceipt, SiteError> {
             "last_rtp_timestamp",
             "parameter_set_digests",
             "server_identity",
-            "clock_evidence",
         ],
     )?;
     schema(fields, SITE_PROBE_RECEIPT_SCHEMA)?;
@@ -339,33 +338,6 @@ fn receipt(value: &Value) -> Result<SiteProbeReceipt, SiteError> {
         }
         parameter_set_digests.push(digest);
     }
-    let clock_evidence = match fields.get("clock_evidence") {
-        None | Some(Value::Null) => None,
-        Some(value) => {
-            let fields = object(
-                value,
-                &[
-                    "wall_clock_unix_ns",
-                    "monotonic_ns",
-                    "ntp_offset_ns",
-                    "ntp_offset_direction",
-                    "ntp_uncertainty_ns",
-                ],
-            )?;
-            let ntp_offset_direction = match text(fields, "ntp_offset_direction")? {
-                "ahead" => ClockOffsetDirection::Ahead,
-                "behind" => ClockOffsetDirection::Behind,
-                _ => return Err(SiteError::InvalidField("ntp_offset_direction")),
-            };
-            Some(ClockWitness {
-                wall_clock_unix_ns: integer(fields, "wall_clock_unix_ns")?,
-                monotonic_ns: integer(fields, "monotonic_ns")?,
-                ntp_offset_ns: integer(fields, "ntp_offset_ns")?,
-                ntp_offset_direction,
-                ntp_uncertainty_ns: integer(fields, "ntp_uncertainty_ns")?,
-            })
-        }
-    };
     let receipt = SiteProbeReceipt {
         site_id: text(fields, "site_id")?.to_owned(),
         source_id: text(fields, "source_id")?.to_owned(),
@@ -389,7 +361,6 @@ fn receipt(value: &Value) -> Result<SiteProbeReceipt, SiteError> {
         last_rtp_timestamp: integer(fields, "last_rtp_timestamp")?,
         parameter_set_digests,
         server_identity: text(fields, "server_identity")?.to_owned(),
-        clock_evidence,
     };
     if receipt.observed_frames > MAX_PROBE_FRAMES {
         return Err(SiteError::Limit);
