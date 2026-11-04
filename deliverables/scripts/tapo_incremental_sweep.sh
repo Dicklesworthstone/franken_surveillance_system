@@ -16,7 +16,7 @@ while true; do
   [ -s "$STATE" ] && IDX=$(cat "$STATE") || IDX=0
   case "$OUT" in
     *shell*) log "SHELL CHAIN COMPLETE — sweep exiting"; exit 0 ;;
-    *no-login*) sleep 30 ;;
+    *no-login*) sleep 10 ;;
     *burst-done*) sleep 20 ;;
     *) sleep 20 ;;
   esac
