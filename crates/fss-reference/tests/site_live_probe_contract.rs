@@ -9,9 +9,11 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use fss_core::ContentDigest;
-use fss_packet::StreamKey;
+use fss_packet::{PacketLimits, RtpPacket, StreamKey};
+use fss_reference::ingest::rtpdump::{RtpDumpKind, RtpDumpLimits, RtpDumpReader};
 use fss_reference::rtsp::authentication::{DigestCredentials, DigestPolicy};
 use fss_reference::rtsp::client::{ClientCloseReceipt, ClientConfig, ClientError};
+use fss_reference::rtsp::decode_base64;
 use fss_reference::rtsp::tcp::{
     SocketReadiness, TcpAuthority, TcpBinding, TcpDenial, TcpError, TcpLimits, TcpOperation,
     TcpSecurityPolicy, TcpTotals,
@@ -38,7 +40,6 @@ const HEVC_VPS: &str = "QAEMAf//AWAAAAMAkAAAAwAAAwAekoCQ";
 const HEVC_SPS: &str = "QgEBAWAAAAMAkAAAAwAAAwAeoCCBBZZKuTC8BaAgAAADACAAAAMBQQ==";
 const HEVC_FIELD_SPS: &str = "QgEBAWAAAAMAkAAAAwAAAwAeoCCBBZZKuTC8BaEgAAADACAAAAMBQQ==";
 const HEVC_PPS: &str = "RAHBcaGkgA==";
-const SSRC: u32 = 0x0102_0304;
 const REALM: &str = "site-fixture-realm";
 const SERVER_CANARY: &str = "PRIVATE_SERVER_ID_NEVER_ECHO";
 const SESSION_CANARY: &str = "PRIVATE_SESSION_NEVER_ECHO";
@@ -55,6 +56,13 @@ enum MediaFault {
     MissingMarker,
     ForeignChannel,
     Truncated,
+    MarkerOnly,
+    ForgedSlice,
+    NoEos,
+    ParameterDrift,
+    AvcField,
+    AvcMbaff,
+    HevcField,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -420,24 +428,6 @@ fn scenario_packets(scenario: Scenario) -> io::Result<Vec<Vec<u8>>> {
         ));
     }
     Ok(packets)
-fn sdp(codec: ProbeCodec) -> &'static [u8] {
-    if codec == ProbeCodec::Hevc {
-        concat!(
-            "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=fixture\r\nt=0 0\r\n",
-            "a=control:*\r\nm=video 0 RTP/AVP 98\r\na=control:trackID=1\r\n",
-            "a=rtpmap:98 H265/90000\r\n",
-            "a=fmtp:98 sprop-vps=QAEBAg==;sprop-sps=QgECAw==;sprop-pps=RAEDBA==\r\n"
-        )
-        .as_bytes()
-    } else {
-        concat!(
-            "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=fixture\r\nt=0 0\r\n",
-            "a=control:*\r\nm=video 0 RTP/AVP 96\r\na=control:trackID=1\r\n",
-            "a=rtpmap:96 H264/90000\r\n",
-            "a=fmtp:96 packetization-mode=1;sprop-parameter-sets=Z0IAHw==,aAA=\r\n"
-        )
-        .as_bytes()
-    }
 }
 
 fn interleaved(channel: u8, payload: &[u8]) -> Vec<u8> {
@@ -447,137 +437,148 @@ fn interleaved(channel: u8, payload: &[u8]) -> Vec<u8> {
     frame
 }
 
-fn rtp(codec: ProbeCodec, index: u16, fault: MediaFault) -> Vec<u8> {
-    let payload = if codec == ProbeCodec::Hevc { 98 } else { 96 };
-    let marker = !(matches!(fault, MediaFault::MissingMarker) && index == 1);
-    let mut bytes = vec![0x80, payload | if marker { 0x80 } else { 0 }];
-    let sequence = if matches!(fault, MediaFault::Sequence) && index == 1 {
-        10
-    } else {
-        index
-    };
-    let timestamp = if matches!(fault, MediaFault::Cadence) && index == 2 {
-        7300
-    } else {
-        u32::from(index) * 3600
-    };
-    let sender = if matches!(fault, MediaFault::Sender) {
-        SSRC + 1
-    } else {
-        SSRC
-    };
-    bytes.extend_from_slice(&sequence.to_be_bytes());
-    bytes.extend_from_slice(&timestamp.to_be_bytes());
-    bytes.extend_from_slice(&sender.to_be_bytes());
-    bytes.extend_from_slice(if codec == ProbeCodec::Hevc {
-        &[0x26, 1, 0x80]
-    } else {
-        &[0x65, 0, 0x80]
-    });
-    bytes
-}
-
 fn serve(listener: TcpListener, scenario: Scenario) -> io::Result<ServerLog> {
+    let packets = scenario_packets(scenario)?;
+    let description = scenario_sdp(scenario)?;
+    let late_packet = fixture_packets(scenario.codec)?
+        .into_iter()
+        .next()
+        .ok_or_else(|| io::Error::other("fixture late packet"))?;
     let (mut socket, _) = listener.accept()?;
     socket.set_read_timeout(Some(Duration::from_secs(3)))?;
     socket.set_write_timeout(Some(Duration::from_secs(3)))?;
     let mut log = ServerLog::default();
-    let mut challenged = false;
-    for method in ["OPTIONS", "DESCRIBE", "SETUP", "PLAY", "TEARDOWN"] {
-        let Some((mut cseq, signed)) = read_request(&mut socket, &mut log)? else {
-            return Ok(log);
-        };
-        if log.methods.last().map(String::as_str) != Some(method) {
-            return Err(io::Error::other("unexpected fixture method"));
-        }
-        if scenario.digest && !challenged {
-            assert!(!signed);
-            let realm = if scenario.wrong_realm {
-                "foreign-realm"
-            } else {
-                REALM
+    let session = (|| -> io::Result<()> {
+        let mut challenged = false;
+        for method in ["OPTIONS", "DESCRIBE", "SETUP", "PLAY", "TEARDOWN"] {
+            let request = match read_request(&mut socket, &mut log) {
+                Err(error)
+                    if method == "TEARDOWN"
+                        && matches!(
+                            scenario.media_fault,
+                            MediaFault::MarkerOnly | MediaFault::ForgedSlice | MediaFault::NoEos
+                        )
+                        && matches!(
+                            error.kind(),
+                            io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+                        ) =>
+                {
+                    // Keep the peer open long enough to acknowledge a buggy marker-only
+                    // completion. A correct observer needs more syntax, then sees clean EOF.
+                    return Ok(());
+                }
+                other => other?,
             };
-            let challenge = format!(
-                "RTSP/1.0 401 Unauthorized\r\nCSeq: {cseq}\r\nWWW-Authenticate: Digest realm=\"{realm}\",nonce=\"fixture-nonce\",algorithm=SHA-256,qop=\"auth\"\r\nContent-Length: 0\r\n\r\n"
-            );
-            write_chunks(&mut socket, challenge.as_bytes(), scenario.chunks)?;
-            challenged = true;
-            let Some((retry, signed)) = read_request(&mut socket, &mut log)? else {
-                return Ok(log);
+            let Some((mut cseq, signed)) = request else {
+                return Ok(());
             };
-            if retry != cseq + 1
-                || !signed
-                || log.methods.last().map(String::as_str) != Some(method)
-            {
-                return Err(io::Error::other("invalid fixture Digest retry"));
+            if log.methods.last().map(String::as_str) != Some(method) {
+                return Err(io::Error::other("unexpected fixture method"));
             }
-            cseq = retry;
-        } else if scenario.digest && !signed {
-            return Err(io::Error::other("lost fixture Digest context"));
-        }
-        let bytes = match method {
-            "DESCRIBE" => response(
-                cseq,
-                &format!("Content-Type: application/sdp\r\nServer: {SERVER_CANARY}\r\n"),
-                sdp(scenario.codec),
-            ),
-            "SETUP" => response(
-                cseq,
-                &format!(
-                    "Session: {SESSION_CANARY};timeout=60\r\nTransport: RTP/AVP/TCP;unicast;interleaved=0-1;ssrc={SSRC:08x}\r\n"
-                ),
-                &[],
-            ),
-            "PLAY" | "TEARDOWN" => response(
-                if method == "TEARDOWN" && matches!(scenario.close, CloseMode::WrongCseq) {
-                    cseq + 1
+            if scenario.digest && !challenged {
+                assert!(!signed);
+                let realm = if scenario.wrong_realm {
+                    "foreign-realm"
                 } else {
-                    cseq
-                },
-                &format!("Session: {SESSION_CANARY}\r\n"),
-                &[],
-            ),
-            _ => response(cseq, "", &[]),
-        };
-        if method == "TEARDOWN" {
-            if matches!(scenario.close, CloseMode::Drop) {
-                return Ok(log);
+                    REALM
+                };
+                let challenge = format!(
+                    "RTSP/1.0 401 Unauthorized\r\nCSeq: {cseq}\r\nWWW-Authenticate: Digest realm=\"{realm}\",nonce=\"fixture-nonce\",algorithm=SHA-256,qop=\"auth\"\r\nContent-Length: 0\r\n\r\n"
+                );
+                write_chunks(&mut socket, challenge.as_bytes(), scenario.chunks)?;
+                challenged = true;
+                let Some((retry, signed)) = read_request(&mut socket, &mut log)? else {
+                    return Ok(());
+                };
+                if retry != cseq + 1
+                    || !signed
+                    || log.methods.last().map(String::as_str) != Some(method)
+                {
+                    return Err(io::Error::other("invalid fixture Digest retry"));
+                }
+                cseq = retry;
+            } else if scenario.digest && !signed {
+                return Err(io::Error::other("lost fixture Digest context"));
             }
-            if scenario.late_media {
-                write_chunks(
-                    &mut socket,
-                    &interleaved(0, &rtp(scenario.codec, 3, MediaFault::None)),
-                    scenario.chunks,
-                )?;
-                write_chunks(
-                    &mut socket,
-                    &interleaved(1, b"excluded-rtcp-tail"),
-                    scenario.chunks,
-                )?;
+            let bytes = match method {
+                "DESCRIBE" => response(
+                    cseq,
+                    &format!("Content-Type: application/sdp\r\nServer: {SERVER_CANARY}\r\n"),
+                    &description,
+                ),
+                "SETUP" => response(
+                    cseq,
+                    &format!(
+                        "Session: {SESSION_CANARY};timeout=60\r\nTransport: RTP/AVP/TCP;unicast;interleaved=0-1;ssrc={:08x}\r\n",
+                        fixture_ssrc(scenario.codec)
+                    ),
+                    &[],
+                ),
+                "PLAY" | "TEARDOWN" => response(
+                    if method == "TEARDOWN" && matches!(scenario.close, CloseMode::WrongCseq) {
+                        cseq + 1
+                    } else {
+                        cseq
+                    },
+                    &format!("Session: {SESSION_CANARY}\r\n"),
+                    &[],
+                ),
+                _ => response(cseq, "", &[]),
+            };
+            if method == "TEARDOWN" {
+                if matches!(scenario.close, CloseMode::Drop) {
+                    return Ok(());
+                }
+                if scenario.late_media {
+                    write_chunks(&mut socket, &interleaved(0, &late_packet), scenario.chunks)?;
+                    write_chunks(
+                        &mut socket,
+                        &interleaved(1, b"excluded-rtcp-tail"),
+                        scenario.chunks,
+                    )?;
+                }
             }
-        }
-        write_chunks(&mut socket, &bytes, scenario.chunks)?;
-        if method == "PLAY" {
-            // Deliberately not a valid RTCP packet: this channel is excluded, not trusted timing.
-            let mut frames = interleaved(1, b"excluded-rtcp");
-            for index in 0..3 {
+            write_chunks(&mut socket, &bytes, scenario.chunks)?;
+            if method == "PLAY" {
+                // Deliberately not valid RTCP: this channel is excluded, not trusted timing.
+                let mut frames = interleaved(1, b"excluded-rtcp");
                 let channel = if matches!(scenario.media_fault, MediaFault::ForeignChannel) {
                     4
                 } else {
                     0
                 };
-                frames.extend_from_slice(&interleaved(
-                    channel,
-                    &rtp(scenario.codec, index, scenario.media_fault),
-                ));
-            }
-            if matches!(scenario.media_fault, MediaFault::Truncated) {
-                frames.truncate(frames.len() - 1);
+                for packet in &packets {
+                    frames.extend_from_slice(&interleaved(channel, packet));
+                }
+                if matches!(scenario.media_fault, MediaFault::Truncated) {
+                    frames.truncate(frames.len() - 1);
+                    write_chunks(&mut socket, &frames, scenario.chunks)?;
+                    return Ok(());
+                }
                 write_chunks(&mut socket, &frames, scenario.chunks)?;
-                return Ok(log);
             }
-            write_chunks(&mut socket, &frames, scenario.chunks)?;
         }
+        Ok(())
+    })();
+    if let Err(error) = session {
+        let refusal_expected = scenario.wrong_realm
+            || !matches!(
+                scenario.media_fault,
+                MediaFault::None | MediaFault::MissingMarker
+            )
+            || matches!(scenario.close, CloseMode::WrongCseq);
+        if !refusal_expected
+            || !matches!(
+                error.kind(),
+                io::ErrorKind::BrokenPipe
+                    | io::ErrorKind::ConnectionReset
+                    | io::ErrorKind::ConnectionAborted
+            )
+        {
+            return Err(error);
+        }
+        // Early native rejection may retire the socket while fixture writes are in flight.
+        // Positive sessions still require every server write and the exact close handshake.
     }
     Ok(log)
 }
@@ -750,16 +751,7 @@ fn native_avc_sample_waits_for_teardown_and_records_omission() -> Test {
         ["OPTIONS", "DESCRIBE", "SETUP", "PLAY", "TEARDOWN"]
     );
     assert_eq!(log.cseqs, [1, 2, 3, 4, 5]);
-    assert_eq!(completed.receipt.codec, ProbeCodec::Avc);
-    assert_eq!(completed.receipt.ssrc, SSRC);
-    assert_eq!(completed.receipt.observed_frames, 3);
-    assert_eq!(completed.receipt.frame_duration_ticks, 3600);
-    assert_eq!(
-        completed.receipt.sdp_digest,
-        ContentDigest::sha256(sdp(ProbeCodec::Avc))
-    );
-    assert_eq!(completed.accounting.rtp_packets, 3);
-    assert_eq!(completed.accounting.rtcp_frames_excluded, 1);
+    assert_fixture_measurement(&completed, ProbeCodec::Avc, false)?;
     assert_eq!(completed.accounting.control_responses, 5);
     assert_eq!(
         completed.accounting.discarded_wire_bytes,
@@ -787,16 +779,7 @@ fn native_hevc_uses_exact_selected_parameter_sets_without_decoding() -> Test {
         ..Scenario::default()
     })?;
     let completed = result?;
-    assert_eq!(completed.receipt.codec, ProbeCodec::Hevc);
-    assert_eq!(completed.receipt.payload_type, 98);
-    assert_eq!(
-        completed.receipt.parameter_set_digests,
-        vec![
-            ContentDigest::sha256(&[0x40, 1, 1, 2]),
-            ContentDigest::sha256(&[0x42, 1, 2, 3]),
-            ContentDigest::sha256(&[0x44, 1, 3, 4]),
-        ]
-    );
+    assert_fixture_measurement(&completed, ProbeCodec::Hevc, false)?;
     Ok(())
 }
 
@@ -842,13 +825,7 @@ fn partial_socket_requests_and_chunked_responses_preserve_one_receipt() -> Test 
             .count(),
         1
     );
-    assert_eq!(completed.receipt.observed_frames, 3);
-    assert_eq!(completed.accounting.rtp_packets, 3);
-    assert_eq!(completed.accounting.closing_frames_excluded, 2);
-    assert_eq!(
-        completed.accounting.closing_bytes_excluded,
-        15 + b"excluded-rtcp-tail".len() as u64
-    );
+    assert_fixture_measurement(&completed, ProbeCodec::Avc, true)?;
     assert!(!completed.close.remote_session_may_exist);
     Ok(())
 }
@@ -868,6 +845,7 @@ fn digest_challenge_borrows_credentials_only_for_bounded_requests() -> Test {
     );
     assert_eq!(log.cseqs, [1, 2, 3, 4, 5, 6]);
     assert_eq!(log.signed_requests, 5);
+    assert_fixture_measurement(&completed, ProbeCodec::Avc, false)?;
     assert_eq!(completed.accounting.control_responses, 6);
     assert!(!completed.close.remote_session_may_exist);
     Ok(())
@@ -934,41 +912,6 @@ fn sender_gaps_cadence_and_channel_faults_never_publish_a_sample() -> Test {
             assert!(!retired.teardown_acknowledged);
             assert!(!log.methods.iter().any(|method| method == "TEARDOWN"));
         }
-fn sender_gaps_cadence_marker_and_channel_faults_never_publish_a_sample() -> Test {
-    for (fault, expected) in [
-        (
-            MediaFault::Sender,
-            ProbeError::Observation(ObservationError::Continuity),
-        ),
-        (
-            MediaFault::Sequence,
-            ProbeError::Observation(ObservationError::Continuity),
-        ),
-        (
-            MediaFault::Cadence,
-            ProbeError::Observation(ObservationError::Cadence),
-        ),
-        (
-            MediaFault::MissingMarker,
-            ProbeError::Observation(ObservationError::Continuity),
-        ),
-        (
-            MediaFault::ForeignChannel,
-            ProbeError::Session(ClientError::MediaNotAdmitted),
-        ),
-    ] {
-        let (result, log) = run(Scenario {
-            media_fault: fault,
-            ..Scenario::default()
-        })?;
-        let Err(error) = result else {
-            return Err("malformed sample was accepted".into());
-        };
-        assert_eq!(error.reason, expected);
-        let retired = error.retirement.ok_or("missing retirement")?;
-        assert!(retired.close.remote_session_may_exist);
-        assert!(!retired.teardown_acknowledged);
-        assert!(!log.methods.iter().any(|method| method == "TEARDOWN"));
     }
     Ok(())
 }
@@ -998,26 +941,6 @@ fn complete_sample_without_matching_teardown_ack_remains_indeterminate() -> Test
                 1
             );
         }
-    for close in [CloseMode::Drop, CloseMode::WrongCseq] {
-        let (result, log) = run(Scenario {
-            close,
-            ..Scenario::default()
-        })?;
-        let Err(error) = result else {
-            return Err("unacknowledged close was accepted".into());
-        };
-        let retired = error.retirement.ok_or("missing retirement")?;
-        assert!(retired.close.remote_session_may_exist);
-        assert_eq!(retired.close.pending_cseq, Some(5));
-        assert_eq!(retired.accounting.rtp_packets, 3);
-        assert!(!retired.teardown_acknowledged);
-        assert_eq!(
-            log.methods
-                .iter()
-                .filter(|method| *method == "TEARDOWN")
-                .count(),
-            1
-        );
     }
     Ok(())
 }

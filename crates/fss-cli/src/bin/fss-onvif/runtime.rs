@@ -227,6 +227,27 @@ pub(crate) fn run<T>(
     .map(|completed| completed.value)
 }
 
+/// Use the same native ownership, budget, cancellation and finalization contract
+/// for an explicitly approved site probe. Only the audit namespace differs.
+#[allow(dead_code, reason = "Shared owner is also included by ONVIF commands")]
+pub(crate) fn run_site_probe<T>(
+    request: Request,
+    work: impl FnOnce(&Scope<'_, '_>) -> Result<T, &'static str>,
+) -> Result<T, &'static str> {
+    run_with_clock_domain(
+        request,
+        |scope| {
+            work(scope).map(|value| WorkValue {
+                value,
+                committed: false,
+            })
+        },
+        || NativeClock(Instant::now()),
+        "site-probe",
+    )
+    .map(|completed| completed.value)
+}
+
 /// Run a write whose owner explicitly marks its successful durable result.
 /// Every failure before that marker remains an ordinary error. After it, the
 /// publication identifiers survive cancellation, deadlines and retirement failures;
@@ -267,6 +288,15 @@ fn run_with_clock<T, C: Clock>(
     work: impl FnOnce(&Scope<'_, '_>) -> Result<WorkValue<T>, &'static str>,
     open_clock: impl FnOnce() -> C,
 ) -> Result<CommittedCompletion<T>, &'static str> {
+    run_with_clock_domain(request, work, open_clock, "onvif")
+}
+
+fn run_with_clock_domain<T, C: Clock>(
+    request: Request,
+    work: impl FnOnce(&Scope<'_, '_>) -> Result<WorkValue<T>, &'static str>,
+    open_clock: impl FnOnce() -> C,
+    domain: &'static str,
+) -> Result<CommittedCompletion<T>, &'static str> {
     let allowance = BudgetVector::builder()
         .bytes(request.bytes)
         .network_bytes(request.network_bytes)
@@ -291,8 +321,9 @@ fn run_with_clock<T, C: Clock>(
         grants.push(RuntimeGrant::AdapterAuth);
     }
     let spec = RootAuthoritySpec {
-        trace_id: "trace:onvif-operator".into(),
-        operation_id: OperationId::parse("operation:onvif-operator").map_err(|_| AUTHORITY)?,
+        trace_id: format!("trace:{domain}-operator"),
+        operation_id: OperationId::parse(format!("operation:{domain}-operator"))
+            .map_err(|_| AUTHORITY)?,
         principal: request.principal,
         capabilities: grants
             .iter()
@@ -301,15 +332,15 @@ fn run_with_clock<T, C: Clock>(
         deadline: Some(TimestampNs(i128::from(request.timeout_ns))),
         priority: 10,
         budgets: allowance,
-        privacy_scope: "privacy:owner-private-onvif-metadata".into(),
-        retention_scope: "retention:explicit-onvif-operator-output".into(),
+        privacy_scope: format!("privacy:owner-private-{domain}-metadata"),
+        retention_scope: format!("retention:explicit-{domain}-operator-output"),
         anchor_universe: request.approval,
         generation: 1,
     };
-    let resource = format!("onvif-operator:{}", request.approval.to_text());
+    let resource = format!("{domain}-operator:{}", request.approval.to_text());
     let (mut process, mut tree) = AuthorityCx::root(
         spec.clone(),
-        RegionId::new("region:onvif-process").map_err(|_| AUTHORITY)?,
+        RegionId::new(format!("region:{domain}-process")).map_err(|_| AUTHORITY)?,
         RegionKind::Process,
         allowance,
         TimestampNs(0),
@@ -323,7 +354,7 @@ fn run_with_clock<T, C: Clock>(
     let mut property = process
         .scope_down(
             &mut tree,
-            RegionId::new("region:onvif-property").map_err(|_| AUTHORITY)?,
+            RegionId::new(format!("region:{domain}-property")).map_err(|_| AUTHORITY)?,
             RegionKind::Property,
             allowance,
             spec.clone(),
@@ -333,7 +364,7 @@ fn run_with_clock<T, C: Clock>(
     let mut sensor = property
         .scope_down(
             &mut tree,
-            RegionId::new("region:onvif-sensor").map_err(|_| AUTHORITY)?,
+            RegionId::new(format!("region:{domain}-sensor")).map_err(|_| AUTHORITY)?,
             RegionKind::Sensor,
             allowance,
             spec,
@@ -347,7 +378,7 @@ fn run_with_clock<T, C: Clock>(
         &mut sensor,
         &mut tree,
         TaskSpec {
-            task_id: TaskId::new("task:onvif-operator").map_err(|_| AUTHORITY)?,
+            task_id: TaskId::new(format!("task:{domain}-operator")).map_err(|_| AUTHORITY)?,
             started_at: TimestampNs(0),
         },
         |task| {
