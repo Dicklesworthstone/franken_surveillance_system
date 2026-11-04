@@ -254,6 +254,44 @@ def main() -> int:
             super().__init__(*x, directory=a.dir, **kw)
 
         def do_GET(self):
+            # S3 component proxy: the camera fetches presigned URLs (valid signatures) that our
+            # DNS spoof routes here. For any path we do not have locally, forward the request
+            # VERBATIM — same path + same presigned query — to the real S3 host the URL was
+            # signed for, and stream the response back. This makes the full component set
+            # (12 files + launch.sh) fetchable through us without mirroring every byte.
+            if self.path.startswith(("/wyzeedgeai_cam_v4_test_protocol/", "/kvsWebrtcClientMaster_t41/")) \
+                    and not os.path.exists(os.path.join(a.dir, self.path.split("?")[0].lstrip("/"))):
+                try:
+                    import urllib.parse
+                    host = "sinker-t-usw2.s3.us-west-2.amazonaws.com"
+                    fwd = self.path if "?" in self.path else self.path + \
+                        "?" + ("X-Amz-Signature=proxy" if "X-Amz" not in self.path else "")
+                    req = (f"GET {fwd} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n").encode()
+                    raw = socket.create_connection((host, 443), timeout=15)
+                    ctx = ssl.create_default_context()
+                    c = ctx.wrap_socket(raw, server_hostname=host)
+                    c.sendall(req)
+                    buf = b""
+                    while True:
+                        d = c.recv(65536)
+                        if not d:
+                            break
+                        buf += d
+                    c.close()
+                    head, _, body = buf.partition(b"\r\n\r\n")
+                    status = int(head.split(b" ")[1]) if b" " in head else 502
+                    print(f"{self.address_string()} ua={self.headers.get('User-Agent','-')!r} "
+                          f"GET {self.path.split('?')[0]} -> S3 proxy {status} ({len(body)}B)", flush=True)
+                    self.send_response(status)
+                    for line in head.split(b"\r\n"):
+                        if line.lower().startswith((b"content-type:", b"etag:")):
+                            self.send_header(line.split(b":")[0].decode(), line.split(b":", 1)[1].decode().strip())
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+                except Exception as exc:
+                    print(f"  -> S3 proxy failed: {exc}", flush=True)
             # The SDK builds the get_firmware_detail request itself; accept GET too so a
             # probe or an SDK variant that uses GET still lands on the trigger (§23.4).
             if "get_firmware_detail" in self.path and a.firmware_detail:
