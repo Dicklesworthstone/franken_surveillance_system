@@ -1,15 +1,12 @@
 #![forbid(unsafe_code)]
-//! Native syntax-grouped RTP observations for a session-owned RTSP site probe.
+//! Pure RTP observations for a native, session-owned RTSP site probe (VIT-003).
 //!
 //! Callers own approved network effects, authentication, liveness and TEARDOWN.
-//! Picture boundaries are measured by the same codec owners as recorded probes;
-//! they do not certify complete decoded pixels or authenticate a camera. A live
-//! caller may explicitly freeze a confirmed prefix and account for its excluded
-//! unfinished tail. Raw SDP and media never survive into a receipt.
+//! These observations cannot authenticate a camera or certify a complete picture.
+//! Raw SDP and packet bytes never survive into a receipt.
 
 use fss_core::ContentDigest;
-use fss_packet::{PacketLimits, RtpPacket, StreamKey};
-
+use fss_packet::{PacketLimits, RtpPacket};
 use super::{ProbeCodec, SiteManifest, SiteProbeReceipt, SourceKind};
 use crate::rtsp::client::observed::ObservedVideoDescription;
 use crate::rtsp::client::{hevc, jpeg};
@@ -18,12 +15,14 @@ use crate::rtsp::selection::{
 };
 use crate::site_probe::media::{MediaObserver, PreparedMedia};
 use crate::site_probe::{Cadence, SiteProbeError};
+use crate::rtsp::sdp::decode_base64;
+use crate::rtsp::selection::{MAX_SELECTION_BYTES, select_h264_description, select_h265_description};
 
 /// Maximum datagrams in one strictly bounded observation.
 pub const MAX_PROBE_RTP_PACKETS: u32 = 4096;
-/// Maximum aggregate RTP bytes in one observation.
+/// Maximum aggregate bytes in one observation.
 pub const MAX_PROBE_RTP_BYTES: u64 = 8 * 1024 * 1024;
-/// Maximum native syntax-grouped picture observations in one sample.
+/// Maximum marked candidate pictures in one observation.
 pub const MAX_PROBE_PICTURES: u32 = 64;
 
 /// Payload-free refusal states; no camera address, secret or source data is rendered.
@@ -31,17 +30,17 @@ pub const MAX_PROBE_PICTURES: u32 = 64;
 pub enum ObservationError {
     /// Source kind, identity, declaration or selected index is invalid.
     Scope,
-    /// SDP, native codec syntax or immutable parameter sets cannot be admitted.
+    /// The chosen SDP media and codec parameter sets do not match exactly.
     Negotiation,
     /// An input or cumulative work limit was exceeded.
     Limit,
     /// A malformed RTP packet or foreign channel or payload arrived.
     Packet,
-    /// Sender, sequence or native picture-start continuity was lost.
+    /// Sender, sequence or picture-boundary continuity was lost.
     Continuity,
-    /// Native picture-boundary timestamps do not follow one fixed 90 kHz cadence.
+    /// RTP picture-boundary timestamps do not follow one fixed 90 kHz cadence.
     Cadence,
-    /// Too few witnessed groups, or an unfinished strict sample or prefix operation.
+    /// The sample contains fewer than three complete marked boundaries.
     Incomplete,
     /// The emitted receipt fails the canonical schema contract.
     Receipt,
@@ -87,18 +86,7 @@ pub struct NegotiatedProbe<'a> {
     pub server_identity: &'a str,
 }
 
-/// Derivative bytes explicitly excluded at a live sample cut. These counts do
-/// not represent extra original-wire bytes, omitted frames, or durable custody.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct ProbeTail {
-    /// Complete reconstructed NAL bytes in a group with no witnessed boundary.
-    pub unverified_nal_bytes_excluded: u64,
-    /// Reconstructed bytes of an unfinished fragmentation unit.
-    pub unfinished_fragment_bytes_excluded: u64,
-}
-
-/// Bounded transient native reconstruction. Only digests, counters and RTP
-/// coordinates survive successful finalization; no media is retained in a receipt.
+/// Fixed-memory observer. Only digests, counters and RTP header coordinates survive.
 pub struct RtspProbeObserver<'a> {
     manifest: &'a SiteManifest,
     source_index: usize,
@@ -109,30 +97,29 @@ pub struct RtspProbeObserver<'a> {
     sdp_digest: ContentDigest,
     parameter_digests: Vec<ContentDigest>,
     server_identity: String,
-    prepared: Option<PreparedMedia>,
-    media: Option<MediaObserver>,
     ssrc: Option<u32>,
-    sequence: Option<u64>,
-    last_ns: Option<u64>,
-    cadence: Cadence,
+    sequence: Option<u16>,
+    active_timestamp: Option<u32>,
+    active_marked: bool,
+    first_timestamp: Option<u32>,
+    last_timestamp: Option<u32>,
+    cadence: Option<u32>,
+    pictures: u32,
     packets: u32,
     bytes: u64,
     invalidated: bool,
-    frozen: Option<ProbeTail>,
 }
 impl std::fmt::Debug for RtspProbeObserver<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RtspProbeObserver")
             .field("source_index", &self.source_index)
-            .field("confirmed_pictures", &self.cadence.frames())
+            .field("pictures", &self.pictures)
             .field("packets", &self.packets)
-            .field("frozen", &self.frozen.is_some())
             .finish_non_exhaustive()
     }
 }
 impl<'a> RtspProbeObserver<'a> {
-    /// Begin from an exact validated source and SDP selection. The shared native
-    /// configuration owner checks full SPS syntax, including field-mode refusal.
+    /// Begin observation from an exact validated manifest source and SDP selection.
     pub fn new(
         manifest: &'a SiteManifest,
         source_index: usize,
@@ -210,6 +197,17 @@ impl<'a> RtspProbeObserver<'a> {
                     .map_err(|_| ObservationError::Negotiation)?;
                 PreparedMedia::new(ObservedVideoDescription::Hevc(selected))
                     .map_err(measurement_error)?
+        let (session, projected_hevc) = match negotiated.codec {
+            ProbeCodec::Avc => (
+                select_h264_description(negotiated.sdp, negotiated.media_index, Some(negotiated.payload_type))
+                    .map_err(|_| ObservationError::Negotiation)?,
+                None,
+            ),
+            ProbeCodec::Hevc => {
+                let (session, projected) = select_h265_description(
+                    negotiated.sdp, negotiated.media_index, Some(negotiated.payload_type),
+                ).map_err(|_| ObservationError::Negotiation)?;
+                (session, Some(projected))
             }
             ProbeCodec::Jpeg => {
                 let session = select_jpeg_description(
@@ -238,8 +236,41 @@ impl<'a> RtspProbeObserver<'a> {
                         || supplied.len() > 16_384
                         || *digest != ContentDigest::sha256(supplied)
                 })
+        let media = session.media.get(negotiated.media_index).ok_or(ObservationError::Negotiation)?;
+        if media.media_type != "video" || media.payload_type != negotiated.payload_type
+            || media.clock_rate != Some(90_000)
         {
             return Err(ObservationError::Negotiation);
+        }
+        let decoded = match negotiated.codec {
+            ProbeCodec::Avc => vec![
+                media.sps.clone().ok_or(ObservationError::Negotiation)?,
+                media.pps.clone().ok_or(ObservationError::Negotiation)?,
+            ],
+            ProbeCodec::Hevc => hevc_sets(
+                projected_hevc.as_deref().ok_or(ObservationError::Negotiation)?,
+                negotiated.media_index, negotiated.payload_type,
+            )?,
+            ProbeCodec::Jpeg => return Err(ObservationError::Negotiation),
+        };
+        if decoded.len() != negotiated.parameter_sets.len() {
+            return Err(ObservationError::Negotiation);
+        }
+        let mut parameter_digests = Vec::with_capacity(decoded.len());
+        for (index, (actual, supplied)) in decoded.iter().zip(negotiated.parameter_sets).enumerate() {
+            let header_ok = match negotiated.codec {
+                ProbeCodec::Avc => actual.first().is_some_and(|b| b & 0x1f == 7 + index as u8),
+                ProbeCodec::Hevc => actual.len() >= 2 && (actual[0] >> 1) & 0x3f == 32 + index as u8,
+                ProbeCodec::Jpeg => false,
+            };
+            if actual.as_slice() != *supplied || actual.is_empty() || actual.len() > 16_384 || !header_ok {
+                return Err(ObservationError::Negotiation);
+            }
+            let digest = ContentDigest::sha256(actual);
+            if parameter_digests.contains(&digest) {
+                return Err(ObservationError::Negotiation);
+            }
+            parameter_digests.push(digest);
         }
         Ok(Self {
             manifest,
@@ -261,11 +292,14 @@ impl<'a> RtspProbeObserver<'a> {
             bytes: 0,
             invalidated: false,
             frozen: None,
+            parameter_digests, server_identity: negotiated.server_identity.to_owned(),
+            ssrc: None, sequence: None, active_timestamp: None, active_marked: false,
+            first_timestamp: None, last_timestamp: None, cadence: None,
+            pictures: 0, packets: 0, bytes: 0, invalidated: false,
         })
     }
 
-    /// Admit supplied evidence with a local work coordinate, not an arrival-time
-    /// claim. Live owners use `observe_rtp_at` with their actual monotonic clock.
+    /// Admit one interleaved RTP packet (not RTCP), without retaining its bytes.
     pub fn observe_rtp(&mut self, channel: u8, bytes: &[u8]) -> Result<(), ObservationError> {
         let Some(step) = self.last_ns.unwrap_or(0).checked_add(1) else {
             self.invalidated = true;
@@ -286,23 +320,17 @@ impl<'a> RtspProbeObserver<'a> {
         if self.invalidated || self.frozen.is_some() || self.last_ns.is_some_and(|old| now_ns < old)
         {
             self.invalidated = true;
+        if self.invalidated {
             return Err(ObservationError::Continuity);
         }
-        let result = self.observe_packet(channel, bytes, now_ns);
+        let result = self.observe_packet(channel, bytes);
         if result.is_err() {
             self.invalidated = true;
-        } else {
-            self.last_ns = Some(now_ns);
         }
         result
     }
 
-    fn observe_packet(
-        &mut self,
-        channel: u8,
-        bytes: &[u8],
-        now_ns: u64,
-    ) -> Result<(), ObservationError> {
+    fn observe_packet(&mut self, channel: u8, bytes: &[u8]) -> Result<(), ObservationError> {
         if self.packets >= MAX_PROBE_RTP_PACKETS {
             return Err(ObservationError::Limit);
         }
@@ -321,12 +349,19 @@ impl<'a> RtspProbeObserver<'a> {
         {
             return Err(ObservationError::Packet);
         }
-        if self.ssrc.is_some_and(|old| old != packet.ssrc()) {
+        if self.ssrc.is_some_and(|old| old != packet.ssrc())
+            || self.sequence.is_some_and(|old| old.wrapping_add(1) != packet.sequence())
+        {
             return Err(ObservationError::Continuity);
         }
-        let extended = if let Some(previous) = self.sequence {
-            let next = previous.checked_add(1).ok_or(ObservationError::Limit)?;
-            if packet.sequence() != next as u16 {
+        let ts = packet.timestamp();
+        if let Some(active) = self.active_timestamp {
+            if ts != active {
+                if !self.active_marked {
+                    return Err(ObservationError::Continuity);
+                }
+                self.active_marked = false;
+            } else if self.active_marked {
                 return Err(ObservationError::Continuity);
             }
             next
@@ -359,25 +394,42 @@ impl<'a> RtspProbeObserver<'a> {
         if self.cadence.frames() > MAX_PROBE_PICTURES {
             return Err(ObservationError::Limit);
         }
+        self.active_timestamp = Some(ts);
+        if packet.marker() {
+            if self.pictures >= MAX_PROBE_PICTURES {
+                return Err(ObservationError::Limit);
+            }
+            if let Some(last) = self.last_timestamp {
+                let delta = ts.wrapping_sub(last);
+                if !(1..=90_000).contains(&delta)
+                    || self.cadence.is_some_and(|old| old != delta)
+                {
+                    return Err(ObservationError::Cadence);
+                }
+                self.cadence = Some(delta);
+            } else {
+                self.first_timestamp = Some(ts);
+            }
+            self.last_timestamp = Some(ts);
+            self.active_marked = true;
+            self.pictures += 1;
+        }
         self.packets += 1;
         self.bytes = total;
+        self.sequence = Some(packet.sequence());
+        self.ssrc = Some(packet.ssrc());
         Ok(())
     }
 
-    /// Witnessed native groups so far. Markers, incomplete fragments, pending
-    /// pictures and unverified EOF tails do not independently increment this count.
-    pub fn confirmed_pictures(&self) -> u32 {
-        self.cadence.frames()
-    }
-
-    /// Freeze a confirmed live prefix, explicitly omitting any unfinished next
-    /// group/fragment. This performs local cancellation, never fabricated EOS/EOF.
-    /// A whole datagram is processed before a cut, so it may confirm several groups.
-    pub fn freeze_prefix(&mut self) -> Result<ProbeTail, ObservationError> {
+    /// Return a canonical v1 receipt only for a fully marked, steady source sample.
+    ///
+    /// The caller must independently observe successful RTSP TEARDOWN; returning a
+    /// receipt cannot prove remote close, caller identity, freshness or camera liveness.
+    pub fn finish(self) -> Result<SiteProbeReceipt, ObservationError> {
         if self.invalidated {
             return Err(ObservationError::Continuity);
         }
-        if self.frozen.is_some() || self.cadence.frames() < 3 {
+        if !self.active_marked || self.pictures < 3 {
             return Err(ObservationError::Incomplete);
         }
         let pending = self
@@ -459,6 +511,10 @@ impl<'a> RtspProbeObserver<'a> {
             observed_frames,
             first_rtp_timestamp,
             last_rtp_timestamp,
+            frame_duration_ticks: self.cadence.ok_or(ObservationError::Incomplete)?,
+            clock_rate_hz: 90_000, observed_frames: self.pictures,
+            first_rtp_timestamp: self.first_timestamp.ok_or(ObservationError::Incomplete)?,
+            last_rtp_timestamp: self.last_timestamp.ok_or(ObservationError::Incomplete)?,
             parameter_set_digests: self.parameter_digests,
             server_identity: self.server_identity,
         };
@@ -489,9 +545,132 @@ fn measurement_error(error: SiteProbeError) -> ObservationError {
         }
         SiteProbeError::Cadence => ObservationError::Cadence,
         SiteProbeError::Encoding => ObservationError::Receipt,
+// Strict single-value HEVC subset: a selected native representation with multiple
+// parameter NAL alternatives is ambiguous for the v1 receipt's one-digest slots.
+fn hevc_sets(projected: &str, media_index: usize, payload: u8) -> Result<Vec<Vec<u8>>, ObservationError> {
+    let mut section = None;
+    let mut found = false;
+    let mut result: [Option<Vec<u8>>; 3] = [None, None, None];
+    for line in projected.lines().map(str::trim) {
+        if line.starts_with("m=") {
+            section = Some(section.map_or(0usize, |n| n + 1));
+        }
+        if section != Some(media_index) {
+            continue;
+        }
+        let Some(rest) = line.strip_prefix("a=fmtp:") else { continue };
+        let Some((number, fields)) = rest.split_once(' ') else {
+            return Err(ObservationError::Negotiation);
+        };
+        if number.parse::<u8>().ok() != Some(payload) {
+            continue;
+        }
+        if found {
+            return Err(ObservationError::Negotiation);
+        }
+        found = true;
+        for field in fields.split(';').map(str::trim) {
+            let Some((key, raw)) = field.split_once('=') else { continue };
+            let index = if key.eq_ignore_ascii_case("sprop-vps") { Some(0) }
+                else if key.eq_ignore_ascii_case("sprop-sps") { Some(1) }
+                else if key.eq_ignore_ascii_case("sprop-pps") { Some(2) }
+                else { None };
+            if let Some(index) = index {
+                if result[index].is_some() || raw.contains(',') {
+                    return Err(ObservationError::Negotiation);
+                }
+                result[index] = Some(decode_base64(raw).map_err(|_| ObservationError::Negotiation)?);
+            }
+        }
     }
+    if !found { return Err(ObservationError::Negotiation) }
+    result.into_iter().map(|value| value.ok_or(ObservationError::Negotiation)).collect()
 }
 
 #[cfg(test)]
-#[path = "probe_observation_tests.rs"]
-mod tests;
+mod tests {
+    use super::*;
+    const MANIFEST: &str = include_str!("../../../../fixtures/site/manifest.v1.json");
+    const SDP: &str = concat!(
+        "v=0\r\n", "o=- 1 1 IN IP4 127.0.0.1\r\n", "s=probe-fixture\r\n",
+        "t=0 0\r\n", "a=control:*\r\n", "m=video 0 RTP/AVP 96\r\n",
+        "a=control:trackID=1\r\n", "a=rtpmap:96 H264/90000\r\n",
+        "a=fmtp:96 packetization-mode=1;sprop-parameter-sets=Z0IAHw==,aAA=\r\n",
+    );
+    const SPS: &[u8] = &[0x67, 0x42, 0x00, 0x1f];
+    const PPS: &[u8] = &[0x68, 0x00];
+
+    fn probe<'a>(manifest: &'a SiteManifest) -> Result<RtspProbeObserver<'a>, ObservationError> {
+        let parameters = [SPS, PPS];
+        RtspProbeObserver::new(manifest, 0, NegotiatedProbe {
+            sdp: SDP.as_bytes(), media_index: 0, rtp_channel: 0, codec: ProbeCodec::Avc,
+            payload_type: 96, parameter_sets: &parameters, server_identity: "fixture",
+        })
+    }
+    fn packet(seq: u16, ts: u32, ssrc: u32, marker: bool) -> Vec<u8> {
+        let mut bytes = vec![0x80, if marker { 0xe0 } else { 0x60 }];
+        bytes.extend_from_slice(&seq.to_be_bytes());
+        bytes.extend_from_slice(&ts.to_be_bytes());
+        bytes.extend_from_slice(&ssrc.to_be_bytes());
+        bytes.extend_from_slice(&[0x65, 0x00]);
+        bytes
+    }
+    #[test]
+    fn sequence_and_timestamp_wrap_yield_exact_receipt() -> Result<(), Box<dyn std::error::Error>> {
+        let manifest = SiteManifest::parse(MANIFEST)?;
+        let mut observer = probe(&manifest)?;
+        let stamps = [0xffff_f000_u32, 0xffff_fe10, 0x0000_0c20, 0x0000_1a30];
+        for (i, stamp) in stamps.into_iter().enumerate() {
+            observer.observe_rtp(0, &packet((u16::MAX - 1).wrapping_add(i as u16), stamp, 0, true))?;
+        }
+        let receipt = observer.finish()?;
+        assert_eq!(receipt.observed_frames, 4);
+        assert_eq!(receipt.ssrc, 0);
+        assert_eq!(receipt.frame_duration_ticks, 3600);
+        assert_eq!(receipt.last_rtp_timestamp, stamps[3]);
+        assert_eq!(receipt.parameter_set_digests, vec![ContentDigest::sha256(SPS), ContentDigest::sha256(PPS)]);
+        receipt.validate_for(&manifest)?;
+        Ok(())
+    }
+    #[test]
+    fn gaps_foreign_sender_and_channels_refuse() -> Result<(), Box<dyn std::error::Error>> {
+        let manifest = SiteManifest::parse(MANIFEST)?;
+        let mut gap = probe(&manifest)?;
+        gap.observe_rtp(0, &packet(1, 100, 7, true))?;
+        assert_eq!(gap.observe_rtp(0, &packet(3, 3700, 7, true)), Err(ObservationError::Continuity));
+        // A caller cannot ignore the error and resume to manufacture a valid receipt.
+        assert_eq!(gap.observe_rtp(0, &packet(2, 3700, 7, true)), Err(ObservationError::Continuity));
+        assert!(matches!(gap.finish(), Err(ObservationError::Continuity)));
+        let mut switch = probe(&manifest)?;
+        switch.observe_rtp(0, &packet(1, 100, 7, true))?;
+        assert_eq!(switch.observe_rtp(0, &packet(2, 3700, 8, true)), Err(ObservationError::Continuity));
+        assert_eq!(probe(&manifest)?.observe_rtp(2, &packet(1, 100, 7, true)), Err(ObservationError::Packet));
+        Ok(())
+    }
+    #[test]
+    fn drift_and_missing_markers_refuse() -> Result<(), Box<dyn std::error::Error>> {
+        let manifest = SiteManifest::parse(MANIFEST)?;
+        let mut incomplete = probe(&manifest)?;
+        incomplete.observe_rtp(0, &packet(1, 100, 7, false))?;
+        assert_eq!(incomplete.observe_rtp(0, &packet(2, 3700, 7, true)), Err(ObservationError::Continuity));
+        assert!(matches!(incomplete.finish(), Err(ObservationError::Continuity)));
+        let mut drift = probe(&manifest)?;
+        drift.observe_rtp(0, &packet(1, 100, 7, true))?;
+        drift.observe_rtp(0, &packet(2, 3700, 7, true))?;
+        assert_eq!(drift.observe_rtp(0, &packet(3, 7500, 7, true)), Err(ObservationError::Cadence));
+        Ok(())
+    }
+    #[test]
+    fn nominated_sdp_parameter_bytes_are_checked() -> Result<(), Box<dyn std::error::Error>> {
+        let manifest = SiteManifest::parse(MANIFEST)?;
+        let bad = [0x67, 0x42, 0, 0x20];
+        let params: [&[u8]; 2] = [&bad, PPS];
+        assert!(matches!(RtspProbeObserver::new(&manifest, 0, NegotiatedProbe {
+            sdp: SDP.as_bytes(), media_index: 0, rtp_channel: 0,
+            codec: ProbeCodec::Avc, payload_type: 96,
+            parameter_sets: &params, server_identity: "fixture",
+        }), Err(ObservationError::Negotiation)));
+        assert!(matches!(probe(&manifest)?.finish(), Err(ObservationError::Incomplete)));
+        Ok(())
+    }
+}

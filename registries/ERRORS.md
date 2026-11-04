@@ -29,7 +29,7 @@ operation states rather than generic errors.
 | `ERR-SITE-PROBE-CLOCK-001` | Owner-supplied native probe time moved backwards | Retire this generation before any further socket effect. |
 | `ERR-SITE-PROBE-CLOSED-001` | A retired native probe was stepped again | No reconnect or duplicate receipt; allocate a separately authorized owner for new work. |
 | `ERR-SITE-PROBE-SCOPE-001` | Strict RTP observer source/route scope is not admitted | Correct the exact manifest and negotiated selection; no observation claim. |
-| `ERR-SITE-PROBE-NEGOTIATION-001` | Strict RTP observer SDP, selected codec/configuration or native sequence syntax is unsupported or inconsistent | Use the same accepted native DESCRIBE/selection; do not substitute parameter claims. |
+| `ERR-SITE-PROBE-NEGOTIATION-001` | Strict RTP observer SDP and selected codec/configuration disagree | Use the same accepted native DESCRIBE/selection; do not substitute parameter claims. |
 | `ERR-SITE-PROBE-RECEIPT-001` | The complete native observation cannot produce a valid manifest-bound receipt | No successful prefix or replacement identity. |
 | `ERR-SITE-PROBE-INPUT-PIN-001` | A complete named manifest, DESCRIBE response or RTPdump differs from its independent raw SHA-256 pin | Restore the exact expected bytes or provide independently verified new evidence; never accept a partial match. |
 | `ERR-SITE-PROBE-MANIFEST-001` | The independently pinned probe manifest violates the strict site input contract | Correct the complete declaration and update its independent pin; no guessed or partial source inventory. |
@@ -37,7 +37,7 @@ operation states rather than generic errors.
 | `ERR-SITE-PROBE-SELECTION-001` | Manifest/source or explicit codec/media/channel selection is invalid or unsupported | Correct the exact scope; no guessed source or codec fallback. |
 | `ERR-SITE-PROBE-DESCRIPTION-001` | Recorded DESCRIBE framing, native SDP/control route or Server identity is invalid or ambiguous | Provide one complete supported response; metadata is never silently selected. |
 | `ERR-SITE-PROBE-PACKET-001` | RTPdump or complete RTP/RTCP framing is malformed, truncated or capture-limited | Provide complete original datagrams; never pad missing bytes. |
-| `ERR-SITE-PROBE-CONTINUITY-001` | Observed RTP has loss, duplication, reordering, sender drift or payload drift | Acquire a new contiguous single-stream sample; do not hide gaps. |
+| `ERR-SITE-PROBE-CONTINUITY-001` | Recorded RTP has loss, duplication, reordering, sender drift or payload drift | Acquire a new contiguous single-stream sample; do not hide gaps. |
 | `ERR-SITE-PROBE-PICTURE-001` | Native codec reconstruction, configuration or picture-boundary admission failed | Provide a complete supported sample with exact parameter sets and witnessed picture boundaries. |
 | `ERR-SITE-PROBE-CADENCE-001` | Fewer than three native picture groups or complete JPEG reconstructions, or no single positive fixed RTP cadence | Acquire at least three consecutive pictures under one supported constant-cadence source configuration. |
 | `ERR-SITE-PROBE-ENCODING-001` | Complete canonical measured-evidence or resulting receipt identity cannot be constructed | Correct the exact input; no partial receipt or replacement identity. |

@@ -9,7 +9,7 @@
 //! rtpdump does not contain a SETUP transaction or interleaved channel numbers.
 
 mod description;
-pub(crate) mod media;
+mod media;
 
 #[cfg(test)]
 mod tests;
@@ -437,7 +437,7 @@ fn encoded_digest(encoding: CanonicalEncoder) -> Result<ContentDigest, SiteProbe
 }
 
 #[derive(Default)]
-pub(crate) struct Cadence {
+struct Cadence {
     frames: u32,
     first: Option<u32>,
     last: Option<u32>,
@@ -445,10 +445,6 @@ pub(crate) struct Cadence {
 }
 
 impl Cadence {
-    pub(crate) fn frames(&self) -> u32 {
-        self.frames
-    }
-
     fn observe(&mut self, timestamp: u32) -> Result<(), SiteProbeError> {
         if self.frames == MAX_MEASURED_PROBE_FRAMES {
             return Err(SiteProbeError::Limit);
@@ -466,7 +462,7 @@ impl Cadence {
         Ok(())
     }
 
-    pub(crate) fn finish(self) -> Result<(u32, u32, u32, u32), SiteProbeError> {
+    fn finish(self) -> Result<(u32, u32, u32, u32), SiteProbeError> {
         if self.frames < MIN_MEASURED_PROBE_FRAMES {
             return Err(SiteProbeError::InsufficientPictures);
         }

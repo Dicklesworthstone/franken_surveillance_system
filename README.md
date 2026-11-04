@@ -194,6 +194,9 @@ TEARDOWN acknowledgement; failures preserve possible remote-session state. See
 Validation, recorded probing and capture planning perform no device contact,
 credential reads, recording or signed rights verification. A site recorder remains
 open. Unsupported sources and payment regions that require masking before original retention refuse.
+This is read-only planning: no device contact, credential reads, recording or signed
+rights verification. A site executor and live probe producer remain open. Unsupported
+sources and payment regions that require masking before original retention refuse.
 See [the executable two-source example and contracts](docs/SITE_PLANNING.md).
 
 ## Architecture in one page
