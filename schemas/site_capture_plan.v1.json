@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://franken-surveillance-system.dev/schemas/site_capture_plan.v1.json",
   "title": "FSS atomic site capture plan v1",
-  "description": "Pure direct RTSP/NVR AVC/HEVC/JPEG planning. The complete site digest binds canonical manifest and probe receipts plus exact native approvals. No site executor, rights-lease verification or current-liveness claim. JPEG sources use the existing bounded datagram-capture planner and require at most 256 pictures; native JPEG plans contain no independent AVC/HEVC pin journal or cadence option.",
+  "description": "Atomic direct RTSP/NVR AVC/HEVC/JPEG and protected UniFi AVC/HEVC planning. The complete site digest binds canonical manifest and probe receipts plus exact native approvals; UniFi additionally binds the actual protected-export fingerprint, camera and exact selected view/route through the existing native wrapper. No site executor, rights-lease verification or current-liveness claim. JPEG sources use the existing bounded datagram-capture planner and require at most 256 pictures; native JPEG plans contain no independent AVC/HEVC pin journal or cadence option. UniFi JPEG capture is not admitted.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -141,7 +141,8 @@
         "kind": {
           "enum": [
             "rtsp",
-            "nvr_channel"
+            "nvr_channel",
+            "unifi_protect"
           ]
         },
         "stream_role": {
@@ -162,7 +163,7 @@
           "const": "fss-capture-rtsp"
         },
         "argv": {
-          "description": "Exact native arguments, with an initial jpeg subcommand for JPEG and alternating option names and values after it. No --approve option is emitted. Treat successful plans as private operator material: paths and allowed exact route queries are retained.",
+          "description": "Exact native arguments, with an initial jpeg subcommand for direct JPEG or from-unifi for protected UniFi, and option/value pairs after it. No --approve option is emitted. Treat plans as private operator material: file references and direct-source route queries can remain. UniFi route capabilities stay in the protected export and never enter argv.",
           "type": "array",
           "minItems": 2,
           "maxItems": 128,
@@ -181,10 +182,55 @@
             },
             {
               "$ref": "#/$defs/native_jpeg_plan"
+            },
+            {
+              "$ref": "#/$defs/native_unifi_plan"
             }
           ]
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "unifi_protect"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "native_plan": {
+                "$ref": "#/$defs/native_unifi_plan"
+              },
+              "argv": {
+                "prefixItems": [
+                  {
+                    "const": "from-unifi"
+                  }
+                ]
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "native_plan": {
+                "oneOf": [
+                  {
+                    "$ref": "#/$defs/native_plan"
+                  },
+                  {
+                    "$ref": "#/$defs/native_jpeg_plan"
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ]
     },
     "native_plan": {
       "type": "object",
@@ -1598,6 +1644,139 @@
           "const": "none-until-exact-approval"
         }
       }
+    },
+    "native_unifi_plan": {
+      "description": "The exact existing from-unifi v1 single-capture wrapper. The camera ID and private-file identity are represented only by digests. Native authority remains explicit while presentation and control capabilities are redacted.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "phase",
+        "approval",
+        "policy",
+        "quality",
+        "view",
+        "camera_ref",
+        "stream_transport",
+        "capture_mode",
+        "operation",
+        "unifi_digest",
+        "unifi_file_identity",
+        "native_capture",
+        "model_specific_assumptions",
+        "hardware_qualified",
+        "effects_started"
+      ],
+      "properties": {
+        "schema": {
+          "const": "fss.rtsp_from_unifi_plan.v1"
+        },
+        "phase": {
+          "const": "planned"
+        },
+        "approval": {
+          "$ref": "#/$defs/digest"
+        },
+        "policy": {
+          "const": "private-unifi-protect-capability-selected-view:exact-owner-peer:explicit-codec-and-cadence:no-url-rewrite:no-quality-fallback:no-tls-downgrade:revalidate-private-source-before-capture:v1"
+        },
+        "quality": {
+          "enum": [
+            "high",
+            "medium",
+            "low",
+            "package"
+          ]
+        },
+        "view": {
+          "enum": [
+            "main",
+            "package"
+          ]
+        },
+        "camera_ref": {
+          "$ref": "#/$defs/digest"
+        },
+        "stream_transport": {
+          "enum": [
+            "published",
+            "operator-rtsp"
+          ]
+        },
+        "capture_mode": {
+          "const": "single"
+        },
+        "operation": {
+          "const": "capture"
+        },
+        "unifi_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "unifi_file_identity": {
+          "$ref": "#/$defs/digest"
+        },
+        "native_capture": {
+          "$ref": "#/$defs/private_unifi_capture"
+        },
+        "model_specific_assumptions": {
+          "const": false
+        },
+        "hardware_qualified": {
+          "const": false
+        },
+        "effects_started": {
+          "const": false
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "quality": {
+                "const": "package"
+              }
+            },
+            "required": [
+              "quality"
+            ]
+          },
+          "then": {
+            "properties": {
+              "view": {
+                "const": "package"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "view": {
+                "const": "main"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "private_unifi_capture": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/native_plan"
+        },
+        {
+          "required": [
+            "presentation_uri_digest",
+            "control_root_uri_digest"
+          ],
+          "properties": {
+            "presentation_uri": {
+              "const": "[redacted]"
+            },
+            "control_root_uri": {
+              "const": "[redacted]"
+            }
+          }
+        }
+      ]
     }
   },
   "allOf": [
@@ -1631,22 +1810,82 @@
       "then": {
         "required": [
           "reserved_pins_root"
-        ],
-        "properties": {
-          "policy": {
-            "const": "site-capture-plan:v1:manifest-and-probe-pinned:all-sources-or-none:existing-native-avc-hevc-jpeg-planners:exact-ssrc:receipt-bound-cadence:receipt-bound-jpeg-retention:reserved-journal-parent-bound:no-executor:no-rights-grant"
-          }
-        }
+        ]
       },
       "else": {
         "not": {
           "required": [
             "reserved_pins_root"
           ]
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "sources": {
+            "contains": {
+              "properties": {
+                "kind": {
+                  "const": "unifi_protect"
+                }
+              },
+              "required": [
+                "kind"
+              ]
+            }
+          }
         },
+        "required": [
+          "sources"
+        ]
+      },
+      "then": {
         "properties": {
           "policy": {
-            "const": "site-capture-plan:v1:manifest-and-probe-pinned:all-sources-or-none:existing-native-avc-hevc-planner:exact-ssrc-and-cadence:no-executor:no-rights-grant"
+            "const": "site-capture-plan:v1:manifest-and-probe-pinned:all-sources-or-none:existing-native-avc-hevc-jpeg-and-unifi-planners:private-export-fingerprint-and-camera-bound:exact-selected-view-and-route:no-url-rewrite:no-quality-fallback:no-tls-downgrade:exact-ssrc:receipt-bound-cadence:receipt-bound-jpeg-retention:reserved-journal-parent-bound:no-executor:no-rights-grant"
+          }
+        }
+      },
+      "else": {
+        "if": {
+          "properties": {
+            "sources": {
+              "contains": {
+                "properties": {
+                  "native_plan": {
+                    "properties": {
+                      "schema": {
+                        "const": "fss.rtsp_jpeg_capture_cli.v1"
+                      }
+                    },
+                    "required": [
+                      "schema"
+                    ]
+                  }
+                },
+                "required": [
+                  "native_plan"
+                ]
+              }
+            }
+          },
+          "required": [
+            "sources"
+          ]
+        },
+        "then": {
+          "properties": {
+            "policy": {
+              "const": "site-capture-plan:v1:manifest-and-probe-pinned:all-sources-or-none:existing-native-avc-hevc-jpeg-planners:exact-ssrc:receipt-bound-cadence:receipt-bound-jpeg-retention:reserved-journal-parent-bound:no-executor:no-rights-grant"
+            }
+          }
+        },
+        "else": {
+          "properties": {
+            "policy": {
+              "const": "site-capture-plan:v1:manifest-and-probe-pinned:all-sources-or-none:existing-native-avc-hevc-planner:exact-ssrc-and-cadence:no-executor:no-rights-grant"
+            }
           }
         }
       }

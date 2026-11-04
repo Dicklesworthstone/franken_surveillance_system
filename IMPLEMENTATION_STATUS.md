@@ -4,6 +4,60 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Protected UniFi site capture compilation
+
+`fss site plan --unifi-bindings BINDINGS.json` now compiles UniFi Protect
+AVC/HEVC sources into the existing `from-unifi` single-session capture command,
+alongside direct RTSP/NVR and JPEG sources. The strict v1 binding document pins
+the canonical site manifest and each private export's complete bytes, exact
+quality and transport. The native private-file owner checks actual filesystem
+identity, permissions, link count and content before and after compilation.
+Every source must succeed before a plan is released.
+
+The compiler verifies the exported camera ID and selected main/package view,
+manifest peer/authority, exact receipt route and the complete native capture
+plan. It rejects missing/disabled qualities, secure-only endpoints, mismatched
+cameras or receipts, output/credential overlap and duplicate resolved routes.
+It does not rewrite URLs, choose a fallback or infer codec/cadence from a model.
+Main and package views receive separate sensor/stream and operation identities.
+The generated arguments and nested native previews omit selected capability
+URLs; the native outer approval binds the actual protected-file fingerprint.
+An identical-content replacement file therefore requires a fresh approval.
+
+The standalone `from-unifi` binary and site compiler now share one pure selection,
+approval and report owner. Existing single and reconnect approval/report bytes
+are preserved. Direct-only site approvals and complete reports remain identical
+to the prior implementation. The protected adapter has a five-second request,
+16,384 metadata-operation allowance, 256 KiB per-export and 8 MiB aggregate
+input ceilings, and a 32 MiB declared logical working reservation, not measured
+RSS. It uses the existing runtime without network, write or credential grants.
+
+**Validation:** the exact complete native planner dependency closure passes
+59 test executions: 23 existing native capture contracts, nine new UniFi site
+compiler contracts, nine shared UniFi helper contracts, and 18 private-file
+contract executions from two inclusion sites. Another 18 protected-input tests
+pass, including actual file boundaries and the complete compiler; five exact
+CLI grammar checks pass. Six permanent schema contracts pass, all six actual
+emitted plans validate, and 28 malformed plan variants refuse. Side-by-side
+compilation of the prior and current site compiler proves byte-identical direct
+AVC/HEVC and mixed JPEG outputs and approvals. The actual site command-test
+source, including two new UniFi process contracts, compiles.
+
+The focused builds use actual production owners, native planners and real file
+fingerprints. They omit unrelated dependency modules and do not substitute a
+runtime or capture implementation. The full Asupersync-backed CLI processes and
+the protected adapter's final runtime wrapper remain unexecuted because the
+serialized full build was SIGKILLed in Asupersync before FSS diagnostics. Native
+hardware and release qualification remain unclaimed.
+
+This advances the site compiler portion of VIT-004. UniFi-specific receipt
+production is still missing: current live/recorded producers admit direct
+RTSP/NVR sources, and the v1 receipt includes private route fields. Supplied
+UniFi receipts remain historical consistency claims. A future producer needs a
+protected receipt artifact or a separately versioned redacted contract. Protect
+API acquisition, TLS/RTSPS, signed rights verification and a site executor remain
+separate work; no such authority is inferred by a successful plan.
+
 ## Native and recorded JPEG site probing
 
 `fss site probe --codec jpeg` and `fss site probe-file --codec jpeg` now produce

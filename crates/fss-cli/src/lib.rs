@@ -82,6 +82,10 @@ pub mod site_plan;
 pub mod site_probe;
 /// Measure pinned recorded RTSP/RTP evidence into native site probe receipts.
 pub mod site_probe_cmd;
+/// Protected exact UniFi export bindings for atomic site capture planning.
+pub mod site_unifi;
+/// Pure native UniFi selection, private argument composition and outer approval.
+pub mod unifi_plan;
 /// `fss status --json [--root <dir>]`: read-only retained inventory (SCHEMA-STATUS-001).
 pub mod status_cmd;
 /// Bounded multi-camera supervisor coordinator with explicit sequential fusion (`fss-becce`).

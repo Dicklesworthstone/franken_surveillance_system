@@ -10,9 +10,11 @@ use std::path::{Component, Path, PathBuf};
 
 use fss_core::{CanonicalEncoder, ContentDigest, PrincipalId};
 use fss_reference::site::{ProbeCodec, SiteManifest, SiteProbeReceipt, SourceKind};
+use fss_reference::unifi::ProtectQuality;
 
-use crate::capture_plan::{prepare_jpeg, prepare_rtsp};
+use crate::capture_plan::{prepare_jpeg, prepare_rtsp, prepare_selected_unifi};
 use crate::json_output::{array, object, string, strings};
+use crate::unifi_plan::{ProtectedUnifiInput, UnifiSourceSpec};
 
 /// Versioned site plan report schema.
 pub const SITE_PLAN_SCHEMA: &str = "fss.site_capture_plan.v1";
@@ -26,6 +28,30 @@ existing-native-avc-hevc-planner:exact-ssrc-and-cadence:no-executor:no-rights-gr
 const JPEG_POLICY: &str = "site-capture-plan:v1:manifest-and-probe-pinned:all-sources-or-none:\
 existing-native-avc-hevc-jpeg-planners:exact-ssrc:receipt-bound-cadence:receipt-bound-jpeg-retention:\
 reserved-journal-parent-bound:no-executor:no-rights-grant";
+const UNIFI_POLICY: &str = "site-capture-plan:v1:manifest-and-probe-pinned:all-sources-or-none:\
+existing-native-avc-hevc-jpeg-and-unifi-planners:private-export-fingerprint-and-camera-bound:\
+exact-selected-view-and-route:no-url-rewrite:no-quality-fallback:no-tls-downgrade:\
+exact-ssrc:receipt-bound-cadence:receipt-bound-jpeg-retention:\
+reserved-journal-parent-bound:no-executor:no-rights-grant";
+
+/// Exact protected observations borrowed by the pure compiler for one site source.
+/// The private-file owner must supply the observations; this type grants no authority.
+pub struct SiteUnifiInput<'a> {
+    /// Manifest source identity, independent of the order of supplied inputs.
+    pub source_id: &'a str,
+    /// Exact private export, selected rendition and manifest-approved peer.
+    pub spec: &'a UnifiSourceSpec,
+    /// Actual lease bytes and its complete observed filesystem fingerprint.
+    pub input: ProtectedUnifiInput<'a>,
+}
+
+impl std::fmt::Debug for SiteUnifiInput<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SiteUnifiInput")
+            .finish_non_exhaustive()
+    }
+}
 
 /// Explicit operation coordinates supplied separately from the site manifest.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -261,6 +287,40 @@ fn stable_source_identity(
     )?))
 }
 
+fn stable_unifi_source_identity(
+    purpose: &str,
+    site: &str,
+    source: &str,
+    camera: ContentDigest,
+    view: &str,
+) -> Result<ContentDigest, SitePlanError> {
+    let mut encoder = CanonicalEncoder::new();
+    encoder.text("fss.site_unifi_source_identity.v1");
+    encoder.text(purpose);
+    encoder.text(site);
+    encoder.text(source);
+    encoder.digest(camera);
+    encoder.text(view);
+    Ok(ContentDigest::sha256(&encoder.finish_checked().map_err(
+        |_| refused("UniFi source identity encoding refused"),
+    )?))
+}
+
+fn unifi_coordinate(
+    coordinate: ContentDigest,
+    camera: ContentDigest,
+    view: &str,
+) -> Result<ContentDigest, SitePlanError> {
+    let mut encoder = CanonicalEncoder::new();
+    encoder.text("fss.site_unifi_capture_identity.v1");
+    encoder.digest(coordinate);
+    encoder.digest(camera);
+    encoder.text(view);
+    Ok(ContentDigest::sha256(&encoder.finish_checked().map_err(
+        |_| refused("UniFi operation identity encoding refused"),
+    )?))
+}
+
 fn hex(digest: ContentDigest) -> String {
     // ContentDigest::to_text is the registered algorithm:hex spelling.
     digest.to_text()["sha256:".len()..].to_owned()
@@ -302,6 +362,21 @@ pub fn compile(
     receipts: &[SiteProbeReceipt],
     options: &SitePlanOptions,
 ) -> Result<SitePlan, SitePlanError> {
+    compile_with_unifi(manifest, receipts, options, &[])
+}
+
+/// Compile a complete site, including exact protected UniFi export observations.
+///
+/// Every UniFi source requires one input, with no extras. The selected camera and
+/// private route must agree with the source and its receipt. The existing native
+/// `from-unifi` parser owns the capture approval, including the actual export file
+/// fingerprint. No capability token is included in the returned arguments or report.
+pub fn compile_with_unifi(
+    manifest: &SiteManifest,
+    receipts: &[SiteProbeReceipt],
+    options: &SitePlanOptions,
+    unifi_inputs: &[SiteUnifiInput<'_>],
+) -> Result<SitePlan, SitePlanError> {
     validate_options(options)?;
     manifest
         .validate()
@@ -315,7 +390,10 @@ pub fn compile(
         if indices.insert(source.source_id.as_str(), index).is_some() {
             return Err(source_refused(index, "duplicate source identity"));
         }
-        if !matches!(source.kind, SourceKind::Rtsp | SourceKind::NvrChannel) {
+        if !matches!(
+            source.kind,
+            SourceKind::Rtsp | SourceKind::NvrChannel | SourceKind::UnifiProtect
+        ) {
             return Err(source_refused(
                 index,
                 "source kind requires an onboarding path not supported by this compiler",
@@ -355,6 +433,68 @@ pub fn compile(
                     "credential references must be outside all archive and journal output namespaces",
                 ));
             }
+        }
+    }
+
+    if unifi_inputs.len() > manifest.sources.len() {
+        return Err(refused(
+            "protected source inventory exceeds the site inventory",
+        ));
+    }
+    let mut bindings = BTreeMap::new();
+    let mut protected_bytes = 0usize;
+    for input in unifi_inputs {
+        let index = *indices
+            .get(input.source_id)
+            .ok_or_else(|| refused("protected input names a foreign source"))?;
+        if manifest.sources[index].kind != SourceKind::UnifiProtect
+            || bindings.insert(index, input).is_some()
+        {
+            return Err(source_refused(
+                index,
+                "exactly one protected input per UniFi source required",
+            ));
+        }
+        if input.spec.peer != manifest.sources[index].peer {
+            return Err(source_refused(
+                index,
+                "protected selection peer differs from the manifest",
+            ));
+        }
+        protected_bytes = protected_bytes
+            .checked_add(input.input.bytes.len())
+            .ok_or_else(|| source_refused(index, "protected source byte bound exceeded"))?;
+        if protected_bytes > 8 * 1024 * 1024 {
+            return Err(source_refused(
+                index,
+                "protected source byte bound exceeded",
+            ));
+        }
+        let private_path = &input.spec.source;
+        if [&options.archive_root, &options.pins_root]
+            .iter()
+            .any(|root| private_path.starts_with(root) || root.starts_with(private_path))
+            || manifest
+                .sources
+                .iter()
+                .filter_map(|source| source.authentication.as_ref())
+                .any(|auth| {
+                    private_path.starts_with(&auth.credential_file)
+                        || auth.credential_file.starts_with(private_path)
+                })
+        {
+            return Err(source_refused(
+                index,
+                "protected exports must be separate from output and credential namespaces",
+            ));
+        }
+    }
+    for (index, source) in manifest.sources.iter().enumerate() {
+        if source.kind == SourceKind::UnifiProtect && !bindings.contains_key(&index) {
+            return Err(source_refused(
+                index,
+                "UniFi source requires an exact protected export binding",
+            ));
         }
     }
 
@@ -406,7 +546,18 @@ pub fn compile(
     // has a different custody format and no pin-journal argument, so its site
     // policy explicitly binds the still-reserved independent journal parent.
     let includes_jpeg = probes.values().any(|probe| probe.codec == ProbeCodec::Jpeg);
-    let policy = if includes_jpeg { JPEG_POLICY } else { POLICY };
+    let includes_unifi = !bindings.is_empty();
+    let policy = if includes_unifi {
+        UNIFI_POLICY
+    } else if includes_jpeg {
+        JPEG_POLICY
+    } else {
+        POLICY
+    };
+    // This clone is only an input to the existing normalized-route collision check.
+    // The authoritative manifest, source kind, approval and emitted commands retain
+    // UniFi identity. No selected private route becomes a generic capture command.
+    let mut resolved_routes = includes_unifi.then(|| manifest.clone());
     let mut sources = Vec::with_capacity(manifest.sources.len());
     let mut source_reports = Vec::with_capacity(manifest.sources.len());
     let mut ingress_ids = BTreeSet::new();
@@ -427,6 +578,30 @@ pub fn compile(
             .get(&index)
             .ok_or_else(|| source_refused(index, "source has no exact probe receipt"))?;
         let is_jpeg = probe.codec == ProbeCodec::Jpeg;
+        let unifi = bindings.get(&index).copied();
+        if is_jpeg && unifi.is_some() {
+            return Err(source_refused(
+                index,
+                "native UniFi capture requires observed AVC or HEVC",
+            ));
+        }
+        let unifi_identity = unifi
+            .map(|input| {
+                let camera = ContentDigest::sha256(
+                    source
+                        .unifi_camera_id
+                        .as_deref()
+                        .ok_or_else(|| source_refused(index, "UniFi camera identity missing"))?
+                        .as_bytes(),
+                );
+                let view = if input.spec.quality == ProtectQuality::Package {
+                    "package"
+                } else {
+                    "main"
+                };
+                Ok::<_, SitePlanError>((camera, view))
+            })
+            .transpose()?;
         if probe.rtp_channel.checked_add(1) != Some(probe.rtcp_channel) {
             return Err(source_refused(
                 index,
@@ -436,33 +611,41 @@ pub fn compile(
         let probe_digest = probe
             .digest()
             .map_err(|_| source_refused(index, "probe identity refused"))?;
-        let scope = identity(
-            "output-scope",
-            &manifest.site_id,
-            &source.source_id,
-            manifest_digest,
-            options.epoch,
-        )?;
+        let coordinate = |purpose| {
+            let coordinate = identity(
+                purpose,
+                &manifest.site_id,
+                &source.source_id,
+                manifest_digest,
+                options.epoch,
+            )?;
+            match unifi_identity {
+                Some((camera, view)) => unifi_coordinate(coordinate, camera, view),
+                None => Ok(coordinate),
+            }
+        };
+        let scope = coordinate("output-scope")?;
         if !output_scopes.insert(scope) {
             return Err(source_refused(index, "source output identity collision"));
         }
-        let sensor = stable_source_identity("sensor", &manifest.site_id, &source.source_id)?;
-        let stream = stable_source_identity("stream", &manifest.site_id, &source.source_id)?;
+        let stable = |purpose| match unifi_identity {
+            Some((camera, view)) => stable_unifi_source_identity(
+                purpose,
+                &manifest.site_id,
+                &source.source_id,
+                camera,
+                view,
+            ),
+            None => stable_source_identity(purpose, &manifest.site_id, &source.source_id),
+        };
+        let sensor = stable("sensor")?;
+        let stream = stable("stream")?;
         let mut ingress_bytes = [0_u8; 16];
         ingress_bytes.copy_from_slice(&stream.bytes()[..16]);
         let ingress = u128::from_be_bytes(ingress_bytes);
         if ingress == 0 || !ingress_ids.insert(ingress) {
             return Err(source_refused(index, "source ingress identity collision"));
         }
-        let coordinate = |purpose| {
-            identity(
-                purpose,
-                &manifest.site_id,
-                &source.source_id,
-                manifest_digest,
-                options.epoch,
-            )
-        };
         // The JPEG retention reference binds this declared source scope and exact
         // receipt. It is evidence identity only, never a verified rights verdict.
         let mut evidence = CanonicalEncoder::new();
@@ -512,23 +695,25 @@ pub fn compile(
             );
         }
         add(&mut argv, "--peer", source.peer);
-        add(&mut argv, "--authority", &source.authority);
-        add(
-            &mut argv,
-            "--presentation",
-            source
-                .presentation
-                .as_deref()
-                .ok_or_else(|| source_refused(index, "source presentation path missing"))?,
-        );
-        add(
-            &mut argv,
-            "--control-root",
-            source
-                .control_root
-                .as_deref()
-                .ok_or_else(|| source_refused(index, "source control subtree missing"))?,
-        );
+        if unifi.is_none() {
+            add(&mut argv, "--authority", &source.authority);
+            add(
+                &mut argv,
+                "--presentation",
+                source
+                    .presentation
+                    .as_deref()
+                    .ok_or_else(|| source_refused(index, "source presentation path missing"))?,
+            );
+            add(
+                &mut argv,
+                "--control-root",
+                source
+                    .control_root
+                    .as_deref()
+                    .ok_or_else(|| source_refused(index, "source control subtree missing"))?,
+            );
+        }
         add(
             &mut argv,
             "--sensor-id",
@@ -601,7 +786,63 @@ pub fn compile(
             .skip(if is_jpeg { 1 } else { 0 })
             .map(OsString::from)
             .collect();
-        let native = if is_jpeg {
+        let native = if let Some(input) = unifi {
+            let selected = input
+                .spec
+                .prepare(input.input, &os_args)
+                .map_err(|reason| source_refused(index, reason))?;
+            let (camera, view) = unifi_identity
+                .ok_or_else(|| source_refused(index, "UniFi selection identity missing"))?;
+            if selected.camera_ref() != camera || selected.view() != view {
+                return Err(source_refused(
+                    index,
+                    "protected export camera or view differs from the manifest selection",
+                ));
+            }
+            if !selected.matches_route(
+                probe.peer,
+                &probe.authority,
+                &probe.presentation,
+                &probe.control_root,
+            ) {
+                return Err(source_refused(
+                    index,
+                    "probe route differs from the exact protected selection",
+                ));
+            }
+            if let Some(routes) = &mut resolved_routes {
+                let route = &mut routes.sources[index];
+                route.kind = SourceKind::Rtsp;
+                route.unifi_camera_id = None;
+                route.presentation = Some(probe.presentation.clone());
+                route.control_root = Some(probe.control_root.clone());
+            }
+            let native = prepare_selected_unifi(input.spec, &selected)
+                .map_err(|reason| source_refused(index, reason))?;
+            let mut wrapper = vec!["from-unifi".to_owned()];
+            add(
+                &mut wrapper,
+                "--unifi-source",
+                input.spec.source.to_str().ok_or_else(|| {
+                    source_refused(index, "UTF-8 protected export reference required")
+                })?,
+            );
+            add(
+                &mut wrapper,
+                "--unifi-digest",
+                input.spec.expected.to_text(),
+            );
+            add(&mut wrapper, "--quality", input.spec.quality.as_str());
+            add(
+                &mut wrapper,
+                "--stream-transport",
+                input.spec.transport_name(),
+            );
+            add(&mut wrapper, "--capture-mode", "single");
+            wrapper.append(&mut argv);
+            argv = wrapper;
+            Ok(native)
+        } else if is_jpeg {
             prepare_jpeg(&os_args)
         } else {
             prepare_rtsp(&os_args)
@@ -640,6 +881,12 @@ pub fn compile(
             native_approval: native.approval,
             native_preview: native.preview,
         });
+    }
+
+    if let Some(routes) = resolved_routes {
+        routes
+            .validate()
+            .map_err(|_| refused("resolved source routes collide or violate the site contract"))?;
     }
 
     let approval = ContentDigest::sha256(
@@ -682,3 +929,7 @@ pub fn compile(
         report,
     })
 }
+
+#[cfg(all(test, target_os = "linux"))]
+#[path = "site_plan/unifi_tests.rs"]
+mod unifi_tests;

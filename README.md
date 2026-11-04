@@ -181,6 +181,13 @@ approval digest. Every source must pass; an invalid source produces no partial p
 JPEG uses the existing datagram-capture command and its 256-picture limit; AVC/HEVC
 retain their existing native planning and approval behavior.
 
+`site plan --unifi-bindings BINDINGS.json` also compiles UniFi Protect AVC/HEVC
+sources through the existing `from-unifi` recorder. Exact private exports, camera
+IDs, selected views and receipt routes must agree. Its native approval binds the
+actual private-file identity; generated commands and previews omit stream tokens.
+Main and package views receive separate identities and destinations. See the
+[protected UniFi site workflow](docs/SITE_PLANNING.md#unifi-protect-site-bindings).
+
 `fss site probe-file` now derives receipts from independently pinned recorded
 DESCRIBE responses and RTPdump samples using native AVC/HEVC picture assembly or RFC 2435 JPEG reconstruction.
 It measures media configuration, SSRC and constant cadence, and refuses unverified

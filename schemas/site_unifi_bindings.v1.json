@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.dev/schemas/site_unifi_bindings.v1.json",
+  "title": "FSS protected UniFi site bindings v1",
+  "description": "Strict operator input binding a canonical site manifest to private Protect exports and exact requested renditions. The complete UTF-8 document is bounded to 1 MiB (1048576 bytes) by the native parser. Every manifest UniFi source must appear exactly once; other or unknown sources are refused. Empty sources is valid only when the manifest has no UniFi sources. Peer, authority, selected camera and receipt route come from the manifest and protected export, never from override fields here. These bindings grant no capture, file, credential or network authority.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "manifest_digest",
+    "sources"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.site_unifi_bindings.v1"
+    },
+    "manifest_digest": {
+      "$ref": "#/$defs/digest",
+      "description": "Exact current canonical manifest digest, independently checked before private exports are opened."
+    },
+    "sources": {
+      "type": "array",
+      "minItems": 0,
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/source"
+      },
+      "description": "The native parser checks uniqueness by source_id and complete coverage of the supplied manifest's UniFi sources. Binding order does not change manifest source order."
+    }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "minLength": 71,
+      "maxLength": 71,
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "not": {
+        "const": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_id",
+        "source_file",
+        "source_digest",
+        "quality",
+        "stream_transport"
+      ],
+      "properties": {
+        "source_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+          "not": {
+            "pattern": "[^A-Za-z0-9._:-]"
+          }
+        },
+        "source_file": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 4096,
+          "pattern": "^/[^\u0000-\u001f\u007f-\u009f]+$",
+          "not": {
+            "anyOf": [
+              {
+                "pattern": "(^|/)\\.\\.?(/|$)"
+              },
+              {
+                "pattern": "^/+$"
+              },
+              {
+                "pattern": "[\u0000-\u001f\u007f-\u009f]"
+              }
+            ]
+          },
+          "description": "Absolute private export path with a filename, no control characters and no dot or parent components. The native owner additionally checks the 4096 UTF-8 byte bound, exact canonical path, regular-file identity, owner-only permissions, one hard link and unchanged bytes. Each export is bounded to 262144 bytes; complete selected exports are bounded to 8 MiB per compilation. No file is opened by schema validation."
+        },
+        "source_digest": {
+          "$ref": "#/$defs/digest",
+          "description": "Exact SHA-256 of the complete protected export bytes. File identity is separately observed through the native private-file lease and bound into the capture approval."
+        },
+        "quality": {
+          "enum": [
+            "high",
+            "medium",
+            "low",
+            "package"
+          ]
+        },
+        "stream_transport": {
+          "enum": [
+            "published",
+            "operator-rtsp"
+          ],
+          "description": "Explicit selection only. Published RTSPS is refused by the plaintext native capture owner; operator-rtsp requires an independently supplied exact plaintext endpoint in the private export. No rewrite, quality fallback or TLS downgrade occurs."
+        }
+      }
+    }
+  }
+}

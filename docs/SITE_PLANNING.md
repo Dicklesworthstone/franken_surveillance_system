@@ -6,7 +6,8 @@ deterministic site preview containing the existing native RTSP capture plans.
 This removes the need to hand-invent sensor, stream, ingress, clock, authority,
 journal and destination identities for every camera and operation.
 
-This is the direct RTSP/NVR, AVC/HEVC/JPEG portion of VIT-001 and VIT-002 in
+This covers direct RTSP/NVR AVC/HEVC/JPEG planning and protected UniFi AVC/HEVC
+site compilation from VIT-001, VIT-002 and VIT-004 in
 [the footage-plane plan](VITTLES_FOOTAGE_PLANE_PLAN.md). Planning reads the named
 control documents; it does not contact devices, read credentials, create archives,
 verify signed rights leases or start recording. An independently approved
@@ -32,7 +33,7 @@ cargo run --locked -p fss-cli --bin fss -- site plan \
   --epoch 1 --stop-after-pictures 250 --json
 ```
 
-The output parents do not have to exist for planning. Their existence and native
+For direct RTSP/NVR planning, the output parents do not have to exist. Their existence and native
 storage protections are checked only by a separately approved native capture.
 The planner will not inspect either directory. Use separate, nonnested absolute
 parents, with no `.` or `..` components. Credentials must be outside both output
@@ -85,7 +86,7 @@ Each source declares the following scope:
 | Field | Meaning |
 | --- | --- |
 | `source_id`, `generation` | Stable source name and positive configuration generation. |
-| `kind` | `rtsp`, `nvr_channel`, `onvif`, or `unifi_protect`. The compiler currently accepts the first two. |
+| `kind` | `rtsp`, `nvr_channel`, `onvif`, or `unifi_protect`. The compiler accepts RTSP/NVR directly and UniFi with exact protected bindings; ONVIF remains unsupported here. |
 | `peer` | Canonically spelled literal IP and nonzero port, including bracketed IPv6 when needed. No DNS lookup. |
 | `authority` | Exact RTSP authority label. An explicit port or literal address must agree with `peer`. |
 | `presentation`, `control_root` | Required RTSP/NVR path and allowed control subtree. No embedded credentials, traversal, redirect or credential-bearing query fields. |
@@ -173,8 +174,112 @@ receipts. Replacing their manifest hashes without making fresh observations does
 not turn them into evidence of the changed source. To derive receipts from recorded
 DESCRIBE responses and RTPdump samples, use
 [`fss site probe-file`](SITE_PROBE_MEASUREMENT.md). It measures native AVC/HEVC
-picture syntax and constant cadence under exact input pins. A live network probe
-producer and authenticated/fresh receipt handling remain separate work.
+picture syntax or whole-frame JPEG reconstruction and constant cadence under
+exact input pins. The separately approved `site probe` supports live RTSP/NVR
+measurements. UniFi-specific receipt production and authenticated/fresh receipt
+handling remain separate work; the UniFi compiler validates supplied receipts
+against the exact selected private route.
+
+## UniFi Protect site bindings
+
+Add `--unifi-bindings /etc/fss/site-unifi-bindings.json` when the manifest contains
+`unifi_protect` sources. Keep the existing manifest v1 shape: each source declares
+its exact `unifi_camera_id`, literal stream peer and RTSP authority, and omits
+`presentation`, `control_root` and `onvif_service_path`. The peer is the selected
+stream endpoint, not an inferred Protect API address. Source permission,
+retention, payment-zone, receipt-generation and connection declarations retain
+the same checks as direct capture.
+
+The separate strict binding document uses
+[`fss.site_unifi_bindings.v1`](../schemas/site_unifi_bindings.v1.json):
+
+```json
+{
+  "schema": "fss.site_unifi_bindings.v1",
+  "manifest_digest": "sha256:<exact canonical site manifest digest>",
+  "sources": [
+    {
+      "source_id": "source:front",
+      "source_file": "/etc/fss/private/front-protect.json",
+      "source_digest": "sha256:<SHA-256 of the complete private export bytes>",
+      "quality": "high",
+      "stream_transport": "operator-rtsp"
+    }
+  ]
+}
+```
+
+Replace both illustrated digest placeholders with 64 lowercase hexadecimal
+characters. `site validate` reports the canonical manifest digest. The source
+pin hashes the complete independently obtained private export, including its
+whitespace. See [the Protect handoff guide](UNIFI_PROTECT.md) for its exact
+`camera`, `streams` and optional `rtsp` shape. Bindings never contain URLs, API
+keys, credentials or peer overrides. Every UniFi source requires exactly one
+row; missing, duplicate, foreign and direct-source rows refuse the complete site.
+Row ordering does not affect the plan.
+
+```sh
+fss site plan --manifest /etc/fss/site.json \
+  --probes /etc/fss/site-probes.json \
+  --unifi-bindings /etc/fss/site-unifi-bindings.json \
+  --archive-root /srv/fss/footage --pins-root /srv/fss/pins \
+  --epoch 1 --stop-after-pictures 250 --json
+```
+
+UniFi planning reads the named protected exports on Linux. The existing private
+file owner requires a nonempty regular file, owner-read permission, no group or
+other permissions, exactly one hard link and no symlink path. Each export is at
+most 256 KiB; the complete request admits at most 8 MiB of protected export bytes
+and 64 bindings. The read request has a five-second deadline, a 16,384-operation metadata
+allowance and a 32 MiB declared logical working reservation. That reservation
+accounts for bounded input and coexisting report representations; it is not
+measured process RSS. Both output parents must already exist for the native
+canonical overlap check. Exports must be outside both output namespaces and
+separate from every credential reference. No capture destination is created, and no credential file is read. All export leases and destination overlaps are rechecked before
+the complete plan is released; a failed finalization yields no plan.
+
+Selection is exact: `high`, `medium`, `low` or `package`, with explicit
+`published` or `operator-rtsp` transport. Missing and disabled qualities refuse.
+Package selection requires the camera's reported package capability. Published
+RTSPS remains unsupported by the native capture owner; the compiler never
+rewrites a scheme, port, path or query, chooses another quality, or infers a
+plaintext endpoint. The exported camera ID must match the manifest. Each receipt
+must match the selected peer, authority, presentation and exact control root;
+the root defaults to that selected path without its query. Codec and cadence
+come from the receipt, never the vendor camera model. UniFi capture supports
+AVC/HEVC; a UniFi JPEG receipt refuses. Direct JPEG and UniFi sources can share
+a site, subject to every source's native limits.
+
+Generated arguments use `from-unifi --unifi-source ... --unifi-digest ...
+--quality ... --stream-transport ... --capture-mode single` and the ordinary
+native capture options. They contain no selected stream URL, presentation or
+control-root argument. The nested report is the existing redacted native
+wrapper preview; `native_approval` is its **outer** approval, ready for that
+command's independent native approval flow. Replacing the private file changes
+that approval even when its content bytes are identical. Execution reopens and
+checks the file again. No site-wide executor is added.
+
+UniFi sensor and stream identities also bind the exact camera-ID digest and
+`main` or `package` view. Operation destinations and clock/journal coordinates
+bind that view too. High/medium/low remain renditions of the main view; assigning
+separate source IDs distinguishes simultaneous renditions. Package selection
+cannot reuse a main-view identity or output namespace. Once private routes are
+resolved, the existing normalized-route collision validator checks the entire
+mixed site. Changing a source name or kind cannot create a duplicate acquisition.
+Existing direct-only plans and native UniFi wrapper approval encodings retain
+their previous bytes.
+
+This command consumes supplied historical receipts. It neither authenticates
+those observations nor obtains new ones, contacts Protect, starts recording,
+verifies signed rights or claims hardware qualification.
+
+The existing receipt format includes its selected presentation and control route.
+Treat a UniFi `--probes` document as private operator input because those fields
+can contain a stream capability. It uses the existing bounded control-document
+reader; only the separately bound exports use the stronger private-file lease.
+The compiler never copies receipt route fields into its generated UniFi arguments
+or report. A future UniFi receipt producer must preserve this disclosure boundary
+through a protected artifact or a separately versioned redacted contract.
 
 ## What the plan binds
 
@@ -182,8 +287,10 @@ The complete output follows
 [`fss.site_capture_plan.v1`](../schemas/site_capture_plan.v1.json). Each source
 includes an `argv` array for `fss-capture-rtsp`, the exact native `native_approval`
 and the native `native_plan` JSON. JPEG argument arrays start with `jpeg`; their
-native report uses `fss.rtsp_jpeg_capture_cli.v1`, while AVC/HEVC reports retain
-`fss.rtsp_capture_cli.v1`. The arguments contain no `--approve`. The
+native report uses `fss.rtsp_jpeg_capture_cli.v1`, while direct AVC/HEVC reports
+retain `fss.rtsp_capture_cli.v1`. UniFi argument arrays start with `from-unifi`;
+their `fss.rtsp_from_unifi_plan.v1` report wraps the actual native AVC/HEVC plan
+with its URI fields redacted and its original URI digests intact. The arguments contain no `--approve`. The
 compiler invokes the same production planning source as the native binary;
 defaults, resource limits and approval encoding have one implementation.
 
@@ -233,8 +340,8 @@ final-component symlink and avoid blocking on a replacement FIFO. These are
 control-file admission checks, not cryptographic provenance or a trusted parent
 directory guarantee.
 
-No command infers success for an unsupported source. ONVIF/UniFi onboarding,
-automatic discovery, TLS/RTSPS, signed
+No command infers success for an unsupported source. Site ONVIF integration,
+automatic UniFi export acquisition, UniFi-specific live probing, TLS/RTSPS, signed
 rights-lease verification, site execution, retention rings and agent footage
 queries remain outside this implementation. Existing standalone native tools
 retain their separately documented capabilities.
@@ -243,9 +350,12 @@ retain their separately documented capabilities.
 
 - `fss_reference::site` owns strict admission, typed validation and canonical
   manifest/source/receipt identities.
-- `fss_cli::capture_plan::{prepare_rtsp, prepare_jpeg}` expose the existing pure
+- `fss_cli::capture_plan::{prepare_rtsp, prepare_jpeg, prepare_unifi}` expose the existing pure
   native planners. They refuse execution approval and JPEG replay requests.
 - `fss_cli::site_plan::compile` atomically compiles a whole site without I/O.
+- `fss_cli::site_plan::compile_with_unifi` adds exact borrowed private export
+  observations without I/O; `fss_cli::site_unifi` owns their protected reads and
+  final revalidation through the existing request runtime.
 - `fss_cli::site_cmd` owns CLI parsing, bounded input-file authority and reports.
 - `crates/fss-cli/tests/site_cli_contract.rs` exercises emitted native plans,
   deterministic identity changes and whole-site refusal through command processes.
@@ -265,7 +375,7 @@ tests actually executed in this environment and its full-build limitations.
 ## Native RTP probe observation component (VIT-003)
 
 The pure `fss_reference::site::probe_observation::RtspProbeObserver` API accepts one
-already-negotiated AVC/HEVC SDP selection and validates the complete native codec
+already-negotiated AVC/HEVC/JPEG SDP selection and validates the complete native codec
 configuration. It shares the recorded-probe depacketizers, picture assemblers and
 cadence measurement. SSRC, payload, packet order, immutable parameter sets and
 constant 90 kHz picture timing must agree. RTP markers alone cannot create an

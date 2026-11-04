@@ -19,6 +19,22 @@ cameras, firmware versions, or every codec profile. The
 [native capture guide](rtsp_capture_cli.md) describes the underlying recording
 and timing limits; this guide explains the Protect-specific handoff.
 
+## Compile a complete site
+
+`fss site plan --unifi-bindings BINDINGS.json` composes these exact private
+selections with a site manifest and supplied probe receipts. It generates the
+existing single-session `from-unifi` command and its outer native approval,
+using the same selection and approval implementation as this standalone binary.
+It binds the actual export-file identity, checks camera and receipt-route
+agreement, keeps capability tokens out of arguments/reports, and separates main
+and package source identities. Direct RTSP/NVR and JPEG sources can coexist in
+the same atomic plan. Follow [the site binding workflow](SITE_PLANNING.md#unifi-protect-site-bindings).
+
+The site command does not acquire Protect exports or UniFi probe receipts,
+verify signed rights, contact devices or execute a site approval. The standalone
+capture and reconnect capabilities below retain their existing independent
+approval and private-file revalidation.
+
 ## Export the selected camera and its existing streams
 
 Use the owner's authenticated Protect interface or API workflow to obtain:

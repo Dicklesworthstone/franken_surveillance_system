@@ -65,3 +65,42 @@ pub fn prepare_jpeg(args: &[OsString]) -> Result<PreparedRtspPlan, &'static str>
         preview: native.preview()?,
     })
 }
+
+/// Prepare the exact existing single-session `from-unifi` wrapper without I/O.
+///
+/// The protected input must come from the actual private-file lease. Its fingerprint
+/// participates in the outer approval, and execution independently reopens that file.
+/// Route-bearing arguments never enter the returned preview; the native parser owns
+/// validation, limits and the private-URI report just as it does in the binary.
+pub fn prepare_unifi(
+    spec: &crate::unifi_plan::UnifiSourceSpec,
+    input: crate::unifi_plan::ProtectedUnifiInput<'_>,
+    native_args: &[OsString],
+) -> Result<PreparedRtspPlan, &'static str> {
+    let selected = spec.prepare(input, native_args)?;
+    prepare_selected_unifi(spec, &selected)
+}
+
+pub(crate) fn prepare_selected_unifi(
+    spec: &crate::unifi_plan::UnifiSourceSpec,
+    selected: &crate::unifi_plan::PreparedUnifiSelection,
+) -> Result<PreparedRtspPlan, &'static str> {
+    let native = selected.with_capture_arguments(plan::Options::parse)?;
+    let native_approval = native.digest()?;
+    let native_preview = native.private_uri_preview()?;
+    Ok(PreparedRtspPlan {
+        approval: spec.approval(
+            selected.file_identity(),
+            "single",
+            "capture",
+            native_approval,
+        )?,
+        preview: spec.preview(
+            selected,
+            "single",
+            "capture",
+            native_approval,
+            &native_preview,
+        )?,
+    })
+}

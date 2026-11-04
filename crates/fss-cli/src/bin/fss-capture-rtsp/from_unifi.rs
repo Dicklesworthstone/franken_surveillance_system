@@ -4,25 +4,17 @@
 
 use std::collections::BTreeSet;
 use std::ffi::OsString;
-use std::net::{IpAddr, SocketAddr};
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
-use fss_cli::agent_json::{object, string};
-use fss_core::{CanonicalEncoder, ContentDigest, DigestAlgorithm, PrincipalId};
-use fss_reference::rtsp::client::validated_uri_parts;
-use fss_reference::unifi::{
-    ProtectError, ProtectQuality, ProtectSource, ProtectView, TransportChoice,
+use fss_cli::unifi_plan::{
+    ERR_UNIFI_APPROVAL as APPROVAL, ERR_UNIFI_ROUTE as ROUTE, ERR_UNIFI_SOURCE as ERROR,
+    ERR_UNIFI_TRANSPORT as TRANSPORT, PreparedUnifiSelection, ProtectedUnifiInput, UnifiSourceSpec,
 };
+use fss_core::{ContentDigest, DigestAlgorithm, PrincipalId};
+use fss_reference::unifi::{ProtectQuality, TransportChoice};
 
 use super::from_onvif::{CaptureMode, NativeCapture, private_file, runtime};
-
-const ERROR: &str = "ERR-CAPTURE-UNIFI-SOURCE-001";
-const APPROVAL: &str = "ERR-CAPTURE-UNIFI-APPROVAL-001";
-const TRANSPORT: &str = "ERR-CAPTURE-UNIFI-TRANSPORT-001";
-const ROUTE: &str = "ERR-CAPTURE-UNIFI-ROUTE-001";
-const SCHEMA: &str = "fss.rtsp_from_unifi_plan.v1";
-const POLICY: &str = "private-unifi-protect-capability-selected-view:exact-owner-peer:explicit-codec-and-cadence:\
-no-url-rewrite:no-quality-fallback:no-tls-downgrade:revalidate-private-source-before-capture:v1";
 
 pub(super) const MAX_ARGUMENTS: usize = super::reconnect::MAX_ARGUMENTS + 12;
 pub(super) const HELP: &str = "fss-capture-rtsp from-unifi\n\
@@ -96,15 +88,12 @@ pub(super) struct SourcePlan {
     transport: TransportChoice,
     mode: CaptureMode,
     peer: SocketAddr,
-    has_control_root: bool,
     capture_args: Vec<OsString>,
 }
 
 struct Prepared {
     capture: NativeCapture,
-    identity: ContentDigest,
-    camera: ContentDigest,
-    view: &'static str,
+    selection: PreparedUnifiSelection,
 }
 
 fn digest(value: &str) -> Result<ContentDigest, &'static str> {
@@ -113,17 +102,6 @@ fn digest(value: &str) -> Result<ContentDigest, &'static str> {
         return Err(ERROR);
     }
     Ok(parsed)
-}
-
-fn selection_error(error: ProtectError) -> &'static str {
-    match error {
-        ProtectError::MissingStream(_) => "ERR-CAPTURE-UNIFI-STREAM-MISSING-001",
-        ProtectError::DisabledStream(_) => "ERR-CAPTURE-UNIFI-STREAM-DISABLED-001",
-        ProtectError::PackageUnavailable => "ERR-CAPTURE-UNIFI-PACKAGE-001",
-        ProtectError::MissingOperatorRtsp | ProtectError::NonRtspOverride => TRANSPORT,
-        ProtectError::SecureTransportRequired => TRANSPORT,
-        _ => ERROR,
-    }
 }
 
 impl SourcePlan {
@@ -142,7 +120,6 @@ impl SourcePlan {
         let mut transport = TransportChoice::Published;
         let mut mode = CaptureMode::Single;
         let mut peer = None;
-        let mut has_control_root = false;
         let mut has_codec = false;
         let mut capture_args = Vec::new();
         let mut seen = BTreeSet::new();
@@ -184,7 +161,6 @@ impl SourcePlan {
                     match key {
                         "--principal" => principal = value.to_owned(),
                         "--peer" => peer = Some(value.parse::<SocketAddr>().map_err(|_| ERROR)?),
-                        "--control-root" => has_control_root = true,
                         "--codec" => has_codec = matches!(value, "avc" | "hevc"),
                         _ => {}
                     }
@@ -205,7 +181,6 @@ impl SourcePlan {
             transport,
             mode,
             peer: peer.ok_or(ERROR)?,
-            has_control_root,
             capture_args,
         })
     }
@@ -214,19 +189,13 @@ impl SourcePlan {
         self.approval.is_some()
     }
 
-    fn quality(&self) -> &'static str {
-        match self.quality {
-            ProtectQuality::High => "high",
-            ProtectQuality::Medium => "medium",
-            ProtectQuality::Low => "low",
-            ProtectQuality::Package => "package",
-        }
-    }
-
-    fn transport(&self) -> &'static str {
-        match self.transport {
-            TransportChoice::Published => "published",
-            TransportChoice::OperatorRtsp => "operator-rtsp",
+    fn spec(&self) -> UnifiSourceSpec {
+        UnifiSourceSpec {
+            source: self.source.clone(),
+            expected: self.expected,
+            quality: self.quality,
+            transport: self.transport,
+            peer: self.peer,
         }
     }
 
@@ -245,46 +214,20 @@ impl SourcePlan {
             },
             |scope| {
                 let input = private_file::InputLease::open(&self.source, &|| scope.input())?;
-                if ContentDigest::sha256(input.bytes()) != self.expected {
-                    return Err(ERROR);
-                }
-                let source = ProtectSource::parse(input.bytes()).map_err(selection_error)?;
-                let selected = source
-                    .select(self.quality, self.transport)
-                    .map_err(selection_error)?;
-                let endpoint = selected.endpoint();
-                let uri = endpoint.require_plaintext_rtsp().map_err(|_| TRANSPORT)?;
-                let (authority, presentation) = validated_uri_parts(uri).map_err(|_| ERROR)?;
-                if endpoint.port().unwrap_or(554) != self.peer.port()
-                    || endpoint
-                        .host()
-                        .parse::<IpAddr>()
-                        .is_ok_and(|ip| ip != self.peer.ip())
-                {
-                    return Err(ROUTE);
-                }
-                let mut args = self.capture_args.clone();
-                for (key, value) in [("--authority", authority), ("--presentation", presentation)] {
-                    args.extend([OsString::from(key), OsString::from(value)]);
-                }
-                if !self.has_control_root {
-                    let path = presentation.split('?').next().ok_or(ERROR)?;
-                    args.extend([OsString::from("--control-root"), OsString::from(path)]);
-                }
-                let capture = NativeCapture::parse(self.mode, &args)?;
+                let selection = self.spec().prepare(
+                    ProtectedUnifiInput {
+                        bytes: input.bytes(),
+                        fingerprint: &input.fingerprint(),
+                    },
+                    &self.capture_args,
+                )?;
+                let capture = selection
+                    .with_capture_arguments(|args| NativeCapture::parse(self.mode, args))?;
                 for output in capture.paths()? {
                     self.check_destination(output, &|| scope.input())?;
                 }
                 input.revalidate(&|| scope.input())?;
-                Ok(Prepared {
-                    capture,
-                    identity: ContentDigest::sha256(&input.fingerprint()),
-                    camera: ContentDigest::sha256(selected.camera().id().as_bytes()),
-                    view: match selected.view() {
-                        ProtectView::Main => "main",
-                        ProtectView::Package => "package",
-                    },
-                })
+                Ok(Prepared { capture, selection })
             },
         )
     }
@@ -314,59 +257,32 @@ impl SourcePlan {
         operation: &str,
         native: ContentDigest,
     ) -> Result<ContentDigest, &'static str> {
-        let mut encoded = CanonicalEncoder::new();
-        // Extend the registered capture-approval family with a distinct selection policy.
-        encoded.text("fss.rtsp_capture_cli_plan.v1");
-        encoded.text(POLICY);
-        encoded.text(self.source.to_str().ok_or(ERROR)?);
-        encoded.digest(self.expected);
-        encoded.digest(identity);
-        encoded.text(self.quality());
-        encoded.text(self.transport());
-        encoded.text(self.mode.as_str());
-        encoded.text(operation);
-        encoded.digest(native);
-        Ok(ContentDigest::sha256(
-            &encoded.finish_checked().map_err(|_| ERROR)?,
-        ))
+        self.spec()
+            .approval(identity, self.mode.as_str(), operation, native)
     }
 
     pub(super) fn preview(&self) -> Result<String, &'static str> {
         let prepared = self.read()?;
         let (native, preview) = prepared.capture.prepared_preview()?;
         let operation = prepared.capture.operation_kind();
-        Ok(object(&[
-            ("schema", string(SCHEMA)),
-            ("phase", string("planned")),
-            (
-                "approval",
-                string(&self.digest(prepared.identity, operation, native)?.to_text()),
-            ),
-            ("policy", string(POLICY)),
-            ("quality", string(self.quality())),
-            ("view", string(prepared.view)),
-            ("camera_ref", string(&prepared.camera.to_text())),
-            ("stream_transport", string(self.transport())),
-            ("capture_mode", string(self.mode.as_str())),
-            ("operation", string(operation)),
-            ("unifi_digest", string(&self.expected.to_text())),
-            ("unifi_file_identity", string(&prepared.identity.to_text())),
-            ("native_capture", preview),
-            ("model_specific_assumptions", "false".into()),
-            ("hardware_qualified", "false".into()),
-            ("effects_started", "false".into()),
-        ]))
+        self.spec().preview(
+            &prepared.selection,
+            self.mode.as_str(),
+            operation,
+            native,
+            &preview,
+        )
     }
 
     pub(super) fn execute(&self) -> Result<(), &'static str> {
         let prepared = self.read()?;
-        let identity = prepared.identity;
+        let identity = prepared.selection.file_identity();
         let operation = prepared.capture.operation_kind();
         prepared.capture.execute(&|native| {
             if self.approval != Some(self.digest(identity, operation, native)?) {
                 return Err(APPROVAL);
             }
-            if self.read()?.identity != identity {
+            if self.read()?.selection.file_identity() != identity {
                 return Err(APPROVAL);
             }
             Ok(())

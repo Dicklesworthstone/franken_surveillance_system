@@ -2,7 +2,8 @@
 //! Site onboarding: inventory, recorded observations, capture plans and approved native probes.
 //!
 //! Host inputs are explicitly named manifests, receipts and recorded protocol evidence.
-//! Planning never inspects destination directories, credential files, cameras, or rights stores.
+//! UniFi planning reads exact protected exports and checks existing output parents.
+//! Planning never reads credential files, contacts cameras, or inspects rights stores.
 //! The pure compiler owns plan semantics; this module owns bounded CLI/file presentation.
 //! An exactly approved probe delegates network/credential ownership to `site_probe`.
 
@@ -52,6 +53,8 @@ pub enum SiteCommand {
         manifest: PathBuf,
         /// Exact file containing the complete array of supplied probe receipts.
         probes: PathBuf,
+        /// Optional exact bindings for protected UniFi exports and rendition selection.
+        unifi_bindings: Option<PathBuf>,
         /// Explicit identity epoch, output destinations, principal and picture budget.
         options: SitePlanOptions,
     },
@@ -89,6 +92,7 @@ pub fn parse_site_args(tokens: &[ArgToken]) -> Result<SiteCommand, CliError> {
         &[
             "--manifest",
             "--probes",
+            "--unifi-bindings",
             "--archive-root",
             "--pins-root",
             "--epoch",
@@ -128,6 +132,7 @@ pub fn parse_site_args(tokens: &[ArgToken]) -> Result<SiteCommand, CliError> {
     Ok(SiteCommand::Plan {
         manifest,
         probes: PathBuf::from(required("--probes")?),
+        unifi_bindings: take(&values, "--unifi-bindings").map(|(_, value, _)| PathBuf::from(value)),
         options: SitePlanOptions {
             epoch: number("--epoch")?,
             archive_root: PathBuf::from(required("--archive-root")?),
@@ -156,8 +161,23 @@ impl InputAuthority {
                 Self::for_inputs(&[(manifest, MAX_INPUT_BYTES)])
             }
             SiteCommand::Plan {
-                manifest, probes, ..
-            } => Self::for_inputs(&[(manifest, MAX_INPUT_BYTES), (probes, MAX_INPUT_BYTES)]),
+                manifest,
+                probes,
+                unifi_bindings,
+                ..
+            } => {
+                let mut inputs = vec![
+                    (manifest.as_path(), MAX_INPUT_BYTES),
+                    (probes.as_path(), MAX_INPUT_BYTES),
+                ];
+                if let Some(bindings) = unifi_bindings {
+                    inputs.push((
+                        bindings.as_path(),
+                        crate::site_unifi::MAX_SITE_UNIFI_BINDINGS_BYTES,
+                    ));
+                }
+                Self::for_inputs(&inputs)
+            }
             SiteCommand::ProbeFile(args) => Self::for_inputs(&args.input_scopes()),
         }
     }
@@ -314,7 +334,10 @@ pub fn execute_site(command: &SiteCommand) -> (String, ExitIdentity) {
             Err(error) => return refusal(error.code(), &error.to_string(), None),
         },
         SiteCommand::Plan {
-            probes, options, ..
+            probes,
+            unifi_bindings,
+            options,
+            ..
         } => {
             let bytes = match authority.read(probes) {
                 Ok(bytes) => bytes,
@@ -330,7 +353,22 @@ pub fn execute_site(command: &SiteCommand) -> (String, ExitIdentity) {
                 Ok(receipts) => receipts,
                 Err(error) => return refusal(error.code(), &error.to_string(), None),
             };
-            match compile(&manifest, &receipts, options) {
+            let result = if let Some(path) = unifi_bindings {
+                let bytes = match authority.read(path) {
+                    Ok(bytes) => bytes,
+                    Err(code) => {
+                        return refusal(
+                            code,
+                            "UniFi binding input could not be read within its bounds",
+                            None,
+                        );
+                    }
+                };
+                crate::site_unifi::compile_from_bindings(&manifest, &receipts, options, &bytes)
+            } else {
+                compile(&manifest, &receipts, options)
+            };
+            match result {
                 Ok(plan) => plan.render_json(),
                 Err(error) => return refusal(error.code, error.reason, error.source_index),
             }
