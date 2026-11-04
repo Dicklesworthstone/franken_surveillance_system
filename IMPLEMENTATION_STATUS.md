@@ -4,6 +4,29 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Alert dispatch timing before commitment (2026-11-04)
+
+The shared reference alert-dispatch path now requires strict preparation,
+commitment and outcome ordering while an operation is still `Prepared`. Invalid
+timestamps refuse before authority revalidation can cancel the operation, before
+journal commitment and before provider dispatch. The in-memory, durable and
+deployment callers share this check. This prevents a delivered notification from
+being stranded at `Committed` solely because its supplied outcome time cannot
+be recorded. Existing reconciliation requirements and terminal retry behavior
+remain unchanged, including at the signed timestamp limits.
+
+**Scoped validation:** all four new regression bodies pass against the actual
+alert/provider and durable-journal implementations, including unchanged durable
+bytes on refusal, cold reopen, corrected retry and idempotent reconciliation.
+Replacing only the dispatch function with its previous body makes the three
+defect regressions fail; the valid numeric-boundary compatibility test still
+passes. The focused harness uses genuine core, ledger, object and publication
+code with an explicit reference-event fixture. It excludes native webhook and
+the unreachable native source-health branch, which traps if reached. This is
+dispatch/recovery validation, not full runtime, source-health or webhook
+qualification. The complete Cargo build remains blocked in Asupersync as
+described below; no dependency or qualification gate was changed.
+
 ## Conservative site clock-window admission (2026-11-04)
 
 `SiteProbeReceipt::utc_window()` now validates directly constructed receipts before

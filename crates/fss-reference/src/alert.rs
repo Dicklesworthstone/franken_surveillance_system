@@ -78,6 +78,8 @@ pub struct ReferenceAlertPlan {
 ///
 /// The commitment is journaled at `commit_at` before the provider is touched; the provider's
 /// acceptance, loss, or failure is recorded at `outcome_at`.
+/// A new dispatch requires `prepared_at < commit_at < outcome_at`. Invalid ordering is refused
+/// before authority revalidation can cancel the operation, any commitment, or provider dispatch.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AlertDispatchTimes {
     /// Time at which the commitment is journaled, before provider dispatch.
@@ -1567,8 +1569,10 @@ where
 
 /// Shared execution helper for alert dispatch through the deterministic provider oracle.
 ///
-/// Ensures event authority and plan integrity are revalidated atomically before committing
-/// and invoking provider dispatch.
+/// Checks the complete dispatch time ordering before revalidation can mutate a prepared
+/// operation, then revalidates event authority and plan integrity before committing and invoking
+/// provider dispatch. Existing operations past preparation retain their lifecycle refusal: an
+/// ambiguous delivery still requires reconciliation, regardless of the supplied dispatch times.
 pub(crate) fn execute_alert_dispatch<J, R, E>(
     options: AlertDispatchOptions<'_, J, R, E>,
 ) -> Result<OperationReceipt, ReferenceError>
@@ -1588,9 +1592,18 @@ where
         provider,
     } = options;
 
+    let operation_id = &plan.intent.operation_id;
+    if let Some(operation) = journal.operation(operation_id)
+        && operation.state == EffectState::Prepared
+        && (commit_at <= operation.updated_at || outcome_at <= commit_at)
+    {
+        // Once the provider is called, an impossible outcome time would strand a delivered
+        // operation at Committed. Both timestamps are known now, before any effect or cancel.
+        return Err(fss_core::ContractError::InvertedTimeInterval.into());
+    }
+
     revalidate_alert_event_authority(plan, authority, read_payload, commit_at, journal)?;
 
-    let operation_id = &plan.intent.operation_id;
     journal.transition_committed(operation_id, commit_at)?;
 
     match provider.dispatch(&plan.intent, behavior) {

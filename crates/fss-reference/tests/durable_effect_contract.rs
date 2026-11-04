@@ -322,6 +322,132 @@ fn situation_request<'a>(
 }
 
 #[test]
+fn durable_alert_dispatch_refusal_survives_reopen_and_corrected_retry() -> Result<(), Box<dyn Error>>
+{
+    for (name, behavior, expected_state, expected_counts) in [
+        (
+            "delivery",
+            ReferenceProviderBehavior::Deliver,
+            EffectState::AdapterAccepted,
+            (1, 0),
+        ),
+        (
+            "lost-ack",
+            ReferenceProviderBehavior::LoseAckAfterDelivery,
+            EffectState::Indeterminate,
+            (1, 0),
+        ),
+        (
+            "failure",
+            ReferenceProviderBehavior::FailBeforeDelivery,
+            EffectState::Failed,
+            (0, 1),
+        ),
+    ] {
+        let path = temp_journal(&format!("dispatch-time-{name}"));
+        let ledger_path = temp_journal(&format!("dispatch-time-{name}-authority"));
+        let (plan, _, authority, objects) = setup_alert_plan(&path, &ledger_path)?;
+        let mut provider = ReferenceAlertProvider::new(format!("provider:dispatch-time:{name}"));
+        let mut journal = DurableEffectJournal::open(&path, IncompleteTailPolicy::Reject)?;
+        let prepared = journal.operation(&plan.intent.operation_id).cloned();
+        let obligation = journal.obligation(&plan.obligation_id).cloned();
+        let root = journal.last_root();
+        let committed_len = journal.committed_len();
+        let bytes = fs::read(&path)?;
+
+        for (commit_at, outcome_at) in [
+            (TimestampNs(110), TimestampNs(110)),
+            (TimestampNs(110), TimestampNs(109)),
+            (TimestampNs(100), TimestampNs(120)),
+            (TimestampNs(99), TimestampNs(120)),
+            (TimestampNs::MAX, TimestampNs::MAX),
+            (TimestampNs::MAX, TimestampNs::MIN),
+        ] {
+            let refused = journal.dispatch_alert(
+                &plan,
+                &authority,
+                &objects,
+                behavior,
+                AlertDispatchTimes::new(commit_at, outcome_at),
+                &mut provider,
+            );
+            assert!(
+                matches!(
+                    refused,
+                    Err(DurableEffectError::Contract(
+                        ContractError::InvertedTimeInterval
+                    ))
+                ),
+                "{behavior:?} at {commit_at:?}/{outcome_at:?}: {refused:?}"
+            );
+            assert_eq!(
+                journal.operation(&plan.intent.operation_id),
+                prepared.as_ref()
+            );
+            assert_eq!(journal.obligation(&plan.obligation_id), obligation.as_ref());
+            assert_eq!(journal.last_root(), root);
+            assert_eq!(journal.committed_len(), committed_len);
+            assert_eq!(fs::read(&path)?, bytes);
+            assert_eq!((provider.message_count(), provider.failure_count()), (0, 0));
+        }
+        drop(journal);
+
+        // A refused request leaves no recovery obligation or committed tail behind.
+        let mut reopened = DurableEffectJournal::open(&path, IncompleteTailPolicy::Reject)?;
+        assert_eq!(
+            reopened.operation(&plan.intent.operation_id),
+            prepared.as_ref()
+        );
+        assert_eq!(
+            reopened.obligation(&plan.obligation_id),
+            obligation.as_ref()
+        );
+        assert_eq!(reopened.last_root(), root);
+        assert_eq!(reopened.committed_len(), committed_len);
+        let dispatched = reopened.dispatch_alert(
+            &plan,
+            &authority,
+            &objects,
+            behavior,
+            AlertDispatchTimes::new(TimestampNs(110), TimestampNs(120)),
+            &mut provider,
+        )?;
+        assert_eq!(dispatched.state, expected_state);
+        assert_eq!(
+            (provider.message_count(), provider.failure_count()),
+            expected_counts
+        );
+
+        let terminal = reopened
+            .reconcile_alert(&plan, TimestampNs(130), &provider)?
+            .ok_or(ContractError::NotFound)?;
+        assert!(terminal.state.is_terminal());
+        let terminal_root = reopened.last_root();
+        let terminal_bytes = fs::read(&path)?;
+        drop(reopened);
+
+        // Exact terminal reconciliation is still idempotent after a cold reopen, even at
+        // an older timestamp. It writes nothing and never invokes another provider dispatch.
+        let mut reopened = DurableEffectJournal::open(&path, IncompleteTailPolicy::Reject)?;
+        assert_eq!(
+            reopened.reconcile_alert(&plan, TimestampNs::MIN, &provider)?,
+            Some(terminal)
+        );
+        assert_eq!(reopened.last_root(), terminal_root);
+        assert_eq!(fs::read(&path)?, terminal_bytes);
+        assert_eq!(
+            (provider.message_count(), provider.failure_count()),
+            expected_counts
+        );
+        drop(reopened);
+        drop(authority);
+        let _ = fs::remove_file(path);
+        let _ = fs::remove_file(ledger_path);
+    }
+    Ok(())
+}
+
+#[test]
 fn test_positive_prepare_transition_reconcile_durably_replayed_identically()
 -> Result<(), Box<dyn Error>> {
     let path = temp_journal("positive-replay");

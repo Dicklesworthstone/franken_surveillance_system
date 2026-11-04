@@ -143,6 +143,238 @@ fn prepare_alert(
     )
 }
 
+#[test]
+fn alert_dispatch_rejects_malformed_times_without_effects() -> Result<(), Box<dyn Error>> {
+    let path = temp_journal("dispatch-time-admission");
+    let mut objects = InMemoryObjectStore::new(ObjectLimits::new(512, 8 * 1024 * 1024));
+    let mut authority =
+        DurableReferenceLedger::open(&path, "site:alert", IncompleteTailPolicy::Reject)?;
+    let (decision, event_receipt) = eligible_event(&mut objects, &mut authority)?;
+
+    for (behavior, expected_state, expected_counts) in [
+        (
+            ReferenceProviderBehavior::Deliver,
+            EffectState::AdapterAccepted,
+            (1, 0),
+        ),
+        (
+            ReferenceProviderBehavior::LoseAckAfterDelivery,
+            EffectState::Indeterminate,
+            (1, 0),
+        ),
+        (
+            ReferenceProviderBehavior::FailBeforeDelivery,
+            EffectState::Failed,
+            (0, 1),
+        ),
+    ] {
+        let mut journal = EffectJournal::new();
+        let plan = prepare_alert(&decision, &event_receipt, &authority, &mut journal)?;
+        let prepared = journal.operation(&plan.intent.operation_id).cloned();
+        let obligations = journal.obligations().cloned().collect::<Vec<_>>();
+        let root = journal.journal_root();
+        let mut provider = ReferenceAlertProvider::new("provider:test:dispatch-time-admission");
+
+        for (commit_at, outcome_at) in [
+            (TimestampNs(101), TimestampNs(101)),
+            (TimestampNs(101), TimestampNs(100)),
+            (TimestampNs(100), TimestampNs(102)),
+            (TimestampNs(99), TimestampNs(102)),
+            (TimestampNs::MIN, TimestampNs::MAX),
+            (TimestampNs::MAX, TimestampNs::MAX),
+            (TimestampNs::MAX, TimestampNs::MIN),
+        ] {
+            let refused = dispatch_reference_alert(
+                &plan,
+                &authority,
+                &objects,
+                behavior,
+                AlertDispatchTimes::new(commit_at, outcome_at),
+                &mut journal,
+                &mut provider,
+            );
+            assert!(
+                matches!(
+                    refused,
+                    Err(ReferenceError::Contract(
+                        ContractError::InvertedTimeInterval
+                    ))
+                ),
+                "{behavior:?} at {commit_at:?}/{outcome_at:?}: {refused:?}"
+            );
+            assert_eq!(
+                journal.operation(&plan.intent.operation_id),
+                prepared.as_ref()
+            );
+            assert_eq!(
+                journal.obligations().cloned().collect::<Vec<_>>(),
+                obligations
+            );
+            assert_eq!(journal.journal_root(), root);
+            assert_eq!((provider.message_count(), provider.failure_count()), (0, 0));
+        }
+
+        let dispatched = dispatch_reference_alert(
+            &plan,
+            &authority,
+            &objects,
+            behavior,
+            AlertDispatchTimes::new(TimestampNs(101), TimestampNs(102)),
+            &mut journal,
+            &mut provider,
+        )?;
+        assert_eq!(dispatched.state, expected_state);
+        assert_eq!(
+            (provider.message_count(), provider.failure_count()),
+            expected_counts
+        );
+
+        // Bad times never replace the existing no-redispatch/reconciliation contract.
+        let dispatched_root = journal.journal_root();
+        let refused_retry = dispatch_reference_alert(
+            &plan,
+            &authority,
+            &objects,
+            behavior,
+            AlertDispatchTimes::new(TimestampNs::MAX, TimestampNs::MIN),
+            &mut journal,
+            &mut provider,
+        );
+        let expected_error = if expected_state == EffectState::Indeterminate {
+            ContractError::ReconciliationRequired
+        } else {
+            ContractError::InvalidEffectTransition
+        };
+        assert!(
+            matches!(refused_retry, Err(ReferenceError::Contract(error)) if error == expected_error)
+        );
+        assert_eq!(journal.journal_root(), dispatched_root);
+        assert_eq!(
+            (provider.message_count(), provider.failure_count()),
+            expected_counts
+        );
+    }
+
+    let _ = fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn alert_dispatch_checks_time_before_revalidation_can_cancel() -> Result<(), Box<dyn Error>> {
+    let path = temp_journal("dispatch-time-before-cancel");
+    let mut objects = InMemoryObjectStore::new(ObjectLimits::new(512, 8 * 1024 * 1024));
+    let mut authority =
+        DurableReferenceLedger::open(&path, "site:alert", IncompleteTailPolicy::Reject)?;
+    let (decision, event_receipt) = eligible_event(&mut objects, &mut authority)?;
+    let mut journal = EffectJournal::new();
+    let mut plan = prepare_alert(&decision, &event_receipt, &authority, &mut journal)?;
+    plan.channel = "operator:unprepared-channel".to_owned();
+    let root = journal.journal_root();
+    let mut provider = ReferenceAlertProvider::new("provider:test:dispatch-time-before-cancel");
+
+    for (commit_at, outcome_at) in [(100, 102), (101, 101)] {
+        assert!(matches!(
+            dispatch_reference_alert(
+                &plan,
+                &authority,
+                &objects,
+                ReferenceProviderBehavior::Deliver,
+                AlertDispatchTimes::new(TimestampNs(commit_at), TimestampNs(outcome_at)),
+                &mut journal,
+                &mut provider,
+            ),
+            Err(ReferenceError::Contract(
+                ContractError::InvertedTimeInterval
+            ))
+        ));
+        assert_eq!(journal.journal_root(), root);
+    }
+
+    // With valid timing, the existing authority refusal still cancels the altered plan.
+    assert!(matches!(
+        dispatch_reference_alert(
+            &plan,
+            &authority,
+            &objects,
+            ReferenceProviderBehavior::Deliver,
+            AlertDispatchTimes::new(TimestampNs(101), TimestampNs(102)),
+            &mut journal,
+            &mut provider,
+        ),
+        Err(ReferenceError::InvalidSpec("alert_plan_integrity"))
+    ));
+    assert_eq!(
+        journal
+            .operation(&plan.intent.operation_id)
+            .map(|receipt| receipt.state),
+        Some(EffectState::Cancelled)
+    );
+    assert_eq!((provider.message_count(), provider.failure_count()), (0, 0));
+    let _ = fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn alert_dispatch_accepts_strict_time_order_at_numeric_limits() -> Result<(), Box<dyn Error>> {
+    let path = temp_journal("dispatch-time-numeric-limits");
+    let mut objects = InMemoryObjectStore::new(ObjectLimits::new(512, 8 * 1024 * 1024));
+    let mut authority =
+        DurableReferenceLedger::open(&path, "site:alert", IncompleteTailPolicy::Reject)?;
+    let (decision, event_receipt) = eligible_event(&mut objects, &mut authority)?;
+
+    for (prepared_at, commit_at, outcome_at) in [
+        (i128::MIN, i128::MIN + 1, i128::MIN + 2),
+        (i128::MAX - 2, i128::MAX - 1, i128::MAX),
+    ] {
+        let mut journal = EffectJournal::new();
+        let plan = prepare_reference_alert(
+            PrepareAlertParams {
+                decision: &decision,
+                event_receipt: &event_receipt,
+                authority: &authority,
+                operation_id: OperationId::parse("operation:effect:time-limits")?,
+                idempotency_key: IdempotencyKey::parse("idempotency:effect:time-limits")?,
+                obligation_id: ObligationId::parse("obligation:effect:time-limits")?,
+                channel: "operator:oncall".to_owned(),
+                now: TimestampNs(prepared_at),
+            },
+            &mut journal,
+        )?;
+        let mut provider = ReferenceAlertProvider::new("provider:test:dispatch-time-limits");
+        let failed = dispatch_reference_alert(
+            &plan,
+            &authority,
+            &objects,
+            ReferenceProviderBehavior::FailBeforeDelivery,
+            AlertDispatchTimes::new(TimestampNs(commit_at), TimestampNs(outcome_at)),
+            &mut journal,
+            &mut provider,
+        )?;
+        assert_eq!(failed.state, EffectState::Failed);
+        assert_eq!(failed.updated_at, TimestampNs(outcome_at));
+
+        // Exact terminal reconciliation remains read-like even with an old timestamp.
+        let proof = provider
+            .lookup_failure(&plan.intent)?
+            .ok_or(ContractError::NotFound)?;
+        let root = journal.journal_root();
+        let retry = reconcile_failed_reference_alert(
+            &plan,
+            proof.receipt_digest(),
+            proof.error_code.clone(),
+            TimestampNs::MIN,
+            &mut journal,
+            &provider,
+        )?;
+        assert_eq!(retry, failed);
+        assert_eq!(journal.journal_root(), root);
+        assert_eq!((provider.message_count(), provider.failure_count()), (0, 1));
+    }
+
+    let _ = fs::remove_file(path);
+    Ok(())
+}
+
 /// F2: ReferenceAlertProvider binds full intent (idempotency key, operation_id, request_digest,
 /// precondition_digest, effect_class). Conflicting intents sharing the same idempotency key are
 /// rejected with typed conflict errors.
