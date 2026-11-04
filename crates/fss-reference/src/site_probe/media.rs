@@ -20,7 +20,7 @@ use crate::rtsp::client::observed::ObservedVideoDescription;
 
 use super::{Cadence, SiteProbeError};
 
-pub(super) enum PreparedMedia {
+pub(crate) enum PreparedMedia {
     Avc {
         sps: AvcSps,
         pps: AvcPps,
@@ -36,34 +36,17 @@ pub(super) enum PreparedMedia {
 }
 
 impl PreparedMedia {
-    pub(super) fn new(description: ObservedVideoDescription) -> Result<Self, SiteProbeError> {
+    pub(crate) fn new(description: ObservedVideoDescription) -> Result<Self, SiteProbeError> {
         match description {
             ObservedVideoDescription::Avc(media) => {
-                if !(96..=127).contains(&media.payload_type()) {
-                    return Err(SiteProbeError::Selection);
-                }
                 let (sps, pps) = media.parameter_sets();
-                let syntax = AvcSyntaxLimits::default();
-                let sps = parse_sps(sps, syntax).map_err(|_| SiteProbeError::Codec)?;
-                // The packet syntax owner can identify fields and MBAFF pictures,
-                // but native footage decode/remux admits frame-only AVC. Counting
-                // field timestamps as frames would mint the wrong capture cadence.
-                if !sps.frame_mbs_only() {
-                    return Err(SiteProbeError::Codec);
-                }
-                let pps = parse_pps(pps, &sps, syntax).map_err(|_| SiteProbeError::Codec)?;
-                let mode = match media.packetization_mode() {
-                    0 => H264Mode::SingleNal,
-                    1 => H264Mode::NonInterleaved,
-                    _ => return Err(SiteProbeError::Codec),
-                };
-                Ok(Self::Avc {
+                Self::avc(
                     sps,
                     pps,
-                    mode,
-                    payload_type: media.payload_type(),
-                    reduced_rtcp: media.reduced_rtcp(),
-                })
+                    media.packetization_mode(),
+                    media.payload_type(),
+                    media.reduced_rtcp(),
+                )
             }
             ObservedVideoDescription::Hevc(media) => {
                 if !(96..=127).contains(&media.payload_type())
@@ -104,13 +87,39 @@ impl PreparedMedia {
         }
     }
 
-    pub(super) fn payload_type(&self) -> u8 {
+    /// The same complete syntax admission serves recorded and live observations.
+    pub(crate) fn avc(
+        sps: &[u8],
+        pps: &[u8],
+        packetization_mode: u8,
+        payload_type: u8,
+        reduced_rtcp: bool,
+    ) -> Result<Self, SiteProbeError> {
+        if !(96..=127).contains(&payload_type) {
+            return Err(SiteProbeError::Selection);
+        }
+        let syntax = AvcSyntaxLimits::default();
+        let sps = parse_sps(sps, syntax).map_err(|_| SiteProbeError::Codec)?;
+        // Field/MBAFF cadence is not the frame-only native footage contract.
+        if !sps.frame_mbs_only() {
+            return Err(SiteProbeError::Codec);
+        }
+        let pps = parse_pps(pps, &sps, syntax).map_err(|_| SiteProbeError::Codec)?;
+        let mode = match packetization_mode {
+            0 => H264Mode::SingleNal,
+            1 => H264Mode::NonInterleaved,
+            _ => return Err(SiteProbeError::Codec),
+        };
+        Ok(Self::Avc { sps, pps, mode, payload_type, reduced_rtcp })
+    }
+
+    pub(crate) fn payload_type(&self) -> u8 {
         match self {
             Self::Avc { payload_type, .. } | Self::Hevc { payload_type, .. } => *payload_type,
         }
     }
 
-    pub(super) fn rtcp_mode(&self) -> RtcpMode {
+    pub(crate) fn rtcp_mode(&self) -> RtcpMode {
         let reduced = match self {
             Self::Avc { reduced_rtcp, .. } | Self::Hevc { reduced_rtcp, .. } => *reduced_rtcp,
         };
@@ -121,7 +130,7 @@ impl PreparedMedia {
         }
     }
 
-    pub(super) fn parameter_set_digests(&self) -> Vec<ContentDigest> {
+    pub(crate) fn parameter_set_digests(&self) -> Vec<ContentDigest> {
         match self {
             Self::Avc { sps, pps, .. } => [sps.nal_bytes(), pps.nal_bytes()]
                 .into_iter()
@@ -138,7 +147,7 @@ impl PreparedMedia {
         }
     }
 
-    pub(super) fn start(self, key: StreamKey) -> Result<MediaObserver, SiteProbeError> {
+    pub(crate) fn start(self, key: StreamKey) -> Result<MediaObserver, SiteProbeError> {
         match self {
             Self::Avc {
                 sps,
@@ -185,13 +194,20 @@ impl PreparedMedia {
     }
 }
 
-pub(super) enum MediaObserver {
+/// Derivative bytes excluded at a deliberate sample cut, never source-custody bytes.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct UnobservedTail {
+    pub(crate) nal_bytes: u64,
+    pub(crate) fragment_bytes: u64,
+}
+
+pub(crate) enum MediaObserver {
     Avc(Box<AvcObserver>),
     Hevc(Box<HevcObserver>),
 }
 
 impl MediaObserver {
-    pub(super) fn push(
+    pub(crate) fn push(
         &mut self,
         sequence: u64,
         packet: RtpPacket<'_>,
@@ -204,7 +220,32 @@ impl MediaObserver {
         }
     }
 
-    pub(super) fn finish(
+    /// Retire a deliberately excluded live tail without manufacturing EOF/EOS
+    /// or promoting the pending group into the confirmed cadence.
+    pub(crate) fn discard_pending(&mut self) -> UnobservedTail {
+        match self {
+            Self::Avc(observer) => {
+                let tail = UnobservedTail {
+                    nal_bytes: observer.assembler.pending_bytes() as u64,
+                    fragment_bytes: observer.depacketizer.pending_bytes() as u64,
+                };
+                let _ = observer.depacketizer.cancel();
+                let _ = observer.assembler.cancel();
+                tail
+            }
+            Self::Hevc(observer) => {
+                let tail = UnobservedTail {
+                    nal_bytes: observer.assembler.pending_bytes() as u64,
+                    fragment_bytes: observer.depacketizer.pending_bytes() as u64,
+                };
+                let _ = observer.depacketizer.cancel();
+                let _ = observer.assembler.cancel();
+                tail
+            }
+        }
+    }
+
+    pub(crate) fn finish(
         &mut self,
         step: u64,
         cadence: &mut Cadence,
@@ -216,7 +257,7 @@ impl MediaObserver {
     }
 }
 
-pub(super) struct AvcObserver {
+pub(crate) struct AvcObserver {
     key: StreamKey,
     depacketizer: H264Depacketizer,
     assembler: AvcAssembler,
@@ -305,7 +346,7 @@ fn avc_picture(picture: &AvcPictureGroup, cadence: &mut Cadence) -> Result<(), S
     cadence.observe(picture.timestamp())
 }
 
-pub(super) struct HevcObserver {
+pub(crate) struct HevcObserver {
     key: StreamKey,
     depacketizer: H265Depacketizer,
     assembler: HevcAssembler,

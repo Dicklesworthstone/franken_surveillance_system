@@ -186,9 +186,14 @@ DESCRIBE responses and RTPdump samples using native AVC/HEVC picture assembly.
 It measures media configuration, SSRC and constant cadence, and refuses unverified
 picture tails, lost packets or inconsistent timing. See [the recorded-probe example](docs/SITE_PROBE_MEASUREMENT.md).
 
-This is read-only planning: no device contact, credential reads, recording or signed
-rights verification. A site executor and live probe producer remain open. Unsupported
-sources and payment regions that require masking before original retention refuse.
+`fss site probe` previews and, with the exact approval digest, performs one bounded
+native AVC/HEVC RTSP/NVR observation. It returns a receipt array only after matching
+TEARDOWN acknowledgement; failures preserve possible remote-session state. See
+[approved native site probing](docs/SITE_PROBING.md).
+
+Validation, recorded probing and capture planning perform no device contact,
+credential reads, recording or signed rights verification. A site recorder remains
+open. Unsupported sources and payment regions that require masking before original retention refuse.
 See [the executable two-source example and contracts](docs/SITE_PLANNING.md).
 
 ## Architecture in one page

@@ -1,0 +1,221 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.dev/schemas/site_probe_plan.v1.json",
+  "title": "FSS separately approved native site probe plan",
+  "description": "Private operator preview for one exact manifest source and explicit AVC/HEVC selection. Its approval binds the complete manifest and all selections/limits. Preview performs no network or credential access; it grants no capture, rights or freshness authority.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "status",
+    "policy",
+    "approval",
+    "manifest_digest",
+    "site_id",
+    "source_id",
+    "source_index",
+    "peer",
+    "authority",
+    "presentation",
+    "control_root",
+    "codec",
+    "media_index",
+    "payload_type",
+    "rtp_channel",
+    "observe_frames",
+    "timeout_ms",
+    "principal",
+    "authentication",
+    "commands",
+    "max_received_bytes",
+    "max_sent_bytes",
+    "max_io_calls",
+    "max_steps",
+    "device_contacted",
+    "credentials_read",
+    "source_retained",
+    "capture_authorized",
+    "rights_verdict_verified",
+    "teardown_ack_required"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.site_probe_plan.v1"
+    },
+    "status": {
+      "const": "requires_approval"
+    },
+    "approval": {
+      "$ref": "#/$defs/digest"
+    },
+    "manifest_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "site_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "source_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "source_index": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 63
+    },
+    "peer": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 128
+    },
+    "authority": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "presentation": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048
+    },
+    "control_root": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048
+    },
+    "codec": {
+      "enum": [
+        "avc",
+        "hevc"
+      ]
+    },
+    "media_index": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 63
+    },
+    "payload_type": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "integer",
+          "minimum": 96,
+          "maximum": 127
+        }
+      ]
+    },
+    "rtp_channel": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 254,
+      "multipleOf": 2
+    },
+    "observe_frames": {
+      "type": "integer",
+      "minimum": 3,
+      "maximum": 64
+    },
+    "timeout_ms": {
+      "type": "integer",
+      "minimum": 100,
+      "maximum": 60000
+    },
+    "principal": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "authentication": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/authentication"
+        }
+      ]
+    },
+    "commands": {
+      "const": [
+        "OPTIONS",
+        "DESCRIBE",
+        "SETUP",
+        "PLAY",
+        "TEARDOWN"
+      ]
+    },
+    "max_received_bytes": {
+      "const": 8650752
+    },
+    "max_sent_bytes": {
+      "const": 65536
+    },
+    "max_io_calls": {
+      "const": 65536
+    },
+    "max_steps": {
+      "const": 65536
+    },
+    "device_contacted": {
+      "const": false
+    },
+    "credentials_read": {
+      "const": false
+    },
+    "source_retained": {
+      "const": false
+    },
+    "capture_authorized": {
+      "const": false
+    },
+    "rights_verdict_verified": {
+      "const": false
+    },
+    "teardown_ack_required": {
+      "const": true
+    },
+    "policy": {
+      "const": "site-native-probe:v1:one-source:rtsp-nvr:explicit-avc-hevc:exact-route:options-describe-setup-play:strict-rtp-cadence:teardown-ack-required:no-source-retention:no-rights-grant:no-retry"
+    }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "not": {
+        "const": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    },
+    "authentication": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "credential_file",
+        "realm_digest",
+        "legacy_md5",
+        "legacy_no_qop"
+      ],
+      "properties": {
+        "credential_file": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "realm_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "legacy_md5": {
+          "type": "boolean"
+        },
+        "legacy_no_qop": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}

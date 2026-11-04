@@ -9,8 +9,9 @@ journal and destination identities for every camera and operation.
 This is the direct RTSP/NVR, AVC/HEVC/JPEG portion of VIT-001 and VIT-002 in
 [the footage-plane plan](VITTLES_FOOTAGE_PLANE_PLAN.md). Planning reads the named
 control documents; it does not contact devices, read credentials, create archives,
-verify signed rights leases or start recording. No `site run`, `site probe` or
-site-wide approval executor is available. The reference implementation remains
+verify signed rights leases or start recording. An independently approved
+[`site probe`](SITE_PROBING.md) can produce an AVC/HEVC receipt from one native
+RTSP/NVR session. No `site run` or site-wide approval executor is available. The reference implementation remains
 unqualified, with no real-camera measurement implied by a successful plan.
 
 ## Try the complete synthetic example
@@ -233,7 +234,7 @@ control-file admission checks, not cryptographic provenance or a trusted parent
 directory guarantee.
 
 No command infers success for an unsupported source. ONVIF/UniFi onboarding,
-live probing, automatic discovery, TLS/RTSPS, signed
+JPEG live probing, automatic discovery, TLS/RTSPS, signed
 rights-lease verification, site execution, retention rings and agent footage
 queries remain outside this implementation. Existing standalone native tools
 retain their separately documented capabilities.
@@ -263,17 +264,31 @@ tests actually executed in this environment and its full-build limitations.
 
 ## Native RTP probe observation component (VIT-003)
 
-The pure fss_reference::site::probe_observation::RtspProbeObserver API accepts one
-already-negotiated AVC or HEVC SDP selection, verifies its exact parameter NALs,
-then derives SSRC, fixed 90-kHz cadence and wrap-aware timestamp boundaries from
-bounded RTP packets. A missing packet, foreign sender, changed payload, incomplete
-marker sequence or cadence drift refuses the whole observation. No raw packet or SDP
-bytes are returned. Returned values satisfy the existing site probe receipt v1
-contract and can feed the current site plan compiler.
+The pure `fss_reference::site::probe_observation::RtspProbeObserver` API accepts one
+already-negotiated AVC/HEVC SDP selection and validates the complete native codec
+configuration. It shares the recorded-probe depacketizers, picture assemblers and
+cadence measurement. SSRC, payload, packet order, immutable parameter sets and
+constant 90 kHz picture timing must agree. RTP markers alone cannot create an
+observation. Field-coded configurations, malformed media, discontinuities and
+variable cadence refuse the sample.
 
-This is **not** a live camera probe. The RTSP session owner still needs to bind its
-DESCRIBE/SETUP/PLAY transcript to this observer, independently receive and confirm
-TEARDOWN, and enforce explicit network and credential authority. This pure API does
-not authenticate the caller or source, prove freshness, or certify decoded pictures.
-The v1 receipt remains an untrusted observational claim until its provenance and
-subsequent live capture pins are established.
+A strict `finish()` requires witnessed boundaries for the supplied sample.
+Live callers use `freeze_prefix()` followed by `finish_prefix()` to deliberately
+exclude the unverified next group or fragment without fabricating EOF/EOS.
+Excluded reconstructed NAL/fragment bytes are reported separately from original
+wire omissions; they do not assert an omitted-frame count or pixel completeness.
+One RTP aggregation packet is processed atomically, so a minimum picture target
+may be exceeded, subject to the hard 64-picture bound.
+
+The [`site probe`](SITE_PROBING.md) command and its
+`site::live_probe::LiveSiteProbe` owner feeds this observer from its actual
+accepted DESCRIBE/SETUP/PLAY session, supplies current scoped TCP authority and
+monotonic time, freezes the measured prefix, and releases its receipt only after
+the matching successful TEARDOWN response. Local cancellation or EOF cannot
+substitute for that acknowledgement. Close uncertainty remains explicit.
+
+Neither the pure observer nor a matching remote close authenticates the physical
+camera, proves current scene freshness, certifies every slice/macroblock, grants
+rights, or establishes source custody. The returned metadata uses the existing
+site probe receipt contract. See the implementation status for the exact
+qualification limits of the changed observer and real-media loopback tests.

@@ -6,6 +6,17 @@ operation states rather than generic errors.
 
 | ID | Meaning | Retry policy |
 |---|---|---|
+| `ERR-SITE-PROBE-PLAN-001` | Requested native probe manifest/source/selection or bounds are not admitted | Correct the exact request and preview again; no credential or network work. |
+| `ERR-SITE-PROBE-APPROVAL-001` | The supplied approval is not the complete current native probe plan digest | Review the new complete preview and supply its exact digest; no automatic approval. |
+| `ERR-SITE-PROBE-DEADLINE-001` | The approved probe operation deadline is exhausted | No receipt or renewed budget; inspect remote-session uncertainty before new work. |
+| `ERR-SITE-PROBE-CANCELLED-001` | The request-owned runtime cancelled the probe | Close local resources; no hidden TEARDOWN or automatic retry. |
+| `ERR-SITE-PROBE-BUDGET-001` | The approved probe runtime resource allowance is exhausted | No renewed allowance or partial successful receipt. |
+| `ERR-SITE-PROBE-AUTHORITY-001` | The live probe runtime or credential authority refused a boundary | Re-establish exact owner scope before a separately approved operation. |
+| `ERR-SITE-PROBE-CREDENTIAL-001` | The approved private credential reference cannot be admitted | Correct the private file without exposing its content; no connection if initial resolution failed. |
+| `ERR-SITE-PROBE-CREDENTIAL-REVOKED-001` | The admitted private credential file changed during the probe | Stop the generation and review the current credential configuration; no automatic retry. |
+| `ERR-SITE-PROBE-ENTROPY-001` | Scoped native cnonce entropy could not be obtained | Do not substitute deterministic entropy or weaken Digest. |
+| `ERR-SITE-PROBE-CLOSE-001` | A native completion lacks a settled matching remote close | No receipt; preserve remote uncertainty. |
+| `ERR-SITE-PROBE-OUTPUT-001` | The complete native probe result exceeds its output allowance | No truncated or partial receipt. |
 | `ERR-SITE-PROBE-CONFIGURATION-001` | Native probe source, route, generation, authentication policy or finite limits disagree | Correct the exact scope and preview again; no network work for configuration refusal. |
 | `ERR-SITE-PROBE-TRANSPORT-001` | Native scoped probe transport or network authority refused | Inspect the explicit attempt/remote-session facts; never reconnect automatically. |
 | `ERR-SITE-PROBE-SESSION-001` | Native RTSP lifecycle, negotiation, correlation or deadline refused | Correct the supported protocol scope and request a new probe explicitly. |
@@ -17,7 +28,7 @@ operation states rather than generic errors.
 | `ERR-SITE-PROBE-CLOCK-001` | Owner-supplied native probe time moved backwards | Retire this generation before any further socket effect. |
 | `ERR-SITE-PROBE-CLOSED-001` | A retired native probe was stepped again | No reconnect or duplicate receipt; allocate a separately authorized owner for new work. |
 | `ERR-SITE-PROBE-SCOPE-001` | Strict RTP observer source/route scope is not admitted | Correct the exact manifest and negotiated selection; no observation claim. |
-| `ERR-SITE-PROBE-NEGOTIATION-001` | Strict RTP observer SDP and selected codec/configuration disagree | Use the same accepted native DESCRIBE/selection; do not substitute parameter claims. |
+| `ERR-SITE-PROBE-NEGOTIATION-001` | Strict RTP observer SDP, selected codec/configuration or native sequence syntax is unsupported or inconsistent | Use the same accepted native DESCRIBE/selection; do not substitute parameter claims. |
 | `ERR-SITE-PROBE-RECEIPT-001` | The complete native observation cannot produce a valid manifest-bound receipt | No successful prefix or replacement identity. |
 | `ERR-SITE-PROBE-INPUT-PIN-001` | A complete named manifest, DESCRIBE response or RTPdump differs from its independent raw SHA-256 pin | Restore the exact expected bytes or provide independently verified new evidence; never accept a partial match. |
 | `ERR-SITE-PROBE-MANIFEST-001` | The independently pinned probe manifest violates the strict site input contract | Correct the complete declaration and update its independent pin; no guessed or partial source inventory. |
@@ -25,7 +36,7 @@ operation states rather than generic errors.
 | `ERR-SITE-PROBE-SELECTION-001` | Manifest/source or explicit codec/media/channel selection is invalid or unsupported | Correct the exact scope; no guessed source or codec fallback. |
 | `ERR-SITE-PROBE-DESCRIPTION-001` | Recorded DESCRIBE framing, native SDP/control route or Server identity is invalid or ambiguous | Provide one complete supported response; metadata is never silently selected. |
 | `ERR-SITE-PROBE-PACKET-001` | RTPdump or complete RTP/RTCP framing is malformed, truncated or capture-limited | Provide complete original datagrams; never pad missing bytes. |
-| `ERR-SITE-PROBE-CONTINUITY-001` | Recorded RTP has loss, duplication, reordering, sender drift or payload drift | Acquire a new contiguous single-stream sample; do not hide gaps. |
+| `ERR-SITE-PROBE-CONTINUITY-001` | Observed RTP has loss, duplication, reordering, sender drift or payload drift | Acquire a new contiguous single-stream sample; do not hide gaps. |
 | `ERR-SITE-PROBE-PICTURE-001` | Native codec reconstruction, configuration or picture-boundary admission failed | Provide a complete supported sample with exact parameter sets and witnessed picture boundaries. |
 | `ERR-SITE-PROBE-CADENCE-001` | Fewer than three syntax-grouped pictures or no single positive fixed RTP cadence | Acquire at least three consecutive pictures under one supported constant-cadence source configuration. |
 | `ERR-SITE-PROBE-ENCODING-001` | Complete canonical measured-evidence or resulting receipt identity cannot be constructed | Correct the exact input; no partial receipt or replacement identity. |

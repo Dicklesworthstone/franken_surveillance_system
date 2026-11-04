@@ -78,6 +78,8 @@ pub mod session_cmd;
 pub mod site_cmd;
 /// Atomic site-to-native capture planning with exact manifest and probe bindings.
 pub mod site_plan;
+/// Exact approval-gated native RTSP probing with receipt-only output.
+pub mod site_probe;
 /// Measure pinned recorded RTSP/RTP evidence into native site probe receipts.
 pub mod site_probe_cmd;
 /// `fss status --json [--root <dir>]`: read-only retained inventory (SCHEMA-STATUS-001).

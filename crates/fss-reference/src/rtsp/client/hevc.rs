@@ -81,7 +81,7 @@ impl fmt::Debug for HevcClientMedia {
 }
 
 /// Called only after the shared parser's whole-document bounds and structure checks.
-pub(super) fn negotiate(
+pub(crate) fn negotiate(
     text: &str,
     selected: usize,
     media: &SdpMedia,

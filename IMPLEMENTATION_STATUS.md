@@ -4,14 +4,42 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
-## Native RTSP site probe session owner
+## Native picture measurement in live site probes
+
+Live RTSP observations now share the recorded-probe AVC/HEVC configuration,
+depacketization, picture assembly and cadence owners. RTP markers alone no longer
+increment the live picture count. Unsupported field/MBAFF AVC and HEVC field
+sequences refuse through the same native SPS admission, and owner monotonic time
+reaches native fragment and picture lifetime checks.
+
+A live sample freezes only a prefix with witnessed native picture boundaries.
+The next unverified group or unfinished fragment is explicitly discarded and
+accounted in derivative-byte counters; it is never counted as another picture,
+promoted through fabricated EOS, or added again to original-wire omissions.
+An RTP aggregation datagram is processed atomically, so the requested picture
+count is a minimum subject to the hard 64-picture ceiling. Existing exact
+DESCRIBE/SETUP/PLAY, scoped TCP, Digest, and acknowledged TEARDOWN ownership is
+preserved. No usable receipt leaves the live owner before matching remote close.
+
+The revised sources include 11 real-fixture observer contracts and 17 real TCP
+loopback contracts, replacing the earlier 4 marker-observer and 12 session tests.
+Positive paths use retained AVC/HEVC codec bytes; negative paths include forged
+markers, missing syntax boundaries, field sequences, configuration changes,
+strict source continuity, expiry, authority loss and remote-close uncertainty.
+These revised tests have **not been compiled or executed**: the pinned formatter
+parsed the seven changed backend/test files, but the shared executor disconnected
+before any compiler invocation. Earlier test results below apply to their prior
+source versions, not this changed measurement path. The required new loopback,
+observer and recorded-probe regression runs remain pending.
+
+## Approved native RTSP site probing
 
 `fss_reference::site::live_probe::LiveSiteProbe` now owns one bounded native
 RTSP/NVR probe from OPTIONS through DESCRIBE, SETUP, PLAY and acknowledged
 TEARDOWN. It composes the existing scoped client, Digest owner, exact wire intake,
 TCP transport and strict RTP observer. The same accepted SDP supplies negotiation
 and receipt parameter hashes. Explicit media/channel/payload selection, stable
-SSRC, sequence continuity and constant marked-picture cadence must agree; no raw
+SSRC, sequence continuity and constant native-picture cadence must agree; no raw
 SDP, media, session token or credential leaves the owner. RTCP and in-flight media
 while closing are explicitly omitted and counted. Each step rechecks supplied
 network authority and owner time. No clock, sleep, secret resolver, decoder,
@@ -24,16 +52,45 @@ explicit possible remote-session state. Cancellation retires local resources onc
 without sending a hidden cleanup request. Transport and omission counters remain
 available without exposing original bytes.
 
-**Validation:** 12 native loopback contracts pass with the pinned toolchain against
+`fss site probe --manifest SITE.json --source SOURCE --codec avc|hevc --json`
+now supplies the operator entry point. With no approval it returns a pure preview;
+an exact `--approve` digest binds the complete manifest, source selection,
+principal and all observation limits before any credential or network access.
+The approved adapter reuses the production request-owned runtime and private-file
+credential/entropy owner. It revalidates credentials at socket boundaries and
+again before releasing a successful result. Success is a receipt array accepted
+by `site plan`; refusal reports only static identities and explicit connection,
+credential-access and remote-close facts. No media archive or automatic retry is
+introduced. Existing `probe-file` and JPEG site planning remain available.
+See [SITE_PROBING.md](docs/SITE_PROBING.md) for the command and scope.
+
+**Prior validation, before the native-picture measurement revision above:** 12 native
+loopback contracts passed with the pinned toolchain against
 the exact production site/RTSP modules, full native packet source and native core
 library. They exercise AVC/HEVC, Digest, foreign realms, seven-byte request writes,
 chunked responses, RTP faults, late media, close uncertainty, cancellation, clock
-regression and pre-connect authority denial. This focused module build uses no
-replacement implementation; it is not a complete workspace/runtime build. Full
-selected binary compilation was SIGKILLed in the existing Asupersync dependency
-under shared memory pressure and remains unqualified. This completes the native
-session-owner slice of VIT-003; the operator CLI, authenticated/fresh receipt
-handling, JPEG live probing and an always-on site recorder are separate work.
+regression and pre-connect authority denial. Five pure production approval/preview/
+receipt contracts and six existing production credential/entropy contracts also
+pass. Six focused checks of the exact production parser and refusal renderer pass,
+including malformed selections, value redaction and empty-input refusal. The
+pure-module isolation preserves byte-identical approvals and previews
+for AVC, authenticated AVC and selected HEVC. Production previews and receipt
+and refusal renderings pass their full Draft 2020-12 schemas. These focused builds select
+actual production modules and contain no replacement runtime or implementation.
+
+**Full CLI integration remains unverified here.** Nine command-process contracts
+are added and their test source typechecks, but no actual `fss` executable could be
+built: LLVM builds, serialized compilation, metadata-only checking and the pinned
+Cranelift development-backend attempt were SIGKILLed inside the existing Asupersync
+dependency before FSS diagnostics. The nine command tests and shared runtime unit
+tests therefore remain unrun. Changed sources pass formatting/whitespace checks;
+existing unrelated repository-wide formatting drift was not rewritten. No complete
+workspace, hardware or release qualification is claimed. This advances VIT-003;
+authenticated/fresh receipt handling, JPEG live probing and an always-on site
+recorder remain separate work. This is a standalone owner-approved reference
+capability. Customer deployment under the Vittles plan additionally requires the
+current FLDT rights lease and device-collection admission in VIT-010, which this
+command does not yet verify; local approval is not that authorization.
 
 ## Executive summary
 
