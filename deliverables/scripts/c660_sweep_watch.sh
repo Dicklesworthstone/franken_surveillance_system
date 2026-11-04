@@ -110,6 +110,9 @@ while :; do
       phase DONE
       exit 0
     fi
+    # discriminating test: did system() actually run? probe login latency around the sleep
+    sudo -n /opt/homebrew/bin/python3 "$HERE/rop_timing_probe.py" "$ip" >>"$LOG" 2>&1
+    log "timing probe: $(cat /tmp/rop_timing.json 2>/dev/null || echo 'no-result')"
     log "ROP fired rc=$rc but 4444 not open — will retry on next presence"
     phase WAITING
     continue
