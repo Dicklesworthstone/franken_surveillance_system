@@ -5,6 +5,25 @@
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
 
+## ONVIF probe admission across the original site inventory (2026-11-04)
+
+Native ONVIF probe selection now checks its independently bound RTSP route
+against every known direct RTSP/NVR route and UniFi peer in the complete
+manifest before connection authority is consulted. Excluding a source from a
+single-camera probe cannot hide an equivalent route or conflicting connection
+limit on the same physical peer. Canonical route aliases and mapped IPv4
+addresses retain the existing inventory rules. Other ONVIF HTTP endpoints do
+not imply an RTSP route, and no fake receipt is needed for admission.
+
+This extends the existing protected route owner while preserving its exact
+historical onboarding/profile/codec pins. **Scoped validation:** 211 actual-source
+native tests pass: 179 unit tests, 25 live probe contracts and seven route
+contracts. Three new admission regressions cover duplicate direct/NVR routes,
+known UniFi/RTSP peer limits, excluded sources and unknown ONVIF media endpoints.
+The existing AVC/HEVC/Digest loopback, preconnection refusal and acknowledged
+TEARDOWN contracts remain passing. Pinned formatting and `git diff --check`
+pass. These tests do not qualify the full CLI/Asupersync runtime or hardware.
+
 ## Native protected ONVIF probe route owner (2026-11-04)
 
 The native site probe can now observe an explicitly bound ONVIF handoff through

@@ -135,6 +135,13 @@ impl ProbeRoute {
         if !matches!(codec, ProbeCodec::Avc | ProbeCodec::Hevc) {
             return Err(SiteError::InvalidField("codec"));
         }
+        validate_onvif_probe_inventory(
+            manifest,
+            source_index,
+            selected.peer,
+            &selected.authority,
+            &selected.presentation,
+        )?;
         Ok(Self {
             manifest_digest: selected.manifest_digest,
             source_index,
@@ -173,6 +180,13 @@ impl ProbeRoute {
                 super::digest(selected.handoff_digest)?;
                 super::digest(selected.onboarding_plan)?;
                 super::digest(selected.profile_digest)?;
+                validate_onvif_probe_inventory(
+                    manifest,
+                    source_index,
+                    self.peer,
+                    &self.authority,
+                    &self.presentation,
+                )?;
             }
             None => {
                 if source.kind == SourceKind::Onvif
@@ -374,6 +388,52 @@ impl OnvifCaptureRoute {
     pub const fn handoff_digest(&self) -> ContentDigest {
         self.handoff_digest
     }
+}
+
+// Compare the actual ONVIF RTSP selection with all other known manifest routes and
+// physical-peer limits before native probing. No measured receipt is manufactured for
+// admission, and another ONVIF HTTP service supplies no knowledge of its RTSP endpoint.
+fn validate_onvif_probe_inventory(
+    manifest: &SiteManifest,
+    source_index: usize,
+    peer: SocketAddr,
+    authority: &str,
+    presentation: &str,
+) -> Result<(), SiteError> {
+    let selected_source = source(manifest, source_index)?;
+    let selected_ip = super::physical_peer_ip(peer);
+    let selected_route = (
+        peer.port(),
+        super::authority_identity(authority)?,
+        super::presentation_identity(presentation)?,
+    );
+    for (index, other) in manifest.sources.iter().enumerate() {
+        if index == source_index || other.kind == SourceKind::Onvif {
+            continue;
+        }
+        if super::physical_peer_ip(other.peer) != selected_ip {
+            continue;
+        }
+        if other.max_connections != selected_source.max_connections {
+            return Err(SiteError::InvalidField("max_connections"));
+        }
+        if matches!(other.kind, SourceKind::Rtsp | SourceKind::NvrChannel) {
+            let other_route = (
+                other.peer.port(),
+                super::authority_identity(&other.authority)?,
+                super::presentation_identity(
+                    other
+                        .presentation
+                        .as_deref()
+                        .ok_or(SiteError::MissingField("presentation"))?,
+                )?,
+            );
+            if other_route == selected_route {
+                return Err(SiteError::DuplicateSource);
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Check complete selected-route inventory for collisions and physical-peer admission drift.
@@ -869,6 +929,111 @@ mod onvif_tests {
         validate_selected_capture_route_inventory(&manifest, &[0], &[&receipts[0]])?;
         // The default API still requires every manifest receipt.
         assert!(validate_capture_route_inventory(&manifest, &[&receipts[0]]).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn native_onvif_admission_checks_known_unselected_routes_without_a_fake_receipt() -> Test {
+        for kind in [SourceKind::Rtsp, SourceKind::NvrChannel] {
+            let (mut manifest, _) = with_excluded_direct()?;
+            manifest.sources[1].kind = kind;
+            manifest.sources[1].owner_authorized = false;
+            for peer in ["192.0.2.11:554", "[::ffff:192.0.2.11]:554"] {
+                let selected = OnvifCaptureRoute::new(
+                    &manifest,
+                    0,
+                    ContentDigest::sha256(b"handoff"),
+                    peer.parse()?,
+                    "CAMERA-11.EXAMPLE:554",
+                    "/l%69ve/main",
+                    "/",
+                )?;
+                assert_eq!(
+                    ProbeRoute::from_onvif(
+                        &manifest,
+                        0,
+                        &selected,
+                        ContentDigest::sha256(b"onboarding"),
+                        ContentDigest::sha256(b"profile"),
+                        ProbeCodec::Avc,
+                    ),
+                    Err(SiteError::DuplicateSource)
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn native_onvif_admission_keeps_known_physical_peer_limits() -> Test {
+        for kind in [
+            SourceKind::Rtsp,
+            SourceKind::NvrChannel,
+            SourceKind::UnifiProtect,
+        ] {
+            let (mut manifest, _) = with_excluded_direct()?;
+            let other = &mut manifest.sources[1];
+            other.kind = kind;
+            other.owner_authorized = false;
+            if kind == SourceKind::UnifiProtect {
+                other.presentation = None;
+                other.control_root = None;
+                other.unifi_camera_id = Some("camera:excluded".to_owned());
+            }
+            for limit in [2, 1] {
+                manifest.sources[1].max_connections = limit;
+                let selected = OnvifCaptureRoute::new(
+                    &manifest,
+                    0,
+                    ContentDigest::sha256(b"handoff"),
+                    "[::ffff:192.0.2.11]:8554".parse()?,
+                    "camera-11.example:8554",
+                    "/different/live",
+                    "/different",
+                )?;
+                let route = ProbeRoute::from_onvif(
+                    &manifest,
+                    0,
+                    &selected,
+                    ContentDigest::sha256(b"onboarding"),
+                    ContentDigest::sha256(b"profile"),
+                    ProbeCodec::Hevc,
+                );
+                if limit == 2 {
+                    assert_eq!(route, Err(SiteError::InvalidField("max_connections")));
+                } else {
+                    route?.validate_for(&manifest, 0)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn native_onvif_admission_does_not_invent_another_management_peers_rtsp_route() -> Test {
+        let (mut manifest, _) = fixture()?;
+        manifest.sources[1].max_connections = 2;
+        manifest.sources[1].owner_authorized = false;
+        let selected = OnvifCaptureRoute::new(
+            &manifest,
+            0,
+            ContentDigest::sha256(b"handoff"),
+            "192.0.2.11:554".parse()?,
+            "camera-11.example:554",
+            "/live/main",
+            "/live",
+        )?;
+        let route = ProbeRoute::from_onvif(
+            &manifest,
+            0,
+            &selected,
+            ContentDigest::sha256(b"onboarding"),
+            ContentDigest::sha256(b"profile"),
+            ProbeCodec::Avc,
+        )?;
+        route.validate_for(&manifest, 0)?;
+        assert_eq!(route.peer(), selected.peer);
+        assert_ne!(route.peer(), manifest.sources[1].peer);
         Ok(())
     }
 }
