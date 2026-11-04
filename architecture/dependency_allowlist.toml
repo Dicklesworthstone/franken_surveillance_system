@@ -246,6 +246,10 @@ not_admitted_without_dep_record_adr_and_release_evidence = [
   "chacha20poly1305", "x25519-dalek", "hkdf", "sha2"
 ]
 
+[exception_candidates.in_progress]
+rustls = "ADR-0014 decided the policy (admit, for camera-facing TLS only) and the provider (rustls-rustcrypto, not ring/aws-lc-rs, to avoid a separate C/C++ FFI exception). DEP-TLS-001 (architecture/dep_records/DEP-TLS-001-rustls.md) opens the admission record; its evidence fields are PENDING a real offline cargo resolution. Stays in not_admitted_without_dep_record_adr_and_release_evidence until that evidence lands — this entry is a pointer, not an admission."
+webpki_roots = "Companion to rustls above, same ADR-0014 / DEP-TLS-001, same pending status. Fallback trust-anchor path only; a site's pinned certificate takes precedence per the vittles footage-plane plan's decision D2."
+
 [resolved_drifts]
 thiserror = "not_admitted; an older comprehensive-plan sentence grouped it with the default exception set, but no DEP record, ADR admission, Cargo dependency, or release evidence exists. Machine policy remains authoritative per ADR-0012."
 
