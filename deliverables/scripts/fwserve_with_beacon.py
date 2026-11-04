@@ -10,6 +10,17 @@ class H(http.server.SimpleHTTPRequestHandler):
     def __init__(self, *a, **kw):
         super().__init__(*a, directory=ROOT, **kw)
     def do_GET(self):
+        try:
+            self._handle_get()
+        except Exception:
+            try:
+                self.send_response(500)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+            except Exception:
+                pass
+
+    def _handle_get(self):
         p = self.path.split("?")[0]
         if p.startswith("/fss-ran") or p.startswith("/fss-recon"):
             q = urllib.parse.parse_qs(self.path.split("?")[1] if "?" in self.path else "")
