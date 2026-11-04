@@ -461,6 +461,9 @@ impl<'a> RtspProbeObserver<'a> {
             last_rtp_timestamp,
             parameter_set_digests: self.parameter_digests,
             server_identity: self.server_identity,
+            // VIT-019 adds the schema field; wiring a real wall-clock sample into
+            // the live observer is a separate follow-up, tracked on that bead.
+            clock_evidence: None,
         };
         receipt
             .validate_for(self.manifest)
