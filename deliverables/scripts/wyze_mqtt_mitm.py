@@ -71,7 +71,7 @@ def _rewrite(d):
     ct = d[j:]
     if len(ct) < 8 or len(ct) % 4:
         return None
-    pt = _xxtea(ct, os.environ["OTA_ENR"].encode(), True)
+    pt = _xxtea(ct, os.environ.get("OTA_ENR","").encode(), True)
     try:
         doc = json.loads(pt.split(b"\0")[0])
     except Exception:
@@ -83,7 +83,7 @@ def _rewrite(d):
     par["firmware_ver"] = os.environ["OTA_URL"].rsplit("/", 1)[-1].split(".tar")[0]
     doc["Params"] = par
     new = json.dumps(doc, separators=(",", ":")).encode()
-    new = _xxtea(new + b"\0" * (-len(new) % 4), os.environ["OTA_ENR"].encode())
+    new = _xxtea(new + b"\0" * (-len(new) % 4), os.environ.get("OTA_ENR","").encode())
     # rebuild: same header byte, same topic (+packet id), new payload, fresh remaining length
     varint = 1
     while d[varint] & 0x80:
@@ -311,17 +311,17 @@ def inject(cli=None, up=None):
         if os.environ.get("OTA_ENC","3"):
             import base64
             from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-            if os.environ["OTA_ENC"] == "5":
-                pl=bytes.fromhex(os.environ["OTA_RAWHEX"])
-            elif os.environ["OTA_ENC"] in ("3", "4"):
-                pl=_xxtea(pl+b"\0"*(-len(pl)%4), os.environ["OTA_ENR"].encode())
-                if os.environ["OTA_ENC"] == "4":
+            if os.environ.get("OTA_ENC","3") == "5":
+                pl=bytes.fromhex(os.environ.get("OTA_RAWHEX",""))
+            elif os.environ.get("OTA_ENC","3") in ("3", "4"):
+                pl=_xxtea(pl+b"\0"*(-len(pl)%4), os.environ.get("OTA_ENR","").encode())
+                if os.environ.get("OTA_ENC","3") == "4":
                     pl=struct.pack("<III", 0, 1319, len(pl))+pl
             else:
-                if os.environ["OTA_ENC"] == "2":
-                    k=os.environ["OTA_ENR"].encode()[:16]
+                if os.environ.get("OTA_ENC","3") == "2":
+                    k=os.environ.get("OTA_ENR","").encode()[:16]
                 else:
-                    k=base64.b64decode(os.environ["OTA_ENR"]); k=(k+b"\0"*16)[:16]
+                    k=base64.b64decode(os.environ.get("OTA_ENR","")); k=(k+b"\0"*16)[:16]
                 pl=pl+b"\0"*(-len(pl)%16)
                 e=Cipher(algorithms.AES(k),modes.ECB()).encryptor()
                 pl=e.update(pl)+e.finalize()
