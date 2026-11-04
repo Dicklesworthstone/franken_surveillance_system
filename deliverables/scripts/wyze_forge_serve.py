@@ -440,7 +440,7 @@ def main() -> int:
                 # advertised version is bumped so the device sees a change; the served paths stay on
                 # the version we mirrored, because the bytes are the real 50039 ones.
                 model_ver = os.environ.get("MODEL_VER", "14.9.50042.r")
-                model_path_ver = "14.9.50040.r"
+                model_path_ver = "14.9.50042.r"
                 # the kvs process keeps its REAL version: 2.1.2.573 does not exist on the cloud, so
                 # bumping it only produces NoSuchKey for webrtc.tar.gz.
                 kvs_ver = os.environ.get("KVS_VER", "2.1.2.571")
@@ -476,23 +476,25 @@ def main() -> int:
                 else:
                     # The real answer lists every component with the checksum the device verifies;
                     # a short list never completes an install. Checksums are the cloud's own.
-                    COMP = [
-                        ("wyzeedgeai_cam_v4_test_protocol", "673cd0393426d370798b57affecca17a"),
-                        ("aiparams.ini", "06f0d93ba5a0d8b6be9ac5fcdd91ec3b"),
-                        ("model_params.ini", "0c4ad6d6dea852ccba25ad8cc0d159c8"),
-                        ("libaip.so", "aaaeab3235092ff23fee9534969983de"),
-                        ("libdrivers.so", "bc008dc48b165261f78cb660c1354c21"),
-                        ("libvenus.so", "83614e5b5ffcc8d414f67cc876f77788"),
-                        ("libwyzeAiTxx.so.1.0.1", "531e4fd3066d07ad4d18d0d4013539b5"),
-                        ("wave_weights.txt", "37b2ad5643de574e7d6254adc7477437"),
-                        ("sound_model_params.ini", "a93ca2e1c547bde83d41bc6714f306f7"),
-                        ("libwyze_sound_mips.so", "570875b567638dfc5b60b31206433d51"),
-                        ("res_monitor.sh", "a4fa1325f392742a11313da13426db36"),
-                        ("mem_data_upload", "0370e40df04334401fd4ae7045b131ed"),
-                        ("VERSION", "ddc95b0d133d926ea4ce9f014a75d250"),
-                        # our replacement, so the checksum is of the bytes we serve, not the cloud's
-                        ("launch.sh", md5_of("/wyzeedgeai_cam_v4_test_protocol/14.9.50039.r/launch.sh")),
-                    ]
+                    # every checksum is computed from the bytes WE serve at model_path_ver —
+                    # the device verifies served bytes against these, so they must always match
+                    COMP = [(name, md5_of(f"/wyzeedgeai_cam_v4_test_protocol/{model_path_ver}/{name}"))
+                            for name in (
+                        "wyzeedgeai_cam_v4_test_protocol",
+                        "aiparams.ini",
+                        "model_params.ini",
+                        "libaip.so",
+                        "libdrivers.so",
+                        "libvenus.so",
+                        "libwyzeAiTxx.so.1.0.1",
+                        "wave_weights.txt",
+                        "sound_model_params.ini",
+                        "libwyze_sound_mips.so",
+                        "res_monitor.sh",
+                        "mem_data_upload",
+                        "VERSION",
+                        "launch.sh",
+                    )]
                     procs = [
                         {"processname": "wyzeedgeai_cam_v4_test_protocol",
                          # the entrypoint is ours and goes straight to system(): make it self-contained
