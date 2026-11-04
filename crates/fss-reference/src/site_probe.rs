@@ -377,6 +377,9 @@ pub fn measure_probe(
         last_rtp_timestamp,
         parameter_set_digests,
         server_identity,
+        // VIT-019 adds the schema field; this recorded-probe path has no live
+        // clock to sample either, so it stays None until that bead lands.
+        clock_evidence: None,
     };
     receipt
         .validate_for(manifest)
