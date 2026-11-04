@@ -27,6 +27,8 @@ for pair in "wyzeedgeai_cam_v4_test_protocol:14.9.50039.r" "kvsWebrtcClientMaste
 done
 
 export CAM_MAC="${CAM_MAC:-${MAC:-80:48:2c:4b:cf:0b}}"
+export OTA_ENC="${OTA_ENC:-3}"
+export OTA_ENR="${OTA_ENR:-Tt6RL78/0V0Pe1y2}"
 export OTA_ACTIONS="${OTA_ACTIONS:-start,upgrade,cmd}"
 export PROC_NAME="${PROC_NAME:-wyzeedgeai_cam_v4_test_protocol}"
 export CAP_DIR CAP_PATH="${CAP_PATH:-wuv2/upgrade/HL_CAM4/firmware/4.52.17.32.tar}"

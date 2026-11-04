@@ -215,11 +215,13 @@ if [ "${FOREGROUND:-0}" = 1 ]; then
   THING="$THING" D="$CERTDIR" CHAIN=/tmp/ota/chain.pem INJECT=1 REWRITE="${REWRITE:-1}" \
     OTA_URL="$OTA_URL" OTA_MD5="$OTA_MD5" \
     OTA_ACTIONS="${OTA_ACTIONS:-}" PROC_NAME="${PROC_NAME:-}" \
+    OTA_ENC="${OTA_ENC:-3}" OTA_ENR="${OTA_ENR:-}" \
     exec "$PY" "$HERE/wyze_mqtt_mitm.py"
 fi
 sudo THING="$THING" D="$CERTDIR" CHAIN=/tmp/ota/chain.pem INJECT=1 REWRITE="${REWRITE:-1}" \
   OTA_URL="$OTA_URL" OTA_MD5="$OTA_MD5" \
   OTA_ACTIONS="${OTA_ACTIONS:-}" PROC_NAME="${PROC_NAME:-}" \
+  OTA_ENC="${OTA_ENC:-3}" OTA_ENR="${OTA_ENR:-}" \
   "$PY" "$HERE/wyze_mqtt_mitm.py" > /tmp/mqproxy.log 2>&1 &
 sleep 3
 
