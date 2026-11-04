@@ -203,6 +203,8 @@ pub mod package_event;
 pub mod package_handoffs;
 /// Retained class-selected package tracks, observed image-zone transitions and sampled dwell.
 pub mod package_zones;
+/// Read-only QSR observations over cold-verified, historically screened package-zone reports.
+pub mod qsr_observations;
 
 /// Opt-in, source-bound visual-degradation screening before recorded watch publication.
 pub mod sensor_health;

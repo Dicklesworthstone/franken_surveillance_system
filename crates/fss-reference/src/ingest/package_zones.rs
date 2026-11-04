@@ -540,6 +540,28 @@ impl PackageZoneReport {
     pub fn config(&self) -> &PackageZoneConfig {
         &self.config
     }
+    /// Whether the current verified privacy policy overlaps the named complete image zone.
+    /// This remains meaningful when the detector found no tracks and there are no cells.
+    pub fn zone_is_masked(&self, zone: usize) -> Option<bool> {
+        let zone = self.config.zones.get(zone)?;
+        Some(self.privacy.policy().is_some_and(|policy| {
+            policy
+                .zone_masking([zone.x, zone.y, zone.width, zone.height])
+                .any()
+        }))
+    }
+    /// Exact verified privacy interpretation, including an explicit no-policy state.
+    pub fn privacy_binding_digest(&self) -> ContentDigest {
+        self.privacy.digest()
+    }
+    /// Original capture-time provenance; a downstream view must preserve operator assumptions.
+    pub fn capture_time_label(&self) -> &str {
+        &self.capture_time_label
+    }
+    /// Original source clock basis, never promoted to UTC by a downstream view.
+    pub fn clock_basis(&self) -> ClockBasis {
+        self.clock
+    }
     /// Complete source-frame sequence.
     pub fn frames(&self) -> &[PackageZoneFrame] {
         &self.frames

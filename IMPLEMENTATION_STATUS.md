@@ -5,6 +5,57 @@
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
 
+
+## Tracker-backed QSR observations from retained evidence (2026-11-04)
+
+`fss-event qsr --root ... --site ... --report-digest ...` now produces a usable
+read-only QSR observation report from an exact retained, historically screened
+`fss.package_zone_report.v2`. Its sole public constructor cold-reopens the real
+source owner, including retained model/detector evidence, native tracker
+reconstruction, source custody, current privacy, diagnostic custody and deletion
+checks. No second detector or tracker, new media acquisition, QSR retention,
+security event or effect is introduced.
+
+The registered QSR vocabulary supplies complete per-zone/source-frame confirmed
+model-track counts and presence, the source owner's exact sampled dwell, and
+conservative endpoint-separation intervals for adjacent explicitly ordered lane
+stages. Roles annotate existing zones and the source report's selected model
+class; they do not imply physical people, vehicle identity, a transaction or
+customer service. Masked or historically unsupported samples have null counts;
+zero observations never certify absence. Missing/tentative/clipped assignments,
+source boundaries, excessive gaps, unreliable time, screening exclusions,
+ambiguous overlap and skipped/reversed stages interrupt lane sequences explicitly.
+Source/model/package/class/tracker/privacy/health roots, frame/capture references,
+normalized roles and reducer policy remain bound in the checked canonical result.
+
+**Executed validation:** 15 actual package-zone integration tests passed, including
+three new QSR tests over native JPEG and numeric FMPK inference, retained detector
+and tracker evidence, retained health diagnostics, screened zones and cold QSR
+reconstruction. The fixture correctly excludes its first tentative assignment,
+reports six observed samples among seven supported samples and preserves a
+498–502 ms sampled dwell. A missing-screening fixture yields seven unknown/null
+observations. Corrupt diagnostics, deleted source and changed current privacy
+refuse, with no authority-anchor changes. These are deterministic fixture facts,
+not detector-accuracy claims for restaurant footage.
+
+Fourteen actual-source reducer/configuration adversaries and three exact CLI
+parser tests also pass. The exact new command, verbatim existing deployment
+preflight/output helpers and genuine CLI identities executed against real retained
+fixtures: clear/unknown results equal the library byte-for-byte, repeated reads
+are exact, role-only changes alter identity without custody writes, and ten CLI
+refusals pass. Four real JSON projections pass both schema validators; twelve
+schema adversaries refuse. The complete unmodified production reference crate
+compiled with actual first-party dependencies and checked canonical completion.
+
+The validation scope excludes four unrelated object runtime upload/effect adapter
+modules and the outer Asupersync CLI/Cargo qualification, without replacing source,
+model, health, privacy, deletion or command implementations. The extended full
+multi-binary package-zone regression script was added but not executed end-to-end.
+VIT-012 remains open for measured physical queue/detector quality, wait or service
+time, door state, cross-camera journeys, native clock witnesses, FLDT rights and
+the future fss/1 QSR view. See [the workflow](docs/QSR_OBSERVATIONS.md) and
+[registered semantics](registries/QSR_OBSERVATIONS.md).
+
 ## Protected ONVIF probe-to-plan command workflow (2026-11-04)
 
 `fss site probe --onvif-bindings FILE --receipt-file ABSOLUTE_NEW_FILE` now

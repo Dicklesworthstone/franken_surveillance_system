@@ -25,6 +25,19 @@ def main():
         validator.validate(schema, data, name)
         return data
 
+    qsr_schema = parse_strict_json((repository / 'schemas/qsr_observation_report.v1.json').read_text())
+
+    def qsr(report):
+        output = run([event_bin, 'qsr', *base, '--report-digest', report, '--zone-role', 'yard:queue'])
+        data = document(output.stdout)
+        validator.validate(qsr_schema, data, 'qsr_observation_report.v1.json')
+        assert data['source']['zone_report'] == report
+        assert data['source']['label'] == 'numeric-a'
+        assert data['coverage']['capture_time_label'] == 'operator_assumption'
+        assert data['coverage']['absence_certified'] is False
+        assert data['interpretation']['service_or_wait_duration_established'] is False
+        return data
+
     root = scratch / 'deployment'
     base = ['--root', root, '--site', 'site:package-zones-cli']
     imported = run([file_bin, 'import', *base, '--input', source, '--sensor', 'sensor:package-zones-cli',
@@ -138,6 +151,20 @@ def main():
     assert unknown_cold['retention_anchor'] == unknown_retained['retention_anchor']
     assert unknown_retained['historical_health']['operation_usage']['retention_indexed_read_attempts'] > 0
     assert unknown_cold['historical_health']['operation_usage']['retention_indexed_read_attempts'] == 0
+    head = snapshot(root)
+    qsr_unknown = qsr(unknown_retained['report_digest'])
+    assert qsr_unknown['zones'][0]['unknown_frames'] == 14
+    assert qsr_unknown['zones'][0]['maximum_observed_count'] is None
+    assert all(sample['presence'] == 'unknown' and sample['confirmed_track_count'] is None
+               for sample in qsr_unknown['samples'])
+    assert qsr_unknown['sampled_dwell'] == []
+    assert qsr(unknown_retained['report_digest']) == qsr_unknown
+    run([event_bin, 'qsr', *base, '--report-digest', retained['report_digest']], ok=False)
+    run([event_bin, 'qsr', *base, '--report-digest', unknown_retained['report_digest'],
+         '--zone-role', 'missing:register'], ok=False)
+    run([event_bin, 'qsr', *base, '--report-digest', unknown_retained['report_digest'],
+         '--retain', 'yes'], ok=False)
+    assert snapshot(root) == head, 'QSR reads or refusals changed custody'
 
     def retain_screen(first, count):
         args = [event_bin, 'watch', *base, '--import-id', import_id, '--interpretation', 'ycbcr',
@@ -153,6 +180,7 @@ def main():
     assert first_screen['status'] == 'no_findings'
     head = snapshot(root)
     run(unknown_read, ok=False)
+    run([event_bin, 'qsr', *base, '--report-digest', unknown_retained['report_digest']], ok=False)
     partial = checked(run(screened_command))
     assert partial['cells'] == preview['cells']
     exposed = partial['historical_health']['frames']
@@ -165,6 +193,15 @@ def main():
     partial_dwells = [e for e in partial['events'] if e['kind'] == 'sampled_dwell']
     assert partial_dwells and all(e['through_frame'] < 7 for e in partial_dwells)
     assert snapshot(root) == head, 'read-only health join mutated custody'
+    partial_retained = checked(run([*screened_command, '--retain', partial['approval_digest']]))
+    head = snapshot(root)
+    qsr_partial = qsr(partial_retained['report_digest'])
+    assert qsr_partial['zones'][0]['supported_frames'] == 7
+    assert qsr_partial['zones'][0]['unknown_frames'] == 7
+    assert all(sample['confirmed_track_count'] is None for sample in qsr_partial['samples'][7:])
+    assert qsr_partial['sampled_dwell']
+    assert all(dwell['through_frame'] < 7 for dwell in qsr_partial['sampled_dwell'])
+    assert snapshot(root) == head, 'QSR partial-coverage projection changed custody'
 
     full_screen = retain_screen(0, 14)
     assert full_screen['status'] == 'suspected_degradation'
@@ -187,6 +224,10 @@ def main():
     assert retained_usage['retention_indexed_read_bytes_reserved'] <= retained_usage['retention_indexed_read_byte_limit']
     assert cold_screened == retained_screened, 'v2 cold proof/source/support changed'
     assert checked(run(read))['report_digest'] == retained['report_digest'], 'v1 bytes changed after historical health publication'
+    qsr_findings = qsr(retained_screened['report_digest'])
+    assert qsr_findings['zones'][0]['unknown_frames'] == 14
+    assert all(sample['confirmed_track_count'] is None for sample in qsr_findings['samples'])
+    run([event_bin, 'qsr', *base, '--report-digest', partial_retained['report_digest']], ok=False)
     assert snapshot(root) == head
     assert not source.exists() and not package.exists()
     print('PASS: native class-zone v1/v2 custody, unknown/partial/finding health gates, cumulative work, retained cold replay and legacy identity')

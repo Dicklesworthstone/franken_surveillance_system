@@ -210,11 +210,25 @@ and `--receipt-file /absolute/new-private-receipt.json`. The probe selects the e
 private exported stream, measures its real SDP, SSRC and cadence, and saves a new
 `0600` receipt array for `site plan --probes`. Export bytes and file identity,
 camera/view/quality, route and output are approval-bound; capability URLs remain
-off stdout. See [approved native site probing](docs/SITE_PROBING.md).
+off stdout. Protected ONVIF AVC/HEVC probing now uses `--onvif-bindings` with the
+same private receipt destination: it validates the actual handoff and independently
+pinned profile/RTSP scope, measures the selected stream, and preserves the original
+HTTP manifest for planning. No ONVIF HTTP contact or HTTP-origin verification is
+implied. See [approved native site probing](docs/SITE_PROBING.md).
+
+`fss-event qsr` now reads an exact retained, historically screened package-zone
+report to produce actual sampled model-track counts, queue/register-zone presence,
+source-sampled dwell and ordered lane-stage endpoint observations. It cold-rechecks
+source custody, model/tracker provenance, current privacy, health evidence and
+deletion state. Missing or masked support remains unknown with null counts; gaps
+and ambiguous stage transitions remain explicit. It grants no physical absence,
+unique-person, service-time or detector-accuracy claim and writes no QSR object or
+security event. See [the retained QSR workflow](docs/QSR_OBSERVATIONS.md) and
+[observation definitions](registries/QSR_OBSERVATIONS.md).
 
 Validation, recorded probing and capture planning perform no device contact,
 credential reads, recording or signed rights verification. Automatic Protect export
-acquisition, ONVIF site probing, TLS/RTSPS, automatic all-source probing and a site
+acquisition, automatic ONVIF discovery, TLS/RTSPS, automatic all-source probing and a site
 recorder remain open. Unsupported sources and payment regions that require masking before original retention refuse.
 See [the executable two-source example and contracts](docs/SITE_PLANNING.md).
 

@@ -12,6 +12,9 @@ use fss_reference::ingest::recorded_watch::{
 };
 use fss_reference::ingest::zone_dwell::DwellPolicy;
 
+#[path = "health/qsr.rs"]
+mod qsr;
+
 fn clear_media() -> Vec<u8> {
     [128, 144, 160, 176, 192, 208, 224]
         .into_iter()

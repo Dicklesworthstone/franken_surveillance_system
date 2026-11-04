@@ -49,6 +49,8 @@ mod health;
 mod package_zones;
 #[path = "fss-event/privacy_mask.rs"]
 mod privacy_mask;
+#[path = "fss-event/qsr.rs"]
+mod qsr;
 #[path = "fss-event/replay.rs"]
 mod replay;
 #[path = "fss-event/supervise.rs"]
@@ -56,7 +58,7 @@ mod supervise;
 #[path = "fss-event/watch.rs"]
 mod watch;
 
-const HELP: &str = "fss-event <report|prepare|publish|read|verify|watch|corroborate|package-zones|health|calibrate|calibration|alert|privacy-mask|graph|delete> [options]\n\
+const HELP: &str = "fss-event <report|prepare|publish|read|verify|watch|corroborate|package-zones|qsr|health|calibrate|calibration|alert|privacy-mask|graph|delete> [options]\n\
   All: --root DIR --site SITE [--principal ID]\n\
   report: --import-id sha256:HEX --runs FILE --interpretation gray|ycbcr\n\
           --model-digest sha256:HEX --output-port NAME --labels ORDERED,CLASS,NAMES\n\
@@ -74,6 +76,8 @@ const HELP: &str = "fss-event <report|prepare|publish|read|verify|watch|corrobor
     transitions and sampled dwell; approved cognition retention and cold source verification.\n\
     Uses actual assigned boxes, per-sample confirmation and complete missing-frame timelines.\n\
     See `fss-event package-zones --help`; no inference rerun, absence or alert authority.\n\
+  qsr: read one retained screened package-zone report as sampled counts, presence, dwell\n\
+    and ordered lane-stage endpoint observations. See `fss-event qsr --help`.\n\
   prepare/publish: --report FILE --report-digest sha256:HEX --track sha256:HEX\n\
   publish additionally requires: --proposal-digest sha256:HEX\n\
   read: --event-id ID (report and original source/model files are not required)\n\
@@ -1278,6 +1282,9 @@ fn print_package_event(
 
 fn main() -> ExitCode {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
+    if args.first().is_some_and(|command| command == "qsr") {
+        return qsr::main(&args[1..]);
+    }
     if args
         .first()
         .is_some_and(|command| command == "package-zones")
