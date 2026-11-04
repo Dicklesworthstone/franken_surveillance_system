@@ -20,6 +20,7 @@ use fss_reference::rtsp::tcp::{TcpBinding, TcpLimits, TcpSecurityPolicy};
 use fss_reference::site::probe_observation::{
     MAX_PROBE_PICTURES, MAX_PROBE_RTP_BYTES, MAX_PROBE_RTP_PACKETS,
 };
+use fss_reference::site::probe_route::ProbeRoute;
 use fss_reference::site::{ProbeCodec, SiteManifest, SiteProbeReceipt, SourceKind};
 
 use crate::json_output::{array, object, string};
@@ -27,7 +28,8 @@ use crate::json_output::{array, object, string};
 /// Successful output projection. Neither form includes raw media or credential bytes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ProbeOutput {
-    /// Existing receipt array accepted directly by site planning.
+    /// Existing receipt array accepted directly by site planning. UniFi writes
+    /// this array to a protected file and emits safe publication metadata instead.
     Receipts,
     /// Receipt array plus explicit native session accounting and omissions.
     Session,
@@ -47,6 +49,10 @@ impl ProbeOutput {
 /// One explicit source selection and bounded observation, before any network work.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SiteProbeOptions {
+    /// Existing site bindings for exactly selected private UniFi exports.
+    pub unifi_bindings: Option<std::path::PathBuf>,
+    /// Create-only private receipt destination, required for UniFi stream capabilities.
+    pub receipt_file: Option<std::path::PathBuf>,
     /// Exact source identifier from the manifest.
     pub source: String,
     /// Explicit codec; probing does not select a fallback.
@@ -66,7 +72,7 @@ pub struct SiteProbeOptions {
     pub principal: String,
     /// Requested successful output projection, independently bound into approval.
     pub output: ProbeOutput,
-    /// Exact separately supplied preview digest. None means no network or secrets.
+    /// Exact separately supplied preview digest. None means no network or credential access.
     pub approve: Option<ContentDigest>,
 }
 
@@ -82,6 +88,11 @@ exact-plaintext-route:source-specific-ingress:learn-one-ssrc:options-describe-se
 native-rfc2435-whole-frame-prefix:minimum-picture-target:explicit-unfinished-fragment-omission:\
 constant-90khz-cadence:teardown-ack-required:declared-working-reservation:\
 no-entropy-decode:no-decoded-pixels:no-source-retention:no-archive:no-rights-grant:no-retry:no-redirect";
+const UNIFI_POLICY: &str = "site-native-unifi-probe:v1:private-export-file-identity:\
+exact-camera-view-quality-and-plaintext-route:no-quality-fallback:no-tls-downgrade:\
+original-manifest-receipt:revalidate-source-at-network-boundaries:\
+native-syntax-confirmed-prefix:teardown-ack-required:private-create-only-receipt:\
+no-console-contact:no-decoded-pixels:no-media-retention:no-rights-grant:no-retry";
 pub(crate) const MAX_STEPS: u64 = fss_reference::site::live_probe::MAX_PROBE_STEPS;
 pub(crate) const MAX_IO_CALLS: u64 = MAX_STEPS;
 pub(crate) const MAX_RECEIVED_BYTES: u64 = MAX_PROBE_RTP_BYTES + 256 * 1024;
@@ -137,6 +148,8 @@ pub(crate) struct ProbePlan<'a> {
     pub(super) protocol: ClientConfig,
     pub(super) transport: TcpLimits,
     pub(super) allowance: BudgetVector,
+    pub(super) route: ProbeRoute,
+    pub(super) private: Option<super::unifi::PrivateProbe>,
     observer_limits_digest: ContentDigest,
 }
 
@@ -144,6 +157,26 @@ impl<'a> ProbePlan<'a> {
     pub(super) fn new(
         manifest: &'a SiteManifest,
         options: &'a SiteProbeOptions,
+    ) -> Result<Self, &'static str> {
+        if options.unifi_bindings.is_some() || options.receipt_file.is_some() {
+            return Err(PLAN_ERROR);
+        }
+        Self::build(manifest, options, None)
+    }
+
+    pub(super) fn with_unifi(
+        manifest: &'a SiteManifest,
+        options: &'a SiteProbeOptions,
+        private: super::unifi::PrivateProbe,
+        route: ProbeRoute,
+    ) -> Result<Self, &'static str> {
+        Self::build(manifest, options, Some((private, route)))
+    }
+
+    fn build(
+        manifest: &'a SiteManifest,
+        options: &'a SiteProbeOptions,
+        selected: Option<(super::unifi::PrivateProbe, ProbeRoute)>,
     ) -> Result<Self, &'static str> {
         manifest.validate().map_err(|_| PLAN_ERROR)?;
         options.validate()?;
@@ -153,20 +186,40 @@ impl<'a> ProbePlan<'a> {
             .position(|source| source.source_id == options.source)
             .ok_or(PLAN_ERROR)?;
         let source = &manifest.sources[source_index];
-        if !matches!(source.kind, SourceKind::Rtsp | SourceKind::NvrChannel)
-            || !source.owner_authorized
-            || !source.plaintext
-        {
+        if !source.owner_authorized || !source.plaintext {
             return Err(PLAN_ERROR);
         }
+        let (private, route) = match selected {
+            Some((private, route)) => {
+                if source.kind != SourceKind::UnifiProtect || options.codec == ProbeCodec::Jpeg {
+                    return Err(PLAN_ERROR);
+                }
+                route
+                    .validate_for(manifest, source_index)
+                    .map_err(|_| PLAN_ERROR)?;
+                (Some(private), route)
+            }
+            None => (
+                None,
+                ProbeRoute::direct(manifest, source_index).map_err(|_| PLAN_ERROR)?,
+            ),
+        };
         let manifest_digest = manifest.digest().map_err(|_| PLAN_ERROR)?;
         // Use the same stable stream/site/source identity as the site capture compiler.
         // Distinct cameras must not inherit one ingress merely because they share a manifest.
         let mut identity = CanonicalEncoder::new();
-        identity.text("fss.site_source_identity.v1");
+        identity.text(if private.is_some() {
+            "fss.site_unifi_source_identity.v1"
+        } else {
+            "fss.site_source_identity.v1"
+        });
         identity.text("stream");
         identity.text(&manifest.site_id);
         identity.text(&source.source_id);
+        if let Some(private) = &private {
+            identity.digest(private.camera_ref);
+            identity.text(private.view);
+        }
         let stream = ContentDigest::sha256(&identity.finish_checked().map_err(|_| PLAN_ERROR)?);
         let ingress = u128::from_be_bytes(stream.bytes()[..16].try_into().map_err(|_| PLAN_ERROR)?);
         if ingress == 0 {
@@ -189,16 +242,8 @@ impl<'a> ProbePlan<'a> {
             .checked_mul(1_000_000)
             .ok_or(PLAN_ERROR)?;
         let protocol = ClientConfig {
-            presentation_uri: format!(
-                "rtsp://{}{}",
-                source.authority,
-                source.presentation.as_deref().ok_or(PLAN_ERROR)?
-            ),
-            control_root_uri: format!(
-                "rtsp://{}{}",
-                source.authority,
-                source.control_root.as_deref().ok_or(PLAN_ERROR)?
-            ),
+            presentation_uri: format!("rtsp://{}{}", source.authority, route.presentation()),
+            control_root_uri: format!("rtsp://{}{}", source.authority, route.control_root()),
             media_index: options.media_index,
             channels: (options.rtp_channel, options.rtp_channel + 1),
             response_timeout_ns: timeout_ns.min(REQUEST_TIMEOUT_NS),
@@ -246,7 +291,11 @@ impl<'a> ProbePlan<'a> {
         let observer_limits_digest = observer_limits_digest(options.codec)?;
         let mut encoder = CanonicalEncoder::new();
         encoder.text("fss.site_probe_plan.v1");
-        encoder.text(policy(options.codec));
+        encoder.text(if private.is_some() {
+            UNIFI_POLICY
+        } else {
+            policy(options.codec)
+        });
         encoder.digest(manifest_digest);
         encoder.u64(source_index as u64);
         encoder.digest(stream);
@@ -284,6 +333,11 @@ impl<'a> ProbePlan<'a> {
         encoder.u64(crate::site_cmd::MAX_SITE_OUTPUT_BYTES as u64);
         encoder.digest(observer_limits_digest);
         allowance.encode_canonical(&mut encoder);
+        if let Some(private) = &private {
+            private.encode(&mut encoder)?;
+            encoder.text(route.presentation());
+            encoder.text(route.control_root());
+        }
         let approval = ContentDigest::sha256(&encoder.finish_checked().map_err(|_| PLAN_ERROR)?);
         Ok(Self {
             manifest,
@@ -294,6 +348,8 @@ impl<'a> ProbePlan<'a> {
             protocol,
             transport,
             allowance,
+            route,
+            private,
             observer_limits_digest,
         })
     }
@@ -327,10 +383,17 @@ impl<'a> ProbePlan<'a> {
                 ])
             },
         );
-        Ok(object(&[
+        let mut fields = vec![
             ("schema", string("fss.site_probe_plan.v1")),
             ("status", string("requires_approval")),
-            ("policy", string(policy(self.options.codec))),
+            (
+                "policy",
+                string(if self.private.is_some() {
+                    UNIFI_POLICY
+                } else {
+                    policy(self.options.codec)
+                }),
+            ),
             ("approval", string(&self.approval.to_text())),
             (
                 "manifest_digest",
@@ -346,11 +409,17 @@ impl<'a> ProbePlan<'a> {
             ("authority", string(&source.authority)),
             (
                 "presentation",
-                string(source.presentation.as_deref().ok_or(PLAN_ERROR)?),
+                string(&self.private.as_ref().map_or_else(
+                    || self.route.presentation().to_owned(),
+                    |_| ContentDigest::sha256(self.route.presentation().as_bytes()).to_text(),
+                )),
             ),
             (
                 "control_root",
-                string(source.control_root.as_deref().ok_or(PLAN_ERROR)?),
+                string(&self.private.as_ref().map_or_else(
+                    || self.route.control_root().to_owned(),
+                    |_| ContentDigest::sha256(self.route.control_root().as_bytes()).to_text(),
+                )),
             ),
             ("codec", string(self.options.codec.as_str())),
             ("media_index", self.options.media_index.to_string()),
@@ -423,7 +492,11 @@ impl<'a> ProbePlan<'a> {
             ("capture_authorized", "false".to_owned()),
             ("rights_verdict_verified", "false".to_owned()),
             ("teardown_ack_required", "true".to_owned()),
-        ]))
+        ];
+        if let Some(private) = &self.private {
+            fields.push(("unifi", private.preview()));
+        }
+        Ok(object(&fields))
     }
 }
 

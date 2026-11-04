@@ -248,6 +248,28 @@ pub(crate) fn run_site_probe<T>(
     .map(|completed| completed.value)
 }
 
+/// A site probe with one explicitly bound private source-metadata lease. Unlike
+/// direct RTSP probing this owner needs ReadMedia for the protected export, but
+/// never grants archive writes or credentials merely because the export exists.
+#[allow(dead_code, reason = "Shared owner is also included by ONVIF commands")]
+pub(crate) fn run_private_site_probe<T>(
+    request: Request,
+    work: impl FnOnce(&Scope<'_, '_>) -> Result<T, &'static str>,
+) -> Result<T, &'static str> {
+    run_with_clock_domain(
+        request,
+        |scope| {
+            work(scope).map(|value| WorkValue {
+                value,
+                committed: false,
+            })
+        },
+        || NativeClock(Instant::now()),
+        "site-probe-private",
+    )
+    .map(|completed| completed.value)
+}
+
 /// Run a write whose owner explicitly marks its successful durable result.
 /// Every failure before that marker remains an ordinary error. After it, the
 /// publication identifiers survive cancellation, deadlines and retirement failures;

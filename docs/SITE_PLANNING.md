@@ -12,7 +12,8 @@ site compilation from VIT-001, VIT-002 and VIT-004 in
 control documents; it does not contact devices, read credentials, create archives,
 verify signed rights leases or start recording. An independently approved
 [`site probe`](SITE_PROBING.md) can produce an AVC/HEVC/JPEG receipt from one native
-RTSP/NVR session. No `site run` or site-wide approval executor is available. The reference implementation remains
+RTSP/NVR session or a protected AVC/HEVC receipt from a selected UniFi export.
+No `site run` or site-wide approval executor is available. The reference implementation remains
 unqualified, with no real-camera measurement implied by a successful plan.
 
 ## Try the complete synthetic example
@@ -176,9 +177,9 @@ DESCRIBE responses and RTPdump samples, use
 [`fss site probe-file`](SITE_PROBE_MEASUREMENT.md). It measures native AVC/HEVC
 picture syntax or whole-frame JPEG reconstruction and constant cadence under
 exact input pins. The separately approved `site probe` supports live RTSP/NVR
-measurements. UniFi-specific receipt production and authenticated/fresh receipt
-handling remain separate work; the UniFi compiler validates supplied receipts
-against the exact selected private route.
+measurements and protected UniFi AVC/HEVC observations with the bindings below.
+Authenticated/fresh receipt handling remains separate work; the UniFi compiler
+validates supplied receipts against the exact selected private route.
 
 ## UniFi Protect site bindings
 
@@ -217,6 +218,35 @@ whitespace. See [the Protect handoff guide](UNIFI_PROTECT.md) for its exact
 keys, credentials or peer overrides. Every UniFi source requires exactly one
 row; missing, duplicate, foreign and direct-source rows refuse the complete site.
 Row ordering does not affect the plan.
+
+Obtain a live receipt for one selected UniFi source using the same bindings:
+
+```sh
+fss site probe --manifest /etc/fss/site.json \
+  --unifi-bindings /etc/fss/site-unifi-bindings.json \
+  --source source:front --codec avc --observe-frames 6 \
+  --receipt-file /etc/fss/private/front-probe.json \
+  --timeout-ms 10000 --json
+```
+
+This is a preview. Review it and repeat with its exact `--approve sha256:HEX`.
+The Linux protected export reader and selected route are shared with the existing
+UniFi handoff. Preview reads only the selected private export, checks an absent
+absolute receipt destination, and contacts no camera or console. Route fields on
+stdout are SHA-256 digests; approval binds the original manifest, exact bindings,
+export bytes and file fingerprint, selection, route and receipt destination.
+The preview's `receipt_parent_identity` also binds the destination parent's
+device/inode identity before camera contact; a replacement parent refuses output.
+Successful probing writes the ordinary one-element receipt array to a new `0600`
+file and reports its digests through `fss.site_unifi_probe_result.v1`. It never
+overwrites a receipt, and UniFi `--output session` is unsupported. See
+[protected UniFi probing](SITE_PROBING.md#probe-a-unifi-protect-source) for the
+separate file-stage deadlines and how to interpret a partial or committed file
+after a failure.
+
+For a one-source manifest, use `/etc/fss/private/front-probe.json` directly as
+`--probes`. For several sources, privately combine their successful arrays into
+one complete inventory, preserving every original manifest and source identity:
 
 ```sh
 fss site plan --manifest /etc/fss/site.json \
@@ -278,8 +308,9 @@ Treat a UniFi `--probes` document as private operator input because those fields
 can contain a stream capability. It uses the existing bounded control-document
 reader; only the separately bound exports use the stronger private-file lease.
 The compiler never copies receipt route fields into its generated UniFi arguments
-or report. A future UniFi receipt producer must preserve this disclosure boundary
-through a protected artifact or a separately versioned redacted contract.
+or report. The live UniFi producer preserves this boundary with its create-only
+private receipt artifact and separate redacted stdout contract. Raw capability
+routes remain inside the protected export and receipt inputs.
 
 ## What the plan binds
 
@@ -341,7 +372,7 @@ control-file admission checks, not cryptographic provenance or a trusted parent
 directory guarantee.
 
 No command infers success for an unsupported source. Site ONVIF integration,
-automatic UniFi export acquisition, UniFi-specific live probing, TLS/RTSPS, signed
+automatic UniFi export acquisition, automatic all-source probing, TLS/RTSPS, signed
 rights-lease verification, site execution, retention rings and agent footage
 queries remain outside this implementation. Existing standalone native tools
 retain their separately documented capabilities.

@@ -195,12 +195,18 @@ picture tails, lost packets or inconsistent timing. See [the recorded-probe exam
 
 `fss site probe` previews and, with the exact approval digest, performs one bounded
 native AVC/HEVC/JPEG RTSP/NVR observation. It returns a receipt array only after matching
-TEARDOWN acknowledgement; failures preserve possible remote-session state. See
-[approved native site probing](docs/SITE_PROBING.md).
+TEARDOWN acknowledgement; failures preserve possible remote-session state. For a
+UniFi AVC/HEVC source, add the same `--unifi-bindings BINDINGS.json` used by planning
+and `--receipt-file /absolute/new-private-receipt.json`. The probe selects the exact
+private exported stream, measures its real SDP, SSRC and cadence, and saves a new
+`0600` receipt array for `site plan --probes`. Export bytes and file identity,
+camera/view/quality, route and output are approval-bound; capability URLs remain
+off stdout. See [approved native site probing](docs/SITE_PROBING.md).
 
 Validation, recorded probing and capture planning perform no device contact,
-credential reads, recording or signed rights verification. A site recorder remains
-open. Unsupported sources and payment regions that require masking before original retention refuse.
+credential reads, recording or signed rights verification. Automatic Protect export
+acquisition, ONVIF site probing, TLS/RTSPS, automatic all-source probing and a site
+recorder remain open. Unsupported sources and payment regions that require masking before original retention refuse.
 See [the executable two-source example and contracts](docs/SITE_PLANNING.md).
 
 ## Architecture in one page

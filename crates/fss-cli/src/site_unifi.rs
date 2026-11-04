@@ -26,7 +26,7 @@ pub use crate::site_plan::SiteUnifiInput;
     reason = "The shared owner also supports private output"
 )]
 #[path = "bin/fss-onvif/private_file.rs"]
-mod private_file;
+pub(crate) mod private_file;
 #[allow(
     dead_code,
     reason = "The shared owner also supports network and durable output"
@@ -210,6 +210,21 @@ fn parse_bindings(manifest: &SiteManifest, bytes: &[u8]) -> Result<Bindings, Sit
         digest: ContentDigest::sha256(bytes),
         sources,
     })
+}
+
+/// Select one source from the same strict site binding document used for capture.
+/// This performs no export read and does not broaden the requested peer or rendition.
+pub(crate) fn probe_source_spec(
+    manifest: &SiteManifest,
+    bytes: &[u8],
+    source_id: &str,
+) -> Result<UnifiSourceSpec, SitePlanError> {
+    parse_bindings(manifest, bytes)?
+        .sources
+        .into_iter()
+        .find(|binding| binding.source_id == source_id)
+        .map(|binding| binding.spec)
+        .ok_or_else(|| refused(None, "selected source has no protected UniFi binding"))
 }
 
 fn overlaps(left: &Path, right: &Path) -> bool {
