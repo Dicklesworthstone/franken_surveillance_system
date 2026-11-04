@@ -2,15 +2,20 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>Label</key><string>com.jeffreyemanuel.fss-fwserve</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>/opt/homebrew/bin/python3</string>
-        <string>/Users/jemanuel/projects/franken_surveillance_system/deliverables/scripts/fwserve_with_beacon.py</string>
-    </array>
-    <key>KeepAlive</key><true/>
-    <key>ThrottleInterval</key><integer>10</integer>
-    <key>StandardOutPath</key><string>/tmp/ota/fwserve8080.log</string>
-    <key>StandardErrorPath</key><string>/tmp/ota/fwserve8080.log</string>
+	<key>KeepAlive</key>
+	<true/>
+	<key>Label</key>
+	<string>com.jeffreyemanuel.fss-fwserve</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/opt/homebrew/bin/python3</string>
+		<string>/Users/jemanuel/projects/franken_surveillance_system/deliverables/scripts/fwserve_with_beacon.py</string>
+	</array>
+	<key>StandardErrorPath</key>
+	<string>/tmp/ota/fwserve8080.log</string>
+	<key>StandardOutPath</key>
+	<string>/tmp/ota/fwserve8080.log</string>
+	<key>ThrottleInterval</key>
+	<integer>15</integer>
 </dict>
 </plist>
