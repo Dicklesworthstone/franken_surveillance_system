@@ -66,7 +66,10 @@ def main():
         stok = login_once()
         tries += 1
         if stok:
-            log(f"DS UP (try {tries}) — bursting from index {idx}")
+            log(f"DS UP (try {tries}) — disabling sleep + bursting from index {idx}")
+            # disable sleep mode first (keeps camera awake for future attempts)
+            subprocess.run(["bash", "deliverables/scripts/disable_tapo_sleep.sh", HOST],
+                           capture_output=True, timeout=30)
             sess = {"stok": stok}
             fired = 0
             while fired < 12:
