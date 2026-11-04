@@ -103,7 +103,7 @@ pub mod live_hevc {
         HevcPictureClientRetirement, RtspHevcPictureClient,
     };
     /// The same readiness contract as the existing native AVC owner.
-    pub use super::live_avc::SocketReadiness;
+    pub use super::tcp::SocketReadiness;
     use super::tcp::{
         RtspTcpLink, TcpAuthority, TcpBinding, TcpError, TcpLimits, TcpOperation, TcpReadChunk,
         TcpReadStep, TcpRetirement, TcpTotals, TcpWriteStep,
@@ -293,11 +293,32 @@ pub mod live_hevc {
             now: u64,
             authority: &dyn TcpAuthority,
         ) -> Result<Self, LiveHevcConnectFailure> {
+            Self::connect_selected(config, None, now, authority)
+        }
+        /// Select the exact owner payload before DESCRIBE, including between several
+        /// H265 offers. No missing mapping, parameter set or codec is substituted.
+        pub fn connect_with_payload_type(
+            config: LiveHevcConfig,
+            payload_type: u8,
+            now: u64,
+            authority: &dyn TcpAuthority,
+        ) -> Result<Self, LiveHevcConnectFailure> {
+            Self::connect_selected(config, Some(payload_type), now, authority)
+        }
+        fn connect_selected(
+            config: LiveHevcConfig,
+            payload_type: Option<u8>,
+            now: u64,
+            authority: &dyn TcpAuthority,
+        ) -> Result<Self, LiveHevcConnectFailure> {
             let refused = |reason| LiveHevcConnectFailure {
                 reason,
                 connection_attempted: false,
             };
-            if config.max_steps == 0 || now >= config.deadline_ns {
+            if config.max_steps == 0
+                || now >= config.deadline_ns
+                || payload_type.is_some_and(|pt| pt > 127)
+            {
                 return Err(refused(LiveHevcError::Configuration));
             }
             let presentation = uri_authority(&config.protocol.presentation_uri);
@@ -306,9 +327,13 @@ pub mod live_hevc {
             {
                 return Err(refused(LiveHevcError::Configuration));
             }
-            let protocol = RtspHevcPictureClient::with_digest_and_ssrc_policy(
+            let protocol = RtspHevcPictureClient::with_digest_and_selection(
                 config.protocol,
-                (config.binding.key(), config.binding.ssrc_policy()),
+                (
+                    config.binding.key(),
+                    config.binding.ssrc_policy(),
+                    payload_type,
+                ),
                 config.reorder,
                 config.reconstruction,
                 config.assembly,

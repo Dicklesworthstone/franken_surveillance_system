@@ -329,6 +329,7 @@ fn auto_ssrc_hevc_retains_setup_or_packet_sender_through_cold_import() -> Test {
         let mut args = args(&directory, listener.local_addr()?, 2)?;
         replace(&mut args, "--ssrc", "auto")?;
         let mut camera = camera(StreamCase::Target)?;
+        camera.description = description(&[99, PT]);
         for packet in camera.packets.as_mut().ok_or("fixture packets")? {
             packet[8..12].copy_from_slice(&ssrc.to_be_bytes());
         }
@@ -773,15 +774,23 @@ fn explicit_hevc_tuple_requires_its_own_approval_before_secret_or_socket_access(
 
 #[test]
 fn requested_stop_retains_the_real_hevc_boundary_and_cold_decodes_both_pictures() -> Test {
-    requested_stop(false)
+    requested_stop(false, false)
 }
 
 #[test]
 fn explicit_hevc_tuple_without_sdp_parameters_captures_and_cold_decodes() -> Test {
-    requested_stop(true)
+    requested_stop(true, false)
 }
 
-fn requested_stop(explicit: bool) -> Test {
+#[test]
+fn exact_hevc_payload_among_alternatives_captures_with_selected_or_owner_configuration() -> Test {
+    for explicit in [false, true] {
+        requested_stop(explicit, true)?;
+    }
+    Ok(())
+}
+
+fn requested_stop(explicit: bool, alternatives: bool) -> Test {
     let directory = Directory::new(if explicit {
         "hevc-target-owner-tuple"
     } else {
@@ -790,6 +799,9 @@ fn requested_stop(explicit: bool) -> Test {
     let listener = listener()?;
     let mut args = args(&directory, listener.local_addr()?, 2)?;
     let mut camera = camera(StreamCase::Target)?;
+    if alternatives {
+        camera.description = description(&[99, PT]);
+    }
     if explicit {
         supply_parameters(&mut args)?;
         camera.description = description_without_parameters(&camera.description);
@@ -987,7 +999,20 @@ fn unsupported_hevc_payloads_and_sdp_configurations_are_refused_before_setup() -
     let valid = description(&[PT]);
     let cases = [
         ("wrong-payload", description(&[99])),
-        ("ambiguous-payload", description(&[PT, 99])),
+        (
+            "selected-wrong-codec",
+            description(&[99, PT]).replace(
+                &format!("a=rtpmap:{PT} H265/90000"),
+                &format!("a=rtpmap:{PT} H264/90000"),
+            ),
+        ),
+        (
+            "selected-missing-pps",
+            description(&[99, PT]).replace(
+                &format!("a=fmtp:{PT} sprop-vps={VPS};sprop-sps={SPS};sprop-pps={PPS}"),
+                &format!("a=fmtp:{PT} sprop-vps={VPS};sprop-sps={SPS}"),
+            ),
+        ),
         ("wrong-codec", valid.replace("H265/90000", "H264/90000")),
         ("wrong-clock", valid.replace("H265/90000", "H265/48000")),
         (

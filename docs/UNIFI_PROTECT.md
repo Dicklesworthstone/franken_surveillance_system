@@ -225,9 +225,11 @@ and 3000 ticks respectively. Do not copy the main-view cadence to a package
 view. A missing interval, cadence drift, or timestamp discontinuity is a
 capture refusal, not permission to fabricate timing.
 
-For a confirmed HEVC stream, use `--codec hevc` with the actual advertised
-payload and the existing HEVC configuration contract. Selected SDP must
-provide a compatible VPS/SPS/PPS, or the operator must supply the exact tuple
+For a confirmed HEVC stream, use `--codec hevc` and `--payload-type` with the
+actual advertised payload. Native capture selects that exact mapping even
+when SDP offers several H.265 payloads; it does not switch to another offer
+or borrow that offer's parameter sets. Selected SDP must provide a compatible
+VPS/SPS/PPS, or the operator must supply the exact tuple
 using `--hevc-vps`, `--hevc-sps`, and `--hevc-pps` as described in the native
 guide. FSS does not change camera encoding settings or transcode to AVC.
 Audio, PTZ control, two-way talk, motion events, and multisensor stitching are

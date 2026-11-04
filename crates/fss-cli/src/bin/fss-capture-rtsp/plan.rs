@@ -46,11 +46,11 @@ zero-composition-offset:idr-led-windows:requested-stop-is-not-eof:v2";
 const HEVC_POLICY: &str = "one-literal-ip:owner-approved-plaintext:opt-in-scoped-digest:no-reconnect:\
 journal-before-publication:original-rtp:fixed-90000hz:exact-cadence:relative-dts:\
 zero-composition-offset:idr-led-windows:requested-stop-is-not-eof:\
-hevc-single-exact-offer:selected-sdp-vps-sps-pps:real-boundary-source-witness:v1";
+hevc-exact-selected-payload:selected-sdp-vps-sps-pps:real-boundary-source-witness:v2";
 const HEVC_SUPPLIED_POLICY: &str = "one-literal-ip:owner-approved-plaintext:opt-in-scoped-digest:no-reconnect:\
 journal-before-publication:original-rtp:fixed-90000hz:exact-cadence:relative-dts:\
 zero-composition-offset:idr-led-windows:requested-stop-is-not-eof:\
-hevc-single-exact-offer:owner-vps-sps-pps:real-boundary-source-witness:v1";
+hevc-exact-selected-payload:owner-vps-sps-pps:real-boundary-source-witness:v2";
 const GET_PARAMETER_POLICY: &str = "fss.rtsp_keepalive.v1:empty-get-parameter:no-method-fallback";
 const SSRC_AUTO_POLICY: &str =
     "fss.rtsp_ssrc_selection.v1:setup-or-valid-selected-rtp:learn-once:no-rebind";
@@ -99,7 +99,8 @@ archive. Raw RTSP/control/RTCP wire and unselected tails are not retained; outpu
 for omissions. Local custody is UNENCRYPTED. Apply deployment privacy before pixel output.\n\
 \n\
 Codec: --codec avc (default) or --codec hevc; exact offer: --payload-type 96\n\
-HEVC requires one matching H265/90000 offer; its VPS/SPS/PPS tuple defaults to SDP.\n\
+HEVC selects the exact H265/90000 payload even among several offers; no fallback.\n\
+Its VPS/SPS/PPS tuple defaults to that offer's SDP; other offers never supply parameters.\n\
 Optional owner tuple: --hevc-vps HEX --hevc-sps HEX --hevc-pps HEX, all three together.\n\
 Each is 3..=2048 exact NAL bytes without Annex-B prefixes; plan validation is pure.\n\
 There is no codec fallback. HEVC retains real picture-boundary lookahead as source-only\n\

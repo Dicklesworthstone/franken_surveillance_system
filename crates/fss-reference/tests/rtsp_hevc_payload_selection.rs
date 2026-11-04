@@ -69,6 +69,16 @@ fn mixed_offer(avc_first: bool) -> String {
     )
 }
 
+fn hevc_alternatives() -> String {
+    mixed_offer(true)
+        .replace("RTP/AVP 96 98", "RTP/AVP 99 98")
+        .replace("a=rtpmap:96 H264/90000", "a=rtpmap:99 H265/90000")
+        .replace(
+            "a=fmtp:96 packetization-mode=1;sprop-parameter-sets=Z0IAHw==,aAA=",
+            "a=fmtp:99 sprop-vps=QAEBAg==;sprop-sps=QgECAw==;sprop-pps=RAEDBA==",
+        )
+}
+
 fn response(cseq: u32, headers: &str, body: &str) -> Vec<u8> {
     format!(
         "RTSP/1.0 200 OK\r\nCSeq: {cseq}\r\nContent-Length: {}\r\n{headers}\r\n{body}",
@@ -85,6 +95,15 @@ struct Fixture {
 }
 impl Fixture {
     fn new(chunk: usize, media_index: usize) -> Test<Self> {
+        Self::with_selection(chunk, media_index, None, false)
+    }
+
+    fn with_selection(
+        chunk: usize,
+        media_index: usize,
+        payload_type: Option<u8>,
+        auto_ssrc: bool,
+    ) -> Test<Self> {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
         let peer: SocketAddr = listener.local_addr()?;
         let binding = TcpBinding::new(
@@ -93,33 +112,40 @@ impl Fixture {
             "camera.local",
             TcpSecurityPolicy::OwnerApprovedPlaintext,
         )?;
+        let binding = if auto_ssrc {
+            binding.with_auto_ssrc()
+        } else {
+            binding
+        };
         let authority = Authority(binding.clone());
-        let connection = LiveHevcConnection::connect(
-            LiveHevcConfig {
-                protocol: ClientConfig {
-                    presentation_uri: "rtsp://camera.local/live/".into(),
-                    control_root_uri: "rtsp://camera.local/live".into(),
-                    media_index,
-                    channels: (0, 1),
-                    response_timeout_ns: 10_000_000_000,
-                    default_session_timeout_seconds: 60,
-                },
-                binding,
-                transport: TcpLimits {
-                    chunk_bytes: chunk,
-                    ..TcpLimits::default()
-                },
-                reorder: ReorderLimits::default(),
-                reconstruction: H265Limits::default(),
-                assembly: HevcAssemblyLimits::default(),
-                realm: REALM.into(),
-                digest_policy: DigestPolicy::default(),
-                deadline_ns: LEASE,
-                max_steps: 200_000,
+        let config = LiveHevcConfig {
+            protocol: ClientConfig {
+                presentation_uri: "rtsp://camera.local/live/".into(),
+                control_root_uri: "rtsp://camera.local/live".into(),
+                media_index,
+                channels: (0, 1),
+                response_timeout_ns: 10_000_000_000,
+                default_session_timeout_seconds: 60,
             },
-            0,
-            &authority,
-        )?;
+            binding,
+            transport: TcpLimits {
+                chunk_bytes: chunk,
+                ..TcpLimits::default()
+            },
+            reorder: ReorderLimits::default(),
+            reconstruction: H265Limits::default(),
+            assembly: HevcAssemblyLimits::default(),
+            realm: REALM.into(),
+            digest_policy: DigestPolicy::default(),
+            deadline_ns: LEASE,
+            max_steps: 200_000,
+        };
+        let connection = match payload_type {
+            Some(payload_type) => {
+                LiveHevcConnection::connect_with_payload_type(config, payload_type, 0, &authority)
+            }
+            None => LiveHevcConnection::connect(config, 0, &authority),
+        }?;
         let (peer, _) = listener.accept()?;
         peer.set_read_timeout(Some(Duration::from_secs(2)))?;
         peer.set_write_timeout(Some(Duration::from_secs(2)))?;
@@ -290,7 +316,7 @@ fn mixed_offers_negotiate_over_short_io_and_preserve_original_rtp() -> Test {
 
 #[test]
 fn digest_selected_description_keeps_original_challenge_and_scope() -> Test {
-    let mut f = Fixture::new(7, 0)?;
+    let mut f = Fixture::with_selection(7, 0, Some(98), true)?;
     let (seq, unsigned) = f.command(ClientCommand::Describe)?;
     assert!(!std::str::from_utf8(&unsigned)?.contains("Authorization:"));
     let challenge = format!(
@@ -323,7 +349,7 @@ fn digest_selected_description_keeps_original_challenge_and_scope() -> Test {
     let original = response(
         queued.cseq,
         "Content-Type: application/sdp\r\n",
-        &mixed_offer(true),
+        &hevc_alternatives(),
     );
     accepted(f.reply(&original)?, ClientState::Described, &original)?;
     assert_eq!(
@@ -335,6 +361,151 @@ fn digest_selected_description_keeps_original_challenge_and_scope() -> Test {
     assert!(setup.starts_with("SETUP rtsp://camera.local/live/trackID=0 RTSP/1.0\r\n"));
     assert!(setup.contains("Authorization: Digest "));
     assert!(!setup.contains(PASSWORD));
+    let _retirement = f.connection.cancel().ok_or("missing retirement")?;
+    Ok(())
+}
+
+#[test]
+fn exact_native_hevc_payload_selects_its_own_sets_and_coexists_with_auto_ssrc() -> Test {
+    for (payload_type, auto_ssrc) in [(98, false), (99, false), (98, true), (99, true)] {
+        let mut f = Fixture::with_selection(7, 0, Some(payload_type), auto_ssrc)?;
+        let (seq, _) = f.command(ClientCommand::Describe)?;
+        let original = response(
+            seq,
+            "Content-Type: application/sdp\r\n",
+            &hevc_alternatives(),
+        );
+        accepted(f.reply(&original)?, ClientState::Described, &original)?;
+        let media = f.connection.media().ok_or("exact HEVC payload missing")?;
+        assert_eq!(media.payload_type(), payload_type);
+        let expected = if payload_type == 98 {
+            [VPS, SPS, PPS]
+        } else {
+            // Distinct header-screening sets prove no borrowing from payload 98.
+            // This second offer does not claim decodable parameter syntax.
+            ["QAEBAg==", "QgECAw==", "RAEDBA=="]
+        };
+        for (actual, expected) in [media.vps(), media.sps(), media.pps()]
+            .into_iter()
+            .zip(expected)
+        {
+            assert_eq!(actual, &[fss_reference::rtsp::decode_base64(expected)?]);
+        }
+        let (seq, setup) = f.command(ClientCommand::Setup)?;
+        assert!(setup.starts_with(b"SETUP rtsp://camera.local/live/trackID=0 RTSP/1.0\r\n"));
+        let original = response(
+            seq,
+            "Session: fixture;timeout=60\r\nTransport: RTP/AVP/TCP;unicast;interleaved=0-1\r\n",
+            "",
+        );
+        accepted(f.reply(&original)?, ClientState::Ready, &original)?;
+        assert_eq!(f.connection.bound_key(), (!auto_ssrc).then_some(KEY));
+        let (seq, _) = f.command(ClientCommand::Play)?;
+        let original = response(seq, "Session: fixture\r\n", "");
+        accepted(f.reply(&original)?, ClientState::Playing, &original)?;
+        let ssrc = if auto_ssrc { 0x91a0_0042 } else { KEY.ssrc };
+        let actual_key = StreamKey { ssrc, ..KEY };
+        let mut final_packet = Vec::new();
+        for sequence in [1_u16, 2] {
+            let mut packet = vec![0x80, payload_type];
+            packet.extend_from_slice(&sequence.to_be_bytes());
+            packet.extend_from_slice(&0_u32.to_be_bytes());
+            packet.extend_from_slice(&ssrc.to_be_bytes());
+            packet.extend_from_slice(&fss_reference::rtsp::decode_base64(expected[0])?);
+            let mut wire = vec![b'$', 0];
+            wire.extend_from_slice(&u16::try_from(packet.len())?.to_be_bytes());
+            wire.extend_from_slice(&packet);
+            let LiveHevcStep::Protocol {
+                event: HevcPictureClientPoll::Client { event, work: None },
+                transport: None,
+            } = f.reply(&wire)?
+            else {
+                return Err("exact RTP admission missing".into());
+            };
+            let HevcClientPoll::Rtp {
+                source,
+                retirement: None,
+                ..
+            } = *event
+            else {
+                return Err("selected RTP rejected".into());
+            };
+            assert_eq!(source.expose_wire(), wire);
+            assert_eq!(f.connection.bound_key(), Some(actual_key));
+            final_packet = packet;
+        }
+        let mut observed_source = false;
+        for _ in 0..32 {
+            if let LiveHevcStep::Protocol {
+                event: HevcPictureClientPoll::Source { source, .. },
+                transport: None,
+            } = f.poll(false, false)?
+            {
+                assert_eq!(source.key(), actual_key);
+                assert_eq!(source.bytes(), final_packet);
+                observed_source = true;
+                break;
+            }
+        }
+        assert!(
+            observed_source,
+            "selected payload did not preserve ordered original source"
+        );
+        let retired = f.connection.cancel().ok_or("missing native retirement")?;
+        assert_eq!(retired.protocol.client.source_key, Some(actual_key));
+    }
+    Ok(())
+}
+
+#[test]
+fn exact_native_hevc_payload_refuses_absent_unsupported_and_wrong_clock_without_fallback() -> Test {
+    let alternatives = hevc_alternatives();
+    let cases = [
+        (97, alternatives.clone()),
+        (96, mixed_offer(true)),
+        (
+            98,
+            alternatives.replace("a=rtpmap:98 H265/90000", "a=rtpmap:98 H265/8000"),
+        ),
+        (98, alternatives.replace("a=rtpmap:98 H265/90000\r\n", "")),
+        (
+            98,
+            alternatives.replace("a=fmtp:98 ", "a=fmtp:98 sprop-max-don-diff=1;"),
+        ),
+    ];
+    for (payload_type, body) in cases {
+        let mut f = Fixture::with_selection(7, 0, Some(payload_type), true)?;
+        let (seq, describe) = f.command(ClientCommand::Describe)?;
+        let original = response(seq, "Content-Type: application/sdp\r\n", &body);
+        let LiveHevcStep::Protocol {
+            transport: Some(retired),
+            ..
+        } = f.reply(&original)?
+        else {
+            return Err("unsupported exact selection did not close native owner".into());
+        };
+        assert_eq!(retired.totals.sent_bytes, u64::try_from(describe.len())?);
+        assert!(f.connection.media().is_none());
+        assert!(f.command(ClientCommand::Setup).is_err());
+    }
+    Ok(())
+}
+
+#[test]
+fn selected_hevc_missing_sets_remain_empty_even_when_an_alternative_has_them() -> Test {
+    let mut f = Fixture::with_selection(7, 0, Some(99), false)?;
+    let body = hevc_alternatives().replace(
+        "a=fmtp:99 sprop-vps=QAEBAg==;sprop-sps=QgECAw==;sprop-pps=RAEDBA==\r\n",
+        "",
+    );
+    let (seq, _) = f.command(ClientCommand::Describe)?;
+    let original = response(seq, "Content-Type: application/sdp\r\n", &body);
+    accepted(f.reply(&original)?, ClientState::Described, &original)?;
+    let media = f.connection.media().ok_or("selected HEVC missing")?;
+    assert_eq!(media.payload_type(), 99);
+    assert!(media.vps().is_empty());
+    assert!(media.sps().is_empty());
+    assert!(media.pps().is_empty());
     let _retirement = f.connection.cancel().ok_or("missing retirement")?;
     Ok(())
 }

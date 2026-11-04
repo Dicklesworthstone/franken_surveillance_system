@@ -672,11 +672,15 @@ pub mod live {
             let binding = live.binding.clone();
             let deadline_ns = live.deadline_ns;
             let remaining_steps = live.max_steps;
-            let connection = LiveHevcConnection::connect(live, now, authority).map_err(|e| {
-                LiveHevcRecordingConnectFailure {
-                    reason: LiveHevcRecordingError::Network(e.reason),
-                    connection_attempted: e.connection_attempted,
-                }
+            let connection = LiveHevcConnection::connect_with_payload_type(
+                live,
+                expected_payload_type,
+                now,
+                authority,
+            )
+            .map_err(|e| LiveHevcRecordingConnectFailure {
+                reason: LiveHevcRecordingError::Network(e.reason),
+                connection_attempted: e.connection_attempted,
             })?;
             Ok(Self {
                 connection,

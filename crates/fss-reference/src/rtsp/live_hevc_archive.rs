@@ -48,8 +48,8 @@ use super::recording_collector::CollectorLimits;
 use super::tcp::{TcpAuthority, TcpBinding, TcpDenial, TcpOperation, TcpRetirement, TcpTotals};
 
 /// Owner limits and identity for a configuration obtained from the exact selected description.
-/// The current HEVC session profile admits one payload offer, and this owner additionally requires
-/// exactly one VPS, SPS and PPS. Missing or ambiguous configuration is refused before SETUP/PLAY.
+/// The owner's exact payload selects one offer; this owner additionally requires exactly one
+/// VPS, SPS and PPS from that offer. Missing or ambiguous configuration refuses before SETUP/PLAY.
 #[derive(Clone, Debug)]
 pub struct SelectedHevcRecordingConfig {
     /// Canonical sensor, stream, generation and receive-clock provenance.
@@ -324,11 +324,15 @@ impl<'a, 'p> JournaledLiveHevcArchive<'a, 'p> {
             cancel,
         )
         .map_err(|e| refused(LiveHevcArchiveError::Pins(e)))?;
-        let connection = LiveHevcConnection::connect(live, now, authority).map_err(|e| {
-            LiveHevcArchiveConnectFailure {
-                reason: LiveHevcArchiveError::Network(e.reason),
-                connection_attempted: e.connection_attempted,
-            }
+        let connection = LiveHevcConnection::connect_with_payload_type(
+            live,
+            recording.payload_type,
+            now,
+            authority,
+        )
+        .map_err(|e| LiveHevcArchiveConnectFailure {
+            reason: LiveHevcArchiveError::Network(e.reason),
+            connection_attempted: e.connection_attempted,
         })?;
         let last_anchor = writer.journal_anchor();
         let last_pins = writer.pin_state().clone();

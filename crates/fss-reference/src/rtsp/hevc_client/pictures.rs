@@ -253,30 +253,44 @@ impl RtspHevcPictureClient {
         client.inner.digest_enabled = true;
         Ok(client)
     }
-    /// Constructor-only sender selection for the native owner. The initial
-    /// assembler is untouched until the same session supplies its actual key.
-    pub(crate) fn with_digest_and_ssrc_policy(
+    /// Constructor-only payload and sender selection for the native owner. The
+    /// initial assembler is untouched until the same session supplies its actual key.
+    pub(crate) fn with_digest_and_selection(
         config: ClientConfig,
-        sender: (StreamKey, SsrcPolicy),
+        selection: (StreamKey, SsrcPolicy, Option<u8>),
         reorder: ReorderLimits,
         reconstruction: H265Limits,
         assembly: HevcAssemblyLimits,
         realm: &str,
         policy: DigestPolicy,
     ) -> Result<Self, HevcPictureClientError> {
-        let (key, ssrc_policy) = sender;
-        let mut client = Self::with_digest(
+        let (key, ssrc_policy, payload_type) = selection;
+        let assembler =
+            HevcAssembler::new(key, assembly).map_err(HevcPictureClientError::Assembly)?;
+        let mut inner = RtspHevcClient::new_with_selection(
             config,
             key,
             reorder,
             reconstruction,
-            assembly,
-            realm,
-            policy,
-        )?;
-        client.inner.sender = SenderBinding::new(key, ssrc_policy);
-        client.awaiting_sender = ssrc_policy == SsrcPolicy::LearnOnce;
-        Ok(client)
+            payload_type,
+            ssrc_policy,
+        )
+        .map_err(HevcPictureClientError::Client)?;
+        inner
+            .session
+            .enable_digest(realm, policy)
+            .map_err(|e| HevcPictureClientError::Client(HevcClientError::Authentication(e)))?;
+        inner.digest_enabled = true;
+        Ok(Self {
+            inner,
+            assembler,
+            awaiting_sender: ssrc_policy == SsrcPolicy::LearnOnce,
+            limits: assembly,
+            pending: Vec::new().into_iter(),
+            pending_deadline_ns: None,
+            last_ns: 0,
+            closed: false,
+        })
     }
     /// Existing RTSP protocol state; not decoded-frame or coverage truth.
     pub fn state(&self) -> ClientState {

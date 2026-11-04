@@ -74,8 +74,10 @@ Original media is retained unencrypted.
 
 ## Select HEVC explicitly
 
-Use `--codec hevc` for a camera whose selected SDP media section advertises exactly
-one `H265/90000` payload. `--payload-type` must match that offer. By default the selected description
+Use `--codec hevc` and `--payload-type` to select an exact `H265/90000` mapping in the
+chosen SDP media section, including when it advertises several HEVC or mixed-codec
+alternatives. A missing or unsupported selected mapping stops before SETUP; the
+recorder never switches to another offer. By default the selected description
 must contain exactly one VPS, SPS and PPS in `sprop-vps`, `sprop-sps` and `sprop-pps`.
 The native configuration reader checks their IDs, profile/temporal agreement and bounded
 dimensions before SETUP or PLAY. Missing, ambiguous, mismatched or unsupported parameters
@@ -106,6 +108,11 @@ work-root and pin-journal family and binds its native reconstruction, assembly,
 configuration and boundary-lookahead ceilings. Changing codecs changes the approval
 and decode-clock identity. Existing default/explicit AVC requests keep their AVC
 identities. Both codecs use the same optional Digest credential-file lease described below.
+
+HEVC exact payload selection has a new approval policy and decode-clock identity.
+Review a fresh plan before capture; approvals from the earlier single-offer policy
+do not authorize this behavior. Automatic SSRC selection remains independent and can
+be combined with `--payload-type`: only RTP for the selected mapping can bind a sender.
 
 ### Supply a known HEVC configuration when SDP omits it
 
@@ -362,13 +369,12 @@ switches. Native packet, NAL, picture, source-byte and residence limits remain i
 no bound evicts prior state to make room.
 
 Payload type defaults to 96 for either codec, media index to 0 and RTP/RTCP channels to 0/1.
-For AVC, `--payload-type` selects that exact mapping during DESCRIBE, even when the chosen
-media section advertises several H.264 alternatives. Missing, unsupported or malformed
+For AVC and HEVC, `--payload-type` selects that exact mapping during DESCRIBE, even when
+the chosen media section advertises several alternatives. Missing, unsupported or malformed
 selected offers refuse without borrowing another offer's parameters. The same payload
 type binds native reconstruction and retained original packets. Its negotiated clock
-must be 90,000 Hz. Final draining has its own allowance, capped by capture deadline plus
-drain timeout. HEVC uses the single-offer and exact selected configuration rules above;
-it does not inherit AVC's multiple-offer selector.
+must be 90,000 Hz. HEVC still requires the exact selected configuration rules above.
+Final draining has its own allowance, capped by capture deadline plus drain timeout.
 
 ```sh
 cargo test --locked --offline -p fss-cli \

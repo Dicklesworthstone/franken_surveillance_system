@@ -224,11 +224,56 @@ impl RtspHevcClient {
         reorder_limits: ReorderLimits,
         h265_limits: H265Limits,
     ) -> Result<Self, HevcClientError> {
+        Self::new_with_selection(
+            config,
+            key,
+            reorder_limits,
+            h265_limits,
+            None,
+            SsrcPolicy::Pinned,
+        )
+    }
+
+    /// Select the owner's exact H265/90000 payload, including among several HEVC offers.
+    /// Missing or unsupported mappings refuse; another offer never supplies parameters.
+    pub fn new_with_payload_type(
+        config: ClientConfig,
+        key: StreamKey,
+        reorder_limits: ReorderLimits,
+        h265_limits: H265Limits,
+        payload_type: u8,
+    ) -> Result<Self, HevcClientError> {
+        Self::new_with_selection(
+            config,
+            key,
+            reorder_limits,
+            h265_limits,
+            Some(payload_type),
+            SsrcPolicy::Pinned,
+        )
+    }
+
+    /// Constructor-only combined selection for the native picture/recording owners.
+    pub(crate) fn new_with_selection(
+        config: ClientConfig,
+        key: StreamKey,
+        reorder_limits: ReorderLimits,
+        h265_limits: H265Limits,
+        payload_type: Option<u8>,
+        ssrc_policy: SsrcPolicy,
+    ) -> Result<Self, HevcClientError> {
         if key.ingress == 0 || key.generation == 0 {
             return Err(HevcClientError::StreamBinding);
         }
-        let session = RtspClientSession::with_codec(config, ClientCodec::H265)
-            .map_err(HevcClientError::Session)?;
+        let session = match payload_type {
+            Some(payload_type) => RtspClientSession::with_codec_and_payload_type(
+                config,
+                ClientCodec::H265,
+                payload_type,
+            ),
+            None => RtspClientSession::with_codec(config, ClientCodec::H265),
+        }
+        .map_err(HevcClientError::Session)?;
         // Validate through the semantic owners. This temporary receiver admits
         // no packet; the actual payload type is bound only after DESCRIBE/SETUP.
         let _ = H265Receiver::new(key, 0, 0, reorder_limits, h265_limits)
@@ -236,7 +281,7 @@ impl RtspHevcClient {
         Ok(Self {
             session,
             intake: RtspWireIntake::new(),
-            sender: SenderBinding::new(key, SsrcPolicy::Pinned),
+            sender: SenderBinding::new(key, ssrc_policy),
             reorder_limits,
             h265_limits,
             video: None,
@@ -261,9 +306,7 @@ impl RtspHevcClient {
         h265_limits: H265Limits,
         policy: SsrcPolicy,
     ) -> Result<Self, HevcClientError> {
-        let mut client = Self::new(config, key, reorder_limits, h265_limits)?;
-        client.sender = SenderBinding::new(key, policy);
-        Ok(client)
+        Self::new_with_selection(config, key, reorder_limits, h265_limits, None, policy)
     }
 
     /// Pin a credential realm/policy before the first request. Passwords and HA1

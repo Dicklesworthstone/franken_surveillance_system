@@ -122,6 +122,29 @@ fn automatic_ssrc_cannot_enter_unimplemented_source_retention_or_reconnect_ident
 }
 
 #[test]
+fn hevc_exact_payload_changes_approval_under_the_explicit_selection_policy()
+-> Result<(), &'static str> {
+    for ssrc in ["7", "auto"] {
+        let mut input = args();
+        set(&mut input, "--codec", "hevc");
+        set(&mut input, "--ssrc", ssrc);
+        set(&mut input, "--payload-type", "98");
+        let selected = Options::parse(&input)?;
+        assert!(selected.policy().contains("hevc-exact-selected-payload:"));
+        assert!(!selected.policy().contains("hevc-single-exact-offer:"));
+        let approval = selected.digest()?;
+        set(&mut input, "--approve", &approval.to_text());
+        set(&mut input, "--payload-type", "99");
+        let changed = Options::parse(&input)?;
+        assert_eq!(changed.approve, Some(approval));
+        assert_ne!(changed.digest()?, approval);
+        assert_eq!(selected.recording_config().payload_type, 98);
+        assert_eq!(changed.recording_config().payload_type, 99);
+    }
+    Ok(())
+}
+
+#[test]
 fn preview_requires_disclosure_permission_and_preserves_recording_identity()
 -> Result<(), &'static str> {
     let original = Options::parse(&args())?;
