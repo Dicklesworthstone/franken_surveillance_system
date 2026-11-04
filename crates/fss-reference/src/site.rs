@@ -52,14 +52,6 @@ pub const MAX_PAYMENT_MASKS: usize = 32;
 pub const SITE_COORDINATE_SCALE: u32 = 1_000_000;
 /// Maximum observed pictures in one bounded probe receipt.
 pub const MAX_PROBE_FRAMES: u32 = 1_000_000;
-/// Floor for a plausible `CLOCK_REALTIME` sample: 2023-11-14T22:13:20Z in nanoseconds
-/// since the Unix epoch. A witness at or before this is a clearly wrong clock
-/// (zero, an epoch default, or a stuck RTC), not evidence (VIT-019).
-pub const MIN_PLAUSIBLE_WALL_CLOCK_UNIX_NS: u64 = 1_700_000_000_000_000_000;
-/// Ceiling on an admitted NTP/chrony offset uncertainty, in nanoseconds (10 seconds).
-/// Beyond this the clock is effectively unsynchronized and must not be reported
-/// as a witness at all.
-pub const MAX_CLOCK_UNCERTAINTY_NS: u64 = 10_000_000_000;
 
 /// Pure refusal categories contain only static field names, never input values.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -198,63 +190,6 @@ impl ProbeCodec {
             Self::Hevc => "hevc",
             Self::Jpeg => "jpeg",
         }
-    }
-}
-
-/// Direction of an applied NTP/chrony correction relative to the node's own
-/// uncorrected wall clock. `Ahead` means the local clock read later than true
-/// time before correction; `Behind` means it read earlier.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ClockOffsetDirection {
-    /// The local clock was ahead of true time before correction.
-    Ahead,
-    /// The local clock was behind true time before correction.
-    Behind,
-}
-impl ClockOffsetDirection {
-    /// Stable JSON and canonical spelling.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Ahead => "ahead",
-            Self::Behind => "behind",
-        }
-    }
-}
-
-/// A labeled wall-clock correlation for one probe or capture window: the site
-/// node's own paired `CLOCK_REALTIME`/`CLOCK_MONOTONIC` samples plus the
-/// NTP/chrony correction already folded into the wall-clock sample. This is a
-/// claim about the node's own clock, never an authenticated fact, a camera- or
-/// NVR-side timestamp, or a capture-time certification. See
-/// `docs/VITTLES_FOOTAGE_PLANE_PLAN.md` section 4b ("Time").
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ClockWitness {
-    /// `CLOCK_REALTIME` sample, nanoseconds since the Unix epoch, after the
-    /// `ntp_offset_ns`/`ntp_offset_direction` correction has already been applied.
-    pub wall_clock_unix_ns: u64,
-    /// `CLOCK_MONOTONIC` sample taken at the same instant as `wall_clock_unix_ns`,
-    /// so a caller can later map any monotonic instant in the same probe session
-    /// to this wall-clock epoch without re-sampling the clock.
-    pub monotonic_ns: u64,
-    /// Magnitude of the NTP/chrony correction already folded into `wall_clock_unix_ns`.
-    pub ntp_offset_ns: u64,
-    /// Direction of that correction.
-    pub ntp_offset_direction: ClockOffsetDirection,
-    /// Bound on the correction's own uncertainty, in nanoseconds. Never zero; an
-    /// exact-zero uncertainty is refused as an implausible claim, not accepted.
-    pub ntp_uncertainty_ns: u64,
-}
-impl ClockWitness {
-    /// Validate plausibility. This is not proof the clock is actually correct.
-    pub fn validate(&self) -> Result<(), SiteError> {
-        if self.wall_clock_unix_ns < MIN_PLAUSIBLE_WALL_CLOCK_UNIX_NS
-            || self.ntp_uncertainty_ns == 0
-            || self.ntp_uncertainty_ns > MAX_CLOCK_UNCERTAINTY_NS
-        {
-            return Err(SiteError::InvalidField("clock_evidence"));
-        }
-        Ok(())
     }
 }
 
@@ -421,12 +356,6 @@ pub struct SiteProbeReceipt {
     pub parameter_set_digests: Vec<ContentDigest>,
     /// Bounded server identity attestation; private, untrusted and never printed in Debug.
     pub server_identity: String,
-    /// Optional wall-clock correlation for this probe window (VIT-019). `None`
-    /// until a capturing session actually populates it; absence is not an error.
-    /// Contract when present: `monotonic_ns` is the local monotonic instant at
-    /// which `first_rtp_timestamp` was observed. [`Self::utc_window`] relies on
-    /// this anchor; a witness that does not honor it must not be attached here.
-    pub clock_evidence: Option<ClockWitness>,
 }
 impl fmt::Debug for SiteProbeReceipt {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -748,39 +677,7 @@ impl SiteProbeReceipt {
         {
             return Err(SiteError::InvalidField("server_identity"));
         }
-        if let Some(witness) = &self.clock_evidence {
-            witness.validate()?;
-        }
         Ok(())
-    }
-
-    /// Map this receipt's observed window to a UTC interval (nanoseconds since
-    /// the Unix epoch, inclusive start and end), widened by the attached
-    /// witness's own uncertainty. `None` when no witness is attached, or on an
-    /// internal overflow that validated field bounds should already prevent;
-    /// either way this is a typed gap, not a crash.
-    ///
-    /// Relies on `clock_evidence`'s documented anchor: `monotonic_ns` is the
-    /// local monotonic instant at which `first_rtp_timestamp` was observed.
-    /// This is a claim about the node's own clock, never an authenticated
-    /// fact; 90 kHz does not evenly divide a nanosecond, so the span itself
-    /// carries sub-nanosecond rounding before the uncertainty is even added.
-    #[must_use]
-    pub fn utc_window(&self) -> Option<(u64, u64)> {
-        let witness = self.clock_evidence.as_ref()?;
-        let ticks = u64::from(self.frame_duration_ticks) * u64::from(self.observed_frames - 1);
-        let duration_ns: u64 =
-            (u128::from(ticks) * 1_000_000_000 / u128::from(self.clock_rate_hz))
-                .try_into()
-                .ok()?;
-        let end = witness
-            .wall_clock_unix_ns
-            .checked_add(duration_ns)?
-            .saturating_add(witness.ntp_uncertainty_ns);
-        let start = witness
-            .wall_clock_unix_ns
-            .saturating_sub(witness.ntp_uncertainty_ns);
-        Some((start, end))
     }
 
     /// Check a supplied receipt against an exact manifest. This is consistency, not provenance.
