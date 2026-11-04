@@ -10,7 +10,7 @@ log() { echo "$(date '+%H:%M:%S') $*" >> "$LOG"; }
 log "incremental sweep starting from index $IDX"
 while [ $IDX -lt $COUNT ]; do
   # DS-gate: only shoot when the camera is FULLY awake (HTTP worker bound)
-  DS=$(curl -sk -m 5 -X POST -H "User-Agent: Tapo CameraClient Android" \
+  DS=$(curl -sk -m 5 --interface en1 -X POST -H "User-Agent: Tapo CameraClient Android" \
     -d '{"method":"login","params":{"cnonce":"","encrypt_type":"3","username":"admin"}}' \
     https://192.168.4.33/ 2>/dev/null | head -c 40)
   case "$DS" in
