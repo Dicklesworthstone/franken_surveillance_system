@@ -1,0 +1,140 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.dev/schemas/site_onvif_bindings.v1.json",
+  "title": "FSS protected ONVIF site bindings v1",
+  "description": "Strict operator input binding a canonical site manifest to historical private ONVIF handoffs, expected onboarding/profile digests and independently declared RTSP scope. The complete UTF-8 document is bounded to 1 MiB. Each ONVIF source appears exactly once, with no foreign or duplicate sources. A handoff is historical operator configuration, not proof that the manifest HTTP service produced it, current liveness, rights or capture authority. Native code checks all cross-field relations before releasing a complete plan.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "manifest_digest",
+    "sources"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.site_onvif_bindings.v1"
+    },
+    "manifest_digest": {
+      "$ref": "#/$defs/digest",
+      "description": "Exact canonical digest of the original site manifest, including its independent ONVIF HTTP endpoints and source generations."
+    },
+    "sources": {
+      "type": "array",
+      "minItems": 0,
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/source"
+      },
+      "description": "Native validation requires complete unique coverage of manifest ONVIF sources. Empty is valid only when there are no ONVIF sources. Binding order does not change manifest order."
+    }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "minLength": 71,
+      "maxLength": 71,
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "not": {
+        "const": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_id",
+        "source_file",
+        "source_digest",
+        "onboarding_plan",
+        "profile_digest",
+        "rtsp_peer",
+        "rtsp_authority",
+        "control_root"
+      ],
+      "properties": {
+        "source_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+          "not": {
+            "pattern": "[^A-Za-z0-9._:-]"
+          }
+        },
+        "source_file": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 4096,
+          "pattern": "^/[^\u0000-\u001f\u007f-\u009f]+$",
+          "not": {
+            "anyOf": [
+              {
+                "pattern": "(^|/)\\.\\.?(/|$)"
+              },
+              {
+                "pattern": "^/+$"
+              },
+              {
+                "pattern": "[\u0000-\u001f\u007f-\u009f]"
+              }
+            ]
+          },
+          "description": "Absolute private handoff path with a filename and no control, dot or parent components. The Linux owner also checks exact canonical path, regular-file identity, owner-read permission, no group/other permissions, one hard link and unchanged identity. Only complete stable Media1 AVC or indefinite Media2 AVC/HEVC handoffs up to 8192 bytes are retained; aggregate handoff bytes are at most 524288. No file is opened by schema validation."
+        },
+        "source_digest": {
+          "$ref": "#/$defs/digest",
+          "description": "SHA-256 of the complete protected handoff bytes, including their original encoding. Native approval separately binds the actual file fingerprint."
+        },
+        "onboarding_plan": {
+          "$ref": "#/$defs/digest",
+          "description": "Independent expected historical onboarding-plan digest, compared exactly with the handoff. This comparison does not authenticate an HTTP origin."
+        },
+        "profile_digest": {
+          "$ref": "#/$defs/digest",
+          "description": "Independent expected SHA-256 of the exact selected ONVIF profile token, compared with the handoff and bound into stream/operation identities. Stable sensor identity remains the original site/source coordinate."
+        },
+        "rtsp_peer": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 128,
+          "pattern": "^[0-9A-Fa-f.:\\[\\]]+:[0-9]+$",
+          "description": "Explicit literal IPv4:port or [IPv6]:port RTSP endpoint. Native parsing requires a literal SocketAddr, a valid nonzero port and an admitted peer; it does not resolve DNS or derive this endpoint from the ONVIF HTTP address.",
+          "not": {
+            "pattern": "[\\u0000-\\u001f\\u007f-\\u009f]"
+          }
+        },
+        "rtsp_authority": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[A-Za-z0-9.\\-:\\[\\]]+$",
+          "description": "Exact independently supplied RTSP authority, compared byte-for-byte with the protected handoff. Native validation binds any literal IP and explicit/default RTSP port to rtsp_peer.",
+          "not": {
+            "pattern": "[\\u0000-\\u001f\\u007f-\\u009f]"
+          }
+        },
+        "control_root": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048,
+          "pattern": "^/[^?\\u0000-\\u001f\\u007f-\\u009f]*$",
+          "not": {
+            "anyOf": [
+              {
+                "pattern": "^//"
+              },
+              {
+                "pattern": "(^|/)\\.\\.?(/|$)"
+              },
+              {
+                "pattern": "[?\\u0000-\\u001f\\u007f-\\u009f]"
+              }
+            ]
+          },
+          "description": "Explicit query-free capture control subtree, validated by the existing site/native URI rules and required to contain the exact selected presentation path. This field can itself contain a private capability; protect the binding document. Generated argv contains only its SHA-256, resolved to one exact ancestor of the protected handoff path without normalization or fallback."
+        }
+      }
+    }
+  }
+}

@@ -279,6 +279,28 @@ Native retained import and cold decode remain available through
 configuration, never recording evidence or a substitute for retained source
 bytes and independent recovery pins.
 
+### Use the handoff in a site capture plan
+
+`fss site plan --onvif-bindings /etc/fss/private/site-onvif-bindings.json`
+combines these protected handoffs with the original ONVIF site manifest and a
+complete supplied receipt inventory. The binding pins the expected onboarding
+plan and profile digest, independent RTSP peer/authority and explicit control
+subtree. The compiler emits the existing `from-onvif` single-capture command and
+its actual outer native approval. See [ONVIF site bindings](SITE_PLANNING.md#onvif-site-bindings)
+for the input schema, mixed UniFi/direct-source usage and historical-provenance
+limits. Native ONVIF site probing remains separate work.
+
+For a private subtree, the wrapper also accepts
+`--onvif-control-root-digest sha256:HEX` in place of `--control-root`. The digest
+is SHA-256 of the exact query-free root string, including its slash spelling.
+Existing control-root syntax still applies; percent-escaped roots remain refused.
+The reader resolves it to exactly one ancestor of the selected
+protected path and then uses the unchanged native planner. Both forms together,
+an unknown digest or a nonancestor refuse. There is no inferred root, path
+normalization or fallback. Site planning emits the digest form so capability
+paths do not appear in command arguments; the original explicit-root form
+remains compatible.
+
 ## 5. Supervise capture, retain datagrams, and recover original stores
 
 Add `--capture-mode reconnect` to the protected handoff command to delegate to

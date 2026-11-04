@@ -18,8 +18,9 @@ struct Fixture(PathBuf);
 impl Fixture {
     fn new() -> Result<Self, std::io::Error> {
         let path = PathBuf::from(format!(
-            "/tmp/fss-onvif-private-file-{}-{}",
+            "/tmp/fss-onvif-private-file-{}-{}-{}",
             std::process::id(),
+            module_path!(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         DirBuilder::new().mode(0o700).create(&path)?;

@@ -104,3 +104,38 @@ pub(crate) fn prepare_selected_unifi(
         )?,
     })
 }
+
+/// Prepare the existing single-session `from-onvif` wrapper without I/O.
+/// The input fingerprint must come from the actual private-file lease; execution rechecks it.
+pub fn prepare_onvif(
+    spec: &crate::onvif_plan::OnvifSourceSpec,
+    input: crate::onvif_plan::ProtectedOnvifInput<'_>,
+    native_args: &[OsString],
+) -> Result<PreparedRtspPlan, &'static str> {
+    let selected = spec.prepare(input, native_args)?;
+    prepare_selected_onvif(spec, &selected)
+}
+
+pub(crate) fn prepare_selected_onvif(
+    spec: &crate::onvif_plan::OnvifSourceSpec,
+    selected: &crate::onvif_plan::PreparedOnvifSelection,
+) -> Result<PreparedRtspPlan, &'static str> {
+    let native = selected.with_capture_arguments(plan::Options::parse)?;
+    let native_approval = native.digest()?;
+    let native_preview = native.private_uri_preview()?;
+    Ok(PreparedRtspPlan {
+        approval: spec.approval(
+            selected.file_identity(),
+            "single",
+            "capture",
+            native_approval,
+        )?,
+        preview: spec.preview(
+            selected.file_identity(),
+            "single",
+            "capture",
+            native_approval,
+            &native_preview,
+        )?,
+    })
+}

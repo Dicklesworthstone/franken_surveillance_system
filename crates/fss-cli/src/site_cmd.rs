@@ -55,6 +55,8 @@ pub enum SiteCommand {
         probes: PathBuf,
         /// Optional exact bindings for protected UniFi exports and rendition selection.
         unifi_bindings: Option<PathBuf>,
+        /// Optional exact historical ONVIF handoffs and independently pinned RTSP scope.
+        onvif_bindings: Option<PathBuf>,
         /// Explicit identity epoch, output destinations, principal and picture budget.
         options: SitePlanOptions,
     },
@@ -93,6 +95,7 @@ pub fn parse_site_args(tokens: &[ArgToken]) -> Result<SiteCommand, CliError> {
             "--manifest",
             "--probes",
             "--unifi-bindings",
+            "--onvif-bindings",
             "--archive-root",
             "--pins-root",
             "--epoch",
@@ -133,6 +136,7 @@ pub fn parse_site_args(tokens: &[ArgToken]) -> Result<SiteCommand, CliError> {
         manifest,
         probes: PathBuf::from(required("--probes")?),
         unifi_bindings: take(&values, "--unifi-bindings").map(|(_, value, _)| PathBuf::from(value)),
+        onvif_bindings: take(&values, "--onvif-bindings").map(|(_, value, _)| PathBuf::from(value)),
         options: SitePlanOptions {
             epoch: number("--epoch")?,
             archive_root: PathBuf::from(required("--archive-root")?),
@@ -164,6 +168,7 @@ impl InputAuthority {
                 manifest,
                 probes,
                 unifi_bindings,
+                onvif_bindings,
                 ..
             } => {
                 let mut inputs = vec![
@@ -174,6 +179,12 @@ impl InputAuthority {
                     inputs.push((
                         bindings.as_path(),
                         crate::site_unifi::MAX_SITE_UNIFI_BINDINGS_BYTES,
+                    ));
+                }
+                if let Some(bindings) = onvif_bindings {
+                    inputs.push((
+                        bindings.as_path(),
+                        crate::site_onvif::MAX_SITE_ONVIF_BINDINGS_BYTES,
                     ));
                 }
                 Self::for_inputs(&inputs)
@@ -336,6 +347,7 @@ pub fn execute_site(command: &SiteCommand) -> (String, ExitIdentity) {
         SiteCommand::Plan {
             probes,
             unifi_bindings,
+            onvif_bindings,
             options,
             ..
         } => {
@@ -353,7 +365,7 @@ pub fn execute_site(command: &SiteCommand) -> (String, ExitIdentity) {
                 Ok(receipts) => receipts,
                 Err(error) => return refusal(error.code(), &error.to_string(), None),
             };
-            let result = if let Some(path) = unifi_bindings {
+            let unifi_bytes = if let Some(path) = unifi_bindings {
                 let bytes = match authority.read(path) {
                     Ok(bytes) => bytes,
                     Err(code) => {
@@ -364,6 +376,29 @@ pub fn execute_site(command: &SiteCommand) -> (String, ExitIdentity) {
                         );
                     }
                 };
+                Some(bytes)
+            } else {
+                None
+            };
+            let result = if let Some(path) = onvif_bindings {
+                let bytes = match authority.read(path) {
+                    Ok(bytes) => bytes,
+                    Err(code) => {
+                        return refusal(
+                            code,
+                            "ONVIF binding input could not be read within its bounds",
+                            None,
+                        );
+                    }
+                };
+                crate::site_unifi::compile_with_onvif_bindings(
+                    &manifest,
+                    &receipts,
+                    options,
+                    &bytes,
+                    unifi_bytes.as_deref(),
+                )
+            } else if let Some(bytes) = unifi_bytes {
                 crate::site_unifi::compile_from_bindings(&manifest, &receipts, options, &bytes)
             } else {
                 compile(&manifest, &receipts, options)

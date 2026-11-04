@@ -1009,3 +1009,7 @@ fn all_jpeg_site_binds_reserved_pin_parent_and_exact_retention_receipts() -> Tes
 #[cfg(target_os = "linux")]
 #[path = "site_cli_contract/unifi.rs"]
 mod unifi;
+
+#[cfg(target_os = "linux")]
+#[path = "site_cli_contract/onvif.rs"]
+mod onvif;

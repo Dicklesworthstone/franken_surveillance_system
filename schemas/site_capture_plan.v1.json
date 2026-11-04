@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://franken-surveillance-system.dev/schemas/site_capture_plan.v1.json",
   "title": "FSS atomic site capture plan v1",
-  "description": "Atomic direct RTSP/NVR AVC/HEVC/JPEG and protected UniFi AVC/HEVC planning. The complete site digest binds canonical manifest and probe receipts plus exact native approvals; UniFi additionally binds the actual protected-export fingerprint, camera and exact selected view/route through the existing native wrapper. No site executor, rights-lease verification or current-liveness claim. JPEG sources use the existing bounded datagram-capture planner and require at most 256 pictures; native JPEG plans contain no independent AVC/HEVC pin journal or cadence option. UniFi JPEG capture is not admitted.",
+  "description": "Atomic direct RTSP/NVR AVC/HEVC/JPEG and protected UniFi/ONVIF AVC/HEVC planning. The complete site digest binds canonical manifest and probe receipts plus exact native approvals and actual private-file fingerprints. ONVIF additionally binds expected historical onboarding/profile digests and independent RTSP scope, without authenticating the HTTP origin. No site executor, rights-lease verification or current-liveness claim. JPEG uses the bounded native datagram planner and at most 256 pictures; protected UniFi and ONVIF JPEG capture is not admitted.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -96,6 +96,12 @@
       "minLength": 1,
       "maxLength": 1024,
       "description": "Independent journal parent reserved by the site request, displayed and approval-bound whenever the site contains JPEG. Native JPEG capture does not create or use an AVC/HEVC pin journal."
+    },
+    "onvif_selection_provenance": {
+      "const": "operator-bound-historical-consistency"
+    },
+    "onvif_http_origin_verified": {
+      "const": false
     }
   },
   "$defs": {
@@ -142,7 +148,8 @@
           "enum": [
             "rtsp",
             "nvr_channel",
-            "unifi_protect"
+            "unifi_protect",
+            "onvif"
           ]
         },
         "stream_role": {
@@ -163,7 +170,7 @@
           "const": "fss-capture-rtsp"
         },
         "argv": {
-          "description": "Exact native arguments, with an initial jpeg subcommand for direct JPEG or from-unifi for protected UniFi, and option/value pairs after it. No --approve option is emitted. Treat plans as private operator material: file references and direct-source route queries can remain. UniFi route capabilities stay in the protected export and never enter argv.",
+          "description": "Exact native arguments, with initial jpeg for direct JPEG, from-unifi for protected UniFi or from-onvif for protected ONVIF. Option/value pairs follow; no --approve is emitted. Treat plans as private operator configuration. Protected stream paths and queries never enter argv; ONVIF control roots use only --onvif-control-root-digest.",
           "type": "array",
           "minItems": 2,
           "maxItems": 128,
@@ -185,6 +192,9 @@
             },
             {
               "$ref": "#/$defs/native_unifi_plan"
+            },
+            {
+              "$ref": "#/$defs/native_onvif_plan"
             }
           ]
         }
@@ -216,16 +226,42 @@
             }
           },
           "else": {
-            "properties": {
-              "native_plan": {
-                "oneOf": [
-                  {
-                    "$ref": "#/$defs/native_plan"
-                  },
-                  {
-                    "$ref": "#/$defs/native_jpeg_plan"
-                  }
-                ]
+            "if": {
+              "properties": {
+                "kind": {
+                  "const": "onvif"
+                }
+              },
+              "required": [
+                "kind"
+              ]
+            },
+            "then": {
+              "properties": {
+                "native_plan": {
+                  "$ref": "#/$defs/native_onvif_plan"
+                },
+                "argv": {
+                  "prefixItems": [
+                    {
+                      "const": "from-onvif"
+                    }
+                  ]
+                }
+              }
+            },
+            "else": {
+              "properties": {
+                "native_plan": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/$defs/native_plan"
+                    },
+                    {
+                      "$ref": "#/$defs/native_jpeg_plan"
+                    }
+                  ]
+                }
               }
             }
           }
@@ -1777,6 +1813,79 @@
           }
         }
       ]
+    },
+    "native_onvif_plan": {
+      "description": "The unchanged from-onvif v1 single-capture wrapper, binding complete private handoff bytes, actual file identity and the real native approval. Presentation and control URIs remain redacted. Historical Media1/v2 handoff selection does not change this outer plan schema.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "phase",
+        "approval",
+        "policy",
+        "capture_mode",
+        "operation",
+        "onvif_source",
+        "onvif_digest",
+        "onvif_file_identity",
+        "native_capture",
+        "effects"
+      ],
+      "properties": {
+        "schema": {
+          "const": "fss.rtsp_from_onvif_plan.v1"
+        },
+        "phase": {
+          "const": "planned"
+        },
+        "approval": {
+          "$ref": "#/$defs/digest"
+        },
+        "policy": {
+          "const": "private-digest-bound-stable-onvif-uri:separate-owner-capture-approval:unchanged-source-clock-timing-and-independent-pin-owners:no-camera-or-credential-read-in-preview:v1"
+        },
+        "capture_mode": {
+          "const": "single"
+        },
+        "operation": {
+          "const": "capture"
+        },
+        "onvif_source": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 4096
+        },
+        "onvif_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "onvif_file_identity": {
+          "$ref": "#/$defs/digest"
+        },
+        "native_capture": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/native_plan"
+            },
+            {
+              "required": [
+                "presentation_uri_digest",
+                "control_root_uri_digest"
+              ],
+              "properties": {
+                "presentation_uri": {
+                  "const": "[redacted]"
+                },
+                "control_root_uri": {
+                  "const": "[redacted]"
+                }
+              }
+            }
+          ]
+        },
+        "effects": {
+          "const": "protected-handoff-and-destination-inspection-only"
+        }
+      }
     }
   },
   "allOf": [
@@ -1827,7 +1936,7 @@
             "contains": {
               "properties": {
                 "kind": {
-                  "const": "unifi_protect"
+                  "const": "onvif"
                 }
               },
               "required": [
@@ -1841,53 +1950,105 @@
         ]
       },
       "then": {
+        "required": [
+          "onvif_selection_provenance",
+          "onvif_http_origin_verified"
+        ],
         "properties": {
           "policy": {
-            "const": "site-capture-plan:v1:manifest-and-probe-pinned:all-sources-or-none:existing-native-avc-hevc-jpeg-and-unifi-planners:private-export-fingerprint-and-camera-bound:exact-selected-view-and-route:no-url-rewrite:no-quality-fallback:no-tls-downgrade:exact-ssrc:receipt-bound-cadence:receipt-bound-jpeg-retention:reserved-journal-parent-bound:no-executor:no-rights-grant"
+            "const": "site-capture-plan:v1:manifest-and-probe-pinned:all-sources-or-none:existing-native-avc-hevc-jpeg-unifi-and-onvif-planners:private-file-fingerprint-bound:onvif-historical-profile-and-onboarding-plan:independent-rtsp-scope:no-http-origin-proof:exact-selected-route:no-codec-fallback:exact-ssrc:receipt-bound-cadence:reserved-journal-parent-bound:no-executor:no-rights-grant"
           }
         }
       },
       "else": {
-        "if": {
-          "properties": {
-            "sources": {
-              "contains": {
-                "properties": {
-                  "native_plan": {
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "sources": {
+                  "contains": {
                     "properties": {
-                      "schema": {
-                        "const": "fss.rtsp_jpeg_capture_cli.v1"
+                      "kind": {
+                        "const": "unifi_protect"
                       }
                     },
                     "required": [
-                      "schema"
+                      "kind"
                     ]
+                  }
+                }
+              },
+              "required": [
+                "sources"
+              ]
+            },
+            "then": {
+              "properties": {
+                "policy": {
+                  "const": "site-capture-plan:v1:manifest-and-probe-pinned:all-sources-or-none:existing-native-avc-hevc-jpeg-and-unifi-planners:private-export-fingerprint-and-camera-bound:exact-selected-view-and-route:no-url-rewrite:no-quality-fallback:no-tls-downgrade:exact-ssrc:receipt-bound-cadence:receipt-bound-jpeg-retention:reserved-journal-parent-bound:no-executor:no-rights-grant"
+                }
+              }
+            },
+            "else": {
+              "if": {
+                "properties": {
+                  "sources": {
+                    "contains": {
+                      "properties": {
+                        "native_plan": {
+                          "properties": {
+                            "schema": {
+                              "const": "fss.rtsp_jpeg_capture_cli.v1"
+                            }
+                          },
+                          "required": [
+                            "schema"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "native_plan"
+                      ]
+                    }
                   }
                 },
                 "required": [
-                  "native_plan"
+                  "sources"
                 ]
+              },
+              "then": {
+                "properties": {
+                  "policy": {
+                    "const": "site-capture-plan:v1:manifest-and-probe-pinned:all-sources-or-none:existing-native-avc-hevc-jpeg-planners:exact-ssrc:receipt-bound-cadence:receipt-bound-jpeg-retention:reserved-journal-parent-bound:no-executor:no-rights-grant"
+                  }
+                }
+              },
+              "else": {
+                "properties": {
+                  "policy": {
+                    "const": "site-capture-plan:v1:manifest-and-probe-pinned:all-sources-or-none:existing-native-avc-hevc-planner:exact-ssrc-and-cadence:no-executor:no-rights-grant"
+                  }
+                }
               }
             }
           },
-          "required": [
-            "sources"
-          ]
-        },
-        "then": {
-          "properties": {
-            "policy": {
-              "const": "site-capture-plan:v1:manifest-and-probe-pinned:all-sources-or-none:existing-native-avc-hevc-jpeg-planners:exact-ssrc:receipt-bound-cadence:receipt-bound-jpeg-retention:reserved-journal-parent-bound:no-executor:no-rights-grant"
+          {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "onvif_selection_provenance"
+                  ]
+                },
+                {
+                  "required": [
+                    "onvif_http_origin_verified"
+                  ]
+                }
+              ]
             }
           }
-        },
-        "else": {
-          "properties": {
-            "policy": {
-              "const": "site-capture-plan:v1:manifest-and-probe-pinned:all-sources-or-none:existing-native-avc-hevc-planner:exact-ssrc-and-cadence:no-executor:no-rights-grant"
-            }
-          }
-        }
+        ]
       }
     }
   ]

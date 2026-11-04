@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use fss_core::json_input::{self, Value};
-use fss_core::{ContentDigest, DigestAlgorithm};
+use fss_core::{CanonicalEncoder, ContentDigest, DigestAlgorithm};
 use fss_reference::site::{SiteManifest, SiteProbeReceipt, SourceKind};
 use fss_reference::unifi::{ProtectQuality, TransportChoice};
 
@@ -59,8 +59,8 @@ struct Binding {
     spec: UnifiSourceSpec,
 }
 
-struct Bindings {
-    digest: ContentDigest,
+pub(crate) struct Bindings {
+    pub(crate) digest: ContentDigest,
     sources: Vec<Binding>,
 }
 
@@ -112,7 +112,10 @@ fn digest(text: &str, source_index: Option<usize>) -> Result<ContentDigest, Site
     Ok(digest)
 }
 
-fn parse_bindings(manifest: &SiteManifest, bytes: &[u8]) -> Result<Bindings, SitePlanError> {
+pub(crate) fn parse_bindings(
+    manifest: &SiteManifest,
+    bytes: &[u8],
+) -> Result<Bindings, SitePlanError> {
     let manifest_digest = manifest
         .digest()
         .map_err(|_| refused(None, "valid canonical site manifest required"))?;
@@ -231,7 +234,7 @@ fn overlaps(left: &Path, right: &Path) -> bool {
     left.starts_with(right) || right.starts_with(left)
 }
 
-fn check_paths(
+pub(crate) fn check_paths(
     manifest: &SiteManifest,
     bindings: &Bindings,
     options: &SitePlanOptions,
@@ -300,6 +303,20 @@ fn compile_owned(
     bindings: &Bindings,
     checkpoint: &impl Fn() -> Result<(), &'static str>,
 ) -> Result<SitePlan, SitePlanError> {
+    with_inputs(manifest, options, bindings, checkpoint, |inputs| {
+        site_plan::compile_with_unifi(manifest, receipts, options, inputs)
+    })
+}
+
+/// Hold exact UniFi leases across a combined protected-source compilation and revalidation.
+/// The caller's existing read scope owns every boundary; no nested runtime is started.
+pub(crate) fn with_inputs(
+    _manifest: &SiteManifest,
+    options: &SitePlanOptions,
+    bindings: &Bindings,
+    checkpoint: &impl Fn() -> Result<(), &'static str>,
+    compile: impl FnOnce(&[SiteUnifiInput<'_>]) -> Result<SitePlan, SitePlanError>,
+) -> Result<SitePlan, SitePlanError> {
     check_canonical_destinations(bindings, options, checkpoint)?;
     let mut leases = Vec::new();
     leases
@@ -345,7 +362,7 @@ fn compile_owned(
             },
         })
         .collect();
-    let plan = site_plan::compile_with_unifi(manifest, receipts, options, &inputs)?;
+    let plan = compile(&inputs)?;
     // Destination aliases can drift while several exports are read and parsed.
     // Recheck the same native isolation rule before releasing any source lease.
     check_canonical_destinations(bindings, options, checkpoint)?;
@@ -399,6 +416,92 @@ pub fn compile_from_bindings(
     .map_err(|_| {
         inner_error.unwrap_or_else(|| refused(None, "protected input runtime did not finalize"))
     })
+}
+
+/// Compile a mixed site with exact protected ONVIF handoffs and optional UniFi exports.
+/// Both binding documents are parsed and checked before opening any protected input.
+/// One finite read scope owns all leases; no credentials, network or writes are enabled.
+pub fn compile_with_onvif_bindings(
+    manifest: &SiteManifest,
+    receipts: &[SiteProbeReceipt],
+    options: &SitePlanOptions,
+    onvif_json: &[u8],
+    unifi_json: Option<&[u8]>,
+) -> Result<SitePlan, SitePlanError> {
+    let onvif = crate::site_onvif::parse_bindings(manifest, onvif_json)?;
+    crate::site_onvif::check_paths(manifest, &onvif, options)?;
+    let unifi = unifi_json
+        .map(|bytes| parse_bindings(manifest, bytes))
+        .transpose()?;
+    if let Some(bindings) = &unifi {
+        check_paths(manifest, bindings, options)?;
+    }
+    let mut encoded = CanonicalEncoder::new();
+    encoded.text("fss.site_protected_input_read.v1");
+    encoded.digest(onvif.digest);
+    if let Some(bindings) = &unifi {
+        encoded.digest(bindings.digest);
+    }
+    let approval = ContentDigest::sha256(&encoded.finish_checked().map_err(|_| {
+        crate::site_onvif::refused(None, "private input identity encoding refused")
+    })?);
+    let mut inner_error = None;
+    runtime::run(
+        runtime::Request {
+            approval,
+            principal: options.principal.clone(),
+            timeout_ns: READ_TIMEOUT_NS,
+            // Existing 32 MiB export/report allowance plus handoffs, second binding
+            // document and bounded private parser representations; no RSS promise.
+            bytes: READ_WORKING_BYTES + 8 * 1024 * 1024,
+            network_bytes: 0,
+            storage_operations: MAX_READ_OPERATIONS * 2,
+            network: false,
+            write: false,
+            secrets: false,
+        },
+        |scope| {
+            compile_owned_with_onvif(manifest, receipts, options, &onvif, unifi.as_ref(), &|| {
+                scope.input()
+            })
+            .map_err(|error| {
+                let code = error.code;
+                inner_error = Some(error);
+                code
+            })
+        },
+    )
+    .map_err(|_| {
+        inner_error.unwrap_or_else(|| {
+            crate::site_onvif::refused(None, "protected input runtime did not finalize")
+        })
+    })
+}
+
+pub(crate) fn compile_owned_with_onvif(
+    manifest: &SiteManifest,
+    receipts: &[SiteProbeReceipt],
+    options: &SitePlanOptions,
+    onvif: &crate::site_onvif::Bindings,
+    unifi: Option<&Bindings>,
+    checkpoint: &impl Fn() -> Result<(), &'static str>,
+) -> Result<SitePlan, SitePlanError> {
+    let owned = crate::site_onvif::OwnedInputs::open(onvif, options, checkpoint)?;
+    let inputs = owned.inputs();
+    let compile = |unifi_inputs: &[SiteUnifiInput<'_>]| {
+        let result =
+            site_plan::compile_with_protected(manifest, receipts, options, unifi_inputs, &inputs)?;
+        // Keep both lease sets alive through complete compilation and the first
+        // handoff recheck; the UniFi owner then revalidates its own held exports.
+        owned.revalidate(options, checkpoint)?;
+        Ok(result)
+    };
+    let plan = match unifi {
+        Some(bindings) => with_inputs(manifest, options, bindings, checkpoint, compile)?,
+        None => compile(&[])?,
+    };
+    owned.revalidate(options, checkpoint)?;
+    Ok(plan)
 }
 
 #[cfg(test)]

@@ -6,14 +6,19 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
+use std::net::SocketAddr;
 use std::path::{Component, Path, PathBuf};
 
 use fss_core::{CanonicalEncoder, ContentDigest, PrincipalId};
+use fss_reference::site::probe_route::{OnvifCaptureRoute, validate_capture_route_inventory};
 use fss_reference::site::{ProbeCodec, SiteManifest, SiteProbeReceipt, SourceKind};
 use fss_reference::unifi::ProtectQuality;
 
-use crate::capture_plan::{prepare_jpeg, prepare_rtsp, prepare_selected_unifi};
+use crate::capture_plan::{
+    prepare_jpeg, prepare_rtsp, prepare_selected_onvif, prepare_selected_unifi,
+};
 use crate::json_output::{array, object, string, strings};
+use crate::onvif_plan::{OnvifSourceSpec, ProtectedOnvifInput};
 use crate::unifi_plan::{ProtectedUnifiInput, UnifiSourceSpec};
 
 /// Versioned site plan report schema.
@@ -27,6 +32,11 @@ const POLICY: &str = "site-capture-plan:v1:manifest-and-probe-pinned:all-sources
 existing-native-avc-hevc-planner:exact-ssrc-and-cadence:no-executor:no-rights-grant";
 const JPEG_POLICY: &str = "site-capture-plan:v1:manifest-and-probe-pinned:all-sources-or-none:\
 existing-native-avc-hevc-jpeg-planners:exact-ssrc:receipt-bound-cadence:receipt-bound-jpeg-retention:\
+reserved-journal-parent-bound:no-executor:no-rights-grant";
+const ONVIF_POLICY: &str = "site-capture-plan:v1:manifest-and-probe-pinned:all-sources-or-none:\
+existing-native-avc-hevc-jpeg-unifi-and-onvif-planners:private-file-fingerprint-bound:\
+onvif-historical-profile-and-onboarding-plan:independent-rtsp-scope:no-http-origin-proof:\
+exact-selected-route:no-codec-fallback:exact-ssrc:receipt-bound-cadence:\
 reserved-journal-parent-bound:no-executor:no-rights-grant";
 const UNIFI_POLICY: &str = "site-capture-plan:v1:manifest-and-probe-pinned:all-sources-or-none:\
 existing-native-avc-hevc-jpeg-and-unifi-planners:private-export-fingerprint-and-camera-bound:\
@@ -50,6 +60,73 @@ impl std::fmt::Debug for SiteUnifiInput<'_> {
         formatter
             .debug_struct("SiteUnifiInput")
             .finish_non_exhaustive()
+    }
+}
+
+/// Exact historical ONVIF handoff observations and independently pinned capture scope.
+/// The private-file owner supplies the actual bytes and fingerprint; no authority is granted.
+pub struct SiteOnvifInput<'a> {
+    /// Source identity in the original complete manifest.
+    pub source_id: &'a str,
+    /// Exact private handoff reference and complete byte digest.
+    pub spec: &'a OnvifSourceSpec,
+    /// Exact expected historical onboarding-plan identity, not a verified HTTP-origin claim.
+    pub onboarding_plan: ContentDigest,
+    /// Exact selected profile token digest, supplied independently of the handoff.
+    pub profile_digest: ContentDigest,
+    /// Independently pinned literal RTSP peer; the ONVIF HTTP peer remains in the manifest.
+    pub peer: SocketAddr,
+    /// Independently pinned exact RTSP authority, without DNS resolution.
+    pub authority: &'a str,
+    /// Explicit query-free track control subtree; never inferred from device metadata.
+    pub control_root: &'a str,
+    /// Actual protected-file observations.
+    pub input: ProtectedOnvifInput<'a>,
+}
+
+impl std::fmt::Debug for SiteOnvifInput<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SiteOnvifInput").finish_non_exhaustive()
+    }
+}
+
+impl SiteOnvifInput<'_> {
+    fn validate_receipt(
+        &self,
+        manifest: &SiteManifest,
+        index: usize,
+        receipt: &SiteProbeReceipt,
+    ) -> Result<(), SitePlanError> {
+        let selected = self
+            .spec
+            .prepare(self.input, &[])
+            .map_err(|reason| source_refused(index, reason))?;
+        if selected.onboarding_plan() != self.onboarding_plan
+            || selected.profile_digest() != self.profile_digest
+            || selected.codec() != receipt.codec.as_str()
+            || !selected.matches_route(self.peer, self.authority, &receipt.presentation)
+        {
+            return Err(source_refused(
+                index,
+                "protected handoff differs from the exact profile, onboarding plan, codec or RTSP scope",
+            ));
+        }
+        let route = OnvifCaptureRoute::new(
+            manifest,
+            index,
+            self.spec.expected,
+            self.peer,
+            self.authority,
+            &receipt.presentation,
+            self.control_root,
+        )
+        .map_err(|_| source_refused(index, "independent ONVIF capture route refused"))?;
+        route.validate_receipt(manifest, receipt).map_err(|_| {
+            source_refused(
+                index,
+                "probe differs from the exact historical ONVIF selection",
+            )
+        })
     }
 }
 
@@ -377,6 +454,19 @@ pub fn compile_with_unifi(
     options: &SitePlanOptions,
     unifi_inputs: &[SiteUnifiInput<'_>],
 ) -> Result<SitePlan, SitePlanError> {
+    compile_with_protected(manifest, receipts, options, unifi_inputs, &[])
+}
+
+/// Compile a complete site using actual protected UniFi and historical ONVIF observations.
+/// No URI, codec or profile is guessed. ONVIF HTTP and RTSP scopes remain separate and
+/// supplied handoffs establish consistency only, not authenticated origin or freshness.
+pub fn compile_with_protected(
+    manifest: &SiteManifest,
+    receipts: &[SiteProbeReceipt],
+    options: &SitePlanOptions,
+    unifi_inputs: &[SiteUnifiInput<'_>],
+    onvif_inputs: &[SiteOnvifInput<'_>],
+) -> Result<SitePlan, SitePlanError> {
     validate_options(options)?;
     manifest
         .validate()
@@ -392,7 +482,10 @@ pub fn compile_with_unifi(
         }
         if !matches!(
             source.kind,
-            SourceKind::Rtsp | SourceKind::NvrChannel | SourceKind::UnifiProtect
+            SourceKind::Rtsp
+                | SourceKind::NvrChannel
+                | SourceKind::UnifiProtect
+                | SourceKind::Onvif
         ) {
             return Err(source_refused(
                 index,
@@ -498,6 +591,62 @@ pub fn compile_with_unifi(
         }
     }
 
+    if onvif_inputs.len() > manifest.sources.len() {
+        return Err(refused(
+            "protected ONVIF inventory exceeds the site inventory",
+        ));
+    }
+    let mut onvif_bindings = BTreeMap::new();
+    let mut onvif_bytes = 0usize;
+    for input in onvif_inputs {
+        let index = *indices
+            .get(input.source_id)
+            .ok_or_else(|| refused("protected ONVIF input names a foreign source"))?;
+        if manifest.sources[index].kind != SourceKind::Onvif
+            || onvif_bindings.insert(index, input).is_some()
+        {
+            return Err(source_refused(
+                index,
+                "exactly one protected handoff per ONVIF source required",
+            ));
+        }
+        onvif_bytes = onvif_bytes
+            .checked_add(input.input.bytes.len())
+            .ok_or_else(|| source_refused(index, "protected handoff byte bound exceeded"))?;
+        if onvif_bytes > 64 * crate::onvif_plan::MAX_ONVIF_HANDOFF_BYTES {
+            return Err(source_refused(
+                index,
+                "protected handoff byte bound exceeded",
+            ));
+        }
+        let path = &input.spec.source;
+        if [&options.archive_root, &options.pins_root]
+            .iter()
+            .any(|root| path.starts_with(root) || root.starts_with(path))
+            || manifest
+                .sources
+                .iter()
+                .filter_map(|source| source.authentication.as_ref())
+                .any(|auth| {
+                    path.starts_with(&auth.credential_file)
+                        || auth.credential_file.starts_with(path)
+                })
+        {
+            return Err(source_refused(
+                index,
+                "protected handoffs must be separate from output and credential namespaces",
+            ));
+        }
+    }
+    for (index, source) in manifest.sources.iter().enumerate() {
+        if source.kind == SourceKind::Onvif && !onvif_bindings.contains_key(&index) {
+            return Err(source_refused(
+                index,
+                "ONVIF source requires an exact protected handoff binding",
+            ));
+        }
+    }
+
     if receipts.len() > manifest.sources.len() {
         return Err(refused(
             "probe inventory contains extra or duplicate source receipts",
@@ -526,12 +675,16 @@ pub fn compile_with_unifi(
                 "probe source generation is stale or foreign",
             ));
         }
-        receipt.validate_for(manifest).map_err(|_| {
-            source_refused(
-                index,
-                "probe route or source binding differs from the manifest",
-            )
-        })?;
+        if let Some(input) = onvif_bindings.get(&index) {
+            input.validate_receipt(manifest, index, receipt)?;
+        } else {
+            receipt.validate_for(manifest).map_err(|_| {
+                source_refused(
+                    index,
+                    "probe route or source binding differs from the manifest",
+                )
+            })?;
+        }
         if probes.insert(index, receipt).is_some() {
             return Err(source_refused(index, "duplicate probe receipt for source"));
         }
@@ -547,17 +700,16 @@ pub fn compile_with_unifi(
     // policy explicitly binds the still-reserved independent journal parent.
     let includes_jpeg = probes.values().any(|probe| probe.codec == ProbeCodec::Jpeg);
     let includes_unifi = !bindings.is_empty();
-    let policy = if includes_unifi {
+    let includes_onvif = !onvif_bindings.is_empty();
+    let policy = if includes_onvif {
+        ONVIF_POLICY
+    } else if includes_unifi {
         UNIFI_POLICY
     } else if includes_jpeg {
         JPEG_POLICY
     } else {
         POLICY
     };
-    // This clone is only an input to the existing normalized-route collision check.
-    // The authoritative manifest, source kind, approval and emitted commands retain
-    // UniFi identity. No selected private route becomes a generic capture command.
-    let mut resolved_routes = includes_unifi.then(|| manifest.clone());
     let mut sources = Vec::with_capacity(manifest.sources.len());
     let mut source_reports = Vec::with_capacity(manifest.sources.len());
     let mut ingress_ids = BTreeSet::new();
@@ -579,10 +731,11 @@ pub fn compile_with_unifi(
             .ok_or_else(|| source_refused(index, "source has no exact probe receipt"))?;
         let is_jpeg = probe.codec == ProbeCodec::Jpeg;
         let unifi = bindings.get(&index).copied();
-        if is_jpeg && unifi.is_some() {
+        let onvif = onvif_bindings.get(&index).copied();
+        if is_jpeg && (unifi.is_some() || onvif.is_some()) {
             return Err(source_refused(
                 index,
-                "native UniFi capture requires observed AVC or HEVC",
+                "native protected handoff capture requires observed AVC or HEVC",
             ));
         }
         let unifi_identity = unifi
@@ -619,6 +772,17 @@ pub fn compile_with_unifi(
                 manifest_digest,
                 options.epoch,
             )?;
+            if let Some(input) = onvif {
+                let mut encoded = CanonicalEncoder::new();
+                encoded.text("fss.site_onvif_capture_identity.v1");
+                encoded.digest(coordinate);
+                encoded.digest(input.spec.expected);
+                encoded.digest(input.onboarding_plan);
+                encoded.digest(input.profile_digest);
+                return Ok(ContentDigest::sha256(&encoded.finish_checked().map_err(
+                    |_| source_refused(index, "ONVIF operation identity encoding refused"),
+                )?));
+            }
             match unifi_identity {
                 Some((camera, view)) => unifi_coordinate(coordinate, camera, view),
                 None => Ok(coordinate),
@@ -628,15 +792,33 @@ pub fn compile_with_unifi(
         if !output_scopes.insert(scope) {
             return Err(source_refused(index, "source output identity collision"));
         }
-        let stable = |purpose| match unifi_identity {
-            Some((camera, view)) => stable_unifi_source_identity(
-                purpose,
-                &manifest.site_id,
-                &source.source_id,
-                camera,
-                view,
-            ),
-            None => stable_source_identity(purpose, &manifest.site_id, &source.source_id),
+        let stable = |purpose| {
+            if let Some(input) = onvif {
+                // A selected profile identifies a stream, never a new physical sensor.
+                // Keep the operator's stable site/source sensor coordinate across profiles.
+                if purpose == "sensor" {
+                    return stable_source_identity(purpose, &manifest.site_id, &source.source_id);
+                }
+                let mut encoded = CanonicalEncoder::new();
+                encoded.text("fss.site_onvif_source_identity.v1");
+                encoded.text(purpose);
+                encoded.text(&manifest.site_id);
+                encoded.text(&source.source_id);
+                encoded.digest(input.profile_digest);
+                return Ok(ContentDigest::sha256(&encoded.finish_checked().map_err(
+                    |_| source_refused(index, "ONVIF source identity encoding refused"),
+                )?));
+            }
+            match unifi_identity {
+                Some((camera, view)) => stable_unifi_source_identity(
+                    purpose,
+                    &manifest.site_id,
+                    &source.source_id,
+                    camera,
+                    view,
+                ),
+                None => stable_source_identity(purpose, &manifest.site_id, &source.source_id),
+            }
         };
         let sensor = stable("sensor")?;
         let stream = stable("stream")?;
@@ -694,8 +876,10 @@ pub fn compile_with_unifi(
                     .ok_or_else(|| source_refused(index, "UTF-8 journal path required"))?,
             );
         }
-        add(&mut argv, "--peer", source.peer);
-        if unifi.is_none() {
+        if onvif.is_none() {
+            add(&mut argv, "--peer", source.peer);
+        }
+        if unifi.is_none() && onvif.is_none() {
             add(&mut argv, "--authority", &source.authority);
             add(
                 &mut argv,
@@ -712,6 +896,13 @@ pub fn compile_with_unifi(
                     .control_root
                     .as_deref()
                     .ok_or_else(|| source_refused(index, "source control subtree missing"))?,
+            );
+        }
+        if let Some(input) = onvif {
+            add(
+                &mut argv,
+                "--onvif-control-root-digest",
+                ContentDigest::sha256(input.control_root.as_bytes()).to_text(),
             );
         }
         add(
@@ -742,7 +933,9 @@ pub fn compile_with_unifi(
         } else {
             add(&mut argv, "--timing-evidence", evidence.to_text());
             add(&mut argv, "--journal-id", coordinate("journal")?.to_text());
-            add(&mut argv, "--codec", probe.codec.as_str());
+            if onvif.is_none() {
+                add(&mut argv, "--codec", probe.codec.as_str());
+            }
         }
         add(&mut argv, "--payload-type", probe.payload_type);
         add(&mut argv, "--media-index", probe.media_index);
@@ -810,13 +1003,6 @@ pub fn compile_with_unifi(
                     "probe route differs from the exact protected selection",
                 ));
             }
-            if let Some(routes) = &mut resolved_routes {
-                let route = &mut routes.sources[index];
-                route.kind = SourceKind::Rtsp;
-                route.unifi_camera_id = None;
-                route.presentation = Some(probe.presentation.clone());
-                route.control_root = Some(probe.control_root.clone());
-            }
             let native = prepare_selected_unifi(input.spec, &selected)
                 .map_err(|reason| source_refused(index, reason))?;
             let mut wrapper = vec!["from-unifi".to_owned()];
@@ -837,6 +1023,30 @@ pub fn compile_with_unifi(
                 &mut wrapper,
                 "--stream-transport",
                 input.spec.transport_name(),
+            );
+            add(&mut wrapper, "--capture-mode", "single");
+            wrapper.append(&mut argv);
+            argv = wrapper;
+            Ok(native)
+        } else if let Some(input) = onvif {
+            let selected = input
+                .spec
+                .prepare(input.input, &os_args)
+                .map_err(|reason| source_refused(index, reason))?;
+            let native = prepare_selected_onvif(input.spec, &selected)
+                .map_err(|reason| source_refused(index, reason))?;
+            let mut wrapper = vec!["from-onvif".to_owned()];
+            add(
+                &mut wrapper,
+                "--onvif-source",
+                input.spec.source.to_str().ok_or_else(|| {
+                    source_refused(index, "UTF-8 protected handoff reference required")
+                })?,
+            );
+            add(
+                &mut wrapper,
+                "--onvif-digest",
+                input.spec.expected.to_text(),
             );
             add(&mut wrapper, "--capture-mode", "single");
             wrapper.append(&mut argv);
@@ -883,9 +1093,8 @@ pub fn compile_with_unifi(
         });
     }
 
-    if let Some(routes) = resolved_routes {
-        routes
-            .validate()
+    if includes_unifi || includes_onvif {
+        validate_capture_route_inventory(manifest, &probes.values().copied().collect::<Vec<_>>())
             .map_err(|_| refused("resolved source routes collide or violate the site contract"))?;
     }
 
@@ -919,6 +1128,15 @@ pub fn compile_with_unifi(
             string(checked_base(&options.pins_root)?),
         ));
     }
+    if includes_onvif {
+        report_fields.extend([
+            (
+                "onvif_selection_provenance",
+                string("operator-bound-historical-consistency"),
+            ),
+            ("onvif_http_origin_verified", "false".to_owned()),
+        ]);
+    }
     let report = object(&report_fields);
     if report.len() > MAX_SITE_PLAN_BYTES {
         return Err(refused("complete site report exceeds its bound"));
@@ -933,3 +1151,7 @@ pub fn compile_with_unifi(
 #[cfg(all(test, target_os = "linux"))]
 #[path = "site_plan/unifi_tests.rs"]
 mod unifi_tests;
+
+#[cfg(all(test, target_os = "linux"))]
+#[path = "site_plan/onvif_tests.rs"]
+pub(crate) mod onvif_tests;

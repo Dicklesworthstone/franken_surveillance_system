@@ -4,6 +4,49 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Protected ONVIF site capture compilation (2026-11-04)
+
+`fss site plan --onvif-bindings BINDINGS.json` now compiles stable Media1 AVC
+and indefinite Media2 AVC/HEVC handoffs through the existing native `from-onvif`
+capture planner. ONVIF, UniFi, direct RTSP/NVR and direct JPEG sources can share
+one atomic plan. Exact historical onboarding/profile pins, complete handoff
+bytes, actual private-file identity, codec and supplied receipt must agree.
+The original manifest retains its ONVIF HTTP endpoint; the binding independently
+declares the selected RTSP peer, authority and control subtree. Resolved routes
+are checked for duplicates and consistent actual-peer connection ceilings.
+
+Generated commands expose only `--onvif-control-root-digest` for the private
+subtree. The native reader resolves that digest to one exact admissible ancestor
+of the protected presentation path, without fallback or URI normalization.
+Private presentation/query/control values remain absent from argv and previews.
+Original standalone explicit-root approvals retain their encoding. Sensor
+identity stays stable across profile changes; stream and operation identities
+also bind the selected profile. Actual handoff/export leases remain held and
+revalidated through complete mixed-site planning, with no network, secret or
+write capability enabled.
+
+**Scoped validation:** 125 focused native planner/private-file tests pass in
+parallel, including an exact-source export/compatibility check, plus three new
+original-manifest/route-admission contracts. Actual direct-only and UniFi-only
+reports are byte-identical to the baseline. Fourteen emitted plan/binding
+instances validate against the schemas; 28 negative schema cases and two existing
+UniFi policy/redaction contracts pass. The complete CLI process-test target,
+including two ONVIF subprocess regressions, compiles and links with zero warnings
+against the genuine scoped libraries; those subprocesses have not been executed.
+The focused build excludes the outer Asupersync request wrappers and live
+execution. Full CLI/runtime compilation remains unverified at the environment's
+8 GiB Asupersync build ceiling. The full reference test build was SIGKILLed;
+a serialized metadata-only CLI check was stopped under the same sustained memory
+pressure before FSS diagnostics. No dependency, lockfile or gate was weakened.
+
+This advances VIT-002's source-to-capture workflow. The report explicitly states
+`operator-bound-historical-consistency` and `onvif_http_origin_verified: false`:
+the handoff does not authenticate its HTTP origin or prove current liveness.
+Native ONVIF site receipt production, automatic all-source probing, signed-rights
+verification, synchronized native clock witnesses and continuous site execution
+remain separate work. See [site bindings](docs/SITE_PLANNING.md#onvif-site-bindings)
+and [native onboarding](docs/ONVIF_ONBOARDING.md).
+
 ## Lease renewal preserves controller ownership (2026-11-04)
 
 `LeaseRegistry::renew` now extends a finite deadline monotonically. Shorter

@@ -6,13 +6,17 @@ use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-use fss_cli::agent_json::{object, string};
-use fss_core::{CanonicalEncoder, ContentDigest, PrincipalId};
+use fss_cli::onvif_plan::{OnvifSourceSpec, ProtectedOnvifInput};
+use fss_core::{ContentDigest, PrincipalId};
 
 use super::driver;
 use super::plan::Options;
 use super::reconnect::{self, ReconnectPlan};
 
+#[allow(
+    dead_code,
+    reason = "The handoff parser and producer are shared with the pure planner"
+)]
 #[path = "../fss-onvif/handoff.rs"]
 mod handoff;
 #[path = "../fss-onvif/private_file.rs"]
@@ -21,16 +25,12 @@ pub(super) mod private_file;
 pub(super) mod runtime;
 
 const ERROR: &str = "ERR-CAPTURE-ONVIF-HANDOFF-001";
-const POLICY: &str = "private-digest-bound-stable-onvif-uri:separate-owner-capture-approval:\
-unchanged-source-clock-timing-and-independent-pin-owners:no-camera-or-credential-read-in-preview:v1";
-const RECONNECT_POLICY: &str = "private-digest-bound-stable-onvif-uri:explicit-native-reconnect-owner:\
-separate-owner-approval:all-derived-destinations-disjoint:private-child-previews:\
-fresh-observed-recovery-approval:no-camera-or-credential-read-in-preview:v2";
 pub(super) const MAX_ARGUMENTS: usize = reconnect::MAX_ARGUMENTS + 6;
 
 pub(super) const HELP: &str = "fss-capture-rtsp from-onvif\n\
   --onvif-source /PRIVATE_HANDOFF --onvif-digest sha256:HEX\n\
-  --control-root /OWNER_APPROVED_TRACK_SUBTREE [ordinary capture source/timing/store options]\n\
+  (--control-root /OWNER_APPROVED_TRACK_SUBTREE | --onvif-control-root-digest sha256:HEX)\n\
+  [ordinary capture source/timing/store options]\n\
   [--capture-mode single|reconnect] [existing reconnect/source/recovery options]\n\
   [--approve sha256:HEX]\n\
 \n\
@@ -41,11 +41,15 @@ options with that approval. File content, identity, permissions and digest are c
 before entering the existing native capture owner. No source/timing identity is inferred.\n\
 \n\
 The handoff supplies peer, authority, exact presentation URI and AVC or HEVC codec. Do not supply\n\
---peer, --authority, --presentation or --codec. The owner must supply --control-root plus\n\
+--peer, --authority, --presentation or --codec. The owner must supply a control root plus\n\
 all ordinary required sensor/stream/generation/ingress/SSRC, source and clock digests, cadence,\n\
 new archive and independent pin-journal paths, budgets and original-retention authorization.\n\
 Queries and safe percent escapes are preserved exactly and redacted from stdout. The control\n\
 root remains an explicit query-free subtree; camera metadata cannot authorize sibling tracks.\n\
+--onvif-control-root-digest is mutually exclusive with --control-root. It must match exactly one\n\
+query-free ancestor of the protected presentation, preserving exact slash spelling.\n\
+This keeps private paths out of process arguments; no match refuses without a default root.\n\
+Native control-root restrictions still apply; escaped control roots remain refused.\n\
 RTSP Digest, if needed, requires its own --credential-file and exact --auth-realm options.\n\
 \n\
 Stable Media1 H.264 and Media2 H.264/H.265 handoffs are accepted. Inventory files, unsupported codecs, expiring\n\
@@ -206,6 +210,13 @@ impl SourcePlan {
         self.approval.is_some()
     }
 
+    fn spec(&self) -> OnvifSourceSpec {
+        OnvifSourceSpec {
+            source: self.source.clone(),
+            expected: self.expected,
+        }
+    }
+
     fn read(&self) -> Result<Prepared, &'static str> {
         let request = runtime::Request {
             approval: self.expected,
@@ -223,25 +234,23 @@ impl SourcePlan {
             if ContentDigest::sha256(input.bytes()) != self.expected {
                 return Err(ERROR);
             }
-            let handoff = handoff::Handoff::parse(input.bytes())?;
-            let mut args = self.capture_args.clone();
-            for (key, value) in [
-                ("--peer", handoff.peer.to_string()),
-                ("--authority", handoff.authority.clone()),
-                ("--presentation", handoff.presentation()?.to_owned()),
-                ("--codec", handoff.codec.clone()),
-            ] {
-                args.push(OsString::from(key));
-                args.push(OsString::from(value));
-            }
-            let capture = NativeCapture::parse(self.mode, &args)?;
+            let fingerprint = input.fingerprint();
+            let selected = self.spec().prepare(
+                ProtectedOnvifInput {
+                    bytes: input.bytes(),
+                    fingerprint: &fingerprint,
+                },
+                &self.capture_args,
+            )?;
+            let capture =
+                selected.with_capture_arguments(|args| NativeCapture::parse(self.mode, args))?;
             for output in capture.paths()? {
                 self.check_destination(output, &|| scope.input())?;
             }
             input.revalidate(&|| scope.input())?;
             Ok(Prepared {
                 capture,
-                identity: ContentDigest::sha256(&input.fingerprint()),
+                identity: selected.file_identity(),
             })
         })
     }
@@ -268,75 +277,27 @@ impl SourcePlan {
         Ok(())
     }
 
-    fn schema(&self) -> &'static str {
-        match self.mode {
-            CaptureMode::Single => "fss.rtsp_from_onvif_plan.v1",
-            CaptureMode::Reconnect => "fss.rtsp_from_onvif_plan.v2",
-        }
-    }
-
-    fn policy(&self) -> &'static str {
-        match self.mode {
-            CaptureMode::Single => POLICY,
-            CaptureMode::Reconnect => RECONNECT_POLICY,
-        }
-    }
-
     fn digest(
         &self,
         identity: ContentDigest,
         operation: &str,
         native_approval: ContentDigest,
     ) -> Result<ContentDigest, &'static str> {
-        let mut encoded = CanonicalEncoder::new();
-        encoded.text(self.schema());
-        encoded.text(self.policy());
-        // Preserve the exact historical single-attempt approval encoding. Every
-        // newly composed mode and recovery operation has a distinct v2 binding.
-        if self.mode == CaptureMode::Reconnect {
-            encoded.text(self.mode.as_str());
-            encoded.text(operation);
-        }
-        encoded.text(self.source.to_str().ok_or(ERROR)?);
-        encoded.digest(self.expected);
-        encoded.digest(identity);
-        encoded.digest(native_approval);
-        Ok(ContentDigest::sha256(
-            &encoded.finish_checked().map_err(|_| ERROR)?,
-        ))
+        self.spec()
+            .approval(identity, self.mode.as_str(), operation, native_approval)
     }
 
     pub(super) fn preview(&self) -> Result<String, &'static str> {
         let prepared = self.read()?;
         let (native_approval, native_preview) = prepared.capture.prepared_preview()?;
         let operation = prepared.capture.operation_kind();
-        Ok(object(&[
-            ("schema", string(self.schema())),
-            ("phase", string("planned")),
-            (
-                "approval",
-                string(
-                    &self
-                        .digest(prepared.identity, operation, native_approval)?
-                        .to_text(),
-                ),
-            ),
-            ("policy", string(self.policy())),
-            ("capture_mode", string(self.mode.as_str())),
-            ("operation", string(operation)),
-            ("onvif_source", string(self.source.to_str().ok_or(ERROR)?)),
-            ("onvif_digest", string(&self.expected.to_text())),
-            ("onvif_file_identity", string(&prepared.identity.to_text())),
-            ("native_capture", native_preview),
-            (
-                "effects",
-                string(if operation == "capture" {
-                    "protected-handoff-and-destination-inspection-only"
-                } else {
-                    "protected-handoff-and-native-recovery-inspection-only"
-                }),
-            ),
-        ]))
+        self.spec().preview(
+            prepared.identity,
+            self.mode.as_str(),
+            operation,
+            native_approval,
+            &native_preview,
+        )
     }
 
     pub(super) fn execute(&self) -> Result<(), &'static str> {

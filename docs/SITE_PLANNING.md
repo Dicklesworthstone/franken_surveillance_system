@@ -6,7 +6,7 @@ deterministic site preview containing the existing native RTSP capture plans.
 This removes the need to hand-invent sensor, stream, ingress, clock, authority,
 journal and destination identities for every camera and operation.
 
-This covers direct RTSP/NVR AVC/HEVC/JPEG planning and protected UniFi AVC/HEVC
+This covers direct RTSP/NVR AVC/HEVC/JPEG planning and protected UniFi/ONVIF AVC/HEVC
 site compilation from VIT-001, VIT-002 and VIT-004 in
 [the footage-plane plan](VITTLES_FOOTAGE_PLANE_PLAN.md). Planning reads the named
 control documents; it does not contact devices, read credentials, create archives,
@@ -87,7 +87,7 @@ Each source declares the following scope:
 | Field | Meaning |
 | --- | --- |
 | `source_id`, `generation` | Stable source name and positive configuration generation. |
-| `kind` | `rtsp`, `nvr_channel`, `onvif`, or `unifi_protect`. The compiler accepts RTSP/NVR directly and UniFi with exact protected bindings; ONVIF remains unsupported here. |
+| `kind` | `rtsp`, `nvr_channel`, `onvif`, or `unifi_protect`. The compiler accepts RTSP/NVR directly and UniFi/ONVIF with their exact protected bindings. Live site probing supports RTSP/NVR and UniFi. |
 | `peer` | Canonically spelled literal IP and nonzero port, including bracketed IPv6 when needed. No DNS lookup. |
 | `authority` | Exact RTSP authority label. An explicit port or literal address must agree with `peer`. |
 | `presentation`, `control_root` | Required RTSP/NVR path and allowed control subtree. No embedded credentials, traversal, redirect or credential-bearing query fields. |
@@ -312,6 +312,100 @@ or report. The live UniFi producer preserves this boundary with its create-only
 private receipt artifact and separate redacted stdout contract. Raw capability
 routes remain inside the protected export and receipt inputs.
 
+## ONVIF site bindings
+
+Add `--onvif-bindings /etc/fss/private/site-onvif-bindings.json` for `onvif`
+sources. It can be used together with `--unifi-bindings` in a mixed site. The
+original manifest retains the ONVIF HTTP peer, authority and service path; its
+`presentation`, `control_root` and `unifi_camera_id` remain absent. The selected
+RTSP endpoint is declared independently in the binding document because its
+address, port and authority can differ from the HTTP service.
+
+First obtain a private stable Media1 AVC or indefinite Media2 AVC/HEVC handoff
+through the separately approved [ONVIF onboarding flow](ONVIF_ONBOARDING.md).
+The strict [`fss.site_onvif_bindings.v1`](../schemas/site_onvif_bindings.v1.json)
+input has this shape:
+
+```json
+{
+  "schema": "fss.site_onvif_bindings.v1",
+  "manifest_digest": "sha256:<exact canonical site manifest digest>",
+  "sources": [
+    {
+      "source_id": "source:front",
+      "source_file": "/etc/fss/private/front-onvif.json",
+      "source_digest": "sha256:<SHA-256 of the complete private handoff bytes>",
+      "onboarding_plan": "sha256:<independently expected onboarding plan digest>",
+      "profile_digest": "sha256:<SHA-256 of the exact selected profile token>",
+      "rtsp_peer": "192.0.2.10:554",
+      "rtsp_authority": "192.0.2.10",
+      "control_root": "/owner-approved-track-subtree"
+    }
+  ]
+}
+```
+
+Replace digest placeholders with 64 lowercase hexadecimal characters. Supply one
+row per ONVIF source; missing, duplicate, unknown or non-ONVIF rows refuse the
+whole plan. The handoff's complete bytes, expected onboarding/profile identities,
+peer, exact authority and codec must agree. A supplied receipt must bind the
+**original** manifest, source ID and generation, and match the selected RTSP
+peer, authority, exact presentation, codec and explicit control root. Renaming a
+source or rewriting its manifest kind to RTSP is not part of this workflow.
+
+```sh
+fss site plan --manifest /etc/fss/site.json \
+  --probes /etc/fss/private/site-probes.json \
+  --onvif-bindings /etc/fss/private/site-onvif-bindings.json \
+  --archive-root /srv/fss/footage --pins-root /srv/fss/pins \
+  --epoch 1 --stop-after-pictures 250 --json
+```
+
+The current site probe and recorded-probe producers do not yet acquire ONVIF
+receipts. This command consumes an independently supplied historical receipt
+inventory and checks its consistency; it does not claim to authenticate those
+observations or the HTTP origin of the handoff. The handoff format does not
+record the HTTP device path or current site generation. The report therefore
+states `onvif_selection_provenance: "operator-bound-historical-consistency"` and
+`onvif_http_origin_verified: false`. Matching digests do not establish current
+liveness, physical-camera identity or capture-time truth.
+
+Linux planning holds actual private-file leases on the handoffs and revalidates
+their identities before releasing the complete mixed-site result. Each retained
+handoff is at most 8 KiB, the aggregate at most 512 KiB, and the binding document
+at most 1 MiB with 64 sources. The existing private-file requirements apply:
+canonical absolute path, regular file, owner-read permission, no group/other
+permissions, and exactly one hard link. Both output parents must exist; handoffs
+must be separate from output and credential namespaces. No credential is read,
+camera contacted, output created or capture started by planning.
+
+Generated commands begin `from-onvif --onvif-source ... --onvif-digest ...
+--capture-mode single`. Their outer native approval binds the actual file
+fingerprint and complete native capture plan. The explicit control root is
+represented only by `--onvif-control-root-digest`: the native reader matches its
+SHA-256 to exactly one query-free ancestor of the protected presentation path,
+preserving original spelling and refusing a mismatch. Existing root syntax
+remains strict, including its refusal of percent-escaped control roots. It never guesses a
+broader subtree. Neither the selected path/query nor the control root appears
+in generated arguments or native previews. The existing standalone
+`--control-root` form and its approval bytes remain supported.
+
+Keep the bindings and receipts private: their control and presentation fields
+can contain capabilities. They use bounded control-document reads; the stronger
+private-file lease applies to the handoff itself. Existing receipt validation
+still refuses sensitive query keys such as `token`, `password` and `session`;
+the integration does not broaden that grammar. Accepted opaque path values and
+safe query spellings remain exact. ONVIF JPEG, expiring handoffs, route/codec
+fallback and TLS/RTSPS remain unsupported.
+
+ONVIF sensor identities retain the stable site/source coordinate across profile
+changes. Stream identities additionally bind the selected profile digest.
+Operation coordinates also bind the complete manifest, epoch, handoff and
+onboarding plan. Resolved routes across direct, UniFi and ONVIF sources must be
+unique, and sources sharing the selected RTSP IP must agree on connection caps.
+Planning does not schedule those connections. Existing direct-only and UniFi-only
+report and approval bytes are unchanged.
+
 ## What the plan binds
 
 The complete output follows
@@ -321,7 +415,9 @@ and the native `native_plan` JSON. JPEG argument arrays start with `jpeg`; their
 native report uses `fss.rtsp_jpeg_capture_cli.v1`, while direct AVC/HEVC reports
 retain `fss.rtsp_capture_cli.v1`. UniFi argument arrays start with `from-unifi`;
 their `fss.rtsp_from_unifi_plan.v1` report wraps the actual native AVC/HEVC plan
-with its URI fields redacted and its original URI digests intact. The arguments contain no `--approve`. The
+with its URI fields redacted and its original URI digests intact. ONVIF arguments
+start with `from-onvif` and use the existing `fss.rtsp_from_onvif_plan.v1` wrapper
+with the same private native projection. The arguments contain no `--approve`. The
 compiler invokes the same production planning source as the native binary;
 defaults, resource limits and approval encoding have one implementation.
 
@@ -371,7 +467,7 @@ final-component symlink and avoid blocking on a replacement FIFO. These are
 control-file admission checks, not cryptographic provenance or a trusted parent
 directory guarantee.
 
-No command infers success for an unsupported source. Site ONVIF integration,
+No command infers success for an unsupported source. Native ONVIF site probing,
 automatic UniFi export acquisition, automatic all-source probing, TLS/RTSPS, signed
 rights-lease verification, site execution, retention rings and agent footage
 queries remain outside this implementation. Existing standalone native tools
@@ -387,6 +483,10 @@ retain their separately documented capabilities.
 - `fss_cli::site_plan::compile_with_unifi` adds exact borrowed private export
   observations without I/O; `fss_cli::site_unifi` owns their protected reads and
   final revalidation through the existing request runtime.
+- `fss_cli::site_plan::compile_with_protected` also admits exact borrowed ONVIF
+  handoffs. `site_onvif` validates their bindings and holds native private-file
+  leases inside the same mixed-input request owner. `onvif_plan` shares the
+  existing standalone handoff parser, private selection and approval encoding.
 - `fss_cli::site_cmd` owns CLI parsing, bounded input-file authority and reports.
 - `crates/fss-cli/tests/site_cli_contract.rs` exercises emitted native plans,
   deterministic identity changes and whole-site refusal through command processes.

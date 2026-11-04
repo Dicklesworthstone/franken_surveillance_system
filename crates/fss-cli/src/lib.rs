@@ -84,6 +84,10 @@ pub mod site_probe;
 pub mod site_probe_cmd;
 /// Protected exact UniFi export bindings for atomic site capture planning.
 pub mod site_unifi;
+/// Protected historical ONVIF handoff bindings for atomic site capture planning.
+pub mod site_onvif;
+/// Pure native ONVIF handoff selection and unchanged outer capture approval.
+pub mod onvif_plan;
 /// Pure native UniFi selection, private argument composition and outer approval.
 pub mod unifi_plan;
 /// `fss status --json [--root <dir>]`: read-only retained inventory (SCHEMA-STATUS-001).

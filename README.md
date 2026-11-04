@@ -188,6 +188,15 @@ actual private-file identity; generated commands and previews omit stream tokens
 Main and package views receive separate identities and destinations. See the
 [protected UniFi site workflow](docs/SITE_PLANNING.md#unifi-protect-site-bindings).
 
+`site plan --onvif-bindings BINDINGS.json` adds stable Media1 AVC and Media2
+AVC/HEVC handoffs through the existing `from-onvif` capture command, including in
+mixed direct/UniFi sites. Bindings pin the historical onboarding/profile identity
+and independent RTSP endpoint while preserving the original ONVIF HTTP manifest.
+Actual private-file identity is approval-bound; stream and control paths stay
+out of generated commands. This validates supplied historical receipts without
+claiming their freshness or authenticated HTTP origin. See
+[ONVIF site bindings](docs/SITE_PLANNING.md#onvif-site-bindings).
+
 `fss site probe-file` now derives receipts from independently pinned recorded
 DESCRIBE responses and RTPdump samples using native AVC/HEVC picture assembly or RFC 2435 JPEG reconstruction.
 It measures media configuration, SSRC and constant cadence, and refuses unverified
