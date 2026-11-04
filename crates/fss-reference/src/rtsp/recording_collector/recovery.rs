@@ -104,7 +104,8 @@ pub(crate) fn prepare_prefix(
     {
         return Err(CollectorError::Capacity);
     }
-    if original.key.ingress == 0
+    if !original.sender_bound
+        || original.key.ingress == 0
         || original.key.generation == 0
         || original.key.generation != scope.generation
         || original

@@ -133,6 +133,20 @@ pub struct HevcRecordingCapture {
     last_ns: u64,
 }
 impl HevcRecordingCapture {
+    /// Initial sender selection only; no pending or historical source can be relabeled.
+    pub(super) fn bind_initial_sender(&mut self, key: StreamKey) -> Result<(), CaptureError> {
+        if self.event.is_some()
+            || self.timing_required
+            || self.input_ended
+            || self.finished
+            || self.closed
+        {
+            return Err(CaptureError::Backpressure);
+        }
+        self.collector
+            .bind_initial_sender(key)
+            .map_err(CaptureError::Collection)
+    }
     /// Take exclusive collection ownership; no I/O or effect capability is granted.
     pub fn new(collector: HevcRecordingCollector) -> Self {
         Self {
@@ -634,6 +648,14 @@ pub mod live {
             now: u64,
             authority: &dyn TcpAuthority,
         ) -> Result<Self, LiveHevcRecordingConnectFailure> {
+            // This legacy caller-supplied collector owner has no provisional
+            // source contract. The journaled archive owner supports LearnOnce.
+            if live.binding.ssrc_policy() != super::super::tcp::SsrcPolicy::Pinned {
+                return Err(LiveHevcRecordingConnectFailure {
+                    reason: LiveHevcRecordingError::Network(LiveHevcError::Configuration),
+                    connection_attempted: false,
+                });
+            }
             let expected_payload_type = recording.payload_type;
             let collector = HevcRecordingCollector::new(
                 recording.scope,

@@ -191,8 +191,11 @@ pub enum CollectionStop {
 /// All unsealed originals and completed derivatives, transferred rather than silently dropped.
 #[derive(Debug, Eq, PartialEq)]
 pub struct UnsealedRecording {
-    /// Exact receiver epoch, not a new durable identity.
+    /// Requested receiver epoch. Its SSRC is authoritative for these source
+    /// bytes only when `sender_bound` is true; an unbound retirement is empty.
     pub key: StreamKey,
+    /// Whether this collector was pinned or learned its actual sender before input.
+    pub sender_bound: bool,
     /// Why collection stopped for these inputs.
     pub reason: CollectionStop,
     /// Exact original datagrams, including next-picture lookahead.
@@ -247,6 +250,7 @@ pub struct CollectorCancellation {
 pub struct RecordingCollector {
     scope: RecordingScope,
     key: StreamKey,
+    sender_bound: bool,
     payload_type: u8,
     time_scale: u32,
     limits: CollectorLimits,
@@ -270,6 +274,7 @@ impl std::fmt::Debug for RecordingCollector {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RecordingCollector")
             .field("key", &self.key)
+            .field("sender_bound", &self.sender_bound)
             .field("source_bytes", &self.source_bytes)
             .field("picture_bytes", &self.picture_bytes)
             .field("samples", &self.pictures.len())
@@ -280,6 +285,40 @@ impl std::fmt::Debug for RecordingCollector {
     }
 }
 impl RecordingCollector {
+    /// Constructor-only transition to a provisional sender, before any retained input.
+    pub(super) fn defer_initial_sender(mut self) -> Result<Self, CollectorError> {
+        self.check_initial_sender(self.key)?;
+        self.sender_bound = false;
+        Ok(self)
+    }
+    /// Complete a live owner's provisional sender binding before any source or
+    /// picture has been admitted. Historical source state makes rebinding impossible.
+    pub(super) fn bind_initial_sender(&mut self, key: StreamKey) -> Result<(), CollectorError> {
+        self.check_initial_sender(key)?;
+        if self.sender_bound {
+            return Err(CollectorError::StreamMismatch);
+        }
+        self.key = key;
+        self.sender_bound = true;
+        Ok(())
+    }
+    fn check_initial_sender(&self, key: StreamKey) -> Result<(), CollectorError> {
+        if key.ingress != self.key.ingress
+            || key.generation != self.key.generation
+            || self.closed
+            || self.last_source.is_some()
+            || self.last_picture_source.is_some()
+            || self.last_end.is_some()
+            || self.skipped_through.is_some()
+            || self.configuration.is_some()
+            || !self.sources.is_empty()
+            || !self.pictures.is_empty()
+            || self.ready.is_some()
+        {
+            return Err(CollectorError::StreamMismatch);
+        }
+        Ok(())
+    }
     /// Bind one canonical scope to a receiver epoch and explicit media tick rate.
     pub fn new(
         scope: RecordingScope,
@@ -300,6 +339,7 @@ impl RecordingCollector {
         Ok(Self {
             scope,
             key,
+            sender_bound: true,
             payload_type,
             time_scale,
             limits,
@@ -376,7 +416,7 @@ impl RecordingCollector {
         now_ns: u64,
     ) -> Result<(), CollectorError> {
         self.check_admission(now_ns)?;
-        if key != self.key {
+        if !self.sender_bound || key != self.key {
             return Err(CollectorError::StreamMismatch);
         }
         let packet = RtpPacket::parse(source.bytes, PacketLimits::default())
@@ -603,7 +643,7 @@ impl RecordingCollector {
 
     fn picture_plan(&self, input: &CollectedPicture) -> Result<PicturePlan, CollectorError> {
         let picture = &input.picture;
-        if picture.key() != self.key {
+        if !self.sender_bound || picture.key() != self.key {
             return Err(CollectorError::StreamMismatch);
         }
         if !picture.saw_first_macroblock()
@@ -744,6 +784,7 @@ impl RecordingCollector {
         self.deadline_ns = None;
         UnsealedRecording {
             key: self.key,
+            sender_bound: self.sender_bound,
             reason,
             sources,
             pictures,

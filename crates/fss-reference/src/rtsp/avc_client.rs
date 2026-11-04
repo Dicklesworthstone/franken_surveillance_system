@@ -5,6 +5,7 @@ use super::client::{
     ClientChannel, ClientCloseReceipt, ClientCommand, ClientConfig, ClientError, ClientProgress,
     ClientRequest, ClientState, RtspClientSession,
 };
+use super::tcp::{SenderBinding, SsrcPolicy};
 use super::{RtspError, RtspEvent, RtspLimits, RtspParser};
 use fss_packet::avc::{
     AvcError, AvcReceiveAdmission, AvcReceiveCancellation, AvcReceiveError, AvcReceiveLimits,
@@ -87,6 +88,8 @@ impl fmt::Debug for InterleavedSource {
 /// Local teardown accounting; remote session existence remains a separate question.
 #[derive(Debug)]
 pub struct AvcClientRetirement {
+    /// Pinned or observed source key; None if automatic selection never completed.
+    pub source_key: Option<StreamKey>,
     /// Remote-session uncertainty and the outstanding CSeq, if any.
     pub session: ClientCloseReceipt,
     /// Every retained RTP/NAL/picture derivative retired, if the codec was configured.
@@ -173,7 +176,7 @@ pub enum AvcClientPoll {
 pub struct RtspAvcClient {
     session: RtspClientSession,
     parser: RtspParser,
-    key: StreamKey,
+    sender: SenderBinding,
     limits: AvcReceiveLimits,
     video: Option<AvcReceiver>,
     events: std::vec::IntoIter<RtspEvent>,
@@ -188,7 +191,7 @@ pub struct RtspAvcClient {
 impl fmt::Debug for RtspAvcClient {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("RtspAvcClient")
-            .field("key", &self.key)
+            .field("key", &self.sender.key())
             .field("state", &self.session.state())
             .field("queued_events", &self.events.len())
             .field("partial_wire_bytes", &self.parser.buffered_bytes())
@@ -215,7 +218,7 @@ impl RtspAvcClient {
                 max_body_bytes: 65_536,
                 max_interleaved_bytes: 65_535,
             }),
-            key,
+            sender: SenderBinding::new(key, SsrcPolicy::Pinned),
             limits,
             video: None,
             events: Vec::new().into_iter(),
@@ -227,6 +230,23 @@ impl RtspAvcClient {
             draining: false,
             closed: false,
         })
+    }
+    /// Construct an untouched client with explicit pinned or learn-once sender policy.
+    /// Automatic binding never changes the selected channel, payload, route or epoch.
+    pub fn new_with_ssrc_policy(
+        config: ClientConfig,
+        key: StreamKey,
+        limits: AvcReceiveLimits,
+        policy: SsrcPolicy,
+    ) -> Result<Self, AvcClientError> {
+        let mut client = Self::new(config, key, limits)?;
+        client.sender = SenderBinding::new(key, policy);
+        Ok(client)
+    }
+    /// Pinned or actually observed source key; automatic selection stays None until bound.
+    /// This identifies the source epoch and does not authenticate the camera.
+    pub fn bound_key(&self) -> Option<StreamKey> {
+        self.sender.key()
     }
     /// Protocol state; not camera health or decodability.
     pub fn state(&self) -> ClientState {
@@ -470,13 +490,9 @@ impl RtspAvcClient {
         })
     }
     fn configure_video(&mut self) -> Result<(), AvcClientError> {
-        if self
-            .session
-            .server_ssrc()
-            .is_some_and(|ssrc| ssrc != self.key.ssrc)
-        {
-            return Err(AvcClientError::StreamBinding);
-        }
+        self.sender
+            .setup(self.session.server_ssrc())
+            .map_err(|()| AvcClientError::StreamBinding)?;
         let media = self.session.media().ok_or(AvcClientError::StreamBinding)?;
         let (sps, pps) = media.parameter_sets();
         let sps = parse_sps(sps, self.limits.syntax).map_err(AvcClientError::Syntax)?;
@@ -486,15 +502,14 @@ impl RtspAvcClient {
         } else {
             H264Mode::NonInterleaved
         };
+        // SDP syntax is still checked at SETUP. Without a sender assertion, only
+        // the receiver's identity-dependent construction waits for selected RTP.
+        let Some(key) = self.sender.key() else {
+            return Ok(());
+        };
         self.video = Some(
-            AvcReceiver::new(
-                self.key,
-                media.payload_type(),
-                mode,
-                self.limits,
-                (sps, pps),
-            )
-            .map_err(AvcClientError::Video)?,
+            AvcReceiver::new(key, media.payload_type(), mode, self.limits, (sps, pps))
+                .map_err(AvcClientError::Video)?,
         );
         Ok(())
     }
@@ -514,10 +529,30 @@ impl RtspAvcClient {
                 .map(|c| c.packet_count());
             return AvcClientPoll::Rtcp { source, validation };
         }
-        let result = match &mut self.video {
-            Some(video) => {
-                video.ingest_received(self.key, &source.payload, source.received_ns, now)
+        if self.video.is_none() {
+            let Some(media) = self.session.media() else {
+                return self.fault(AvcClientError::StreamBinding, Some(source));
+            };
+            if self
+                .sender
+                .packet(
+                    &source.payload,
+                    media.payload_type(),
+                    self.limits.reorder.packet,
+                )
+                .is_err()
+            {
+                return self.fault(AvcClientError::StreamBinding, Some(source));
             }
+            if let Err(error) = self.configure_video() {
+                return self.fault(error, Some(source));
+            }
+        }
+        let Some(key) = self.sender.key() else {
+            return self.fault(AvcClientError::StreamBinding, Some(source));
+        };
+        let result = match &mut self.video {
+            Some(video) => video.ingest_received(key, &source.payload, source.received_ns, now),
             None => return self.fault(AvcClientError::StreamBinding, Some(source)),
         };
         match result {
@@ -570,6 +605,7 @@ impl RtspAvcClient {
         self.partial_deadline_ns = None;
         self.closed = true;
         AvcClientRetirement {
+            source_key: self.sender.key(),
             session: self.session.cancel(),
             video: self.video.as_mut().map(AvcReceiver::cancel),
             pending_events,

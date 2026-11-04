@@ -260,7 +260,9 @@ fn malformed_duplicate_and_changed_transport_are_fail_closed() -> TestResult {
         "RTP/AVP/TCP;unicast;interleaved=2-3",
         "RTP/AVP/TCP;unicast;interleaved=0-1;interleaved=0-1",
         "RTP/AVP/TCP;unicast;interleaved=0-1;mode=RECORD",
-        "RTP/AVP/TCP;unicast;interleaved=0-1;destination=other",
+        "RTP/AVP/TCP;unicast;interleaved=0-1;destination=other:554",
+        "RTP/AVP/TCP;unicast;interleaved=0-1;destination=other;destination=other",
+        "RTP/AVP/TCP;unicast;interleaved=0-1;source=name@other",
         "RTP/AVP/TCP;unicast;interleaved=0-1;ssrc=XYZ",
         "RTP/AVP/TCP;unicast;interleaved=0-1,RTP/AVP/TCP;unicast;interleaved=0-1",
     ] {
@@ -280,6 +282,39 @@ fn malformed_duplicate_and_changed_transport_are_fail_closed() -> TestResult {
         );
         assert_eq!(c.state(), S::Failed);
     }
+    Ok(())
+}
+
+#[test]
+fn tcp_address_metadata_never_redirects_requests_or_changes_selected_channels() -> TestResult {
+    let mut c = described()?;
+    c.request(C::Setup, 2)?;
+    assert_eq!(
+        c.accept(
+            &response(
+                2,
+                200,
+                &[
+                    ("Session", "opaque-token"),
+                    ("Transport", "RTP/AVP/TCP;unicast;interleaved=0-1;source=192.0.2.8;destination=other;ssrc=00000007;mode=\"PLAY\""),
+                ],
+                &[],
+            ),
+            3,
+        )?,
+        P::Accepted(S::Ready),
+    );
+    assert_eq!(c.server_ssrc(), Some(7));
+    let play = c.request(C::Play, 4)?;
+    assert!(
+        play.bytes()
+            .starts_with(b"PLAY rtsp://camera.local/live/ RTSP/1.0\r\n")
+    );
+    assert!(!std::str::from_utf8(play.bytes())?.contains("other"));
+    c.accept(&response(3, 200, &[("Session", "opaque-token")], &[]), 5)?;
+    assert_eq!(c.admit_channel(0, 6)?, ClientChannel::Rtp);
+    assert_eq!(c.admit_channel(1, 6)?, ClientChannel::Rtcp);
+    assert!(c.admit_channel(2, 6).is_err());
     Ok(())
 }
 

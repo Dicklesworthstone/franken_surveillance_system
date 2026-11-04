@@ -59,7 +59,8 @@ pub struct NativeMetadataConfig {
 impl NativeMetadataConfig {
     /// Pure scope validation using the real session and native route contracts.
     pub fn validate(&self) -> Result<(), NativeMetadataSourceError> {
-        if self.approval.algorithm() != DigestAlgorithm::Sha256
+        if self.binding.ssrc_policy() != super::tcp::SsrcPolicy::Pinned
+            || self.approval.algorithm() != DigestAlgorithm::Sha256
             || self.approval.is_laboratory()
             || !(1..=MAX_SOURCE_BYTES).contains(&self.max_source_bytes)
             || !(1..=MAX_RECORDS).contains(&self.max_records)

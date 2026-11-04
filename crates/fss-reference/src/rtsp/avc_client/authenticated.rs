@@ -131,6 +131,26 @@ impl fmt::Debug for DigestAvcClient {
     }
 }
 impl DigestAvcClient {
+    /// Constructor-only sender policy, with the existing optional exact payload selection.
+    /// No live client can replace its source binding through this factory.
+    pub(crate) fn new_with_source_selection(
+        config: ClientConfig,
+        key: StreamKey,
+        limits: AvcReceiveLimits,
+        realm: &str,
+        policy: DigestPolicy,
+        payload_type: Option<u8>,
+        ssrc_policy: SsrcPolicy,
+    ) -> Result<Self, DigestAvcError> {
+        let mut client = match payload_type {
+            Some(payload_type) => {
+                Self::new_with_payload_type(config, key, limits, payload_type, realm, policy)?
+            }
+            None => Self::new(config, key, limits, realm, policy)?,
+        };
+        client.inner.sender = SenderBinding::new(key, ssrc_policy);
+        Ok(client)
+    }
     /// Pin owner URL scope, stream epoch, media limits, credential realm and policy
     /// before any request. SHA-256 remains the default; no automatic legacy fallback.
     pub fn new(
@@ -159,6 +179,10 @@ impl DigestAvcClient {
     /// Negotiation only, never authentication of received frames or camera health.
     pub fn state(&self) -> ClientState {
         self.inner.state()
+    }
+    /// Pinned or observed sender identity; None while learn-once selection is unresolved.
+    pub fn bound_key(&self) -> Option<StreamKey> {
+        self.inner.bound_key()
     }
     /// Exact retained TCP bytes, including a challenge awaiting an explicit owner.
     pub fn buffered_wire_bytes(&self) -> usize {

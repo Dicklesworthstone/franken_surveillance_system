@@ -140,6 +140,11 @@ impl SourcePlan {
             }
         }
         let capture = Options::parse(&native)?;
+        if capture.binding().ssrc_policy() != fss_reference::rtsp::tcp::SsrcPolicy::Pinned {
+            return Err(
+                "automatic SSRC selection currently requires single recording capture without retain-source",
+            );
+        }
         let root = absolute(
             values
                 .get("--source-root")

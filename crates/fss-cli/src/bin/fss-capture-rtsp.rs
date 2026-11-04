@@ -12,6 +12,8 @@ mod authentication;
 mod driver;
 #[path = "fss-capture-rtsp/from_onvif.rs"]
 mod from_onvif;
+#[path = "fss-capture-rtsp/from_unifi.rs"]
+mod from_unifi;
 #[path = "fss-capture-rtsp/jpeg.rs"]
 mod jpeg;
 #[path = "fss-capture-rtsp/plan.rs"]
@@ -30,7 +32,12 @@ mod timing;
 fn main() -> ExitCode {
     let args: Vec<_> = std::env::args_os()
         .skip(1)
-        .take(from_onvif::MAX_ARGUMENTS.max(sentinel::MAX_ARGUMENTS) + 2)
+        .take(
+            from_onvif::MAX_ARGUMENTS
+                .max(from_unifi::MAX_ARGUMENTS)
+                .max(sentinel::MAX_ARGUMENTS)
+                + 2,
+        )
         .collect();
     if args.first().and_then(|arg| arg.to_str()) == Some("jpeg") {
         return jpeg_main(&args[1..]);
@@ -50,10 +57,13 @@ fn main() -> ExitCode {
     if args.first().and_then(|arg| arg.to_str()) == Some("from-onvif") {
         return onvif_main(&args[1..]);
     }
+    if args.first().and_then(|arg| arg.to_str()) == Some("from-unifi") {
+        return unifi_main(&args[1..]);
+    }
     if args.len() == 1 && matches!(args[0].to_str(), Some("help" | "--help" | "-h")) {
         return match write_bounded(plan::HELP.as_bytes()).and_then(|()| {
             write_bounded(single::HELP.as_bytes()).and_then(|()| {
-                write_bounded(b"\nBounded reconnects: fss-capture-rtsp reconnect --help\nSource-first retention: fss-capture-rtsp retain-source --help\nNative JPEG capture/cold replay: fss-capture-rtsp jpeg --help\nPrivate ONVIF handoff: fss-capture-rtsp from-onvif --help\nLive trained detection: fss-capture-rtsp sentinel --help\n")
+                write_bounded(b"\nBounded reconnects: fss-capture-rtsp reconnect --help\nSource-first retention: fss-capture-rtsp retain-source --help\nNative JPEG capture/cold replay: fss-capture-rtsp jpeg --help\nPrivate ONVIF handoff: fss-capture-rtsp from-onvif --help\nPrivate UniFi Protect selection: fss-capture-rtsp from-unifi --help\nLive trained detection: fss-capture-rtsp sentinel --help\n")
             })
         }) {
             Ok(()) => ExitCode::SUCCESS,
@@ -147,6 +157,32 @@ fn onvif_main(args: &[std::ffi::OsString]) -> ExitCode {
         plan.preview()
             .and_then(|preview| write_bounded((preview + "\n").as_bytes()))
     })
+}
+
+fn unifi_main(args: &[std::ffi::OsString]) -> ExitCode {
+    if args.len() == 1 && matches!(args[0].to_str(), Some("help" | "--help" | "-h")) {
+        return finish(write_bounded(from_unifi::HELP.as_bytes()));
+    }
+    let plan = match from_unifi::SourcePlan::parse(args) {
+        Ok(plan) => plan,
+        Err(code) => {
+            eprintln!("{code}: invalid private UniFi selection; use from-unifi --help");
+            return ExitCode::from(ExitIdentity::MALFORMED_VALUE.code);
+        }
+    };
+    let result = if plan.approved() {
+        plan.execute()
+    } else {
+        plan.preview()
+            .and_then(|preview| write_bounded((preview + "\n").as_bytes()))
+    };
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(code) => {
+            eprintln!("{code}: {}", from_unifi::remediation(code));
+            ExitCode::from(ExitIdentity::RUNTIME_FAILURE.code)
+        }
+    }
 }
 
 fn source_main(args: &[std::ffi::OsString]) -> ExitCode {

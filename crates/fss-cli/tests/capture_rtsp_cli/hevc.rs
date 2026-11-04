@@ -192,7 +192,10 @@ fn accept(listener: TcpListener) -> Test<TcpStream> {
 fn write_media(peer: &mut TcpStream, packets: &[Vec<u8>]) -> Test {
     // Native receiver probation is a real preceding datagram, not recorded source. Keep the
     // fixture's accepted RTP sequence contiguous and preserve every accepted datagram verbatim.
-    let probation = packet(0, 0, false, nals()?.first().ok_or("missing fixture VPS")?);
+    let mut probation = packet(0, 0, false, nals()?.first().ok_or("missing fixture VPS")?);
+    if let Some(first) = packets.first() {
+        probation[8..12].copy_from_slice(&first[8..12]);
+    }
     let mut wire = Vec::new();
     for packet in std::iter::once(&probation).chain(packets.iter()) {
         wire.extend_from_slice(&[b'$', 0]);
@@ -204,6 +207,14 @@ fn write_media(peer: &mut TcpStream, packets: &[Vec<u8>]) -> Test {
 }
 
 fn serve(listener: TcpListener, camera: Camera) -> Test<Transcript> {
+    serve_sender(listener, camera, Some(7))
+}
+
+fn serve_sender(
+    listener: TcpListener,
+    camera: Camera,
+    advertised: Option<u32>,
+) -> Test<Transcript> {
     let mut peer = accept(listener)?;
     let (method, cseq) = request(&mut peer)?.ok_or("HEVC client sent no DESCRIBE")?;
     assert_eq!(method, "DESCRIBE");
@@ -228,10 +239,13 @@ fn serve(listener: TcpListener, camera: Camera) -> Test<Transcript> {
     let (method, cseq) = request(&mut peer)?.ok_or("HEVC client sent no SETUP")?;
     assert_eq!(method, "SETUP");
     transcript.methods.push(method);
+    let ssrc = advertised.map_or_else(String::new, |ssrc| format!(";ssrc={ssrc:08X}"));
     response(
         &mut peer,
         cseq,
-        "Session: fixture;timeout=60\r\nTransport: RTP/AVP/TCP;unicast;interleaved=0-1;ssrc=7\r\n",
+        &format!(
+            "Session: fixture;timeout=60\r\nTransport: RTP/AVP/TCP;unicast;interleaved=0-1{ssrc}\r\n"
+        ),
         "",
     )?;
     let (method, cseq) = request(&mut peer)?.ok_or("HEVC client sent no PLAY")?;
@@ -239,7 +253,9 @@ fn serve(listener: TcpListener, camera: Camera) -> Test<Transcript> {
     transcript.methods.push(method);
     response(&mut peer, cseq, "Session: fixture\r\n", "")?;
 
-    write_media(&mut peer, &packets)?;
+    if !packets.is_empty() {
+        write_media(&mut peer, &packets)?;
+    }
     transcript.packets = packets;
     if camera.source_eof {
         peer.shutdown(Shutdown::Write)?;
@@ -281,6 +297,90 @@ fn captured(
             (Err(error), _) => Err(error),
         }
     })
+}
+
+fn captured_sender(
+    listener: TcpListener,
+    args: &[OsString],
+    camera: Camera,
+    advertised: Option<u32>,
+) -> Test<(Output, Transcript)> {
+    thread::scope(|scope| {
+        let server = scope.spawn(move || serve_sender(listener, camera, advertised));
+        let output = run("capture", args)?;
+        let server = server.join().map_err(|_| "HEVC sender fixture panicked")?;
+        match server {
+            Ok(transcript) => Ok((output, transcript)),
+            Err(error) => Err(format!(
+                "HEVC sender fixture: {error}; stdout={} stderr={}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            )
+            .into()),
+        }
+    })
+}
+
+#[test]
+fn auto_ssrc_hevc_retains_setup_or_packet_sender_through_cold_import() -> Test {
+    for (advertised, ssrc) in [(Some(0xfedc_ba98_u32), 0xfedc_ba98_u32), (None, 0)] {
+        let directory = Directory::new("ssrc-hevc")?;
+        let listener = listener()?;
+        let mut args = args(&directory, listener.local_addr()?, 2)?;
+        replace(&mut args, "--ssrc", "auto")?;
+        let mut camera = camera(StreamCase::Target)?;
+        for packet in camera.packets.as_mut().ok_or("fixture packets")? {
+            packet[8..12].copy_from_slice(&ssrc.to_be_bytes());
+        }
+        let (output, transcript) = captured_sender(listener, &approve(&args)?, camera, advertised)?;
+        assert!(
+            output.status.success(),
+            "stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!transcript.source_eof);
+        let rows = rows(&output)?;
+        stopped(&rows, 2, 1)?;
+        let bound = value(detail(&rows, "terminal")?, "source_binding")?;
+        assert_eq!(text(bound, "state")?, "bound");
+        assert_eq!(integer(bound, "ssrc")?, i128::from(ssrc));
+        assert_eq!(integer(bound, "generation")?, 1);
+        assert!(!boolean(bound, "sender_authenticated")?);
+        let windows = load_windows(&directory, &rows)?;
+        assert_eq!(windows.len(), 1);
+        exact_source(&windows[0], &transcript.packets)?;
+        for packet in windows[0].packets()? {
+            assert_eq!(
+                fss_packet::RtpPacket::parse(packet.bytes, fss_packet::PacketLimits::default())?
+                    .ssrc(),
+                ssrc
+            );
+        }
+        import_and_cold_decode(&directory, &rows, 2, false)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn auto_ssrc_hevc_without_media_does_not_report_placeholder_sender() -> Test {
+    let directory = Directory::new("ssrc-unresolved-hevc")?;
+    let listener = listener()?;
+    let mut args = args(&directory, listener.local_addr()?, 2)?;
+    replace(&mut args, "--ssrc", "auto")?;
+    let camera = Camera {
+        description: description(&[PT]),
+        packets: Some(Vec::new()),
+        source_eof: true,
+    };
+    let (output, _) = captured_sender(listener, &approve(&args)?, camera, None)?;
+    assert!(!output.status.success());
+    let rows = rows(&output)?;
+    no_windows(&rows)?;
+    let bound = value(detail(&rows, "terminal")?, "source_binding")?;
+    assert_eq!(text(bound, "state")?, "unresolved");
+    assert!(!bound.object().ok_or("binding object")?.contains_key("ssrc"));
+    Ok(())
 }
 
 pub(super) fn load_windows(

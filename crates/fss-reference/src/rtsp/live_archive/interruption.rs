@@ -48,13 +48,19 @@ impl LiveAvcArchive<'_> {
         let prepared = error.retirement.as_deref().and_then(|retired| {
             // The network owner must have transferred its terminal state. Never
             // discard an additional ready window or relabel an untimed picture.
-            if retired.connection.is_none()
+            let source_key = retired.connection.as_ref()?.protocol.client.source_key?;
+            let requested_key = self.binding.key();
+            if source_key.ingress != requested_key.ingress
+                || source_key.generation != requested_key.generation
+                || (self.binding.ssrc_policy() == crate::rtsp::tcp::SsrcPolicy::Pinned
+                    && source_key != requested_key)
+                || !retired.capture.collection.pending.sender_bound
                 || retired.capture.collection.ready.is_some()
                 || retired.capture.picture.is_some()
                 || retired.capture.event.is_some()
                 || retired.capture.trailing.is_some()
                 || retired.unoffered_media.is_some()
-                || retired.capture.collection.pending.key != self.binding.key()
+                || retired.capture.collection.pending.key != source_key
             {
                 return None;
             }

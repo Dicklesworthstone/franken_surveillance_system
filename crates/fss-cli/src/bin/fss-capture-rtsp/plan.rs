@@ -26,7 +26,7 @@ use fss_reference::rtsp::recording_archive::{
 };
 use fss_reference::rtsp::recording_catalog::CatalogScope;
 use fss_reference::rtsp::recording_collector::{CollectorLimits, RecordingCollector};
-use fss_reference::rtsp::tcp::{TcpBinding, TcpLimits, TcpSecurityPolicy};
+use fss_reference::rtsp::tcp::{SsrcPolicy, TcpBinding, TcpLimits, TcpSecurityPolicy};
 
 use super::authentication::{AuthPlan, MAX_CREDENTIAL_BYTES, MAX_SECRET_IO_CALLS};
 
@@ -52,9 +52,11 @@ journal-before-publication:original-rtp:fixed-90000hz:exact-cadence:relative-dts
 zero-composition-offset:idr-led-windows:requested-stop-is-not-eof:\
 hevc-single-exact-offer:owner-vps-sps-pps:real-boundary-source-witness:v1";
 const GET_PARAMETER_POLICY: &str = "fss.rtsp_keepalive.v1:empty-get-parameter:no-method-fallback";
+const SSRC_AUTO_POLICY: &str =
+    "fss.rtsp_ssrc_selection.v1:setup-or-valid-selected-rtp:learn-once:no-rebind";
 pub(super) const HELP: &str = "fss-capture-rtsp --root NEW_ABSOLUTE_ARCHIVE --pins NEW_ABSOLUTE_PIN_JOURNAL\n\
   --peer IP:PORT --authority HOST[:PORT] --presentation /PATH --control-root /PATH\n\
-  --sensor-id ID --stream-id ID --generation N --ingress N --ssrc N\n\
+  --sensor-id ID --stream-id ID --generation N --ingress N --ssrc N|auto\n\
   --anchor sha256:HEX --receive-clock sha256:HEX --timing-evidence sha256:HEX\n\
   --journal-id sha256:HEX --frame-duration-ticks N --stop-after-pictures N\n\
   --owner-authorized yes --plaintext yes --retain-originals yes [--approve sha256:HEX]\n\
@@ -64,6 +66,11 @@ Repeat exactly with the returned approval to capture one bounded RTSP TCP sessio
 Both destination directories must be new, separate and outside one another; their parents\n\
 must already exist. The journal must be protected independently from footage storage.\n\
 Only a literal IP peer is contacted. No DNS, redirects, TLS or reconnect.\n\
+--ssrc auto binds once within this same session: SETUP's SSRC or the first valid\n\
+RTP packet on the selected channel and payload. Actual recorded keys retain that SSRC.\n\
+It is not authentication; a changed sender closes the attempt. Integer SSRCs (including\n\
+zero) stay exact pins. Auto is supported for single AVC/HEVC capture, not reconnect\n\
+or retain-source mode. Its policy has a distinct approval and decode-clock identity.\n\
 By default an authentication challenge stops capture without sending Authorization.\n\
 Linux Digest opt-in: --credential-file /PRIVATE_FILE --auth-realm EXACT_REALM\n\
 The private regular file contains exactly username LF password LF (bounded printable ASCII).\n\
@@ -391,8 +398,13 @@ impl Options {
         }
         let generation = unsigned(required("--generation")?)?;
         let ingress = unsigned128(required("--ingress")?)?;
-        let ssrc =
-            u32::try_from(unsigned(required("--ssrc")?)?).map_err(|_| "SSRC exceeds 32 bits")?;
+        let ssrc_input = required("--ssrc")?;
+        let auto_ssrc = ssrc_input == "auto";
+        let ssrc = if auto_ssrc {
+            0
+        } else {
+            u32::try_from(unsigned(ssrc_input)?).map_err(|_| "SSRC exceeds 32 bits")?
+        };
         let key = StreamKey {
             ingress,
             generation,
@@ -409,6 +421,11 @@ impl Options {
             TcpSecurityPolicy::OwnerApprovedPlaintext,
         )
         .map_err(|_| "native RTSP route refused")?;
+        let binding = if auto_ssrc {
+            binding.with_auto_ssrc()
+        } else {
+            binding
+        };
         let channel = number("--rtp-channel", 0, 0, 254)? as u8;
         let protocol = ClientConfig {
             presentation_uri: format!(
@@ -519,7 +536,11 @@ impl Options {
         clock.digest(scope.receive_clock);
         clock.bytes(&ingress.to_be_bytes());
         clock.u64(generation);
-        clock.u32(ssrc);
+        if auto_ssrc {
+            clock.text(SSRC_AUTO_POLICY);
+        } else {
+            clock.u32(ssrc);
+        }
         clock.u32(time_scale);
         clock.u32(frame_duration);
         if max_reorder_pictures != 0 {
@@ -687,14 +708,19 @@ impl Options {
         if self.hevc.is_some() { "hevc" } else { "avc" }
     }
     fn policy(&self) -> String {
-        timing_policy(
+        let mut policy = timing_policy(
             match self.hevc.as_ref() {
                 Some(plan) if plan.supplied.is_some() => HEVC_SUPPLIED_POLICY,
                 Some(_) => HEVC_POLICY,
                 None => POLICY,
             },
             self.max_reorder_pictures,
-        )
+        );
+        if self.binding.ssrc_policy() == SsrcPolicy::LearnOnce {
+            policy.push(':');
+            policy.push_str(SSRC_AUTO_POLICY);
+        }
+        policy
     }
     pub(super) fn catalog_scope(&self) -> &CatalogScope {
         self.hevc.as_ref().map_or_else(
@@ -821,6 +847,10 @@ impl Options {
         }
         if let Some(preview) = &self.live_preview {
             numbers.extend(preview.numbers());
+        }
+        if self.binding.ssrc_policy() == SsrcPolicy::LearnOnce {
+            // Unobserved is not the valid numeric SSRC zero.
+            numbers.retain(|(name, _)| *name != "ssrc");
         }
         numbers
     }
@@ -1000,6 +1030,13 @@ impl Options {
         }
         if let Some(preview) = &self.live_preview {
             fields.push(("live_preview", preview.report()));
+        }
+        if self.binding.ssrc_policy() == SsrcPolicy::LearnOnce {
+            fields.push((
+                "ssrc_selection",
+                string("learn_once_from_setup_or_selected_rtp"),
+            ));
+            fields.push(("ssrc_state", string("unknown_until_session_observation")));
         }
         Ok(object(&fields))
     }

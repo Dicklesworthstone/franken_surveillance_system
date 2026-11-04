@@ -147,7 +147,8 @@ impl Schedule {
         policy: ReconnectPolicy,
         now: u64,
     ) -> Result<Self, ReconnectRefusal> {
-        if !(1..=1024).contains(&policy.max_attempts)
+        if binding.ssrc_policy() != crate::rtsp::tcp::SsrcPolicy::Pinned
+            || !(1..=1024).contains(&policy.max_attempts)
             || policy.initial_backoff_ns == 0
             || policy.initial_backoff_ns > policy.max_backoff_ns
             || policy.max_steps == 0

@@ -60,6 +60,68 @@ fn set(args: &mut Vec<OsString>, key: &str, value: &str) {
 }
 
 #[test]
+fn automatic_ssrc_has_distinct_approval_clock_and_explicit_unobserved_state()
+-> Result<(), &'static str> {
+    for codec in ["avc", "hevc"] {
+        let mut input = args();
+        set(&mut input, "--codec", codec);
+        set(&mut input, "--ssrc", "0");
+        let pinned = Options::parse(&input)?;
+        assert_eq!(pinned.binding().ssrc_policy(), SsrcPolicy::Pinned);
+        set(&mut input, "--ssrc", "auto");
+        let auto = Options::parse(&input)?;
+        assert_eq!(auto.binding().ssrc_policy(), SsrcPolicy::LearnOnce);
+        assert_ne!(auto.digest()?, pinned.digest()?);
+        assert_ne!(
+            auto.catalog_scope().decode_clock,
+            pinned.catalog_scope().decode_clock
+        );
+        assert_eq!(auto.recording.scope, pinned.recording.scope);
+        let preview = auto.preview()?;
+        assert!(preview.contains("unknown_until_session_observation"));
+        assert!(preview.contains("learn_once_from_setup_or_selected_rtp"));
+        assert!(!preview.contains("\"ssrc\":0"));
+        assert!(pinned.preview()?.contains("\"ssrc\":0"));
+        set(&mut input, "--approve", &auto.digest()?.to_text());
+        assert_eq!(Options::parse(&input)?.digest()?, auto.digest()?);
+        for invalid in ["AUTO", "learn", "-1", "4294967296"] {
+            set(&mut input, "--ssrc", invalid);
+            assert!(Options::parse(&input).is_err());
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn automatic_ssrc_cannot_enter_unimplemented_source_retention_or_reconnect_identity_paths() {
+    let mut source = args();
+    set(&mut source, "--source-root", "/owner/private/datagrams");
+    set(
+        &mut source,
+        "--source-retention-evidence",
+        "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+    );
+    assert!(super::super::source_mode::SourcePlan::parse(&source).is_ok());
+    set(&mut source, "--ssrc", "auto");
+    assert!(
+        super::super::source_mode::SourcePlan::parse(&source)
+            .err()
+            .is_some_and(|error| error.contains("automatic SSRC"))
+    );
+    let mut reconnect = args();
+    set(&mut reconnect, "--max-attempts", "2");
+    set(&mut reconnect, "--retry-delay-ms", "1");
+    set(&mut reconnect, "--retry-max-delay-ms", "2");
+    assert!(super::super::reconnect::ReconnectPlan::parse(&reconnect).is_ok());
+    set(&mut reconnect, "--ssrc", "auto");
+    assert!(
+        super::super::reconnect::ReconnectPlan::parse(&reconnect)
+            .err()
+            .is_some_and(|error| error.contains("automatic SSRC"))
+    );
+}
+
+#[test]
 fn preview_requires_disclosure_permission_and_preserves_recording_identity()
 -> Result<(), &'static str> {
     let original = Options::parse(&args())?;

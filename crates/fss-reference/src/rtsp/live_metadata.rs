@@ -212,7 +212,10 @@ impl LiveMetadataConnection {
             reason,
             connection_attempted: false,
         };
-        if config.max_steps == 0 || now >= config.deadline_ns {
+        if config.max_steps == 0
+            || now >= config.deadline_ns
+            || config.binding.ssrc_policy() != super::tcp::SsrcPolicy::Pinned
+        {
             return Err(refused(LiveMetadataError::Configuration));
         }
         let presentation = uri_authority(&config.protocol.presentation_uri);

@@ -13,14 +13,14 @@ pub mod avc_client;
 pub mod framed;
 /// Owner-driven TCP framing, optional Digest authentication, and HEVC RTP reception.
 pub mod hevc_client;
-/// Shared RTSP/Digest framing and source-linked native RFC 2435 JPEG reception.
-pub mod jpeg_client;
-/// Explicit-authority native TCP transport for complete RFC 2435 JPEG images.
-pub mod live_jpeg;
 /// Ordered HEVC client-event capture with explicit timing and automatic failure fencing.
 pub mod hevc_recording_capture;
 /// Continuous HEVC window collection with original boundary-packet retention.
 pub mod hevc_recording_collector;
+/// Shared RTSP/Digest framing and source-linked native RFC 2435 JPEG reception.
+pub mod jpeg_client;
+/// Explicit-authority native TCP transport for complete RFC 2435 JPEG images.
+pub mod live_jpeg;
 /// Explicit-authority native TCP transport for the metadata session owner.
 pub mod live_metadata;
 /// Exact, bounded ONVIF metadata transport on the shared RTSP session owner.
@@ -306,9 +306,9 @@ pub mod live_hevc {
             {
                 return Err(refused(LiveHevcError::Configuration));
             }
-            let protocol = RtspHevcPictureClient::with_digest(
+            let protocol = RtspHevcPictureClient::with_digest_and_ssrc_policy(
                 config.protocol,
-                config.binding.key(),
+                (config.binding.key(), config.binding.ssrc_policy()),
                 config.reorder,
                 config.reconstruction,
                 config.assembly,
@@ -348,6 +348,11 @@ pub mod live_hevc {
         /// permission to borrow configuration from another media offer or stream generation.
         pub fn media(&self) -> Option<&super::client::hevc::HevcClientMedia> {
             self.active.as_ref().and_then(|a| a.protocol.media())
+        }
+        /// Pinned or observed sender key from this exact live connection.
+        /// Automatic selection returns None until SETUP or valid selected RTP binds it.
+        pub fn bound_key(&self) -> Option<fss_packet::StreamKey> {
+            self.active.as_ref().and_then(|a| a.protocol.bound_key())
         }
         /// Remaining connection-wide work, independent of socket-call and byte ceilings.
         pub fn remaining_steps(&self) -> u64 {

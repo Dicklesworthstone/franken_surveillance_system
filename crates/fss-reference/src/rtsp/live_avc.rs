@@ -263,23 +263,15 @@ impl LiveAvcConnection {
         if presentation != Some(config.binding.authority()) || control != presentation {
             return Err(refused(LiveAvcError::Configuration));
         }
-        let protocol = match payload_type {
-            Some(payload_type) => DigestAvcClient::new_with_payload_type(
-                config.protocol,
-                config.binding.key(),
-                config.media,
-                payload_type,
-                &config.realm,
-                config.digest_policy,
-            ),
-            None => DigestAvcClient::new(
-                config.protocol,
-                config.binding.key(),
-                config.media,
-                &config.realm,
-                config.digest_policy,
-            ),
-        }
+        let protocol = DigestAvcClient::new_with_source_selection(
+            config.protocol,
+            config.binding.key(),
+            config.media,
+            &config.realm,
+            config.digest_policy,
+            payload_type,
+            config.binding.ssrc_policy(),
+        )
         .map_err(|e| refused(LiveAvcError::Protocol(e)))?;
         let transport = RtspTcpLink::connect(
             config.binding,
@@ -309,6 +301,10 @@ impl LiveAvcConnection {
         self.active
             .as_ref()
             .map_or(ClientState::Closed, |a| a.protocol.state())
+    }
+    /// Source key pinned or observed within this exact connection; None while unbound.
+    pub fn bound_key(&self) -> Option<fss_packet::StreamKey> {
+        self.active.as_ref().and_then(|a| a.protocol.bound_key())
     }
     /// Remaining bounded driver calls, independent of transport I/O and byte ceilings.
     pub fn remaining_steps(&self) -> u64 {

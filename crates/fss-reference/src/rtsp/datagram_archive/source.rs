@@ -46,7 +46,8 @@ pub struct DatagramScope {
 impl DatagramScope {
     /// Complete immutable interpretation; the route is committed without storing its text.
     pub fn digest(&self) -> Result<ContentDigest> {
-        if self.channels.0 == self.channels.1
+        if self.binding.ssrc_policy() != super::super::tcp::SsrcPolicy::Pinned
+            || self.channels.0 == self.channels.1
             || [self.receive_clock, self.retention_evidence]
                 .iter()
                 .any(|d| d.algorithm() != DigestAlgorithm::Sha256 || d.bytes() == [0; 32])

@@ -38,6 +38,7 @@ impl Statistics {
         self.unpublished_receiver_state |= retired.unread.is_some();
     }
     fn hevc_client_retirement(&mut self, retired: &HevcClientRetirement) {
+        self.bound_source = self.bound_source.or(retired.source_key);
         self.remote_session_may_exist |= retired.session.remote_session_may_exist;
         self.pending_request |= retired.session.pending_cseq.is_some();
         self.unpublished_receiver_state |= retired.video.is_some()

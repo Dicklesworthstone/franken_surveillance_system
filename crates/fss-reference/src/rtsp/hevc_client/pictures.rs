@@ -50,8 +50,9 @@ pub enum HevcPictureWorkReason {
 /// Their original source datagrams were already returned to the transport owner.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HevcQueuedNalRetirement {
-    /// Exact owner epoch of the queue.
-    pub key: StreamKey,
+    /// Pinned or observed owner epoch, absent before automatic source binding.
+    /// No NAL can be queued while this is None.
+    pub key: Option<StreamKey>,
     /// Complete NAL count retired.
     pub nals: usize,
     /// Reconstructed byte count retired.
@@ -192,7 +193,7 @@ pub enum HevcPictureClientPoll {
 pub struct RtspHevcPictureClient {
     inner: RtspHevcClient,
     assembler: HevcAssembler,
-    key: StreamKey,
+    awaiting_sender: bool,
     limits: HevcAssemblyLimits,
     pending: std::vec::IntoIter<H265NalUnit>,
     pending_deadline_ns: Option<u64>,
@@ -225,7 +226,7 @@ impl RtspHevcPictureClient {
         Ok(Self {
             inner,
             assembler,
-            key,
+            awaiting_sender: false,
             limits: assembly,
             pending: Vec::new().into_iter(),
             pending_deadline_ns: None,
@@ -252,9 +253,38 @@ impl RtspHevcPictureClient {
         client.inner.digest_enabled = true;
         Ok(client)
     }
+    /// Constructor-only sender selection for the native owner. The initial
+    /// assembler is untouched until the same session supplies its actual key.
+    pub(crate) fn with_digest_and_ssrc_policy(
+        config: ClientConfig,
+        sender: (StreamKey, SsrcPolicy),
+        reorder: ReorderLimits,
+        reconstruction: H265Limits,
+        assembly: HevcAssemblyLimits,
+        realm: &str,
+        policy: DigestPolicy,
+    ) -> Result<Self, HevcPictureClientError> {
+        let (key, ssrc_policy) = sender;
+        let mut client = Self::with_digest(
+            config,
+            key,
+            reorder,
+            reconstruction,
+            assembly,
+            realm,
+            policy,
+        )?;
+        client.inner.sender = SenderBinding::new(key, ssrc_policy);
+        client.awaiting_sender = ssrc_policy == SsrcPolicy::LearnOnce;
+        Ok(client)
+    }
     /// Existing RTSP protocol state; not decoded-frame or coverage truth.
     pub fn state(&self) -> ClientState {
         self.inner.state()
+    }
+    /// Actual source binding, or None while automatic sender selection is pending.
+    pub fn bound_key(&self) -> Option<StreamKey> {
+        self.inner.bound_key()
     }
     /// Immutable accepted HEVC signaling; not parsed parameter-set compatibility.
     pub fn media(&self) -> Option<&HevcClientMedia> {
@@ -391,6 +421,15 @@ impl RtspHevcPictureClient {
             .inner
             .poll(now)
             .map_err(HevcPictureClientError::Client)?;
+        if self.awaiting_sender
+            && let Some(key) = self.inner.bound_key()
+        {
+            // The inner pump reports SETUP/first-RTP before any reconstructed
+            // NAL. No picture or source can have entered this initial assembler.
+            self.assembler =
+                HevcAssembler::new(key, self.limits).map_err(HevcPictureClientError::Assembly)?;
+            self.awaiting_sender = false;
+        }
         Ok(match event {
             HevcClientPoll::Media(H265ReceivePoll::Packet {
                 source,
@@ -526,7 +565,7 @@ impl RtspHevcPictureClient {
     fn retire_queue(&mut self) -> HevcQueuedNalRetirement {
         let nals = self.pending.as_slice();
         let receipt = HevcQueuedNalRetirement {
-            key: self.key,
+            key: self.inner.bound_key(),
             nals: nals.len(),
             bytes: nals.iter().map(|n| n.bytes().len()).sum(),
             first_sequence: nals

@@ -35,11 +35,18 @@ mod authentication;
 #[path = "capture_rtsp_cli/onvif.rs"]
 mod onvif;
 
+#[cfg(target_os = "linux")]
+#[path = "capture_rtsp_cli/unifi.rs"]
+mod unifi;
+
 #[path = "capture_rtsp_cli/campaign.rs"]
 mod campaign;
 
 #[path = "capture_rtsp_cli/hevc.rs"]
 mod hevc;
+
+#[path = "capture_rtsp_cli/ssrc.rs"]
+mod ssrc;
 
 #[path = "capture_rtsp_cli/reordered.rs"]
 mod reordered;

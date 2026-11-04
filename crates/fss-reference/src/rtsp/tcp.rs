@@ -15,6 +15,10 @@ use super::client::ClientRequest;
 use super::framed::{MAX_WIRE_CHUNK, WIRE_LIFETIME_NS};
 use fss_packet::StreamKey;
 
+mod ssrc;
+pub(super) use ssrc::SenderBinding;
+pub use ssrc::SsrcPolicy;
+
 /// Explicit opt-in to unencrypted RTSP. There is deliberately no default, TLS
 /// fallback, or implication that Digest protects media or the entire session.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -28,6 +32,7 @@ pub enum TcpSecurityPolicy {
 #[derive(Clone, Eq, PartialEq)]
 pub struct TcpBinding {
     key: StreamKey,
+    ssrc_policy: SsrcPolicy,
     peer: SocketAddr,
     authority: String,
     security: TcpSecurityPolicy,
@@ -56,12 +61,28 @@ impl TcpBinding {
         }
         Ok(Self {
             key,
+            ssrc_policy: SsrcPolicy::Pinned,
             peer,
             authority: authority.to_owned(),
             security,
         })
     }
-    /// Expected ingress, stream generation and SSRC. SSRC is not authentication.
+    /// Explicitly select one connection's sender during negotiation or initial RTP.
+    /// This immutable route keeps a placeholder zero in `key()`; the protocol
+    /// owner's separate `bound_key()` supplies media evidence. Zero remains a valid
+    /// pinned SSRC and is never itself interpreted as an automatic-selection flag.
+    #[must_use]
+    pub fn with_auto_ssrc(mut self) -> Self {
+        self.key.ssrc = 0;
+        self.ssrc_policy = SsrcPolicy::LearnOnce;
+        self
+    }
+    /// Immutable sender-selection policy approved with this exact route and epoch.
+    pub fn ssrc_policy(&self) -> SsrcPolicy {
+        self.ssrc_policy
+    }
+    /// Requested ingress, generation and SSRC. In `LearnOnce` mode the SSRC is
+    /// only an unbound placeholder; protocol owners expose the actual bound key.
     pub fn key(&self) -> StreamKey {
         self.key
     }
@@ -82,6 +103,7 @@ impl fmt::Debug for TcpBinding {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TcpBinding")
             .field("key", &self.key)
+            .field("ssrc_policy", &self.ssrc_policy)
             .field("security", &self.security)
             .finish_non_exhaustive()
     }

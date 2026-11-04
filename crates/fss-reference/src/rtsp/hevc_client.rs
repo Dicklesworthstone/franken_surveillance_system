@@ -26,6 +26,7 @@ use super::framed::{
     MAX_WIRE_BUFFER, MAX_WIRE_CHUNK, RetainedRtspWire, RtspWireFrame, RtspWireIntake,
     WireIntakeError,
 };
+use super::tcp::{SenderBinding, SsrcPolicy};
 
 /// Payload-free refusal categories. No URL, token, challenge or media is printed.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -64,6 +65,8 @@ impl std::error::Error for HevcClientError {}
 /// Terminal accounting for every locally retained layer, not remote TEARDOWN proof.
 #[derive(Debug)]
 pub struct HevcClientRetirement {
+    /// Pinned or observed source key; None if automatic selection never completed.
+    pub source_key: Option<StreamKey>,
     /// Shared session uncertainty and any outstanding request correlation.
     pub session: ClientCloseReceipt,
     /// Separate retirement of queued RTP datagrams and incomplete HEVC fragments.
@@ -185,7 +188,7 @@ struct HeldFrame {
 pub struct RtspHevcClient {
     session: RtspClientSession,
     intake: RtspWireIntake,
-    key: StreamKey,
+    sender: SenderBinding,
     reorder_limits: ReorderLimits,
     h265_limits: H265Limits,
     video: Option<H265Receiver>,
@@ -203,7 +206,7 @@ pub struct RtspHevcClient {
 impl fmt::Debug for RtspHevcClient {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("RtspHevcClient")
-            .field("key", &self.key)
+            .field("key", &self.sender.key())
             .field("state", &self.state())
             .field("wire_bytes", &self.buffered_wire_bytes())
             .field("pending_nal_bytes", &self.retained_nal_bytes())
@@ -233,7 +236,7 @@ impl RtspHevcClient {
         Ok(Self {
             session,
             intake: RtspWireIntake::new(),
-            key,
+            sender: SenderBinding::new(key, SsrcPolicy::Pinned),
             reorder_limits,
             h265_limits,
             video: None,
@@ -247,6 +250,20 @@ impl RtspHevcClient {
             draining: false,
             closed: false,
         })
+    }
+
+    /// Construct one epoch with explicit pinned or learn-once SSRC selection.
+    /// Automatic selection is confined to this session's negotiated video channel.
+    pub fn new_with_ssrc_policy(
+        config: ClientConfig,
+        key: StreamKey,
+        reorder_limits: ReorderLimits,
+        h265_limits: H265Limits,
+        policy: SsrcPolicy,
+    ) -> Result<Self, HevcClientError> {
+        let mut client = Self::new(config, key, reorder_limits, h265_limits)?;
+        client.sender = SenderBinding::new(key, policy);
+        Ok(client)
     }
 
     /// Pin a credential realm/policy before the first request. Passwords and HA1
@@ -271,6 +288,10 @@ impl RtspHevcClient {
     /// Shared protocol state only, not frame, source-custody or camera health truth.
     pub fn state(&self) -> ClientState {
         self.session.state()
+    }
+    /// Pinned or observed source identity; None until an automatic choice is bound.
+    pub fn bound_key(&self) -> Option<StreamKey> {
+        self.sender.key()
     }
     /// Exact accepted HEVC signaling; missing parameter sets remain missing.
     pub fn media(&self) -> Option<&HevcClientMedia> {
@@ -613,10 +634,26 @@ impl RtspHevcClient {
                         validation,
                     };
                 }
-                let result = match &mut self.video {
-                    Some(video) => {
-                        video.ingest_received(self.key, span, held.frame.received_ns(), now)
+                if self.video.is_none() {
+                    let Some(media) = self.session.hevc_media() else {
+                        return self.fault(HevcClientError::StreamBinding, Some(held.frame));
+                    };
+                    if self
+                        .sender
+                        .packet(span, media.payload_type(), self.reorder_limits.packet)
+                        .is_err()
+                    {
+                        return self.fault(HevcClientError::StreamBinding, Some(held.frame));
                     }
+                    if let Err(error) = self.configure_video() {
+                        return self.fault(error, Some(held.frame));
+                    }
+                }
+                let Some(key) = self.sender.key() else {
+                    return self.fault(HevcClientError::StreamBinding, Some(held.frame));
+                };
+                let result = match &mut self.video {
+                    Some(video) => video.ingest_received(key, span, held.frame.received_ns(), now),
                     None => return self.fault(HevcClientError::StreamBinding, Some(held.frame)),
                 };
                 match result {
@@ -653,20 +690,19 @@ impl RtspHevcClient {
     }
 
     fn configure_video(&mut self) -> Result<(), HevcClientError> {
-        if self
-            .session
-            .server_ssrc()
-            .is_some_and(|ssrc| ssrc != self.key.ssrc)
-        {
-            return Err(HevcClientError::StreamBinding);
-        }
+        self.sender
+            .setup(self.session.server_ssrc())
+            .map_err(|()| HevcClientError::StreamBinding)?;
         let media = self
             .session
             .hevc_media()
             .ok_or(HevcClientError::StreamBinding)?;
+        let Some(key) = self.sender.key() else {
+            return Ok(());
+        };
         self.video = Some(
             H265Receiver::new(
-                self.key,
+                key,
                 media.payload_type(),
                 media.sprop_max_don_diff(),
                 self.reorder_limits,
@@ -691,6 +727,7 @@ impl RtspHevcClient {
         self.input_ready = false;
         self.pending_cseq = None;
         HevcClientRetirement {
+            source_key: self.sender.key(),
             session: self.session.cancel(),
             video: self.video.take().map(|mut video| video.cancel()),
             wire: self.intake.cancel(),

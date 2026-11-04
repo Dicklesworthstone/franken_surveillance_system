@@ -84,6 +84,7 @@ impl<W: Write> Transcript<'_, W> {
 
 #[derive(Default)]
 pub(super) struct Statistics {
+    pub(super) bound_source: Option<fss_packet::StreamKey>,
     pub(super) retain_campaign_bindings: bool,
     pub(super) runtime: Option<String>,
     pub(super) live_preview: Option<String>,
@@ -160,6 +161,7 @@ impl Statistics {
         self.pins = capture.pin_state().clone();
     }
     pub(super) fn client_retirement(&mut self, retired: &AvcClientRetirement) {
+        self.bound_source = self.bound_source.or(retired.source_key);
         self.remote_session_may_exist |= retired.session.remote_session_may_exist;
         self.pending_request |= retired.session.pending_cseq.is_some();
         self.unpublished_receiver_state |= retired.video.is_some()
@@ -447,6 +449,19 @@ pub(super) fn terminal(
     ];
     if let Some(preview) = &stats.live_preview {
         fields.push(("live_preview", preview.clone()));
+    }
+    if options.binding().ssrc_policy() == fss_reference::rtsp::tcp::SsrcPolicy::LearnOnce {
+        let selection = match stats.bound_source {
+            Some(key) => object(&[
+                ("state", string("bound")),
+                ("ingress", string(&key.ingress.to_string())),
+                ("generation", key.generation.to_string()),
+                ("ssrc", key.ssrc.to_string()),
+                ("sender_authenticated", "false".into()),
+            ]),
+            None => object(&[("state", string("unresolved"))]),
+        };
+        fields.push(("source_binding", selection));
     }
     if let Some(source) = &stats.source_custody {
         for (key, value) in &mut fields {

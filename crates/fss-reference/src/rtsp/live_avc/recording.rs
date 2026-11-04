@@ -156,6 +156,7 @@ pub struct LiveAvcRecording {
     connection: LiveAvcConnection,
     capture: RecordingCapture,
     binding: TcpBinding,
+    awaiting_sender: bool,
     deadline_ns: u64,
     last_ns: u64,
     remaining_steps: u64,
@@ -192,6 +193,17 @@ impl LiveAvcRecording {
             connection_attempted: false,
         })?;
         let binding = config.binding.clone();
+        let awaiting_sender = binding.ssrc_policy() == crate::rtsp::tcp::SsrcPolicy::LearnOnce;
+        let collector = if awaiting_sender {
+            collector
+                .defer_initial_sender()
+                .map_err(|e| LiveRecordingConnectFailure {
+                    reason: LiveRecordingError::Capture(CaptureError::Collection(e)),
+                    connection_attempted: false,
+                })?
+        } else {
+            collector
+        };
         let deadline_ns = config.deadline_ns;
         let remaining_steps = config.max_steps;
         // The same owner choice governs both SDP selection and original RTP collection.
@@ -211,6 +223,7 @@ impl LiveAvcRecording {
             connection,
             capture: RecordingCapture::new(collector),
             binding,
+            awaiting_sender,
             deadline_ns,
             remaining_steps,
             last_ns: now,
@@ -307,6 +320,16 @@ impl LiveAvcRecording {
             return Ok(LiveRecordingStep::Ended);
         }
         self.admit(now, authority)?;
+        if self.awaiting_sender
+            && let Some(key) = self.connection.bound_key()
+        {
+            // SETUP/first-RTP is returned before the receiver can emit an ordered
+            // source. Bind collection before polling that receiver again.
+            if let Err(error) = self.capture.bind_initial_sender(key) {
+                return Err(self.fatal(LiveRecordingError::Capture(error), None, None));
+            }
+            self.awaiting_sender = false;
+        }
         match self.capture.poll(now) {
             Ok(CapturePoll::Pending { .. }) => {}
             Ok(event) => {

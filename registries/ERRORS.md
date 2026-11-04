@@ -6,6 +6,13 @@ operation states rather than generic errors.
 
 | ID | Meaning | Retry policy |
 |---|---|---|
+| `ERR-CAPTURE-UNIFI-SOURCE-001` | Private Protect camera/stream handoff is malformed, outside bounds, not owner-only, changed, or inconsistent with the approved native capture plan | Repair the exact private input and preview again; no alternate camera, quality or route is selected. |
+| `ERR-CAPTURE-UNIFI-APPROVAL-001` | Protect file identity, selected view/quality, transport or complete native capture plan no longer matches its outer approval | Review a fresh complete plan; never reuse a stale approval after file replacement or selection changes. |
+| `ERR-CAPTURE-UNIFI-TRANSPORT-001` | Selected Protect URL requires secure transport, or the explicit operator RTSP map is absent or contains a secure URL | Supply an independently verified plaintext endpoint with explicit operator-rtsp selection and plaintext authorization, or use a qualified secure transport; never rewrite the published URL automatically. |
+| `ERR-CAPTURE-UNIFI-ROUTE-001` | Selected URL port or literal IP differs from the owner-approved peer | Correct the explicit peer and preview again; no DNS lookup or alternate-route fallback occurs. |
+| `ERR-CAPTURE-UNIFI-STREAM-MISSING-001` | Selected quality is absent from the chosen stream map; availability is unknown | Refresh the complete export or explicitly select an available quality; missing is never inferred disabled or silently substituted. |
+| `ERR-CAPTURE-UNIFI-STREAM-DISABLED-001` | Selected quality is explicitly null and supplies no enabled stream URL | Enable the intended stream through the owner's Protect interface and refresh the export; capture changes no camera settings. |
+| `ERR-CAPTURE-UNIFI-PACKAGE-001` | Package view was requested without an explicit true hasPackageCamera capability | Refresh the camera export or explicitly select a supported main view; a package URI cannot invent package-camera capability. |
 | `fusion.cli.sequence_invalid` | Offline sequence fields, transition kind, explicit binding or bounded configuration/time contract are invalid | Correct the complete input; no checkpoint for an accepted prefix is published. |
 | `fusion.cli.sequence_unreadable` | The bounded sequence input cannot be read or strictly parsed | Supply a complete regular UTF-8 JSON request or one explicit stdin input. |
 | `fusion.cli.checkpoint_identity` | CLI checkpoint exceeds its bound, has a non-SHA-256 pin or disagrees with its independently supplied pin | Recover exact previously accepted bytes and pin; do not derive a replacement pin from untrusted input. |

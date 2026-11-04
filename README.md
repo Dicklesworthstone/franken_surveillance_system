@@ -651,6 +651,11 @@ Implemented (reference, unqualified):
   Wyze Cam v4 (`HL_CAM4`) lab tuple (`fss-capture-tutk`), unified LAN camera discovery across
   mDNS, SSDP, WS-Discovery, and UDP beacons (`fss-discover`), local capture archives with
   verify/export (`fss-archive`), and fragmented-MP4 remux for AVC/HEVC;
+- [UniFi Protect camera and package-view selection](docs/UNIFI_PROTECT.md)
+  (`fss-capture-rtsp from-unifi`), with private stream-token files, exact quality and transport
+  selection, native AVC/HEVC recording and cold import/decode, and optional once-per-session
+  RTP sender-ID learning (`--ssrc auto`). Unknown models use reported capabilities; secure
+  RTSPS endpoints require a secure transport that this recorder does not yet implement;
 - baseline JPEG/MJPEG decode, bit-exact (vs FFmpeg) H.264 decode (Baseline, Main and High
   profile, CABAC/CAVLC, I/P/B slices with display-order output, 8x8 transform, scaling matrices),
   and bit-exact H.265 Main profile decode (`fss-file decode`, `fss-video`, `fss-decode-rtp`);

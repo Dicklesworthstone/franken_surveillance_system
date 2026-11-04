@@ -238,6 +238,7 @@ pub struct JournaledLiveHevcArchive<'a, 'p> {
     supplied_collector: Option<HevcRecordingCollector>,
     writer: Option<JournaledHevcArchiveWriter<'a, 'p>>,
     binding: TcpBinding,
+    awaiting_sender: bool,
     live_deadline_ns: u64,
     publication_deadline_ns: u64,
     max_window_bytes: usize,
@@ -309,6 +310,7 @@ impl<'a, 'p> JournaledLiveHevcArchive<'a, 'p> {
             return Err(refused(LiveHevcArchiveError::Configuration));
         }
         let binding = live.binding.clone();
+        let awaiting_sender = binding.ssrc_policy() == super::tcp::SsrcPolicy::LearnOnce;
         let live_deadline_ns = live.deadline_ns;
         let writer = JournaledHevcArchiveWriter::open(
             publisher,
@@ -337,6 +339,7 @@ impl<'a, 'p> JournaledLiveHevcArchive<'a, 'p> {
             supplied_collector: None,
             writer: Some(writer),
             binding,
+            awaiting_sender,
             live_deadline_ns,
             publication_deadline_ns: archive.publication_deadline_ns,
             max_window_bytes: archive.max_window_bytes,
@@ -923,6 +926,24 @@ impl<'a, 'p> JournaledLiveHevcArchive<'a, 'p> {
                 return Ok(LiveHevcArchiveStep::Recording(Box::new(trigger)));
             }
         }
+        if self.awaiting_sender
+            && let Some(key) = self.connection.as_ref().and_then(|c| c.bound_key())
+        {
+            let result = self
+                .capture
+                .as_mut()
+                .ok_or(LiveHevcArchiveError::Invariant)
+                .and_then(|capture| {
+                    capture
+                        .bind_initial_sender(key)
+                        .map_err(LiveHevcArchiveError::Capture)
+                });
+            if let Err(reason) = result {
+                let recording = self.retire_input(None, Some(Box::new(event)), transport);
+                return Err(self.fatal(reason, recording, None));
+            }
+            self.awaiting_sender = false;
+        }
         match self
             .capture
             .as_mut()
@@ -957,6 +978,13 @@ impl<'a, 'p> JournaledLiveHevcArchive<'a, 'p> {
         }
         if let Some(collector) = self.supplied_collector.take() {
             self.selected = None;
+            let collector = if self.awaiting_sender {
+                collector
+                    .defer_initial_sender()
+                    .map_err(|e| LiveHevcArchiveError::Capture(CaptureError::Collection(e)))?
+            } else {
+                collector
+            };
             self.capture = Some(HevcRecordingCapture::new(collector));
             return Ok(());
         }
@@ -983,6 +1011,13 @@ impl<'a, 'p> JournaledLiveHevcArchive<'a, 'p> {
             selected.limits,
         )
         .map_err(|e| LiveHevcArchiveError::Capture(CaptureError::Collection(e)))?;
+        let collector = if self.awaiting_sender {
+            collector
+                .defer_initial_sender()
+                .map_err(|e| LiveHevcArchiveError::Capture(CaptureError::Collection(e)))?
+        } else {
+            collector
+        };
         self.capture = Some(HevcRecordingCapture::new(collector));
         Ok(())
     }

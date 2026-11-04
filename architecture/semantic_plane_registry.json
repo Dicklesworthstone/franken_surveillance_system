@@ -863,7 +863,9 @@
     "crates/fss-cli/src/bin/fss-fuse/sequence_tests.rs": "support",
     "crates/fss-cli/src/fusion_json.rs": "cognition",
     "crates/fss-cli/src/supervisor/tests.rs": "support",
-    "crates/fss-cli/tests/fusion_sequence_cli.rs": "support"
+    "crates/fss-cli/tests/fusion_sequence_cli.rs": "support",
+    "crates/fss-cli/src/bin/fss-capture-rtsp/from_unifi.rs": "support",
+    "crates/fss-reference/src/rtsp/tcp/ssrc.rs": "support"
   },
   "types": {
     "AlertEffectRecord": {

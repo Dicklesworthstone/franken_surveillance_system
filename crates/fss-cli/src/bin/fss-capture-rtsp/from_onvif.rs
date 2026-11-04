@@ -16,9 +16,9 @@ use super::reconnect::{self, ReconnectPlan};
 #[path = "../fss-onvif/handoff.rs"]
 mod handoff;
 #[path = "../fss-onvif/private_file.rs"]
-mod private_file;
+pub(super) mod private_file;
 #[path = "../fss-onvif/runtime.rs"]
-mod runtime;
+pub(super) mod runtime;
 
 const ERROR: &str = "ERR-CAPTURE-ONVIF-HANDOFF-001";
 const POLICY: &str = "private-digest-bound-stable-onvif-uri:separate-owner-capture-approval:\
@@ -67,13 +67,13 @@ Native recovery revalidates its exact observed stores before writing. Preserve a
 on failure, preview again and approve current state. Recovery never resumes camera capture.\n";
 
 #[derive(Clone, Copy, Eq, PartialEq)]
-enum CaptureMode {
+pub(super) enum CaptureMode {
     Single,
     Reconnect,
 }
 
 impl CaptureMode {
-    fn as_str(self) -> &'static str {
+    pub(super) fn as_str(self) -> &'static str {
         match self {
             Self::Single => "single",
             Self::Reconnect => "reconnect",
@@ -81,13 +81,13 @@ impl CaptureMode {
     }
 }
 
-enum NativeCapture {
+pub(super) enum NativeCapture {
     Single(Box<Options>),
     Reconnect(Box<ReconnectPlan>),
 }
 
 impl NativeCapture {
-    fn parse(mode: CaptureMode, args: &[OsString]) -> Result<Self, &'static str> {
+    pub(super) fn parse(mode: CaptureMode, args: &[OsString]) -> Result<Self, &'static str> {
         match mode {
             CaptureMode::Single => Options::parse(args).map(|plan| Self::Single(Box::new(plan))),
             CaptureMode::Reconnect => {
@@ -96,28 +96,28 @@ impl NativeCapture {
         }
     }
 
-    fn paths(&self) -> Result<Vec<&Path>, &'static str> {
+    pub(super) fn paths(&self) -> Result<Vec<&Path>, &'static str> {
         match self {
             Self::Single(plan) => Ok(vec![plan.root.as_path(), plan.pins.as_path()]),
             Self::Reconnect(plan) => plan.output_paths(),
         }
     }
 
-    fn prepared_preview(&self) -> Result<(ContentDigest, String), &'static str> {
+    pub(super) fn prepared_preview(&self) -> Result<(ContentDigest, String), &'static str> {
         match self {
             Self::Single(plan) => Ok((plan.digest()?, plan.private_uri_preview()?)),
             Self::Reconnect(plan) => plan.private_prepared_preview(),
         }
     }
 
-    fn operation_kind(&self) -> &'static str {
+    pub(super) fn operation_kind(&self) -> &'static str {
         match self {
             Self::Single(_) => "capture",
             Self::Reconnect(plan) => plan.operation_kind(),
         }
     }
 
-    fn execute(
+    pub(super) fn execute(
         self,
         validate_approval: &impl Fn(ContentDigest) -> Result<(), &'static str>,
     ) -> Result<(), &'static str> {

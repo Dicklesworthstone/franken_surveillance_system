@@ -168,6 +168,20 @@ pub struct RecordingCapture {
     closed: bool,
 }
 impl RecordingCapture {
+    /// Initial binding only; never replace the identity of a retained event or picture.
+    pub(super) fn bind_initial_sender(&mut self, key: StreamKey) -> Result<(), CaptureError> {
+        if self.event.is_some()
+            || self.picture.is_some()
+            || self.trailing.is_some()
+            || self.input_ended
+            || self.closed
+        {
+            return Err(CaptureError::Backpressure);
+        }
+        self.collector
+            .bind_initial_sender(key)
+            .map_err(CaptureError::Collection)
+    }
     /// Take exclusive ownership of a configured collector without granting any I/O authority.
     pub fn new(collector: RecordingCollector) -> Self {
         Self {

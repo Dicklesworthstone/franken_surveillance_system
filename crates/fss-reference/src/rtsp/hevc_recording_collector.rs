@@ -109,8 +109,11 @@ pub struct HevcCollectionSeal {
 /// Terminal transfer of every retained original and prepared root, without implicit deletion.
 #[derive(Debug)]
 pub struct HevcCollectionRetirement {
-    /// Exact owner key; process-local ingress is not serialized into recordings.
+    /// Requested owner key. Its SSRC is meaningful only when `sender_bound` is true.
+    /// Process-local ingress is not serialized into recordings.
     pub key: StreamKey,
+    /// Whether the pinned or learned sender was established before admitting source.
+    pub sender_bound: bool,
     /// Why this attempt ended.
     pub reason: CollectionStop,
     /// Already prepared output is preserved even if a later operation failed.
@@ -133,6 +136,7 @@ pub struct HevcCollectionRetirement {
 pub struct HevcRecordingCollector {
     scope: RecordingScope,
     key: StreamKey,
+    sender_bound: bool,
     payload_type: u8,
     configuration: HevcConfiguration,
     time_scale: u32,
@@ -155,6 +159,7 @@ impl std::fmt::Debug for HevcRecordingCollector {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HevcRecordingCollector")
             .field("key", &self.key)
+            .field("sender_bound", &self.sender_bound)
             .field("source_bytes", &self.source_bytes)
             .field("samples", &self.pictures.len())
             .field("ready", &self.ready.is_some())
@@ -163,6 +168,40 @@ impl std::fmt::Debug for HevcRecordingCollector {
     }
 }
 impl HevcRecordingCollector {
+    /// Constructor-only provisional state; no source has entered this collector.
+    pub(super) fn defer_initial_sender(mut self) -> Result<Self> {
+        self.check_initial_sender(self.key)?;
+        self.sender_bound = false;
+        Ok(self)
+    }
+    /// Bind a live session's actual sender before any original source is admitted.
+    /// Existing configuration/timing remain immutable, and historical source state
+    /// prevents changing the sender even after a prior window was drained.
+    pub(super) fn bind_initial_sender(&mut self, key: StreamKey) -> Result<()> {
+        self.check_initial_sender(key)?;
+        if self.sender_bound {
+            return Err(E::StreamMismatch);
+        }
+        self.key = key;
+        self.sender_bound = true;
+        Ok(())
+    }
+    fn check_initial_sender(&self, key: StreamKey) -> Result<()> {
+        if key.ingress != self.key.ingress
+            || key.generation != self.key.generation
+            || self.closed
+            || self.last_source.is_some()
+            || self.last_picture.is_some()
+            || self.last_end.is_some()
+            || self.stop_reason.is_some()
+            || !self.sources.is_empty()
+            || !self.pictures.is_empty()
+            || self.ready.is_some()
+        {
+            return Err(E::StreamMismatch);
+        }
+        Ok(())
+    }
     /// Pin exact source/configuration, canonical scope, explicit timescale and budgets.
     pub fn new(
         scope: RecordingScope,
@@ -184,6 +223,7 @@ impl HevcRecordingCollector {
         Ok(Self {
             scope,
             key,
+            sender_bound: true,
             payload_type,
             configuration,
             time_scale,
@@ -254,7 +294,7 @@ impl HevcRecordingCollector {
         now: u64,
     ) -> Result<()> {
         self.check_admission(now)?;
-        if key != self.key {
+        if !self.sender_bound || key != self.key {
             return Err(E::StreamMismatch);
         }
         let packet =
@@ -478,6 +518,7 @@ impl HevcRecordingCollector {
         self.spans = 0;
         HevcCollectionRetirement {
             key: self.key,
+            sender_bound: self.sender_bound,
             reason,
             ready: self.ready.take(),
             sources: std::mem::take(&mut self.sources),
@@ -489,7 +530,7 @@ impl HevcRecordingCollector {
         p: &HevcPictureGroup,
         timing: HevcRecordingTiming,
     ) -> Result<HevcCollectedPicture> {
-        if p.key() != self.key {
+        if !self.sender_bound || p.key() != self.key {
             return Err(E::StreamMismatch);
         }
         if p.discontinuity_before()

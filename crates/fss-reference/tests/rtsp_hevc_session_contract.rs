@@ -234,7 +234,7 @@ fn payload_rebinding_and_ambiguous_normalized_attributes_fail_closed() -> TestRe
         sdp(sets()).replace("a=rtpmap:98", "a=rtpmap:99"),
         sdp(sets()).replace("H265/90000", "H265/90000/2"),
         sdp(sets()).replace("H265/90000", "H265/8000"),
-        sdp(sets()).replace("RTP/AVP 98", "RTP/AVP 98 99"),
+        sdp(sets()).replace("RTP/AVP 98", "RTP/AVP 98 99") + "a=rtpmap:99 H265/90000\r\n",
         sdp("a=rtpmap:98 H265/90000\r\n"),
         sdp("a= rtpmap:98 H265/90000\r\n"),
         sdp("a=fmtp:98 tx-mode=SRST\r\na= fmtp:98 sprop-max-don-diff=1\r\n"),
@@ -245,6 +245,35 @@ fn payload_rebinding_and_ambiguous_normalized_attributes_fail_closed() -> TestRe
     ] {
         assert_eq!(describe(&body).err(), Some(E::Description));
     }
+    Ok(())
+}
+
+#[test]
+fn unique_hevc_mapping_survives_other_offers_without_payload_fallback() -> TestResult {
+    let body = sdp(sets()).replace("RTP/AVP 98", "RTP/AVP 98 99");
+    let selected = describe(&body)?;
+    let media = selected
+        .hevc_media()
+        .ok_or("missing uniquely mapped HEVC")?;
+    assert_eq!(media.payload_type(), 98);
+    assert_eq!(media.vps(), &[vec![0x40, 1, 1, 2]]);
+    assert_eq!(media.sps(), &[vec![0x42, 1, 2, 3]]);
+    assert_eq!(media.pps(), &[vec![0x44, 1, 3, 4]]);
+
+    // An exact owner selection cannot borrow payload 98's mapping or parameter sets.
+    let mut unmapped =
+        RtspClientSession::with_codec_and_payload_type(config(), ClientCodec::H265, 99)?;
+    unmapped.request(C::Describe, 0)?;
+    assert_eq!(
+        unmapped.accept(
+            &response(1, &[("Content-Type", "application/sdp")], body.as_bytes()),
+            1,
+        ),
+        Err(E::Description)
+    );
+    assert_eq!(unmapped.state(), S::Failed);
+    assert!(unmapped.hevc_media().is_none());
+    assert!(unmapped.request(C::Setup, 2).is_err());
     Ok(())
 }
 
