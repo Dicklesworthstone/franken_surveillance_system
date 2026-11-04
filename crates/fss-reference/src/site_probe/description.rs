@@ -76,7 +76,7 @@ pub(super) fn inspect(
     let codec = match selection.codec {
         ProbeCodec::Avc => ClientCodec::H264,
         ProbeCodec::Hevc => ClientCodec::H265,
-        ProbeCodec::Jpeg => return Err(SiteProbeError::Selection),
+        ProbeCodec::Jpeg => ClientCodec::Jpeg,
     };
     let media = observe_video_description(&config, &response, codec, None)
         .map_err(|_| SiteProbeError::Description)?;

@@ -156,6 +156,61 @@ fn protocol_scope_and_budget_refusals_do_not_disclose_inputs()
 }
 
 #[test]
+fn jpeg_static_and_dynamic_selections_are_explicit_and_approval_bound()
+-> Result<(), Box<dyn std::error::Error>> {
+    let manifest = manifest()?;
+    let mut options = options(&manifest);
+    let avc_approval = ProbePlan::new(&manifest, &options)?.approval;
+    options.codec = ProbeCodec::Jpeg;
+    let automatic = ProbePlan::new(&manifest, &options)?;
+    let automatic_approval = automatic.approval;
+    assert_ne!(automatic_approval, avc_approval);
+    assert!(automatic.preview()?.contains(JPEG_POLICY));
+    options.payload_type = Some(26);
+    let static_plan = ProbePlan::new(&manifest, &options)?;
+    let static_approval = static_plan.approval;
+    assert_ne!(static_approval, automatic_approval);
+    options.payload_type = Some(97);
+    assert_ne!(
+        ProbePlan::new(&manifest, &options)?.approval,
+        static_approval
+    );
+    options.approve = Some(static_approval);
+    assert_eq!(
+        ProbePlan::new(&manifest, &options)?.check_approval(),
+        Err(APPROVAL_ERROR)
+    );
+    options.payload_type = Some(26);
+    assert_eq!(
+        ProbePlan::new(&manifest, &options)?.check_approval(),
+        Ok(true)
+    );
+    Ok(())
+}
+
+#[test]
+fn static_jpeg_payload_never_enters_an_avc_or_hevc_plan() -> Result<(), Box<dyn std::error::Error>>
+{
+    let manifest = manifest()?;
+    let mut options = options(&manifest);
+    for codec in [ProbeCodec::Avc, ProbeCodec::Hevc] {
+        options.codec = codec;
+        options.payload_type = Some(26);
+        assert_eq!(options.validate(), Err(PLAN_ERROR));
+    }
+    options.codec = ProbeCodec::Jpeg;
+    for payload in [0, 25, 27, 95, 128, 255] {
+        options.payload_type = Some(payload);
+        assert_eq!(options.validate(), Err(PLAN_ERROR));
+    }
+    for payload in [26, 96, 127] {
+        options.payload_type = Some(payload);
+        assert!(ProbePlan::new(&manifest, &options).is_ok());
+    }
+    Ok(())
+}
+
+#[test]
 fn receipt_output_round_trips_the_existing_site_input_contract()
 -> Result<(), Box<dyn std::error::Error>> {
     let receipts = fss_reference::site::parse_probe_receipts(include_bytes!(
@@ -168,7 +223,6 @@ fn receipt_output_round_trips_the_existing_site_input_contract()
     }
     Ok(())
 }
-
 
 #[test]
 fn distinct_sources_have_distinct_stable_ingress_even_in_one_manifest()
@@ -197,7 +251,10 @@ fn distinct_sources_have_distinct_stable_ingress_even_in_one_manifest()
     changed.sources[0].generation += 1;
     let next_generation = ProbePlan::new(&changed, &first_options)?;
     assert_eq!(next_generation.binding.key().ingress, first_key.ingress);
-    assert_eq!(next_generation.binding.key().generation, first_key.generation + 1);
+    assert_eq!(
+        next_generation.binding.key().generation,
+        first_key.generation + 1
+    );
     assert_ne!(next_generation.approval, first.approval);
     Ok(())
 }
@@ -227,7 +284,10 @@ fn changing_output_projection_requires_its_own_exact_approval()
         Some(&fss_core::json_input::Value::Text("session".into()))
     );
     options.approve = Some(session_approval);
-    assert_eq!(ProbePlan::new(&manifest, &options)?.check_approval(), Ok(true));
+    assert_eq!(
+        ProbePlan::new(&manifest, &options)?.check_approval(),
+        Ok(true)
+    );
     assert_eq!(ProbeOutput::Receipts.as_str(), "receipts");
     Ok(())
 }
@@ -249,7 +309,10 @@ fn runtime_reservation_covers_native_buffers_and_preserves_tight_transport_caps(
         assert_eq!(plan.allowance.latency_ms, options.timeout_ms);
         assert_eq!(plan.allowance.model_calls, 0);
         assert_eq!(plan.allowance.tokens, 0);
-        assert_eq!(plan.transport.max_received_bytes, 8 * 1024 * 1024 + 256 * 1024);
+        assert_eq!(
+            plan.transport.max_received_bytes,
+            8 * 1024 * 1024 + 256 * 1024
+        );
         assert_eq!(plan.transport.max_sent_bytes, 64 * 1024);
         assert_eq!(plan.transport.max_request_bytes, 16 * 1024);
         assert_eq!(plan.transport.chunk_bytes, MAX_WIRE_CHUNK);
@@ -266,10 +329,15 @@ fn runtime_reservation_covers_native_buffers_and_preserves_tight_transport_caps(
         };
         assert!(
             plan.allowance.bytes
-                >= (assembly_bytes + nal_bytes + MAX_WIRE_BUFFER
+                >= (assembly_bytes
+                    + nal_bytes
+                    + MAX_WIRE_BUFFER
                     + crate::site_cmd::MAX_SITE_OUTPUT_BYTES) as u64
         );
-        assert_eq!(plan.binding.ssrc_policy(), fss_reference::rtsp::tcp::SsrcPolicy::LearnOnce);
+        assert_eq!(
+            plan.binding.ssrc_policy(),
+            fss_reference::rtsp::tcp::SsrcPolicy::LearnOnce
+        );
     }
     options.timeout_ms = 100;
     let short = ProbePlan::new(&manifest, &options)?;
@@ -294,8 +362,14 @@ fn preview_describes_minimum_native_prefix_and_independently_bound_observer_limi
     for (name, expected) in [
         ("output", "receipts"),
         ("observe_frames_meaning", "minimum_native_picture_groups"),
-        ("unverified_tail_policy", "count_and_omit_after_confirmed_prefix"),
-        ("reservation_basis", "declared_logical_working_bound_not_measured_rss"),
+        (
+            "unverified_tail_policy",
+            "count_and_omit_after_confirmed_prefix",
+        ),
+        (
+            "reservation_basis",
+            "declared_logical_working_bound_not_measured_rss",
+        ),
         ("ssrc_policy", "learn_once"),
     ] {
         assert_eq!(
@@ -310,7 +384,9 @@ fn preview_describes_minimum_native_prefix_and_independently_bound_observer_limi
     let hevc = ProbePlan::new(&manifest, &options)?;
     assert_ne!(hevc.observer_limits_digest, avc_limits);
     assert_ne!(hevc.approval, avc_approval);
-    assert!(observer_limits_digest(ProbeCodec::Jpeg).is_err());
+    let jpeg_limits = observer_limits_digest(ProbeCodec::Jpeg)?;
+    assert_ne!(jpeg_limits, avc_limits);
+    assert_ne!(jpeg_limits, hevc.observer_limits_digest);
     Ok(())
 }
 
@@ -320,24 +396,35 @@ fn nonretaining_probe_does_not_promote_payment_or_rights_declarations()
     let mut manifest = manifest()?;
     let options = options(&manifest);
     manifest.sources[0].retain_originals = false;
-    manifest.sources[0].zones.push(fss_reference::site::SiteZone {
-        zone_id: "zone:payment".into(),
-        kind: "payment".into(),
-        vertices: vec![[0, 0], [100_000, 0], [100_000, 100_000], [0, 100_000]],
-    });
-    manifest.sources[0].payment_masks.push(fss_reference::site::PaymentMask {
-        x: 0,
-        y: 0,
-        width: 100_000,
-        height: 100_000,
-    });
+    manifest.sources[0]
+        .zones
+        .push(fss_reference::site::SiteZone {
+            zone_id: "zone:payment".into(),
+            kind: "payment".into(),
+            vertices: vec![[0, 0], [100_000, 0], [100_000, 100_000], [0, 100_000]],
+        });
+    manifest.sources[0]
+        .payment_masks
+        .push(fss_reference::site::PaymentMask {
+            x: 0,
+            y: 0,
+            width: 100_000,
+            height: 100_000,
+        });
     let plan = ProbePlan::new(&manifest, &options)?;
     let previous = plan.approval;
     let preview = plan.preview()?;
     let value = fss_core::json_input::parse(&preview)?;
     let fields = value.object().ok_or("preview object")?;
-    for field in ["source_retained", "capture_authorized", "rights_verdict_verified"] {
-        assert_eq!(fields.get(field), Some(&fss_core::json_input::Value::Bool(false)));
+    for field in [
+        "source_retained",
+        "capture_authorized",
+        "rights_verdict_verified",
+    ] {
+        assert_eq!(
+            fields.get(field),
+            Some(&fss_core::json_input::Value::Bool(false))
+        );
     }
     manifest.sources[0].rights_verdict_ref = "fldt:rights:still-unverified".into();
     assert_ne!(ProbePlan::new(&manifest, &options)?.approval, previous);

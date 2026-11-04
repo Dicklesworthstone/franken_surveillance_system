@@ -10,7 +10,7 @@ This is the direct RTSP/NVR, AVC/HEVC/JPEG portion of VIT-001 and VIT-002 in
 [the footage-plane plan](VITTLES_FOOTAGE_PLANE_PLAN.md). Planning reads the named
 control documents; it does not contact devices, read credentials, create archives,
 verify signed rights leases or start recording. An independently approved
-[`site probe`](SITE_PROBING.md) can produce an AVC/HEVC receipt from one native
+[`site probe`](SITE_PROBING.md) can produce an AVC/HEVC/JPEG receipt from one native
 RTSP/NVR session. No `site run` or site-wide approval executor is available. The reference implementation remains
 unqualified, with no real-camera measurement implied by a successful plan.
 
@@ -234,7 +234,7 @@ control-file admission checks, not cryptographic provenance or a trusted parent
 directory guarantee.
 
 No command infers success for an unsupported source. ONVIF/UniFi onboarding,
-JPEG live probing, automatic discovery, TLS/RTSPS, signed
+automatic discovery, TLS/RTSPS, signed
 rights-lease verification, site execution, retention rings and agent footage
 queries remain outside this implementation. Existing standalone native tools
 retain their separately documented capabilities.

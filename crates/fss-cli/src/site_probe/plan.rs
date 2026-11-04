@@ -7,6 +7,7 @@
 use fss_core::{BudgetVector, CanonicalEncode, CanonicalEncoder, ContentDigest, PrincipalId};
 use fss_packet::avc::{AvcAssemblyLimits, AvcSyntaxLimits};
 use fss_packet::hevc::{HevcAssemblyLimits, HevcConfigurationLimits};
+use fss_packet::jpeg::{JPEG_RECONSTRUCTION_PROFILE, JpegLimits};
 use fss_packet::{H264Limits, H265Limits, PacketLimits, StreamKey};
 use fss_reference::rtsp::client::ClientConfig;
 use fss_reference::rtsp::framed::{
@@ -52,7 +53,7 @@ pub struct SiteProbeOptions {
     pub codec: ProbeCodec,
     /// Original SDP media ordinal.
     pub media_index: usize,
-    /// Optional exact dynamic RTP payload selection.
+    /// Optional exact RTP payload: dynamic 96..127, or static 26 for JPEG.
     pub payload_type: Option<u8>,
     /// Even RTP channel offered with its consecutive RTCP channel.
     pub rtp_channel: u8,
@@ -76,6 +77,11 @@ exact-plaintext-route:source-specific-ingress:learn-one-ssrc:options-describe-se
 native-syntax-confirmed-prefix:minimum-picture-target:explicit-unverified-tail-omission:\
 progressive-only:constant-90khz-cadence:teardown-ack-required:declared-working-reservation:\
 no-decoded-pixels:no-source-retention:no-archive:no-rights-grant:no-retry:no-redirect";
+const JPEG_POLICY: &str = "site-native-probe:v1:one-source:rtsp-nvr:explicit-jpeg:\
+exact-plaintext-route:source-specific-ingress:learn-one-ssrc:options-describe-setup-play:\
+native-rfc2435-whole-frame-prefix:minimum-picture-target:explicit-unfinished-fragment-omission:\
+constant-90khz-cadence:teardown-ack-required:declared-working-reservation:\
+no-entropy-decode:no-decoded-pixels:no-source-retention:no-archive:no-rights-grant:no-retry:no-redirect";
 pub(crate) const MAX_STEPS: u64 = fss_reference::site::live_probe::MAX_PROBE_STEPS;
 pub(crate) const MAX_IO_CALLS: u64 = MAX_STEPS;
 pub(crate) const MAX_RECEIVED_BYTES: u64 = MAX_PROBE_RTP_BYTES + 256 * 1024;
@@ -91,6 +97,13 @@ pub(crate) const STORAGE_OPERATIONS: u64 = MAX_STEPS * 64;
 const REQUEST_TIMEOUT_NS: u64 = 5_000_000_000;
 const DEFAULT_SESSION_SECONDS: u32 = 60;
 
+fn policy(codec: ProbeCodec) -> &'static str {
+    match codec {
+        ProbeCodec::Avc | ProbeCodec::Hevc => POLICY,
+        ProbeCodec::Jpeg => JPEG_POLICY,
+    }
+}
+
 impl SiteProbeOptions {
     pub(super) fn validate(&self) -> Result<(), &'static str> {
         if self.source.is_empty()
@@ -99,10 +112,11 @@ impl SiteProbeOptions {
                 .source
                 .bytes()
                 .all(|b| b.is_ascii_alphanumeric() || b"._:-".contains(&b))
-            || !matches!(self.codec, ProbeCodec::Avc | ProbeCodec::Hevc)
             || self.media_index > 63
             || self.rtp_channel % 2 != 0
-            || self.payload_type.is_some_and(|p| !(96..=127).contains(&p))
+            || self.payload_type.is_some_and(|p| {
+                !(96..=127).contains(&p) && !(self.codec == ProbeCodec::Jpeg && p == 26)
+            })
             || !(3..=MAX_PROBE_PICTURES).contains(&self.observe_frames)
             || !(100..=60_000).contains(&self.timeout_ms)
             || self.principal.len() > 256
@@ -153,12 +167,8 @@ impl<'a> ProbePlan<'a> {
         identity.text("stream");
         identity.text(&manifest.site_id);
         identity.text(&source.source_id);
-        let stream = ContentDigest::sha256(
-            &identity.finish_checked().map_err(|_| PLAN_ERROR)?,
-        );
-        let ingress = u128::from_be_bytes(
-            stream.bytes()[..16].try_into().map_err(|_| PLAN_ERROR)?,
-        );
+        let stream = ContentDigest::sha256(&identity.finish_checked().map_err(|_| PLAN_ERROR)?);
+        let ingress = u128::from_be_bytes(stream.bytes()[..16].try_into().map_err(|_| PLAN_ERROR)?);
         if ingress == 0 {
             return Err(PLAN_ERROR);
         }
@@ -174,7 +184,10 @@ impl<'a> ProbePlan<'a> {
         )
         .map_err(|_| PLAN_ERROR)?
         .with_auto_ssrc();
-        let timeout_ns = options.timeout_ms.checked_mul(1_000_000).ok_or(PLAN_ERROR)?;
+        let timeout_ns = options
+            .timeout_ms
+            .checked_mul(1_000_000)
+            .ok_or(PLAN_ERROR)?;
         let protocol = ClientConfig {
             presentation_uri: format!(
                 "rtsp://{}{}",
@@ -203,22 +216,29 @@ impl<'a> ProbePlan<'a> {
         let codec = match options.codec {
             ProbeCodec::Avc => fss_reference::rtsp::client::ClientCodec::H264,
             ProbeCodec::Hevc => fss_reference::rtsp::client::ClientCodec::H265,
-            ProbeCodec::Jpeg => return Err(PLAN_ERROR),
+            ProbeCodec::Jpeg => fss_reference::rtsp::client::ClientCodec::Jpeg,
         };
         let _ = match options.payload_type {
-            None => fss_reference::rtsp::client::RtspClientSession::with_codec(
-                protocol.clone(), codec,
-            ),
+            None => {
+                fss_reference::rtsp::client::RtspClientSession::with_codec(protocol.clone(), codec)
+            }
             Some(payload) => {
                 fss_reference::rtsp::client::RtspClientSession::with_codec_and_payload_type(
-                    protocol.clone(), codec, payload,
+                    protocol.clone(),
+                    codec,
+                    payload,
                 )
             }
-        }.map_err(|_| PLAN_ERROR)?;
+        }
+        .map_err(|_| PLAN_ERROR)?;
         transport.validate().map_err(|_| PLAN_ERROR)?;
         let allowance = BudgetVector::builder()
             .bytes(MEMORY_BYTES)
-            .network_bytes(MAX_RECEIVED_BYTES.checked_add(MAX_SENT_BYTES).ok_or(PLAN_ERROR)?)
+            .network_bytes(
+                MAX_RECEIVED_BYTES
+                    .checked_add(MAX_SENT_BYTES)
+                    .ok_or(PLAN_ERROR)?,
+            )
             .storage_operations(STORAGE_OPERATIONS)
             .latency_ms(options.timeout_ms)
             .build()
@@ -226,7 +246,7 @@ impl<'a> ProbePlan<'a> {
         let observer_limits_digest = observer_limits_digest(options.codec)?;
         let mut encoder = CanonicalEncoder::new();
         encoder.text("fss.site_probe_plan.v1");
-        encoder.text(POLICY);
+        encoder.text(policy(options.codec));
         encoder.digest(manifest_digest);
         encoder.u64(source_index as u64);
         encoder.digest(stream);
@@ -310,7 +330,7 @@ impl<'a> ProbePlan<'a> {
         Ok(object(&[
             ("schema", string("fss.site_probe_plan.v1")),
             ("status", string("requires_approval")),
-            ("policy", string(POLICY)),
+            ("policy", string(policy(self.options.codec))),
             ("approval", string(&self.approval.to_text())),
             (
                 "manifest_digest",
@@ -342,9 +362,15 @@ impl<'a> ProbePlan<'a> {
             ),
             ("rtp_channel", self.options.rtp_channel.to_string()),
             ("observe_frames", self.options.observe_frames.to_string()),
-            ("observe_frames_meaning", string("minimum_native_picture_groups")),
+            (
+                "observe_frames_meaning",
+                string("minimum_native_picture_groups"),
+            ),
             ("max_observed_frames", MAX_PROBE_PICTURES.to_string()),
-            ("unverified_tail_policy", string("count_and_omit_after_confirmed_prefix")),
+            (
+                "unverified_tail_policy",
+                string("count_and_omit_after_confirmed_prefix"),
+            ),
             ("output", string(self.options.output.as_str())),
             ("timeout_ms", self.options.timeout_ms.to_string()),
             ("principal", string(&self.options.principal)),
@@ -357,19 +383,40 @@ impl<'a> ProbePlan<'a> {
             ("max_sent_bytes", MAX_SENT_BYTES.to_string()),
             ("max_io_calls", MAX_IO_CALLS.to_string()),
             ("max_steps", MAX_STEPS.to_string()),
-            ("max_request_bytes", self.transport.max_request_bytes.to_string()),
+            (
+                "max_request_bytes",
+                self.transport.max_request_bytes.to_string(),
+            ),
             ("chunk_bytes", self.transport.chunk_bytes.to_string()),
-            ("connect_timeout_ns", self.transport.connect_timeout_ns.to_string()),
-            ("response_timeout_ns", self.protocol.response_timeout_ns.to_string()),
-            ("default_session_timeout_seconds", self.protocol.default_session_timeout_seconds.to_string()),
+            (
+                "connect_timeout_ns",
+                self.transport.connect_timeout_ns.to_string(),
+            ),
+            (
+                "response_timeout_ns",
+                self.protocol.response_timeout_ns.to_string(),
+            ),
+            (
+                "default_session_timeout_seconds",
+                self.protocol.default_session_timeout_seconds.to_string(),
+            ),
             ("max_rtp_packets", MAX_PROBE_RTP_PACKETS.to_string()),
             ("max_rtp_bytes", MAX_PROBE_RTP_BYTES.to_string()),
             ("wait_quantum_ns", WAIT_QUANTUM_NS.to_string()),
             ("max_credential_bytes", MAX_CREDENTIAL_BYTES.to_string()),
             ("max_secret_io_calls", MAX_SECRET_IO_CALLS.to_string()),
-            ("observer_limits_digest", string(&self.observer_limits_digest.to_text())),
-            ("runtime_allowance", crate::agent_json::budget(&self.allowance)),
-            ("reservation_basis", string("declared_logical_working_bound_not_measured_rss")),
+            (
+                "observer_limits_digest",
+                string(&self.observer_limits_digest.to_text()),
+            ),
+            (
+                "runtime_allowance",
+                crate::agent_json::budget(&self.allowance),
+            ),
+            (
+                "reservation_basis",
+                string("declared_logical_working_bound_not_measured_rss"),
+            ),
             ("device_contacted", "false".to_owned()),
             ("credentials_read", "false".to_owned()),
             ("source_retained", "false".to_owned()),
@@ -444,7 +491,15 @@ fn observer_limits_digest(codec: ProbeCodec) -> Result<ContentDigest, &'static s
             // Shared full-SPS validation's fixed RBSP ceiling and progressive-only policy.
             encoder.text("native-hevc-full-sps:rbsp-16384:progressive-only:v1");
         }
-        ProbeCodec::Jpeg => return Err(PLAN_ERROR),
+        ProbeCodec::Jpeg => {
+            let jpeg = JpegLimits::default();
+            encoder.u64(jpeg.max_frame_bytes as u64);
+            encoder.u64(jpeg.max_fragment_packets as u64);
+            encoder.u64(jpeg.max_pending_age_ns);
+            encoder.u64(jpeg.max_cached_quantizers as u64);
+            encoder.u32(u32::from(jpeg.max_dimension));
+            encoder.text(JPEG_RECONSTRUCTION_PROFILE);
+        }
     }
     Ok(ContentDigest::sha256(
         &encoder.finish_checked().map_err(|_| PLAN_ERROR)?,

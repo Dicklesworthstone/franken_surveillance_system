@@ -66,9 +66,9 @@ pub struct LiveSiteProbeConfig {
     pub binding: TcpBinding,
     /// Bounded byte, syscall and connect allowances; never replenished by protocol progress.
     pub transport: TcpLimits,
-    /// AVC or HEVC; other codecs are explicitly unsupported by this receipt producer.
+    /// AVC, HEVC or RFC 2435 JPEG through the existing native media owners.
     pub codec: ProbeCodec,
-    /// Optional exact dynamic payload selection; ambiguity is refused by the existing client.
+    /// Optional exact payload selection (26 for JPEG or 96..=127); ambiguity is refused.
     pub payload_type: Option<u8>,
     /// Absolute owner-clock deadline, at most sixty seconds beyond construction.
     pub deadline_ns: u64,
@@ -321,7 +321,7 @@ impl<'a> LiveSiteProbe<'a> {
         let codec = match config.codec {
             ProbeCodec::Avc => ClientCodec::H264,
             ProbeCodec::Hevc => ClientCodec::H265,
-            ProbeCodec::Jpeg => return Err(fail(ProbeError::Configuration)),
+            ProbeCodec::Jpeg => ClientCodec::Jpeg,
         };
         let media_index = config.protocol.media_index;
         let mut protocol = match config.payload_type {
@@ -643,7 +643,13 @@ impl<'a> LiveSiteProbe<'a> {
                     vec![vps.as_slice(), sps.as_slice(), pps.as_slice()],
                 )
             }
-            ProbeCodec::Jpeg => return Err(ProbeError::Configuration),
+            ProbeCodec::Jpeg => {
+                let media = self
+                    .protocol
+                    .jpeg_media()
+                    .ok_or(ProbeError::Configuration)?;
+                (media.payload_type(), Vec::new())
+            }
         };
         RtspProbeObserver::new(
             self.manifest,
@@ -818,7 +824,6 @@ fn validate_config(
     if !matches!(source.kind, SourceKind::Rtsp | SourceKind::NvrChannel)
         || !source.owner_authorized
         || !source.plaintext
-        || !matches!(config.codec, ProbeCodec::Avc | ProbeCodec::Hevc)
         || config.binding.peer() != source.peer
         || config.binding.authority() != source.authority
         || config.binding.key().generation != source.generation
@@ -841,9 +846,9 @@ fn validate_config(
                     .ok_or(ProbeError::Configuration)?
             )
         || config.protocol.channels.0 % 2 != 0
-        || config
-            .payload_type
-            .is_some_and(|value| !(96..=127).contains(&value))
+        || config.payload_type.is_some_and(|value| {
+            !(96..=127).contains(&value) && !(config.codec == ProbeCodec::Jpeg && value == 26)
+        })
         || !(1..=MAX_PROBE_DURATION_NS).contains(&config.deadline_ns.saturating_sub(now))
         || !(1..=MAX_PROBE_STEPS).contains(&config.max_steps)
         || !(3..=MAX_PROBE_PICTURES).contains(&config.stop_after_pictures)

@@ -11,6 +11,7 @@ use fss_packet::hevc::{
     HevcAssembler, HevcAssemblyLimits, HevcAssemblyOutput, HevcAssemblyStep, HevcBoundary,
     HevcConfiguration, HevcConfigurationLimits, HevcPictureGroup, HevcRetirementReason,
 };
+use fss_packet::jpeg::{JpegDepacketizer, JpegLimits, JpegStatus};
 use fss_packet::{
     H264Depacketizer, H264Limits, H264Mode, H264Status, H265Depacketizer, H265Limits, H265Status,
     RtcpMode, RtpPacket, StreamKey,
@@ -30,6 +31,10 @@ pub(crate) enum PreparedMedia {
     },
     Hevc {
         configuration: HevcConfiguration,
+        payload_type: u8,
+        reduced_rtcp: bool,
+    },
+    Jpeg {
         payload_type: u8,
         reduced_rtcp: bool,
     },
@@ -84,6 +89,10 @@ impl PreparedMedia {
                     reduced_rtcp: media.reduced_rtcp(),
                 })
             }
+            ObservedVideoDescription::Jpeg(media) => Ok(Self::Jpeg {
+                payload_type: media.payload_type(),
+                reduced_rtcp: media.reduced_rtcp(),
+            }),
         }
     }
 
@@ -110,18 +119,28 @@ impl PreparedMedia {
             1 => H264Mode::NonInterleaved,
             _ => return Err(SiteProbeError::Codec),
         };
-        Ok(Self::Avc { sps, pps, mode, payload_type, reduced_rtcp })
+        Ok(Self::Avc {
+            sps,
+            pps,
+            mode,
+            payload_type,
+            reduced_rtcp,
+        })
     }
 
     pub(crate) fn payload_type(&self) -> u8 {
         match self {
-            Self::Avc { payload_type, .. } | Self::Hevc { payload_type, .. } => *payload_type,
+            Self::Avc { payload_type, .. }
+            | Self::Hevc { payload_type, .. }
+            | Self::Jpeg { payload_type, .. } => *payload_type,
         }
     }
 
     pub(crate) fn rtcp_mode(&self) -> RtcpMode {
         let reduced = match self {
-            Self::Avc { reduced_rtcp, .. } | Self::Hevc { reduced_rtcp, .. } => *reduced_rtcp,
+            Self::Avc { reduced_rtcp, .. }
+            | Self::Hevc { reduced_rtcp, .. }
+            | Self::Jpeg { reduced_rtcp, .. } => *reduced_rtcp,
         };
         if reduced {
             RtcpMode::ReducedSize
@@ -144,6 +163,9 @@ impl PreparedMedia {
             .into_iter()
             .map(ContentDigest::sha256)
             .collect(),
+            // JPEG quantizers are validated by the native per-image owner. They
+            // are not out-of-band NAL parameter sets and must not be invented here.
+            Self::Jpeg { .. } => Vec::new(),
         }
     }
 
@@ -190,6 +212,14 @@ impl PreparedMedia {
                     configuration,
                 })))
             }
+            Self::Jpeg { payload_type, .. } => {
+                let depacketizer = JpegDepacketizer::new(key, payload_type, JpegLimits::default())
+                    .map_err(|_| SiteProbeError::Codec)?;
+                Ok(MediaObserver::Jpeg(Box::new(JpegObserver {
+                    key,
+                    depacketizer,
+                })))
+            }
         }
     }
 }
@@ -204,6 +234,7 @@ pub(crate) struct UnobservedTail {
 pub(crate) enum MediaObserver {
     Avc(Box<AvcObserver>),
     Hevc(Box<HevcObserver>),
+    Jpeg(Box<JpegObserver>),
 }
 
 impl MediaObserver {
@@ -217,6 +248,7 @@ impl MediaObserver {
         match self {
             Self::Avc(observer) => observer.push(sequence, packet, step, cadence),
             Self::Hevc(observer) => observer.push(sequence, packet, step, cadence),
+            Self::Jpeg(observer) => observer.push(sequence, packet, step, cadence),
         }
     }
 
@@ -242,6 +274,14 @@ impl MediaObserver {
                 let _ = observer.assembler.cancel();
                 tail
             }
+            Self::Jpeg(observer) => {
+                let tail = UnobservedTail {
+                    nal_bytes: 0,
+                    fragment_bytes: observer.depacketizer.pending_bytes() as u64,
+                };
+                let _ = observer.depacketizer.cancel();
+                tail
+            }
         }
     }
 
@@ -253,7 +293,47 @@ impl MediaObserver {
         match self {
             Self::Avc(observer) => observer.finish(step, cadence),
             Self::Hevc(observer) => observer.finish(step, cadence),
+            Self::Jpeg(observer) => observer.finish(),
         }
+    }
+}
+
+/// Complete native RFC 2435 reconstruction is a transport picture witness,
+/// not proof of valid entropy or decoded pixels. No derived image is retained.
+pub(crate) struct JpegObserver {
+    key: StreamKey,
+    depacketizer: JpegDepacketizer,
+}
+
+impl JpegObserver {
+    fn push(
+        &mut self,
+        sequence: u64,
+        packet: RtpPacket<'_>,
+        step: u64,
+        cadence: &mut Cadence,
+    ) -> Result<(), SiteProbeError> {
+        let output = self
+            .depacketizer
+            .push(self.key, sequence, packet, step)
+            .map_err(|_| SiteProbeError::Codec)?;
+        if output.gap_before
+            || output.discarded.is_some()
+            || output.status == JpegStatus::IgnoredNonIncreasing
+        {
+            return Err(SiteProbeError::Sequence);
+        }
+        if let Some(frame) = output.frame {
+            cadence.observe(frame.timestamp())?;
+        }
+        Ok(())
+    }
+
+    fn finish(&mut self) -> Result<(), SiteProbeError> {
+        if self.depacketizer.finish().is_some() {
+            return Err(SiteProbeError::IncompletePicture);
+        }
+        Ok(())
     }
 }
 

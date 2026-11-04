@@ -12,7 +12,7 @@ use fss_reference::site::live_probe::ProbeAccounting;
 use fss_reference::site::probe_observation::{
     MAX_PROBE_PICTURES, MAX_PROBE_RTP_BYTES, MAX_PROBE_RTP_PACKETS,
 };
-use fss_reference::site::SiteProbeReceipt;
+use fss_reference::site::{ProbeCodec, SiteProbeReceipt};
 
 use super::native::Facts;
 use super::plan::{ProbePlan, receipt_json};
@@ -22,9 +22,16 @@ use crate::json_output::{array, object, string};
 const SCHEMA: &str = "fss.site_probe_session.v1";
 const ENCODING: &str = "ERR-SITE-PROBE-SESSION-EVIDENCE-001";
 const MEASUREMENT_BASIS: &str = "native_rtsp_picture_syntax";
+const JPEG_MEASUREMENT_BASIS: &str = "native_rfc2435_whole_frame_reconstruction";
 const CUTOFF_POLICY: &str = "minimum_confirmed_prefix_with_explicit_tail_omission";
-const RECONCILIATION: &str =
-    "Remote session closure is unconfirmed. Local socket retirement is not a TEARDOWN acknowledgement; no reconnect was attempted.";
+const RECONCILIATION: &str = "Remote session closure is unconfirmed. Local socket retirement is not a TEARDOWN acknowledgement; no reconnect was attempted.";
+
+fn measurement_basis(codec: ProbeCodec) -> &'static str {
+    match codec {
+        ProbeCodec::Avc | ProbeCodec::Hevc => MEASUREMENT_BASIS,
+        ProbeCodec::Jpeg => JPEG_MEASUREMENT_BASIS,
+    }
+}
 
 fn optional_cseq(value: Option<u32>) -> String {
     value.map_or_else(|| "null".to_owned(), |value| value.to_string())
@@ -53,7 +60,10 @@ fn accounting(value: ProbeAccounting) -> String {
             "unfinished_fragment_bytes_excluded",
             value.unfinished_fragment_bytes_excluded.to_string(),
         ),
-        ("rtcp_frames_excluded", value.rtcp_frames_excluded.to_string()),
+        (
+            "rtcp_frames_excluded",
+            value.rtcp_frames_excluded.to_string(),
+        ),
         ("rtcp_bytes_excluded", value.rtcp_bytes_excluded.to_string()),
         (
             "closing_frames_excluded",
@@ -64,7 +74,10 @@ fn accounting(value: ProbeAccounting) -> String {
             value.closing_bytes_excluded.to_string(),
         ),
         ("control_responses", value.control_responses.to_string()),
-        ("discarded_wire_bytes", value.discarded_wire_bytes.to_string()),
+        (
+            "discarded_wire_bytes",
+            value.discarded_wire_bytes.to_string(),
+        ),
     ])
 }
 
@@ -78,11 +91,15 @@ pub(super) fn success(
     receipt.validate_for(plan.manifest).map_err(|_| ENCODING)?;
     let totals = facts.totals.ok_or(ENCODING)?;
     let measured = facts.accounting.ok_or(ENCODING)?;
-    let classified_wire_bytes = measured.rtp_bytes
+    let classified_wire_bytes = measured
+        .rtp_bytes
         .checked_add(measured.rtcp_bytes_excluded)
         .and_then(|bytes| bytes.checked_add(measured.closing_bytes_excluded))
         .ok_or(ENCODING)?;
-    let io_calls = totals.read_calls.checked_add(totals.write_calls).ok_or(ENCODING)?;
+    let io_calls = totals
+        .read_calls
+        .checked_add(totals.write_calls)
+        .ok_or(ENCODING)?;
     if !facts.connection_attempted
         || !facts.teardown_acknowledged
         || facts.remote_session_may_exist
@@ -91,12 +108,17 @@ pub(super) fn success(
         || facts.unsent_request_bytes != 0
         || facts.credentials_loaded != facts.credential_access_attempted
         || facts.credentials_loaded
-            != plan.manifest.sources[plan.source_index].authentication.is_some()
+            != plan.manifest.sources[plan.source_index]
+                .authentication
+                .is_some()
         || receipt.source_id != plan.options.source
         || receipt.codec != plan.options.codec
         || receipt.media_index != plan.options.media_index
         || receipt.rtp_channel != plan.options.rtp_channel
-        || plan.options.payload_type.is_some_and(|value| value != receipt.payload_type)
+        || plan
+            .options
+            .payload_type
+            .is_some_and(|value| value != receipt.payload_type)
         || receipt.observed_frames < plan.options.observe_frames
         || receipt.observed_frames > MAX_PROBE_PICTURES
         || measured.rtp_packets == 0
@@ -136,7 +158,7 @@ fn completion_digest(
 ) -> Result<ContentDigest, &'static str> {
     let mut encoder = CanonicalEncoder::new();
     encoder.text(SCHEMA);
-    encoder.text(MEASUREMENT_BASIS);
+    encoder.text(measurement_basis(plan.options.codec));
     encoder.text(CUTOFF_POLICY);
     encoder.digest(plan.approval);
     encoder.digest(receipt_digest);
@@ -234,15 +256,15 @@ fn render(
             "requested_minimum_pictures",
             plan.options.observe_frames.to_string(),
         ),
-        ("measurement_basis", string(MEASUREMENT_BASIS)),
+        (
+            "measurement_basis",
+            string(measurement_basis(plan.options.codec)),
+        ),
         ("cutoff_policy", string(CUTOFF_POLICY)),
         ("receipt_digest", receipt_digest),
         ("completion_digest", completion),
         ("receipts", receipts),
-        (
-            "error_id",
-            error.map_or_else(|| "null".to_owned(), string),
-        ),
+        ("error_id", error.map_or_else(|| "null".to_owned(), string)),
         ("exit_id", string(exit.identifier)),
         ("exit_code", exit.code.to_string()),
         (
@@ -264,7 +286,10 @@ fn render(
         ),
         ("pending_cseq", optional_cseq(facts.pending_cseq)),
         ("request_sent_bytes", facts.request_sent_bytes.to_string()),
-        ("unsent_request_bytes", facts.unsent_request_bytes.to_string()),
+        (
+            "unsent_request_bytes",
+            facts.unsent_request_bytes.to_string(),
+        ),
         ("last_observed_ns", facts.last_observed_ns.to_string()),
         (
             "transport",
@@ -272,9 +297,14 @@ fn render(
         ),
         (
             "accounting",
-            facts.accounting.map_or_else(|| "null".to_owned(), accounting),
+            facts
+                .accounting
+                .map_or_else(|| "null".to_owned(), accounting),
         ),
-        ("runtime_allowance", crate::agent_json::budget(&plan.allowance)),
+        (
+            "runtime_allowance",
+            crate::agent_json::budget(&plan.allowance),
+        ),
         ("receipt_issued", completed.is_some().to_string()),
         ("source_retained", "false".to_owned()),
         ("raw_media_returned", "false".to_owned()),

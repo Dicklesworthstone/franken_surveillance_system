@@ -1,6 +1,6 @@
 # Approved native site probing
 
-`fss site probe` obtains one bounded AVC or HEVC observation from an explicitly
+`fss site probe` obtains one bounded AVC, HEVC or JPEG observation from an explicitly
 selected RTSP camera or NVR channel. It uses the manifest's exact literal peer,
 authority and permitted RTSP control subtree. By default, successful stdout is a
 one-element array of `fss.site_probe_receipt.v1` objects, ready for
@@ -36,12 +36,12 @@ manifest, source, codec, media selection, payload, channel, observation count,
 deadline, output selection or principal invalidates the approval before network or credential work.
 The command never approves itself or retries the camera automatically.
 
-`--codec avc|hevc` and `--source` are required. Defaults are media index 0, RTP
+`--codec avc|hevc|jpeg` and `--source` are required. Defaults are media index 0, RTP
 channel 0 with RTCP channel 1, a minimum of six native picture groups, ten seconds, and
 `principal:local-operator`. `--payload-type 96..127` optionally selects an exact
-dynamic payload when SDP offers more than one. Media indices are 0 through 63;
+dynamic payload when SDP offers more than one; JPEG also admits static payload 26. Media indices are 0 through 63;
 RTP channels are even values from 0 through 254. Samples allow a requested minimum of 3 through 64
-native syntax-confirmed picture groups and 100 through 60000 milliseconds for the whole operation,
+native syntax-confirmed picture groups (or complete reconstructed JPEG frames) and 100 through 60000 milliseconds for the whole operation,
 including connection, negotiation, authentication and remote close.
 
 Probe sources one at a time. A multi-source site plan requires one receipt for
@@ -64,6 +64,13 @@ boundaries, and timestamp increments must remain constant under explicit RTP
 wrapping. Markers alone cannot create a picture. Field-coded configurations,
 unsupported sequence syntax and changed parameter sets refuse the observation.
 
+For JPEG, the same session owner uses the existing RFC 2435 depacketizer. Only a
+complete reconstructed frame counts; an RTP marker without its ordered fragments
+does not suffice. Fragment offsets, dimensions, type, quantizer mappings and
+pending-frame lifetime must satisfy the native reconstruction contract. JPEG has
+no external parameter-set digests. Reconstruction checks the transport/header
+profile and does not decode or certify the entropy-coded pixels.
+
 The picture target is a minimum: one RTP aggregation packet is processed
 atomically and may confirm several groups, subject to the hard 64-picture ceiling.
 The observer freezes only the confirmed prefix. A following unverified NAL group
@@ -82,7 +89,8 @@ The limits are fixed and approval-bound: at most 65536 driver steps and socket
 calls, 8 MiB plus 256 KiB of total received wire bytes, and 64 KiB of sent requests.
 The strict observer also limits selected RTP to 4096 packets and 8 MiB. Limits
 never renew during negotiation or progress. The plan also binds the actual
-codec/parser/assembly limit profile, exact request/chunk/connect/response limits,
+codec/parser/assembly limit profile (including JPEG dimensions, fragments, pending
+lifetime and quantizer cache), exact request/chunk/connect/response limits,
 credential bounds, one-millisecond maximum wait, and the complete runtime
 allowance. The runtime reserves 64 MiB of logical native working capacity and
 4,194,304 metadata operations before effects; this is not a measured allocator or
@@ -111,6 +119,9 @@ An approved session returns
 Successful output has `status: "measured"`, one element in `receipts`,
 the exact receipt digest, and a canonical `completion_digest`. Its
 `receipts` member can be saved as the existing `site plan --probes` input.
+JPEG reports use `measurement_basis: "native_rfc2435_whole_frame_reconstruction"`;
+AVC/HEVC preserve their existing `native_rtsp_picture_syntax` basis and approval
+bytes. JPEG has a distinct approval policy that explicitly excludes entropy decoding.
 The default `--output receipts` continues to provide that array directly.
 
 The report records actual received/sent bytes, read/write calls, last sent CSeq,
@@ -122,7 +133,7 @@ meanings and must not be summed as if they were independent originals:
 | `discarded_wire_bytes` | Every received wire byte deliberately not retained, including control and unread suffixes. |
 | `rtp_bytes` | Whole selected RTP datagrams accepted into the native observation. |
 | `rtcp_bytes_excluded` / `closing_bytes_excluded` | Payloads deliberately excluded from observation or received while closing. |
-| `unverified_nal_bytes_excluded` | Reconstructed complete NAL bytes in the unverified next group at the cutoff. |
+| `unverified_nal_bytes_excluded` | Reconstructed complete NAL bytes in the unverified next group at the cutoff; zero for JPEG. |
 | `unfinished_fragment_bytes_excluded` | Reconstructed bytes from an unfinished fragment at the cutoff. |
 
 Reconstructed tail counts overlap received originals. They do not establish how
@@ -178,11 +189,11 @@ closure from EOF or silently reacquire the stream.
 
 This supplies the native RTSP/NVR producer portion of VIT-003. It is a short
 observation, not continuous recording, decoded-picture validation or a liveness
-certificate. Plaintext LAN/VPN routes and explicit AVC/HEVC selections are the
-supported profile. JPEG live probing, ONVIF/UniFi route resolution, TLS, automatic
+certificate. Plaintext LAN/VPN routes and explicit AVC/HEVC/JPEG selections are the
+supported profile. ONVIF/UniFi route resolution, TLS, automatic
 all-source probing, authenticated/fresh receipt envelopes and a site recorder
-remain separate work. JPEG capture planning accepts valid supplied JPEG receipts
-through its existing contract.
+remain separate work. Native and recorded JPEG probes now supply receipts
+accepted by the existing JPEG capture planner.
 
 This is a standalone owner-approved reference capability, suitable for an owner's
 lab. Customer collection under the [Vittles plan](VITTLES_FOOTAGE_PLANE_PLAN.md)

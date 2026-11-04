@@ -35,11 +35,15 @@ const POLICY: &str = "offline-measured-site-probe:v1:native-describe-and-picture
 strict-contiguous-single-stream:constant-rtp-cadence:all-bytes-or-refuse:\
 operator-route-and-channels:no-origin-authentication:no-liveness:no-custody:\
 no-decoded-completeness:no-clock-trust";
+const JPEG_POLICY: &str = "offline-measured-site-probe-jpeg:v1:native-describe-and-rfc2435-owner:\
+complete-transport-images:strict-contiguous-single-stream:constant-rtp-cadence:\
+all-bytes-or-refuse:operator-route-and-channels:no-origin-authentication:\
+no-liveness:no-custody:no-entropy-validation:no-decoded-completeness:no-clock-trust";
 
 /// Explicit media choice; the payload is selected only if the native SDP owner finds one.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ProbeSelection {
-    /// AVC or HEVC. JPEG has no implemented picture observer in this slice.
+    /// AVC, HEVC or RFC 2435 JPEG, using the existing native picture/reconstruction owners.
     pub codec: ProbeCodec,
     /// Exact source SDP media section, from 0 through 63.
     pub media_index: usize,
@@ -237,8 +241,7 @@ pub fn measure_probe(
     if !matches!(source.kind, SourceKind::Rtsp | SourceKind::NvrChannel) {
         return Err(SiteProbeError::SourceKind);
     }
-    if !matches!(selection.codec, ProbeCodec::Avc | ProbeCodec::Hevc)
-        || selection.media_index > 63
+    if selection.media_index > 63
         || selection.rtp_channel % 2 != 0
         || selection.rtp_channel.checked_add(1).is_none()
     {
@@ -380,7 +383,11 @@ pub fn measure_probe(
         .map_err(|_| SiteProbeError::Encoding)?;
     let mut evidence = CanonicalEncoder::new();
     evidence.text("fss.site_measured_probe.v1");
-    evidence.text(POLICY);
+    evidence.text(if selection.codec == ProbeCodec::Jpeg {
+        JPEG_POLICY
+    } else {
+        POLICY
+    });
     evidence.digest(manifest_digest);
     evidence.text(source_id);
     evidence.digest(describe_digest);
@@ -400,6 +407,17 @@ pub fn measure_probe(
     evidence.u64(MAX_PROBE_RECORDS as u64);
     evidence.u32(MAX_MEASURED_PROBE_FRAMES);
     evidence.u32(MIN_MEASURED_PROBE_FRAMES);
+    if selection.codec == ProbeCodec::Jpeg {
+        // Preserve all existing AVC/HEVC identities while binding this newly
+        // admitted reconstruction contract and every native per-image bound.
+        let limits = fss_packet::jpeg::JpegLimits::default();
+        evidence.text(fss_packet::jpeg::JPEG_RECONSTRUCTION_PROFILE);
+        evidence.u64(limits.max_frame_bytes as u64);
+        evidence.u64(limits.max_fragment_packets as u64);
+        evidence.u64(limits.max_pending_age_ns);
+        evidence.u64(limits.max_cached_quantizers as u64);
+        evidence.u32(u32::from(limits.max_dimension));
+    }
     Ok(MeasuredProbe {
         receipt,
         evidence_digest: encoded_digest(evidence)?,

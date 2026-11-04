@@ -11,6 +11,9 @@ const AVC_RTP: &[u8] = include_bytes!("../../../../fixtures/site_probe/avc.rtpdu
 const HEVC_DESCRIPTION: &[u8] =
     include_bytes!("../../../../fixtures/site_probe/hevc.describe.rtsp");
 const HEVC_RTP: &[u8] = include_bytes!("../../../../fixtures/site_probe/hevc.rtpdump");
+const JPEG_DESCRIPTION: &[u8] =
+    include_bytes!("../../../../fixtures/site_probe/jpeg.describe.rtsp");
+const JPEG_RTP: &[u8] = include_bytes!("../../../../fixtures/site_probe/jpeg.rtpdump");
 const SOURCE: &str = "source:front";
 const FIRST: u32 = 0xffff_f000;
 const TICKS: u32 = 3600;
@@ -86,7 +89,7 @@ fn sdp_changed(response: &[u8], edit: impl FnOnce(&str) -> String) -> Test<Vec<u
 }
 
 #[test]
-fn real_avc_and_hevc_syntax_measure_exact_wrapping_cadence() -> Test {
+fn native_avc_hevc_and_jpeg_measure_exact_wrapping_cadence() -> Test {
     for (codec, response, dump, frames, packets, payload_type, ssrc, sets) in [
         (
             ProbeCodec::Avc,
@@ -107,6 +110,16 @@ fn real_avc_and_hevc_syntax_measure_exact_wrapping_cadence() -> Test {
             98,
             0x5566_7788,
             3,
+        ),
+        (
+            ProbeCodec::Jpeg,
+            JPEG_DESCRIPTION,
+            JPEG_RTP,
+            3,
+            6,
+            26,
+            0x99aa_bbcc,
+            0,
         ),
     ] {
         let result = measured(codec, response, dump)?;
@@ -616,7 +629,7 @@ fn public_values_and_resource_bounds_are_checked_before_receipt_production() -> 
     for bad in [
         ProbeSelection {
             codec: ProbeCodec::Jpeg,
-            media_index: 0,
+            media_index: 64,
             rtp_channel: 0,
         },
         ProbeSelection {
@@ -821,5 +834,92 @@ fn hevc_vui_field_sequence_cannot_mint_frame_cadence() -> Test {
         ),
         Err(SiteProbeError::Codec)
     );
+    Ok(())
+}
+
+#[test]
+fn recorded_jpeg_uses_native_static_and_dynamic_payload_selection_without_fallback() -> Test {
+    let manifest = parse_manifest(MANIFEST)?;
+    let dynamic = sdp_changed(JPEG_DESCRIPTION, |body| {
+        body.replace(
+            "m=video 0 RTP/AVP 26\r\n",
+            "m=video 0 RTP/AVP 99\r\na=rtpmap:99 JPEG/90000\r\n",
+        )
+    })?;
+    let mut dump = JPEG_RTP.to_vec();
+    for span in packet_spans(JPEG_RTP)? {
+        dump[span.start + 1] = (dump[span.start + 1] & 0x80) | 99;
+    }
+    let result = measured(ProbeCodec::Jpeg, &dynamic, &dump)?;
+    assert_eq!(result.receipt().payload_type, 99);
+    assert_eq!(result.receipt().observed_frames, 3);
+    assert!(result.receipt().parameter_set_digests.is_empty());
+
+    for bad in [
+        sdp_changed(&dynamic, |body| {
+            body.replace("a=rtpmap:99 JPEG/90000\r\n", "")
+        })?,
+        sdp_changed(&dynamic, |body| body.replace("JPEG/90000", "H264/90000"))?,
+        sdp_changed(&dynamic, |body| body.replace("RTP/AVP 99", "RTP/AVP 26 99"))?,
+        sdp_changed(&dynamic, |body| format!("{body}a=fmtp:99 quality=50\r\n"))?,
+        sdp_changed(JPEG_DESCRIPTION, |body| {
+            format!("{body}a=rtpmap:26 H264/90000\r\n")
+        })?,
+    ] {
+        assert_eq!(
+            measure_probe(&manifest, SOURCE, &selection(ProbeCodec::Jpeg), &bad, &dump),
+            Err(SiteProbeError::Description)
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn recorded_jpeg_requires_whole_frames_and_contiguous_single_source_cadence() -> Test {
+    let manifest = parse_manifest(MANIFEST)?;
+    let spans = packet_spans(JPEG_RTP)?;
+    let records = record_spans(JPEG_RTP)?;
+    let missing_end = &JPEG_RTP[..records.last().ok_or("fixture record")?.start];
+    assert_eq!(
+        measure_probe(
+            &manifest,
+            SOURCE,
+            &selection(ProbeCodec::Jpeg),
+            JPEG_DESCRIPTION,
+            missing_end
+        ),
+        Err(SiteProbeError::IncompletePicture)
+    );
+    for (fault, expected) in [
+        (0, SiteProbeError::Sequence),
+        (1, SiteProbeError::StreamChanged),
+        (2, SiteProbeError::Cadence),
+        (3, SiteProbeError::IncompletePicture),
+        (4, SiteProbeError::Codec),
+    ] {
+        let mut dump = JPEG_RTP.to_vec();
+        let second = spans[1].start;
+        match fault {
+            0 => dump[second + 3] ^= 1,
+            1 => dump[second + 11] ^= 1,
+            2 => replace_timestamp(
+                &mut dump,
+                FIRST.wrapping_add(2 * TICKS),
+                FIRST.wrapping_add(2 * TICKS + 1),
+            )?,
+            3 => dump[spans.last().ok_or("fixture last packet")?.start + 1] &= 0x7f,
+            _ => dump[spans[0].start + 15] = 1,
+        }
+        assert_eq!(
+            measure_probe(
+                &manifest,
+                SOURCE,
+                &selection(ProbeCodec::Jpeg),
+                JPEG_DESCRIPTION,
+                &dump
+            ),
+            Err(expected)
+        );
+    }
     Ok(())
 }

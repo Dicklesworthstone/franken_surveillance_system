@@ -32,6 +32,8 @@ const AVC_DESCRIPTION: &[u8] = include_bytes!("../../../fixtures/site_probe/avc.
 const HEVC_DESCRIPTION: &[u8] = include_bytes!("../../../fixtures/site_probe/hevc.describe.rtsp");
 const AVC_RTP: &[u8] = include_bytes!("../../../fixtures/site_probe/avc.rtpdump");
 const HEVC_RTP: &[u8] = include_bytes!("../../../fixtures/site_probe/hevc.rtpdump");
+const JPEG_DESCRIPTION: &[u8] = include_bytes!("../../../fixtures/site_probe/jpeg.describe.rtsp");
+const JPEG_RTP: &[u8] = include_bytes!("../../../fixtures/site_probe/jpeg.rtpdump");
 const AVC_SPS: &str = "Z0LAC9oKEbARAAADAAEAAAMAMg8UKqA=";
 const AVC_PPS: &str = "aM4PLIA=";
 const HEVC_VPS: &str = "QAEMAf//AWAAAAMAkAAAAwAAAwAekoCQ";
@@ -189,7 +191,7 @@ fn config(manifest: &SiteManifest, codec: ProbeCodec) -> Result<LiveSiteProbeCon
             connect_timeout_ns: 1_000_000_000,
         },
         codec,
-        payload_type: Some(if codec == ProbeCodec::Hevc { 98 } else { 96 }),
+        payload_type: Some(fixture_payload_type(codec)),
         deadline_ns: 10_000_000_000,
         max_steps: MAX_PROBE_STEPS,
         stop_after_pictures: 3,
@@ -255,18 +257,26 @@ fn write_chunks(socket: &mut TcpStream, bytes: &[u8], chunk_size: usize) -> io::
 }
 
 fn fixture_ssrc(codec: ProbeCodec) -> u32 {
-    if codec == ProbeCodec::Hevc {
-        0x5566_7788
-    } else {
-        0x1122_3344
+    match codec {
+        ProbeCodec::Avc => 0x1122_3344,
+        ProbeCodec::Hevc => 0x5566_7788,
+        ProbeCodec::Jpeg => 0x99aa_bbcc,
+    }
+}
+
+fn fixture_payload_type(codec: ProbeCodec) -> u8 {
+    match codec {
+        ProbeCodec::Avc => 96,
+        ProbeCodec::Hevc => 98,
+        ProbeCodec::Jpeg => 26,
     }
 }
 
 fn sdp(codec: ProbeCodec) -> &'static [u8] {
-    let response = if codec == ProbeCodec::Hevc {
-        HEVC_DESCRIPTION
-    } else {
-        AVC_DESCRIPTION
+    let response = match codec {
+        ProbeCodec::Avc => AVC_DESCRIPTION,
+        ProbeCodec::Hevc => HEVC_DESCRIPTION,
+        ProbeCodec::Jpeg => JPEG_DESCRIPTION,
     };
     let body = response
         .windows(4)
@@ -297,10 +307,10 @@ fn scenario_sdp(scenario: Scenario) -> io::Result<Vec<u8>> {
 }
 
 fn fixture_packets(codec: ProbeCodec) -> io::Result<Vec<Vec<u8>>> {
-    let bytes = if codec == ProbeCodec::Hevc {
-        HEVC_RTP
-    } else {
-        AVC_RTP
+    let bytes = match codec {
+        ProbeCodec::Avc => AVC_RTP,
+        ProbeCodec::Hevc => HEVC_RTP,
+        ProbeCodec::Jpeg => JPEG_RTP,
     };
     let mut reader = RtpDumpReader::new(bytes, RtpDumpLimits::default())
         .map_err(|_| io::Error::other("checked-in RTPdump header"))?;
@@ -330,11 +340,7 @@ fn scenario_packets(scenario: Scenario) -> io::Result<Vec<Vec<u8>>> {
     ) {
         let mut packets = Vec::new();
         for index in 0u16..4 {
-            let payload_type = if scenario.codec == ProbeCodec::Hevc {
-                98
-            } else {
-                96
-            };
+            let payload_type = fixture_payload_type(scenario.codec);
             let mut packet = vec![0x80, 0x80 | payload_type];
             packet.extend_from_slice(&65534u16.wrapping_add(index).to_be_bytes());
             packet.extend_from_slice(
@@ -680,18 +686,15 @@ fn assert_fixture_measurement(completed: &Completion, codec: ProbeCodec, late: b
         completed.receipt.last_rtp_timestamp,
         FIRST_TIMESTAMP.wrapping_add(2 * FRAME_TICKS)
     );
-    assert_eq!(
-        completed.receipt.payload_type,
-        if codec == ProbeCodec::Hevc { 98 } else { 96 }
-    );
+    assert_eq!(completed.receipt.payload_type, fixture_payload_type(codec));
     assert_eq!(
         completed.receipt.sdp_digest,
         ContentDigest::sha256(sdp(codec))
     );
-    let encoded: &[&str] = if codec == ProbeCodec::Hevc {
-        &[HEVC_VPS, HEVC_SPS, HEVC_PPS]
-    } else {
-        &[AVC_SPS, AVC_PPS]
+    let encoded: &[&str] = match codec {
+        ProbeCodec::Avc => &[AVC_SPS, AVC_PPS],
+        ProbeCodec::Hevc => &[HEVC_VPS, HEVC_SPS, HEVC_PPS],
+        ProbeCodec::Jpeg => &[],
     };
     let expected = encoded
         .iter()
@@ -727,8 +730,8 @@ fn assert_fixture_measurement(completed: &Completion, codec: ProbeCodec, late: b
     );
     assert_eq!(accounting.unfinished_fragment_bytes_excluded, 0);
     assert!(accounting.unverified_nal_bytes_excluded <= accounting.rtp_bytes);
-    if codec == ProbeCodec::Hevc {
-        // The retained EOS syntax closes the last native picture without inventing a tail.
+    if codec != ProbeCodec::Avc {
+        // HEVC EOS or the complete final JPEG closes the sample without inventing a tail.
         assert_eq!(accounting.unverified_nal_bytes_excluded, 0);
         assert_eq!(accounting.rtp_packets, sent_packets);
     }
@@ -777,6 +780,33 @@ fn native_hevc_uses_exact_selected_parameter_sets_without_decoding() -> Test {
     })?;
     let completed = result?;
     assert_fixture_measurement(&completed, ProbeCodec::Hevc, false)?;
+    Ok(())
+}
+
+#[test]
+fn native_jpeg_completes_fragmented_authenticated_probe_and_waits_for_teardown() -> Test {
+    let (result, log) = run(Scenario {
+        codec: ProbeCodec::Jpeg,
+        digest: true,
+        chunks: 1,
+        late_media: true,
+        ..Scenario::default()
+    })?;
+    let completed = result?;
+    assert_fixture_measurement(&completed, ProbeCodec::Jpeg, true)?;
+    assert_eq!(
+        log.methods,
+        [
+            "OPTIONS", "OPTIONS", "DESCRIBE", "SETUP", "PLAY", "TEARDOWN"
+        ]
+    );
+    assert_eq!(log.signed_requests, 5);
+    assert_eq!(completed.accounting.rtp_packets, 6);
+    assert_eq!(completed.accounting.control_responses, 6);
+    assert!(!completed.close.remote_session_may_exist);
+    for canary in [SERVER_CANARY, SESSION_CANARY, PASSWORD, "/live/main"] {
+        assert!(!format!("{completed:?}").contains(canary));
+    }
     Ok(())
 }
 
@@ -849,62 +879,68 @@ fn foreign_realm_refuses_without_a_signed_request_or_secret_output() -> Test {
 
 #[test]
 fn sender_gaps_cadence_and_channel_faults_never_publish_a_sample() -> Test {
-    for (fault, expected) in [
-        (
-            MediaFault::Sender,
-            ProbeError::Observation(ObservationError::Continuity),
-        ),
-        (
-            MediaFault::Sequence,
-            ProbeError::Observation(ObservationError::Continuity),
-        ),
-        (
-            MediaFault::Cadence,
-            ProbeError::Observation(ObservationError::Cadence),
-        ),
-        (
-            MediaFault::ForeignChannel,
-            ProbeError::Session(ClientError::MediaNotAdmitted),
-        ),
-    ] {
-        let (result, log) = run(Scenario {
-            media_fault: fault,
-            ..Scenario::default()
-        })?;
-        let Err(error) = result else {
-            return Err("malformed sample was accepted".into());
-        };
-        assert_eq!(error.reason, expected);
-        let retired = error.retirement.ok_or("missing retirement")?;
-        assert!(retired.close.remote_session_may_exist);
-        assert!(!retired.teardown_acknowledged);
-        assert!(!log.methods.iter().any(|method| method == "TEARDOWN"));
+    for codec in [ProbeCodec::Avc, ProbeCodec::Jpeg] {
+        for (fault, expected) in [
+            (
+                MediaFault::Sender,
+                ProbeError::Observation(ObservationError::Continuity),
+            ),
+            (
+                MediaFault::Sequence,
+                ProbeError::Observation(ObservationError::Continuity),
+            ),
+            (
+                MediaFault::Cadence,
+                ProbeError::Observation(ObservationError::Cadence),
+            ),
+            (
+                MediaFault::ForeignChannel,
+                ProbeError::Session(ClientError::MediaNotAdmitted),
+            ),
+        ] {
+            let (result, log) = run(Scenario {
+                codec,
+                media_fault: fault,
+                ..Scenario::default()
+            })?;
+            let Err(error) = result else {
+                return Err("malformed sample was accepted".into());
+            };
+            assert_eq!(error.reason, expected);
+            let retired = error.retirement.ok_or("missing retirement")?;
+            assert!(retired.close.remote_session_may_exist);
+            assert!(!retired.teardown_acknowledged);
+            assert!(!log.methods.iter().any(|method| method == "TEARDOWN"));
+        }
     }
     Ok(())
 }
 
 #[test]
 fn complete_sample_without_matching_teardown_ack_remains_indeterminate() -> Test {
-    for close in [CloseMode::Drop, CloseMode::WrongCseq] {
-        let (result, log) = run(Scenario {
-            close,
-            ..Scenario::default()
-        })?;
-        let Err(error) = result else {
-            return Err("unacknowledged close was accepted".into());
-        };
-        let retired = error.retirement.ok_or("missing retirement")?;
-        assert!(retired.close.remote_session_may_exist);
-        assert_eq!(retired.close.pending_cseq, Some(5));
-        assert!(retired.accounting.rtp_packets > 3);
-        assert!(!retired.teardown_acknowledged);
-        assert_eq!(
-            log.methods
-                .iter()
-                .filter(|method| *method == "TEARDOWN")
-                .count(),
-            1
-        );
+    for codec in [ProbeCodec::Avc, ProbeCodec::Jpeg] {
+        for close in [CloseMode::Drop, CloseMode::WrongCseq] {
+            let (result, log) = run(Scenario {
+                codec,
+                close,
+                ..Scenario::default()
+            })?;
+            let Err(error) = result else {
+                return Err("unacknowledged close was accepted".into());
+            };
+            let retired = error.retirement.ok_or("missing retirement")?;
+            assert!(retired.close.remote_session_may_exist);
+            assert_eq!(retired.close.pending_cseq, Some(5));
+            assert!(retired.accounting.rtp_packets > 3);
+            assert!(!retired.teardown_acknowledged);
+            assert_eq!(
+                log.methods
+                    .iter()
+                    .filter(|method| *method == "TEARDOWN")
+                    .count(),
+                1
+            );
+        }
     }
     Ok(())
 }
@@ -926,6 +962,25 @@ fn truncated_interleaved_tail_is_not_clean_completion() -> Test {
             .close
             .remote_session_may_exist
     );
+    Ok(())
+}
+
+#[test]
+fn jpeg_marked_invalid_payload_and_truncated_transport_never_publish_receipts() -> Test {
+    for media_fault in [MediaFault::MarkerOnly, MediaFault::Truncated] {
+        let (result, log) = run(Scenario {
+            codec: ProbeCodec::Jpeg,
+            media_fault,
+            ..Scenario::default()
+        })?;
+        let Err(error) = result else {
+            return Err("invalid JPEG probe was accepted".into());
+        };
+        let retired = error.retirement.ok_or("missing JPEG retirement")?;
+        assert!(retired.close.remote_session_may_exist);
+        assert!(!retired.teardown_acknowledged);
+        assert!(!log.methods.iter().any(|method| method == "TEARDOWN"));
+    }
     Ok(())
 }
 
@@ -1075,7 +1130,7 @@ fn invalid_scope_and_authentication_drift_refuse_before_connect() -> Test {
                     policy: DigestPolicy::default(),
                 })
             }
-            4 => options.codec = ProbeCodec::Jpeg,
+            4 => options.payload_type = Some(26),
             5 => options.deadline_ns = 60_000_000_001,
             _ => {
                 options.binding = TcpBinding::new(

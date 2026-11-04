@@ -76,7 +76,8 @@
     "codec": {
       "enum": [
         "avc",
-        "hevc"
+        "hevc",
+        "jpeg"
       ]
     },
     "requested_minimum_pictures": {
@@ -85,7 +86,10 @@
       "maximum": 64
     },
     "measurement_basis": {
-      "const": "native_rtsp_picture_syntax"
+      "enum": [
+        "native_rtsp_picture_syntax",
+        "native_rfc2435_whole_frame_reconstruction"
+      ]
     },
     "cutoff_policy": {
       "const": "minimum_confirmed_prefix_with_explicit_tail_omission"
@@ -124,7 +128,8 @@
               "codec": {
                 "enum": [
                   "avc",
-                  "hevc"
+                  "hevc",
+                  "jpeg"
                 ]
               },
               "observed_frames": {
@@ -391,6 +396,102 @@
         "properties": {
           "credential_access_attempted": {
             "const": true
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "codec": {
+            "const": "jpeg"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "measurement_basis": {
+            "const": "native_rfc2435_whole_frame_reconstruction"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "measurement_basis": {
+            "const": "native_rtsp_picture_syntax"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "codec": {
+            "const": "avc"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "receipts": {
+            "items": {
+              "properties": {
+                "codec": {
+                  "const": "avc"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "codec": {
+            "const": "hevc"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "receipts": {
+            "items": {
+              "properties": {
+                "codec": {
+                  "const": "hevc"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "codec": {
+            "const": "jpeg"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "receipts": {
+            "items": {
+              "properties": {
+                "codec": {
+                  "const": "jpeg"
+                }
+              }
+            }
+          },
+          "accounting": {
+            "properties": {
+              "unverified_nal_bytes_excluded": {
+                "const": 0
+              }
+            }
           }
         }
       }

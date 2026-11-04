@@ -39,7 +39,7 @@ operation states rather than generic errors.
 | `ERR-SITE-PROBE-PACKET-001` | RTPdump or complete RTP/RTCP framing is malformed, truncated or capture-limited | Provide complete original datagrams; never pad missing bytes. |
 | `ERR-SITE-PROBE-CONTINUITY-001` | Observed RTP has loss, duplication, reordering, sender drift or payload drift | Acquire a new contiguous single-stream sample; do not hide gaps. |
 | `ERR-SITE-PROBE-PICTURE-001` | Native codec reconstruction, configuration or picture-boundary admission failed | Provide a complete supported sample with exact parameter sets and witnessed picture boundaries. |
-| `ERR-SITE-PROBE-CADENCE-001` | Fewer than three syntax-grouped pictures or no single positive fixed RTP cadence | Acquire at least three consecutive pictures under one supported constant-cadence source configuration. |
+| `ERR-SITE-PROBE-CADENCE-001` | Fewer than three native picture groups or complete JPEG reconstructions, or no single positive fixed RTP cadence | Acquire at least three consecutive pictures under one supported constant-cadence source configuration. |
 | `ERR-SITE-PROBE-ENCODING-001` | Complete canonical measured-evidence or resulting receipt identity cannot be constructed | Correct the exact input; no partial receipt or replacement identity. |
 | `ERR-SITE-INPUT-LIMIT-001` | Complete site/probe input, source count, geometry or canonical fingerprint exceeds a hard bound | Narrow the complete request; no truncation or partial acceptance. |
 | `ERR-SITE-JSON-001` | Site input is not strict bounded UTF-8 JSON, including duplicate keys or trailing input | Correct the document; diagnostics never include input bytes. |

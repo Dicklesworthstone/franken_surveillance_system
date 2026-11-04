@@ -11,9 +11,11 @@ use fss_core::ContentDigest;
 use fss_packet::{PacketLimits, RtpPacket, StreamKey};
 
 use super::{ProbeCodec, SiteManifest, SiteProbeReceipt, SourceKind};
-use crate::rtsp::client::hevc;
 use crate::rtsp::client::observed::ObservedVideoDescription;
-use crate::rtsp::selection::{MAX_SELECTION_BYTES, select_h264_description, select_h265_description};
+use crate::rtsp::client::{hevc, jpeg};
+use crate::rtsp::selection::{
+    MAX_SELECTION_BYTES, select_h264_description, select_h265_description, select_jpeg_description,
+};
 use crate::site_probe::media::{MediaObserver, PreparedMedia};
 use crate::site_probe::{Cadence, SiteProbeError};
 
@@ -77,9 +79,9 @@ pub struct NegotiatedProbe<'a> {
     pub rtp_channel: u8,
     /// Selected codec.
     pub codec: ProbeCodec,
-    /// Exact dynamic RTP payload type.
+    /// Exact dynamic RTP payload type, or static payload 26 for JPEG.
     pub payload_type: u8,
-    /// Decoded selected NALs (AVC SPS/PPS or HEVC VPS/SPS/PPS).
+    /// Decoded selected NALs (AVC SPS/PPS or HEVC VPS/SPS/PPS); empty for JPEG.
     pub parameter_sets: &'a [&'a [u8]],
     /// Opaque bounded identity provided by the owning client.
     pub server_identity: &'a str,
@@ -137,30 +139,46 @@ impl<'a> RtspProbeObserver<'a> {
         negotiated: NegotiatedProbe<'_>,
     ) -> Result<Self, ObservationError> {
         manifest.validate().map_err(|_| ObservationError::Scope)?;
-        let source = manifest.sources.get(source_index).ok_or(ObservationError::Scope)?;
+        let source = manifest
+            .sources
+            .get(source_index)
+            .ok_or(ObservationError::Scope)?;
         if !matches!(source.kind, SourceKind::Rtsp | SourceKind::NvrChannel)
-            || !source.owner_authorized || !source.plaintext
+            || !source.owner_authorized
+            || !source.plaintext
         {
             return Err(ObservationError::Scope);
         }
         if negotiated.sdp.is_empty() || negotiated.sdp.len() > MAX_SELECTION_BYTES {
             return Err(ObservationError::Limit);
         }
-        if negotiated.media_index > 63 || negotiated.rtp_channel % 2 != 0
-            || !(96..=127).contains(&negotiated.payload_type)
-            || negotiated.server_identity.is_empty() || negotiated.server_identity.len() > 256
-            || !negotiated.server_identity.bytes().all(|b| (32..=126).contains(&b))
+        if negotiated.media_index > 63
+            || negotiated.rtp_channel % 2 != 0
+            || (!(96..=127).contains(&negotiated.payload_type)
+                && !(negotiated.codec == ProbeCodec::Jpeg && negotiated.payload_type == 26))
+            || negotiated.server_identity.is_empty()
+            || negotiated.server_identity.len() > 256
+            || !negotiated
+                .server_identity
+                .bytes()
+                .all(|b| (32..=126).contains(&b))
         {
             return Err(ObservationError::Negotiation);
         }
         let prepared = match negotiated.codec {
             ProbeCodec::Avc => {
                 let session = select_h264_description(
-                    negotiated.sdp, negotiated.media_index, Some(negotiated.payload_type),
-                ).map_err(|_| ObservationError::Negotiation)?;
-                let media = session.media.get(negotiated.media_index)
+                    negotiated.sdp,
+                    negotiated.media_index,
+                    Some(negotiated.payload_type),
+                )
+                .map_err(|_| ObservationError::Negotiation)?;
+                let media = session
+                    .media
+                    .get(negotiated.media_index)
                     .ok_or(ObservationError::Negotiation)?;
-                if media.media_type != "video" || media.encoding_name.as_deref() != Some("H264")
+                if media.media_type != "video"
+                    || media.encoding_name.as_deref() != Some("H264")
                     || media.payload_type != negotiated.payload_type
                     || media.clock_rate != Some(90_000)
                 {
@@ -172,13 +190,19 @@ impl<'a> RtspProbeObserver<'a> {
                     media.packetization_mode.unwrap_or(0),
                     media.payload_type,
                     media.rtcp_reduced_size,
-                ).map_err(measurement_error)?
+                )
+                .map_err(measurement_error)?
             }
             ProbeCodec::Hevc => {
                 let (session, projected) = select_h265_description(
-                    negotiated.sdp, negotiated.media_index, Some(negotiated.payload_type),
-                ).map_err(|_| ObservationError::Negotiation)?;
-                let media = session.media.get(negotiated.media_index)
+                    negotiated.sdp,
+                    negotiated.media_index,
+                    Some(negotiated.payload_type),
+                )
+                .map_err(|_| ObservationError::Negotiation)?;
+                let media = session
+                    .media
+                    .get(negotiated.media_index)
                     .ok_or(ObservationError::Negotiation)?;
                 // Reuse the session's no-DON/profile/parameter negotiation; there
                 // is no independent fmtp parser or guessed parameter fallback.
@@ -187,20 +211,39 @@ impl<'a> RtspProbeObserver<'a> {
                 PreparedMedia::new(ObservedVideoDescription::Hevc(selected))
                     .map_err(measurement_error)?
             }
-            ProbeCodec::Jpeg => return Err(ObservationError::Negotiation),
+            ProbeCodec::Jpeg => {
+                let session = select_jpeg_description(
+                    negotiated.sdp,
+                    negotiated.media_index,
+                    Some(negotiated.payload_type),
+                )
+                .map_err(|_| ObservationError::Negotiation)?;
+                let media = session
+                    .media
+                    .get(negotiated.media_index)
+                    .ok_or(ObservationError::Negotiation)?;
+                let selected = jpeg::negotiate(media).map_err(|_| ObservationError::Negotiation)?;
+                PreparedMedia::new(ObservedVideoDescription::Jpeg(selected))
+                    .map_err(measurement_error)?
+            }
         };
         let parameter_digests = prepared.parameter_set_digests();
         if prepared.payload_type() != negotiated.payload_type
             || parameter_digests.len() != negotiated.parameter_sets.len()
-            || parameter_digests.iter().zip(negotiated.parameter_sets).any(|(digest, supplied)| {
-                supplied.is_empty() || supplied.len() > 16_384
-                    || *digest != ContentDigest::sha256(supplied)
-            })
+            || parameter_digests
+                .iter()
+                .zip(negotiated.parameter_sets)
+                .any(|(digest, supplied)| {
+                    supplied.is_empty()
+                        || supplied.len() > 16_384
+                        || *digest != ContentDigest::sha256(supplied)
+                })
         {
             return Err(ObservationError::Negotiation);
         }
         Ok(Self {
-            manifest, source_index,
+            manifest,
+            source_index,
             media_index: negotiated.media_index,
             rtp_channel: negotiated.rtp_channel,
             codec: negotiated.codec,
@@ -208,9 +251,16 @@ impl<'a> RtspProbeObserver<'a> {
             sdp_digest: ContentDigest::sha256(negotiated.sdp),
             parameter_digests,
             server_identity: negotiated.server_identity.to_owned(),
-            prepared: Some(prepared), media: None,
-            ssrc: None, sequence: None, last_ns: None, cadence: Cadence::default(),
-            packets: 0, bytes: 0, invalidated: false, frozen: None,
+            prepared: Some(prepared),
+            media: None,
+            ssrc: None,
+            sequence: None,
+            last_ns: None,
+            cadence: Cadence::default(),
+            packets: 0,
+            bytes: 0,
+            invalidated: false,
+            frozen: None,
         })
     }
 
@@ -233,8 +283,7 @@ impl<'a> RtspProbeObserver<'a> {
         bytes: &[u8],
         now_ns: u64,
     ) -> Result<(), ObservationError> {
-        if self.invalidated || self.frozen.is_some()
-            || self.last_ns.is_some_and(|old| now_ns < old)
+        if self.invalidated || self.frozen.is_some() || self.last_ns.is_some_and(|old| now_ns < old)
         {
             self.invalidated = true;
             return Err(ObservationError::Continuity);
@@ -257,13 +306,17 @@ impl<'a> RtspProbeObserver<'a> {
         if self.packets >= MAX_PROBE_RTP_PACKETS {
             return Err(ObservationError::Limit);
         }
-        let total = self.bytes.checked_add(bytes.len() as u64).ok_or(ObservationError::Limit)?;
+        let total = self
+            .bytes
+            .checked_add(bytes.len() as u64)
+            .ok_or(ObservationError::Limit)?;
         if total > MAX_PROBE_RTP_BYTES {
             return Err(ObservationError::Limit);
         }
         let packet = RtpPacket::parse(bytes, PacketLimits::default())
             .map_err(|_| ObservationError::Packet)?;
-        if channel != self.rtp_channel || packet.payload_type() != self.payload_type
+        if channel != self.rtp_channel
+            || packet.payload_type() != self.payload_type
             || packet.payload().is_empty()
         {
             return Err(ObservationError::Packet);
@@ -289,14 +342,20 @@ impl<'a> RtspProbeObserver<'a> {
                 ssrc: packet.ssrc(),
             };
             self.media = Some(
-                self.prepared.take().ok_or(ObservationError::Negotiation)?
-                    .start(key).map_err(measurement_error)?,
+                self.prepared
+                    .take()
+                    .ok_or(ObservationError::Negotiation)?
+                    .start(key)
+                    .map_err(measurement_error)?,
             );
         }
         self.ssrc = Some(packet.ssrc());
         self.sequence = Some(extended);
-        self.media.as_mut().ok_or(ObservationError::Incomplete)?
-            .push(extended, packet, now_ns, &mut self.cadence).map_err(measurement_error)?;
+        self.media
+            .as_mut()
+            .ok_or(ObservationError::Incomplete)?
+            .push(extended, packet, now_ns, &mut self.cadence)
+            .map_err(measurement_error)?;
         if self.cadence.frames() > MAX_PROBE_PICTURES {
             return Err(ObservationError::Limit);
         }
@@ -321,7 +380,10 @@ impl<'a> RtspProbeObserver<'a> {
         if self.frozen.is_some() || self.cadence.frames() < 3 {
             return Err(ObservationError::Incomplete);
         }
-        let pending = self.media.as_mut().ok_or(ObservationError::Incomplete)?
+        let pending = self
+            .media
+            .as_mut()
+            .ok_or(ObservationError::Incomplete)?
             .discard_pending();
         let tail = ProbeTail {
             unverified_nal_bytes_excluded: pending.nal_bytes,
@@ -352,8 +414,11 @@ impl<'a> RtspProbeObserver<'a> {
         if self.frozen.is_some() {
             return Err(ObservationError::Incomplete);
         }
-        self.media.as_mut().ok_or(ObservationError::Incomplete)?
-            .finish(self.last_ns.unwrap_or(0), &mut self.cadence).map_err(measurement_error)?;
+        self.media
+            .as_mut()
+            .ok_or(ObservationError::Incomplete)?
+            .finish(self.last_ns.unwrap_or(0), &mut self.cadence)
+            .map_err(measurement_error)?;
         if self.cadence.frames() > MAX_PROBE_PICTURES {
             return Err(ObservationError::Limit);
         }
@@ -365,22 +430,41 @@ impl<'a> RtspProbeObserver<'a> {
             self.cadence.finish().map_err(measurement_error)?;
         let source = &self.manifest.sources[self.source_index];
         let receipt = SiteProbeReceipt {
-            site_id: self.manifest.site_id.clone(), source_id: source.source_id.clone(),
-            manifest_digest: self.manifest.digest().map_err(|_| ObservationError::Receipt)?,
-            source_generation: source.generation, peer: source.peer,
+            site_id: self.manifest.site_id.clone(),
+            source_id: source.source_id.clone(),
+            manifest_digest: self
+                .manifest
+                .digest()
+                .map_err(|_| ObservationError::Receipt)?,
+            source_generation: source.generation,
+            peer: source.peer,
             authority: source.authority.clone(),
-            presentation: source.presentation.clone().ok_or(ObservationError::Receipt)?,
-            control_root: source.control_root.clone().ok_or(ObservationError::Receipt)?,
-            media_index: self.media_index, rtp_channel: self.rtp_channel,
-            rtcp_channel: self.rtp_channel + 1, sdp_digest: self.sdp_digest,
-            codec: self.codec, payload_type: self.payload_type,
+            presentation: source
+                .presentation
+                .clone()
+                .ok_or(ObservationError::Receipt)?,
+            control_root: source
+                .control_root
+                .clone()
+                .ok_or(ObservationError::Receipt)?,
+            media_index: self.media_index,
+            rtp_channel: self.rtp_channel,
+            rtcp_channel: self.rtp_channel + 1,
+            sdp_digest: self.sdp_digest,
+            codec: self.codec,
+            payload_type: self.payload_type,
             ssrc: self.ssrc.ok_or(ObservationError::Incomplete)?,
-            frame_duration_ticks, clock_rate_hz: 90_000, observed_frames,
-            first_rtp_timestamp, last_rtp_timestamp,
+            frame_duration_ticks,
+            clock_rate_hz: 90_000,
+            observed_frames,
+            first_rtp_timestamp,
+            last_rtp_timestamp,
             parameter_set_digests: self.parameter_digests,
             server_identity: self.server_identity,
         };
-        receipt.validate_for(self.manifest).map_err(|_| ObservationError::Receipt)?;
+        receipt
+            .validate_for(self.manifest)
+            .map_err(|_| ObservationError::Receipt)?;
         Ok(receipt)
     }
 }
@@ -388,15 +472,21 @@ impl<'a> RtspProbeObserver<'a> {
 fn measurement_error(error: SiteProbeError) -> ObservationError {
     match error {
         SiteProbeError::Limit => ObservationError::Limit,
-        SiteProbeError::Manifest | SiteProbeError::Source | SiteProbeError::SourceKind =>
-            ObservationError::Scope,
-        SiteProbeError::Selection | SiteProbeError::Description | SiteProbeError::ServerHeader
-        | SiteProbeError::Codec | SiteProbeError::ParameterChange => ObservationError::Negotiation,
+        SiteProbeError::Manifest | SiteProbeError::Source | SiteProbeError::SourceKind => {
+            ObservationError::Scope
+        }
+        SiteProbeError::Selection
+        | SiteProbeError::Description
+        | SiteProbeError::ServerHeader
+        | SiteProbeError::Codec
+        | SiteProbeError::ParameterChange => ObservationError::Negotiation,
         SiteProbeError::RtpDump | SiteProbeError::Packet => ObservationError::Packet,
-        SiteProbeError::Sequence | SiteProbeError::StreamChanged | SiteProbeError::Picture =>
-            ObservationError::Continuity,
-        SiteProbeError::IncompletePicture | SiteProbeError::InsufficientPictures =>
-            ObservationError::Incomplete,
+        SiteProbeError::Sequence | SiteProbeError::StreamChanged | SiteProbeError::Picture => {
+            ObservationError::Continuity
+        }
+        SiteProbeError::IncompletePicture | SiteProbeError::InsufficientPictures => {
+            ObservationError::Incomplete
+        }
         SiteProbeError::Cadence => ObservationError::Cadence,
         SiteProbeError::Encoding => ObservationError::Receipt,
     }

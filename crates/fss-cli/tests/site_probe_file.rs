@@ -24,6 +24,8 @@ const AVC_RESPONSE: &[u8] = include_bytes!("../../../fixtures/site_probe/avc.des
 const AVC_DUMP: &[u8] = include_bytes!("../../../fixtures/site_probe/avc.rtpdump");
 const HEVC_RESPONSE: &[u8] = include_bytes!("../../../fixtures/site_probe/hevc.describe.rtsp");
 const HEVC_DUMP: &[u8] = include_bytes!("../../../fixtures/site_probe/hevc.rtpdump");
+const JPEG_RESPONSE: &[u8] = include_bytes!("../../../fixtures/site_probe/jpeg.describe.rtsp");
+const JPEG_DUMP: &[u8] = include_bytes!("../../../fixtures/site_probe/jpeg.rtpdump");
 const SERVER_CANARY: &str = "fixture-private-server-canary";
 const FIRST_TIMESTAMP: u32 = 0xffff_f000;
 const MAX_CAPTURE_BYTES: u64 = 2 * 1024 * 1024 + 1024;
@@ -282,6 +284,7 @@ impl Fixture {
         let (response, dump) = match codec {
             "avc" => (AVC_RESPONSE, AVC_DUMP),
             "hevc" => (HEVC_RESPONSE, HEVC_DUMP),
+            "jpeg" => (JPEG_RESPONSE, JPEG_DUMP),
             _ => return Err("unknown test codec".into()),
         };
         Ok(Self {
@@ -387,7 +390,7 @@ fn an_empty_token_slice_is_a_typed_grammar_refusal() -> Test {
 }
 
 #[test]
-fn measured_avc_and_hevc_receipts_are_deterministic_and_bound_to_all_inputs() -> Test {
+fn measured_native_codec_receipts_are_deterministic_and_bound_to_all_inputs() -> Test {
     for (codec, frame_count, packet_count, ssrc, payload_type, parameters) in [
         (
             "avc",
@@ -412,6 +415,7 @@ fn measured_avc_and_hevc_receipts_are_deterministic_and_bound_to_all_inputs() ->
                 "sha256:a7adbe577180ca6f0faac120bba141068e7abbbee4116d284c3a6d6d6663f0bf",
             ][..],
         ),
+        ("jpeg", 3, 6, 0x99aa_bbcc, 26, &[][..]),
     ] {
         let fixture = Fixture::new(codec, codec)?;
         fixture.write()?;
@@ -497,7 +501,7 @@ fn measured_avc_and_hevc_receipts_are_deterministic_and_bound_to_all_inputs() ->
 
 #[test]
 fn measured_receipts_feed_the_real_site_compiler() -> Test {
-    for codec in ["avc", "hevc"] {
+    for codec in ["avc", "hevc", "jpeg"] {
         let fixture = Fixture::new("site-plan", codec)?;
         fixture.write()?;
         let report = good(&fixture.run()?)?;
@@ -535,13 +539,21 @@ fn measured_receipts_feed_the_real_site_compiler() -> Test {
         let source = items(&planned, "sources")?
             .first()
             .ok_or("missing source plan")?;
-        assert_eq!(argument(source, "--codec")?, codec);
+        if codec == "jpeg" {
+            assert_eq!(
+                items(source, "argv")?.first().and_then(Value::text),
+                Some("jpeg")
+            );
+            assert!(argument(source, "--retention-evidence")?.starts_with("sha256:"));
+        } else {
+            assert_eq!(argument(source, "--codec")?, codec);
+            assert_eq!(argument(source, "--frame-duration-ticks")?, "3600");
+        }
         assert_eq!(argument(source, "--ssrc")?, observed.ssrc.to_string());
         assert_eq!(
             argument(source, "--payload-type")?,
             observed.payload_type.to_string()
         );
-        assert_eq!(argument(source, "--frame-duration-ticks")?, "3600");
         assert_eq!(argument(source, "--generation")?, "9");
         assert!(
             !items(source, "argv")?

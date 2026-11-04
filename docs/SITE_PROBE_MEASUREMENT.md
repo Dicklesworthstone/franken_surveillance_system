@@ -8,10 +8,11 @@ protocol parsers, depacketizers and picture assemblers. These values can feed
 
 This is the offline measurement portion of VIT-003 in
 [the footage-plane plan](VITTLES_FOOTAGE_PLANE_PLAN.md). It accepts direct RTSP and
-NVR-channel sources using supported frame-only AVC or 8-bit HEVC with field
-sequences excluded. It does not
-implement live `fss site probe`, device discovery, ONVIF/UniFi negotiation, JPEG
-measurement or a site recorder. No network connection or credential read occurs.
+NVR-channel sources using supported frame-only AVC, 8-bit HEVC with field
+sequences excluded, or native RFC 2435 JPEG reconstruction. The separately
+approved [live probe](SITE_PROBING.md) shares these media observers. Device
+discovery, ONVIF/UniFi negotiation and a site recorder remain outside this command.
+No network connection or credential read occurs.
 
 ## Run the retained example
 
@@ -52,7 +53,9 @@ cargo run --locked -p fss-cli --bin fss -- site plan --json \
 
 For HEVC, select `--codec hevc`, use `hevc.describe.rtsp` and `hevc.rtpdump`, and
 compute their own exact byte pins. The expected AVC result is 23 RTP packets and
-4 pictures; HEVC is 14 RTP packets and 3 pictures. Both measure 3600 ticks per
+4 pictures; HEVC is 14 RTP packets and 3 pictures. For JPEG, select `--codec jpeg`,
+use `jpeg.describe.rtsp` and `jpeg.rtpdump`, and compute their exact byte pins. Its
+six fragmented packets reconstruct three frames on static payload 26. All measure 3600 ticks per
 picture on the 90 kHz media clock, including sequence and timestamp wrapping.
 Generation and provenance are documented in
 [`fixtures/site_probe/README.md`](../fixtures/site_probe/README.md).
@@ -71,7 +74,7 @@ The manifest's raw byte pin is distinct from its canonical typed identity.
 | `--source` | One exact source ID in that manifest. No nearest match or route discovery. |
 | `--describe-response`, `--describe-digest` | One complete RTSP 1.0 success response including headers and SDP body, at most 128 KiB, and its raw SHA-256. An SDP body alone is insufficient. |
 | `--rtp-dump`, `--rtp-dump-digest` | One complete standard rtptools RTPdump, at most 8 MiB and 32768 records, and its raw SHA-256. |
-| `--codec` | Explicit `avc` or `hevc`; no fallback based on device branding. `jpeg` is recognized and explicitly refused by this measurement profile. |
+| `--codec` | Explicit `avc`, `hevc` or `jpeg`; no fallback based on device branding. |
 | `--media-index` | Exact SDP media index from 0 through 63; default 0. |
 | `--rtp-channel` | Proposed even interleaved channel from 0 through 254; default 0, with RTCP on the next channel. RTPdump does not contain this transport observation. |
 
@@ -101,7 +104,8 @@ Server header exists, the report says so rather than inventing a device identity
 
 ## Conditions for a measured receipt
 
-At least three native syntax-grouped picture observations with witnessed
+At least three native syntax-grouped picture observations, or complete RFC 2435
+JPEG reconstructions, with witnessed
 boundaries must yield the same positive RTP timestamp delta, with at most 4096
 observations. Each delta is limited
 to 90000 ticks. Arithmetic supports 16-bit sequence and 32-bit timestamp wrapping.
@@ -115,7 +119,11 @@ stream changes, codec-configuration drift and unfinished fragments or pictures
 refuse the complete observation. RTP marker bits alone cannot prove a picture
 boundary. Interlaced AVC, field-coded HEVC, variable cadence and picture timestamp
 reordering are outside this profile; timestamps are not sorted and a favorable prefix is not
-silently selected. The HEVC fixture closes its final picture with explicit EOS.
+silently selected. The HEVC fixture closes its final picture with explicit EOS. JPEG must finish every
+fragmented frame; offset gaps, missing markers, stale or conflicting quantizers,
+unsupported types and inconsistent dimensions refuse the full recording. JPEG
+receipts have an empty external-parameter digest array. The native reconstruction
+profile does not decode or certify the image entropy.
 
 Execution refusals use `fss.site_diagnostic.v1`, stable error IDs and exit code 2.
 They contain no accepted receipt prefix, raw media, private paths or server banner.

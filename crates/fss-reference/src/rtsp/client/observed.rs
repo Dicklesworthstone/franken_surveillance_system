@@ -6,7 +6,8 @@
 
 use super::{
     ClientCodec, ClientConfig, ClientError, ClientMedia, NegotiatedMedia, RtspClientSession,
-    RtspResponse, bounded_response, decimal, description, hevc::HevcClientMedia, singleton,
+    RtspResponse, bounded_response, decimal, description, hevc::HevcClientMedia,
+    jpeg::JpegClientMedia, singleton,
 };
 
 /// Admitted video signaling, not a decoded or currently reachable source.
@@ -16,6 +17,8 @@ pub enum ObservedVideoDescription {
     Avc(ClientMedia),
     /// Existing no-DON single-layer HEVC signaling; configuration remains separately checked.
     Hevc(HevcClientMedia),
+    /// Existing RFC 2435 JPEG signaling; per-image reconstruction remains separately checked.
+    Jpeg(JpegClientMedia),
 }
 
 /// Apply the same video-description function used by a matching live DESCRIBE response.
@@ -29,8 +32,11 @@ pub fn observe_video_description(
     codec: ClientCodec,
     payload_type: Option<u8>,
 ) -> Result<ObservedVideoDescription, ClientError> {
-    if !matches!(codec, ClientCodec::H264 | ClientCodec::H265)
-        || payload_type.is_some_and(|pt| !(96..=127).contains(&pt))
+    if !matches!(
+        codec,
+        ClientCodec::H264 | ClientCodec::H265 | ClientCodec::Jpeg
+    ) || payload_type
+        .is_some_and(|pt| !(96..=127).contains(&pt) && !(codec == ClientCodec::Jpeg && pt == 26))
     {
         return Err(ClientError::Configuration);
     }
@@ -49,6 +55,7 @@ pub fn observe_video_description(
     match description(config, response, codec, payload_type)?.0 {
         NegotiatedMedia::H264(media) => Ok(ObservedVideoDescription::Avc(media)),
         NegotiatedMedia::H265(media) => Ok(ObservedVideoDescription::Hevc(media)),
+        NegotiatedMedia::Jpeg(media) => Ok(ObservedVideoDescription::Jpeg(media)),
         _ => Err(ClientError::Description),
     }
 }

@@ -73,10 +73,11 @@ pub fn parse_probe_args(tokens: &[ArgToken]) -> Result<(PathBuf, SiteProbeOption
     let codec = match required("--codec")?.as_str() {
         "avc" => ProbeCodec::Avc,
         "hevc" => ProbeCodec::Hevc,
+        "jpeg" => ProbeCodec::Jpeg,
         _ => {
             return Err(malformed(
                 "--codec",
-                "native probe supports explicit avc or hevc",
+                "native probe supports explicit avc, hevc or jpeg",
             ));
         }
     };
@@ -114,10 +115,7 @@ pub fn parse_probe_args(tokens: &[ArgToken]) -> Result<(PathBuf, SiteProbeOption
         None | Some("receipts") => ProbeOutput::Receipts,
         Some("session") => ProbeOutput::Session,
         Some(_) => {
-            return Err(malformed(
-                "--output",
-                "expected receipts or session",
-            ));
+            return Err(malformed("--output", "expected receipts or session"));
         }
     };
     let options = SiteProbeOptions {

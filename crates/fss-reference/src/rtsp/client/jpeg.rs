@@ -20,7 +20,7 @@ impl JpegClientMedia {
         self.reduced_rtcp
     }
 }
-pub(super) fn negotiate(media: &SdpMedia) -> Result<JpegClientMedia, ClientError> {
+pub(crate) fn negotiate(media: &SdpMedia) -> Result<JpegClientMedia, ClientError> {
     if media.media_type != "video"
         || !matches!(media.proto.as_str(), "RTP/AVP" | "RTP/AVP/TCP")
         || !matches!(media.payload_type, 26 | 96..=127)

@@ -182,12 +182,12 @@ JPEG uses the existing datagram-capture command and its 256-picture limit; AVC/H
 retain their existing native planning and approval behavior.
 
 `fss site probe-file` now derives receipts from independently pinned recorded
-DESCRIBE responses and RTPdump samples using native AVC/HEVC picture assembly.
+DESCRIBE responses and RTPdump samples using native AVC/HEVC picture assembly or RFC 2435 JPEG reconstruction.
 It measures media configuration, SSRC and constant cadence, and refuses unverified
 picture tails, lost packets or inconsistent timing. See [the recorded-probe example](docs/SITE_PROBE_MEASUREMENT.md).
 
 `fss site probe` previews and, with the exact approval digest, performs one bounded
-native AVC/HEVC RTSP/NVR observation. It returns a receipt array only after matching
+native AVC/HEVC/JPEG RTSP/NVR observation. It returns a receipt array only after matching
 TEARDOWN acknowledgement; failures preserve possible remote-session state. See
 [approved native site probing](docs/SITE_PROBING.md).
 

@@ -4,6 +4,38 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Native and recorded JPEG site probing
+
+`fss site probe --codec jpeg` and `fss site probe-file --codec jpeg` now produce
+receipts accepted by the existing JPEG site capture planner. Both reuse the native
+RFC 2435 depacketizer, exact SDP selection and shared cadence observer. Static
+payload 26 and dynamic payloads 96..127 are explicit selections. Only a complete
+reconstructed JPEG frame counts; offset gaps, missing boundaries, invalid type or
+dimensions, quantizer conflicts, source drift, expiry and inconsistent cadence
+refuse. No entropy or pixel decoding is claimed. The live session preserves exact
+approval, Digest, native transport limits, explicit omission accounting and the
+matching TEARDOWN requirement.
+
+JPEG has distinct approval and recorded-evidence policies binding the actual
+reconstruction profile and all native JPEG limits. Its session report explicitly
+names whole-frame reconstruction as the measurement basis. Existing AVC/HEVC
+approval and evidence encodings are preserved. New reproducible transport fixtures
+packetize the pinned baseline JPEG corpus into six fragments for three frames,
+including sequence and timestamp wrapping; they retain no camera material.
+
+**Current native validation:** all 103 focused production-source unit contracts
+and all 19 real TCP loopback contracts pass with the pinned compiler and actual
+core/packet/AVC/HEVC dependencies. This includes the current AVC/HEVC native-picture
+changes described below, the shared recorded observer and the new JPEG paths.
+These are actual source modules and native sockets, without substitute runtimes.
+All 35 focused CLI plan, report, parser and redaction contracts pass. The actual
+recorded-command parser and executor also produce valid observations for all three
+codecs through the real bounded input reader. Both complete command-test sources
+compile; execution of the full command processes remains unverified. A fresh
+serialized full CLI build
+was again SIGKILLed inside the existing Asupersync dependency, before FSS compiler
+diagnostics. No full-workspace, rch, hardware or release qualification is claimed.
+
 ## Native probe session evidence and source isolation
 
 `fss site probe --output session` now exposes native transport work, confirmed

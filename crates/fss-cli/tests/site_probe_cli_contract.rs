@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 //! Actual operator CLI probing against bounded, owned loopback RTSP cameras.
 //!
-//! The cameras serve checked-in AVC/HEVC media and keep successful streams open
+//! The cameras serve checked-in AVC/HEVC/JPEG media and keep successful streams open
 //! until the client acknowledges TEARDOWN and closes. These are wiring, approval,
 //! observation and cleanup tests, not physical camera, retained custody or codec
 //! qualification. No production credentials or external network are used.
@@ -46,6 +46,8 @@ const AVC_DESCRIPTION: &str = include_str!("../../../fixtures/site_probe/avc.des
 const HEVC_DESCRIPTION: &str = include_str!("../../../fixtures/site_probe/hevc.describe.rtsp");
 const AVC_RTP: &[u8] = include_bytes!("../../../fixtures/site_probe/avc.rtpdump");
 const HEVC_RTP: &[u8] = include_bytes!("../../../fixtures/site_probe/hevc.rtpdump");
+const JPEG_DESCRIPTION: &str = include_str!("../../../fixtures/site_probe/jpeg.describe.rtsp");
+const JPEG_RTP: &[u8] = include_bytes!("../../../fixtures/site_probe/jpeg.rtpdump");
 
 struct Directory(PathBuf);
 impl Directory {
@@ -322,24 +324,28 @@ impl Fixture {
 enum Codec {
     Avc,
     Hevc,
+    Jpeg,
 }
 impl Codec {
     fn name(self) -> &'static str {
         match self {
             Self::Avc => "avc",
             Self::Hevc => "hevc",
+            Self::Jpeg => "jpeg",
         }
     }
     fn payload(self) -> u8 {
         match self {
             Self::Avc => 96,
             Self::Hevc => 98,
+            Self::Jpeg => 26,
         }
     }
     fn channel(self) -> u8 {
         match self {
             Self::Avc => 0,
             Self::Hevc => 2,
+            Self::Jpeg => 4,
         }
     }
     fn cadence(self) -> u32 {
@@ -349,12 +355,14 @@ impl Codec {
         match self {
             Self::Avc => 0x1122_3344,
             Self::Hevc => 0x5566_7788,
+            Self::Jpeg => 0x99aa_bbcc,
         }
     }
     fn description(self) -> String {
         let response = match self {
             Self::Avc => AVC_DESCRIPTION,
             Self::Hevc => HEVC_DESCRIPTION,
+            Self::Jpeg => JPEG_DESCRIPTION,
         };
         response
             .split_once("\r\n\r\n")
@@ -366,6 +374,7 @@ impl Codec {
         let parameters: &[&str] = match self {
             Self::Avc => &[AVC_SPS, AVC_PPS],
             Self::Hevc => &[HEVC_VPS, HEVC_SPS, HEVC_PPS],
+            Self::Jpeg => &[],
         };
         parameters
             .iter()
@@ -379,6 +388,7 @@ impl Codec {
         let bytes = match self {
             Self::Avc => AVC_RTP,
             Self::Hevc => HEVC_RTP,
+            Self::Jpeg => JPEG_RTP,
         };
         let mut reader = RtpDumpReader::new(bytes, RtpDumpLimits::default())?;
         let mut packets = Vec::new();
@@ -428,7 +438,12 @@ fn request(peer: &mut TcpStream, deadline: Instant) -> Test<Option<Request>> {
                 return Ok(None);
             }
             Err(error)
-                if matches!(error.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut | io::ErrorKind::Interrupted) =>
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock
+                        | io::ErrorKind::TimedOut
+                        | io::ErrorKind::Interrupted
+                ) =>
             {
                 continue;
             }
@@ -532,6 +547,7 @@ enum Behavior {
     AvcMbaff,
     HevcField,
     ParameterDrift,
+    JpegOffsetGap,
     WrongCadence,
     WrongSender,
     MalformedRtp,
@@ -557,7 +573,9 @@ fn media(codec: Codec, behavior: &Behavior) -> Test<Vec<u8>> {
             let mut packet = vec![0x80, codec.payload() | 0x80];
             packet.extend_from_slice(&65534u16.wrapping_add(index).to_be_bytes());
             packet.extend_from_slice(
-                &FIRST_TIMESTAMP.wrapping_add(u32::from(index) * FRAME_TICKS).to_be_bytes(),
+                &FIRST_TIMESTAMP
+                    .wrapping_add(u32::from(index) * FRAME_TICKS)
+                    .to_be_bytes(),
             );
             packet.extend_from_slice(&codec.ssrc().to_be_bytes());
             let payload: &[u8] = match (codec, behavior) {
@@ -565,6 +583,7 @@ fn media(codec: Codec, behavior: &Behavior) -> Test<Vec<u8>> {
                 (Codec::Hevc, Behavior::MarkerOnly) => &[0x46, 1, 0x50],
                 (Codec::Avc, _) => &[0x65, 0, 0x80],
                 (Codec::Hevc, _) => &[0x26, 1, 0x80],
+                (Codec::Jpeg, _) => return Err("NAL forgery fixture requires AVC or HEVC".into()),
             };
             packet.extend_from_slice(payload);
             packets.push(packet);
@@ -583,9 +602,9 @@ fn media(codec: Codec, behavior: &Behavior) -> Test<Vec<u8>> {
     }
     if matches!(behavior, Behavior::EofBeforeTarget) {
         packets.retain(|packet| {
-            let timestamp = u32::from_be_bytes(packet[4..8].try_into().expect("validated RTP header"));
-            timestamp == FIRST_TIMESTAMP
-                || timestamp == FIRST_TIMESTAMP.wrapping_add(FRAME_TICKS)
+            let timestamp =
+                u32::from_be_bytes(packet[4..8].try_into().expect("validated RTP header"));
+            timestamp == FIRST_TIMESTAMP || timestamp == FIRST_TIMESTAMP.wrapping_add(FRAME_TICKS)
         });
     }
     let mut parameter_changed = false;
@@ -596,19 +615,27 @@ fn media(codec: Codec, behavior: &Behavior) -> Test<Vec<u8>> {
         let kind = match codec {
             Codec::Avc => parsed.payload()[0] & 31,
             Codec::Hevc => (parsed.payload()[0] >> 1) & 63,
+            Codec::Jpeg => 0,
         };
         let parameter_kind = match codec {
             Codec::Avc => 7,
             Codec::Hevc => 32,
+            Codec::Jpeg => u8::MAX,
         };
         match behavior {
-            Behavior::WrongCadence if timestamp == FIRST_TIMESTAMP.wrapping_add(2 * FRAME_TICKS) => {
+            Behavior::WrongCadence
+                if timestamp == FIRST_TIMESTAMP.wrapping_add(2 * FRAME_TICKS) =>
+            {
                 bytes[4..8].copy_from_slice(&timestamp.wrapping_add(100).to_be_bytes());
             }
             Behavior::WrongSender if index == 1 => {
                 bytes[8..12].copy_from_slice(&codec.ssrc().wrapping_add(1).to_be_bytes());
             }
             Behavior::MalformedRtp if index == 1 => bytes.truncate(4),
+            Behavior::JpegOffsetGap if index == 1 => {
+                assert!(matches!(codec, Codec::Jpeg));
+                bytes[payload.start + 3] = bytes[payload.start + 3].wrapping_add(1);
+            }
             Behavior::NoMarkers => bytes[1] &= 0x7f,
             Behavior::ParameterDrift if !parameter_changed && kind == parameter_kind => {
                 bytes[payload.end - 1] ^= 1;
@@ -618,7 +645,10 @@ fn media(codec: Codec, behavior: &Behavior) -> Test<Vec<u8>> {
         }
     }
     if matches!(behavior, Behavior::ParameterDrift) {
-        assert!(parameter_changed, "real fixture parameter mutation did not apply");
+        assert!(
+            parameter_changed,
+            "real fixture parameter mutation did not apply"
+        );
     }
     let mut wire = Vec::new();
     for packet in packets {
@@ -635,8 +665,12 @@ fn description(codec: Codec, behavior: &Behavior) -> String {
         Behavior::MalformedSdp => format!(
             "v=0\r\n{PRIVATE_SDP}\r\na=control:rtsp://user:{PASSWORD}@foreign.invalid/escape\r\n"
         ),
-        Behavior::AvcField => body.replace(AVC_SPS, "Z0IAH/QUIJA=").replace(AVC_PPS, "aM44gA=="),
-        Behavior::AvcMbaff => body.replace(AVC_SPS, "Z0IAH/QUIZA=").replace(AVC_PPS, "aM44gA=="),
+        Behavior::AvcField => body
+            .replace(AVC_SPS, "Z0IAH/QUIJA=")
+            .replace(AVC_PPS, "aM44gA=="),
+        Behavior::AvcMbaff => body
+            .replace(AVC_SPS, "Z0IAH/QUIZA=")
+            .replace(AVC_PPS, "aM44gA=="),
         Behavior::HevcField => body.replace(HEVC_SPS, HEVC_FIELD_SPS),
         _ => body,
     }
@@ -739,10 +773,13 @@ fn serve(listener: TcpListener, codec: Codec, behavior: Behavior) -> Test<Transc
                     // TCP closure is deliberately not an RTSP acknowledgment.
                     peer.shutdown(Shutdown::Write)?;
                 } else if matches!(behavior, Behavior::RejectedTeardown) {
-                    peer.write_all(format!(
-                        "RTSP/1.0 500 Close Rejected\r\nCSeq: {}\r\nContent-Length: 0\r\n\r\n",
-                        request.cseq
-                    ).as_bytes())?;
+                    peer.write_all(
+                        format!(
+                            "RTSP/1.0 500 Close Rejected\r\nCSeq: {}\r\nContent-Length: 0\r\n\r\n",
+                            request.cseq
+                        )
+                        .as_bytes(),
+                    )?;
                 } else {
                     let cseq = if matches!(behavior, Behavior::WrongTeardownCseq) {
                         request.cseq + 1
@@ -838,26 +875,34 @@ fn diagnostic(output: Output, connection: bool, credentials: bool) -> Test<Value
 /// there is deliberately no invented runtime-quiescence or pixel-decoding claim.
 fn session(output: Output, measured: bool, remote_session: bool) -> Test<Value> {
     no_secrets(&output);
-    assert_eq!(output.status.code(), Some(if measured { 0 } else { 1 }),
+    assert_eq!(
+        output.status.code(),
+        Some(if measured { 0 } else { 1 }),
         "stdout={} stderr={}",
         String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr));
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert!(output.stderr.is_empty());
     let value = json_input::parse(std::str::from_utf8(&output.stdout)?)?;
     assert_eq!(text(&value, "schema")?, "fss.site_probe_session.v1");
-    assert_eq!(text(&value, "status")?, if measured {
-        "measured"
-    } else if remote_session {
-        "indeterminate"
-    } else {
-        "refused"
-    });
+    assert_eq!(
+        text(&value, "status")?,
+        if measured {
+            "measured"
+        } else if remote_session {
+            "indeterminate"
+        } else {
+            "refused"
+        }
+    );
     assert!(boolean(&value, "connection_attempted")?);
     assert!(!boolean(&value, "credential_access_attempted")?);
     assert!(!boolean(&value, "credentials_loaded")?);
     assert_eq!(boolean(&value, "remote_session_may_exist")?, remote_session);
     assert_eq!(boolean(&value, "teardown_acknowledged")?, measured);
-    let receipts = field(&value, "receipts")?.array().ok_or("receipt array missing")?;
+    let receipts = field(&value, "receipts")?
+        .array()
+        .ok_or("receipt array missing")?;
     assert_eq!(receipts.len(), usize::from(measured));
     for name in ["receipt_digest", "completion_digest"] {
         if measured {
@@ -876,9 +921,15 @@ fn session(output: Output, measured: bool, remote_session: bool) -> Test<Value> 
     let _ = boolean(transport, "peer_eof")?;
     let accounting = field(&value, "accounting")?;
     for name in [
-        "rtp_packets", "rtp_bytes", "rtcp_frames_excluded", "rtcp_bytes_excluded",
-        "closing_frames_excluded", "closing_bytes_excluded", "control_responses",
-        "discarded_wire_bytes", "unverified_nal_bytes_excluded",
+        "rtp_packets",
+        "rtp_bytes",
+        "rtcp_frames_excluded",
+        "rtcp_bytes_excluded",
+        "closing_frames_excluded",
+        "closing_bytes_excluded",
+        "control_responses",
+        "discarded_wire_bytes",
+        "unverified_nal_bytes_excluded",
         "unfinished_fragment_bytes_excluded",
     ] {
         assert!(integer(accounting, name)? >= 0, "{name}");
@@ -888,10 +939,16 @@ fn session(output: Output, measured: bool, remote_session: bool) -> Test<Value> 
         assert_eq!(field(&value, "pending_cseq")?, &Value::Null);
         assert_eq!(integer(&value, "unsent_request_bytes")?, 0);
         assert_eq!(integer(transport, "last_sent_cseq")?, 5);
-        assert_eq!(integer(accounting, "discarded_wire_bytes")?, integer(transport, "received_bytes")?);
+        assert_eq!(
+            integer(accounting, "discarded_wire_bytes")?,
+            integer(transport, "received_bytes")?
+        );
     } else {
         assert!(text(&value, "error_id")?.starts_with("ERR-SITE-PROBE-"));
-        assert!(!render(&value).contains(PRIVATE_ROUTE), "session refusal leaked the route");
+        assert!(
+            !render(&value).contains(PRIVATE_ROUTE),
+            "session refusal leaked the route"
+        );
     }
     Ok(value)
 }
@@ -905,7 +962,10 @@ fn session_receipt(value: &Value, fixture: &Fixture, codec: Codec) -> Test {
     assert_eq!(receipt.observed_frames, 3);
     assert_eq!(receipt.frame_duration_ticks, FRAME_TICKS);
     assert_eq!(receipt.first_rtp_timestamp, FIRST_TIMESTAMP);
-    assert_eq!(receipt.last_rtp_timestamp, FIRST_TIMESTAMP.wrapping_add(2 * FRAME_TICKS));
+    assert_eq!(
+        receipt.last_rtp_timestamp,
+        FIRST_TIMESTAMP.wrapping_add(2 * FRAME_TICKS)
+    );
     assert_eq!(receipt.ssrc, codec.ssrc());
     assert_eq!(receipt.parameter_set_digests, codec.parameter_digests()?);
     Ok(())
@@ -954,7 +1014,10 @@ fn preview_and_mismatched_approval_do_not_connect_or_resolve_credentials() -> Te
     assert!(!boolean(&refusal, "remote_session_may_exist")?);
     assert!(!credential.exists());
     assert_eq!(fixture.directory.entries()?, original_entries);
-    assert_eq!(fs::read(fixture.directory.0.join("manifest.json"))?, original_manifest);
+    assert_eq!(
+        fs::read(fixture.directory.0.join("manifest.json"))?,
+        original_manifest
+    );
     no_connection(&listener)?;
     Ok(())
 }
@@ -1010,7 +1073,10 @@ fn approval_is_invalidated_by_manifest_source_and_every_observation_selection() 
     let mut changed_output = approved.clone();
     changed_output.extend(["--output".into(), "session".into()]);
     assert_eq!(
-        text(&diagnostic(run(&changed_output)?, false, false)?, "error_id")?,
+        text(
+            &diagnostic(run(&changed_output)?, false, false)?,
+            "error_id"
+        )?,
         "ERR-SITE-PROBE-APPROVAL-001",
         "output mode must remain part of the exact reviewed plan"
     );
@@ -1025,8 +1091,8 @@ fn approval_is_invalidated_by_manifest_source_and_every_observation_selection() 
 }
 
 #[test]
-fn avc_and_hevc_observed_receipts_feed_the_native_site_planner_after_teardown() -> Test {
-    for codec in [Codec::Avc, Codec::Hevc] {
+fn all_native_codec_receipts_feed_the_site_planner_after_teardown() -> Test {
+    for codec in [Codec::Avc, Codec::Hevc, Codec::Jpeg] {
         let listener = listener()?;
         let fixture = Fixture::new(codec.name(), listener.local_addr()?)?;
         fixture.write()?;
@@ -1050,7 +1116,10 @@ fn avc_and_hevc_observed_receipts_feed_the_native_site_planner_after_teardown() 
         assert_eq!(receipt.observed_frames, 3);
         assert_eq!(receipt.frame_duration_ticks, codec.cadence());
         assert_eq!(receipt.first_rtp_timestamp, FIRST_TIMESTAMP);
-        assert_eq!(receipt.last_rtp_timestamp, FIRST_TIMESTAMP.wrapping_add(2 * codec.cadence()));
+        assert_eq!(
+            receipt.last_rtp_timestamp,
+            FIRST_TIMESTAMP.wrapping_add(2 * codec.cadence())
+        );
         assert_eq!(
             receipt.sdp_digest,
             ContentDigest::sha256(codec.description().as_bytes())
@@ -1123,6 +1192,46 @@ fn missing_teardown_ack_retains_remote_uncertainty_and_never_issues_a_receipt() 
         ["OPTIONS", "DESCRIBE", "SETUP", "PLAY", "TEARDOWN"]
     );
     assert!(transcript.client_closed);
+    Ok(())
+}
+
+#[test]
+fn jpeg_session_counts_complete_reconstruction_and_preserves_close_uncertainty() -> Test {
+    for (label, behavior, measured) in [
+        ("jpeg-complete", Behavior::Complete, true),
+        ("jpeg-gap", Behavior::JpegOffsetGap, false),
+        ("jpeg-no-markers", Behavior::NoMarkers, false),
+        ("jpeg-cadence", Behavior::WrongCadence, false),
+        ("jpeg-shortfall", Behavior::EofBeforeTarget, false),
+        ("jpeg-close", Behavior::LostTeardownAck, false),
+    ] {
+        let listener = listener()?;
+        let fixture = Fixture::new(label, listener.local_addr()?)?;
+        fixture.write()?;
+        let (output, transcript) = probed(
+            listener,
+            &fixture.session_args(Codec::Jpeg)?,
+            Codec::Jpeg,
+            behavior,
+        )?;
+        let report = session(output, measured, !measured)?;
+        assert_eq!(
+            text(&report, "measurement_basis")?,
+            "native_rfc2435_whole_frame_reconstruction"
+        );
+        assert!(!boolean(&report, "pixels_decoded")?);
+        assert_eq!(
+            integer(
+                field(&report, "accounting")?,
+                "unverified_nal_bytes_excluded"
+            )?,
+            0
+        );
+        if measured {
+            session_receipt(&report, &fixture, Codec::Jpeg)?;
+        }
+        assert!(transcript.client_closed);
+    }
     Ok(())
 }
 
@@ -1254,21 +1363,29 @@ fn credential_revocation_after_play_closes_locally_and_preserves_remote_uncertai
     Ok(())
 }
 
-
 #[test]
 fn native_markerless_pictures_issue_a_session_receipt_with_explicit_sample_tail() -> Test {
     for codec in [Codec::Avc, Codec::Hevc] {
         let listener = listener()?;
-        let fixture = Fixture::new(&format!("markerless-{}", codec.name()), listener.local_addr()?)?;
+        let fixture = Fixture::new(
+            &format!("markerless-{}", codec.name()),
+            listener.local_addr()?,
+        )?;
         fixture.write()?;
         let before = fixture.directory.entries()?;
         let (output, transcript) = probed(
-            listener, &fixture.session_args(codec)?, codec, Behavior::NoMarkers,
+            listener,
+            &fixture.session_args(codec)?,
+            codec,
+            Behavior::NoMarkers,
         )?;
         let measured = session(output, true, false)?;
         session_receipt(&measured, &fixture, codec)?;
         let accounting = field(&measured, "accounting")?;
-        assert_eq!(integer(accounting, "unfinished_fragment_bytes_excluded")?, 0);
+        assert_eq!(
+            integer(accounting, "unfinished_fragment_bytes_excluded")?,
+            0
+        );
         match codec {
             Codec::Avc => {
                 // The real fourth access unit closes picture three; its partial group
@@ -1281,10 +1398,18 @@ fn native_markerless_pictures_issue_a_session_receipt_with_explicit_sample_tail(
                 assert_eq!(integer(accounting, "unverified_nal_bytes_excluded")?, 0);
                 assert_eq!(integer(accounting, "rtp_packets")?, 14);
             }
+            Codec::Jpeg => return Err("markerless picture test requires AVC or HEVC".into()),
         }
-        assert_eq!(transcript.methods, ["OPTIONS", "DESCRIBE", "SETUP", "PLAY", "TEARDOWN"]);
+        assert_eq!(
+            transcript.methods,
+            ["OPTIONS", "DESCRIBE", "SETUP", "PLAY", "TEARDOWN"]
+        );
         assert!(transcript.client_closed);
-        assert_eq!(fixture.directory.entries()?, before, "probe wrote a local artifact");
+        assert_eq!(
+            fixture.directory.entries()?,
+            before,
+            "probe wrote a local artifact"
+        );
     }
     Ok(())
 }
@@ -1297,13 +1422,13 @@ fn marker_only_metadata_and_forged_slice_headers_never_issue_session_receipts() 
             ("forged-slice", Behavior::ForgedSlice),
         ] {
             let listener = listener()?;
-            let fixture = Fixture::new(&format!("{label}-{}", codec.name()), listener.local_addr()?)?;
+            let fixture =
+                Fixture::new(&format!("{label}-{}", codec.name()), listener.local_addr()?)?;
             fixture.write()?;
             // The peer stays open and would acknowledge a premature TEARDOWN.
             // A marker-counting implementation therefore fails this test by succeeding.
-            let (output, transcript) = probed(
-                listener, &fixture.session_args(codec)?, codec, behavior,
-            )?;
+            let (output, transcript) =
+                probed(listener, &fixture.session_args(codec)?, codec, behavior)?;
             let _ = session(output, false, true)?;
             assert_eq!(transcript.methods, ["OPTIONS", "DESCRIBE", "SETUP", "PLAY"]);
             assert!(transcript.client_closed);
@@ -1318,7 +1443,10 @@ fn three_hevc_marked_timestamps_without_eos_leave_the_native_sample_incomplete()
     let fixture = Fixture::new("hevc-without-eos", listener.local_addr()?)?;
     fixture.write()?;
     let (output, transcript) = probed(
-        listener, &fixture.session_args(Codec::Hevc)?, Codec::Hevc, Behavior::MissingHevcEos,
+        listener,
+        &fixture.session_args(Codec::Hevc)?,
+        Codec::Hevc,
+        Behavior::MissingHevcEos,
     )?;
     let refused = session(output, false, true)?;
     assert_eq!(integer(field(&refused, "accounting")?, "rtp_packets")?, 13);
@@ -1337,9 +1465,8 @@ fn interlaced_codec_descriptions_refuse_before_setup_without_picture_receipts() 
         let listener = listener()?;
         let fixture = Fixture::new(label, listener.local_addr()?)?;
         fixture.write()?;
-        let (output, transcript) = probed(
-            listener, &fixture.session_args(codec)?, codec, behavior,
-        )?;
+        let (output, transcript) =
+            probed(listener, &fixture.session_args(codec)?, codec, behavior)?;
         let refused = session(output, false, false)?;
         assert_eq!(integer(field(&refused, "accounting")?, "rtp_packets")?, 0);
         assert_eq!(transcript.methods, ["OPTIONS", "DESCRIBE"]);
@@ -1352,10 +1479,16 @@ fn interlaced_codec_descriptions_refuse_before_setup_without_picture_receipts() 
 fn changed_inband_parameter_sets_refuse_the_whole_live_receipt() -> Test {
     for codec in [Codec::Avc, Codec::Hevc] {
         let listener = listener()?;
-        let fixture = Fixture::new(&format!("parameter-drift-{}", codec.name()), listener.local_addr()?)?;
+        let fixture = Fixture::new(
+            &format!("parameter-drift-{}", codec.name()),
+            listener.local_addr()?,
+        )?;
         fixture.write()?;
         let (output, transcript) = probed(
-            listener, &fixture.session_args(codec)?, codec, Behavior::ParameterDrift,
+            listener,
+            &fixture.session_args(codec)?,
+            codec,
+            Behavior::ParameterDrift,
         )?;
         let _ = session(output, false, true)?;
         assert_eq!(transcript.methods, ["OPTIONS", "DESCRIBE", "SETUP", "PLAY"]);
@@ -1375,11 +1508,17 @@ fn lost_rejected_or_mismatched_teardown_never_releases_a_session_completion() ->
         let fixture = Fixture::new(&format!("session-close-{label}"), listener.local_addr()?)?;
         fixture.write()?;
         let (output, transcript) = probed(
-            listener, &fixture.session_args(Codec::Avc)?, Codec::Avc, behavior,
+            listener,
+            &fixture.session_args(Codec::Avc)?,
+            Codec::Avc,
+            behavior,
         )?;
         let refused = session(output, false, true)?;
         assert!(integer(field(&refused, "accounting")?, "rtp_packets")? >= 3);
-        assert_eq!(transcript.methods, ["OPTIONS", "DESCRIBE", "SETUP", "PLAY", "TEARDOWN"]);
+        assert_eq!(
+            transcript.methods,
+            ["OPTIONS", "DESCRIBE", "SETUP", "PLAY", "TEARDOWN"]
+        );
         assert!(transcript.client_closed);
     }
     Ok(())
