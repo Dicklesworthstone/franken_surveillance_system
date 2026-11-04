@@ -429,3 +429,23 @@ recipe now carries the real chain: `NetworkUpdate` with `publish_upgrade_descrip
 `Prerequisite`s were added; the rationale text now states the actual gate (caller-supplied MD5, root
 script, separate boot-chain verification) and the eMudhra TLS route. 37 provision tests pass, and the
 planner's Wyze expectation moved from `LaneIngest` to `Flashed`.
+
+## 2026-11-04 02:40 — execution state after the watcher hardening pass
+
+Per-family position:
+
+| Family | Exploit/delivery | Root proof | Firmware path |
+|---|---|---|---|
+| Wyze v4 ×2 | MITM + OTA delta + process channel | vendor `upgraderun.sh` (OTA) + `launch.sh` root script (process channel) — both armed | thingino capsule served, delta PUBACK ×2, pf rdr now live for .51/.39 |
+| Tapo C460 | connectAp overflow, offset 1060 | **3 live root shells (:4444) today**; guard grabs recon in-band | postshell chain ready; boot-addr auto-re-derivation in c460-fire |
+| Tapo C660 | non-PIE ROP (offline-derived gadgets) | port opens; grab timing fixed (DS-gated fires + telnetd persistent listener) | Novatek flash plan committed |
+| Owlet | direct AV connect | full handshake completes (probe→nO1→ack→AV-CONNECT), grant withheld | firmware path not started (honest) |
+| Yi | U1 payload SSID | not fired | listener armed, plist staged, operator ritual documented |
+
+Watcher fabric (all launchd or long-lived, DS-gated, MAC-verified): `c460-fire`
+(KeepAlive, addr-aware, auto-sweep-on-miss), `persistent_exploit v2.1` (per-camera
+chains), `tapo_incremental_sweep` (boot-addr hunter, state persists across sleep
+cycles), wyze forge/spoof/broker + watchdogs, fss-fwserve, fss-backup-recv.
+
+Blocking set is exactly: camera wake events (Tapo recon bytes, Wyze OTA poll) and two
+operator-physical gates (Owlet power cycle, Yi AP toggle). Nothing else is missing.
