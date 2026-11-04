@@ -774,11 +774,115 @@ fn utc_window_at_the_minimum_observed_frames_is_a_single_frame_duration() -> Tes
     // the span is exactly one frame_duration_ticks interval, not zero.
     let narrowed = with_clock_evidence(VALID_CLOCK_EVIDENCE)
         .replacen("\"observed_frames\": 4", "\"observed_frames\": 2", 1)
-        .replacen("\"last_rtp_timestamp\": 11800", "\"last_rtp_timestamp\": 4600", 1);
+        .replacen(
+            "\"last_rtp_timestamp\": 11800",
+            "\"last_rtp_timestamp\": 4600",
+            1,
+        );
     let receipts = parse_probe_receipts(narrowed.as_bytes())?;
     let (start, end) = receipts[0].utc_window().expect("a witness is attached");
     // 1 * 3600 ticks at 90 kHz = 40_000_000 ns, plus the 2_000_000 ns uncertainty
     // on each side.
     assert_eq!(end - start, 40_000_000 + 2 * 2_000_000);
+    Ok(())
+}
+
+#[test]
+fn utc_window_rounds_fractional_nanoseconds_outward_across_rtp_wrap() -> Test {
+    let mut receipt =
+        parse_probe_receipts(with_clock_evidence(VALID_CLOCK_EVIDENCE).as_bytes())?.remove(0);
+    receipt.observed_frames = 2;
+    receipt.first_rtp_timestamp = u32::MAX;
+    let witness = receipt.clock_evidence.ok_or("missing clock witness")?;
+    for ticks in [1, 2, 3, 8, 9, 90_000] {
+        receipt.frame_duration_ticks = ticks;
+        receipt.last_rtp_timestamp = u32::MAX.wrapping_add(ticks);
+        receipt.validate()?;
+        let (start, end) = receipt.utc_window().ok_or("missing UTC window")?;
+        assert_eq!(
+            start,
+            witness.wall_clock_unix_ns - witness.ntp_uncertainty_ns
+        );
+        let span = end - witness.wall_clock_unix_ns - witness.ntp_uncertainty_ns;
+        // Integer inequalities independently verify the smallest outward bound,
+        // including one-tick spans that cannot be expressed in whole nanoseconds.
+        let numerator = u128::from(ticks) * 1_000_000_000;
+        assert!(u128::from(span) * 90_000 >= numerator);
+        assert!(u128::from(span - 1) * 90_000 < numerator);
+    }
+    Ok(())
+}
+
+#[test]
+fn utc_window_refuses_invalid_directly_constructed_receipts_without_panicking() -> Test {
+    let receipt =
+        parse_probe_receipts(with_clock_evidence(VALID_CLOCK_EVIDENCE).as_bytes())?.remove(0);
+    let mut invalid = Vec::new();
+    for frames in [0, 1, MAX_PROBE_FRAMES + 1, u32::MAX] {
+        let mut value = receipt.clone();
+        value.observed_frames = frames;
+        invalid.push(value);
+    }
+    for rate in [0, 1, 89_999, u32::MAX] {
+        let mut value = receipt.clone();
+        value.clock_rate_hz = rate;
+        invalid.push(value);
+    }
+    for duration in [0, 90_001, u32::MAX] {
+        let mut value = receipt.clone();
+        value.frame_duration_ticks = duration;
+        invalid.push(value);
+    }
+    let mut value = receipt.clone();
+    value.last_rtp_timestamp = value.last_rtp_timestamp.wrapping_add(1);
+    invalid.push(value);
+    for uncertainty in [0, MAX_CLOCK_UNCERTAINTY_NS + 1, u64::MAX] {
+        let mut value = receipt.clone();
+        value
+            .clock_evidence
+            .as_mut()
+            .ok_or("missing clock witness")?
+            .ntp_uncertainty_ns = uncertainty;
+        invalid.push(value);
+    }
+    let mut value = receipt;
+    value
+        .clock_evidence
+        .as_mut()
+        .ok_or("missing clock witness")?
+        .wall_clock_unix_ns = 0;
+    invalid.push(value);
+    for value in invalid {
+        assert!(value.validate().is_err());
+        assert_eq!(value.utc_window(), None);
+    }
+    Ok(())
+}
+
+#[test]
+fn utc_window_refuses_unrepresentable_uncertainty_instead_of_saturating() -> Test {
+    let mut receipt =
+        parse_probe_receipts(with_clock_evidence(VALID_CLOCK_EVIDENCE).as_bytes())?.remove(0);
+    // The fixture's three cadence intervals span exactly 120 ms. The upper
+    // endpoint may equal u64::MAX, but never silently discard uncertainty.
+    let witness = receipt
+        .clock_evidence
+        .as_mut()
+        .ok_or("missing clock witness")?;
+    witness.wall_clock_unix_ns = u64::MAX - 120_000_000 - witness.ntp_uncertainty_ns;
+    receipt.validate()?;
+    assert_eq!(receipt.utc_window().map(|(_, end)| end), Some(u64::MAX));
+    receipt
+        .clock_evidence
+        .as_mut()
+        .ok_or("missing clock witness")?
+        .wall_clock_unix_ns += 1;
+    assert_eq!(receipt.utc_window(), None);
+    receipt
+        .clock_evidence
+        .as_mut()
+        .ok_or("missing clock witness")?
+        .wall_clock_unix_ns = u64::MAX;
+    assert_eq!(receipt.utc_window(), None);
     Ok(())
 }

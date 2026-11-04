@@ -762,30 +762,34 @@ impl SiteProbeReceipt {
 
     /// Map this receipt's observed window to a UTC interval (nanoseconds since
     /// the Unix epoch, inclusive start and end), widened by the attached
-    /// witness's own uncertainty. `None` when no witness is attached, or on an
-    /// internal overflow that validated field bounds should already prevent;
-    /// either way this is a typed gap, not a crash.
+    /// witness's own uncertainty. `None` when no witness is attached, the
+    /// receipt is invalid, or either endpoint cannot be represented. Refusal
+    /// is a typed gap, never a crash or a saturated uncertainty interval.
     ///
     /// Relies on `clock_evidence`'s documented anchor: `monotonic_ns` is the
     /// local monotonic instant at which `first_rtp_timestamp` was observed.
     /// This is a claim about the node's own clock, never an authenticated
-    /// fact; 90 kHz does not evenly divide a nanosecond, so the span itself
-    /// carries sub-nanosecond rounding before the uncertainty is even added.
+    /// fact. The duration rounds outward: a fractional nanosecond must not
+    /// move the upper endpoint inside the claimed observation interval.
     #[must_use]
     pub fn utc_window(&self) -> Option<(u64, u64)> {
         let witness = self.clock_evidence.as_ref()?;
+        // Receipts have public fields and this method is also called directly,
+        // without a parser or manifest admission boundary. In particular, zero
+        // frames/rate must refuse before subtraction or division can panic.
+        self.validate().ok()?;
         let ticks = u64::from(self.frame_duration_ticks) * u64::from(self.observed_frames - 1);
-        let duration_ns: u64 =
-            (u128::from(ticks) * 1_000_000_000 / u128::from(self.clock_rate_hz))
-                .try_into()
-                .ok()?;
+        let duration_ns: u64 = (u128::from(ticks) * 1_000_000_000)
+            .div_ceil(u128::from(self.clock_rate_hz))
+            .try_into()
+            .ok()?;
         let end = witness
             .wall_clock_unix_ns
             .checked_add(duration_ns)?
-            .saturating_add(witness.ntp_uncertainty_ns);
+            .checked_add(witness.ntp_uncertainty_ns)?;
         let start = witness
             .wall_clock_unix_ns
-            .saturating_sub(witness.ntp_uncertainty_ns);
+            .checked_sub(witness.ntp_uncertainty_ns)?;
         Some((start, end))
     }
 

@@ -4,6 +4,29 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Conservative site clock-window admission (2026-11-04)
+
+`SiteProbeReceipt::utc_window()` now validates directly constructed receipts before
+performing timestamp arithmetic. Invalid frame counts, clock rates, cadence,
+witnesses and inconsistent RTP endpoints return `None` without panicking. Fractional
+nanosecond durations round outward, and an unrepresentable upper uncertainty bound
+refuses instead of saturating into a narrower interval. Existing integral-duration
+windows and canonical receipt bytes are unchanged.
+
+**Scoped validation:** 38 exact-source site and zone-dwell contracts pass with the
+pinned nightly, the complete actual `fss-core` crate, and the production URI,
+parser and canonical encoding code. All three new regressions fail against the
+previous `utc_window()` body, reproducing the panic, inward rounding and saturated
+uncertainty. The probe-receipt schema also passes its repository validator. The
+focused build excludes live probe modules; it is not a full CLI/runtime test.
+The serialized full reference build, with debug information disabled, was again
+SIGKILLed inside Asupersync before FSS diagnostics at this environment's 8 GiB
+ceiling. No manifest, lockfile or qualification gate was weakened.
+
+This advances the mapping boundary of VIT-019. Native clock sampling, clock-step
+detection and recorder heartbeat witnesses remain separate work; no native clock
+producer or live UTC capture-time qualification is claimed.
+
 ## Local camera onboarding: protected live UniFi receipts and ONVIF Digest offers
 
 The native probe owner now accepts an exact UniFi selection while preserving the
