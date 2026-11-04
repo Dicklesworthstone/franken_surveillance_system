@@ -662,7 +662,7 @@ FSS beads live in this repository's `.beads` under the epic `fss-vit-je36t`.
 | `.2` VIT-002 | `fss site plan` compiler, one site approval digest | .1 |
 | `.3` VIT-003 | `fss site probe` (read-only ONVIF/RTSP/UniFi) | .1 |
 | `.4` VIT-004 | UniFi source kind in the compiler and automatic export production | .2 |
-| `.5` VIT-005 | Always-on site recorder (`fss site run`/`status`); a new standing-approval model, not campaign mode generalized (D7) | .2, .3, .10, VIT-020, VIT-021, VIT-024, DOC-019 (`fss-x4a.5.19`) |
+| `.5` VIT-005 | Always-on site recorder (`fss site run`/`status`); a new standing-approval model, not campaign mode generalized (D7) | .2, .3, .10, VIT-020, VIT-021, VIT-024, VIT-D7, DOC-019 (`fss-x4a.5.19`) |
 | `.6` VIT-006 | Retention ring | .5 |
 | `.7` VIT-007 | Digest auth on macOS | — |
 | `.8` VIT-008 | Footage-window query | .5, VIT-019, VIT-022 |
@@ -677,12 +677,17 @@ FSS beads live in this repository's `.beads` under the epic `fss-vit-je36t`.
 | `.17` VIT-D2 | Owner decision: TLS | — |
 | `.18` VIT-D5 | Owner decision: Rusty's read | — |
 | `VIT-019` | Site clock witness and UTC interval mapping (`ClockEvidence`) | .1 |
-| `VIT-020` | FLDT-to-site-node uplink: local spool and wire contract (D6) | .1 |
-| `VIT-021` | SSRC-per-session and VFR-tolerant source-envelope approval (ADR) | .1, .2 |
+| `VIT-020` | FLDT-to-site-node uplink: local spool and wire contract (D6) | .1, VIT-D6 |
+| `VIT-021` | SSRC-per-session and VFR-tolerant source-envelope approval (ADR) | .1, .2, VIT-D7 |
 | `VIT-022` | Recorder-of-record window retrieval (ONVIF Profile G / vendor playback) | .1, .3 |
 | `VIT-023` | Trimmed, masked review export of one retained window | .8, .11 |
-| `VIT-024` | Site-node image, provisioning, encrypted volume, update/rollback, health | .1, VIT-020 |
+| `VIT-024` | Site-node image, provisioning, encrypted volume, update/rollback, health | .1, VIT-020, VIT-D3 |
 | `VIT-025` | Customer offboarding and deletion closure | .6, VIT-020 |
+| `VIT-D1` | Owner decision: ratify FSS as FLDT's vault (crosswalk) | — |
+| `VIT-D3` | Owner decision: site-node custody | — |
+| `VIT-D4` | Owner decision: cross-site identity within one tenant | — |
+| `VIT-D6` | Owner decision: FLDT-to-site-node control plane and offline lease age | — |
+| `VIT-D7` | Owner decision: admit an always-on site recorder | — |
 
 Related, non-blocking links: .5 to DOC-019 daemon lifecycle (`fss-x4a.5.19`) and
 SLO-INGEST-001 (`fss-x4a.30.57`); .6 to DOC-060 (`fss-x4a.5.60`) and FSS-036
