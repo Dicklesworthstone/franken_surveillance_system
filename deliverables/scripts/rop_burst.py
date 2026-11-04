@@ -30,6 +30,7 @@ def login():
         except Exception:
             pass
         if i % 8 == 7:
+            log(f"login wait: try {i}, DS still closed")
             time.sleep(0.5)
     return None, -1
 
