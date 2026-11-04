@@ -388,7 +388,7 @@ def main() -> int:
                 print(f"  -> variant[{i}] {label}", flush=True)
                 out = json.dumps(obj).encode()
             elif ("get_processes" in self.path or "get_download_location" in self.path) \
-                    and os.environ.get("PROC_ANSWER"):
+                    and os.environ.get("PROC_ANSWER", "1"):
                 # Two different answers, captured from the cloud:
                 #   get_processes          -> {"code":"1","msg":"v2","data":{"processes":[{processname,
                 #                             entrypoint, maxstartuptime, version, components:[{checksum,
