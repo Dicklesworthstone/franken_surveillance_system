@@ -60,8 +60,14 @@ Both authentication modes share the existing bounded printable-ASCII credential
 format; this command does not broaden the username/password character set.
 
 Digest defaults to SHA-256 with `qop=auth`. `--legacy-md5 yes` and
-`--legacy-no-qop yes` are separate explicit compatibility choices. Every signed
-SOAP retry uses a fresh operating-system nonce and the exact HTTP request
+`--legacy-no-qop yes` are separate explicit compatibility choices. Cameras may
+advertise repeated `WWW-Authenticate` fields or a combined list containing Basic,
+Digest and other schemes. FSS selects the strongest unambiguous Digest permitted
+by the exact configured realm and policy; Basic and other schemes never receive
+credentials. The same bounded selector serves RTSP and ONVIF: at most eight offers,
+2,048 bytes per field and 8,192 combined field bytes. Malformed, wrong-realm,
+equally preferred or incomparable Digest offers refuse before credential use.
+Every signed SOAP retry uses a fresh operating-system nonce and the exact HTTP request
 target. Only one challenged retry is allowed per operation. There is no automatic
 authentication fallback or simultaneous HTTP/WS-Security authentication. Basic,
 PasswordText, redirects, TLS, and transport fallback are unsupported. Plaintext HTTP does not
@@ -403,6 +409,9 @@ Profile M, and full Profile T qualification remain separate work.
 ## Verification scope
 
 Repository tests use owned loopback HTTP/RTSP peers and checked-in AVC/HEVC media.
+Native HTTP and onboarding regressions cover mixed and repeated authentication
+offers, exact-target Digest signing, strongest-permitted selection independent of
+header order, every header split, bounded refusals and the one-retry ceiling.
 The process fixture verifies real SHA-256 Digest responses with fresh nonces,
 private profile inventory, same-origin service enforcement, credential
 revocation, handoff replacement/content/permission refusals, and exact

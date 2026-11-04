@@ -20,6 +20,8 @@ use fss_reference::rtsp::authentication::{
     DigestAuthorization, DigestChallenge, DigestCredentials, DigestPolicy,
 };
 
+#[path = "onvif_onboarding_contract/digest_offers.rs"]
+mod digest_offers;
 #[path = "onvif_onboarding_contract/username_token.rs"]
 mod username_token;
 

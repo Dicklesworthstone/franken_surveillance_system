@@ -2,7 +2,8 @@
 //! Private, bounded HTTP/1 response framing. It owns no network or auth policy.
 
 use super::{HttpError, HttpLimits, HttpResponse};
-use crate::rtsp::authentication::MAX_CHALLENGE_BYTES;
+use crate::rtsp::authentication::AuthenticationError;
+use crate::rtsp::client::authenticated::ChallengeOffers;
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum Phase {
@@ -27,7 +28,7 @@ enum Framing {
 struct Head {
     status: u16,
     content_type: Option<String>,
-    digest_challenge: Option<String>,
+    authentication_headers: Vec<String>,
     framing: Framing,
 }
 
@@ -239,7 +240,7 @@ impl Decoder {
         Ok(HttpResponse {
             status: head.status,
             content_type: head.content_type,
-            digest_challenge: head.digest_challenge,
+            authentication_headers: head.authentication_headers,
             body: std::mem::take(&mut self.body),
         })
     }
@@ -279,7 +280,8 @@ fn parse_head(bytes: &[u8], body_limit: usize) -> Result<Head, HttpError> {
     let mut length = None;
     let mut transfer = false;
     let mut content_type = None;
-    let mut digest_challenge = None;
+    let mut authentication_headers = Vec::new();
+    let mut offers = ChallengeOffers::new();
     let mut encoding = false;
     for (index, line) in lines.enumerate() {
         if index >= 64 {
@@ -320,20 +322,21 @@ fn parse_head(bytes: &[u8], body_limit: usize) -> Result<Head, HttpError> {
             }
             encoding = true;
         } else if name.eq_ignore_ascii_case("www-authenticate") {
-            if digest_challenge.is_some() {
-                return Err(HttpError::Malformed);
-            }
-            if value.len() > MAX_CHALLENGE_BYTES {
-                return Err(HttpError::Limit);
-            }
-            if !value
-                .get(..7)
-                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("Digest "))
-            {
-                return Err(HttpError::Unsupported);
-            }
-            digest_challenge = Some(copy_text(value)?);
+            // Bound the complete offer set before copying a field. A camera may
+            // advertise Basic beside Digest or several Digest algorithms, but
+            // only the credential owner can select under its pinned policy.
+            offers.push_header(value).map_err(|error| match error {
+                AuthenticationError::Capacity => HttpError::Limit,
+                _ => HttpError::Malformed,
+            })?;
+            authentication_headers
+                .try_reserve_exact(1)
+                .map_err(|_| HttpError::Allocation)?;
+            authentication_headers.push(copy_text(value)?);
         }
+    }
+    if !authentication_headers.is_empty() && !offers.contains_digest() {
+        return Err(HttpError::Unsupported);
     }
     if transfer && (length.is_some() || status_line.starts_with(b"HTTP/1.0 "))
         || (status < 200 || status == 204) && (transfer || length.is_some())
@@ -356,7 +359,7 @@ fn parse_head(bytes: &[u8], body_limit: usize) -> Result<Head, HttpError> {
     Ok(Head {
         status,
         content_type,
-        digest_challenge,
+        authentication_headers,
         framing,
     })
 }

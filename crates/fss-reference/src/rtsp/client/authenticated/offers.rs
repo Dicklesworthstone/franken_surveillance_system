@@ -11,14 +11,14 @@ const MAX_OFFERS: usize = 8;
 const MAX_OFFER_BYTES: usize = 8_192;
 
 /// Borrowed original challenge slices. Never expose them through Debug or reports.
-pub(super) struct ChallengeOffers<'a> {
+pub(crate) struct ChallengeOffers<'a> {
     values: [&'a str; MAX_OFFERS],
     len: usize,
     bytes: usize,
 }
 
 impl<'a> ChallengeOffers<'a> {
-    pub(super) fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             values: [""; MAX_OFFERS],
             len: 0,
@@ -28,7 +28,7 @@ impl<'a> ChallengeOffers<'a> {
 
     /// Accept repeated fields or a combined challenge list. A comma within a
     /// quoted value, or before another name=value parameter, is not a boundary.
-    pub(super) fn push_header(&mut self, value: &'a str) -> Result<(), AuthenticationError> {
+    pub(crate) fn push_header(&mut self, value: &'a str) -> Result<(), AuthenticationError> {
         if value.len() > MAX_CHALLENGE_BYTES
             || value.len() > MAX_OFFER_BYTES.saturating_sub(self.bytes)
         {
@@ -102,10 +102,21 @@ impl<'a> ChallengeOffers<'a> {
         Ok(())
     }
 
-    pub(super) fn contains_digest(&self) -> bool {
+    pub(crate) fn contains_digest(&self) -> bool {
         self.values[..self.len]
             .iter()
             .any(|value| extract_auth_scheme(value) == Some(AuthScheme::Digest))
+    }
+
+    /// Compatibility access to one raw Digest offer only. Multiple offers need
+    /// policy-aware selection; their wire order never chooses the credential use.
+    pub(crate) fn single_digest(&self) -> Option<&'a str> {
+        let mut digest = self.values[..self.len]
+            .iter()
+            .copied()
+            .filter(|value| extract_auth_scheme(value) == Some(AuthScheme::Digest));
+        let first = digest.next()?;
+        digest.next().is_none().then_some(first)
     }
 
     /// Select the strongest allowed Digest without changing the owner's policy.
@@ -113,7 +124,7 @@ impl<'a> ChallengeOffers<'a> {
     /// schemes/algorithms never receive credentials. The winner must preserve all
     /// security properties of every other supported offer; incomparable choices
     /// and equally preferred duplicate offers fail closed.
-    pub(super) fn select(
+    pub(crate) fn select(
         &self,
         realm: &str,
         policy: DigestPolicy,

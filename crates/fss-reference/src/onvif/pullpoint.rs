@@ -24,7 +24,7 @@ use super::wire::{
     parse_unsubscribe_response, pull_messages_request, renew_pull_point_request,
     unsubscribe_pull_point_request, validate_relates_to,
 };
-use crate::rtsp::authentication::{DigestAuthorization, DigestChallenge};
+use crate::rtsp::authentication::DigestAuthorization;
 
 /// Time reserved exclusively for explicit Unsubscribe after capture stops.
 pub const CLEANUP_RESERVE_NS: u64 = 2_000_000_000;
@@ -1004,10 +1004,9 @@ fn control_exchange(
             .auth
             .as_ref()
             .ok_or(ClientError::AuthenticationRequired)?;
-        let header = first
-            .digest_challenge()
+        let challenge = first
+            .select_digest_challenge(&auth.expected_realm, auth.policy)?
             .ok_or(ClientError::AuthenticationRefused)?;
-        let challenge = DigestChallenge::parse(header, &auth.expected_realm, auth.policy)?;
         let now = budget.now(deadline, maximum_steps, cx)?;
         cx.checkpoint(route, HttpOperation::Write, now, deadline)
             .map_err(denial)?;
@@ -1314,10 +1313,9 @@ fn exchange(
         .auth
         .as_ref()
         .ok_or(ClientError::AuthenticationRequired)?;
-    let header = first
-        .digest_challenge()
+    let challenge = first
+        .select_digest_challenge(&auth.expected_realm, auth.policy)?
         .ok_or(ClientError::AuthenticationRefused)?;
-    let challenge = DigestChallenge::parse(header, &auth.expected_realm, auth.policy)?;
     let now = budget.now(deadline, maximum_steps, cx)?;
     cx.checkpoint(route, HttpOperation::Write, now, deadline)
         .map_err(denial)?;

@@ -9,7 +9,10 @@
 mod framing;
 
 use super::wire::SoapRequest;
-use crate::rtsp::authentication::DigestAuthorization;
+use crate::rtsp::authentication::{
+    AuthenticationError, DigestAuthorization, DigestChallenge, DigestPolicy,
+};
+use crate::rtsp::client::authenticated::ChallengeOffers;
 use fss_core::{CanonicalEncoder, ContentDigest};
 use std::fmt;
 use std::io::{self, Read, Write};
@@ -557,7 +560,7 @@ pub enum HttpProgress {
 pub struct HttpResponse {
     status: u16,
     content_type: Option<String>,
-    digest_challenge: Option<String>,
+    authentication_headers: Vec<String>,
     body: Vec<u8>,
 }
 
@@ -578,10 +581,36 @@ impl HttpResponse {
     pub fn into_body(mut self) -> Vec<u8> {
         std::mem::take(&mut self.body)
     }
-    /// At most one bounded Digest challenge; the authentication owner must validate
-    /// its pinned realm, algorithm, nonce and qop before any credential use.
+    /// The exact raw Digest offer, only when the response contains exactly one.
+    /// No offer is chosen by wire order. Authentication owners should use
+    /// [`Self::select_digest_challenge`] for policy-aware multiple-offer handling.
     pub fn digest_challenge(&self) -> Option<&str> {
-        self.digest_challenge.as_deref()
+        self.challenge_offers().ok()?.single_digest()
+    }
+    /// Select the strongest unambiguous Digest permitted by the owner's exact
+    /// realm and policy. Repeated fields and combined lists share RTSP's bounded
+    /// selector; Basic and other schemes never receive credentials. A malformed,
+    /// wrong-realm or ambiguous offer refuses before any credential callback.
+    /// `None` means the response contained no Digest challenge.
+    pub fn select_digest_challenge(
+        &self,
+        realm: &str,
+        policy: DigestPolicy,
+    ) -> Result<Option<DigestChallenge>, AuthenticationError> {
+        let offers = self.challenge_offers()?;
+        if offers.contains_digest() {
+            offers.select(realm, policy).map(Some)
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn challenge_offers(&self) -> Result<ChallengeOffers<'_>, AuthenticationError> {
+        let mut offers = ChallengeOffers::new();
+        for header in &self.authentication_headers {
+            offers.push_header(header)?;
+        }
+        Ok(offers)
     }
 }
 
