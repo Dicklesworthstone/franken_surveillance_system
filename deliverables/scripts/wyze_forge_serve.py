@@ -439,7 +439,7 @@ def main() -> int:
                 base = "https://s3-us-west-2.amazonaws.com"
                 # advertised version is bumped so the device sees a change; the served paths stay on
                 # the version we mirrored, because the bytes are the real 50039 ones.
-                model_ver = os.environ.get("MODEL_VER", "14.9.50041.r")
+                model_ver = os.environ.get("MODEL_VER", "14.9.50044.r")
                 model_path_ver = "14.9.50041.r"
                 # the kvs process keeps its REAL version: 2.1.2.573 does not exist on the cloud, so
                 # bumping it only produces NoSuchKey for webrtc.tar.gz.
