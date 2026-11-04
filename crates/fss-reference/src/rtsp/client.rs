@@ -14,6 +14,9 @@ pub mod jpeg;
 /// Owner-selected uncompressed ONVIF application transport metadata.
 #[path = "client/metadata.rs"]
 pub mod metadata;
+/// Pure validation of supplied video DESCRIBE evidence without a live transaction.
+#[path = "client/observed.rs"]
+pub mod observed;
 
 use super::selection::{
     select_h264_description, select_h265_description, select_jpeg_description,

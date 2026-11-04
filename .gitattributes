@@ -9,3 +9,6 @@
 *.onnx binary
 *.safetensors binary
 *.fmpk binary
+# Native protocol fixtures must retain their exact framing and pinned wire bytes.
+fixtures/site_probe/*.rtsp binary
+fixtures/site_probe/*.rtpdump binary

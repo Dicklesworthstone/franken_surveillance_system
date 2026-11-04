@@ -1,0 +1,27 @@
+{
+  "schema": "fss.site_camera_manifest.v1",
+  "site_id": "site:probe-fixture",
+  "generation": 3,
+  "network_route": "lan",
+  "sources": [
+    {
+      "source_id": "source:front",
+      "generation": 5,
+      "kind": "rtsp",
+      "peer": "192.0.2.10:554",
+      "authority": "camera-10.example:554",
+      "presentation": "/live/main",
+      "control_root": "/live",
+      "stream_role": "main",
+      "authentication": null,
+      "retention_class": "ordinary",
+      "rights_verdict_ref": "fldt:rights:example",
+      "zones": [],
+      "payment_masks": [],
+      "max_connections": 1,
+      "owner_authorized": true,
+      "plaintext": true,
+      "retain_originals": true
+    }
+  ]
+}

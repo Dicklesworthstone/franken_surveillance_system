@@ -6,6 +6,14 @@ operation states rather than generic errors.
 
 | ID | Meaning | Retry policy |
 |---|---|---|
+| `ERR-SITE-PROBE-LIMIT-001` | Complete recorded probe evidence exceeds a byte, record, picture or native bound | Provide a smaller complete evidence sample; no truncation. |
+| `ERR-SITE-PROBE-SELECTION-001` | Manifest/source or explicit codec/media/channel selection is invalid or unsupported | Correct the exact scope; no guessed source or codec fallback. |
+| `ERR-SITE-PROBE-DESCRIPTION-001` | Recorded DESCRIBE framing, native SDP/control route or Server identity is invalid or ambiguous | Provide one complete supported response; metadata is never silently selected. |
+| `ERR-SITE-PROBE-PACKET-001` | RTPdump or complete RTP/RTCP framing is malformed, truncated or capture-limited | Provide complete original datagrams; never pad missing bytes. |
+| `ERR-SITE-PROBE-CONTINUITY-001` | Recorded RTP has loss, duplication, reordering, sender drift or payload drift | Acquire a new contiguous single-stream sample; do not hide gaps. |
+| `ERR-SITE-PROBE-PICTURE-001` | Native codec reconstruction, configuration or picture-boundary admission failed | Provide a complete supported sample with exact parameter sets and witnessed picture boundaries. |
+| `ERR-SITE-PROBE-CADENCE-001` | Fewer than three syntax-grouped pictures or no single positive fixed RTP cadence | Acquire at least three consecutive pictures under one supported constant-cadence source configuration. |
+| `ERR-SITE-PROBE-ENCODING-001` | Complete canonical measured-evidence or resulting receipt identity cannot be constructed | Correct the exact input; no partial receipt or replacement identity. |
 | `ERR-SITE-INPUT-LIMIT-001` | Complete site/probe input, source count, geometry or canonical fingerprint exceeds a hard bound | Narrow the complete request; no truncation or partial acceptance. |
 | `ERR-SITE-JSON-001` | Site input is not strict bounded UTF-8 JSON, including duplicate keys or trailing input | Correct the document; diagnostics never include input bytes. |
 | `ERR-SITE-SCHEMA-001` | Site/probe schema, field, requested route, reference or geometry is invalid or unknown | Correct the exact declared scope and preview again; no inferred fields or endpoint fallback. |
