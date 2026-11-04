@@ -1,9 +1,10 @@
 #![forbid(unsafe_code)]
-//! Read-only onboarding: validate sites, measure recordings and compile native capture plans.
+//! Site onboarding: inventory, recorded observations, capture plans and approved native probes.
 //!
 //! Host inputs are explicitly named manifests, receipts and recorded protocol evidence.
 //! Planning never inspects destination directories, credential files, cameras, or rights stores.
 //! The pure compiler owns plan semantics; this module owns bounded CLI/file presentation.
+//! An exactly approved probe delegates network/credential ownership to `site_probe`.
 
 use std::collections::BTreeMap;
 use std::fs::{self, Metadata, OpenOptions};
@@ -17,6 +18,7 @@ use crate::agent_json::{array, object, string};
 use crate::error::{CliError, ExitIdentity};
 use crate::orient_cmd::{collect_options, take};
 use crate::site_plan::{SitePlanOptions, compile};
+use crate::site_probe::{SiteProbeOptions, execute_probe, parse_probe_args};
 use crate::token::ArgToken;
 
 /// Schema of the bounded, non-disclosing manifest validation summary.
@@ -32,6 +34,13 @@ const OUTPUT_ERROR: &str = "ERR-SITE-OUTPUT-BOUND-001";
 pub enum SiteCommand {
     /// Measure a supplied native DESCRIBE response and RTPdump into a probe receipt.
     ProbeFile(Box<crate::site_probe_cmd::ProbeFileArgs>),
+    /// Inspect or approve one bounded native RTSP observation, without recording.
+    Probe {
+        /// Exact site inventory to read before approval revalidation.
+        manifest: PathBuf,
+        /// Exact selected source, protocol, observation budget and approval.
+        options: SiteProbeOptions,
+    },
     /// Parse one manifest and return its canonical identity and bounded source inventory.
     Validate {
         /// The only file the validation request may read.
@@ -48,13 +57,17 @@ pub enum SiteCommand {
     },
 }
 
-/// Parse site validation, recorded-probe measurement or planning with exact exhaustion.
+/// Parse site validation, recorded/native probing or planning with exact exhaustion.
 pub fn parse_site_args(tokens: &[ArgToken]) -> Result<SiteCommand, CliError> {
     let action = tokens.get(1).ok_or_else(|| CliError::MissingValue {
         option: "site".to_owned(),
         command: Some("site".to_owned()),
-        expected: "validate, plan or probe-file".to_owned(),
+        expected: "validate, plan, probe or probe-file".to_owned(),
     })?;
+    if action.as_str() == "probe" {
+        let (manifest, options) = parse_probe_args(tokens)?;
+        return Ok(SiteCommand::Probe { manifest, options });
+    }
     if action.as_str() == "probe-file" {
         return crate::site_probe_cmd::parse(tokens)
             .map(|args| SiteCommand::ProbeFile(Box::new(args)));
@@ -139,7 +152,9 @@ pub(crate) struct InputAuthority {
 impl InputAuthority {
     fn new(command: &SiteCommand) -> Self {
         match command {
-            SiteCommand::Validate { manifest } => Self::for_inputs(&[(manifest, MAX_INPUT_BYTES)]),
+            SiteCommand::Validate { manifest } | SiteCommand::Probe { manifest, .. } => {
+                Self::for_inputs(&[(manifest, MAX_INPUT_BYTES)])
+            }
             SiteCommand::Plan {
                 manifest, probes, ..
             } => Self::for_inputs(&[(manifest, MAX_INPUT_BYTES), (probes, MAX_INPUT_BYTES)]),
@@ -272,7 +287,9 @@ pub fn execute_site(command: &SiteCommand) -> (String, ExitIdentity) {
     }
     let mut authority = InputAuthority::new(command);
     let manifest_path = match command {
-        SiteCommand::Validate { manifest } | SiteCommand::Plan { manifest, .. } => manifest,
+        SiteCommand::Validate { manifest }
+        | SiteCommand::Plan { manifest, .. }
+        | SiteCommand::Probe { manifest, .. } => manifest,
         SiteCommand::ProbeFile(args) => &args.manifest,
     };
     let bytes = match authority.read(manifest_path) {
@@ -290,6 +307,7 @@ pub fn execute_site(command: &SiteCommand) -> (String, ExitIdentity) {
         Err(error) => return refusal(error.code(), &error.to_string(), None),
     };
     let output = match command {
+        SiteCommand::Probe { options, .. } => return execute_probe(&manifest, options),
         SiteCommand::ProbeFile(args) => return crate::site_probe_cmd::execute(args),
         SiteCommand::Validate { .. } => match render_validation(&manifest) {
             Ok(output) => output,

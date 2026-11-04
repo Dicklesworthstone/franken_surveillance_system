@@ -6,6 +6,17 @@ operation states rather than generic errors.
 
 | ID | Meaning | Retry policy |
 |---|---|---|
+| `ERR-SITE-PROBE-PLAN-001` | Requested native probe manifest/source/selection or bounds are not admitted | Correct the exact request and preview again; no credential or network work. |
+| `ERR-SITE-PROBE-APPROVAL-001` | The supplied approval is not the complete current native probe plan digest | Review the new complete preview and supply its exact digest; no automatic approval. |
+| `ERR-SITE-PROBE-DEADLINE-001` | The approved probe operation deadline is exhausted | No receipt or renewed budget; inspect remote-session uncertainty before new work. |
+| `ERR-SITE-PROBE-CANCELLED-001` | The request-owned runtime cancelled the probe | Close local resources; no hidden TEARDOWN or automatic retry. |
+| `ERR-SITE-PROBE-BUDGET-001` | The approved probe runtime resource allowance is exhausted | No renewed allowance or partial successful receipt. |
+| `ERR-SITE-PROBE-AUTHORITY-001` | The live probe runtime or credential authority refused a boundary | Re-establish exact owner scope before a separately approved operation. |
+| `ERR-SITE-PROBE-CREDENTIAL-001` | The approved private credential reference cannot be admitted | Correct the private file without exposing its content; no connection if initial resolution failed. |
+| `ERR-SITE-PROBE-CREDENTIAL-REVOKED-001` | The admitted private credential file changed during the probe | Stop the generation and review the current credential configuration; no automatic retry. |
+| `ERR-SITE-PROBE-ENTROPY-001` | Scoped native cnonce entropy could not be obtained | Do not substitute deterministic entropy or weaken Digest. |
+| `ERR-SITE-PROBE-CLOSE-001` | A native completion lacks a settled matching remote close | No receipt; preserve remote uncertainty. |
+| `ERR-SITE-PROBE-OUTPUT-001` | The complete native probe result exceeds its output allowance | No truncated or partial receipt. |
 | `ERR-SITE-PROBE-CONFIGURATION-001` | Native probe source, route, generation, authentication policy or finite limits disagree | Correct the exact scope and preview again; no network work for configuration refusal. |
 | `ERR-SITE-PROBE-TRANSPORT-001` | Native scoped probe transport or network authority refused | Inspect the explicit attempt/remote-session facts; never reconnect automatically. |
 | `ERR-SITE-PROBE-SESSION-001` | Native RTSP lifecycle, negotiation, correlation or deadline refused | Correct the supported protocol scope and request a new probe explicitly. |

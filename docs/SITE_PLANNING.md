@@ -9,8 +9,9 @@ journal and destination identities for every camera and operation.
 This is the direct RTSP/NVR, AVC/HEVC/JPEG portion of VIT-001 and VIT-002 in
 [the footage-plane plan](VITTLES_FOOTAGE_PLANE_PLAN.md). Planning reads the named
 control documents; it does not contact devices, read credentials, create archives,
-verify signed rights leases or start recording. No `site run`, `site probe` or
-site-wide approval executor is available. The reference implementation remains
+verify signed rights leases or start recording. An independently approved
+[`site probe`](SITE_PROBING.md) can produce an AVC/HEVC receipt from one native
+RTSP/NVR session. No `site run` or site-wide approval executor is available. The reference implementation remains
 unqualified, with no real-camera measurement implied by a successful plan.
 
 ## Try the complete synthetic example
@@ -233,7 +234,7 @@ control-file admission checks, not cryptographic provenance or a trusted parent
 directory guarantee.
 
 No command infers success for an unsupported source. ONVIF/UniFi onboarding,
-live probing, automatic discovery, TLS/RTSPS, signed
+JPEG live probing, automatic discovery, TLS/RTSPS, signed
 rights-lease verification, site execution, retention rings and agent footage
 queries remain outside this implementation. Existing standalone native tools
 retain their separately documented capabilities.
@@ -271,9 +272,10 @@ marker sequence or cadence drift refuses the whole observation. No raw packet or
 bytes are returned. Returned values satisfy the existing site probe receipt v1
 contract and can feed the current site plan compiler.
 
-This is **not** a live camera probe. The RTSP session owner still needs to bind its
-DESCRIBE/SETUP/PLAY transcript to this observer, independently receive and confirm
-TEARDOWN, and enforce explicit network and credential authority. This pure API does
+The observer itself performs no network I/O. The
+[`site probe` owner](SITE_PROBING.md) now binds its native DESCRIBE/SETUP/PLAY
+transcript to this observer, independently confirms TEARDOWN, and enforces explicit
+network and credential authority. This pure API does
 not authenticate the caller or source, prove freshness, or certify decoded pictures.
 The v1 receipt remains an untrusted observational claim until its provenance and
 subsequent live capture pins are established.

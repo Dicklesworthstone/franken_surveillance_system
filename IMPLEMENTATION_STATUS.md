@@ -4,7 +4,7 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
-## Native RTSP site probe session owner
+## Approved native RTSP site probing
 
 `fss_reference::site::live_probe::LiveSiteProbe` now owns one bounded native
 RTSP/NVR probe from OPTIONS through DESCRIBE, SETUP, PLAY and acknowledged
@@ -24,16 +24,44 @@ explicit possible remote-session state. Cancellation retires local resources onc
 without sending a hidden cleanup request. Transport and omission counters remain
 available without exposing original bytes.
 
+`fss site probe --manifest SITE.json --source SOURCE --codec avc|hevc --json`
+now supplies the operator entry point. With no approval it returns a pure preview;
+an exact `--approve` digest binds the complete manifest, source selection,
+principal and all observation limits before any credential or network access.
+The approved adapter reuses the production request-owned runtime and private-file
+credential/entropy owner. It revalidates credentials at socket boundaries and
+again before releasing a successful result. Success is a receipt array accepted
+by `site plan`; refusal reports only static identities and explicit connection,
+credential-access and remote-close facts. No media archive or automatic retry is
+introduced. Existing `probe-file` and JPEG site planning remain available.
+See [SITE_PROBING.md](docs/SITE_PROBING.md) for the command and scope.
+
 **Validation:** 12 native loopback contracts pass with the pinned toolchain against
 the exact production site/RTSP modules, full native packet source and native core
 library. They exercise AVC/HEVC, Digest, foreign realms, seven-byte request writes,
 chunked responses, RTP faults, late media, close uncertainty, cancellation, clock
-regression and pre-connect authority denial. This focused module build uses no
-replacement implementation; it is not a complete workspace/runtime build. Full
-selected binary compilation was SIGKILLed in the existing Asupersync dependency
-under shared memory pressure and remains unqualified. This completes the native
-session-owner slice of VIT-003; the operator CLI, authenticated/fresh receipt
-handling, JPEG live probing and an always-on site recorder are separate work.
+regression and pre-connect authority denial. Five pure production approval/preview/
+receipt contracts and six existing production credential/entropy contracts also
+pass. Six focused checks of the exact production parser and refusal renderer pass,
+including malformed selections, value redaction and empty-input refusal. The
+pure-module isolation preserves byte-identical approvals and previews
+for AVC, authenticated AVC and selected HEVC. Production previews and receipt
+and refusal renderings pass their full Draft 2020-12 schemas. These focused builds select
+actual production modules and contain no replacement runtime or implementation.
+
+**Full CLI integration remains unverified here.** Nine command-process contracts
+are added and their test source typechecks, but no actual `fss` executable could be
+built: LLVM builds, serialized compilation, metadata-only checking and the pinned
+Cranelift development-backend attempt were SIGKILLed inside the existing Asupersync
+dependency before FSS diagnostics. The nine command tests and shared runtime unit
+tests therefore remain unrun. Changed sources pass formatting/whitespace checks;
+existing unrelated repository-wide formatting drift was not rewritten. No complete
+workspace, hardware or release qualification is claimed. This advances VIT-003;
+authenticated/fresh receipt handling, JPEG live probing and an always-on site
+recorder remain separate work. This is a standalone owner-approved reference
+capability. Customer deployment under the Vittles plan additionally requires the
+current FLDT rights lease and device-collection admission in VIT-010, which this
+command does not yet verify; local approval is not that authorization.
 
 ## Executive summary
 
