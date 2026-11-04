@@ -46,12 +46,17 @@ RTP channels are even values from 0 through 254. Samples allow a requested minim
 native syntax-confirmed picture groups (or complete reconstructed JPEG frames) and 100 through 60000 milliseconds for the whole operation,
 including connection, negotiation, authentication and remote close.
 
-Probe sources one at a time. A multi-source site plan requires one receipt for
-every manifest source; combine only successful one-element arrays into a single
-array. Preserve their source and manifest identities. A failed command returns an
-object, never a partial successful receipt array. Save stdout only when the command
-exits successfully, and handle both previews and receipts as private deployment
-metadata because they include exact routing information.
+Probe sources one at a time. A default multi-source site plan requires one receipt
+for every manifest source. To plan cameras as their probes become available, use
+`site plan --source SOURCE_ID` (repeat for several sources) with exactly the
+selected receipt array. Keep the original manifest unchanged so its probe
+bindings remain valid. See [selected planning](SITE_PLANNING.md#plan-selected-cameras-without-changing-the-manifest).
+
+Combine only successful one-element receipt arrays into the requested inventory.
+A failed command returns an object, never a partial successful receipt array.
+Save stdout only when the command exits successfully, and handle both previews
+and receipts as private deployment metadata because they include exact routing
+information.
 
 ## Probe a UniFi Protect source
 

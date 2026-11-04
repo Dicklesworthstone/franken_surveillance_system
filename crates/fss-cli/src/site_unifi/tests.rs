@@ -60,21 +60,51 @@ fn document(manifest: &SiteManifest, rows: &[String]) -> Test<Vec<u8>> {
 }
 
 fn receipts(manifest: &SiteManifest) -> Test<Vec<SiteProbeReceipt>> {
+    Ok(vec![receipt_for(manifest, 0)?])
+}
+
+fn receipt_for(manifest: &SiteManifest, source_index: usize) -> Test<SiteProbeReceipt> {
     let mut receipt = fss_reference::site::parse_probe_receipts(include_bytes!(
         "../../../../fixtures/site/probes.v1.json"
     ))?
     .remove(0);
-    let source = &manifest.sources[0];
+    let source = &manifest.sources[source_index];
     receipt.site_id = manifest.site_id.clone();
     receipt.source_id = source.source_id.clone();
     receipt.manifest_digest = manifest.digest()?;
     receipt.source_generation = source.generation;
     receipt.peer = source.peer;
     receipt.authority = source.authority.clone();
-    receipt.presentation = "/PRIVATE_STREAM_CAPABILITY_CANARY".to_owned();
-    receipt.control_root = receipt.presentation.clone();
+    receipt.presentation = source
+        .presentation
+        .clone()
+        .unwrap_or_else(|| "/PRIVATE_STREAM_CAPABILITY_CANARY".to_owned());
+    receipt.control_root = source
+        .control_root
+        .clone()
+        .unwrap_or_else(|| receipt.presentation.clone());
     receipt.validate_for(manifest)?;
-    Ok(vec![receipt])
+    Ok(receipt)
+}
+
+fn selection_manifest() -> Test<SiteManifest> {
+    let mut manifest = manifest()?;
+    let mut selected = manifest.sources[0].clone();
+    selected.source_id = "source:selected".to_owned();
+    let mut direct = selected.clone();
+    direct.source_id = "source:direct".to_owned();
+    direct.kind = SourceKind::Rtsp;
+    direct.presentation = Some("/direct".to_owned());
+    direct.control_root = Some("/direct".to_owned());
+    direct.unifi_camera_id = None;
+    // This source remains in the authoritative inventory but has no supplied
+    // export or probe and is not eligible for a capture plan.
+    manifest.sources[0].unifi_camera_id = Some("camera:unselected".to_owned());
+    manifest.sources[0].owner_authorized = false;
+    manifest.sources.push(direct);
+    manifest.sources.push(selected);
+    manifest.validate()?;
+    Ok(manifest)
 }
 
 #[test]
@@ -229,6 +259,171 @@ fn lexical_destination_and_credential_overlap_refuse_without_file_access() -> Te
     Ok(())
 }
 
+#[test]
+fn selected_bindings_keep_the_full_manifest_and_original_source_ordinals() -> Test {
+    let manifest = selection_manifest()?;
+    let ids = vec!["source:selected".to_owned()];
+    let indices = site_plan::validate_selected_sources(&manifest, &ids)?;
+    let bytes = document(
+        &manifest,
+        &[row(
+            "source:selected",
+            Path::new("/private/selected.json"),
+            EXPORT,
+        )?],
+    )?;
+    let parsed = parse_bindings_scoped(&manifest, &bytes, Some(&indices))?;
+    assert_eq!(parsed.sources.len(), 1);
+    assert_eq!(parsed.sources[0].source_index, 2);
+    assert_eq!(parsed.sources[0].source_id, "source:selected");
+    assert_eq!(parsed.digest, ContentDigest::sha256(&bytes));
+    // Whole-site callers still require the unselected source's binding.
+    let whole = parse_bindings(&manifest, &bytes)
+        .err()
+        .ok_or("whole-site parser silently accepted a subset")?;
+    assert_eq!(whole.source_index, Some(0));
+    let missing = parse_bindings_scoped(&manifest, &document(&manifest, &[])?, Some(&indices))
+        .err()
+        .ok_or("selected source binding was optional")?;
+    assert_eq!(missing.source_index, Some(2));
+
+    let direct = site_plan::validate_selected_sources(&manifest, &["source:direct".to_owned()])?;
+    assert!(
+        parse_bindings_scoped(&manifest, &document(&manifest, &[])?, Some(&direct))?
+            .sources
+            .is_empty()
+    );
+
+    let reversed = site_plan::validate_selected_sources(
+        &manifest,
+        &["source:selected".to_owned(), "source:front".to_owned()],
+    )?;
+    let rows = [
+        row(
+            "source:selected",
+            Path::new("/private/selected.json"),
+            EXPORT,
+        )?,
+        row("source:front", Path::new("/private/front.json"), EXPORT)?,
+    ];
+    let parsed = parse_bindings_scoped(&manifest, &document(&manifest, &rows)?, Some(&reversed))?;
+    assert_eq!(
+        parsed
+            .sources
+            .iter()
+            .map(|s| s.source_index)
+            .collect::<Vec<_>>(),
+        vec![0, 2]
+    );
+
+    let mut changed = manifest.clone();
+    changed.sources[0].generation += 1;
+    let stale = parse_bindings_scoped(&changed, &bytes, Some(&indices))
+        .err()
+        .ok_or("unselected manifest mutation did not stale the binding")?;
+    assert_eq!(stale.reason, "binding manifest digest is stale");
+    Ok(())
+}
+
+#[test]
+fn selected_bindings_refuse_extra_duplicate_foreign_and_direct_source_rows() -> Test {
+    let manifest = selection_manifest()?;
+    let selected = [2];
+    let valid = row(
+        "source:selected",
+        Path::new("/absent/selected.json"),
+        EXPORT,
+    )?;
+    let cases = [
+        (
+            vec![
+                valid.clone(),
+                row("source:front", Path::new("/absent/front.json"), EXPORT)?,
+            ],
+            Some(0),
+            "binding names an unselected site source",
+        ),
+        (
+            vec![valid.clone(), valid.clone()],
+            Some(2),
+            "duplicate UniFi source binding",
+        ),
+        (
+            vec![
+                valid,
+                row("source:foreign", Path::new("/absent/foreign.json"), EXPORT)?,
+            ],
+            None,
+            "binding names an unknown site source",
+        ),
+    ];
+    for (rows, index, reason) in cases {
+        let error = parse_bindings_scoped(&manifest, &document(&manifest, &rows)?, Some(&selected))
+            .err()
+            .ok_or("extraneous selected binding was ignored")?;
+        assert_eq!(error.source_index, index);
+        assert_eq!(error.reason, reason);
+        assert!(!format!("{error:?}").contains("/absent"));
+        assert!(!format!("{error:?}").contains("source:foreign"));
+    }
+    let direct = parse_bindings_scoped(
+        &manifest,
+        &document(
+            &manifest,
+            &[row(
+                "source:direct",
+                Path::new("/absent/direct.json"),
+                EXPORT,
+            )?],
+        )?,
+        Some(&[1]),
+    )
+    .err()
+    .ok_or("direct source accepted a protected UniFi binding")?;
+    assert_eq!(direct.source_index, Some(1));
+    assert_eq!(direct.reason, "binding must name a UniFi Protect source");
+    Ok(())
+}
+
+#[test]
+fn selected_receipt_preflight_refuses_missing_extra_duplicate_foreign_and_stale_evidence() -> Test {
+    let manifest = selection_manifest()?;
+    let valid = receipt_for(&manifest, 2)?;
+    check_selected_receipts(&manifest, std::slice::from_ref(&valid), &[2])?;
+    let missing = check_selected_receipts(&manifest, &[], &[2])
+        .err()
+        .ok_or("missing selected probe accepted")?;
+    assert_eq!(missing.source_index, Some(2));
+    let unselected = check_selected_receipts(&manifest, &[receipt_for(&manifest, 0)?], &[2])
+        .err()
+        .ok_or("unselected probe accepted")?;
+    assert_eq!(unselected.source_index, Some(0));
+    assert_eq!(
+        unselected.reason,
+        "probe inventory contains an unselected source"
+    );
+    assert!(check_selected_receipts(&manifest, &[valid.clone(), valid.clone()], &[2]).is_err());
+    let duplicate = check_selected_receipts(&manifest, &[valid.clone(), valid.clone()], &[0, 2])
+        .err()
+        .ok_or("duplicate probes satisfied a larger selection")?;
+    assert_eq!(duplicate.source_index, Some(2));
+    assert_eq!(duplicate.reason, "duplicate probe receipt for source");
+    let mut foreign = valid.clone();
+    foreign.source_id = "source:foreign".to_owned();
+    let error = check_selected_receipts(&manifest, &[foreign], &[2])
+        .err()
+        .ok_or("foreign probe accepted")?;
+    assert_eq!(error.reason, "probe inventory contains a foreign source");
+    assert!(!format!("{error:?}").contains("source:foreign"));
+    let mut stale = valid.clone();
+    stale.manifest_digest = ContentDigest::sha256(b"earlier-manifest");
+    assert!(check_selected_receipts(&manifest, &[stale], &[2]).is_err());
+    let mut changed = manifest.clone();
+    changed.sources[0].generation += 1;
+    assert!(check_selected_receipts(&changed, &[valid], &[2]).is_err());
+    Ok(())
+}
+
 #[cfg(target_os = "linux")]
 mod native {
     use super::*;
@@ -291,6 +486,279 @@ mod native {
             remaining.set(budget);
             Ok(())
         })
+    }
+
+    fn selected_plan_with_check(
+        manifest: &SiteManifest,
+        receipts: &[SiteProbeReceipt],
+        options: &SitePlanOptions,
+        source_ids: &[String],
+        bytes: &[u8],
+        checkpoint: &impl Fn() -> Result<(), &'static str>,
+    ) -> Result<SitePlan, SitePlanError> {
+        let bindings = prepare_selected_bindings(manifest, receipts, source_ids, bytes)?;
+        check_paths(manifest, &bindings, options)?;
+        compile_owned_scoped(
+            manifest,
+            receipts,
+            options,
+            &bindings,
+            Some(source_ids),
+            checkpoint,
+        )
+    }
+
+    fn owned_selected_plan(
+        manifest: &SiteManifest,
+        receipts: &[SiteProbeReceipt],
+        options: &SitePlanOptions,
+        source_ids: &[String],
+        bytes: &[u8],
+    ) -> Result<SitePlan, SitePlanError> {
+        let remaining = Cell::new(MAX_READ_OPERATIONS);
+        selected_plan_with_check(manifest, receipts, options, source_ids, bytes, &|| {
+            let budget = remaining
+                .get()
+                .checked_sub(1)
+                .ok_or("fixture read budget")?;
+            remaining.set(budget);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn selected_inventory_refusals_precede_all_native_read_checkpoints() -> Test {
+        let manifest = selection_manifest()?;
+        let options = options(Path::new("/fss-selected-no-files-created"));
+        let ids = vec!["source:selected".to_owned()];
+        let receipt = receipt_for(&manifest, 2)?;
+        let valid = row(
+            "source:selected",
+            Path::new("/absent/selected.json"),
+            EXPORT,
+        )?;
+        let bytes = document(&manifest, std::slice::from_ref(&valid))?;
+        let checks = Cell::new(0);
+        let checkpoint = || {
+            checks.set(checks.get() + 1);
+            Err("unexpected private input boundary")
+        };
+        for invalid_ids in [
+            vec![],
+            vec!["source:foreign".to_owned()],
+            vec!["source:selected".to_owned(), "source:selected".to_owned()],
+        ] {
+            assert!(
+                selected_plan_with_check(
+                    &manifest,
+                    std::slice::from_ref(&receipt),
+                    &options,
+                    &invalid_ids,
+                    &bytes,
+                    &checkpoint,
+                )
+                .is_err()
+            );
+            assert_eq!(checks.get(), 0);
+        }
+        for rows in [
+            vec![],
+            vec![valid.clone(), valid.clone()],
+            vec![
+                valid.clone(),
+                row("source:front", Path::new("/absent/front.json"), EXPORT)?,
+            ],
+            vec![
+                valid.clone(),
+                row("source:foreign", Path::new("/absent/foreign.json"), EXPORT)?,
+            ],
+        ] {
+            let error = selected_plan_with_check(
+                &manifest,
+                std::slice::from_ref(&receipt),
+                &options,
+                &ids,
+                &document(&manifest, &rows)?,
+                &checkpoint,
+            )
+            .err()
+            .ok_or("invalid binding inventory reached protected reads")?;
+            assert_eq!(error.code, ERR_SITE_UNIFI_INPUT);
+            assert_eq!(checks.get(), 0);
+        }
+        let mut foreign = receipt.clone();
+        foreign.source_id = "source:foreign".to_owned();
+        for invalid_receipts in [
+            vec![],
+            vec![receipt.clone(), receipt],
+            vec![receipt_for(&manifest, 0)?],
+            vec![foreign],
+        ] {
+            assert!(
+                selected_plan_with_check(
+                    &manifest,
+                    &invalid_receipts,
+                    &options,
+                    &ids,
+                    &bytes,
+                    &checkpoint,
+                )
+                .is_err()
+            );
+            assert_eq!(checks.get(), 0);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn selected_plan_reads_only_requested_exports_and_binds_actual_file_identity() -> Test {
+        let fixture = Fixture::new()?;
+        let path = fixture.file("selected.json", EXPORT)?;
+        let manifest = selection_manifest()?;
+        let receipts = vec![receipt_for(&manifest, 2)?];
+        let options = options(&fixture.0);
+        let ids = vec!["source:selected".to_owned()];
+        let bytes = document(&manifest, &[row("source:selected", &path, EXPORT)?])?;
+        let first = owned_selected_plan(&manifest, &receipts, &options, &ids, &bytes)?;
+        assert_eq!(first.sources().len(), 1);
+        assert_eq!(first.sources()[0].source_index(), 2);
+        assert_eq!(first.sources()[0].source_id(), "source:selected");
+        assert!(first.render_json().contains(&manifest.digest()?.to_text()));
+
+        let bindings = parse_bindings_scoped(&manifest, &bytes, Some(&[2]))?;
+        let lease = private_file::InputLease::open(&path, &|| Ok(()))?;
+        let fingerprint = lease.fingerprint();
+        let exact = site_plan::compile_selected_with_unifi(
+            &manifest,
+            &receipts,
+            &options,
+            &ids,
+            &[SiteUnifiInput {
+                source_id: "source:selected",
+                spec: &bindings.sources[0].spec,
+                input: ProtectedUnifiInput {
+                    bytes: lease.bytes(),
+                    fingerprint: &fingerprint,
+                },
+            }],
+        )?;
+        assert_eq!(first.approval(), exact.approval());
+        assert_eq!(first.render_json(), exact.render_json());
+        drop(lease);
+        let replacement = fixture.file("replacement.json", EXPORT)?;
+        fs::rename(replacement, &path)?;
+        let replaced = owned_selected_plan(&manifest, &receipts, &options, &ids, &bytes)?;
+        assert_ne!(first.approval(), replaced.approval());
+        for canary in [
+            "PRIVATE_STREAM_CAPABILITY_CANARY",
+            "PRIVATE_CAMERA_ID_CANARY",
+            "PRIVATE_CAMERA_NAME_CANARY",
+        ] {
+            assert!(!replaced.render_json().contains(canary));
+        }
+        assert_eq!(fs::read_dir(&options.archive_root)?.count(), 0);
+        assert_eq!(fs::read_dir(&options.pins_root)?.count(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn selected_plan_protects_credentials_and_outputs_of_unselected_sources() -> Test {
+        let fixture = Fixture::new()?;
+        let path = fixture.file("selected.json", EXPORT)?;
+        let mut manifest = selection_manifest()?;
+        let options = options(&fixture.0);
+        let ids = vec!["source:selected".to_owned()];
+        manifest.sources[0].authentication = Some(fss_reference::site::SiteAuthentication {
+            credential_file: path.clone(),
+            realm: "fixture".to_owned(),
+            legacy_md5: false,
+            legacy_no_qop: false,
+        });
+        let checks = Cell::new(0);
+        let error = selected_plan_with_check(
+            &manifest,
+            &[receipt_for(&manifest, 2)?],
+            &options,
+            &ids,
+            &document(&manifest, &[row("source:selected", &path, EXPORT)?])?,
+            &|| {
+                checks.set(checks.get() + 1);
+                Err("credential access forbidden")
+            },
+        )
+        .err()
+        .ok_or("unselected source credential was read as an export")?;
+        assert_eq!(checks.get(), 0);
+        assert_eq!(error.source_index, Some(2));
+        assert_eq!(
+            error.reason,
+            "private export overlaps a credential reference"
+        );
+
+        manifest.sources[0]
+            .authentication
+            .as_mut()
+            .ok_or("fixture authentication")?
+            .credential_file = options.archive_root.join("credential");
+        let error = owned_selected_plan(
+            &manifest,
+            &[receipt_for(&manifest, 2)?],
+            &options,
+            &ids,
+            &document(&manifest, &[row("source:selected", &path, EXPORT)?])?,
+        )
+        .err()
+        .ok_or("unselected source credential namespace was unprotected")?;
+        assert_eq!(error.source_index, Some(0));
+        assert_eq!(
+            error.reason,
+            "credential references must be outside all archive and journal output namespaces"
+        );
+        assert_eq!(fs::read_dir(&options.archive_root)?.count(), 0);
+        assert_eq!(fs::read_dir(&options.pins_root)?.count(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn selected_plan_retains_final_file_revalidation_and_read_revocation() -> Test {
+        let fixture = Fixture::new()?;
+        let path = fixture.file("selected.json", EXPORT)?;
+        let manifest = selection_manifest()?;
+        let receipts = vec![receipt_for(&manifest, 2)?];
+        let options = options(&fixture.0);
+        let ids = vec!["source:selected".to_owned()];
+        let bytes = document(&manifest, &[row("source:selected", &path, EXPORT)?])?;
+        let denied =
+            selected_plan_with_check(&manifest, &receipts, &options, &ids, &bytes, &|| {
+                Err("fixture revoked")
+            })
+            .err()
+            .ok_or("revoked selected read owner was accepted")?;
+        assert_eq!(denied.reason, "private input read authority expired");
+
+        let boundaries = Cell::new(0);
+        selected_plan_with_check(&manifest, &receipts, &options, &ids, &bytes, &|| {
+            boundaries.set(boundaries.get() + 1);
+            Ok(())
+        })?;
+        let final_check = boundaries.get() - 3;
+        boundaries.set(0);
+        let error = selected_plan_with_check(&manifest, &receipts, &options, &ids, &bytes, &|| {
+            boundaries.set(boundaries.get() + 1);
+            if boundaries.get() == final_check {
+                OpenOptions::new()
+                    .append(true)
+                    .open(&path)
+                    .and_then(|mut file| file.write_all(b" "))
+                    .map_err(|_| "fixture write")?;
+            }
+            Ok(())
+        })
+        .err()
+        .ok_or("changed selected export was released")?;
+        assert_eq!(error.source_index, Some(2));
+        assert_eq!(error.reason, "protected export changed before plan release");
+        Ok(())
     }
 
     #[test]
@@ -479,6 +947,22 @@ mod native {
         let bytes = document(&manifest, &[row("source:front", &path, EXPORT)?])?;
         let expected = owned_plan(&manifest, &receipts, &options, &bytes)?;
         let actual = compile_from_bindings(&manifest, &receipts, &options, &bytes)?;
+        assert_eq!(actual.approval(), expected.approval());
+        assert_eq!(actual.render_json(), expected.render_json());
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_selected_wrapper_matches_protected_compilation() -> Test {
+        let fixture = Fixture::new()?;
+        let path = fixture.file("selected.json", EXPORT)?;
+        let manifest = selection_manifest()?;
+        let receipts = vec![receipt_for(&manifest, 2)?];
+        let options = options(&fixture.0);
+        let ids = vec!["source:selected".to_owned()];
+        let bytes = document(&manifest, &[row("source:selected", &path, EXPORT)?])?;
+        let expected = owned_selected_plan(&manifest, &receipts, &options, &ids, &bytes)?;
+        let actual = compile_selected_from_bindings(&manifest, &receipts, &options, &ids, &bytes)?;
         assert_eq!(actual.approval(), expected.approval());
         assert_eq!(actual.render_json(), expected.render_json());
         Ok(())

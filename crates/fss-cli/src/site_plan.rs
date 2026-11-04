@@ -10,7 +10,9 @@ use std::net::SocketAddr;
 use std::path::{Component, Path, PathBuf};
 
 use fss_core::{CanonicalEncoder, ContentDigest, PrincipalId};
-use fss_reference::site::probe_route::{OnvifCaptureRoute, validate_capture_route_inventory};
+use fss_reference::site::probe_route::{
+    OnvifCaptureRoute, validate_capture_route_inventory, validate_selected_capture_route_inventory,
+};
 use fss_reference::site::{ProbeCodec, SiteManifest, SiteProbeReceipt, SourceKind};
 use fss_reference::unifi::ProtectQuality;
 
@@ -23,6 +25,8 @@ use crate::unifi_plan::{ProtectedUnifiInput, UnifiSourceSpec};
 
 /// Versioned site plan report schema.
 pub const SITE_PLAN_SCHEMA: &str = "fss.site_capture_plan.v1";
+/// Explicit selected-source report and approval domain; legacy whole-site bytes are unchanged.
+pub const SITE_SELECTED_PLAN_SCHEMA: &str = "fss.site_capture_plan.v2";
 /// Maximum complete report. Over-bound sites are refused, never truncated.
 pub const MAX_SITE_PLAN_BYTES: usize = 2 * 1024 * 1024;
 /// Stable refusal identity; `reason` and `source_index` locate the failed contract.
@@ -42,6 +46,21 @@ const UNIFI_POLICY: &str = "site-capture-plan:v1:manifest-and-probe-pinned:all-s
 existing-native-avc-hevc-jpeg-and-unifi-planners:private-export-fingerprint-and-camera-bound:\
 exact-selected-view-and-route:no-url-rewrite:no-quality-fallback:no-tls-downgrade:\
 exact-ssrc:receipt-bound-cadence:receipt-bound-jpeg-retention:\
+reserved-journal-parent-bound:no-executor:no-rights-grant";
+const SELECTED_POLICY: &str = "site-capture-plan:v2:manifest-and-probe-pinned:explicit-selected-sources-or-none:\
+existing-native-avc-hevc-planner:exact-ssrc-and-cadence:no-executor:no-rights-grant";
+const SELECTED_JPEG_POLICY: &str = "site-capture-plan:v2:manifest-and-probe-pinned:explicit-selected-sources-or-none:\
+existing-native-avc-hevc-jpeg-planners:exact-ssrc:receipt-bound-cadence:receipt-bound-jpeg-retention:\
+reserved-journal-parent-bound:no-executor:no-rights-grant";
+const SELECTED_UNIFI_POLICY: &str = "site-capture-plan:v2:manifest-and-probe-pinned:explicit-selected-sources-or-none:\
+existing-native-avc-hevc-jpeg-and-unifi-planners:private-export-fingerprint-and-camera-bound:\
+exact-selected-view-and-route:no-url-rewrite:no-quality-fallback:no-tls-downgrade:\
+exact-ssrc:receipt-bound-cadence:receipt-bound-jpeg-retention:\
+reserved-journal-parent-bound:no-executor:no-rights-grant";
+const SELECTED_ONVIF_POLICY: &str = "site-capture-plan:v2:manifest-and-probe-pinned:explicit-selected-sources-or-none:\
+existing-native-avc-hevc-jpeg-unifi-and-onvif-planners:private-file-fingerprint-bound:\
+onvif-historical-profile-and-onboarding-plan:independent-rtsp-scope:no-http-origin-proof:\
+exact-selected-route:no-codec-fallback:exact-ssrc:receipt-bound-cadence:\
 reserved-journal-parent-bound:no-executor:no-rights-grant";
 
 /// Exact protected observations borrowed by the pure compiler for one site source.
@@ -242,7 +261,8 @@ impl SiteSourcePlan {
     }
 }
 
-/// An immutable complete site preview. Construction succeeds only for the whole site.
+/// An immutable complete preview of the whole site or an explicitly selected source inventory.
+/// Construction succeeds only for every requested source; no failed source is silently omitted.
 #[derive(Clone, Eq, PartialEq)]
 pub struct SitePlan {
     approval: ContentDigest,
@@ -442,6 +462,85 @@ pub fn compile(
     compile_with_unifi(manifest, receipts, options, &[])
 }
 
+/// Validate an explicit nonempty source selection against the complete original manifest.
+///
+/// Full manifest validation precedes selection, so excluding a source cannot hide invalid
+/// geometry, duplicate routes, identity collisions or inconsistent connection declarations.
+/// The returned ordinals are in manifest order; input order is immaterial. No input is read.
+pub fn validate_selected_sources(
+    manifest: &SiteManifest,
+    source_ids: &[String],
+) -> Result<Vec<usize>, SitePlanError> {
+    manifest
+        .validate()
+        .map_err(|_| refused("site manifest contract refused"))?;
+    if source_ids.is_empty() || source_ids.len() > manifest.sources.len() {
+        return Err(refused(
+            "explicit source selection must be nonempty and bounded by the site inventory",
+        ));
+    }
+    let mut selected = BTreeSet::new();
+    for source_id in source_ids {
+        let index = manifest
+            .sources
+            .iter()
+            .position(|source| source.source_id == *source_id)
+            .ok_or_else(|| refused("explicit selection names a foreign source"))?;
+        if !selected.insert(index) {
+            return Err(source_refused(index, "explicit selection repeats a source"));
+        }
+    }
+    Ok(selected.into_iter().collect())
+}
+
+/// Compile exactly the named sources while preserving the complete manifest identity.
+///
+/// The selection is explicit and atomic; it never means "whichever sources succeed".
+/// Receipts must cover exactly the selection, with no extras. The v2 report and approval
+/// distinguish this operation from legacy whole-site planning, even when all sources are
+/// selected. Original source ordinals and native per-source plan bytes are preserved.
+pub fn compile_selected(
+    manifest: &SiteManifest,
+    receipts: &[SiteProbeReceipt],
+    options: &SitePlanOptions,
+    source_ids: &[String],
+) -> Result<SitePlan, SitePlanError> {
+    compile_selected_with_unifi(manifest, receipts, options, source_ids, &[])
+}
+
+/// Compile an explicit source selection with exact protected inputs for its UniFi sources.
+/// Unselected protected inputs are refused before any native plan is prepared.
+pub fn compile_selected_with_unifi(
+    manifest: &SiteManifest,
+    receipts: &[SiteProbeReceipt],
+    options: &SitePlanOptions,
+    source_ids: &[String],
+    unifi_inputs: &[SiteUnifiInput<'_>],
+) -> Result<SitePlan, SitePlanError> {
+    compile_selected_with_sources(manifest, receipts, options, source_ids, unifi_inputs, &[])
+}
+
+/// Compile an explicit source inventory with its exact protected UniFi and ONVIF inputs.
+/// ONVIF management and capture endpoints remain separately bound. Excluded protected
+/// sources require no handoff, and every supplied handoff must belong to the selection.
+pub fn compile_selected_with_sources(
+    manifest: &SiteManifest,
+    receipts: &[SiteProbeReceipt],
+    options: &SitePlanOptions,
+    source_ids: &[String],
+    unifi_inputs: &[SiteUnifiInput<'_>],
+    onvif_inputs: &[SiteOnvifInput<'_>],
+) -> Result<SitePlan, SitePlanError> {
+    compile_scoped(
+        manifest,
+        receipts,
+        options,
+        unifi_inputs,
+        onvif_inputs,
+        Some(source_ids),
+    )
+}
+
 /// Compile a complete site, including exact protected UniFi export observations.
 ///
 /// Every UniFi source requires one input, with no extras. The selected camera and
@@ -467,6 +566,24 @@ pub fn compile_with_protected(
     unifi_inputs: &[SiteUnifiInput<'_>],
     onvif_inputs: &[SiteOnvifInput<'_>],
 ) -> Result<SitePlan, SitePlanError> {
+    compile_scoped(
+        manifest,
+        receipts,
+        options,
+        unifi_inputs,
+        onvif_inputs,
+        None,
+    )
+}
+
+fn compile_scoped(
+    manifest: &SiteManifest,
+    receipts: &[SiteProbeReceipt],
+    options: &SitePlanOptions,
+    unifi_inputs: &[SiteUnifiInput<'_>],
+    onvif_inputs: &[SiteOnvifInput<'_>],
+    source_ids: Option<&[String]>,
+) -> Result<SitePlan, SitePlanError> {
     validate_options(options)?;
     manifest
         .validate()
@@ -474,37 +591,48 @@ pub fn compile_with_protected(
     let manifest_digest = manifest
         .digest()
         .map_err(|_| refused("site manifest identity refused"))?;
+    let selected: BTreeSet<usize> = match source_ids {
+        Some(ids) => validate_selected_sources(manifest, ids)?
+            .into_iter()
+            .collect(),
+        None => (0..manifest.sources.len()).collect(),
+    };
 
     let mut indices = BTreeMap::new();
     for (index, source) in manifest.sources.iter().enumerate() {
         if indices.insert(source.source_id.as_str(), index).is_some() {
             return Err(source_refused(index, "duplicate source identity"));
         }
-        if !matches!(
-            source.kind,
-            SourceKind::Rtsp
-                | SourceKind::NvrChannel
-                | SourceKind::UnifiProtect
-                | SourceKind::Onvif
-        ) {
+        if selected.contains(&index)
+            && !matches!(
+                source.kind,
+                SourceKind::Rtsp
+                    | SourceKind::NvrChannel
+                    | SourceKind::UnifiProtect
+                    | SourceKind::Onvif
+            )
+        {
             return Err(source_refused(
                 index,
                 "source kind requires an onboarding path not supported by this compiler",
             ));
         }
-        if !source.owner_authorized || !source.plaintext || !source.retain_originals {
+        if selected.contains(&index)
+            && (!source.owner_authorized || !source.plaintext || !source.retain_originals)
+        {
             return Err(source_refused(
                 index,
                 "owner, plaintext and original-retention declarations must all be explicit",
             ));
         }
-        if !source.payment_masks.is_empty()
-            || source.zones.iter().any(|zone| {
-                matches!(
-                    zone.kind.as_str(),
-                    "payment" | "payment_terminal" | "lane_pay"
-                )
-            })
+        if selected.contains(&index)
+            && (!source.payment_masks.is_empty()
+                || source.zones.iter().any(|zone| {
+                    matches!(
+                        zone.kind.as_str(),
+                        "payment" | "payment_terminal" | "lane_pay"
+                    )
+                }))
         {
             return Err(source_refused(
                 index,
@@ -529,7 +657,7 @@ pub fn compile_with_protected(
         }
     }
 
-    if unifi_inputs.len() > manifest.sources.len() {
+    if unifi_inputs.len() > selected.len() {
         return Err(refused(
             "protected source inventory exceeds the site inventory",
         ));
@@ -540,6 +668,12 @@ pub fn compile_with_protected(
         let index = *indices
             .get(input.source_id)
             .ok_or_else(|| refused("protected input names a foreign source"))?;
+        if !selected.contains(&index) {
+            return Err(source_refused(
+                index,
+                "protected input names an unselected source",
+            ));
+        }
         if manifest.sources[index].kind != SourceKind::UnifiProtect
             || bindings.insert(index, input).is_some()
         {
@@ -583,7 +717,10 @@ pub fn compile_with_protected(
         }
     }
     for (index, source) in manifest.sources.iter().enumerate() {
-        if source.kind == SourceKind::UnifiProtect && !bindings.contains_key(&index) {
+        if selected.contains(&index)
+            && source.kind == SourceKind::UnifiProtect
+            && !bindings.contains_key(&index)
+        {
             return Err(source_refused(
                 index,
                 "UniFi source requires an exact protected export binding",
@@ -591,7 +728,7 @@ pub fn compile_with_protected(
         }
     }
 
-    if onvif_inputs.len() > manifest.sources.len() {
+    if onvif_inputs.len() > selected.len() {
         return Err(refused(
             "protected ONVIF inventory exceeds the site inventory",
         ));
@@ -602,6 +739,12 @@ pub fn compile_with_protected(
         let index = *indices
             .get(input.source_id)
             .ok_or_else(|| refused("protected ONVIF input names a foreign source"))?;
+        if !selected.contains(&index) {
+            return Err(source_refused(
+                index,
+                "protected ONVIF input names an unselected source",
+            ));
+        }
         if manifest.sources[index].kind != SourceKind::Onvif
             || onvif_bindings.insert(index, input).is_some()
         {
@@ -639,7 +782,10 @@ pub fn compile_with_protected(
         }
     }
     for (index, source) in manifest.sources.iter().enumerate() {
-        if source.kind == SourceKind::Onvif && !onvif_bindings.contains_key(&index) {
+        if selected.contains(&index)
+            && source.kind == SourceKind::Onvif
+            && !onvif_bindings.contains_key(&index)
+        {
             return Err(source_refused(
                 index,
                 "ONVIF source requires an exact protected handoff binding",
@@ -647,7 +793,7 @@ pub fn compile_with_protected(
         }
     }
 
-    if receipts.len() > manifest.sources.len() {
+    if receipts.len() > selected.len() {
         return Err(refused(
             "probe inventory contains extra or duplicate source receipts",
         ));
@@ -657,6 +803,12 @@ pub fn compile_with_protected(
         let index = *indices
             .get(receipt.source_id.as_str())
             .ok_or_else(|| refused("probe inventory contains a foreign source"))?;
+        if !selected.contains(&index) {
+            return Err(source_refused(
+                index,
+                "probe inventory contains an unselected source",
+            ));
+        }
         receipt
             .validate()
             .map_err(|_| source_refused(index, "probe evidence contract refused"))?;
@@ -689,9 +841,9 @@ pub fn compile_with_protected(
             return Err(source_refused(index, "duplicate probe receipt for source"));
         }
     }
-    for index in 0..manifest.sources.len() {
-        if !probes.contains_key(&index) {
-            return Err(source_refused(index, "source has no exact probe receipt"));
+    for index in &selected {
+        if !probes.contains_key(index) {
+            return Err(source_refused(*index, "source has no exact probe receipt"));
         }
     }
 
@@ -701,31 +853,45 @@ pub fn compile_with_protected(
     let includes_jpeg = probes.values().any(|probe| probe.codec == ProbeCodec::Jpeg);
     let includes_unifi = !bindings.is_empty();
     let includes_onvif = !onvif_bindings.is_empty();
-    let policy = if includes_onvif {
-        ONVIF_POLICY
-    } else if includes_unifi {
-        UNIFI_POLICY
-    } else if includes_jpeg {
-        JPEG_POLICY
-    } else {
-        POLICY
+    let policy = match (
+        source_ids.is_some(),
+        includes_onvif,
+        includes_unifi,
+        includes_jpeg,
+    ) {
+        (true, true, _, _) => SELECTED_ONVIF_POLICY,
+        (true, false, true, _) => SELECTED_UNIFI_POLICY,
+        (true, false, false, true) => SELECTED_JPEG_POLICY,
+        (true, false, false, false) => SELECTED_POLICY,
+        (false, true, _, _) => ONVIF_POLICY,
+        (false, false, true, _) => UNIFI_POLICY,
+        (false, false, false, true) => JPEG_POLICY,
+        (false, false, false, false) => POLICY,
     };
-    let mut sources = Vec::with_capacity(manifest.sources.len());
-    let mut source_reports = Vec::with_capacity(manifest.sources.len());
+    let mut sources = Vec::with_capacity(selected.len());
+    let mut source_reports = Vec::with_capacity(selected.len());
     let mut ingress_ids = BTreeSet::new();
     let mut output_scopes = BTreeSet::new();
     let mut report_bytes = 0usize;
     let mut approval = CanonicalEncoder::new();
-    approval.text(SITE_PLAN_SCHEMA);
+    let schema = if source_ids.is_some() {
+        SITE_SELECTED_PLAN_SCHEMA
+    } else {
+        SITE_PLAN_SCHEMA
+    };
+    approval.text(schema);
     approval.text(policy);
     approval.digest(manifest_digest);
     approval.u64(options.epoch);
-    approval.u64(manifest.sources.len() as u64);
+    approval.u64(selected.len() as u64);
     if includes_jpeg {
         approval.text(checked_base(&options.pins_root)?);
     }
 
     for (index, source) in manifest.sources.iter().enumerate() {
+        if !selected.contains(&index) {
+            continue;
+        }
         let probe = probes
             .get(&index)
             .ok_or_else(|| source_refused(index, "source has no exact probe receipt"))?;
@@ -1094,7 +1260,17 @@ pub fn compile_with_protected(
     }
 
     if includes_unifi || includes_onvif {
-        validate_capture_route_inventory(manifest, &probes.values().copied().collect::<Vec<_>>())
+        let routes = probes.values().copied().collect::<Vec<_>>();
+        let checked = if source_ids.is_some() {
+            validate_selected_capture_route_inventory(
+                manifest,
+                &selected.iter().copied().collect::<Vec<_>>(),
+                &routes,
+            )
+        } else {
+            validate_capture_route_inventory(manifest, &routes)
+        };
+        checked
             .map_err(|_| refused("resolved source routes collide or violate the site contract"))?;
     }
 
@@ -1104,7 +1280,7 @@ pub fn compile_with_protected(
             .map_err(|_| refused("site approval encoding refused"))?,
     );
     let mut report_fields = vec![
-        ("schema", string(SITE_PLAN_SCHEMA)),
+        ("schema", string(schema)),
         ("phase", string("planned")),
         ("policy", string(policy)),
         ("site_id", string(&manifest.site_id)),
@@ -1122,6 +1298,23 @@ pub fn compile_with_protected(
         ("capture_authorized", "false".to_owned()),
         ("probe_liveness_verified", "false".to_owned()),
     ];
+    if source_ids.is_some() {
+        let mut selected_ids = Vec::with_capacity(selected.len());
+        let mut unselected_ids = Vec::with_capacity(manifest.sources.len() - selected.len());
+        for (index, source) in manifest.sources.iter().enumerate() {
+            if selected.contains(&index) {
+                selected_ids.push(source.source_id.clone());
+            } else {
+                unselected_ids.push(source.source_id.clone());
+            }
+        }
+        report_fields.extend([
+            ("selection_mode", string("explicit")),
+            ("manifest_source_count", manifest.sources.len().to_string()),
+            ("selected_source_ids", strings(&selected_ids)),
+            ("unselected_source_ids", strings(&unselected_ids)),
+        ]);
+    }
     if includes_jpeg {
         report_fields.push((
             "reserved_pins_root",
@@ -1155,3 +1348,7 @@ mod unifi_tests;
 #[cfg(all(test, target_os = "linux"))]
 #[path = "site_plan/onvif_tests.rs"]
 pub(crate) mod onvif_tests;
+
+#[cfg(test)]
+#[path = "site_plan/selection_tests.rs"]
+mod selection_tests;

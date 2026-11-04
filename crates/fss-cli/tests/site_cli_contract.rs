@@ -770,6 +770,173 @@ fn site_grammar_refuses_execution_unknown_actions_and_ambiguous_options() -> Tes
     Ok(())
 }
 
+#[test]
+fn selected_source_plans_against_the_unchanged_manifest_without_an_unprobed_onvif_source() -> Test {
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    listener.set_nonblocking(true)?;
+    let mut fixture = Fixture::new("selected-onvif", &listener.local_addr()?.to_string())?;
+    let unselected = source_mut(&mut fixture.manifest, 0)?;
+    set(unselected, "kind", Value::Text("onvif".to_owned()))?;
+    set(unselected, "presentation", Value::Null)?;
+    set(unselected, "control_root", Value::Null)?;
+    set(
+        unselected,
+        "onvif_service_path",
+        Value::Text("/onvif/device_service".to_owned()),
+    )?;
+    fixture.rebind_manifest()?;
+    let selected_receipt = fixture.probe_mut(1)?.clone();
+    fixture.probes = Value::Array(vec![selected_receipt]);
+    fixture.write()?;
+    let original_manifest = fs::read(fixture.directory.0.join("manifest.json"))?;
+    let manifest_digest = parse_manifest(&original_manifest)?.digest()?.to_text();
+
+    refused(run(false, &fixture.args())?, Some("ERR-SITE-PLAN-001"), &[])?;
+    let mut args = fixture.args();
+    args.extend(["--source".into(), "source:back".into()]);
+    let plan = good(run(false, &args)?)?;
+    assert_eq!(text(&plan, "schema")?, "fss.site_capture_plan.v2");
+    assert_eq!(text(&plan, "selection_mode")?, "explicit");
+    assert_eq!(text(&plan, "manifest_digest")?, manifest_digest);
+    assert_eq!(
+        field(&plan, "manifest_source_count")?,
+        &Value::Number("2".into())
+    );
+    assert_eq!(field(&plan, "source_count")?, &Value::Number("1".into()));
+    assert_eq!(
+        items(&plan, "selected_source_ids")?,
+        &[Value::Text("source:back".into())]
+    );
+    assert_eq!(
+        items(&plan, "unselected_source_ids")?,
+        &[Value::Text("source:front".into())]
+    );
+    let sources = items(&plan, "sources")?;
+    assert_eq!(sources.len(), 1);
+    assert_eq!(text(&sources[0], "source_id")?, "source:back");
+    assert_eq!(
+        field(&sources[0], "source_index")?,
+        &Value::Number("1".into())
+    );
+    assert!(!boolean(&plan, "capture_authorized")?);
+    assert_eq!(
+        fs::read(fixture.directory.0.join("manifest.json"))?,
+        original_manifest
+    );
+    fixture.untouched();
+    no_connection(&listener)
+}
+
+#[test]
+fn explicit_selection_order_is_canonical_and_does_not_alias_the_default_plan() -> Test {
+    let fixture = Fixture::new("selected-order", "127.0.0.1:554")?;
+    fixture.write()?;
+    let all = good(run(false, &fixture.args())?)?;
+    let mut forward = fixture.args();
+    forward.extend([
+        "--source".into(),
+        "source:front".into(),
+        "--source=source:back".into(),
+    ]);
+    let selected = good(run(false, &forward)?)?;
+    let mut reverse = fixture.args();
+    reverse.extend([
+        "--source=source:back".into(),
+        "--source".into(),
+        "source:front".into(),
+    ]);
+    let reordered = good(run(false, &reverse)?)?;
+    assert_eq!(selected, reordered);
+    assert_eq!(items(&selected, "sources")?, items(&all, "sources")?);
+    assert_ne!(text(&selected, "approval")?, text(&all, "approval")?);
+    assert!(items(&selected, "unselected_source_ids")?.is_empty());
+    fixture.untouched();
+    Ok(())
+}
+
+#[test]
+fn selected_sources_refuse_duplicate_foreign_and_unselected_probe_inputs() -> Test {
+    let fixture = Fixture::new("selected-refusals", "127.0.0.1:554")?;
+    fixture.write()?;
+    for selection in [
+        vec!["source:front", "source:front"],
+        vec!["source:foreign"],
+        vec!["source:front"], // The supplied receipt inventory still contains back.
+    ] {
+        let mut args = fixture.args();
+        for source in selection {
+            args.extend(["--source".into(), source.into()]);
+        }
+        refused(run(false, &args)?, Some("ERR-SITE-PLAN-001"), &[])?;
+    }
+    fixture.untouched();
+    Ok(())
+}
+
+#[test]
+fn selection_does_not_bypass_unselected_credential_namespace_protection() -> Test {
+    let mut fixture = Fixture::new("selected-credential-scope", "127.0.0.1:554")?;
+    let credential = fixture.directory.0.join("archive-not-created/secret");
+    let authentication = object_mut(source_mut(&mut fixture.manifest, 1)?)?
+        .get_mut("authentication")
+        .ok_or("missing authentication")?;
+    set(
+        authentication,
+        "credential_file",
+        Value::Text(credential.to_str().ok_or("UTF-8 path")?.into()),
+    )?;
+    fixture.rebind_manifest()?;
+    let selected_receipt = fixture.probe_mut(0)?.clone();
+    fixture.probes = Value::Array(vec![selected_receipt]);
+    fixture.write()?;
+    let mut args = fixture.args();
+    args.extend(["--source".into(), "source:front".into()]);
+    let refusal = refused(run(false, &args)?, Some("ERR-SITE-PLAN-001"), &[])?;
+    assert_eq!(field(&refusal, "source_index")?, &Value::Number("1".into()));
+    fixture.untouched();
+    Ok(())
+}
+
+#[test]
+fn repeated_source_grammar_keeps_other_option_exhaustion_and_bounds() -> Test {
+    let fixture = Fixture::new("selected-grammar", "127.0.0.1:554")?;
+    for suffix in [
+        vec!["--source", ""],
+        vec!["--source="],
+        vec!["--source", "source:front", "--epoch", "10"],
+        vec!["--source", "source:front", "--json"],
+    ] {
+        let mut args = fixture.args();
+        args.extend(suffix.into_iter().map(OsString::from));
+        let output = run(false, &args)?;
+        assert_eq!(output.status.code(), Some(2));
+        assert!(
+            output.stdout.is_empty(),
+            "invalid grammar reached file input"
+        );
+    }
+    let mut too_many = fixture.args();
+    for index in 0..65 {
+        too_many.extend(["--source".into(), format!("source:{index}").into()]);
+    }
+    let output = run(false, &too_many)?;
+    assert_eq!(output.status.code(), Some(2));
+    assert!(
+        output.stdout.is_empty(),
+        "source bound was checked after file input"
+    );
+    let mut validation = validate_args(&fixture.directory.0.join("manifest.json"));
+    validation.extend(["--source".into(), "source:front".into()]);
+    let output = run(false, &validation)?;
+    assert_eq!(output.status.code(), Some(2));
+    assert!(
+        output.stdout.is_empty(),
+        "selection was accepted for validation"
+    );
+    fixture.untouched();
+    Ok(())
+}
+
 fn select_jpeg(fixture: &mut Fixture, index: usize) -> Test {
     let receipt = fixture.probe_mut(index)?;
     set(receipt, "codec", Value::Text("jpeg".to_owned()))?;

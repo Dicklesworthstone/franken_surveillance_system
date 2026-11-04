@@ -1,8 +1,10 @@
 # Site manifests and native capture planning
 
 `fss site validate` admits a bounded site manifest. `fss site plan` combines that
-manifest with a complete inventory of supplied probe receipts and produces one
-deterministic site preview containing the existing native RTSP capture plans.
+manifest with an exact inventory of supplied probe receipts and produces one
+deterministic preview containing the existing native RTSP capture plans. By
+default this covers every manifest source. Repeated `--source` options select an
+explicit subset while preserving the full manifest and its existing receipt bindings.
 This removes the need to hand-invent sensor, stream, ingress, clock, authority,
 journal and destination identities for every camera and operation.
 
@@ -39,9 +41,9 @@ storage protections are checked only by a separately approved native capture.
 The planner will not inspect either directory. Use separate, nonnested absolute
 parents, with no `.` or `..` components. Credentials must be outside both output
 namespaces. AVC/HEVC captures accept 1 through 4096 pictures per source; JPEG
-captures accept 1 through 256. The same requested count applies to every source,
-so a mixed site containing JPEG also has a 256-picture ceiling. A request above
-any source's limit refuses the whole plan; it is never silently reduced. The
+captures accept 1 through 256. The same requested count applies to every included source,
+so a requested inventory containing JPEG also has a 256-picture ceiling. A request above
+any included source's limit refuses the whole plan; it is never silently reduced. The
 native deadline ceiling also applies, and slower cadence can lower the effective
 picture cap. The existing JPEG planner additionally requires a nonzero SSRC and
 media index 0 through 15. A supplied JPEG receipt outside those native limits
@@ -72,6 +74,57 @@ independently as documented in [the native JPEG guide](rtsp_jpeg_capture_cli.md)
 principal must be explicit; a label does not authenticate its author. `--epoch`
 is a positive operation generation that the caller must advance for a new
 capture. The compiler has no state from which to allocate or remember epochs.
+
+## Plan selected cameras without changing the manifest
+
+A camera can be probed and planned before every other source is ready. Repeat
+`--source` for exactly the cameras to include:
+
+```sh
+fss site plan --manifest /etc/fss/site.json \
+  --probes /etc/fss/front-and-back.probes.json \
+  --source source:front --source source:back \
+  --archive-root /srv/fss/footage --pins-root /srv/fss/pins \
+  --epoch 2 --stop-after-pictures 250 --json
+```
+
+The receipt array must contain exactly one receipt for each selected source and
+no others. Each receipt still binds the complete original manifest digest and
+its original source generation. Do not remove other cameras from the manifest
+to create a one-camera plan: changing the manifest invalidates its receipts.
+For a single camera, pass its ordinary receipt array and one `--source`.
+
+Selection order does not change the result. Sources are emitted in original
+manifest order, with their original `source_index`. Duplicate, foreign or empty
+source selections refuse. Every selected source must pass; there is no automatic
+fallback that drops a failed camera. Omitting `--source` keeps the existing
+all-source behavior and exact v1 output/approval bytes.
+
+Explicit selection emits
+[`fss.site_capture_plan.v2`](../schemas/site_capture_plan.v2.json). It identifies
+`selection_mode: "explicit"`, the complete `manifest_source_count`, and the
+`selected_source_ids` and `unselected_source_ids`. Its approval has a distinct
+v2 domain, including when every source was explicitly selected. The per-camera
+native plan and operation identities remain the same as for that camera in a
+complete plan with identical inputs; selecting it twice does not create a new
+capture epoch or output namespace.
+
+An unselected camera may remain unprobed, use an unsupported onboarding kind,
+or be ineligible for original retention. The complete manifest must still be
+valid. Credential references from **every** source must remain outside the
+selected capture output namespaces, so selection cannot hide a credential
+collision. A selected source with a payment mask or missing permission
+declaration still refuses.
+
+For selected UniFi or ONVIF sources, provide the corresponding `--unifi-bindings`
+or `--onvif-bindings` document; mixed selections can use both. Each document must
+name exactly the selected sources of its kind and no others, and still pin the
+complete manifest digest. Unselected private exports and handoffs are neither
+needed nor opened. Existing file fingerprint, route, camera/view/profile and
+output isolation checks apply to the selected inputs. Actual selected routes
+are also checked against known unselected direct RTSP routes; excluded protected
+routes are not inferred. No selection grants recording authority; each emitted
+native capture still requires its own exact approval.
 
 ## Manifest contract
 
@@ -136,7 +189,7 @@ nonadjacent-edge intersections. Payment masks have positive width and height and
 must fit within the same coordinate range. A source has at most 32 zones and 32
 masks; a whole site has at most 8192 polygon vertices.
 
-The compiler refuses any source with a payment mask or a `payment`,
+The compiler refuses to include a source with a payment mask or a `payment`,
 `payment_terminal` or `lane_pay` zone. The current original-byte capture path
 cannot apply a payment privacy floor before retaining source bytes. A declared
 mask alone cannot make that capture permissible.
@@ -145,9 +198,10 @@ mask alone cannot make that capture permissible.
 
 The `--probes` document is a JSON array of
 [`fss.site_probe_receipt.v1`](../schemas/site_probe_receipt.v1.json) objects.
-Each manifest source must have exactly one receipt. Input receipt order is
+Each requested source must have exactly one receipt: every manifest source by
+default, or exactly the explicit `--source` selection. Input receipt order is
 irrelevant; output always follows manifest source order. Missing, duplicate,
-foreign or stale receipts refuse the whole plan.
+foreign, unselected or stale receipts refuse the whole plan.
 
 A receipt binds the exact manifest digest and source generation, literal peer,
 authority, presentation/control subtree, selected SDP media index, RTP/RTCP
@@ -215,8 +269,9 @@ characters. `site validate` reports the canonical manifest digest. The source
 pin hashes the complete independently obtained private export, including its
 whitespace. See [the Protect handoff guide](UNIFI_PROTECT.md) for its exact
 `camera`, `streams` and optional `rtsp` shape. Bindings never contain URLs, API
-keys, credentials or peer overrides. Every UniFi source requires exactly one
-row; missing, duplicate, foreign and direct-source rows refuse the complete site.
+keys, credentials or peer overrides. Every included UniFi source requires exactly one
+row: all by default, or exactly the explicit plan selection. Missing, duplicate,
+foreign, unselected and direct-source rows refuse the complete requested plan.
 Row ordering does not affect the plan.
 
 Obtain a live receipt for one selected UniFi source using the same bindings:
@@ -346,8 +401,9 @@ input has this shape:
 ```
 
 Replace digest placeholders with 64 lowercase hexadecimal characters. Supply one
-row per ONVIF source; missing, duplicate, unknown or non-ONVIF rows refuse the
-whole plan. The handoff's complete bytes, expected onboarding/profile identities,
+row per included ONVIF source: all by default, or exactly the explicit `--source`
+selection. Missing, duplicate, unknown, unselected or non-ONVIF rows refuse the
+whole requested plan. The handoff's complete bytes, expected onboarding/profile identities,
 peer, exact authority and codec must agree. A supplied receipt must bind the
 **original** manifest, source ID and generation, and match the selected RTSP
 peer, authority, exact presentation, codec and explicit control root. Renaming a
@@ -408,8 +464,9 @@ report and approval bytes are unchanged.
 
 ## What the plan binds
 
-The complete output follows
-[`fss.site_capture_plan.v1`](../schemas/site_capture_plan.v1.json). Each source
+The default complete-site output follows
+[`fss.site_capture_plan.v1`](../schemas/site_capture_plan.v1.json); explicit
+`--source` selection follows the additive v2 contract described above. Each source
 includes an `argv` array for `fss-capture-rtsp`, the exact native `native_approval`
 and the native `native_plan` JSON. JPEG argument arrays start with `jpeg`; their
 native report uses `fss.rtsp_jpeg_capture_cli.v1`, while direct AVC/HEVC reports

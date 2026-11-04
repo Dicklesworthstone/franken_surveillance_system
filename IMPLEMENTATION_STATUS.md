@@ -4,6 +4,48 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Plan explicitly selected site sources (2026-11-04)
+
+`fss site plan` now accepts repeated `--source SOURCE_ID` options. Operators can
+plan one successfully probed camera without deleting other cameras from the
+manifest and invalidating its receipts. The default still requires the complete
+site. Explicit selection preserves the full manifest digest, original source
+ordinals and per-camera native plans; its distinct v2 report/approval enumerates
+both selected and unselected sources in manifest order.
+
+Selected sources must have exactly matching receipt and protected UniFi/ONVIF binding
+inventories. Duplicate, foreign, missing or unselected inputs refuse, and every
+selected camera must succeed before any plan is returned. Excluded cameras need
+no probes or private exports. Complete manifest validity and credential/output
+isolation across every source remain mandatory. The selected protected-input owner checks
+scope before private reads and retains the existing file fingerprints, bounded
+request authority, exact camera/view/profile/route checks and final revalidation.
+Selected actual RTSP routes retain collision and connection-limit checks against
+known unselected direct routes and UniFi peers; excluded ONVIF management endpoints
+are never invented as RTSP routes. Both input lease sets stay held through mixed
+compilation and final revalidation.
+
+**Scoped validation:** all 154 exact-source native planner, compiler and protected
+input contracts pass, including 23 native capture-plan tests, against a 124-test
+committed ONVIF baseline. Another 70 site/route/geometry contracts pass, including
+the new selected actual-route inventory tests. New tests cover selected/native equality,
+original indices, explicit-all domain separation, receipt/export scope, excluded
+source permissions, whole-manifest validity, file replacement, revocation and
+complete refusal. Another 20 exact-source grammar/token/redaction contracts pass,
+including the 64-source bound and preservation of ordinary duplicate-option rules.
+Legacy direct, JPEG, UniFi, ONVIF AVC and ONVIF HEVC reports and approvals compare
+byte-for-byte against upstream commit `3fde67c`; native per-camera behavior is preserved.
+The affected schemas pass the repository schema validator;
+changed Rust files pass pinned formatting. Full CLI subprocess and native runtime
+wrapper tests remain unexecuted here: the full reference build was stopped after
+sustained pressure at the environment's 8 GiB ceiling, before FSS diagnostics.
+The focused builds use actual production owners and dependencies without protocol
+or planning substitutes; they do not qualify the full application or hardware.
+
+This closes the per-source probe-to-plan workflow gap in VIT-001/VIT-002/VIT-004.
+The concurrently added ONVIF source planner is preserved. This selection feature
+does not add a site executor, continuous recorder, TLS transport or signed rights verification. See [site planning](docs/SITE_PLANNING.md).
+
 ## Protected ONVIF site capture compilation (2026-11-04)
 
 `fss site plan --onvif-bindings BINDINGS.json` now compiles stable Media1 AVC

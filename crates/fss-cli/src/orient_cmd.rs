@@ -114,6 +114,16 @@ pub(crate) fn collect_options(
     tokens: &[ArgToken],
     valued: &[&str],
 ) -> Result<Vec<(String, String, usize)>, CliError> {
+    collect_options_with_repeatable(command, tokens, valued, &[])
+}
+
+/// Collect explicitly repeatable valued options while preserving ordinary duplicate refusal.
+pub(crate) fn collect_options_with_repeatable(
+    command: &str,
+    tokens: &[ArgToken],
+    valued: &[&str],
+    repeatable: &[(&str, usize)],
+) -> Result<Vec<(String, String, usize)>, CliError> {
     let mut seen_json = false;
     let mut values: Vec<(String, String, usize)> = Vec::new();
     let mut index = 1;
@@ -151,7 +161,20 @@ pub(crate) fn collect_options(
                 }
             });
         }
-        if values.iter().any(|(seen, _, _)| seen == name) {
+        let count = values.iter().filter(|(seen, _, _)| seen == name).count();
+        let repeat_limit = repeatable
+            .iter()
+            .find_map(|(option, maximum)| (*option == name).then_some(*maximum));
+        if repeat_limit.is_some_and(|maximum| count >= maximum) {
+            return Err(CliError::MalformedValue {
+                option: name.to_owned(),
+                value: "[too many selections]".to_owned(),
+                reason: "repeated option exceeds its declared bound".to_owned(),
+                command: Some(command.to_owned()),
+                index: token.index,
+            });
+        }
+        if repeat_limit.is_none() && count != 0 {
             return Err(CliError::DuplicateOption {
                 option: name.to_owned(),
                 command: Some(command.to_owned()),

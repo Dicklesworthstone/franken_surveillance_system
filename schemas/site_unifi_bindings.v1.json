@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://franken-surveillance-system.dev/schemas/site_unifi_bindings.v1.json",
   "title": "FSS protected UniFi site bindings v1",
-  "description": "Strict operator input binding a canonical site manifest to private Protect exports and exact requested renditions. The complete UTF-8 document is bounded to 1 MiB (1048576 bytes) by the native parser. Every manifest UniFi source must appear exactly once; other or unknown sources are refused. Empty sources is valid only when the manifest has no UniFi sources. Peer, authority, selected camera and receipt route come from the manifest and protected export, never from override fields here. These bindings grant no capture, file, credential or network authority.",
+  "description": "Strict operator input binding a canonical site manifest to private Protect exports and exact requested renditions. The complete UTF-8 document is bounded to 1 MiB (1048576 bytes) by the native parser. By default every manifest UniFi source must appear exactly once. With an explicit site plan source selection, exactly the selected UniFi sources must appear. Other, unselected or unknown sources are refused. Empty sources is valid only when the applicable source scope has no UniFi sources. The manifest digest always binds the complete original manifest. Peer, authority, selected camera and receipt route come from the manifest and protected export, never from override fields here. These bindings grant no capture, file, credential or network authority.",
   "type": "object",
   "additionalProperties": false,
   "required": [

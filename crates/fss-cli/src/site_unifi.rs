@@ -116,6 +116,16 @@ pub(crate) fn parse_bindings(
     manifest: &SiteManifest,
     bytes: &[u8],
 ) -> Result<Bindings, SitePlanError> {
+    parse_bindings_scoped(manifest, bytes, None)
+}
+
+// Selected ordinals come only from the full-manifest selection validator. Keep
+// the all-source parser unchanged for capture and probe callers.
+fn parse_bindings_scoped(
+    manifest: &SiteManifest,
+    bytes: &[u8],
+    selected: Option<&[usize]>,
+) -> Result<Bindings, SitePlanError> {
     let manifest_digest = manifest
         .digest()
         .map_err(|_| refused(None, "valid canonical site manifest required"))?;
@@ -157,6 +167,9 @@ pub(crate) fn parse_bindings(
             .ok_or_else(|| refused(None, "binding names an unknown site source"))?;
         let index = Some(source_index);
         let source = &manifest.sources[source_index];
+        if selected.is_some_and(|indices| !indices.contains(&source_index)) {
+            return Err(refused(index, "binding names an unselected site source"));
+        }
         if source.kind != SourceKind::UnifiProtect {
             return Err(refused(index, "binding must name a UniFi Protect source"));
         }
@@ -201,10 +214,17 @@ pub(crate) fn parse_bindings(
         });
     }
     for (index, source) in manifest.sources.iter().enumerate() {
-        if source.kind == SourceKind::UnifiProtect && !seen.contains(&index) {
+        if source.kind == SourceKind::UnifiProtect
+            && selected.is_none_or(|indices| indices.contains(&index))
+            && !seen.contains(&index)
+        {
             return Err(refused(
                 Some(index),
-                "every UniFi source requires one protected binding",
+                if selected.is_some() {
+                    "every selected UniFi source requires one protected binding"
+                } else {
+                    "every UniFi source requires one protected binding"
+                },
             ));
         }
     }
@@ -213,6 +233,88 @@ pub(crate) fn parse_bindings(
         digest: ContentDigest::sha256(bytes),
         sources,
     })
+}
+
+// Refuse a mismatched receipt inventory before opening any protected export.
+// The pure compiler repeats complete validation after receiving the leased bytes.
+fn check_selected_receipts(
+    manifest: &SiteManifest,
+    receipts: &[SiteProbeReceipt],
+    selected: &[usize],
+) -> Result<(), SitePlanError> {
+    if receipts.len() > selected.len() {
+        return Err(refused(
+            None,
+            "probe inventory contains extra or duplicate source receipts",
+        ));
+    }
+    let manifest_digest = manifest
+        .digest()
+        .map_err(|_| refused(None, "valid canonical site manifest required"))?;
+    let mut seen = BTreeSet::new();
+    for receipt in receipts {
+        let index = manifest
+            .sources
+            .iter()
+            .position(|source| source.source_id == receipt.source_id)
+            .ok_or_else(|| refused(None, "probe inventory contains a foreign source"))?;
+        if !selected.contains(&index) {
+            return Err(refused(
+                Some(index),
+                "probe inventory contains an unselected source",
+            ));
+        }
+        if !seen.insert(index) {
+            return Err(refused(Some(index), "duplicate probe receipt for source"));
+        }
+        // ONVIF's management endpoint remains in the original manifest while
+        // the handoff and its independent pins own the RTSP endpoint. Its full
+        // route is verified by the protected compiler after reading the handoff.
+        if receipt.validate().is_err()
+            || receipt.site_id != manifest.site_id
+            || receipt.manifest_digest != manifest_digest
+            || receipt.source_generation != manifest.sources[index].generation
+            || (manifest.sources[index].kind != SourceKind::Onvif
+                && receipt.validate_for(manifest).is_err())
+        {
+            return Err(refused(
+                Some(index),
+                "probe evidence does not bind the exact current manifest source",
+            ));
+        }
+    }
+    for index in selected {
+        if !seen.contains(index) {
+            return Err(refused(
+                Some(*index),
+                "selected source has no exact probe receipt",
+            ));
+        }
+    }
+    Ok(())
+}
+
+// Shared selected admission boundary: complete scope and receipt checks finish
+// before either the runtime wrapper or a bounded test owner can open an export.
+fn prepare_selected_bindings(
+    manifest: &SiteManifest,
+    receipts: &[SiteProbeReceipt],
+    source_ids: &[String],
+    bindings_json: &[u8],
+) -> Result<Bindings, SitePlanError> {
+    let selected = site_plan::validate_selected_sources(manifest, source_ids)?;
+    if let Some(index) = selected
+        .iter()
+        .find(|index| manifest.sources[**index].kind == SourceKind::Onvif)
+    {
+        return Err(crate::site_onvif::refused(
+            Some(*index),
+            "selected ONVIF source requires a protected handoff binding document",
+        ));
+    }
+    let bindings = parse_bindings_scoped(manifest, bindings_json, Some(&selected))?;
+    check_selected_receipts(manifest, receipts, &selected)?;
+    Ok(bindings)
 }
 
 /// Select one source from the same strict site binding document used for capture.
@@ -303,9 +405,29 @@ fn compile_owned(
     bindings: &Bindings,
     checkpoint: &impl Fn() -> Result<(), &'static str>,
 ) -> Result<SitePlan, SitePlanError> {
-    with_inputs(manifest, options, bindings, checkpoint, |inputs| {
-        site_plan::compile_with_unifi(manifest, receipts, options, inputs)
-    })
+    compile_owned_scoped(manifest, receipts, options, bindings, None, checkpoint)
+}
+
+fn compile_owned_scoped(
+    manifest: &SiteManifest,
+    receipts: &[SiteProbeReceipt],
+    options: &SitePlanOptions,
+    bindings: &Bindings,
+    source_ids: Option<&[String]>,
+    checkpoint: &impl Fn() -> Result<(), &'static str>,
+) -> Result<SitePlan, SitePlanError> {
+    with_inputs(
+        manifest,
+        options,
+        bindings,
+        checkpoint,
+        |inputs| match source_ids {
+            Some(ids) => {
+                site_plan::compile_selected_with_unifi(manifest, receipts, options, ids, inputs)
+            }
+            None => site_plan::compile_with_unifi(manifest, receipts, options, inputs),
+        },
+    )
 }
 
 /// Hold exact UniFi leases across a combined protected-source compilation and revalidation.
@@ -386,9 +508,49 @@ pub fn compile_from_bindings(
     bindings_json: &[u8],
 ) -> Result<SitePlan, SitePlanError> {
     let bindings = parse_bindings(manifest, bindings_json)?;
-    check_paths(manifest, &bindings, options)?;
+    compile_bound_inputs(manifest, receipts, options, &bindings, None)
+}
+
+/// Read exactly the protected exports for an explicit source selection.
+///
+/// The complete original manifest remains authoritative: selections use its
+/// original ordinals, receipts and bindings retain its digest, and all sources'
+/// credential references remain protected. The binding document must contain
+/// exactly the selected UniFi sources; unrelated, duplicate or missing bindings
+/// are refused before any private file is opened. Receipt inventory and binding
+/// validation also finish before reads. Unselected sources require no exports or
+/// receipts and are never silently added to the returned plan.
+///
+/// Reads use the same bounded request authority, private-file fingerprints and
+/// final revalidation as whole-site planning. No capture or credential authority
+/// is acquired. A selection containing only direct sources remains pure when
+/// paired with an empty, manifest-bound binding inventory.
+pub fn compile_selected_from_bindings(
+    manifest: &SiteManifest,
+    receipts: &[SiteProbeReceipt],
+    options: &SitePlanOptions,
+    source_ids: &[String],
+    bindings_json: &[u8],
+) -> Result<SitePlan, SitePlanError> {
+    let bindings = prepare_selected_bindings(manifest, receipts, source_ids, bindings_json)?;
+    compile_bound_inputs(manifest, receipts, options, &bindings, Some(source_ids))
+}
+
+fn compile_bound_inputs(
+    manifest: &SiteManifest,
+    receipts: &[SiteProbeReceipt],
+    options: &SitePlanOptions,
+    bindings: &Bindings,
+    source_ids: Option<&[String]>,
+) -> Result<SitePlan, SitePlanError> {
+    check_paths(manifest, bindings, options)?;
     if bindings.sources.is_empty() {
-        return site_plan::compile_with_unifi(manifest, receipts, options, &[]);
+        return match source_ids {
+            Some(ids) => {
+                site_plan::compile_selected_with_unifi(manifest, receipts, options, ids, &[])
+            }
+            None => site_plan::compile_with_unifi(manifest, receipts, options, &[]),
+        };
     }
     let mut inner_error = None;
     runtime::run(
@@ -404,13 +566,19 @@ pub fn compile_from_bindings(
             secrets: false,
         },
         |scope| {
-            compile_owned(manifest, receipts, options, &bindings, &|| scope.input()).map_err(
-                |error| {
-                    let code = error.code;
-                    inner_error = Some(error);
-                    code
-                },
-            )
+            let result = match source_ids {
+                Some(_) => {
+                    compile_owned_scoped(manifest, receipts, options, bindings, source_ids, &|| {
+                        scope.input()
+                    })
+                }
+                None => compile_owned(manifest, receipts, options, bindings, &|| scope.input()),
+            };
+            result.map_err(|error| {
+                let code = error.code;
+                inner_error = Some(error);
+                code
+            })
         },
     )
     .map_err(|_| {
@@ -445,6 +613,122 @@ pub fn compile_with_onvif_bindings(
     let approval = ContentDigest::sha256(&encoded.finish_checked().map_err(|_| {
         crate::site_onvif::refused(None, "private input identity encoding refused")
     })?);
+    compile_bound_onvif_inputs(
+        manifest,
+        receipts,
+        options,
+        &onvif,
+        unifi.as_ref(),
+        None,
+        approval,
+    )
+}
+
+/// Admit the exact selected inventories before either protected input owner opens a file.
+/// Source ordinals and all policy/credential references remain in the original manifest.
+pub(crate) fn prepare_selected_onvif_bindings(
+    manifest: &SiteManifest,
+    receipts: &[SiteProbeReceipt],
+    options: &SitePlanOptions,
+    source_ids: &[String],
+    onvif_json: &[u8],
+    unifi_json: Option<&[u8]>,
+) -> Result<(crate::site_onvif::Bindings, Option<Bindings>), SitePlanError> {
+    let selected = site_plan::validate_selected_sources(manifest, source_ids)?;
+    let onvif = crate::site_onvif::parse_selected_bindings(manifest, onvif_json, &selected)?;
+    let unifi = unifi_json
+        .map(|bytes| parse_bindings_scoped(manifest, bytes, Some(&selected)))
+        .transpose()?;
+    if unifi.is_none()
+        && let Some(index) = selected
+            .iter()
+            .find(|index| manifest.sources[**index].kind == SourceKind::UnifiProtect)
+    {
+        return Err(refused(
+            Some(*index),
+            "selected UniFi source requires a protected export binding document",
+        ));
+    }
+    check_selected_receipts(manifest, receipts, &selected)?;
+    crate::site_onvif::check_paths(manifest, &onvif, options)?;
+    if let Some(bindings) = &unifi {
+        check_paths(manifest, bindings, options)?;
+    }
+    Ok((onvif, unifi))
+}
+
+/// Compile an explicit source selection using protected ONVIF and optional UniFi bindings.
+///
+/// Both documents must cover exactly the selected sources of their respective kinds.
+/// Full-manifest validation, selection, binding and receipt inventory checks finish before
+/// opening any protected input. A selected ONVIF receipt retains its independently pinned
+/// RTSP endpoint; the manifest's original HTTP management endpoint is never rewritten.
+///
+/// One finite read scope holds both sets of private-file leases through complete compilation
+/// and revalidation. The scope identity binds the normalized selection and both documents.
+/// Credentials, network access, destination creation and capture remain disabled.
+pub fn compile_selected_with_onvif_bindings(
+    manifest: &SiteManifest,
+    receipts: &[SiteProbeReceipt],
+    options: &SitePlanOptions,
+    source_ids: &[String],
+    onvif_json: &[u8],
+    unifi_json: Option<&[u8]>,
+) -> Result<SitePlan, SitePlanError> {
+    let (onvif, unifi) = prepare_selected_onvif_bindings(
+        manifest, receipts, options, source_ids, onvif_json, unifi_json,
+    )?;
+    let selected = site_plan::validate_selected_sources(manifest, source_ids)?;
+    if selected.iter().all(|index| {
+        !matches!(
+            manifest.sources[*index].kind,
+            SourceKind::Onvif | SourceKind::UnifiProtect
+        )
+    }) {
+        return site_plan::compile_selected_with_sources(
+            manifest,
+            receipts,
+            options,
+            source_ids,
+            &[],
+            &[],
+        );
+    }
+    let mut encoded = CanonicalEncoder::new();
+    encoded.text("fss.site_protected_input_read.v2");
+    encoded.digest(onvif.digest);
+    encoded.bool(unifi.is_some());
+    if let Some(bindings) = &unifi {
+        encoded.digest(bindings.digest);
+    }
+    encoded.u64(selected.len() as u64);
+    for index in selected {
+        encoded.u64(index as u64);
+        encoded.text(&manifest.sources[index].source_id);
+    }
+    let approval = ContentDigest::sha256(&encoded.finish_checked().map_err(|_| {
+        crate::site_onvif::refused(None, "private input identity encoding refused")
+    })?);
+    compile_bound_onvif_inputs(
+        manifest,
+        receipts,
+        options,
+        &onvif,
+        unifi.as_ref(),
+        Some(source_ids),
+        approval,
+    )
+}
+
+fn compile_bound_onvif_inputs(
+    manifest: &SiteManifest,
+    receipts: &[SiteProbeReceipt],
+    options: &SitePlanOptions,
+    onvif: &crate::site_onvif::Bindings,
+    unifi: Option<&Bindings>,
+    source_ids: Option<&[String]>,
+    approval: ContentDigest,
+) -> Result<SitePlan, SitePlanError> {
     let mut inner_error = None;
     runtime::run(
         runtime::Request {
@@ -461,10 +745,23 @@ pub fn compile_with_onvif_bindings(
             secrets: false,
         },
         |scope| {
-            compile_owned_with_onvif(manifest, receipts, options, &onvif, unifi.as_ref(), &|| {
-                scope.input()
-            })
-            .map_err(|error| {
+            let result = match source_ids {
+                Some(ids) => compile_owned_selected_with_onvif(
+                    manifest,
+                    receipts,
+                    options,
+                    ids,
+                    onvif,
+                    unifi,
+                    &|| scope.input(),
+                ),
+                None => {
+                    compile_owned_with_onvif(manifest, receipts, options, onvif, unifi, &|| {
+                        scope.input()
+                    })
+                }
+            };
+            result.map_err(|error| {
                 let code = error.code;
                 inner_error = Some(error);
                 code
@@ -486,11 +783,58 @@ pub(crate) fn compile_owned_with_onvif(
     unifi: Option<&Bindings>,
     checkpoint: &impl Fn() -> Result<(), &'static str>,
 ) -> Result<SitePlan, SitePlanError> {
+    compile_owned_with_onvif_scoped(manifest, receipts, options, onvif, unifi, None, checkpoint)
+}
+
+pub(crate) fn compile_owned_selected_with_onvif(
+    manifest: &SiteManifest,
+    receipts: &[SiteProbeReceipt],
+    options: &SitePlanOptions,
+    source_ids: &[String],
+    onvif: &crate::site_onvif::Bindings,
+    unifi: Option<&Bindings>,
+    checkpoint: &impl Fn() -> Result<(), &'static str>,
+) -> Result<SitePlan, SitePlanError> {
+    compile_owned_with_onvif_scoped(
+        manifest,
+        receipts,
+        options,
+        onvif,
+        unifi,
+        Some(source_ids),
+        checkpoint,
+    )
+}
+
+fn compile_owned_with_onvif_scoped(
+    manifest: &SiteManifest,
+    receipts: &[SiteProbeReceipt],
+    options: &SitePlanOptions,
+    onvif: &crate::site_onvif::Bindings,
+    unifi: Option<&Bindings>,
+    source_ids: Option<&[String]>,
+    checkpoint: &impl Fn() -> Result<(), &'static str>,
+) -> Result<SitePlan, SitePlanError> {
     let owned = crate::site_onvif::OwnedInputs::open(onvif, options, checkpoint)?;
     let inputs = owned.inputs();
     let compile = |unifi_inputs: &[SiteUnifiInput<'_>]| {
-        let result =
-            site_plan::compile_with_protected(manifest, receipts, options, unifi_inputs, &inputs)?;
+        let result = match source_ids {
+            Some(ids) => site_plan::compile_selected_with_sources(
+                manifest,
+                receipts,
+                options,
+                ids,
+                unifi_inputs,
+                &inputs,
+            )?,
+            None => site_plan::compile_with_protected(
+                manifest,
+                receipts,
+                options,
+                unifi_inputs,
+                &inputs,
+            )?,
+        };
         // Keep both lease sets alive through complete compilation and the first
         // handoff recheck; the UniFi owner then revalidates its own held exports.
         owned.revalidate(options, checkpoint)?;

@@ -90,7 +90,9 @@ It includes all input digests, canonical manifest identity, evidence digest,
 packet/picture counts and one `receipts` array. The array uses the existing
 [`fss.site_probe_receipt.v1`](../schemas/site_probe_receipt.v1.json) contract.
 Combine separately measured arrays only when they bind the same complete
-manifest; the site planner requires exactly one receipt for every source.
+manifest; the default site planner requires exactly one receipt for every source.
+Use repeated `site plan --source SOURCE_ID` options with exactly the selected
+receipts to plan a subset against that same unchanged manifest.
 Successful receipts retain declared routes for planning and are private operator
 metadata, even though raw banners, credentials and media bytes are omitted.
 

@@ -467,3 +467,89 @@ fn same_export_bytes_on_a_new_file_change_the_native_and_site_approvals() -> Tes
     assert_ne!(before.approval(), after.approval());
     Ok(())
 }
+
+#[test]
+fn selected_unifi_and_direct_sources_preserve_their_exact_native_plans() -> Test {
+    let mut fixture = Fixture::new()?;
+    fixture.add_direct_jpeg()?;
+    let whole = fixture.compile()?;
+    let selected_unifi = compile_selected_with_unifi(
+        &fixture.manifest,
+        &fixture.receipts[..1],
+        &fixture.options,
+        &[fixture.manifest.sources[0].source_id.clone()],
+        &[fixture.input()],
+    )?;
+    assert_eq!(selected_unifi.sources(), &whole.sources()[..1]);
+    assert!(selected_unifi.render_json().contains(SELECTED_UNIFI_POLICY));
+    assert_ne!(selected_unifi.approval(), whole.approval());
+    let selected_direct = compile_selected(
+        &fixture.manifest,
+        &fixture.receipts[1..],
+        &fixture.options,
+        &[fixture.manifest.sources[1].source_id.clone()],
+    )?;
+    assert_eq!(selected_direct.sources(), &whole.sources()[1..]);
+    assert_eq!(selected_direct.sources()[0].source_index(), 1);
+    for plan in [&selected_unifi, &selected_direct] {
+        for canary in [CAMERA, HIGH, MEDIUM, PACKAGE] {
+            assert!(!format!("{} {plan:?}", plan.render_json()).contains(canary));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn selected_inventory_refuses_missing_and_unselected_protected_inputs() -> Test {
+    let mut fixture = Fixture::new()?;
+    fixture.add_direct_jpeg()?;
+    assert!(
+        compile_selected(
+            &fixture.manifest,
+            &fixture.receipts[..1],
+            &fixture.options,
+            &[fixture.manifest.sources[0].source_id.clone()],
+        )
+        .is_err()
+    );
+    let error = compile_selected_with_unifi(
+        &fixture.manifest,
+        &fixture.receipts[1..],
+        &fixture.options,
+        &[fixture.manifest.sources[1].source_id.clone()],
+        &[fixture.input()],
+    )
+    .err()
+    .ok_or("unselected private input accepted")?;
+    assert_eq!(error.source_index, Some(0));
+    assert_eq!(error.reason, "protected input names an unselected source");
+    Ok(())
+}
+
+#[test]
+fn selected_private_route_cannot_collide_with_an_unselected_manifest_route() -> Test {
+    let mut fixture = Fixture::new()?;
+    fixture.add_direct_jpeg()?;
+    let first = fixture.manifest.sources[0].clone();
+    let direct = &mut fixture.manifest.sources[1];
+    direct.peer = first.peer;
+    direct.authority = first.authority;
+    direct.presentation = Some(HIGH.replace("%4a", "%4A"));
+    direct.control_root = Some(HIGH.split('?').next().ok_or("fixture path")?.to_owned());
+    fixture.rebind()?;
+    let error = compile_selected_with_unifi(
+        &fixture.manifest,
+        &fixture.receipts[..1],
+        &fixture.options,
+        &[fixture.manifest.sources[0].source_id.clone()],
+        &[fixture.input()],
+    )
+    .err()
+    .ok_or("selected resolved route collided with unselected source")?;
+    assert_eq!(
+        error.reason,
+        "resolved source routes collide or violate the site contract"
+    );
+    assert!(!format!("{error:?}").contains("PRIVATE_HIGH_CAPABILITY_CANARY"));
+    Ok(())
+}

@@ -13,12 +13,12 @@ use std::io::{ErrorKind, Read};
 use std::path::{Path, PathBuf};
 
 use fss_core::json_input::MAX_INPUT_BYTES;
-use fss_reference::site::{SiteManifest, parse_manifest, parse_probe_receipts};
+use fss_reference::site::{MAX_SITE_SOURCES, SiteManifest, parse_manifest, parse_probe_receipts};
 
 use crate::agent_json::{array, object, string};
 use crate::error::{CliError, ExitIdentity};
-use crate::orient_cmd::{collect_options, take};
-use crate::site_plan::{SitePlanOptions, compile};
+use crate::orient_cmd::{collect_options_with_repeatable, take};
+use crate::site_plan::{SitePlanOptions, compile, compile_selected};
 use crate::site_probe::{SiteProbeOptions, execute_probe, parse_probe_args};
 use crate::token::ArgToken;
 
@@ -57,6 +57,8 @@ pub enum SiteCommand {
         unifi_bindings: Option<PathBuf>,
         /// Optional exact historical ONVIF handoffs and independently pinned RTSP scope.
         onvif_bindings: Option<PathBuf>,
+        /// Explicit source subset, or the complete manifest inventory when omitted.
+        source_ids: Option<Vec<String>>,
         /// Explicit identity epoch, output destinations, principal and picture budget.
         options: SitePlanOptions,
     },
@@ -96,6 +98,7 @@ pub fn parse_site_args(tokens: &[ArgToken]) -> Result<SiteCommand, CliError> {
             "--probes",
             "--unifi-bindings",
             "--onvif-bindings",
+            "--source",
             "--archive-root",
             "--pins-root",
             "--epoch",
@@ -104,7 +107,12 @@ pub fn parse_site_args(tokens: &[ArgToken]) -> Result<SiteCommand, CliError> {
         ]
     };
     // collect_options skips its command token; original argument indices remain intact.
-    let values = collect_options(command, &tokens[1..], allowed)?;
+    let values = collect_options_with_repeatable(
+        command,
+        &tokens[1..],
+        allowed,
+        &[("--source", MAX_SITE_SOURCES)],
+    )?;
     let required = |name: &str| -> Result<String, CliError> {
         take(&values, name)
             .map(|(_, value, _)| value.clone())
@@ -132,11 +140,17 @@ pub fn parse_site_args(tokens: &[ArgToken]) -> Result<SiteCommand, CliError> {
     if action.as_str() == "validate" {
         return Ok(SiteCommand::Validate { manifest });
     }
+    let source_ids: Vec<_> = values
+        .iter()
+        .filter(|(name, _, _)| name == "--source")
+        .map(|(_, value, _)| value.clone())
+        .collect();
     Ok(SiteCommand::Plan {
         manifest,
         probes: PathBuf::from(required("--probes")?),
         unifi_bindings: take(&values, "--unifi-bindings").map(|(_, value, _)| PathBuf::from(value)),
         onvif_bindings: take(&values, "--onvif-bindings").map(|(_, value, _)| PathBuf::from(value)),
+        source_ids: (!source_ids.is_empty()).then_some(source_ids),
         options: SitePlanOptions {
             epoch: number("--epoch")?,
             archive_root: PathBuf::from(required("--archive-root")?),
@@ -348,6 +362,7 @@ pub fn execute_site(command: &SiteCommand) -> (String, ExitIdentity) {
             probes,
             unifi_bindings,
             onvif_bindings,
+            source_ids,
             options,
             ..
         } => {
@@ -391,15 +406,34 @@ pub fn execute_site(command: &SiteCommand) -> (String, ExitIdentity) {
                         );
                     }
                 };
-                crate::site_unifi::compile_with_onvif_bindings(
-                    &manifest,
-                    &receipts,
-                    options,
-                    &bytes,
-                    unifi_bytes.as_deref(),
-                )
+                if let Some(source_ids) = source_ids {
+                    crate::site_unifi::compile_selected_with_onvif_bindings(
+                        &manifest,
+                        &receipts,
+                        options,
+                        source_ids,
+                        &bytes,
+                        unifi_bytes.as_deref(),
+                    )
+                } else {
+                    crate::site_unifi::compile_with_onvif_bindings(
+                        &manifest,
+                        &receipts,
+                        options,
+                        &bytes,
+                        unifi_bytes.as_deref(),
+                    )
+                }
             } else if let Some(bytes) = unifi_bytes {
-                crate::site_unifi::compile_from_bindings(&manifest, &receipts, options, &bytes)
+                if let Some(source_ids) = source_ids {
+                    crate::site_unifi::compile_selected_from_bindings(
+                        &manifest, &receipts, options, source_ids, &bytes,
+                    )
+                } else {
+                    crate::site_unifi::compile_from_bindings(&manifest, &receipts, options, &bytes)
+                }
+            } else if let Some(source_ids) = source_ids {
+                compile_selected(&manifest, &receipts, options, source_ids)
             } else {
                 compile(&manifest, &receipts, options)
             };

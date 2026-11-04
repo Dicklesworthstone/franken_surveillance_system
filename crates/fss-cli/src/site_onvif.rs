@@ -98,6 +98,23 @@ pub(crate) fn parse_bindings(
     manifest: &SiteManifest,
     bytes: &[u8],
 ) -> Result<Bindings, SitePlanError> {
+    parse_bindings_scoped(manifest, bytes, None)
+}
+
+/// Exact selected inventory using validated original-manifest source ordinals.
+pub(crate) fn parse_selected_bindings(
+    manifest: &SiteManifest,
+    bytes: &[u8],
+    selected: &[usize],
+) -> Result<Bindings, SitePlanError> {
+    parse_bindings_scoped(manifest, bytes, Some(selected))
+}
+
+fn parse_bindings_scoped(
+    manifest: &SiteManifest,
+    bytes: &[u8],
+    selected: Option<&[usize]>,
+) -> Result<Bindings, SitePlanError> {
     let manifest_digest = manifest
         .digest()
         .map_err(|_| refused(None, "valid canonical site manifest required"))?;
@@ -139,6 +156,9 @@ pub(crate) fn parse_bindings(
             .ok_or_else(|| refused(None, "binding names an unknown site source"))?;
         let index = Some(source_index);
         let source = &manifest.sources[source_index];
+        if selected.is_some_and(|indices| !indices.contains(&source_index)) {
+            return Err(refused(index, "binding names an unselected site source"));
+        }
         if source.kind != SourceKind::Onvif || !seen.insert(source_index) {
             return Err(refused(
                 index,
@@ -196,10 +216,17 @@ pub(crate) fn parse_bindings(
         });
     }
     for (index, source) in manifest.sources.iter().enumerate() {
-        if source.kind == SourceKind::Onvif && !seen.contains(&index) {
+        if source.kind == SourceKind::Onvif
+            && selected.is_none_or(|indices| indices.contains(&index))
+            && !seen.contains(&index)
+        {
             return Err(refused(
                 Some(index),
-                "every ONVIF source requires one protected binding",
+                if selected.is_some() {
+                    "every selected ONVIF source requires one protected binding"
+                } else {
+                    "every ONVIF source requires one protected binding"
+                },
             ));
         }
     }

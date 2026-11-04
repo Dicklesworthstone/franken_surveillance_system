@@ -317,3 +317,59 @@ fn onvif_replacement_invalidates_approval_and_binding_drift_refuses_whole_site()
     no_connection(&rtsp)?;
     Ok(())
 }
+
+#[test]
+fn selected_onvif_preserves_native_plan_and_excluded_handoffs_are_not_opened() -> Test {
+    let http = TcpListener::bind("127.0.0.1:0")?;
+    let rtsp = TcpListener::bind("127.0.0.1:0")?;
+    http.set_nonblocking(true)?;
+    rtsp.set_nonblocking(true)?;
+    let mut fixture = OnvifFixture::new(
+        "onvif-selected",
+        &http.local_addr()?.to_string(),
+        &rtsp.local_addr()?.to_string(),
+    )?;
+    let all_output = run(false, &fixture.args())?;
+    private_output(&all_output);
+    let all = good(all_output)?;
+    let receipts = fixture
+        .site
+        .probes
+        .array()
+        .ok_or("fixture receipt array")?
+        .to_vec();
+    fixture.site.probes = Value::Array(vec![receipts[0].clone()]);
+    fixture.write()?;
+    let mut selected = fixture.args();
+    selected.extend(["--source".into(), "source:front".into()]);
+    let output = run(false, &selected)?;
+    private_output(&output);
+    let plan = good(output)?;
+    assert_eq!(text(&plan, "schema")?, "fss.site_capture_plan.v2");
+    assert_eq!(items(&plan, "sources")?, &items(&all, "sources")?[..1]);
+    assert_eq!(
+        text(&plan, "manifest_digest")?,
+        text(&all, "manifest_digest")?
+    );
+    assert_eq!(
+        items(&plan, "unselected_source_ids")?,
+        &[Value::Text("source:back".into())]
+    );
+    assert!(!boolean(&plan, "onvif_http_origin_verified")?);
+
+    // An excluded source needs neither its protected file nor a binding input.
+    // An owner-readable handoff is mandatory if the protected path is actually entered.
+    fs::set_permissions(&fixture.handoff, fs::Permissions::from_mode(0o000))?;
+    fixture.site.probes = Value::Array(vec![receipts[1].clone()]);
+    fixture.write()?;
+    let mut direct_only = fixture.site.args();
+    direct_only.extend(["--source".into(), "source:back".into()]);
+    let output = run(false, &direct_only)?;
+    private_output(&output);
+    let direct = good(output)?;
+    assert_eq!(items(&direct, "sources")?, &items(&all, "sources")?[1..]);
+    fs::set_permissions(&fixture.handoff, fs::Permissions::from_mode(0o600))?;
+    fixture.no_capture()?;
+    no_connection(&http)?;
+    no_connection(&rtsp)
+}

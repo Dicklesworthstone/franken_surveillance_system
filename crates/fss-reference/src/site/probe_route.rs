@@ -282,6 +282,113 @@ pub fn validate_capture_route_inventory(
     Ok(())
 }
 
+/// Check an exact explicit source selection against the unchanged complete manifest.
+///
+/// Selected routes use the actual receipt endpoints after their owner has verified each
+/// direct or protected binding. Excluded direct sources retain their declared route and
+/// peer guards, and excluded UniFi sources retain their known literal RTSP peer limits.
+/// No excluded protected presentation is invented. In particular, an excluded ONVIF HTTP
+/// endpoint is not treated as its unknown RTSP peer. This remains a pure consistency check,
+/// with no source authentication, liveness claim, scheduling or capture authority.
+pub fn validate_selected_capture_route_inventory(
+    manifest: &SiteManifest,
+    selected_source_indices: &[usize],
+    receipts: &[&SiteProbeReceipt],
+) -> Result<(), SiteError> {
+    let manifest_digest = manifest.digest()?;
+    if selected_source_indices.is_empty()
+        || selected_source_indices.len() > manifest.sources.len()
+        || receipts.len() != selected_source_indices.len()
+    {
+        return Err(SiteError::SourceMismatch);
+    }
+    let selected: BTreeSet<_> = selected_source_indices.iter().copied().collect();
+    if selected.len() != selected_source_indices.len()
+        || selected
+            .iter()
+            .any(|index| *index >= manifest.sources.len())
+    {
+        return Err(SiteError::SourceMismatch);
+    }
+    let indices: BTreeMap<_, _> = manifest
+        .sources
+        .iter()
+        .enumerate()
+        .map(|(index, source)| (source.source_id.as_str(), index))
+        .collect();
+    let mut seen = BTreeSet::new();
+    let mut peer_limits = BTreeMap::new();
+    let mut routes = BTreeSet::new();
+    let mut admit = |peer: SocketAddr,
+                     authority: Option<&str>,
+                     presentation: Option<&str>,
+                     limit: u32|
+     -> Result<(), SiteError> {
+        let ip = super::physical_peer_ip(peer);
+        if peer_limits
+            .insert(ip, limit)
+            .is_some_and(|old| old != limit)
+        {
+            return Err(SiteError::InvalidField("max_connections"));
+        }
+        if let Some((authority, presentation)) = authority.zip(presentation) {
+            let route = (
+                ip,
+                peer.port(),
+                super::authority_identity(authority)?,
+                super::presentation_identity(presentation)?,
+            );
+            if !routes.insert(route) {
+                return Err(SiteError::DuplicateSource);
+            }
+        }
+        Ok(())
+    };
+    for receipt in receipts {
+        receipt.validate()?;
+        if receipt.site_id != manifest.site_id || receipt.manifest_digest != manifest_digest {
+            return Err(SiteError::StaleManifest);
+        }
+        let index = *indices
+            .get(receipt.source_id.as_str())
+            .ok_or(SiteError::UnknownSource)?;
+        let source = &manifest.sources[index];
+        if !selected.contains(&index)
+            || receipt.source_generation != source.generation
+            || !seen.insert(index)
+        {
+            return Err(SiteError::SourceMismatch);
+        }
+        admit(
+            receipt.peer,
+            Some(&receipt.authority),
+            Some(&receipt.presentation),
+            source.max_connections,
+        )?;
+    }
+    for (index, source) in manifest.sources.iter().enumerate() {
+        if selected.contains(&index) {
+            continue;
+        }
+        match source.kind {
+            SourceKind::Rtsp | SourceKind::NvrChannel => admit(
+                source.peer,
+                Some(&source.authority),
+                Some(
+                    source
+                        .presentation
+                        .as_deref()
+                        .ok_or(SiteError::MissingField("presentation"))?,
+                ),
+                source.max_connections,
+            )?,
+            SourceKind::UnifiProtect => admit(source.peer, None, None, source.max_connections)?,
+            SourceKind::Onvif => {}
+        }
+    }
+    Ok(())
+}
+
 fn source(manifest: &SiteManifest, source_index: usize) -> Result<&SiteSource, SiteError> {
     let source = manifest
         .sources
@@ -391,6 +498,100 @@ mod onvif_tests {
         assert!(
             validate_capture_route_inventory(&manifest, &[&receipts[0], &receipts[0]]).is_err()
         );
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_selected_inventory_requires_exact_nonempty_unique_membership() -> Test {
+        let (manifest, receipts) = fixture()?;
+        validate_selected_capture_route_inventory(&manifest, &[1], &[&receipts[1]])?;
+        for (selection, inventory) in [
+            (vec![], vec![]),
+            (vec![0], vec![]),
+            (vec![0], vec![&receipts[0], &receipts[1]]),
+            (vec![0], vec![&receipts[1]]),
+            (vec![0, 1], vec![&receipts[0], &receipts[0]]),
+            (vec![0, 0], vec![&receipts[0], &receipts[1]]),
+            (vec![2], vec![&receipts[0]]),
+        ] {
+            assert!(
+                validate_selected_capture_route_inventory(&manifest, &selection, &inventory)
+                    .is_err()
+            );
+        }
+        let mut stale = receipts[0].clone();
+        stale.manifest_digest = ContentDigest::sha256(b"different-manifest");
+        assert_eq!(
+            validate_selected_capture_route_inventory(&manifest, &[0], &[&stale]),
+            Err(SiteError::StaleManifest)
+        );
+        Ok(())
+    }
+
+    fn with_excluded_direct() -> Test<(SiteManifest, Vec<SiteProbeReceipt>)> {
+        let (mut manifest, mut receipts) = fixture()?;
+        let direct =
+            SiteManifest::parse(include_str!("../../../../fixtures/site/manifest.v1.json"))?;
+        manifest.sources[1] = direct.sources[1].clone();
+        for receipt in &mut receipts {
+            receipt.manifest_digest = manifest.digest()?;
+        }
+        Ok((manifest, receipts))
+    }
+
+    #[test]
+    fn selected_actual_route_still_cannot_duplicate_an_excluded_direct_route() -> Test {
+        let (manifest, mut receipts) = with_excluded_direct()?;
+        receipts[0].peer = "[::ffff:192.0.2.11]:554".parse()?;
+        receipts[0].authority = "CAMERA-11.EXAMPLE:554".to_owned();
+        receipts[0].presentation = "/l%69ve/main".to_owned();
+        receipts[0].control_root = "/".to_owned();
+        assert_eq!(
+            validate_selected_capture_route_inventory(&manifest, &[0], &[&receipts[0]]),
+            Err(SiteError::DuplicateSource)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn selected_actual_peer_keeps_known_excluded_source_connection_limits() -> Test {
+        let (mut manifest, mut receipts) = with_excluded_direct()?;
+        manifest.sources[1].max_connections = 2;
+        receipts[0].peer = "[::ffff:192.0.2.11]:8554".parse()?;
+        receipts[0].authority = "camera-11.example:8554".to_owned();
+        receipts[0].manifest_digest = manifest.digest()?;
+        assert_eq!(
+            validate_selected_capture_route_inventory(&manifest, &[0], &[&receipts[0]]),
+            Err(SiteError::InvalidField("max_connections"))
+        );
+        // The UniFi RTSP peer is still explicit even when its private presentation is excluded.
+        let source = &mut manifest.sources[1];
+        source.kind = SourceKind::UnifiProtect;
+        source.presentation = None;
+        source.control_root = None;
+        source.unifi_camera_id = Some("camera:excluded".to_owned());
+        receipts[0].manifest_digest = manifest.digest()?;
+        assert_eq!(
+            validate_selected_capture_route_inventory(&manifest, &[0], &[&receipts[0]]),
+            Err(SiteError::InvalidField("max_connections"))
+        );
+        manifest.sources[1].max_connections = 1;
+        receipts[0].manifest_digest = manifest.digest()?;
+        validate_selected_capture_route_inventory(&manifest, &[0], &[&receipts[0]])?;
+        Ok(())
+    }
+
+    #[test]
+    fn excluded_onvif_management_scope_never_becomes_an_invented_capture_route() -> Test {
+        let (mut manifest, mut receipts) = fixture()?;
+        manifest.sources[1].max_connections = 2;
+        manifest.sources[1].owner_authorized = false;
+        receipts[0].peer = "192.0.2.11:554".parse()?;
+        receipts[0].authority = "camera-11.example:554".to_owned();
+        receipts[0].manifest_digest = manifest.digest()?;
+        validate_selected_capture_route_inventory(&manifest, &[0], &[&receipts[0]])?;
+        // The default API still requires every manifest receipt.
+        assert!(validate_capture_route_inventory(&manifest, &[&receipts[0]]).is_err());
         Ok(())
     }
 }

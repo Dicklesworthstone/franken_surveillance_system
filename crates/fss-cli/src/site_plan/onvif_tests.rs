@@ -499,3 +499,182 @@ fn mixed_direct_jpeg_and_onvif_plans_are_atomic_and_keep_independent_native_owne
     assert!(fixture.compile().is_err());
     Ok(())
 }
+
+fn add_selected_test_direct_jpeg(fixture: &mut Fixture) -> Test {
+    let mut source = fixture.manifest.sources[0].clone();
+    source.source_id = "source:jpeg".to_owned();
+    source.kind = SourceKind::Rtsp;
+    source.peer = "192.0.2.12:554".parse()?;
+    source.authority = source.peer.to_string();
+    source.onvif_service_path = None;
+    source.presentation = Some("/jpeg".to_owned());
+    source.control_root = Some("/jpeg".to_owned());
+    let mut receipt = fixture.receipts[0].clone();
+    receipt.source_id = source.source_id.clone();
+    receipt.peer = source.peer;
+    receipt.authority = source.authority.clone();
+    receipt.presentation = "/jpeg".to_owned();
+    receipt.control_root = "/jpeg".to_owned();
+    receipt.codec = ProbeCodec::Jpeg;
+    receipt.payload_type = 26;
+    receipt.parameter_set_digests.clear();
+    fixture.manifest.sources.push(source);
+    fixture.receipts.push(receipt);
+    fixture.rebind()
+}
+
+#[test]
+fn explicit_onvif_selection_keeps_original_ordinal_and_exact_native_plan() -> Test {
+    for (codec, media2) in [(ProbeCodec::Avc, false), (ProbeCodec::Hevc, true)] {
+        let mut fixture = Fixture::new(codec, media2)?;
+        add_selected_test_direct_jpeg(&mut fixture)?;
+        fixture.manifest.sources.swap(0, 1);
+        fixture.receipts.swap(0, 1);
+        fixture.rebind()?;
+        let selected_id = fixture.manifest.sources[1].source_id.clone();
+        let mut input = fixture.input();
+        input.source_id = &selected_id;
+        let whole = compile_with_protected(
+            &fixture.manifest,
+            &fixture.receipts,
+            &fixture.options,
+            &[],
+            &[input],
+        )?;
+        let mut input = fixture.input();
+        input.source_id = &selected_id;
+        let selected = compile_selected_with_sources(
+            &fixture.manifest,
+            &fixture.receipts[1..],
+            &fixture.options,
+            &[selected_id.clone()],
+            &[],
+            &[input],
+        )?;
+        assert_eq!(selected.sources(), &whole.sources()[1..]);
+        assert_eq!(selected.sources()[0].source_index(), 1);
+        assert_eq!(selected.sources()[0].argv()[0], "from-onvif");
+        assert_ne!(selected.approval(), whole.approval());
+        let report = selected.render_json();
+        assert!(report.contains(SITE_SELECTED_PLAN_SCHEMA));
+        assert!(report.contains(SELECTED_ONVIF_POLICY));
+        assert!(report.contains("\"onvif_http_origin_verified\":false"));
+        assert!(report.contains("operator-bound-historical-consistency"));
+        assert!(report.contains("\"unselected_source_ids\":[\"source:jpeg\"]"));
+        for private in [
+            "PRIVATE_CAPABILITY_CANARY",
+            "PRIVATE_QUERY_CANARY",
+            "PRIVATE_PROFILE_TOKEN_CANARY",
+        ] {
+            assert!(!report.contains(private));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn selected_onvif_does_not_require_an_excluded_protected_handoff_or_permission() -> Test {
+    let mut fixture = Fixture::new(ProbeCodec::Avc, false)?;
+    let mut excluded = fixture.manifest.sources[0].clone();
+    excluded.source_id = "source:excluded".to_owned();
+    excluded.peer = "192.0.2.20:80".parse()?;
+    excluded.authority = "camera-20.example:80".to_owned();
+    excluded.owner_authorized = false;
+    fixture.manifest.sources.push(excluded);
+    fixture.rebind()?;
+    let plan = compile_selected_with_sources(
+        &fixture.manifest,
+        &fixture.receipts,
+        &fixture.options,
+        &[fixture.manifest.sources[0].source_id.clone()],
+        &[],
+        &[fixture.input()],
+    )?;
+    assert_eq!(plan.sources().len(), 1);
+    assert_eq!(plan.sources()[0].source_index(), 0);
+    assert!(fixture.compile().is_err());
+    Ok(())
+}
+
+#[test]
+fn selected_onvif_requires_exact_handoff_inventory_and_profile_binding() -> Test {
+    let mut fixture = Fixture::new(ProbeCodec::Avc, false)?;
+    add_selected_test_direct_jpeg(&mut fixture)?;
+    let selected = vec![fixture.manifest.sources[0].source_id.clone()];
+    assert!(
+        compile_selected_with_sources(
+            &fixture.manifest,
+            &fixture.receipts[..1],
+            &fixture.options,
+            &selected,
+            &[],
+            &[],
+        )
+        .is_err()
+    );
+    let mut wrong_profile = fixture.input();
+    wrong_profile.profile_digest = ContentDigest::sha256(b"foreign selected profile");
+    assert!(
+        compile_selected_with_sources(
+            &fixture.manifest,
+            &fixture.receipts[..1],
+            &fixture.options,
+            &selected,
+            &[],
+            &[wrong_profile],
+        )
+        .is_err()
+    );
+    assert!(
+        compile_selected_with_sources(
+            &fixture.manifest,
+            &fixture.receipts[..1],
+            &fixture.options,
+            &selected,
+            &[],
+            &[fixture.input(), fixture.input()],
+        )
+        .is_err()
+    );
+    let error = compile_selected_with_sources(
+        &fixture.manifest,
+        &fixture.receipts[1..],
+        &fixture.options,
+        &[fixture.manifest.sources[1].source_id.clone()],
+        &[],
+        &[fixture.input()],
+    )
+    .err()
+    .ok_or("unselected ONVIF handoff accepted")?;
+    assert_eq!(error.source_index, Some(0));
+    assert_eq!(
+        error.reason,
+        "protected ONVIF input names an unselected source"
+    );
+    Ok(())
+}
+
+#[test]
+fn selected_onvif_keeps_the_excluded_direct_route_collision_guard() -> Test {
+    let mut fixture = Fixture::new(ProbeCodec::Avc, false)?;
+    add_selected_test_direct_jpeg(&mut fixture)?;
+    let source = &mut fixture.manifest.sources[1];
+    source.peer = "192.0.2.10:554".parse()?;
+    source.authority = "CAMERA-10.EXAMPLE:554".to_owned();
+    source.presentation = Some(PRESENTATION.replace("%4a", "%4A"));
+    source.control_root = Some(ROOT.to_owned());
+    fixture.rebind()?;
+    let error = compile_selected_with_sources(
+        &fixture.manifest,
+        &fixture.receipts[..1],
+        &fixture.options,
+        &[fixture.manifest.sources[0].source_id.clone()],
+        &[],
+        &[fixture.input()],
+    )
+    .err()
+    .ok_or("excluded known route collision accepted")?;
+    assert!(error.reason.contains("resolved source routes"));
+    assert_eq!(fixture.manifest.sources[0].peer.port(), 80);
+    Ok(())
+}
