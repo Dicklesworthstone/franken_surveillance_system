@@ -102,6 +102,8 @@ pub mod preprocess;
 pub mod reference_deployment;
 pub mod rtsp;
 pub mod scalar_executor;
+/// Bounded sans-I/O site manifest and probe-receipt onboarding contracts.
+pub mod site;
 mod situation;
 mod situation_guard;
 mod situation_sections;

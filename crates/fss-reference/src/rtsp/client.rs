@@ -1091,47 +1091,7 @@ fn h264_media(m: &super::SdpMedia) -> Result<ClientMedia, ClientError> {
 /// Encoded controls, separators, traversal, and double decoding are refused. The returned
 /// strings can contain private stream tokens and must not be included in diagnostics.
 pub fn validated_uri_parts(uri: &str) -> Result<(&str, &str), ClientError> {
-    if uri.len() > MAX_URI
-        || !uri.is_ascii()
-        || uri
-            .bytes()
-            .any(|b| b <= 32 || b >= 127 || b"\\#@".contains(&b))
-    {
-        return Err(ClientError::UriScope);
-    }
-    let rest = uri.strip_prefix("rtsp://").ok_or(ClientError::UriScope)?;
-    let split = rest.find('/').ok_or(ClientError::UriScope)?;
-    let (authority, path) = rest.split_at(split);
-    if authority.is_empty() || (authority.contains('%') || authority.contains('?')) {
-        return Err(ClientError::UriScope);
-    }
-    // Authority is matched exactly, not resolved. No DNS alias or alternate port broadening.
-    if !authority
-        .bytes()
-        .all(|b| b.is_ascii_alphanumeric() || b".-:[]".contains(&b))
-    {
-        return Err(ClientError::UriScope);
-    }
-    for segment in path.split('?').next().unwrap_or("").split('/') {
-        if matches!(segment, "." | "..") {
-            return Err(ClientError::UriScope);
-        }
-    }
-    let mut at = 0;
-    let raw = path.as_bytes();
-    while at < raw.len() {
-        if raw[at] == b'%' {
-            let hex = path.get(at + 1..at + 3).ok_or(ClientError::UriScope)?;
-            let decoded = u8::from_str_radix(hex, 16).map_err(|_| ClientError::UriScope)?;
-            if decoded <= 32 || b"./\\@#%".contains(&decoded) || decoded == 127 {
-                return Err(ClientError::UriScope);
-            }
-            at += 3;
-        } else {
-            at += 1;
-        }
-    }
-    Ok((authority, path))
+    super::uri::validated_uri_parts(uri).map_err(|_| ClientError::UriScope)
 }
 fn uri_parts(uri: &str) -> Result<(&str, &str), ClientError> {
     validated_uri_parts(uri)

@@ -1,0 +1,367 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.dev/schemas/site_probe_receipt.v1.json",
+  "title": "FSS site probe receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "site_id",
+    "source_id",
+    "manifest_digest",
+    "source_generation",
+    "peer",
+    "authority",
+    "presentation",
+    "control_root",
+    "media_index",
+    "rtp_channel",
+    "rtcp_channel",
+    "sdp_digest",
+    "codec",
+    "payload_type",
+    "ssrc",
+    "frame_duration_ticks",
+    "clock_rate_hz",
+    "observed_frames",
+    "first_rtp_timestamp",
+    "last_rtp_timestamp",
+    "parameter_set_digests",
+    "server_identity"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.site_probe_receipt.v1"
+    },
+    "site_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+    },
+    "source_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+    },
+    "manifest_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "not": {
+        "const": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    },
+    "source_generation": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 18446744073709551615
+    },
+    "peer": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 64,
+      "pattern": "^(?:[0-9]{1,3}(?:\\.[0-9]{1,3}){3}|\\[[0-9a-f:.]+\\]):[1-9][0-9]{0,4}$",
+      "description": "Canonical literal SocketAddr, nonzero port and non-unspecified/non-multicast/non-broadcast address. No DNS or scoped IPv6."
+    },
+    "authority": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "description": "Credential-free exact host[:port] or [IPv6][:port] label. Explicit port and literal IP must match peer. Host labels are never resolved."
+    },
+    "presentation": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048,
+      "pattern": "^/[^\\s]*$",
+      "description": "Exact credential-free RTSP path plus optional query. Existing native URI rules reject controls, userinfo, fragments, escaped separators, traversal and double decoding. Query credential keys are refused. Complete rtsp://authority/path URI is at most 2048 bytes."
+    },
+    "control_root": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "pattern": "^/[A-Za-z0-9/._~-]*$",
+      "description": "No duplicate separators or dot components. Must contain presentation in its path subtree."
+    },
+    "media_index": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 63
+    },
+    "rtp_channel": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 254,
+      "enum": [
+        0,
+        2,
+        4,
+        6,
+        8,
+        10,
+        12,
+        14,
+        16,
+        18,
+        20,
+        22,
+        24,
+        26,
+        28,
+        30,
+        32,
+        34,
+        36,
+        38,
+        40,
+        42,
+        44,
+        46,
+        48,
+        50,
+        52,
+        54,
+        56,
+        58,
+        60,
+        62,
+        64,
+        66,
+        68,
+        70,
+        72,
+        74,
+        76,
+        78,
+        80,
+        82,
+        84,
+        86,
+        88,
+        90,
+        92,
+        94,
+        96,
+        98,
+        100,
+        102,
+        104,
+        106,
+        108,
+        110,
+        112,
+        114,
+        116,
+        118,
+        120,
+        122,
+        124,
+        126,
+        128,
+        130,
+        132,
+        134,
+        136,
+        138,
+        140,
+        142,
+        144,
+        146,
+        148,
+        150,
+        152,
+        154,
+        156,
+        158,
+        160,
+        162,
+        164,
+        166,
+        168,
+        170,
+        172,
+        174,
+        176,
+        178,
+        180,
+        182,
+        184,
+        186,
+        188,
+        190,
+        192,
+        194,
+        196,
+        198,
+        200,
+        202,
+        204,
+        206,
+        208,
+        210,
+        212,
+        214,
+        216,
+        218,
+        220,
+        222,
+        224,
+        226,
+        228,
+        230,
+        232,
+        234,
+        236,
+        238,
+        240,
+        242,
+        244,
+        246,
+        248,
+        250,
+        252,
+        254
+      ]
+    },
+    "rtcp_channel": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 255
+    },
+    "sdp_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "not": {
+        "const": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    },
+    "codec": {
+      "enum": [
+        "avc",
+        "hevc",
+        "jpeg"
+      ]
+    },
+    "payload_type": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 127
+    },
+    "ssrc": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4294967295
+    },
+    "frame_duration_ticks": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 90000
+    },
+    "clock_rate_hz": {
+      "const": 90000
+    },
+    "observed_frames": {
+      "type": "integer",
+      "minimum": 2,
+      "maximum": 1000000
+    },
+    "first_rtp_timestamp": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4294967295
+    },
+    "last_rtp_timestamp": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4294967295
+    },
+    "parameter_set_digests": {
+      "type": "array",
+      "maxItems": 3,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^sha256:[0-9a-f]{64}$",
+        "not": {
+          "const": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      }
+    },
+    "server_identity": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[ -~]+$"
+    }
+  },
+  "description": "One supplied observation claim, not authenticated or fresh evidence. Files contain an array of 0..64 receipts (no duplicate site/source pair, <=1 MiB). Exact site/manifest/source generation/peer/authority/presentation/control scope checked before compilation. rtcp_channel=rtp_channel+1. The modular timestamp difference must equal frame_duration_ticks*(observed_frames-1); this checks supplied claims, not intermediate RTP packets. SPS/PPS or VPS/SPS/PPS hashes have fixed order. No media bytes, secrets or rights grant.",
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "codec": {
+            "const": "avc"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "parameter_set_digests": {
+            "minItems": 2,
+            "maxItems": 2
+          },
+          "payload_type": {
+            "minimum": 96
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "codec": {
+            "const": "hevc"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "parameter_set_digests": {
+            "minItems": 3,
+            "maxItems": 3
+          },
+          "payload_type": {
+            "minimum": 96
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "codec": {
+            "const": "jpeg"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "parameter_set_digests": {
+            "maxItems": 0
+          },
+          "payload_type": {
+            "anyOf": [
+              {
+                "const": 26
+              },
+              {
+                "minimum": 96
+              }
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,46 @@
+{
+  "schema": "fss.site_camera_manifest.v1",
+  "site_id": "site:example",
+  "generation": 1,
+  "network_route": "lan",
+  "sources": [
+    {
+      "source_id": "source:front",
+      "generation": 1,
+      "kind": "rtsp",
+      "peer": "192.0.2.10:554",
+      "authority": "camera-10.example:554",
+      "presentation": "/live/main",
+      "control_root": "/live",
+      "stream_role": "main",
+      "authentication": null,
+      "retention_class": "ordinary",
+      "rights_verdict_ref": "fldt:rights:example",
+      "zones": [],
+      "payment_masks": [],
+      "max_connections": 1,
+      "owner_authorized": true,
+      "plaintext": true,
+      "retain_originals": true
+    },
+    {
+      "source_id": "source:back",
+      "generation": 1,
+      "kind": "nvr_channel",
+      "peer": "192.0.2.11:554",
+      "authority": "camera-11.example:554",
+      "presentation": "/live/main",
+      "control_root": "/live",
+      "stream_role": "main",
+      "authentication": null,
+      "retention_class": "ordinary",
+      "rights_verdict_ref": "fldt:rights:example",
+      "zones": [],
+      "payment_masks": [],
+      "max_connections": 1,
+      "owner_authorized": true,
+      "plaintext": true,
+      "retain_originals": true
+    }
+  ]
+}

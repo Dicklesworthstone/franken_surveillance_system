@@ -66,6 +66,8 @@ pub mod sdp;
 pub mod selection;
 /// Native bounded TCP ownership under an exact route and explicit live authority.
 pub mod tcp;
+/// Shared credential-free RTSP URI syntax validation, without I/O.
+pub mod uri;
 
 pub use message::{
     AuthScheme, ContentLengthConflict, DEFAULT_MAX_BODY_BYTES, DEFAULT_MAX_HEADERS,

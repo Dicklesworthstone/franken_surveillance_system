@@ -6,6 +6,12 @@ operation states rather than generic errors.
 
 | ID | Meaning | Retry policy |
 |---|---|---|
+| `ERR-SITE-INPUT-LIMIT-001` | Complete site/probe input, source count, geometry or canonical fingerprint exceeds a hard bound | Narrow the complete request; no truncation or partial acceptance. |
+| `ERR-SITE-JSON-001` | Site input is not strict bounded UTF-8 JSON, including duplicate keys or trailing input | Correct the document; diagnostics never include input bytes. |
+| `ERR-SITE-SCHEMA-001` | Site/probe schema, field, requested route, reference or geometry is invalid or unknown | Correct the exact declared scope and preview again; no inferred fields or endpoint fallback. |
+| `ERR-SITE-DUPLICATE-001` | Site source, zone or supplied probe identity is ambiguous through duplication | Supply one exact declaration per identity; duplicates are never silently overwritten. |
+| `ERR-SITE-STALE-MANIFEST-001` | Probe site or manifest fingerprint differs from the complete requested manifest | Obtain observations for the current exact manifest; never silently rebind an old receipt. |
+| `ERR-SITE-SOURCE-MISMATCH-001` | Probe source is absent or its generation/route differs from the manifest | Reconcile the declared source and observations, then create a new complete plan. |
 | `ERR-CAPTURE-UNIFI-SOURCE-001` | Private Protect camera/stream handoff is malformed, outside bounds, not owner-only, changed, or inconsistent with the approved native capture plan | Repair the exact private input and preview again; no alternate camera, quality or route is selected. |
 | `ERR-CAPTURE-UNIFI-APPROVAL-001` | Protect file identity, selected view/quality, transport or complete native capture plan no longer matches its outer approval | Review a fresh complete plan; never reuse a stale approval after file replacement or selection changes. |
 | `ERR-CAPTURE-UNIFI-TRANSPORT-001` | Selected Protect URL requires secure transport, or the explicit operator RTSP map is absent or contains a secure URL | Supply an independently verified plaintext endpoint with explicit operator-rtsp selection and plaintext authorization, or use a qualified secure transport; never rewrite the published URL automatically. |
