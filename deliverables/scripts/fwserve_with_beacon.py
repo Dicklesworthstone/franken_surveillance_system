@@ -1,7 +1,7 @@
 #!/opt/homebrew/bin/python3
 """http.server with beacon capture: logs /fss-ran and /fss-recon hits to /tmp/fss_beacons.log
 Serves /tmp/fwserve on 192.168.4.160:8080 — replacement for the launchd plain http.server."""
-import http.server, socketserver, os, time, urllib.parse
+import http.server, socketserver, os, socket, time, urllib.parse
 
 ROOT = "/tmp/fwserve"
 LOG = "/tmp/fss_beacons.log"
@@ -27,5 +27,10 @@ class H(http.server.SimpleHTTPRequestHandler):
         pass  # quiet: beacon log is the signal
 
 socketserver.TCPServer.allow_reuse_address = True
-with socketserver.TCPServer(("192.168.4.160", 8080), H) as s:
+class Server(socketserver.ThreadingTCPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+    address_family = socket.AF_INET
+
+with Server(("0.0.0.0", 8080), H) as s:
     s.serve_forever()
