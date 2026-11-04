@@ -439,7 +439,7 @@ def main() -> int:
                 base = "https://s3-us-west-2.amazonaws.com"
                 # advertised version is bumped so the device sees a change; the served paths stay on
                 # the version we mirrored, because the bytes are the real 50039 ones.
-                model_ver = os.environ.get("MODEL_VER", "14.9.50042.r")
+                model_ver = os.environ.get("MODEL_VER", "14.9.50043.r")
                 model_path_ver = "14.9.50041.r"
                 # the kvs process keeps its REAL version: 2.1.2.573 does not exist on the cloud, so
                 # bumping it only produces NoSuchKey for webrtc.tar.gz.
@@ -467,11 +467,30 @@ def main() -> int:
                     req = {}
                 name = req.get("processname") or ""
                 if "get_download_location" in self.path:
-                    # ALWAYS hand out the real presigned URL (passthrough via the MITM):
-                    # a forged signature (0*64) can be rejected client-side before any fetch,
-                    # while the real URL validates — and the DNS spoof routes the resulting
-                    # fetch to this same forge, which serves the path with our SNI cert.
+                    # Prefer the real presigned URL (passthrough via the MITM): a forged
+                    # signature (0*64) can be rejected client-side before any fetch.
+                    # FALLBACK: if the cloud doesn't know the requested version (e.g. our
+                    # advertised bump ahead of the cloud's catalog), passthrough returns an
+                    # error shape — then serve our own dl-loc pointing at the DNS-spoofed
+                    # path we serve locally; the camera verifies bytes via OUR md5 from
+                    # get_processes, so the signature is irrelevant on this path.
                     out = passthrough(self.path, body, self.headers)
+                    try:
+                        ok = json.loads(out).get("msg") == "SUCCESS" or \
+                             json.loads(out).get("code") == "1"
+                    except Exception:
+                        ok = False
+                    if not ok:
+                        asked_ver = req.get("version") or model_ver
+                        fname = req.get("filename") or "launch.sh"
+                        path = f"/wyzeedgeai_cam_v4_test_protocol/{asked_ver}/{fname}"
+                        out = json.dumps({
+                            "code": "1", "ts": int(time.time() * 1000), "msg": "SUCCESS",
+                            "data": {"version": asked_ver,
+                                     "url": "https://sinker-t-usw2.s3.us-west-2.amazonaws.com" + path,
+                                     "filename": fname},
+                            "traceId": os.urandom(16).hex()}).encode()
+                        print(f"  -> dl-loc FALLBACK (cloud lacks {asked_ver}) serving local path", flush=True)
                     print(f"  -> dl-loc {name!r} -> {out[:220]!r}", flush=True)
                 else:
                     # The real answer lists every component with the checksum the device verifies;
