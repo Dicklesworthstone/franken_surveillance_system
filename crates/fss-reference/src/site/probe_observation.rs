@@ -11,7 +11,7 @@ use fss_core::ContentDigest;
 use fss_packet::{PacketLimits, RtpPacket, StreamKey};
 
 use super::probe_route::ProbeRoute;
-use super::{ProbeCodec, SiteManifest, SiteProbeReceipt, SourceKind};
+use super::{ProbeCodec, SiteManifest, SiteProbeReceipt};
 use crate::rtsp::client::observed::ObservedVideoDescription;
 use crate::rtsp::client::{hevc, jpeg};
 use crate::rtsp::selection::{
@@ -145,7 +145,7 @@ impl<'a> RtspProbeObserver<'a> {
         Self::new_with_route(manifest, source_index, route, negotiated)
     }
 
-    /// Begin with an exact preselected direct or UniFi route under the original manifest.
+    /// Begin with an exact direct or protected UniFi/ONVIF route under the original manifest.
     /// The route is consistency evidence only; the caller still owns network authority and
     /// must supply codec/session observations rather than infer them from an export.
     pub fn new_with_route(
@@ -157,13 +157,9 @@ impl<'a> RtspProbeObserver<'a> {
         route
             .validate_for(manifest, source_index)
             .map_err(|_| ObservationError::Scope)?;
-        let source = manifest
-            .sources
-            .get(source_index)
-            .ok_or(ObservationError::Scope)?;
-        if source.kind == SourceKind::UnifiProtect && negotiated.codec == ProbeCodec::Jpeg {
-            return Err(ObservationError::Negotiation);
-        }
+        route
+            .validate_codec(manifest, negotiated.codec)
+            .map_err(|_| ObservationError::Negotiation)?;
         if negotiated.sdp.is_empty() || negotiated.sdp.len() > MAX_SELECTION_BYTES {
             return Err(ObservationError::Limit);
         }
@@ -450,8 +446,8 @@ impl<'a> RtspProbeObserver<'a> {
             source_id: source.source_id.clone(),
             manifest_digest: self.route.manifest_digest(),
             source_generation: source.generation,
-            peer: source.peer,
-            authority: source.authority.clone(),
+            peer: self.route.peer(),
+            authority: self.route.authority().to_owned(),
             presentation: self.route.presentation().to_owned(),
             control_root: self.route.control_root().to_owned(),
             media_index: self.media_index,
@@ -472,8 +468,8 @@ impl<'a> RtspProbeObserver<'a> {
             // the live observer is a separate follow-up, tracked on that bead.
             clock_evidence: None,
         };
-        receipt
-            .validate_for(self.manifest)
+        self.route
+            .validate_receipt(self.manifest, &receipt)
             .map_err(|_| ObservationError::Receipt)?;
         Ok(receipt)
     }

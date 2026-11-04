@@ -1512,3 +1512,298 @@ mod unifi {
         Ok(())
     }
 }
+
+mod onvif {
+    use super::*;
+    use fss_reference::site::SourceKind;
+    use fss_reference::site::probe_route::{OnvifCaptureRoute, ProbeRoute};
+
+    const RESOURCE: &str = "/PRIVATE_ONVIF_PROBE/?variant=%41%2b&quality=main";
+    const ROOT: &str = "/PRIVATE_ONVIF_PROBE/";
+
+    fn selection(
+        http_peer: SocketAddr,
+        rtsp_peer: SocketAddr,
+        codec: ProbeCodec,
+        digest: bool,
+    ) -> Result<(SiteManifest, OnvifCaptureRoute, ProbeRoute), Box<dyn std::error::Error>> {
+        let mut manifest = SiteManifest::parse(MANIFEST)?;
+        let source = &mut manifest.sources[0];
+        source.kind = SourceKind::Onvif;
+        source.peer = http_peer;
+        source.authority = http_peer.to_string();
+        source.onvif_service_path = Some("/onvif/device_service".into());
+        source.presentation = None;
+        source.control_root = None;
+        if digest {
+            source.authentication = Some(SiteAuthentication {
+                credential_file: PathBuf::from("/tmp/onvif-probe-fixture-secret-is-never-opened"),
+                realm: REALM.into(),
+                legacy_md5: false,
+                legacy_no_qop: false,
+            });
+        }
+        let capture = OnvifCaptureRoute::new(
+            &manifest,
+            0,
+            ContentDigest::sha256(b"exact-private-handoff"),
+            rtsp_peer,
+            &format!("rtsp-selected.example:{}", rtsp_peer.port()),
+            RESOURCE,
+            ROOT,
+        )?;
+        let route = ProbeRoute::from_onvif(
+            &manifest,
+            0,
+            &capture,
+            ContentDigest::sha256(b"historical-onboarding-plan"),
+            ContentDigest::sha256(b"historical-profile"),
+            codec,
+        )?;
+        Ok((manifest, capture, route))
+    }
+
+    fn options(
+        manifest: &SiteManifest,
+        route: &ProbeRoute,
+        codec: ProbeCodec,
+    ) -> Result<LiveSiteProbeConfig, TcpError> {
+        let mut options = config(manifest, codec)?;
+        options.binding = TcpBinding::new(
+            options.binding.key(),
+            route.peer(),
+            route.authority(),
+            TcpSecurityPolicy::OwnerApprovedPlaintext,
+        )?
+        .with_auto_ssrc();
+        options.protocol.presentation_uri =
+            format!("rtsp://{}{}", route.authority(), route.presentation());
+        options.protocol.control_root_uri =
+            format!("rtsp://{}{}", route.authority(), route.control_root());
+        Ok(options)
+    }
+
+    fn assert_uncontacted(listener: &TcpListener) {
+        assert_eq!(
+            listener.accept().err().map(|error| error.kind()),
+            Some(io::ErrorKind::WouldBlock)
+        );
+    }
+
+    #[test]
+    fn native_onvif_avc_hevc_and_digest_observe_only_selected_rtsp_peer() -> Test {
+        for codec in [ProbeCodec::Avc, ProbeCodec::Hevc] {
+            for digest in [false, true] {
+                let http = TcpListener::bind("127.0.0.1:0")?;
+                http.set_nonblocking(true)?;
+                let listener = TcpListener::bind("127.0.0.1:0")?;
+                let (manifest, capture, route) =
+                    selection(http.local_addr()?, listener.local_addr()?, codec, digest)?;
+                let original = manifest.clone();
+                let options = options(&manifest, &route, codec)?;
+                let uri = options.protocol.presentation_uri.clone();
+                let track = format!("{}trackID=0", options.protocol.control_root_uri);
+                let permit = Permit {
+                    binding: options.binding.clone(),
+                    denial: Cell::new(None),
+                    calls: Cell::new(0),
+                };
+                thread::scope(|scope| -> Test {
+                    let server = scope.spawn(move || {
+                        serve(
+                            listener,
+                            Scenario {
+                                codec,
+                                digest,
+                                ..Scenario::default()
+                            },
+                        )
+                    });
+                    let mut probe = LiveSiteProbe::connect_with_route(
+                        &manifest,
+                        options,
+                        route.clone(),
+                        0,
+                        &permit,
+                    )?;
+                    let completed = drive(&mut probe, &permit, digest)??;
+                    assert_fixture_measurement(&completed, codec, false)?;
+                    assert_eq!(completed.receipt.manifest_digest, original.digest()?);
+                    assert_eq!(completed.receipt.peer, route.peer());
+                    assert_eq!(completed.receipt.authority, route.authority());
+                    assert_eq!(completed.receipt.presentation, RESOURCE);
+                    assert_eq!(completed.receipt.control_root, ROOT);
+                    assert!(completed.receipt.clock_evidence.is_none());
+                    assert!(completed.receipt.validate_for(&original).is_err());
+                    route.validate_receipt(&original, &completed.receipt)?;
+                    capture.validate_receipt(&original, &completed.receipt)?;
+                    assert!(!completed.close.remote_session_may_exist);
+                    assert!(completed.close.pending_cseq.is_none());
+                    for private in [
+                        "PRIVATE_ONVIF_PROBE",
+                        SERVER_CANARY,
+                        SESSION_CANARY,
+                        PASSWORD,
+                    ] {
+                        assert!(!format!("{completed:?}").contains(private));
+                    }
+                    let log = server
+                        .join()
+                        .map_err(|_| io::Error::other("fixture server panic"))??;
+                    let mut methods = vec!["OPTIONS", "DESCRIBE", "SETUP", "PLAY", "TEARDOWN"];
+                    let mut targets = vec![&uri, &uri, &track, &uri, &uri];
+                    if digest {
+                        methods.insert(0, "OPTIONS");
+                        targets.insert(0, &uri);
+                        assert!(log.signed_requests >= 5);
+                    }
+                    assert_eq!(log.methods, methods);
+                    assert_eq!(
+                        log.request_target_digests,
+                        targets
+                            .into_iter()
+                            .map(|target| ContentDigest::sha256(target.as_bytes()))
+                            .collect::<Vec<_>>()
+                    );
+                    Ok(())
+                })?;
+                assert_eq!(manifest, original);
+                assert_uncontacted(&http);
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn onvif_endpoint_codec_manifest_and_auth_drift_refuse_before_any_authority_or_connect() -> Test
+    {
+        let http = TcpListener::bind("127.0.0.1:0")?;
+        http.set_nonblocking(true)?;
+        let rtsp = TcpListener::bind("127.0.0.1:0")?;
+        rtsp.set_nonblocking(true)?;
+        let (manifest, _, route) = selection(
+            http.local_addr()?,
+            rtsp.local_addr()?,
+            ProbeCodec::Avc,
+            true,
+        )?;
+        for change in 0..10 {
+            let mut manifest = manifest.clone();
+            let mut options = options(&manifest, &route, ProbeCodec::Avc)?;
+            let permit = Permit {
+                binding: options.binding.clone(),
+                denial: Cell::new(None),
+                calls: Cell::new(0),
+            };
+            match change {
+                0 => {} // The direct constructor must still refuse every ONVIF source.
+                1 => options.source_index = 1,
+                2 => options.protocol.presentation_uri.push_str("&extra=1"),
+                3 => options.protocol.control_root_uri = format!("rtsp://{}/", route.authority()),
+                4 => options.binding = config(&manifest, ProbeCodec::Avc)?.binding,
+                5 => {
+                    options.binding = TcpBinding::new(
+                        options.binding.key(),
+                        route.peer(),
+                        &format!("other.example:{}", route.peer().port()),
+                        TcpSecurityPolicy::OwnerApprovedPlaintext,
+                    )?
+                    .with_auto_ssrc()
+                }
+                6 => {
+                    options.codec = ProbeCodec::Hevc;
+                    options.payload_type = Some(98);
+                }
+                7 => manifest.sources[0].onvif_service_path = Some("/onvif/changed".into()),
+                8 => options.digest = None,
+                _ => manifest.sources[0].generation += 1,
+            }
+            let result = if change == 0 {
+                LiveSiteProbe::connect(&manifest, options, 0, &permit)
+            } else {
+                LiveSiteProbe::connect_with_route(&manifest, options, route.clone(), 0, &permit)
+            };
+            let error = result.expect_err("selection drift must not connect");
+            assert_eq!(error.reason, ProbeError::Configuration);
+            assert!(!error.connection_attempted);
+            assert_eq!(permit.calls.get(), 0);
+            assert_uncontacted(&http);
+            assert_uncontacted(&rtsp);
+        }
+        let options = options(&manifest, &route, ProbeCodec::Avc)?;
+        let permit = Permit {
+            binding: options.binding.clone(),
+            denial: Cell::new(Some(TcpDenial::Unauthorized)),
+            calls: Cell::new(0),
+        };
+        let error = LiveSiteProbe::connect_with_route(&manifest, options, route, 0, &permit)
+            .expect_err("historical binding cannot grant live authority");
+        assert_eq!(
+            error.reason,
+            ProbeError::Transport(TcpError::Denied(TcpDenial::Unauthorized))
+        );
+        assert!(!error.connection_attempted);
+        assert_eq!(permit.calls.get(), 1);
+        assert_uncontacted(&http);
+        assert_uncontacted(&rtsp);
+        Ok(())
+    }
+
+    #[test]
+    fn onvif_media_fault_or_unsettled_teardown_never_releases_a_receipt() -> Test {
+        for codec in [ProbeCodec::Avc, ProbeCodec::Hevc] {
+            for (media_fault, close) in [
+                (MediaFault::Sender, CloseMode::Acknowledge),
+                (MediaFault::None, CloseMode::Drop),
+                (MediaFault::None, CloseMode::WrongCseq),
+            ] {
+                let http = TcpListener::bind("127.0.0.1:0")?;
+                http.set_nonblocking(true)?;
+                let listener = TcpListener::bind("127.0.0.1:0")?;
+                let (manifest, _, route) =
+                    selection(http.local_addr()?, listener.local_addr()?, codec, false)?;
+                let options = options(&manifest, &route, codec)?;
+                let permit = Permit {
+                    binding: options.binding.clone(),
+                    denial: Cell::new(None),
+                    calls: Cell::new(0),
+                };
+                thread::scope(|scope| -> Test {
+                    let server = scope.spawn(move || {
+                        serve(
+                            listener,
+                            Scenario {
+                                codec,
+                                media_fault,
+                                close,
+                                ..Scenario::default()
+                            },
+                        )
+                    });
+                    let mut probe =
+                        LiveSiteProbe::connect_with_route(&manifest, options, route, 0, &permit)?;
+                    let error = drive(&mut probe, &permit, false)?
+                        .expect_err("failed media or uncertain close cannot release a receipt");
+                    let retired = error.retirement.ok_or("missing retirement")?;
+                    assert!(retired.close.remote_session_may_exist);
+                    assert!(!retired.teardown_acknowledged);
+                    assert_eq!(
+                        retired.accounting.discarded_wire_bytes,
+                        retired.totals.received_bytes
+                    );
+                    assert!(probe.cancel().is_none());
+                    let log = server
+                        .join()
+                        .map_err(|_| io::Error::other("fixture server panic"))??;
+                    assert_eq!(
+                        log.methods.iter().any(|method| method == "TEARDOWN"),
+                        matches!(media_fault, MediaFault::None)
+                    );
+                    Ok(())
+                })?;
+                assert_uncontacted(&http);
+            }
+        }
+        Ok(())
+    }
+}

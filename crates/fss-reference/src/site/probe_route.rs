@@ -1,10 +1,10 @@
 #![forbid(unsafe_code)]
 //! Exact private probe routing bound to the original complete site manifest.
 //!
-//! A UniFi export can supply a presentation without changing the manifest's source kind,
-//! camera identity or digest. This pure value grants no network or credential authority;
-//! construction and revalidation perform no I/O or DNS lookup. Paths and queries can be bearer
-//! capabilities, so only explicit accessors expose them and diagnostics remain redacted.
+//! A protected UniFi export or ONVIF handoff can supply a presentation without changing the
+//! manifest's source kind, camera identity or digest. This pure value grants no network or
+//! credential authority; construction and revalidation perform no I/O or DNS lookup. Paths and
+//! queries can be bearer capabilities, so only explicit accessors expose them and diagnostics remain redacted.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -12,7 +12,7 @@ use std::net::{IpAddr, SocketAddr};
 
 use fss_core::ContentDigest;
 
-use super::{SiteError, SiteManifest, SiteProbeReceipt, SiteSource, SourceKind};
+use super::{ProbeCodec, SiteError, SiteManifest, SiteProbeReceipt, SiteSource, SourceKind};
 use crate::rtsp::uri::validated_uri_parts;
 use crate::unifi::SelectedStream;
 
@@ -21,8 +21,20 @@ use crate::unifi::SelectedStream;
 pub struct ProbeRoute {
     manifest_digest: ContentDigest,
     source_index: usize,
+    peer: SocketAddr,
+    authority: String,
     presentation: String,
     control_root: String,
+    onvif: Option<OnvifProbeSelection>,
+}
+
+/// Exact historical selection, not evidence that the current HTTP device produced the handoff.
+#[derive(Clone, Eq, PartialEq)]
+struct OnvifProbeSelection {
+    handoff_digest: ContentDigest,
+    onboarding_plan: ContentDigest,
+    profile_digest: ContentDigest,
+    codec: ProbeCodec,
 }
 
 impl fmt::Debug for ProbeRoute {
@@ -47,6 +59,8 @@ impl ProbeRoute {
         Ok(Self {
             manifest_digest,
             source_index,
+            peer: source.peer,
+            authority: source.authority.clone(),
             presentation: source
                 .presentation
                 .clone()
@@ -55,6 +69,7 @@ impl ProbeRoute {
                 .control_root
                 .clone()
                 .ok_or(SiteError::MissingField("control_root"))?,
+            onvif: None,
         })
     }
 
@@ -94,8 +109,45 @@ impl ProbeRoute {
         Ok(Self {
             manifest_digest,
             source_index,
+            peer: source.peer,
+            authority: source.authority.clone(),
             presentation: presentation.to_owned(),
             control_root: control_root.to_owned(),
+            onvif: None,
+        })
+    }
+
+    /// Bind a protected ONVIF handoff to the original HTTP source and independent RTSP endpoint.
+    /// The caller must verify the actual private handoff bytes, onboarding/profile identities,
+    /// codec and route before construction. These historical pins grant neither network authority
+    /// nor proof of HTTP origin, freshness or current camera identity. No ONVIF request is sent.
+    pub fn from_onvif(
+        manifest: &SiteManifest,
+        source_index: usize,
+        selected: &OnvifCaptureRoute,
+        onboarding_plan: ContentDigest,
+        profile_digest: ContentDigest,
+        codec: ProbeCodec,
+    ) -> Result<Self, SiteError> {
+        selected.validate_for(manifest, source_index)?;
+        super::digest(onboarding_plan)?;
+        super::digest(profile_digest)?;
+        if !matches!(codec, ProbeCodec::Avc | ProbeCodec::Hevc) {
+            return Err(SiteError::InvalidField("codec"));
+        }
+        Ok(Self {
+            manifest_digest: selected.manifest_digest,
+            source_index,
+            peer: selected.peer,
+            authority: selected.authority.clone(),
+            presentation: selected.presentation.clone(),
+            control_root: selected.control_root.clone(),
+            onvif: Some(OnvifProbeSelection {
+                handoff_digest: selected.handoff_digest,
+                onboarding_plan,
+                profile_digest,
+                codec,
+            }),
         })
     }
 
@@ -113,13 +165,92 @@ impl ProbeRoute {
             return Err(SiteError::SourceMismatch);
         }
         let source = source(manifest, source_index)?;
-        super::route(&source.authority, &self.presentation, &self.control_root)
+        match &self.onvif {
+            Some(selected) => {
+                if source.kind != SourceKind::Onvif {
+                    return Err(SiteError::InvalidField("kind"));
+                }
+                super::digest(selected.handoff_digest)?;
+                super::digest(selected.onboarding_plan)?;
+                super::digest(selected.profile_digest)?;
+            }
+            None => {
+                if source.kind == SourceKind::Onvif
+                    || self.peer != source.peer
+                    || self.authority != source.authority
+                {
+                    return Err(SiteError::SourceMismatch);
+                }
+            }
+        }
+        super::peer(self.peer)?;
+        super::bound_authority(self.peer, &self.authority)?;
+        super::route(&self.authority, &self.presentation, &self.control_root)
+    }
+
+    /// Validate an observed receipt against this exact selected route and original manifest.
+    /// The generic manifest-only receipt validator remains unchanged. Only the explicitly bound
+    /// ONVIF route admits its independent RTSP endpoint, with the handoff's codec still pinned.
+    pub fn validate_receipt(
+        &self,
+        manifest: &SiteManifest,
+        receipt: &SiteProbeReceipt,
+    ) -> Result<(), SiteError> {
+        self.validate_for(manifest, self.source_index)?;
+        if self.onvif.is_some() {
+            receipt.validate()?;
+        } else {
+            receipt.validate_for(manifest)?;
+        }
+        if receipt.manifest_digest != self.manifest_digest || receipt.site_id != manifest.site_id {
+            return Err(SiteError::StaleManifest);
+        }
+        let source = source(manifest, self.source_index)?;
+        if receipt.source_id != source.source_id
+            || receipt.source_generation != source.generation
+            || receipt.peer != self.peer
+            || receipt.authority != self.authority
+            || receipt.presentation != self.presentation
+            || receipt.control_root != self.control_root
+        {
+            return Err(SiteError::SourceMismatch);
+        }
+        self.validate_codec(manifest, receipt.codec)
+    }
+
+    pub(crate) fn validate_codec(
+        &self,
+        manifest: &SiteManifest,
+        codec: ProbeCodec,
+    ) -> Result<(), SiteError> {
+        let source = source(manifest, self.source_index)?;
+        if (source.kind == SourceKind::UnifiProtect && codec == ProbeCodec::Jpeg)
+            || self
+                .onvif
+                .as_ref()
+                .is_some_and(|selected| selected.codec != codec)
+        {
+            return Err(SiteError::InvalidField("codec"));
+        }
+        Ok(())
     }
 
     /// Canonical digest of the original complete manifest, not a synthetic RTSP manifest.
     #[must_use]
     pub const fn manifest_digest(&self) -> ContentDigest {
         self.manifest_digest
+    }
+
+    /// Actual literal RTSP peer. An ONVIF HTTP peer is never substituted for this selection.
+    #[must_use]
+    pub const fn peer(&self) -> SocketAddr {
+        self.peer
+    }
+
+    /// Exact selected RTSP authority; construction performs no DNS resolution.
+    #[must_use]
+    pub fn authority(&self) -> &str {
+        &self.authority
     }
 
     /// Exact private resource, including query order, escaping and case. Never use in diagnostics.
@@ -140,7 +271,8 @@ impl ProbeRoute {
 /// The ONVIF HTTP endpoint and selected RTSP endpoint are independent declarations. This
 /// value records their exact operator binding; it does not authenticate the handoff's origin,
 /// prove that the HTTP device path produced it, or grant native probe/capture authority.
-/// It deliberately is not a `ProbeRoute`: live owners retain their existing supported scope.
+/// A live probe requires a separate `ProbeRoute::from_onvif` selection with exact historical
+/// onboarding/profile and codec pins, followed by independent network approval.
 #[derive(Clone, Eq, PartialEq)]
 pub struct OnvifCaptureRoute {
     manifest_digest: ContentDigest,
@@ -219,6 +351,22 @@ impl OnvifCaptureRoute {
             return Err(SiteError::SourceMismatch);
         }
         Ok(())
+    }
+
+    fn validate_for(&self, manifest: &SiteManifest, source_index: usize) -> Result<(), SiteError> {
+        if self.manifest_digest != manifest.digest()? {
+            return Err(SiteError::StaleManifest);
+        }
+        if self.source_index != source_index {
+            return Err(SiteError::SourceMismatch);
+        }
+        if source(manifest, source_index)?.kind != SourceKind::Onvif {
+            return Err(SiteError::InvalidField("kind"));
+        }
+        super::digest(self.handoff_digest)?;
+        super::peer(self.peer)?;
+        super::bound_authority(self.peer, &self.authority)?;
+        super::route(&self.authority, &self.presentation, &self.control_root)
     }
 
     /// Exact historical file content identity bound to this source and route.
@@ -455,6 +603,135 @@ mod onvif_tests {
         changed.source_generation += 1;
         assert!(route.validate_receipt(&manifest, &changed).is_err());
         assert!(ProbeRoute::direct(&manifest, 0).is_err());
+        Ok(())
+    }
+
+    fn selected_probe_route(
+        manifest: &SiteManifest,
+        receipt: &SiteProbeReceipt,
+    ) -> Test<(OnvifCaptureRoute, ProbeRoute)> {
+        let capture = OnvifCaptureRoute::new(
+            manifest,
+            0,
+            ContentDigest::sha256(b"actual-handoff-bytes"),
+            receipt.peer,
+            &receipt.authority,
+            &receipt.presentation,
+            &receipt.control_root,
+        )?;
+        let route = ProbeRoute::from_onvif(
+            manifest,
+            0,
+            &capture,
+            ContentDigest::sha256(b"historical-onboarding-plan"),
+            ContentDigest::sha256(b"historical-selected-profile"),
+            receipt.codec,
+        )?;
+        Ok((capture, route))
+    }
+
+    #[test]
+    fn onvif_probe_selection_keeps_http_manifest_and_exact_historical_pins() -> Test {
+        let (manifest, receipts) = fixture()?;
+        let original = manifest.clone();
+        let (capture, route) = selected_probe_route(&manifest, &receipts[0])?;
+        route.validate_for(&manifest, 0)?;
+        route.validate_receipt(&manifest, &receipts[0])?;
+        assert_eq!(route.peer(), receipts[0].peer);
+        assert_eq!(route.authority(), receipts[0].authority);
+        assert_ne!(route.peer(), manifest.sources[0].peer);
+        assert_eq!(route.manifest_digest(), manifest.digest()?);
+        assert!(receipts[0].validate_for(&manifest).is_err());
+        for change in 0..3 {
+            let mut capture = capture.clone();
+            let mut onboarding = ContentDigest::sha256(b"historical-onboarding-plan");
+            let mut profile = ContentDigest::sha256(b"historical-selected-profile");
+            match change {
+                0 => capture.handoff_digest = ContentDigest::sha256(b"different-file"),
+                1 => onboarding = ContentDigest::sha256(b"different-onboarding"),
+                _ => profile = ContentDigest::sha256(b"different-profile"),
+            }
+            let changed = ProbeRoute::from_onvif(
+                &manifest,
+                0,
+                &capture,
+                onboarding,
+                profile,
+                receipts[0].codec,
+            )?;
+            assert_ne!(changed, route);
+        }
+        assert_eq!(manifest, original);
+        for private in ["camera-10.example", "/live/main", "/live"] {
+            assert!(!format!("{route:?}").contains(private));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn onvif_probe_selection_refuses_missing_pins_wrong_codec_and_stale_source() -> Test {
+        let (manifest, receipts) = fixture()?;
+        let (capture, route) = selected_probe_route(&manifest, &receipts[0])?;
+        let valid = ContentDigest::sha256(b"valid-history-pin");
+        let absent = ContentDigest::new(fss_core::DigestAlgorithm::Sha256, [0; 32]);
+        for (onboarding, profile, codec) in [
+            (absent, valid, ProbeCodec::Avc),
+            (valid, absent, ProbeCodec::Avc),
+            (valid, valid, ProbeCodec::Jpeg),
+        ] {
+            assert!(
+                ProbeRoute::from_onvif(&manifest, 0, &capture, onboarding, profile, codec).is_err()
+            );
+        }
+        assert_eq!(
+            ProbeRoute::from_onvif(&manifest, 1, &capture, valid, valid, ProbeCodec::Avc),
+            Err(SiteError::SourceMismatch)
+        );
+        for change in 0..4 {
+            let mut changed = manifest.clone();
+            match change {
+                0 => changed.sources[0].generation += 1,
+                1 => changed.sources[0].onvif_service_path = Some("/onvif/changed".into()),
+                2 => changed.sources.swap(0, 1),
+                _ => changed.sources.truncate(1),
+            }
+            assert_eq!(
+                route.validate_for(&changed, 0),
+                Err(SiteError::StaleManifest)
+            );
+            assert_eq!(
+                ProbeRoute::from_onvif(&changed, 0, &capture, valid, valid, ProbeCodec::Avc),
+                Err(SiteError::StaleManifest)
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn onvif_probe_receipt_validator_refuses_endpoint_resource_and_codec_substitution() -> Test {
+        let (manifest, receipts) = fixture()?;
+        let (_, route) = selected_probe_route(&manifest, &receipts[0])?;
+        for change in 0..7 {
+            let mut receipt = receipts[0].clone();
+            match change {
+                0 => receipt.peer.set_ip("192.0.2.99".parse()?),
+                1 => receipt.authority = "different.example:554".into(),
+                2 => receipt.presentation.push_str("?different=1"),
+                3 => receipt.control_root = "/".into(),
+                4 => receipt.source_generation += 1,
+                5 => receipt.source_id = manifest.sources[1].source_id.clone(),
+                _ => {
+                    receipt.codec = ProbeCodec::Hevc;
+                    receipt.parameter_set_digests = [b"vps", b"sps", b"pps"]
+                        .map(|bytes| ContentDigest::sha256(bytes))
+                        .to_vec();
+                }
+            }
+            // Every candidate remains structurally valid. Refusal is the exact selection,
+            // not a coincidental malformed receipt that the generic schema would reject.
+            receipt.validate()?;
+            assert!(route.validate_receipt(&manifest, &receipt).is_err());
+        }
         Ok(())
     }
 

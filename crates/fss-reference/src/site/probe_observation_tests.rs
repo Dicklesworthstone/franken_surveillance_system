@@ -29,6 +29,16 @@ fn from_sdp<'a>(
     codec: ProbeCodec,
     sdp: &[u8],
 ) -> Result<RtspProbeObserver<'a>, ObservationError> {
+    let route = ProbeRoute::direct(manifest, 0).map_err(|_| ObservationError::Scope)?;
+    from_sdp_with_route(manifest, codec, sdp, route)
+}
+
+fn from_sdp_with_route<'a>(
+    manifest: &'a SiteManifest,
+    codec: ProbeCodec,
+    sdp: &[u8],
+    route: ProbeRoute,
+) -> Result<RtspProbeObserver<'a>, ObservationError> {
     let (payload_type, parameters) = match codec {
         ProbeCodec::Avc => {
             let session = select_h264_description(sdp, 0, Some(96))
@@ -56,9 +66,10 @@ fn from_sdp<'a>(
         ProbeCodec::Jpeg => (26, Vec::new()),
     };
     let parameters = parameters.iter().map(Vec::as_slice).collect::<Vec<_>>();
-    RtspProbeObserver::new(
+    RtspProbeObserver::new_with_route(
         manifest,
         0,
+        route,
         NegotiatedProbe {
             sdp,
             media_index: 0,
@@ -69,6 +80,76 @@ fn from_sdp<'a>(
             server_identity: "fixture",
         },
     )
+}
+
+#[test]
+fn protected_onvif_observations_bind_measured_rtsp_without_rewriting_http_source() -> Test {
+    use crate::site::SourceKind;
+    use crate::site::probe_route::OnvifCaptureRoute;
+
+    let mut manifest = parse_manifest(MANIFEST)?;
+    let source = &mut manifest.sources[0];
+    source.kind = SourceKind::Onvif;
+    source.peer = "192.0.2.99:80".parse()?;
+    source.authority = "onvif-device.example:80".into();
+    source.onvif_service_path = Some("/onvif/device_service".into());
+    source.presentation = None;
+    source.control_root = None;
+    let original = manifest.clone();
+    let selected = OnvifCaptureRoute::new(
+        &manifest,
+        0,
+        ContentDigest::sha256(b"private-handoff"),
+        "192.0.2.10:8554".parse()?,
+        "rtsp-device.example:8554",
+        "/PRIVATE_ONVIF/%41?quality=main&variant=%2b",
+        "/PRIVATE_ONVIF",
+    )?;
+    for (codec, description) in [
+        (ProbeCodec::Avc, AVC_DESCRIPTION),
+        (ProbeCodec::Hevc, HEVC_DESCRIPTION),
+    ] {
+        let route = ProbeRoute::from_onvif(
+            &manifest,
+            0,
+            &selected,
+            ContentDigest::sha256(b"historical-onboarding"),
+            ContentDigest::sha256(b"historical-profile"),
+            codec,
+        )?;
+        for (other, other_description) in [
+            (ProbeCodec::Avc, AVC_DESCRIPTION),
+            (ProbeCodec::Hevc, HEVC_DESCRIPTION),
+            (ProbeCodec::Jpeg, JPEG_DESCRIPTION),
+        ] {
+            if other != codec {
+                assert!(matches!(
+                    from_sdp_with_route(&manifest, other, body(other_description)?, route.clone()),
+                    Err(ObservationError::Negotiation)
+                ));
+            }
+        }
+        let mut observer =
+            from_sdp_with_route(&manifest, codec, body(description)?, route.clone())?;
+        for packet in packets(codec)? {
+            observer.observe_rtp(0, &packet)?;
+        }
+        let receipt = observer.finish()?;
+        assert_eq!(receipt.manifest_digest, original.digest()?);
+        assert_eq!(receipt.peer, route.peer());
+        assert_eq!(receipt.authority, route.authority());
+        assert_eq!(receipt.presentation, route.presentation());
+        assert_eq!(receipt.control_root, route.control_root());
+        assert_eq!(receipt.codec, codec);
+        assert_eq!(receipt.frame_duration_ticks, TICKS);
+        assert!(receipt.clock_evidence.is_none());
+        assert!(receipt.validate_for(&original).is_err());
+        route.validate_receipt(&original, &receipt)?;
+        selected.validate_receipt(&original, &receipt)?;
+        assert!(!format!("{receipt:?}").contains("PRIVATE_ONVIF"));
+    }
+    assert_eq!(manifest, original);
+    Ok(())
 }
 
 fn probe(manifest: &SiteManifest, codec: ProbeCodec) -> Test<RtspProbeObserver<'_>> {

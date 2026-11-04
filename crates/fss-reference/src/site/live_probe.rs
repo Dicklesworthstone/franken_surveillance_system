@@ -18,7 +18,7 @@ use super::probe_observation::{
     MAX_PROBE_PICTURES, NegotiatedProbe, ObservationError, RtspProbeObserver,
 };
 use super::probe_route::ProbeRoute;
-use super::{ProbeCodec, SiteManifest, SiteProbeReceipt, SourceKind};
+use super::{ProbeCodec, SiteManifest, SiteProbeReceipt};
 use crate::rtsp::authentication::{DigestCredentials, DigestPolicy};
 use crate::rtsp::client::authenticated::DigestClientError;
 use crate::rtsp::client::{
@@ -323,7 +323,7 @@ impl<'a> LiveSiteProbe<'a> {
         Self::connect_with_route(manifest, config, route, now_ns, authority)
     }
 
-    /// Validate an exact preselected direct or UniFi route, then attempt one connection.
+    /// Validate an exact direct or protected UniFi/ONVIF route, then attempt one connection.
     /// The original complete manifest remains the receipt's identity. Route, media, scope and
     /// budgets are checked before network authority is consulted or a socket is opened.
     pub fn connect_with_route(
@@ -846,14 +846,16 @@ fn validate_config(
         .sources
         .get(config.source_index)
         .ok_or(ProbeError::Configuration)?;
-    if (source.kind == SourceKind::UnifiProtect && config.codec == ProbeCodec::Jpeg)
-        || config.binding.peer() != source.peer
-        || config.binding.authority() != source.authority
+    route
+        .validate_codec(manifest, config.codec)
+        .map_err(|_| ProbeError::Configuration)?;
+    if config.binding.peer() != route.peer()
+        || config.binding.authority() != route.authority()
         || config.binding.key().generation != source.generation
         || config.protocol.presentation_uri
-            != format!("rtsp://{}{}", source.authority, route.presentation())
+            != format!("rtsp://{}{}", route.authority(), route.presentation())
         || config.protocol.control_root_uri
-            != format!("rtsp://{}{}", source.authority, route.control_root())
+            != format!("rtsp://{}{}", route.authority(), route.control_root())
         || config.protocol.channels.0 % 2 != 0
         || config.payload_type.is_some_and(|value| {
             !(96..=127).contains(&value) && !(config.codec == ProbeCodec::Jpeg && value == 26)

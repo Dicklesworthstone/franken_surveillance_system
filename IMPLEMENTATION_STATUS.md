@@ -4,6 +4,33 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+
+## Native protected ONVIF probe route owner (2026-11-04)
+
+The native site probe can now observe an explicitly bound ONVIF handoff through
+its independent RTSP endpoint while keeping the complete original HTTP manifest
+and source ordinal. `ProbeRoute::from_onvif` binds the protected handoff digest,
+onboarding-plan/profile expectations and advertised AVC/HEVC selection. The live
+owner checks those coordinates before network authority and again when emitting
+the measured receipt. The generic manifest-only receipt validator stays strict;
+only the exact protected route admits the separate RTSP endpoint.
+
+The existing native TCP, Digest, SDP, RTP, picture-syntax and acknowledged
+TEARDOWN owners remain responsible for measurement and closure. This slice adds
+no ONVIF HTTP contact, network grant, camera-identity or scene-freshness assertion,
+clock receipt, decoded pixels or recording. Protected CLI handoff/publication is
+a separate integration increment; this core API is additive and preserves the
+existing direct and UniFi entry points.
+
+Validation: **128 focused tests passed** with the pinned compiler against the
+actual production native dependency closure: 25 live TCP loopback contracts,
+7 route contracts, 78 site unit tests and 18 recorded native probe tests. New
+cases exercise AVC/HEVC with and without Digest, untouched HTTP listeners,
+pre-connect route/codec/generation/authentication drift, media faults and
+unacknowledged TEARDOWN. No protocol or success-returning runtime stubs were used.
+This is not full Asupersync/workspace, device or release qualification; the
+previously documented full-build memory limitation remains.
+
 ## Plan explicitly selected site sources (2026-11-04)
 
 `fss site plan` now accepts repeated `--source SOURCE_ID` options. Operators can
