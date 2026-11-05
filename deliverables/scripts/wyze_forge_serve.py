@@ -440,7 +440,11 @@ def main() -> int:
                 # advertised version is bumped so the device sees a change; the served paths stay on
                 # the version we mirrored, because the bytes are the real 50039 ones.
                 model_ver = os.environ.get("MODEL_VER", "14.9.50044.r")
-                model_path_ver = "14.9.50041.r"
+                # serve the bytes from the ADVERTISED version's dir (the arm/broker
+                # mirror copies them there) — keeping this pinned to 50041 while
+                # advertising 50199 gave the camera md5s of 50041 bytes with 50199
+                # version labels, and its dl-loc fetches verified against the wrong set.
+                model_path_ver = model_ver
                 # the kvs process keeps its REAL version: 2.1.2.573 does not exist on the cloud, so
                 # bumping it only produces NoSuchKey for webrtc.tar.gz.
                 kvs_ver = os.environ.get("KVS_VER", "2.1.2.571")
@@ -474,22 +478,16 @@ def main() -> int:
                     # error shape — then serve our own dl-loc pointing at the DNS-spoofed
                     # path we serve locally; the camera verifies bytes via OUR md5 from
                     # get_processes, so the signature is irrelevant on this path.
-                    out = passthrough(self.path, body, self.headers)
-                    try:
-                        ok = json.loads(out).get("msg") == "SUCCESS" or \
-                             json.loads(out).get("code") == "1"
-                    except Exception:
-                        ok = False
-                    if not ok:
-                        # serve the ADVERTISED version (model_ver), not the camera's own
-                        # (asked_ver): the camera asks with its installed version, and
-                        # answering with that same version closed the version loop — the
-                        # camera re-downloaded identical bytes forever and never saw an
-                        # upgrade, so the entrypoint never ran (measured 2026-11-05:
-                        # 238 dl-loc calls all answered 50041 while advertising 50199).
-                        # The get_processes checksums are computed from model_path_ver
-                        # bytes, so the camera's md5 verification still passes only if
-                        # model_path_ver == model_ver; the arm script mirrors the bytes.
+                    # DELIBERATE: skip passthrough entirely. The real cloud answers
+                    # dl-loc for the camera's OWN version (50041) with real URLs — the
+                    # camera then re-installs its current version and never advances,
+                    # so the entrypoint never runs. We control the full chain (DNS +
+                    # served bytes + md5s in get_processes), so always answer with the
+                    # ADVERTISED version (model_ver) served from our spoofed S3 host.
+                    # The get_processes checksums are computed from model_path_ver
+                    # bytes; the arm script mirrors those bytes to model_ver paths so
+                    # the camera's md5 gate passes.
+                    if True:
                         asked_ver = model_ver
                         fname = req.get("filename") or "launch.sh"
                         path = f"/wyzeedgeai_cam_v4_test_protocol/{asked_ver}/{fname}"
@@ -499,7 +497,7 @@ def main() -> int:
                                      "url": "https://sinker-t-usw2.s3.us-west-2.amazonaws.com" + path,
                                      "filename": fname},
                             "traceId": os.urandom(16).hex()}).encode()
-                        print(f"  -> dl-loc FALLBACK (cloud lacks {asked_ver}) serving local path", flush=True)
+                        print(f"  -> dl-loc LOCAL (advertised {asked_ver}) serving local path", flush=True)
                     print(f"  -> dl-loc {name!r} -> {out[:220]!r}", flush=True)
                 else:
                     # The real answer lists every component with the checksum the device verifies;
