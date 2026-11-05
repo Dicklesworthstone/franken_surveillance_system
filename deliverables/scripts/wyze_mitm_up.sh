@@ -119,10 +119,18 @@ done
 
 # forged chain: leaf + intermediate + key, newline-separated (a PEM without a trailing newline
 # glues the next header on and OpenSSL answers "PEM: BAD_END_LINE")
+# Ownership: the root-run wyze-forge launchd daemon also (re)writes these /tmp files; when it
+# does they come back root-owned and the user-run redirections here fail silently, leaving
+# stale/empty certs (measured 2026-11-04: /tmp/iot2.pem 0 bytes → "PEM lib" on every spawn).
+# Always chown before writing.
 mkdir -p /tmp/ota
+sudo -n chown "$(id -u)" /tmp/ota/chain.pem /tmp/serve443.pem /tmp/iot2.pem /tmp/iot2.key 2>/dev/null
 { cat "$CERTS/emudhra/leaf.pem"; echo; cat "$CERTS/emudhra/ev-ca-aaa-cross.pem"; echo; cat "$CERTS/emudhra/leaf.key"; } > /tmp/ota/chain.pem
 cp /tmp/ota/chain.pem /tmp/serve443.pem
-{ cat "$CERTS/emudhra/leaf.pem"; echo; cat "$CERTS/emudhra/leaf.key"; } > /tmp/iot2.pem
+# /tmp/iot2.pem must be the CERT ONLY (the forge builds serve.pem = cert + intermediate and
+# hands serve.pem + iot2.key to load_cert_chain; concatenating the key here made serve.pem's
+# first block a private key → "PEM lib" / KEY_VALUES_MISMATCH).
+cat "$CERTS/emudhra/leaf.pem" > /tmp/iot2.pem
 cp "$CERTS/emudhra/leaf.key" /tmp/iot2.key
 
 # served tree: capsule + the three IoT files + the image plane
