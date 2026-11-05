@@ -24,7 +24,7 @@ use fss_core::{
     RegionState, RegionTree, RuntimeGrant, TaskId, TaskOutcome, TaskReceipt, TimestampNs,
 };
 
-use crate::authority::{AuthorityCx, AuthorityError};
+use crate::authority::{AuthorityBinding, AuthorityCx, AuthorityError};
 use crate::budget::LedgerError;
 use crate::grant::GrantError;
 use crate::obligation::ObligationTerminal;
@@ -162,6 +162,13 @@ pub struct TaskCx<'a> {
     registered_at: TimestampNs,
 }
 
+/// Unforgeable process-local identity for resources owned by one registered task.
+#[derive(Clone, Eq, PartialEq)]
+pub(crate) struct TaskBinding {
+    scope: AuthorityBinding,
+    task: TaskId,
+}
+
 impl<'a> TaskCx<'a> {
     /// Immutable authority metadata for existing request/custody interfaces.
     /// This snapshot does not replace live admission through this task context.
@@ -177,6 +184,15 @@ impl<'a> TaskCx<'a> {
     /// Canonical task identity.
     pub fn task_id(&self) -> &TaskId {
         &self.task_id
+    }
+
+    pub(crate) fn binding(&self) -> Result<TaskBinding, ExecutionError> {
+        let state = self.state()?;
+        self.check_registration(&state)?;
+        Ok(TaskBinding {
+            scope: state.authority.binding().clone(),
+            task: self.task_id.clone(),
+        })
     }
 
     fn state(&self) -> Result<RefMut<'_, ExecutionState<'a>>, ExecutionError> {
