@@ -936,9 +936,13 @@ three readbacks were `Previous`, `Requested`, `Requested`. An independent
 no-write check also reported the requested address. The result is consistent
 with a delayed change but does not distinguish that write from earlier
 unreconciled effects. The Rust listener accepted TCP, TLS and WebSocket, then
-its startup conversation timed out without a clip. Its journal contains a
-time-sync operation but no hello, agreement or stream operation; the timeout
-was not phase-tagged. The original repair setting was restored and a no-write
+its startup conversation timed out without a clip. A bounded read-only
+inspection checked the two journal objects' checksums, predecessor link and
+event linkage, and found the time-sync operation committed; no hello,
+agreement or stream operation was present. This inspection did not use an
+independently retained root pin or perform full canonical recovery. A commit
+does not prove the reply reached the camera, and the timeout was not
+phase-tagged. The original repair setting was restored and a no-write
 observation reported the original controller. The scheduled repair and
 controller restoration checks were no-ops. The recovery service failed with
 an indeterminate error; neither its reboot marker nor the trial reboot marker
@@ -946,6 +950,10 @@ was present. A separate recorder-journal classification returned unknown and
 took 15.4 seconds, exceeding the watchdog's eight-second journal timeout; this
 is a plausible explanation, not a proven cause. Fresh staging writes and
 uploads were observed independently after the original controller returned.
+A subsequent isolated trial-source change adds a payload-free phase report for
+a conversation deadline and a synthetic post-time-sync deadline case. It has
+only been syntax-parsed: remote source transfers timed out before compilation,
+so it has not been built, exercised or used against the camera.
 
 The external recording volume later disappeared from the Mac's mounted
 volumes and several uploads were deferred, with the staging files preserved.
