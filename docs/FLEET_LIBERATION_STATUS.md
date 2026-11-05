@@ -515,3 +515,25 @@ uImage data CRC over the whole container; per-block 20-byte vendor header CRC-ve
 dumps). **Kernel recovered**: uImage @0x30200 payload is a standard XZ stream — 488,624-byte
 ARM zImage at `/tmp/c460_kernel.bin`. Decoder verified bit-exact against it; the sstarXZ
 desync is narrowed to the first three literal decisions (tree-path evidence in tapo.md C3).
+
+## 22:44 — MQTT MITM LIVE (breakthrough)
+
+Root cause of the dead shadow-delta path found: camera .51 resolves its IoT broker via
+`wyze-iot.s3.us-west-2.amazonaws.com` → CNAME `s3-r-w.us-west-2.amazonaws.com` — neither in
+the caplet's spoof list, so MQTT went to the real AWS. After adding both (`5ec2586f`), .39
+landed on our :8883 MITM (live TLS session via bettercap + proxy).
+
+The injector now fires the full action set (cmd/upgrade/start) with the capsule URL
+`s3-us-west-2.amazonaws.com/wuv2/upgrade/HL_CAM4/firmware/4.52.17.32.tar` (md5 `ef2d38…`,
+verified served byte-identical by the forge), and REWRITE=1 rewrites the cloud's own deltas
+(v1384378+) in flight. Camera PUBACKs everything.
+
+Backup receiver port mismatch fixed (`7c2178be`): the capsule's upgraderun.sh streams
+partition backups to 444..449 (PORT+1+slot); the receiver listened on 8447+. Now aligned,
+listening, and the payload chain is verified end-to-end: capsule tar → busybox exec bit ✓,
+img.bin 16 MiB @ SHA `033eb3…` = capsule pin ✓, U-Boot 2026.10-rc4 isvp-t4 @0x14000 +
+squashfs @0x200000 (dropbear SSH inside; root:root).
+
+Watchdog running (`/tmp/liberation_watch.sh` → `/tmp/liberation_watch.log`): alerts on new
+beacons (entrypoint execution) and backup arrivals (installer step 2). The camera's assis
+acts on its own poll cadence — every link is now armed and verified except that timing.
