@@ -36,6 +36,26 @@ actually run on a qualification branch and its output is attached here.
 
 ## Next concrete step
 
+On 2026-11-05, the upstream `rustls-rustcrypto` README at Git revision
+[`70f76c039e587192688af18a80d5d6435dedaf22`](https://github.com/RustCrypto/rustls-rustcrypto/blob/70f76c039e587192688af18a80d5d6435dedaf22/README.md)
+explicitly advised against production use and described its TLS implementation
+as incomplete. This is an upstream development-head observation, not the
+admission of a particular crate release or a completed security assessment.
+Before qualifying a camera-facing provider, reconcile that upstream position
+with the required operating environment and review the exact pinned release,
+feature closure, supported camera handshake, and the project's pure-Rust policy.
+This observation does not change the existing provider decision by itself.
+At that same upstream revision, [`src/lib.rs`](https://github.com/RustCrypto/rustls-rustcrypto/blob/70f76c039e587192688af18a80d5d6435dedaf22/src/lib.rs)
+uses `getrandom::SysRng` in its provider randomness hook; its
+[`src/kx.rs`](https://github.com/RustCrypto/rustls-rustcrypto/blob/70f76c039e587192688af18a80d5d6435dedaf22/src/kx.rs)
+also invokes `SysRng` directly during key exchange, as does its randomized
+signer in [`src/sign.rs`](https://github.com/RustCrypto/rustls-rustcrypto/blob/70f76c039e587192688af18a80d5d6435dedaf22/src/sign.rs).
+Thus replacing only the provider's `secure_random` hook would not by itself
+demonstrate compliance with the explicit entropy-authority requirement. These
+are source observations about that development revision, not a resolved crate
+version, runtime trace, or proof about every cryptographic path. An exact
+candidate closure and its complete entropy paths still require review.
+
 Whoever picks up VIT-016 should start by running the `PENDING` command above on a qualification
 branch, attaching its output to this record, and only then writing the boundary crate against a
 real, pinned closure. This record's job was to make every required field explicit and to make clear
