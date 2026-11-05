@@ -17,6 +17,8 @@ pub mod h265_access_unit;
 pub mod hevc;
 /// Bounded RFC 2435 RTP/JPEG reconstruction with complete source-to-derived byte maps.
 pub mod jpeg;
+/// Bounded basic-mode SNTPv4 packet evidence with conservative offset intervals.
+pub mod ntp;
 /// Bounded uncompressed ONVIF metadata documents over owner-scoped RTP.
 pub mod onvif_metadata;
 /// Bounded, untrusted Ubiquiti discovery datagram parsing.
