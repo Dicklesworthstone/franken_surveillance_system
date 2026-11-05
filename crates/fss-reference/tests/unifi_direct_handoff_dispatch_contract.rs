@@ -18,7 +18,7 @@ use fss_reference::unifi_direct::{
         HandoffWrite, Phase, Session, WriteOutcome,
     },
     camera_http,
-    handoff::{Plan, Preconditions},
+    handoff::{Framing, Plan, Preconditions},
     metered::{MeteredClock, MeteredIo},
 };
 use fss_runtime::{
@@ -104,6 +104,9 @@ struct Harness {
     permit: CommittedEffect,
 }
 fn harness(suffix: &str) -> Result<Harness, Box<dyn Error>> {
+    harness_with_framing(suffix, Framing::ContentLength)
+}
+fn harness_with_framing(suffix: &str, framing: Framing) -> Result<Harness, Box<dyn Error>> {
     let path = std::fs::canonicalize(std::env::temp_dir())?.join(format!(
         "fss-unifi-handoff-dispatch-{}-{suffix}",
         std::process::id()
@@ -173,7 +176,7 @@ fn harness(suffix: &str) -> Result<Harness, Box<dyn Error>> {
         lease_fence: fence,
         settings,
     };
-    let plan = Plan::new(peer, Ipv4Addr::new(192, 168, 1, 40), conditions)?;
+    let plan = Plan::new_with_framing(peer, Ipv4Addr::new(192, 168, 1, 40), conditions, framing)?;
     let op = OperationId::parse("operation:handoff-dispatch")?;
     let prepared = effects.prepare(
         &authority,
@@ -218,6 +221,13 @@ fn harness(suffix: &str) -> Result<Harness, Box<dyn Error>> {
 
 #[test]
 fn denied_stale_then_written_requires_fresh_readback() -> Test {
+    exercise_framing(Framing::ContentLength)
+}
+#[test]
+fn chunked_write_is_bound_to_its_own_permit_and_has_exact_wire_framing() -> Test {
+    exercise_framing(Framing::Chunked)
+}
+fn exercise_framing(framing: Framing) -> Test {
     let Harness {
         _temp,
         mut authority,
@@ -227,7 +237,14 @@ fn denied_stale_then_written_requires_fresh_readback() -> Test {
         plan,
         conditions,
         permit,
-    } = harness("written")?;
+    } = harness_with_framing(
+        if framing == Framing::Chunked {
+            "chunked"
+        } else {
+            "written"
+        },
+        framing,
+    )?;
     let runtime = RuntimeBuilder::current_thread().build()?;
     runtime.block_on(async {
         let cx = asupersync::Cx::current().ok_or("missing runtime")?;
@@ -270,6 +287,30 @@ fn denied_stale_then_written_requires_fresh_readback() -> Test {
                         )
                         .await
                         .expect_err("different plan must deny");
+                    assert_eq!(refusal.reason, HandoffError::PermitMismatch);
+                    assert!(bytes.borrow().is_empty());
+                    let wrong_framing = Plan::new_with_framing(
+                        Ipv4Addr::new(192, 168, 1, 30),
+                        Ipv4Addr::new(192, 168, 1, 40),
+                        conditions,
+                        if framing == Framing::Chunked {
+                            Framing::ContentLength
+                        } else {
+                            Framing::Chunked
+                        },
+                    )?;
+                    let refusal = session
+                        .dispatch_handoff(
+                            cx,
+                            &mut io,
+                            &wrong_framing,
+                            conditions,
+                            refusal.permit,
+                            &Guard(true),
+                            Duration::from_secs(1),
+                        )
+                        .await
+                        .expect_err("permit must bind framing");
                     assert_eq!(refusal.reason, HandoffError::PermitMismatch);
                     assert!(bytes.borrow().is_empty());
                     let refusal = session
@@ -323,7 +364,27 @@ fn denied_stale_then_written_requires_fresh_readback() -> Test {
                     assert!(!permit.try_claim_dispatch());
                     let wire = bytes.borrow();
                     assert!(wire.starts_with(b"PUT /api/1.1/settings HTTP/1.1\r\n"));
-                    assert!(wire.ends_with(br#"{"controller":{"addr":"192.168.1.40"}}"#));
+                    let body = br#"{"controller":{"addr":"192.168.1.40"}}"#;
+                    let wire_text = std::str::from_utf8(&wire)?;
+                    match framing {
+                        Framing::ContentLength => {
+                            assert!(
+                                wire_text
+                                    .contains(&format!("\r\nContent-Length: {}\r\n", body.len()))
+                            );
+                            assert!(!wire_text.contains("Transfer-Encoding:"));
+                            assert!(wire.ends_with(body));
+                        }
+                        Framing::Chunked => {
+                            assert!(wire_text.contains("\r\nTransfer-Encoding: chunked\r\n"));
+                            assert!(!wire_text.contains("Content-Length:"));
+                            assert!(wire_text.ends_with(&format!(
+                                "\r\n\r\n{:x}\r\n{}\r\n0\r\n\r\n",
+                                body.len(),
+                                std::str::from_utf8(body)?
+                            )));
+                        }
+                    }
                     drop(wire);
                     assert_eq!(session.phase(), Phase::AwaitHandoff);
                     let observed = session.accept_handoff_response_observed(Response::new(

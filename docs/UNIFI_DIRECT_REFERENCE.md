@@ -871,8 +871,32 @@ seconds without another setting write. The setup owner also retains that
 response shape if a later readback is interrupted, alongside the unresolved
 effect permit. Nine independent synthetic HTTPS cases passed, including delayed
 and reversed camera claims, and nine handoff-dispatch contracts passed,
-including interrupted readback. This new timeline has not yet been run against
-the physical camera.
+including interrupted readback. These fixture cases used synthetic peers.
+In a later owner-authorized physical trial, the camera returned HTTP 200 with
+an empty response body, then reported the previous controller in all three
+readbacks across the diagnostic window. The native listener received no
+connection before its deadline. The effect remains unresolved: the result
+does not distinguish an unapplied setting from an immediate competing write.
+The camera's local status subsequently reported controller port 7442, whereas
+the preceding trials listened on 7443. A protected test on port 7442 reached
+TLS and WebSocket, but retired with an unexpected EOF before hello; the three
+handoff readbacks still reported the previous controller. In another test,
+the existing controller's repair address was temporarily held empty under an
+independent restoration timer. Before a new setting was written, the camera
+reported the temporary controller address, and its connection reached TLS and
+WebSocket, but the native conversation timed out before hello. The existing
+repair address was restored. This is consistent with a competing repair or a
+delayed earlier write, but does not establish which changed the camera's claim.
+Neither physical test produced a native clip. The independently scheduled
+repair-address and controller restoration checks were no-ops after manual
+restoration; the recovery watchdog abstained, and fresh recorder segments were
+verified and uploaded afterward.
+In a subsequent protected attempt with re-pairing held, one controller-address
+write returned an empty HTTP 200 but all three immediate readbacks still showed
+the previous address. A separate no-write check did not confirm the intended
+address, so the planned camera reboot was skipped and the existing repair
+address restored. This further limits the evidence for a successful handoff;
+it does not establish whether the camera would apply that request later.
 
 The transitional recorder separately showed several stream exits at roughly
 four-minute intervals and another after about 100 seconds, followed by
@@ -906,6 +930,31 @@ was 18,937 ms; adjacent candidate timestamps advanced by 33–34 ms. This health
 window does not cover the failure and uses heuristic tag boundaries, so it
 does not prove decoded frames or rule out an intermittent clock jump or host
 stall. The capture was processed in memory and only aggregate timing was kept.
+A longer observation ending at a server close reported an apparent 7,392 ms
+arrival-versus-camera timestamp difference, but its observer reset reassembly
+on 26 TCP sequence gaps. The figure is therefore inconclusive: those gaps may
+represent reordering, retransmission or incomplete capture rather than camera
+clock behavior. Zero kernel capture drops does not resolve that ambiguity.
+After adding bounded out-of-order TCP reassembly and synthetic reordering,
+duplicate and wraparound checks, a subsequent server-close observation found
+no captured camera TCP payload for 8,725 ms before the close. In the preceding
+sample, 900 heuristic video-tag candidates covered 29,967 ms of camera time
+and 29,916 ms of prefix-completion time; 59 out-of-order segments were
+reassembled, one duplicate was discarded, and no gaps or kernel drops remained
+at close. This single observation points to an upstream or network interruption
+for that event; it neither proves where packets stopped nor explains the earlier
+close that had camera payload immediately beforehand. No decoded-picture or
+continuous-coverage claim follows from the tag candidates.
+After another recorder exit, the camera's HTTPS connection timed out and the
+recorder host's neighbor entry reported failure. One of two immediate ICMP
+probes then returned, and subsequent ten-probe windows from each of two hosts
+received all responses. A later 40-probe window from each host also received
+all responses. The recorder reported the camera offline once and
+then started again. A later camera status response reported Wi-Fi channel 36,
+frequency 5,180 MHz, signal −58 dBm and noise −89 dBm. These are untrusted
+point-in-time camera claims; they establish neither stability nor the cause
+of the interruption. The observed reachability symptom does not by itself
+distinguish Wi-Fi, power, camera or network-device causes.
 Another protected trial temporarily stopped the dedicated single-camera
 controller to examine that interaction. The native listener received no
 camera connection within its window, and the handoff readback did not confirm

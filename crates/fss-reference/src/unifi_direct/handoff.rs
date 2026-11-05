@@ -14,6 +14,15 @@ use std::{fmt, net::Ipv4Addr};
 /// Effect class used for controller-association changes.
 pub const EFFECT_CLASS: &str = "EFFECT-CAMERA-MANAGEMENT-001";
 
+/// HTTP body framing bound to the prepared management effect.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Framing {
+    /// Send a fixed content length, preserving the original request identity.
+    ContentLength,
+    /// Send one HTTP/1.1 chunk followed by the terminating chunk.
+    Chunked,
+}
+
 /// Caller-supplied preconditions; their authenticity and freshness are external.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Preconditions {
@@ -80,6 +89,7 @@ pub struct Plan {
     request: ContentDigest,
     preconditions: ContentDigest,
     reverse_preview: ContentDigest,
+    framing: Framing,
 }
 impl fmt::Debug for Plan {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -98,6 +108,15 @@ impl Plan {
         destination: Ipv4Addr,
         current: Preconditions,
     ) -> Result<Self, Error> {
+        Self::new_with_framing(peer, destination, current, Framing::ContentLength)
+    }
+    /// Prepare a request using explicitly selected, digest-bound HTTP framing.
+    pub fn new_with_framing(
+        peer: Ipv4Addr,
+        destination: Ipv4Addr,
+        current: Preconditions,
+        framing: Framing,
+    ) -> Result<Self, Error> {
         let prior = match current.settings.controller {
             ControllerAddress::Reported(ip) => ip,
             _ => return Err(Error::PriorUnknown),
@@ -106,8 +125,8 @@ impl Plan {
             return Err(Error::Destination);
         }
         let preconditions = preconditions_digest(peer, current)?;
-        let request = request_digest(peer, current.session_generation, destination)?;
-        let reverse_preview = request_digest(peer, current.session_generation, prior)?;
+        let request = request_digest(peer, current.session_generation, destination, framing)?;
+        let reverse_preview = request_digest(peer, current.session_generation, prior, framing)?;
         Ok(Self {
             peer,
             generation: current.session_generation,
@@ -118,6 +137,7 @@ impl Plan {
             request,
             preconditions,
             reverse_preview,
+            framing,
         })
     }
     /// Exact semantic request digest for management-effect preparation.
@@ -173,9 +193,14 @@ impl Plan {
     pub(super) fn matches_session(&self, peer: Ipv4Addr, generation: u64) -> bool {
         self.peer == peer && self.generation == generation
     }
+    pub(super) fn framing(&self) -> Framing {
+        self.framing
+    }
     pub(super) fn body(&self) -> Result<String, Error> {
         let body = body(self.destination);
-        if request_digest(self.peer, self.generation, self.destination)? != self.request {
+        if request_digest(self.peer, self.generation, self.destination, self.framing)?
+            != self.request
+        {
             return Err(Error::Stale);
         }
         Ok(body)
@@ -236,10 +261,17 @@ fn request_digest(
     peer: Ipv4Addr,
     generation: u64,
     address: Ipv4Addr,
+    framing: Framing,
 ) -> Result<ContentDigest, Error> {
     let body = body(address);
     let mut e = CanonicalEncoder::new();
-    e.text("fss.unifi-direct.controller-handoff-request.v1");
+    match framing {
+        Framing::ContentLength => e.text("fss.unifi-direct.controller-handoff-request.v1"),
+        Framing::Chunked => {
+            e.text("fss.unifi-direct.controller-handoff-request.v2");
+            e.text("transfer-encoding:chunked");
+        }
+    }
     e.text("PUT");
     e.text("/api/1.1/settings");
     e.text(&peer.to_string());

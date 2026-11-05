@@ -612,15 +612,28 @@ impl Session {
         let Ok(body) = plan.body() else {
             refuse!(HandoffError::Stale);
         };
+        let framing_header = match plan.framing() {
+            handoff::Framing::ContentLength => format!("Content-Length: {}\r\n", body.len()),
+            handoff::Framing::Chunked => "Transfer-Encoding: chunked\r\n".to_owned(),
+        };
         let head = format!(
-            "PUT /api/1.1/settings HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nAccept: application/json\r\nAccept-Encoding: identity\r\nConnection: keep-alive\r\nCookie: ",
-            self.peer,
-            body.len()
+            "PUT /api/1.1/settings HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\n{}Accept: application/json\r\nAccept-Encoding: identity\r\nConnection: keep-alive\r\nCookie: ",
+            self.peer, framing_header
         );
+        let prefix = match plan.framing() {
+            handoff::Framing::ContentLength => String::new(),
+            handoff::Framing::Chunked => format!("{:x}\r\n", body.len()),
+        };
+        let suffix: &[u8] = match plan.framing() {
+            handoff::Framing::ContentLength => b"",
+            handoff::Framing::Chunked => b"\r\n0\r\n\r\n",
+        };
         let mut bytes = Private(Vec::new());
         if bytes
             .0
-            .try_reserve_exact(head.len() + cookie.0.len() + 4 + body.len())
+            .try_reserve_exact(
+                head.len() + cookie.0.len() + 4 + prefix.len() + body.len() + suffix.len(),
+            )
             .is_err()
         {
             refuse!(HandoffError::Allocation);
@@ -628,7 +641,9 @@ impl Session {
         bytes.0.extend_from_slice(head.as_bytes());
         bytes.0.extend_from_slice(&cookie.0);
         bytes.0.extend_from_slice(b"\r\n\r\n");
+        bytes.0.extend_from_slice(prefix.as_bytes());
         bytes.0.extend_from_slice(body.as_bytes());
+        bytes.0.extend_from_slice(suffix);
         if !permit.try_claim_dispatch() {
             refuse!(HandoffError::PermitUsed);
         }
