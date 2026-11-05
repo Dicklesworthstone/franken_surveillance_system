@@ -51,7 +51,7 @@ exclude_patterns = [
     "**/*.[gG][gG][uU][fF]",
     "**/*.[oO][nN][nN][xX]",
     "**/*.[gG][gG][mM][lL]",
-    "coverage/",
+    "/coverage/", # only top-level reports; nested coverage/ contains Rust source
     ".nyc_output/",
     "perf.data",
     "perf.data.old",

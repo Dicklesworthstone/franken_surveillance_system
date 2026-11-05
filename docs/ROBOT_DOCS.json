@@ -5,7 +5,7 @@
       "capability": "request cancellation/drain/reconciliation of owned work",
       "defaultRole": "owner or delegated supervisor",
       "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-AGENT-CANCEL-001 authority on session/task/plan/obligation",
-      "generation": "gen:fss1:capabilities-v2",
+      "generation": "gen:fss1:capabilities-v4",
       "id": "CAP-AGENT-CANCEL-001",
       "plane": "lifecycle effect",
       "safeAlternative": "request task owner or supervisor to initiate drain/cancel transition",
@@ -15,7 +15,7 @@
       "capability": "create/revise investigations, hypotheses, probes, and findings",
       "defaultRole": "explicit mission role",
       "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-AGENT-CASE-WRITE-001 authority on mission/case scope",
-      "generation": "gen:fss1:capabilities-v2",
+      "generation": "gen:fss1:capabilities-v4",
       "id": "CAP-AGENT-CASE-WRITE-001",
       "plane": "agent cognition",
       "safeAlternative": "request mission investigation role or record local hypotheses",
@@ -25,7 +25,7 @@
       "capability": "read minimal evidence/decision subgraphs and counterfactuals",
       "defaultRole": "agent read role",
       "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-AGENT-EXPLAIN-001 authority on authorized decision/evidence domain",
-      "generation": "gen:fss1:capabilities-v2",
+      "generation": "gen:fss1:capabilities-v4",
       "id": "CAP-AGENT-EXPLAIN-001",
       "plane": "cognition read",
       "safeAlternative": "request explanation access role or query top-level outcome summary",
@@ -35,7 +35,7 @@
       "capability": "append correction, adjudication, outcome, or learning proposal",
       "defaultRole": "scoped agent/operator role",
       "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-AGENT-FEEDBACK-001 authority on episode/event/case",
-      "generation": "gen:fss1:capabilities-v2",
+      "generation": "gen:fss1:capabilities-v4",
       "id": "CAP-AGENT-FEEDBACK-001",
       "plane": "advisory write",
       "safeAlternative": "request feedback role or submit offline evaluation report",
@@ -45,7 +45,7 @@
       "capability": "publish a redacted root-last handoff capsule",
       "defaultRole": "explicit delegation",
       "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-AGENT-HANDOFF-WRITE-001 authority on mission/workspace + recipient scope",
-      "generation": "gen:fss1:capabilities-v2",
+      "generation": "gen:fss1:capabilities-v4",
       "id": "CAP-AGENT-HANDOFF-WRITE-001",
       "plane": "agent continuity write",
       "safeAlternative": "request handoff delegation authorization or retain session locally",
@@ -55,7 +55,7 @@
       "capability": "submit an exact prepared plan to domain effect authorities",
       "defaultRole": "denied unless explicit; never substitutes for domain effect capabilities",
       "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-AGENT-PLAN-COMMIT-001 authority on plan digest + fences",
-      "generation": "gen:fss1:capabilities-v2",
+      "generation": "gen:fss1:capabilities-v4",
       "id": "CAP-AGENT-PLAN-COMMIT-001",
       "plane": "effect orchestration",
       "safeAlternative": "submit prepared plan to human supervisor for manual approval and domain dispatch",
@@ -65,7 +65,7 @@
       "capability": "compile and seal a witnessed contingent plan",
       "defaultRole": "explicit planner role",
       "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-AGENT-PLAN-PREPARE-001 authority on mission + objective + target domain",
-      "generation": "gen:fss1:capabilities-v2",
+      "generation": "gen:fss1:capabilities-v4",
       "id": "CAP-AGENT-PLAN-PREPARE-001",
       "plane": "cognition/prepare",
       "safeAlternative": "request planner role or inspect established affordance frontier",
@@ -75,7 +75,7 @@
       "capability": "compile and execute bounded semantic queries",
       "defaultRole": "agent read role",
       "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-AGENT-QUERY-001 authority on authorized resources + anchor",
-      "generation": "gen:fss1:capabilities-v2",
+      "generation": "gen:fss1:capabilities-v4",
       "id": "CAP-AGENT-QUERY-001",
       "plane": "cognition read",
       "safeAlternative": "request agent query role or query standard pre-aggregated views",
@@ -85,7 +85,7 @@
       "capability": "open a mission-scoped agent session",
       "defaultRole": "denied unless negotiated",
       "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-AGENT-SESSION-OPEN-001 authority on deployment + mission + principal",
-      "generation": "gen:fss1:capabilities-v2",
+      "generation": "gen:fss1:capabilities-v4",
       "id": "CAP-AGENT-SESSION-OPEN-001",
       "plane": "agent control",
       "safeAlternative": "authenticate principal credentials and negotiate session contract basis",
@@ -95,7 +95,7 @@
       "capability": "read/resume exact workspace or handoff revisions",
       "defaultRole": "session principal",
       "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-AGENT-SESSION-READ-001 authority on mission/session/workspace root",
-      "generation": "gen:fss1:capabilities-v2",
+      "generation": "gen:fss1:capabilities-v4",
       "id": "CAP-AGENT-SESSION-READ-001",
       "plane": "agent control",
       "safeAlternative": "authenticate as session principal or request delegated continuation",
@@ -105,7 +105,7 @@
       "capability": "read capability-projected SituationFrames, deltas, and obligations",
       "defaultRole": "agent read role",
       "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-AGENT-SITUATION-READ-001 authority on deployment/mission/zone/time",
-      "generation": "gen:fss1:capabilities-v2",
+      "generation": "gen:fss1:capabilities-v4",
       "id": "CAP-AGENT-SITUATION-READ-001",
       "plane": "cognition read",
       "safeAlternative": "request agent read role or query minimal public SituationCapsule",
@@ -115,7 +115,7 @@
       "capability": "generate sealed repair plan",
       "defaultRole": "operator",
       "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-REPAIR-PREPARE-001 authority on subsystem/object scope",
-      "generation": "gen:fss1:capabilities-v2",
+      "generation": "gen:fss1:capabilities-v4",
       "id": "CAP-REPAIR-PREPARE-001",
       "plane": "authority read",
       "safeAlternative": "request operator repair inspection role or run read-only diagnostics",
@@ -612,6 +612,41 @@
       "id": "ERR-CAPTURE-SENTINEL-SOURCE-001"
     },
     {
+      "description": "Protect file identity, selected view/quality, transport or complete native capture plan no longer matches its outer approval",
+      "guidance": "Review a fresh complete plan; never reuse a stale approval after file replacement or selection changes.",
+      "id": "ERR-CAPTURE-UNIFI-APPROVAL-001"
+    },
+    {
+      "description": "Package view was requested without an explicit true hasPackageCamera capability",
+      "guidance": "Refresh the camera export or explicitly select a supported main view; a package URI cannot invent package-camera capability.",
+      "id": "ERR-CAPTURE-UNIFI-PACKAGE-001"
+    },
+    {
+      "description": "Selected URL port or literal IP differs from the owner-approved peer",
+      "guidance": "Correct the explicit peer and preview again; no DNS lookup or alternate-route fallback occurs.",
+      "id": "ERR-CAPTURE-UNIFI-ROUTE-001"
+    },
+    {
+      "description": "Private Protect camera/stream handoff is malformed, outside bounds, not owner-only, changed, or inconsistent with the approved native capture plan",
+      "guidance": "Repair the exact private input and preview again; no alternate camera, quality or route is selected.",
+      "id": "ERR-CAPTURE-UNIFI-SOURCE-001"
+    },
+    {
+      "description": "Selected quality is explicitly null and supplies no enabled stream URL",
+      "guidance": "Enable the intended stream through the owner's Protect interface and refresh the export; capture changes no camera settings.",
+      "id": "ERR-CAPTURE-UNIFI-STREAM-DISABLED-001"
+    },
+    {
+      "description": "Selected quality is absent from the chosen stream map; availability is unknown",
+      "guidance": "Refresh the complete export or explicitly select an available quality; missing is never inferred disabled or silently substituted.",
+      "id": "ERR-CAPTURE-UNIFI-STREAM-MISSING-001"
+    },
+    {
+      "description": "Selected Protect URL requires secure transport, or the explicit operator RTSP map is absent or contains a secure URL",
+      "guidance": "Supply an independently verified plaintext endpoint with explicit operator-rtsp selection and plaintext authorization, or use a qualified secure transport; never rewrite the published URL automatically.",
+      "id": "ERR-CAPTURE-UNIFI-TRANSPORT-001"
+    },
+    {
       "description": "promoted proof or bounded_model claim declares no assumptions, or an assumption lacks a non-empty id and statement",
       "guidance": "declare every named assumption before promotion; no retry without them",
       "id": "ERR-CLAIM-ASSUMPTIONS-MISSING-001"
@@ -910,6 +945,11 @@
       "description": "option flag is unrecognized for binary or active command",
       "guidance": "do not retry without valid option flag",
       "id": "ERR-CLI-UNKNOWN-OPTION-001"
+    },
+    {
+      "description": "Cooperative cancellation interrupted the selected clock-validation profile during native fitting or bounded report construction; outcome is cancelled and no successful report is emitted",
+      "guidance": "Retry only as a new bounded invocation with the intended complete input; no partial validation or clock activation can be inferred.",
+      "id": "ERR-CLOCK-ALIGNMENT-CANCELLED-001"
     },
     {
       "description": "comparison or association between incompatible clock bases",
@@ -1352,6 +1392,26 @@
       "id": "ERR-FROZEN-UNREGISTERED-OP-001"
     },
     {
+      "description": "Checkpoint bytes disagree with the independently supplied SHA-256 or embedded checksum",
+      "guidance": "Obtain the exact originally pinned bytes; recomputing a pin from unknown input is not recovery.",
+      "id": "ERR-FUSION-CHECKPOINT-DIGEST-001"
+    },
+    {
+      "description": "Source-once checkpoint is truncated, noncanonical, duplicated, has trailing data or inconsistent numerical/source state",
+      "guidance": "Repair from the exact retained checkpoint; no partial restoration or history certification is returned.",
+      "id": "ERR-FUSION-CHECKPOINT-INVALID-001"
+    },
+    {
+      "description": "Complete source-once checkpoint bytes, source/domain inventory or reset text exceed the frozen allowance",
+      "guidance": "Retain the existing owner/checkpoint; do not truncate, evict sources or silently initialize a new process.",
+      "id": "ERR-FUSION-CHECKPOINT-LIMIT-001"
+    },
+    {
+      "description": "Source-once checkpoint declares an unsupported version",
+      "guidance": "Use its producing compatible reader; there is no implicit downgrade or migration.",
+      "id": "ERR-FUSION-CHECKPOINT-VERSION-001"
+    },
+    {
       "description": "an fss-fusion query is outside its contract (empty, oversized or control-character identity, duplicate observation/opportunity/probe, an item without failure domains, an inverted or out-of-bound log-likelihood interval or window, zero looks, too many items); nothing was fused",
       "guidance": "correct the query; inputs are refused, never repaired; do not retry unchanged",
       "id": "ERR-FUSION-INPUT-INVALID-001"
@@ -1367,9 +1427,29 @@
       "id": "ERR-FUSION-POLICY-INVALID-001"
     },
     {
+      "description": "The explicit source-once profile did not receive exactly one binding for every original evidence identity, or an observed calibrated item lacks a source key",
+      "guidance": "Correct the complete binding inventory; no accumulator, source inventory or receipt state changed.",
+      "id": "ERR-FUSION-SOURCE-BINDING-INVALID-001"
+    },
+    {
+      "description": "The complete new numeric-source inventory would exceed the selected nonrefillable lifetime allowance",
+      "guidance": "Select a sufficient complete allowance for a new explicit invocation; no prefix was consumed, identity evicted or capacity refunded.",
+      "id": "ERR-FUSION-SOURCE-CAPACITY-001"
+    },
+    {
+      "description": "A canonical declared source key was reused with incompatible immutable item semantics, including conflicting aliases within the same query",
+      "guidance": "Inspect original source and interpretation; a relabel, retry or reset cannot reinterpret consumed evidence. The whole step was refused.",
+      "id": "ERR-FUSION-SOURCE-CONFLICT-001"
+    },
+    {
       "description": "a declared graph budget (operations or output entries) ran out before the exact answer was complete; no partial answer or witness was produced",
       "guidance": "raise the budget within the registered bound or narrow the projection",
       "id": "ERR-GRAPH-BUDGET-EXHAUSTED-001"
+    },
+    {
+      "description": "a caller cancellation probe interrupted a graph run or its nested certified solver before completion; no answer, partial optimum or witness was produced",
+      "guidance": "retry only with a valid new cancellation/deadline allowance; retain the same source and declared input pins when replaying",
+      "id": "ERR-GRAPH-CANCELLED-001"
     },
     {
       "description": "an observed graph operation counter exceeded the registered complexity or output bound for the input size, at run time or when a witness is re-checked; no answer is trusted",
@@ -1457,6 +1537,51 @@
       "id": "ERR-HOLD-STORAGE-001"
     },
     {
+      "description": "Exact outer capture/model approval, current native capability or cancellation admission refused the composed operation",
+      "guidance": "Review the complete outer plan and restore current authority. Neither nested approval grants the combined operation; preserve any original or retained progress.",
+      "id": "ERR-HTTP-CAPTURE-SENTINEL-AUTHORITY-001"
+    },
+    {
+      "description": "The analysis deadline expired at a cooperative phase or I/O boundary, including time spent in capture",
+      "guidance": "Use the exact saved offline continuation after checking custody. Capture has its separately approved deadline; no native call is forcibly preempted and no allowance is silently renewed.",
+      "id": "ERR-HTTP-CAPTURE-SENTINEL-DEADLINE-001"
+    },
+    {
+      "description": "Bounded model/preflight/history/import work, archive I/O, arithmetic or complete parent output exceeded its ceiling",
+      "guidance": "Review explicit bounds for an offline continuation; do not truncate a report, refill per generation or reacquire a camera automatically.",
+      "id": "ERR-HTTP-CAPTURE-SENTINEL-LIMIT-001"
+    },
+    {
+      "description": "The archive already exists, parents/model are unavailable, or canonical archive/deployment/package paths overlap or violate admitted file types",
+      "guidance": "Select separate resources with existing parents and a regular pinned model. Preserve an existing archive and continue from exact offline pins rather than live recapture.",
+      "id": "ERR-HTTP-CAPTURE-SENTINEL-PATH-001"
+    },
+    {
+      "description": "Capture request was not satisfied, the typed receipt lacks its required settled history or exact single-generation requested-count prefix, or cold source/import identities disagree",
+      "guidance": "Preserve native source and history/recovery pins. Unsatisfied capture cannot trigger automatic perception or camera retry. Failed-but-ended custody can be analyzed only by a separately approved offline request.",
+      "id": "ERR-HTTP-CAPTURE-SENTINEL-SOURCE-001"
+    },
+    {
+      "description": "Exact owner approval, current source/import/model/retention authority, cancellation or cooperative deadline refused processing",
+      "guidance": "Inspect durable imports and retained analyses, restore current authority and retry the exact intended plan; a refusal does not erase earlier progress.",
+      "id": "ERR-HTTP-HISTORY-SENTINEL-AUTHORITY-001"
+    },
+    {
+      "description": "Whole-history source/decode/model/report admission, resident output reservation, checked arithmetic or complete output exceeded its ceiling",
+      "guidance": "Select a smaller exact history or explicitly review new bounds; resources never refill per connection and no connection/report is silently truncated.",
+      "id": "ERR-HTTP-HISTORY-SENTINEL-LIMIT-001"
+    },
+    {
+      "description": "The explicitly selected local native model could not be read as bounded ordinary verified custody",
+      "guidance": "Supply the intended readable local archive and independent digest outside both stores; no download or inferred replacement is attempted.",
+      "id": "ERR-HTTP-HISTORY-SENTINEL-PACKAGE-001"
+    },
+    {
+      "description": "Exact history/model/backend, ordered source/camera/capture bindings, sampling, paths or resource configuration is invalid",
+      "guidance": "Review the complete pure preview and correct the declared plan; no implicit latest history, model or capture timing is selected.",
+      "id": "ERR-HTTP-HISTORY-SENTINEL-REQUEST-001"
+    },
+    {
       "description": "current original-read or destination-retention permission, cancellation, cooperative timeout or exact CLI approval refused history processing",
       "guidance": "inspect already retained imports; restore explicit authority before retrying the same plan, or review a new approval for changed bounds",
       "id": "ERR-HTTP-HISTORY-WATCH-AUTHORITY-001"
@@ -1495,6 +1620,26 @@
       "description": "pinned original HTTP chain, native framing, source mapping or source-read work allowance was refused",
       "guidance": "repair or select verified source custody; never substitute reconstructed bytes for damaged originals",
       "id": "ERR-HTTP-IMPORT-SOURCE-001"
+    },
+    {
+      "description": "Current original-read/import/model/retention authority or cancellation admission refused the selected prefix operation",
+      "guidance": "Restore current explicit authority and inspect durable originals/imports. An old capture or retained model grants no current operation or reacquisition permission.",
+      "id": "ERR-HTTP-PREFIX-SENTINEL-AUTHORITY-001"
+    },
+    {
+      "description": "The single prefix computation exceeded its shared native work/output or checked allocation ceiling",
+      "guidance": "Choose a supported first-N schedule or review explicit resource bounds. No budget refills per burst and no partial success report.",
+      "id": "ERR-HTTP-PREFIX-SENTINEL-LIMIT-001"
+    },
+    {
+      "description": "The typed durable-import observer declined progress before native model work",
+      "guidance": "Preserve the exact retained import and source pin. Perform a separately admitted cold continuation; model execution did not begin through this observer refusal.",
+      "id": "ERR-HTTP-PREFIX-SENTINEL-PROGRESS-001"
+    },
+    {
+      "description": "Exact native original prefix, acknowledged first-N range, package/backend/threshold, native schedule or current source/privacy identity is inconsistent",
+      "guidance": "Review the explicit bounded selection and current custody. Read-ahead remains retained but outside the selected range; never infer EOF or replace originals.",
+      "id": "ERR-HTTP-PREFIX-SENTINEL-REQUEST-001"
     },
     {
       "description": "H2 decision artifact privacy class is not `private:property`, the only privacy class fss-core uses; raw or unredacted media included (code `invalid_privacy_class`)",
@@ -2082,6 +2227,31 @@
       "id": "ERR-PACKAGE-EVENT-UNAVAILABLE-001"
     },
     {
+      "description": "retained handoff source reconstruction or revalidation observed owner cancellation; no complete result is released",
+      "guidance": "rerun with current authority and sufficient time; no partial report is a valid result",
+      "id": "ERR-PACKAGE-HANDOFF-CANCELLED-001"
+    },
+    {
+      "description": "retained handoff source facts, original clock pins, frame joins or native assignments disagree with their exact retained bindings",
+      "guidance": "investigate the named custody or binding mismatch; reads never repair missing or changed evidence",
+      "id": "ERR-PACKAGE-HANDOFF-MISMATCH-001"
+    },
+    {
+      "description": "retained package-track selection or projection exceeds its contract, including duplicate native aliases, reused assigned observations, invalid tracking recipes or inconsistent declared alignments",
+      "guidance": "correct the selection; choose existing distinct tracks with disjoint assigned observations; do not retry unchanged",
+      "id": "ERR-PACKAGE-HANDOFF-REQUEST-001"
+    },
+    {
+      "description": "the deployment root, principal, full authority anchor or rebuilt source projection changed, or the durable head disagrees with the current authority",
+      "guidance": "rebuild against the current retained deployment; never reuse the stale result",
+      "id": "ERR-PACKAGE-HANDOFF-STALE-001"
+    },
+    {
+      "description": "a requested native package track is absent or has no assigned observations",
+      "guidance": "choose an existing nonempty track from the exact retained report and tracking recipe",
+      "id": "ERR-PACKAGE-HANDOFF-TRACK-001"
+    },
+    {
       "description": "plan anchor changed before commit",
       "guidance": "re-plan; never auto-commit changed intent",
       "id": "ERR-PRECONDITION-STALE-001"
@@ -2437,6 +2607,71 @@
       "id": "ERR-RTSP-IMPORT-SOURCE-001"
     },
     {
+      "description": "CLI approval does not match the exact JPEG import plan, including independent physical mapping and every bound",
+      "guidance": "review the current no-I/O preview and approve that exact plan",
+      "id": "ERR-RTSP-JPEG-IMPORT-APPROVAL-001"
+    },
+    {
+      "description": "current original-read or destination-retention permission, cancellation or cooperative deadline refused the JPEG import",
+      "guidance": "inspect retained progress, restore explicit authority and retry the exact approved request",
+      "id": "ERR-RTSP-JPEG-IMPORT-AUTHORITY-001"
+    },
+    {
+      "description": "retained MJPEG/capsule construction, destination authority, journal capacity or root-last publication refused",
+      "guidance": "inspect the underlying retained-owner error and exact progress; retry cannot rewrite damaged committed evidence",
+      "id": "ERR-RTSP-JPEG-IMPORT-CUSTODY-001"
+    },
+    {
+      "description": "cumulative original/read/media/frame/step/work admission or checked arithmetic exceeded the selected ceiling",
+      "guidance": "select a smaller exact prefix or review new complete bounds; no frame truncation, hidden source omission or per-item allowance reset",
+      "id": "ERR-RTSP-JPEG-IMPORT-LIMIT-001"
+    },
+    {
+      "description": "exact RTP/JPEG prefix, interpretation, physical sensor/stream mapping, receive time or whole-selection bounds are invalid, or the selected prefix yields no complete image",
+      "guidance": "correct the complete request and review its new approval; an empty usable image set is not a quiet-scene or source-completion claim",
+      "id": "ERR-RTSP-JPEG-IMPORT-REQUEST-001"
+    },
+    {
+      "description": "original datagram chain, canonical source closure, native JPEG reconstruction or exact source-map verification refused",
+      "guidance": "repair source custody or select a separately verified prefix; reconstructed JPEG bytes cannot replace missing originals or quantizer ancestry",
+      "id": "ERR-RTSP-JPEG-IMPORT-SOURCE-001"
+    },
+    {
+      "description": "Exact twin/source, original camera input, physical sensor, camera tuple, selected adoption or deployment lineage/prefix differs",
+      "guidance": "Reopen the intended deployment and select its exact current calibration; no nominal fallback.",
+      "id": "ERR-SCENE-CALIBRATION-BASIS-001"
+    },
+    {
+      "description": "Explicit authority or the shared geometry cancellation/deadline probe refused before or after calibration work",
+      "guidance": "Drain/finalize the request; no partial successful scene report.",
+      "id": "ERR-SCENE-CALIBRATION-CANCELLED-001"
+    },
+    {
+      "description": "A selected current adoption is absent, superseded, withdrawn, stale or names another sensor",
+      "guidance": "Inspect current calibration authority and supply the exact active adoption; historical receipts do not grant current use.",
+      "id": "ERR-SCENE-CALIBRATION-CURRENCY-001"
+    },
+    {
+      "description": "A required original adoption/withdrawal authority object is missing, corrupt or unreadable",
+      "guidance": "Repair exact retained custody before retry; missing evidence is not an unadopted camera.",
+      "id": "ERR-SCENE-CALIBRATION-CUSTODY-001"
+    },
+    {
+      "description": "Adopted-scene calibration selection, exact FSSCAL bytes or original camera input is malformed, duplicated, numerically invalid or inconsistent with its pin",
+      "guidance": "Correct the complete input and pins; do not retry unchanged.",
+      "id": "ERR-SCENE-CALIBRATION-INPUT-001"
+    },
+    {
+      "description": "Complete calibration input, authority traversal/read reservation or shared geometry work exceeds its finite allowance",
+      "guidance": "Admit an adequate bounded request or reduce the selected inventory; never truncate authority history or renew a spent allowance.",
+      "id": "ERR-SCENE-CALIBRATION-LIMIT-001"
+    },
+    {
+      "description": "The calibrated image model or requested interpretation is outside the explicitly selected native profile, including nonzero radial terms in the original pinhole profile or unsupported native coefficients",
+      "guidance": "Select the exact calibrated pinhole mode or explicitly opt into the native radial profile and bind its complete verified rectification model; never reinterpret raw distorted pixels as pinhole.",
+      "id": "ERR-SCENE-CALIBRATION-UNSUPPORTED-001"
+    },
+    {
       "description": "input durable schema version unsupported",
       "guidance": "migrate with registered path or reject",
       "id": "ERR-SCHEMA-UNSUPPORTED-001"
@@ -2515,6 +2750,261 @@
       "description": "the joint bundle refinement refused (degenerate tie rays, non-finite observation, adjuster refusal, non-convergence, budget or limit); no calibration was written",
       "guidance": "inspect the cause; correct inputs or raise --work-units within bounds",
       "id": "ERR-SITE-CALIBRATION-REFINEMENT-001"
+    },
+    {
+      "description": "Site source identity, exact normalized RTSP/NVR route, zone or supplied probe identity is ambiguous through duplication",
+      "guidance": "Supply one exact declaration per identity; duplicates are never silently overwritten.",
+      "id": "ERR-SITE-DUPLICATE-001"
+    },
+    {
+      "description": "An explicitly named site control file is unavailable, nonregular, changed during its bounded read or outside its input authority",
+      "guidance": "Supply complete stable regular manifest/receipt files within the input limits; input filenames and contents are not disclosed in the refusal.",
+      "id": "ERR-SITE-INPUT-001"
+    },
+    {
+      "description": "Complete site/probe input, source count, geometry or canonical fingerprint exceeds a hard bound",
+      "guidance": "Narrow the complete request; no truncation or partial acceptance.",
+      "id": "ERR-SITE-INPUT-LIMIT-001"
+    },
+    {
+      "description": "Site input is not strict bounded UTF-8 JSON, including duplicate keys or trailing input",
+      "guidance": "Correct the document; diagnostics never include input bytes.",
+      "id": "ERR-SITE-JSON-001"
+    },
+    {
+      "description": "ONVIF binding, protected handoff content/identity or input/output isolation is invalid or changed",
+      "guidance": "Restore the exact protected handoff and safe destination, then preview again; no private URI or credential is disclosed.",
+      "id": "ERR-SITE-ONVIF-PROBE-INPUT-001"
+    },
+    {
+      "description": "ONVIF receipt evidence, output bound or approval-bound destination-parent identity failed before successful private publication",
+      "guidance": "Inspect receipt_saved and receipt_file_may_exist; preserve any existing file and obtain a new exact approval without automatic retry or overwrite.",
+      "id": "ERR-SITE-ONVIF-PROBE-OUTPUT-001"
+    },
+    {
+      "description": "ONVIF source, historical onboarding/profile, advertised codec, explicit RTSP scope or private-output selection does not match",
+      "guidance": "Use the exact protected AVC/HEVC handoff and independently pinned route with a private receipt destination; no source rewrite, HTTP-origin claim or fallback.",
+      "id": "ERR-SITE-ONVIF-PROBE-SELECTION-001"
+    },
+    {
+      "description": "The complete site command result exceeds its output ceiling",
+      "guidance": "Narrow the complete request and preview again; never truncate a plan or accept a source prefix.",
+      "id": "ERR-SITE-OUTPUT-BOUND-001"
+    },
+    {
+      "description": "Complete pure site capture planning refused an invalid, missing, stale, unsupported or privacy-blocked source or operation scope",
+      "guidance": "Correct the explicitly reported source ordinal/reason and preview the whole site again. No partial approval, credentials read, network contact or capture occurred.",
+      "id": "ERR-SITE-PLAN-001"
+    },
+    {
+      "description": "The supplied approval is not the complete current native probe plan digest",
+      "guidance": "Review the new complete preview and supply its exact digest; no automatic approval.",
+      "id": "ERR-SITE-PROBE-APPROVAL-001"
+    },
+    {
+      "description": "Native Digest challenge, pinned realm or required credential borrow refused",
+      "guidance": "Correct the exact credential policy; no Basic fallback or automatic downgrade.",
+      "id": "ERR-SITE-PROBE-AUTH-001"
+    },
+    {
+      "description": "The live probe runtime or credential authority refused a boundary",
+      "guidance": "Re-establish exact owner scope before a separately approved operation.",
+      "id": "ERR-SITE-PROBE-AUTHORITY-001"
+    },
+    {
+      "description": "The approved probe runtime resource allowance is exhausted",
+      "guidance": "No renewed allowance or partial successful receipt.",
+      "id": "ERR-SITE-PROBE-BUDGET-001"
+    },
+    {
+      "description": "Fewer than three native picture groups or complete JPEG reconstructions, or no single positive fixed RTP cadence",
+      "guidance": "Acquire at least three consecutive pictures under one supported constant-cadence source configuration.",
+      "id": "ERR-SITE-PROBE-CADENCE-001"
+    },
+    {
+      "description": "The request-owned runtime cancelled the probe",
+      "guidance": "Close local resources; no hidden TEARDOWN or automatic retry.",
+      "id": "ERR-SITE-PROBE-CANCELLED-001"
+    },
+    {
+      "description": "Owner-supplied native probe time moved backwards",
+      "guidance": "Retire this generation before any further socket effect.",
+      "id": "ERR-SITE-PROBE-CLOCK-001"
+    },
+    {
+      "description": "A native completion lacks a settled matching remote close",
+      "guidance": "No receipt; preserve remote uncertainty.",
+      "id": "ERR-SITE-PROBE-CLOSE-001"
+    },
+    {
+      "description": "A retired native probe was stepped again",
+      "guidance": "No reconnect or duplicate receipt; allocate a separately authorized owner for new work.",
+      "id": "ERR-SITE-PROBE-CLOSED-001"
+    },
+    {
+      "description": "Native probe source, route, generation, authentication policy or finite limits disagree",
+      "guidance": "Correct the exact scope and preview again; no network work for configuration refusal.",
+      "id": "ERR-SITE-PROBE-CONFIGURATION-001"
+    },
+    {
+      "description": "Observed RTP has loss, duplication, reordering, sender drift or payload drift",
+      "guidance": "Acquire a new contiguous single-stream sample; do not hide gaps.",
+      "id": "ERR-SITE-PROBE-CONTINUITY-001"
+    },
+    {
+      "description": "The approved private credential reference cannot be admitted",
+      "guidance": "Correct the private file without exposing its content; no connection if initial resolution failed.",
+      "id": "ERR-SITE-PROBE-CREDENTIAL-001"
+    },
+    {
+      "description": "The admitted private credential file changed during the probe",
+      "guidance": "Stop the generation and review the current credential configuration; no automatic retry.",
+      "id": "ERR-SITE-PROBE-CREDENTIAL-REVOKED-001"
+    },
+    {
+      "description": "The approved probe operation deadline is exhausted",
+      "guidance": "No receipt or renewed budget; inspect remote-session uncertainty before new work.",
+      "id": "ERR-SITE-PROBE-DEADLINE-001"
+    },
+    {
+      "description": "Recorded DESCRIBE framing, native SDP/control route or Server identity is invalid or ambiguous",
+      "guidance": "Provide one complete supported response; metadata is never silently selected.",
+      "id": "ERR-SITE-PROBE-DESCRIPTION-001"
+    },
+    {
+      "description": "Complete canonical measured-evidence or resulting receipt identity cannot be constructed",
+      "guidance": "Correct the exact input; no partial receipt or replacement identity.",
+      "id": "ERR-SITE-PROBE-ENCODING-001"
+    },
+    {
+      "description": "Scoped native cnonce entropy could not be obtained",
+      "guidance": "Do not substitute deterministic entropy or weaken Digest.",
+      "id": "ERR-SITE-PROBE-ENTROPY-001"
+    },
+    {
+      "description": "Probe observation or matching remote TEARDOWN acknowledgement is incomplete",
+      "guidance": "No successful receipt; preserve possible remote-session state and require an explicit new decision.",
+      "id": "ERR-SITE-PROBE-INCOMPLETE-001"
+    },
+    {
+      "description": "An unexpected request, channel or pre-PLAY packet arrived during native probing",
+      "guidance": "Stop this probe; no fallback channel or partial sample.",
+      "id": "ERR-SITE-PROBE-INPUT-001"
+    },
+    {
+      "description": "A complete named manifest, DESCRIBE response or RTPdump differs from its independent raw SHA-256 pin",
+      "guidance": "Restore the exact expected bytes or provide independently verified new evidence; never accept a partial match.",
+      "id": "ERR-SITE-PROBE-INPUT-PIN-001"
+    },
+    {
+      "description": "Probe evidence or a native driver exceeds its fixed byte, record, picture or work bound",
+      "guidance": "Provide a smaller complete evidence sample; no truncation.",
+      "id": "ERR-SITE-PROBE-LIMIT-001"
+    },
+    {
+      "description": "The independently pinned probe manifest violates the strict site input contract",
+      "guidance": "Correct the complete declaration and update its independent pin; no guessed or partial source inventory.",
+      "id": "ERR-SITE-PROBE-MANIFEST-001"
+    },
+    {
+      "description": "Strict RTP observer SDP, selected codec/configuration or native sequence syntax is unsupported or inconsistent",
+      "guidance": "Use the same accepted native DESCRIBE/selection; do not substitute parameter claims.",
+      "id": "ERR-SITE-PROBE-NEGOTIATION-001"
+    },
+    {
+      "description": "The complete native probe result exceeds its output allowance",
+      "guidance": "No truncated or partial receipt.",
+      "id": "ERR-SITE-PROBE-OUTPUT-001"
+    },
+    {
+      "description": "RTPdump or complete RTP/RTCP framing is malformed, truncated or capture-limited",
+      "guidance": "Provide complete original datagrams; never pad missing bytes.",
+      "id": "ERR-SITE-PROBE-PACKET-001"
+    },
+    {
+      "description": "Native codec reconstruction, configuration or picture-boundary admission failed",
+      "guidance": "Provide a complete supported sample with exact parameter sets and witnessed picture boundaries.",
+      "id": "ERR-SITE-PROBE-PICTURE-001"
+    },
+    {
+      "description": "Requested native probe manifest/source/selection or bounds are not admitted",
+      "guidance": "Correct the exact request and preview again; no credential or network work.",
+      "id": "ERR-SITE-PROBE-PLAN-001"
+    },
+    {
+      "description": "The complete native observation cannot produce a valid manifest-bound receipt",
+      "guidance": "No successful prefix or replacement identity.",
+      "id": "ERR-SITE-PROBE-RECEIPT-001"
+    },
+    {
+      "description": "A probe response has no completely sent matching request",
+      "guidance": "Stop the connection; never reinterpret unsolicited or premature data as acknowledgement.",
+      "id": "ERR-SITE-PROBE-RESPONSE-001"
+    },
+    {
+      "description": "Strict RTP observer source/route scope is not admitted",
+      "guidance": "Correct the exact manifest and negotiated selection; no observation claim.",
+      "id": "ERR-SITE-PROBE-SCOPE-001"
+    },
+    {
+      "description": "Manifest/source or explicit codec/media/channel selection is invalid or unsupported",
+      "guidance": "Correct the exact scope; no guessed source or codec fallback.",
+      "id": "ERR-SITE-PROBE-SELECTION-001"
+    },
+    {
+      "description": "Native RTSP lifecycle, negotiation, correlation or deadline refused",
+      "guidance": "Correct the supported protocol scope and request a new probe explicitly.",
+      "id": "ERR-SITE-PROBE-SESSION-001"
+    },
+    {
+      "description": "A purported native completion lacks consistent settled receipt, transport or exclusion evidence, or its canonical witness cannot be encoded",
+      "guidance": "Preserve observed attempt/retirement facts; issue no receipt or completion witness and do not synthesize missing counters.",
+      "id": "ERR-SITE-PROBE-SESSION-EVIDENCE-001"
+    },
+    {
+      "description": "Native scoped probe transport or network authority refused",
+      "guidance": "Inspect the explicit attempt/remote-session facts; never reconnect automatically.",
+      "id": "ERR-SITE-PROBE-TRANSPORT-001"
+    },
+    {
+      "description": "Exact native RTSP/interleaved message intake refused",
+      "guidance": "Provide a supported complete protocol exchange; no resynchronization or successful prefix.",
+      "id": "ERR-SITE-PROBE-WIRE-001"
+    },
+    {
+      "description": "Site/probe schema, field, requested route, reference or geometry is invalid or unknown",
+      "guidance": "Correct the exact declared scope and preview again; no inferred fields or endpoint fallback.",
+      "id": "ERR-SITE-SCHEMA-001"
+    },
+    {
+      "description": "Probe source is absent or its generation/route differs from the manifest",
+      "guidance": "Reconcile the declared source and observations, then create a new complete plan.",
+      "id": "ERR-SITE-SOURCE-MISMATCH-001"
+    },
+    {
+      "description": "Probe site or manifest fingerprint differs from the complete requested manifest",
+      "guidance": "Obtain observations for the current exact manifest; never silently rebind an old receipt.",
+      "id": "ERR-SITE-STALE-MANIFEST-001"
+    },
+    {
+      "description": "Exact UniFi bindings, protected export input, output isolation, bounded read authority or final file/runtime revalidation failed",
+      "guidance": "Correct the static reason and source ordinal, restore exact private input permissions/content/identity or obtain a new independently verified export, then preview the complete site again. No accepted source prefix, raw capability token, credential read or network contact is returned.",
+      "id": "ERR-SITE-UNIFI-INPUT-001"
+    },
+    {
+      "description": "A UniFi probe binding, protected export digest/identity, or input/output separation is invalid or changed",
+      "guidance": "Restore the exact private source and safe destination, then preview again; no URL or credential bytes are disclosed.",
+      "id": "ERR-SITE-UNIFI-PROBE-INPUT-001"
+    },
+    {
+      "description": "UniFi receipt evidence, output bound or approval-bound destination-parent identity failed before successful private publication",
+      "guidance": "Inspect receipt_saved and receipt_file_may_exist, preserve any existing file, and obtain a new exact approval; never infer a saved receipt or overwrite/retry automatically.",
+      "id": "ERR-SITE-UNIFI-PROBE-OUTPUT-001"
+    },
+    {
+      "description": "UniFi probe camera, rendition, route, explicit plaintext transport, codec or private-output selection is unsupported",
+      "guidance": "Use the exact owner-approved AVC/HEVC selection with both bindings and private receipt file; no RTSPS rewrite, quality fallback or session-output disclosure.",
+      "id": "ERR-SITE-UNIFI-PROBE-SELECTION-001"
     },
     {
       "description": "capsule source bytes does not match custody source bytes",
@@ -3547,6 +4037,20 @@
       "schema": "fss.acquisition.session_checkpoint.v1"
     },
     {
+      "authority": "native retained activity producer / derived cognition",
+      "compatibilityRule": "Complete Estimated/Derived cell, full anchor including privacy epoch, journal root, exact native producer/receipt and ordered eight-role payload/authority/revision closure. Original retained JPEG bytes are Observed content; result, invocation, decode and capsule metadata are Derived. Equal content preserves all roles and distinct origins. Canonical integrity encoding uses fss.canonical.v1 plus this tag, full anchor/journal root, producer algorithm/generation/derivation receipt, typed cell, checked u8 role count and ordered role/origin/digest/ObjectId/full ObjectRevision; at most eight roles, supporting references and contradictions, with checked completion before hashing. The private verified type is constructed only after native custody and replay checks; JSON and its integrity digest remain untrusted until independent native re-verification. No physical scene, capture-time, calibration, future custody, session or effect authority.",
+      "file": "schemas/activity_knowledge_projection.v1.json",
+      "id": "SCHEMA-ACTIVITY-KNOWLEDGE-PROJECTION-001",
+      "schema": "fss.activity_knowledge_projection.v1"
+    },
+    {
+      "authority": "operator-local native replay projection",
+      "compatibilityRule": "Explicit verify-activity --report-profile producer-origins-v1 adds the complete producer-origin projection to the existing verified activity result under the same output, custody and cancellation limits. Default and explicit v1 retain their original report bytes. Every transferred claim must be checked against an independently obtained native observation; self-consistent hashes, declared origins and deserialization cannot create verified status.",
+      "file": "schemas/activity_verification.v2.json",
+      "id": "SCHEMA-ACTIVITY-VERIFICATION-002",
+      "schema": "fss.activity_verification.v2"
+    },
+    {
       "authority": "compatibility",
       "compatibilityRule": "exact tuple only; invalidator transitions revoke/degrade",
       "file": "schemas/adapter_compatibility_certificate.v1.json",
@@ -3799,6 +4303,41 @@
       "schema": "fss.cli_diagnostic.v1"
     },
     {
+      "authority": "caller input / derived geometry",
+      "compatibilityRule": "Owner: fss-cli::fss-clock-align with fss-geometry::temporal_alignment::drift::validation. Strict frozen camera, clock, world, fit and complete hypothesis inventory; one through eight disjoint held-out sessions and at most 128 interval requests. Source/exposure/evidence reuse refuses the entire request. Input assertions do not authenticate associations, camera custody or calibration.",
+      "file": "schemas/clock_validation_query.v1.json",
+      "id": "SCHEMA-CLOCK-VALIDATION-QUERY-001",
+      "schema": "fss.clock_validation_query.v1"
+    },
+    {
+      "authority": "embedded derived geometry",
+      "compatibilityRule": "Owner: fss-cli::clock_alignment::ClockValidationReplay. Complete original search, held-out sessions, every candidate and unpruned interval mapping from native replay. Work limit is the parent's remaining allowance at evaluation entry, with full u64 bounds and no child allocation. Distinct from the standalone CLI profile; no source authentication, physical synchronization or clock activation.",
+      "file": "schemas/clock_validation_replay_report.v1.json",
+      "id": "SCHEMA-CLOCK-VALIDATION-REPLAY-REPORT-001",
+      "schema": "fss.clock_validation_replay_report.v1"
+    },
+    {
+      "authority": "embedded replay integrity",
+      "compatibilityRule": "Exact full native replay report plus SHA-256 of emitted report JSON. Constructed only by strict pinned original-query evaluation under the caller's work account, with complete output bounds and live cancellation. A serialized success report cannot replace original observations.",
+      "file": "schemas/clock_validation_replay_response.v1.json",
+      "id": "SCHEMA-CLOCK-VALIDATION-REPLAY-RESPONSE-001",
+      "schema": "fss.clock_validation_replay_response.v1"
+    },
+    {
+      "authority": "derived geometry",
+      "compatibilityRule": "Complete search and held-out trial inventories, failed/unresolved alternatives, all-candidate capture-time hulls and extrapolation labels under one work account. Hypotheses cannot be pruned using favorable outcomes. Complete bounded output or explicit refusal; no physical-clock activation, independent calibration, continuous coverage, source authentication or effect grant.",
+      "file": "schemas/clock_validation_report.v1.json",
+      "id": "SCHEMA-CLOCK-VALIDATION-REPORT-001",
+      "schema": "fss.clock_validation_report.v1"
+    },
+    {
+      "authority": "operator projection / integrity",
+      "compatibilityRule": "Exact complete validation report plus SHA-256 of its emitted UTF-8 JSON bytes. The wrapper and newline share the 8 MiB output bound. Cancellation, limit or invalidity yields no successful report prefix; the digest establishes output integrity only. Existing alignment/drift profiles retain their previous bytes and semantics.",
+      "file": "schemas/clock_validation_response.v1.json",
+      "id": "SCHEMA-CLOCK-VALIDATION-RESPONSE-001",
+      "schema": "fss.clock_validation_response.v1"
+    },
+    {
       "authority": "context/hydration projection",
       "compatibilityRule": "one emitted expansion slot maps to one exact descriptor revision, purpose, level, and descriptor-owned full cost",
       "file": "schemas/context_expansion_binding.v1.json",
@@ -3821,10 +4360,24 @@
     },
     {
       "authority": "derived/query",
+      "compatibilityRule": "exact hypothetical camera-addition analysis over retained whole-window support and explicit owner-declared movement, candidate coverage and separate cost units; no physical or effect authority",
+      "file": "schemas/coverage_robust_placement.v1.json",
+      "id": "SCHEMA-COVERAGE-ROBUST-PLACEMENT-001",
+      "schema": "fss.coverage_robust_placement.v1"
+    },
+    {
+      "authority": "derived/query",
       "compatibilityRule": "read-only retained evidence set selection; selection never grants authority",
       "file": "schemas/coverage_set_selection.v1.json",
       "id": "SCHEMA-COVERAGE-SET-SELECTION-001",
       "schema": "fss.coverage_set_selection.v1"
+    },
+    {
+      "authority": "derived/query",
+      "compatibilityRule": "exact hypothetical camera additions under individual sensor and shared failure actions; canonical active-member unions, separate installation/loss costs and typed action/path witnesses over retained whole-window support; no live coverage, probability, independence or effect authority",
+      "file": "schemas/coverage_shared_failure_placement.v1.json",
+      "id": "SCHEMA-COVERAGE-SHARED-FAILURE-PLACEMENT-001",
+      "schema": "fss.coverage_shared_failure_placement.v1"
     },
     {
       "authority": "authority/query",
@@ -3939,6 +4492,34 @@
       "schema": "fss.formal_model.v1"
     },
     {
+      "authority": "derived/cognition",
+      "compatibilityRule": "Owner: fss-fusion::eprocess::EProcessTranscript. Exact ordered fusion query/decision or reset input, previous transcript, independently bounded full state, historical numerical digest and complete supporting-domain commitment. Reset preserves ancestry; validation refusal changes no accumulator state. Reconstruction requires exact ordered replay; no source-custody, statistical qualification or effect authority.",
+      "file": "schemas/fusion_eprocess_transcript.v1.json",
+      "id": "SCHEMA-FUSION-EPROCESS-TRANSCRIPT-001",
+      "schema": "fss.fusion_eprocess_transcript.v1"
+    },
+    {
+      "authority": "explicit caller input / derived cognition",
+      "compatibilityRule": "Owner: fss-fuse sequence adapter. Closed configuration and ordered observe/reset transition envelopes with ordinary v1/v2 fusion queries and exact complete alias-to-source bindings. At most 64 transitions, 1 MiB input and 4096 lifetime sources. Resume pins the prior checkpoint and exact hypothesis/config/limit; observation time cannot move backwards.",
+      "file": "schemas/fusion_sequence.v1.json",
+      "id": "SCHEMA-FUSION-SEQUENCE-001",
+      "schema": "fss.fusion_sequence.v1"
+    },
+    {
+      "authority": "caller-declared sources / derived continuation",
+      "compatibilityRule": "Complete source/numerical transitions, effective decisions with filtered score provenance, exact original input and sequence commitments, original/final step indexes, lifetime core/raw inventories and previous/new checkpoint identity. Full batch and <=16 MiB report are checked before new-file checkpoint publication; refusal exports no accepted prefix. Source identity remains unverified, statistical validity is not established and effect_authority is false.",
+      "file": "schemas/fusion_sequence_report.v1.json",
+      "id": "SCHEMA-FUSION-SEQUENCE-REPORT-001",
+      "schema": "fss.fusion_sequence_report.v1"
+    },
+    {
+      "authority": "declared-source accounting / derived cognition",
+      "compatibilityRule": "Owner: fss-fusion::UniqueSourceEProcess. Explicit bounded profile with complete original/effective queries, source bindings and dispositions, independent inner transcript, lifetime inventory/capacity and predecessor. Observed calibrated rows require keys; nonnumeric rows may explicitly lack one. Signed likelihoods consumed once, conflicting consumed-source semantics and capacity overflow refuse transactionally, resets retain inventory. Caller declarations do not prove physical uniqueness/custody, statistical validity or effect authority.",
+      "file": "schemas/fusion_unique_source_step.v1.json",
+      "id": "SCHEMA-FUSION-UNIQUE-SOURCE-STEP-001",
+      "schema": "fss.fusion_unique_source_step.v1"
+    },
+    {
       "authority": "derived/evidence",
       "compatibilityRule": "algorithm/projection/policy identity and output digest preserved",
       "file": "schemas/graph_algorithm_witness.v1.json",
@@ -3960,11 +4541,46 @@
       "schema": "fss.hevc_recipe_draft.v1"
     },
     {
+      "authority": "operator projection / derived cognition",
+      "compatibilityRule": "Six closed JSONL states for pure outer preview, model admission, exact typed history handoff, incomplete capture, completed native cognition or interrupted analysis. Capture preview, explicit generation/time bindings, exact offline argv, source outcomes and retained replay handles preserve their existing owners. Only a satisfied settled capture advances automatically; failed-but-ended custody requires a separately approved offline request. No automatic reacquisition, event, effect, continuous coverage or absence authority.",
+      "file": "schemas/http_capture_sentinel.v1.json",
+      "id": "SCHEMA-HTTP-CAPTURE-SENTINEL-001",
+      "schema": "fss.http_capture_sentinel.v1"
+    },
+    {
+      "authority": "operator preview / retained-cognition projection",
+      "compatibilityRule": "Pure complete plan and successful processing result, distinguished by kind. Exact CLI approval binds all native choices, paths, actor, model, source and limits. Completed results include the whole native history report, cumulative I/O/work accounting and nullable per-connection exact native replay commands. No network/capture/event authority. Native custody, cross-field, canonical and current-authority checks remain mandatory.",
+      "file": "schemas/http_history_sentinel_operator.v1.json",
+      "id": "SCHEMA-HTTP-HISTORY-SENTINEL-OPERATOR-001",
+      "schema": "fss.http_history_sentinel_operator.v1"
+    },
+    {
+      "authority": "derived cognition / verified source projection",
+      "compatibilityRule": "Complete ordered exact-history connection inventory, explicit native outcomes and sampling gaps, one nonrenewable resource account, original source/camera/capture assumptions and optional native report/model/recipe receipts. Embedded long-sentinel computation remains verified by its existing native owner. No motion gate, cross-reconnect continuity, event, absence or effect grant; at most 32 connection rows and 33619968 bytes.",
+      "file": "schemas/http_history_sentinel_report.v1.json",
+      "id": "SCHEMA-HTTP-HISTORY-SENTINEL-REPORT-001",
+      "schema": "fss.http_history_sentinel_report.v1"
+    },
+    {
+      "authority": "operator projection / derived cognition",
+      "compatibilityRule": "Closed wrapper states for pure requested-count preview, model preflight, exact one-generation source prefix, durable import acknowledged before model work, complete native long-sentinel computation, or explicit capture/analysis refusal. Every received original/read-ahead/tail byte remains native custody; only acknowledged first N frames enter inference. Existing native report validation remains authoritative. Exact offline argv preserves source/computation identity but is a new bounded invocation. No EOF/history fabrication, automatic reacquisition, event, absence or effect grant.",
+      "file": "schemas/http_prefix_capture_sentinel.v1.json",
+      "id": "SCHEMA-HTTP-PREFIX-CAPTURE-SENTINEL-001",
+      "schema": "fss.http_prefix_capture_sentinel.v1"
+    },
+    {
       "authority": "derived progress",
-      "compatibilityRule": "Owner: fss-cli::fss-event::watch::incremental. Bounded JSON (1 MiB plus 16 KiB without calibrated advice) with exact checkpoint body/root pins, complete status, source cursor, remaining/new positions, all seven logical-scan and separately admitted cold-restoration counters, and an exact bounded continuation command. Cold replay is explicit; optional event_report appears only after the original full range completes and uses the existing long-dwell report/approval contract. When a terminal detector is explicitly requested, additive detector_stage and detector_request fields distinguish deferred_until_complete from a completed native stage and describe selection/inference bounds. Partial steps perform no model I/O; complete output requires verified terminal classification under the original remaining scan limits. Model-free output is unchanged. The checkpoint still contains temporal state only; failed terminal attempts preserve it and their retry costs are separately owned. Optional calibrated advice is admitted only from exact pins for an already complete checkpoint, with no new temporal positions, checkpoint append or event publication. It cold-reconstructs the complete native prefix and reruns the explicitly requested terminal classifier under the original remaining scan ceilings; fusion uses the existing version-four dwell profile/report contract. Additive event_report.calibrated_class_advice preserves native episode/proposal fields and separate publication hints. The entire progress wrapper with advice, including its final newline, is at most 2 MiB. Original progress responses without fusion retain their 1 MiB plus 16 KiB bound. Optional conservative screening adds sensor_health_policy, sensor_health_policy_digest, sensor_health_stage, logical_health_scan_work and cold_health_restoration_work (each work object has frames_screened and samples_screened). These counters are separately bounded by the original health sample allowance and cold replay; completed means the requested scan finished, while event_report.sensor_health separately declares diagnostic completeness and the publication block. No completed diagnostic appears for partial prefixes. Screened requests use FMT-012 and cannot change mode on resume; incremental fusion and health/coverage retention remain excluded for screened requests. Unscreened responses retain their original fields. Checkpoints are not events, absence certificates or alert authority. Changed meaning requires a new schema.",
+      "compatibilityRule": "Owner: fss-cli::fss-event::watch::incremental. MJPEG projection over flat FMT-010/FMT-012 or partitioned FMT-021, with the same fields and output ceilings. Bounded JSON (1 MiB plus 16 KiB without calibrated advice) with exact checkpoint body/root pins, complete status, source cursor, remaining/new positions, all seven logical-scan and separately admitted cold-restoration counters, and an exact bounded continuation command. Cold replay is explicit; optional event_report appears only after the original full range completes and uses the existing long-dwell report/approval contract. When a terminal detector is explicitly requested, additive detector_stage and detector_request fields distinguish deferred_until_complete from a completed native stage and describe selection/inference bounds. Partial steps perform no model I/O; complete output requires verified terminal classification under the original remaining scan limits. Model-free output is unchanged. The checkpoint still contains temporal state only; failed terminal attempts preserve it and their retry costs are separately owned. Optional calibrated advice is admitted only from exact pins for an already complete checkpoint, with no new temporal positions, checkpoint append or event publication. It cold-reconstructs the complete native prefix and reruns the explicitly requested terminal classifier under the original remaining scan ceilings; fusion uses the existing version-four dwell profile/report contract. Additive event_report.calibrated_class_advice preserves native episode/proposal fields and separate publication hints. The entire progress wrapper with advice, including its final newline, is at most 2 MiB. Original progress responses without fusion retain their 1 MiB plus 16 KiB bound. Optional conservative screening adds sensor_health_policy, sensor_health_policy_digest, sensor_health_stage, logical_health_scan_work and cold_health_restoration_work (each work object has frames_screened and samples_screened). These counters are separately bounded by the original health sample allowance and cold replay; completed means the requested scan finished, while event_report.sensor_health separately declares diagnostic completeness and the publication block. No completed diagnostic appears for partial prefixes. Screened flat MJPEG requests use FMT-012 and screened partitioned MJPEG requests use FMT-021; neither can change mode on resume. Fusion and separately approved historical-health retention require an already complete checkpoint and the existing health gates; coverage retention remains excluded. Unscreened responses retain their original fields. Checkpoints are not events, absence certificates or alert authority. Changed meaning requires a new schema.",
       "file": "CLI output",
       "id": "SCHEMA-INCREMENTAL-DWELL-PROGRESS-001",
       "schema": "fss.incremental_dwell_progress.v1"
+    },
+    {
+      "authority": "derived progress",
+      "compatibilityRule": "Owner: fss-cli::fss-event::watch::incremental. Explicit native AVC/HEVC continuation projection over flat FMT-018 or partitioned FMT-021, with unchanged v2 fields and output ceilings. Coding input consumption, processed display frames, explicit RASL omissions and validated decoder drain remain distinct; all original scan counters and separately admitted cold restoration are preserved. A consumed source range with delayed display output is incomplete. Exact bounded continuation and original event/detector/health/fusion contracts remain; no checkpoint grants event, coverage or effect authority. Existing MJPEG v1 progress bytes are unchanged.",
+      "file": "schemas/incremental_dwell_progress.v2.json",
+      "id": "SCHEMA-INCREMENTAL-DWELL-PROGRESS-002",
+      "schema": "fss.incremental_dwell_progress.v2"
     },
     {
       "authority": "investigation cognition",
@@ -4023,6 +4639,34 @@
       "schema": "fss.negative_evidence_report.v1"
     },
     {
+      "authority": "ephemeral/provisioning result",
+      "compatibilityRule": "success-only CLI report after package verification and exclusive output synchronization; exact source/recipe/package/manifest/model/head/importer digests, archive bytes and cumulative conversion work preserved; activated and calibrated remain false; not a retained authority receipt",
+      "file": "schemas/onnx_rgb_package_import.v1.json",
+      "id": "SCHEMA-ONNX-RGB-PACKAGE-IMPORT-001",
+      "schema": "fss.onnx_rgb_package_import.v1"
+    },
+    {
+      "authority": "operator input/provisioning",
+      "compatibilityRule": "strict complete recipe pinned by its exact UTF-8 bytes; immutable model/tensor generations, RGB preprocessing, decoded head semantics, ordered labels and license decision remain explicit; native shape, byte, license and cross-field checks still apply; no activation or calibration authority",
+      "file": "schemas/onnx_rgb_package_recipe.v1.json",
+      "id": "SCHEMA-ONNX-RGB-PACKAGE-RECIPE-001",
+      "schema": "fss.onnx_rgb_package_recipe.v1"
+    },
+    {
+      "authority": "operator input/provisioning",
+      "compatibilityRule": "Explicit RGB/BGR order and three finite F32 means/positive standard deviations after the existing RGB resize and optional unit scaling; native Slice/Concat/Sub/Div are frozen into the immutable graph, with cumulative original-import quotas. Exact recipe bytes, source ONNX, labels, license and head meanings remain pinned. Version1 keeps its original parser and graph bytes; no normalization inference or foreign runtime.",
+      "file": "schemas/onnx_rgb_package_recipe.v2.json",
+      "id": "SCHEMA-ONNX-RGB-PACKAGE-RECIPE-002",
+      "schema": "fss.onnx_rgb_package_recipe.v2"
+    },
+    {
+      "authority": "operator input/provisioning",
+      "compatibilityRule": "All explicit v2 preprocessing plus one declared static anchor-free DFL raw output, rows/channels layout, 2..32 bins and ordered unique strides. Native Softmax/MatMul computes side expectations; stride multiplication precedes pixel-center Sub/Add; score tail and original outputs remain unchanged. A distinct rows/pixel-corners output is frozen into the graph under cumulative original-import limits. No model-family guessing, new operator/backend/wire format or quality claim.",
+      "file": "schemas/onnx_rgb_package_recipe.v3.json",
+      "id": "SCHEMA-ONNX-RGB-PACKAGE-RECIPE-003",
+      "schema": "fss.onnx_rgb_package_recipe.v3"
+    },
+    {
       "authority": "effect truth",
       "compatibilityRule": "state monotonicity; idempotency identity preserved",
       "file": "schemas/operation_receipt.v1.json",
@@ -4030,11 +4674,25 @@
       "schema": "fss.operation_receipt.v1"
     },
     {
+      "authority": "derived read-only sampled class observations",
+      "compatibilityRule": "Observation kind `sampled_class_occupancy`, generation 1. Reopens an exact retained package-zone report and preserves its model/class/tracking/privacy/clock/health policy. Complete frame-major, zone-minor grid contains confirmed actual inside counts, canonical anonymous support and disjoint exclusions. Masked or health-excluded counts are null even with no tracks; zero never certifies absence. Rendered output is bounded to 4 MiB before final custody/privacy/deletion/principal/head/proof revalidation. No new retention, canonical event, calibrated population, continuous coverage or effect authority.",
+      "file": "schemas/package_zone_occupancy.v1.json",
+      "id": "SCHEMA-PACKAGE-ZONE-OCCUPANCY-001",
+      "schema": "fss.package_zone_occupancy.v1"
+    },
+    {
       "authority": "derived/cognition",
       "compatibilityRule": "Owner: fss-reference::ingest::package_zones. Complete source-verified image-zone observations over exact retained class-selected tracks; all frames/cells/transitions, confirmation and uncertainty preserved. The native owner additionally verifies source/privacy/deletion custody, exact references, aggregate work and canonical replay. No calibrated class, continuous occupancy, absence, source health or effect authority.",
       "file": "schemas/package_zone_report.v1.json",
       "id": "SCHEMA-PACKAGE-ZONE-REPORT-001",
       "schema": "fss.package_zone_report.v1"
+    },
+    {
+      "authority": "derived/cognition",
+      "compatibilityRule": "Owner: fss-reference::ingest::package_zones. Additive explicit historical-health-screened counterpart of v1. Each distinct source frame is matched once to bounded exact-source/privacy diagnostic evidence; complete raw assigned geometry remains visible while unknown, incomplete or suspect screening interrupts positive zone/crossing/dwell support. All matching pins/findings and selected trace custody are preserved. Current-operation read/work accounting is outside the immutable report identity. Cold reconstruction verifies current relevant diagnostic custody and byte equality; a clear finite screen is not a healthy-camera or absence certificate. V1 bytes and default behavior are unchanged.",
+      "file": "schemas/package_zone_report.v2.json",
+      "id": "SCHEMA-PACKAGE-ZONE-REPORT-002",
+      "schema": "fss.package_zone_report.v2"
     },
     {
       "authority": "effect truth",
@@ -4065,11 +4723,67 @@
       "schema": "fss.provider_observation_receipt.v1"
     },
     {
+      "authority": "source-verified derived read; no EventKind, retention or effect grant",
+      "compatibilityRule": "Cold-reopens one exact retained screened package-zone report through its existing model/tracker, custody, current privacy, health and deletion owners. Returns complete finite sampled track counts/presence, source-sampled dwell and conservative adjacent lane-stage endpoint observations, with exact package/model/class/policy/provenance and frame references. Unknown/masked counts are null, zero observations never certify absence, and gaps/ambiguous or skipped stages remain explicit. At most 16 zones, 64 frames and 8 MiB complete JSON; no synthetic detector, unique physical identity, service/wait-time, continuous coverage or current-camera-health claim. Vocabulary: registries/QSR_OBSERVATIONS.md.",
+      "file": "schemas/qsr_observation_report.v1.json",
+      "id": "SCHEMA-QSR-OBSERVATION-REPORT-001",
+      "schema": "fss.qsr_observation_report.v1"
+    },
+    {
       "authority": "aggregate release custody",
       "compatibilityRule": "primary/support artifact digests, claim boundary, and signing state immutable",
       "file": "schemas/release_qualification_root.v2.json",
       "id": "SCHEMA-QUALIFICATION-ROOT-002",
       "schema": "fss.qualification_root.v2"
+    },
+    {
+      "authority": "derived/query with current calibration custody",
+      "compatibilityRule": "Owner: fss-cli::fss-scene-fuse::retained_matching::{calibrated_atlas,calibrated_atlas_report}. Complete private create-only atlas export after original-source/privacy and current adoption/withdrawal revalidation, with the deployment owner held through publication. Exact archive/provenance/descriptor/semantic pins, complete embedded manifest, source/calibration/decoder cost axes and final serialization work. FSATLAS1 remains bounded to 8 MiB; complete report 32 MiB. No calibration, twin revision, identity or future source-access authority is activated; partial output I/O failures remain explicit.",
+      "file": "schemas/reconstruction_atlas_adopted.v1.json",
+      "id": "SCHEMA-RECONSTRUCTION-ATLAS-ADOPTED-001",
+      "schema": "fss.reconstruction_atlas_adopted.v1"
+    },
+    {
+      "authority": "derived/query with current calibration custody",
+      "compatibilityRule": "Owner: fss-cli::fss-scene-fuse::retained_matching::{calibrated_atlas,calibrated_atlas_report}. Versioned private create-only export envelope binds the complete v2 provenance manifest, unchanged FSATLAS1 package/semantic/descriptor identities, all source and current-adoption revalidation and final nonrenewable work/cost axes. Full report 32 MiB and archive 8 MiB bounds remain; no calibration, physical identity, absolute accuracy or future source-access grant.",
+      "file": "schemas/reconstruction_atlas_adopted.v2.json",
+      "id": "SCHEMA-RECONSTRUCTION-ATLAS-ADOPTED-002",
+      "schema": "fss.reconstruction_atlas_adopted.v2"
+    },
+    {
+      "authority": "derived/provenance with retained calibration custody",
+      "compatibilityRule": "Owner: fss-cli::fss-scene-fuse::retained_matching::{calibrated_atlas,calibrated_atlas_report}. Exact current adopted calibration, original image basis, rig/query/static-selection declarations, every retained source record and native geometric alternative, and complete native atlas admission. Direct pinhole pair or multiview only. Unknown absolute landmark error stays unknown; local covariance grants no physical calibration accuracy. Exact UTF-8 manifest SHA256 is the unchanged FSATLAS1 provenance pin; no archive package hash creates a cycle.",
+      "file": "schemas/reconstruction_atlas_adopted_provenance.v1.json",
+      "id": "SCHEMA-RECONSTRUCTION-ATLAS-ADOPTED-PROVENANCE-001",
+      "schema": "fss.reconstruction_atlas_adopted_provenance.v1"
+    },
+    {
+      "authority": "derived/provenance with retained calibration custody",
+      "compatibilityRule": "Owner: fss-cli::fss-scene-fuse::retained_matching::{calibrated_atlas,calibrated_atlas_report}. Explicit adopted-radial profile preserves full current calibration/adoption and original source lineage, exact two-term Brown model and refined original source/target grid, actual native map/mask/coverage receipts, all static association alternatives and complete selected atlas admission. Zero-radial cameras may remain direct; moving fits cannot become static references. Exact UTF-8 hash remains the unchanged FSATLAS1 provenance pin; interpolation/lens-parameter error is not converted to absolute landmark accuracy. V1 bytes and constraints remain unchanged.",
+      "file": "schemas/reconstruction_atlas_adopted_provenance.v2.json",
+      "id": "SCHEMA-RECONSTRUCTION-ATLAS-ADOPTED-PROVENANCE-002",
+      "schema": "fss.reconstruction_atlas_adopted_provenance.v2"
+    },
+    {
+      "authority": "derived/provenance",
+      "compatibilityRule": "Owner: fss-cli::fss-scene-fuse::retained_matching::{atlas,atlas_report} and fss-twin::reconstruction_atlas. Complete exact source/rig/image/clock/privacy, query/selection, native geometry, candidate/admission and semantic atlas manifest. Original covariance remains conditional; absolute landmark error unknown. Exact UTF-8 manifest is pinned by unchanged FSATLAS1; it excludes final package hash to avoid circular identity. No calibration or future source-access authority.",
+      "file": "schemas/reconstruction_atlas_provenance.v1.json",
+      "id": "SCHEMA-RECONSTRUCTION-ATLAS-PROVENANCE-001",
+      "schema": "fss.reconstruction_atlas_provenance.v1"
+    },
+    {
+      "authority": "derived/query",
+      "compatibilityRule": "Owner: fss-cli::fss-scene-fuse::retained_matching::atlas. Complete private create-only candidate atlas export with exact archive/provenance/descriptor/semantic pins and embedded exact provenance_manifest_utf8, final original-source/current-privacy revalidation and independent cost axes. Report body SHA256; complete output 32 MiB, archive 8 MiB; partial publication failures remain explicit. Existing fss-file localize consumes the unchanged archive.",
+      "file": "schemas/reconstruction_atlas_retained.v1.json",
+      "id": "SCHEMA-RECONSTRUCTION-ATLAS-RETAINED-001",
+      "schema": "fss.reconstruction_atlas_retained.v1"
+    },
+    {
+      "authority": "explicit static support",
+      "compatibilityRule": "Owner: fss-cli::fss-scene-fuse::retained_matching::atlas_input. Exact whole native association with 1..128 selected hypothesis/landmark/physical-group/twin-feature/enduring-static declarations; 64 KiB maximum. No coordinate, descriptor, source or absolute-error overrides. Native producer rejects ineligible or contradictory selections and preserves all other candidates.",
+      "file": "schemas/reconstruction_atlas_selection.v1.json",
+      "id": "SCHEMA-RECONSTRUCTION-ATLAS-SELECTION-001",
+      "schema": "fss.reconstruction_atlas_selection.v1"
     },
     {
       "authority": "release custody",
@@ -4098,6 +4812,209 @@
       "file": "schemas/robot_docs.v1.json",
       "id": "SCHEMA-ROBOT-DOCS-001",
       "schema": "fss.robot_docs.v1"
+    },
+    {
+      "authority": "operator plan / retained custody projection",
+      "compatibilityRule": "Exact offline RTP/JPEG import plan and successful receipt, distinguished by kind. Complete source/prefix/replay, independent physical mapping, fixed and selected bounds, unknown capture time, exact retained import/proof identities and gap/tail accounting. No entropy, pixel, source EOF, physical camera authentication or absence claim. Native source, canonical proof, cross-field and current authority checks remain mandatory; the JSON projection alone grants no authority.",
+      "file": "schemas/rtsp_jpeg_import_operator.v1.json",
+      "id": "SCHEMA-RTSP-JPEG-IMPORT-OPERATOR-001",
+      "schema": "fss.rtsp_jpeg_import_operator.v1"
+    },
+    {
+      "authority": "exact retained-calibration selection",
+      "compatibilityRule": "Owner: fss-cli::fss-scene-fuse::retained_matching::calibrated_input and fss-reference::ingest::scene_calibration. Pins both the FSSCAL semantic identity and whole-file SHA-256, each exact original camera input, current adoption receipt and physical sensor. Geometry comes only from the verified calibration; no caller pose, intrinsics, status or error override. Explicit twin/scope, source object, image/clock/privacy handles and validity remain distinct from measured physical currency. First profile requires the original direct pinhole domain. The same domain tags fss-cli::scene_rig::adopted's sealed semantic rig transcript, whose identity is distinct from the whole-file SHA-256; the published registry ID and transcript bytes are preserved.",
+      "file": "schemas/scene_camera_rig_adopted.v1.json",
+      "id": "SCHEMA-DOMAIN-ADOPTED-SCENE-CAMERA-RIG-001",
+      "schema": "fss.scene_camera_rig_adopted.v1"
+    },
+    {
+      "authority": "exact retained-calibration image-profile selection",
+      "compatibilityRule": "Owner: fss-cli::fss-scene-fuse::retained_matching::calibrated_input and fss-reference::ingest::scene_calibration. Same exact FSSCAL/file/original-input/current-adoption/sensor/twin pins as v1, with explicit native radial preparation opt-in. Refined original K/grid and two radial terms cannot be overridden; nonzero radial sources require admitted native correction, while zero-radial cameras may remain direct. Radius/luma and clock/privacy/use validity remain owner declarations. Whole-file JSON pin is distinct from the separately registered rectified semantic rig transcript.",
+      "file": "schemas/scene_camera_rig_adopted.v2.json",
+      "id": "SCHEMA-SCENE-CAMERA-RIG-ADOPTED-002",
+      "schema": "fss.scene_camera_rig_adopted.v2"
+    },
+    {
+      "authority": "derived/query",
+      "compatibilityRule": "Owner: fss-cli::fss-scene-fuse::matching. Complete exact-source decode/extraction receipts, camera snapshots, declarations, up to16384 Cartesian pair rows and all feature dispositions enclose native static 3D estimates or typed refusals. The report body is fss.scene_feature_match_report.v1; SHA256 covers its exact UTF8 bytes. No physical identity, measured camera accuracy, retained-deployment custody or effect authority.",
+      "file": "schemas/scene_feature_match.v1.json",
+      "id": "SCHEMA-SCENE-FEATURE-MATCH-001",
+      "schema": "fss.scene_feature_match.v1"
+    },
+    {
+      "authority": "derived/query with current calibration custody",
+      "compatibilityRule": "Owner: fss-cli::fss-scene-fuse::retained_matching::{calibrated,calibrated_report}. Complete selected adoptions, original calibration/image/atlas lineage, local covariance, retained sources, current privacy and every native pair/multiview/temporal alternative. Strict outcome additionally refuses nominal occlusion conflicts without dropping fitted geometry. Final source and adoption/withdrawal revalidation is included in bounded costs; exact UTF-8 report-body SHA-256 and complete 32-MiB output. Unknown absolute calibration error stays unknown; no physical currency measurement, identity or effect grant.",
+      "file": "schemas/scene_feature_match_adopted.v1.json",
+      "id": "SCHEMA-SCENE-FEATURE-MATCH-ADOPTED-001",
+      "schema": "fss.scene_feature_match_adopted.v1"
+    },
+    {
+      "authority": "derived/query with current calibration custody",
+      "compatibilityRule": "Owner: fss-cli::fss-scene-fuse::retained_matching::{calibrated,calibrated_report}. Complete adopted two-term radial calibration and native image preparation lineage for pair, multiview and temporal analysis. Direct zero-radial or actual corrected images preserve original exposure and complete source/mask identities; model/map/coverage and full geometry alternatives remain explicit. All plans admit before decode, every source/current-privacy and adoption/withdrawal revalidate before release, and absolute calibration error stays unknown. Pixel covariance excludes interpolation correlation and lens-parameter error; v1 output is unchanged.",
+      "file": "schemas/scene_feature_match_adopted.v2.json",
+      "id": "SCHEMA-SCENE-FEATURE-MATCH-ADOPTED-002",
+      "schema": "fss.scene_feature_match_adopted.v2"
+    },
+    {
+      "authority": "retained source custody / current adopted calibration / derived motion",
+      "compatibilityRule": "Explicit retained-motion query v2 replays the pinned original clock query against the exact currently adopted calibration, sensor, pose, intrinsics and prepared image domain. Every clock candidate remains in each complete source interval before decoding and temporal association. The full native replay, original query text, source mappings and reserved sidecar/read/work accounting remain in the report; source, privacy and adoption currency are revalidated before output. Existing adopted v1/v2 inputs and reports are unchanged. No clock-observation authentication, physical synchronization, clock activation, static-landmark admission or effect authority.",
+      "file": "schemas/scene_feature_match_adopted.v3.json",
+      "id": "SCHEMA-SCENE-FEATURE-MATCH-ADOPTED-003",
+      "schema": "fss.scene_feature_match_adopted.v3"
+    },
+    {
+      "authority": "local-image selection",
+      "compatibilityRule": "Owner: fss-cli::fss-scene-fuse::matching::input. Exact original JPEG, rig, image-domain and mask pins; explicit shared clock/privacy, complete capture hull and stationary common-feature assumptions. At most128 extracted features/view; symmetric descriptor and nominal epipolar policy; both cameras required with no outlier omission. Paths come only from CLI arguments. No custody, calibration or identity grant.",
+      "file": "schemas/scene_feature_match_query.v1.json",
+      "id": "SCHEMA-SCENE-FEATURE-MATCH-QUERY-001",
+      "schema": "fss.scene_feature_match_query.v1"
+    },
+    {
+      "authority": "derived/query",
+      "compatibilityRule": "Owner: fss-cli::fss-scene-fuse::retained_matching and sealed fss-reference::ingest::twin_localization::features. Complete entry/final anchors, original source and native receipts, current privacy, exact declarations, all pair/feature decisions and conditional point estimates/refusals. Original ranges and current privacy revalidate after analysis; final costs include those reads. No physical identity, measured calibration, live coverage, world publication or effect authority.",
+      "file": "schemas/scene_feature_match_retained.v1.json",
+      "id": "SCHEMA-SCENE-FEATURE-MATCH-RETAINED-001",
+      "schema": "fss.scene_feature_match_retained.v1"
+    },
+    {
+      "authority": "derived/query",
+      "compatibilityRule": "Owner: fss-cli::fss-scene-fuse::retained_matching. Complete original v1 source/geometry semantics plus per-view image_processing: original source and actual target identities, exact model/map, both masks and full unavailable/privacy counts. Original exposure/native decoder receipt remain separate and unchanged. Conditional output-pixel covariance excludes interpolation correlation and lens error. Exact UTF-8 v2 report-body digest; final source/privacy revalidation before release.",
+      "file": "schemas/scene_feature_match_retained.v2.json",
+      "id": "SCHEMA-SCENE-FEATURE-MATCH-RETAINED-002",
+      "schema": "fss.scene_feature_match_retained.v2"
+    },
+    {
+      "authority": "retained-source selection",
+      "compatibilityRule": "Owner: fss-cli::fss-scene-fuse::retained_matching::input. Two exact retained JPEG/AVC/HEVC source selections, capsule/source/sensor/stream pins, original clock plus additive interval and explicit source-to-rig/undistorted-image/static-scene assumptions. No capture, dimensions, pixels or current mask can be overridden; video ranges contain at most64 coding segments. No identity, calibration or effect grant.",
+      "file": "schemas/scene_feature_match_retained_query.v1.json",
+      "id": "SCHEMA-SCENE-FEATURE-MATCH-RETAINED-QUERY-001",
+      "schema": "fss.scene_feature_match_retained_query.v1"
+    },
+    {
+      "authority": "retained-source selection",
+      "compatibilityRule": "Owner: fss-cli::fss-scene-fuse::retained_matching::{input,images}. Original two-view source/clock/association contract with explicit per-view pinhole or rectified image declaration. Raw source intrinsics/domain/lens basis/family/radius/range are explicit; target intrinsics come only from the rig and output domain only from the compiled native plan. No source fact, current privacy, target grid or corrected identity override. V1 remains unchanged.",
+      "file": "schemas/scene_feature_match_retained_query.v2.json",
+      "id": "SCHEMA-SCENE-FEATURE-MATCH-RETAINED-QUERY-002",
+      "schema": "fss.scene_feature_match_retained_query.v2"
+    },
+    {
+      "authority": "derived/query",
+      "compatibilityRule": "Complete original source records, every temporal descriptor comparison and ambiguity, all component outcomes and conditional common-time 3D position/velocity with final source/privacy revalidation costs.",
+      "file": "schemas/scene_feature_motion_match_retained.v1.json",
+      "id": "SCHEMA-SCENE-FEATURE-MOTION-MATCH-RETAINED-001",
+      "schema": "fss.scene_feature_motion_match_retained.v1"
+    },
+    {
+      "authority": "derived query integrity",
+      "compatibilityRule": "Complete v2 motion report and SHA-256 of its emitted UTF-8 body. Refusal emits no successful prefix; the complete response and newline share the operator output ceiling. Conditional motion under declared clock hypotheses grants no physical identity, synchronization, calibration activation, coverage or effect authority.",
+      "file": "schemas/scene_feature_motion_match_retained.v2.json",
+      "id": "SCHEMA-SCENE-FEATURE-MOTION-MATCH-RETAINED-002",
+      "schema": "fss.scene_feature_motion_match_retained.v2"
+    },
+    {
+      "authority": "retained-source selection",
+      "compatibilityRule": "Exact repeated retained exposures, fixed camera/source mapping, native image declarations, bounded full capture intervals and conditional constant-velocity descriptor/motion policy.",
+      "file": "schemas/scene_feature_motion_match_retained_query.v1.json",
+      "id": "SCHEMA-SCENE-FEATURE-MOTION-MATCH-RETAINED-QUERY-001",
+      "schema": "fss.scene_feature_motion_match_retained_query.v1"
+    },
+    {
+      "authority": "retained sources and declared clock mapping",
+      "compatibilityRule": "Explicit original clock-query file/pin, exact two-camera sensor/stream/clock/calibration/image bindings and complete target capsule-to-projection inventory. Original world/geometry and every full capture interval must match; zero additive offsets prevent double mapping. Version1 retains its existing additive-alignment contract.",
+      "file": "schemas/scene_feature_motion_match_retained_query.v2.json",
+      "id": "SCHEMA-SCENE-FEATURE-MOTION-MATCH-RETAINED-QUERY-002",
+      "schema": "fss.scene_feature_motion_match_retained_query.v2"
+    },
+    {
+      "authority": "derived motion and replay diagnostics",
+      "compatibilityRule": "Retained source records and complete native temporal geometry plus exact original clock-query text, complete replay diagnostics and every original-to-common interval mapping. All unsupported/unresolved candidates remain in capture hulls. The 1 MiB sidecar reserves space from the existing 4 GiB source allowance; shared work, full uncertainty and final source/privacy revalidation remain mandatory.",
+      "file": "schemas/scene_feature_motion_match_retained_report.v2.json",
+      "id": "SCHEMA-SCENE-FEATURE-MOTION-MATCH-RETAINED-REPORT-002",
+      "schema": "fss.scene_feature_motion_match_retained_report.v2"
+    },
+    {
+      "authority": "derived/query",
+      "compatibilityRule": "Owner: fss-cli::fss-scene-fuse::retained_matching::multiview and fss-twin::multiview_feature_association. Complete original source owners, exact declarations/anchors, all camera-pair decisions and connected-component members/links/refusals enclose joint static points requiring all participating cameras. Both requested/derived times and full hulls are explicit. Complete output at most 32 MiB; final source/current-privacy revalidation is included in costs. No hidden conflict pruning, physical identity, calibrated accuracy, live coverage, world publication or effect grant.",
+      "file": "schemas/scene_feature_multimatch_retained.v1.json",
+      "id": "SCHEMA-SCENE-FEATURE-MULTIMATCH-RETAINED-001",
+      "schema": "fss.scene_feature_multimatch_retained.v1"
+    },
+    {
+      "authority": "derived/query",
+      "compatibilityRule": "Owner: fss-cli::fss-scene-fuse::retained_matching::multiview. Complete camera-pair/component evidence and v2 image_processing for every view, including empty corrected views. Retains all original source/target identity, privacy, full timing, conflict and refusal semantics; final costs include plan preparation and original source revalidation. No measured lens/calibration, physical identity, live coverage or effect authority.",
+      "file": "schemas/scene_feature_multimatch_retained.v2.json",
+      "id": "SCHEMA-SCENE-FEATURE-MULTIMATCH-RETAINED-002",
+      "schema": "fss.scene_feature_multimatch_retained.v2"
+    },
+    {
+      "authority": "retained-source selection",
+      "compatibilityRule": "Owner: fss-cli::fss-scene-fuse::retained_matching::multiview::input. Three through eight complete retained view selections share the original pair source/clock/privacy/mapping contracts. At most 128 selected features per view and 256 actual total, without aggregate truncation. Full global hull contains the original reference; explicit static subset-time clamping does not estimate motion or clocks. No caller overrides of source facts, calibration activation or physical identity.",
+      "file": "schemas/scene_feature_multimatch_retained_query.v1.json",
+      "id": "SCHEMA-SCENE-FEATURE-MULTIMATCH-RETAINED-QUERY-001",
+      "schema": "fss.scene_feature_multimatch_retained_query.v1"
+    },
+    {
+      "authority": "retained-source selection",
+      "compatibilityRule": "Owner: fss-cli::fss-scene-fuse::retained_matching::multiview::input. Three through eight original source selections with the same v2 explicit image declarations. Mixed direct/corrected views share all original distinctness, complete inventory and full-interval bounds. Every lens plan is admitted before source decoding; no corrected camera pose or independent exposure is manufactured.",
+      "file": "schemas/scene_feature_multimatch_retained_query.v2.json",
+      "id": "SCHEMA-SCENE-FEATURE-MULTIMATCH-RETAINED-QUERY-002",
+      "schema": "fss.scene_feature_multimatch_retained_query.v2"
+    },
+    {
+      "authority": "derived/query",
+      "compatibilityRule": "Owner: fss-cli::fss-scene-fuse::retained_fusion and fss-reference::ingest::package_handoffs. Complete current anchor and source projection, all native source/track/observation bindings, exact declarations and query-local track aliases enclose native static, supplied-velocity or inferred-velocity geometry with every success/refusal preserved. Retained custody and privacy are revalidated after solving and before release; geometric covariance covers only declared independent pixel noise. No physical identity, calibrated-camera certificate or effect authority.",
+      "file": "schemas/scene_fusion_retained.v1.json",
+      "id": "SCHEMA-SCENE-FUSION-RETAINED-001",
+      "schema": "fss.scene_fusion_retained.v1"
+    },
+    {
+      "authority": "retained-source selection",
+      "compatibilityRule": "Owner: fss-cli::fss-scene-fuse::retained_fusion_input. At most 32 exact native tracks from four retained report/label/tracker recipes, 64 geometric hypotheses and 2048 feature selections; explicit source-generation-to-rig, image-domain, additive-clock and common-feature assumptions. Source facts and full capture intervals are authenticated by the sealed retained owner, never supplied as replacements by this selection. No identity, calibration or effect grant.",
+      "file": "schemas/scene_fusion_retained_query.v1.json",
+      "id": "SCHEMA-SCENE-FUSION-RETAINED-QUERY-001",
+      "schema": "fss.scene_fusion_retained_query.v1"
+    },
+    {
+      "authority": "derived/query",
+      "compatibilityRule": "Owner: fss-cli::continuity_query. Complete 24-field bounded report preserves every tracklet and ordered-pair disposition, the exact implicit robust-forward path-cover family including all-singletons, a conservatively marked ranked prefix and both full certified ALG-MULTIMATCH-001 identities, outputs and accounting; owner assertions are not authenticated evidence, costs are not probabilities and paths grant no identity or effect authority; incompatible meaning requires a new version.",
+      "file": "schemas/scene_handoffs.v1.json",
+      "id": "SCHEMA-SCENE-HANDOFFS-001",
+      "schema": "fss.scene_handoffs.v1"
+    },
+    {
+      "authority": "owner-declared query",
+      "compatibilityRule": "Owner: fss-cli::continuity_query. One explicit property/session/privacy/generation/clock scope, at most 32 anonymous tracklets and 992 declared transitions, bounded exact clock intervals, evidence/model/calibration pins and integer transit/cost assumptions; handles do not authenticate custody or establish physical identity; unknown fields and incompatible versions refuse.",
+      "file": "schemas/scene_handoffs_query.v1.json",
+      "id": "SCHEMA-SCENE-HANDOFFS-QUERY-001",
+      "schema": "fss.scene_handoffs_query.v1"
+    },
+    {
+      "authority": "derived/query",
+      "compatibilityRule": "Owner: fss-cli::retained_continuity_query and fss-reference::ingest::package_handoffs. Complete current full anchor, exact retained detector/track/capsule bindings and every assigned observation preserve original clock intervals and source-derived comparison/privacy generations; the unchanged conditional planner report remains nested with all alternatives and certificates. The sealed owner authenticates and revalidates custody; public report shapes alone do not. No physical identity or effect authority is established.",
+      "file": "schemas/scene_handoffs_retained.v1.json",
+      "id": "SCHEMA-SCENE-HANDOFFS-RETAINED-001",
+      "schema": "fss.scene_handoffs_retained.v1"
+    },
+    {
+      "authority": "native retained custody / derived temporal handoffs",
+      "compatibilityRule": "Complete original sealed source projection, separately derived common-time observations, exact original clock-query text and native replay, every supplied hypothesis and complete native handoff solver result. Source inventory, original intervals, mapped ordering and current custody are revalidated; one shared work account and existing byte ceilings govern the complete result. The deployment guard and original deadline survive file/stdout publication. No physical identity, clock-observation authentication, clock activation, coverage or effect authority.",
+      "file": "schemas/scene_handoffs_retained.v2.json",
+      "id": "SCHEMA-SCENE-HANDOFFS-RETAINED-002",
+      "schema": "fss.scene_handoffs_retained.v2"
+    },
+    {
+      "authority": "retained-source selection",
+      "compatibilityRule": "Owner: fss-cli::retained_continuity_query. At most 32 native tracks across four exact retained report/label/tracker recipes, with explicit original import/stream/clock alignment pins and declared calibration, transit and costs; source facts cannot be overridden and the selection grants no authority.",
+      "file": "schemas/scene_handoffs_retained_query.v1.json",
+      "id": "SCHEMA-SCENE-HANDOFFS-RETAINED-QUERY-001",
+      "schema": "fss.scene_handoffs_retained_query.v1"
+    },
+    {
+      "authority": "explicit retained-source selection / declared clock scope",
+      "compatibilityRule": "Exactly two retained import/sensor/stream/clock bindings, exact world/camera/calibration/image scope and independently pinned original clock-validation query. Every selected target observation, including interior and tentative samples, requires one exact full-interval projection. Caller offsets and capture overrides are forbidden; original source records remain local time. Version1 keeps its declared additive alignment contract.",
+      "file": "schemas/scene_handoffs_retained_query.v2.json",
+      "id": "SCHEMA-SCENE-HANDOFFS-RETAINED-QUERY-002",
+      "schema": "fss.scene_handoffs_retained_query.v2"
     },
     {
       "authority": "context projection",
@@ -4163,6 +5080,104 @@
       "schema": "fss.sensor_tamper_status.v1"
     },
     {
+      "authority": "requested site/source scope; no grant",
+      "compatibilityRule": "Complete strict <=1 MiB input; 1..64 ordered unique sources, explicit generations/routes/owner/plaintext/retention intent, credential references only, rights references and bounded normalized polygons/masks. CanonicalEncoder validates every typed field before hashing; JSON spelling is not identity. Unknown fields, duplicate keys, duplicate exact routes, conflicting shared-IP connection ceilings, unsafe routes and invalid geometry refuse. No device contact, credential read, rights verification or recording.",
+      "file": "schemas/site_camera_manifest.v1.json",
+      "id": "SCHEMA-SITE-CAMERA-MANIFEST-001",
+      "schema": "fss.site_camera_manifest.v1"
+    },
+    {
+      "authority": "atomic requested site capture plan; no executor/grant",
+      "compatibilityRule": "Exact manifest and probe digests plus operation epoch, independent output parents, principal and bounded pictures compile through existing native AVC/HEVC/JPEG planners (JPEG at most 256 pictures). Protected UniFi AVC/HEVC sources use the unchanged native outer wrapper approval, actual private-file fingerprint, exact camera/view/receipt-route checks and redacted URI preview. Protected ONVIF AVC/HEVC adds unchanged native handoff wrapper approvals, expected historical onboarding/profile pins, independent RTSP scope and explicit false HTTP-origin verification. Private path/control capabilities never enter generated protected-source arguments. Resolved routes must remain unique across mixed source kinds. One site digest binds every native plan in manifest order; any refusal discards the whole result. No credential read, device contact, signed-rights verification or capture grant.",
+      "file": "schemas/site_capture_plan.v1.json",
+      "id": "SCHEMA-SITE-PLAN-001",
+      "schema": "fss.site_capture_plan.v1"
+    },
+    {
+      "authority": "atomic explicit source selection; no executor/grant",
+      "compatibilityRule": "Full unchanged manifest identity plus an explicit nonempty source set. Selection is canonicalized to manifest order; original source indices remain intact. Exact selected receipts and protected UniFi/ONVIF bindings are required without extras. Selected/unselected IDs and full manifest count are exposed; all selected plans succeed or none are returned. The distinct v2 approval binds policy, full manifest, epoch, selected count and each original ordinal/source/probe/native approval. Full manifest and all-source credential isolation checks remain. Legacy all-source v1 bytes are unchanged; no automatic fallback, source freshness, capture authority or site executor.",
+      "file": "schemas/site_capture_plan.v2.json",
+      "id": "SCHEMA-SITE-PLAN-002",
+      "schema": "fss.site_capture_plan.v2"
+    },
+    {
+      "authority": "operator refusal projection",
+      "compatibilityRule": "Payload-free stable error, static reason and optional source ordinal. Input values, secrets and private routes are never echoed; refused inputs produce no accepted prefix or effect authority.",
+      "file": "schemas/site_diagnostic.v1.json",
+      "id": "SCHEMA-SITE-DIAGNOSTIC-001",
+      "schema": "fss.site_diagnostic.v1"
+    },
+    {
+      "authority": "explicit historical handoff and independent RTSP declarations; no grant",
+      "compatibilityRule": "Exact original manifest digest and complete unique applicable ONVIF source coverage (all by default, or exactly the explicit plan selection), private source file/raw digest, expected onboarding/profile digests, independently supplied RTSP peer/authority and explicit control subtree. Stable Media1 AVC or indefinite Media2 AVC/HEVC only; at most 64 rows/1 MiB, 8 KiB per retained handoff and 512 KiB aggregate. Actual private-file fingerprints and destination isolation are revalidated. Matching observations establish operator-bound historical consistency, not authenticated HTTP origin, current liveness, signed rights or capture authority.",
+      "file": "schemas/site_onvif_bindings.v1.json",
+      "id": "SCHEMA-SITE-ONVIF-BINDINGS-001",
+      "schema": "fss.site_onvif_bindings.v1"
+    },
+    {
+      "authority": "protected receipt publication outcome; no capture grant",
+      "compatibilityRule": "One exact native RTSP observation from an operator-bound historical ONVIF handoff. Acknowledged TEARDOWN and finalized request precede create-only mode-0600 receipt publication. Complete original manifest, private handoff identity, onboarding/profile, independent RTSP route and destination parent are approval-bound. Stdout exposes safe digests and explicit publication/late-failure facts; capability paths remain private. No HTTP-origin authentication, ONVIF HTTP contact, recording, rights grant, overwrite or automatic retry.",
+      "file": "schemas/site_onvif_probe_result.v1.json",
+      "id": "SCHEMA-SITE-ONVIF-PROBE-RESULT-001",
+      "schema": "fss.site_onvif_probe_result.v1"
+    },
+    {
+      "authority": "payload-free native probe refusal",
+      "compatibilityRule": "Explicit connection/credential access attempts, possible remote-session state and acknowledged close; no URI, peer, credential reference, session token or raw wire. No successful receipt or automatic retry after refusal. Matching TEARDOWN acknowledgement is mandatory for success.",
+      "file": "schemas/site_probe_diagnostic.v1.json",
+      "id": "SCHEMA-SITE-PROBE-DIAGNOSTIC-001",
+      "schema": "fss.site_probe_diagnostic.v1"
+    },
+    {
+      "authority": "measured recorded-protocol consistency; no live/custody/effect grant",
+      "compatibilityRule": "Exact raw response/dump and manifest-input pins, canonical manifest/source identity, native AVC/HEVC picture cadence or complete RFC2435 JPEG reconstruction cadence, packet counts and one complete site probe receipt. The bounded observer refuses loss, reorder, unfinished pictures, configuration drift and unsupported frame modes. Server header bytes remain private; only their parsed-value digest is projected. Channel selection is operator-declared; origin authentication, live coverage, custody, synchronized clocks, rights and capture authorization stay false.",
+      "file": "schemas/site_probe_observation.v1.json",
+      "id": "SCHEMA-SITE-PROBE-OBSERVATION-001",
+      "schema": "fss.site_probe_observation.v1"
+    },
+    {
+      "authority": "requested native observation; no capture grant",
+      "compatibilityRule": "Pure preview binds the complete manifest, exact source, AVC/HEVC/JPEG selection, principal, codec-specific native prefix/tail policy, output mode, source-specific ingress, actual native limit profile and complete logical runtime reservation. Only the exact separately supplied digest admits one native RTSP/NVR or protected UniFi/ONVIF AVC/HEVC probe. Optional ONVIF metadata binds the historical onboarding/profile and handoff file identity to an independent RTSP endpoint without authenticating the HTTP origin. Optional UniFi metadata binds the protected export fingerprint, rendition, exact route and destination-parent identity; its route fields are SHA-256 digests and preview reads only the selected export. Direct preview and approval bytes are unchanged. No preview socket or credential access; no automatic retry, source retention or scene-liveness claim.",
+      "file": "schemas/site_probe_plan.v1.json",
+      "id": "SCHEMA-SITE-PROBE-PLAN-001",
+      "schema": "fss.site_probe_plan.v1"
+    },
+    {
+      "authority": "supplied observation claims; no freshness/authenticity grant",
+      "compatibilityRule": "Exact site/manifest/source generation and route, observed codec/payload/SSRC/90 kHz cadence/channel/SDP/configuration digests. Complete bounded input arrays contain at most 64 nonduplicate receipts. Explicit canonical order; SHA-256 only, zero and laboratory digests refused. Mathematical timestamp consistency never authenticates observations, establishes live coverage or activates rights. Optional `clock_evidence` (VIT-019): a paired real/monotonic clock sample plus its NTP/chrony correction and uncertainty bound (1 ns to 10 s); absent until a capturing session populates it, and never an authenticated or camera-side fact.",
+      "file": "schemas/site_probe_receipt.v1.json",
+      "id": "SCHEMA-SITE-PROBE-RECEIPT-001",
+      "schema": "fss.site_probe_receipt.v1"
+    },
+    {
+      "authority": "optional native session evidence; no custody or effect grant",
+      "compatibilityRule": "Approval-selected output preserves the planner receipt array, actual transport/cutoff counters and canonical completion witness. JPEG names whole-frame reconstruction as its measurement basis and does not claim entropy or pixel decoding. Only acknowledged TEARDOWN plus owned-runtime completion releases success. Refusal and remote-close indeterminacy contain no receipt or completion digest; unobserved counters are null. Reconstructed tail bytes overlap original wire, assert no omitted-frame count and grant no freshness, rights or capture authority.",
+      "file": "schemas/site_probe_session.v1.json",
+      "id": "SCHEMA-SITE-PROBE-SESSION-001",
+      "schema": "fss.site_probe_session.v1"
+    },
+    {
+      "authority": "explicit private export references; no endpoint or credential authority",
+      "compatibilityRule": "Exact canonical manifest digest and one source-file/raw-SHA-256/quality/transport row for every applicable UniFi source (all by default, or exactly the explicit selection), with no extras, fallback or peer overrides. Selection never changes the complete manifest digest. Strict bounded JSON, at most 64 rows/1 MiB; the native Linux owner protects each 256 KiB export and an 8 MiB aggregate, revalidates actual file fingerprints and output isolation before release. Stream capability URLs remain private.",
+      "file": "schemas/site_unifi_bindings.v1.json",
+      "id": "SCHEMA-SITE-UNIFI-BINDINGS-001",
+      "schema": "fss.site_unifi_bindings.v1"
+    },
+    {
+      "authority": "protected receipt publication outcome; no capture grant",
+      "compatibilityRule": "Acknowledged native UniFi observation and finalized network request precede a separate bounded create-only mode-0600 receipt write. Stdout contains only safe selection, receipt and file digests plus destination and completion facts; exact capability routes remain in the private receipt array. Export and destination-parent identities are approval-bound and revalidated. Late writer retirement failure preserves a known durable receipt; uncertain writes report possible file presence without retry or overwrite.",
+      "file": "schemas/site_unifi_probe_result.v1.json",
+      "id": "SCHEMA-SITE-UNIFI-PROBE-RESULT-001",
+      "schema": "fss.site_unifi_probe_result.v1"
+    },
+    {
+      "authority": "read-only operator projection",
+      "compatibilityRule": "Complete bounded source inventory and canonical manifest digest; fixed false device-contact/credential-read/rights-verification/capture-authority fields. Private routes and credential references are not projected.",
+      "file": "schemas/site_validation.v1.json",
+      "id": "SCHEMA-SITE-VALIDATION-001",
+      "schema": "fss.site_validation.v1"
+    },
+    {
       "authority": "agent driver projection",
       "compatibilityRule": "frame, meaningful delta, obligations, resources, affordances, context, and compression proof remain one anchor-pinned publication",
       "file": "schemas/situation_capsule.v1.json",
@@ -4191,6 +5206,20 @@
       "schema": "fss.status.v1"
     },
     {
+      "authority": "derived/query",
+      "compatibilityRule": "complete source-bound aggregate camera routing under declared directed topology, positive demands/capacities, nonnegative costs and explicit failures; every camera shortfall, link/recorder row, typed minimum cut and complete maximum-flow/minimum-cost proof remains present; exact additive ALG-MCF-001 capacity identity, whole-window retained support and source anchor are preserved; no measured throughput, fairness, session multipath or effect authority",
+      "file": "schemas/stream_capacity.v1.json",
+      "id": "SCHEMA-STREAM-CAPACITY-001",
+      "schema": "fss.stream_capacity.v1"
+    },
+    {
+      "authority": "caller-supplied simulation / derived cognition",
+      "compatibilityRule": "Owner: fss-cli::supervisor. Explicit --plan --transcript yes wrapper around unchanged fss.supervisor_report.v1, ordered per-window fusion transcripts and independently bound deterministic supervisor transcript. The default projection and historical numerical hashes remain unchanged; wall latency is excluded. Retained native supervision keeps its separate owner. No source custody, calibrated field quality, anytime false-alarm guarantee or effect authority.",
+      "file": "schemas/supervisor_transcript_report.v1.json",
+      "id": "SCHEMA-SUPERVISOR-TRANSCRIPT-REPORT-001",
+      "schema": "fss.supervisor_transcript_report.v1"
+    },
+    {
       "authority": "authority/transfer",
       "compatibilityRule": "root-last; object and closure identities immutable",
       "file": "schemas/transfer_manifest.v1.json",
@@ -4203,6 +5232,13 @@
       "file": "schemas/transfer_receipt.v1.json",
       "id": "SCHEMA-TRANSFER-RECEIPT-001",
       "schema": "fss.transfer_receipt.v1"
+    },
+    {
+      "authority": "caller-declared sources / derived cognition",
+      "compatibilityRule": "Owner: fss-cli::supervisor::run_unique_source_supervisor. Explicit --plan --unique-sources N profile binds configuration even for zero transitions, exact raw detector facts before calibration binning, every core admission/reset receipt and bounded lifetime inventories. Aliases and resets cannot consume a source twice; conflict or capacity refusal exports no successful prefix. Separate from default and transcript-only reports; no physical custody, source independence, calibrated field quality or effect authority.",
+      "file": "schemas/unique_source_supervisor_report.v1.json",
+      "id": "SCHEMA-SUPERVISOR-UNIQUE-SOURCE-REPORT-001",
+      "schema": "fss.unique_source_supervisor_report.v1"
     },
     {
       "authority": "historical upload status",
