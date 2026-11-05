@@ -162,6 +162,10 @@ for port in 443 8443 8883 8080 9101; do
   # same adoption rule as the TLS loop below: never kill a contract-complete forge — the
   # wyze-forge launchd daemon would just respawn it and the two supervisors would fight
   if { [ "$port" = 443 ] || [ "$port" = 8443 ]; } && forge_ok "$port"; then continue; fi
+  # 8883 is served by an exec'd wyze_mqtt_mitm from a PRIOR generation: free_port only waits,
+  # so a stale proxy here makes this generation's proxy die at bind (measured: 3700+ restart
+  # loop) and KeepAlive restarts the whole plane stack forever.
+  if [ "$port" = 8883 ]; then sudo pkill -f 'wyze_mqtt_mitm.py' 2>/dev/null; fi
   free_port "$port" || echo "WARN: port $port still held after 5 s"
 done
 sudo pkill -f 'wyze_dns_redirect.py' 2>/dev/null
