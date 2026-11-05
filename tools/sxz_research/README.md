@@ -18,3 +18,12 @@ usize 86257, csize 61439, props 0x5d):
   custom literal/match state machine). Next: differential-trace the SXZ decode against a
   synthetic stream whose plaintext we control end-to-end (encode with the vendor's own
   tools if findable, else align bit-by-bit using the CRC-verified container boundaries).
+
+## Additions (same session, later)
+
+- The image at 0x30200 is U-Boot 2021.10 (not the Linux kernel) — corrected in tapo.md C4.
+- lc=0 variants (`lc0_test.py` logic): all give `27 04 …` — the 0x04 echoes the vendor block
+  header's first byte; coincidence of fresh-probability decoding, not the rule.
+- The SXZ hardware decode likely needs register-level tracing (hal_xzdec.c documents the
+  interface; CTRL0=0x0003 for SXZ vs 0x0007 for XZ — the SXZ engine may implement a
+  simplified/custom LZMA2). A UART/JTAG trace of one live decode would settle it.
