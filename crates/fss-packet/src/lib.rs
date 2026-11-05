@@ -19,6 +19,8 @@ pub mod hevc;
 pub mod jpeg;
 /// Bounded uncompressed ONVIF metadata documents over owner-scoped RTP.
 pub mod onvif_metadata;
+/// Bounded, untrusted Ubiquiti discovery datagram parsing.
+pub mod unifi_discovery;
 
 mod continuity;
 mod error;

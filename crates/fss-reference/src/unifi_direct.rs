@@ -17,6 +17,8 @@ use fss_core::json_input::{self, Value};
 
 /// Source-preserving TCP-to-extended-FLV ingress boundary.
 pub mod ingress;
+/// Bounded owner-scoped UniFi LAN discovery.
+pub mod discovery;
 
 /// Maximum incoming management message size before JSON parsing.
 pub const MAX_MESSAGE_BYTES: usize = 64 * 1024;
