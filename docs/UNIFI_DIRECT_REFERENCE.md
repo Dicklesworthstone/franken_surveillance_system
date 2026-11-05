@@ -955,15 +955,29 @@ and the original uploader reported copying 14 staged segments. A transitional
 local fallback on `trj` is now enabled at
 `/bulk/unifi_camera_recordings/g4-instant-fallback`; it copies closed staged
 files, verifies each new copy by hash, and does not delete the staging source.
+The fallback directory is root-owned and private, so reading it requires
+appropriate privileged access. Existing published copies are checked by file
+metadata on subsequent passes, not rehashed on every pass.
 Its private, create-only archive removes matching regular archive files after
-30 days and does not follow symlinks. Six synthetic filesystem tests and a
-separate synthetic real-media/open-file probe passed. A manual pass copied ten
-real segments, and an independent hash and media probe confirmed one against its
-still-present staging source. The enabled timer also completed a scheduled pass
-with no eligible copies after the original uploader resumed. Neither path
-proves gap-free recording or an actual 30-day deletion. If the external drive
+30 days and does not follow symlinks. Nine synthetic filesystem tests and a
+separate synthetic real-media/open-file probe passed on the revised version,
+including an expired staging backlog followed by a recent segment and reporting
+of unavailable probes or publication failures. A manual pass of the earlier
+version copied ten real segments, and an independent hash and media probe
+confirmed one against its still-present staging source. The enabled timer also
+completed a scheduled pass on the revised version after the original uploader
+resumed; an earlier scheduled pass had no eligible copies. Neither path proves
+gap-free recording or an actual 30-day deletion. If the external drive
 stays absent, staging originals accumulate because the fallback does not
 delete them; free space must be monitored.
+
+The failed recovery helper has a revised version installed separately for
+future guarded trials. Its journal read allows 30 seconds, and a timeout or
+journal error becomes `unknown`, which abstains from reboot. Six synthetic
+tests passed locally and on `trj`. An independent read on `trj` returned
+`unknown` after 9.7 seconds, and the new wrapper's prior-marker and invalid-time
+checks abstained without touching the camera. The failed earlier timer remains
+a failure, and the revised helper is not evidence of automatic recovery.
 
 The transitional recorder separately showed several stream exits at roughly
 four-minute intervals and another after about 100 seconds, followed by
