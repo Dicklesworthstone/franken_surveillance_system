@@ -666,3 +666,26 @@ OPERATOR ACTIONS that unblock everything (all remote levers exhausted):
 All automation persists across the power-cycles: forge (root daemon), MITM broker
 (KeepAlive), watchdog v2 (auto-probes telnetd, captures root proof), TFTP daemon,
 backup receivers (root daemon), C460 burst/fire/sweep watchers.
+
+## 15:40 — fresh-eyes review complete; definitive operator action list
+
+Four bugs found and fixed in the fresh-eyes code review (32c6ab11): free_port killing
+contract-complete forges during ssl startup, tftp_serve missing ERROR handling,
+PID extraction with multi-colon process names, and liberation_watch silently losing
+the root proof to a missing directory.
+
+THE OPERATOR ACTION LIST (all remote levers exhausted; these complete the chain):
+1. **Power-cycle .39 and .51** — the camera's MQTT/shadow re-syncs on boot; the flushed
+   desired state (our capsule) reaches assis; the 0x1fe fires; the capsule downloads;
+   the installer streams backups to 444-449; Thingino flashes; dropbear root:root.
+   The watchdog v2 auto-captures the telnetd proof.
+2. **Walk past the C660** — PIR wake fires the ROP; the tftp exfil lands /etc/passwd +
+   /proc/version in /tmp/tftp/ as system() ground truth (receiver verified).
+3. **Connect a 3.3V USB-serial adapter to the C460's UART pads** (115200 8N1) —
+   interrupt U-Boot autoboot → `loados nor by_header RAMDISK by_header` → XZDEC decodes
+   the container → dump the result → /bin/main → real gadget addresses → verified exploit.
+   The complete pre-stage guide is in tools/sxz_research/README.md.
+4. **Owlet**: Frida-hook the phone app during a live stream to capture the 0x2041 grant
+   sequence; or power-cycle and re-probe (the DTLS handshake now completes).
+5. **Yi**: re-provision through the Yi phone app to join our AP (the listener has been
+   armed for 20+ hours).
