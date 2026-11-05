@@ -18,7 +18,7 @@ use fss_object::{
 use fss_packet::extended_flv::{Limits as FlvLimits, stream::Framer};
 use fss_reference::unifi_direct::{
     AudioCodec, Controller, Identity, Observation, StreamStart, VideoChannel, VideoCodec,
-    conversation,
+    controller_listener, conversation,
     ingress::DirectIngress,
     intent, listener,
     management::{Intent, Preconditions},
@@ -338,9 +338,9 @@ impl conversation::Approval for FixtureApproval<'_> {
     }
 }
 
-fn conversation_scenario(revoke_stream: bool) -> Test {
+fn conversation_scenario(revoke_stream: bool, revoke_after_start: bool) -> Test {
     let path = std::fs::canonicalize(std::env::temp_dir())?.join(format!(
-        "fss-unifi-task-conversation-{}-{revoke_stream}",
+        "fss-unifi-task-conversation-{}-{revoke_stream}-{revoke_after_start}",
         std::process::id(),
     ));
     std::fs::create_dir(&path)?;
@@ -414,12 +414,11 @@ fn conversation_scenario(revoke_stream: bool) -> Test {
         let cx=asupersync::Cx::current().ok_or("missing runtime")?;
         let result=run_owned_async(&mut authority,&mut tree,TaskSpec { task_id:TaskId::new("task:conversation")?, started_at:TimestampNs(3) },&cx,async |task,cx| {
             let output: Test = async {
-                let listener=TcpListener::bind("127.0.0.1:0").await?;
-                let address=listener.local_addr()?;
                 let clock=MeteredClock::new(task,cx,TimestampNs(4))?;
                 let policy=FixtureMediaAdmission {listen:Cell::new(false),peer:Cell::new(true)};
                 let bind=SocketAddrV4::new(Ipv4Addr::LOCALHOST,0);
                 assert!(matches!(listener::Listener::bind(task,cx,clock,&policy,bind,"fixture:camera",Duration::from_secs(5)).await,Err(listener::Error::Denied)));
+                assert!(matches!(controller_listener::Listener::bind(task,cx,clock,&policy,bind,"fixture:camera",Duration::from_secs(5)).await,Err(listener::Error::Denied)));
                 policy.listen.set(true);
                 let revoked=listener::Listener::bind(task,cx,clock,&policy,bind,"fixture:camera",Duration::from_secs(5)).await?;
                 let revoked_address=SocketAddr::V4(revoked.local_addr());
@@ -440,7 +439,66 @@ fn conversation_scenario(revoke_stream: bool) -> Test {
                 let recorder=recording::Recorder::new(SourceKey {connection:4,generation:1},recording::Limits::default())?;
                 assert!(matches!(denied_peer.accept(framer,recorder,4096,1_000_000,Duration::from_secs(5)).await,Err(listener::Error::Denied)));
                 unexpected.join().map_err(|_|"unexpected peer panic")??;
+                let denied_control=controller_listener::Listener::bind(task,cx,clock,&policy,bind,"fixture:camera",Duration::from_secs(5)).await?;
+                let denied_control_address=SocketAddr::V4(denied_control.local_addr());
+                let unexpected_control=std::thread::spawn(move || std::net::TcpStream::connect_timeout(&denied_control_address,Duration::from_secs(5)).map(drop));
+                assert!(matches!(denied_control.accept(4096,Duration::from_secs(5)).await,Err(listener::Error::Denied)));
+                unexpected_control.join().map_err(|_|"unexpected controller peer panic")??;
                 policy.peer.set(true);
+                let guarded_control=controller_listener::Listener::bind(task,cx,clock,&policy,bind,"fixture:camera",Duration::from_secs(5)).await?;
+                let guarded_address=SocketAddr::V4(guarded_control.local_addr());
+                let sending_control=std::thread::spawn(move || -> io::Result<()> {
+                    let mut socket=std::net::TcpStream::connect_timeout(&guarded_address,Duration::from_secs(5))?;
+                    socket.write_all(b"fixture")
+                });
+                let (mut guarded_io,_)=guarded_control.accept(4096,Duration::from_secs(5)).await?;
+                sending_control.join().map_err(|_|"guarded controller peer panic")??;
+                policy.peer.set(false);
+                let mut byte=[0u8;1];
+                assert_eq!(asupersync::io::AsyncReadExt::read(&mut guarded_io,&mut byte).await.unwrap_err().kind(),io::ErrorKind::PermissionDenied);
+                assert_eq!(asupersync::io::AsyncWriteExt::write(&mut guarded_io,b"x").await.unwrap_err().kind(),io::ErrorKind::PermissionDenied);
+                policy.peer.set(true);
+                assert_eq!(asupersync::io::AsyncReadExt::read(&mut guarded_io,&mut byte).await.unwrap_err().kind(),io::ErrorKind::PermissionDenied);
+                drop(guarded_io);
+                policy.peer.set(true);
+                // The upgrade parser has already buffered the hello, so a raw
+                // socket or TLS policy check cannot protect this observation.
+                let buffered_control=controller_listener::Listener::bind(task,cx,clock,&policy,bind,"fixture:camera",Duration::from_secs(5)).await?;
+                let buffered_address=SocketAddr::V4(buffered_control.local_addr());
+                let buffered_peer=std::thread::spawn(move || std::net::TcpStream::connect_timeout(&buffered_address,Duration::from_secs(5)));
+                let (buffered_raw,buffered_gate)=buffered_control.accept(4096,Duration::from_secs(5)).await?;
+                let buffered_peer=buffered_peer.join().map_err(|_|"buffered controller peer panic")??;
+                let mut pipelined=HEAD.as_bytes().to_vec();
+                pipelined.extend(frame(HELLO));
+                let prepared=fss_reference::unifi_direct::upgrade::PreparedUpgrade::parse(&pipelined,ProtocolPolicy::RequireOffer)?;
+                let buffered_io=MeteredIo::with_clock(buffered_gate.wrap(buffered_raw),clock,"fixture:camera",4096)?;
+                let buffered_controller=Controller::new(Identity::new("FSS","12345678-1234-4abc-9abc-123456789abc","1.20.0")?,1)?;
+                let mut buffered_session=fss_reference::unifi_direct::receive::Session::from_upgrade(prepared,buffered_io,fss_reference::unifi_direct::Dispatch::Written,buffered_controller)?;
+                buffered_session.bind_admission(buffered_gate)?;
+                policy.peer.set(false);
+                match buffered_session.next(Duration::from_secs(5)).await? {
+                    fss_reference::unifi_direct::receive::Step::Retired {reason:fss_reference::unifi_direct::receive::Stop::AdmissionRevoked,controller} => {
+                        assert_eq!(controller.previous_phase,fss_reference::unifi_direct::Phase::AwaitHello);
+                        assert_eq!(controller.hello_request_id,None);
+                    },
+                    other=>return Err(format!("buffered message survived revocation: {other:?}").into()),
+                }
+                policy.peer.set(true);
+                assert!(matches!(buffered_session.next(Duration::from_secs(5)).await,Err(fss_reference::unifi_direct::receive::Error::Retired)));
+                drop(buffered_peer);
+                let invalid_control=controller_listener::Listener::bind(task,cx,clock,&policy,bind,"fixture:camera",Duration::from_secs(5)).await?;
+                assert!(matches!(invalid_control.accept(0,Duration::from_secs(5)).await,Err(listener::Error::Configuration)));
+                let revoked_control=controller_listener::Listener::bind(task,cx,clock,&policy,bind,"fixture:camera",Duration::from_secs(5)).await?;
+                let revoked_control_address=SocketAddr::V4(revoked_control.local_addr());
+                let mut waiting_control=Box::pin(revoked_control.accept(4096,Duration::from_secs(5)));
+                poll_fn(|context| match waiting_control.as_mut().poll(context) {Poll::Pending=>Poll::Ready(()),Poll::Ready(_)=>panic!("controller accept should wait")}).await;
+                policy.listen.set(false);
+                let wake_control=std::net::TcpStream::connect_timeout(&revoked_control_address,Duration::from_secs(1))?;
+                assert!(matches!(waiting_control.await,Err(listener::Error::Denied)));
+                drop(wake_control);
+                policy.listen.set(true);
+                let controller_listener=controller_listener::Listener::bind(task,cx,clock,&policy,bind,"fixture:camera",Duration::from_secs(5)).await?;
+                let address=SocketAddr::V4(controller_listener.local_addr());
                 let wire=media_fixture()?;
                 let expected=wire.clone();
                 let peer=std::thread::spawn(move || -> io::Result<()> {
@@ -471,6 +529,10 @@ fn conversation_scenario(revoke_stream: bool) -> Test {
                     let mut media=std::net::TcpStream::connect_timeout(&destination,Duration::from_secs(5))?;
                     let split=wire.len().min(100);
                     media.write_all(&wire[..split])?;
+                    if revoke_after_start {
+                        let mut last=[0u8;1];
+                        return match socket.read(&mut last) { Ok(0)=>Ok(()), _=>Err(io::Error::other("revoked controller did not retire")) };
+                    }
                     socket.write_all(&frame(br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"ubnt_avclient_timeSync","messageId":11}"#))?;
                     if !receive_binary(&mut socket)?.windows(b"ubnt_avclient_timeSync".len()).any(|w|w==b"ubnt_avclient_timeSync") { return Err(io::Error::other("missing post-start time-sync reply")); }
                     media.write_all(&wire[split..])?;
@@ -478,10 +540,9 @@ fn conversation_scenario(revoke_stream: bool) -> Test {
                     let mut last=[0u8;1];
                     match socket.read(&mut last) { Ok(0)=>Ok(()), _=>Err(io::Error::other("controller did not retire")) }
                 });
-                let (socket,_)=timeout(cx.now(),Duration::from_secs(5),listener.accept()).await??;
-                let io=MeteredIo::with_clock(socket,clock,"fixture:camera",4096)?;
+                let (io,gate)=controller_listener.accept(4096,Duration::from_secs(5)).await?;
                 let controller=Controller::new(Identity::new("FSS","12345678-1234-4abc-9abc-123456789abc","1.20.0")?,1)?;
-                let mut session=owner::accept(io,ProtocolPolicy::RequireOffer,&FixtureAdmission,controller,Duration::from_secs(5)).await?;
+                let mut session=owner::accept_guarded(io,ProtocolPolicy::RequireOffer,&FixtureAdmission,gate,controller,Duration::from_secs(5)).await?;
                 let guard=Guard { leases:&leases, clock };
                 let request=StreamStart::new(VideoChannel::Video2,SocketAddrV4::new(Ipv4Addr::LOCALHOST,17551),VideoCodec::H264,AudioCodec::Aac,"0123456789abcdef")?;
                 let config=conversation::Config { hello:&operations[0], agreement:&operations[1], stream:&operations[2], time_sync:&operations[3..4], management:conditions, stream_conditions, request:&request, wait:Duration::from_secs(5) };
@@ -512,6 +573,29 @@ fn conversation_scenario(revoke_stream: bool) -> Test {
                 let started=started?;
                 assert_eq!(started.reply,conversation::Reply { status_code:None, success:None, time_syncs:1 });
                 let mut supervisor=supervisor::Supervisor::new(session,started.pipeline,conditions);
+                if revoke_after_start {
+                    let mut retained=Vec::new();
+                    match supervisor.step(&mut owner,&operations[4],Duration::from_secs(5)).await {
+                        supervisor::Step::Media(pipeline::Step::Progress {appended}) if appended>0=>(),
+                        supervisor::Step::Media(pipeline::Step::Recording(recording::Push::Source {record,..}))=>retained.extend_from_slice(record.bytes()),
+                        other=>return Err(format!("expected buffered media: {other:?}").into()),
+                    };
+                    policy.peer.set(false);
+                    assert!(matches!(supervisor.step(&mut owner,&operations[4],Duration::from_secs(5)).await,
+                        supervisor::Step::ControllerStopped(fss_reference::unifi_direct::receive::Stop::AdmissionRevoked)));
+                    policy.peer.set(true);
+                    assert!(matches!(supervisor.step(&mut owner,&operations[4],Duration::from_secs(5)).await,supervisor::Step::Stopped));
+                    let retired=supervisor.retire();
+                    assert_eq!(retired.controller.previous_phase,fss_reference::unifi_direct::Phase::AgreementReplyObserved);
+                    for record in retired.media.recorder.pending {retained.extend_from_slice(record.bytes());}
+                    retained.extend_from_slice(retired.media.ingress.framing.bytes());
+                    if let Some(buffered)=retired.media.ingress.buffered {retained.extend_from_slice(&buffered.source.bytes()[buffered.appended..]);}
+                    if let Some(pending)=retired.media.ingress.source.pending {retained.extend_from_slice(pending.bytes());}
+                    assert_eq!(retained.len() as u64,retired.media.ingress.source.received);
+                    assert_eq!(retained,expected[..retained.len()]);
+                    peer.join().map_err(|_|"fixture peer panic")??;
+                    return Ok(());
+                }
                 let mut later_syncs=0;
                 let mut originals=Vec::new();
                 let mut segments=0;
@@ -592,7 +676,11 @@ fn conversation_scenario(revoke_stream: bool) -> Test {
         }).await?;
         result.receipt?; result.output
     })?;
-    for operation in &operations[..if revoke_stream { 4 } else { 5 }] {
+    for operation in &operations[..if revoke_stream || revoke_after_start {
+        4
+    } else {
+        5
+    }] {
         assert_eq!(
             effects
                 .journal()
@@ -608,10 +696,15 @@ fn conversation_scenario(revoke_stream: bool) -> Test {
 
 #[test]
 fn owned_conversation_requests_a_stream_that_reaches_the_recording_pipeline() -> Test {
-    conversation_scenario(false)
+    conversation_scenario(false, false)
 }
 
 #[test]
 fn revoked_listener_policy_prevents_stream_setting_dispatch() -> Test {
-    conversation_scenario(true)
+    conversation_scenario(true, false)
+}
+
+#[test]
+fn revoked_controller_admission_stops_buffered_media_and_retains_it() -> Test {
+    conversation_scenario(false, true)
 }

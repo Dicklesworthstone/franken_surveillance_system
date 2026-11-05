@@ -119,6 +119,12 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Supervisor<'scope, 'task
                 if owner.cx.checkpoint().is_err() {
                     return Poll::Ready(Ready::Clock);
                 }
+                // A buffered media record must not bypass a revoked controller
+                // session merely because media happened to be polled first.
+                if !self.session.admission_current() {
+                    let mut control = pin!(self.session.next(wait));
+                    return control.as_mut().poll(context).map(Ready::Controller);
+                }
                 if !media_first {
                     let mut control = pin!(self.session.next(wait));
                     if let Poll::Ready(value) = control.as_mut().poll(context) {

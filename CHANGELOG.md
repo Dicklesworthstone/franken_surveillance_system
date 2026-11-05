@@ -5,6 +5,14 @@ All notable changes to Franken Surveillance System are recorded here. The projec
 ## Unreleased
 
 ### Added
+- Expose a bounded, payload-free UniFi handoff-response observation and sample a short readback timeline in the laboratory; synthetic delayed-change and reversal cases pass, while the physical timeline remains untested.
+- The isolated UniFi trial can retry an early WebSocket EOF before any management effect, within its existing connection and startup limits. Five process fixtures passed, including four encrypted camera cases; a later G4 handoff reported the previous controller and no native connection occurred, so live reconnect remains unverified.
+- Preserve payload-free UniFi WebSocket and I/O failure categories through controller retirement; synthetic receive and encrypted process tests distinguish unmasked frames from transport resets without exposing peer data. A subsequent physical G4 trial reported an unexpected I/O EOF while awaiting hello and produced no native clip; the cause remains unconfirmed.
+- Added a bounded standalone UniFi controller-to-MP4 trial. Synthetic process tests passed; owner-authorized physical G4 attempts reached TLS and WebSocket after bounded reconnect handling but did not produce a native clip. The existing recorder resumed verified uploads. Automatic setup and native continuous recording remain open.
+- Handle correlated UniFi time-sync replies without echoing them as new requests, retain payload-free retirement diagnostics, and allow a scoped controller listener to accept sequential connections under caller-owned bounds.
+- Added a shared UniFi connection admission gate across raw I/O, TLS plaintext, and opted-in controller sessions, including a buffered WebSocket revocation check; this remains an experimental service component.
+- Added a bounded task-owned UniFi controller TCP listener with scoped peer admission and raw-I/O revocation fencing; TLS identity and a runnable camera service remain open.
+- Exercised joint UniFi control and media supervision through an experimental encrypted loopback and source-linked archive reopen; the two passing cases use a synthetic camera, not live streaming.
 - Added bounded joint supervision of an admitted UniFi controller and media pipeline, including journaled post-start time-sync replies and retained retirement state; the end-to-end test uses loopback fixtures, not a live camera.
 - Added task-owned, single-candidate UniFi setup orchestration from a discovery report through admitted camera HTTP, journaled controller handoff and readback; loopback tests cover idempotence and interrupted replies, while production TLS, automatic enrollment and native recording remain open.
 - Connected the owned UniFi camera HTTP session to journaled controller handoff, bounded response handling and typed untrusted readback; loopback tests cover denial and cancellation, while live adoption remains unqualified.

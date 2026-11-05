@@ -14,8 +14,8 @@ use fss_object::{
 };
 use fss_reference::unifi_direct::{
     camera_api::{
-        ControllerAddress, HandoffAuthority, HandoffError, HandoffWrite, Phase, Session,
-        WriteOutcome,
+        ControllerAddress, HandoffAuthority, HandoffError, HandoffResponseObservation,
+        HandoffWrite, Phase, Session, WriteOutcome,
     },
     camera_http,
     handoff::{Plan, Preconditions},
@@ -326,7 +326,20 @@ fn denied_stale_then_written_requires_fresh_readback() -> Test {
                     assert!(wire.ends_with(br#"{"controller":{"addr":"192.168.1.40"}}"#));
                     drop(wire);
                     assert_eq!(session.phase(), Phase::AwaitHandoff);
-                    session.accept_handoff_response(Response::new(200, "OK", b"{}".to_vec()))?;
+                    let observed = session.accept_handoff_response_observed(Response::new(
+                        200,
+                        "OK",
+                        br#"{"success":false,"statusCode":17,"password":"fixture-secret"}"#
+                            .to_vec(),
+                    ))?;
+                    assert_eq!(
+                        observed,
+                        HandoffResponseObservation::Object {
+                            success: Some(false),
+                            status_code: Some(17)
+                        }
+                    );
+                    assert!(!format!("{observed:?}").contains("fixture-secret"));
                     assert_eq!(session.phase(), Phase::ReconcileSettings);
                     assert!(session.prepare_snapshot().is_err());
                     let readback = session.prepare_settings()?;

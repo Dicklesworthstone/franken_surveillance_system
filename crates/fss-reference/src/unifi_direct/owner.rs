@@ -134,3 +134,27 @@ where
     }
     Session::from_upgrade(prepared, io, Dispatch::Written, controller).map_err(Error::Session)
 }
+
+/// Upgrade a connection and install its existing admission gate before the
+/// session is returned. The caller must have wrapped plaintext I/O with the
+/// same gate, and must bind the gate to this exact independently admitted peer.
+/// This helper neither performs TLS nor authenticates the camera.
+pub async fn accept_guarded<'scope, 'task, IO, A>(
+    io: MeteredIo<'scope, 'task, IO>,
+    policy: ProtocolPolicy,
+    admission: &A,
+    gate: super::controller_listener::AdmissionGate<'scope>,
+    controller: Controller,
+    wait: Duration,
+) -> Result<Session<'scope, 'task, IO>, Error>
+where
+    IO: AsyncRead + AsyncWrite + Unpin,
+    A: PeerAdmission,
+{
+    gate.check().map_err(|_| Error::PeerDenied)?;
+    let mut session = accept(io, policy, admission, controller, wait).await?;
+    session
+        .bind_admission(gate)
+        .map_err(|_| Error::PeerDenied)?;
+    Ok(session)
+}

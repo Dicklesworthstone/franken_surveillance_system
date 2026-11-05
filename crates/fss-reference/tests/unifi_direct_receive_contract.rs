@@ -13,8 +13,8 @@ use fss_core::{
 };
 use fss_reference::unifi_direct::{
     Controller, Dispatch, Identity, Observation, Phase,
-    metered::MeteredIo,
-    receive::{Error as ReceiveError, Session, Step, Stop},
+    metered::{MeteredClock, MeteredIo},
+    receive::{Error as ReceiveError, Session, Step, Stop, TransportFailure},
     upgrade::{PreparedUpgrade, ProtocolPolicy},
 };
 use fss_runtime::{
@@ -195,6 +195,116 @@ fn malformed_management_data_retires_without_reflecting_payload() -> TestResult 
                     TaskOutcome::Success
                 } else {
                     TaskOutcome::Failed("invalid fixture failed".into())
+                };
+                TaskCompletion {
+                    output,
+                    outcome,
+                    completed_at: TimestampNs(59_000_000_000),
+                }
+            },
+        )
+        .await?;
+        result.receipt?;
+        result.output
+    })
+}
+
+#[test]
+fn transport_retirement_distinguishes_wire_errors_without_leaking_details() -> TestResult {
+    use asupersync::io::{AsyncRead, AsyncWrite, ReadBuf};
+    use std::{
+        io,
+        pin::Pin,
+        task::{Context, Poll},
+    };
+
+    struct ResetIo;
+    impl AsyncRead for ResetIo {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+            _: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::ConnectionReset,
+                "PRIVATE_TRANSPORT_DETAIL",
+            )))
+        }
+    }
+    impl AsyncWrite for ResetIo {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+            data: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            Poll::Ready(Ok(data.len()))
+        }
+        fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+        fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    let runtime = RuntimeBuilder::current_thread().build()?;
+    let (mut owner, mut tree) = root()?;
+    runtime.block_on(async {
+        let cx = asupersync::Cx::current().ok_or("missing runtime")?;
+        let result = run_owned_async(
+            &mut owner,
+            &mut tree,
+            TaskSpec {
+                task_id: TaskId::new("task:receive-wire-failures")?,
+                started_at: TimestampNs(2),
+            },
+            &cx,
+            async |task, cx| {
+                let output: Result<(), Box<dyn Error>> = async {
+                    let clock = MeteredClock::new(task, cx, TimestampNs(3))?;
+                    for (unmasked, expected) in [
+                        (true, TransportFailure::UnmaskedClientFrame),
+                        (false, TransportFailure::Io(io::ErrorKind::ConnectionReset)),
+                    ] {
+                        let mut request = HEAD.as_bytes().to_vec();
+                        if unmasked {
+                            request.extend_from_slice(&[0x82, 1, b'x']);
+                        }
+                        let prepared =
+                            PreparedUpgrade::parse(&request, ProtocolPolicy::RequireOffer)?;
+                        let io = MeteredIo::with_clock(ResetIo, clock, "fixture:camera", 4096)?;
+                        let controller = Controller::new(
+                            Identity::new("FSS", "12345678-1234-4abc-9abc-123456789abc", "1.20.0")?,
+                            1,
+                        )?;
+                        let mut session =
+                            Session::from_upgrade(prepared, io, Dispatch::Written, controller)?;
+                        let step = session.next(Duration::from_secs(1)).await?;
+                        match step {
+                            Step::Retired {
+                                reason: Stop::TransportDetail(actual),
+                                controller,
+                            } => {
+                                assert_eq!(actual, expected);
+                                assert_eq!(controller.previous_phase, Phase::AwaitHello);
+                            }
+                            other => return Err(format!("unexpected retirement: {other:?}").into()),
+                        }
+                        assert!(
+                            !format!("{step:?} {session:?}").contains("PRIVATE_TRANSPORT_DETAIL")
+                        );
+                        assert_eq!(
+                            session.next(Duration::from_millis(1)).await,
+                            Err(ReceiveError::Retired)
+                        );
+                    }
+                    Ok(())
+                }
+                .await;
+                let outcome = if output.is_ok() {
+                    TaskOutcome::Success
+                } else {
+                    TaskOutcome::Failed("transport failure fixture failed".into())
                 };
                 TaskCompletion {
                     output,

@@ -79,6 +79,17 @@ pub enum Error {
     Limit,
     /// The session retired or a protocol step was refused.
     Session,
+    /// The session retired with a payload-free observation of the reason.
+    SessionRetired {
+        /// The transport or protocol reason.
+        reason: super::receive::Stop,
+        /// State at the moment the session was retired.
+        phase: super::Phase,
+        /// Known rejected message type, without its contents.
+        rejected_message: Option<super::RejectedMessage>,
+    },
+    /// A session operation was refused before it could complete.
+    SessionDetail(super::receive::Error),
     /// Effect preparation, approval or commit was refused.
     Effect,
     /// A management or stream write may have occurred.
@@ -182,7 +193,7 @@ impl Owner<'_, '_, '_> {
     ) -> Result<(), Error> {
         let intent = session
             .management_intent(conditions)
-            .map_err(|_| Error::Session)?;
+            .map_err(Error::SessionDetail)?;
         let permit = self.permit(
             operation,
             intent.request_digest(),
@@ -222,9 +233,13 @@ impl Owner<'_, '_, '_> {
         messages: &mut usize,
     ) -> Result<Option<Observation>, Error> {
         let wait = self.remaining(deadline)?.min(slice);
-        match session.next(wait).await.map_err(|_| Error::Session)? {
+        match session.next(wait).await.map_err(Error::SessionDetail)? {
             Step::WaitElapsed => Ok(None),
-            Step::Retired { .. } => Err(Error::Session),
+            Step::Retired { reason, controller } => Err(Error::SessionRetired {
+                reason,
+                phase: controller.previous_phase,
+                rejected_message: controller.rejected_message,
+            }),
             Step::Observation(observation) => {
                 *messages += 1;
                 if *messages > MAX_MESSAGES {
@@ -235,7 +250,7 @@ impl Owner<'_, '_, '_> {
                     let wall = self.wall.observe().ok_or(Error::Clock)?;
                     session
                         .prepare_time_sync(wall.unix_ms, &wall.timestamp)
-                        .map_err(|_| Error::Session)?;
+                        .map_err(Error::SessionDetail)?;
                     self.send_management(session, operation, cfg.management, deadline)
                         .await?;
                     *syncs += 1;
@@ -273,7 +288,7 @@ impl Owner<'_, '_, '_> {
         let wall = self.wall.observe().ok_or(Error::Clock)?;
         session
             .prepare_time_sync(wall.unix_ms, &wall.timestamp)
-            .map_err(|_| Error::Session)?;
+            .map_err(Error::SessionDetail)?;
         self.send_management(session, operation, conditions, deadline)
             .await
     }
@@ -326,7 +341,7 @@ impl Owner<'_, '_, '_> {
         let wall = self.wall.observe().ok_or(Error::Clock)?;
         session
             .prepare_hello(&wall.timestamp)
-            .map_err(|_| Error::Session)?;
+            .map_err(Error::SessionDetail)?;
         self.send_management(session, cfg.hello, cfg.management, deadline)
             .await?;
         let sent = self.cx.now().as_nanos();
@@ -358,7 +373,7 @@ impl Owner<'_, '_, '_> {
         let wall = self.wall.observe().ok_or(Error::Clock)?;
         session
             .prepare_agreement(&wall.timestamp, elapsed)
-            .map_err(|_| Error::Session)?;
+            .map_err(Error::SessionDetail)?;
         self.send_management(session, cfg.agreement, cfg.management, deadline)
             .await?;
         loop {
@@ -374,7 +389,7 @@ impl Owner<'_, '_, '_> {
         let wall = self.wall.observe().ok_or(Error::Clock)?;
         let intent = session
             .prepare_stream_start(cfg.request, &wall.timestamp, cfg.stream_conditions)
-            .map_err(|_| Error::Session)?;
+            .map_err(Error::SessionDetail)?;
         let permit = self.permit(
             cfg.stream,
             intent.request_digest(),

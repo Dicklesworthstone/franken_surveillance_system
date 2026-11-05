@@ -4,7 +4,7 @@
 //! The core state machine accepts already-decoded WebSocket message bytes, a
 //! stable controller identity, timestamps and local write outcomes. Its
 //! networking submodules perform explicitly task-owned I/O; they do not open a
-//! controller listener, authenticate a peer, or grant camera control authority.
+//! authenticate a peer or grant camera control authority.
 //! A correlated agreement reply is a protocol observation, not proof of
 //! camera identity, adoption, a live stream, or source continuity.
 //!
@@ -22,6 +22,8 @@ pub mod archive;
 pub mod camera_api;
 /// Task-scoped, bounded camera-local HTTP over an independently admitted transport.
 pub mod camera_http;
+/// Task-scoped, policy-admitted controller TCP listener.
+pub mod controller_listener;
 /// Experimental owned hello, agreement and stream-request conversation.
 pub mod conversation;
 /// Bounded owner-scoped UniFi LAN discovery.
@@ -109,6 +111,19 @@ pub enum Phase {
     Indeterminate,
     /// The owner retired this state machine.
     Closed,
+}
+
+/// Payload-free type of a known management message rejected for its state.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RejectedMessage {
+    /// Camera hello.
+    Hello,
+    /// Camera time-sync request.
+    TimeSync,
+    /// Agreement response.
+    Agreement,
+    /// Video-settings response.
+    VideoSettings,
 }
 
 /// Sanitized classification of one incoming management envelope.
@@ -262,6 +277,8 @@ pub enum Dispatch {
 pub struct Retirement {
     /// The state immediately before retirement, including an uncertain write.
     pub previous_phase: Phase,
+    /// Known message type rejected for its state, without its payload.
+    pub rejected_message: Option<RejectedMessage>,
     /// Unresolved prepared message ID and kind, if present.
     pub prepared: Option<(u64, MessageKind)>,
     /// Outstanding agreement request ID whose reply was not observed.
@@ -360,6 +377,7 @@ pub struct Controller {
     agreement_id: Option<u64>,
     stream_request: Option<(u64, VideoChannel)>,
     prepared: Option<PreparedMessage>,
+    rejected_message: Option<RejectedMessage>,
 }
 
 impl fmt::Debug for Controller {
@@ -387,6 +405,7 @@ impl Controller {
             agreement_id: None,
             stream_request: None,
             prepared: None,
+            rejected_message: None,
         })
     }
 
@@ -402,6 +421,7 @@ impl Controller {
 
     /// Parse one complete WebSocket message, never retaining its raw JSON or payload.
     pub fn observe(&mut self, bytes: &[u8]) -> Result<Observation, Error> {
+        self.rejected_message = None;
         if matches!(self.phase, Phase::Indeterminate | Phase::Closed) {
             return Err(Error::InvalidState);
         }
@@ -437,6 +457,7 @@ impl Controller {
         match name {
             "ubnt_avclient_hello" => {
                 if self.phase != Phase::AwaitHello || response_to != 0 {
+                    self.rejected_message = Some(RejectedMessage::Hello);
                     return Err(Error::UnexpectedMessage);
                 }
                 let version = match fields.get("payload") {
@@ -458,8 +479,11 @@ impl Controller {
                 Ok(Observation::Hello)
             }
             "ubnt_avclient_timeSync" => {
+                // A correlated time-sync is a camera reply, not a fresh
+                // request. Never resolve a local operation from it or reply
+                // again; doing so can create an endless response loop.
                 if response_to != 0 {
-                    return Err(Error::UnexpectedMessage);
+                    return Ok(Observation::Other);
                 }
                 if self.time_sync.is_some() {
                     return Err(Error::TimeSyncLimit);
@@ -471,6 +495,7 @@ impl Controller {
                 if self.phase != Phase::AwaitAgreementReply
                     || self.agreement_id != Some(response_to)
                 {
+                    self.rejected_message = Some(RejectedMessage::Agreement);
                     return Err(Error::UnexpectedMessage);
                 }
                 self.agreement_id = None;
@@ -478,8 +503,12 @@ impl Controller {
                 Ok(Observation::AgreementReply)
             }
             "ChangeVideoSettings" => {
-                let (request_id, channel) = self.stream_request.ok_or(Error::UnexpectedMessage)?;
+                let Some((request_id, channel)) = self.stream_request else {
+                    self.rejected_message = Some(RejectedMessage::VideoSettings);
+                    return Err(Error::UnexpectedMessage);
+                };
                 if self.phase != Phase::AgreementReplyObserved || response_to != request_id {
+                    self.rejected_message = Some(RejectedMessage::VideoSettings);
                     return Err(Error::UnexpectedMessage);
                 }
                 let payload = match fields.get("payload") {
@@ -684,6 +713,7 @@ impl Controller {
     pub fn close(&mut self) -> Retirement {
         let retirement = Retirement {
             previous_phase: self.phase,
+            rejected_message: self.rejected_message,
             prepared: self.prepared.as_ref().map(|m| (m.id, m.kind)),
             agreement_id: self.agreement_id,
             hello_request_id: self.hello.map(|hello| hello.0),
@@ -695,6 +725,7 @@ impl Controller {
         self.time_sync = None;
         self.agreement_id = None;
         self.stream_request = None;
+        self.rejected_message = None;
         self.phase = Phase::Closed;
         retirement
     }

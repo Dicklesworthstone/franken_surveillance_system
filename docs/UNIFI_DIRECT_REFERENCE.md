@@ -2,9 +2,11 @@
 
 This is an in-progress owner-authorized interoperability lane. Native discovery
 has contacted one owner-controlled G4, and native ingress has processed a
-passive capture through loopback. It does **not** yet implement a networked
-controller, authenticate a peer, directly acquire a camera stream, write a
-recording, or claim general device or firmware support.
+passive capture through loopback. An experimental networked controller has
+reached TLS and WebSocket upgrade with that camera, but has not completed its
+conversation or produced a native clip. It does not independently authenticate
+the peer, provide continuous native recording, or establish general device or
+firmware support.
 Existing UniFi Protect export handling is separate and remains unchanged.
 
 ## Working reference and proposed route
@@ -805,6 +807,123 @@ and the recorder and both timers remained active. The live test executable SHA-2
 These windows do not authenticate the device or establish absence of other
 cameras.
 
+A fresh service-triggered native discovery window on `trj` on 2026-11-05
+completed with `WindowElapsed`, one datagram and one candidate claiming the
+platform `UVC G4 Instant`. Its discovery identity was unverified and the CLI
+reported setup unavailable; this is not an authenticated device identification
+or automatic enrollment. The existing recorder and its firewall, upload and
+discovery timers remained active.
+
+### Standalone direct trial
+
+An isolated Rust executable now joins the task-owned controller listener,
+experimental TLS, management conversation, supervised media pipeline and one
+private MP4 verification output. It does not change a camera's controller
+address or provide continuous recording. Process fixtures exercise it with a
+synthetic camera. In a separate owner-authorized physical G4 trial on `ts1`, a
+journaled camera handoff received a readback that did not match the requested
+address; the native connection ended with an unexpected EOF and no clip was
+produced. A second bounded trial with stage markers confirmed the camera reached
+the controller over TCP, but the experimental TLS handshake ended with EOF.
+It does not establish the underlying TLS incompatibility. Both separately
+scheduled restoration checks confirmed the existing controller address; fresh
+segments were subsequently verified and uploaded by the existing recorder.
+In a third limited test, a camera-to-controller packet capture showed the
+camera closing its accepted TCP connection before sending any TLS bytes. The
+capture therefore cannot establish a TLS version or certificate mismatch;
+the interaction with the existing controller remains a possible explanation.
+The listener was then extended to accept sequential connections within a
+bounded deadline. A real G4 reconnect completed TLS and WebSocket upgrade,
+revealing an early camera time-sync frame with a nonzero correlation. An
+attempt to answer such frames exhausted the message limit; the controller now
+ignores correlated time-sync replies and answers uncorrelated camera requests.
+The synthetic process fixture covers that sequence and the existing controller
+contracts passed. A later physical test with this code completed TLS and
+WebSocket upgrade but retired on a transport error while awaiting hello; no
+native clip was produced. The existing controller reasserted its address near
+the attempt, but its role in that failure is not established.
+The receiver now retains a payload-free WebSocket or I/O failure category,
+including the standard I/O error kind, instead of collapsing all such failures
+into one transport result. Five receive-contract tests and four encrypted
+process fixtures passed remotely; synthetic cases distinguish an unmasked
+client frame from a connection reset and ensure I/O error text is not exposed.
+This diagnostic cannot identify the earlier failure retroactively. A later
+physical G4 attempt reached TLS and WebSocket, then reported an I/O
+`UnexpectedEof` while awaiting hello. Its handoff readback again failed to
+confirm the requested address and no native clip was produced. This result
+does not establish why the connection ended or indicate an unmasked frame.
+The trial listener now permits a bounded reconnect after this exact early EOF
+only when no management effect has reached approval; it stops instead if an
+effect was prepared. Five process fixtures passed: four encrypted camera cases
+and a no-camera deadline. They included a successful synthetic reconnect and
+an EOF after a time-sync effect that did not retry. In a subsequent physical
+trial, the handoff readback reported the previous controller and the listener
+received no connection before its
+deadline. Thus the new reconnect path was not exercised by the physical G4,
+and this result does not distinguish an unapplied change from a competing
+controller restoring the old address. The scheduled restoration check found
+the existing address and made no write, the recovery watchdog abstained, and
+fresh recorder segments were verified and uploaded afterward.
+The handoff owner can now expose a bounded, payload-free HTTP response shape;
+its optional boolean and numeric values are untrusted claims and cannot settle
+an effect. A laboratory diagnostic samples three readbacks over roughly two
+seconds without another setting write. Nine independent synthetic HTTPS cases
+passed, including delayed and reversed camera claims, while the original
+eight handoff-dispatch contracts passed. This new timeline has not yet been
+run against the physical camera.
+
+The transitional recorder separately showed repeated stream exits at roughly
+four-minute intervals, followed by approximately eleven-second restarts. A
+header-only loopback observation saw its local RTSP server send FIN and then
+RST immediately before the recorder exited. This identifies the TCP close
+direction, not the cause of the server's shutdown or the exact amount of lost
+coverage. The service resumed writing and subsequently uploaded a verified
+segment. Continuous recording without gaps is not established; do not use a
+successful upload or an active service as evidence of continuity.
+A second bounded header-only trace observed another restart: the local RTSP
+server initiated its close and, within a millisecond, the controller host
+also initiated closure of the camera's video-push connection. No camera FIN
+or RST preceded those events in that capture, which reported zero kernel
+drops. This narrows the shutdown direction but does not distinguish the local
+parser, pacing, backpressure, watchdog or other causes. The temporary trace
+did not record packet payloads.
+Another protected trial temporarily stopped the dedicated single-camera
+controller to examine that interaction. The native listener received no
+camera connection within its window, and the handoff readback did not confirm
+the requested address. After the controller restarted, the camera required a
+reboot to reconnect, causing a recording gap. A fresh segment was subsequently
+verified and uploaded by the existing recorder. This isolated attempt does not
+establish the cause of the native failure or automatic setup.
+Automatic handoff, peer identity, TLS-provider qualification and native live
+recording remain open. See the [trial notes](../experiments/unifi_tls_05_server_lab/README.md).
+
+### Controller TCP listener
+
+`unifi_direct::controller_listener` binds an explicitly scoped IPv4 address,
+checks the task network grant and current listener and peer policies, and
+returns a task-metered socket. Its policy guard rechecks every raw socket poll
+and fences the connection on an observed revocation. The one-shot `accept`
+consumes the listener; `accept_next` retains it for sequential attempts under
+caller-owned time and retry bounds.
+A source address is not camera identity. The accepted socket also returns a
+shared admission gate: callers wrap the TLS plaintext stream with that gate and
+use `owner::accept_guarded` to bind it to the controller session before any
+observation. The guarded session checks it before and after receiving each
+message and before preparing or dispatching management effects. The caller is
+responsible for associating the gate with the exact same connection; older
+unguarded APIs remain available and do not provide these checks. The supervisor
+also checks a bound controller gate before each joint poll, so a revoked
+controller cannot release a buffered media record on a subsequent
+poll. This is not independent revalidation of the media peer's policy after
+accept, and an idle revoked session is not guaranteed an immediate wakeup.
+TLS, physical camera identity, durable supervision and live-camera
+interoperability remain separate work. The task-owned loopback suite passed
+4/4 on `hz4`, including denied peers, revoked admission while waiting, fencing
+after a connected peer is revoked and later reallowed, and retention of the
+received media prefix when a revoked controller stops the supervisor.
+The experimental encrypted controller-to-archive fixture also passed both
+cases on `hz4` with this listener; its camera and media were synthetic.
+
 ### Joint controller and media supervision (loopback only)
 
 `unifi_direct::supervisor` owns an already-admitted controller session and its
@@ -817,8 +936,19 @@ transport acceptance. Cancelled receives rely on the owners' documented
 cancel-safe contracts; no task is detached.
 
 The task-owned loopback test pauses a synthetic stream until a second time-sync
-response is received, then reconstructs the input and decodes six frames. This
-does not demonstrate live-camera operation. Persistent publication, automatic
+response is received, then reconstructs the input and decodes six frames. An
+isolated TLS 1.3 loopback also exercised this supervisor with a fragmented,
+encrypted management connection, then published two synthetic segments,
+reopened the archive and decoded six frames. Both its normal and revoked-policy
+cases passed on `hz4` (2/2); its initial CA-certificate handshake failed before
+a corrected leaf-certificate rerun. A later 3/3 encrypted fixture used the
+shared raw/plaintext/session gate. It proved an unguarded TLS layer could return
+an already-buffered byte after raw policy revocation and the guarded layer
+refused it. A task-owned fixture separately supplied a hello already buffered
+by the WebSocket upgrade and verified that the guarded session retired before
+interpreting it. The TLS provider is the same at both ends,
+and media uses a separate plaintext loopback. This does not demonstrate
+live-camera operation. Persistent publication, automatic
 reconnection, a production nonblocking journal, camera identity and qualified
 TLS are still needed before this can replace the existing recorder. A single
 step may spend up to the configured wait polling and another configured wait on

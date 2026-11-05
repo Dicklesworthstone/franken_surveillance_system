@@ -179,6 +179,23 @@ pub struct SettingsObservation {
     pub binding: Option<ContentDigest>,
 }
 
+/// Bounded, payload-free shape of a camera's handoff HTTP response body.
+/// Values are unauthenticated peer claims, not evidence that a setting changed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HandoffResponseObservation {
+    /// The server returned an empty body.
+    Empty,
+    /// The body was a strict JSON object. Only these optional scalars survive.
+    Object {
+        /// An explicitly boolean top-level `success`, if present.
+        success: Option<bool>,
+        /// A bounded numeric top-level `statusCode`, if present.
+        status_code: Option<i64>,
+    },
+    /// The body was malformed, non-object, or outside the inspection bound.
+    Other,
+}
+
 /// Revalidate the independently identified peer, current authority and lease.
 /// Implementations must bind the transport to the intended peer and prevent
 /// stale or revoked policy from authorizing a write. This check is repeated
@@ -643,6 +660,14 @@ impl Session {
     /// Observe the complete HTTP response to a locally written handoff. A 200
     /// requires fresh readback and does not settle the effect obligation.
     pub fn accept_handoff_response(&mut self, response: Response) -> Result<(), Error> {
+        self.accept_handoff_response_observed(response).map(|_| ())
+    }
+    /// Accept the same response while returning only bounded peer claims.
+    /// Even a positive claim requires fresh readback and effect reconciliation.
+    pub fn accept_handoff_response_observed(
+        &mut self,
+        response: Response,
+    ) -> Result<HandoffResponseObservation, Error> {
         let response = PrivateResponse(response);
         if self.phase != Phase::AwaitHandoff {
             return Err(Error::State);
@@ -651,8 +676,9 @@ impl Session {
             self.phase = Phase::Fenced;
             return Err(Error::HttpStatus);
         }
+        let observation = handoff_response_observation(&response.0.body);
         self.phase = Phase::ReconcileSettings;
-        Ok(())
+        Ok(observation)
     }
     /// Consume a complete JPEG response and transfer its bytes into a redacted handle.
     pub fn accept_snapshot(&mut self, response: Response) -> Result<Snapshot, Error> {
@@ -730,6 +756,39 @@ fn status_shape(body: &[u8]) -> Result<StatusShape, Error> {
             controller: o.get("controller").and_then(Value::object).is_some(),
         })
         .ok_or(Error::Status);
+    clear_value(&mut value);
+    result
+}
+
+fn handoff_response_observation(body: &[u8]) -> HandoffResponseObservation {
+    if body.is_empty() {
+        return HandoffResponseObservation::Empty;
+    }
+    if body.len() > MAX_STATUS {
+        return HandoffResponseObservation::Other;
+    }
+    let Ok(text) = std::str::from_utf8(body) else {
+        return HandoffResponseObservation::Other;
+    };
+    let Ok(mut value) = json_input::parse(text) else {
+        return HandoffResponseObservation::Other;
+    };
+    let result = value
+        .object()
+        .map_or(HandoffResponseObservation::Other, |object| {
+            let status_code = match object.get("statusCode") {
+                Some(Value::Number(_)) => object
+                    .get("statusCode")
+                    .and_then(Value::integer)
+                    .filter(|number| (-9999..=9999).contains(number))
+                    .and_then(|number| i64::try_from(number).ok()),
+                _ => None,
+            };
+            HandoffResponseObservation::Object {
+                success: object.get("success").and_then(Value::boolean),
+                status_code,
+            }
+        });
     clear_value(&mut value);
     result
 }
@@ -819,5 +878,40 @@ fn clear_value(value: &mut Value) {
             }
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod handoff_response_tests {
+    use super::{
+        HandoffResponseObservation as Observation, MAX_STATUS, handoff_response_observation,
+    };
+
+    #[test]
+    fn shape_is_bounded_and_does_not_retain_other_fields() {
+        assert_eq!(handoff_response_observation(b""), Observation::Empty);
+        let body = br#"{"success":true,"statusCode":200,"secret":"do-not-retain"}"#;
+        let observed = handoff_response_observation(body);
+        assert_eq!(
+            observed,
+            Observation::Object {
+                success: Some(true),
+                status_code: Some(200)
+            }
+        );
+        assert!(!format!("{observed:?}").contains("do-not-retain"));
+        assert_eq!(handoff_response_observation(b"[]"), Observation::Other);
+        assert_eq!(handoff_response_observation(b"{broken"), Observation::Other);
+        assert_eq!(
+            handoff_response_observation(&vec![b' '; MAX_STATUS + 1]),
+            Observation::Other
+        );
+        assert_eq!(
+            handoff_response_observation(br#"{"success":"true","statusCode":999999}"#),
+            Observation::Object {
+                success: None,
+                status_code: None
+            }
+        );
     }
 }

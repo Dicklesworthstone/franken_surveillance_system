@@ -423,6 +423,18 @@ impl<'scope, 'task, 'policy, IO: AsyncRead + AsyncWrite + Unpin> Owner<'scope, '
         permit: &CommittedEffect,
         wait: Duration,
     ) -> Result<(), Error> {
+        self.read_handoff_response_observed(permit, wait)
+            .await
+            .map(|_| ())
+    }
+
+    /// Read the exact reply and retain only its bounded, untrusted body shape.
+    /// This observation neither confirms the effect nor replaces readback.
+    pub async fn read_handoff_response_observed(
+        &mut self,
+        permit: &CommittedEffect,
+        wait: Duration,
+    ) -> Result<camera_api::HandoffResponseObservation, Error> {
         if self.session.phase() != camera_api::Phase::AwaitHandoff
             || self.pending_handoff != Some(permit.prepared().digest())
         {
@@ -450,11 +462,11 @@ impl<'scope, 'task, 'policy, IO: AsyncRead + AsyncWrite + Unpin> Owner<'scope, '
             Ok(value) => value?,
         }));
         guarded.check().map_err(classify_io)?;
-        attempt
+        let observation = attempt
             .session
-            .accept_handoff_response(response.0.take().ok_or(Error::Protocol)?)?;
+            .accept_handoff_response_observed(response.0.take().ok_or(Error::Protocol)?)?;
         attempt.finished = true;
-        Ok(())
+        Ok(observation)
     }
     async fn perform(
         &mut self,

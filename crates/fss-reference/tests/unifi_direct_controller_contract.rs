@@ -4,12 +4,26 @@
 use fss_core::json_input::{self, Value};
 use fss_reference::unifi_direct::{
     AGREEMENT_DELAY_NS, AudioCodec, Controller, Dispatch, Error, Identity, MAX_MESSAGE_BYTES,
-    MAX_MESSAGE_ID, MessageKind, Observation, Phase, StreamStart, VideoChannel, VideoCodec,
+    MAX_MESSAGE_ID, MessageKind, Observation, Phase, RejectedMessage, StreamStart, VideoChannel,
+    VideoCodec,
 };
 use std::net::{Ipv4Addr, SocketAddrV4};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 const TIME: &str = "2026-11-05T05:00:00.000Z";
+
+#[test]
+fn retirement_retains_rejected_message_kind_without_payload() -> TestResult {
+    let mut c = controller(1)?;
+    assert_eq!(
+        c.observe(&message("ubnt_avclient_paramAgreement", 2, 1, "{}")),
+        Err(Error::UnexpectedMessage)
+    );
+    let retired = c.close();
+    assert_eq!(retired.previous_phase, Phase::AwaitHello);
+    assert_eq!(retired.rejected_message, Some(RejectedMessage::Agreement));
+    Ok(())
+}
 
 fn controller(first_id: u64) -> Result<Controller, Error> {
     Controller::new(
@@ -50,6 +64,10 @@ fn stream(channel: VideoChannel, audio: AudioCodec) -> Result<StreamStart, Error
 #[test]
 fn hello_agreement_and_time_sync_are_correlated_without_authentication_claims() -> TestResult {
     let mut c = controller(1)?;
+    let reply = message("ubnt_avclient_timeSync", 40, 99, "{\"timeDelta\":0}");
+    assert_eq!(c.observe(&reply)?, Observation::Other);
+    assert_eq!(c.phase(), Phase::AwaitHello);
+    assert_eq!(c.prepare_time_sync(123_456, TIME), Err(Error::InvalidState));
     let sync = message("ubnt_avclient_timeSync", 41, 0, "{\"timeDelta\":0}");
     assert_eq!(c.observe(&sync)?, Observation::TimeSyncRequested);
     let p = c.prepare_time_sync(123_456, TIME)?;

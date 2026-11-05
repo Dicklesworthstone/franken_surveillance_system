@@ -11,7 +11,7 @@
 use asupersync::{
     Cx,
     io::{AsyncRead, AsyncWrite},
-    net::websocket::{Message, ServerWebSocket},
+    net::websocket::{Message, ServerWebSocket, WsError},
     time::timeout_at,
 };
 use fss_runtime::effect::CommittedEffect;
@@ -19,6 +19,7 @@ use std::{fmt, time::Duration};
 
 use super::{
     Controller, Dispatch, MessageKind, Observation, Phase, Retirement, StreamStart,
+    controller_listener::AdmissionGate,
     intent::{self, Intent, Preconditions},
     management,
     metered::{MeteredClock, MeteredIo},
@@ -26,6 +27,55 @@ use super::{
 };
 
 const MAX_WAIT: Duration = Duration::from_secs(30);
+
+/// Payload-free classification of a WebSocket or underlying I/O failure.
+/// No peer-provided text, frame bytes, lengths, or opcode values are retained.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TransportFailure {
+    /// The underlying transport failed with this standard error kind.
+    Io(std::io::ErrorKind),
+    /// An unsupported frame opcode was received.
+    InvalidOpcode,
+    /// The peer violated a WebSocket protocol rule.
+    ProtocolViolation,
+    /// A frame used reserved bits without negotiated support.
+    ReservedBits,
+    /// A message exceeded its configured bound.
+    PayloadTooLarge,
+    /// A control frame exceeded its configured bound.
+    ControlFrameTooLarge,
+    /// A control frame was fragmented.
+    FragmentedControlFrame,
+    /// A client frame was not masked.
+    UnmaskedClientFrame,
+    /// A server frame was unexpectedly masked.
+    MaskedServerFrame,
+    /// A text frame was not valid UTF-8.
+    InvalidUtf8,
+    /// A close frame had an invalid payload.
+    InvalidClosePayload,
+    /// A bounded outbound buffer could not accept another frame.
+    OutboundBufferFull,
+}
+
+impl From<WsError> for TransportFailure {
+    fn from(error: WsError) -> Self {
+        match error {
+            WsError::Io(error) => Self::Io(error.kind()),
+            WsError::InvalidOpcode(_) => Self::InvalidOpcode,
+            WsError::ProtocolViolation(_) => Self::ProtocolViolation,
+            WsError::ReservedBitsSet => Self::ReservedBits,
+            WsError::PayloadTooLarge { .. } => Self::PayloadTooLarge,
+            WsError::ControlFrameTooLarge(_) => Self::ControlFrameTooLarge,
+            WsError::FragmentedControlFrame => Self::FragmentedControlFrame,
+            WsError::UnmaskedClientFrame => Self::UnmaskedClientFrame,
+            WsError::MaskedServerFrame => Self::MaskedServerFrame,
+            WsError::InvalidUtf8 => Self::InvalidUtf8,
+            WsError::InvalidClosePayload => Self::InvalidClosePayload,
+            WsError::OutboundBufferFull { .. } => Self::OutboundBufferFull,
+        }
+    }
+}
 
 /// Why an observation session was retired.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -36,12 +86,16 @@ pub enum Stop {
     Cancelled,
     /// A WebSocket or metered transport error occurred.
     Transport,
+    /// A WebSocket or I/O error occurred with a payload-free classification.
+    TransportDetail(TransportFailure),
     /// A control frame was surfaced unexpectedly by the WebSocket layer.
     UnexpectedFrame,
     /// A complete management message was invalid for the controller state.
     Protocol(super::Error),
     /// A management write may have reached the peer and must be reconciled.
     IndeterminateWrite,
+    /// Current connection admission was revoked, including for buffered messages.
+    AdmissionRevoked,
 }
 
 /// One bounded observation step.
@@ -212,6 +266,7 @@ pub struct Session<'scope, 'task, IO> {
     clock: MeteredClock<'scope, 'task>,
     claimed_mac: [u8; 6],
     in_flight: Option<u64>,
+    admission: Option<AdmissionGate<'scope>>,
 }
 impl<IO> fmt::Debug for Session<'_, '_, IO> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -248,7 +303,29 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Session<'scope, 'task, I
             clock,
             claimed_mac,
             in_flight: None,
+            admission: None,
         })
+    }
+
+    /// Bind the admission gate from this exact accepted connection before any
+    /// controller observation. The caller must also wrap its plaintext stream
+    /// with this same gate before the upgrade. A source claim is not identity.
+    pub fn bind_admission(&mut self, gate: AdmissionGate<'scope>) -> Result<(), Error> {
+        if self.admission.is_some()
+            || self.socket.is_none()
+            || self.in_flight.is_some()
+            || self.controller.phase() != Phase::AwaitHello
+            || gate.check().is_err()
+        {
+            return Err(Error::Denied);
+        }
+        self.admission = Some(gate);
+        Ok(())
+    }
+    pub(crate) fn admission_current(&self) -> bool {
+        self.admission
+            .as_ref()
+            .is_none_or(|gate| gate.check().is_ok())
     }
 
     /// Unauthenticated claimed MAC, never a verified device identity.
@@ -269,6 +346,9 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Session<'scope, 'task, I
         if self.in_flight.is_some() || self.socket.is_none() {
             return Err(Error::Retired);
         }
+        if !self.admission_current() {
+            return Err(Error::Denied);
+        }
         let value = self
             .controller
             .prepare_hello(timestamp)
@@ -283,6 +363,9 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Session<'scope, 'task, I
     ) -> Result<(u64, MessageKind), Error> {
         if self.in_flight.is_some() || self.socket.is_none() {
             return Err(Error::Retired);
+        }
+        if !self.admission_current() {
+            return Err(Error::Denied);
         }
         let value = self
             .controller
@@ -299,6 +382,9 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Session<'scope, 'task, I
         if self.in_flight.is_some() || self.socket.is_none() {
             return Err(Error::Retired);
         }
+        if !self.admission_current() {
+            return Err(Error::Denied);
+        }
         let value = self
             .controller
             .prepare_time_sync(wall_ms, timestamp)
@@ -314,6 +400,9 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Session<'scope, 'task, I
     ) -> Result<management::Intent, Error> {
         if self.in_flight.is_some() || self.socket.is_none() {
             return Err(Error::Retired);
+        }
+        if !self.admission_current() {
+            return Err(Error::Denied);
         }
         let message = self.controller.prepared().ok_or(Error::NoPrepared)?;
         management::Intent::new(message, conditions).map_err(Error::ManagementIntent)
@@ -342,6 +431,9 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Session<'scope, 'task, I
         }
         if self.socket.is_none() || self.in_flight.is_some() {
             refuse!(Error::Retired);
+        }
+        if !self.admission_current() {
+            refuse!(Error::Denied);
         }
         if !permit.journal_backed() {
             refuse!(Error::JournalRequired);
@@ -411,6 +503,9 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Session<'scope, 'task, I
         if self.in_flight.is_some() || self.socket.is_none() {
             return Err(Error::Retired);
         }
+        if !self.admission_current() {
+            return Err(Error::Denied);
+        }
         conditions.validate().map_err(Error::Intent)?;
         let message = self
             .controller
@@ -443,6 +538,9 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Session<'scope, 'task, I
         }
         if self.socket.is_none() || self.in_flight.is_some() {
             refuse!(Error::Retired);
+        }
+        if !self.admission_current() {
+            refuse!(Error::Denied);
         }
         if !permit.journal_backed() {
             refuse!(Error::JournalRequired);
@@ -548,15 +646,21 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Session<'scope, 'task, I
         if self.cx.checkpoint().is_err() {
             return Ok(self.stop(Stop::Cancelled));
         }
+        if !self.admission_current() {
+            return Ok(self.stop(Stop::AdmissionRevoked));
+        }
         let Some(socket) = self.socket.as_mut() else {
             return Err(Error::Retired);
         };
         let next = timeout_at(self.cx.now() + wait, socket.recv(self.cx)).await;
+        if !self.admission_current() {
+            return Ok(self.stop(Stop::AdmissionRevoked));
+        }
         match next {
             Err(_) if self.cx.is_cancelled() => Ok(self.stop(Stop::Cancelled)),
             Err(_) => Ok(Step::WaitElapsed),
             Ok(Err(_)) if self.cx.is_cancelled() => Ok(self.stop(Stop::Cancelled)),
-            Ok(Err(_)) => Ok(self.stop(Stop::Transport)),
+            Ok(Err(error)) => Ok(self.stop(Stop::TransportDetail(error.into()))),
             Ok(Ok(None | Some(Message::Close(_)))) => Ok(self.stop(Stop::PeerClosed)),
             Ok(Ok(Some(Message::Binary(bytes)))) => match self.controller.observe(&bytes) {
                 Ok(value) => Ok(Step::Observation(value)),
