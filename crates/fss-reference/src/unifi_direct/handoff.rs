@@ -50,6 +50,25 @@ impl fmt::Display for Error {
 }
 impl std::error::Error for Error {}
 
+/// Classification of an untrusted settings readback. Reported and unset
+/// values carry a peer/session binding; missing and unsupported values do not.
+/// None of these variants proves device identity, adoption or effect settlement.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Readback {
+    /// The camera reported the requested controller address.
+    Requested,
+    /// The camera reported the controller address observed before the change.
+    Previous,
+    /// A different IPv4 address was reported.
+    Different,
+    /// The address was explicitly unset.
+    Unset,
+    /// The address was absent.
+    Missing,
+    /// The address was present but unsupported by this profile.
+    Unsupported,
+}
+
 /// Digest-bound, non-dispatchable plan. Debug omits network addresses.
 pub struct Plan {
     peer: Ipv4Addr,
@@ -130,6 +149,26 @@ impl Plan {
             return Err(Error::Stale);
         }
         Ok(())
+    }
+    /// Compare a settings claim; representable values must carry the binding
+    /// for this plan's exact peer and session. Missing and unsupported values
+    /// are not bound and cannot confirm any remote state. The caller must
+    /// establish freshness and independently reconcile the journaled effect.
+    pub fn classify_readback(&self, observation: SettingsObservation) -> Result<Readback, Error> {
+        let expected =
+            camera_api::controller_binding(observation.controller, self.peer, self.generation)
+                .map_err(|_| Error::Preconditions)?;
+        if observation.binding != expected {
+            return Err(Error::Preconditions);
+        }
+        Ok(match observation.controller {
+            ControllerAddress::Reported(ip) if ip == self.destination => Readback::Requested,
+            ControllerAddress::Reported(ip) if ip == self.prior => Readback::Previous,
+            ControllerAddress::Reported(_) => Readback::Different,
+            ControllerAddress::Unset => Readback::Unset,
+            ControllerAddress::Missing => Readback::Missing,
+            ControllerAddress::Unsupported => Readback::Unsupported,
+        })
     }
     pub(super) fn matches_session(&self, peer: Ipv4Addr, generation: u64) -> bool {
         self.peer == peer && self.generation == generation

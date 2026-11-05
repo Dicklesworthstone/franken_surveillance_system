@@ -2,12 +2,13 @@
 //! Bounded task-owned camera-local HTTP over a caller-admitted transport.
 //!
 //! This does not establish TLS, authenticate a device, acquire credentials,
-//! provision Wi-Fi or change a camera. The caller must bind the exact transport
-//! and lease to independently authorized peer identity. A cancelled or failed
-//! exchange fences the session; the owner must retire it, not reuse the socket.
+//! provision Wi-Fi or confer management authority. A controller handoff requires
+//! a separately journaled effect and current authorization. The caller must bind
+//! the exact transport and lease to independently authorized peer identity. A
+//! cancelled or failed exchange fences the session; do not reuse its socket.
 
 use super::{
-    camera_api,
+    camera_api, handoff,
     metered::{MeteredClock, MeteredIo},
 };
 use asupersync::{
@@ -18,7 +19,8 @@ use asupersync::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf},
     time::timeout_at,
 };
-use fss_core::{BudgetVector, RuntimeGrant};
+use fss_core::{BudgetVector, ContentDigest, RuntimeGrant};
+use fss_runtime::effect::CommittedEffect;
 use fss_runtime::execution::TaskCx;
 use std::{
     fmt, io,
@@ -44,6 +46,8 @@ pub enum Operation {
     Settings,
     /// Read one JPEG frame.
     Snapshot,
+    /// Commit one separately journaled controller-association change.
+    Handoff,
 }
 impl Operation {
     fn grant(self) -> RuntimeGrant {
@@ -51,6 +55,7 @@ impl Operation {
             Self::Login => RuntimeGrant::AdapterAuth,
             Self::Status | Self::Settings => RuntimeGrant::ObserveStatus,
             Self::Snapshot => RuntimeGrant::ReadMedia,
+            Self::Handoff => RuntimeGrant::CameraManagementCommit,
         }
     }
 }
@@ -154,6 +159,49 @@ impl<IO: AsyncWrite + Unpin> AsyncWrite for Guarded<'_, '_, '_, IO> {
         Pin::new(&mut *self.io).poll_shutdown(cx)
     }
 }
+struct HandoffPolicy<'a, 'scope, 'task> {
+    owner: &'a dyn Authority,
+    handoff: &'a dyn camera_api::HandoffAuthority,
+    task: &'scope TaskCx<'task>,
+    clock: MeteredClock<'scope, 'task>,
+    peer: Ipv4Addr,
+    generation: u64,
+    resource: &'a str,
+}
+impl camera_api::HandoffAuthority for HandoffPolicy<'_, '_, '_> {
+    fn permits(
+        &self,
+        plan: &handoff::Plan,
+        current: handoff::Preconditions,
+        permit: &CommittedEffect,
+    ) -> bool {
+        self.handoff.permits(plan, current, permit)
+            && self
+                .owner
+                .permits(self.peer, self.generation, Operation::Handoff)
+            && self.clock.now().ok().is_some_and(|now| {
+                self.task
+                    .checkpoint_for(
+                        RuntimeGrant::CameraManagementCommit,
+                        self.resource,
+                        now,
+                        &BudgetVector::ZERO,
+                    )
+                    .is_ok()
+            })
+    }
+}
+struct ResponseAttempt<'a> {
+    session: &'a mut camera_api::Session,
+    finished: bool,
+}
+impl Drop for ResponseAttempt<'_> {
+    fn drop(&mut self) {
+        if !self.finished {
+            self.session.fence();
+        }
+    }
+}
 struct Attempt<'a> {
     session: &'a mut camera_api::Session,
     request: Option<camera_api::Request>,
@@ -200,6 +248,7 @@ pub struct Owner<'scope, 'task, 'policy, IO> {
     generation: u64,
     resource: String,
     session: camera_api::Session,
+    pending_handoff: Option<ContentDigest>,
 }
 impl<IO> fmt::Debug for Owner<'_, '_, '_, IO> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -238,6 +287,7 @@ impl<'scope, 'task, 'policy, IO: AsyncRead + AsyncWrite + Unpin> Owner<'scope, '
             generation,
             resource: resource.to_owned(),
             session: camera_api::Session::new(peer, generation)?,
+            pending_handoff: None,
         })
     }
     /// Current local state; no remote identity or adoption is implied.
@@ -287,9 +337,12 @@ impl<'scope, 'task, 'policy, IO: AsyncRead + AsyncWrite + Unpin> Owner<'scope, '
         self.admit(Operation::Settings, wait)?;
         let request = self.session.prepare_settings()?;
         let response = self.perform(request, Operation::Settings, wait).await?;
-        self.session
+        let observation = self
+            .session
             .accept_settings(response)
-            .map_err(Error::Camera)
+            .map_err(Error::Camera)?;
+        self.pending_handoff = None;
+        Ok(observation)
     }
     /// Read one bounded original JPEG without implying decoded content or capture time.
     pub async fn snapshot(&mut self, wait: Duration) -> Result<camera_api::Snapshot, Error> {
@@ -299,6 +352,91 @@ impl<'scope, 'task, 'policy, IO: AsyncRead + AsyncWrite + Unpin> Owner<'scope, '
         self.session
             .accept_snapshot(response)
             .map_err(Error::Camera)
+    }
+    /// Dispatch a previously journaled controller change on this exact session.
+    /// A returned permit remains open for independent reconciliation; neither a
+    /// local write nor later HTTP success proves the remote state or a stream.
+    /// A cancelled or partial dispatch is never automatically retried.
+    pub async fn dispatch_handoff(
+        &mut self,
+        plan: &handoff::Plan,
+        current: handoff::Preconditions,
+        permit: CommittedEffect,
+        authority: &dyn camera_api::HandoffAuthority,
+        wait: Duration,
+    ) -> Result<camera_api::HandoffWrite, camera_api::HandoffRefusal> {
+        if self.resource != plan.resource() || self.pending_handoff.is_some() {
+            return Err(camera_api::HandoffRefusal {
+                reason: camera_api::HandoffError::Session,
+                permit,
+            });
+        }
+        let policy = HandoffPolicy {
+            owner: self.authority,
+            handoff: authority,
+            task: self.task,
+            clock: self.clock,
+            peer: self.peer,
+            generation: self.generation,
+            resource: &self.resource,
+        };
+        let result = self
+            .session
+            .dispatch_handoff(
+                self.io.runtime_context(),
+                &mut self.io,
+                plan,
+                current,
+                permit,
+                &policy,
+                wait,
+            )
+            .await;
+        if let Ok(camera_api::HandoffWrite::Written { permit }) = &result {
+            self.pending_handoff = Some(permit.prepared().digest());
+        }
+        result
+    }
+    /// Read the reply to this session's exact written handoff, then require a
+    /// fresh [`Self::settings`] readback. The caller retains the claimed permit
+    /// and must reconcile its journaled obligation independently.
+    pub async fn read_handoff_response(
+        &mut self,
+        permit: &CommittedEffect,
+        wait: Duration,
+    ) -> Result<(), Error> {
+        if self.session.phase() != camera_api::Phase::AwaitHandoff
+            || self.pending_handoff != Some(permit.prepared().digest())
+        {
+            return Err(Error::Camera(camera_api::Error::State));
+        }
+        self.admit(Operation::Settings, wait)?;
+        let cx = self.io.runtime_context();
+        let mut attempt = ResponseAttempt {
+            session: &mut self.session,
+            finished: false,
+        };
+        let mut guarded = Guarded {
+            io: &mut self.io,
+            task: self.task,
+            clock: self.clock,
+            authority: self.authority,
+            peer: self.peer,
+            generation: self.generation,
+            operation: Operation::Settings,
+            resource: &self.resource,
+        };
+        let result = timeout_at(cx.now() + wait, read_response(&mut guarded)).await;
+        let mut response = SensitiveResponse(Some(match result {
+            Err(_) => return Err(Error::Deadline),
+            Ok(value) => value?,
+        }));
+        guarded.check().map_err(classify_io)?;
+        attempt
+            .session
+            .accept_handoff_response(response.0.take().ok_or(Error::Protocol)?)?;
+        attempt.finished = true;
+        Ok(())
     }
     async fn perform(
         &mut self,
@@ -359,6 +497,9 @@ async fn exchange<IO: AsyncRead + AsyncWrite + Unpin>(
     }
     io.write_all(request).await.map_err(classify_io)?;
     io.flush().await.map_err(classify_io)?;
+    read_response(io).await
+}
+async fn read_response<IO: AsyncRead + Unpin>(io: &mut IO) -> Result<Response, Error> {
     let mut codec = Http1ClientCodec::new()
         .max_headers_size(16 * 1024)
         .max_body_size(4 * 1024 * 1024)

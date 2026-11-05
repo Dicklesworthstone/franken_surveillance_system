@@ -1,7 +1,9 @@
 #![forbid(unsafe_code)]
 #![cfg(unix)]
 //! Journal-authorized HTTP controller handoff, partial writes and reconciliation.
-use asupersync::{http::h1::Response, io::AsyncWrite, runtime::RuntimeBuilder};
+use asupersync::{
+    http::h1::Response, io::AsyncWrite, net::TcpListener, runtime::RuntimeBuilder, time::timeout,
+};
 use fss_core::{
     BudgetVector, ContentDigest, IdempotencyKey, OperationId, RegionId, RegionKind,
     RootAuthoritySpec, RuntimeGrant, TaskId, TaskOutcome, TimestampNs,
@@ -11,7 +13,11 @@ use fss_object::{
     effect_journal::{EffectJournalLimits, FileEffectJournal},
 };
 use fss_reference::unifi_direct::{
-    camera_api::{HandoffAuthority, HandoffError, HandoffWrite, Phase, Session, WriteOutcome},
+    camera_api::{
+        ControllerAddress, HandoffAuthority, HandoffError, HandoffWrite, Phase, Session,
+        WriteOutcome,
+    },
+    camera_http,
     handoff::{Plan, Preconditions},
     metered::{MeteredClock, MeteredIo},
 };
@@ -25,7 +31,8 @@ use std::future::{Future, poll_fn};
 use std::{
     cell::{Cell, RefCell},
     error::Error,
-    net::Ipv4Addr,
+    io::{Read, Write},
+    net::{Ipv4Addr, SocketAddr},
     path::PathBuf,
     pin::Pin,
     rc::Rc,
@@ -118,6 +125,8 @@ fn harness(suffix: &str) -> Result<Harness, Box<dyn Error>> {
             principal: "principal:fixture".into(),
             capabilities: vec![
                 RuntimeGrant::AdapterNet.as_str().into(),
+                RuntimeGrant::AdapterAuth.as_str().into(),
+                RuntimeGrant::ObserveStatus.as_str().into(),
                 RuntimeGrant::CameraManagementPrepare.as_str().into(),
                 RuntimeGrant::CameraManagementCommit.as_str().into(),
             ],
@@ -545,4 +554,255 @@ fn dropped_partial_write_fences_session_and_keeps_committed_obligation() -> Test
         fss_core::EffectState::Committed
     );
     Ok(())
+}
+
+struct HttpAccess;
+impl camera_http::Authority for HttpAccess {
+    fn permits(&self, peer: Ipv4Addr, generation: u64, _: camera_http::Operation) -> bool {
+        peer == Ipv4Addr::new(192, 168, 1, 30) && generation == 1
+    }
+}
+fn http_request(socket: &mut std::net::TcpStream) -> std::io::Result<Vec<u8>> {
+    let mut head = Vec::new();
+    let mut one = [0u8; 1];
+    while !head.ends_with(b"\r\n\r\n") {
+        socket.read_exact(&mut one)?;
+        head.push(one[0]);
+        if head.len() > 8192 {
+            return Err(std::io::Error::other("fixture header limit"));
+        }
+    }
+    let text = std::str::from_utf8(&head).map_err(std::io::Error::other)?;
+    let len = text
+        .lines()
+        .find_map(|line| line.strip_prefix("Content-Length: "))
+        .map_or(Ok(0), str::parse::<usize>)
+        .map_err(std::io::Error::other)?;
+    if len > 4096 {
+        return Err(std::io::Error::other("fixture body limit"));
+    }
+    let end = head.len() + len;
+    head.resize(end, 0);
+    socket.read_exact(&mut head[end - len..])?;
+    Ok(head)
+}
+fn http_fixture(address: SocketAddr, cancel_reply: bool) -> std::io::Result<()> {
+    let mut socket = std::net::TcpStream::connect_timeout(&address, Duration::from_secs(5))?;
+    socket.set_read_timeout(Some(Duration::from_secs(8)))?;
+    let routes = [
+        "POST /api/1.1/login ",
+        "GET /api/1.1/status ",
+        "GET /api/1.1/settings ",
+        "PUT /api/1.1/settings ",
+        "GET /api/1.1/settings ",
+    ];
+    for (index, route) in routes.iter().enumerate() {
+        let request = http_request(&mut socket)?;
+        if !request.starts_with(route.as_bytes()) {
+            return Err(std::io::Error::other("fixture unexpected route"));
+        }
+        if index > 0
+            && !request
+                .windows(b"Cookie: authId=fixture-cookie".len())
+                .any(|window| window == b"Cookie: authId=fixture-cookie")
+        {
+            return Err(std::io::Error::other("fixture cookie missing"));
+        }
+        if index == 3 && !request.ends_with(br#"{"controller":{"addr":"192.168.1.40"}}"#) {
+            return Err(std::io::Error::other("fixture handoff mismatch"));
+        }
+        if index == 3 && cancel_reply {
+            let mut b = [0u8; 1];
+            return if socket.read(&mut b)? == 0 {
+                Ok(())
+            } else {
+                Err(std::io::Error::other("fixture expected closure"))
+            };
+        }
+        let body: &[u8] = match index {
+            2 => br#"{"controller":{"addr":"192.168.1.10"}}"#,
+            4 => br#"{"controller":{"addr":"192.168.1.40"}}"#,
+            _ => b"{}",
+        };
+        let cookie = if index == 0 {
+            "Set-Cookie: authId=fixture-cookie\r\n"
+        } else {
+            ""
+        };
+        let header = format!(
+            "HTTP/1.1 200 OK\r\n{cookie}Content-Length: {}\r\nConnection: keep-alive\r\n\r\n",
+            body.len()
+        );
+        socket.write_all(header.as_bytes())?;
+        socket.write_all(body)?;
+    }
+    Ok(())
+}
+fn owned_http_handoff(cancel_reply: bool) -> Test {
+    let suffix = if cancel_reply {
+        "http-cancel"
+    } else {
+        "http-success"
+    };
+    let Harness {
+        _temp,
+        mut authority,
+        mut tree,
+        effects,
+        session: _,
+        plan,
+        conditions,
+        permit,
+    } = harness(suffix)?;
+    let runtime = RuntimeBuilder::current_thread().build()?;
+    runtime.block_on(async {
+        let cx = asupersync::Cx::current().ok_or("runtime context")?;
+        let result = run_owned_async(
+            &mut authority,
+            &mut tree,
+            TaskSpec {
+                task_id: TaskId::new("task:owned-handoff-http")?,
+                started_at: TimestampNs(5),
+            },
+            &cx,
+            async |task, cx| {
+                let output: Test = async {
+                    let listener = TcpListener::bind("127.0.0.1:0").await?;
+                    let address = listener.local_addr()?;
+                    let peer = std::thread::spawn(move || http_fixture(address, cancel_reply));
+                    let (socket, _) =
+                        timeout(cx.now(), Duration::from_secs(5), listener.accept()).await??;
+                    let clock = MeteredClock::new(task, cx, TimestampNs(6))?;
+                    let resource = plan.resource();
+                    let io = MeteredIo::with_clock(socket, clock, &resource, 4096)?;
+                    let mut owner = camera_http::Owner::new(
+                        io,
+                        task,
+                        cx,
+                        clock,
+                        &HttpAccess,
+                        Ipv4Addr::new(192, 168, 1, 30),
+                        1,
+                        &resource,
+                    )?;
+                    owner
+                        .login(
+                            br#"{"username":"fixture","password":"synthetic"}"#,
+                            Duration::from_secs(5),
+                        )
+                        .await?;
+                    owner.status(Duration::from_secs(5)).await?;
+                    let observed = owner.settings(Duration::from_secs(5)).await?;
+                    assert_eq!(observed, conditions.settings);
+                    let stale = Preconditions {
+                        lease_fence: conditions.lease_fence + 1,
+                        ..conditions
+                    };
+                    let refused = owner
+                        .dispatch_handoff(
+                            &plan,
+                            stale,
+                            permit,
+                            &Guard(true),
+                            Duration::from_secs(5),
+                        )
+                        .await
+                        .expect_err("stale handoff must refuse");
+                    assert_eq!(refused.reason, HandoffError::Stale);
+                    assert_eq!(owner.phase(), Phase::Snapshot);
+                    let denied = owner
+                        .dispatch_handoff(
+                            &plan,
+                            conditions,
+                            refused.permit,
+                            &Guard(false),
+                            Duration::from_secs(5),
+                        )
+                        .await
+                        .expect_err("policy must refuse");
+                    assert_eq!(denied.reason, HandoffError::Denied);
+                    let mut permit = match owner
+                        .dispatch_handoff(
+                            &plan,
+                            conditions,
+                            denied.permit,
+                            &Guard(true),
+                            Duration::from_secs(5),
+                        )
+                        .await
+                        .map_err(|_| "handoff refused")?
+                    {
+                        HandoffWrite::Written { permit } => permit,
+                        HandoffWrite::Indeterminate { .. } => {
+                            return Err("unexpected indeterminate write".into());
+                        }
+                    };
+                    assert!(!permit.try_claim_dispatch());
+                    assert_eq!(owner.phase(), Phase::AwaitHandoff);
+                    if cancel_reply {
+                        let mut reply =
+                            Box::pin(owner.read_handoff_response(&permit, Duration::from_secs(5)));
+                        poll_fn(|context| match reply.as_mut().poll(context) {
+                            Poll::Pending => Poll::Ready(()),
+                            Poll::Ready(_) => panic!("reply should wait"),
+                        })
+                        .await;
+                        drop(reply);
+                        assert_eq!(owner.phase(), Phase::Fenced);
+                    } else {
+                        owner
+                            .read_handoff_response(&permit, Duration::from_secs(5))
+                            .await?;
+                        assert_eq!(owner.phase(), Phase::ReconcileSettings);
+                        let after = owner.settings(Duration::from_secs(5)).await?;
+                        assert_eq!(
+                            after.controller,
+                            ControllerAddress::Reported(Ipv4Addr::new(192, 168, 1, 40))
+                        );
+                        assert_eq!(
+                            plan.classify_readback(after)?,
+                            fss_reference::unifi_direct::handoff::Readback::Requested
+                        );
+                        assert_eq!(owner.phase(), Phase::Snapshot);
+                    }
+                    drop(owner);
+                    peer.join().map_err(|_| "fixture peer panic")??;
+                    Ok(())
+                }
+                .await;
+                // The task completed its fixture work; the separately journaled
+                // camera effect remains committed and unreconciled below.
+                let outcome = if output.is_ok() {
+                    TaskOutcome::Success
+                } else {
+                    TaskOutcome::Failed("HTTP handoff fixture failed".into())
+                };
+                TaskCompletion {
+                    output,
+                    outcome,
+                    completed_at: TimestampNs(59_000_000_000),
+                }
+            },
+        )
+        .await?;
+        result.receipt?;
+        result.output
+    })?;
+    assert_eq!(
+        effects
+            .journal()
+            .operation(&OperationId::parse("operation:handoff-dispatch")?)
+            .ok_or("missing operation")?
+            .state,
+        fss_core::EffectState::Committed
+    );
+    Ok(())
+}
+#[test]
+fn owned_http_handoff_requires_success_and_readback() -> Test {
+    owned_http_handoff(false)
+}
+#[test]
+fn cancelled_owned_http_handoff_reply_fences_session() -> Test {
+    owned_http_handoff(true)
 }

@@ -439,8 +439,14 @@ TLS, camera identity, credentials and a live lease; this owner does not itself
 provide discovery, device adoption or continuous recording. On `hz4`, six
 camera API tests and one owned HTTP integration test passed, including a real
 loopback sequence, same-task clock revalidation, malformed response and
-cancellation/refusal controls. The camera-specific TLS integration remains a
-separate laboratory qualification.
+cancellation/refusal controls. The camera-specific TLS lab subsequently used
+this exact owner with an independent TLS fixture (including a 60,000-byte
+settings response), then logged into the owner's G4 and decoded a 640×360
+snapshot. Changed-pin and wrong-key controls were rejected before credential
+access. This is an experimental, same-network-observed TLS identity and a
+fresh login session with unknown expiry, not native recorder or onboarding
+qualification. See the [snapshot lab](../experiments/unifi_https_snapshot_lab/README.md)
+for binary/source identities and the initial clock-regression failure.
 
 The camera-local API now supports read-only settings observations after login
 and status. It returns only the claimed controller IPv4 address (or explicit

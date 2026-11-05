@@ -12,7 +12,7 @@ use fss_object::{
 };
 use fss_reference::unifi_direct::{
     camera_api::{Session, SettingsObservation, WriteOutcome},
-    handoff::{Error, Plan, Preconditions},
+    handoff::{Error, Plan, Preconditions, Readback},
 };
 use fss_runtime::{
     authority::AuthorityCx,
@@ -93,6 +93,45 @@ fn plans_bind_exact_forward_prior_and_live_conditions() -> Test {
     assert!(Plan::new(Ipv4Addr::new(192, 168, 1, 31), target, c).is_err());
     let other = Plan::new(peer, Ipv4Addr::new(192, 168, 1, 41), c)?;
     assert_ne!(plan.request_digest(), other.request_digest());
+    Ok(())
+}
+
+#[test]
+fn readback_classifies_untrusted_claims_and_refuses_wrong_binding() -> Test {
+    let peer = Ipv4Addr::new(192, 168, 1, 30);
+    let prior = observed(peer, 1, br#"{"controller":{"addr":"192.168.1.10"}}"#)?;
+    let plan = Plan::new(peer, Ipv4Addr::new(192, 168, 1, 40), conditions(prior))?;
+    let cases: [(&[u8], Readback); 6] = [
+        (
+            br#"{"controller":{"addr":"192.168.1.40"}}"#,
+            Readback::Requested,
+        ),
+        (
+            br#"{"controller":{"addr":"192.168.1.10"}}"#,
+            Readback::Previous,
+        ),
+        (
+            br#"{"controller":{"addr":"192.168.1.99"}}"#,
+            Readback::Different,
+        ),
+        (br#"{"controller":{"addr":null}}"#, Readback::Unset),
+        (br#"{"controller":{}}"#, Readback::Missing),
+        (
+            br#"{"controller":{"addr":"invalid.example"}}"#,
+            Readback::Unsupported,
+        ),
+    ];
+    for (body, expected) in cases {
+        assert_eq!(plan.classify_readback(observed(peer, 1, body)?)?, expected);
+    }
+    let other = observed(
+        Ipv4Addr::new(192, 168, 1, 31),
+        1,
+        br#"{"controller":{"addr":"192.168.1.40"}}"#,
+    )?;
+    assert_eq!(plan.classify_readback(other), Err(Error::Preconditions));
+    let stale = observed(peer, 2, br#"{"controller":{"addr":"192.168.1.40"}}"#)?;
+    assert_eq!(plan.classify_readback(stale), Err(Error::Preconditions));
     Ok(())
 }
 
