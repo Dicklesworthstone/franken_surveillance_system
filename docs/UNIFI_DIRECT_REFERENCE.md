@@ -805,6 +805,25 @@ and the recorder and both timers remained active. The live test executable SHA-2
 These windows do not authenticate the device or establish absence of other
 cameras.
 
+### Joint controller and media supervision (loopback only)
+
+`unifi_direct::supervisor` owns an already-admitted controller session and its
+media pipeline together. It fairly polls both with a finite wait, returns media
+results and any unaccepted original records to its caller, and retains the
+original controller retirement facts if the peer closes. Post-start camera
+time-sync requests require a distinct caller-provided operation identity and a
+journaled, reauthorized management write. A written response proves only local
+transport acceptance. Cancelled receives rely on the owners' documented
+cancel-safe contracts; no task is detached.
+
+The task-owned loopback test pauses a synthetic stream until a second time-sync
+response is received, then reconstructs the input and decodes six frames. This
+does not demonstrate live-camera operation. Persistent publication, automatic
+reconnection, a production nonblocking journal, camera identity and qualified
+TLS are still needed before this can replace the existing recorder. A single
+step may spend up to the configured wait polling and another configured wait on
+a time-sync write.
+
 `unifi_direct::setup` now drives one completed, nonconflicting discovery
 candidate through an independently admitted camera session, login, status,
 settings, a journaled controller change and readback under one task and total

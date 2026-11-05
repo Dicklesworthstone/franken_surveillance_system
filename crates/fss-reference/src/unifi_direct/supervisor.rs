@@ -92,8 +92,9 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Supervisor<'scope, 'task
         self.pipeline.initialization()
     }
 
-    /// Poll both sources fairly for at most `wait`. Every time-sync request requires
-    /// a fresh operation identity; reuse is refused by the effect journal.
+    /// Poll both sources fairly for at most `wait`, then allow up to another
+    /// `wait` to write a requested time-sync reply. Each request requires a
+    /// fresh operation identity; reuse is refused by the effect journal.
     pub async fn step(
         &mut self,
         owner: &mut conversation::Owner<'_, '_, '_>,
