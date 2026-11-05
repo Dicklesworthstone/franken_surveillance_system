@@ -251,7 +251,14 @@ done
 sudo "$PY" "$HERE/fwserve_with_beacon.py" > /tmp/img8080.log 2>&1 &
 sudo "$PY" -m http.server 9101 --directory "$CAP_DIR/img" > /tmp/img.log 2>&1 &
 # the capsule streams every partition back before it writes; without a receiver it dies at step 2
-sudo "$PY" "$HERE/wyze_backup_recv.py" --base-port "${PORT:-8446}" --dir /tmp/fwbackup \
+# Backup ports must match the capsule's installer scheme: it streams partition backups to
+# $PORT+1+slot with PORT=443 baked into upgraderun.sh (444..449 for six MTD partitions).
+# The old base-port 8446 listened on 8447+ — the installer's nc would hit closed ports and
+# die at step 2, before the flash (measured 2026-11-04). Kill any stale receiver first:
+# a surviving prior generation holds 444..449 and the new bind dies silently.
+sudo pkill -f 'wyze_backup_recv.py' 2>/dev/null
+sleep 1
+sudo "$PY" "$HERE/wyze_backup_recv.py" --base-port 443 --dir /tmp/fwbackup \
   >> /tmp/ota/backup.log 2>&1 &
 if [ "${FOREGROUND:-0}" = 1 ]; then
   # launchd supervises the proxy in the foreground; the listeners above are its children.
