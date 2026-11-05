@@ -172,7 +172,9 @@ def av_login2(l1):
     p[20]=(p[20]+1)&0xff
     return bytes(p)
 def build_hl(cmd,payload):
-    return b"HL"+bytes([5,0])+struct.pack('<H',cmd)+struct.pack('<H',len(payload))+b'\x00'*8+payload
+    # version 0x25 (37) per wyze_dtls.py — version 5 here made the camera ignore every HL
+    # command (K10001 re-challenged forever, login never completed; measured 2026-11-05).
+    return b"HL"+bytes([0x25,0])+struct.pack('<H',cmd)+struct.pack('<H',len(payload))+b'\x00'*8+payload
 def build_ioctrl(avseq,sub,hl):
     p=bytearray(40); struct.pack_into('<HH',p,0,0x000C,0x000C); struct.pack_into('<I',p,4,avseq)
     struct.pack_into('<H',p,16,0x7000); struct.pack_into('<H',p,18,sub); struct.pack_into('<I',p,20,1)
@@ -202,7 +204,10 @@ class Cam2(Cam):
         elif mode=='enr': r=xt_decrypt(bytes(challenge),self.enr.encode()[:16])
         else:
             r=xt_decrypt(xt_decrypt(bytes(challenge),self.enr.encode()[:16]),self.enr.encode()[16:32])
-        self.hl(10002,r+os.urandom(4)+bytes([1,0]))
+        # the proven shape (wyze_dtls.py): the 4 bytes after the decrypted challenge are
+        # ZEROS (the rx counter), not random — random bytes here made the camera reject
+        # the login and re-challenge forever (measured 2026-11-05, 11 status-3 rounds).
+        self.hl(10002, r + struct.pack("<I", getattr(self, "rx", 0)) + bytes([1, 0]))
         return r
     def login(self,tries=5,secs=25):
         import random
