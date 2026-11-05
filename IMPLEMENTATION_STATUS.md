@@ -1,11 +1,37 @@
 # Implementation status
 
-**As of:** 2026-11-04 (dated feature sections retain their original verification scope)
+**As of:** 2026-11-05 (dated feature sections retain their original verification scope)
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
 
 
+
+## QSR final source and proof revalidation (2026-11-05)
+
+`QsrObservationReport::open` now admits its complete canonical result and bounded
+JSON before a final native source reconstruction and retained-proof check. This
+rechecks source custody, current privacy/deletion, the principal, durable ledger
+head and the selected report's exact proof before returning a successful result.
+Historical screening consumes the original remaining allowance across both source
+passes; it cannot obtain a fresh budget during final verification.
+
+The existing screened-v2 requirement, canonical bytes and JSON format are
+preserved. `to_json()` keeps its public signature and returns the already admitted
+immutable snapshot of the completed read. Cancellation or an unavailable source
+at final delivery returns no successful report.
+
+Two native regressions exercise cancellation after rendering and during the
+second actual source pass, cumulative screening work, unchanged source/provenance
+bytes, repeatable JSON and an unchanged authority anchor. Complete actual production
+reference/CLI/event sources and all affected native test targets have passed
+metadata compilation with the real runtime dependencies and no production source
+exclusions. Native execution is not yet established by that compilation; the first
+full reference code-generation attempt exceeded shared memory before tests ran.
+A smaller retry refused to launch when available memory fell below its admission
+threshold. The retained occupancy/QSR integration tests remain compiled but
+unexecuted in this session. The CLI continues normal exclusive deployment startup/durability recovery, as
+qualified in [the QSR workflow](docs/QSR_OBSERVATIONS.md).
 
 ## Protected receipt outcome projection and ONVIF workflow contracts (2026-11-04)
 

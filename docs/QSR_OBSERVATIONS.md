@@ -14,6 +14,11 @@ lane journeys still require their own evidence and qualified interpretations.
 
 ## Read an existing report
 
+The command uses the deployment's normal exclusive startup and recovery. That
+startup may clean recovery metadata and mark interrupted committed effects
+`Indeterminate`. The QSR projection itself creates no reports or events and
+dispatches no effects; the command does not promise an unchanged filesystem.
+
 The input must be a retained `fss.package_zone_report.v2` created through the
 existing `fss-event package-zones analyze --require-health-screening yes` workflow.
 That workflow first reopens retained package detections, computes exact assigned
@@ -116,6 +121,13 @@ track × zone × frame cells. QSR preserves these bounds, emits every selected s
 and interruption, and refuses complete JSON output above 8 MiB. It never ranks away
 unknown samples or truncates the observations to make a result fit.
 
+The complete canonical result and JSON are constructed before a final native revalidation
+of source custody, current privacy/deletion, the principal, durable ledger head and retained
+report proof. This second reconstruction spends the original source-health allowance's
+remaining work; it does not refill a new allowance. Cancellation or a failed check at this
+boundary returns no successful report. `to_json()` returns the already admitted immutable
+snapshot of the completed read, without performing another read or implying later freshness.
+
 Tests include actual retained JPEG and numeric FMPK model execution through the
 existing detection, tracking, screening and custody owners, followed by QSR cold
 reconstruction. Separate reducer cases cover missing/tentative/clipped samples,
@@ -123,6 +135,11 @@ masking with zero tracks, unknown health, ambiguous and out-of-order stages,
 capture-time regression, uncertainty widening, integer extremes, malformed cell
 matrices, cancellation and bounds. The numeric fixture is test data, not evidence
 of detection accuracy on real restaurant footage.
+
+Final-delivery regressions cancel both after rendering and during the second actual source
+reconstruction. They also check cumulative historical-screening work, unchanged source
+canonical bytes and no new authority commits. These complement the existing native tests
+for diagnostic corruption, current privacy and original-source deletion.
 
 ```sh
 cargo test -p fss-reference --lib ingest::qsr_observations

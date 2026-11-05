@@ -26,6 +26,8 @@ pub const QSR_OBSERVATION_SCHEMA: &str = "fss.qsr_observation_report.v1";
 pub const QSR_OBSERVATION_POLICY: &str = "fss.qsr_observation_policy.v1:actual-confirmed-boxes;complete-historical-screen;no-absence;sampled-dwell;adjacent-ordered-stage-endpoints";
 /// Complete output bound, including every exclusion and supporting track identity.
 pub const MAX_QSR_JSON_BYTES: usize = 8 * 1024 * 1024;
+/// After complete derivation/rendering, before current source and retained-proof revalidation.
+pub const STAGE_QSR_REVALIDATE: &str = "qsr:revalidate";
 
 /// Typed refusals never return an empty-success substitute for missing source custody.
 #[derive(Debug)]
@@ -71,10 +73,14 @@ pub struct QsrObservationReport {
     observations: QsrObservations,
     bytes: Vec<u8>,
     digest: ContentDigest,
+    json: String,
 }
 impl QsrObservationReport {
     /// Reopen one retained v2 screened report through its original custody/privacy/deletion
     /// owner, then project it without inference, source acquisition, retention or authority writes.
+    /// Complete canonical and JSON output is admitted before final custody/privacy/deletion,
+    /// principal, ledger-head and retained-proof revalidation under the remaining source-health
+    /// allowance. A failed final check returns no report, even when derivation has completed.
     pub fn open(
         deployment: &ReferenceDeployment,
         report_digest: ContentDigest,
@@ -126,15 +132,25 @@ impl QsrObservationReport {
         )?;
         let bytes = wire::encode(&source, &config, &observations)?;
         let digest = ContentDigest::sha256(&bytes);
-        cx.checkpoint("qsr:complete")
-            .map_err(|_| QsrError::Cancelled)?;
-        Ok(Self {
+        let mut report = Self {
             source,
             config,
             observations,
             bytes,
             digest,
-        })
+            json: String::new(),
+        };
+        let json = wire::json(&report)?;
+        cx.checkpoint(STAGE_QSR_REVALIDATE)
+            .map_err(|_| QsrError::Cancelled)?;
+        report
+            .source
+            .revalidate_retained_read(deployment, cx)
+            .map_err(QsrError::Source)?;
+        cx.checkpoint("qsr:complete")
+            .map_err(|_| QsrError::Cancelled)?;
+        report.json = json;
+        Ok(report)
     }
     /// Exact source-verified report and its immutable evidence handles.
     pub fn source(&self) -> &PackageZoneReport {
@@ -156,8 +172,10 @@ impl QsrObservationReport {
     pub fn digest(&self) -> ContentDigest {
         self.digest
     }
-    /// Complete bounded byte-free JSON with provenance, coverage limitations and exclusions.
+    /// Complete bounded byte-free JSON, admitted before the final source check in `open`.
+    /// This is the immutable snapshot of that completed read; rendering it performs no new
+    /// source reads, budget refills or claim of freshness after construction.
     pub fn to_json(&self) -> Result<String> {
-        wire::json(self)
+        Ok(self.json.clone())
     }
 }

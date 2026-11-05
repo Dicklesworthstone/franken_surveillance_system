@@ -268,7 +268,11 @@ impl PackageZoneReport {
         }
         Ok(report)
     }
-    pub(super) fn revalidate(&mut self, deployment: &ReferenceDeployment, cx: &ReplayCx) -> Result<()> {
+    pub(super) fn revalidate(
+        &mut self,
+        deployment: &ReferenceDeployment,
+        cx: &ReplayCx,
+    ) -> Result<()> {
         check_scope(deployment, cx)?;
         if self.root.as_path() != deployment.root()
             || self.site != deployment.site_lineage()
@@ -298,6 +302,20 @@ impl PackageZoneReport {
         }
         if let (Some(original), Some(current)) = (&mut self.health, &report.health) {
             original.complete_revalidation(current)?;
+        }
+        Ok(())
+    }
+    /// Revalidate a retained read through the original source/privacy/deletion and health
+    /// owners, then verify the selected report's exact current retained proof. Repeated work
+    /// consumes this report's remaining screening allowance; no new allowance is substituted.
+    pub(in crate::ingest) fn revalidate_retained_read(
+        &mut self,
+        deployment: &ReferenceDeployment,
+        cx: &ReplayCx,
+    ) -> Result<()> {
+        self.revalidate(deployment, cx)?;
+        if existing(deployment, self)?.is_none() {
+            return Err(PackageZoneError::Unavailable);
         }
         Ok(())
     }

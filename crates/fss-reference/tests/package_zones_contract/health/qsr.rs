@@ -4,6 +4,7 @@
 use super::*;
 use fss_reference::ingest::qsr_observations::{
     QsrConfig, QsrError, QsrObservationReport, QsrPresence, QsrZoneBinding, QsrZoneRole,
+    STAGE_QSR_REVALIDATE,
 };
 
 fn qsr_config() -> QsrConfig {
@@ -166,5 +167,72 @@ fn qsr_rechecks_diagnostic_custody_current_privacy_and_source_deletion_without_r
         QsrObservationReport::open(&masked.deployment, zones, qsr_config(), &masked.cx).is_err()
     );
     assert_eq!(masked.deployment.current_anchor(), &head);
+    Ok(())
+}
+
+#[test]
+fn qsr_final_delivery_checkpoint_and_second_native_source_pass_cancel_without_a_report() -> Test {
+    let mut f = fixture("qsr-final-revalidation", &clear_media(), &package()?, true)?;
+    diagnostic(&mut f, 0, 7, false)?;
+    let zones = retain_screened(&mut f)?;
+    let head = f.deployment.current_anchor().clone();
+
+    let final_gate = context(&f.root, PRINCIPAL)?;
+    final_gate.set_cancel_at_checkpoint(STAGE_QSR_REVALIDATE);
+    assert!(matches!(
+        QsrObservationReport::open(&f.deployment, zones, qsr_config(), &final_gate),
+        Err(QsrError::Cancelled)
+    ));
+    assert_eq!(f.deployment.current_anchor(), &head);
+    final_gate.drain_and_finalize();
+
+    // Initial cold reconstruction reaches this owner once. The second occurrence must be
+    // the final native revalidation, not another renderer or a fabricated source check.
+    let second_source_pass = context(&f.root, PRINCIPAL)?;
+    second_source_pass.set_cancel_at_checkpoint_occurrence("package_zones:analyze", 2);
+    assert!(matches!(
+        QsrObservationReport::open(&f.deployment, zones, qsr_config(), &second_source_pass),
+        Err(QsrError::Source(PackageZoneError::Cancelled))
+    ));
+    assert_eq!(f.deployment.current_anchor(), &head);
+    second_source_pass.drain_and_finalize();
+    assert!(QsrObservationReport::open(&f.deployment, zones, qsr_config(), &f.cx).is_ok());
+    assert_eq!(f.deployment.current_anchor(), &head);
+    Ok(())
+}
+
+#[test]
+fn qsr_final_source_revalidation_accumulates_screening_work_without_changing_frozen_bytes() -> Test
+{
+    let mut f = fixture("qsr-shared-read-budget", &clear_media(), &package()?, true)?;
+    diagnostic(&mut f, 0, 7, false)?;
+    let zones = retain_screened(&mut f)?;
+    let original = PackageZoneReport::open(&f.deployment, zones, &f.cx)?;
+    let first_usage = original.health_usage().ok_or("initial screening work")?;
+    assert_eq!(first_usage.assessment_work, 7);
+    let head = f.deployment.current_anchor().clone();
+
+    let report = QsrObservationReport::open(&f.deployment, zones, qsr_config(), &f.cx)?;
+    let final_usage = report
+        .source()
+        .health_usage()
+        .ok_or("final screening work")?;
+    assert_eq!(final_usage.assessment_work, first_usage.assessment_work * 2);
+    assert_eq!(final_usage.records_seen, first_usage.records_seen * 2);
+    assert_eq!(report.source().encoded(), original.encoded());
+    assert_eq!(
+        report.source().provenance_root(),
+        original.provenance_root()
+    );
+    assert_eq!(
+        report.source().retention_anchor(),
+        original.retention_anchor()
+    );
+    let bytes = report.encoded().to_vec();
+    let json = report.to_json()?;
+    assert_eq!(report.to_json()?, json);
+    assert_eq!(report.encoded(), bytes);
+    assert_eq!(report.source().health_usage(), Some(final_usage));
+    assert_eq!(f.deployment.current_anchor(), &head);
     Ok(())
 }
