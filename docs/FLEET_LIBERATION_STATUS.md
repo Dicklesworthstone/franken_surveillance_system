@@ -472,3 +472,46 @@ fss-ran beacon (loop_closer watching, captures telnetd:9999 root on sight);
 C460 recon_sweep.txt + postshell (burst waits inside login loop for the wake);
 C660 telnetd:4444 or tftp artifact (sweep fires on presence, timing probe answers
 the system() question on next full wake).
+
+## 2026-11-04 session — infrastructure repair (JEM agent)
+
+Zero cameras rooted this session; all work was restoring the automation fabric the handoff
+described as "running" but that had silently died.
+
+**Found vs handoff:** only 4 of 9 claimed launchd services were loaded; wyze-forge was alive
+(launchd, root) but the MQTT MITM (:8883), beacon server (:8080), image server (:9101),
+c460-burst-daemon, c660-sweep and persistent-exploit were all dead. All 17 beacons in
+`/tmp/fss_beacons.log` were self-tests.
+
+**Root causes fixed (commits 93f22b32..879228d2):**
+1. Two-servisor cascade: KeepAlive kept respawning `wyze-broker` while previous wrapper
+   generations still ran their ARP sweeps; each new generation's `free_port`/`pkill`
+   SIGTERM'd the old generation's children. Fixed with a single-flight lockfile
+   (`/tmp/wyze_mitm_bringup.lock`, PID-guarded, EXIT-trap released; second generation defers).
+2. EADDRINUSE restart loop on :8883 — 3,722 measured bind failures: stale root-owned
+   `wyze_mqtt_mitm.py` from a prior generation survived `free_port` (which only waits).
+   Fixed: wrapper pkills the proxy before freeing 8883.
+3. Root-owned logs (`/tmp/tls.log`, `/tmp/iot2.*`, c660/c460 daemon logs) — user launchd
+   redirections failed silently ("Permission denied" in broker.log). Fixed: per-run chown.
+4. `/tmp/iot2.pem` zeroing: the log-ownership prune `install /dev/null` ran BEFORE the
+   single-flight lock check, so deferred runs left empty certs → every TLS spawn died with
+   `PEM lib`. Fixed: certs excluded from prune, chown+rebuild in the cert section only;
+   `iot2.pem` is cert-only (key-in-pem made `serve.pem`'s first block a private key →
+   `KEY_VALUES_MISMATCH`).
+5. Beacon plane: the wrapper spawned plain `http.server` on :8080 (no beacon handler — fixed
+   bug #9 had regressed); replaced with `fwserve_with_beacon.py`; verified end-to-end
+   (`/fss-ran?...` → 200 → structured log line). loop_closer watches the right log.
+
+**State at session end:** 443 forge ✓, 8883 MQTT MITM ✓ (injector armed), 8080 beacon-aware ✓,
+9101 image ✓, c460-burst-daemon + c660-sweep + persistent-exploit loaded and polling.
+8443 verify pending (cert fix just landed). Cameras .51/.39 still poll `get_processes`
+with `version:"lastknowngood"` and never request `dl-location` — the version-state machine
+handoff (Priority 1.5: force a dl-location by advertising a changed component set) is still
+the open Wyze move.
+
+**Tapo C460 firmware breakthrough (docs/exploit/tapo.md C3-C5):** sstarXZ container format
+fully cracked (VLQ table = LSB-first base-128, block starts verified by chunk headers AND the
+uImage data CRC over the whole container; per-block 20-byte vendor header CRC-verified on both
+dumps). **Kernel recovered**: uImage @0x30200 payload is a standard XZ stream — 488,624-byte
+ARM zImage at `/tmp/c460_kernel.bin`. Decoder verified bit-exact against it; the sstarXZ
+desync is narrowed to the first three literal decisions (tree-path evidence in tapo.md C3).
