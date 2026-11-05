@@ -689,3 +689,14 @@ THE OPERATOR ACTION LIST (all remote levers exhausted; these complete the chain)
    sequence; or power-cycle and re-probe (the DTLS handshake now completes).
 5. **Yi**: re-provision through the Yi phone app to join our AP (the listener has been
    armed for 20+ hours).
+
+## 17:45 — post-reset discovery: AOSU camera found at .126
+
+After the operator's factory reset, a Tuya-family device (MAC 78:28:ca:92:21:dc, OUI =
+Tuya Semiconductor) is broadcasting discovery beacons on UDP :6667 from 192.168.4.126.
+This is the AOSU camera (fss-fkkpw). The discovery packet contains the device MAC and
+an `ip` TLV (192.168.4.56 — the AOSU's previous address before the reset).
+
+The AOSU is now in POST-RESET SETUP MODE — the Tuya discovery beacon is the app's
+provisioning entry point. The fss-fkkpw lane (Tuya api.json sign → device detail →
+local_key) can now proceed: the camera is reachable and broadcasting its identity.
