@@ -48,6 +48,29 @@ def _rewrite(d):
     topic = d[i + 2:i + 2 + tl].decode(errors="replace")
     qos = (d[0] >> 1) & 3
     j = i + 2 + tl + (2 if qos else 0)
+    # SHADOW GET/ACCEPTED: the camera's desired state carries stale experiment URLs from
+    # earlier sessions (trycloudflare.com, ota.frankenfs.com — both dead). assis's OTA
+    # state machine reads THESE, tries the dead hosts, and silently retries forever —
+    # which is why the 0x1fe never fired. Rewrite the accepted doc's url/md5 to our
+    # capsule (measured 2026-11-05: cloud shadow desired = frankenfs 4.52.17.30).
+    if "/shadow/name/" in topic and topic.endswith("/get/accepted") \
+            and ("wyze-service/" in topic or "wyze-secure/" in topic):
+        try:
+            doc = json.loads(d[j:])
+            des = doc.get("state", {}).get("desired", {})
+            if isinstance(des, dict) and ("url" in des or "APPPushOTA" in des):
+                des["url"] = os.environ["OTA_URL"]
+                des["md5"] = os.environ["OTA_MD5"]
+                if "APPPushOTA" in des and isinstance(des["APPPushOTA"], dict):
+                    des["APPPushOTA"]["url"] = os.environ["OTA_URL"]
+                    des["APPPushOTA"]["md5"] = os.environ["OTA_MD5"]
+                new = json.dumps(doc, separators=(",", ":")).encode()
+                print(f"rewrite accepted: url={des['url']} md5={des['md5']}", flush=True)
+                # rebuild the packet: fixed header + varint + topic(+packet id) + new payload
+                return bytes([d[0]]) + enc_len((j - i) + len(new)) + d[i:j] + new
+        except Exception as e:
+            print("rewrite accepted:", e, flush=True)
+            return None
     if topic.endswith("/update/delta") and "/wyze-service/" in topic:
         # the cloud's own shadow delta is plain JSON; point it at our capsule so the
         # device acts on the delivery it already trusts
