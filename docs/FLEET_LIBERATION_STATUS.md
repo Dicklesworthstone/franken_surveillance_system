@@ -607,3 +607,24 @@ those deltas too, once the sessions land on :8883.
 
 The C660 ground-truth loop is now closed: wake → ROP fire → telnetd (probe) +
 tftp exfil (receiver) → operator-side proof files. The next PIR wake tests it.
+
+## 02:10 — FOURTH chain defect: stale shadow desired state (the deepest one)
+
+The camera's shadow `desired` state (delivered in `wyze-secure/wyze-service
+get/accepted` responses) still carried dead experiment URLs from earlier sessions:
+`batch-heard-quotations-lunch.trycloudflare.com/4.52.17.29.tar` and
+`ota.frankenfs.com/…4.52.17.30.tar` — both tunnels long gone. assis's OTA state
+machine reads THIS document, tries the dead hosts, and silently retries forever.
+That is why the 0x1fe never fired despite every other link being correct.
+
+Fix (`a6bd9e4f`): the MITM now rewrites `wyze-service/wyze-secure get/accepted`
+responses in flight — url/md5 (and APPPushOTA) replaced with the armed capsule.
+Unit-verified packet reconstruction. Live proxy restarted with the code (57269).
+
+The four defects, in the order they masked each other:
+1. broker discovery chain (DNS CNAME) — MQTT never reached us → fixed
+2. version-install loop (dl-loc/version mismatch) → fixed
+3. backup receiver ports (backups would have died at installer step 2) → fixed
+4. stale shadow desired state (assis pointed at dead URLs) → fixed
+All four must be fixed simultaneously for the OTA to complete; any one alone
+would have produced "nothing happens" with no error on either side.
