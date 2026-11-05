@@ -57,6 +57,10 @@ def main() -> int:
                     d, _ = sock.recvfrom(2048)
                 except socket.timeout:
                     break
+                if len(d) >= 4 and struct.unpack(">H", d[:2])[0] == ERROR:
+                    msg = d[4:].split(b"\x00")[0].decode(errors="replace")
+                    print(f"  sender aborted: {msg}", flush=True)
+                    break
                 if len(d) >= 4 and struct.unpack(">H", d[:2])[0] == DATA:
                     blk = struct.unpack(">H", d[2:4])[0]
                     if blk == expected:

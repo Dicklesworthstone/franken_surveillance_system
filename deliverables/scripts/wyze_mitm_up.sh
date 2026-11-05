@@ -25,7 +25,7 @@ port_pids() {  # $1 = tcp port number → prints space-separated PIDs
     # 2026-11-05: bash script → 0 lines, sh → 635 lines). lsof was the previous
     # implementation: 22 s per call (autofs walk) — 100x slower.
     /bin/sh -c 'netstat -anv -p tcp 2>/dev/null' | awk -v port="$1" '$4 ~ ("[.]" port "$") && /LISTEN/ {
-        for (i = 5; i <= NF; i++) if ($i ~ /^[A-Za-z]+:[0-9]+$/) { split($i, a, ":"); print a[2] }
+        for (i = 5; i <= NF; i++) if ($i ~ /^[A-Za-z]+:[0-9]+$/) { n = split($i, a, ":"); print a[n] }
     }' | sort -u
 }
 # Everything privileged here runs under sudo, so the /tmp logs are root-owned and a launchd start

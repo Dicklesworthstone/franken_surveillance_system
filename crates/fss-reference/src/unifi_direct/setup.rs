@@ -123,6 +123,8 @@ pub enum Outcome {
     Indeterminate {
         /// Boundary at which the operation stopped.
         stage: Indeterminate,
+        /// Untrusted response shape, when read before the interruption.
+        response: Option<camera_api::HandoffResponseObservation>,
         /// Permit retained for independent reconciliation.
         permit: CommittedEffect,
     },
@@ -130,6 +132,8 @@ pub enum Outcome {
     Observed {
         /// Original untrusted status shape.
         status: camera_api::StatusShape,
+        /// Untrusted response shape, not proof of the camera effect.
+        response: camera_api::HandoffResponseObservation,
         /// Locally bound readback comparison.
         readback: handoff::Readback,
         /// Original readback claim; it does not settle the effect.
@@ -365,6 +369,7 @@ impl Owner<'_, '_, '_> {
             _ => {
                 return Ok(Outcome::Indeterminate {
                     stage: Indeterminate::AuthorityOrDeadline,
+                    response: None,
                     permit,
                 });
             }
@@ -382,6 +387,7 @@ impl Owner<'_, '_, '_> {
             Ok(camera_api::HandoffWrite::Indeterminate { permit }) => {
                 return Ok(Outcome::Indeterminate {
                     stage: Indeterminate::Write,
+                    response: None,
                     permit,
                 });
             }
@@ -392,21 +398,27 @@ impl Owner<'_, '_, '_> {
             _ => {
                 return Ok(Outcome::Indeterminate {
                     stage: Indeterminate::AuthorityOrDeadline,
+                    response: None,
                     permit,
                 });
             }
         };
-        if camera.read_handoff_response(&permit, wait).await.is_err() {
-            return Ok(Outcome::Indeterminate {
-                stage: Indeterminate::Response,
-                permit,
-            });
-        }
+        let response = match camera.read_handoff_response_observed(&permit, wait).await {
+            Ok(response) => response,
+            Err(_) => {
+                return Ok(Outcome::Indeterminate {
+                    stage: Indeterminate::Response,
+                    response: None,
+                    permit,
+                });
+            }
+        };
         let wait = match remaining(self.cx, deadline) {
             Ok(wait) if guard.current() => wait,
             _ => {
                 return Ok(Outcome::Indeterminate {
                     stage: Indeterminate::AuthorityOrDeadline,
+                    response: Some(response),
                     permit,
                 });
             }
@@ -416,6 +428,7 @@ impl Owner<'_, '_, '_> {
             Err(_) => {
                 return Ok(Outcome::Indeterminate {
                     stage: Indeterminate::Readback,
+                    response: Some(response),
                     permit,
                 });
             }
@@ -423,6 +436,7 @@ impl Owner<'_, '_, '_> {
         if !guard.current() {
             return Ok(Outcome::Indeterminate {
                 stage: Indeterminate::AuthorityOrDeadline,
+                response: Some(response),
                 permit,
             });
         }
@@ -431,12 +445,14 @@ impl Owner<'_, '_, '_> {
             Err(_) => {
                 return Ok(Outcome::Indeterminate {
                     stage: Indeterminate::Readback,
+                    response: Some(response),
                     permit,
                 });
             }
         };
         Ok(Outcome::Observed {
             status,
+            response,
             readback,
             observation,
             permit,

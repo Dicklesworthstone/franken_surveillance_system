@@ -603,7 +603,12 @@ fn http_request(socket: &mut std::net::TcpStream) -> std::io::Result<Vec<u8>> {
     socket.read_exact(&mut head[end - len..])?;
     Ok(head)
 }
-fn http_fixture(address: SocketAddr, cancel_reply: bool, already: bool) -> std::io::Result<()> {
+fn http_fixture(
+    address: SocketAddr,
+    cancel_reply: bool,
+    already: bool,
+    fail_readback: bool,
+) -> std::io::Result<()> {
     let mut socket = std::net::TcpStream::connect_timeout(&address, Duration::from_secs(5))?;
     socket.set_read_timeout(Some(Duration::from_secs(8)))?;
     let routes = [
@@ -636,9 +641,13 @@ fn http_fixture(address: SocketAddr, cancel_reply: bool, already: bool) -> std::
                 Err(std::io::Error::other("fixture expected closure"))
             };
         }
+        if index == 4 && fail_readback {
+            return Ok(());
+        }
         let body: &[u8] = match index {
             2 if already => br#"{"controller":{"addr":"192.168.1.40"}}"#,
             2 => br#"{"controller":{"addr":"192.168.1.10"}}"#,
+            3 => br#"{"success":false,"statusCode":17,"secret":"fixture-private"}"#,
             4 => br#"{"controller":{"addr":"192.168.1.40"}}"#,
             _ => b"{}",
         };
@@ -690,8 +699,9 @@ fn owned_http_handoff(cancel_reply: bool) -> Test {
                 let output: Test = async {
                     let listener = TcpListener::bind("127.0.0.1:0").await?;
                     let address = listener.local_addr()?;
-                    let peer =
-                        std::thread::spawn(move || http_fixture(address, cancel_reply, false));
+                    let peer = std::thread::spawn(move || {
+                        http_fixture(address, cancel_reply, false, false)
+                    });
                     let (socket, _) =
                         timeout(cx.now(), Duration::from_secs(5), listener.accept()).await??;
                     let clock = MeteredClock::new(task, cx, TimestampNs(6))?;
@@ -903,10 +913,10 @@ fn discovery_packet() -> Vec<u8> {
     packet.extend_from_slice(&body);
     packet
 }
-fn run_discovered_setup(cancel_reply: bool, already: bool) -> Test {
+fn run_discovered_setup(cancel_reply: bool, already: bool, fail_readback: bool) -> Test {
     use fss_reference::unifi_direct::{discovery, setup};
     let path = std::fs::canonicalize(std::env::temp_dir())?.join(format!(
-        "fss-unifi-setup-{}-{cancel_reply}-{already}",
+        "fss-unifi-setup-{}-{cancel_reply}-{already}-{fail_readback}",
         std::process::id()
     ));
     std::fs::create_dir(&path)?;
@@ -993,8 +1003,9 @@ fn run_discovered_setup(cancel_reply: bool, already: bool) -> Test {
                     assert_eq!(report.cameras.len(), 1);
                     let listener = TcpListener::bind("127.0.0.1:0").await?;
                     let address = listener.local_addr()?;
-                    let peer =
-                        std::thread::spawn(move || http_fixture(address, cancel_reply, already));
+                    let peer = std::thread::spawn(move || {
+                        http_fixture(address, cancel_reply, already, fail_readback)
+                    });
                     let (socket, _) =
                         timeout(cx.now(), Duration::from_secs(5), listener.accept()).await??;
                     let io = MeteredIo::with_clock(socket, clock, &resource, 4096)?;
@@ -1063,16 +1074,47 @@ fn run_discovered_setup(cancel_reply: bool, already: bool) -> Test {
                             assert_eq!(http.phase(), Phase::Snapshot);
                         }
                         setup::Outcome::Observed {
-                            readback, permit, ..
-                        } if !cancel_reply && !already => {
+                            readback,
+                            response,
+                            permit,
+                            ..
+                        } if !cancel_reply && !already && !fail_readback => {
                             assert_eq!(
                                 readback,
                                 fss_reference::unifi_direct::handoff::Readback::Requested
                             );
+                            assert_eq!(
+                                response,
+                                HandoffResponseObservation::Object {
+                                    success: Some(false),
+                                    status_code: Some(17)
+                                }
+                            );
                             assert_eq!(permit.operation(), &operation);
                         }
-                        setup::Outcome::Indeterminate { stage, permit } if cancel_reply => {
+                        setup::Outcome::Indeterminate {
+                            stage,
+                            response,
+                            permit,
+                        } if cancel_reply => {
                             assert_eq!(stage, setup::Indeterminate::Response);
+                            assert_eq!(response, None);
+                            assert_eq!(permit.operation(), &operation);
+                            assert_eq!(http.phase(), Phase::Fenced);
+                        }
+                        setup::Outcome::Indeterminate {
+                            stage,
+                            response,
+                            permit,
+                        } if fail_readback => {
+                            assert_eq!(stage, setup::Indeterminate::Readback);
+                            assert_eq!(
+                                response,
+                                Some(HandoffResponseObservation::Object {
+                                    success: Some(false),
+                                    status_code: Some(17)
+                                })
+                            );
                             assert_eq!(permit.operation(), &operation);
                             assert_eq!(http.phase(), Phase::Fenced);
                         }
@@ -1115,14 +1157,19 @@ fn run_discovered_setup(cancel_reply: bool, already: bool) -> Test {
 
 #[test]
 fn discovered_candidate_runs_owned_setup_through_journal_and_readback() -> Test {
-    run_discovered_setup(false, false)
+    run_discovered_setup(false, false, false)
 }
 #[test]
 fn discovered_setup_reply_timeout_preserves_committed_obligation() -> Test {
-    run_discovered_setup(true, false)
+    run_discovered_setup(true, false, false)
 }
 
 #[test]
 fn discovered_setup_already_associated_does_not_prepare_an_effect() -> Test {
-    run_discovered_setup(false, true)
+    run_discovered_setup(false, true, false)
+}
+
+#[test]
+fn discovered_setup_retains_response_if_readback_is_interrupted() -> Test {
+    run_discovered_setup(false, false, true)
 }

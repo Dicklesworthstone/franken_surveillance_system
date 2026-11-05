@@ -867,13 +867,16 @@ fresh recorder segments were verified and uploaded afterward.
 The handoff owner can now expose a bounded, payload-free HTTP response shape;
 its optional boolean and numeric values are untrusted claims and cannot settle
 an effect. A laboratory diagnostic samples three readbacks over roughly two
-seconds without another setting write. Nine independent synthetic HTTPS cases
-passed, including delayed and reversed camera claims, while the original
-eight handoff-dispatch contracts passed. This new timeline has not yet been
-run against the physical camera.
+seconds without another setting write. The setup owner also retains that
+response shape if a later readback is interrupted, alongside the unresolved
+effect permit. Nine independent synthetic HTTPS cases passed, including delayed
+and reversed camera claims, and nine handoff-dispatch contracts passed,
+including interrupted readback. This new timeline has not yet been run against
+the physical camera.
 
-The transitional recorder separately showed repeated stream exits at roughly
-four-minute intervals, followed by approximately eleven-second restarts. A
+The transitional recorder separately showed several stream exits at roughly
+four-minute intervals and another after about 100 seconds, followed by
+approximately eleven-second restarts. A
 header-only loopback observation saw its local RTSP server send FIN and then
 RST immediately before the recorder exited. This identifies the TCP close
 direction, not the cause of the server's shutdown or the exact amount of lost
@@ -884,9 +887,12 @@ A second bounded header-only trace observed another restart: the local RTSP
 server initiated its close and, within a millisecond, the controller host
 also initiated closure of the camera's video-push connection. No camera FIN
 or RST preceded those events in that capture, which reported zero kernel
-drops. This narrows the shutdown direction but does not distinguish the local
-parser, pacing, backpressure, watchdog or other causes. The temporary trace
-did not record packet payloads.
+drops. A subsequent bounded header-only observation found camera TCP payload
+arriving one millisecond before another local server close, including 12,881
+bytes in the preceding second, with zero reported kernel drops. This rules out
+complete TCP silence immediately before that close; it does not prove the data
+contained decodable video or distinguish local parser, pacing, backpressure,
+watchdog or other causes. The temporary traces did not record packet payloads.
 Another protected trial temporarily stopped the dedicated single-camera
 controller to examine that interaction. The native listener received no
 camera connection within its window, and the handoff readback did not confirm
