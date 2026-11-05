@@ -90,3 +90,20 @@ log-format strings' xrefs (the dispatcher's error paths WILL reference "[DS]Unsu
 method"), then walk back to the dispatch loop. That code will contain the strcmp/hashing
 against the name area and the handler call — from which the stack layout at connectAp can
 be recovered and the C460 offset verified.
+
+## Mask enumeration result (2026-11-05, 03:00)
+
+Extended per-position is_match masks to 10 positions, scored against the full expected
+uImage header (27 05 19 56 d0 fd 9d 78 67 6c d1 9e): all masks plateau at 3/12 bytes
+(best: 27 05 19 58…). Pure-literal decoding with per-position is_match skips cannot
+express the vendor stream — positions 4+ require MATCH symbols (the header's zero fields
+are match-encoded), so the decision-sequence search space is not a simple mask.
+
+The three-byte prefix 27 05 19 is ROBUST across masks 0bxx000011 (pos2/pos3 skip
+is_match) — the strongest structural signal so far: the vendor encoder does NOT write
+is_match decisions for consecutive literals at pos2/pos3. But the byte-3 divergence
+(0x58 vs 0x56) shows a second, independent difference (prob adaptation or a skipped
+decision at pos4+) that pure masks cannot capture.
+
+VERDICT: the SXZ decode requires the vendor's encoder or a hardware decode trace.
+Black-box reverse engineering has extracted all available signal.
