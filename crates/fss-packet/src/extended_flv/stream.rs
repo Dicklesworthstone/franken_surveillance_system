@@ -285,7 +285,9 @@ impl Framer {
             Phase::Successor => match match self.mode {
                 SearchMode::Conservative => find_next(input, self.limits),
                 SearchMode::Provisional => find_next_provisional(input, self.limits),
-            }.map_err(Error::Parse)? {
+            }
+            .map_err(Error::Parse)?
+            {
                 Parse::NeedMore => return Ok(Next::NeedMore),
                 Parse::Complete(candidate) => (
                     candidate.trailer.len() + candidate.tag.wire_bytes().len(),
@@ -317,7 +319,10 @@ impl Framer {
         };
         self.base = end;
         self.phase = next_phase;
-        if let RecordKind::Candidate { provisional: true, .. } = kind {
+        if let RecordKind::Candidate {
+            provisional: true, ..
+        } = kind
+        {
             self.provisional = true;
         }
         Ok(Next::Record(record))

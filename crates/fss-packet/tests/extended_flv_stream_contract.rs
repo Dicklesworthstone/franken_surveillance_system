@@ -3,7 +3,7 @@
 
 use fss_packet::extended_flv::{
     Limits, Parse, Tag, avc,
-    stream::{Error, Framer, Next, Phase, RecordKind},
+    stream::{Error, Framer, Next, Phase, RecordKind, SearchMode},
 };
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -169,5 +169,54 @@ fn refused_offsets_capacity_and_invalid_tags_never_discard_source() -> TestResul
     assert_eq!(rest.offset, 13);
     assert_eq!(rest.bytes(), b"PRIVATE");
     assert!(!format!("{rest:?}").contains("PRIVATE"));
+    Ok(())
+}
+
+#[test]
+fn provisional_search_marks_skipped_and_all_later_boundaries() -> TestResult {
+    let limits = Limits {
+        max_payload: 64,
+        max_trailer: 64,
+        ..Limits::default()
+    };
+    let mut framer = Framer::with_mode(limits, 128, SearchMode::Provisional)?;
+    let mut initial = b"FLV\x01\x01\x00\x00\x00\x09\x00\x00\x00\x00".to_vec();
+    initial.extend_from_slice(&tag(9, 0, b"first"));
+    framer.append(0, &initial)?;
+    assert!(matches!(framer.take()?, Next::Record(_)));
+    assert!(matches!(framer.take()?, Next::Record(_)));
+    let embedded = tag(8, 1, b"audio");
+    let mut payload = embedded.clone();
+    payload.resize(40, 0x77);
+    let outer = tag(9, 2, &payload);
+    let cut = 11 + embedded.len();
+    framer.append(framer.next_offset(), &outer[..cut])?;
+    let Next::Record(first) = framer.take()? else {
+        return Err("provisional candidate missing".into());
+    };
+    assert!(matches!(
+        first.kind(),
+        RecordKind::Candidate {
+            trailer_bytes: 11,
+            earlier_incomplete: true,
+            provisional: true,
+            ..
+        }
+    ));
+    let next = tag(9, 3, b"video");
+    framer.append(framer.next_offset(), &next)?;
+    let Next::Record(second) = framer.take()? else {
+        return Err("later candidate missing".into());
+    };
+    assert!(matches!(
+        second.kind(),
+        RecordKind::Candidate {
+            trailer_bytes: 0,
+            earlier_incomplete: false,
+            provisional: true,
+            ..
+        }
+    ));
+    assert!(framer.retire().provisional);
     Ok(())
 }
