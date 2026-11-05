@@ -556,10 +556,14 @@ fn dropped_partial_write_fences_session_and_keeps_committed_obligation() -> Test
     Ok(())
 }
 
-struct HttpAccess;
+struct HttpAccess {
+    handoff: Cell<bool>,
+}
 impl camera_http::Authority for HttpAccess {
-    fn permits(&self, peer: Ipv4Addr, generation: u64, _: camera_http::Operation) -> bool {
-        peer == Ipv4Addr::new(192, 168, 1, 30) && generation == 1
+    fn permits(&self, peer: Ipv4Addr, generation: u64, operation: camera_http::Operation) -> bool {
+        peer == Ipv4Addr::new(192, 168, 1, 30)
+            && generation == 1
+            && (operation != camera_http::Operation::Handoff || self.handoff.get())
     }
 }
 fn http_request(socket: &mut std::net::TcpStream) -> std::io::Result<Vec<u8>> {
@@ -675,12 +679,15 @@ fn owned_http_handoff(cancel_reply: bool) -> Test {
                     let clock = MeteredClock::new(task, cx, TimestampNs(6))?;
                     let resource = plan.resource();
                     let io = MeteredIo::with_clock(socket, clock, &resource, 4096)?;
+                    let http_access = HttpAccess {
+                        handoff: Cell::new(true),
+                    };
                     let mut owner = camera_http::Owner::new(
                         io,
                         task,
                         cx,
                         clock,
-                        &HttpAccess,
+                        &http_access,
                         Ipv4Addr::new(192, 168, 1, 30),
                         1,
                         &resource,
@@ -721,11 +728,24 @@ fn owned_http_handoff(cancel_reply: bool) -> Test {
                         .await
                         .expect_err("policy must refuse");
                     assert_eq!(denied.reason, HandoffError::Denied);
-                    let mut permit = match owner
+                    http_access.handoff.set(false);
+                    let denied_by_owner = owner
                         .dispatch_handoff(
                             &plan,
                             conditions,
                             denied.permit,
+                            &Guard(true),
+                            Duration::from_secs(5),
+                        )
+                        .await
+                        .expect_err("HTTP owner policy must refuse");
+                    assert_eq!(denied_by_owner.reason, HandoffError::Denied);
+                    http_access.handoff.set(true);
+                    let mut permit = match owner
+                        .dispatch_handoff(
+                            &plan,
+                            conditions,
+                            denied_by_owner.permit,
                             &Guard(true),
                             Duration::from_secs(5),
                         )

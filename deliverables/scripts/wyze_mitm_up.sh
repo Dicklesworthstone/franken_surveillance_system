@@ -280,12 +280,11 @@ sudo "$PY" -m http.server 9101 --directory "$CAP_DIR/img" > /tmp/img.log 2>&1 &
 # Backup ports must match the capsule's installer scheme: it streams partition backups to
 # $PORT+1+slot with PORT=443 baked into upgraderun.sh (444..449 for six MTD partitions).
 # The old base-port 8446 listened on 8447+ — the installer's nc would hit closed ports and
-# die at step 2, before the flash (measured 2026-11-04). Kill any stale receiver first:
-# a surviving prior generation holds 444..449 and the new bind dies silently.
-sudo pkill -f 'wyze_backup_recv.py' 2>/dev/null
-sleep 1
-sudo "$PY" "$HERE/wyze_backup_recv.py" --base-port 443 --dir /tmp/fwbackup \
-  >> /tmp/ota/backup.log 2>&1 &
+# die at step 2, before the flash (measured 2026-11-04). The receiver now runs as the
+# PERSISTENT root LaunchDaemon com.jeffreyemanuel.fss-backup-recv (base-port 443) — do NOT
+# pkill or spawn it here: the daemon's KeepAlive and this wrapper's pkill were fighting
+# (each bring-up SIGTERM'd the daemon; the daemon respawned; repeat — measured 2026-11-05).
+# The daemon's plist lives in deliverables/launchd/ + /Library/LaunchDaemons/.
 if [ "${FOREGROUND:-0}" = 1 ]; then
   # launchd supervises the proxy in the foreground; the listeners above are its children.
   # REWRITE edits the cloud's own wyze-service delta in flight — it is the delivery that has
