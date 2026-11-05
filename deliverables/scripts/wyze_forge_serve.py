@@ -481,7 +481,16 @@ def main() -> int:
                     except Exception:
                         ok = False
                     if not ok:
-                        asked_ver = req.get("version") or model_ver
+                        # serve the ADVERTISED version (model_ver), not the camera's own
+                        # (asked_ver): the camera asks with its installed version, and
+                        # answering with that same version closed the version loop — the
+                        # camera re-downloaded identical bytes forever and never saw an
+                        # upgrade, so the entrypoint never ran (measured 2026-11-05:
+                        # 238 dl-loc calls all answered 50041 while advertising 50199).
+                        # The get_processes checksums are computed from model_path_ver
+                        # bytes, so the camera's md5 verification still passes only if
+                        # model_path_ver == model_ver; the arm script mirrors the bytes.
+                        asked_ver = model_ver
                         fname = req.get("filename") or "launch.sh"
                         path = f"/wyzeedgeai_cam_v4_test_protocol/{asked_ver}/{fname}"
                         out = json.dumps({
