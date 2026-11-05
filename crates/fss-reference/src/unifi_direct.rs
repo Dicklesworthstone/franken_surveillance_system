@@ -1,11 +1,12 @@
 #![forbid(unsafe_code)]
 //! Bounded sans-I/O reference for direct-UniFi controller negotiation.
 //!
-//! The owner supplies already-decoded WebSocket message bytes, a stable
-//! controller identity, timestamps and local write outcomes. This module opens
-//! no listener, authenticates no peer, writes no socket and never grants camera
-//! control authority. A correlated agreement reply is a protocol observation,
-//! not proof of camera identity, adoption, a live stream, or source continuity.
+//! The core state machine accepts already-decoded WebSocket message bytes, a
+//! stable controller identity, timestamps and local write outcomes. Its
+//! networking submodules perform explicitly task-owned I/O; they do not open a
+//! controller listener, authenticate a peer, or grant camera control authority.
+//! A correlated agreement reply is a protocol observation, not proof of
+//! camera identity, adoption, a live stream, or source continuity.
 //!
 //! Wire behavior is modeled from `xuio/scrypted-unifi-direct` commit
 //! `2920ce8896aadd603e2847d17554905592d155e8`; actual device and transport
@@ -15,10 +16,40 @@ use std::{collections::BTreeMap, fmt, net::SocketAddrV4};
 
 use fss_core::json_input::{self, Value};
 
-/// Source-preserving TCP-to-extended-FLV ingress boundary.
-pub mod ingress;
+/// Authorized ledgered FLV evidence publication.
+pub mod archive;
+/// Bounded camera-local HTTPS request/response state without transport or trust policy.
+pub mod camera_api;
+/// Task-scoped, bounded camera-local HTTP over an independently admitted transport.
+pub mod camera_http;
+/// Experimental owned hello, agreement and stream-request conversation.
+pub mod conversation;
 /// Bounded owner-scoped UniFi LAN discovery.
 pub mod discovery;
+/// Source-linked FLV segment evidence graph preparation.
+pub mod evidence;
+/// Inert, exact controller-address handoff planning.
+pub mod handoff;
+/// Source-preserving TCP-to-extended-FLV ingress boundary.
+pub mod ingress;
+/// Exact inert stream-setting effect intent.
+pub mod intent;
+/// Bounded task-scoped media listener with caller-supplied peer admission.
+pub mod listener;
+/// Exact inert controller-association and clock effect intent.
+pub mod management;
+/// Task-scoped byte admission for controller transport I/O.
+pub mod metered;
+/// Bounded task-owned WebSocket upgrade orchestration.
+pub mod owner;
+/// Bounded task-owned TCP ingress to in-memory recording pipeline.
+pub mod pipeline;
+/// Bounded WebSocket-to-controller observation owner.
+pub mod receive;
+/// Bounded source-preserving FLV-to-MP4 segment owner.
+pub mod recording;
+/// Bounded, untrusted camera WebSocket upgrade preparation.
+pub mod upgrade;
 
 /// Maximum incoming management message size before JSON parsing.
 pub const MAX_MESSAGE_BYTES: usize = 64 * 1024;

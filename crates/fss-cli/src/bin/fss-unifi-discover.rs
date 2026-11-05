@@ -7,7 +7,7 @@ use fss_core::{
     BudgetVector, ContentDigest, DigestAlgorithm, OperationId, RegionId, RegionKind,
     RootAuthoritySpec, RuntimeGrant, TaskId, TaskOutcome, TimestampNs,
 };
-use fss_reference::unifi_direct::discovery::{self, Config, Report};
+use fss_reference::unifi_direct::discovery::{self, Config, Report, Stop};
 use fss_runtime::{
     authority::AuthorityCx,
     execution::{TaskCompletion, TaskSpec, run_owned_async},
@@ -141,10 +141,12 @@ fn execute(options: &Options) -> Result<Report, &'static str> {
             &cx,
             async |owner, runtime_cx| {
                 let output = discovery::discover(owner, runtime_cx, elapsed(start), &config).await;
-                let outcome = if output.is_ok() {
+                let outcome = if output.as_ref().is_ok_and(|report| {
+                    matches!(report.stop, Stop::WindowElapsed | Stop::PacketLimit)
+                }) {
                     TaskOutcome::Success
                 } else {
-                    TaskOutcome::Failed("discovery failed".into())
+                    TaskOutcome::Failed("discovery stopped or failed".into())
                 };
                 TaskCompletion {
                     output,
@@ -185,9 +187,12 @@ fn main() -> ExitCode {
     let report = options(&args).and_then(|options| execute(&options));
     match report {
         Ok(report) => {
-            let cameras = report.cameras.iter().map(|c| format!("{{\"address\":{},\"platform\":{},\"firmware\":{},\"source_advertised\":{},\"identity\":\"unverified\",\"setup\":\"unavailable\"}}", json(&c.source().ip().to_string()), json(c.platform()), c.firmware().map_or_else(|| "null".into(), json), c.source_advertised())).collect::<Vec<_>>().join(",");
+            let cameras = report.cameras.iter().enumerate().map(|(index, c)| {
+                let claims = report.assess_claims(index).expect("enumerated candidate exists");
+                format!("{{\"address\":{},\"platform\":{},\"firmware\":{},\"source_advertised\":{},\"identity\":\"unverified\",\"setup\":\"unavailable\",\"claim_issues\":{{\"missing_or_invalid_mac\":{},\"conflicting_macs_at_address\":{},\"same_mac_at_multiple_addresses\":{},\"conflicting_metadata\":{},\"source_not_advertised\":{}}}}}", json(&c.source().ip().to_string()), json(c.platform()), c.firmware().map_or_else(|| "null".into(), json), c.source_advertised(), claims.missing_or_invalid_mac, claims.conflicting_macs_at_address, claims.same_mac_at_multiple_addresses, claims.conflicting_metadata, claims.source_not_advertised)
+            }).collect::<Vec<_>>().join(",");
             println!(
-                "{{\"schema\":\"fss.unifi_discovery_lab.v1\",\"datagrams\":{},\"malformed\":{},\"out_of_scope\":{},\"stop\":{},\"absence_proven\":false,\"cameras\":[{}]}}",
+                "{{\"schema\":\"fss.unifi_discovery_lab.v2\",\"datagrams\":{},\"malformed\":{},\"out_of_scope\":{},\"stop\":{},\"absence_proven\":false,\"cameras\":[{}]}}",
                 report.datagrams,
                 report.malformed,
                 report.out_of_scope,

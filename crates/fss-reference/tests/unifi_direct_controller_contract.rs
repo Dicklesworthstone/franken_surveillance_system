@@ -480,3 +480,80 @@ fn hevc_request_uses_the_selected_track_and_an_empty_reply_is_not_success() -> T
     );
     Ok(())
 }
+
+#[test]
+fn stream_intent_binds_exact_request_and_owner_supplied_preconditions() -> TestResult {
+    use fss_core::{ContentDigest, DigestAlgorithm};
+    use fss_reference::unifi_direct::intent::{Error as IntentError, Intent, Preconditions};
+    let conditions = Preconditions {
+        camera: ContentDigest::sha256(b"fixture identity"),
+        peer_admission: ContentDigest::sha256(b"fixture peer admission"),
+        stream_generation: 9,
+        previous_settings: Some(ContentDigest::sha256(b"fixture settings readback")),
+        lease_fence: 12,
+    };
+    let mut first = ready()?;
+    let request = stream(VideoChannel::Video2, AudioCodec::Aac)?;
+    let prepared = first.prepare_stream_start(&request, TIME)?;
+    let intent = Intent::new(prepared, conditions)?;
+    assert_eq!(intent.message_id(), 3);
+    assert_eq!(intent.channel(), VideoChannel::Video2);
+    intent.check_message(prepared)?;
+    intent.check_preconditions(conditions)?;
+    assert_eq!(
+        intent.check_preconditions(Preconditions {
+            lease_fence: 13,
+            ..conditions
+        }),
+        Err(IntentError::Mismatch)
+    );
+    assert_eq!(
+        intent.request_digest(),
+        ContentDigest::sha256(prepared.bytes())
+    );
+    let changed_conditions = Intent::new(
+        prepared,
+        Preconditions {
+            lease_fence: 13,
+            ..conditions
+        },
+    )?;
+    assert_ne!(
+        intent.precondition_digest(),
+        changed_conditions.precondition_digest()
+    );
+    assert_eq!(intent.request_digest(), changed_conditions.request_digest());
+    let unknown_old = Intent::new(
+        prepared,
+        Preconditions {
+            previous_settings: None,
+            ..conditions
+        },
+    )?;
+    assert_ne!(
+        intent.precondition_digest(),
+        unknown_old.precondition_digest()
+    );
+    assert_eq!(
+        Intent::new(
+            prepared,
+            Preconditions {
+                camera: ContentDigest::new(DigestAlgorithm::Sha256, [0; 32]),
+                ..conditions
+            }
+        ),
+        Err(IntentError::Preconditions)
+    );
+    let mut second = ready()?;
+    let other = stream(VideoChannel::Video3, AudioCodec::Aac)?;
+    let different = second.prepare_stream_start(&other, TIME)?;
+    assert_eq!(intent.check_message(different), Err(IntentError::Mismatch));
+    assert!(!format!("{intent:?}").contains("0123456789abcdef"));
+    let mut hello = controller(1)?;
+    hello.observe(&message("ubnt_avclient_hello", 7, 0, "{}"))?;
+    assert_eq!(
+        Intent::new(hello.prepare_hello(TIME)?, conditions),
+        Err(IntentError::WrongMessage)
+    );
+    Ok(())
+}

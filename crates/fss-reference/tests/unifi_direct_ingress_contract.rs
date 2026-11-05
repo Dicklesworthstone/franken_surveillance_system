@@ -9,8 +9,11 @@ use fss_core::{
 use fss_packet::extended_flv::{
     self, Limits, Parse, Tag, avc,
     stream::{Framer, RecordKind, SearchMode, SourceRecord},
+    track::{Observation as TrackObservation, Track},
 };
-use fss_reference::unifi_direct::ingress::{DirectIngress, Error as DirectError, Retirement, Step};
+use fss_reference::unifi_direct::ingress::{
+    DirectIngress, Error as DirectError, Retirement, TrackedError, TrackedIngress, TrackedStep,
+};
 use fss_runtime::{
     authority::AuthorityCx,
     execution::{TaskCompletion, TaskSpec, run_owned_async},
@@ -97,6 +100,7 @@ fn receive_case(
         max_buffer,
         expect_limit,
         SearchMode::Conservative,
+        false,
     )
 }
 
@@ -106,6 +110,7 @@ fn receive_case_mode(
     max_buffer: usize,
     expect_limit: bool,
     mode: SearchMode,
+    expect_track_refusal: bool,
 ) -> Result<(Vec<SourceRecord>, Retirement), Box<dyn Error>> {
     let runtime = RuntimeBuilder::current_thread().build()?;
     let (mut authority, mut tree) = root()?;
@@ -149,7 +154,11 @@ fn receive_case_mode(
                         .map_err(|e| e.to_string())?;
                     let framer = Framer::with_mode(Limits::default(), max_buffer, mode)
                         .map_err(|e| e.to_string())?;
-                    let mut ingress = DirectIngress::new(tcp, framer);
+                    let mut ingress = TrackedIngress::new(
+                        DirectIngress::new(tcp, framer),
+                        Limits::default(),
+                        avc::Limits::default(),
+                    );
                     let mut records = Vec::new();
                     let mut terminal = false;
                     for _ in 0..2048 {
@@ -161,15 +170,35 @@ fn receive_case_mode(
                         .await
                         .map_err(|e| e.to_string())?;
                         match next {
-                            Ok(Step::Record(record)) => records.push(record),
-                            Ok(Step::Progress { appended }) if appended > 0 => {}
-                            Ok(Step::Eof) if !expect_limit => {
+                            Ok(TrackedStep::Record {
+                                source,
+                                interpretation,
+                            }) => {
+                                records.push(source);
+                                if let Err(error) = interpretation {
+                                    if !expect_track_refusal {
+                                        return Err(error.to_string());
+                                    }
+                                    if !matches!(
+                                        ingress.step(owner, runtime_cx, TimestampNs(4)).await,
+                                        Err(TrackedError::TrackFenced)
+                                    ) {
+                                        return Err(
+                                            "tracked source continued after AVC refusal".into()
+                                        );
+                                    }
+                                    terminal = true;
+                                    break;
+                                }
+                            }
+                            Ok(TrackedStep::Progress { appended }) if appended > 0 => {}
+                            Ok(TrackedStep::Eof) if !expect_limit && !expect_track_refusal => {
                                 terminal = true;
                                 break;
                             }
-                            Err(DirectError::Framing(extended_flv::stream::Error::BufferLimit))
-                                if expect_limit =>
-                            {
+                            Err(TrackedError::Ingress(DirectError::Framing(
+                                extended_flv::stream::Error::BufferLimit,
+                            ))) if expect_limit => {
                                 terminal = true;
                                 break;
                             }
@@ -244,6 +273,20 @@ fn actual_tcp_chunks_reach_flv_and_avc_with_exact_source_offsets() -> TestResult
     let nal = nal_units.iter().next().ok_or("missing NAL")?;
     let offset = records[2].offset() as usize + tag_range.start + nal.range().start;
     assert_eq!(&wire[offset..offset + nal.bytes().len()], &[0x65, 0x42]);
+    let mut track = Track::new(Limits::default(), avc::Limits::default());
+    assert_eq!(track.observe(&records[0])?, TrackObservation::Header);
+    assert!(matches!(
+        track.observe(&records[1])?,
+        TrackObservation::Configuration { epoch: 1, .. }
+    ));
+    let TrackObservation::Sample { epoch, nals, .. } = track.observe(&records[2])? else {
+        return Err("missing source-linked sample".into());
+    };
+    assert_eq!(epoch, 1);
+    assert_eq!(
+        &wire[nals[0].start as usize..nals[0].end as usize],
+        &[0x65, 0x42]
+    );
     Ok(())
 }
 
@@ -254,6 +297,40 @@ fn buffer_exhaustion_returns_the_complete_received_source_prefix() -> TestResult
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].kind(), RecordKind::Header);
     let mut recovered = records[0].bytes().to_vec();
+    assert_eq!(retirement.framing.offset as usize, recovered.len());
+    recovered.extend_from_slice(retirement.framing.bytes());
+    if let Some(buffered) = &retirement.buffered {
+        recovered.extend_from_slice(&buffered.source.bytes()[buffered.appended..]);
+    }
+    if let Some(chunk) = &retirement.source.pending {
+        recovered.extend_from_slice(chunk.bytes());
+    }
+    assert_eq!(recovered.len() as u64, retirement.source.received);
+    assert_eq!(recovered, wire[..recovered.len()]);
+    Ok(())
+}
+
+#[test]
+fn malformed_video_returns_source_record_and_fences_future_reads() -> TestResult {
+    let mut wire = b"FLV\x01\x01\x00\x00\x00\x09\x00\x00\x00\x00".to_vec();
+    wire.extend_from_slice(&tag(
+        9,
+        0,
+        &[
+            0x17, 0, 0, 0, 0, 1, 100, 0, 31, 0xff, 0xe1, 0, 3, 0x67, 0x64, 0x1f, 1, 0, 2, 0x68,
+            0xaa,
+        ],
+    ));
+    wire.extend_from_slice(&tag(9, 40, &[0x17, 1, 0, 0, 0, 0, 0, 0, 9, 0x65]));
+    wire.extend_from_slice(&tag(18, 50, b"subsequent source"));
+    let (records, retirement) =
+        receive_case_mode(wire.clone(), 64, 512, false, SearchMode::Conservative, true)?;
+    assert_eq!(records.len(), 3);
+    let mut recovered = Vec::new();
+    for source in &records {
+        assert_eq!(source.offset() as usize, recovered.len());
+        recovered.extend_from_slice(source.bytes());
+    }
     assert_eq!(retirement.framing.offset as usize, recovered.len());
     recovered.extend_from_slice(retirement.framing.bytes());
     if let Some(buffered) = &retirement.buffered {
@@ -285,13 +362,22 @@ fn owner_camera_live_ingress() -> TestResult {
         8 * 1024 * 1024,
         false,
         SearchMode::Provisional,
+        false,
     )?;
     let mut position = 0_usize;
     let mut video = 0_usize;
     let mut avc_samples = 0_usize;
     let mut provisional = 0_usize;
     let mut skipped = 0_usize;
+    let mut track = Track::new(Limits::default(), avc::Limits::default());
+    let mut track_samples = 0_usize;
+    let mut unconfigured_samples = 0_usize;
     for record in &records {
+        match track.observe(record)? {
+            TrackObservation::Sample { .. } => track_samples += 1,
+            TrackObservation::UnconfiguredSample { .. } => unconfigured_samples += 1,
+            _ => {}
+        }
         if record.offset() as usize != position
             || wire.get(position..position + record.bytes().len()) != Some(record.bytes())
         {
@@ -330,11 +416,13 @@ fn owner_camera_live_ingress() -> TestResult {
         return Err("incomplete source recovery".into());
     }
     println!(
-        "source_bytes={} records={} video_tags={} avc_sample_tags={} provisional_records={} incomplete_candidate_skips={} tail_bytes={}",
+        "source_bytes={} records={} video_tags={} avc_sample_tags={} configured_samples={} unconfigured_samples={} provisional_records={} incomplete_candidate_skips={} tail_bytes={}",
         wire.len(),
         records.len(),
         video,
         avc_samples,
+        track_samples,
+        unconfigured_samples,
         provisional,
         skipped,
         retirement.framing.bytes().len()
@@ -345,5 +433,244 @@ fn owner_camera_live_ingress() -> TestResult {
     if avc_samples == 0 {
         return Err("no AVC samples observed".into());
     }
+    Ok(())
+}
+
+#[test]
+#[ignore = "owner-authorized camera bytes and an explicitly synthetic configuration are required on stdin"]
+fn owner_camera_configured_decode() -> TestResult {
+    use std::io::Read;
+    let mut wire = Vec::new();
+    std::io::stdin()
+        .lock()
+        .take(8 * 1024 * 1024 + 1)
+        .read_to_end(&mut wire)?;
+    if wire.len() > 8 * 1024 * 1024 || !wire.starts_with(b"FLV\x01") {
+        return Err("invalid bounded laboratory input".into());
+    }
+    let (records, retirement) = receive_case_mode(
+        wire.clone(),
+        32 * 1024,
+        8 * 1024 * 1024,
+        false,
+        SearchMode::Provisional,
+        false,
+    )?;
+    let limits = fss_codec_h264::DecoderLimits {
+        max_pictures: 8,
+        ..fss_codec_h264::DecoderLimits::default()
+    };
+    let mut decoder = fss_codec_h264::Decoder::new(limits)?;
+    let mut track = Track::new(Limits::default(), avc::Limits::default());
+    let mut configuration_count = 0_usize;
+    let mut samples = 0_usize;
+    let mut started = false;
+    let mut decoded = 0_usize;
+    let mut dimensions = None;
+    for record in &records {
+        match track.observe(record)? {
+            TrackObservation::Configuration {
+                parameter_sets,
+                provisional,
+                ..
+            } => {
+                if provisional || configuration_count != 0 {
+                    return Err("configuration is ambiguous".into());
+                }
+                for span in parameter_sets {
+                    let start = usize::try_from(span.start)?;
+                    let end = usize::try_from(span.end)?;
+                    decoder.decode_nal(wire.get(start..end).ok_or("invalid parameter span")?)?;
+                }
+                configuration_count += 1;
+            }
+            TrackObservation::Sample {
+                provisional,
+                contains_idr_nal_type,
+                nals,
+                ..
+            } => {
+                if provisional {
+                    return Err("sample framing is provisional".into());
+                }
+                samples += 1;
+                if contains_idr_nal_type {
+                    started = true;
+                }
+                if !started {
+                    continue;
+                }
+                for span in nals {
+                    let start = usize::try_from(span.start)?;
+                    let end = usize::try_from(span.end)?;
+                    if let Some(picture) =
+                        decoder.decode_nal(wire.get(start..end).ok_or("invalid sample span")?)?
+                    {
+                        dimensions = Some((picture.width(), picture.height()));
+                        decoded += 1;
+                    }
+                    while let Some(picture) = decoder.next_output() {
+                        dimensions = Some((picture.width(), picture.height()));
+                        decoded += 1;
+                    }
+                    if decoded >= 3 {
+                        break;
+                    }
+                }
+                if decoded >= 3 {
+                    break;
+                }
+            }
+            TrackObservation::UnconfiguredSample { .. } => {
+                return Err("missing injected configuration".into());
+            }
+            _ => {}
+        }
+    }
+    if retirement.buffered.is_some()
+        || retirement.source.pending.is_some()
+        || configuration_count != 1
+        || decoded < 3
+    {
+        return Err("configured camera decode did not produce three frames".into());
+    }
+    println!(
+        "configured_samples={samples} decoded_frames={decoded} dimensions={dimensions:?} source=passive_g4 configuration=synthetic_from_separate_recording authenticity=unverified media_persisted=no"
+    );
+    Ok(())
+}
+
+#[test]
+#[ignore = "owner-authorized camera bytes beginning at an IDR and a synthetic configuration are required on stdin"]
+fn owner_camera_configured_mux() -> TestResult {
+    use fss_container::{
+        Mp4Limits,
+        demux::{AvcMp4, DemuxLimits},
+        flv_avc::{Muxer, SourceKey, TimedSample},
+    };
+    use std::io::Read;
+    let mut wire = Vec::new();
+    std::io::stdin()
+        .lock()
+        .take(8 * 1024 * 1024 + 1)
+        .read_to_end(&mut wire)?;
+    if wire.len() > 8 * 1024 * 1024 || !wire.starts_with(b"FLV\x01") {
+        return Err("invalid bounded laboratory input".into());
+    }
+    let (records, _) = receive_case_mode(
+        wire.clone(),
+        32 * 1024,
+        8 * 1024 * 1024,
+        false,
+        SearchMode::Provisional,
+        false,
+    )?;
+    if records.len() < 6 {
+        return Err("insufficient source records".into());
+    }
+    let mut videos = Vec::new();
+    for (index, record) in records.iter().enumerate().skip(2) {
+        let Some(range) = record.tag_range() else {
+            return Err("missing tag".into());
+        };
+        let Parse::Complete(tag) = Tag::parse(&record.bytes()[range], Limits::default())? else {
+            return Err("incomplete tag".into());
+        };
+        if tag.kind() == 9 {
+            let video = avc::VideoTag::parse(tag)?;
+            if video.packet_type() != avc::PacketType::NalUnits {
+                return Err("unexpected video configuration change".into());
+            }
+            videos.push((index, video.timestamp_ms()));
+            if videos.len() == 4 {
+                break;
+            }
+        }
+    }
+    if videos.len() != 4 {
+        return Err("insufficient video samples".into());
+    }
+    let mut cursor = u64::from(videos[0].1);
+    let mut samples = Vec::new();
+    for pair in videos.windows(2) {
+        let duration = pair[1].1.wrapping_sub(pair[0].1);
+        if duration == 0 || duration > 1000 {
+            return Err("unsupported source timestamp interval".into());
+        }
+        samples.push(TimedSample {
+            record: &records[pair[0].0],
+            decode_time_ms: cursor,
+            duration_ms: duration,
+        });
+        cursor = cursor
+            .checked_add(u64::from(duration))
+            .ok_or("timestamp overflow")?;
+    }
+    let coverage: Vec<_> = records[2..=videos[3].0].iter().collect();
+    let mut mux = Muxer::new(
+        SourceKey {
+            connection: 1,
+            generation: 1,
+        },
+        &records[1],
+        Mp4Limits::default(),
+    )?;
+    let fragment = mux.fragment(&samples, &records[videos[3].0], &coverage)?;
+    for mapping in fragment.nals() {
+        if wire.get(usize::try_from(mapping.source.start)?..usize::try_from(mapping.source.end)?)
+            != fragment.bytes().get(mapping.target.clone())
+        {
+            return Err("source mapping mismatch".into());
+        }
+    }
+    let mut mp4 = mux.initialization().bytes().to_vec();
+    mp4.extend_from_slice(fragment.bytes());
+    let parsed = AvcMp4::parse(&mp4, None, DemuxLimits::default())?;
+    let annex_b = parsed.annex_b(0, samples.len())?;
+    let limits = fss_codec_h264::DecoderLimits {
+        max_pictures: 8,
+        ..fss_codec_h264::DecoderLimits::default()
+    };
+    let mut decoder = fss_codec_h264::Decoder::new(limits)?;
+    let mut pictures = decoder.decode_annex_b(annex_b.bytes())?;
+    pictures.extend(decoder.finish()?);
+    if pictures.len() != samples.len() {
+        return Err("not every sample decoded".into());
+    }
+    if std::env::var_os("FSS_LAB_FRAME_DIGESTS").is_some() {
+        use std::fmt::Write;
+        let mut digests = String::new();
+        for picture in &pictures {
+            if !digests.is_empty() {
+                digests.push(',');
+            }
+            for byte in picture.i420_sha256() {
+                write!(&mut digests, "{byte:02x}")?;
+            }
+        }
+        println!("LAB_PRIVATE_FRAME_DIGESTS={digests}");
+        let mut nal_digests = String::new();
+        for mapping in fragment.nals() {
+            if !nal_digests.is_empty() {
+                nal_digests.push(',');
+            }
+            let bytes = fragment
+                .bytes()
+                .get(mapping.target.clone())
+                .ok_or("invalid output mapping")?;
+            for byte in ContentDigest::sha256(bytes).bytes() {
+                write!(&mut nal_digests, "{byte:02x}")?;
+            }
+        }
+        println!("LAB_PRIVATE_NAL_DIGESTS={nal_digests}");
+    }
+    println!(
+        "muxed_samples={} decoded_frames={} dimensions={}x{} mapped_nals={} source=passive_g4 configuration=synthetic_from_separate_recording idr_start=synthetically_selected authenticity=unverified media_persisted=no",
+        samples.len(),
+        pictures.len(),
+        pictures[0].width(),
+        pictures[0].height(),
+        fragment.nals().len()
+    );
     Ok(())
 }

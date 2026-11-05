@@ -1,0 +1,220 @@
+#![forbid(unsafe_code)]
+//! Camera-local request sequencing, bounded inputs and refusal contracts.
+use asupersync::http::h1::Response;
+use fss_core::ContentDigest;
+use fss_reference::unifi_direct::camera_api::{
+    ControllerAddress, Error, Phase, Session, StatusShape, WriteOutcome,
+};
+use std::{error::Error as StdError, net::Ipv4Addr};
+
+type Test = Result<(), Box<dyn StdError>>;
+const CREDENTIAL: &[u8] = br#"{"username":"test-user-canary","password":"test-password-canary"}"#;
+
+fn login(s: &mut Session) -> Test {
+    let request = s.prepare_login(CREDENTIAL)?;
+    assert!(!format!("{request:?} {s:?}").contains("test-password-canary"));
+    s.finish_write(request, WriteOutcome::Written)?;
+    s.accept_login(
+        Response::new(200, "OK", Vec::new())
+            .with_header("Set-Cookie", "authId=test-cookie-canary; Path=/"),
+    )?;
+    Ok(())
+}
+fn status(s: &mut Session) -> Test {
+    let request = s.prepare_status()?;
+    assert!(!format!("{request:?} {s:?}").contains("test-cookie-canary"));
+    s.finish_write(request, WriteOutcome::Written)?;
+    assert_eq!(
+        s.accept_status(Response::new(
+            200,
+            "OK",
+            br#"{"board":{},"fw":{},"controller":{}}"#.to_vec()
+        ))?,
+        StatusShape {
+            board: true,
+            firmware: true,
+            controller: true
+        }
+    );
+    Ok(())
+}
+
+#[test]
+fn login_status_and_repeated_snapshot_sequence() -> Test {
+    let mut s = Session::new(Ipv4Addr::LOCALHOST, 1)?;
+    assert_eq!(s.phase(), Phase::Login);
+    assert!(s.prepare_status().is_err());
+    login(&mut s)?;
+    status(&mut s)?;
+    let frame = [0xff, 0xd8, 0xff, 0xd9];
+    for _ in 0..2 {
+        let request = s.prepare_snapshot()?;
+        assert!(request.bytes().starts_with(b"GET /snap.jpeg HTTP/1.1\r\n"));
+        s.finish_write(request, WriteOutcome::Written)?;
+        let result = s.accept_snapshot(Response::new(200, "OK", frame.to_vec()))?;
+        assert_eq!(result.bytes(), frame);
+        assert_eq!(result.digest(), ContentDigest::sha256(&frame));
+        assert_eq!(s.phase(), Phase::Snapshot);
+    }
+    Ok(())
+}
+
+#[test]
+fn partial_write_fences_and_unwritten_request_can_be_prepared_again() -> Test {
+    let mut s = Session::new(Ipv4Addr::LOCALHOST, 1)?;
+    let request = s.prepare_login(CREDENTIAL)?;
+    s.finish_write(request, WriteOutcome::NotWritten)?;
+    assert_eq!(s.phase(), Phase::Login);
+    let request = s.prepare_login(CREDENTIAL)?;
+    s.finish_write(request, WriteOutcome::Indeterminate)?;
+    assert_eq!(s.phase(), Phase::Fenced);
+    assert!(s.prepare_login(CREDENTIAL).is_err());
+    Ok(())
+}
+
+#[test]
+fn wrong_session_request_and_invalid_credential_never_advance_state() -> Test {
+    let mut a = Session::new(Ipv4Addr::LOCALHOST, 1)?;
+    let mut b = Session::new(Ipv4Addr::LOCALHOST, 1)?;
+    assert!(
+        a.prepare_login(br#"{"username":"x","password":"y","extra":"z"}"#)
+            .is_err()
+    );
+    assert!(
+        a.prepare_login(br#"{"username":"x","password":"y","password":"z"}"#)
+            .is_err()
+    );
+    let a_request = a.prepare_login(CREDENTIAL)?;
+    let b_request = b.prepare_login(CREDENTIAL)?;
+    assert_eq!(
+        a.finish_write(b_request, WriteOutcome::Written),
+        Err(Error::RequestMismatch)
+    );
+    assert_eq!(a.phase(), Phase::RequestPrepared);
+    a.finish_write(a_request, WriteOutcome::NotWritten)?;
+    assert_eq!(a.phase(), Phase::Login);
+    assert_eq!(b.phase(), Phase::RequestPrepared);
+    Ok(())
+}
+
+#[test]
+fn invalid_cookies_status_and_images_fence_without_retry() -> Test {
+    for response in [
+        Response::new(401, "no", Vec::new()),
+        Response::new(200, "ok", Vec::new()).with_header("Set-Cookie", "authId=a\r\nX: injected"),
+        Response::new(200, "ok", Vec::new())
+            .with_header("Set-Cookie", "authId=a")
+            .with_header("Set-Cookie", "authId=b"),
+    ] {
+        let mut s = Session::new(Ipv4Addr::LOCALHOST, 1)?;
+        let request = s.prepare_login(CREDENTIAL)?;
+        s.finish_write(request, WriteOutcome::Written)?;
+        assert!(s.accept_login(response).is_err());
+        assert_eq!(s.phase(), Phase::Fenced);
+    }
+    let mut s = Session::new(Ipv4Addr::LOCALHOST, 1)?;
+    login(&mut s)?;
+    let request = s.prepare_status()?;
+    s.finish_write(request, WriteOutcome::Written)?;
+    assert!(
+        s.accept_status(Response::new(200, "ok", br#"{"fw":{},"fw":{}}"#.to_vec()))
+            .is_err()
+    );
+    assert_eq!(s.phase(), Phase::Fenced);
+    let mut s = Session::new(Ipv4Addr::LOCALHOST, 1)?;
+    login(&mut s)?;
+    status(&mut s)?;
+    let request = s.prepare_snapshot()?;
+    s.finish_write(request, WriteOutcome::Written)?;
+    assert!(
+        s.accept_snapshot(Response::new(200, "ok", b"not a jpeg".to_vec()))
+            .is_err()
+    );
+    assert_eq!(s.phase(), Phase::Fenced);
+    Ok(())
+}
+
+#[test]
+fn settings_preserve_known_unset_and_unknown_controller_claims() -> Test {
+    let mut s = Session::new(Ipv4Addr::LOCALHOST, 1)?;
+    login(&mut s)?;
+    status(&mut s)?;
+    let cases: [(&[u8], ControllerAddress, bool); 5] = [
+        (
+            br#"{"controller":{"addr":"192.168.1.12"},"password":"private-settings-canary"}"#,
+            ControllerAddress::Reported(Ipv4Addr::new(192, 168, 1, 12)),
+            true,
+        ),
+        (
+            br#"{"controller":{"addr":null}}"#,
+            ControllerAddress::Unset,
+            true,
+        ),
+        (br#"{"controller":{}}"#, ControllerAddress::Missing, false),
+        (
+            br#"{"controller":{"addr":"other.example"}}"#,
+            ControllerAddress::Unsupported,
+            false,
+        ),
+        (
+            br#"{"controller":{"addr":123}}"#,
+            ControllerAddress::Unsupported,
+            false,
+        ),
+    ];
+    let mut prior = None;
+    for (body, expected, bound) in cases {
+        let request = s.prepare_settings()?;
+        assert!(
+            request
+                .bytes()
+                .starts_with(b"GET /api/1.1/settings HTTP/1.1\r\n")
+        );
+        s.finish_write(request, WriteOutcome::Written)?;
+        let result = s.accept_settings(Response::new(200, "OK", body.to_vec()))?;
+        assert_eq!(result.controller, expected);
+        assert_eq!(result.binding.is_some(), bound);
+        assert!(!format!("{result:?}").contains("192.168.1.12"));
+        assert!(!format!("{result:?}").contains("private-settings-canary"));
+        if prior.is_none() {
+            prior = result.binding;
+        } else if bound {
+            assert_ne!(prior, result.binding);
+        }
+        assert_eq!(s.phase(), Phase::Snapshot);
+    }
+    let request = s.prepare_settings()?;
+    s.finish_write(request, WriteOutcome::Written)?;
+    assert!(
+        s.accept_settings(Response::new(
+            200,
+            "OK",
+            br#"{"controller":{},"controller":{}}"#.to_vec()
+        ))
+        .is_err()
+    );
+    assert_eq!(s.phase(), Phase::Fenced);
+    Ok(())
+}
+
+#[test]
+fn settings_binding_changes_with_peer_and_generation() -> Test {
+    fn observe(peer: Ipv4Addr, generation: u64) -> Result<ContentDigest, Box<dyn StdError>> {
+        let mut s = Session::new(peer, generation)?;
+        login(&mut s)?;
+        status(&mut s)?;
+        let request = s.prepare_settings()?;
+        s.finish_write(request, WriteOutcome::Written)?;
+        s.accept_settings(Response::new(
+            200,
+            "OK",
+            br#"{"controller":{"addr":"192.168.1.12"}}"#.to_vec(),
+        ))?
+        .binding
+        .ok_or_else(|| "missing settings binding".into())
+    }
+    let base = observe(Ipv4Addr::LOCALHOST, 1)?;
+    assert_ne!(base, observe(Ipv4Addr::LOCALHOST, 2)?);
+    assert_ne!(base, observe(Ipv4Addr::new(127, 0, 0, 2), 1)?);
+    Ok(())
+}

@@ -10,6 +10,7 @@ use std::fmt;
 use asupersync::Cx;
 use fss_core::{BudgetVector, TimestampNs};
 use fss_packet::extended_flv::stream::{self, Framer, Next, SourceRecord};
+use fss_packet::extended_flv::{self, avc, track};
 use fss_runtime::{
     execution::TaskCx,
     tcp_ingress::{self, Receive, SourceChunk, TcpIngress},
@@ -187,5 +188,115 @@ impl DirectIngress {
             framing: self.framer.retire(),
             buffered: self.buffered,
         }
+    }
+}
+
+/// One source record and its AVC interpretation. The original remains owned by
+/// the caller even when the interpretation is refused.
+#[must_use]
+#[derive(Debug)]
+pub enum TrackedStep {
+    /// An exact original record and its payload-free interpretation result.
+    Record {
+        /// Original source bytes; not a durable custody receipt.
+        source: SourceRecord,
+        /// Structural interpretation or the reason this track was fenced.
+        interpretation: Result<track::Observation, track::Error>,
+    },
+    /// Bytes were buffered but a complete record is not yet available.
+    Progress {
+        /// Number of original bytes appended.
+        appended: usize,
+    },
+    /// The TCP source closed; buffered source is returned by retirement.
+    Eof,
+    /// The configured connection byte limit was reached.
+    LimitReached,
+}
+
+/// Payload-free refusal by a tracked source owner.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TrackedError {
+    /// The underlying owned source or framer refused progress.
+    Ingress(Error),
+    /// An earlier returned record could not be interpreted; no more input was read.
+    TrackFenced,
+}
+impl fmt::Display for TrackedError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "tracked UniFi source refusal: {self:?}")
+    }
+}
+impl std::error::Error for TrackedError {}
+
+/// A single connection's ingress and source-relative AVC interpretation.
+/// This owner neither authenticates the peer nor stores, decodes or muxes data.
+pub struct TrackedIngress {
+    ingress: DirectIngress,
+    track: track::Track,
+    fenced: bool,
+}
+impl fmt::Debug for TrackedIngress {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TrackedIngress")
+            .field("ingress", &self.ingress)
+            .field("track", &self.track)
+            .field("fenced", &self.fenced)
+            .finish()
+    }
+}
+impl TrackedIngress {
+    /// Attach a fresh track to the beginning of one caller-owned connection.
+    /// The caller must use FLV limits compatible with the supplied framer and
+    /// bind the enclosing connection to its authorized stream generation.
+    pub fn new(
+        ingress: DirectIngress,
+        flv_limits: extended_flv::Limits,
+        avc_limits: avc::Limits,
+    ) -> Self {
+        Self {
+            ingress,
+            track: track::Track::new(flv_limits, avc_limits),
+            fenced: false,
+        }
+    }
+
+    /// Advance the underlying source once and interpret at most one record.
+    /// When interpretation fails the exact record is returned with the error;
+    /// all further reads are fenced until this owner is retired.
+    pub async fn step(
+        &mut self,
+        owner: &TaskCx<'_>,
+        cx: &Cx,
+        now: TimestampNs,
+    ) -> Result<TrackedStep, TrackedError> {
+        if self.fenced {
+            return Err(TrackedError::TrackFenced);
+        }
+        Ok(
+            match self
+                .ingress
+                .step(owner, cx, now)
+                .await
+                .map_err(TrackedError::Ingress)?
+            {
+                Step::Record(source) => {
+                    let interpretation = self.track.observe(&source);
+                    self.fenced = interpretation.is_err();
+                    TrackedStep::Record {
+                        source,
+                        interpretation,
+                    }
+                }
+                Step::Progress { appended } => TrackedStep::Progress { appended },
+                Step::Eof => TrackedStep::Eof,
+                Step::LimitReached => TrackedStep::LimitReached,
+            },
+        )
+    }
+
+    /// Return the underlying source's pending and unparsed bytes.
+    pub fn retire(self) -> Retirement {
+        self.ingress.retire()
     }
 }

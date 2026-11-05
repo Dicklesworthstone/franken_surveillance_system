@@ -6,6 +6,7 @@
 //! configure, log into, or take over any device. A timeout or packet limit
 //! never proves that the rest of the network lacks cameras.
 
+use super::metered::MeteredClock;
 use asupersync::{Cx, net::UdpSocket, time::timeout_at};
 use fss_core::{BudgetVector, RuntimeGrant, TimestampNs};
 use fss_packet::unifi_discovery::{self, DeviceKind, Reply};
@@ -53,6 +54,7 @@ pub struct Config {
     bind: Ipv4Addr,
     mask: u32,
     target: SocketAddrV4,
+    broadcast: bool,
     resource: String,
     window: Duration,
     max_packets: usize,
@@ -67,7 +69,8 @@ impl fmt::Debug for Config {
 }
 impl Config {
     /// Construct one scoped query. The destination is a unicast address in
-    /// the interface subnet or the limited broadcast address; no subnet sweep
+    /// the interface subnet, its directed broadcast, or the limited broadcast
+    /// address; no subnet sweep
     /// is performed. The owner must authorize this particular interface and
     /// network resource before invoking the probe.
     pub fn new(
@@ -99,10 +102,15 @@ impl Config {
         {
             return Err(Error::Configuration);
         }
+        // /31 and /32 have no directed broadcast address. Do not treat their
+        // last address as a multi-source destination.
+        let broadcast = *target.ip() == Ipv4Addr::BROADCAST
+            || (prefix <= 30 && u32::from(*target.ip()) == (u32::from(bind) | !mask));
         Ok(Self {
             bind,
             mask,
             target,
+            broadcast,
             resource: resource.to_owned(),
             window,
             max_packets,
@@ -110,7 +118,7 @@ impl Config {
     }
     fn in_scope(&self, ip: Ipv4Addr) -> bool {
         (u32::from(ip) & self.mask) == (u32::from(self.bind) & self.mask)
-            && (*self.target.ip() == Ipv4Addr::BROADCAST || ip == *self.target.ip())
+            && (self.broadcast || ip == *self.target.ip())
     }
 }
 
@@ -185,11 +193,58 @@ pub struct Report {
     pub stop: Stop,
 }
 
+/// Potential inconsistencies among untrusted claims in one bounded window.
+/// Absence of a conflict does not authenticate a device or authorize setup.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ClaimAssessment {
+    /// The candidate did not provide a usable unicast hardware address.
+    pub missing_or_invalid_mac: bool,
+    /// The same source IP asserted different hardware addresses.
+    pub conflicting_macs_at_address: bool,
+    /// One hardware address appeared at different source IP addresses.
+    pub same_mac_at_multiple_addresses: bool,
+    /// The same source and hardware address gave different platform or firmware claims.
+    pub conflicting_metadata: bool,
+    /// The datagram did not advertise its actual source address.
+    pub source_not_advertised: bool,
+}
+
+impl Report {
+    /// Assess one candidate against this report, without treating a MAC or IP
+    /// as identity. A moving device can produce conflicts during a window;
+    /// callers must preserve that uncertainty rather than choose a winner.
+    #[must_use]
+    pub fn assess_claims(&self, index: usize) -> Option<ClaimAssessment> {
+        let candidate = self.cameras.get(index)?;
+        let valid_mac = |mac: [u8; 6]| mac != [0; 6] && mac[0] & 1 == 0;
+        let mut result = ClaimAssessment {
+            missing_or_invalid_mac: !candidate.mac.is_some_and(valid_mac),
+            source_not_advertised: !candidate.source_advertised,
+            ..ClaimAssessment::default()
+        };
+        for other in &self.cameras {
+            let same_ip = candidate.source.ip() == other.source.ip();
+            if let (Some(mac), Some(other_mac)) = (candidate.mac, other.mac) {
+                if valid_mac(mac) && valid_mac(other_mac) {
+                    result.conflicting_macs_at_address |= same_ip && mac != other_mac;
+                    result.same_mac_at_multiple_addresses |= !same_ip && mac == other_mac;
+                    result.conflicting_metadata |= same_ip
+                        && mac == other_mac
+                        && (candidate.platform != other.platform
+                            || candidate.firmware != other.firmware);
+                }
+            }
+        }
+        Some(result)
+    }
+}
+
 /// Send one scoped v1 query and collect a finite set of untrusted camera claims.
 ///
 /// The supplied `now` is the current observation in the task's canonical clock
-/// domain. The caller must maintain its clock relationship to the runtime timer
-/// and supervise the enclosing region and join. Socket receive cancellation can
+/// domain, co-observed with this runtime context. Elapsed runtime time advances
+/// subsequent task admissions. The caller must supervise the enclosing region
+/// and join and supply a completion time in the same clock domain. Socket receive cancellation can
 /// discard an arriving datagram, so no terminal state establishes absence.
 pub async fn discover(
     owner: &TaskCx<'_>,
@@ -201,11 +256,15 @@ pub async fn discover(
     if !runtime_cx.has_timer() {
         return Err(Error::NoTimer);
     }
+    // Use the earlier runtime sample for the window cap: a delay in creating
+    // the mapping must not extend the caller's canonical deadline.
+    let runtime_start = runtime_cx.now();
+    let clock = MeteredClock::new(owner, runtime_cx, now).map_err(|_| Error::Authority)?;
     owner
         .checkpoint_for(
             RuntimeGrant::AdapterNet,
             &config.resource,
-            now,
+            clock.now().map_err(|_| Error::Authority)?,
             &BudgetVector::ZERO,
         )
         .map_err(|_| Error::Authority)?;
@@ -226,7 +285,7 @@ pub async fn discover(
     cameras
         .try_reserve_exact(config.max_packets)
         .map_err(|_| Error::Allocation)?;
-    let deadline = runtime_cx.now() + window;
+    let deadline = runtime_start + window;
     let mut socket = timeout_at(deadline, UdpSocket::bind(SocketAddrV4::new(config.bind, 0)))
         .await
         .map_err(|_| Error::SetupDeadline)?
@@ -234,12 +293,23 @@ pub async fn discover(
     socket
         .set_broadcast(true)
         .map_err(|e| Error::Io(e.kind()))?;
+    if runtime_cx.now() >= deadline {
+        return Err(Error::SetupDeadline);
+    }
     let mut send_cost = BudgetVector::ZERO;
     send_cost.network_bytes = unifi_discovery::V1_QUERY.len() as u64;
     owner
-        .checkpoint_for(RuntimeGrant::AdapterNet, &config.resource, now, &send_cost)
+        .checkpoint_for(
+            RuntimeGrant::AdapterNet,
+            &config.resource,
+            clock.now().map_err(|_| Error::Authority)?,
+            &send_cost,
+        )
         .map_err(|_| Error::Authority)?;
     runtime_cx.checkpoint().map_err(|_| Error::Authority)?;
+    if runtime_cx.now() >= deadline {
+        return Err(Error::SetupDeadline);
+    }
     let sent = match timeout_at(
         deadline,
         socket.send_to(&unifi_discovery::V1_QUERY, config.target),
@@ -285,16 +355,27 @@ pub async fn discover(
         }
         let mut receive_cost = BudgetVector::ZERO;
         receive_cost.network_bytes = buffer.len() as u64;
+        let current = match clock.now() {
+            Ok(current) => current,
+            Err(_) => {
+                report.stop = if runtime_cx.is_cancelled() {
+                    Stop::Cancelled
+                } else {
+                    Stop::AuthorityStopped
+                };
+                break;
+            }
+        };
         if let Err(error) = owner.checkpoint_for(
             RuntimeGrant::AdapterNet,
             &config.resource,
-            now,
+            current,
             &receive_cost,
         ) {
-            report.stop = if matches!(error, ExecutionError::Budget(_)) {
-                Stop::BudgetExhausted
-            } else {
-                Stop::AuthorityStopped
+            report.stop = match error {
+                ExecutionError::Budget(_) => Stop::BudgetExhausted,
+                ExecutionError::Deadline { .. } => Stop::AuthorityDeadline,
+                _ => Stop::AuthorityStopped,
             };
             break;
         }
@@ -315,6 +396,40 @@ pub async fn discover(
             Ok(Ok(value)) => value,
         };
         report.datagrams += 1;
+        // A receive can become ready at the same time as timeout, cancellation,
+        // or authority expiry. Count its consumption but do not admit a claim
+        // after the corresponding boundary.
+        if runtime_cx.is_cancelled() {
+            report.stop = Stop::Cancelled;
+            break;
+        }
+        if runtime_cx.now() >= deadline {
+            break;
+        }
+        let current = match clock.now() {
+            Ok(current) => current,
+            Err(_) => {
+                report.stop = if runtime_cx.is_cancelled() {
+                    Stop::Cancelled
+                } else {
+                    Stop::AuthorityStopped
+                };
+                break;
+            }
+        };
+        if let Err(error) = owner.checkpoint_for(
+            RuntimeGrant::AdapterNet,
+            &config.resource,
+            current,
+            &BudgetVector::ZERO,
+        ) {
+            report.stop = match error {
+                ExecutionError::Deadline { .. } => Stop::AuthorityDeadline,
+                ExecutionError::Budget(_) => Stop::BudgetExhausted,
+                _ => Stop::AuthorityStopped,
+            };
+            break;
+        }
         let SocketAddr::V4(source) = source else {
             report.out_of_scope += 1;
             continue;
@@ -351,4 +466,65 @@ pub async fn discover(
         }
     }
     Ok(report)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn directed_broadcast_and_point_to_point_scopes_are_distinct() -> Result<(), Error> {
+        let make = |prefix, ip| {
+            Config::new(
+                Ipv4Addr::new(192, 168, 1, 4),
+                prefix,
+                SocketAddrV4::new(ip, 10001),
+                "fixture:network",
+                Duration::from_secs(1),
+                4,
+            )
+        };
+        let broadcast = make(24, Ipv4Addr::new(192, 168, 1, 255))?;
+        assert!(broadcast.in_scope(Ipv4Addr::new(192, 168, 1, 20)));
+        assert!(!broadcast.in_scope(Ipv4Addr::new(192, 168, 2, 20)));
+        let point_to_point = make(31, Ipv4Addr::new(192, 168, 1, 5))?;
+        assert!(!point_to_point.in_scope(Ipv4Addr::new(192, 168, 1, 4)));
+        assert!(point_to_point.in_scope(Ipv4Addr::new(192, 168, 1, 5)));
+        Ok(())
+    }
+
+    #[test]
+    fn repeated_mac_at_different_addresses_remains_ambiguous() {
+        let make = |ip, mac| CameraCandidate {
+            source: SocketAddrV4::new(ip, 10001),
+            platform: "UVC G4".into(),
+            firmware: None,
+            mac,
+            source_advertised: true,
+        };
+        let report = Report {
+            cameras: vec![
+                make(Ipv4Addr::new(192, 168, 1, 4), Some([0x10, 2, 3, 4, 5, 6])),
+                make(Ipv4Addr::new(192, 168, 1, 5), Some([0x10, 2, 3, 4, 5, 6])),
+                make(Ipv4Addr::new(192, 168, 1, 6), Some([0x01, 2, 3, 4, 5, 6])),
+            ],
+            datagrams: 3,
+            malformed: 0,
+            out_of_scope: 0,
+            stop: Stop::WindowElapsed,
+        };
+        assert!(
+            report
+                .assess_claims(0)
+                .unwrap()
+                .same_mac_at_multiple_addresses
+        );
+        assert!(
+            report
+                .assess_claims(1)
+                .unwrap()
+                .same_mac_at_multiple_addresses
+        );
+        assert!(report.assess_claims(2).unwrap().missing_or_invalid_mac);
+    }
 }
