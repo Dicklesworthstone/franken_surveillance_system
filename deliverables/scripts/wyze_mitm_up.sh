@@ -256,7 +256,13 @@ for port in 443 8443; do
     sudo sh -c "exec '$PY' '$HERE/wyze_forge_serve.py' --dir '$CAP_DIR' --port '$port' \
       --cert /tmp/iot2.pem --key /tmp/iot2.key --intermediate '$CERTS/emudhra/ev-ca-aaa-cross.pem' \
       --sni s3-us-west-2.amazonaws.com $extra >> /tmp/ota/tls.log 2>&1" &
-    sleep 1
+    # python + ssl cert load takes 2-4 s; a single 1 s check raced the bind and
+    # free_port then killed the freshly-spawned forge every attempt (measured
+    # 2026-11-05 once the fast netstat helper removed the old 22 s lsof delay).
+    for _ in 1 2 3 4 5 6; do
+      sleep 1
+      forge_ok "$port" && break
+    done
     forge_ok "$port" && break
     free_port "$port"
   done
