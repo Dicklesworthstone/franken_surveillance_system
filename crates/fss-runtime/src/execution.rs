@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! Canonically owned, synchronous execution of bounded native work.
+//! Canonically owned execution of bounded synchronous and asynchronous work.
 //!
 //! The closure is entered only after task registration. Its context exclusively
 //! borrows the original authority and region tree, so neither can be finalized
@@ -9,9 +9,12 @@
 //!
 //! This module does not spawn, detach, preempt, read clocks, or manufacture
 //! Asupersync capabilities. It preserves the cancellation-only `Cx<cap::None>`
-//! underneath `AuthorityCx`. A blocking operation still needs a bounded native
-//! timeout and cooperative checkpoints. An unwind leaves the task active and
-//! visible in the canonical tree; it never manufactures a cancellation receipt.
+//! underneath `AuthorityCx`. Async work receives a separate runtime-owned
+//! Asupersync context explicitly; the caller owns its runtime region and must
+//! arrange cancellation and task joining. A blocking operation still needs a
+//! bounded native timeout and cooperative checkpoints. An unwind or a dropped
+//! in-flight async future leaves the task active and visible in the canonical
+//! tree; neither manufactures a cancellation receipt or a quiescence proof.
 
 use std::cell::{RefCell, RefMut};
 
@@ -90,6 +93,8 @@ pub enum ExecutionError {
     InvalidCompletion,
     /// A caller attempted to account for dimensions the ledger does not meter.
     UnmeteredCost,
+    /// The caller's Asupersync context refused admission at its checkpoint.
+    RuntimeCancelled,
     /// An obligation names another operation.
     ObligationOwnerMismatch,
 }
@@ -115,6 +120,7 @@ impl std::fmt::Display for ExecutionError {
             Self::RegistrationChanged => f.write_str("owned task registration changed"),
             Self::InvalidCompletion => f.write_str("owned task completion is inconsistent"),
             Self::UnmeteredCost => f.write_str("owned task cost names an unmetered dimension"),
+            Self::RuntimeCancelled => f.write_str("runtime context refused owned task admission"),
             Self::ObligationOwnerMismatch => f.write_str("owned task obligation owner mismatch"),
         }
     }
@@ -496,6 +502,57 @@ pub fn run_owned<T>(
     spec: TaskSpec,
     work: impl FnOnce(&TaskCx<'_>) -> TaskCompletion<T>,
 ) -> Result<TaskRun<T>, ExecutionError> {
+    let cx = begin_owned(authority, tree, spec)?;
+    let TaskCompletion {
+        output,
+        outcome,
+        completed_at,
+    } = work(&cx);
+    let receipt = cx.complete_after_return(outcome, completed_at);
+    Ok(TaskRun { output, receipt })
+}
+
+/// Execute one canonically registered task on a caller-owned async runtime.
+///
+/// This function neither spawns nor detaches work. The caller must supply the
+/// runtime-owned context for the executing task, maintain its region ownership,
+/// and join or explicitly reconcile it. The context is checkpointed before
+/// canonical admission; the work must continue checking it at I/O and
+/// cancellation boundaries. Canonical grants, deadlines, and budgets remain
+/// enforced through [`TaskCx`], rather than the runtime context alone.
+///
+/// The returned future holds the original authority and tree exclusively while
+/// polled. A completed work result is returned even if canonical receipt
+/// publication is refused. If the future is dropped or unwinds after
+/// registration, its inner future and resources are dropped and the canonical
+/// registration remains active for explicit reconciliation; no terminal
+/// receipt, successful cleanup, or source custody is inferred. `TaskCx` is not
+/// `Sync`, so this future is not a general shared task supervisor.
+pub async fn run_owned_async<T>(
+    authority: &mut AuthorityCx,
+    tree: &mut RegionTree,
+    spec: TaskSpec,
+    runtime_cx: &asupersync::Cx,
+    work: impl AsyncFnOnce(&TaskCx<'_>, &asupersync::Cx) -> TaskCompletion<T>,
+) -> Result<TaskRun<T>, ExecutionError> {
+    runtime_cx
+        .checkpoint()
+        .map_err(|_| ExecutionError::RuntimeCancelled)?;
+    let cx = begin_owned(authority, tree, spec)?;
+    let TaskCompletion {
+        output,
+        outcome,
+        completed_at,
+    } = work(&cx, runtime_cx).await;
+    let receipt = cx.complete_after_return(outcome, completed_at);
+    Ok(TaskRun { output, receipt })
+}
+
+fn begin_owned<'a>(
+    authority: &'a mut AuthorityCx,
+    tree: &'a mut RegionTree,
+    spec: TaskSpec,
+) -> Result<TaskCx<'a>, ExecutionError> {
     authority.require_active(tree)?;
     let node = tree.get(authority.region())?;
     let previous = node
@@ -525,7 +582,7 @@ pub fn run_owned<T>(
     }
     let region = authority.region().clone();
     tree.register_task(&region, spec.task_id.clone(), spec.started_at)?;
-    let cx = TaskCx {
+    Ok(TaskCx {
         state: RefCell::new(ExecutionState {
             authority,
             tree,
@@ -538,12 +595,5 @@ pub fn run_owned<T>(
         region,
         task_id: spec.task_id,
         registered_at: spec.started_at,
-    };
-    let TaskCompletion {
-        output,
-        outcome,
-        completed_at,
-    } = work(&cx);
-    let receipt = cx.complete_after_return(outcome, completed_at);
-    Ok(TaskRun { output, receipt })
+    })
 }
