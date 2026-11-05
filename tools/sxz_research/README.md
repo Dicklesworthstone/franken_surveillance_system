@@ -37,3 +37,28 @@ ZERO absolute references anywhere in the image (checked .text literal pools, .da
 The DS dispatcher computes string pointers at runtime (master-table + offset pattern).
 Finding connectAp's handler → the stack-buffer offset needs this dispatch RE first;
 the borrowed offset 1060 remains unverified for C460 (different SoC, same framework).
+
+## Three-container consistency check (2026-11-05, 01:45)
+
+Decoded block0 chunk1 of THREE independent containers with the same decoder+params:
+- ramdisk (c460_fw @0x420284): 27 05 31 4b 00 00 00 …
+- kernel (c460_113 @0x70284):  27 05 31 4b 00 00 00 …
+- rtos (c460_fw @0x2a0284):    27 05 31 4b ef 91 …
+
+All three decode WITHOUT rc violations, all produce the same first 4 bytes, and all
+produce ~95% zeros with periodic high-entropy bursts (entropy 0.64; no ASCII strings,
+no cpio/squashfs/ext4 magics anywhere in 60KB each).
+
+Two readings remain:
+(a) the decode is CORRECT and 27 05 31 4b is a genuine SigmaStar inner-image header
+    (the ramdisk would then be a vendor-format image, not cpio/squashfs);
+(b) the decode is systematically misaligned in a way that is identical across containers
+    (same encoder → same misalignment).
+
+Discriminating test for next session: the rtos container's block0 usize=237392 and the
+kernel's usize=742400 — if (a), the images' internal length fields should appear inside
+the decoded output at fixed offsets; if (b), nothing will. Also worth trying: decode with
+`is_match` probs indexed by (state<<2|pos_state) but the LITERAL prob group selected by
+`prev >> (8-lc)` where prev is the PREVIOUS-DECODED SYMBOL rather than the previous byte
+(identical for literals, different after matches — matches the "position-dependent" note
+above only partially).
