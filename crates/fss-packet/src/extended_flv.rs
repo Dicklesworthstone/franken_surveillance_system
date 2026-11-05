@@ -14,6 +14,8 @@ use std::{fmt, ops::Range};
 pub mod avc;
 /// Incremental framing that returns original bytes and stream-relative ranges.
 pub mod stream;
+/// Source-relative AVC configuration epochs and sample spans.
+pub mod track;
 
 const TAG_HEADER: usize = 11;
 const TAG_SUFFIX: usize = 4;

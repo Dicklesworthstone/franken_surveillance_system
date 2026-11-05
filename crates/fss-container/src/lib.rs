@@ -8,6 +8,8 @@
 //! the owner. No codec, socket, filesystem, worker, or external runtime is used.
 
 mod boxes;
+/// FLV-source-specific AVC fragmented MP4, preserving connection byte ranges.
+pub mod flv_avc;
 /// Indexed or fragmented AVC/HEVC MP4 sample index, source-preserving Annex-B extraction and
 /// exact byte maps.
 pub mod demux;

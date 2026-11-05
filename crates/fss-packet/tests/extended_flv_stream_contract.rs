@@ -74,6 +74,7 @@ fn chunk_boundaries_preserve_header_trailers_tag_offsets_and_avc_bytes() -> Test
                 timestamp_ms: 40,
                 earlier_incomplete: false,
                 provisional: false,
+                policy: SearchMode::Conservative,
             }
         ));
         assert_eq!(&records[2].bytes()[..5], trailer);
@@ -148,6 +149,7 @@ fn earlier_incomplete_candidate_is_not_skipped_when_chunked() -> TestResult {
             timestamp_ms: 2,
             earlier_incomplete: false,
             provisional: false,
+            policy: SearchMode::Conservative,
         }
     ));
     Ok(())
@@ -218,5 +220,87 @@ fn provisional_search_marks_skipped_and_all_later_boundaries() -> TestResult {
         }
     ));
     assert!(framer.retire().provisional);
+    Ok(())
+}
+
+#[test]
+fn explicit_structured_trailer_ignores_embedded_false_header_and_keeps_source() -> TestResult {
+    let mut initial = b"FLV\x01\x01\x00\x00\x00\x09\x00\x00\x00\x00".to_vec();
+    initial.extend_from_slice(&tag(9, 0, b"first"));
+    // A plausible incomplete tag header lies inside a 16-byte zero-padded trailer.
+    let trailer = [9, 3, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 3, 4];
+    let successor = tag(8, 40, b"audio");
+    let mut rest = trailer.to_vec();
+    rest.extend_from_slice(&successor);
+    for cut in 0..=rest.len() {
+        let mut framer =
+            Framer::with_mode(Limits::default(), 1024, SearchMode::StructuredTrailer16)?;
+        framer.append(0, &initial)?;
+        assert!(matches!(framer.take()?, Next::Record(_)));
+        assert!(matches!(framer.take()?, Next::Record(_)));
+        framer.append(framer.next_offset(), &rest[..cut])?;
+        if cut < rest.len() {
+            assert_eq!(framer.take()?, Next::NeedMore);
+            framer.append(framer.next_offset(), &rest[cut..])?;
+        }
+        let Next::Record(record) = framer.take()? else {
+            return Err("missing structured record".into());
+        };
+        assert!(matches!(
+            record.kind(),
+            RecordKind::Candidate {
+                trailer_bytes: 16,
+                tag_kind: 8,
+                timestamp_ms: 40,
+                earlier_incomplete: false,
+                provisional: false,
+                policy: SearchMode::StructuredTrailer16,
+            }
+        ));
+        assert_eq!(record.bytes(), rest);
+    }
+    let mut conservative = Framer::new(Limits::default(), 1024)?;
+    conservative.append(0, &initial)?;
+    conservative.take()?;
+    conservative.take()?;
+    conservative.append(conservative.next_offset(), &rest)?;
+    assert_eq!(conservative.take()?, Next::NeedMore);
+    Ok(())
+}
+
+#[test]
+fn structured_trailer_mismatch_is_fenced_without_discarding_bytes() -> TestResult {
+    let mut initial = b"FLV\x01\x01\x00\x00\x00\x09\x00\x00\x00\x00".to_vec();
+    initial.extend_from_slice(&tag(9, 0, b"first"));
+    let mut source = vec![0; 16];
+    source[7] = 1;
+    source.extend_from_slice(&tag(8, 40, b"audio"));
+    let mut framer = Framer::with_mode(Limits::default(), 1024, SearchMode::StructuredTrailer16)?;
+    framer.append(0, &initial)?;
+    framer.take()?;
+    framer.take()?;
+    framer.append(framer.next_offset(), &source)?;
+    assert_eq!(framer.take(), Err(Error::TrailerPolicyMismatch));
+    let remainder = framer.retire();
+    assert_eq!(remainder.bytes(), source);
+    let mut wrong_stream = vec![0; 16];
+    let mut successor = tag(8, 40, b"audio");
+    successor[8] = 1;
+    wrong_stream.extend_from_slice(&successor);
+    let mut framer = Framer::with_mode(Limits::default(), 1024, SearchMode::StructuredTrailer16)?;
+    framer.append(0, &initial)?;
+    framer.take()?;
+    framer.take()?;
+    framer.append(framer.next_offset(), &wrong_stream)?;
+    assert_eq!(framer.take(), Err(Error::TrailerPolicyMismatch));
+    assert_eq!(framer.retire().bytes(), wrong_stream);
+    let tight = Limits {
+        max_trailer: 15,
+        ..Limits::default()
+    };
+    assert!(matches!(
+        Framer::with_mode(tight, 1024, SearchMode::StructuredTrailer16),
+        Err(Error::Configuration)
+    ));
     Ok(())
 }

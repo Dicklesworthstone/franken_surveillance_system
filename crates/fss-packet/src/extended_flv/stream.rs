@@ -28,6 +28,8 @@ pub enum Error {
     Allocation,
     /// Existing framing rejected the source. Buffered bytes remain available.
     Parse(ParseError),
+    /// Explicit 16-byte trailer policy did not match; buffered bytes remain available.
+    TrailerPolicyMismatch,
 }
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -47,7 +49,7 @@ pub enum Phase {
     Successor,
 }
 
-/// Choice of structural successor search; neither mode authenticates boundaries.
+/// Choice of structural successor policy; no mode authenticates boundaries.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SearchMode {
     /// Wait for every earlier plausible candidate to become complete or invalid.
@@ -55,6 +57,12 @@ pub enum SearchMode {
     /// Emit a later match even while an earlier candidate remains incomplete.
     /// The output and every subsequent record are explicitly marked provisional.
     Provisional,
+    /// Require a 16-byte trailer whose middle eight bytes are zero, followed
+    /// immediately by a structurally valid tag with a zero FLV stream ID.
+    /// This explicitly selected policy
+    /// reflects observed devices; it does not authenticate the sender or prove
+    /// that another model or firmware uses this trailer format.
+    StructuredTrailer16,
 }
 
 /// Why a range of source bytes was surfaced.
@@ -82,6 +90,8 @@ pub enum RecordKind {
         /// This or an earlier selection skipped an incomplete candidate.
         /// Later input can change the claimed segment boundaries.
         provisional: bool,
+        /// Explicit local policy that selected this candidate; not an authenticity proof.
+        policy: SearchMode,
     },
 }
 
@@ -108,6 +118,20 @@ impl SourceRecord {
     /// Exact original bytes, including uninterpreted candidate trailer bytes.
     pub fn bytes(&self) -> &[u8] {
         &self.bytes
+    }
+    /// Duplicate the exact record for a bounded lookahead witness. This is a
+    /// copy, not a transfer of original custody or proof of persistence.
+    pub fn try_duplicate(&self) -> Result<Self, Error> {
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(self.bytes.len())
+            .map_err(|_| Error::Allocation)?;
+        bytes.extend_from_slice(&self.bytes);
+        Ok(Self {
+            offset: self.offset,
+            kind: self.kind,
+            bytes,
+        })
     }
     /// Tag range relative to this record, including its header and back-reference.
     pub fn tag_range(&self) -> Option<Range<usize>> {
@@ -204,7 +228,10 @@ impl Framer {
 
     /// Begin at offset zero with an explicit successor-search policy.
     pub fn with_mode(limits: Limits, max_buffer: usize, mode: SearchMode) -> Result<Self, Error> {
-        if !(13..=MAX_BUFFER_BYTES).contains(&max_buffer) || Header::parse(&[], limits).is_err() {
+        if !(13..=MAX_BUFFER_BYTES).contains(&max_buffer)
+            || Header::parse(&[], limits).is_err()
+            || (mode == SearchMode::StructuredTrailer16 && limits.max_trailer < 16)
+        {
             return Err(Error::Configuration);
         }
         Ok(Self {
@@ -283,11 +310,12 @@ impl Framer {
                 ),
             },
             Phase::Successor => match match self.mode {
-                SearchMode::Conservative => find_next(input, self.limits),
-                SearchMode::Provisional => find_next_provisional(input, self.limits),
-            }
-            .map_err(Error::Parse)?
-            {
+                SearchMode::Conservative => find_next(input, self.limits).map_err(Error::Parse),
+                SearchMode::Provisional => {
+                    find_next_provisional(input, self.limits).map_err(Error::Parse)
+                }
+                SearchMode::StructuredTrailer16 => structured_trailer_16(input, self.limits),
+            }? {
                 Parse::NeedMore => return Ok(Next::NeedMore),
                 Parse::Complete(candidate) => (
                     candidate.trailer.len() + candidate.tag.wire_bytes().len(),
@@ -297,6 +325,7 @@ impl Framer {
                         timestamp_ms: candidate.tag.timestamp_ms(),
                         earlier_incomplete: candidate.earlier_incomplete,
                         provisional: self.provisional || candidate.earlier_incomplete,
+                        policy: self.mode,
                     },
                     Phase::Successor,
                 ),
@@ -338,5 +367,29 @@ impl Framer {
             provisional: self.provisional,
             bytes: self.buffer,
         }
+    }
+}
+
+fn structured_trailer_16(
+    input: &[u8],
+    limits: Limits,
+) -> Result<Parse<super::Candidate<'_>>, Error> {
+    if input.len() < 16 {
+        return Ok(Parse::NeedMore);
+    }
+    if input[4..12] != [0; 8] {
+        return Err(Error::TrailerPolicyMismatch);
+    }
+    if input.len() >= 27 && input[24..27] != [0; 3] {
+        return Err(Error::TrailerPolicyMismatch);
+    }
+    match Tag::parse(&input[16..], limits) {
+        Ok(Parse::NeedMore) => Ok(Parse::NeedMore),
+        Ok(Parse::Complete(tag)) => Ok(Parse::Complete(super::Candidate {
+            trailer: &input[..16],
+            tag,
+            earlier_incomplete: false,
+        })),
+        Err(_) => Err(Error::TrailerPolicyMismatch),
     }
 }
