@@ -593,3 +593,17 @@ full dl-loc → fetch → verify → install → entrypoint cycle. Watchdog arme
 manager still doesn't act within its cadence, the missing input is likely the shadow
 version state via MQTT (.39 in reconnect backoff, .51 on real AWS) — the MITM rewrites
 those deltas too, once the sessions land on :8883.
+
+## 01:58 — TFTP write path verified; loop_closer un-wedged
+
+- The C660 ROP payload exfils via `tftp -p -l` (WRQ), but tftp_serve.py only answered RRQ —
+  every upload was silently dropped, so a successful system() had NO observable trace.
+  Added the WRQ/DATA receive path, verified end-to-end (WRQ ack 00040000, data ack
+  00040001, file landed in /tmp/tftp). Now a root LaunchDaemon
+  (com.jeffreyemanuel.c660-tftp) so it survives agent sessions (de9341e9).
+- loop_closer.sh (30s telnetd probe) had wedged at 21:07 (likely a hung nc inside the
+  probe loop); restarted — it immediately re-evaluated the accumulated beacon and probed
+  both cameras (9999 closed, as expected pre-entrypoint).
+
+The C660 ground-truth loop is now closed: wake → ROP fire → telnetd (probe) +
+tftp exfil (receiver) → operator-side proof files. The next PIR wake tests it.
