@@ -510,6 +510,7 @@ dependencies = [
 name = "fss-cli"
 version = "0.0.1"
 dependencies = [
+ "asupersync",
  "fss-codec-h265",
  "fss-codec-mjpeg",
  "fss-container",
