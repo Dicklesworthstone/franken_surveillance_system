@@ -353,3 +353,73 @@ fn admitted_exchange_can_start_live_monitoring_before_an_observation_is_availabl
     assert_eq!(monitor.project(ORIGIN + 1_000_000_000), Err(C::Invalidated));
     Ok(())
 }
+
+#[test]
+fn reusable_exchange_preserves_the_existing_v1_retained_identities() -> Result<(), Box<dyn Error>> {
+    let original = proof()?;
+    let exchange = original.exchange();
+    // Frozen from the original v1 canonical field order and independently
+    // checked using SHA-256 over its 287-byte exchange / 114-byte proof envelope.
+    assert_eq!(
+        exchange.source_digest()?.to_text(),
+        "sha256:45cee787f55dd3854245a8f237b65cfea9fa680eada8d680ca2d8bf9d92c7e88"
+    );
+    assert_eq!(
+        original.digest()?.to_text(),
+        "sha256:60207026ffb4475c4b11036087e4a702d71c967882609ba22ea94485e9604027"
+    );
+    assert_eq!(exchange.source_digest()?, original.source_digest()?);
+    assert_eq!(exchange.correlation()?, original.correlation()?);
+    let debug = format!("{exchange:?}");
+    for private in ["127.0.0.1", "request", "reply", "TEST"] {
+        assert!(!debug.contains(private));
+    }
+    Ok(())
+}
+
+#[test]
+fn exchange_is_independent_of_an_unavailable_first_picture_but_never_of_its_epoch()
+-> Result<(), Box<dyn Error>> {
+    let original = proof()?;
+    let exchange = original.exchange();
+    let mut pending = original;
+    pending.observation_start_ns = 0;
+    pending.observation_end_ns = u64::MAX;
+    pending.terminal = host(0);
+    assert_eq!(pending.exchange(), exchange);
+    assert_eq!(pending.reconstruct(), Err(E::ObservationOrder));
+    let mut correlation = exchange.correlation()?;
+    correlation.observe_later_sample(host(40_000_000_000))?;
+    assert!(correlation.project(ORIGIN + 30_000_000_000).is_ok());
+    assert_eq!(
+        correlation.observe_later_sample(host(61_000_000_000)),
+        Err(C::Expired)
+    );
+    // Expiry does not erase historical projections inside the retained epoch.
+    // Native owners separately stop all further work after any sample failure.
+    assert_eq!(
+        correlation.project(ORIGIN + 61_000_000_000),
+        Err(C::Expired)
+    );
+    assert!(correlation.project(ORIGIN + 30_000_000_000).is_ok());
+    Ok(())
+}
+
+#[test]
+fn direct_exchange_literals_cannot_bypass_raw_evidence_validation() -> Result<(), Box<dyn Error>> {
+    let original = proof()?.exchange();
+    let mut wrong_origin = original;
+    wrong_origin.reply[24] ^= 1;
+    assert_eq!(wrong_origin.source_digest(), Err(E::Ntp(SntpError::Origin)));
+    let mut wrong_policy = original;
+    wrong_policy.policy.max_age_ns += 1;
+    assert_eq!(wrong_policy.source_digest(), Err(E::Policy));
+    let mut wrong_epoch = original;
+    wrong_epoch.received_after.monotonic_before_ns += 1_000_000_000;
+    wrong_epoch.received_after.monotonic_after_ns += 1_000_000_000;
+    assert_eq!(
+        wrong_epoch.source_digest(),
+        Err(E::Correlation(C::WallClockDiscontinuity))
+    );
+    Ok(())
+}

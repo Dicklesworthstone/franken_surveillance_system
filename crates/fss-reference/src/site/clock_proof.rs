@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! Reconstructible local-daemon SNTP evidence for one native site observation.
+//! Reconstructible local-daemon SNTP exchange and native site observation evidence.
 //!
 //! The packet bytes and bracketed host samples remain untrusted supplied
 //! evidence. Reconstruction proves internal consistency and conservative interval
@@ -44,6 +44,41 @@ pub const LOCAL_NTP_LIMITS: SntpLimits = SntpLimits {
     max_offset_ns: 10_000_000_000,
     max_uncertainty_ns: 10_000_000_000,
 };
+
+/// One exact local-daemon exchange, independent of any later source observation.
+///
+/// Every sample belongs to the same caller-owned monotonic clock. Public fields
+/// remain untrusted until [`Self::correlation`] or [`Self::source_digest`] checks
+/// them. The exchange grants no network authority, server authentication, source
+/// custody, camera capture time, or continuity beyond its sampled brackets.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub struct LocalNtpExchange {
+    /// Explicit literal loopback endpoint, without a zero port or IPv6 zone.
+    pub peer: SocketAddr,
+    /// Exact request generated from `sent_before.wall_clock_unix_ns`.
+    pub request: [u8; 48],
+    /// Exact complete basic-mode server reply.
+    pub reply: [u8; 48],
+    /// Host sample completed before request transmission.
+    pub sent_before: HostClockSample,
+    /// Host sample begun after request transmission.
+    pub sent_after: HostClockSample,
+    /// Host sample completed before response reception.
+    pub received_before: HostClockSample,
+    /// Host sample begun after response reception; the correlation's origin.
+    pub received_after: HostClockSample,
+    /// Exact versioned sampling, drift and age policy.
+    pub policy: ClockCorrelationPolicy,
+}
+
+impl fmt::Debug for LocalNtpExchange {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("LocalNtpExchange")
+            .field("policy", &self.policy)
+            .finish_non_exhaustive()
+    }
+}
 
 /// Exact supplied exchange and host samples needed to reconstruct a site-node
 /// clock witness. The peer must be an explicitly selected literal loopback
@@ -148,11 +183,11 @@ impl From<SntpError> for ClockProofError {
     }
 }
 
-impl LocalNtpClockProof {
+impl LocalNtpExchange {
     /// Admit the synchronization exchange and return its checked correlation for
-    /// live host-clock monitoring. This checks only the peer, policy, packet bytes
-    /// and four exchange samples. Observation and terminal fields are checked by
-    /// [`Self::reconstruct`] after the native caller has observed its prefix.
+    /// same-session host-clock monitoring or retained source projection. This
+    /// checks the peer, policy, packet bytes and four exchange samples. Later
+    /// observation and terminal brackets must be checked by their source owner.
     /// No placeholder precision or authenticated-server claim is introduced.
     pub fn correlation(&self) -> Result<ClockCorrelation, ClockProofError> {
         self.validate_scope_and_samples()?;
@@ -212,6 +247,38 @@ impl LocalNtpClockProof {
         )?)
     }
 
+    /// Exact synchronization-only identity after admitting every exchange field.
+    /// The unchanged v1 identity does not authenticate or durably retain evidence.
+    pub fn source_digest(&self) -> Result<ContentDigest, ClockProofError> {
+        self.correlation()?;
+        self.exchange_digest_unchecked()
+    }
+}
+
+impl LocalNtpClockProof {
+    /// Extract the exact exchange without admitting later observation fields.
+    /// This copy preserves the original v1 synchronization-source identity.
+    #[must_use]
+    pub const fn exchange(&self) -> LocalNtpExchange {
+        LocalNtpExchange {
+            peer: self.peer,
+            request: self.request,
+            reply: self.reply,
+            sent_before: self.sent_before,
+            sent_after: self.sent_after,
+            received_before: self.received_before,
+            received_after: self.received_after,
+            policy: self.policy,
+        }
+    }
+
+    /// Admit the synchronization exchange and return its checked correlation for
+    /// live host-clock monitoring. Observation and terminal fields are checked
+    /// by [`Self::reconstruct`] after the caller has observed its prefix.
+    pub fn correlation(&self) -> Result<ClockCorrelation, ClockProofError> {
+        self.exchange().correlation()
+    }
+
     /// Recompute the exact unchanged v1 witness from raw protocol and clock
     /// evidence. Every field is checked on each call, including direct struct
     /// literals; successful reconstruction is not a server-authentication claim.
@@ -260,7 +327,7 @@ impl LocalNtpClockProof {
         self.reconstruct()?;
         let mut encoder = CanonicalEncoder::new();
         encoder.text(LOCAL_NTP_CLOCK_PROOF_DOMAIN);
-        encoder.digest(self.exchange_digest_unchecked()?);
+        encoder.digest(self.exchange().exchange_digest_unchecked()?);
         encoder.u64(self.observation_start_ns);
         encoder.u64(self.observation_end_ns);
         encode_sample(&mut encoder, self.terminal);
@@ -271,10 +338,11 @@ impl LocalNtpClockProof {
     /// Observation and terminal fields are outside this source identity. This
     /// does not make the source authenticated or durably retained.
     pub fn source_digest(&self) -> Result<ContentDigest, ClockProofError> {
-        self.correlation()?;
-        self.exchange_digest_unchecked()
+        self.exchange().source_digest()
     }
+}
 
+impl LocalNtpExchange {
     fn validate_scope_and_samples(&self) -> Result<(), ClockProofError> {
         if !self.peer.ip().is_loopback()
             || self.peer.port() == 0

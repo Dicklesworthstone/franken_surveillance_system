@@ -59,6 +59,8 @@ pub mod json_output;
 pub mod lab_cmd;
 /// Explicit, proof-backed plan-outcome mission contracts under AOP-007.
 pub mod mission_cmd;
+/// Explicitly owned bounded local-daemon synchronization for native source clocks.
+pub mod native_clock;
 pub mod negative_evidence_cmd;
 /// Read-only `orient` (AOP-003) and `explain` (AOP-011) over a deployment root.
 pub mod orient_cmd;
