@@ -431,4 +431,6 @@ def main():
             c.settimeout(None)
         except Exception as e: print("tls fail",e,flush=True); c.close(); continue
         threading.Thread(target=handle,args=(c,),daemon=True).start()
-main()
+
+if __name__ == "__main__":
+    main()
