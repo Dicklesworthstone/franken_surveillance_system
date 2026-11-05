@@ -253,6 +253,33 @@ fn tcp_ingress_retries_a_dropped_pending_read_without_losing_or_double_charging_
                         .map_err(|e| e.to_string())?;
                     let mut source = TcpIngress::new(stream, "fixture:source", 4, 4)
                         .map_err(|e| e.to_string())?;
+                    source.bind_task(owner).map_err(|e| e.to_string())?;
+                    let (mut different, mut different_tree) = root().map_err(|e| e.to_string())?;
+                    let foreign = run_owned_async(
+                        &mut different,
+                        &mut different_tree,
+                        task("task:source").map_err(|e| e.to_string())?,
+                        cx,
+                        async |foreign_owner, foreign_cx| {
+                            let bind = source.bind_task(foreign_owner);
+                            let read = source
+                                .receive(foreign_owner, foreign_cx, TimestampNs(4))
+                                .await;
+                            TaskCompletion {
+                                output: (bind, read),
+                                outcome: TaskOutcome::Success,
+                                completed_at: TimestampNs(5),
+                            }
+                        },
+                    )
+                    .await
+                    .map_err(|e| e.to_string())?;
+                    if foreign.output
+                        != (Err(IngressError::Authority), Err(IngressError::Authority))
+                    {
+                        return Err("different task claimed pre-bound source".into());
+                    }
+                    foreign.receipt.map_err(|e| e.to_string())?;
                     {
                         let mut read = Box::pin(source.receive(owner, cx, TimestampNs(4)));
                         let pending = poll_fn(|task| match read.as_mut().poll(task) {

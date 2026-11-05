@@ -473,6 +473,21 @@ impl PreparedEffect {
         &self.binding.prepared.terminal_predicate
     }
 
+    /// Registered class of this exact external effect.
+    #[must_use]
+    pub fn effect_class(&self) -> &str {
+        &self.binding.prepared.intent.effect_class
+    }
+    /// Digest of the exact external request that was prepared.
+    #[must_use]
+    pub fn request_digest(&self) -> ContentDigest {
+        self.binding.prepared.intent.request_digest
+    }
+    /// Digest of the exact preconditions revalidated during commit.
+    #[must_use]
+    pub fn precondition_digest(&self) -> ContentDigest {
+        self.binding.prepared.intent.precondition_digest
+    }
     /// The whole preparation, authority and resource binding that must be approved.
     #[must_use]
     pub fn digest(&self) -> ContentDigest {
@@ -492,6 +507,8 @@ impl AsRef<PreparedEffect> for PreparedEffect {
 #[derive(Debug)]
 pub struct CommittedEffect {
     inner: PreparedEffect,
+    journal_backed: bool,
+    dispatch_claimed: bool,
 }
 
 impl CommittedEffect {
@@ -499,6 +516,24 @@ impl CommittedEffect {
     #[must_use]
     pub fn prepared(&self) -> &PreparedEffect {
         &self.inner
+    }
+
+    /// Whether the coordinator acknowledged this commit through its configured
+    /// journal store. This is not an attestation of the store's implementation.
+    #[must_use]
+    pub fn journal_backed(&self) -> bool {
+        self.journal_backed
+    }
+
+    /// Claim the single local dispatch attempt. A false result means this
+    /// permit has already been used. A claimed permit must be reconciled even
+    /// if its surrounding future is dropped before acknowledgement.
+    pub fn try_claim_dispatch(&mut self) -> bool {
+        if self.dispatch_claimed {
+            return false;
+        }
+        self.dispatch_claimed = true;
+        true
     }
 
     /// The operation identity.
@@ -860,7 +895,11 @@ impl EffectCoordinator {
             self.journal = candidate;
             Ok(())
         })?;
-        Ok(CommittedEffect { inner: prepared })
+        Ok(CommittedEffect {
+            inner: prepared,
+            journal_backed: self.persistence.is_some() && self.durable_head.is_some(),
+            dispatch_claimed: false,
+        })
     }
 
     /// Cancels a preparation with the core proof binding the exact record to the cancel evidence.
@@ -1296,11 +1335,17 @@ fn apply_reconciliation(
         .map_err(|error| journal_error(operation, error))
 }
 
-// These six pairs are the registered domain effects. Agent-plan orchestration
+// These pairs are the registered domain effects. Agent-plan orchestration
 // and event-review authority capabilities cannot substitute for a domain grant.
 fn registered_effect_class(prepare: RuntimeGrant, commit: RuntimeGrant) -> Option<&'static str> {
     match (prepare, commit) {
         (RuntimeGrant::AlertPrepare, RuntimeGrant::AlertCommit) => Some("EFFECT-ALERT-001"),
+        (RuntimeGrant::CameraSettingPrepare, RuntimeGrant::CameraSettingCommit) => {
+            Some("EFFECT-CAMERA-SETTING-001")
+        }
+        (RuntimeGrant::CameraManagementPrepare, RuntimeGrant::CameraManagementCommit) => {
+            Some("EFFECT-CAMERA-MANAGEMENT-001")
+        }
         (RuntimeGrant::PtzPrepare, RuntimeGrant::PtzCommit) => Some("EFFECT-PTZ-001"),
         (RuntimeGrant::RetentionPrepare, RuntimeGrant::RetentionCommit) => {
             Some("EFFECT-RETENTION-001")

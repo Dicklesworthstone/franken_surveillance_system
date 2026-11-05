@@ -17,6 +17,7 @@
 //! tree; neither manufactures a cancellation receipt or a quiescence proof.
 
 use std::cell::{RefCell, RefMut};
+use std::collections::BTreeSet;
 
 use fss_core::effect::{Obligation, ObligationState};
 use fss_core::{
@@ -26,7 +27,12 @@ use fss_core::{
 
 use crate::authority::{AuthorityBinding, AuthorityCx, AuthorityError};
 use crate::budget::LedgerError;
+use crate::effect::{
+    CommitApproval, CommittedEffect, EffectCoordError, EffectCoordinator, MAX_RETAINED_EFFECTS,
+    PrepareSpec, PreparedEffect,
+};
 use crate::grant::GrantError;
+use crate::lease::LeaseRegistry;
 use crate::obligation::ObligationTerminal;
 
 /// Identity and caller-observed registration time for one actual execution.
@@ -128,6 +134,51 @@ impl std::fmt::Display for ExecutionError {
 
 impl std::error::Error for ExecutionError {}
 
+/// Refusal of a task-owned effect operation, without granting dispatch.
+#[derive(Debug)]
+pub enum TaskEffectError {
+    /// The task registration, clock, lifecycle or runtime refused admission.
+    Execution(ExecutionError),
+    /// The effect coordinator refused its own authority, lease or journal checks.
+    Coordinator(EffectCoordError),
+    /// This task has already retained the maximum number of effect operations.
+    Capacity,
+    /// This operation was prepared before this task registered its ownership.
+    ForeignPreparation,
+}
+impl std::fmt::Display for TaskEffectError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Execution(error) => write!(f, "task effect admission: {error}"),
+            Self::Coordinator(error) => write!(f, "task effect coordinator: {error}"),
+            Self::Capacity => f.write_str("task effect operation capacity exceeded"),
+            Self::ForeignPreparation => f.write_str("effect preparation belongs to another task"),
+        }
+    }
+}
+impl std::error::Error for TaskEffectError {}
+
+/// A refused commit retains its inert prepared handle for retry or reconciliation.
+#[must_use]
+#[derive(Debug)]
+pub struct TaskEffectCommitRefusal {
+    /// Why no dispatch permit was issued.
+    pub reason: TaskEffectError,
+    prepared: PreparedEffect,
+}
+impl TaskEffectCommitRefusal {
+    /// Recover the original prepared handle; this does not authorize dispatch.
+    pub fn into_prepared(self) -> PreparedEffect {
+        self.prepared
+    }
+}
+impl std::fmt::Display for TaskEffectCommitRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.reason.fmt(f)
+    }
+}
+impl std::error::Error for TaskEffectCommitRefusal {}
+
 impl From<AuthorityError> for ExecutionError {
     fn from(error: AuthorityError) -> Self {
         Self::Authority(error)
@@ -147,6 +198,7 @@ struct ExecutionState<'a> {
     draining: bool,
     cancellation_requested: bool,
     deadline_reached: bool,
+    effect_operations: BTreeSet<fss_core::OperationId>,
 }
 
 /// A non-cloneable context for the closure currently executing one registered task.
@@ -296,6 +348,99 @@ impl<'a> TaskCx<'a> {
         cost: &BudgetVector,
     ) -> Result<(), ExecutionError> {
         self.admit(now, cost, Some((grant, resource)), false)
+    }
+
+    /// Prepare an exact registered effect while this task owns the authority
+    /// and region tree. The coordinator still validates its domain grants,
+    /// lease, request, preconditions and durable journal policy.
+    ///
+    /// This method is synchronous: a journal store may block. It is unsuitable
+    /// for a latency-sensitive async reactor until its caller provides a
+    /// supervised nonblocking persistence boundary. `runtime_cx` must be the
+    /// same runtime-owned context supplied to this task.
+    pub fn prepare_effect(
+        &self,
+        runtime_cx: &asupersync::Cx,
+        effects: &mut EffectCoordinator,
+        leases: &mut LeaseRegistry,
+        spec: PrepareSpec<'_>,
+        now: TimestampNs,
+    ) -> Result<PreparedEffect, TaskEffectError> {
+        runtime_cx
+            .checkpoint()
+            .map_err(|_| TaskEffectError::Execution(ExecutionError::RuntimeCancelled))?;
+        let mut state = self.state().map_err(TaskEffectError::Execution)?;
+        self.check_registration(&state)
+            .map_err(TaskEffectError::Execution)?;
+        Self::observe_time(&mut state, now).map_err(TaskEffectError::Execution)?;
+        self.check_deadline(&mut state, now)
+            .map_err(TaskEffectError::Execution)?;
+        if !state.effect_operations.contains(spec.operation)
+            && state.effect_operations.len() >= MAX_RETAINED_EFFECTS
+        {
+            return Err(TaskEffectError::Capacity);
+        }
+        if !state.effect_operations.contains(spec.operation)
+            && effects.prepared(spec.operation).is_some()
+        {
+            return Err(TaskEffectError::ForeignPreparation);
+        }
+        let operation = spec.operation.clone();
+        let ExecutionState {
+            authority, tree, ..
+        } = &mut *state;
+        let prepared = effects
+            .prepare(authority, tree, leases, spec, now)
+            .map_err(TaskEffectError::Coordinator)?;
+        state.effect_operations.insert(operation);
+        Ok(prepared)
+    }
+
+    /// Commit only an effect prepared by this exact task. Refusal returns the
+    /// inert preparation, and success alone issues the one-use permit.
+    /// Like [`Self::prepare_effect`], this may synchronously block on storage.
+    pub fn commit_effect(
+        &self,
+        runtime_cx: &asupersync::Cx,
+        effects: &mut EffectCoordinator,
+        leases: &mut LeaseRegistry,
+        prepared: PreparedEffect,
+        now: TimestampNs,
+        approval: CommitApproval,
+    ) -> Result<CommittedEffect, TaskEffectCommitRefusal> {
+        let admission = (|| -> Result<_, TaskEffectError> {
+            runtime_cx
+                .checkpoint()
+                .map_err(|_| TaskEffectError::Execution(ExecutionError::RuntimeCancelled))?;
+            let mut state = self.state().map_err(TaskEffectError::Execution)?;
+            self.check_registration(&state)
+                .map_err(TaskEffectError::Execution)?;
+            Self::observe_time(&mut state, now).map_err(TaskEffectError::Execution)?;
+            self.check_deadline(&mut state, now)
+                .map_err(TaskEffectError::Execution)?;
+            if !state.effect_operations.contains(prepared.operation()) {
+                return Err(TaskEffectError::Execution(
+                    ExecutionError::ObligationOwnerMismatch,
+                ));
+            }
+            Ok(state)
+        })();
+        let mut state = match admission {
+            Ok(state) => state,
+            Err(reason) => return Err(TaskEffectCommitRefusal { reason, prepared }),
+        };
+        let ExecutionState {
+            authority, tree, ..
+        } = &mut *state;
+        effects
+            .commit(authority, tree, leases, prepared, now, approval)
+            .map_err(|error| {
+                let (reason, prepared) = error.into_parts();
+                TaskEffectCommitRefusal {
+                    reason: TaskEffectError::Coordinator(reason),
+                    prepared,
+                }
+            })
     }
 
     /// Admit bounded cleanup after `begin_drain`, within the original deadline
@@ -473,7 +618,8 @@ impl<'a> TaskCx<'a> {
         }
         if matches!(outcome, TaskOutcome::Indeterminate(_))
             && !node.obligations.values().any(|obligation| {
-                obligation.operation_id == self.context.operation_id
+                (obligation.operation_id == self.context.operation_id
+                    || state.effect_operations.contains(&obligation.operation_id))
                     && (obligation.state == ObligationState::Pending
                         || (obligation.state == ObligationState::Indeterminate
                             && node
@@ -606,6 +752,7 @@ fn begin_owned<'a>(
             draining: false,
             cancellation_requested: false,
             deadline_reached: false,
+            effect_operations: BTreeSet::new(),
         }),
         context,
         region,

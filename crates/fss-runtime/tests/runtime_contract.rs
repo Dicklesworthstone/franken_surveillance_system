@@ -1538,3 +1538,87 @@ fn failed_scope_down_never_strands_a_reservation() -> Result<(), Box<dyn std::er
     );
     Ok(())
 }
+
+#[test]
+fn camera_settings_effect_requires_its_own_grants_and_lease()
+-> Result<(), Box<dyn std::error::Error>> {
+    use fss_runtime::effect::EffectCoordError;
+    let (auth, mut tree) = effect_authority(vec![
+        "CAP-CAMERA-SETTING-PREPARE-001".to_string(),
+        "CAP-CAMERA-SETTING-COMMIT-001".to_string(),
+    ])?;
+    let mut leases = fss_runtime::lease::LeaseRegistry::new();
+    let lease = leases.acquire(
+        "device:camera:fixture",
+        "region:fx",
+        Some(10_000),
+        TimestampNs(100),
+    )?;
+    let operation = OperationId::parse("op:camera-settings-fixture")?;
+    let mut effects = EffectCoordinator::new();
+    let mixed = effect_spec(
+        &operation,
+        "device:camera:fixture",
+        lease.fence,
+        [RuntimeGrant::CameraSettingPrepare, RuntimeGrant::PtzCommit],
+        "settings readback and stream generation",
+    )?;
+    assert!(matches!(
+        effects.prepare(&auth, &mut tree, &mut leases, mixed, TimestampNs(101)),
+        Err(EffectCoordError::InvalidGrantPair { .. })
+    ));
+    let cross_domain = effect_spec(
+        &operation,
+        "device:camera:fixture",
+        lease.fence,
+        [RuntimeGrant::CameraManagementPrepare, RuntimeGrant::CameraSettingCommit],
+        "management and setting grants cannot be combined",
+    )?;
+    assert!(matches!(
+        effects.prepare(&auth, &mut tree, &mut leases, cross_domain, TimestampNs(101)),
+        Err(EffectCoordError::InvalidGrantPair { .. })
+    ));
+    let prepared = effects.prepare(
+        &auth,
+        &mut tree,
+        &mut leases,
+        effect_spec(
+            &operation,
+            "device:camera:fixture",
+            lease.fence,
+            [
+                RuntimeGrant::CameraSettingPrepare,
+                RuntimeGrant::CameraSettingCommit,
+            ],
+            "settings readback and stream generation",
+        )?,
+        TimestampNs(102),
+    )?;
+    assert_eq!(effects.state(&prepared)?, EffectState::Prepared);
+    let approval = effect_approval(&prepared);
+    let mut committed = effects.commit(
+        &auth,
+        &tree,
+        &mut leases,
+        prepared,
+        TimestampNs(103),
+        approval,
+    )?;
+    assert!(!committed.journal_backed());
+    assert!(committed.try_claim_dispatch());
+    assert!(!committed.try_claim_dispatch());
+    effects.adapter_accepted(&mut committed, None, TimestampNs(104))?;
+    let proof = ContentDigest::sha256(b"synthetic settings readback and generation rollover");
+    effects.observed(&mut committed, proof, TimestampNs(105))?;
+    effects.verified(&mut tree, &auth, committed, proof, TimestampNs(106))?;
+    assert_eq!(
+        effects
+            .journal()
+            .operation(&operation)
+            .ok_or("missing effect receipt")?
+            .state,
+        EffectState::Verified
+    );
+    assert!(auth.finalize_report(&tree)?.is_empty());
+    Ok(())
+}

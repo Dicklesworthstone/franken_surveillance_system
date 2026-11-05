@@ -180,6 +180,25 @@ impl TcpIngress {
         })
     }
 
+    /// Bind this unread source to one active canonical task. This grants no
+    /// network or media authority; receive still rechecks both capabilities.
+    /// A different task is refused, including before the first socket read.
+    pub fn bind_task(&mut self, owner: &TaskCx<'_>) -> Result<(), IngressError> {
+        if self.received != 0 || self.pending.is_some() || self.state != EndState::Open {
+            return Err(IngressError::Authority);
+        }
+        let binding = owner.binding().map_err(|_| IngressError::Authority)?;
+        if self
+            .owner
+            .as_ref()
+            .is_some_and(|current| current != &binding)
+        {
+            return Err(IngressError::Authority);
+        }
+        self.owner = Some(binding);
+        Ok(())
+    }
+
     /// Borrow the currently owned source chunk, if any.
     pub fn pending_bytes(&self) -> Option<&[u8]> {
         self.pending.map(|(_, len)| &self.buffer[..len])
