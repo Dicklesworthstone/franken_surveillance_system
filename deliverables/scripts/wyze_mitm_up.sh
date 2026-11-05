@@ -14,6 +14,20 @@
 set -u
 PY=/opt/homebrew/bin/python3
 HERE="$(cd "$(dirname "$0")" && pwd)"
+
+# Fast port→PID lookup. lsof walks every mount including the /Volumes autofs mounts and
+# takes ~22 SECONDS per call on this machine (measured 2026-11-05), which blew the
+# wrapper's spawn/retry timing and thrashed the planes. netstat -anv -p tcp does the
+# same lookup in 0.2s and includes the owning pid as "ProcName:PID".
+port_pids() {  # $1 = tcp port number → prints space-separated PIDs
+    # netstat is invoked under /bin/sh because this session's environment (one of the
+    # ~40 agent vars) makes netstat -anv output NOTHING under #!/bin/bash (measured
+    # 2026-11-05: bash script → 0 lines, sh → 635 lines). lsof was the previous
+    # implementation: 22 s per call (autofs walk) — 100x slower.
+    /bin/sh -c 'netstat -anv -p tcp 2>/dev/null' | awk -v port="$1" '$4 ~ ("[.]" port "$") && /LISTEN/ {
+        for (i = 5; i <= NF; i++) if ($i ~ /^[A-Za-z]+:[0-9]+$/) { split($i, a, ":"); print a[2] }
+    }' | sort -u
+}
 # Everything privileged here runs under sudo, so the /tmp logs are root-owned and a launchd start
 # (as the user) cannot append to them: every plane came up with "Permission denied" instead of a
 # log. Re-own ours before anything writes.
@@ -177,7 +191,7 @@ sudo sysctl -w net.inet.ip.forwarding=1 >/dev/null
 # respawn them, so each port is waited on (bounded) instead of assumed free after one kill.
 free_port() {
   for _ in 1 2 3 4 5 6 7 8 9 10; do
-    pids=$(sudo lsof -nP -tiTCP:"$1" -sTCP:LISTEN 2>/dev/null)
+    pids=$(port_pids "$1")
     [ -z "$pids" ] && return 0
     sudo kill $pids 2>/dev/null
     sleep 0.5
@@ -190,9 +204,9 @@ free_port() {
 # Rule: a holder whose command line already carries the iot-cert contract is adopted, not killed;
 # only a stale/bare forge (the liberation2-worktree failure mode) is replaced.
 forge_ok() {
-  [ -n "$(sudo lsof -nP -tiTCP:"$1" -sTCP:LISTEN 2>/dev/null)" ] || return 1
-  sudo ps -o command= -p "$(sudo lsof -nP -tiTCP:"$1" -sTCP:LISTEN 2>/dev/null)" 2>/dev/null \
-    | grep -q -- '--iot-cert'
+  local pids; pids=$(port_pids "$1")
+  [ -n "$pids" ] || return 1
+  sudo ps -o command= -p $pids 2>/dev/null | grep -q -- '--iot-cert'
 }
 for port in 443 8443 8883 8080 9101; do
   # same adoption rule as the TLS loop below: never kill a contract-complete forge — the
@@ -283,8 +297,8 @@ sleep 3
 down=0
 for probe in "udp 53" "tcp 443" "tcp 8443" "tcp 8883" "tcp 8080" "tcp 9101"; do
   set -- $probe
-  if [ "$1" = udp ]; then n=$(sudo lsof -nP -iUDP:"$2" 2>/dev/null | wc -l | tr -d ' ')
-  else n=$(sudo lsof -nP -iTCP:"$2" -sTCP:LISTEN 2>/dev/null | wc -l | tr -d ' '); fi
+  if [ "$1" = udp ]; then n=$(/usr/sbin/netstat -anv -p udp 2>/dev/null | grep -c "\.$2 ")
+  else n=$(/usr/sbin/netstat -anv -p tcp 2>/dev/null | grep -cE "\.$2 .*LISTEN"); fi
   if [ "$n" -ge 2 ]; then printf '%-10s up\n' "$1:$2"; else printf '%-10s DOWN\n' "$1:$2"; down=1; fi
 done
 [ "$(ps -ef | grep -c "[w]yze_arp_spoof")" -ge 1 ] && echo "spoof      up" || { echo "spoof      DOWN"; down=1; }
