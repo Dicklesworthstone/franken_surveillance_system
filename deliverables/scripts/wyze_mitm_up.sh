@@ -69,7 +69,10 @@ ARP_CMD="${ARP_CMD:-sudo -n /usr/sbin/arp}"
 # runs as the user: a root-owned log makes the agent's plain redirections fail and the plane
 # silently never starts (measured: dns/arp/tls dead, only :443 up). Hand these files back to
 # the invoking user instead of teaching every writer to pipe through sudo.
-for f in /tmp/ota/chain.pem /tmp/serve443.pem /tmp/iot2.pem /tmp/iot2.key \
+# The cert files are NOT zeroed here: this run may defer at the single-flight lock before
+# rebuilding them, and an empty /tmp/iot2.pem breaks every TLS spawn with "PEM lib"
+# (measured 2026-11-04). They are chowned and rebuilt at the cert section instead.
+for f in /tmp/ota/chain.pem /tmp/serve443.pem \
          /tmp/dns.log /tmp/arp.log /tmp/tls.log /tmp/mqproxy.log; do
   sudo -n install -m 0644 -o "$(id -un)" -g "$(id -gn)" /dev/null "$f" 2>/dev/null || true
 done
