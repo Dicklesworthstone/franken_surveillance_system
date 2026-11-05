@@ -477,6 +477,19 @@ luma frame. This created another camera session with unknown expiry; no image
 was persisted. The same observed-pin and experimental-provider limits apply.
 This was not a test of the archive reader or native continuous recording.
 
+Later the same day, a fresh read-only physical G4 check on `trj` used the
+earlier laboratory snapshot executable with SHA-256
+`9677e491f893a41ee2d311f067399f9308a542f090e58f947d7b4461b1ec8884`.
+It returned HTTP 200 for status and snapshot, decoded a 640×360 luma frame in
+memory, and reported a completed task receipt. No image was persisted. This
+creates another camera login session whose expiry is not established, and the
+same observed-pin and experimental-provider limits apply. It does not test
+native continuous video, identity authentication, or automatic enrollment.
+Separately, the transitional recorder restarted at 18:42 Eastern before that
+snapshot check. Its journal subsequently reported recording started, and seven
+upload runs reported eight verified segments copied without a deferral. These
+observations do not establish that recording was gap-free around the restart.
+
 `unifi_direct::handoff` now prepares an inert controller-address change bound
 to the exact semantic request, reported prior IPv4 address, camera and peer
 claims, session generation and lease fence. Unknown or unset prior addresses
