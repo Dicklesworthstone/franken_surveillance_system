@@ -481,6 +481,77 @@
           "const": true
         }
       }
+    },
+    "clock_observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source",
+        "peer",
+        "exchanges",
+        "max_exchange_ns",
+        "max_offset_ns",
+        "max_uncertainty_ns",
+        "max_sample_bracket_ns",
+        "assumed_max_drift_ppb",
+        "max_age_ns",
+        "max_receive_polls",
+        "observation_basis",
+        "camera_capture_time",
+        "server_authenticated",
+        "adjust_host_clock",
+        "retry_automatically"
+      ],
+      "properties": {
+        "source": {
+          "const": "unauthenticated_loopback_ntp_claim"
+        },
+        "peer": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 64,
+          "description": "Canonical literal loopback endpoint with nonzero port and no IPv6 zone or flow identifier; Rust admission checks the parsed address."
+        },
+        "exchanges": {
+          "const": 1
+        },
+        "max_exchange_ns": {
+          "const": 1000000000
+        },
+        "max_offset_ns": {
+          "const": 10000000000
+        },
+        "max_uncertainty_ns": {
+          "const": 10000000000
+        },
+        "max_sample_bracket_ns": {
+          "const": 25000000
+        },
+        "assumed_max_drift_ppb": {
+          "const": 500000
+        },
+        "max_age_ns": {
+          "const": 60000000000
+        },
+        "max_receive_polls": {
+          "const": 1024
+        },
+        "observation_basis": {
+          "const": "first_picture_node_processing_bracket"
+        },
+        "camera_capture_time": {
+          "const": false
+        },
+        "server_authenticated": {
+          "const": false
+        },
+        "adjust_host_clock": {
+          "const": false
+        },
+        "retry_automatically": {
+          "const": false
+        }
+      }
     }
   },
   "$defs": {

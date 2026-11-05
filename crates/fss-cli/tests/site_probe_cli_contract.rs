@@ -33,6 +33,9 @@ mod unifi;
 #[path = "site_probe_cli_contract/onvif.rs"]
 mod onvif;
 
+#[path = "site_probe_cli_contract/clock.rs"]
+mod clock;
+
 type Test<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 const USERNAME: &str = "FSS_SITE_PROBE_SYNTHETIC_USER_CANARY";

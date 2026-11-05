@@ -248,6 +248,10 @@ pub enum ProbeStep {
     Complete {
         /// Existing manifest-bound observation schema, with no liveness/freshness grant.
         receipt: SiteProbeReceipt,
+        /// Caller-clock admission coordinate of the first confirmed picture's RTP
+        /// timestamp. The caller must preserve and account for the enclosing
+        /// socket/parse interval before correlating this coordinate to wall time.
+        first_picture_observed_at_ns: u64,
         /// Native transport work for this exact connection.
         totals: TcpTotals,
         /// Matching remote close acknowledgement; both fields are terminal and settled.
@@ -754,18 +758,18 @@ impl<'a> LiveSiteProbe<'a> {
             return Err(ProbeError::Incomplete);
         }
         self.teardown_acknowledged = true;
-        let receipt = self
-            .observer
-            .take()
-            .ok_or(ProbeError::Incomplete)?
-            .finish_prefix()
+        let observer = self.observer.take().ok_or(ProbeError::Incomplete)?;
+        let first_picture_observed_at_ns = observer
+            .first_picture_observed_at()
             .map_err(ProbeError::Observation)?;
+        let receipt = observer.finish_prefix().map_err(ProbeError::Observation)?;
         let retirement = self.cancel().ok_or(ProbeError::Closed)?;
         if retirement.close.remote_session_may_exist || retirement.close.pending_cseq.is_some() {
             return Err(ProbeError::Incomplete);
         }
         Ok(ProbeStep::Complete {
             receipt,
+            first_picture_observed_at_ns,
             totals: retirement.totals,
             close: retirement.close,
             accounting: retirement.accounting,

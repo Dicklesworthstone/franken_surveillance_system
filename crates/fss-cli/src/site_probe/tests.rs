@@ -10,6 +10,7 @@ fn manifest() -> Result<SiteManifest, Box<dyn std::error::Error>> {
 
 fn options(manifest: &SiteManifest) -> SiteProbeOptions {
     SiteProbeOptions {
+        clock_ntp_peer: None,
         unifi_bindings: None,
         onvif_bindings: None,
         receipt_file: None,

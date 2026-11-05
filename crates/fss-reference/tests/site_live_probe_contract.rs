@@ -636,7 +636,9 @@ fn drive(
                 totals,
                 close,
                 accounting,
+                first_picture_observed_at_ns,
             }) => {
+                assert!(first_picture_observed_at_ns <= now);
                 assert!(!probe.needs_credentials());
                 assert!(probe.cancel().is_none());
                 let repeated =

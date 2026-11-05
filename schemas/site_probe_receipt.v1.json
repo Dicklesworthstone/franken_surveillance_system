@@ -295,7 +295,7 @@
       "pattern": "^[ -~]+$"
     },
     "clock_evidence": {
-      "description": "Optional wall-clock correlation for this probe window (VIT-019). Absent or null until a capturing session populates it; this is a claim about the node's own clock, never an authenticated fact or a camera-side timestamp.",
+      "description": "Optional node-clock correlation for the first observed picture timestamp. It is a supplied claim, never source authentication or camera capture time. Native observations retain reconstruction evidence in clock_observation.",
       "anyOf": [
         {
           "type": "object",
@@ -312,13 +312,13 @@
               "type": "integer",
               "minimum": 1700000000000000000,
               "maximum": 18446744073709551615,
-              "description": "CLOCK_REALTIME sample, nanoseconds since the Unix epoch, after the NTP/chrony correction below has already been applied. The floor is 2023-11-14T22:13:20Z; a sample at or before it is a clearly wrong clock, not evidence."
+              "description": "Corrected Unix nanoseconds at the first picture processing/observation anchor. Native values are projected from bracketed host samples and an explicit local NTP claim; all ambiguity widens uncertainty."
             },
             "monotonic_ns": {
               "type": "integer",
               "minimum": 0,
               "maximum": 18446744073709551615,
-              "description": "CLOCK_MONOTONIC sample taken at the same instant as wall_clock_unix_ns."
+              "description": "Process-local monotonic observation anchor. Native observations use the pre-processing coordinate and include the whole processing bracket in uncertainty; this is not an exact kernel or camera timestamp."
             },
             "ntp_offset_ns": {
               "type": "integer",
@@ -327,15 +327,29 @@
               "description": "Magnitude of the NTP/chrony correction already folded into wall_clock_unix_ns."
             },
             "ntp_offset_direction": {
-              "enum": ["ahead", "behind"]
+              "enum": [
+                "ahead",
+                "behind"
+              ]
             },
             "ntp_uncertainty_ns": {
               "type": "integer",
               "minimum": 1,
               "maximum": 10000000000,
-              "description": "Bound on the correction's own uncertainty, in nanoseconds. Never zero (an exact-zero uncertainty is refused as implausible) and never more than 10 seconds (beyond that the clock is effectively unsynchronized and must not be reported as a witness at all)."
+              "description": "Conservative symmetric uncertainty including the declared source interval, host read brackets, drift assumption and native observation bracket; 1ns through 10s. It is conditional on the supplied time-source claim."
             }
           }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "clock_observation": {
+      "description": "Optional exact local NTP packet evidence and node-clock brackets. When present the native parser reconstructs clock_evidence and requires exact equality. Old receipts without this extension keep their existing canonical digest.",
+      "anyOf": [
+        {
+          "$ref": "site_clock_observation.v1.json"
         },
         {
           "type": "null"
@@ -407,6 +421,28 @@
                 "minimum": 96
               }
             ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "clock_observation"
+        ],
+        "properties": {
+          "clock_observation": {
+            "type": "object"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "clock_evidence"
+        ],
+        "properties": {
+          "clock_evidence": {
+            "type": "object"
           }
         }
       }

@@ -147,6 +147,16 @@ impl SiteProbeReceipt {
         }
         encoder.text(&self.server_identity);
         optional_clock_witness(&mut encoder, self.clock_evidence.as_ref());
+        // Preserve every historical v1 byte when no measured clock observation
+        // exists. The explicit extension domain cannot alias an older witness.
+        if let Some(observation) = &self.clock_observation {
+            encoder.text("fss.site_clock_observation.v1");
+            encoder.digest(
+                observation
+                    .digest()
+                    .map_err(|_| SiteError::InvalidField("clock_observation"))?,
+            );
+        }
         finish(encoder)
     }
 }

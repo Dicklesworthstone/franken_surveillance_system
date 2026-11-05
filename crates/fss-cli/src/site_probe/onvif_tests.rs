@@ -14,6 +14,7 @@ const APPROVAL_ERROR: &str = "ERR-SITE-PROBE-APPROVAL-001";
 
 fn options(fixture: &Fixture, codec: ProbeCodec) -> SiteProbeOptions {
     SiteProbeOptions {
+        clock_ntp_peer: None,
         unifi_bindings: None,
         onvif_bindings: Some(fixture.directory.join("bindings.json")),
         receipt_file: Some(fixture.directory.join("probe-receipts.json")),

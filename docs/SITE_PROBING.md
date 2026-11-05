@@ -60,6 +60,80 @@ Save stdout only when the command exits successfully, and handle both previews
 and receipts as private deployment metadata because they include exact routing
 information.
 
+## Optional measured node-clock evidence
+
+Add `--clock-ntp-peer 127.0.0.1:123` (or another explicit literal loopback
+endpoint) to request one basic-mode NTPv4 exchange with an already configured
+local time daemon. The option, peer, limits and extra runtime reservation become
+part of the preview approval. Preview still contacts no endpoint. Adding,
+removing or changing this option requires the approval from the matching preview.
+
+```sh
+fss site probe --manifest /etc/fss/site.json \
+  --source camera:front --codec avc --observe-frames 6 \
+  --clock-ntp-peer 127.0.0.1:123 --output session \
+  --timeout-ms 10000 --json
+```
+
+Review the returned preview, then repeat that exact selection with
+`--approve sha256:<digest-from-preview>`. The command does not configure a daemon,
+select an upstream time source, adjust the host clock or retry a failed exchange.
+An unavailable or refused time source prevents camera connection and issuance of
+a successful receipt. Omit the option for the existing behavior: no time-daemon
+contact, no native wall-clock sampling, and no manufactured clock witness.
+
+After approval, the existing owned runtime admits one 48-byte UDP request to the
+selected loopback peer from an ephemeral local port. It accepts exactly one
+48-byte reply, with matching origin timestamp, supported server mode/version,
+valid timing and bounded offset/uncertainty. Kiss-of-death, unsynchronized or
+pending-leap responses, unsupported extensions/MACs, malformed or oversized
+replies, and an expired exchange refuse. No DNS lookup or remote NTP endpoint is
+supported. The exchange has a one-second ceiling within the existing total probe
+deadline; polling is bounded and shares the task's cancellation and authority.
+
+The native owner brackets wall-clock samples with its process-local monotonic
+clock around the exchange, before and after each probe processing step, and at
+completion. Later samples must agree with both the synchronization origin and
+the preceding sample. A sampled wall-clock step or monotonic regression refuses
+the whole clock-enabled probe; a later apparently good sample cannot revive it.
+Compatible samples do not tighten the original interval or renew its age.
+
+The fixed profile admits at most 25 milliseconds for an individual host clock
+read and 60 seconds from synchronization. Its explicit drift/slew assumption is
+500,000 parts per billion (500 ppm). This is an assumption under which the
+reported interval is computed, not a measurement of the oscillator. The result
+includes asymmetric network-delay ambiguity, the daemon's declared root distance
+and precision, outward-rounded host sampling brackets, drift growth, and the
+whole step that first observed the RTP timestamp of the first confirmed picture.
+The existing witness limit remains 1 nanosecond through 10 seconds of uncertainty.
+Leap seconds and leap smear have no admitted mapping in this profile.
+
+Successful receipts include both `clock_evidence` and
+[`clock_observation`](../schemas/site_clock_observation.v1.json). The latter
+retains the exact request/reply bytes, literal peer, bracketed host samples,
+observation interval, terminal sample and fixed policy. The strict receipt parser
+reconstructs the witness and requires exact equality; the receipt digest binds
+this complete evidence. Old receipts without the extension retain their existing
+canonical bytes. An old caller-supplied witness without a proof remains a supplied
+claim and does not acquire native-observation provenance.
+
+`--output session` also exposes a `utc_window` with the explicit basis
+`first_picture_node_observation_plus_rtp_duration`. This anchors the existing RTP
+cadence span to the node's processing observation. The processing step can
+consume previously buffered wire: its bracket does **not** locate kernel packet
+arrival, camera exposure, encoder buffering, or the last packet's actual arrival.
+Parameter-only predecessor timestamps and later semantic picture confirmation do
+not replace the first picture's own observation anchor. Camera/NVR and RTCP time
+claims remain separate. The NTP reply is an unauthenticated local-daemon claim;
+internal reconstruction is not proof of independently trusted UTC or continuous
+absence of an unsampled clock step.
+
+The same option is available on the existing protected UniFi/ONVIF probe path;
+its full proof is written with the private receipt, through the existing
+create-only writer. This probe functionality does not supply recorder heartbeats,
+multi-segment retained-window mapping or a deployment-wide clock discipline.
+Those broader VIT-019 requirements remain open.
+
 ## Probe a UniFi Protect source
 
 Use the existing [site bindings](SITE_PLANNING.md#unifi-protect-site-bindings)

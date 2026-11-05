@@ -62,6 +62,9 @@
     },
     "retry_automatically": {
       "const": false
+    },
+    "clock_contact_attempted": {
+      "const": true
     }
   }
 }

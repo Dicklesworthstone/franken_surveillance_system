@@ -36,6 +36,8 @@ mod runtime;
 
 use authentication::{CredentialLease, Entropy, SecretError};
 
+pub(super) mod clock;
+
 // The approval must name the limits of the actual included credential owner.
 const _: () = assert!(authentication::MAX_CREDENTIAL_BYTES == super::plan::MAX_CREDENTIAL_BYTES);
 const _: () = assert!(authentication::MAX_SECRET_IO_CALLS == super::plan::MAX_SECRET_IO_CALLS);
@@ -44,6 +46,7 @@ const _: () = assert!(runtime::WAIT_QUANTUM_NS == WAIT_QUANTUM_NS);
 #[derive(Clone, Copy, Default)]
 pub(super) struct Facts {
     pub(super) connection_attempted: bool,
+    pub(super) clock_contact_attempted: bool,
     pub(super) credential_access_attempted: bool,
     pub(super) credentials_loaded: bool,
     pub(super) remote_session_may_exist: bool,
@@ -70,35 +73,36 @@ impl Facts {
 }
 
 pub(super) fn refusal(code: &str, facts: Facts, exit: ExitIdentity) -> (String, ExitIdentity) {
-    (
-        object(&[
-            ("schema", string("fss.site_probe_diagnostic.v1")),
-            ("status", string("refused")),
-            ("error_id", string(code)),
-            ("exit_id", string(exit.identifier)),
-            ("exit_code", exit.code.to_string()),
-            (
-                "connection_attempted",
-                facts.connection_attempted.to_string(),
-            ),
-            (
-                "credential_access_attempted",
-                facts.credential_access_attempted.to_string(),
-            ),
-            (
-                "remote_session_may_exist",
-                facts.remote_session_may_exist.to_string(),
-            ),
-            (
-                "teardown_acknowledged",
-                facts.teardown_acknowledged.to_string(),
-            ),
-            ("source_retained", "false".to_owned()),
-            ("receipt_issued", "false".to_owned()),
-            ("retry_automatically", "false".to_owned()),
-        ]),
-        exit,
-    )
+    let mut fields = vec![
+        ("schema", string("fss.site_probe_diagnostic.v1")),
+        ("status", string("refused")),
+        ("error_id", string(code)),
+        ("exit_id", string(exit.identifier)),
+        ("exit_code", exit.code.to_string()),
+        (
+            "connection_attempted",
+            facts.connection_attempted.to_string(),
+        ),
+        (
+            "credential_access_attempted",
+            facts.credential_access_attempted.to_string(),
+        ),
+        (
+            "remote_session_may_exist",
+            facts.remote_session_may_exist.to_string(),
+        ),
+        (
+            "teardown_acknowledged",
+            facts.teardown_acknowledged.to_string(),
+        ),
+        ("source_retained", "false".to_owned()),
+        ("receipt_issued", "false".to_owned()),
+        ("retry_automatically", "false".to_owned()),
+    ];
+    if facts.clock_contact_attempted {
+        fields.push(("clock_contact_attempted", "true".to_owned()));
+    }
+    (object(&fields), exit)
 }
 
 fn runtime_error(code: &'static str) -> &'static str {
@@ -215,6 +219,16 @@ fn run_native(
             Ok::<_, &'static str>(input)
         })
         .transpose()?;
+    let mut clock = plan
+        .options
+        .clock_ntp_peer
+        .map(|peer| {
+            let mut current = facts.get();
+            current.clock_contact_attempted = true;
+            facts.set(current);
+            clock::NativeClock::begin(peer, timeout_ns, scope)
+        })
+        .transpose()?;
     let credentials = source
         .authentication
         .as_ref()
@@ -310,7 +324,11 @@ fn run_native(
             };
             // Secret/entropy boundaries must not leave the protocol using a
             // caller timestamp sampled before those potentially blocking reads.
-            let now = scope.now().map_err(runtime_error)?;
+            let now = if let Some(clock) = &mut clock {
+                clock.before_step(scope)?
+            } else {
+                scope.now().map_err(runtime_error)?
+            };
             let step = probe
                 .step(
                     SocketReadiness {
@@ -331,8 +349,15 @@ fn run_native(
                     failure.reason.code()
                 })?;
             match step {
-                ProbeStep::Progress => {}
+                ProbeStep::Progress => {
+                    if let Some(clock) = &mut clock {
+                        clock.after_step(now, scope)?;
+                    }
+                }
                 ProbeStep::Pending { wake_at_ns, .. } => {
+                    if let Some(clock) = &mut clock {
+                        clock.after_step(now, scope)?;
+                    }
                     let now = scope.now().map_err(runtime_error)?;
                     let wake = wake_at_ns.unwrap_or(timeout_ns).min(timeout_ns);
                     if wake > now {
@@ -340,7 +365,8 @@ fn run_native(
                     }
                 }
                 ProbeStep::Complete {
-                    receipt,
+                    mut receipt,
+                    first_picture_observed_at_ns,
                     totals,
                     close,
                     accounting,
@@ -358,17 +384,26 @@ fn run_native(
                     if !current.teardown_acknowledged {
                         return Err("ERR-SITE-PROBE-CLOSE-001");
                     }
+                    if let Some(clock) = &mut clock {
+                        clock.after_step(now, scope)?;
+                    }
                     if let Some(credentials) = &credentials {
                         credentials
                             .revalidate(&|| secret_check(scope))
                             .map_err(secret_error)?;
                     }
-                    plan.route
-                        .validate_receipt(plan.manifest, &receipt)
-                        .map_err(|_| "ERR-SITE-PROBE-RECEIPT-001")?;
                     if let Some(input) = &private_source {
                         input.revalidate(&|| scope.input())?;
                     }
+                    if let Some(clock) = &mut clock {
+                        let (witness, observation) =
+                            clock.finish(first_picture_observed_at_ns, scope)?;
+                        receipt.clock_evidence = Some(witness);
+                        receipt.clock_observation = Some(observation);
+                    }
+                    plan.route
+                        .validate_receipt(plan.manifest, &receipt)
+                        .map_err(|_| "ERR-SITE-PROBE-RECEIPT-001")?;
                     current.last_observed_ns = scope.now().map_err(runtime_error)?;
                     facts.set(current);
                     return Ok(receipt);

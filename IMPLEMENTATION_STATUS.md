@@ -4,6 +4,54 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Native site clock observations (2026-11-05, execution qualification pending)
+
+`fss site probe --clock-ntp-peer <literal-loopback-ip:port>` now has an optional
+native clock-evidence producer. Its approval binds one bounded basic NTPv4
+exchange, the exact peer and a fixed clock policy. The existing owned runtime
+brackets host realtime with its same-session monotonic clock, monitors sampled
+clock continuity, and binds the first confirmed picture timestamp to the entire
+native processing step that observed it. A clock failure refuses the probe;
+remote TEARDOWN and local retirement facts remain explicit on late failures.
+
+The packet layer computes conservative integer offset intervals without assuming
+symmetric path delays. The pure correlation refuses stale mappings and permanently
+invalidates observed discontinuities. Receipts can retain the exact NTP packets,
+host brackets, observation bracket, terminal sample and fixed policy in
+`clock_observation`; strict parsing reconstructs and matches `clock_evidence`, and
+the canonical receipt digest binds that proof. Default probes and old receipts
+without the extension retain their existing approvals and canonical bytes.
+Session output labels its optional UTC span as node observation plus RTP duration.
+Buffered input, camera exposure and kernel arrival are not silently equated.
+
+**Executed validation:** all 15 native NTP packet contracts pass using the pinned
+nightly and complete production core/packet crates. All five changed/new schemas
+pass Draft 2020-12 checks and the repository's offline reference checker (40
+references, zero errors/warnings). Four existing receipt fixtures, deterministic
+clock-proof fixtures and changed property shapes pass 14 positive checks; 13
+negative schema controls refuse. Formatting and targeted diff checks pass.
+All changed/new artifact hashes are updated in the delta manifest. The full
+repository integrity audit still reports 1,391 existing findings on untouched
+paths (stale/missing/redundant inventory); this work does not regenerate the base
+manifest or conceal that separate qualification failure.
+
+**Unverified execution:** 36 new reference contracts and five new CLI clock
+contracts are present but have not run. The normal reference test build was
+SIGKILLed in core's dev-only test-support build. A full production binary build
+and a lighter full production metadata check both received SIGKILL in the real
+pinned Asupersync dependency before the new reference/CLI sources were typechecked.
+The shared environment repeatedly hit its 8 GiB memory limit and exhausted its
+63 GiB filesystem. No production sources, dependencies, features or qualification
+gates were removed or weakened to obtain a substitute pass. These changes are
+implemented and reviewed, not native integration-qualified or release-qualified.
+
+This materially advances `fss-vit019-clock-witness-r6d9t`, which remains open.
+The source is an unauthenticated local-daemon assertion under an explicit 500 ppm
+drift assumption; reconstruction is internal consistency, not trusted UTC,
+continuous clock integrity, camera capture-time qualification or clock discipline.
+Recorder start/end/heartbeats, multi-segment retained-window mapping and leap/smear
+policy remain outstanding. See [the operator workflow](docs/SITE_PROBING.md#optional-measured-node-clock-evidence).
+
 ## UniFi direct packet reference (2026-11-04, experimental)
 
 `fss-packet::extended_flv` adds bounded, borrowed FLV header/tag views and

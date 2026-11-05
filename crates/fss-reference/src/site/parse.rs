@@ -17,6 +17,9 @@ use super::{
 
 type Fields = BTreeMap<String, Value>;
 
+mod clock;
+use clock::clock_observation;
+
 /// Decode one complete site manifest. Syntax, bounds and semantics are checked before return.
 pub fn parse_manifest(bytes: &[u8]) -> Result<SiteManifest, SiteError> {
     let value = parse(bytes)?;
@@ -317,6 +320,7 @@ fn receipt(value: &Value) -> Result<SiteProbeReceipt, SiteError> {
             "parameter_set_digests",
             "server_identity",
             "clock_evidence",
+            "clock_observation",
         ],
     )?;
     schema(fields, SITE_PROBE_RECEIPT_SCHEMA)?;
@@ -390,6 +394,10 @@ fn receipt(value: &Value) -> Result<SiteProbeReceipt, SiteError> {
         parameter_set_digests,
         server_identity: text(fields, "server_identity")?.to_owned(),
         clock_evidence,
+        clock_observation: match fields.get("clock_observation") {
+            None | Some(Value::Null) => None,
+            Some(value) => Some(clock_observation(value)?),
+        },
     };
     if receipt.observed_frames > MAX_PROBE_FRAMES {
         return Err(SiteError::Limit);

@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.dev/schemas/site_clock_observation.v1.json",
+  "title": "FSS local NTP clock observation",
+  "description": "Reconstructible supplied evidence for one node processing/observation bracket. Exact packet validation, host chronology, sampled discontinuity, fixed policy, conservative intervals and equality to the enclosing receipt witness are enforced by native reconstruction. This is an unauthenticated local daemon claim; it neither disciplines clocks nor certifies camera capture time, a trusted UTC source, or continuous absence of hidden clock steps. Leap seconds and leap smear are unsupported.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "source",
+    "peer",
+    "request_hex",
+    "reply_hex",
+    "sent_before",
+    "sent_after",
+    "received_before",
+    "received_after",
+    "observation_start_ns",
+    "observation_end_ns",
+    "terminal",
+    "policy"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.site_clock_observation.v1"
+    },
+    "source": {
+      "const": "unauthenticated_loopback_ntp_claim"
+    },
+    "peer": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 64,
+      "description": "Canonical literal loopback endpoint with nonzero port and no IPv6 zone or flow identifier; Rust admission checks the parsed address."
+    },
+    "request_hex": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{96}$"
+    },
+    "reply_hex": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{96}$"
+    },
+    "sent_before": {
+      "$ref": "#/$defs/host_sample"
+    },
+    "sent_after": {
+      "$ref": "#/$defs/host_sample"
+    },
+    "received_before": {
+      "$ref": "#/$defs/host_sample"
+    },
+    "received_after": {
+      "$ref": "#/$defs/host_sample"
+    },
+    "observation_start_ns": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615
+    },
+    "observation_end_ns": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615
+    },
+    "terminal": {
+      "$ref": "#/$defs/host_sample"
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_sample_bracket_ns",
+        "max_drift_ppb",
+        "max_age_ns"
+      ],
+      "properties": {
+        "max_sample_bracket_ns": {
+          "const": 25000000
+        },
+        "max_drift_ppb": {
+          "const": 500000
+        },
+        "max_age_ns": {
+          "const": 60000000000
+        }
+      }
+    }
+  },
+  "$defs": {
+    "host_sample": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "monotonic_before_ns",
+        "wall_clock_unix_ns",
+        "monotonic_after_ns"
+      ],
+      "properties": {
+        "monotonic_before_ns": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "wall_clock_unix_ns": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "monotonic_after_ns": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        }
+      }
+    }
+  }
+}

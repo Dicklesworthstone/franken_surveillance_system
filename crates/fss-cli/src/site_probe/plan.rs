@@ -73,6 +73,9 @@ pub struct SiteProbeOptions {
     pub timeout_ms: u64,
     /// Audit principal; does not authenticate an identity.
     pub principal: String,
+    /// Optional explicit loopback NTP endpoint for node-clock evidence. No DNS,
+    /// server authentication, clock discipline, retry or remote NTP is implied.
+    pub clock_ntp_peer: Option<std::net::SocketAddr>,
     /// Requested successful output projection, independently bound into approval.
     pub output: ProbeOutput,
     /// Exact separately supplied preview digest. None means no network or credential access.
@@ -141,6 +144,8 @@ impl SiteProbeOptions {
             || !(100..=60_000).contains(&self.timeout_ms)
             || self.principal.len() > 256
             || PrincipalId::parse(&self.principal).is_err()
+            || self.clock_ntp_peer.is_some_and(|peer| !peer.ip().is_loopback() || peer.port() == 0)
+            || self.clock_ntp_peer.is_some_and(|peer| matches!(peer, std::net::SocketAddr::V6(peer) if peer.scope_id() != 0 || peer.flowinfo() != 0))
         {
             return Err(PLAN_ERROR);
         }
@@ -311,10 +316,24 @@ impl<'a> ProbePlan<'a> {
         .map_err(|_| PLAN_ERROR)?;
         transport.validate().map_err(|_| PLAN_ERROR)?;
         let allowance = BudgetVector::builder()
-            .bytes(MEMORY_BYTES)
+            .bytes(
+                MEMORY_BYTES
+                    + if options.clock_ntp_peer.is_some() {
+                        MAX_STEPS * 64
+                    } else {
+                        0
+                    },
+            )
             .network_bytes(
                 MAX_RECEIVED_BYTES
                     .checked_add(MAX_SENT_BYTES)
+                    .and_then(|bytes| {
+                        bytes.checked_add(if options.clock_ntp_peer.is_some() {
+                            97
+                        } else {
+                            0
+                        })
+                    })
                     .ok_or(PLAN_ERROR)?,
             )
             .storage_operations(STORAGE_OPERATIONS)
@@ -374,6 +393,11 @@ impl<'a> ProbePlan<'a> {
             }
             encoder.text(route.presentation());
             encoder.text(route.control_root());
+        }
+        if let Some(peer) = options.clock_ntp_peer {
+            encoder.text("fss.site_probe_loopback_ntp.v1");
+            encoder.text(&peer.to_string());
+            super::native::clock::encode_policy(&mut encoder);
         }
         let approval = ContentDigest::sha256(&encoder.finish_checked().map_err(|_| PLAN_ERROR)?);
         Ok(Self {
@@ -533,6 +557,9 @@ impl<'a> ProbePlan<'a> {
         if let Some(private) = &self.private {
             fields.push(private.preview());
         }
+        if let Some(peer) = self.options.clock_ntp_peer {
+            fields.push(("clock_observation", super::native::clock::preview(peer)));
+        }
         Ok(object(&fields))
     }
 }
@@ -622,7 +649,7 @@ pub(super) fn receipt_json(receipt: &SiteProbeReceipt) -> String {
         .iter()
         .map(|digest| string(&digest.to_text()))
         .collect();
-    object(&[
+    let mut fields = vec![
         (
             "schema",
             string(fss_reference::site::SITE_PROBE_RECEIPT_SCHEMA),
@@ -658,7 +685,17 @@ pub(super) fn receipt_json(receipt: &SiteProbeReceipt) -> String {
         ("last_rtp_timestamp", receipt.last_rtp_timestamp.to_string()),
         ("parameter_set_digests", array(&parameters)),
         ("server_identity", string(&receipt.server_identity)),
-    ])
+    ];
+    if let Some(witness) = &receipt.clock_evidence {
+        fields.push(("clock_evidence", super::clock_json::witness(witness)));
+    }
+    if let Some(observation) = &receipt.clock_observation {
+        fields.push((
+            "clock_observation",
+            super::clock_json::observation(observation),
+        ));
+    }
+    object(&fields)
 }
 
 #[cfg(test)]

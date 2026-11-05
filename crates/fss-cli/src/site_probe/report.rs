@@ -103,6 +103,9 @@ pub(super) fn success(
         .checked_add(totals.write_calls)
         .ok_or(ENCODING)?;
     if !facts.connection_attempted
+        || facts.clock_contact_attempted != plan.options.clock_ntp_peer.is_some()
+        || receipt.clock_observation.as_ref().map(|proof| proof.peer) != plan.options.clock_ntp_peer
+        || receipt.clock_evidence.is_some() != plan.options.clock_ntp_peer.is_some()
         || !facts.teardown_acknowledged
         || facts.remote_session_may_exist
         || facts.pending_cseq.is_some()
@@ -193,6 +196,10 @@ fn completion_digest(
     ] {
         encoder.u64(value);
     }
+    if plan.options.clock_ntp_peer.is_some() {
+        encoder.text("fss.site_probe_clock_contact.v1");
+        encoder.bool(facts.clock_contact_attempted);
+    }
     Ok(ContentDigest::sha256(
         &encoder.finish_checked().map_err(|_| ENCODING)?,
     ))
@@ -246,7 +253,7 @@ fn render(
             "null".to_owned(),
         ),
     };
-    object(&[
+    let mut fields = vec![
         ("schema", string(SCHEMA)),
         ("status", string(status)),
         ("approval", string(&plan.approval.to_text())),
@@ -324,7 +331,31 @@ fn render(
                 "null".to_owned()
             },
         ),
-    ])
+    ];
+    if plan.options.clock_ntp_peer.is_some() {
+        fields.push((
+            "clock_contact_attempted",
+            facts.clock_contact_attempted.to_string(),
+        ));
+        let window = completed.and_then(|(receipt, _, _)| receipt.utc_window());
+        fields.push((
+            "utc_window",
+            window.map_or_else(
+                || "null".to_owned(),
+                |(start, end)| {
+                    object(&[
+                        ("start_ns", start.to_string()),
+                        ("end_ns", end.to_string()),
+                        (
+                            "basis",
+                            string("first_picture_node_observation_plus_rtp_duration"),
+                        ),
+                    ])
+                },
+            ),
+        ));
+    }
+    object(&fields)
 }
 
 #[cfg(test)]

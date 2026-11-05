@@ -380,6 +380,7 @@ pub fn measure_probe(
         // VIT-019 adds the schema field; this recorded-probe path has no live
         // clock to sample either, so it stays None until that bead lands.
         clock_evidence: None,
+        clock_observation: None,
     };
     receipt
         .validate_for(manifest)
@@ -448,6 +449,10 @@ pub(crate) struct Cadence {
 }
 
 impl Cadence {
+    pub(crate) fn first_timestamp(&self) -> Option<u32> {
+        self.first
+    }
+
     pub(crate) fn frames(&self) -> u32 {
         self.frames
     }

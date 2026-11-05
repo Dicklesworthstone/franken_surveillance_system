@@ -265,6 +265,41 @@
           "type": "null"
         }
       ]
+    },
+    "clock_contact_attempted": {
+      "type": "boolean"
+    },
+    "utc_window": {
+      "description": "First node processing/observation anchor plus RTP cadence duration, widened by clock uncertainty. Neither a camera capture window nor the last packet arrival window.",
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "start_ns",
+            "end_ns",
+            "basis"
+          ],
+          "properties": {
+            "start_ns": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "end_ns": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "basis": {
+              "const": "first_picture_node_observation_plus_rtp_duration"
+            }
+          }
+        }
+      ]
     }
   },
   "allOf": [

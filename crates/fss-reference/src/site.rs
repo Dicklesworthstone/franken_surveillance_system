@@ -12,6 +12,12 @@
 mod parse;
 mod wire;
 
+/// Pure bounded site-node clock correlation and sampled discontinuity detection.
+pub mod clock;
+
+/// Replayable local-daemon synchronization evidence for native site observations.
+pub mod clock_proof;
+
 /// Pure bounded observations for native RTSP site probe receipts.
 pub mod probe_observation;
 
@@ -229,25 +235,28 @@ impl ClockOffsetDirection {
 }
 
 /// A labeled wall-clock correlation for one probe or capture window: the site
-/// node's own paired `CLOCK_REALTIME`/`CLOCK_MONOTONIC` samples plus the
-/// NTP/chrony correction already folded into the wall-clock sample. This is a
+/// node's own bracketed realtime/monotonic correlation plus the NTP/chrony
+/// correction already folded into its nominal wall-clock value. This is a
 /// claim about the node's own clock, never an authenticated fact, a camera- or
 /// NVR-side timestamp, or a capture-time certification. See
 /// `docs/VITTLES_FOOTAGE_PLANE_PLAN.md` section 4b ("Time").
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ClockWitness {
-    /// `CLOCK_REALTIME` sample, nanoseconds since the Unix epoch, after the
-    /// `ntp_offset_ns`/`ntp_offset_direction` correction has already been applied.
+    /// Corrected nominal Unix nanoseconds at the observation anchor. Native
+    /// producers project bracketed host samples under an explicit drift policy;
+    /// this need not be an instantaneous realtime read at the picture boundary.
     pub wall_clock_unix_ns: u64,
-    /// `CLOCK_MONOTONIC` sample taken at the same instant as `wall_clock_unix_ns`,
-    /// so a caller can later map any monotonic instant in the same probe session
-    /// to this wall-clock epoch without re-sampling the clock.
+    /// Same-session monotonic observation coordinate. The native probe uses its
+    /// owned request's elapsed clock, not a cross-process absolute timestamp.
+    /// Mapping another coordinate requires the original correlation, freshness
+    /// policy and additional drift allowance; this point witness cannot renew it.
     pub monotonic_ns: u64,
     /// Magnitude of the NTP/chrony correction already folded into `wall_clock_unix_ns`.
     pub ntp_offset_ns: u64,
     /// Direction of that correction.
     pub ntp_offset_direction: ClockOffsetDirection,
-    /// Bound on the correction's own uncertainty, in nanoseconds. Never zero; an
+    /// Symmetric uncertainty at this anchor, including the source claim, host
+    /// sampling, declared drift and any observation bracket. Never zero; an
     /// exact-zero uncertainty is refused as an implausible claim, not accepted.
     pub ntp_uncertainty_ns: u64,
 }
@@ -429,10 +438,16 @@ pub struct SiteProbeReceipt {
     pub server_identity: String,
     /// Optional wall-clock correlation for this probe window (VIT-019). `None`
     /// until a capturing session actually populates it; absence is not an error.
-    /// Contract when present: `monotonic_ns` is the local monotonic instant at
-    /// which `first_rtp_timestamp` was observed. [`Self::utc_window`] relies on
-    /// this anchor; a witness that does not honor it must not be attached here.
+    /// Contract when present: `monotonic_ns` anchors the local observation of
+    /// `first_rtp_timestamp`; uncertainty must enclose the whole native read
+    /// bracket when exact arrival time is unavailable. [`Self::utc_window`]
+    /// relies on this anchor, never on camera exposure or RTCP sender time.
     pub clock_evidence: Option<ClockWitness>,
+    /// Optional reconstructible local NTP observation and bracketed host samples.
+    /// Its derived witness must equal `clock_evidence`. It binds unverified server
+    /// claims and sampled node-clock behavior, never camera capture time or NTP
+    /// authentication. Legacy caller-supplied witnesses can omit this observation.
+    pub clock_observation: Option<clock_proof::LocalNtpClockProof>,
 }
 impl fmt::Debug for SiteProbeReceipt {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -757,19 +772,30 @@ impl SiteProbeReceipt {
         if let Some(witness) = &self.clock_evidence {
             witness.validate()?;
         }
+        if let Some(observation) = &self.clock_observation {
+            let rebuilt = observation
+                .reconstruct()
+                .map_err(|_| SiteError::InvalidField("clock_observation"))?;
+            if self.clock_evidence.as_ref() != Some(&rebuilt) {
+                return Err(SiteError::InvalidField("clock_observation"));
+            }
+        }
         Ok(())
     }
 
-    /// Map this receipt's observed window to a UTC interval (nanoseconds since
-    /// the Unix epoch, inclusive start and end), widened by the attached
+    /// Map this receipt's RTP-duration window, anchored to the first picture's
+    /// local observation, to a UTC interval (nanoseconds since the Unix epoch,
+    /// inclusive start and end), widened by the attached
     /// witness's own uncertainty. `None` when no witness is attached, the
     /// receipt is invalid, or either endpoint cannot be represented. Refusal
     /// is a typed gap, never a crash or a saturated uncertainty interval.
     ///
     /// Relies on `clock_evidence`'s documented anchor: `monotonic_ns` is the
-    /// local monotonic instant at which `first_rtp_timestamp` was observed.
-    /// This is a claim about the node's own clock, never an authenticated
-    /// fact. The duration rounds outward: a fractional nanosecond must not
+    /// local monotonic coordinate at which `first_rtp_timestamp` was observed,
+    /// with any read bracket included in uncertainty. RTP cadence supplies the
+    /// duration; buffering and network delay mean this is neither a bound on
+    /// camera capture time nor the last packet's actual arrival time. It is an
+    /// unauthenticated node-clock claim. The duration rounds outward: a fractional nanosecond must not
     /// move the upper endpoint inside the claimed observation interval.
     #[must_use]
     pub fn utc_window(&self) -> Option<(u64, u64)> {

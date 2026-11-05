@@ -1,0 +1,153 @@
+{
+  "format": "engineering-session-handoff",
+  "date": "2026-11-05",
+  "mission": {
+    "goal": "Implement the most consequential remaining functionality from the comprehensive plan and beads; commit meaningful batches directly to main without pull requests.",
+    "inputs": [
+      "AGENTS.md",
+      "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md",
+      ".beads/issues.jsonl",
+      "docs/VITTLES_FOOTAGE_PLANE_PLAN.md"
+    ],
+    "initial_source_commit": "906e570166c2c7db6255f67ea5dc1b5ea64da356",
+    "source_head_before_this_commit": "7104c44b888eda81b0585032e2702cbb7858d8bd"
+  },
+  "authority": {
+    "git": "User explicitly authorized direct main commits, no PRs.",
+    "deployment_authority_root": null,
+    "external_device_execution": false,
+    "clock_adjustment": false,
+    "concurrent_changes": "Preserved the subsequent UniFi chunked-handoff commit by fast-forwarding and using expected-head GitHub updates."
+  },
+  "published_checkpoints": [
+    {
+      "commit": "2159734a96e3ee74712111b64787f5e876424a7f",
+      "change": "Bounded pure NTPv4 exchange validation and conservative integer offset intervals; 15 native tests passed."
+    },
+    {
+      "commit": "this_commit",
+      "change": "Optional native site-probe clock producer, reconstructible receipts, sampled discontinuity detection, operator interface and contract coverage."
+    }
+  ],
+  "cases": [
+    {
+      "bead": "fss-vit019-clock-witness-r6d9t",
+      "finding": "The existing receipt witness and UTC window API had no native producer: live and recorded constructors always supplied None.",
+      "resolution": "Optional approved local NTP exchange, bracketed host samples, first semantic picture processing anchor, fixed drift/age profile, monotonic/wall-step invalidation, reconstructible proof, strict receipt equality and digest binding.",
+      "status": "advanced_open",
+      "bead_status_changed": false,
+      "remaining": [
+        "Recorder start/end/heartbeat witnesses",
+        "Retained windows spanning multiple segments",
+        "Admitted leap-second/smear mapping",
+        "Physical time-source and deployment qualification"
+      ]
+    }
+  ],
+  "findings": [
+    {
+      "state": "observed_source_fact",
+      "claim": "Fusion and reconnect candidates already had substantial native implementation; stale open labels were insufficient grounds to duplicate them."
+    },
+    {
+      "state": "implemented_unexecuted_integration",
+      "claim": "Clock-enabled native probe uses the same owned runtime and exact approval; default behavior omits clock effects and extensions."
+    },
+    {
+      "state": "bounded_unverified_source_claim",
+      "claim": "A local NTP response is not authenticated UTC. Processing brackets can consume previously buffered RTP and do not locate packet arrival or camera exposure."
+    }
+  ],
+  "verification": {
+    "toolchain": "nightly-2026-08-31",
+    "dependencies": "Cargo.lock unchanged; locked offline dependency closure resolves.",
+    "native_packet": {
+      "status": "passed",
+      "tests": 15,
+      "command": "cargo test --locked --offline -p fss-packet --test ntp_contract -j 1"
+    },
+    "schemas": {
+      "status": "passed",
+      "schemas": 5,
+      "references": 40,
+      "positive_checks": 14,
+      "negative_controls": 13
+    },
+    "formatting": "passed",
+    "reference_contracts": {
+      "status": "not_executed",
+      "tests": 36,
+      "targets": [
+        "site_clock_contract",
+        "site_clock_proof_contract",
+        "site_clock_receipt_contract"
+      ]
+    },
+    "native_probe_contracts": {
+      "status": "not_executed",
+      "targets": [
+        "site_live_probe_contract",
+        "site_probe_cli_contract"
+      ],
+      "new_cli_clock_tests": 5
+    },
+    "full_production_typecheck": {
+      "status": "blocked_before_reference_and_cli",
+      "reason": "SIGKILL in pinned Asupersync during metadata-only compilation under shared memory exhaustion."
+    },
+    "native_builds": {
+      "status": "blocked",
+      "reason": "SIGKILL in dev-only core test-support and, separately, the real production Asupersync dependency."
+    },
+    "release_qualification": "not_run_not_claimed",
+    "source_exclusions_or_runtime_substitutions": false,
+    "repository_manifest": {
+      "status": "full_audit_failed_on_untouched_paths",
+      "findings": 1391,
+      "findings_mentioning_session_changed_paths": 0,
+      "changed_artifact_rows": "updated_in_delta_only",
+      "base_manifest": "unchanged"
+    }
+  },
+  "budgets": {
+    "native_ntp_exchanges": 1,
+    "ntp_exchange_ns": 1000000000,
+    "max_poll_count": 1024,
+    "max_host_sample_bracket_ns": 25000000,
+    "assumed_max_drift_ppb": 500000,
+    "max_sync_age_ns": 60000000000,
+    "max_clock_uncertainty_ns": 10000000000,
+    "extra_network_reservation_bytes": 97
+  },
+  "invalidations": [
+    "A sampled wall or monotonic discontinuity permanently invalidates the correlation; compatible samples cannot revive it or renew age.",
+    "Changing the clock option, peer or fixed policy invalidates the preview approval.",
+    "Changing proof evidence changes receipt identity; a mismatching or absent derived witness refuses."
+  ],
+  "obligations": [
+    "Run full production typechecking and all new native contracts once actual memory/disk headroom is available.",
+    "Run repository-owned qualification before any release claim.",
+    "Keep VIT-019 open until recorder/retained-window requirements and their proof scope are complete."
+  ],
+  "unknowns": [
+    "Actual local daemon synchronization, source authenticity, oscillator behavior and physical deployment performance.",
+    "Unsampled clock steps can occur between checks; no continuous-time integrity is claimed.",
+    "The new reference and CLI code has not reached compiler typechecking in this session."
+  ],
+  "continuations": [
+    {
+      "kind": "verification",
+      "action": "Run the three reference clock targets, site_live_probe_contract and the full site_probe_cli_contract against real production dependencies."
+    },
+    {
+      "kind": "feature",
+      "action": "Carry the same clock proof and discontinuity boundary into the recorder lifecycle and retained multi-segment window consumer; do not relabel RTP or RTCP time as capture UTC."
+    }
+  ],
+  "valid_next_affordances": [
+    "Local full-source compile/test with adequate resources",
+    "Review exact optional clock approval and evidence policy",
+    "Continue recorder clock lifecycle implementation"
+  ],
+  "terminal_state": "implemented_and_reviewed_with_explicit_native_validation_blocker"
+}

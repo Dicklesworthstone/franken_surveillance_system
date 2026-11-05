@@ -7,6 +7,7 @@
 //! Direct stdout contains receipts or selected session evidence. Protected receipts
 //! are saved privately for `fss site plan`, with safe result metadata on stdout.
 
+mod clock_json;
 mod native;
 mod onvif;
 mod plan;
@@ -47,6 +48,7 @@ pub fn parse_probe_args(tokens: &[ArgToken]) -> Result<(PathBuf, SiteProbeOption
             "--unifi-bindings",
             "--onvif-bindings",
             "--receipt-file",
+            "--clock-ntp-peer",
         ],
     )?;
     let required = |name: &str| -> Result<String, CliError> {
@@ -126,6 +128,16 @@ pub fn parse_probe_args(tokens: &[ArgToken]) -> Result<(PathBuf, SiteProbeOption
         }
     };
     let options = SiteProbeOptions {
+        clock_ntp_peer: take(&values, "--clock-ntp-peer").map(|(_, value, _)| {
+            let peer = value.parse::<std::net::SocketAddr>()
+                .map_err(|_| malformed("--clock-ntp-peer", "canonical loopback IP:port required"))?;
+            if peer.to_string() != *value || !peer.ip().is_loopback() || peer.port() == 0
+                || matches!(peer, std::net::SocketAddr::V6(peer) if peer.scope_id() != 0 || peer.flowinfo() != 0)
+            {
+                return Err(malformed("--clock-ntp-peer", "canonical loopback IP:port required"));
+            }
+            Ok(peer)
+        }).transpose()?,
         unifi_bindings: take(&values, "--unifi-bindings").map(|(_, value, _)| PathBuf::from(value)),
         onvif_bindings: take(&values, "--onvif-bindings").map(|(_, value, _)| PathBuf::from(value)),
         receipt_file: take(&values, "--receipt-file").map(|(_, value, _)| PathBuf::from(value)),

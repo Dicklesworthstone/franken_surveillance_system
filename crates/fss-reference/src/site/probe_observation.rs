@@ -7,6 +7,8 @@
 //! caller may explicitly freeze a confirmed prefix and account for its excluded
 //! unfinished tail. Raw SDP and media never survive into a receipt.
 
+use std::collections::BTreeMap;
+
 use fss_core::ContentDigest;
 use fss_packet::{PacketLimits, RtpPacket, StreamKey};
 
@@ -116,6 +118,10 @@ pub struct RtspProbeObserver<'a> {
     ssrc: Option<u32>,
     sequence: Option<u64>,
     last_ns: Option<u64>,
+    // At most MAX_PROBE_RTP_PACKETS entries. The first syntactically confirmed
+    // picture can follow parameter-only packets with another RTP timestamp.
+    // Keep its actual owner admission coordinate rather than timing completion.
+    timestamp_observations: BTreeMap<u32, u64>,
     cadence: Cadence,
     packets: u32,
     bytes: u64,
@@ -268,6 +274,7 @@ impl<'a> RtspProbeObserver<'a> {
             ssrc: None,
             sequence: None,
             last_ns: None,
+            timestamp_observations: BTreeMap::new(),
             cadence: Cadence::default(),
             packets: 0,
             bytes: 0,
@@ -363,6 +370,7 @@ impl<'a> RtspProbeObserver<'a> {
         }
         self.ssrc = Some(packet.ssrc());
         self.sequence = Some(extended);
+        let timestamp = packet.timestamp();
         self.media
             .as_mut()
             .ok_or(ObservationError::Incomplete)?
@@ -373,7 +381,31 @@ impl<'a> RtspProbeObserver<'a> {
         }
         self.packets += 1;
         self.bytes = total;
+        self.timestamp_observations
+            .entry(timestamp)
+            .or_insert(now_ns);
         Ok(())
+    }
+
+    /// Owner admission time of the first RTP timestamp in the confirmed sample.
+    ///
+    /// This is neither a kernel receive timestamp nor a camera capture time. A
+    /// native caller must retain the enclosing socket/parse interval and widen
+    /// any wall-clock correlation by that interval before making a time claim.
+    /// Parameter-only packets and later picture-boundary confirmation do not
+    /// substitute their admission times for the first confirmed picture.
+    pub fn first_picture_observed_at(&self) -> Result<u64, ObservationError> {
+        if self.invalidated {
+            return Err(ObservationError::Continuity);
+        }
+        let first = self
+            .cadence
+            .first_timestamp()
+            .ok_or(ObservationError::Incomplete)?;
+        self.timestamp_observations
+            .get(&first)
+            .copied()
+            .ok_or(ObservationError::Incomplete)
     }
 
     /// Witnessed native groups so far. Markers, incomplete fragments, pending
@@ -464,9 +496,10 @@ impl<'a> RtspProbeObserver<'a> {
             last_rtp_timestamp,
             parameter_set_digests: self.parameter_digests,
             server_identity: self.server_identity,
-            // VIT-019 adds the schema field; wiring a real wall-clock sample into
-            // the live observer is a separate follow-up, tracked on that bead.
+            // The native clock owner adds its independently measured correlation
+            // only after matching the first-picture admission and final sample.
             clock_evidence: None,
+            clock_observation: None,
         };
         self.route
             .validate_receipt(self.manifest, &receipt)
