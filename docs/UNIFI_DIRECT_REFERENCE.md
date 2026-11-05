@@ -893,6 +893,19 @@ bytes in the preceding second, with zero reported kernel drops. This rules out
 complete TCP silence immediately before that close; it does not prove the data
 contained decodable video or distinguish local parser, pacing, backpressure,
 watchdog or other causes. The temporary traces did not record packet payloads.
+With the existing plugin's diagnostic logging temporarily enabled under an
+independent restore timer, its own bounded diagnostic reported an output
+deadline 7,766 ms late immediately before one restart. The original logging
+setting was restored and the private temporary logs removed. This establishes
+the plugin's stated trigger, not whether the underlying cause was event-loop
+delay, camera timestamps, media parsing, or something else.
+A separate 20-second passive sample contained 569 structurally identified
+video-tag candidates in one contiguous TCP run. Their first-to-last camera
+timestamp span was 18,934 ms and the corresponding TCP prefix-completion span
+was 18,937 ms; adjacent candidate timestamps advanced by 33–34 ms. This healthy
+window does not cover the failure and uses heuristic tag boundaries, so it
+does not prove decoded frames or rule out an intermittent clock jump or host
+stall. The capture was processed in memory and only aggregate timing was kept.
 Another protected trial temporarily stopped the dedicated single-camera
 controller to examine that interaction. The native listener received no
 camera connection within its window, and the handoff readback did not confirm
