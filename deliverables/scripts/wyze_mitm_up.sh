@@ -145,12 +145,15 @@ done
 # Always chown before writing.
 mkdir -p /tmp/ota
 sudo -n chown "$(id -u)" /tmp/ota/chain.pem /tmp/serve443.pem /tmp/iot2.pem /tmp/iot2.key 2>/dev/null
-{ cat "$CERTS/emudhra/leaf.pem"; echo; cat "$CERTS/emudhra/ev-ca-aaa-cross.pem"; echo; cat "$CERTS/emudhra/leaf.key"; } > /tmp/ota/chain.pem
+# Atomic write: the MQTT proxy (a concurrent reader) crashes with "PEM lib" if it opens
+# chain.pem mid-rebuild — a partial file fails load_cert_chain and the proxy exits, so
+# KeepAlive restarts the whole plane stack. tmp+rename is atomic on the same filesystem.
+{ cat "$CERTS/emudhra/leaf.pem"; echo; cat "$CERTS/emudhra/ev-ca-aaa-cross.pem"; echo; cat "$CERTS/emudhra/leaf.key"; } > /tmp/ota/chain.pem.tmp && mv /tmp/ota/chain.pem.tmp /tmp/ota/chain.pem
 cp /tmp/ota/chain.pem /tmp/serve443.pem
 # /tmp/iot2.pem must be the CERT ONLY (the forge builds serve.pem = cert + intermediate and
 # hands serve.pem + iot2.key to load_cert_chain; concatenating the key here made serve.pem's
 # first block a private key → "PEM lib" / KEY_VALUES_MISMATCH).
-cat "$CERTS/emudhra/leaf.pem" > /tmp/iot2.pem
+cat "$CERTS/emudhra/leaf.pem" > /tmp/iot2.pem.tmp && mv /tmp/iot2.pem.tmp /tmp/iot2.pem
 cp "$CERTS/emudhra/leaf.key" /tmp/iot2.key
 
 # served tree: capsule + the three IoT files + the image plane
