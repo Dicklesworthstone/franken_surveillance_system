@@ -1362,3 +1362,14 @@ mod authenticated {
         secret_free_custody(&directory)
     }
 }
+
+#[test]
+fn hevc_native_clock_capture_reopens_originals_for_utc_queries() -> Test {
+    let directory = Directory::new("clock-hevc")?;
+    let listener = listener()?;
+    let args = args(&directory, listener.local_addr()?, 4)?;
+    let camera = camera(StreamCase::TwoWindows)?;
+    super::clock::capture_and_query(&directory, args, |approved| {
+        captured(listener, approved, camera).map(|(output, _)| output)
+    })
+}

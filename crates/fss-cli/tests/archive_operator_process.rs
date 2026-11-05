@@ -28,6 +28,10 @@ fn executable_help_exposes_both_codecs_and_explicit_export_boundary() -> TestRes
         "--codec avc|hevc",
         "--allow-whole-windows yes",
         "--expected-snapshot",
+        "query-utc",
+        "--expected-clock-index",
+        "--start-utc-ns",
+        "--end-utc-ns",
     ] {
         assert!(help.contains(required));
     }
@@ -85,6 +89,70 @@ fn executable_inspect_does_not_create_a_misspelled_archive() -> TestResult {
         Some(i32::from(ExitIdentity::RUNTIME_FAILURE.code))
     );
     assert!(output.stdout.is_empty());
+    assert!(!missing.exists());
+    Ok(())
+}
+
+#[test]
+fn utc_query_argument_refusal_precedes_storage_open_and_emits_no_report() -> TestResult {
+    let _serial = serial();
+    let missing = std::env::temp_dir().join(format!(
+        "fss-archive-process-utc-missing-{}",
+        std::process::id()
+    ));
+    assert!(!missing.exists());
+    let digest = fss_core::ContentDigest::sha256(b"explicit UTC query fixture").to_text();
+    let base = [
+        "--codec",
+        "hevc",
+        "--sensor",
+        "sensor-cli",
+        "--stream",
+        "stream-cli",
+        "--generation",
+        "1",
+        "--anchor",
+        &digest,
+        "--receive-clock",
+        &digest,
+        "--decode-clock",
+        &digest,
+        "--time-scale",
+        "90000",
+        "--expected-snapshot",
+        &digest,
+        "--expected-clock-index",
+        &digest,
+        "--start-utc-ns",
+        "1800000000000000000",
+        "--end-utc-ns",
+        "1800000000000000001",
+    ];
+    let refused = Command::new(env!("CARGO_BIN_EXE_fss-archive"))
+        .args(["query-utc", "--root"])
+        .arg(&missing)
+        .args(base)
+        .args(["--start", "0"])
+        .output()?;
+    assert_eq!(
+        refused.status.code(),
+        Some(i32::from(ExitIdentity::MALFORMED_VALUE.code))
+    );
+    assert!(refused.stdout.is_empty());
+    assert!(String::from_utf8(refused.stderr)?.contains(ERR_CLI_UNKNOWN_OPTION));
+    assert!(!missing.exists());
+    // The complete UTC argument set reaches existing-root validation. A missing
+    // archive remains missing, rather than being initialized by a metadata query.
+    let missing_archive = Command::new(env!("CARGO_BIN_EXE_fss-archive"))
+        .args(["query-utc", "--root"])
+        .arg(&missing)
+        .args(base)
+        .output()?;
+    assert_eq!(
+        missing_archive.status.code(),
+        Some(i32::from(ExitIdentity::RUNTIME_FAILURE.code))
+    );
+    assert!(missing_archive.stdout.is_empty());
     assert!(!missing.exists());
     Ok(())
 }

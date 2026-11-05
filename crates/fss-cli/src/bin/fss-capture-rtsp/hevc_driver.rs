@@ -393,6 +393,12 @@ fn drive<W: Write>(
                     Some((admission.root, pending.objects().source.len() as u64));
                 stats.pending_source_only_nals = pending.source_only_nals() as u64;
                 owner.preview_stage(pending.publication_plan());
+                if let Some(clock) = owner.node_clock.borrow_mut().as_mut() {
+                    let result = clock.accept_hevc(admission.slot.clone(), pending);
+                    if owner.drain_deadline.get().is_none() {
+                        result?;
+                    }
+                }
                 ready = false;
                 if sealing && sealed && !draining {
                     // Retire input before the final window's first checkpoint. No EOF boundary,

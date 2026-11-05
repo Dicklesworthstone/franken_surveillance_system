@@ -52,6 +52,7 @@ fn resources() -> Resources {
         storage: "rtsp-custody:approved-fixture".into(),
         secret: "rtsp-credential:approved-fixture".into(),
         preview: "rtsp-local-preview:approved-fixture".into(),
+        clock_network: "rtsp-node-clock:approved-fixture".into(),
     }
 }
 
@@ -82,6 +83,8 @@ fn owner<'a, 'task>(
         supervision: None,
         preview_scope: None,
         preview: std::cell::RefCell::new(None),
+        node_clock: std::cell::RefCell::new(None),
+        clock_network_bytes: Cell::new(0),
     })
 }
 

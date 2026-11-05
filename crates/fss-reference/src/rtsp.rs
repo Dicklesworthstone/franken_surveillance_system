@@ -57,6 +57,8 @@ pub mod recording_archive;
 pub mod recording_capture;
 /// Immutable multi-window discovery and bounded, verified decode-range retrieval.
 pub mod recording_catalog;
+/// Source-bound node clock companions and bounded UTC candidate selection.
+pub mod recording_clock;
 /// Continuous bounded IDR collection with explicit source ownership and backpressure.
 pub mod recording_collector;
 /// Portable codec/timing recipes and exact source-verified recording reconstruction.

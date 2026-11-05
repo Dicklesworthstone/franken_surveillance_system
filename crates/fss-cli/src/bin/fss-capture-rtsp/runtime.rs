@@ -44,6 +44,7 @@ pub(super) struct Resources {
     storage: String,
     secret: String,
     preview: String,
+    clock_network: String,
 }
 
 /// Every clock read, wait, filesystem, secret and socket callback carries its
@@ -135,6 +136,20 @@ impl TaskClock {
             task,
             &[RuntimeGrant::AdapterNet],
             &resources.network,
+            false,
+            false,
+        )
+    }
+
+    pub(super) fn clock_network(
+        &self,
+        task: &TaskCx<'_>,
+        resources: &Resources,
+    ) -> Result<u64, Failure> {
+        self.admit(
+            task,
+            &[RuntimeGrant::AdapterNet],
+            &resources.clock_network,
             false,
             false,
         )
@@ -255,6 +270,13 @@ impl CaptureRuntime {
                         .map_or(0, |p| p.memory_budget()),
                 )
             })
+            .and_then(|budget| {
+                budget.checked_add(if options.node_clock.is_some() {
+                    super::super::plan::node_clock::MEMORY_BYTES
+                } else {
+                    0
+                })
+            })
             .ok_or(Failure::Configuration)?;
         let network_budget = transport
             .max_received_bytes
@@ -267,12 +289,26 @@ impl CaptureRuntime {
                         .map_or(0, |p| p.network_budget()),
                 )
             })
+            .and_then(|budget| {
+                budget.checked_add(if options.node_clock.is_some() {
+                    fss_cli::native_clock::MAX_NETWORK_BYTES
+                } else {
+                    0
+                })
+            })
             .ok_or(Failure::Configuration)?;
         let storage_budget = options
             .max_steps
             .checked_mul(64)
             .and_then(|budget| {
                 budget.checked_add(source.map_or(0, |s| s.limits.max_datagrams as u64 * 64))
+            })
+            .and_then(|budget| {
+                budget.checked_add(if options.node_clock.is_some() {
+                    super::super::plan::node_clock::STORAGE_OPERATIONS
+                } else {
+                    0
+                })
             })
             .ok_or(Failure::Configuration)?;
         let allowance = BudgetVector::builder()
@@ -314,6 +350,9 @@ impl CaptureRuntime {
             storage: format!("rtsp-custody:{}", approval.to_text()),
             secret: format!("rtsp-credential:{}", approval.to_text()),
             preview: format!("rtsp-local-preview:{}", approval.to_text()),
+            clock_network: options.node_clock.map_or_else(String::new, |clock| {
+                format!("rtsp-node-clock:{}:{}", clock.peer, approval.to_text())
+            }),
         };
         let (mut process, mut tree) = AuthorityCx::root(
             spec.clone(),
@@ -326,6 +365,9 @@ impl CaptureRuntime {
         let mut network_scope = BTreeSet::from([resources.network.clone()]);
         if options.live_preview.is_some() {
             network_scope.insert(resources.preview.clone());
+        }
+        if options.node_clock.is_some() {
+            network_scope.insert(resources.clock_network.clone());
         }
         let mut grants = process
             .grants()

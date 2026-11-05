@@ -95,6 +95,10 @@ pub(super) struct Statistics {
     pub(super) authentication_responses: u64,
     pub(super) digest_requests: u64,
     pub(super) connection_attempted: bool,
+    pub(super) clock_contact_attempted: bool,
+    pub(super) clock_network_bytes: u64,
+    pub(super) clock_index: Option<(String, ContentDigest)>,
+    pub(super) clock_index_unsettled: bool,
     pub(super) collected_pictures: u64,
     pub(super) skipped_pictures: u64,
     pub(super) durable_windows: usize,
@@ -447,6 +451,41 @@ pub(super) fn terminal(
         ("coverage_certified", "false".into()),
         ("qualification", string("implemented_not_qualified")),
     ];
+    if options.node_clock.is_some() {
+        fields.push((
+            "node_clock",
+            object(&[
+                (
+                    "state",
+                    string(if stats.clock_index_unsettled {
+                        "indeterminate"
+                    } else if stats.clock_index.is_some() {
+                        "available"
+                    } else {
+                        "clock_unavailable"
+                    }),
+                ),
+                (
+                    "contact_attempted",
+                    stats.clock_contact_attempted.to_string(),
+                ),
+                ("network_bytes", stats.clock_network_bytes.to_string()),
+                (
+                    "index",
+                    stats.clock_index.as_ref().map_or_else(
+                        || "null".into(),
+                        |(slot, root)| {
+                            object(&[("slot", string(slot)), ("root", string(&root.to_text()))])
+                        },
+                    ),
+                ),
+                ("time_basis", string("node_read_admission_bracket")),
+                ("camera_capture_time", string("unknown")),
+                ("server_authenticated", "false".into()),
+                ("coverage_certified", "false".into()),
+            ]),
+        ));
+    }
     if let Some(preview) = &stats.live_preview {
         fields.push(("live_preview", preview.clone()));
     }

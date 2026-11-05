@@ -71,6 +71,10 @@ use preview::{Gateway, GatewayAuthority};
 mod runtime;
 use runtime::{CaptureRuntime, Resources, TaskClock};
 
+#[path = "clock.rs"]
+mod node_clock;
+use node_clock::CaptureClock;
+
 #[derive(Clone, Copy, Debug)]
 enum Failure {
     Configuration,
@@ -88,6 +92,7 @@ enum Failure {
     Entropy,
     Protocol,
     Timing,
+    Clock,
     Deadline,
     Authority,
     WorkBudget,
@@ -126,6 +131,7 @@ impl Failure {
             // approved controller may start a new, independent recording.
             Self::Protocol | Self::ReadInterrupted => "ERR-CAPTURE-RTSP-SOURCE-001",
             Self::Timing => "ERR-CAPTURE-RTSP-TIMING-001",
+            Self::Clock => "ERR-CAPTURE-RTSP-CLOCK-001",
             Self::Deadline => "ERR-CAPTURE-RTSP-DEADLINE-001",
             Self::ProgressStalled => "ERR-CAPTURE-RTSP-PROGRESS-001",
             Self::EmptyCapture => "ERR-CAPTURE-RTSP-EMPTY-DURATION-001",
@@ -143,6 +149,7 @@ impl Failure {
             Self::Credentials => "credential_refused",
             Self::Entropy => "entropy_unavailable",
             Self::Timing => "timing_refused",
+            Self::Clock => "node_clock_unavailable",
             Self::Deadline => "deadline",
             Self::WorkBudget => "work_budget",
             Self::Shortfall => "input_ended_before_target",
@@ -180,6 +187,8 @@ struct Owner<'a, 'task> {
     supervision: Option<Supervision>,
     preview_scope: Option<PreviewScope>,
     preview: RefCell<Option<Gateway>>,
+    node_clock: RefCell<Option<CaptureClock>>,
+    clock_network_bytes: Cell<u64>,
 }
 
 struct NativeContext<'a, 'task> {
@@ -326,9 +335,15 @@ impl Owner<'_, '_> {
         }
         Ok(())
     }
+    fn freeze_clock(&self) {
+        if let Some(clock) = self.node_clock.borrow_mut().as_mut() {
+            clock.freeze(self);
+        }
+    }
     fn begin_drain(&self) -> Result<(), Failure> {
         // A viewer cannot prolong capture or admit new network work during drain.
         self.close_preview();
+        self.freeze_clock();
         let now = self.clock.metadata_now(self.task)?;
         if self.drain_deadline.get().is_none() {
             let deadline = now
@@ -429,7 +444,7 @@ impl TcpAuthority for Owner<'_, '_> {
     fn checkpoint(
         &self,
         binding: &TcpBinding,
-        _: TcpOperation,
+        operation: TcpOperation,
         now: u64,
         deadline: u64,
     ) -> Result<(), TcpDenial> {
@@ -470,6 +485,9 @@ impl TcpAuthority for Owner<'_, '_> {
             .map_err(denial)?;
         if now >= deadline || observed >= deadline {
             return Err(TcpDenial::Deadline);
+        }
+        if let Some(clock) = self.node_clock.borrow_mut().as_mut() {
+            clock.checkpoint(operation, now, self).map_err(denial)?;
         }
         Ok(())
     }
@@ -778,6 +796,12 @@ fn archive_progress<C: ArchiveCodec, W: Write>(
             let source_only_nals = std::mem::take(&mut stats.pending_source_only_nals);
             stats.durable_source_only_nals += source_only_nals;
             stats.snapshot(snapshot);
+            if let Some(clock) = owner.node_clock.borrow_mut().as_mut() {
+                let result = clock.durable(receipt.root);
+                if owner.drain_deadline.get().is_none() {
+                    result?;
+                }
+            }
             owner.preview_publish(receipt.root);
             let interval = entry.decode_interval();
             log.emit(
@@ -1207,6 +1231,12 @@ fn drive<W: Write>(
                 }
                 stats.pending_window =
                     Some((admission.root, pending.objects().source.len() as u64));
+                if let Some(clock) = owner.node_clock.borrow_mut().as_mut() {
+                    let result = clock.accept_avc(admission.slot.clone(), pending);
+                    if owner.drain_deadline.get().is_none() {
+                        result?;
+                    }
+                }
                 owner.preview_stage(pending);
                 ready = false;
                 if sealing && sealed && !draining {
@@ -1448,6 +1478,8 @@ fn run_owned<W: Write>(
             None
         },
         preview: RefCell::new(None),
+        node_clock: RefCell::new(None),
+        clock_network_bytes: Cell::new(0),
     };
     let check_secret = || owner.secret_check();
     let credentials = options
@@ -1482,6 +1514,12 @@ fn run_owned<W: Write>(
             Ok(path)
         })
         .transpose()?;
+    if options.node_clock.is_some() {
+        stats.clock_contact_attempted = true;
+        let clock = CaptureClock::begin(options, &owner);
+        stats.clock_network_bytes = owner.clock_network_bytes.get();
+        *owner.node_clock.borrow_mut() = Some(clock?);
+    }
     create_root(&root, &owner)?;
     owner.start_preview(options, stats);
     let result = (|| {
@@ -1571,8 +1609,104 @@ fn run_owned<W: Write>(
         if let Some(custody) = &source {
             custody.observe(stats);
         }
-        capture_result
+        // Every native owner has closed its socket before returning. Freeze a
+        // final sample only if the network-to-storage drain did not already do
+        // so. Storage completion never extends source-clock validity.
+        let clock_interrupted = owner
+            .node_clock
+            .borrow()
+            .as_ref()
+            .is_some_and(CaptureClock::interrupted_network);
+        owner.freeze_clock();
+        // A native clock callback travels through the transport's capability
+        // denial type. Recover its actual known cause without reclassifying an
+        // independent source, storage, timing, cancellation or budget failure.
+        if clock_interrupted
+            && matches!(
+                capture_result,
+                Err(Failure::Authority | Failure::Protocol | Failure::Connect)
+            )
+        {
+            return Err(Failure::Clock);
+        }
+        // Preserve a source/storage refusal even if its teardown also makes a
+        // new clock observation unavailable. Neither failure erases custody.
+        capture_result?;
+        if owner
+            .node_clock
+            .borrow()
+            .as_ref()
+            .is_some_and(CaptureClock::failed)
+        {
+            return Err(Failure::Clock);
+        }
+        if options.node_clock.is_some() {
+            owner.begin_drain()?;
+            let approval = match source_config {
+                Some(source) => source.digest(options),
+                None => options.digest(),
+            }
+            .map_err(|_| Failure::Configuration)?;
+            let index = owner
+                .node_clock
+                .borrow()
+                .as_ref()
+                .ok_or(Failure::Clock)?
+                .prepare(options, approval)?;
+            owner.storage_check()?;
+            stats.clock_index_unsettled = true;
+            let receipt = match fss_reference::rtsp::recording_clock::publish_clock_index(
+                &index,
+                &mut publisher,
+                &owner,
+            ) {
+                Ok(receipt) => receipt,
+                Err(_) => {
+                    let slot = fss_reference::rtsp::recording_clock::clock_slot(
+                        index.codec(),
+                        index.scope(),
+                    )
+                    .map_err(|_| Failure::Clock)?;
+                    stats.clock_index_unsettled =
+                        publisher.is_poisoned() || publisher.root(&slot).is_some();
+                    return Err(Failure::Storage);
+                }
+            };
+            if receipt.claims.local != LocalPublicationState::Durable {
+                return Err(Failure::Storage);
+            }
+            stats.clock_index = Some((receipt.slot.as_str().to_owned(), receipt.root));
+            stats.clock_index_unsettled = false;
+            owner.storage_check()?;
+            log.emit(
+                "clock_index_published",
+                object(&[
+                    ("slot", string(receipt.slot.as_str())),
+                    ("root", string(&receipt.root.to_text())),
+                    (
+                        "snapshot_digest",
+                        stats
+                            .snapshot_digest
+                            .map_or_else(|| "null".into(), |digest| string(&digest.to_text())),
+                    ),
+                    ("windows", index.windows().len().to_string()),
+                    ("time_basis", string("node_read_admission_bracket")),
+                    (
+                        "receive_clock",
+                        string(&options.recording_config().scope.receive_clock.to_text()),
+                    ),
+                    ("camera_capture_time", string("unknown")),
+                    ("server_authenticated", "false".into()),
+                    ("coverage_certified", "false".into()),
+                    ("absence_certifiable", "false".into()),
+                    ("durable", "true".into()),
+                ]),
+                false,
+            )?;
+        }
+        Ok(())
     })();
+    stats.clock_network_bytes = owner.clock_network_bytes.get();
     if let Some(report) = owner.close_preview() {
         stats.live_preview = Some(report);
     }

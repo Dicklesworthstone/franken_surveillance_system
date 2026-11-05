@@ -29,17 +29,21 @@ use fss_reference::rtsp::recording_archive::{
 use fss_reference::rtsp::recording_catalog::{CatalogEntry, CatalogScope};
 
 mod export;
+mod utc;
 
 const MAX_REPORT_BYTES: usize = 4 * 1024 * 1024;
 /// Explicitly versioned operator output; this is not an fss/1 agent response.
 pub const ARCHIVE_REPORT_SCHEMA: &str = "fss.local_archive_operator_report.v1";
 /// Help for the standalone archive utility. Paths accept native OS strings.
-pub const HELP: &str = "fss-archive <inspect|query|verify|export> [options]\n\
+pub const HELP: &str = "fss-archive <inspect|query|verify|export|query-utc> [options]\n\
   Required: --root DIR --codec avc|hevc --sensor ID --stream ID --generation N\n\
             --anchor sha256:HEX --receive-clock sha256:HEX\n\
             --decode-clock sha256:HEX --time-scale N\n\
   query/verify/export: --expected-snapshot sha256:HEX --start N --end N\n\
                [--max-output-windows N] [--max-output-bytes N]\n\
+  query-utc: --expected-snapshot sha256:HEX --expected-clock-index sha256:HEX\n\
+             --start-utc-ns N --end-utc-ns N\n\
+             [--max-output-windows N] [--max-output-bytes N]\n\
   export: --output-dir NEW_DIR --allow-whole-windows yes [--max-export-bytes N]\n\
           --privacy-root EXISTING_DEPLOYMENT --site SITE (the deployment retaining the\n\
           sensor's privacy-mask authority). Original packets cannot be masked: export of a\n\
@@ -49,7 +53,9 @@ pub const HELP: &str = "fss-archive <inspect|query|verify|export> [options]\n\
           [--max-scan-roots N] [--max-objects N] [--max-total-bytes N]\n\
   inspect recovers and source-verifies an existing archive; it does not create one.\n\
   query selects metadata from that exact snapshot; verify additionally reads every\n\
-  selected whole window. All times are explicit decode ticks, not capture times.\n\
+  selected whole window. query/verify/export use explicit decode ticks.\n\
+  query-utc selects conservative node read-admission candidates from retained clock\n\
+  evidence. Camera capture time stays unknown; no UTC coverage or absence is inferred.\n\
   Export includes original packets and boundary lookahead beyond requested samples.\n\
   Unindexed ranges are not coverage or absence evidence. Output is bounded JSON.\n\
   Open takes the existing exclusive storage locks and performs normal recovery,\n\
@@ -80,6 +86,10 @@ pub enum ArchiveCommandError {
     NotArchive,
     /// Current recovered inventory differs from the caller's pinned snapshot.
     SnapshotMismatch,
+    /// Retained synchronization, source binding or clock-index closure was refused.
+    ClockIndex(fss_reference::rtsp::recording_clock::RecordingClockError),
+    /// A clock-index window does not belong to the exact recovered archive snapshot.
+    ClockIndexSnapshotMismatch,
     /// The explicit operation timeout elapsed.
     Deadline,
     /// The fixed output allocation/size bound was exceeded.
@@ -120,6 +130,8 @@ impl fmt::Debug for ArchiveCommandError {
             Self::Io { operation, kind } => f.debug_tuple(operation).field(kind).finish(),
             Self::NotArchive => f.write_str("NotArchive"),
             Self::SnapshotMismatch => f.write_str("SnapshotMismatch"),
+            Self::ClockIndex(e) => f.debug_tuple("ClockIndex").field(e).finish(),
+            Self::ClockIndexSnapshotMismatch => f.write_str("ClockIndexSnapshotMismatch"),
             Self::Deadline => f.write_str("Deadline"),
             Self::ReportLimit => f.write_str("ReportLimit"),
             Self::OutputScope => f.write_str("OutputScope"),
@@ -141,6 +153,11 @@ impl From<ArchiveError> for ArchiveCommandError {
         Self::Archive(value)
     }
 }
+impl From<fss_reference::rtsp::recording_clock::RecordingClockError> for ArchiveCommandError {
+    fn from(value: fss_reference::rtsp::recording_clock::RecordingClockError) -> Self {
+        Self::ClockIndex(value)
+    }
+}
 type Result<T> = std::result::Result<T, ArchiveCommandError>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -160,6 +177,7 @@ impl Codec {
 enum Action {
     Inspect,
     Query,
+    QueryUtc,
     Verify,
     Export,
 }
@@ -168,6 +186,7 @@ impl Action {
         match self {
             Self::Inspect => "inspect",
             Self::Query => "query",
+            Self::QueryUtc => "query-utc",
             Self::Verify => "verify",
             Self::Export => "export",
         }
@@ -183,6 +202,7 @@ pub struct ArchiveOptions {
     scope: CatalogScope,
     expected: Option<ContentDigest>,
     query: Option<Range<u64>>,
+    utc_query: Option<utc::UtcQuery>,
     query_limits: ArchiveQueryLimits,
     archive_limits: ArchiveLimits,
     storage_limits: LocalPublicationLimits,
@@ -228,12 +248,13 @@ pub fn parse_archive_args(args: &[OsString]) -> Result<Option<ArchiveOptions>> {
     let action = match command {
         "inspect" => Action::Inspect,
         "query" => Action::Query,
+        "query-utc" => Action::QueryUtc,
         "verify" => Action::Verify,
         "export" => Action::Export,
         _ => {
             return Err(argument(
                 ERR_CLI_UNKNOWN_COMMAND,
-                "expected inspect, query, verify or export",
+                "expected inspect, query, query-utc, verify or export",
             ));
         }
     };
@@ -254,20 +275,23 @@ pub fn parse_archive_args(args: &[OsString]) -> Result<Option<ArchiveOptions>> {
         "--max-objects",
         "--max-total-bytes",
     ];
-    let ranged = [
+    let selection = [
         "--expected-snapshot",
-        "--start",
-        "--end",
         "--max-output-windows",
         "--max-output-bytes",
     ];
+    let ranged = ["--start", "--end"];
+    let utc_ranged = ["--expected-clock-index", "--start-utc-ns", "--end-utc-ns"];
     let mut values: BTreeMap<&str, &OsStr> = BTreeMap::new();
     for pair in args[1..].chunks(2) {
         let key = pair[0]
             .to_str()
             .ok_or_else(|| argument(ERR_CLI_INVALID_UNICODE, "option name must be UTF-8"))?;
         if !common.contains(&key)
-            && !(action != Action::Inspect && ranged.contains(&key))
+            && !(action != Action::Inspect && selection.contains(&key))
+            && !(matches!(action, Action::Query | Action::Verify | Action::Export)
+                && ranged.contains(&key))
+            && !(action == Action::QueryUtc && utc_ranged.contains(&key))
             && !(action == Action::Export
                 && [
                     "--output-dir",
@@ -374,8 +398,24 @@ pub fn parse_archive_args(args: &[OsString]) -> Result<Option<ArchiveOptions>> {
         windows_per_page: 64,
     };
     archive_limits.validate()?;
-    let (expected, query) = if action == Action::Inspect {
-        (None, None)
+    let (expected, query, utc_query) = if action == Action::Inspect {
+        (None, None, None)
+    } else if action == Action::QueryUtc {
+        let start = number("--start-utc-ns", None, 0, u64::MAX)?;
+        let end = number("--end-utc-ns", None, 1, u64::MAX)?;
+        if start >= end {
+            return Err(malformed(
+                "UTC query must be a nonempty half-open nanosecond interval",
+            ));
+        }
+        (
+            Some(digest("--expected-snapshot")?),
+            None,
+            Some(utc::UtcQuery {
+                expected_index: digest("--expected-clock-index")?,
+                interval: start..end,
+            }),
+        )
     } else {
         let start = number("--start", None, 0, u64::MAX)?;
         let end = number("--end", None, 1, u64::MAX)?;
@@ -384,7 +424,7 @@ pub fn parse_archive_args(args: &[OsString]) -> Result<Option<ArchiveOptions>> {
                 "query must be a nonempty half-open decode interval",
             ));
         }
-        (Some(digest("--expected-snapshot")?), Some(start..end))
+        (Some(digest("--expected-snapshot")?), Some(start..end), None)
     };
     let output = if action == Action::Export {
         if text("--allow-whole-windows")? != "yes" {
@@ -422,6 +462,7 @@ pub fn parse_archive_args(args: &[OsString]) -> Result<Option<ArchiveOptions>> {
         scope,
         expected,
         query,
+        utc_query,
         archive_limits,
         storage_limits,
         output,
@@ -758,6 +799,9 @@ fn execute_for<C: ArchiveCodec>(
         .is_some_and(|expected| expected != identity)
     {
         return Err(ArchiveCommandError::SnapshotMismatch);
+    }
+    if options.action == Action::QueryUtc {
+        return utc::execute(options, publisher, &snapshot, identity, clock);
     }
     let mut out = String::new();
     append(

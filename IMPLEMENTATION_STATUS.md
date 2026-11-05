@@ -4,6 +4,50 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Retained capture clock index and UTC footage candidates (2026-11-05, native execution pending)
+
+Clock-enabled bounded AVC/HEVC capture now carries a measured same-session node
+clock through durable original recording windows and into `fss-archive query-utc`.
+`--clock-ntp-peer` is an explicit approval extension with its own endpoint grant,
+97-byte network ceiling, finite sampling/table/index budgets and a 60-second
+capture limit. Each reconnect attempt obtains an independent exchange on its own
+`TaskClock`; the earlier site probe's monotonic origin is never reused.
+
+The pure retained index binds raw synchronization evidence, completed native read
+brackets, terminal sample, exact source/generation/receive clock, and every packet
+admission from each original window. Reordered packets and source-only lookahead
+contribute their actual extrema. The final root-last companion includes original
+window roots and their complete four-child closure without changing recording or
+catalog bytes. Sample failure refuses annotation; already durable footage remains
+accounted for. Indeterminate companion publication blocks automatic continuation.
+
+UTC lookup pins both the recovered archive snapshot and clock-index root, replays
+actual retained source, recomputes the intervals, and returns whole-window candidate
+handles with hydration costs. Extra originals remain explicit `clock_unavailable`
+rows, charged to the same atomic output limits. No camera exposure time, continuous
+coverage or absence is inferred. The local daemon remains unauthenticated, with the
+fixed 500 ppm drift assumption, finite age and unsupported leap mapping explicit.
+
+**Verification scope:** source formatting/parser checks and changed-file integrity
+checks pass. New contracts exercise raw UDP ownership, old proof identities,
+retained source/clock binding, corruption/tombstones/cancellation, UTC boundaries,
+output budgets, and real-process AVC/HEVC capture followed by cold UTC queries.
+These new Rust contracts have **not executed**, and the changed reference/CLI
+sources have **not passed native typechecking** in this session. The complete
+production dependency check previously died in pinned Asupersync under the shared
+8 GiB memory limit and full 63 GiB filesystem; no smaller supported production
+configuration or available remote validator was found. No source, dependency,
+feature or qualification gate was removed to claim a substitute pass. The earlier
+15 packet NTP tests are an executed lower-layer result, not qualification of this
+new integration.
+
+The reusable exchange/native sampler is committed at `e4435c0b927f9b02579fcf1415f884c788b43c89`.
+This capture-to-query slice advances `fss-vit019-clock-witness-r6d9t` and
+`fss-vit-je36t.8`; both remain open. The always-on service in `fss-vit-je36t.5`,
+standing acquisition leases, multi-epoch refresh, variable cadence, historical
+camera retrieval, and the canonical agent/MCP footage view remain incomplete.
+See [the retained node-clock workflow](docs/RETAINED_NODE_CLOCKS.md).
+
 ## Native site clock observations (2026-11-05, execution qualification pending)
 
 `fss site probe --clock-ntp-peer <literal-loopback-ip:port>` now has an optional
@@ -49,8 +93,8 @@ This materially advances `fss-vit019-clock-witness-r6d9t`, which remains open.
 The source is an unauthenticated local-daemon assertion under an explicit 500 ppm
 drift assumption; reconstruction is internal consistency, not trusted UTC,
 continuous clock integrity, camera capture-time qualification or clock discipline.
-Recorder start/end/heartbeats, multi-segment retained-window mapping and leap/smear
-policy remain outstanding. See [the operator workflow](docs/SITE_PROBING.md#optional-measured-node-clock-evidence).
+The bounded retained capture mapping above extends this producer. Standing-recorder
+start/end/heartbeats, multi-epoch clock refresh and leap/smear policy remain outstanding. See [the operator workflow](docs/SITE_PROBING.md#optional-measured-node-clock-evidence).
 
 ## UniFi direct packet reference (2026-11-04, experimental)
 

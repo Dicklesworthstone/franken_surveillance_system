@@ -44,6 +44,62 @@ operator report, not a canonical ledger receipt, signature or authority grant.
 No report is returned on command failure. Stdout failures may leave truncated
 transport output, which must never be interpreted as a complete JSON report.
 
+## UTC candidates from retained node clock evidence
+
+`query-utc` uses a separately retained clock-index root and the exact recovered
+archive snapshot. Copy the index root from the completed clock-enabled capture
+report; it is not inferred from the archive's decode-clock identity.
+
+```sh
+fss-archive query-utc "${COMMON[@]}" \
+  --expected-snapshot "$SNAPSHOT" --expected-clock-index "$CLOCK_INDEX" \
+  --start-utc-ns 1800000000000000000 --end-utc-ns 1800000001000000000 \
+  --max-output-windows 64 --max-output-bytes 268435456
+```
+
+The requested UTC interval is half-open, `[start, end)`, in integer Unix
+nanoseconds. Each retained window has a **closed, conservative node read-admission
+interval** reconstructed from its original packet admission coordinates, raw local
+SNTP exchange, bracketed host samples, terminal sample and fixed drift/age policy.
+An interval is a candidate exactly when `latest >= start && earliest < end`.
+The entire independently decodable window is returned as metadata, including its
+root, slot, original receive-clock identity, stream generation and whole-window
+byte cost. Source-only boundary lookahead can widen the interval beyond the
+window's displayed media. Decode ticks are not scaled or reinterpreted as UTC.
+
+The report labels `time_basis` as `node_read_admission_bracket`,
+`camera_capture_time` as `unknown`, and `server_authenticated`, `coverage_claim`
+and `absence_claim` as `false`. It describes when the node admitted the retained
+packet reads under the declared clock model. It does not establish camera
+exposure time, network or camera buffering delay, continuous clock monitoring,
+authenticated time-server accuracy, camera coverage or physical absence.
+
+Every clock-index entry must match an exact original slot, root, decode interval
+and byte size in the pinned snapshot, including entries outside the UTC query.
+The retained index loader independently checks its pinned root, scope, codec,
+raw clock evidence and complete original-source closure. An unrelated index,
+changed snapshot, missing or damaged evidence, invalid clock model or source
+mismatch refuses the whole command before a report is returned.
+
+A snapshot may contain additional originals that have no row in the selected
+clock index. They remain in the explicit `clock_unavailable` array for every UTC
+query; their UTC interval is `unknown`. They cannot be ruled out by an empty
+candidate selection. The command does not manufacture UTC gaps between windows
+or an absence certificate. `all_snapshot_windows_have_clock_evidence` describes
+annotation of this snapshot only, not observation of the physical world.
+
+`--max-output-windows` and `--max-output-bytes` apply **atomically to the combined
+candidate and clock-unavailable rows**, charging every whole original window.
+Separate candidate and unavailable byte totals, plus their aggregate
+`whole_window_output_bytes`, are reported. Exceeding a count, byte, deadline or
+report-size bound returns no report; no result list is silently truncated.
+`payload_bytes_emitted` is zero, and `range_read_completed` is false: this command
+outputs metadata only. The existing exclusive-owner recovery and source replay
+still run, with the same storage quotas and timeout boundaries described below.
+`--start`, `--end` and export-specific arguments are inapplicable to `query-utc`.
+The existing inspect/decode-range/export formats and snapshot identities are
+unchanged when this action is not selected.
+
 ## Verified whole-window export
 
 ```sh
@@ -155,6 +211,7 @@ or any durable source root retracted after a later failure.
 
 ```sh
 cargo test -p fss-cli --lib archive_cmd::
+cargo test -p fss-cli --lib archive_cmd::tests::utc_tests::
 cargo test -p fss-cli --test archive_operator_process
 cargo run -p fss-cli --bin fss-archive -- help
 ```
@@ -170,3 +227,12 @@ whole-window approval, independent budgets, interrupted and short I/O, deadline
 retirement, corrupt later media with partial output, empty selections and Unix
 privacy modes. Executable contracts check help, strict diagnostics and refusal to
 create a misspelled archive. No release gate is changed.
+
+UTC-query contracts additionally use actual retained HEVC packet fixtures and
+root-last clock-index publication to cover exact snapshot/index pins, cold
+reopening, conservative endpoint selection, explicit unannotated originals,
+aggregate count/byte refusal, foreign index membership, corrupt retained clock
+bytes, deadlines and recovery limits. The process contract checks UTC option
+admission and refusal to create a missing archive. These new native tests were
+authored under compiler-memory and disk exhaustion and remain unexecuted; syntax
+formatting is not a typecheck or qualification result.

@@ -7,6 +7,9 @@
 //! explicitly unpublished malformed tail. These tests establish wiring and custody, not camera,
 //! detector, authentication, calibration or deployment qualification.
 
+#[path = "capture_rtsp_cli/clock.rs"]
+mod clock;
+
 #[path = "capture_rtsp_cli/runtime.rs"]
 mod runtime;
 
@@ -104,6 +107,7 @@ fn binary(name: &str) -> Test<PathBuf> {
             "FSS_CAPTURE_RTSP_BIN",
             option_env!("CARGO_BIN_EXE_fss-capture-rtsp"),
         ),
+        "archive" => ("FSS_ARCHIVE_BIN", option_env!("CARGO_BIN_EXE_fss-archive")),
         "import" => (
             "FSS_IMPORT_RTSP_BIN",
             option_env!("CARGO_BIN_EXE_fss-import-rtsp"),

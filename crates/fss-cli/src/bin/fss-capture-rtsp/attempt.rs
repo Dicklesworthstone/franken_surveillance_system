@@ -50,7 +50,8 @@ impl AttemptOutcome {
             && stats.durable_pictures == 0
             && stats.durable_windows == 0
             && stats.unpublished_prepared_bytes == 0;
-        let recovery_required = stats.source_custody_unsettled
+        let recovery_required = stats.clock_index_unsettled
+            || stats.source_custody_unsettled
             || stats.pins.candidate().is_some()
             || stats.unrecorded_work_receipt.is_some()
             || stats.pending_window.is_some()
@@ -184,6 +185,7 @@ mod tests {
             Failure::Entropy,
             Failure::Protocol,
             Failure::Timing,
+            Failure::Clock,
             Failure::Deadline,
             Failure::Authority,
             Failure::WorkBudget,
@@ -198,7 +200,7 @@ mod tests {
 
     #[test]
     fn every_visible_unsettled_storage_condition_blocks_reconnection() {
-        for condition in 0..6 {
+        for condition in 0..7 {
             let mut stats = ended();
             match condition {
                 0 => stats.pending_window = Some((ContentDigest::sha256(b"pending"), 1)),
@@ -206,7 +208,8 @@ mod tests {
                 2 => stats.unpublished_prepared_pictures = 1,
                 3 => stats.unpublished_prepared_bytes = 1,
                 4 => stats.indexed_windows = 0,
-                _ => stats.pending_source_only_nals = 1,
+                5 => stats.pending_source_only_nals = 1,
+                _ => stats.clock_index_unsettled = true,
             }
             let outcome = AttemptOutcome::new(Err(Failure::Shortfall), &stats);
             assert!(outcome.recovery_required, "condition {condition}");
@@ -284,10 +287,7 @@ mod tests {
                     ..Statistics::default()
                 };
                 let outcome = AttemptOutcome::new(result, &stats);
-                assert!(
-                    outcome.recovery_required,
-                    "{result:?}: {pictures} pictures"
-                );
+                assert!(outcome.recovery_required, "{result:?}: {pictures} pictures");
                 assert!(outcome.retry.is_none());
                 assert_eq!(outcome.result, result.map_err(Failure::code));
                 assert_eq!(outcome.durable_pictures, pictures);
@@ -455,8 +455,11 @@ mod tests {
 #[test]
 fn unsettled_source_custody_blocks_every_successor_without_replacing_failure() {
     for result in [
-        Ok(()), Err(Failure::ConnectionUnavailable), Err(Failure::Shortfall),
-        Err(Failure::ProgressStalled), Err(Failure::ReadInterrupted),
+        Ok(()),
+        Err(Failure::ConnectionUnavailable),
+        Err(Failure::Shortfall),
+        Err(Failure::ProgressStalled),
+        Err(Failure::ReadInterrupted),
     ] {
         let stats = Statistics {
             source_custody_unsettled: true,

@@ -146,6 +146,7 @@ fn interruption_retry_does_not_promote_a_drained_protocol_or_security_failure() 
         Failure::Authority,
         Failure::Deadline,
         Failure::Timing,
+        Failure::Clock,
         Failure::Storage,
         Failure::Output,
         Failure::WorkBudget,

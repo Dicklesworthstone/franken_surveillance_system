@@ -38,6 +38,10 @@ use hevc::HevcPlan;
 pub(super) mod live_preview;
 use live_preview::PreviewPlan;
 
+#[path = "clock_plan.rs"]
+pub(super) mod node_clock;
+use node_clock::ClockPlan;
+
 pub(super) const MAX_ARGUMENTS: usize = 128;
 pub(super) const FORMAT: &str = "fss.rtsp_capture_cli.v1";
 const POLICY: &str = "one-literal-ip:owner-approved-plaintext:opt-in-scoped-digest:no-reconnect:\
@@ -120,6 +124,13 @@ are disconnected within fixed limits and cannot apply recording backpressure.\n\
 Bounds: --preview-max-clients 4 --preview-max-bytes 16777216\n\
         --preview-max-fragment-bytes 4194304 --preview-max-output-bytes 134217728\n\
         --preview-max-age-ms 30000. The viewer closes with the capture attempt.\n\
+Optional retained node UTC: --clock-ntp-peer 127.0.0.1:123 (or canonical [::1]:PORT).\n\
+One approved local NTP exchange uses this capture's own monotonic clock. Requires\n\
+--timeout-ms at most 60000 and --max-windows at most 64. No discovery, adjustment,\n\
+refresh or authenticated-server claim. A sampled clock failure refuses annotation;\n\
+already durable originals remain retained. Successful capture publishes a clock_index\n\
+root over the exact originals for fss-archive query-utc. These are node read-admission\n\
+intervals, including the native read bracket, never camera exposure time.\n\
 All effective native limits are included in the approval and its JSON preview.\n\
 A successful requested stop closes the socket and drains recording/catalog publication;\n\
 it never certifies remote EOF, complete scene coverage, detection, alerts or absence.\n\
@@ -156,6 +167,7 @@ pub(super) struct Options {
     timing_evidence: ContentDigest,
     pub(super) authentication: Option<AuthPlan>,
     pub(super) live_preview: Option<PreviewPlan>,
+    pub(super) node_clock: Option<ClockPlan>,
 }
 
 // Keep every byte of the legacy policy/clock/approval when the option is absent or zero.
@@ -328,6 +340,7 @@ impl Options {
             "--auth-realm",
             "--legacy-md5",
             "--legacy-no-qop",
+            "--clock-ntp-peer",
             "--preview-port",
             "--allow-local-unredacted-preview",
             "--preview-max-clients",
@@ -658,6 +671,7 @@ impl Options {
             timing_evidence,
             authentication,
             live_preview: PreviewPlan::parse(&values)?,
+            node_clock: ClockPlan::parse(&values, timeout_ns, max_windows)?,
             approve: values
                 .get("--approve")
                 .map(|text| digest(text))
@@ -918,6 +932,9 @@ impl Options {
         if self.live_preview.is_some() {
             e.text(live_preview::POLICY);
         }
+        if let Some(clock) = self.node_clock {
+            clock.encode(&mut e);
+        }
         let bytes = e
             .finish_checked()
             .map_err(|_| "capture plan encoding refused")?;
@@ -1031,6 +1048,9 @@ impl Options {
         }
         if let Some(preview) = &self.live_preview {
             fields.push(("live_preview", preview.report()));
+        }
+        if let Some(clock) = self.node_clock {
+            fields.push(("node_clock", clock.preview()));
         }
         if self.binding.ssrc_policy() == SsrcPolicy::LearnOnce {
             fields.push((

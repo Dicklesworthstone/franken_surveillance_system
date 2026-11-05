@@ -350,3 +350,6 @@ fn report_budget_refuses_before_appending_partial_item() -> TestResult {
     assert_eq!(out.len(), MAX_REPORT_BYTES);
     Ok(())
 }
+
+#[path = "utc_tests.rs"]
+mod utc_tests;

@@ -1,0 +1,184 @@
+{
+  "format": "engineering-session-handoff",
+  "date": "2026-11-05",
+  "mission": {
+    "goal": "Implement consequential remaining product functionality from the comprehensive plan and beads; publish meaningful checkpoints directly to main without PRs.",
+    "inputs": [
+      "AGENTS.md",
+      "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md",
+      ".beads/issues.jsonl",
+      "docs/VITTLES_FOOTAGE_PLANE_PLAN.md"
+    ],
+    "initial_head_for_continuation": "e0d83ebaafa54a737e521c6dda3231751a776b4a",
+    "source_head_before_this_commit": "dbae9e5ddb76b8d5debe78c9c8d631f44ca0fa1a"
+  },
+  "authority": {
+    "git": "Explicit user authorization for direct main commits through GitHub, no PRs.",
+    "external_device_execution": false,
+    "deployment_authority_root": null,
+    "clock_adjustment": false,
+    "concurrent_changes": "Preserved concurrent UniFi/fleet documentation and independent bead updates through dbae9e5ddb76b8d5debe78c9c8d631f44ca0fa1a. GitHub main updates use exact expected heads with no force; shared changelog and delta manifest rows are merged without replacing concurrent work."
+  },
+  "published_checkpoints": [
+    {
+      "commit": "e4435c0b927f9b02579fcf1415f884c788b43c89",
+      "change": "Reusable exact local NTP exchange evidence and owned native sampler, preserving existing site proof identities; actual payload accounting precedes post-I/O refusal."
+    },
+    {
+      "commit": "this_commit",
+      "change": "Native bounded AVC/HEVC capture clock producer, durable original-root clock companion, source-verified UTC candidate query, failure/continuation semantics and contracts."
+    }
+  ],
+  "cases": [
+    {
+      "bead": "fss-vit019-clock-witness-r6d9t",
+      "finding": "Site probe proof uses a different monotonic origin and cannot label retained capture packet coordinates.",
+      "resolution": "Fresh exchange inside each actual capture TaskClock; paired native read brackets; terminal sampling before storage drain; immutable companion with exact original root/leaf closure and replayable raw clock evidence.",
+      "status": "advanced_open",
+      "bead_status_changed": false
+    },
+    {
+      "bead": "fss-vit-je36t.8",
+      "finding": "Existing archive query exposes decode ticks but lacked retained same-session UTC evidence.",
+      "resolution": "query-utc pins both archive snapshot and clock index, verifies every index row against the snapshot, replays original source coordinates, returns whole-window candidates and explicit unknown-clock handles under atomic count/byte limits.",
+      "status": "advanced_open",
+      "bead_status_changed": false
+    },
+    {
+      "bead": "fss-vit-je36t.5",
+      "finding": "Always-on supervised site service remains broader than existing finite capture/reconnect; standing lease and adaptive source-envelope decisions remain open.",
+      "status": "open_not_relabelled",
+      "bead_status_changed": false
+    }
+  ],
+  "findings": [
+    {
+      "state": "observed_source_fact",
+      "claim": "AVC and HEVC preserve TcpReadChunk.admitted_ns through framed intake into original packet source; RTP sequence ordering differs from admission ordering."
+    },
+    {
+      "state": "implemented_native_execution_pending",
+      "claim": "Read admission and completed-read extrema, including source-only lookahead, produce conservative node observation UTC envelopes; decode ticks and camera exposure are not reused as clock truth."
+    },
+    {
+      "state": "bounded_unverified_source_claim",
+      "claim": "Local NTP remains unauthenticated, with fixed 500ppm drift, 60second maximum age, bounded correction/uncertainty and no leap mapping. Same-session binding is established by the native capture owner; artifact replay checks internal consistency and original-source identities."
+    },
+    {
+      "state": "reviewed_defect_fixed",
+      "claim": "Unused bracket clipping can alter pairwise interval consistency; preparation now separately replays the exact compact table plus terminal before encoding, with a deterministic regression."
+    }
+  ],
+  "contracts": {
+    "producer_option": "fss-capture-rtsp --clock-ntp-peer LITERAL_LOOPBACK_ENDPOINT",
+    "consumer": "fss-archive query-utc --expected-snapshot DIGEST --expected-clock-index DIGEST --start-utc-ns START --end-utc-ns END with exact source/codec/decode scope",
+    "metadata_domain": "fss.recording_clock_index.v1",
+    "manifest_kind": "recording_clock_index_v1",
+    "slot_domain": "fss.recording_clock_slot.v1",
+    "limits": {
+      "windows": 64,
+      "read_coordinates": 65536,
+      "index_and_manifest_bytes": 16777216,
+      "capture_timeout_ns": 60000000000,
+      "udp_payload_reservation": 97,
+      "successful_udp_payload_bytes": 96,
+      "extra_memory_reservation_bytes": 67108864
+    },
+    "overlap": "closed observation [earliest,latest] against half-open query [start,end): latest >= start and earliest < end",
+    "source_identity": "Original recording/catalog canonical formats unchanged; companion closure includes exact original roots and all four children.",
+    "unknowns": [
+      "Camera exposure and pre-admission encoding/network/NVR/kernel buffering",
+      "Continuous physical scene coverage and absence",
+      "Trusted physical UTC or authenticated daemon",
+      "Unobserved transient clock discontinuities"
+    ]
+  },
+  "verification": {
+    "toolchain": "nightly-2026-08-31",
+    "new_native_tests": {
+      "status": "authored_unexecuted",
+      "count": 43,
+      "groups": {
+        "exchange_compatibility": 3,
+        "native_sampler": 6,
+        "retained_clock_reference": 20,
+        "archive_utc_unit": 8,
+        "archive_utc_process": 1,
+        "capture_utc_process_avc_hevc_and_refusals": 4,
+        "capture_plan": 1
+      }
+    },
+    "extended_existing_tests": [
+      "Clock refusal cannot authorize reconnect",
+      "Indeterminate companion publication prevents successors",
+      "Interrupted source cannot promote a clock/security failure"
+    ],
+    "formatting": "Pinned rustfmt syntax/format check passed on changed Rust paths.",
+    "diff_and_integrity": "Scoped git diff checks and staged changed-file manifest gate required before publication; full immutable base is not regenerated.",
+    "typecheck": "Not established for changed reference/CLI source. Previous full-source check was SIGKILLed in the real pinned Asupersync dependency. No further build attempted while capacity remained saturated.",
+    "capacity": {
+      "memory_limit_bytes": 8589934592,
+      "observed_memory_current_bytes": 8589832192,
+      "filesystem": "63 GiB overlay, zero ordinary available blocks",
+      "remote_validator": "No available rch/dsr/sbh executable found; no compatible complete Asupersync metadata cache found."
+    },
+    "previous_packet_result": {
+      "tests_passed": 15,
+      "scope": "Prior native core/packet NTP contract execution only; not qualification of this integration."
+    },
+    "unchanged": [
+      "Cargo.lock",
+      "Production dependency/features",
+      "Qualification gates",
+      "Immutable MANIFEST.sha256"
+    ],
+    "preexisting_integrity_findings": {
+      "count": 1391,
+      "scope": "Previously observed untouched-path inventory findings; not a passing full repository integrity result."
+    }
+  },
+  "obligations": [
+    {
+      "id": "retained-node-clock-native-execution",
+      "state": "blocked_environment",
+      "work": "Run complete production checks and actual new/affected native contracts with adequate storage/memory; retain normal qualification evidence.",
+      "authority": "Existing source authoring and tests only; no release/deployment claim."
+    },
+    {
+      "id": "retained-node-clock-main-publication",
+      "state": "handled_by_this_commit",
+      "work": "Publish meaningful source batch directly to main with exact expected-head GitHub update."
+    }
+  ],
+  "continuations": [
+    {
+      "priority": 1,
+      "action": "Run the full production fss-capture-rtsp and fss-archive check plus recording_clock_contract, native_clock_contract, archive UTC unit/process and capture clock process contracts after real capacity is available.",
+      "commands": [
+        "cargo check --locked --offline -p fss-cli --bin fss-capture-rtsp --bin fss-archive -j1",
+        "cargo test --locked --offline -p fss-reference --test recording_clock_contract -j1",
+        "cargo test --locked --offline -p fss-cli --test native_clock_contract -j1",
+        "cargo test --locked --offline -p fss-cli --lib archive_cmd::tests::utc_tests:: -j1",
+        "cargo test --locked --offline -p fss-cli --test archive_operator_process -j1",
+        "cargo test --locked --offline -p fss-cli --test capture_rtsp_cli clock -j1"
+      ],
+      "qualification_entrypoint": "scripts/qualify.sh through the existing native DSR authority, without source exclusions or weakened gates."
+    },
+    {
+      "priority": 2,
+      "action": "Add explicit bounded clock refresh and retained epochs for long-running supervised acquisition; do not extrapolate a60second proof or reuse a previous TaskClock."
+    },
+    {
+      "priority": 3,
+      "action": "Finish standing site recorder lease/lifecycle and adaptive cadence contracts, canonical agent/MCP footage projection, and upstream historical retrieval as separate functional work."
+    }
+  ],
+  "evidence_paths": [
+    "docs/RETAINED_NODE_CLOCKS.md",
+    "docs/ARCHIVE_OPERATOR.md",
+    "crates/fss-reference/src/rtsp/recording_clock.rs",
+    "crates/fss-reference/tests/recording_clock_contract.rs",
+    "crates/fss-cli/tests/capture_rtsp_cli/clock.rs",
+    "crates/fss-cli/src/archive_cmd/utc_tests.rs"
+  ]
+}
