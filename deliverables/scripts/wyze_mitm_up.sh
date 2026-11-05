@@ -202,8 +202,11 @@ for port in 443 8443; do
     free_port "$port"
   done
 done
-# image + beacon plane: the capsule's installer fetches /img.bin here and the payloads beacon here
-sudo "$PY" -m http.server 8080 --directory "$CAP_DIR" > /tmp/img8080.log 2>&1 &
+# image + beacon plane: the capsule's installer fetches /img.bin here and the payloads beacon here.
+# The beacon-aware server (not plain http.server) is spawned so /fss-ran hits are logged to
+# /tmp/fss_beacons.log for loop_closer; the separate fss-fwserve launchd job is NOT loaded
+# alongside this wrapper — two supervisors on :8080 flap (same lesson as the :443 forge note).
+sudo "$PY" "$HERE/fwserve_with_beacon.py" > /tmp/img8080.log 2>&1 &
 sudo "$PY" -m http.server 9101 --directory "$CAP_DIR/img" > /tmp/img.log 2>&1 &
 # the capsule streams every partition back before it writes; without a receiver it dies at step 2
 sudo "$PY" "$HERE/wyze_backup_recv.py" --base-port "${PORT:-8446}" --dir /tmp/fwbackup \
