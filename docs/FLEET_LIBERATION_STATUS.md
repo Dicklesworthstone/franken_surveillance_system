@@ -547,3 +547,30 @@ session tags exchange, 200B ack-reply type=0x602, hello 291B / login 168B accept
 client. Either the grant depends on an app-session token we're not replaying correctly, or
 the stuck state moved. Next: Frida-hook the phone app's avClientStartEx during a live stream
 to capture the exact grant sequence, or power-cycle first and re-probe.
+
+## 23:30 — chain armed end-to-end; waiting on assis cadence
+
+Every link of the Wyze OTA chain is verified live:
+- MQTT MITM: .39 session was live (PUBACKs on all injections); .51's shadow gets also
+  traversing (98 gets observed). After the version-999999 delta fix (`a5e35864`) and one
+  broker restart, the camera is in MQTT reconnect backoff — it will land back on :8883
+  (DNS chain spoofed).
+- Injector: 248+ delta injections (cmd/upgrade/start cycling), shadow deltas rewritten
+  in-flight from the real cloud stream (v1384378+).
+- Forge: capsule served byte-identical (md5 `ef2d38…` = injected delta); --firmware-detail
+  armed for the SDK gate.
+- Backup receivers: root, ports 444..449 (matching PORT+1+slot), self-healing after
+  generation overlaps.
+- Payload: img.bin 16 MiB, SHA-pinned in the capsule, dropbear root:root inside; installer
+  streams all six partition backups BEFORE any write, bootloader written last.
+
+Watchdog `/tmp/liberation_watch.sh` (nohup, pid 59464) alerts on new beacons and backup
+arrivals. assis's OTA poll cycle is the only unverified link — expect the fetch within its
+next cycle (~1h).
+
+## C460 correction
+
+The decoded 0x30200 image is **U-Boot 2021.10**, not the Linux kernel (no `Linux version`
+string; U-Boot version present). The kernel remains inside the sstarXZ blocks. C660 /bin/main
+RE note: DS method strings have zero absolute references — dispatch computes string pointers
+at runtime; connectAp handler RE is a prerequisite for verifying the borrowed offset 1060.
