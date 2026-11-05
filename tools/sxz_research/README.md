@@ -107,3 +107,22 @@ decision at pos4+) that pure masks cannot capture.
 
 VERDICT: the SXZ decode requires the vendor's encoder or a hardware decode trace.
 Black-box reverse engineering has extracted all available signal.
+
+## UART console pre-stage (for the next operator with physical access)
+
+The C460's bootargs include `console=ttyS0,115200` — a 3-wire UART (TX/RX/GND) on the
+board. The U-Boot 2021.10 binary we recovered (488 KB, `/tmp/c460_kernel.bin`) is the
+bootloader that runs `loados nor by_header RAMDISK by_header` — it calls the XZDEC
+hardware engine to decode the sstarXZ container.
+
+**The fastest path to the decoded ramdisk:**
+1. Connect a 3.3 V USB-serial adapter to the board's UART pads (115200 8N1, 3.3 V TTL)
+2. Power-cycle → U-Boot's autoboot prompt (interrupt with a key within the timeout)
+3. At the U-Boot prompt: `loados nor by_header RAMDISK by_header` → the XZDEC decodes
+   the container into RAM at the `loados_addr` (printed on the console)
+4. Dump the decoded ramdisk: `md.b ${loados_addr} 0x545E00` (or use YMODEM/MMC dump)
+5. The dumped binary IS the decoded ramdisk — run `binwalk`/`cpio` on it to extract
+   `/bin/main` → real gadget addresses → verified exploit
+
+Alternatively: at the U-Boot prompt, `printenv` reveals the exact mtdparts and
+`loados_addr` conventions, and `help loados` shows the SXZ decode invocation.
