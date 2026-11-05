@@ -950,10 +950,23 @@ was present. A separate recorder-journal classification returned unknown and
 took 15.4 seconds, exceeding the watchdog's eight-second journal timeout; this
 is a plausible explanation, not a proven cause. Fresh staging writes and
 uploads were observed independently after the original controller returned.
-A subsequent isolated trial-source change adds a payload-free phase report for
-a conversation deadline and a synthetic post-time-sync deadline case. It has
-only been syntax-parsed: remote source transfers timed out before compilation,
-so it has not been built, exercised or used against the camera.
+A subsequent isolated trial-source change adds payload-free phase reports for
+both the conversation deadline and the overall startup deadline. On `ovh-b`,
+the lab and its test executable compiled, and two encrypted synthetic
+post-time-sync deadline cases passed, one for each deadline scenario. An
+initial fixture run failed because the disposable test certificate was marked
+as a CA; both cases passed after replacing it with a server certificate. The
+resulting trial executable has SHA-256
+`04c61d2abca1415ad69951b4a8b1ff6795d91ec3a0c69ac0ba79830b93e0e4cd`.
+The matching executable was staged in the private trial directory on `ts1`,
+where its hash and dynamic dependencies were checked and its argument parser
+started. This diagnostic build has not been used against the camera; the
+fixtures do not establish the cause of the physical trial's timeout.
+Later laboratory source additionally records whether the management dispatch
+authority gate allowed an attempt. A passed gate alone does not establish that
+bytes were sent or received. The added instrumentation is not included in the
+staged binary or the two fixture results above and awaits its own build and
+tests.
 
 The external recording volume later disappeared from the Mac's mounted
 volumes and several uploads were deferred, with the staging files preserved.
