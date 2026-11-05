@@ -72,7 +72,7 @@ const HELP: &str = "fss-event <report|prepare|publish|read|verify|watch|corrobor
     Kalman tracker and exports a canonical fss.package_analysis_report.v2. prepare/publish\n\
     accept that report exactly like a luma report and record an unclassified, indeterminate,\n\
     single-sensor event; detector scores are uncalibrated supporting evidence only.\n\
-  package-zones analyze/read: exact retained package class/track to observed image-zone\n\
+  package-zones analyze/read/occupancy: exact retained package class/track to observed image-zone\n\
     transitions and sampled dwell; approved cognition retention and cold source verification.\n\
     Uses actual assigned boxes, per-sample confirmation and complete missing-frame timelines.\n\
     See `fss-event package-zones --help`; no inference rerun, absence or alert authority.\n\

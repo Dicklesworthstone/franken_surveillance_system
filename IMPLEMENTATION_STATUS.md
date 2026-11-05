@@ -93,6 +93,44 @@ time, door state, cross-camera journeys, native clock witnesses, FLDT rights and
 the future fss/1 QSR view. See [the workflow](docs/QSR_OBSERVATIONS.md) and
 [registered semantics](registries/QSR_OBSERVATIONS.md).
 
+## Retained sampled occupancy report owner (2026-11-05)
+
+`fss-event package-zones occupancy` and `PackageOccupancyReport::open` add a
+source-verified class occupancy projection for VIT-012. It cold-reconstructs an exact retained package-zone report and returns
+every source frame and zone, with confirmed actual inside-assignment counts,
+canonical anonymous track support and separate tentative, boundary, clipped,
+unobserved, masked and health-excluded accounting. A masked or health-excluded
+count is unavailable even when no tracks were created. Zero means no usable
+positive observation, never physical absence. Existing v1 health remains explicitly
+unassessed; v2 retains its exact historical screening policy.
+
+The projection binds source custody, package/model/contract/generation/class,
+tracking configuration, privacy, original capture intervals and clock interpretation.
+Checked canonical identity covers the complete source report/root and all output
+rows. Output is capped at 4 MiB, with no ranked subset or truncation. The actual
+retained owner renders first, then revalidates source bytes, privacy, deletion,
+principal, ledger head, shared health allowances and retained proof before returning.
+The projection creates no new custody, canonical event, absence/coverage certificate,
+calibrated population bound or effect authority. The command uses normal exclusive
+deployment startup/recovery, which may repair recovery metadata and mark interrupted
+committed effects Indeterminate; it does not promise a filesystem-only read.
+
+**Scoped verification:** 13 unchanged production-source reducer/renderer tests pass,
+including empty-track privacy/health, tentative/coasting/boundary exclusions, exact
+large timestamp strings, canonical support, bounds and cancellation. The schema
+validates seven actual-renderer scenarios and rejects five contradictory variants.
+Complete actual `fss-reference`, `fss-cli` and
+`fss-event` production sources typecheck with the real runtime and Asupersync metadata,
+without production exclusions or runtime substitutes. Metadata compilation does
+not execute native lifecycle tests. Four new retained JPEG/FMPK source-integration
+regressions are present; native test execution and hardware/model-quality qualification
+remain separate. Queue length, waiting time, lane stages, continuous coverage and
+FLDT consumption remain outside this observation view. The separate `fss-event qsr`
+command supplies role annotations, sampled dwell and lane stages only for screened
+v2 sources; this diagnostic view preserves v1 compatibility without relaxing QSR
+source requirements. See [the workflow](docs/PACKAGE_ZONE_OCCUPANCY.md).
+
+
 ## Protected ONVIF probe-to-plan command workflow (2026-11-04)
 
 `fss site probe --onvif-bindings FILE --receipt-file ABSOLUTE_NEW_FILE` now

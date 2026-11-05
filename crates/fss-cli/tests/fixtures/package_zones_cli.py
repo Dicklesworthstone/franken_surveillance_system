@@ -18,6 +18,10 @@ def main():
         )
         for version in (1, 2)
     }
+    schemas['fss.package_zone_occupancy.v1'] = (
+        'package_zone_occupancy.v1.json',
+        parse_strict_json((repository / 'schemas/package_zone_occupancy.v1.json').read_text()),
+    )
 
     def checked(output):
         data = document(output.stdout)
@@ -84,6 +88,10 @@ def main():
     assert all(int(d['minimum_duration_ns']) >= 180000000 for d in dwells)
     assert not any(e['kind'] == 'left_between_observations' for e in preview['events'])
     assert all(value is False for value in preview['semantics'].values())
+    occupancy_command = [event_bin, 'package-zones', 'occupancy', *base,
+                         '--report-digest', preview['report_digest']]
+    run(occupancy_command, ok=False)
+    assert snapshot(root) == before, 'unretained occupancy read created custody'
     approval = preview['approval_digest']
     run([*command, '--retain', 'sha256:' + 'ab' * 32], ok=False)
     run([*command, '--principal', 'principal:other', '--retain', approval], ok=False)
@@ -106,6 +114,37 @@ def main():
     cold['operation'] = 'retained'
     assert cold == retained, 'cold native derivation or source/approval/proof bindings changed'
     assert snapshot(root) == head
+
+    occupancy = checked(run(occupancy_command))
+    assert occupancy['operation'] == 'read_verified'
+    assert occupancy['observation_kind'] == 'sampled_class_occupancy'
+    assert occupancy['source']['zone_report'] == retained['report_digest']
+    assert occupancy['source']['zone_provenance_root'] == retained['provenance_root']
+    assert occupancy['source']['model_generation'] == retained['source']['generation']
+    assert occupancy['source']['package_digest'] == package_digest
+    assert occupancy['source']['label'] == 'numeric-a'
+    assert occupancy['frames'] == retained['frames']
+    assert occupancy['coverage_witness'] is None
+    assert occupancy['semantics']['absence_certified'] is False
+    assert occupancy['semantics']['continuous_occupancy_established'] is False
+    assert occupancy['semantics']['current_source_revalidated'] is True
+    assert len(occupancy['samples']) == len(retained['frames']) == 14
+    for row in occupancy['samples']:
+        positive = [c['track'] for c in retained['cells']
+                    if c['frame'] == row['frame'] and c['zone'] == row['zone']
+                    and c['sample_confirmed'] and c['relation'] == 'inside']
+        assert row['observed_count'] == len(positive)
+        assert row['supporting_tracks'] == sorted(positive)
+        assert row['health'] == 'unassessed'
+    assert occupancy['samples'][0]['excluded']['tentative'] == 1
+    assert occupancy['samples'][10]['excluded']['unobserved'] == 1
+    assert occupancy['samples'][10]['state'] == 'no_positive_observation'
+    assert checked(run(occupancy_command)) == occupancy
+    for extra in (['--retain', approval], ['--label', 'numeric-b'],
+                  ['--require-health-screening', 'yes'],
+                  ['--report-digest', retained['report_digest']]):
+        run([*occupancy_command, *extra], ok=False)
+    assert snapshot(root) == head, 'occupancy read or inapplicable options mutated custody'
     run([*read, '--label', 'numeric-b'], ok=False)
     assert snapshot(root) == head
 
@@ -122,6 +161,7 @@ def main():
     path.write_bytes(corrupted)
     damaged = snapshot(root)
     run(read, ok=False)
+    run(occupancy_command, ok=False)
     run([*command, '--retain', approval], ok=False)
     assert snapshot(root) == damaged, 'refused cold read or retry repaired damaged proof'
     path.write_bytes(data)
@@ -165,6 +205,15 @@ def main():
     run([event_bin, 'qsr', *base, '--report-digest', unknown_retained['report_digest'],
          '--retain', 'yes'], ok=False)
     assert snapshot(root) == head, 'QSR reads or refusals changed custody'
+    unknown_occupancy_command = [event_bin, 'package-zones', 'occupancy', *base,
+                                 '--report-digest', unknown_retained['report_digest']]
+    unknown_occupancy = checked(run(unknown_occupancy_command))
+    assert unknown_occupancy['source']['health_screening_required'] is True
+    assert len(unknown_occupancy['samples']) == 14
+    assert all(row['observed_count'] is None and row['state'] == 'health_excluded'
+               and row['health'] == 'no_matching_diagnostic' and row['supporting_tracks'] == []
+               for row in unknown_occupancy['samples'])
+    assert any(row['excluded']['health'] > 0 for row in unknown_occupancy['samples'])
 
     def retain_screen(first, count):
         args = [event_bin, 'watch', *base, '--import-id', import_id, '--interpretation', 'ycbcr',
@@ -181,6 +230,7 @@ def main():
     head = snapshot(root)
     run(unknown_read, ok=False)
     run([event_bin, 'qsr', *base, '--report-digest', unknown_retained['report_digest']], ok=False)
+    run(unknown_occupancy_command, ok=False)
     partial = checked(run(screened_command))
     assert partial['cells'] == preview['cells']
     exposed = partial['historical_health']['frames']

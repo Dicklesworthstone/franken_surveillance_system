@@ -12,6 +12,7 @@ use fss_cli::{ERR_CLI_MALFORMED_VALUE, ERR_CLI_RUNTIME_FAILURE, ExitIdentity};
 use fss_core::region::{ContextAuthority, RootAuthoritySpec};
 use fss_core::{BudgetVector, ContentDigest, DigestAlgorithm, OperationId, PrincipalId};
 use fss_reference::ingest::package_event::PackageTrackingConfig;
+use fss_reference::ingest::package_zones::occupancy::PackageOccupancyReport;
 use fss_reference::ingest::package_zones::{
     PackageZone, PackageZoneConfig, PackageZoneDwell, PackageZoneOperation, PackageZoneReport,
 };
@@ -26,6 +27,14 @@ const HELP: &str = "fss-event package-zones analyze --root EXISTING_DIR --site S
   [--retain sha256:EXACT_APPROVAL] [--principal ID]\n\
 fss-event package-zones read --root EXISTING_DIR --site SITE\n\
   --report-digest sha256:RETAINED_ZONE_REPORT [--principal ID]\n\
+fss-event package-zones occupancy --root EXISTING_DIR --site SITE\n\
+  --report-digest sha256:RETAINED_ZONE_REPORT [--principal ID]\n\
+Occupancy returns every source frame and zone with confirmed class-selected counts,\n\
+supporting track identities and explicit tentative, boundary, missing, privacy and health\n\
+exclusions. It reopens retained custody and revalidates current source/privacy/deletion\n\
+before return. Zero is no positive observation, never absence; null is an unavailable count.\n\
+It neither re-runs inference nor retains a new report. Output is bounded to 4 MiB.\n\
+The command uses normal exclusive deployment startup and durability recovery.\n\
 Analyze reopens fss-infer package-detect --retain yes custody and selects exactly one\n\
 package vocabulary label. It does not run inference, decode media or use foreground tracks.\n\
 The full output includes source frames, every track/zone/frame cell, actual assigned boxes\n\
@@ -56,6 +65,7 @@ enum Action {
         screened: bool,
     },
     Read(ContentDigest),
+    Occupancy(ContentDigest),
 }
 struct Options {
     root: PathBuf,
@@ -110,10 +120,14 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
     if args.len() > 65 || args.iter().any(|arg| arg.as_encoded_bytes().len() > 4096) {
         return Err("argument bounds exceeded".into());
     }
-    let analyze = match args.first().and_then(|arg| arg.to_str()) {
-        Some("analyze") => true,
-        Some("read") => false,
-        _ => return Err("expected package-zones analyze or read".into()),
+    let action_name = args
+        .first()
+        .and_then(|arg| arg.to_str())
+        .ok_or("expected package-zones action")?;
+    let analyze = match action_name {
+        "analyze" => true,
+        "read" | "occupancy" => false,
+        _ => return Err("expected package-zones analyze, read or occupancy".into()),
     };
     let mut values = BTreeMap::new();
     let mut zones = Vec::new();
@@ -220,6 +234,8 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
                 .map(|_| digest(text(&values, "--retain")?))
                 .transpose()?,
         }
+    } else if action_name == "occupancy" {
+        Action::Occupancy(digest(text(&values, "--report-digest")?)?)
     } else {
         Action::Read(digest(text(&values, "--report-digest")?)?)
     };
@@ -252,6 +268,11 @@ fn run(options: Options) -> Run<String> {
     let result = (|| -> Run<String> {
         let mut deployment = ReferenceDeployment::open(&root, &options.site, &cx)?;
         let (report, operation) = match options.action {
+            Action::Occupancy(digest) => {
+                return Ok(PackageOccupancyReport::open(&deployment, digest, &cx)?
+                    .to_json()
+                    .to_owned());
+            }
             Action::Read(digest) => (
                 PackageZoneReport::open(&deployment, digest, &cx)?,
                 PackageZoneOperation::ReadVerified,
@@ -318,5 +339,63 @@ pub(super) fn main(args: &[OsString]) -> ExitCode {
             );
             ExitCode::from(ExitIdentity::RUNTIME_FAILURE.code)
         }
+    }
+}
+
+#[cfg(test)]
+mod occupancy_tests {
+    use super::*;
+
+    fn arguments() -> Vec<OsString> {
+        [
+            "occupancy",
+            "--root",
+            "/tmp/occupancy-parse-only",
+            "--site",
+            "site:occupancy-cli",
+            "--report-digest",
+            &ContentDigest::sha256(b"retained zone report").to_text(),
+        ]
+        .into_iter()
+        .map(OsString::from)
+        .collect()
+    }
+
+    #[test]
+    fn occupancy_selects_only_the_exact_retained_report() -> Result<(), String> {
+        let options = parse(&arguments())?;
+        assert!(
+            matches!(options.action, Action::Occupancy(d) if d == ContentDigest::sha256(b"retained zone report"))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn occupancy_refuses_derivation_retention_and_duplicate_overrides() {
+        for (key, value) in [
+            ("--label", "person"),
+            ("--zone", "register:0:0:1:1"),
+            ("--require-health-screening", "yes"),
+            ("--retain", "sha256:ignored"),
+            ("--confirmation-hits", "1"),
+            ("--report-digest", "sha256:ignored"),
+        ] {
+            let mut args = arguments();
+            args.extend([key.into(), value.into()]);
+            assert!(parse(&args).is_err(), "{key}");
+        }
+    }
+
+    #[test]
+    fn occupancy_refuses_missing_zero_foreign_and_unbounded_input() {
+        let mut args = arguments();
+        args.pop();
+        assert!(parse(&args).is_err());
+        args.push(format!("sha256:{}", "00".repeat(32)).into());
+        assert!(parse(&args).is_err());
+        args[6] = "foreign-private-file-path".into();
+        assert!(parse(&args).is_err());
+        args[6] = "x".repeat(4097).into();
+        assert!(parse(&args).is_err());
     }
 }
