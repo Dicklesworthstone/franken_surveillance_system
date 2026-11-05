@@ -940,8 +940,30 @@ its startup conversation timed out without a clip. Its journal contains a
 time-sync operation but no hello, agreement or stream operation; the timeout
 was not phase-tagged. The original repair setting was restored and a no-write
 observation reported the original controller. The scheduled repair and
-controller restoration checks were no-ops; the remaining recovery timer and
-fresh uploads must be checked independently.
+controller restoration checks were no-ops. The recovery service failed with
+an indeterminate error; neither its reboot marker nor the trial reboot marker
+was present. A separate recorder-journal classification returned unknown and
+took 15.4 seconds, exceeding the watchdog's eight-second journal timeout; this
+is a plausible explanation, not a proven cause. Fresh staging writes and
+uploads were observed independently after the original controller returned.
+
+The external recording volume later disappeared from the Mac's mounted
+volumes and several uploads were deferred, with the staging files preserved.
+The enclosure was visible over USB but a read-only `diskutil` inventory did
+not finish. The volume subsequently remounted without a change by this trial,
+and the original uploader reported copying 14 staged segments. A transitional
+local fallback on `trj` is now enabled at
+`/bulk/unifi_camera_recordings/g4-instant-fallback`; it copies closed staged
+files, verifies each new copy by hash, and does not delete the staging source.
+Its private, create-only archive removes matching regular archive files after
+30 days and does not follow symlinks. Six synthetic filesystem tests and a
+separate synthetic real-media/open-file probe passed. A manual pass copied ten
+real segments, and an independent hash and media probe confirmed one against its
+still-present staging source. The enabled timer also completed a scheduled pass
+with no eligible copies after the original uploader resumed. Neither path
+proves gap-free recording or an actual 30-day deletion. If the external drive
+stays absent, staging originals accumulate because the fallback does not
+delete them; free space must be monitored.
 
 The transitional recorder separately showed several stream exits at roughly
 four-minute intervals and another after about 100 seconds, followed by
