@@ -30,6 +30,8 @@ from capability_registry_checker import (
 )
 
 V1 = "gen:fss1:capabilities-v1"
+V2 = "gen:fss1:capabilities-v2"
+V3 = "gen:fss1:capabilities-v3"
 
 
 class CapabilityRegistryCheckerTests(unittest.TestCase):
@@ -56,11 +58,11 @@ class CapabilityRegistryCheckerTests(unittest.TestCase):
         """Live repository capability registry passes with exact pinned freeze digest."""
         res = validate_capability_registry(ROOT)
         self.assertTrue(res.passed, f"Validation failed with errors: {res.errors}")
-        self.assertEqual(res.capability_count, 45)
-        self.assertEqual(CURRENT_GENERATION, "gen:fss1:capabilities-v2")
+        self.assertEqual(res.capability_count, 49)
+        self.assertEqual(CURRENT_GENERATION, "gen:fss1:capabilities-v4")
         expected = EXPECTED_FREEZE_DIGESTS[CURRENT_GENERATION]
         self.assertEqual(res.registry_digest, expected)
-        self.assertEqual(res.registry_digest, "sha256:3ccae04582a7225f5fd596ad0b52605b0cd093266ad910282c0ed4b8b4e8f9d5")
+        self.assertEqual(res.registry_digest, "sha256:911d4859853e9e5a03334a870247c03d892335bd090063b0a7943f9da2892f4e")
 
     def test_superseded_v1_pin_is_retained_as_history(self) -> None:
         """The v1 freeze digest stays pinned and reconstructs exactly from the v2 registry minus v2 rows."""
@@ -68,17 +70,30 @@ class CapabilityRegistryCheckerTests(unittest.TestCase):
             EXPECTED_FREEZE_DIGESTS[V1],
             "sha256:5056fe20103a6c9a157fdb0e29bf5371384b976e874bf2964ff817fb202f045a",
         )
-        self.assertEqual(CAPABILITY_GENERATION_ORDER, (V1, CURRENT_GENERATION))
+        self.assertEqual(CAPABILITY_GENERATION_ORDER, (V1, V2, V3, CURRENT_GENERATION))
         v1 = self._v1_projection(self._read_json())
         # Proves the v2 bump changed no v1 row except its generation stamp.
         self.assertEqual(compute_canonical_capability_digest(v1), EXPECTED_FREEZE_DIGESTS[V1])
+
+    def test_superseded_v2_pin_is_retained_as_history(self) -> None:
+        v2 = copy.deepcopy(self._read_json())
+        v2["generation"] = V2
+        v2["asOf"] = "2026-09-26"
+        v2["capabilities"] = [dict(c, generation=V2) for c in v2["capabilities"] if BASELINE_CAPABILITIES[c["id"]]["generation"] in (V1, V2)]
+        self.assertEqual(compute_canonical_capability_digest(v2), EXPECTED_FREEZE_DIGESTS[V2])
+
+    def test_superseded_v3_pin_is_retained_as_history(self) -> None:
+        v3 = copy.deepcopy(self._read_json())
+        v3["generation"] = V3
+        v3["capabilities"] = [dict(c, generation=V3) for c in v3["capabilities"] if BASELINE_CAPABILITIES[c["id"]]["generation"] != CURRENT_GENERATION]
+        self.assertEqual(compute_canonical_capability_digest(v3), EXPECTED_FREEZE_DIGESTS[V3])
 
     def test_superseded_v1_registry_is_refused(self) -> None:
         """A registry frozen at the superseded v1 generation is refused even with its exact pin."""
         md_path = self.fake_root / "registries/CAPABILITIES.md"
         lines = md_path.read_text(encoding="utf-8").splitlines()
         md_path.write_text(
-            "\n".join(l for l in lines if "CAP-EVENT-REVIEW-" not in l) + "\n", encoding="utf-8"
+            "\n".join(l for l in lines if "CAP-EVENT-REVIEW-" not in l and "CAP-CAMERA-SETTING-" not in l and "CAP-CAMERA-MANAGEMENT-" not in l) + "\n", encoding="utf-8"
         )
         self._write_json(self._v1_projection(self._read_json()))
 

@@ -2,8 +2,8 @@
 //! Normative contract and planted-bypass tests for ContractBasis (FSS-241).
 //!
 //! Verifies:
-//! 1. Canonical encoding and bit-level stability against golden fixture `contract_basis_v2.bin` (cost-v1 predecessor `contract_basis_v1.bin` is the superseded fixture)
-//!    (binary format v1; reference generation `gen:fss1:reference-v2` binding `capabilities-v2`).
+//! 1. Canonical encoding and bit-level stability against golden fixture `contract_basis_v4.bin` (cost-v1 predecessor `contract_basis_v1.bin` is the superseded fixture)
+//!    (binary format v1; reference generation `gen:fss1:reference-v4` binding `capabilities-v4`).
 //! 2. Pinned freeze digests for reference contract basis and its canonical binary envelope.
 //! 3. Registry-digest computation from raw byte slices.
 //! 4. Fail-closed compatibility negotiation under semantic protocol `fss/1`.
@@ -21,8 +21,11 @@ use fss_core::contract_basis::{
     REFERENCE_CONTRACT_BASIS_GENERATION, REFERENCE_COST_REGISTRY_DIGEST,
     REFERENCE_ERROR_REGISTRY_DIGEST, REFERENCE_OPERATION_REGISTRY_DIGEST,
     REFERENCE_SCHEMA_CATALOG_DIGEST, REFERENCE_VIEW_REGISTRY_DIGEST, SCHEMA_CONTRACT_BASIS,
-    SUPERSEDED_CAPABILITY_REGISTRY_DIGEST_V1,
+    SUPERSEDED_CAPABILITY_REGISTRY_DIGEST_V1, SUPERSEDED_CAPABILITY_REGISTRY_DIGEST_V2,
+    SUPERSEDED_CAPABILITY_REGISTRY_DIGEST_V3,
     SUPERSEDED_CONTRACT_BASIS_CANONICAL_DIGEST_CAPABILITIES_V1,
+    SUPERSEDED_CONTRACT_BASIS_CANONICAL_DIGEST_CAPABILITIES_V2,
+    SUPERSEDED_CONTRACT_BASIS_CANONICAL_DIGEST_CAPABILITIES_V3,
     SUPERSEDED_CONTRACT_BASIS_CANONICAL_DIGEST_COST_V1, SUPERSEDED_COST_REGISTRY_DIGEST_V1,
     SUPERSEDED_REGISTRY_DIGESTS, StaleBasisReason, check_basis_freshness, check_compatibility,
     compute_registry_digests, decode_canonical_binary, encode_canonical_binary, negotiate_basis,
@@ -85,7 +88,7 @@ fn test_reference_contract_basis_golden_fixture_and_pinned_digests() -> Result<(
     let binary = encode_canonical_binary(&basis)?;
 
     // 5. Compare against golden fixture file
-    let fixture_bytes = include_bytes!("../../../tests/fixtures/contract_basis_v2.bin");
+    let fixture_bytes = include_bytes!("../../../tests/fixtures/contract_basis_v4.bin");
     assert_eq!(
         binary.as_slice(),
         fixture_bytes,
@@ -675,7 +678,7 @@ fn test_planted_bypass_empty_producer_release_id() -> Result<(), Box<dyn Error>>
 #[test]
 fn test_schema_identifier_constant() {
     assert_eq!(SCHEMA_CONTRACT_BASIS, "fss.agent_contract_basis.v1");
-    assert_eq!(REFERENCE_CONTRACT_BASIS_GENERATION, "gen:fss1:reference-v2");
+    assert_eq!(REFERENCE_CONTRACT_BASIS_GENERATION, "gen:fss1:reference-v4");
 }
 
 /// fss-31cjo: a client still bound to the superseded capability registry generation
@@ -711,6 +714,8 @@ fn test_superseded_capabilities_v1_client_is_refused_as_stale() -> Result<(), Bo
         SUPERSEDED_REGISTRY_DIGESTS,
         &[
             SUPERSEDED_CAPABILITY_REGISTRY_DIGEST_V1,
+            SUPERSEDED_CAPABILITY_REGISTRY_DIGEST_V2,
+            SUPERSEDED_CAPABILITY_REGISTRY_DIGEST_V3,
             SUPERSEDED_COST_REGISTRY_DIGEST_V1
         ]
     );
@@ -802,20 +807,23 @@ fn test_superseded_cost_v1_client_is_refused_as_stale() -> Result<(), Box<dyn Er
     );
     assert!(SUPERSEDED_REGISTRY_DIGESTS.contains(&SUPERSEDED_COST_REGISTRY_DIGEST_V1));
 
-    // Only the cost registry digest differs from the current reference basis.
-    let mut rebased = v1_client.clone();
+    // The historical client also carries capabilities-v2. Rebase that axis
+    // to test cost-v1 refusal independently, while retaining the exact fixture.
+    let mut cost_only = v1_client.clone();
+    cost_only.capability_registry_digest = server.capability_registry_digest;
+    let mut rebased = cost_only.clone();
     rebased.cost_registry_digest = server.cost_registry_digest;
     assert_eq!(rebased, server);
 
     // Plain negotiation: typed cost-registry mismatch.
-    let err = negotiate_basis(&server, &v1_client)
+    let err = negotiate_basis(&server, &cost_only)
         .err()
         .ok_or("cost-v1 client must not negotiate against the v2 server")?;
     assert_eq!(err.error_id(), "ERR-AGENT-PROTOCOL-001");
 
     // Supersession-aware negotiation: documented stale-basis refusal naming the cost registry.
     let superseded = superseded_registry_digests();
-    let err = negotiate_basis_with_superseded(&server, &v1_client, &superseded)
+    let err = negotiate_basis_with_superseded(&server, &cost_only, &superseded)
         .err()
         .ok_or("cost-v1 client must be refused as stale")?;
     assert_eq!(err.error_id(), "ERR-AGENT-SESSION-STALE-001");
@@ -841,5 +849,63 @@ fn test_superseded_cost_v1_client_is_refused_as_stale() -> Result<(), Box<dyn Er
         negotiate_basis_with_superseded(&server, &server, &superseded)?,
         server
     );
+    Ok(())
+}
+
+#[test]
+fn test_superseded_capabilities_v2_client_is_refused_as_stale() -> Result<(), Box<dyn Error>> {
+    let server = reference_contract_basis();
+    let bytes = include_bytes!("../../../tests/fixtures/contract_basis_v2.bin");
+    let old = decode_canonical_binary(bytes)?;
+    assert_eq!(
+        old.basis_digest().to_text(),
+        SUPERSEDED_CONTRACT_BASIS_CANONICAL_DIGEST_CAPABILITIES_V2
+    );
+    assert_eq!(
+        old.capability_registry_digest.to_text(),
+        SUPERSEDED_CAPABILITY_REGISTRY_DIGEST_V2
+    );
+    assert!(matches!(
+        negotiate_basis(&server, &old),
+        Err(ContractBasisError::IncompatibleBasis {
+            refusal: ContractBasisRefusal::IncompatibleCapabilityRegistry { .. }
+        })
+    ));
+    let error = negotiate_basis_with_superseded(&server, &old, &superseded_registry_digests())
+        .expect_err("old capability generation must be stale");
+    assert!(matches!(
+        error,
+        ContractBasisError::StaleBasis {
+            reason: StaleBasisReason::TombstonedRegistryDigest {
+                registry: "capability",
+                ..
+            }
+        }
+    ));
+    Ok(())
+}
+
+#[test]
+fn test_superseded_capabilities_v3_client_is_refused_as_stale() -> Result<(), Box<dyn Error>> {
+    let server = reference_contract_basis();
+    let bytes = include_bytes!("../../../tests/fixtures/contract_basis_v3.bin");
+    let old = decode_canonical_binary(bytes)?;
+    assert_eq!(
+        old.basis_digest().to_text(),
+        SUPERSEDED_CONTRACT_BASIS_CANONICAL_DIGEST_CAPABILITIES_V3
+    );
+    assert_eq!(
+        old.capability_registry_digest.to_text(),
+        SUPERSEDED_CAPABILITY_REGISTRY_DIGEST_V3
+    );
+    assert!(matches!(
+        negotiate_basis_with_superseded(&server, &old, &superseded_registry_digests()),
+        Err(ContractBasisError::StaleBasis {
+            reason: StaleBasisReason::TombstonedRegistryDigest {
+                registry: "capability",
+                ..
+            }
+        })
+    ));
     Ok(())
 }

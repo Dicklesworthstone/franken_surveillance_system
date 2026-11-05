@@ -51,8 +51,9 @@ pub const CANONICAL_PRODUCER_RELEASE_ID: &str = "fss:release:v1";
 /// Generation tag for the frozen reference contract basis.
 ///
 /// `gen:fss1:reference-v1` bound capability registry `gen:fss1:capabilities-v1`; it is
-/// superseded (never reused) by `gen:fss1:reference-v2`, which binds `capabilities-v2`.
-pub const REFERENCE_CONTRACT_BASIS_GENERATION: &str = "gen:fss1:reference-v2";
+/// superseded by `gen:fss1:reference-v2`, which binds `capabilities-v2`.
+/// Reference-v3 bound capabilities-v3; reference-v4 binds capabilities-v4.
+pub const REFERENCE_CONTRACT_BASIS_GENERATION: &str = "gen:fss1:reference-v4";
 
 /// Pinned freeze digest of the schema catalog for the reference generation (`registries/SCHEMAS.md`).
 pub const REFERENCE_SCHEMA_CATALOG_DIGEST: &str =
@@ -66,9 +67,23 @@ pub const REFERENCE_OPERATION_REGISTRY_DIGEST: &str =
 pub const REFERENCE_VIEW_REGISTRY_DIGEST: &str =
     "sha256:a757a7698a79e1c72fb71d6aefa80df264a1896e8ac7f0ad455c411b2f3f5704";
 
-/// Pinned freeze digest of the capability registry (`gen:fss1:capabilities-v2`).
+/// Pinned freeze digest of the capability registry (`gen:fss1:capabilities-v4`).
 pub const REFERENCE_CAPABILITY_REGISTRY_DIGEST: &str =
+    "sha256:911d4859853e9e5a03334a870247c03d892335bd090063b0a7943f9da2892f4e";
+
+/// Superseded capabilities-v3 freeze and semantic basis, retained as history.
+pub const SUPERSEDED_CAPABILITY_REGISTRY_DIGEST_V3: &str =
+    "sha256:8066e8804a853a3b8f3a35a42360daaeee103fc26255556768d41028596443eb";
+/// Semantic identity of the superseded capabilities-v3 and cost-v2 basis.
+pub const SUPERSEDED_CONTRACT_BASIS_CANONICAL_DIGEST_CAPABILITIES_V3: &str =
+    "sha256:76ce34beb0a5db466d38741e0d052933dd7078c565c33c1485b79424099d6158";
+
+/// Superseded capabilities-v2 freeze, retained for typed stale-basis refusal.
+pub const SUPERSEDED_CAPABILITY_REGISTRY_DIGEST_V2: &str =
     "sha256:3ccae04582a7225f5fd596ad0b52605b0cd093266ad910282c0ed4b8b4e8f9d5";
+/// Semantic identity of the superseded capabilities-v2 and cost-v2 basis.
+pub const SUPERSEDED_CONTRACT_BASIS_CANONICAL_DIGEST_CAPABILITIES_V2: &str =
+    "sha256:f0fec48539a0f47eb7e5c18100e03e3189d39c1279eab436346bd795370c7f0f";
 
 /// Freeze digest of the superseded capability registry generation `gen:fss1:capabilities-v1`.
 ///
@@ -85,6 +100,8 @@ pub const SUPERSEDED_CONTRACT_BASIS_CANONICAL_DIGEST_CAPABILITIES_V1: &str =
 /// Every superseded registry freeze digest that a current peer must refuse as stale.
 pub const SUPERSEDED_REGISTRY_DIGESTS: &[&str] = &[
     SUPERSEDED_CAPABILITY_REGISTRY_DIGEST_V1,
+    SUPERSEDED_CAPABILITY_REGISTRY_DIGEST_V2,
+    SUPERSEDED_CAPABILITY_REGISTRY_DIGEST_V3,
     SUPERSEDED_COST_REGISTRY_DIGEST_V1,
 ];
 
@@ -113,17 +130,17 @@ pub const SUPERSEDED_COST_REGISTRY_DIGEST_V1: &str =
     "sha256:c885c834fe3d492076090e551c5988d6ed363bcf3a2432c41e67fe527ccf83b9";
 
 /// Pinned canonical semantic basis digest of the reference contract basis
-/// (current: capabilities-v2 + cost-v2 registry freeze).
+/// (current: capabilities-v4 + cost-v2 registry freeze).
 pub const REFERENCE_CONTRACT_BASIS_CANONICAL_DIGEST: &str =
-    "sha256:f0fec48539a0f47eb7e5c18100e03e3189d39c1279eab436346bd795370c7f0f";
+    "sha256:0b7348151f7ce4ba48a08df561920f090060978d2fba00a9e41c23afc872dd5b";
 
 /// Pinned binary freeze digest of the serialized canonical binary reference contract basis
-/// (current: capabilities-v2 + cost-v2 registry freeze; fixture `contract_basis_v2.bin`).
+/// (current: capabilities-v4 + cost-v2 registry freeze; fixture `contract_basis_v4.bin`).
 pub const REFERENCE_CONTRACT_BASIS_FREEZE_DIGEST: &str =
-    "sha256:dea13e470a9840b12901f70086da59388542d404955e9324f0ddb449663c6bb4";
+    "sha256:94a5ca8eff9eb06e2fbf19f08873ae82b99f726991c23251b8642eba4045ef14";
 
 /// Explicit additive presentation profile; the default durable reference basis stays frozen.
-pub const PROBE_CONTRACT_BASIS_GENERATION: &str = "gen:fss1:probe-context-v1";
+pub const PROBE_CONTRACT_BASIS_GENERATION: &str = "gen:fss1:probe-context-v3";
 
 /// Public registry generation admitting the checked V2 cognitive response for AOP-006 only.
 pub const PROBE_OPERATION_REGISTRY_GENERATION: &str = "gen:fss1:public-v2";
@@ -143,11 +160,11 @@ pub const PROBE_SCHEMA_CATALOG_DIGEST: &str =
 
 /// Canonical semantic identity of the explicitly selected probe presentation basis.
 pub const PROBE_CONTRACT_BASIS_CANONICAL_DIGEST: &str =
-    "sha256:b22d8b888e2d3bd0b4e069849f8041cc09d1fec9993249ed7f2da077de452b69";
+    "sha256:a9a5a9adc804d6eba70fb2e65321c4dd074b229fdde86cb4725625d0d2ae17fa";
 
-/// Binary identity of `tests/fixtures/contract_basis_probe_v1.bin`; legacy fixtures stay intact.
+/// Binary identity of `tests/fixtures/contract_basis_probe_v3.bin`; legacy fixtures stay intact.
 pub const PROBE_CONTRACT_BASIS_FREEZE_DIGEST: &str =
-    "sha256:44ff604949ddad15ed66453619efb2322a5e2b4f0be3335731aa767488776d00";
+    "sha256:127edcdc1b9e64ccfecec8aa601fc9ff9a04be98044705acc9515d3465a792f0";
 
 /// Maximum byte size of a canonical contract-basis binary payload (64 KiB).
 pub const MAX_CONTRACT_BASIS_BINARY_BYTES: usize = 64 * 1024;

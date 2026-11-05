@@ -40,8 +40,10 @@ EXPECTED_FREEZE_DIGESTS: dict[str, str] = {
     "gen:fss1:capabilities-v1": "sha256:5056fe20103a6c9a157fdb0e29bf5371384b976e874bf2964ff817fb202f045a",
     # v2 (fss-31cjo): adds CAP-EVENT-REVIEW-PREPARE-001 and CAP-EVENT-REVIEW-COMMIT-001.
     "gen:fss1:capabilities-v2": "sha256:3ccae04582a7225f5fd596ad0b52605b0cd093266ad910282c0ed4b8b4e8f9d5",
+    "gen:fss1:capabilities-v3": "sha256:8066e8804a853a3b8f3a35a42360daaeee103fc26255556768d41028596443eb",
+    "gen:fss1:capabilities-v4": "sha256:911d4859853e9e5a03334a870247c03d892335bd090063b0a7943f9da2892f4e",
 }
-CURRENT_GENERATION = "gen:fss1:capabilities-v2"
+CURRENT_GENERATION = "gen:fss1:capabilities-v4"
 
 # Total order of capability registry generations. A baseline row's `generation` names the
 # generation that introduced it; a registry may only carry rows introduced at or before
@@ -49,6 +51,8 @@ CURRENT_GENERATION = "gen:fss1:capabilities-v2"
 CAPABILITY_GENERATION_ORDER: tuple[str, ...] = (
     "gen:fss1:capabilities-v1",
     "gen:fss1:capabilities-v2",
+    "gen:fss1:capabilities-v3",
+    "gen:fss1:capabilities-v4",
 )
 
 # Recognized semantic plane designations in FSS architecture
@@ -88,6 +92,28 @@ REQUIRED_ROW_FIELDS = (
 # (see CAPABILITY_GENERATION_ORDER); every other field must match the live row exactly.
 # Adding an ID requires a new generation, a pinned freeze digest, and a baseline row.
 BASELINE_CAPABILITIES: dict[str, dict[str, str]] = {
+    'CAP-CAMERA-MANAGEMENT-COMMIT-001': {'id': 'CAP-CAMERA-MANAGEMENT-COMMIT-001', 'capability': 'commit exact camera management operation', 'scope': 'camera identity + management request digest + lease fence', 'plane': 'effect', 'defaultRole': 'denied unless explicitly granted', 'denialReason': 'ERR-AUTH-DENIED-001: principal lacks CAP-CAMERA-MANAGEMENT-COMMIT-001 authority on camera identity + management request digest + lease fence', 'safeAlternative': 'retain the current camera association and clock and request a scoped grant', 'generation': 'gen:fss1:capabilities-v4'},
+    'CAP-CAMERA-MANAGEMENT-PREPARE-001': {'id': 'CAP-CAMERA-MANAGEMENT-PREPARE-001', 'capability': 'prepare exact camera management operation', 'scope': 'camera identity + management preconditions + lease', 'plane': 'effect', 'defaultRole': 'denied unless explicitly granted', 'denialReason': 'ERR-AUTH-DENIED-001: principal lacks CAP-CAMERA-MANAGEMENT-PREPARE-001 authority on camera identity + management preconditions + lease', 'safeAlternative': 'retain the current camera association and clock and request a scoped grant', 'generation': 'gen:fss1:capabilities-v4'},
+    'CAP-CAMERA-SETTING-COMMIT-001': {
+            "id": "CAP-CAMERA-SETTING-COMMIT-001",
+            "capability": "commit exact camera settings change",
+            "scope": "camera identity + request digest + lease fence",
+            "plane": "effect",
+            "defaultRole": "denied unless explicitly granted",
+            "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-CAMERA-SETTING-COMMIT-001 authority on camera identity + request digest + lease fence",
+            "safeAlternative": "retain the current camera settings and request a scoped grant",
+            "generation": "gen:fss1:capabilities-v3"
+    },
+    'CAP-CAMERA-SETTING-PREPARE-001': {
+            "id": "CAP-CAMERA-SETTING-PREPARE-001",
+            "capability": "prepare exact camera settings change",
+            "scope": "camera identity + settings readback + lease",
+            "plane": "effect",
+            "defaultRole": "denied unless explicitly granted",
+            "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-CAMERA-SETTING-PREPARE-001 authority on camera identity + settings readback + lease",
+            "safeAlternative": "retain the current camera settings and request a scoped grant",
+            "generation": "gen:fss1:capabilities-v3"
+    },
     "CAP-ADAPTER-AUTH-001": {
         "capability": "resolve one adapter secret handle",
         "defaultRole": "adapter host only",

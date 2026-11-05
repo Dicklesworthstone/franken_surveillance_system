@@ -26,6 +26,10 @@ principal, scope, generation, budget, expiry, and optional lease fence.
 | `CAP-EXPORT-COMMIT-001` | publish exact export | plan digest | effect | strong approval |
 | `CAP-DELETE-PREPARE-001` | compute deletion closure plan | subject/object/event | effect | admin/data subject path |
 | `CAP-DELETE-COMMIT-001` | execute sealed deletion plan | plan digest | effect | strong approval |
+| `CAP-CAMERA-MANAGEMENT-COMMIT-001` | commit exact camera management operation | camera identity + management request digest + lease fence | effect | denied unless explicitly granted |
+| `CAP-CAMERA-MANAGEMENT-PREPARE-001` | prepare exact camera management operation | camera identity + management preconditions + lease | effect | denied unless explicitly granted |
+| `CAP-CAMERA-SETTING-PREPARE-001` | prepare exact camera settings change | camera identity + settings readback + lease | effect | denied unless explicitly granted |
+| `CAP-CAMERA-SETTING-COMMIT-001` | commit exact camera settings change | camera identity + request digest + lease fence | effect | denied unless explicitly granted |
 | `CAP-CALIBRATE-001` | run calibration computation | session root + sensors | cognition | operator |
 | `CAP-DRONE-CAPTURE-001` | ingest manually piloted drone capture | session/device | authority read | operator |
 | `CAP-DRONE-FLIGHT-001` | command drone motion | mission/airspace | effect | disabled in v1 |
@@ -65,10 +69,12 @@ IDs are never reused or renumbered.
 | Generation | Freeze digest | Change | Status |
 |---|---|---|---|
 | `gen:fss1:capabilities-v1` | `sha256:5056fe20103a6c9a157fdb0e29bf5371384b976e874bf2964ff817fb202f045a` | initial 43 rows | superseded |
-| `gen:fss1:capabilities-v2` | `sha256:3ccae04582a7225f5fd596ad0b52605b0cd093266ad910282c0ed4b8b4e8f9d5` | adds `CAP-EVENT-REVIEW-PREPARE-001`, `CAP-EVENT-REVIEW-COMMIT-001` (fss-31cjo); no v1 row changed | current |
+| `gen:fss1:capabilities-v2` | `sha256:3ccae04582a7225f5fd596ad0b52605b0cd093266ad910282c0ed4b8b4e8f9d5` | adds `CAP-EVENT-REVIEW-PREPARE-001`, `CAP-EVENT-REVIEW-COMMIT-001` (fss-31cjo); no v1 row changed | superseded |
+| `gen:fss1:capabilities-v3` | `sha256:8066e8804a853a3b8f3a35a42360daaeee103fc26255556768d41028596443eb` | adds camera-setting prepare and commit grants; no v2 row changed | superseded |
+| `gen:fss1:capabilities-v4` | `sha256:911d4859853e9e5a03334a870247c03d892335bd090063b0a7943f9da2892f4e` | adds camera-management prepare and commit grants; no v3 row changed | current |
 
-The capability digest is bound into every `ContractBasis`, so the v2 bump moves the reference
-basis to `gen:fss1:reference-v2`. A peer still bound to v1 is refused with a typed error, never
+The capability digest is bound into every `ContractBasis`, so the v4 bump moves the reference
+basis to `gen:fss1:reference-v4`. A peer still bound to v1, v2, or v3 is refused with a typed error, never
 silently accepted: `negotiate_basis` returns `ERR-AGENT-PROTOCOL-001`
 (`IncompatibleCapabilityRegistry`), and `negotiate_basis_with_superseded` with
 `superseded_registry_digests()` returns the stale-basis refusal `ERR-AGENT-SESSION-STALE-001`

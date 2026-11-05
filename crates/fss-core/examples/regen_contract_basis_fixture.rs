@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 //! Regenerates the contract-basis golden binary fixture after an intentional
-//! registry-digest migration (writes `tests/fixtures/contract_basis_v2.bin`
+//! registry-digest migration (writes `tests/fixtures/contract_basis_v4.bin`
 //! and prints the canonical + freeze digests to pin in `contract_basis.rs`
 //! and `contract_basis_contract.rs`). Deliberately manual: fixture bytes are
 //! reviewable binary artifacts, and regenerating them is a deliberate act,
@@ -20,7 +20,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("canonical basis digest: {}", canonical.to_text());
     println!("binary freeze digest: {}", freeze.to_text());
 
-    let out = PathBuf::from("tests/fixtures/contract_basis_v2.bin");
+    let out = PathBuf::from("tests/fixtures/contract_basis_v4.bin");
     if let Some(parent) = out.parent() {
         std::fs::create_dir_all(parent)?;
     }

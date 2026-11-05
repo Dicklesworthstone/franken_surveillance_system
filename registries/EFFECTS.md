@@ -7,6 +7,7 @@ Every effect has prepare, revalidate, commit, observe, verify, cancel, and recon
 | `EFFECT-ALERT-001` | send event alert | compensable by correction, not retractable | durable provider receipt or explicit indeterminate | target |
 | `EFFECT-ACK-001` | acknowledge/annotate event | supersedable | canonical event annotation revision | target |
 | `EFFECT-PTZ-001` | move camera PTZ | normally reversible | observed pose/scene and restore obligation | future after standards baseline |
+| `EFFECT-CAMERA-MANAGEMENT-001` | change controller association or device clock, or negotiate controller parameters | varies; old association or clock may be unknown | independently observed outcome for the exact operation; otherwise reconcile as indeterminate | experimental |
 | `EFFECT-CAMERA-SETTING-001` | change imaging/bitrate/audio/event settings | reversible where old value known | readback + stream-generation rollover | future |
 | `EFFECT-SPOTLIGHT-001` | temporary light/siren control | reversible, physically observable | device state and timeout restore | disabled by default |
 | `EFFECT-RETENTION-001` | change retention policy | prospective; deletion may be irreversible | policy revision and affected-object plan | target admin path |

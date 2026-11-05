@@ -2708,15 +2708,19 @@ fn test_runtime_authority_and_custody_parse_and_resolution() -> Result<(), Box<d
 /// typed `RuntimeGrant` whose stable ID round-trips, and grant ordering follows stable-ID
 /// ordering (canonical grant lists are validated as strictly ascending).
 #[test]
-fn test_runtime_grants_cover_capability_registry_v2() -> Result<(), Box<dyn Error>> {
+fn test_runtime_grants_cover_capability_registry_v4() -> Result<(), Box<dyn Error>> {
     let registry = include_str!("../../../architecture/capabilities.json");
-    assert!(registry.contains("\"generation\": \"gen:fss1:capabilities-v2\""));
+    assert!(registry.contains("\"generation\": \"gen:fss1:capabilities-v4\""));
     let ids: Vec<&str> = registry
         .lines()
         .filter_map(|line| line.trim().strip_prefix("\"id\": \""))
         .filter_map(|rest| rest.strip_suffix("\","))
         .collect();
-    assert_eq!(ids.len(), 45, "capability registry v2 carries 45 rows");
+    assert_eq!(ids.len(), 49, "capability registry v4 carries 49 rows");
+    assert!(ids.contains(&"CAP-CAMERA-MANAGEMENT-PREPARE-001"));
+    assert!(ids.contains(&"CAP-CAMERA-MANAGEMENT-COMMIT-001"));
+    assert!(ids.contains(&"CAP-CAMERA-SETTING-PREPARE-001"));
+    assert!(ids.contains(&"CAP-CAMERA-SETTING-COMMIT-001"));
     assert!(ids.contains(&"CAP-EVENT-REVIEW-PREPARE-001"));
     assert!(ids.contains(&"CAP-EVENT-REVIEW-COMMIT-001"));
     let mut grants = Vec::with_capacity(ids.len());

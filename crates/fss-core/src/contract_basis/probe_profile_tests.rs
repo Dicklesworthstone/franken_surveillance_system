@@ -12,7 +12,7 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 #[test]
 fn profile_pins_actual_new_schema_and_preserves_both_binary_generations() -> TestResult {
     let old = reference_contract_basis();
-    let legacy = include_bytes!("../../../../tests/fixtures/contract_basis_v2.bin");
+    let legacy = include_bytes!("../../../../tests/fixtures/contract_basis_v4.bin");
     assert_eq!(encode_canonical_binary(&old)?.as_slice(), legacy);
     assert_eq!(
         old.basis_digest().to_text(),
@@ -30,10 +30,26 @@ fn profile_pins_actual_new_schema_and_preserves_both_binary_generations() -> Tes
         ContentDigest::sha256(&encoder.finish()).to_text(),
         PROBE_SCHEMA_CATALOG_DIGEST
     );
+    let historical_probe = decode_canonical_binary(include_bytes!(
+        "../../../../tests/fixtures/contract_basis_probe_v1.bin"
+    ))?;
+    assert_eq!(
+        historical_probe.capability_registry_digest.to_text(),
+        SUPERSEDED_CAPABILITY_REGISTRY_DIGEST_V2
+    );
+    assert!(!is_probe_contract_basis(&historical_probe));
+    let superseded_probe = decode_canonical_binary(include_bytes!(
+        "../../../../tests/fixtures/contract_basis_probe_v2.bin"
+    ))?;
+    assert_eq!(
+        superseded_probe.capability_registry_digest.to_text(),
+        SUPERSEDED_CAPABILITY_REGISTRY_DIGEST_V3
+    );
+    assert!(!is_probe_contract_basis(&superseded_probe));
     let probe = probe_contract_basis();
     assert!(is_probe_contract_basis(&probe));
     assert!(!is_probe_contract_basis(&old));
-    let fixture = include_bytes!("../../../../tests/fixtures/contract_basis_probe_v1.bin");
+    let fixture = include_bytes!("../../../../tests/fixtures/contract_basis_probe_v3.bin");
     assert_eq!(encode_canonical_binary(&probe)?.as_slice(), fixture);
     assert_eq!(decode_canonical_binary(fixture)?, probe);
     assert_eq!(

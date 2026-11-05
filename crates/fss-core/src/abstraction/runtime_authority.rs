@@ -75,6 +75,14 @@ pub enum RuntimeGrant {
     AlertPrepare,
     /// Device calibration grant.
     Calibrate,
+    /// Commit an exact camera-management effect under a lease.
+    CameraManagementCommit,
+    /// Prepare a scoped camera-management effect.
+    CameraManagementPrepare,
+    /// Commit an exact camera-setting effect under a lease.
+    CameraSettingCommit,
+    /// Prepare a scoped camera-setting effect.
+    CameraSettingPrepare,
     /// Deletion effect commit grant.
     DeleteCommit,
     /// Deletion effect prepare grant.
@@ -155,6 +163,10 @@ impl RuntimeGrant {
             Self::AlertCommit => "CAP-ALERT-COMMIT-001",
             Self::AlertPrepare => "CAP-ALERT-PREPARE-001",
             Self::Calibrate => "CAP-CALIBRATE-001",
+            Self::CameraManagementCommit => "CAP-CAMERA-MANAGEMENT-COMMIT-001",
+            Self::CameraManagementPrepare => "CAP-CAMERA-MANAGEMENT-PREPARE-001",
+            Self::CameraSettingCommit => "CAP-CAMERA-SETTING-COMMIT-001",
+            Self::CameraSettingPrepare => "CAP-CAMERA-SETTING-PREPARE-001",
             Self::DeleteCommit => "CAP-DELETE-COMMIT-001",
             Self::DeletePrepare => "CAP-DELETE-PREPARE-001",
             Self::DroneCapture => "CAP-DRONE-CAPTURE-001",
@@ -208,6 +220,10 @@ impl RuntimeGrant {
             "CAP-ALERT-COMMIT-001" => Ok(Self::AlertCommit),
             "CAP-ALERT-PREPARE-001" => Ok(Self::AlertPrepare),
             "CAP-CALIBRATE-001" => Ok(Self::Calibrate),
+            "CAP-CAMERA-MANAGEMENT-COMMIT-001" => Ok(Self::CameraManagementCommit),
+            "CAP-CAMERA-MANAGEMENT-PREPARE-001" => Ok(Self::CameraManagementPrepare),
+            "CAP-CAMERA-SETTING-COMMIT-001" => Ok(Self::CameraSettingCommit),
+            "CAP-CAMERA-SETTING-PREPARE-001" => Ok(Self::CameraSettingPrepare),
             "CAP-DELETE-COMMIT-001" => Ok(Self::DeleteCommit),
             "CAP-DELETE-PREPARE-001" => Ok(Self::DeletePrepare),
             "CAP-DRONE-CAPTURE-001" => Ok(Self::DroneCapture),

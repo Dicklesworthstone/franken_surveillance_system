@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 //! Field-level contract tests for the capability registry rows
-//! (`architecture/capabilities.json`, generation `gen:fss1:capabilities-v2`),
+//! (`architecture/capabilities.json`, generation `gen:fss1:capabilities-v4`),
 //! realizing the fss-x4a.30.86 family acceptance criteria:
 //!
 //! * every row exists exactly once with its normative fields;
@@ -139,7 +139,7 @@ fn adapter_rows_exist_once_with_exact_normative_fields() -> Result<(), Box<dyn E
         );
         assert!(!row.safe_alternative.is_empty(), "{id} safe alternative");
         assert_eq!(
-            row.generation, "gen:fss1:capabilities-v2",
+            row.generation, "gen:fss1:capabilities-v4",
             "{id} generation"
         );
         // The typed grant resolves and round-trips.
@@ -167,7 +167,7 @@ fn registry_rows_are_unique_complete_and_current_generation() -> Result<(), Box<
             assert!(!value.is_empty(), "row {} has empty {field}", row.id);
         }
         assert_eq!(
-            row.generation, "gen:fss1:capabilities-v2",
+            row.generation, "gen:fss1:capabilities-v4",
             "row {} binds a non-current generation",
             row.id
         );
@@ -221,7 +221,7 @@ fn unknown_capability_rows_fail_closed() {
 
 #[test]
 fn registry_digest_declaration_matches_contract_basis_pin() -> Result<(), Box<dyn Error>> {
-    // The ContractBasis pins `gen:fss1:capabilities-v2` at
+    // The ContractBasis pins `gen:fss1:capabilities-v4` at
     // REFERENCE_CAPABILITY_REGISTRY_DIGEST; the file must declare the same
     // digest, and the pin must equal the declaration.
     let marker = "\"registryDigest\": \"";
