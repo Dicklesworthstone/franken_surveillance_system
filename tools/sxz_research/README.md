@@ -27,3 +27,13 @@ usize 86257, csize 61439, props 0x5d):
 - The SXZ hardware decode likely needs register-level tracing (hal_xzdec.c documents the
   interface; CTRL0=0x0003 for SXZ vs 0x0007 for XZ — the SXZ engine may implement a
   simplified/custom LZMA2). A UART/JTAG trace of one live decode would settle it.
+
+## C660 /bin/main RE note (2026-11-04)
+
+`/tmp/c660_rootfs/bin/main` (ARM 32-bit, THUMB, stripped): the DS method strings
+(scanApList/connectAp/getConnectStatus) sit in a packed string block at file 0x4069xx with
+ZERO absolute references anywhere in the image (checked .text literal pools, .data.rel.ro,
+.data, .got, .rel.dyn/.rel.plt addends, aligned+unaligned, file-offset and vaddr forms).
+The DS dispatcher computes string pointers at runtime (master-table + offset pattern).
+Finding connectAp's handler → the stack-buffer offset needs this dispatch RE first;
+the borrowed offset 1060 remains unverified for C460 (different SoC, same framework).
