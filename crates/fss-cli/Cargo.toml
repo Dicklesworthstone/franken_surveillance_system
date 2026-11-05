@@ -81,6 +81,10 @@ name = "fss-discover"
 path = "src/bin/fss-discover.rs"
 
 [[bin]]
+name = "fss-unifi-discover"
+path = "src/bin/fss-unifi-discover.rs"
+
+[[bin]]
 name = "fss-onvif"
 path = "src/bin/fss-onvif.rs"
 
@@ -177,6 +181,7 @@ name = "fss-fusion-profile"
 path = "src/bin/fss-fusion-profile.rs"
 
 [dependencies]
+asupersync = { version = "=0.5.0", default-features = false }
 fss-codec-mjpeg = { path = "../fss-codec-mjpeg" }
 fss-core = { path = "../fss-core" }
 fss-fusion = { path = "../fss-fusion" }

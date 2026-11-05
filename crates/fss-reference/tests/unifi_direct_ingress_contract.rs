@@ -8,7 +8,7 @@ use fss_core::{
 };
 use fss_packet::extended_flv::{
     self, Limits, Parse, Tag, avc,
-    stream::{Framer, RecordKind, SourceRecord},
+    stream::{Framer, RecordKind, SearchMode, SourceRecord},
 };
 use fss_reference::unifi_direct::ingress::{DirectIngress, Error as DirectError, Retirement, Step};
 use fss_runtime::{
@@ -22,8 +22,8 @@ type TestResult = Result<(), Box<dyn Error>>;
 
 fn root() -> Result<(AuthorityCx, fss_core::RegionTree), Box<dyn Error>> {
     let mut budget = BudgetVector::ZERO;
-    budget.bytes = 32_768;
-    budget.network_bytes = 32_768;
+    budget.bytes = 16 * 1024 * 1024;
+    budget.network_bytes = 16 * 1024 * 1024;
     let spec = RootAuthoritySpec {
         trace_id: "trace:direct-ingress".into(),
         operation_id: OperationId::parse("operation:direct-ingress")?,
@@ -91,6 +91,22 @@ fn receive_case(
     max_buffer: usize,
     expect_limit: bool,
 ) -> Result<(Vec<SourceRecord>, Retirement), Box<dyn Error>> {
+    receive_case_mode(
+        wire,
+        chunk_size,
+        max_buffer,
+        expect_limit,
+        SearchMode::Conservative,
+    )
+}
+
+fn receive_case_mode(
+    wire: Vec<u8>,
+    chunk_size: usize,
+    max_buffer: usize,
+    expect_limit: bool,
+    mode: SearchMode,
+) -> Result<(Vec<SourceRecord>, Retirement), Box<dyn Error>> {
     let runtime = RuntimeBuilder::current_thread().build()?;
     let (mut authority, mut tree) = root()?;
     let max_total = wire.len() as u64 + 1;
@@ -131,8 +147,8 @@ fn receive_case(
                             .map_err(|e| e.to_string())?;
                     let tcp = TcpIngress::new(socket, "fixture:direct", chunk_size, max_total)
                         .map_err(|e| e.to_string())?;
-                    let framer =
-                        Framer::new(Limits::default(), max_buffer).map_err(|e| e.to_string())?;
+                    let framer = Framer::with_mode(Limits::default(), max_buffer, mode)
+                        .map_err(|e| e.to_string())?;
                     let mut ingress = DirectIngress::new(tcp, framer);
                     let mut records = Vec::new();
                     let mut terminal = false;
@@ -248,5 +264,86 @@ fn buffer_exhaustion_returns_the_complete_received_source_prefix() -> TestResult
     }
     assert_eq!(recovered.len() as u64, retirement.source.received);
     assert_eq!(recovered, wire[..recovered.len()]);
+    Ok(())
+}
+
+#[test]
+#[ignore = "owner-authorized live camera bytes must be supplied on stdin"]
+fn owner_camera_live_ingress() -> TestResult {
+    use std::io::Read;
+    let mut wire = Vec::new();
+    std::io::stdin()
+        .lock()
+        .take(8 * 1024 * 1024 + 1)
+        .read_to_end(&mut wire)?;
+    if wire.len() > 8 * 1024 * 1024 || !wire.starts_with(b"FLV\x01") {
+        return Err("invalid bounded laboratory input".into());
+    }
+    let (records, retirement) = receive_case_mode(
+        wire.clone(),
+        32 * 1024,
+        8 * 1024 * 1024,
+        false,
+        SearchMode::Provisional,
+    )?;
+    let mut position = 0_usize;
+    let mut video = 0_usize;
+    let mut avc_samples = 0_usize;
+    let mut provisional = 0_usize;
+    let mut skipped = 0_usize;
+    for record in &records {
+        if record.offset() as usize != position
+            || wire.get(position..position + record.bytes().len()) != Some(record.bytes())
+        {
+            return Err("source record mismatch".into());
+        }
+        position += record.bytes().len();
+        if let RecordKind::Candidate {
+            provisional: is_provisional,
+            earlier_incomplete,
+            ..
+        } = record.kind()
+        {
+            provisional += usize::from(is_provisional);
+            skipped += usize::from(earlier_incomplete);
+        }
+        if let Some(range) = record.tag_range() {
+            let Parse::Complete(tag) = Tag::parse(&record.bytes()[range], Limits::default())?
+            else {
+                return Err("incomplete record".into());
+            };
+            if tag.kind() == 9 {
+                video += 1;
+                if let Ok(v) = avc::VideoTag::parse(tag)
+                    && v.packet_type() == avc::PacketType::NalUnits
+                {
+                    avc_samples += 1;
+                }
+            }
+        }
+    }
+    if retirement.buffered.is_some()
+        || retirement.source.pending.is_some()
+        || wire.get(position..) != Some(retirement.framing.bytes())
+        || retirement.source.received as usize != wire.len()
+    {
+        return Err("incomplete source recovery".into());
+    }
+    println!(
+        "source_bytes={} records={} video_tags={} avc_sample_tags={} provisional_records={} incomplete_candidate_skips={} tail_bytes={}",
+        wire.len(),
+        records.len(),
+        video,
+        avc_samples,
+        provisional,
+        skipped,
+        retirement.framing.bytes().len()
+    );
+    println!(
+        "evidence=passive_g4_midstream_synthetic_header_replayed_through_native_asupersync_loopback_no_live_controller"
+    );
+    if avc_samples == 0 {
+        return Err("no AVC samples observed".into());
+    }
     Ok(())
 }

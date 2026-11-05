@@ -277,6 +277,12 @@ pub async fn discover(
             report.stop = Stop::PacketLimit;
             break;
         }
+        // Do not debit a fresh receive after its observation window has
+        // already closed. The preselected stop also preserves whether the
+        // task deadline or the configured window was the limiting boundary.
+        if runtime_cx.now() >= deadline {
+            break;
+        }
         let mut receive_cost = BudgetVector::ZERO;
         receive_cost.network_bytes = buffer.len() as u64;
         if let Err(error) = owner.checkpoint_for(

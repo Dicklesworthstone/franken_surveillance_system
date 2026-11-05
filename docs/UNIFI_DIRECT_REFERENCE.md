@@ -1,8 +1,10 @@
 # UniFi Direct: experimental packet reference
 
-This is an in-progress owner-authorized interoperability lane. It does **not**
-yet implement a networked controller, connect to a camera, authenticate a peer,
-capture video, write a recording, or claim support for a device or firmware tuple.
+This is an in-progress owner-authorized interoperability lane. Native discovery
+has contacted one owner-controlled G4, and native ingress has processed a
+passive capture through loopback. It does **not** yet implement a networked
+controller, authenticate a peer, directly acquire a camera stream, write a
+recording, or claim general device or firmware support.
 Existing UniFi Protect export handling is separate and remains unchanged.
 
 ## Working reference and proposed route
@@ -10,8 +12,8 @@ Existing UniFi Protect export handling is separate and remains unchanged.
 The laboratory setup used xuio/scrypted-unifi-direct commit
 `2920ce8896aadd603e2847d17554905592d155e8` and an owner-authorized G4 Instant.
 The device reported firmware `UVC.v4.70.37.67.M_9b6a37f.240320.0635` on
-2026-11-04. This is a compatibility observation for the existing laboratory
-setup, not evidence that the Rust reference has been exercised on that device.
+2026-11-04. The Rust discovery probe and passive-media replay observations below
+apply to that owned laboratory device and do not establish full compatibility.
 The camera's management connection used a TLS WebSocket, and the controller
 commanded a TCP push using `extendedFlv`. This wire description is based on the
 reference implementation and must be checked against sanitized fixtures and
@@ -31,6 +33,26 @@ candidates. All 208 matched a four-byte NAL-length walk and reported a zero
 composition offset; two claimed FLV keyframe type and 206 inter-frame type.
 Those are observations of tag framing, not proof of the configuration record,
 valid H.264 syntax, successful decoding, or future camera behavior.
+
+On 2026-11-05, a native Asupersync UDP discovery test on `trj` sent one
+owner-scoped local broadcast and received one UVC candidate: the G4 Instant,
+whose response advertised the same address as its sender. This is an
+unauthenticated discovery claim, not proof of ownership, adoption state, or
+access authority. The test made no camera configuration changes. The exact
+executed stripped test binary's SHA-256 was
+`5f33b5be478defe9c7186c076ac5bba6a395325c476f6d78d442f65e65dd41af`.
+
+Also on 2026-11-05, an eight-second passive capture of the running camera's
+existing push was reassembled in memory. Because capture began midstream, the
+laboratory harness prepended a synthetic FLV header and replayed the resulting
+96,697-byte input through `TcpIngress` and `DirectIngress` over native
+Asupersync loopback on `trj`. The Rust code returned 209 AVC sample-tag
+candidates and preserved the complete received source in emitted records and
+the remaining 16-byte tail. Eleven choices skipped an earlier incomplete
+candidate; 315 records were therefore marked provisional. This is actual G4
+traffic processed by the Rust path, not a direct camera TCP connection, a
+verified boundary/decoder result, source custody, or a continuous recording.
+No captured media or credentials were written into the repository.
 
 The intended native path is an authority-scoped and cancellation-owned
 controller, a bounded TCP ingress, source-preserving extended-FLV parsing, and
@@ -108,6 +130,11 @@ is admitted only after its complete NAL-length walk passes. Frame-type flags
 and observed IDR NAL type do not prove a complete or decodable picture. The
 caller still owns cross-tag camera, stream-generation and configuration-epoch
 binding; the structural parser does not validate full H.264 syntax.
+`fss_packet::extended_flv::stream` incrementally frames caller-provided
+contiguous bytes and returns exact original segments and offsets. Its optional
+low-latency mode propagates a provisional marker after any skipped incomplete
+candidate; its conservative mode can wait indefinitely on a plausible long
+candidate, as observed on the real G4. Neither mode proves a genuine boundary.
 
 The next media owner should bind each tag's range to a retained immutable source
 object or an explicit non-retention record before composing tag-relative NAL
@@ -151,7 +178,7 @@ to this state machine, or retain and replay an early reply after resolving the
 local write. The reference currently rejects a reply observed before the write
 receipt; it does not buffer or silently discard that reply for the owner.
 
-The packet and controller references have no live network owner, incremental
+The packet and controller references have no native live controller, incremental
 storage owner, media assembly, session-to-sensor custody, or persistence
 format. Synthetic tests are not live-camera or security qualification. Do not
 replace the running recorder or claim source continuity on this basis.
@@ -165,8 +192,15 @@ read remains in the owner until the caller moves it or explicitly retires the
 owner. The resulting source chunk is not a durable-custody receipt. Listener
 authorization, peer authentication, idle supervision, canonical clock
 observations, source publication, and binding to a camera/session remain the
-caller's responsibilities. This reader is not yet wired to UniFi or the FLV
-parser and must not be used as evidence of a working camera recorder.
+caller's responsibilities. `fss_reference::unifi_direct::ingress` composes
+that reader with the incremental FLV framer, preserving any incomplete source
+at retirement. It is not connected to the controller or a durable recorder.
+
+`fss_reference::unifi_direct::discovery` sends one explicitly scoped v1 UDP
+query over Asupersync and returns bounded, unauthenticated UVC candidates. It is
+not yet integrated with the general discovery command or an automatic enrollment
+and setup owner. Wi-Fi onboarding for unprovisioned devices, credential custody,
+current controller ownership and safe adoption remain independent requirements.
 
 ## Scoped verification and handoff
 
@@ -207,6 +241,17 @@ The TCP tests used real loopback sockets and covered a parked read being dropped
 and retried, task-binding refusal, missing media authority, source retirement,
 and exact byte transfer. They do not establish camera interoperability, live
 recording, native async cancellation wakeup, or durable source custody.
+The incremental framer passed four stream contracts plus six existing FLV and
+eight AVC contracts at base `d229d849a7cfffa422f374d29c10b2423aa57440` and
+overlay `854b05cf67a235cecf5d978c4e0f3ff47a91f096edbbba9709cbf8583be3ec29`.
+The integrated TCP-to-FLV tests passed two synthetic cases at base
+`07e56dd391c33dbb9b9f6b38d4fcb5c1aaa24187` and overlay
+`eb2cdd3060d2ec3790992d4dddea18e3e2de25e1abe541a1e83f7702fd1b91ae`; their
+separately invoked owner-camera replay test passed on `trj` as described above.
+The native discovery target passed two synthetic tests at base
+`e569638aa3f490d87b95c06d7cfbf7534442b848` and overlay
+`425726a1619d754fe99d85ddbddce13fa74c11386e4373e54cdb28c5043031c2`, followed
+by the separately invoked one-test real-device run on `trj` described above.
 This is not a full workspace, release, live-camera, media-decode, or
 retention qualification. A separate test attempt on `ts1` timed out before
 execution. The semantic-plane checker with doctests skipped reports 690 errors
