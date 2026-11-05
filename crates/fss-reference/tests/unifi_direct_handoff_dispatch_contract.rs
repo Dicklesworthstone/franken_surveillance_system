@@ -651,6 +651,39 @@ fn http_request(socket: &mut std::net::TcpStream) -> std::io::Result<Vec<u8>> {
         }
     }
     let text = std::str::from_utf8(&head).map_err(std::io::Error::other)?;
+    let chunked = text
+        .lines()
+        .any(|line| line == "Transfer-Encoding: chunked");
+    if chunked {
+        if text.lines().any(|line| line.starts_with("Content-Length:")) {
+            return Err(std::io::Error::other("ambiguous fixture framing"));
+        }
+        let mut length = Vec::new();
+        while !length.ends_with(b"\r\n") {
+            socket.read_exact(&mut one)?;
+            length.push(one[0]);
+            if length.len() > 10 {
+                return Err(std::io::Error::other("fixture chunk size limit"));
+            }
+        }
+        let len = usize::from_str_radix(
+            std::str::from_utf8(&length[..length.len() - 2]).map_err(std::io::Error::other)?,
+            16,
+        )
+        .map_err(std::io::Error::other)?;
+        if len == 0 || len > 4096 {
+            return Err(std::io::Error::other("fixture chunk body limit"));
+        }
+        let start = head.len();
+        head.resize(start + len, 0);
+        socket.read_exact(&mut head[start..])?;
+        let mut end = [0u8; 7];
+        socket.read_exact(&mut end)?;
+        if &end != b"\r\n0\r\n\r\n" {
+            return Err(std::io::Error::other("fixture chunk terminator"));
+        }
+        return Ok(head);
+    }
     let len = text
         .lines()
         .find_map(|line| line.strip_prefix("Content-Length: "))
@@ -669,6 +702,7 @@ fn http_fixture(
     cancel_reply: bool,
     already: bool,
     fail_readback: bool,
+    framing: Framing,
 ) -> std::io::Result<()> {
     let mut socket = std::net::TcpStream::connect_timeout(&address, Duration::from_secs(5))?;
     socket.set_read_timeout(Some(Duration::from_secs(8)))?;
@@ -693,6 +727,14 @@ fn http_fixture(
         }
         if index == 3 && !request.ends_with(br#"{"controller":{"addr":"192.168.1.40"}}"#) {
             return Err(std::io::Error::other("fixture handoff mismatch"));
+        }
+        if index == 3 {
+            let chunked = request
+                .windows(b"\r\nTransfer-Encoding: chunked\r\n".len())
+                .any(|window| window == b"\r\nTransfer-Encoding: chunked\r\n");
+            if chunked != (framing == Framing::Chunked) {
+                return Err(std::io::Error::other("fixture wrong handoff framing"));
+            }
         }
         if index == 3 && cancel_reply {
             let mut b = [0u8; 1];
@@ -729,7 +771,7 @@ fn http_fixture(
     }
     Ok(())
 }
-fn owned_http_handoff(cancel_reply: bool) -> Test {
+fn owned_http_handoff(cancel_reply: bool, framing: Framing) -> Test {
     let suffix = if cancel_reply {
         "http-cancel"
     } else {
@@ -744,7 +786,14 @@ fn owned_http_handoff(cancel_reply: bool) -> Test {
         plan,
         conditions,
         permit,
-    } = harness(suffix)?;
+    } = harness_with_framing(
+        if framing == Framing::Chunked {
+            "http-chunked"
+        } else {
+            suffix
+        },
+        framing,
+    )?;
     let runtime = RuntimeBuilder::current_thread().build()?;
     runtime.block_on(async {
         let cx = asupersync::Cx::current().ok_or("runtime context")?;
@@ -761,7 +810,7 @@ fn owned_http_handoff(cancel_reply: bool) -> Test {
                     let listener = TcpListener::bind("127.0.0.1:0").await?;
                     let address = listener.local_addr()?;
                     let peer = std::thread::spawn(move || {
-                        http_fixture(address, cancel_reply, false, false)
+                        http_fixture(address, cancel_reply, false, false, framing)
                     });
                     let (socket, _) =
                         timeout(cx.now(), Duration::from_secs(5), listener.accept()).await??;
@@ -909,11 +958,15 @@ fn owned_http_handoff(cancel_reply: bool) -> Test {
 }
 #[test]
 fn owned_http_handoff_requires_success_and_readback() -> Test {
-    owned_http_handoff(false)
+    owned_http_handoff(false, Framing::ContentLength)
 }
 #[test]
 fn cancelled_owned_http_handoff_reply_fences_session() -> Test {
-    owned_http_handoff(true)
+    owned_http_handoff(true, Framing::ContentLength)
+}
+#[test]
+fn owned_http_handoff_uses_chunked_framing_end_to_end() -> Test {
+    owned_http_handoff(false, Framing::Chunked)
 }
 
 struct SetupAdmission {
@@ -974,10 +1027,15 @@ fn discovery_packet() -> Vec<u8> {
     packet.extend_from_slice(&body);
     packet
 }
-fn run_discovered_setup(cancel_reply: bool, already: bool, fail_readback: bool) -> Test {
+fn run_discovered_setup(
+    cancel_reply: bool,
+    already: bool,
+    fail_readback: bool,
+    framing: Framing,
+) -> Test {
     use fss_reference::unifi_direct::{discovery, setup};
     let path = std::fs::canonicalize(std::env::temp_dir())?.join(format!(
-        "fss-unifi-setup-{}-{cancel_reply}-{already}-{fail_readback}",
+        "fss-unifi-setup-{}-{cancel_reply}-{already}-{fail_readback}-{framing:?}",
         std::process::id()
     ));
     std::fs::create_dir(&path)?;
@@ -1065,7 +1123,7 @@ fn run_discovered_setup(cancel_reply: bool, already: bool, fail_readback: bool) 
                     let listener = TcpListener::bind("127.0.0.1:0").await?;
                     let address = listener.local_addr()?;
                     let peer = std::thread::spawn(move || {
-                        http_fixture(address, cancel_reply, already, fail_readback)
+                        http_fixture(address, cancel_reply, already, fail_readback, framing)
                     });
                     let (socket, _) =
                         timeout(cx.now(), Duration::from_secs(5), listener.accept()).await??;
@@ -1125,7 +1183,9 @@ fn run_discovered_setup(cancel_reply: bool, already: bool, fail_readback: bool) 
                     ));
                     assert_eq!(http.phase(), Phase::Login);
                     report.stop = discovery::Stop::WindowElapsed;
-                    let outcome = owner.run(&mut http, &config!(&report)).await?;
+                    let outcome = owner
+                        .run_with_framing(&mut http, &config!(&report), framing)
+                        .await?;
                     match outcome {
                         setup::Outcome::AlreadyAssociated { observation, .. } if already => {
                             assert_eq!(
@@ -1218,19 +1278,23 @@ fn run_discovered_setup(cancel_reply: bool, already: bool, fail_readback: bool) 
 
 #[test]
 fn discovered_candidate_runs_owned_setup_through_journal_and_readback() -> Test {
-    run_discovered_setup(false, false, false)
+    run_discovered_setup(false, false, false, Framing::ContentLength)
+}
+#[test]
+fn discovered_setup_uses_authorized_chunked_handoff() -> Test {
+    run_discovered_setup(false, false, false, Framing::Chunked)
 }
 #[test]
 fn discovered_setup_reply_timeout_preserves_committed_obligation() -> Test {
-    run_discovered_setup(true, false, false)
+    run_discovered_setup(true, false, false, Framing::ContentLength)
 }
 
 #[test]
 fn discovered_setup_already_associated_does_not_prepare_an_effect() -> Test {
-    run_discovered_setup(false, true, false)
+    run_discovered_setup(false, true, false, Framing::ContentLength)
 }
 
 #[test]
 fn discovered_setup_retains_response_if_readback_is_interrupted() -> Test {
-    run_discovered_setup(false, false, true)
+    run_discovered_setup(false, false, true, Framing::ContentLength)
 }

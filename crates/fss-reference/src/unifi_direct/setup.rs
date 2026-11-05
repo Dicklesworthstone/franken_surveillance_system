@@ -229,6 +229,18 @@ impl Owner<'_, '_, '_> {
         camera: &mut camera_http::Owner<'_, '_, '_, IO>,
         cfg: &Config<'_>,
     ) -> Result<Outcome, Error> {
+        self.run_with_framing(camera, cfg, handoff::Framing::ContentLength)
+            .await
+    }
+
+    /// Run setup with an explicit framing choice bound to the prepared effect.
+    /// An indeterminate write is never retried using another framing mode.
+    pub async fn run_with_framing<IO: AsyncRead + AsyncWrite + Unpin>(
+        &mut self,
+        camera: &mut camera_http::Owner<'_, '_, '_, IO>,
+        cfg: &Config<'_>,
+        framing: handoff::Framing,
+    ) -> Result<Outcome, Error> {
         if cfg.wait.is_zero()
             || cfg.wait > MAX_WAIT
             || cfg.generation == 0
@@ -321,8 +333,13 @@ impl Owner<'_, '_, '_> {
             lease_fence: cfg.fence,
             settings: before,
         };
-        let plan = handoff::Plan::new(*candidate.source().ip(), cfg.destination, conditions)
-            .map_err(Error::Plan)?;
+        let plan = handoff::Plan::new_with_framing(
+            *candidate.source().ip(),
+            cfg.destination,
+            conditions,
+            framing,
+        )
+        .map_err(Error::Plan)?;
         let key =
             IdempotencyKey::parse(cfg.operation.as_str()).map_err(|_| Error::Configuration)?;
         remaining(self.cx, deadline)?;
