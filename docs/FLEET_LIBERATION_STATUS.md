@@ -537,3 +537,13 @@ squashfs @0x200000 (dropbear SSH inside; root:root).
 Watchdog running (`/tmp/liberation_watch.sh` → `/tmp/liberation_watch.log`): alerts on new
 beacons (entrypoint execution) and backup arrivals (installer step 2). The camera's assis
 acts on its own poll cadence — every link is now armed and verified except that timing.
+
+## 23:24 — Owlet probe result (update to the -20011 note)
+
+`owlet_direct_connect.py fire` (sudo, --blob captured): the DTLS handshake now COMPLETES —
+session tags exchange, 200B ack-reply type=0x602, hello 291B / login 168B accepted — but the
+0x2041 AV-session grant never arrives ("no grant"). This is different from the handoff's
+`AV_ER_TIMEOUT` stuck state: the vendor auth gate answers, it just doesn't grant to our
+client. Either the grant depends on an app-session token we're not replaying correctly, or
+the stuck state moved. Next: Frida-hook the phone app's avClientStartEx during a live stream
+to capture the exact grant sequence, or power-cycle first and re-probe.
