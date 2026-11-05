@@ -233,9 +233,12 @@ for port in 443 8443; do
       extra="--iot-cert --iot-cert-dir $CERTS/iot"
       [ "${FIRMWARE_DETAIL:-0}" = 1 ] && extra="$extra --firmware-detail"
     fi
-    sudo "$PY" "$HERE/wyze_forge_serve.py" --dir "$CAP_DIR" --port "$port" \
-      --cert /tmp/iot2.pem --key /tmp/iot2.key --intermediate "$CERTS/emudhra/ev-ca-aaa-cross.pem" \
-      --sni s3-us-west-2.amazonaws.com $extra >> /tmp/ota/tls.log 2>&1 &
+    # The redirect must happen in the ROOT shell: /tmp/ota/tls.log keeps getting recreated
+    # root-owned by an unidentified root writer, and a user-shell redirection fails with
+    # EACCES, silently killing the spawn (measured: 8443 plane dead, no log line anywhere).
+    sudo sh -c "exec '$PY' '$HERE/wyze_forge_serve.py' --dir '$CAP_DIR' --port '$port' \
+      --cert /tmp/iot2.pem --key /tmp/iot2.key --intermediate '$CERTS/emudhra/ev-ca-aaa-cross.pem' \
+      --sni s3-us-west-2.amazonaws.com $extra >> /tmp/ota/tls.log 2>&1" &
     sleep 1
     forge_ok "$port" && break
     free_port "$port"
