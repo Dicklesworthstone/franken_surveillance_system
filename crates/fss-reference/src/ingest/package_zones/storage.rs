@@ -268,7 +268,7 @@ impl PackageZoneReport {
         }
         Ok(report)
     }
-    fn revalidate(&mut self, deployment: &ReferenceDeployment, cx: &ReplayCx) -> Result<()> {
+    pub(super) fn revalidate(&mut self, deployment: &ReferenceDeployment, cx: &ReplayCx) -> Result<()> {
         check_scope(deployment, cx)?;
         if self.root.as_path() != deployment.root()
             || self.site != deployment.site_lineage()

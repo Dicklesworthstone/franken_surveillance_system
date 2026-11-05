@@ -23,6 +23,8 @@ use crate::{ReferenceDeployment, ReplayCx};
 mod compute;
 mod health;
 mod json;
+/// Read-only sampled class counts over exact retained, source-verified zone reports.
+pub mod occupancy;
 mod storage;
 mod wire;
 pub use json::PackageZoneOperation;

@@ -3,6 +3,8 @@
 //! The tiny model is numeric test data; the separate YOLOX case checks real clipped proposals.
 #[path = "package_zones_contract/health.rs"]
 mod health;
+#[path = "package_zones_contract/occupancy.rs"]
+mod occupancy;
 mod package_zone_support;
 use fss_codec_mjpeg::ComponentInterpretation;
 use fss_core::region::{ContextAuthority, RootAuthoritySpec};
