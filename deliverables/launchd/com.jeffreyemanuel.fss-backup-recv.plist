@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.jeffreyemanuel.fss-backup-recv</string>
+  <key>ProgramArguments</key><array>
+    <string>/opt/homebrew/bin/python3</string>
+    <string>/Users/jemanuel/projects/franken_surveillance_system/deliverables/scripts/wyze_backup_recv.py</string>
+    <string>--base-port</string>
+    <string>443</string>
+    <string>--dir</string>
+    <string>/tmp/fwbackup</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/tmp/ota/backup.log</string>
+  <key>StandardErrorPath</key><string>/tmp/ota/backup.log</string>
+</dict></plist>
