@@ -82,6 +82,9 @@ done
 # 2026-11-04 as permanent plane flapping). With KeepAlive, exiting 0 when a peer holds the lock
 # just defers to the next respawn; the lock holder releases via EXIT trap.
 LOCK=/tmp/wyze_mitm_bringup.lock
+# A root-descendant generation can leave the lock root-owned; recover ownership before the
+# test (a root-owned lock made every user-run defer with "Permission denied", 2026-11-04).
+[ -f "$LOCK" ] && [ "$(stat -f %Su "$LOCK" 2>/dev/null)" != "$(id -un)" ] && sudo -n chown "$(id -u)" "$LOCK" 2>/dev/null
 if [ -s "$LOCK" ]; then
   other=$(cat "$LOCK" 2>/dev/null)
   if [ -n "$other" ] && kill -0 "$other" 2>/dev/null && [ "$other" != "$$" ]; then
