@@ -242,7 +242,7 @@ def inject(cli=None, up=None):
     replaces LIVE["c"], so the same thread re-arms by itself."""
     if not MD5:
         print("inject: OTA_MD5 unset",flush=True); return
-    st={"state":{"desired":{"url":URL,"md5":MD5,"pcUrl":URL,"pcMd5":MD5,"model":MODEL,"sub_mac":THING.upper()},"reported":{}},"version":999}
+    st={"state":{"desired":{"url":URL,"md5":MD5,"pcUrl":URL,"pcMd5":MD5,"model":MODEL,"sub_mac":THING.upper()},"reported":{}},"version":999999}
     models=[m for m in os.environ.get("OTA_MODELS","").split(",") if m] or [MODEL]
     armed_for=None
     i=0
