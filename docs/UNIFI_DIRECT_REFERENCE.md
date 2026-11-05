@@ -201,6 +201,14 @@ query over Asupersync and returns bounded, unauthenticated UVC candidates. It is
 not yet integrated with the general discovery command or an automatic enrollment
 and setup owner. Wi-Fi onboarding for unprovisioned devices, credential custody,
 current controller ownership and safe adoption remain independent requirements.
+The experimental `fss-unifi-discover` command exposes this primitive as one
+three-second broadcast on an explicitly specified IPv4 interface and prefix.
+It requires `--owner-authorized`, an operator principal and an existing
+authorization digest; the digest identifies the operator-supplied authorization,
+but the command does not independently verify its provenance. Output labels
+each candidate as unverified and setup as unavailable. It never enrolls the
+device or proves that absent candidates do not exist. It is a standalone lab
+projection, not the general discovery command or an automatic setup service.
 
 ## Scoped verification and handoff
 
@@ -252,6 +260,9 @@ The native discovery target passed two synthetic tests at base
 `e569638aa3f490d87b95c06d7cfbf7534442b848` and overlay
 `425726a1619d754fe99d85ddbddce13fa74c11386e4373e54cdb28c5043031c2`, followed
 by the separately invoked one-test real-device run on `trj` described above.
+The discovery CLI's two argument and JSON-escaping unit tests passed on
+`vmi1156319` using base `51bf09a2844a8ad82f03feac6fdb10eb35e1bc96` and
+overlay `11684f16769ba8cbd79bb191db76138adc6766cfdbc31a2385400b20e707e551`.
 This is not a full workspace, release, live-camera, media-decode, or
 retention qualification. A separate test attempt on `ts1` timed out before
 execution. The semantic-plane checker with doctests skipped reports 690 errors
