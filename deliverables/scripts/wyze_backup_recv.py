@@ -15,7 +15,11 @@ def serve(port, path, done):
     s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     s.bind(("0.0.0.0", port))
     s.listen(1)
-    s.settimeout(1800)
+    # no accept timeout: the receiver must be listening when assis's installer connects.
+    # The old 1800 s timeout expired between camera boots, leaving the ports unbound for
+    # minutes at a time — a race against assis's install window (measured 2026-11-05).
+    # The LaunchDaemon KeepAlive restarts the process if it exits for any other reason.
+    s.settimeout(None)
     try:
         c, peer = s.accept()
     except socket.timeout:
