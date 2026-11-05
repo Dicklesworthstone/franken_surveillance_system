@@ -628,3 +628,21 @@ The four defects, in the order they masked each other:
 4. stale shadow desired state (assis pointed at dead URLs) → fixed
 All four must be fixed simultaneously for the OTA to complete; any one alone
 would have produced "nothing happens" with no error on either side.
+
+## 02:55 — convergence confirmed after timing fixes
+
+Post-fix bring-up converges to all planes green: 443 (forge, fw-detail armed, 50199
+advertised), 8883 (MITM proxy with accepted-rewrite, exec'd), 8080 (beacon), 9101 (image),
+444-449 (backup receivers, persistent daemon). Two performance fixes landed during the
+convergence chase:
+- lsof → netstat in the wrapper's port lookup: lsof walked the /Volumes autofs mounts at
+  ~22 s per call (5+ calls per bring-up = 100+ s of hangs); netstat -anv does it in 0.2 s
+  (2c3b2cb9). Caveat recorded: netstat -anv emits nothing under #!/bin/bash in one of
+  this session's shell environments — the helper shells out to /bin/sh -c.
+- forge bind poll: single 1 s check raced python+ssl startup; now polls 6 s before
+  free_port retry (f0762226).
+- chain.pem/iot2.pem writes are atomic (tmp+rename) — the concurrent MQTT proxy crashed
+  with "PEM lib" on partial reads (c7604480).
+
+The next assis poll cycle consumes the corrected 50199 chain end-to-end. Watchdog v2
+auto-captures root proof (telnetd:9999 → id → /tmp/pane1/<ip>/root_via_9999.txt).
