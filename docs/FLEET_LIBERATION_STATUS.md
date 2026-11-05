@@ -574,3 +574,22 @@ The decoded 0x30200 image is **U-Boot 2021.10**, not the Linux kernel (no `Linux
 string; U-Boot version present). The kernel remains inside the sstarXZ blocks. C660 /bin/main
 RE note: DS method strings have zero absolute references — dispatch computes string pointers
 at runtime; connectAp handler RE is a prerequisite for verifying the borrowed offset 1060.
+
+## 01:38 — version-install loop CLOSED (the third and last link defect)
+
+Found the reason the camera never ran the entrypoint despite verified component deliveries:
+the forge's get_download_location answered with the camera's OWN version (req.version =
+50041) — the camera re-downloaded identical bytes forever, its version never advanced, and
+238 dl-loc calls were all self-referential. Three fixes (commits 07e56dd3, 51bf09a2):
+1. dl-loc now always serves the ADVERTISED version (model_ver), skipping the real-cloud
+   passthrough (which answered 50041 with real URLs).
+2. model_path_ver follows model_ver (was pinned 50041) — md5s now match the served bytes.
+3. MODEL_VER/PROC_VER=14.9.50199.r in both the root forge daemon plist and the broker
+   plist; 50199 component dir mirrored (14 files, byte-verified).
+
+Current state: forge advertises 50199 with coherent md5s; the camera's process manager
+should now see installed(50041) < advertised(50199) on its next evaluation and run the
+full dl-loc → fetch → verify → install → entrypoint cycle. Watchdog armed. If the process
+manager still doesn't act within its cadence, the missing input is likely the shadow
+version state via MQTT (.39 in reconnect backoff, .51 on real AWS) — the MITM rewrites
+those deltas too, once the sessions land on :8883.
