@@ -18,16 +18,16 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 # (as the user) cannot append to them: every plane came up with "Permission denied" instead of a
 # log. Re-own ours before anything writes.
 sudo -n mkdir -p /tmp/ota
-for f in /tmp/ota/arm.log /tmp/dns.log /tmp/arp.log /tmp/tls.log /tmp/img8080.log /tmp/img.log \
+for f in /tmp/ota/arm.log /tmp/dns.log /tmp/arp.log /tmp/ota/tls.log /tmp/img8080.log /tmp/img.log \
          /tmp/mqproxy.log /tmp/ota/chain.pem /tmp/serve443.pem /tmp/iot2.pem /tmp/iot2.key; do
   sudo -n touch "$f" 2>/dev/null && sudo -n chown "$(id -u)" "$f" 2>/dev/null
 done
 CERTS="$HERE/../certs"
-# The root-run forge (launchd wyze-forge) appends to /tmp/tls.log and /tmp/ota/forge.log; when it
+# The root-run forge (launchd wyze-forge) appends to /tmp/ota/tls.log and /tmp/ota/forge.log; when it
 # recreates them they come back root-owned and this user-run wrapper's redirections fail with
 # "Permission denied" (measured 2026-11-04). Re-own the mutable set on every run, after any
 # root process had a chance to clobber them.
-for f in /tmp/tls.log /tmp/dns.log /tmp/arp.log /tmp/img8080.log /tmp/img.log /tmp/mqproxy.log; do
+for f in /tmp/ota/tls.log /tmp/dns.log /tmp/arp.log /tmp/img8080.log /tmp/img.log /tmp/mqproxy.log; do
   [ -f "$f" ] && [ "$(stat -f %Su "$f" 2>/dev/null)" != "$(id -un)" ] && sudo -n chown "$(id -u)" "$f" 2>/dev/null
 done
 CAP_DIR="${CAP_DIR:-/tmp/fwserve}"
@@ -73,7 +73,7 @@ ARP_CMD="${ARP_CMD:-sudo -n /usr/sbin/arp}"
 # rebuilding them, and an empty /tmp/iot2.pem breaks every TLS spawn with "PEM lib"
 # (measured 2026-11-04). They are chowned and rebuilt at the cert section instead.
 for f in /tmp/ota/chain.pem /tmp/serve443.pem \
-         /tmp/dns.log /tmp/arp.log /tmp/tls.log /tmp/mqproxy.log; do
+         /tmp/dns.log /tmp/arp.log /tmp/ota/tls.log /tmp/mqproxy.log; do
   sudo -n install -m 0644 -o "$(id -un)" -g "$(id -gn)" /dev/null "$f" 2>/dev/null || true
 done
 
@@ -219,8 +219,8 @@ sudo "$PY" "$HERE/wyze_dns_redirect.py" "$UP" "$GW" > /tmp/dns.log 2>&1 &
 sudo /tmp/sp/bin/python "$HERE/wyze_arp_spoof.py" "$CAM" "$CAM_MAC" "$GW" "$GWMAC" "$IFACE" > /tmp/arp.log 2>&1 &
 # forged TLS on 443 (device API/S3) and 8443 (the alternate port the device also validated).
 for port in 443 8443; do
-  # the root forge may have recreated /tmp/tls.log root-owned after our startup chown
-  [ -f /tmp/tls.log ] && [ "$(stat -f %Su /tmp/tls.log)" != "$(id -un)" ] && sudo -n chown "$(id -u)" /tmp/tls.log 2>/dev/null
+  # the root forge may have recreated /tmp/ota/tls.log root-owned after our startup chown
+  [ -f /tmp/ota/tls.log ] && [ "$(stat -f %Su /tmp/ota/tls.log)" != "$(id -un)" ] && sudo -n chown "$(id -u)" /tmp/ota/tls.log 2>/dev/null
   if forge_ok "$port"; then
     echo "tls: port $port already served by a contract-complete forge — adopting it"
     continue
@@ -235,7 +235,7 @@ for port in 443 8443; do
     fi
     sudo "$PY" "$HERE/wyze_forge_serve.py" --dir "$CAP_DIR" --port "$port" \
       --cert /tmp/iot2.pem --key /tmp/iot2.key --intermediate "$CERTS/emudhra/ev-ca-aaa-cross.pem" \
-      --sni s3-us-west-2.amazonaws.com $extra >> /tmp/tls.log 2>&1 &
+      --sni s3-us-west-2.amazonaws.com $extra >> /tmp/ota/tls.log 2>&1 &
     sleep 1
     forge_ok "$port" && break
     free_port "$port"
