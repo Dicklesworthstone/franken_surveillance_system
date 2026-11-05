@@ -646,3 +646,23 @@ convergence chase:
 
 The next assis poll cycle consumes the corrected 50199 chain end-to-end. Watchdog v2
 auto-captures root proof (telnetd:9999 → id → /tmp/pane1/<ip>/root_via_9999.txt).
+
+## 03:05 — .51 broker endpoint discovery + operator action list
+
+Packet capture: .51's MQTT client connects to **66.151.242.74:443** (Wyze MQTT-over-443),
+NOT to a24rq1e5m4mtei.iot.us-west-2.amazonaws.com:8883. Those SYNs currently get no
+SYN-ACK (host not answering). The camera's MQTT broker endpoint comes from the
+get_iot_certificate response — which our forge serves as a24rq1e5m4mtei:8883 (spoofed ✓).
+After the camera's next cert refresh or boot, its MQTT should land on our :8883.
+
+OPERATOR ACTIONS that unblock everything (all remote levers exhausted):
+1. **Power-cycle .39 and .51** — re-enters the re-sync flow: MQTT lands on our :8883
+   (flushed shadow desired state → 50199 install → entrypoint → beacon → telnetd proof)
+2. **Walk past the C660** — PIR wake fires the ROP; tftp exfil lands /etc/passwd +
+   /proc/version as system() ground truth (receiver verified)
+3. **Tapo C460 UART console** — the SXZ decode needs a hardware trace or the vendor's
+   encoder; everything else about the container is cracked and documented
+
+All automation persists across the power-cycles: forge (root daemon), MITM broker
+(KeepAlive), watchdog v2 (auto-probes telnetd, captures root proof), TFTP daemon,
+backup receivers (root daemon), C460 burst/fire/sweep watchers.
