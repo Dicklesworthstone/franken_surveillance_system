@@ -196,6 +196,21 @@ free_port() {
   for _ in 1 2 3 4 5 6 7 8 9 10; do
     pids=$(port_pids "$1")
     [ -z "$pids" ] && return 0
+    # don't kill a contract-complete forge — the launchd daemon owns it and KeepAlive
+    # would respawn it into a kill loop with this wrapper (the 2026-11-03 flap)
+    contract=""
+    for p in $pids; do
+      c=$(sudo ps -o command= -p $p 2>/dev/null)
+      echo "$c" | grep -q -- '--iot-cert' || continue
+      contract="$contract $p"
+    done
+    # keep only pids NOT in the contract list
+    keep=""
+    for p in $pids; do
+      echo "$contract" | grep -qw "$p" || keep="$keep $p"
+    done
+    pids=$keep
+    [ -z "$pids" ] && return 0
     sudo kill $pids 2>/dev/null
     sleep 0.5
   done
