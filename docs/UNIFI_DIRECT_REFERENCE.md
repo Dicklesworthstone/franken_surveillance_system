@@ -440,7 +440,7 @@ provide discovery, device adoption or continuous recording. On `hz4`, six
 camera API tests and one owned HTTP integration test passed, including a real
 loopback sequence, same-task clock revalidation, malformed response and
 cancellation/refusal controls. The camera-specific TLS lab subsequently used
-this exact owner with an independent TLS fixture (including a 60,000-byte
+the earlier read-only revision of this owner with an independent TLS fixture (including a 60,000-byte
 settings response), then logged into the owner's G4 and decoded a 640×360
 snapshot. Changed-pin and wrong-key controls were rejected before credential
 access. This is an experimental, same-network-observed TLS identity and a
@@ -500,6 +500,19 @@ camera. Independently
 authenticated identity, qualified TLS, supervised durable journal I/O, a
 working native controller and a complete recovery procedure remain necessary
 before switching a controller.
+
+The owned camera HTTP session now connects that journal-backed handoff to its
+existing authenticated session. It applies both the session policy and the
+handoff policy, retains the claimed permit for reconciliation, reads one
+bounded HTTP response, and requires a fresh settings readback. A cancelled
+response read fences the session. The plan classifies a representable readback
+as requested, previous or different after checking its peer/session binding;
+unset, missing and unsupported values remain separate untrusted observations.
+On `hz4`, the handoff fixtures exercised successful HTTP readback, stale and
+denied writes, cancellation and the still-committed journal obligation. These
+are loopback tests: no controller change has been sent to the physical camera,
+and a reported requested address is not proof of identity or adoption.
+
 
 The experimental `unifi_direct::conversation` owner composes the existing
 session and task-effect APIs into a bounded hello, delayed agreement and
@@ -767,8 +780,10 @@ at retirement. It is not connected to the controller or a durable recorder.
 
 `fss_reference::unifi_direct::discovery` sends one explicitly scoped v1 UDP
 query over Asupersync and returns bounded, unauthenticated UVC candidates. It is
-not yet integrated with the general discovery command or an automatic enrollment
-and setup owner. Wi-Fi onboarding for unprovisioned devices, credential custody,
+not yet integrated with the general discovery command or a complete automatic
+setup service. A one-candidate setup owner now composes a completed discovery
+report with an already-admitted camera HTTP session and journaled controller
+handoff. Wi-Fi onboarding for unprovisioned devices, TLS and credential custody,
 current controller ownership and safe adoption remain independent requirements.
 The source now accepts replies from the specified subnet to its directed
 broadcast as well as the limited broadcast; point-to-point `/31` and `/32`
@@ -789,6 +804,26 @@ and the recorder and both timers remained active. The live test executable SHA-2
 `93a104d8864a1458a0931262d3b1bffefe7dcad33ec41f7f0f326e06de5e1837`.
 These windows do not authenticate the device or establish absence of other
 cameras.
+
+`unifi_direct::setup` now drives one completed, nonconflicting discovery
+candidate through an independently admitted camera session, login, status,
+settings, a journaled controller change and readback under one task and total
+deadline. It rechecks the candidate policy at each stage and during writes;
+the camera HTTP owner separately enforces its transport and operation policy.
+An already reported target address returns an untrusted observation without
+preparing an effect. After commit, a partial write, timeout or failed readback
+returns the permit for reconciliation rather than retrying; a reported target
+address does not settle the effect or prove adoption. The caller still supplies
+independent peer identity, TLS, credentials, live lease and controller service.
+Journal operations are synchronous, and this is not a production supervisor.
+
+On `hz4`, 18 synthetic tests passed across discovery, handoff planning and
+handoff dispatch; one live-discovery test was ignored. The setup fixture used
+actual UDP discovery and a loopback camera, covering denied admission,
+incomplete discovery, already-associated idempotence, successful journaled
+readback and a reply timeout with the obligation still committed. No setup or
+controller change was sent to the physical G4 in this test.
+
 An independently invoked v2 CLI executable on `trj` also emitted parseable v2
 JSON for one G4 candidate, with no claim flags and an unverified identity.
 The stripped executable SHA-256 was

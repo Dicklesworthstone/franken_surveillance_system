@@ -48,6 +48,9 @@ pub mod pipeline;
 pub mod receive;
 /// Bounded source-preserving FLV-to-MP4 segment owner.
 pub mod recording;
+/// Task-owned discovery-candidate handoff orchestration.
+pub mod setup;
+pub mod supervisor;
 /// Bounded, untrusted camera WebSocket upgrade preparation.
 pub mod upgrade;
 

@@ -290,6 +290,24 @@ impl<'scope, 'task, 'policy, IO: AsyncRead + AsyncWrite + Unpin> Owner<'scope, '
             pending_handoff: None,
         })
     }
+    pub(super) fn matches_setup(
+        &self,
+        task: &TaskCx<'_>,
+        cx: &Cx,
+        clock: MeteredClock<'_, '_>,
+        peer: Ipv4Addr,
+        generation: u64,
+        resource: &str,
+    ) -> bool {
+        std::ptr::eq(
+            std::ptr::from_ref(self.task).cast::<()>(),
+            std::ptr::from_ref(task).cast::<()>(),
+        ) && std::ptr::eq(self.io.runtime_context(), cx)
+            && self.clock.same_mapping(&clock)
+            && self.peer == peer
+            && self.generation == generation
+            && self.resource == resource
+    }
     /// Current local state; no remote identity or adoption is implied.
     pub fn phase(&self) -> camera_api::Phase {
         self.session.phase()

@@ -247,6 +247,37 @@ impl Owner<'_, '_, '_> {
         }
     }
 
+    /// Answer one already-observed camera time request using a distinct durable
+    /// operation. A locally written reply does not prove the camera received it.
+    pub async fn answer_time_sync<IO: AsyncRead + AsyncWrite + Unpin>(
+        &mut self,
+        session: &mut Session<'_, '_, IO>,
+        operation: &OperationId,
+        conditions: management::Preconditions,
+        wait: Duration,
+    ) -> Result<(), Error> {
+        if wait.is_zero()
+            || wait > Duration::from_secs(30)
+            || !self.clock.matches(self.task, self.cx)
+            || !session.matches_clock(&self.clock)
+        {
+            return Err(Error::Configuration);
+        }
+        let nanos = u64::try_from(wait.as_nanos()).map_err(|_| Error::Configuration)?;
+        let deadline = self
+            .cx
+            .now()
+            .as_nanos()
+            .checked_add(nanos)
+            .ok_or(Error::Configuration)?;
+        let wall = self.wall.observe().ok_or(Error::Clock)?;
+        session
+            .prepare_time_sync(wall.unix_ms, &wall.timestamp)
+            .map_err(|_| Error::Session)?;
+        self.send_management(session, operation, conditions, deadline)
+            .await
+    }
+
     /// Drive hello, delayed agreement and one stream request on an existing
     /// admitted session. All effects remain open after success. A successful
     /// reply is a protocol observation, not a stream or recording receipt.

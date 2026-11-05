@@ -5,6 +5,8 @@ All notable changes to Franken Surveillance System are recorded here. The projec
 ## Unreleased
 
 ### Added
+- Added task-owned, single-candidate UniFi setup orchestration from a discovery report through admitted camera HTTP, journaled controller handoff and readback; loopback tests cover idempotence and interrupted replies, while production TLS, automatic enrollment and native recording remain open.
+- Connected the owned UniFi camera HTTP session to journaled controller handoff, bounded response handling and typed untrusted readback; loopback tests cover denial and cancellation, while live adoption remains unqualified.
 - Added a task-scoped UniFi camera HTTP owner for bounded login, status, settings and snapshots over an independently admitted transport; it fences interrupted sessions and rechecks current policy on I/O. TLS identity and automated onboarding remain open.
 - Updated the owner-scoped `trj` UniFi discovery timer to emit v2 claim-conflict observations; one live G4 was observed in a successful service run, without automatic enrollment or device authentication.
 - Extended the experimental encrypted UniFi controller fixture through ledgered segment publication and recovery; synthetic media decoded after reopening the archive, while native live recording remains unqualified.

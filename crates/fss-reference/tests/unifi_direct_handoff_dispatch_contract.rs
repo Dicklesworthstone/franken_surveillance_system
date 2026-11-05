@@ -590,7 +590,7 @@ fn http_request(socket: &mut std::net::TcpStream) -> std::io::Result<Vec<u8>> {
     socket.read_exact(&mut head[end - len..])?;
     Ok(head)
 }
-fn http_fixture(address: SocketAddr, cancel_reply: bool) -> std::io::Result<()> {
+fn http_fixture(address: SocketAddr, cancel_reply: bool, already: bool) -> std::io::Result<()> {
     let mut socket = std::net::TcpStream::connect_timeout(&address, Duration::from_secs(5))?;
     socket.set_read_timeout(Some(Duration::from_secs(8)))?;
     let routes = [
@@ -624,6 +624,7 @@ fn http_fixture(address: SocketAddr, cancel_reply: bool) -> std::io::Result<()> 
             };
         }
         let body: &[u8] = match index {
+            2 if already => br#"{"controller":{"addr":"192.168.1.40"}}"#,
             2 => br#"{"controller":{"addr":"192.168.1.10"}}"#,
             4 => br#"{"controller":{"addr":"192.168.1.40"}}"#,
             _ => b"{}",
@@ -639,6 +640,9 @@ fn http_fixture(address: SocketAddr, cancel_reply: bool) -> std::io::Result<()> 
         );
         socket.write_all(header.as_bytes())?;
         socket.write_all(body)?;
+        if index == 2 && already {
+            return Ok(());
+        }
     }
     Ok(())
 }
@@ -673,7 +677,8 @@ fn owned_http_handoff(cancel_reply: bool) -> Test {
                 let output: Test = async {
                     let listener = TcpListener::bind("127.0.0.1:0").await?;
                     let address = listener.local_addr()?;
-                    let peer = std::thread::spawn(move || http_fixture(address, cancel_reply));
+                    let peer =
+                        std::thread::spawn(move || http_fixture(address, cancel_reply, false));
                     let (socket, _) =
                         timeout(cx.now(), Duration::from_secs(5), listener.accept()).await??;
                     let clock = MeteredClock::new(task, cx, TimestampNs(6))?;
@@ -825,4 +830,286 @@ fn owned_http_handoff_requires_success_and_readback() -> Test {
 #[test]
 fn cancelled_owned_http_handoff_reply_fences_session() -> Test {
     owned_http_handoff(true)
+}
+
+struct SetupAdmission {
+    allowed: Cell<bool>,
+    camera: ContentDigest,
+    admission: ContentDigest,
+    fence: u64,
+}
+impl fss_reference::unifi_direct::setup::Admission for SetupAdmission {
+    fn permits(
+        &self,
+        candidate: &fss_reference::unifi_direct::discovery::CameraCandidate,
+        camera: ContentDigest,
+        peer_admission: ContentDigest,
+        generation: u64,
+        fence: u64,
+    ) -> bool {
+        self.allowed.get()
+            && candidate.platform() == "UVC G4 Instant"
+            && candidate.source().ip().is_loopback()
+            && camera == self.camera
+            && peer_admission == self.admission
+            && generation == 1
+            && fence == self.fence
+    }
+}
+struct SetupHttpAccess;
+impl camera_http::Authority for SetupHttpAccess {
+    fn permits(&self, peer: Ipv4Addr, generation: u64, _: camera_http::Operation) -> bool {
+        peer.is_loopback() && generation == 1
+    }
+}
+struct SetupApproval;
+impl fss_reference::unifi_direct::conversation::Approval for SetupApproval {
+    fn approve(&self, prepared: &fss_runtime::effect::PreparedEffect) -> Option<CommitApproval> {
+        Some(CommitApproval {
+            prepared_digest: prepared.digest(),
+            current_precondition_digest: prepared.precondition_digest(),
+        })
+    }
+}
+fn discovery_packet() -> Vec<u8> {
+    let mac = [0x10u8, 2, 3, 4, 5, 6];
+    let address = [0x10u8, 2, 3, 4, 5, 6, 127, 0, 0, 1];
+    let mut body = Vec::new();
+    for (kind, value) in [
+        (1, mac.as_slice()),
+        (2, address.as_slice()),
+        (3, b"UVC.fixture".as_slice()),
+        (12, b"UVC G4 Instant".as_slice()),
+    ] {
+        body.push(kind);
+        body.extend_from_slice(&(value.len() as u16).to_be_bytes());
+        body.extend_from_slice(value);
+    }
+    let mut packet = vec![1, 0];
+    packet.extend_from_slice(&(body.len() as u16).to_be_bytes());
+    packet.extend_from_slice(&body);
+    packet
+}
+fn run_discovered_setup(cancel_reply: bool, already: bool) -> Test {
+    use fss_reference::unifi_direct::{discovery, setup};
+    let path = std::fs::canonicalize(std::env::temp_dir())?.join(format!(
+        "fss-unifi-setup-{}-{cancel_reply}-{already}",
+        std::process::id()
+    ));
+    std::fs::create_dir(&path)?;
+    let _temp = Temp(path.clone());
+    let store = FileEffectJournal::create(
+        path.join("journal"),
+        EffectJournalLimits::default(),
+        Arc::new(HostSpoolIo),
+    )?;
+    let mut effects = EffectCoordinator::with_journal(Box::new(store))?;
+    let mut budget = BudgetVector::ZERO;
+    budget.network_bytes = 2_000_000;
+    budget.bytes = 2_000_000;
+    let (mut authority, mut tree) = AuthorityCx::root(
+        RootAuthoritySpec {
+            trace_id: "trace:setup-fixture".into(),
+            operation_id: OperationId::parse("operation:setup-owner")?,
+            principal: "principal:fixture".into(),
+            capabilities: vec![
+                RuntimeGrant::AdapterNet.as_str().into(),
+                RuntimeGrant::AdapterAuth.as_str().into(),
+                RuntimeGrant::ObserveStatus.as_str().into(),
+                RuntimeGrant::CameraManagementPrepare.as_str().into(),
+                RuntimeGrant::CameraManagementCommit.as_str().into(),
+            ],
+            deadline: Some(TimestampNs(600_000_000_000)),
+            priority: 1,
+            budgets: budget,
+            privacy_scope: "privacy:test".into(),
+            retention_scope: "retention:test".into(),
+            anchor_universe: ContentDigest::sha256(b"setup fixture"),
+            generation: 1,
+        },
+        RegionId::new("region:setup-fixture")?,
+        RegionKind::Process,
+        budget,
+        TimestampNs(1),
+    )?;
+    let camera = ContentDigest::sha256(b"verified synthetic camera");
+    let peer_admission = ContentDigest::sha256(b"fixture admission");
+    let resource = format!("camera:{}", camera.to_text());
+    let mut leases = LeaseRegistry::new();
+    let fence = leases
+        .acquire(&resource, authority.region().as_str(), None, TimestampNs(2))?
+        .fence;
+    let leases = RefCell::new(leases);
+    let operation = OperationId::parse("operation:setup-fixture")?;
+    let runtime = RuntimeBuilder::current_thread().build()?;
+    runtime.block_on(async {
+        let cx = asupersync::Cx::current().ok_or("runtime context")?;
+        let run = run_owned_async(
+            &mut authority,
+            &mut tree,
+            TaskSpec {
+                task_id: TaskId::new("task:setup-fixture")?,
+                started_at: TimestampNs(3),
+            },
+            &cx,
+            async |task, cx| {
+                let output: Test = async {
+                    let udp = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))?;
+                    udp.set_read_timeout(Some(Duration::from_secs(5)))?;
+                    let address = match udp.local_addr()? {
+                        SocketAddr::V4(v) => v,
+                        _ => return Err("fixture is not IPv4".into()),
+                    };
+                    let sender = std::thread::spawn(move || -> std::io::Result<()> {
+                        let mut input = [0u8; 32];
+                        let (_, peer) = udp.recv_from(&mut input)?;
+                        udp.send_to(&discovery_packet(), peer)?;
+                        Ok(())
+                    });
+                    let clock = MeteredClock::new(task, cx, TimestampNs(4))?;
+                    let config = discovery::Config::new(
+                        Ipv4Addr::LOCALHOST,
+                        8,
+                        address,
+                        "fixture:discovery",
+                        Duration::from_millis(120),
+                        8,
+                    )?;
+                    let mut report = discovery::discover(task, cx, clock.now()?, &config).await?;
+                    sender.join().map_err(|_| "discovery fixture panic")??;
+                    assert_eq!(report.cameras.len(), 1);
+                    let listener = TcpListener::bind("127.0.0.1:0").await?;
+                    let address = listener.local_addr()?;
+                    let peer =
+                        std::thread::spawn(move || http_fixture(address, cancel_reply, already));
+                    let (socket, _) =
+                        timeout(cx.now(), Duration::from_secs(5), listener.accept()).await??;
+                    let io = MeteredIo::with_clock(socket, clock, &resource, 4096)?;
+                    let mut http = camera_http::Owner::new(
+                        io,
+                        task,
+                        cx,
+                        clock,
+                        &SetupHttpAccess,
+                        Ipv4Addr::LOCALHOST,
+                        1,
+                        &resource,
+                    )?;
+                    let admission = SetupAdmission {
+                        allowed: Cell::new(false),
+                        camera,
+                        admission: peer_admission,
+                        fence,
+                    };
+                    let mut owner = setup::Owner {
+                        cx,
+                        task,
+                        clock,
+                        effects: &mut effects,
+                        leases: &leases,
+                        approval: &SetupApproval,
+                        admission: &admission,
+                        handoff_authority: &Guard(true),
+                    };
+                    macro_rules! config {
+                        ($report:expr) => {
+                            setup::Config {
+                                report: $report,
+                                index: 0,
+                                camera,
+                                peer_admission,
+                                generation: 1,
+                                fence,
+                                destination: Ipv4Addr::new(192, 168, 1, 40),
+                                operation: &operation,
+                                credential: br#"{"username":"fixture","password":"synthetic"}"#,
+                                wait: Duration::from_secs(5),
+                            }
+                        };
+                    }
+                    assert!(matches!(
+                        owner.run(&mut http, &config!(&report)).await,
+                        Err(setup::Error::Denied)
+                    ));
+                    assert_eq!(http.phase(), Phase::Login);
+                    admission.allowed.set(true);
+                    report.stop = discovery::Stop::PacketLimit;
+                    assert!(matches!(
+                        owner.run(&mut http, &config!(&report)).await,
+                        Err(setup::Error::Claims)
+                    ));
+                    assert_eq!(http.phase(), Phase::Login);
+                    report.stop = discovery::Stop::WindowElapsed;
+                    let outcome = owner.run(&mut http, &config!(&report)).await?;
+                    match outcome {
+                        setup::Outcome::AlreadyAssociated { observation, .. } if already => {
+                            assert_eq!(
+                                observation.controller,
+                                ControllerAddress::Reported(Ipv4Addr::new(192, 168, 1, 40))
+                            );
+                            assert_eq!(http.phase(), Phase::Snapshot);
+                        }
+                        setup::Outcome::Observed {
+                            readback, permit, ..
+                        } if !cancel_reply && !already => {
+                            assert_eq!(
+                                readback,
+                                fss_reference::unifi_direct::handoff::Readback::Requested
+                            );
+                            assert_eq!(permit.operation(), &operation);
+                        }
+                        setup::Outcome::Indeterminate { stage, permit } if cancel_reply => {
+                            assert_eq!(stage, setup::Indeterminate::Response);
+                            assert_eq!(permit.operation(), &operation);
+                            assert_eq!(http.phase(), Phase::Fenced);
+                        }
+                        _ => return Err("unexpected setup outcome".into()),
+                    }
+                    drop(http);
+                    peer.join().map_err(|_| "HTTP fixture panic")??;
+                    Ok(())
+                }
+                .await;
+                let outcome = if output.is_ok() && already {
+                    TaskOutcome::Success
+                } else if output.is_ok() {
+                    TaskOutcome::Indeterminate("effect requires reconciliation".into())
+                } else {
+                    TaskOutcome::Failed("setup fixture failed".into())
+                };
+                TaskCompletion {
+                    output,
+                    outcome,
+                    completed_at: TimestampNs(599_000_000_000),
+                }
+            },
+        )
+        .await?;
+        run.receipt?;
+        run.output
+    })?;
+    let journal_entry = effects.journal().operation(&operation);
+    if already {
+        assert!(journal_entry.is_none());
+    } else {
+        assert_eq!(
+            journal_entry.ok_or("missing journal operation")?.state,
+            fss_core::EffectState::Committed
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn discovered_candidate_runs_owned_setup_through_journal_and_readback() -> Test {
+    run_discovered_setup(false, false)
+}
+#[test]
+fn discovered_setup_reply_timeout_preserves_committed_obligation() -> Test {
+    run_discovered_setup(true, false)
+}
+
+#[test]
+fn discovered_setup_already_associated_does_not_prepare_an_effect() -> Test {
+    run_discovered_setup(false, true)
 }

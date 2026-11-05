@@ -26,7 +26,7 @@ use fss_reference::unifi_direct::{
     owner::{self, PeerAdmission},
     pipeline,
     receive::{ManagementAuthority, ManagementWrite, Step, StreamAuthority},
-    recording,
+    recording, supervisor,
     upgrade::ProtocolPolicy,
 };
 use fss_runtime::{
@@ -407,6 +407,7 @@ fn conversation_scenario(revoke_stream: bool) -> Test {
         OperationId::parse("operation:conversation-agreement")?,
         OperationId::parse("operation:conversation-stream")?,
         OperationId::parse("operation:conversation-time-sync")?,
+        OperationId::parse("operation:conversation-later-time-sync")?,
     ];
     let runtime = RuntimeBuilder::current_thread().build()?;
     runtime.block_on(async {
@@ -468,8 +469,14 @@ fn conversation_scenario(revoke_stream: bool) -> Test {
                     if !matches!(destination,SocketAddr::V4(addr) if addr.ip().is_loopback() && addr.port()!=0) {return Err(io::Error::other("invalid stream destination"));}
                     socket.write_all(&frame(br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"ChangeVideoSettings","messageId":9,"inResponseTo":4}"#))?;
                     let mut media=std::net::TcpStream::connect_timeout(&destination,Duration::from_secs(5))?;
-                    media.write_all(&wire)?;
-                    Ok(())
+                    let split=wire.len().min(100);
+                    media.write_all(&wire[..split])?;
+                    socket.write_all(&frame(br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"ubnt_avclient_timeSync","messageId":11}"#))?;
+                    if !receive_binary(&mut socket)?.windows(b"ubnt_avclient_timeSync".len()).any(|w|w==b"ubnt_avclient_timeSync") { return Err(io::Error::other("missing post-start time-sync reply")); }
+                    media.write_all(&wire[split..])?;
+                    drop(media);
+                    let mut last=[0u8;1];
+                    match socket.read(&mut last) { Ok(0)=>Ok(()), _=>Err(io::Error::other("controller did not retire")) }
                 });
                 let (socket,_)=timeout(cx.now(),Duration::from_secs(5),listener.accept()).await??;
                 let io=MeteredIo::with_clock(socket,clock,"fixture:camera",4096)?;
@@ -477,7 +484,7 @@ fn conversation_scenario(revoke_stream: bool) -> Test {
                 let mut session=owner::accept(io,ProtocolPolicy::RequireOffer,&FixtureAdmission,controller,Duration::from_secs(5)).await?;
                 let guard=Guard { leases:&leases, clock };
                 let request=StreamStart::new(VideoChannel::Video2,SocketAddrV4::new(Ipv4Addr::LOCALHOST,17551),VideoCodec::H264,AudioCodec::Aac,"0123456789abcdef")?;
-                let config=conversation::Config { hello:&operations[0], agreement:&operations[1], stream:&operations[2], time_sync:&operations[3..], management:conditions, stream_conditions, request:&request, wait:Duration::from_secs(5) };
+                let config=conversation::Config { hello:&operations[0], agreement:&operations[1], stream:&operations[2], time_sync:&operations[3..4], management:conditions, stream_conditions, request:&request, wait:Duration::from_secs(5) };
                 let approval=FixtureApproval {revoke_stream:revoke_stream.then_some(&policy.listen)};
                 let other_clock=MeteredClock::new(task,cx,TimestampNs(5))?;
                 let mut wrong_owner=conversation::Owner { cx, task, clock:other_clock, effects:&mut effects, leases:&leases, approval:&approval, management_authority:&guard, stream_authority:&guard, wall:&FixtureClock };
@@ -487,7 +494,7 @@ fn conversation_scenario(revoke_stream: bool) -> Test {
                 assert_eq!(owner.start(&mut session,&duplicate).await,Err(conversation::Error::Configuration));
                 let mismatched=conversation::Config { stream_conditions:intent::Preconditions { lease_fence:fence+1, ..stream_conditions }, ..config };
                 assert_eq!(owner.start(&mut session,&mismatched).await,Err(conversation::Error::Configuration));
-                let start=listener::Start {bind,resource:"fixture:camera",admission:&policy,channel:VideoChannel::Video2,video:VideoCodec::H264,audio:AudioCodec::Aac,stream_name:"0123456789abcdef",hello:&operations[0],agreement:&operations[1],stream:&operations[2],time_sync:&operations[3..],management:conditions,stream_conditions,chunk_bytes:4096,max_bytes:u64::try_from(expected.len())?+1,bind_wait:Duration::from_secs(5),conversation_wait:Duration::from_secs(5),accept_wait:Duration::from_secs(5)};
+                let start=listener::Start {bind,resource:"fixture:camera",admission:&policy,channel:VideoChannel::Video2,video:VideoCodec::H264,audio:AudioCodec::Aac,stream_name:"0123456789abcdef",hello:&operations[0],agreement:&operations[1],stream:&operations[2],time_sync:&operations[3..4],management:conditions,stream_conditions,chunk_bytes:4096,max_bytes:u64::try_from(expected.len())?+1,bind_wait:Duration::from_secs(5),conversation_wait:Duration::from_secs(5),accept_wait:Duration::from_secs(5)};
                 let invalid=listener::Start {max_bytes:0,..start};
                 let framer=Framer::new(FlvLimits::default(),1024*1024)?;
                 let recorder=recording::Recorder::new(SourceKey {connection:5,generation:1},recording::Limits::default())?;
@@ -504,17 +511,19 @@ fn conversation_scenario(revoke_stream: bool) -> Test {
                 }
                 let started=started?;
                 assert_eq!(started.reply,conversation::Reply { status_code:None, success:None, time_syncs:1 });
-                let mut pipeline=started.pipeline;
+                let mut supervisor=supervisor::Supervisor::new(session,started.pipeline,conditions);
+                let mut later_syncs=0;
                 let mut originals=Vec::new();
                 let mut segments=0;
                 let mut frames=0;
                 loop {
-                    match timeout(cx.now(),Duration::from_secs(5),pipeline.step(task,cx,clock.now()?)).await?? {
-                        pipeline::Step::Recording(recording::Push::Source {record,..}) => originals.extend_from_slice(record.bytes()),
-                        pipeline::Step::Recording(recording::Push::Buffered) | pipeline::Step::Progress {..} => (),
-                        pipeline::Step::Recording(recording::Push::Segment(segment)) => {
+                    match supervisor.step(&mut owner,&operations[4],Duration::from_secs(5)).await {
+                        supervisor::Step::Media(pipeline::Step::Recording(recording::Push::Source {record,..})) => originals.extend_from_slice(record.bytes()),
+                        supervisor::Step::Media(pipeline::Step::Recording(recording::Push::Buffered) | pipeline::Step::Progress {..}) => (),
+                        supervisor::Step::TimeSyncWritten => later_syncs+=1,
+                        supervisor::Step::Media(pipeline::Step::Recording(recording::Push::Segment(segment))) => {
                             for record in segment.source() { originals.extend_from_slice(record.bytes()); }
-                            let mut movie=pipeline.initialization().ok_or("missing initialization")?.bytes().to_vec();
+                            let mut movie=supervisor.initialization().ok_or("missing initialization")?.bytes().to_vec();
                             movie.extend_from_slice(segment.fragment().bytes());
                             let demux=AvcMp4::parse(&movie,None,DemuxLimits::default())?;
                             let annex=demux.annex_b(0,3)?;
@@ -523,11 +532,15 @@ fn conversation_scenario(revoke_stream: bool) -> Test {
                             frames+=decoder.finish()?.len();
                             segments+=1;
                         }
-                        pipeline::Step::Eof => break,
-                        pipeline::Step::LimitReached => return Err("unexpected media limit".into()),
+                        supervisor::Step::Media(pipeline::Step::Eof) => break,
+                        other => return Err(format!("unexpected supervisor result: {other:?}").into()),
                     }
                 }
-                let retired_media=pipeline.retire();
+                assert_eq!(later_syncs,1);
+                let retired=supervisor.retire();
+                assert_eq!(retired.controller.previous_phase, fss_reference::unifi_direct::Phase::AgreementReplyObserved);
+                assert_eq!(retired.controller.stream_request, None);
+                let retired_media=retired.media;
                 assert!(retired_media.ingress.buffered.is_none());
                 assert!(retired_media.ingress.source.pending.is_none());
                 for record in retired_media.recorder.pending { originals.extend_from_slice(record.bytes()); }
@@ -572,9 +585,6 @@ fn conversation_scenario(revoke_stream: bool) -> Test {
                 assert_eq!(retained,expected[..retained.len()]);
                 fault_sender.join().map_err(|_|"fault sender panic")??;
                 peer.join().map_err(|_|"fixture peer panic")??;
-                let retired = session.retire();
-                assert_eq!(retired.previous_phase, fss_reference::unifi_direct::Phase::AgreementReplyObserved);
-                assert_eq!(retired.stream_request, None);
                 Ok(())
             }.await;
             let outcome=if output.is_ok() { TaskOutcome::Indeterminate("fixture changes require reconciliation".into()) } else { TaskOutcome::Failed("conversation fixture failed".into()) };
@@ -582,7 +592,7 @@ fn conversation_scenario(revoke_stream: bool) -> Test {
         }).await?;
         result.receipt?; result.output
     })?;
-    for operation in &operations {
+    for operation in &operations[..if revoke_stream { 4 } else { 5 }] {
         assert_eq!(
             effects
                 .journal()
