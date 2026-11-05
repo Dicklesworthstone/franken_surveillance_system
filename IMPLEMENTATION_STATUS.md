@@ -19,6 +19,10 @@ a live controller. The network owner,
 source custody, native recording and live-device qualification remain open. See
 [`docs/UNIFI_DIRECT_REFERENCE.md`](docs/UNIFI_DIRECT_REFERENCE.md).
 
+The experimental `fss-runtime::tcp_ingress` supplies a bounded Asupersync TCP
+source-byte reader for a caller-owned, already accepted connection. It is not
+yet connected to the UniFi controller, parser, or durable recording owner.
+
 
 
 

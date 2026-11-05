@@ -156,6 +156,18 @@ storage owner, media assembly, session-to-sensor custody, or persistence
 format. Synthetic tests are not live-camera or security qualification. Do not
 replace the running recorder or claim source continuity on this basis.
 
+`fss_runtime::tcp_ingress` is an experimental bounded original-byte reader
+for an already accepted Asupersync TCP stream. The explicit registered task
+must hold resource-scoped media and network grants, and each read reserves
+bounded byte and network budget before touching the socket. A dropped pending
+read keeps its reservation with the same unforgeable task binding; a completed
+read remains in the owner until the caller moves it or explicitly retires the
+owner. The resulting source chunk is not a durable-custody receipt. Listener
+authorization, peer authentication, idle supervision, canonical clock
+observations, source publication, and binding to a camera/session remain the
+caller's responsibilities. This reader is not yet wired to UniFi or the FLV
+parser and must not be used as evidence of a working camera recorder.
+
 ## Scoped verification and handoff
 
 At base `ec4b6a4c7073321cbd30162783adbbd101c0c0f6`, the three packet source
@@ -187,6 +199,14 @@ all 11 synthetic controller tests on the same worker using clean overlay
 The extra tests cover serialized fields, selected-track scope, reply correlation,
 input refusal, and written/unwritten/uncertain retirement. They do not send a
 camera command or establish camera codec or settings compatibility.
+At base `c09e0261f435b1bdcddbe5ce1f4c102a43c77098`, the bounded TCP reader and
+async task boundary passed five native Linux contract tests plus all 17 existing
+synchronous owned-execution tests on `vmi1156319` with clean overlay
+`b6bcc47c497b9810b98a5f01cabe8b51a03a763838d5e3b2994d6df4b5170d5d`.
+The TCP tests used real loopback sockets and covered a parked read being dropped
+and retried, task-binding refusal, missing media authority, source retirement,
+and exact byte transfer. They do not establish camera interoperability, live
+recording, native async cancellation wakeup, or durable source custody.
 This is not a full workspace, release, live-camera, media-decode, or
 retention qualification. A separate test attempt on `ts1` timed out before
 execution. The semantic-plane checker with doctests skipped reports 690 errors
