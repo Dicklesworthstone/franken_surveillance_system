@@ -72,3 +72,21 @@ decision-sequence layout differs from xz software LZMA2 in a way that pure param
 variation cannot express. Next session: hardware trace (UART on the C460 while it boots —
 the camera decodes these containers every boot with the xzdec engine) or capture the
 vendor's encoder (check the Tapo cloud firmware repository for their build tools).
+
+## C660 DS dispatcher RE note #2 (2026-11-05, 02:10)
+
+The DS method strings (scanApList/connectAp/getConnectStatus/setLanguage/…) sit in a
+rodata blob interleaved with [DS]… error messages around file offset 0x4069xx. Exhaustive
+searches found ZERO references to this region anywhere in the image:
+- 4-byte words (aligned + 2-byte aligned, THUMB literal pools): none
+- .got (0x474000, 0xca0): pointers into OTHER string areas (0x415xxx, 0x402xxx) but not this one
+- .data.rel.ro (0x471660): same — other strings but not the DS names
+- .rel.dyn/.rel.plt addends: none
+
+Implication: the DS dispatcher computes string addresses at runtime (base pointer +
+accumulated strlen, or a hash table keyed by a different string copy). The handler table
+is NOT statically linked to these strings. To find connectAp's handler: locate the [DS]
+log-format strings' xrefs (the dispatcher's error paths WILL reference "[DS]Unsupport
+method"), then walk back to the dispatch loop. That code will contain the strcmp/hashing
+against the name area and the handler call — from which the stack layout at connectAp can
+be recovered and the C460 offset verified.
