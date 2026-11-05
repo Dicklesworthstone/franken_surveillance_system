@@ -12,6 +12,8 @@ use std::{fmt, ops::Range};
 
 /// Borrowed AVC configuration and NAL views over original extended-FLV tags.
 pub mod avc;
+/// Incremental framing that returns original bytes and stream-relative ranges.
+pub mod stream;
 
 const TAG_HEADER: usize = 11;
 const TAG_SUFFIX: usize = 4;
