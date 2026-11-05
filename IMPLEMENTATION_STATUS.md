@@ -4,6 +4,21 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## UniFi direct packet reference (2026-11-04, experimental)
+
+`fss-packet::extended_flv` adds bounded, borrowed FLV header/tag views and
+heuristic successor-candidate search for an owner-authorized direct-UniFi lab
+path. Its `avc` module provides bounded configuration and NAL sample views with
+exact tag-relative source spans and signed composition offsets. The exact
+source bytes and vendor trailer remain available. A candidate
+is not authentication, continuity, stream acquisition, decoding or recording.
+`fss-reference::unifi_direct` additionally models part of the controller
+handshake and one-track stream-start command as a sans-I/O reference with
+explicit local-write outcomes; it does not authenticate the peer or implement
+a live controller. The network owner,
+source custody, native recording and live-device qualification remain open. See
+[`docs/UNIFI_DIRECT_REFERENCE.md`](docs/UNIFI_DIRECT_REFERENCE.md).
+
 
 
 

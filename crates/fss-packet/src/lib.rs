@@ -10,6 +10,8 @@
 pub mod access_unit;
 pub mod avc;
 pub mod cadence;
+/// Bounded, source-preserving parsing of the experimental UniFi extended-FLV wire format.
+pub mod extended_flv;
 /// Bounded H.265 access-unit/VPS/SPS/PPS parser (FSS-114).
 pub mod h265_access_unit;
 pub mod hevc;

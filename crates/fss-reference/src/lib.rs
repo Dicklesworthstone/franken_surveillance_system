@@ -113,6 +113,8 @@ mod source;
 pub mod time_tolerance;
 /// Model-independent parsing of private owner-supplied UniFi Protect camera and stream exports.
 pub mod unifi;
+/// Experimental sans-I/O direct UniFi controller negotiation reference.
+pub mod unifi_direct;
 
 #[cfg(test)]
 mod adapter_replay_tests;
