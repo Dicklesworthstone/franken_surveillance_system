@@ -61,6 +61,7 @@ def _rewrite(d):
             if isinstance(des, dict) and ("url" in des or "APPPushOTA" in des):
                 des["url"] = os.environ["OTA_URL"]
                 des["md5"] = os.environ["OTA_MD5"]
+                des["firmware_ver"] = os.environ["OTA_URL"].rsplit("/", 1)[-1].split(".tar")[0]
                 if "APPPushOTA" in des and isinstance(des["APPPushOTA"], dict):
                     des["APPPushOTA"]["url"] = os.environ["OTA_URL"]
                     des["APPPushOTA"]["md5"] = os.environ["OTA_MD5"]
@@ -79,6 +80,10 @@ def _rewrite(d):
             des = doc.setdefault("state", {}).setdefault("desired", {})
             des["url"] = os.environ["OTA_URL"]
             des["md5"] = os.environ["OTA_MD5"]
+            # iCamera's silent-upgrade handler (fcn.00433680) compares the desired
+            # firmware version against the camera's reported version — without this
+            # field the handler may skip the 0x1fe (no version to compare).
+            des["firmware_ver"] = os.environ["OTA_URL"].rsplit("/", 1)[-1].split(".tar")[0]
             # the cloud re-pushes the same version every ~18 s and the device ignores a
             # delta that is not newer, so lift it out of the cloud's range
             doc["version"] = int(doc.get("version", 0)) + 1000000
