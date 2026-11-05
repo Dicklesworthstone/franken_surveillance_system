@@ -964,9 +964,12 @@ started. This diagnostic build has not been used against the camera; the
 fixtures do not establish the cause of the physical trial's timeout.
 Later laboratory source additionally records whether the management dispatch
 authority gate allowed an attempt. A passed gate alone does not establish that
-bytes were sent or received. The added instrumentation is not included in the
-staged binary or the two fixture results above and awaits its own build and
-tests.
+bytes were sent or received. The revised lab compiled on `ovh-b`, and the
+same two encrypted deadline fixtures passed with assertions for that gate.
+The revised executable's SHA-256 is
+`e57156b6cd2831586d73dfb5b2394f952e269b10d24fcc0b07ff2b6ac2a54ca8`;
+it was also staged on `ts1`, with its hash, runtime dependencies and argument
+parser checked. Neither revised fixture exercised the physical camera.
 
 The external recording volume later disappeared from the Mac's mounted
 volumes and several uploads were deferred, with the staging files preserved.
