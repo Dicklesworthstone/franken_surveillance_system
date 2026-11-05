@@ -62,3 +62,13 @@ the decoded output at fixed offsets; if (b), nothing will. Also worth trying: de
 `prev >> (8-lc)` where prev is the PREVIOUS-DECODED SYMBOL rather than the previous byte
 (identical for literals, different after matches — matches the "position-dependent" note
 above only partially).
+
+### Discriminating test RESULT (01:50)
+
+No length-field oracle (block usizes, container totals, compressed sizes — LE or BE)
+appears anywhere in the decoded 60KB outputs. This supports reading (b): the decode is
+systematically misaligned identically across all three containers. The vendor encoder's
+decision-sequence layout differs from xz software LZMA2 in a way that pure parameter
+variation cannot express. Next session: hardware trace (UART on the C460 while it boots —
+the camera decodes these containers every boot with the xzdec engine) or capture the
+vendor's encoder (check the Tapo cloud firmware repository for their build tools).
