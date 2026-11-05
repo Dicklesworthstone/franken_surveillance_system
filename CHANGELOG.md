@@ -5,6 +5,7 @@ All notable changes to Franken Surveillance System are recorded here. The projec
 ## Unreleased
 
 ### Added
+- Add an explicitly selected, separately journal-bound chunked HTTP request framing for UniFi controller handoff. Its relevance to the physical G4 remains unverified.
 - Expose a bounded, payload-free UniFi handoff-response observation, retain it through interrupted setup readback, and sample a short laboratory timeline; synthetic delayed-change and reversal cases pass, while a physical G4 reported its previous controller throughout the timeline.
 - The isolated UniFi trial can retry an early WebSocket EOF before any management effect, within its existing connection and startup limits. Five process fixtures passed, including four encrypted camera cases; a later G4 handoff reported the previous controller and no native connection occurred, so live reconnect remains unverified.
 - Preserve payload-free UniFi WebSocket and I/O failure categories through controller retirement; synthetic receive and encrypted process tests distinguish unmasked frames from transport resets without exposing peer data. A subsequent physical G4 trial reported an unexpected I/O EOF while awaiting hello and produced no native clip; the cause remains unconfirmed.

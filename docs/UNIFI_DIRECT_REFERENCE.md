@@ -851,7 +851,11 @@ This diagnostic cannot identify the earlier failure retroactively. A later
 physical G4 attempt reached TLS and WebSocket, then reported an I/O
 `UnexpectedEof` while awaiting hello. Its handoff readback again failed to
 confirm the requested address and no native clip was produced. This result
-does not establish why the connection ended or indicate an unmasked frame.
+does not identify whether the G4 sends masked frames. The existing Scrypted
+controller parser accepts either masked or unmasked frames, whereas the Rust
+WebSocket server refuses unmasked client frames. This source difference is a
+compatibility hypothesis, not an observation of the physical camera or an
+explanation of why the connection ended.
 The trial listener now permits a bounded reconnect after this exact early EOF
 only when no management effect has reached approval; it stops instead if an
 effect was prepared. Five process fixtures passed: four encrypted camera cases
@@ -897,6 +901,47 @@ the previous address. A separate no-write check did not confirm the intended
 address, so the planned camera reboot was skipped and the existing repair
 address restored. This further limits the evidence for a successful handoff;
 it does not establish whether the camera would apply that request later.
+The scheduled repair-address and controller restoration checks later finished
+as no-ops, and the recovery watchdog abstained without rebooting the camera.
+Fresh recorder files and successful uploads were observed afterward, without
+establishing uninterrupted coverage.
+The transitional upload program contains a destination-side cleanup that
+checks the recording volume is mounted and removes matching regular files
+when their modification age reaches 30 days. A digest-pinned copy of that
+cleanup, redirected to an owned temporary directory, passed seven synthetic
+mount, age, filename and file-type checks on `trj`; the retained test is
+`experiments/unifi_https_snapshot_lab/test_retention_cleanup.py`. These checks
+do not establish that an actual 30-day-old recording has been deleted or that
+the recorder has provided uninterrupted coverage.
+
+An independent local HTTP observation showed that the existing Node-based
+controller sends its settings body with chunked transfer encoding; the Rust
+handoff previously used a fixed content length. The handoff plan now exposes
+an explicit chunked framing choice with a distinct journal-bound request
+digest, while preserving the original fixed-length identity. This is a
+protocol hypothesis, not an established explanation for the physical camera's
+earlier readbacks. A new camera write must not be inferred from this source
+change; prior uncertain effects still require reconciliation.
+The setup owner accepts this explicit framing choice without automatic replay.
+On `ovh-b`, four handoff-plan and twelve dispatch/setup Rust contracts passed,
+including framing-bound authorization and a chunked loopback discovery-to-setup
+exchange. These use synthetic peers and do not qualify a physical G4 handoff.
+The isolated HTTPS handoff binary with SHA-256
+`f603556cdd1694661514416312e026428dd54f92febd767acefe3a4e4d157986`
+passed ten independent encrypted fixture cases on `hz3`, including one
+chunked request. On the owner's G4 it first confirmed the prior controller
+without a write. In a protected subsequent attempt with the existing repair
+temporarily held, a single journaled chunked write returned an empty HTTP 200;
+three readbacks were `Previous`, `Requested`, `Requested`. An independent
+no-write check also reported the requested address. The result is consistent
+with a delayed change but does not distinguish that write from earlier
+unreconciled effects. The Rust listener accepted TCP, TLS and WebSocket, then
+its startup conversation timed out without a clip. Its journal contains a
+time-sync operation but no hello, agreement or stream operation; the timeout
+was not phase-tagged. The original repair setting was restored and a no-write
+observation reported the original controller. The scheduled repair and
+controller restoration checks were no-ops; the remaining recovery timer and
+fresh uploads must be checked independently.
 
 The transitional recorder separately showed several stream exits at roughly
 four-minute intervals and another after about 100 seconds, followed by
@@ -904,7 +949,9 @@ approximately eleven-second restarts. A
 header-only loopback observation saw its local RTSP server send FIN and then
 RST immediately before the recorder exited. This identifies the TCP close
 direction, not the cause of the server's shutdown or the exact amount of lost
-coverage. The service resumed writing and subsequently uploaded a verified
+coverage. A later service inspection found `RestartUSec=10s`, accounting for
+part of the restart delay without identifying the stream-exit cause. The
+service resumed writing and subsequently uploaded a verified
 segment. Continuous recording without gaps is not established; do not use a
 successful upload or an active service as evidence of continuity.
 A second bounded header-only trace observed another restart: the local RTSP
