@@ -1,0 +1,11 @@
+[Unit]
+Description=Regularly archive staged G4 recordings on bulk storage
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=1min
+AccuracySec=5s
+Unit=unifi-g4-bulk-fallback.service
+
+[Install]
+WantedBy=timers.target

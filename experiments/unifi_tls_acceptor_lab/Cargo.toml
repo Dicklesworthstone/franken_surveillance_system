@@ -1,0 +1,11 @@
+[package]
+name = "unifi-tls-acceptor-lab"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+
+[dependencies]
+asupersync = { version = "=0.6.2", default-features = false, features = ["runtime-core", "native-runtime", "tls-core"] }
+rustls = { version = "=0.23.46", default-features = false, features = ["std"] }
+rustls-pure = "=0.15.4"

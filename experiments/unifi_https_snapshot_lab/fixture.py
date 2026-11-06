@@ -1,0 +1,114 @@
+#!/usr/bin/env python3
+"""Independent, loopback-only TLS fixture; no physical camera or real credentials."""
+import json
+import os
+import pathlib
+import secrets
+import socket
+import ssl
+import subprocess
+import sys
+import tempfile
+import threading
+
+
+def request(sock):
+    data = bytearray()
+    while b"\r\n\r\n" not in data:
+        chunk = sock.recv(4096)
+        if not chunk or len(data) + len(chunk) > 16384:
+            raise RuntimeError("invalid fixture request")
+        data.extend(chunk)
+    head, body = data.split(b"\r\n\r\n", 1)
+    head = bytes(head)
+    lines = head.split(b"\r\n")
+    headers = {}
+    for line in lines[1:]:
+        name, value = line.split(b":", 1)
+        headers[name.lower()] = value.strip()
+    size = int(headers.get(b"content-length", b"0"))
+    if size > 4096:
+        raise RuntimeError("fixture request too large")
+    while len(body) < size:
+        part = sock.recv(size - len(body))
+        if not part:
+            raise RuntimeError("truncated fixture request")
+        body.extend(part)
+    return lines[0], headers, bytes(body)
+
+
+def main():
+    if len(sys.argv) != 6:
+        raise SystemExit("fixture.py BIN CERT_DER CERT_PEM KEY_PEM JPEG_FIXTURE")
+    binary, cert_der, cert_pem, key_pem, jpeg_fixture = sys.argv[1:]
+    username, password, token = (secrets.token_hex(16) for _ in range(3))
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    listener.settimeout(10)
+    port = listener.getsockname()[1]
+    errors = []
+    requests = []
+
+    def serve():
+        try:
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            context.load_cert_chain(cert_pem, key_pem)
+            raw, _ = listener.accept()
+            with raw, context.wrap_socket(raw, server_side=True) as peer:
+                peer.settimeout(10)
+                line, _, body = request(peer)
+                if line != b"POST /api/1.1/login HTTP/1.1" or json.loads(body) != {"username": username, "password": password}:
+                    raise RuntimeError("incorrect login")
+                requests.append("login")
+                reply = b"{}"
+                peer.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nSet-Cookie: authId=" + token.encode() + b"; Path=/; HttpOnly\r\nConnection: keep-alive\r\n\r\n" + reply)
+                line, headers, body = request(peer)
+                if line != b"GET /api/1.1/status HTTP/1.1" or headers.get(b"cookie") != b"authId=" + token.encode() or body:
+                    raise RuntimeError("incorrect status request")
+                requests.append("status")
+                reply = b'{"board":{},"fw":{},"controller":{}}'
+                peer.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: " + str(len(reply)).encode() + b"\r\nConnection: keep-alive\r\n\r\n" + reply)
+                line, headers, body = request(peer)
+                if line != b"GET /api/1.1/settings HTTP/1.1" or headers.get(b"cookie") != b"authId=" + token.encode() or body:
+                    raise RuntimeError("incorrect settings request")
+                requests.append("settings")
+                reply = b'{"controller":{"addr":"127.0.0.1"},"password":"synthetic-settings-canary","padding":"' + b'x' * 60000 + b'"}'
+                peer.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: " + str(len(reply)).encode() + b"\r\nConnection: keep-alive\r\n\r\n" + reply)
+                line, headers, body = request(peer)
+                if line != b"GET /snap.jpeg HTTP/1.1" or headers.get(b"cookie") != b"authId=" + token.encode() or body:
+                    raise RuntimeError("incorrect snapshot request")
+                requests.append("snapshot")
+                reply = pathlib.Path(jpeg_fixture).read_bytes()
+                peer.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nContent-Length: " + str(len(reply)).encode() + b"\r\nConnection: close\r\n\r\n" + reply)
+        except Exception as exc:
+            errors.append(type(exc).__name__)
+        finally:
+            listener.close()
+
+    with tempfile.TemporaryDirectory(prefix="fss-unifi-auth-fixture-") as directory:
+        credential = pathlib.Path(directory) / "credential.json"
+        fd = os.open(credential, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w") as f:
+            json.dump({"username": username, "password": password}, f)
+        thread = threading.Thread(target=serve)
+        thread.start()
+        output = pathlib.Path("/tmp") / ("fss-unifi-snapshot-fixture-" + secrets.token_hex(12) + ".jpg")
+        run = subprocess.run([binary, cert_der, "127.0.0.1", "tls13", "match", "sha256:" + "1" * 64, str(credential), str(port), str(output), "--owner-authorized"], capture_output=True, text=True, timeout=20)
+        thread.join(timeout=10)
+        if thread.is_alive() or errors or run.returncode or requests != ["login", "status", "settings", "snapshot"]:
+            if "message buffer full" in run.stderr:
+                print("client failure: TLS message buffer full")
+            raise SystemExit("loopback fixture failed: " + ", ".join(errors or ["client or sequence"]))
+        if "login_http_status=200" not in run.stdout or "status_http_status=200" not in run.stdout or "settings_http_status=200" not in run.stdout or "controller_address=reported" not in run.stdout or "controller_matches_connection_source=true" not in run.stdout or "snapshot_http_status=200" not in run.stdout or "decoded_luma=16x16" not in run.stdout or "media_persisted=true" not in run.stdout:
+            raise SystemExit("loopback fixture did not decode the expected image")
+        if any(secret in run.stdout or secret in run.stderr for secret in (username, password, token, "synthetic-settings-canary")):
+            raise SystemExit("loopback fixture secret reached process output")
+        if output.stat().st_mode & 0o777 != 0o600 or output.read_bytes() != pathlib.Path(jpeg_fixture).read_bytes():
+            raise SystemExit("loopback fixture output mismatch")
+        output.unlink()
+    print("loopback fixture: login, status, settings, JPEG decode, and private exact output passed; no synthetic secrets in output")
+
+
+if __name__ == "__main__":
+    main()

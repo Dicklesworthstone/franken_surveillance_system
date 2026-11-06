@@ -1,0 +1,13 @@
+[Unit]
+Description=Verify G4 recordings into the local fallback archive
+After=local-fs.target
+ConditionPathIsMountPoint=/bulk
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /data/unifi-g4-recorder/app/g4-fallback-archive.py
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+NoNewPrivileges=true
+TimeoutStartSec=900

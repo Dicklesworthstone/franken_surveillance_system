@@ -1,0 +1,11 @@
+[package]
+name = "unifi-tls-provider-lab"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+
+[dependencies]
+rustls = { version = "=0.23.43", default-features = false, features = ["std", "tls12"] }
+rustls-rustcrypto = { git = "https://github.com/RustCrypto/rustls-rustcrypto.git", rev = "70f76c039e587192688af18a80d5d6435dedaf22", default-features = false, features = ["std", "tls12", "zeroize"] }
+x509-cert = { version = "=0.2.5", default-features = false, features = ["std"] }
