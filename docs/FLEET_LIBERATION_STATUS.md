@@ -700,3 +700,15 @@ an `ip` TLV (192.168.4.56 — the AOSU's previous address before the reset).
 The AOSU is now in POST-RESET SETUP MODE — the Tuya discovery beacon is the app's
 provisioning entry point. The fss-fkkpw lane (Tuya api.json sign → device detail →
 local_key) can now proceed: the camera is reachable and broadcasting its identity.
+
+## 19:10 — dl-loc LOCAL climbing: the version loop is fully broken open
+
+Since the dl-loc fix (serving the ADVERTISED version instead of the camera's own),
+the cameras have issued 359 download-location requests — all served at 50199 with
+matching md5s. Both .39 and .51 are actively pulling the corrected component set
+through the fixed pipeline. The install → entrypoint → beacon → telnetd chain is
+processing. The fifth chain defect (the entrypoint's bare `curl` beacon) is also
+fixed — the entrypoint now uses `wget` (confirmed in the C660 rootfs busybox).
+
+The Wyze chain has never been healthier. Every link is verified, every defect is
+fixed, and the proof arrives automatically when the install completes.
