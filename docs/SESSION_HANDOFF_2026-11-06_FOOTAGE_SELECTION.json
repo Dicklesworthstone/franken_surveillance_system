@@ -1,0 +1,133 @@
+{
+  "format": "engineering-session-handoff",
+  "date": "2026-11-06",
+  "mission": {
+    "goal": "Close consequential remaining recorded-footage retrieval and native decoding gaps from the comprehensive plan and beads, with meaningful direct-main checkpoints.",
+    "inputs": [
+      "AGENTS.md",
+      "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md",
+      ".beads/issues.jsonl",
+      "IMPLEMENTATION_STATUS.md"
+    ],
+    "initial_head": "f2678a1d14be2fb66df866babcc4be3c6253ff29"
+  },
+  "authority": {
+    "git": "Explicit user authorization for direct main commits through the GitHub connector, without PRs.",
+    "ref_update": "Exact expected head; non-forced fast-forward.",
+    "external_device_execution": false,
+    "deployment_mutation_during_session": "Only isolated test deployments; no physical camera or user deployment accessed.",
+    "preserved_concurrent_head": "70e3f681b1d3eb75a6cb94de512f20cf92374587"
+  },
+  "published_checkpoints": [
+    {
+      "commit": "dded8943e38d302f63c5a46bd366f6b12828568e",
+      "change": "Bounded High-profile CAVLC escape decoding with independent fixture and hostile/refusal/recovery contracts."
+    },
+    {
+      "commit": "b3ec3a8e376fcd5aece28a121b018d6cfbc7bf5c",
+      "change": "Pure movie-time interval planning with exact edit/PTS mappings, explicit gaps, source handles, decode prerequisites and cost limits; preserves concurrent mixed MP4/stz2 implementation."
+    },
+    {
+      "commit": "this_commit",
+      "change": "Retained-source verification bridge, fss-file select-movie operator command, usage and bounded report delivery."
+    }
+  ],
+  "cases": [
+    {
+      "bead": "fss-vit-je36t.8",
+      "status": "advanced_open",
+      "implemented": "Recorded-file movie-time selection over authenticated completed ADP-FILE-001 MP4/MOV custody.",
+      "remaining": "Full canonical footage retrieval across live archives and trusted capture time; production/reference/CLI qualification."
+    },
+    {
+      "bead": "fss-x4a.13.8",
+      "status": "advanced_open",
+      "implemented": "Original segment handles and required coding spans for an exact selected movie interval.",
+      "remaining": "Complete incident-driven retrieval and privacy-governed media export."
+    },
+    {
+      "bead": "fss-x4a.12.23",
+      "status": "advanced_open",
+      "implemented": "8-bit High-profile CAVLC residual escape prefixes through 19, active-profile routing and fail-closed bounds.",
+      "remaining": "Broader H.264 profile and physical-device qualification."
+    },
+    {
+      "bead": "fss-vit023-review-export-w8aai",
+      "status": "open",
+      "finding": "The bounded footage selection substrate is now available; this session does not implement the full review/export workflow."
+    }
+  ],
+  "contracts": {
+    "production_dependency_added": false,
+    "schema_or_custody_encoding_changed": false,
+    "source_identity": "All original ordered chunks, whole-file SHA-256 and every sample index/range/digest are checked; completion/root custody revalidated before result release.",
+    "time_basis": "Exact rational container movie ticks; no capture UTC conversion.",
+    "timing_admission": "Unit-rate edits and signed composition offsets; contiguous DTS runs require unique adjacent presentation starts to meet prior declared sample duration; cslg shifts are refused.",
+    "discontinuity": "Decode bootstrap and ranges do not bridge discontinuous DTS runs.",
+    "cli_startup": "Existing local operator deployment startup and normal recovery, separate from sealed canonical footage metadata reader.",
+    "bounds": "Source input, demux parsing, selection work, metadata rows including selected-index references, decode samples, source bytes and Annex-B bytes are independently bounded.",
+    "report_delivery": "Cooperative cancellation between rows/references and before completion; an interrupted streamed prefix has no completion marker.",
+    "requested_frames_equal_decode_span": false,
+    "raw_media_exported": false,
+    "physical_absence_certifiable": false,
+    "decoder_handoff": "Existing fss-file decode admits at most 1024 coding segments per range; select with --max-decode-samples 1024 or narrow the interval."
+  },
+  "verification": {
+    "toolchain": "nightly-2026-08-31",
+    "codec": {
+      "command": "cargo test --locked --offline -p fss-codec-h264 -j 1 -- --test-threads=1",
+      "passed": 176,
+      "failed": 0,
+      "ignored": 0,
+      "profile": "default"
+    },
+    "container": {
+      "command": "cargo test --locked --offline -p fss-container -j 1 -- --test-threads=1",
+      "source_commit": "b3ec3a8e376fcd5aece28a121b018d6cfbc7bf5c",
+      "passed": 125,
+      "failed": 0,
+      "ignored": 0,
+      "profile": "default",
+      "groups": {
+        "lib": 48,
+        "avc_mux": 12,
+        "demux_gauntlets": 2,
+        "flv": 3,
+        "hevc_remux": 11,
+        "inband": 27,
+        "mux_gauntlets": 2,
+        "mixed": 11,
+        "native_boundary": 9
+      },
+      "new_movie_selection_contracts": 16
+    },
+    "retained_cli": {
+      "status": "targeted production typecheck pending; new source not yet natively typechecked",
+      "retained_contracts_authored": 13,
+      "cli_parser_contracts_authored": 6,
+      "tests_executed": false
+    },
+    "qualify_sh": "not run; no release or production approval claimed",
+    "environment": "Shared 8 GiB host; serialized builds; production dependency closure unchanged.",
+    "review": "Independent read-only review found no actionable custody, cancellation or decoder-handoff bug; source review is not execution proof.",
+    "selected_rustfmt": "passed",
+    "whitespace": "passed"
+  },
+  "unknowns": [
+    "Movie-time ticks are not wall-clock capture timestamps; container gaps are not physical absence or acquisition coverage.",
+    "Pure selection does not certify codec pixel decodability or export authorization.",
+    "Original ADP-FILE-001 mp4avc/mp4hevc imports only; native reconstructed origins are explicitly unsupported.",
+    "CLI/reference integration execution and complete repository qualification remain separate requirements."
+  ],
+  "obligations": {
+    "external_effects": [],
+    "leases": [],
+    "indeterminate_publications": [],
+    "beads_closed": []
+  },
+  "continuation": {
+    "next_validation": "Run the full retained-source and fss-file contract suites on the pinned complete production dependency closure; retain any compile/runtime failures honestly.",
+    "next_functionality": "Connect bounded footage selection to the remaining incident/review/export workflow with current privacy checks and exact original custody.",
+    "blocked_product_decisions": "Always-on recorder standing authority and D6/D7 owner decisions remain unresolved; no new authority or source-envelope contract was invented."
+  }
+}

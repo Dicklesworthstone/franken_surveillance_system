@@ -34,8 +34,10 @@ mod localization_replay;
 mod localize;
 #[path = "fss-file/media.rs"]
 mod media;
+#[path = "fss-file/movie.rs"]
+mod movie;
 
-const HELP: &str = "fss-file <import|inspect|verify|extract|decode|read-decoded|verify-decoded|motion|localize|read-localization|verify-localization> [options]\n\
+const HELP: &str = "fss-file <import|inspect|verify|extract|select-movie|decode|read-decoded|verify-decoded|motion|localize|read-localization|verify-localization> [options]\n\
   All commands: --root DIR --site SITE [--principal ID]\n\
   Source commands also accept --manifest-out FILE.\n\
   import: --input FILE --sensor ID --stream ID --receive-time-ns N\n\
@@ -51,6 +53,12 @@ const HELP: &str = "fss-file <import|inspect|verify|extract|decode|read-decoded|
           no capture hint; the import is re-read and verified before it is reported\n\
   inspect/verify: --import-id sha256:HEX\n\
   extract: --import-id sha256:HEX --segment N --output FILE\n\
+  select-movie: --import-id sha256:HEX --start-movie-tick N --end-movie-tick N\n\
+          Selects the half-open interval in retained MP4/MOV movie ticks, not UTC.\n\
+          Verifies retained source bytes; reports exact rational presentation intervals,\n\
+          empty/unrepresented gaps and required decode ranges, without returning media.\n\
+          [--selection-work-units N --max-selection-rows N --max-decode-samples N]\n\
+          [--max-decode-bytes N --max-annex-b-bytes N]; source read bounds also apply.\n\
   decode/read-decoded/verify-decoded: --import-id sha256:HEX --segment N\n\
           --interpretation gray|ycbcr [--output IMAGE.pgm] [--receipt-out FILE]\n\
   decode of an H.264 (annexb/mp4avc/mkvavc) or H.265 (hevc/mp4hevc/mkvhevc) import:\n\
@@ -117,6 +125,7 @@ enum Action {
         output: PathBuf,
     },
     Media(media::Action),
+    Movie(movie::Action),
     Localize(Box<localize::Action>),
     LocalizationReplay(localization_replay::Action),
 }
@@ -173,14 +182,17 @@ fn parse(args: &[OsString]) -> ParseResult<Option<Options>> {
         }
         return Ok(None);
     }
-    if !matches!(command, "import" | "inspect" | "verify" | "extract")
-        && !media::is_command(command)
+    if !matches!(
+        command,
+        "import" | "inspect" | "verify" | "extract" | "select-movie"
+    ) && !media::is_command(command)
         && command != "localize"
         && !localization_replay::is_command(command)
     {
         return Err((
             ERR_CLI_UNKNOWN_COMMAND,
-            "expected import, inspect, verify, extract or a decoded-media command".to_owned(),
+            "expected import, inspect, verify, extract, select-movie or a decoded-media command"
+                .to_owned(),
         ));
     }
     let common = [
@@ -221,6 +233,7 @@ fn parse(args: &[OsString]) -> ParseResult<Option<Options>> {
             || (command != "import" && !replay && key == "--import-id")
             || (command == "extract" && matches!(key, "--segment" | "--output"))
             || media::accepts_option(command, key)
+            || movie::accepts_option(command, key)
             || localize::accepts_option(command, key)
             || localization_replay::accepts_option(command, key);
         if !allowed {
@@ -403,6 +416,7 @@ fn parse(args: &[OsString]) -> ParseResult<Option<Options>> {
                 segment: number(&values, "--segment", None)?,
                 output: PathBuf::from(value(&values, "--output")?),
             },
+            "select-movie" => Action::Movie(movie::parse(identity, &values)?),
             "localize" => Action::Localize(Box::new(localize::parse(identity, limits, &values)?)),
             _ => Action::Media(media::parse(command, identity, limits, &values)?),
         }
@@ -500,6 +514,7 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
             Action::Verify(id) => (*id, "verify"),
             Action::Extract { identity, .. } => (*identity, "extract"),
             Action::Media(action) => (action.identity(), action.name()),
+            Action::Movie(action) => (action.identity(), "select-movie"),
             Action::Localize(action) => (action.identity(), "localize"),
             Action::LocalizationReplay(action) => {
                 return localization_replay::run(
@@ -588,6 +603,9 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
             }
             Action::Media(action) => {
                 media::run(action, &retained, &mut deployment, &options.root, &cx, out)?
+            }
+            Action::Movie(action) => {
+                movie::run(action, &retained, &deployment, options.limits, &cx, out)?
             }
             Action::Localize(action) => {
                 localize::run(action, &retained, &mut deployment, &options.root, &cx, out)?
@@ -856,6 +874,45 @@ mod tests {
         .chain(extra.iter().copied())
         .map(OsString::from)
         .collect()
+    }
+    #[test]
+    fn movie_selection_requires_an_explicit_half_open_interval_and_bounded_work() {
+        let valid = ["--start-movie-tick", "1000", "--end-movie-tick", "2000"];
+        assert!(matches!(
+            parse(&media_args("select-movie", &valid)),
+            Ok(Some(Options {
+                action: Action::Movie(_),
+                ..
+            }))
+        ));
+        for extra in [
+            vec!["--start-movie-tick", "0"],
+            vec!["--start-movie-tick", "7", "--end-movie-tick", "7"],
+            vec!["--start-movie-tick", "8", "--end-movie-tick", "7"],
+            vec!["--start-movie-tick", "-1", "--end-movie-tick", "7"],
+            vec!["--start-movie-tick", "0.5", "--end-movie-tick", "7"],
+        ] {
+            assert!(parse(&media_args("select-movie", &extra)).is_err());
+        }
+        for key in [
+            "--selection-work-units",
+            "--max-selection-rows",
+            "--max-decode-samples",
+            "--max-decode-bytes",
+            "--max-annex-b-bytes",
+        ] {
+            for bad in ["0", "18446744073709551615"] {
+                let mut extra = valid.to_vec();
+                extra.extend([key, bad]);
+                assert!(parse(&media_args("select-movie", &extra)).is_err());
+            }
+        }
+        for key in ["--output", "--interpretation", "--segment", "--from-ns"] {
+            let mut extra = valid.to_vec();
+            extra.extend([key, "1"]);
+            assert!(parse(&media_args("select-movie", &extra)).is_err());
+        }
+        assert!(parse(&media_args("inspect", &valid)).is_err());
     }
     #[test]
     fn decode_commands_require_explicit_interpretation_and_bound_every_axis() {

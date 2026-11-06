@@ -5,7 +5,10 @@
 //! A published root without final import authority is not a completed import. Custody of a
 //! recorded file never certifies live coverage, capture-time precision, or absence.
 
+mod movie;
 mod root_binding;
+
+pub use movie::RetainedMovieSelection;
 
 use super::{
     ADP_FILE_GENERATION, ADP_FILE_ROW_ID, FILE_IMPORT_MANIFEST_SCHEMA, FileImportManifest,

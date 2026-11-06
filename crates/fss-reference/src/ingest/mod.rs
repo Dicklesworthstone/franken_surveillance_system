@@ -146,7 +146,9 @@ pub use mjpeg::{
     JpegFinding, JpegFrameSpan, JpegProcess, JpegScan, JpegSofInfo, JpegSplitError, MjpegLimits,
     OmissionReason, OmissionSpan, split_jpeg_stream,
 };
-pub use retained::{RetainedFileImport, RetainedReadLimits, VerifiedChunkCache};
+pub use retained::{
+    RetainedFileImport, RetainedMovieSelection, RetainedReadLimits, VerifiedChunkCache,
+};
 
 /// Native JPEG RGB through privacy projection, resize and frozen neural graph execution.
 pub mod rgb_inference;

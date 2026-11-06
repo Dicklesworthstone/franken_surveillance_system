@@ -4,6 +4,62 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Retained movie-time footage selection (2026-11-06)
+
+`fss-file select-movie` now maps a half-open MP4/MOV movie-time interval to
+original retained video segments and the separate coding-order ranges needed for
+Annex-B extraction. The pure planner applies unit-rate edits and signed
+composition offsets with exact rational boundaries, preserves repeated
+presentation occurrences, and distinguishes empty edits from unrepresented time.
+It quotes all required random-access preroll and intervening coding samples,
+source bytes and Annex-B bootstrap bytes under independent work/output limits.
+Continuous decode runs must have an exact, nonoverlapping presentation-duration
+grid; ambiguous timing and `cslg` shift profiles refuse instead of being guessed.
+Random-access bootstrap never crosses a decode-time discontinuity.
+
+The retained bridge authenticates the completed import root, manifest, ordered
+source chunks, whole original digest and every retained sample range/digest.
+It reparses the same admitted indexed, fragmented, mixed, in-band and recoverable-tail
+source profile, then revalidates custody before releasing the byte-free result.
+Source reading has its own ceiling, independent of the selected decode bytes.
+Cancellation applies to selection and streamed report delivery; a partial report
+cannot claim completion. The command uses existing operator startup/recovery.
+It does not replace the sealed canonical metadata reader, export media, decode
+pixels, establish UTC or certify coverage/absence. Native reconstructed origins
+remain outside this original `ADP-FILE-001` import contract.
+
+**Verification scope:** all 125 native `fss-container` tests pass on the combined
+published tree under pinned nightly `2026-08-31`, locked/offline dependencies and
+serial compilation. This includes 16 movie-selection contracts plus existing
+indexed, mixed, compact-table, in-band, mux and malformed-media tests. The 13
+retained-library and six CLI/parser contracts are authored, formatted and
+independently reviewed; they have not executed. The new reference/CLI source has
+not yet passed native typechecking; its targeted production check is pending.
+The scoped codec and container tests do not qualify the complete asynchronous
+reference/CLI dependency closure or the repository. See
+`docs/RETAINED_MOVIE_SELECTION.md` for usage, bounds and current timing admission.
+This advances `fss-vit-je36t.8` and `fss-x4a.13.8`; the broad footage query,
+incident retrieval and review/export beads remain open.
+
+## Native High-profile H.264 CAVLC level escapes (2026-11-06)
+
+The decoder now admits bounded extended CAVLC residual-level escape prefixes for
+8-bit High-profile streams and routes that admission from the active SPS.
+Baseline, Main and Extended retain their prefix ceiling. Contradictory legacy
+constraint flags on the High profile, oversized prefixes and truncated escapes
+refuse; recovery requires a subsequent valid random-access picture. Production
+decoding stays in the existing first-party Rust implementation.
+
+**Verification scope:** all 176 native `fss-codec-h264` tests pass under pinned
+nightly `2026-08-31`, locked/offline dependencies, serial compilation and the
+default test profile. This includes 88 unit, 43 decode-conformance, 21 hostile-input,
+two malformed-media gauntlet and 22 access-unit/POC/real-stream tests, with no
+failures or ignored cases. The new frozen High CAVLC fixture matches all decoded
+pixels of its independent, pinned FFmpeg oracle; boundary, sign, suffix adaptation,
+active-profile, refusal and recovery tests pass. Formatting and scoped integrity
+checks pass. This advances `fss-x4a.12.23`; full profile/device qualification
+and the repository release gate remain open.
+
 ## Mixed MP4 recordings and compact sample-size tables (2026-11-06)
 
 The native AVC/HEVC MP4 reader now admits an initial indexed movie followed by

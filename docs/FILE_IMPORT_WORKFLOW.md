@@ -56,6 +56,12 @@ writing bytes. JPEG/MJPEG extraction produces the original encoded JPEG segment,
 image. Metadata can be exported by any command with `--manifest-out FILE`; it is the existing
 `fss.file_import.manifest.v1` canonical binary, not a new JSON or agent-envelope dialect.
 
+For retained AVC/HEVC MP4/MOV files, `select-movie --start-movie-tick N --end-movie-tick N`
+selects a half-open interval on the container's movie timeline. It verifies the retained
+original and reports presentation samples, explicit gaps and required coding-order decode
+ranges with exact rational timing. See [RETAINED_MOVIE_SELECTION.md](RETAINED_MOVIE_SELECTION.md)
+for usage, edit-list and preroll semantics, source/read budgets and scope.
+
 ## Boundaries
 
 The local operator process and filesystem permissions are the trust boundary. `--principal` is an
