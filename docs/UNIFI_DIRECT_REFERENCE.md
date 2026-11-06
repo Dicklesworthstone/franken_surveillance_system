@@ -1067,6 +1067,10 @@ reads completed with a task receipt. The reported controller matched the existin
 recorder, and no management effect was attempted. Immediately afterward the
 recorder, upload, bulk fallback, and discovery timers remained active, the
 recorder restart count remained 53, and the most recent upload had succeeded.
+A later staging inspection found a recently closed 60.024-second H.264
+segment at 1280x720 that `ffprobe` could read, along with an actively written
+segment and an older incomplete segment that lacked an MP4 index. The incomplete
+file was preserved; it cannot establish continuous coverage.
 A separate broadcast discovery window shortly beforehand returned no datagrams;
 this does not prove camera absence or explain the difference. The certificate
 and discovery claims were observed on the same network and do not independently
