@@ -25,6 +25,11 @@ pub use inband::{
 };
 mod matroska;
 pub use matroska::{MatroskaElement, MatroskaSample, MatroskaTrack, MatroskaVideo};
+mod timeline;
+pub use timeline::{
+    MovieDecodeSpan, MovieEditSelection, MovieGap, MovieGapKind, MovieInterval,
+    MovieSampleSelection, MovieSelection, MovieSelectionLimits,
+};
 
 /// Hard source byte ceiling, independent of media-decode limits.
 pub const MAX_MP4_INPUT_BYTES: usize = 512 * 1024 * 1024;
@@ -195,6 +200,7 @@ pub struct AvcMp4<'a> {
     sample_entry_range: Range<usize>,
     configuration_record: Range<usize>,
     inband: Option<Vec<SampleConfiguration>>,
+    composition_shift: bool,
 }
 
 impl<'a> AvcMp4<'a> {
@@ -397,6 +403,9 @@ impl<'a> AvcMp4<'a> {
         validate_data_reference(&mut r, &info)?;
         let stbl = one(&info, b"stbl")?;
         let tables = r.children(stbl.body, false)?;
+        // Historical parsing/extraction preserves this box without interpreting its ISO/QT
+        // timeline conventions. The explicit movie-time selector must not silently ignore it.
+        let composition_shift = tables.iter().any(|b| b.kind == *b"cslg");
         // Auxiliary encryption and alternate layout tables cannot be ignored.
         if tables
             .iter()
@@ -517,6 +526,7 @@ impl<'a> AvcMp4<'a> {
             sample_entry_range,
             configuration_record,
             inband,
+            composition_shift,
         })
     }
     /// Exact borrowed original container bytes, not normalized media.
@@ -614,67 +624,20 @@ impl<'a> AvcMp4<'a> {
         count: usize,
         check: &mut dyn FnMut() -> Result<(), DemuxError>,
     ) -> Result<AnnexBExtraction, DemuxError> {
-        check()?;
-        let end = first
-            .checked_add(count)
-            .filter(|end| *end <= self.samples.len())
-            .ok_or(DemuxError::Layout)?;
-        if count == 0 {
-            return Err(DemuxError::Layout);
-        }
-        let initial = &self.samples[first];
-        if !initial.sync_sample || !initial.contains_idr {
-            return Err(DemuxError::RandomAccessRequired);
-        }
-        let mut selected: Vec<(Option<usize>, Range<usize>)> = if self.inband.is_none() {
-            self.parameter_sets
-                .iter()
-                .cloned()
-                .map(|p| (None, p))
-                .collect()
-        } else {
-            Vec::new()
-        };
-        let mut generation = None;
-        for sample in &self.samples[first..end] {
-            if let Some(configuration) = self.sample_configuration(sample.index)
-                && generation != Some(configuration.generation())
-            {
-                for parameter in configuration.parameter_sets() {
-                    check()?;
-                    if selected.len() == self.limits.maximum_nals {
-                        return Err(DemuxError::Limit);
-                    }
-                    selected.push((parameter.sample, parameter.source.clone()));
-                }
-                generation = Some(configuration.generation());
-            }
-            nals(
-                self.source,
-                sample.source.clone(),
-                self.length_bytes,
-                &mut |nal| {
-                    check()?;
-                    if selected.len() == self.limits.maximum_nals {
-                        return Err(DemuxError::Limit);
-                    }
-                    selected.push((Some(sample.index), nal));
-                    Ok(())
-                },
-            )?;
-        }
-        let size = selected.iter().try_fold(0_usize, |total, (_, range)| {
-            total
-                .checked_add(4)
-                .and_then(|n| n.checked_add(range.len()))
-                .filter(|n| *n <= self.limits.maximum_output_bytes)
-                .ok_or(DemuxError::Limit)
+        let mut selected = Vec::new();
+        let size = self.visit_annex_b_nals(first, count, check, &mut |sample, source| {
+            selected.try_reserve(1).map_err(|_| DemuxError::Limit)?;
+            selected.push((sample, source));
+            Ok(())
         })?;
         let mut bytes = Vec::new();
         bytes
             .try_reserve_exact(size)
             .map_err(|_| DemuxError::Limit)?;
-        let mut mappings = Vec::with_capacity(selected.len());
+        let mut mappings = Vec::new();
+        mappings
+            .try_reserve_exact(selected.len())
+            .map_err(|_| DemuxError::Limit)?;
         for (sample, source) in selected {
             check()?;
             let prefix = bytes.len();
@@ -693,6 +656,68 @@ impl<'a> AvcMp4<'a> {
             first_sample: first,
             sample_count: count,
         })
+    }
+
+    /// Shared bootstrap and NAL walk for extraction and its zero-copy timeline cost quote.
+    /// The visitor only sees borrowed source coordinates; it cannot change admission.
+    fn visit_annex_b_nals(
+        &self,
+        first: usize,
+        count: usize,
+        check: &mut dyn FnMut() -> Result<(), DemuxError>,
+        visit: &mut dyn FnMut(Option<usize>, Range<usize>) -> Result<(), DemuxError>,
+    ) -> Result<usize, DemuxError> {
+        check()?;
+        let end = first
+            .checked_add(count)
+            .filter(|end| *end <= self.samples.len())
+            .ok_or(DemuxError::Layout)?;
+        if count == 0 {
+            return Err(DemuxError::Layout);
+        }
+        let initial = &self.samples[first];
+        if !initial.sync_sample || !initial.contains_idr {
+            return Err(DemuxError::RandomAccessRequired);
+        }
+        let mut nal_count = 0_usize;
+        let mut size = 0_usize;
+        let mut emit = |sample, source: Range<usize>| {
+            check()?;
+            nal_count = nal_count
+                .checked_add(1)
+                .filter(|n| *n <= self.limits.maximum_nals)
+                .ok_or(DemuxError::Limit)?;
+            size = size
+                .checked_add(4)
+                .and_then(|n| n.checked_add(source.len()))
+                .filter(|n| *n <= self.limits.maximum_output_bytes)
+                .ok_or(DemuxError::Limit)?;
+            visit(sample, source)
+        };
+        if self.inband.is_none() {
+            for parameter in &self.parameter_sets {
+                emit(None, parameter.clone())?;
+            }
+        }
+        let mut generation = None;
+        for sample in &self.samples[first..end] {
+            if let Some(configuration) = self.sample_configuration(sample.index)
+                && generation != Some(configuration.generation())
+            {
+                for parameter in configuration.parameter_sets() {
+                    emit(parameter.sample, parameter.source.clone())?;
+                }
+                generation = Some(configuration.generation());
+            }
+            nals(
+                self.source,
+                sample.source.clone(),
+                self.length_bytes,
+                &mut |nal| emit(Some(sample.index), nal),
+            )?;
+        }
+        check()?;
+        Ok(size)
     }
 }
 
