@@ -1,8 +1,9 @@
 #![forbid(unsafe_code)]
 //! Source-preserving AVC/HEVC MP4 demultiplexing (FSS-115).
 //!
-//! The admitted profile is self-contained ISO BMFF, indexed (`moov` sample tables) or fragmented
-//! (`mvex` plus `moof`/`trun`), with one selected `avc1` or `hvc1`/`hev1` video sample
+//! The admitted profile is self-contained ISO BMFF, indexed (`moov` sample tables), fragmented
+//! (`mvex` plus `moof`/`trun`), or an indexed prefix followed by fragments, with one selected
+//! `avc1` or `hvc1`/`hev1` video sample
 //! description. Decode/composition ticks, edit lists and the track matrix are
 //! preserved, not interpreted as capture time or silently applied to an elementary stream.
 //! Other tracks are explicitly outside the selection. No decoder, filesystem or effect runs.
@@ -218,8 +219,11 @@ impl<'a> AvcMp4<'a> {
     /// (power loss, a crashed recorder) is admitted up to its last complete movie fragment: the
     /// top-level boxes end at the first one the bytes run out in, and a final `moof` without a
     /// complete `mdat` after it is dropped. [`Self::truncated_tail`] reports where the unread
-    /// tail starts. An indexed movie cannot be recovered (its sample tables describe the whole
-    /// file) and still refuses; so does any malformation other than running out of bytes.
+    /// tail starts. A complete indexed prefix of a movie declaring fragments also survives,
+    /// even if its first fragment was cut. A purely indexed movie cannot be recovered (its
+    /// sample tables describe the whole file) and still refuses. Malformations in the retained
+    /// prefix also refuse; discarded tail metadata is not validated. Indexed sample bytes must
+    /// always be complete.
     pub fn parse_recovering_tail(
         source: &'a [u8],
         track: Option<u32>,
@@ -330,12 +334,13 @@ impl<'a> AvcMp4<'a> {
         if movie.iter().any(|b| b.kind == *b"cmov") {
             return Err(DemuxError::Unsupported);
         }
-        // Movie fragments are read only when the movie declares them (mvex), and vice versa.
+        // Movie fragments require mvex. It may also declare future fragments after a complete
+        // indexed prefix: a recorder can stop before writing its first moof.
         let mvex = optional(&movie, b"mvex")?;
-        if tail.is_some() && !has_fragments {
+        if tail.is_some() && mvex.is_none() {
             return Err(DemuxError::Truncated);
         }
-        if mvex.is_some() != has_fragments {
+        if has_fragments && mvex.is_none() {
             return Err(DemuxError::Unsupported);
         }
         let mvhd = one(&movie, b"mvhd")?;
@@ -392,13 +397,11 @@ impl<'a> AvcMp4<'a> {
         validate_data_reference(&mut r, &info)?;
         let stbl = one(&info, b"stbl")?;
         let tables = r.children(stbl.body, false)?;
-        // Auxiliary encryption and alternate size/layout tables cannot be ignored.
-        if tables.iter().any(|b| {
-            matches!(
-                &b.kind,
-                b"stz2" | b"senc" | b"saiz" | b"saio" | b"sgpd" | b"sbgp"
-            )
-        }) {
+        // Auxiliary encryption and alternate layout tables cannot be ignored.
+        if tables
+            .iter()
+            .any(|b| matches!(&b.kind, b"senc" | b"saiz" | b"saio" | b"sgpd" | b"sbgp"))
+        {
             return Err(DemuxError::Unsupported);
         }
         let stsd = one(&tables, b"stsd")?;
@@ -421,17 +424,10 @@ impl<'a> AvcMp4<'a> {
                     .any(|p| hevc_nal_kind(&source[p.clone()]).is_ok_and(|value| value == kind));
             }
         }
-        let sizes = sizes(&mut r, &one(&tables, b"stsz")?)?;
-        let entries: Vec<fragments::FragmentSample> = if let Some(mvex) = mvex {
-            // A fragmented movie keeps its samples in moof/trun, never in the moov tables.
-            if !sizes.is_empty() {
-                return Err(DemuxError::Unsupported);
-            }
-            fragments::fragments(&mut r, &top, &mvex, track, &media)?
+        let sizes = sizes(&mut r, &tables)?;
+        let mut entries: Vec<fragments::FragmentSample> = if sizes.is_empty() {
+            Vec::new()
         } else {
-            if sizes.is_empty() {
-                return Err(DemuxError::Layout);
-            }
             let offsets = offsets(&mut r, &tables)?;
             let locations = locations(&mut r, &one(&tables, b"stsc")?, &sizes, &offsets, &media)?;
             let timing = timing(&mut r, &one(&tables, b"stts")?, sizes.len())?;
@@ -454,6 +450,14 @@ impl<'a> AvcMp4<'a> {
                 })
                 .collect()
         };
+        if let Some(mvex) = mvex {
+            // ISO BMFF fragments extend the indexed movie. Reuse one sample vector so decode
+            // continuity, sample limits and source-range overlap checks include both parts.
+            fragments::append(&mut r, &top, &mvex, track, &media, &mut entries)?;
+        }
+        if entries.is_empty() {
+            return Err(DemuxError::Layout);
+        }
         let mut samples = Vec::with_capacity(entries.len());
         for (index, (range, decode_time, duration, composition_offset, sync_sample)) in
             entries.into_iter().enumerate()

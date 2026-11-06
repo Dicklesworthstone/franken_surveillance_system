@@ -372,7 +372,17 @@ fn config_nals(
     }
     Ok(())
 }
-pub(super) fn sizes(r: &mut Reader<'_, '_>, stsz: &BoxRef) -> Result<Vec<u32>, DemuxError> {
+/// Exactly one sample-size variant is required (ISO/IEC 14496-12 8.7.3).
+pub(super) fn sizes(r: &mut Reader<'_, '_>, tables: &[BoxRef]) -> Result<Vec<u32>, DemuxError> {
+    match (optional(tables, b"stsz")?, optional(tables, b"stz2")?) {
+        (Some(stsz), None) => regular_sizes(r, &stsz),
+        (None, Some(stz2)) => compact_sizes(r, &stz2),
+        (None, None) => Err(DemuxError::MissingBox(*b"stsz")),
+        (Some(_), Some(_)) => Err(DemuxError::Layout),
+    }
+}
+
+fn regular_sizes(r: &mut Reader<'_, '_>, stsz: &BoxRef) -> Result<Vec<u32>, DemuxError> {
     let b = r.body(stsz);
     full(b, 0, 0)?;
     let fixed = be32(b, 4)?;
@@ -388,6 +398,50 @@ pub(super) fn sizes(r: &mut Reader<'_, '_>, stsz: &BoxRef) -> Result<Vec<u32>, D
     let mut sizes = Vec::with_capacity(count);
     for row in b[12..].as_chunks::<4>().0 {
         let n = be32(row, 0)?;
+        if n == 0 {
+            return Err(DemuxError::Layout);
+        }
+        sizes.push(n);
+    }
+    Ok(sizes)
+}
+
+/// Compact tables pack nonzero AVC/HEVC sample sizes into 4, 8 or 16 bits. Count, exact
+/// payload length, padding and shared work allowance are checked before allocating entries.
+fn compact_sizes(r: &mut Reader<'_, '_>, stz2: &BoxRef) -> Result<Vec<u32>, DemuxError> {
+    let b = r.body(stz2);
+    full(b, 0, 0)?;
+    let field = be32(b, 4)?;
+    if field & 0xffff_ff00 != 0 {
+        return Err(DemuxError::Layout);
+    }
+    if !matches!(field, 4 | 8 | 16) {
+        return Err(DemuxError::Unsupported);
+    }
+    let count = be32(b, 8)? as usize;
+    if count > r.limits.maximum_samples {
+        return Err(DemuxError::Limit);
+    }
+    let packed_bytes = match field {
+        4 => count.div_ceil(2),
+        8 => count,
+        _ => count.checked_mul(2).ok_or(DemuxError::Limit)?,
+    };
+    exact_table(b, 12, packed_bytes, 1)?;
+    if field == 4 && count % 2 != 0 && b.last().is_some_and(|byte| byte & 15 != 0) {
+        return Err(DemuxError::Layout);
+    }
+    r.entries(count)?;
+    let mut sizes = Vec::with_capacity(count);
+    for index in 0..count {
+        if index % 256 == 0 {
+            r.checkpoint()?;
+        }
+        let n = match field {
+            4 => u32::from((b[12 + index / 2] >> (4 * (1 - index % 2))) & 15),
+            8 => u32::from(b[12 + index]),
+            _ => u32::from(be16(b, 12 + index * 2)?),
+        };
         if n == 0 {
             return Err(DemuxError::Layout);
         }

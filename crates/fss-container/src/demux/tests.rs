@@ -2,6 +2,7 @@
 #![allow(clippy::expect_used)] // fixture lookups over bytes this file just built
 //! Independent sample-table fixtures plus a retained FFmpeg laboratory encoding.
 use super::*;
+mod compact;
 
 type Test<T = ()> = Result<T, Box<dyn std::error::Error>>;
 fn atom(kind: &[u8; 4], body: &[u8]) -> Vec<u8> {

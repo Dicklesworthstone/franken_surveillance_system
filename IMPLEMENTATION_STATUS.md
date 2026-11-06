@@ -4,6 +4,41 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Mixed MP4 recordings and compact sample-size tables (2026-11-06)
+
+The native AVC/HEVC MP4 reader now admits an initial indexed movie followed by
+fragments. Both layouts share one sample selection, source-range overlap check,
+and resource allowance. Fragment decode time continues from the indexed decode
+end; explicit forward gaps remain visible and reversing timestamps refuse. Tail
+recovery can retain a complete indexed prefix before a torn first fragment, with
+the discarded suffix explicit and unvalidated. Initial sample bytes must be complete.
+
+The same reader now accepts `stz2` 4-, 8-, and 16-bit sample sizes as an exclusive
+alternative to `stsz`. Exact lengths, counts, reserved bits, nibble padding, nonzero
+sample sizes, shared quotas, and cancellation are checked before publication.
+Both features feed the existing `mp4avc` / `mp4hevc` file-adapter entrypoints;
+no decoder, runtime dependency, import format, or custody encoding was added.
+
+**Verification scope:** the complete `fss-container` suite passes 109 native tests
+under pinned nightly `2026-08-31`, locked/offline dependencies, serial compilation,
+zero debug information, and disabled incremental compilation. This includes 11
+mixed-recording contracts and seven compact-table contracts. Tests preserve exact
+source bytes, media ticks, Annex-B mappings, independent AVC/HEVC decoded frame
+hashes, random-access behavior, every-byte truncated prefixes, quotas, and every
+parser cancellation checkpoint. Both frozen recordings also independently decode
+to all ten existing FFmpeg frame-hash oracles. Source review, selected formatting,
+whitespace, and staged-file integrity checks pass.
+
+The existing indexed-duration admission rule remains: a known `mdhd.duration`
+must match the indexed decode deltas. The raw FFmpeg 6.1.1 open-GOP HEVC remux
+used during development falls outside this profile and remains a refusal case.
+The positive laboratory fixture changes only that declared duration; its raw and
+adjusted digests and exact transformation are documented. Production never applies
+that adjustment. See `docs/MIXED_MP4_RECORDINGS.md` and
+`docs/COMPACT_MP4_SAMPLE_SIZES.md`. These results do not qualify the complete file
+import/retained-store runtime, physical cameras, capture UTC, or production use.
+This advances `fss-x4a.12.14` and `fss-x4a.12.2`; both broad beads remain open.
+
 ## Static automatic padding for native ONNX import (2026-11-06)
 
 The bounded opset-13 importer now lowers `VALID`, `SAME_UPPER`, and `SAME_LOWER`
@@ -16,10 +51,11 @@ artifact metadata continues to bind the exact original source.
 The importer identity includes the new source; no native operator, schema, or
 production dependency changes. See `docs/onnx_import.md`.
 
-**Verification scope:** 59 targeted native tests pass under pinned nightly
-`2026-08-31` with locked/offline dependencies, serial compilation, zero debug
-information, and incremental compilation disabled: 20 Model IR unit tests,
-16 detector-block, 11 automatic-padding, and 12 existing pooling tests. The new
+**Verification scope:** the complete `fss-model-ir` suite passes 264 native tests
+under pinned nightly `2026-08-31` with locked/offline dependencies, serial
+compilation, zero debug information, and incremental compilation disabled. This
+includes the 59 initially targeted tests: 20 Model IR unit tests, 16 detector-block,
+11 automatic-padding, and 12 existing pooling tests. The new
 target includes nine padding contracts plus two unchanged scalar-executor smoke
 contracts; it checks 207 pooling and 90 grouped/dilated convolution combinations
 against independent coordinate oracles, production scalar execution,

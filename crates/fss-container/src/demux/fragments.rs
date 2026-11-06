@@ -4,7 +4,8 @@
 //! `mvex`/`trex` defaults, then every top-level `moof` in file order: `mfhd` sequence numbers
 //! must increase, the selected track's `traf` is read through `tfhd`, optional `tfdt` and its
 //! `trun` boxes, and every sample range must lie inside one `mdat` body. The result has the same
-//! shape as the indexed sample-table join, so NAL validation and custody stay shared.
+//! shape as the indexed sample-table join and extends any initial indexed samples, so timeline,
+//! aggregate limits, source overlap, NAL validation and custody stay shared.
 use super::DemuxError;
 use super::reader::{BoxRef, Reader, be32, be64, full, one, optional};
 use std::ops::Range;
@@ -103,18 +104,24 @@ fn track_fragment_header(b: &[u8]) -> Result<TrackFragment, DemuxError> {
     })
 }
 
-/// The selected track's samples across every movie fragment, in decode (file) order.
-pub(super) fn fragments(
+/// Append the selected track's movie fragments after its initial indexed samples, in decode
+/// order. The caller owns this unpublished vector; any failure refuses the complete parse.
+pub(super) fn append(
     r: &mut Reader<'_, '_>,
     top: &[BoxRef],
     mvex: &BoxRef,
     track: u32,
     media: &[Range<usize>],
-) -> Result<Vec<FragmentSample>, DemuxError> {
+    samples: &mut Vec<FragmentSample>,
+) -> Result<(), DemuxError> {
     let trex = defaults(r, mvex, track)?;
-    let mut samples: Vec<FragmentSample> = Vec::new();
     let mut sequence = None;
-    let mut next_decode = 0_u64;
+    let mut next_decode = match samples.last() {
+        Some((_, decode, duration, _, _)) => decode
+            .checked_add(u64::from(*duration))
+            .ok_or(DemuxError::Timeline)?,
+        None => 0,
+    };
     for moof in top.iter().filter(|b| b.kind == *b"moof") {
         r.checkpoint()?;
         let children = r.children(moof.body.clone(), false)?;
@@ -278,5 +285,5 @@ pub(super) fn fragments(
     if order.windows(2).any(|pair| pair[0].end > pair[1].start) {
         return Err(DemuxError::Layout);
     }
-    Ok(samples)
+    Ok(())
 }

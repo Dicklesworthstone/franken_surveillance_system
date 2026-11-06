@@ -1,0 +1,122 @@
+{
+  "format": "engineering-session-handoff",
+  "date": "2026-11-06",
+  "mission": {
+    "goal": "Close consequential remaining model-import and recorded-media functionality gaps from the comprehensive plan and beads; commit meaningful checkpoints directly to main.",
+    "inputs": [
+      "AGENTS.md",
+      "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md",
+      ".beads/issues.jsonl",
+      "IMPLEMENTATION_STATUS.md"
+    ],
+    "initial_head": "f2678a1d14be2fb66df866babcc4be3c6253ff29"
+  },
+  "authority": {
+    "git": "Explicit user authorization for direct main commits through the GitHub connector, without PRs.",
+    "ref_update": "Exact expected head, non-forced update.",
+    "preserved_concurrent_head": "bcab915a63767c352023fcf618d8d927406218c4",
+    "external_device_execution": false,
+    "deployment_mutation": false
+  },
+  "published_checkpoints": [
+    {
+      "commit": "55ca7c21ce1a57af37fb190d52dfc0fe75f74cef",
+      "change": "Static ONNX VALID/SAME_UPPER/SAME_LOWER lowering for Conv, MaxPool and AveragePool; independent native execution/artifact/budget/cancellation contracts; 59 targeted tests passed at publication."
+    },
+    {
+      "commit": "this_commit",
+      "change": "Mixed indexed-and-fragmented AVC/HEVC MP4 and compact stz2 sample sizes; source/timing/recovery/decoder contracts; full crate validation and scoped status."
+    }
+  ],
+  "cases": [
+    {
+      "bead": "fss-x4a.14.10",
+      "status": "advanced_open",
+      "implemented": "Checked static automatic spatial padding into existing native operators, source-bound artifacts and exact imported parameter semantics.",
+      "remaining": "Full asynchronous reference/package CLI and deployment/model-quality qualification."
+    },
+    {
+      "bead": "fss-x4a.12.14",
+      "status": "advanced_open",
+      "implemented": "Indexed sample prefixes joined to movie fragments with one timeline, sample allowance and cross-layout source-overlap check.",
+      "remaining": "Complete retained-store import/device qualification; alternate indexed-duration conventions remain outside the existing admission profile."
+    },
+    {
+      "bead": "fss-x4a.12.2",
+      "status": "advanced_open",
+      "implemented": "Exclusive stsz/stz2 size-table admission with 4/8/16-bit compact packing, exact payload validation and bounded expansion."
+    }
+  ],
+  "contracts": {
+    "production_dependencies_added": false,
+    "native_operator_or_schema_change": false,
+    "original_source_preserved": true,
+    "decode_ticks_are_capture_utc": false,
+    "physical_coverage_or_absence_established": false,
+    "tail_recovery": "Only retained complete media is validated; discarded suffix metadata remains explicitly unread.",
+    "known_indexed_duration": "Existing equality with summed indexed decode deltas is retained; fragment continuation uses actual decode end.",
+    "hevc_fixture": {
+      "raw_sha256": "01550857c8e27ec3d6a8c8aead61c30f15f84dc0f508067169c1f89f7c89d037",
+      "adjusted_sha256": "6559942bcf718bc7de53b44f2f134266d5a9f26c11ddd3eef7098097c7b8370d",
+      "changed_range": [
+        280,
+        284
+      ],
+      "raw_duration": 10240,
+      "admitted_fixture_duration": 6144,
+      "scope": "Explicit laboratory-only field adjustment to the existing admitted profile; exact raw file is reconstructed and refused by a regression. Production performs no such adjustment."
+    }
+  },
+  "verification": {
+    "toolchain": "nightly-2026-08-31",
+    "environment": {
+      "CARGO_BUILD_JOBS": "1",
+      "CARGO_PROFILE_DEV_DEBUG": "0",
+      "CARGO_PROFILE_TEST_DEBUG": "0",
+      "CARGO_INCREMENTAL": "0"
+    },
+    "commands": [
+      "cargo test --locked --offline -p fss-model-ir",
+      "cargo test --locked --offline -p fss-container"
+    ],
+    "native_results": {
+      "model-ir-full-tests.log": {
+        "passed": 264,
+        "failed": 0,
+        "ignored": 0,
+        "log_sha256": "a356cbf850e8d683e5a8264d9f15ace78239de242b17780fa14c435f22d09671"
+      },
+      "container-tests.log": {
+        "passed": 109,
+        "failed": 0,
+        "ignored": 0,
+        "log_sha256": "243612e0f41f0ebf12cd91f311faaaabab90eccc1a64a9c42f775e84808fba25"
+      }
+    },
+    "total_native_tests_passed": 373,
+    "ignored": 0,
+    "model_padding_coordinate_cases": {
+      "pooling": 207,
+      "convolution": 90
+    },
+    "mixed_recording_contracts": 11,
+    "compact_table_contracts": 7,
+    "independent_ffmpeg_decoded_frame_hashes": {
+      "AVC": 10,
+      "HEVC": 10
+    },
+    "selected_rustfmt": "passed",
+    "whitespace": "passed",
+    "changed_file_integrity": "passed",
+    "scope": "Scoped developer results using real native crate implementations, not complete repository qualification or production approval."
+  },
+  "unknowns": [
+    "Complete asynchronous file-adapter/package CLI/retained-store runtime integration was not executed in this session.",
+    "No physical-camera, capture-UTC, model-accuracy or continuous-recorder qualification was performed.",
+    "Known alternate mdhd duration conventions remain outside the existing supported profile."
+  ],
+  "continuation": {
+    "next_integration": "Run full fss-reference and fss-cli qualification with the pinned dependency set on a sufficiently provisioned host.",
+    "next_product_decision": "Always-on recorder work remains constrained by the plan's unresolved D6/D7 owner and standing-authority decisions; this session did not invent those decisions."
+  }
+}
