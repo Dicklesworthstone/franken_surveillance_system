@@ -1099,9 +1099,30 @@ automatic adoption, or gap-free recording.
 The discovery CLI source now accepts up to 64 distinct, subnet-checked
 `--target` IPv4 addresses in one window; without them the existing broadcast
 behavior is unchanged. This is intended to rediscover an owner-authorized camera
-inventory when broadcast replies are absent. The new CLI change has not yet
-passed its tests or been installed in the periodic discovery service, and it
-does not discover devices whose addresses are unknown.
+inventory when broadcast replies are absent. Three CLI unit tests passed on
+`ovh-a`, including scoped targets and duplicate rejection; the job acknowledged
+completion and released its source. The test executable SHA-256 was
+`7229757b3b189495b83bd42a212f9cef009ad1fc1c974e11fc2ea0a44df57a66`.
+A later strict-remote executable build on `vmi1149989` completed with terminal
+acknowledgment and released sources. Its SHA-256 was
+`83a9baf9b9618eb92c56b1a3f8b2aba5dfd4e1bf0cb2f48c90e7360a25fb518b`.
+Four independent UDP fixture cases passed against that executable, including
+two simulated cameras in one window. The identical binary was staged on `trj`
+and a bounded read-only unicast run observed the physical G4 as an unverified
+claim.
+
+A root-owned authorization record scopes the existing limited broadcast plus
+the exact previously authorized G4 unicast target. A versioned wrapper verifies
+the record's pinned digest and invokes the tested binary without login or
+camera configuration. It passed as the service user before a reversible systemd
+drop-in selected it for the existing five-minute discovery service; the old
+binary, wrapper and timer remain in place. A manually triggered service run
+succeeded and observed the G4, while the recorder, upload, fallback and discovery
+timers remained active and the recorder restart count stayed at 53. The timer
+subsequently fired on its own at 22:52:36 EST on 2026-11-05; its exact service
+invocation succeeded and reported the G4 as an unverified claim. Unknown-address
+devices that do not answer broadcast remain undiscovered, and discovery does
+not automatically configure or adopt any camera.
 
 The discovery library has a bounded multi-target configuration for up to 64
 distinct destinations on the same port, including broadcasts and owner-scoped
@@ -1146,8 +1167,11 @@ tests passed locally and on `trj`. An independent read on `trj` returned
 `unknown` after 9.7 seconds, and the new wrapper's prior-marker and invalid-time
 checks abstained without touching the camera. A subsequent read-only check of
 the helper against the current recorder journal also returned `unknown`; this
-alone does not identify why. The failed earlier timer remains a failure, and
-the revised helper is not evidence of automatic recovery.
+alone does not identify why. A separate read-only 24-hour lookback classified
+the last relevant recorder event as `recording` in 6.6 seconds. That extended
+lookback is outside the helper's one-hour recovery authorization window and
+does not establish safe automatic recovery. The failed earlier timer remains a
+failure, and the revised helper is not evidence of automatic recovery.
 
 The transitional recorder separately showed several stream exits at roughly
 four-minute intervals and another after about 100 seconds, followed by
