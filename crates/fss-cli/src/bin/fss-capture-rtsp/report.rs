@@ -197,6 +197,9 @@ impl Statistics {
         if let Some(picture) = &retired.picture {
             self.untimed_picture_bytes += picture.byte_len() as u64;
         }
+        if let Some(picture) = &retired.lookahead_picture {
+            self.untimed_picture_bytes += picture.byte_len() as u64;
+        }
         self.unpublished_receiver_state |= retired.event.is_some();
     }
     pub(super) fn recording_retirement(&mut self, retired: &LiveRecordingRetirement) {

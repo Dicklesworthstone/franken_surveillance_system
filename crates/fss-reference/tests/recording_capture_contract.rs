@@ -8,7 +8,8 @@ use fss_packet::avc::{
 };
 use fss_reference::rtsp::recording::{PreparedRecording, verify_recording};
 use fss_reference::rtsp::recording_capture::{
-    CaptureError, CapturePoll, MAX_PENDING_EVENT_AGE_NS, RecordingCapture, TimedCapture,
+    CaptureError, CapturePoll, MAX_PENDING_EVENT_AGE_NS, PictureTimingRequest, RecordingCapture,
+    TimedCapture,
 };
 use fss_reference::rtsp::recording_collector::{CollectionStop, CollectorError, CollectorLimits};
 
@@ -71,6 +72,249 @@ fn first_sample(r: &mut AvcReceiver, c: &mut RecordingCapture) -> TestResult {
     r.ingest(key(), &packet(1, 90_000, true, idr()?), 1)?;
     advance(r, c, 1, &mut 0, &mut Vec::new())?;
     assert_eq!(c.collector().retained_samples(), 1);
+    Ok(())
+}
+
+fn lookahead_advance(
+    r: &mut AvcReceiver,
+    c: &mut RecordingCapture,
+    now: u64,
+) -> Result<Option<PictureTimingRequest>, Error> {
+    for _ in 0..1024 {
+        let event = r.poll(now)?;
+        if matches!(event, AvcReceivePoll::Pending { .. }) {
+            return Ok(None);
+        }
+        c.offer(event, now)?;
+        match c.poll(now)? {
+            CapturePoll::Receiver(_) | CapturePoll::Pending { .. } => {}
+            CapturePoll::TimingRequired(request) => return Ok(Some(request)),
+            other => return Err(format!("unexpected lookahead event {other:?}").into()),
+        }
+    }
+    Err("lookahead receiver progress bound".into())
+}
+
+#[test]
+fn complete_picture_lookahead_preserves_originals_for_variable_timing() -> TestResult {
+    let mut r = receiver()?;
+    let mut c = capture()?;
+    c.enable_timing_lookahead()?;
+    assert!(matches!(
+        c.supply_timing(timing(0), 0),
+        Err(CaptureError::NoPicture)
+    ));
+    prime(&mut r)?;
+    let wires = [
+        packet(1, 90_000, true, idr()?),
+        packet(2, 92_970, true, p_slice()?),
+        packet(3, 96_030, true, idr()?),
+    ];
+    r.ingest(key(), &wires[0], 1)?;
+    assert!(lookahead_advance(&mut r, &mut c, 1)?.is_none());
+    assert!(c.timing_lookahead().is_none());
+    assert!(matches!(
+        c.supply_timing(timing(0), 1),
+        Err(CaptureError::Backpressure)
+    ));
+    r.ingest(key(), &wires[1], 2)?;
+    let first = lookahead_advance(&mut r, &mut c, 2)?.ok_or("first request")?;
+    assert_eq!(first.rtp_timestamp, 90_000);
+    assert_eq!(
+        c.timing_lookahead().ok_or("second picture")?.rtp_timestamp,
+        92_970
+    );
+    let mut first_timing = timing(0);
+    first_timing.duration = 2_970;
+    assert!(matches!(
+        c.supply_timing(first_timing, 2)?,
+        TimedCapture::Collected { .. }
+    ));
+    assert!(c.timing_lookahead().is_none());
+    r.ingest(key(), &wires[2], 3)?;
+    let second = lookahead_advance(&mut r, &mut c, 3)?.ok_or("second request")?;
+    assert_eq!(second.rtp_timestamp, 92_970);
+    assert_eq!(
+        c.timing_lookahead().ok_or("third picture")?.rtp_timestamp,
+        96_030
+    );
+    let mut second_timing = timing(2_970);
+    second_timing.duration = 3_060;
+    assert!(matches!(
+        c.supply_timing(second_timing, 3)?,
+        TimedCapture::Collected { .. }
+    ));
+    assert!(c.seal(4)?);
+    let window = match c.poll(4)? {
+        CapturePoll::Window(window) => window,
+        other => return Err(format!("expected durable-ready window: {other:?}").into()),
+    };
+    assert_eq!(window.summary().samples, 2);
+    verify_recording(window.manifest(), window.objects(), &scope()?)?;
+    let retired = c.cancel();
+    assert_eq!(
+        retired.picture.as_ref().map(|p| p.timestamp()),
+        Some(96_030)
+    );
+    assert!(retired.lookahead_picture.is_none());
+    assert!(
+        retired
+            .collection
+            .pending
+            .sources
+            .iter()
+            .any(|s| s.bytes() == wires[2])
+    );
+    Ok(())
+}
+
+#[test]
+fn lookahead_cancellation_returns_both_complete_pictures() -> TestResult {
+    let mut r = receiver()?;
+    let mut c = capture()?;
+    c.enable_timing_lookahead()?;
+    prime(&mut r)?;
+    for (sequence, stamp, nal) in [(1, 90_000, idr()?), (2, 92_970, p_slice()?)] {
+        r.ingest(key(), &packet(sequence, stamp, true, nal), sequence)?;
+        let _ = lookahead_advance(&mut r, &mut c, sequence)?;
+    }
+    let retired = c.cancel();
+    assert_eq!(
+        retired.picture.as_ref().map(|p| p.timestamp()),
+        Some(90_000)
+    );
+    assert_eq!(
+        retired.lookahead_picture.as_ref().map(|p| p.timestamp()),
+        Some(92_970)
+    );
+    assert_eq!(retired.collection.pending.sources.len(), 2);
+    Ok(())
+}
+
+#[test]
+fn lookahead_never_extends_the_oldest_picture_deadline() -> TestResult {
+    let mut r = receiver()?;
+    let mut c = capture()?;
+    c.enable_timing_lookahead()?;
+    prime(&mut r)?;
+    r.ingest(key(), &packet(1, 90_000, true, idr()?), 1)?;
+    assert!(lookahead_advance(&mut r, &mut c, 1)?.is_none());
+    let deadline = 1 + MAX_PENDING_EVENT_AGE_NS;
+    assert_eq!(c.next_wake_ns(), Some(deadline));
+    r.ingest(key(), &packet(2, 92_970, true, p_slice()?), 2)?;
+    assert!(lookahead_advance(&mut r, &mut c, 2)?.is_some());
+    assert_eq!(c.next_wake_ns(), Some(deadline));
+    match c.poll(deadline)? {
+        CapturePoll::Stopped {
+            reason: CollectionStop::Deadline,
+            retained,
+            ..
+        } => {
+            assert!(retained.picture.is_some());
+            assert!(retained.lookahead_picture.is_some());
+        }
+        other => return Err(format!("expected deadline: {other:?}").into()),
+    }
+    Ok(())
+}
+
+#[test]
+fn lookahead_advances_to_the_next_pictures_own_deadline() -> TestResult {
+    let mut r = receiver()?;
+    let mut c = capture()?;
+    c.enable_timing_lookahead()?;
+    prime(&mut r)?;
+    r.ingest(key(), &packet(1, 90_000, true, idr()?), 1)?;
+    assert!(lookahead_advance(&mut r, &mut c, 1)?.is_none());
+    let second_at = 4_000_000_001;
+    r.ingest(key(), &packet(2, 92_970, true, p_slice()?), second_at)?;
+    assert!(lookahead_advance(&mut r, &mut c, second_at)?.is_some());
+    let mut first = timing(0);
+    first.duration = 2_970;
+    c.supply_timing(first, second_at)?;
+    assert_eq!(c.next_wake_ns(), Some(second_at + MAX_PENDING_EVENT_AGE_NS));
+    let third_at = 6_000_000_001;
+    r.ingest(key(), &packet(3, 96_030, true, idr()?), third_at)?;
+    assert!(lookahead_advance(&mut r, &mut c, third_at)?.is_some());
+    assert_eq!(
+        c.timing_lookahead().ok_or("third picture")?.rtp_timestamp,
+        96_030
+    );
+    Ok(())
+}
+
+#[test]
+fn lookahead_cannot_be_enabled_after_an_input_was_accepted() -> TestResult {
+    let mut r = receiver()?;
+    let mut c = capture()?;
+    prime(&mut r)?;
+    r.ingest(key(), &packet(1, 90_000, true, idr()?), 1)?;
+    c.offer(r.poll(1)?, 1)?;
+    assert!(matches!(c.poll(1)?, CapturePoll::Receiver(_)));
+    assert_eq!(c.enable_timing_lookahead(), Err(CaptureError::Backpressure));
+    Ok(())
+}
+
+#[test]
+fn lookahead_gap_fences_the_untimed_picture_and_retains_the_gap() -> TestResult {
+    let mut r = receiver()?;
+    let mut c = capture()?;
+    c.enable_timing_lookahead()?;
+    prime(&mut r)?;
+    r.ingest(key(), &packet(1, 90_000, true, idr()?), 1)?;
+    assert!(lookahead_advance(&mut r, &mut c, 1)?.is_none());
+    r.ingest(key(), &packet(3, 96_030, true, p_slice()?), 2)?;
+    assert!(matches!(r.poll(2)?, AvcReceivePoll::Pending { .. }));
+    let now = 100_000_002;
+    c.offer(r.poll(now)?, now)?;
+    match c.poll(now)? {
+        CapturePoll::Stopped {
+            reason: CollectionStop::InputDiscontinuity,
+            retained,
+            ..
+        } => {
+            assert_eq!(
+                retained.picture.as_ref().map(|p| p.timestamp()),
+                Some(90_000)
+            );
+            assert!(retained.lookahead_picture.is_none());
+            assert!(matches!(retained.event, Some(AvcReceivePoll::Gap { .. })));
+            assert_eq!(retained.collection.pending.sources.len(), 1);
+        }
+        other => return Err(format!("expected source gap: {other:?}").into()),
+    }
+    Ok(())
+}
+
+#[test]
+fn lookahead_eof_retains_unresolved_picture_instead_of_guessing_duration() -> TestResult {
+    let mut r = receiver()?;
+    let mut c = capture()?;
+    c.enable_timing_lookahead()?;
+    prime(&mut r)?;
+    r.ingest(key(), &packet(1, 90_000, true, idr()?), 1)?;
+    assert!(lookahead_advance(&mut r, &mut c, 1)?.is_none());
+    r.finish();
+    c.offer(r.poll(2)?, 2)?;
+    // The receiver transfers its metadata-only EOF tail first; the held
+    // complete picture must remain owned until the following stop.
+    assert!(matches!(c.poll(2)?, CapturePoll::Tail(_)));
+    match c.poll(2)? {
+        CapturePoll::Stopped {
+            reason: CollectionStop::EndOfInput,
+            retained,
+            ..
+        } => {
+            assert_eq!(
+                retained.picture.as_ref().map(|p| p.timestamp()),
+                Some(90_000)
+            );
+            assert!(retained.lookahead_picture.is_none());
+            assert!(retained.event.is_none());
+            assert!(retained.collection.pending.pictures.is_empty());
+        }
+        other => return Err(format!("expected unresolved end of input: {other:?}").into()),
+    }
     Ok(())
 }
 

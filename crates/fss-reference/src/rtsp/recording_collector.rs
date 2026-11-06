@@ -285,6 +285,10 @@ impl std::fmt::Debug for RecordingCollector {
     }
 }
 impl RecordingCollector {
+    /// Whether no source, picture, ready result, or historical source identity exists.
+    pub(super) fn is_pristine(&self) -> bool {
+        self.check_initial_sender(self.key).is_ok()
+    }
     /// Constructor-only transition to a provisional sender, before any retained input.
     pub(super) fn defer_initial_sender(mut self) -> Result<Self, CollectorError> {
         self.check_initial_sender(self.key)?;

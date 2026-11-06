@@ -108,6 +108,8 @@ pub struct CaptureRetirement {
     pub event: Option<AvcReceivePoll>,
     /// At most one complete picture still waiting for timing.
     pub picture: Option<AvcPictureGroup>,
+    /// A second complete picture retained as a timing witness, if enabled.
+    pub lookahead_picture: Option<AvcPictureGroup>,
     /// Trailing originals after a successful EOF seal, if not yet delivered.
     pub trailing: Option<UnsealedRecording>,
 }
@@ -161,6 +163,10 @@ pub struct RecordingCapture {
     collector: RecordingCollector,
     event: Option<AvcReceivePoll>,
     picture: Option<AvcPictureGroup>,
+    lookahead_picture: Option<AvcPictureGroup>,
+    lookahead_enabled: bool,
+    input_accepted: bool,
+    lookahead_deadline_ns: Option<u64>,
     trailing: Option<UnsealedRecording>,
     last_now_ns: u64,
     event_deadline_ns: Option<u64>,
@@ -172,6 +178,7 @@ impl RecordingCapture {
     pub(super) fn bind_initial_sender(&mut self, key: StreamKey) -> Result<(), CaptureError> {
         if self.event.is_some()
             || self.picture.is_some()
+            || self.lookahead_picture.is_some()
             || self.trailing.is_some()
             || self.input_ended
             || self.closed
@@ -188,12 +195,45 @@ impl RecordingCapture {
             collector,
             event: None,
             picture: None,
+            lookahead_picture: None,
+            lookahead_enabled: false,
+            input_accepted: false,
+            lookahead_deadline_ns: None,
             trailing: None,
             last_now_ns: 0,
             event_deadline_ns: None,
             input_ended: false,
             closed: false,
         }
+    }
+    /// Enable one complete-picture timing lookahead before any input is accepted.
+    ///
+    /// Both pictures and their original packets remain bounded and owned. The
+    /// caller must still validate stream continuity and derive timing; merely
+    /// observing a later timestamp does not prove physical capture time or
+    /// the absence of lost pictures. An unresolved final picture is retired,
+    /// never assigned an invented duration.
+    pub fn enable_timing_lookahead(&mut self) -> Result<(), CaptureError> {
+        if self.event.is_some()
+            || self.picture.is_some()
+            || self.lookahead_picture.is_some()
+            || self.trailing.is_some()
+            || self.input_ended
+            || self.closed
+            || self.input_accepted
+            || !self.collector.is_pristine()
+        {
+            return Err(CaptureError::Backpressure);
+        }
+        self.lookahead_enabled = true;
+        Ok(())
+    }
+
+    /// Metadata for the second held picture, when one is available.
+    pub fn timing_lookahead(&self) -> Option<PictureTimingRequest> {
+        self.lookahead_picture
+            .as_ref()
+            .map(PictureTimingRequest::for_picture)
     }
     /// Read-only collector accounting; mutation must preserve this bridge's event ordering.
     pub fn collector(&self) -> &RecordingCollector {
@@ -205,7 +245,9 @@ impl RecordingCapture {
             return None;
         }
         if self.collector.has_ready()
-            || (self.picture.is_none() && (self.event.is_some() || self.input_ended))
+            || (self.event.is_some() || self.input_ended)
+                && (self.picture.is_none()
+                    || self.lookahead_enabled && self.lookahead_picture.is_none())
         {
             return Some(self.last_now_ns);
         }
@@ -221,7 +263,11 @@ impl RecordingCapture {
             if self.closed || self.input_ended {
                 return Err(CaptureError::Closed);
             }
-            if self.event.is_some() || self.picture.is_some() || self.collector.has_ready() {
+            if self.event.is_some()
+                || self.picture.is_some()
+                    && (!self.lookahead_enabled || self.lookahead_picture.is_some())
+                || self.collector.has_ready()
+            {
                 return Err(CaptureError::Backpressure);
             }
             self.collector
@@ -241,7 +287,17 @@ impl RecordingCapture {
             });
         };
         self.event = Some(event);
-        self.event_deadline_ns = Some(deadline);
+        self.input_accepted = true;
+        if self.lookahead_enabled && self.picture.is_some() {
+            self.lookahead_deadline_ns = Some(
+                self.lookahead_deadline_ns
+                    .map_or(deadline, |old| old.min(deadline)),
+            );
+        }
+        self.event_deadline_ns = Some(
+            self.event_deadline_ns
+                .map_or(deadline, |old| old.min(deadline)),
+        );
         self.last_now_ns = now_ns;
         Ok(())
     }
@@ -260,6 +316,12 @@ impl RecordingCapture {
         if self.event_deadline_ns.is_some_and(|at| now_ns >= at) {
             return Err(CaptureError::Collection(CollectorError::Deadline));
         }
+        if self.picture.is_none() {
+            return Err(CaptureError::NoPicture);
+        }
+        if self.lookahead_enabled && self.lookahead_picture.is_none() {
+            return Err(CaptureError::Backpressure);
+        }
         let picture = self.picture.take().ok_or(CaptureError::NoPicture)?;
         match self
             .collector
@@ -270,7 +332,8 @@ impl RecordingCapture {
                 unselected,
             } => {
                 self.last_now_ns = now_ns;
-                self.event_deadline_ns = None;
+                self.picture = self.lookahead_picture.take();
+                self.event_deadline_ns = self.lookahead_deadline_ns.take();
                 Ok(TimedCapture::Collected {
                     window_ready,
                     unselected,
@@ -281,7 +344,8 @@ impl RecordingCapture {
                 unselected,
             } => {
                 self.last_now_ns = now_ns;
-                self.event_deadline_ns = None;
+                self.picture = self.lookahead_picture.take();
+                self.event_deadline_ns = self.lookahead_deadline_ns.take();
                 Ok(TimedCapture::AwaitingIdr {
                     picture: Box::new(picture),
                     unselected,
@@ -334,7 +398,9 @@ impl RecordingCapture {
         if let Some(window) = self.collector.take_ready() {
             return Ok(CapturePoll::Window(window));
         }
-        if let Some(picture) = &self.picture {
+        if let Some(picture) = &self.picture
+            && (!self.lookahead_enabled || self.lookahead_picture.is_some())
+        {
             return Ok(CapturePoll::TimingRequired(
                 PictureTimingRequest::for_picture(picture),
             ));
@@ -346,6 +412,13 @@ impl RecordingCapture {
             });
         }
         if self.input_ended {
+            if self.picture.is_some() {
+                return Ok(CapturePoll::Stopped {
+                    reason: CollectionStop::EndOfInput,
+                    error: None,
+                    retained: Box::new(self.stop(CollectionStop::EndOfInput)),
+                });
+            }
             match self.collector.finish(now_ns) {
                 Ok(trailing) => {
                     if let Some(window) = self.collector.take_ready() {
@@ -373,6 +446,17 @@ impl RecordingCapture {
                 retained: Box::new(self.stop(CollectionStop::InputDiscontinuity)),
             });
         }
+        if self.lookahead_enabled
+            && self.picture.is_some()
+            && matches!(&event, AvcReceivePoll::Ended { tail: None, .. })
+        {
+            self.event = Some(event);
+            return Ok(CapturePoll::Stopped {
+                reason: CollectionStop::EndOfInput,
+                error: None,
+                retained: Box::new(self.stop(CollectionStop::EndOfInput)),
+            });
+        }
         if let AvcReceivePoll::Source { source, .. } = &event
             && let Err(reason) = self.collector.push_ordered(source, now_ns)
         {
@@ -397,9 +481,22 @@ impl RecordingCapture {
                 picture: Some(picture),
                 retired: None,
             })) => {
-                let request = PictureTimingRequest::for_picture(&picture);
-                self.picture = Some(picture);
-                Ok(CapturePoll::TimingRequired(request))
+                if self.picture.is_some() {
+                    self.lookahead_picture = Some(picture);
+                } else {
+                    self.picture = Some(picture);
+                }
+                if self.lookahead_enabled && self.lookahead_picture.is_none() {
+                    Ok(CapturePoll::Pending {
+                        wake_at_ns: self.next_wake_ns(),
+                    })
+                } else {
+                    Ok(CapturePoll::TimingRequired(
+                        PictureTimingRequest::for_picture(
+                            self.picture.as_ref().expect("picture just retained"),
+                        ),
+                    ))
+                }
             }
             AvcReceivePoll::Ended { tail, .. } => {
                 self.input_ended = true;
@@ -414,9 +511,22 @@ impl RecordingCapture {
                         let Some(picture) = out.picture else {
                             return Ok(CapturePoll::InputEnded);
                         };
-                        let request = PictureTimingRequest::for_picture(&picture);
-                        self.picture = Some(picture);
-                        Ok(CapturePoll::TimingRequired(request))
+                        if self.picture.is_some() {
+                            self.lookahead_picture = Some(picture);
+                        } else {
+                            self.picture = Some(picture);
+                        }
+                        if self.lookahead_enabled && self.lookahead_picture.is_none() {
+                            Ok(CapturePoll::Pending {
+                                wake_at_ns: self.next_wake_ns(),
+                            })
+                        } else {
+                            Ok(CapturePoll::TimingRequired(
+                                PictureTimingRequest::for_picture(
+                                    self.picture.as_ref().expect("picture just retained"),
+                                ),
+                            ))
+                        }
                     }
                     Some(out) => {
                         self.event_deadline_ns = None;
@@ -429,7 +539,9 @@ impl RecordingCapture {
                 }
             }
             other => {
-                self.event_deadline_ns = None;
+                if self.picture.is_none() {
+                    self.event_deadline_ns = None;
+                }
                 Ok(CapturePoll::Receiver(other))
             }
         }
@@ -443,12 +555,14 @@ impl RecordingCapture {
     fn stop(&mut self, reason: CollectionStop) -> CaptureRetirement {
         self.closed = true;
         self.event_deadline_ns = None;
+        self.lookahead_deadline_ns = None;
         let mut collection = self.collector.cancel();
         collection.pending.reason = reason;
         CaptureRetirement {
             collection,
             event: self.event.take(),
             picture: self.picture.take(),
+            lookahead_picture: self.lookahead_picture.take(),
             trailing: self.trailing.take(),
         }
     }
