@@ -24,6 +24,7 @@ mod padding;
 mod pooling;
 mod preprocess;
 mod resize;
+mod resize_coordinates;
 mod shape_program;
 mod split;
 mod structure;

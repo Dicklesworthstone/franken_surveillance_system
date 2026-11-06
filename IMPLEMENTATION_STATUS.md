@@ -4,6 +4,47 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Fractional and shrinking ONNX Resize (2026-11-06; native integration pending)
+
+The bounded opset-13 importer now lowers static nearest-neighbor fractional
+scales, downsampling, explicit size ratios, and mixed shrinking/enlarging spatial
+axes for NCHW tensors. It preserves batch/channel dimensions and supports the
+existing `asymmetric/floor` and `half_pixel/round_prefer_floor` profiles. Exact
+F32 source-scale ratios determine output extents and coordinate selection;
+explicit sizes use the exact output/input ratio. Checked arithmetic preserves
+rounding ties and boundary clamping.
+
+Noninteger axes become bounded positive-stride Slice runs and Concat operations.
+A 480-by-640 to 240-by-320 resize needs two Slice nodes. Shrinking executes before
+enlarging another axis to avoid an unnecessarily large intermediate. Previously
+admitted integer models retain the original four-node lowering and canonical
+graph. Spatial factors remain at most 64, noninteger axes admit at most 4096
+output coordinates, and existing tensor/node/work/cancellation limits apply.
+No native operator, schema or production dependency was added. Both new/lowered
+source files participate in importer identity; original ONNX custody is unchanged.
+See `docs/onnx_import.md`.
+
+**Development validation:** all six standalone tests of the unchanged production
+coordinate planner passed under pinned nightly `2026-08-31`. These exhaust input
+lengths 1–24 and output lengths 1–64 under both profiles, check 21 F32 scale cases
+over input lengths 1–32, literal ties and adjacent values, actual run expansion,
+resource extrema and every planning cancellation checkpoint. Full artifact
+integration tests cover canonical export/reload, production scalar execution,
+bit preservation, detector-style graphs, legacy bytes, quotas and cancellation,
+but have not executed. Complete Cargo tests and metadata checks were killed in
+unchanged `fss-core` before any model diagnostics, including serialized retries
+with debug information and incremental compilation disabled.
+
+**Published recovery scope:** the executor became unavailable before publication.
+Production source and tests were recovered through GitHub from recorded edits
+and complete source-review snapshots. The module and importer-identity changes
+match their recorded final Git blob prefixes; the integer lowering is identical
+to the baseline. Recovered source received independent review, but these exact
+published files have not been natively recompiled or rerun. The standalone
+pre-outage result does not establish full graph/artifact integration or complete
+repository/runtime qualification. This advances `fss-x4a.14.10`; the broad bead
+remains open.
+
 ## Inherited byte offsets in multiplexed fragmented MP4 (2026-11-06; recovery verification pending)
 
 Native AVC/HEVC import now resolves selected video fragments whose byte base

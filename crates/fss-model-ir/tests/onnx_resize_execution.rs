@@ -454,8 +454,7 @@ fn unsupported_interpolation_coordinate_profiles_and_dynamic_controls_refuse() {
         );
     }
     for scales in [
-        [1., 1., 0.5, 2.],
-        [1., 1., 1.5, 2.],
+        [1., 1., 0.25, 2.], // A zero output extent stays outside the profile.
         [1., 1., 65., 2.],
         [2., 1., 2., 2.],
         [1., 2., 2., 2.],
@@ -537,7 +536,6 @@ fn optional_inputs_sizes_and_declared_output_are_strictly_checked() {
         );
     }
     for sizes in [
-        [1, 1, 3, 4],
         [2, 1, 4, 4],
         [1, 1, 0, 4],
         [1, 1, -4, 4],
@@ -756,5 +754,662 @@ fn exporter_constant_nodes_and_unused_mode_defaults_are_admitted_without_losing_
         run(&artifacts, &[("input", input)], "echo")?,
         [1., 1., 2., 3.]
     );
+    Ok(())
+}
+
+// Coordinate-formula oracle follows the Resize-13 definition directly, without
+// integer ratios, run partitioning, Slice or Concat. Literal boundary cases below
+// separately pin exact ties and adjacent F32 scales.
+fn resampling_oracle(
+    input: &[f32],
+    dims: [usize; 4],
+    output: [usize; 4],
+    scales: [f64; 2],
+    half_pixel: bool,
+) -> Vec<f32> {
+    let selected = |position: usize, scale: f64, length: usize| {
+        let coordinate = if half_pixel {
+            (position as f64 + 0.5) / scale - 0.5
+        } else {
+            position as f64 / scale
+        };
+        let rounded = if half_pixel {
+            (coordinate - 0.5).ceil()
+        } else {
+            coordinate.floor()
+        };
+        rounded.max(0.0).min((length - 1) as f64) as usize
+    };
+    let mut values = Vec::new();
+    for batch in 0..output[0] {
+        for channel in 0..output[1] {
+            for y in 0..output[2] {
+                for x in 0..output[3] {
+                    let sy = selected(y, scales[0], dims[2]);
+                    let sx = selected(x, scales[1], dims[3]);
+                    values.push(input[((batch * dims[1] + channel) * dims[2] + sy) * dims[3] + sx]);
+                }
+            }
+        }
+    }
+    values
+}
+
+#[test]
+fn fractional_scales_and_sizes_execute_exact_pixels_after_artifact_reload() -> Test {
+    for dims in [[2, 2, 3, 5], [1, 3, 5, 7], [1, 1, 1, 3]] {
+        let length = dims.iter().product::<usize>();
+        let mut values: Vec<_> = (0..length).map(|n| n as f32 - 9.0).collect();
+        for (target, special) in values.iter_mut().zip([
+            -0.0,
+            0.0,
+            f32::from_bits(1),
+            f32::MIN_POSITIVE,
+            f32::MAX,
+            f32::MIN,
+        ]) {
+            *target = special;
+        }
+        for scales in [
+            [0.5_f32, 0.75],
+            [0.75, 1.5],
+            [1.5, 0.5],
+            [2.5, 1.25],
+            [1.0, 0.6],
+            [0.6, 1.0],
+            [2.0, 0.75],
+            [0.75, 2.0],
+            [3.5, 1.0],
+            [1.0, 3.5],
+        ] {
+            let output = [
+                dims[0],
+                dims[1],
+                (dims[2] as f64 * f64::from(scales[0])).floor() as usize,
+                (dims[3] as f64 * f64::from(scales[1])).floor() as usize,
+            ];
+            if output.contains(&0) {
+                continue;
+            }
+            for half_pixel in [false, true] {
+                for sizes in [false, true] {
+                    let (controls, inputs, oracle_scales) = if sizes {
+                        (
+                            int_weight("sizes", &output.map(|n| n as i64)),
+                            vec!["input", "", "", "sizes"],
+                            [
+                                output[2] as f64 / dims[2] as f64,
+                                output[3] as f64 / dims[3] as f64,
+                            ],
+                        )
+                    } else {
+                        (
+                            weight("scales", &[4], &[1., 1., scales[0], scales[1]]),
+                            vec!["input", "", "scales"],
+                            scales.map(f64::from),
+                        )
+                    };
+                    let source = resize_graph(
+                        dims.map(|n| n as u64),
+                        output.map(|n| n as u64),
+                        &inputs,
+                        &controls,
+                        &if half_pixel { Vec::new() } else { asymmetric() },
+                    );
+                    let imported = import(&source)?;
+                    assert!(imported.parameters().is_empty());
+                    let artifacts = export(&imported)?;
+                    let input =
+                        Tensor::from_values(Shape::new(dims.to_vec())?, &values, GENERATION)?;
+                    assert_eq!(
+                        bits(&run(&artifacts, &[("input", input)], "output")?),
+                        bits(&resampling_oracle(
+                            &values,
+                            dims,
+                            output,
+                            oracle_scales,
+                            half_pixel
+                        )),
+                        "dims={dims:?}, scales={scales:?}, sizes={sizes}, half_pixel={half_pixel}"
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn original_scale_rounding_ties_and_adjacent_f32_values_select_the_right_samples() -> Test {
+    // Original scale .6 and derived size 4/7 have the same output extent but
+    // different selected pixels. Nearest ties must round down exactly.
+    for (length, scale, half_pixel, expected) in [
+        (7, 0.6, false, vec![0., 1., 3., 4.]),
+        (7, 0.6, true, vec![0., 2., 4., 5.]),
+        (5, 1.5, true, vec![0., 0., 1., 2., 2., 3., 4.]),
+        (
+            5,
+            f32::from_bits(1.5_f32.to_bits() - 1),
+            true,
+            vec![0., 1., 1., 2., 3., 3., 4.],
+        ),
+        (
+            5,
+            f32::from_bits(1.5_f32.to_bits() + 1),
+            true,
+            vec![0., 0., 1., 2., 2., 3., 4.],
+        ),
+        (7, 0.5, false, vec![0., 2., 4.]),
+        (7, 0.5, true, vec![0., 2., 4.]),
+        (9, 0.25, false, vec![0., 4.]),
+        (9, 0.25, true, vec![1., 5.]),
+        (4, 1.125, false, vec![0., 0., 1., 2.]),
+        (4, 1.125, true, vec![0., 1., 2., 3.]),
+        (
+            4,
+            f32::from_bits(1.0_f32.to_bits() + 1),
+            false,
+            vec![0., 0., 1., 2.],
+        ),
+        (
+            7,
+            f32::from_bits(0.5_f32.to_bits() + 1),
+            false,
+            vec![0., 1., 3.],
+        ),
+        (1, 63.5, true, vec![0.; 63]),
+    ] {
+        let source = resize_graph(
+            [1, 1, 1, length],
+            [1, 1, 1, expected.len() as u64],
+            &["input", "", "scales"],
+            &weight("scales", &[4], &[1., 1., 1., scale]),
+            &if half_pixel { Vec::new() } else { asymmetric() },
+        );
+        let values: Vec<_> = (0..length).map(|n| n as f32).collect();
+        let input = Tensor::from_values(
+            Shape::new(vec![1, 1, 1, length as usize])?,
+            &values,
+            GENERATION,
+        )?;
+        assert_eq!(
+            run(&export(&import(&source)?)?, &[("input", input)], "output")?,
+            expected
+        );
+    }
+    for (half_pixel, expected) in [(false, vec![0., 1., 3., 5.]), (true, vec![0., 2., 4., 6.])] {
+        let source = resize_graph(
+            [1, 1, 1, 7],
+            [1, 1, 1, 4],
+            &["input", "", "", "sizes"],
+            &int_weight("sizes", &[1, 1, 1, 4]),
+            &if half_pixel { Vec::new() } else { asymmetric() },
+        );
+        let input = Tensor::from_values(
+            Shape::new(vec![1, 1, 1, 7])?,
+            &[0., 1., 2., 3., 4., 5., 6.],
+            GENERATION,
+        )?;
+        assert_eq!(
+            run(&export(&import(&source)?)?, &[("input", input)], "output")?,
+            expected
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn compact_strided_downsampling_and_mixed_directions_fit_the_actual_tensor_budget() -> Test {
+    for scales in [[0.5, 2.0], [2.0, 0.5]] {
+        let output = [1, 1, (4. * scales[0]) as u64, (4. * scales[1]) as u64];
+        let source = resize_graph(
+            [1, 1, 4, 4],
+            output,
+            &["input", "", "scales"],
+            &weight("scales", &[4], &[1., 1., scales[0], scales[1]]),
+            &[],
+        );
+        let imported = import_onnx(
+            &source,
+            ContentDigest::sha256(&source),
+            GENERATION,
+            OnnxLimits {
+                tensor_bytes: 64,
+                ..OnnxLimits::default()
+            },
+            &|| false,
+        )?;
+        let values: Vec<_> = (0..16).map(|n| n as f32).collect();
+        let input = Tensor::from_values(Shape::new(vec![1, 1, 4, 4])?, &values, GENERATION)?;
+        assert_eq!(
+            run(&export(&imported)?, &[("input", input)], "output")?,
+            resampling_oracle(
+                &values,
+                [1, 1, 4, 4],
+                output.map(|n| n as usize),
+                scales.map(f64::from),
+                true
+            )
+        );
+        assert_eq!(
+            imported.graph().nodes()[0].op(),
+            fss_model_ir::OpCode::Slice
+        );
+    }
+    let source = resize_graph(
+        [1, 1, 480, 640],
+        [1, 1, 240, 320],
+        &["input", "", "scales"],
+        &weight("scales", &[4], &[1., 1., 0.5, 0.5]),
+        &[],
+    );
+    let imported = import_onnx(
+        &source,
+        ContentDigest::sha256(&source),
+        GENERATION,
+        OnnxLimits {
+            nodes: 2,
+            ..OnnxLimits::default()
+        },
+        &|| false,
+    )?;
+    assert_eq!(imported.graph().node_count(), 2);
+    let values: Vec<_> = (0..480 * 640).map(|n| n as f32).collect();
+    let input = Tensor::from_values(Shape::new(vec![1, 1, 480, 640])?, &values, GENERATION)?;
+    assert_eq!(
+        run(&export(&imported)?, &[("input", input)], "output")?,
+        resampling_oracle(
+            &values,
+            [1, 1, 480, 640],
+            [1, 1, 240, 320],
+            [0.5, 0.5],
+            true
+        )
+    );
+    Ok(())
+}
+
+#[test]
+fn fractional_expansion_enforces_coordinate_node_tensor_and_work_boundaries() -> Test {
+    let source = resize_graph(
+        [1, 1, 3, 5],
+        [1, 1, 4, 12],
+        &["input", "", "scales"],
+        &weight("scales", &[4], &[1., 1., 1.5, 2.5]),
+        &[],
+    );
+    let imported = import(&source)?;
+    let nodes = imported.graph().node_count();
+    for (limits, error) in [
+        (
+            OnnxLimits {
+                nodes: nodes - 1,
+                ..OnnxLimits::default()
+            },
+            OnnxError::Limit,
+        ),
+        (
+            OnnxLimits {
+                tensors: nodes + 1,
+                ..OnnxLimits::default()
+            },
+            OnnxError::Limit,
+        ),
+        (
+            OnnxLimits {
+                tensor_bytes: 191,
+                ..OnnxLimits::default()
+            },
+            OnnxError::Limit,
+        ),
+        (
+            OnnxLimits {
+                work_units: imported.work_units() - 1,
+                ..OnnxLimits::default()
+            },
+            OnnxError::WorkBudget,
+        ),
+    ] {
+        assert_eq!(
+            import_onnx(
+                &source,
+                ContentDigest::sha256(&source),
+                GENERATION,
+                limits,
+                &|| false
+            )
+            .err(),
+            Some(error)
+        );
+    }
+    let exact = import_onnx(
+        &source,
+        ContentDigest::sha256(&source),
+        GENERATION,
+        OnnxLimits {
+            nodes,
+            tensors: nodes + 2,
+            tensor_bytes: 192,
+            work_units: imported.work_units(),
+            ..OnnxLimits::default()
+        },
+        &|| false,
+    )?;
+    assert_eq!(
+        encode_canonical_model_ir(exact.graph())?,
+        encode_canonical_model_ir(imported.graph())?
+    );
+
+    // A simple run can fill the coordinate ceiling. A larger run still refuses
+    // before planning; the historical integer path keeps its original bound.
+    for (input_width, output_width, scale, succeeds) in [
+        (8192, 4096, 0.5, true),
+        (8194, 4097, 0.5, false),
+        (4097, 8194, 2.0, true),
+    ] {
+        for sizes in [false, true] {
+            let (inputs, controls) = if sizes {
+                (
+                    vec!["input", "", "", "sizes"],
+                    int_weight("sizes", &[1, 1, 1, output_width]),
+                )
+            } else {
+                (
+                    vec!["input", "", "scales"],
+                    weight("scales", &[4], &[1., 1., 1., scale]),
+                )
+            };
+            let source = resize_graph(
+                [1, 1, 1, input_width],
+                [1, 1, 1, output_width as u64],
+                &inputs,
+                &controls,
+                &[],
+            );
+            if succeeds {
+                let imported = import(&source)?;
+                assert_eq!(
+                    imported.graph().node_count(),
+                    if scale == 2.0 { 4 } else { 1 }
+                );
+                let values: Vec<_> = (0..input_width).map(|n| n as f32).collect();
+                let input = Tensor::from_values(
+                    Shape::new(vec![1, 1, 1, input_width as usize])?,
+                    &values,
+                    GENERATION,
+                )?;
+                assert_eq!(
+                    run(&export(&imported)?, &[("input", input)], "output")?,
+                    resampling_oracle(
+                        &values,
+                        [1, 1, 1, input_width as usize],
+                        [1, 1, 1, output_width as usize],
+                        [1., f64::from(scale)],
+                        true
+                    )
+                );
+            } else {
+                reject(&source, OnnxError::Limit);
+            }
+        }
+    }
+    reject(
+        &resize_graph(
+            [1, 1, 600, 600],
+            [1, 1, 900, 900],
+            &["input", "", "scales"],
+            &weight("scales", &[4], &[1., 1., 1.5, 1.5]),
+            &[],
+        ),
+        OnnxError::Limit,
+    );
+    Ok(())
+}
+
+#[test]
+fn fractional_planning_cancellation_never_returns_a_partial_artifact() -> Test {
+    let source = resize_graph(
+        [1, 1, 3, 5],
+        [1, 1, 4, 12],
+        &["input", "", "scales"],
+        &weight("scales", &[4], &[1., 1., 1.5, 2.5]),
+        &[],
+    );
+    let calls = Cell::new(0);
+    let baseline = import_onnx(
+        &source,
+        ContentDigest::sha256(&source),
+        GENERATION,
+        OnnxLimits::default(),
+        &|| {
+            calls.set(calls.get() + 1);
+            false
+        },
+    )?;
+    let total = calls.get();
+    for stop in 1..=total {
+        calls.set(0);
+        assert_eq!(
+            import_onnx(
+                &source,
+                ContentDigest::sha256(&source),
+                GENERATION,
+                OnnxLimits::default(),
+                &|| {
+                    calls.set(calls.get() + 1);
+                    calls.get() == stop
+                },
+            )
+            .err(),
+            Some(OnnxError::Cancelled),
+            "cancellation checkpoint {stop}/{total}"
+        );
+    }
+    assert_eq!(
+        encode_canonical_model_ir(import(&source)?.graph())?,
+        encode_canonical_model_ir(baseline.graph())?
+    );
+    Ok(())
+}
+
+#[test]
+fn scale_extrema_and_inconsistent_fractional_shapes_refuse_without_unbounded_arithmetic() -> Test {
+    for scale in [
+        0.0,
+        -0.0,
+        -1.0,
+        f32::from_bits(1),
+        f32::from_bits(0x7f_ffff),
+        f32::MIN_POSITIVE,
+        2.0_f32.powi(-25),
+        65.0,
+        f32::MAX,
+    ] {
+        reject(
+            &resize_graph(
+                [1, 1, 1, 16_777_216],
+                [1, 1, 1, 1],
+                &["input", "", "scales"],
+                &weight("scales", &[4], &[1., 1., 1., scale]),
+                &[],
+            ),
+            OnnxError::Unsupported,
+        );
+    }
+    for scale in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        reject(
+            &resize_graph(
+                [1, 1, 1, 1],
+                [1, 1, 1, 1],
+                &["input", "", "scales"],
+                &weight("scales", &[4], &[1., 1., 1., scale]),
+                &[],
+            ),
+            OnnxError::NonFinite,
+        );
+    }
+    // Smallest useful dyadic scale at the full tensor-byte ceiling. Inspect the
+    // exact selection without allocating a 64 MiB runtime input just for a test.
+    for (attrs, selected) in [(asymmetric(), 0), (Vec::new(), 8_388_607)] {
+        let source = resize_graph(
+            [1, 1, 1, 16_777_216],
+            [1, 1, 1, 1],
+            &["input", "", "scales"],
+            &weight("scales", &[4], &[1., 1., 1., 2.0_f32.powi(-24)]),
+            &attrs,
+        );
+        let imported = import(&source)?;
+        assert_eq!(
+            imported.graph().nodes()[0].get_attr("starts"),
+            Some(&fss_model_ir::AttrValue::IntList(vec![selected]))
+        );
+    }
+    for source in [
+        resize_graph(
+            [1, 1, 2, 2],
+            [1, 1, 4, 4],
+            &["input", "", "scales"],
+            &weight("scales", &[4], &[1., 1., 1.5, 2.]),
+            &[],
+        ),
+        resize_graph(
+            [1, 1, 2, 2],
+            [1, 1, 4, 4],
+            &["input", "", "", "sizes"],
+            &int_weight("sizes", &[1, 1, 3, 4]),
+            &[],
+        ),
+    ] {
+        reject(&source, OnnxError::Graph);
+    }
+    reject(
+        &resize_graph(
+            [1, 1, 2, 2],
+            [1, 1, 1, 1],
+            &["input", "", "", "sizes"],
+            &int_weight("sizes", &[1, 1, i64::MAX, 1]),
+            &[],
+        ),
+        OnnxError::Unsupported,
+    );
+    Ok(())
+}
+
+#[test]
+fn fractional_helpers_cannot_alias_later_source_values() -> Test {
+    let collision = "onnx-node-0000-resize-axis-3-0-slice";
+    let source = model(
+        &[
+            node("Resize", &["input", "", "scales"], "resized", &[]),
+            node("Identity", &["resized"], collision, &[]),
+            weight("scales", &[4], &[1., 1., 1., 1.5]),
+            bytes(11, &info("input", &[1, 1, 1, 3])),
+            bytes(12, &info(collision, &[1, 1, 1, 4])),
+        ]
+        .concat(),
+    );
+    let imported = import(&source)?;
+    assert_eq!(
+        imported.graph().nodes()[0].outputs()[0],
+        format!("{collision}-1")
+    );
+    let input = Tensor::from_values(
+        Shape::new(vec![1, 1, 1, 3])?,
+        &[-0.0, f32::from_bits(1), f32::MAX],
+        GENERATION,
+    )?;
+    assert_eq!(
+        bits(&run(&export(&imported)?, &[("input", input)], collision)?),
+        bits(&[-0.0, -0.0, f32::from_bits(1), f32::MAX])
+    );
+    Ok(())
+}
+
+#[test]
+fn integer_resize_preserves_the_original_canonical_graph_bytes() -> Test {
+    use fss_model_ir::{
+        AttrValue, AttributeMap, GraphNode, ModelIrGraph, ModelIrVersion, OpCode, TensorPort,
+    };
+    use fss_tensor::DType;
+
+    let make = |id: &str, op, inputs: Vec<&str>, output: &str, name: &str, value| {
+        GraphNode::new(
+            id,
+            op,
+            "onnx-node-0000",
+            inputs.into_iter().map(str::to_owned).collect(),
+            vec![output.to_owned()],
+            AttributeMap::from([(name.to_owned(), value)]),
+        )
+    };
+    let expected = ModelIrGraph::new_validated(
+        "onnx-graph",
+        ModelIrVersion::V1,
+        GENERATION,
+        vec![TensorPort::new(
+            "input",
+            DType::F32,
+            Shape::new(vec![1, 2, 3, 4])?,
+            GENERATION,
+        )?],
+        vec![TensorPort::new(
+            "output",
+            DType::F32,
+            Shape::new(vec![1, 2, 6, 12])?,
+            GENERATION,
+        )?],
+        vec![
+            make(
+                "onnx-node-0000-unit",
+                OpCode::Reshape,
+                vec!["input"],
+                "onnx-node-0000-resize-unit",
+                "shape",
+                AttrValue::IntList(vec![1, 2, 3, 1, 4, 1]),
+            )?,
+            make(
+                "onnx-node-0000-width",
+                OpCode::Concat,
+                vec!["onnx-node-0000-resize-unit"; 3],
+                "onnx-node-0000-resize-wide",
+                "axis",
+                AttrValue::Int(5),
+            )?,
+            make(
+                "onnx-node-0000-height",
+                OpCode::Concat,
+                vec!["onnx-node-0000-resize-wide"; 2],
+                "onnx-node-0000-resize-tall",
+                "axis",
+                AttrValue::Int(3),
+            )?,
+            make(
+                "onnx-node-0000",
+                OpCode::Reshape,
+                vec!["onnx-node-0000-resize-tall"],
+                "output",
+                "shape",
+                AttrValue::IntList(vec![1, 2, 6, 12]),
+            )?,
+        ],
+    )?;
+    let expected = encode_canonical_model_ir(&expected)?;
+    for attrs in [Vec::new(), asymmetric()] {
+        for (inputs, controls) in [
+            (
+                vec!["input", "", "scales"],
+                weight("scales", &[4], &[1., 1., 2., 3.]),
+            ),
+            (
+                vec!["input", "", "", "sizes"],
+                int_weight("sizes", &[1, 2, 6, 12]),
+            ),
+        ] {
+            let source = resize_graph([1, 2, 3, 4], [1, 2, 6, 12], &inputs, &controls, &attrs);
+            let imported = import(&source)?;
+            assert_eq!(encode_canonical_model_ir(imported.graph())?, expected);
+            assert_eq!(export(&imported)?.graph_bytes(), expected);
+        }
+    }
     Ok(())
 }

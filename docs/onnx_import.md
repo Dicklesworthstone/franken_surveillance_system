@@ -63,7 +63,7 @@ including hand-computed dense and convolution/pooling results.
 
 Unknown features refuse rather than being skipped or approximated. In particular,
 runtime or data-dependent shape inputs/computation, negative Slice strides,
-noninteger/downsampling/non-nearest Resize,
+non-nearest or dynamic Resize,
 other opsets/domains/dtypes, symbolic or zero-sized shapes, sparse data, external
 weight files, custom functions, training graphs and model activation are not
 implemented by this profile. Initializers that are also graph inputs refuse rather
@@ -336,39 +336,90 @@ additionally requires its preprocessing, named-output, head and license contract
 that complete CLI integration was not executed for this fixture. These numerical
 fixtures establish conversion and execution behavior, not trained detector quality.
 
-## Nearest-neighbor feature-map upsampling
+## Nearest-neighbor spatial resampling
 
 The importer admits static [Resize-13](https://onnx.ai/onnx/operators/onnx__Resize.html#resize-13)
-for NCHW rank-four tensors, preserving batch/channel sizes and enlarging each spatial
-axis by an integer factor from 1 through 64. This covers nearest-neighbor feature-map
-upsampling in detector necks. Exactly one nonempty embedded F32 `scales` vector or
-INT64 `sizes` vector supplies four values. An omitted ROI or empty F32 ROI is accepted;
-nonempty ROI, dynamic sizes/scales, fractional factors and downsampling refuse.
-Empty optional input names and empty control tensors remain compile-time values.
+for NCHW rank-four tensors, preserving batch/channel sizes while enlarging or shrinking
+the spatial axes. Exactly one nonempty embedded F32 `scales` vector or INT64 `sizes`
+vector supplies four values. Spatial scales must be finite and positive, at most 64,
+and produce positive output dimensions; sizes must be positive and enlarge neither
+axis by more than 64. Fractional factors, downsampling and opposite resize directions
+on the two axes are supported. An omitted ROI or empty F32 ROI is accepted; nonempty
+ROI and dynamic sizes/scales refuse. Empty optional input names and empty control
+tensors remain compile-time values.
 
 Two precise coordinate profiles are admitted: `asymmetric` with nearest mode `floor`,
-and `half_pixel` with `round_prefer_floor` (the opset-13 defaults). In the latter,
-writing an output coordinate as `q*s+r` places the transformed source coordinate
-strictly between `q-0.5` and `q+0.5`; nearest rounding therefore selects `q`. Both
-profiles repeat exactly the same samples. Other coordinate/rounding combinations,
+and `half_pixel` with `round_prefer_floor` (the opset-13 defaults). The source F32 scale
+is retained exactly: output length is `floor(input_length * scale)`, and coordinates
+use that original scale, not a ratio reconstructed from the rounded output length.
+For a sizes control, coordinates instead use the exact ratio `output_length / input_length`.
+Checked integer rational arithmetic applies the coordinate transform and nearest
+rounding without losing ties. `asymmetric/floor` selects `floor(x / scale)`;
+`half_pixel/round_prefer_floor` rounds `(x + 0.5) / scale - 0.5` to the nearest integer,
+with exact halfway cases selecting the lower index. Selected indices are clamped to
+the input axis. Other coordinate/rounding combinations,
 linear/cubic interpolation and `exclude_outside=1` refuse. Exporter-supplied finite
 `cubic_coeff_a` and `extrapolation_value` attributes are validated but have no effect
 under these admitted nearest profiles.
 
-Each Resize lowers to Reshape, two Concat nodes and a final Reshape in the existing
-frozen IR. Repetition preserves exact F32 bits, including signed zero and subnormals.
-Output size is checked before helper expansion; every helper consumes the common
-node, tensor and work quotas and reserves names against all source values. No new
-operator ID or runtime image-resampling kernel is introduced. The importer identity
-includes this lowering source, and the original ONNX source is retained unchanged.
-Controls used only for resizing are removed from execution weights; a scale vector
-also consumed by a runtime node remains present and is exported.
+When both spatial scales are integers, the existing Reshape, two Concat nodes and final
+Reshape remain byte-for-byte the same canonical graph. Other cases lower arithmetic
+runs of selected indices to positive-stride Slice operators and join/repeat those runs
+with Concat. A 480-by-640 to 240-by-320 nearest resize therefore needs two strided Slice
+nodes. Integer axes in a mixed resize use a compact Reshape/Concat expansion; a shrinking
+axis is applied first so the intermediate stays within the input/output byte envelope.
+All paths preserve exact F32 bits, including signed zero and subnormals.
 
-`onnx_resize_execution` checks 100 scale/size/coordinate-profile combinations against
-an independent coordinate-formula oracle after actual graph/Safetensors reload and
-production scalar execution. A Conv-to-Resize-to-dense-head case checks detector-style
-layout; other cases cover exporter Constant nodes, shared data/control values, namespace
-collisions, unsupported modes, malformed controls, exact work bounds and cancellation.
+Each noninteger-scale axis admits at most 4096 output coordinates, with `Limit` returned
+above that ceiling. This also applies to a sizes ratio that is not an integer; the
+unchanged integer path does not acquire this new bound. Coordinate planning and every
+helper consume the common work, node and tensor quotas. Complicated selection patterns
+can reach the 512-node ceiling below 4096 coordinates. Output bytes are checked before
+helper expansion, every intermediate retains the normal tensor byte limit, and helper
+names are reserved against all source values. No new operator ID or runtime resampling
+kernel is introduced. The importer identity includes the lowering and coordinate-planning
+sources, and the original ONNX source is retained unchanged. Controls used only for resizing are removed
+from execution weights; a scale vector also consumed by a runtime node remains present
+and is exported.
+
+`onnx_resize_execution` checks integer, fractional, shrinking and mixed-direction
+scale/size/profile combinations against an independent coordinate-formula oracle after
+actual graph/Safetensors reload and production scalar execution. Literal expected pixels
+pin source-scale versus size-ratio differences, halfway rounding and adjacent F32 scales.
+A Conv-to-Resize-to-dense-head case checks detector-style layout; other cases cover
+exporter Constant nodes, shared data/control values, namespace collisions, preserved
+integer canonical bytes, compact downsampling, resource boundaries and cancellation.
+
+The dependency-free production coordinate planner also has a standalone native target.
+It exhausts small size ratios using independent source-center distances, checks F32
+scales against coordinate formulas and literal boundary pixels, expands the actual run
+plans, and exercises exact admission/cancellation boundaries:
+
+```sh
+rustc +nightly-2026-08-31 --edition 2024 --test \
+  crates/fss-model-ir/tests/resize_coordinates_standalone.rs \
+  -o /tmp/fss-resize-coordinates
+/tmp/fss-resize-coordinates
+```
+
+This target compiles the unchanged production planner. Complete graph lowering,
+serialization and scalar execution are exercised by
+`cargo test --locked -p fss-model-ir --test onnx_resize_execution`.
+
+**Verification record (2026-11-06):** all six standalone coordinate-planner tests
+passed with the pinned compiler before the execution environment became unavailable.
+They cover all input lengths 1–24 and output lengths 1–64 under both profiles,
+21 F32 scales over input lengths 1–32, literal ties, expanded run plans, limits,
+and every planning cancellation checkpoint. The complete model Cargo build/check
+was killed while compiling unchanged `fss-core`, before model diagnostics;
+the new full graph/export/reload/scalar-execution cases have not run.
+
+After the outage, the source was recovered from recorded edits and complete review
+snapshots. The tiny module/identity edits match their recorded final Git blob
+identifiers, and the old integer lowering matches the original source. The recovered
+tree, including its test files, has not been natively recompiled or rerun. Run both
+targets above before treating these exact published bytes as verified; the standalone
+planner result alone does not establish artifact integration or model qualification.
 
 ## Static tensor controls and detector heads
 
@@ -511,6 +562,9 @@ shape checks, parameter binding rules and inference resource/cancellation contra
 remain in force after successful conversion.
 
 ## Native validation
+
+The execution counts below retain their earlier validation scope. They do not
+include the fractional Resize additions; its dated verification record is above.
 
 ```sh
 cargo +nightly-2026-08-31 test --locked --offline -p fss-model-ir
