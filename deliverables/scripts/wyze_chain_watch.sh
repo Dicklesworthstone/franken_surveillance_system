@@ -21,14 +21,17 @@ PY=/opt/homebrew/bin/python3
 log() { echo "$(date '+%H:%M:%S') $*"; }
 
 # marker: camera-sourced capsule GET not yet counted
-base=$(grep -cE '192\.168\.4\.(39|51).*GET.*(4\.52\.17\.99|4\.52\.17\.32)\.tar' "$FORGE_LOG" 2>/dev/null || echo 0)
+base=$(grep -cE '192\.168\.4\.(39|51).*GET.*(4\.52\.17\.99|4\.52\.17\.32)\.tar' "$FORGE_LOG" 2>/dev/null)
+[ -n "$base" ] || base=0
 echo "$base" > "$STATE"
 log "armed: baseline camera-capsule GETs = $base"
 
 while :; do
   sleep 60
-  now=$(grep -cE '192\.168\.4\.(39|51).*GET.*(4\.52\.17\.99|4\.52\.17\.32)\.tar' "$FORGE_LOG" 2>/dev/null || echo 0)
-  prev=$(cat "$STATE" 2>/dev/null || echo 0)
+  now=$(grep -cE '192\.168\.4\.(39|51).*GET.*(4\.52\.17\.99|4\.52\.17\.32)\.tar' "$FORGE_LOG" 2>/dev/null)
+  [ -n "$now" ] || now=0
+  prev=$(cat "$STATE" 2>/dev/null)
+  [ -n "$prev" ] || prev=0
   if [ "$now" -gt "$prev" ]; then
     log "*** CAMERA FETCHED THE CAPSULE ($prev -> $now) ***"
     grep -E '192\.168\.4\.(39|51).*GET.*tar' "$FORGE_LOG" | tail -3
