@@ -62,6 +62,17 @@ fn fixture_with_audio_intervals(
     variable: bool,
     audio_step: Option<u32>,
 ) -> Result<(Vec<u8>, Vec<SourceRecord>), Box<dyn std::error::Error>> {
+    fixture_with_policy(start, preroll, duplicate_idr, variable, audio_step, false)
+}
+
+fn fixture_with_policy(
+    start: u32,
+    preroll: bool,
+    duplicate_idr: bool,
+    variable: bool,
+    audio_step: Option<u32>,
+    av_flag: bool,
+) -> Result<(Vec<u8>, Vec<SourceRecord>), Box<dyn std::error::Error>> {
     let nals: Vec<_> = fss_codec_h264::annex_b_nal_units(BASELINE).collect();
     let sps = nals.iter().copied().find(|n| n[0] & 31 == 7).ok_or("SPS")?;
     let pps = nals.iter().copied().find(|n| n[0] & 31 == 8).ok_or("PPS")?;
@@ -88,7 +99,13 @@ fn fixture_with_audio_intervals(
             i as u32 * 40
         };
         let timestamp = start.wrapping_add(offset);
-        wire.extend([0x77; 3]);
+        if av_flag {
+            let mut trailer = [0; 16];
+            trailer[11] = 1;
+            wire.extend(trailer);
+        } else {
+            wire.extend([0x77; 3]);
+        }
         let audio_timestamp = audio_step
             .map(|step| start.wrapping_add(i as u32 * step))
             .unwrap_or(timestamp);
@@ -103,10 +120,19 @@ fn fixture_with_audio_intervals(
         let mut payload = vec![0x17, 1, 0, 0, 0];
         payload.extend_from_slice(&u32::try_from(nal.len())?.to_be_bytes());
         payload.extend_from_slice(nal);
-        wire.extend([0x77; 2]);
+        if av_flag {
+            wire.extend([0; 16]);
+        } else {
+            wire.extend([0x77; 2]);
+        }
         wire.extend(tag(9, timestamp, &payload));
     }
-    let mut framer = Framer::new(FlvLimits::default(), 1024 * 1024)?;
+    let mode = if av_flag {
+        fss_packet::extended_flv::stream::SearchMode::StructuredTrailer16AvFlag
+    } else {
+        fss_packet::extended_flv::stream::SearchMode::Conservative
+    };
+    let mut framer = Framer::with_mode(FlvLimits::default(), 1024 * 1024, mode)?;
     framer.append(0, &wire)?;
     let mut records = Vec::new();
     while let Next::Record(record) = framer.take()? {
@@ -530,6 +556,15 @@ fn evidence_graph_binds_configuration_source_witness_and_derivative() -> TestRes
 
 #[test]
 fn ledger_publication_requires_capture_bounds_and_retention_authority() -> TestResult {
+    ledger_publication_fixture(false)
+}
+
+#[test]
+fn ledger_publication_round_trips_av_flag_framed_source() -> TestResult {
+    ledger_publication_fixture(true)
+}
+
+fn ledger_publication_fixture(av_flag: bool) -> TestResult {
     use fss_core::{
         BudgetVector, CaptureInterval, ContentDigest, OperationId, RootAuthoritySpec, TimestampNs,
         region::ContextAuthority,
@@ -572,8 +607,10 @@ fn ledger_publication_requires_capture_bounds_and_retention_authority() -> TestR
             self.allowed.get() && calls < self.deny_read_at.get() && self.retention == retention
         }
     }
-    let path =
-        std::env::temp_dir().join(format!("fss-unifi-archive-{}-fixture", std::process::id()));
+    let path = std::env::temp_dir().join(format!(
+        "fss-unifi-archive-{}-{av_flag}-fixture",
+        std::process::id()
+    ));
     std::fs::create_dir(&path)?;
     let temp = Temp(path);
     let context = ContextAuthority::new_root(RootAuthoritySpec {
@@ -601,7 +638,7 @@ fn ledger_publication_requires_capture_bounds_and_retention_authority() -> TestR
         deny_read_at: Cell::new(usize::MAX),
         retention,
     };
-    let (_, records) = fixture(0, false, false)?;
+    let (_, records) = fixture_with_policy(0, false, false, false, None, av_flag)?;
     let mut recorder = Recorder::new(KEY, Limits::default())?;
     let mut configuration = None;
     for record in records {
@@ -611,6 +648,15 @@ fn ledger_publication_requires_capture_bounds_and_retention_authority() -> TestR
                 disposition: SourceDisposition::Configuration,
             } => configuration = Some(record),
             Push::Segment(segment) => {
+                if av_flag {
+                    assert!(segment.source().iter().any(|record| matches!(
+                        record.kind(),
+                        fss_packet::extended_flv::stream::RecordKind::Candidate {
+                            policy: fss_packet::extended_flv::stream::SearchMode::StructuredTrailer16AvFlag,
+                            ..
+                        }
+                    )));
+                }
                 let config = configuration.as_ref().ok_or("missing config")?;
                 let init = recorder.initialization().ok_or("missing init")?;
                 let unknown =
