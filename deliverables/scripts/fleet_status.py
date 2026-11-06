@@ -53,6 +53,9 @@ def port_open(port, host="127.0.0.1"):
         return False
 
 
+PLANE_DETAILS = {}
+
+
 def fleet_planes():
     planes = {}
     planes["broker:8883"] = port_open(8883)
@@ -88,6 +91,22 @@ def fleet_planes():
     guiset = set(filter(None, guiout.split()))
     dups = sorted(sysset & guiset)
     planes["launchd-duplicates"] = dups
+    # plist doctor as a cached gate check: runs at most once/15min, result cached
+    cache = "/tmp/plist_doctor_cache.json"
+    try:
+        age = time.time() - os.path.getmtime(cache)
+    except OSError:
+        age = 1e9
+    if age > 900:
+        here = os.path.dirname(os.path.abspath(__file__))
+        sh(f"bash {here}/plist_doctor.sh --json > {cache} 2>/dev/null", timeout=60)
+    try:
+        doc = json.load(open(cache))
+        f_ = doc.get("findings", 1)
+        planes["plist-doctor"] = f_ == 0
+        PLANE_DETAILS["plist-doctor"] = f"{f_} findings / {doc.get('checked', '?')} plists"
+    except (json.JSONDecodeError, OSError):
+        planes["plist-doctor"] = "no cache (doctor not yet run)"
     return planes
 
 
@@ -188,7 +207,8 @@ def main():
         print("=== fleet planes ===")
         for name, val in planes.items():
             mark = "✅" if (val is True or (isinstance(val, int) and val > 0) or (isinstance(val, list) and not val)) else "❌"
-            print(f"  {mark} {name}: {val}")
+            detail = PLANE_DETAILS.get(name, "")
+            print(f"  {mark} {name}: {val}{'  (' + detail + ')' if detail else ''}")
         print("=== cameras ===")
         print("| camera | state | ip | vector | proofs | open wait |")
         print("|---|---|---|---|---|---|")

@@ -1,0 +1,30 @@
+{
+  "schema": "fss.ota_capsule_manifest.v1",
+  "family": "wyze-hl_cam4",
+  "version": "4.52.17.32",
+  "capsule": {
+    "path": "/tmp/fwserve/wuv2/upgrade/HL_CAM4/firmware/4.52.17.32.tar",
+    "bytes": 2385920,
+    "md5": "ef2d38a3ba07f05b2557cddd9fd21923",
+    "sha256": "4ef64692a1061bd4561982269ba7ced3ce7637f88df2d221881c52c48e2c04c5"
+  },
+  "entrypoint": {
+    "name": "Upgrade/upgraderun.sh",
+    "sha256": "1fabb8e7ce759bc177fa1796d724b6b0244f76dd1bfad539d8a723d91249639e"
+  },
+  "payload": {
+    "name": "img.bin (thingino OS04d10)",
+    "path": "/tmp/fwserve/img.bin",
+    "bytes": 16777216,
+    "sha256_pinned_in_upgraderun": "033eb3643fdb2d2b26112c92d594a4366f23e073114c85b6a528407164f48e21",
+    "sha256_on_disk_verified": "033eb3643fdb2d2b26112c92d594a4366f23e073114c85b6a528407164f48e21"
+  },
+  "delivery": {
+    "url": "https://s3-us-west-2.amazonaws.com/wuv2/upgrade/HL_CAM4/firmware/4.52.17.32.tar",
+    "served_by": "wyze-forge :443 + :8443 (SNI s3-us-west-2.amazonaws.com)",
+    "md5_gate": "assis verifies md5 before exec"
+  },
+  "targets": ["wyze-39 (80482C525905)", "wyze-51 (80482C4BCF0B)"],
+  "notes": "4.52.17.32: armed by the repo wyze_ota_arm.sh exec path (user plist heritage); identical bytes to .99",
+  "hashes_committed": "2026-11-06T14:08:00-05:00"
+}
