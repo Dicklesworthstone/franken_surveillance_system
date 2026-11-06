@@ -1011,6 +1011,21 @@ The revised executable's SHA-256 is
 `e57156b6cd2831586d73dfb5b2394f952e269b10d24fcc0b07ff2b6ac2a54ca8`;
 it was also staged on `ts1`, with its hash, runtime dependencies and argument
 parser checked. Neither revised fixture exercised the physical camera.
+A separate disposable TLS/WebSocket peer on `ts1` exercised that same staged
+executable with an uncorrelated camera time-sync request before hello, both
+coalesced with the upgrade and sent sequentially after it. Both synthetic
+cases received correlated time-sync and hello replies, observed parameter
+agreement and reached a stream request. The peer then stopped the laboratory
+process; it did not send video or prove a clip. This rules out message order
+alone as a sufficient reproduction of the earlier physical timeout, not other
+differences in firmware, timing, delivery or connection state.
+An independently repeated run of the
+[`prehello_fixture.py`](../experiments/unifi_tls_05_server_lab/prehello_fixture.py)
+peer on `ts1` again reached a stream request in both cases. Its observed
+time-to-sync-reply was 104 ms coalesced and 93 ms sequential, measured from
+the upgrade request; hello replies arrived at 185 ms and 169 ms respectively.
+These are synthetic single-run timings and do not establish the physical
+trial's journal latency or response delivery.
 
 The external recording volume later disappeared from the Mac's mounted
 volumes and several uploads were deferred, with the staging files preserved.
