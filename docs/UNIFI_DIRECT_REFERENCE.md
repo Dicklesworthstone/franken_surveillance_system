@@ -1008,6 +1008,11 @@ eight-second timeout and remains below the revised 30-second limit, but is a
 single measurement and does not establish the earlier service failure's cause
 or guarantee that future journal queries complete within the new limit. The
 prior trial's recovery service still reports failed, with exit status 1.
+A later read-only query using the revised watchdog's one-hour, 100-line
+journal bounds completed successfully in 10.48 seconds and contained two
+recording-start markers and no startup-failure markers among 16 lines. This
+is a current healthy-window observation, not a test of the watchdog service,
+an effect reconciliation, or proof that automatic recovery will work.
 A subsequent isolated trial-source change adds payload-free phase reports for
 both the conversation deadline and the overall startup deadline. On `ovh-b`,
 the lab and its test executable compiled, and two encrypted synthetic
@@ -1475,7 +1480,10 @@ Scoped packet job `30098049032257657` passed all eight framing tests, including
 the compatibility test, with acknowledged exit and source release; its
 framer and test source hashes matched the working tree. An archive-record
 regression test has been added but has not run. It checks metadata decoding,
-not an end-to-end A/V archive or durable publication.
+not an end-to-end A/V archive or durable publication. Full-workspace targeted
+job `30098049032257691` was observed compiling on `vmi1264463`; its archive,
+evidence and framer source hashes matched the working tree at admission. Its
+terminal result and source release must be checked before retrying it.
 
 Replay build `30097323753209913` succeeded with acknowledged terminal status
 and source release; the framer and replay source hashes matched the working
@@ -1506,8 +1514,55 @@ the lower-level session directly, not this owner. Scoped recorder-contract job
 cases, with acknowledged exit and source release. Its A/V owner and recorder
 source hashes matched the working tree. The lab AAC-clock source differed by a
 later documentation comment, the test source by a later assertion that removes
-a warning, and the framing source by the later evidence-ID refactor. A fresh
-camera replay of the owner remains pending.
+a warning, and the framing source by the later evidence-ID refactor. The
+integration-test build also produced a laboratory replay executable with
+SHA-256 `08d281e1a35a1d9b359c80fee3e66245c7873904b0d47345f20d677ee7ce8839`;
+its owner, recorder and replay source hashes matched the working tree. A fresh
+passive G4 replay through that owner produced three fragments with 450 video
+and 233 audio frames, all accepted by an independent probe and decoder without
+reported errors. Its initial sender-clock A/V offset was -91 ms. The source
+header, video configuration and initial trailer were synthetic, and video and
+audio configuration came separately from the relay. Their epoch, camera
+identity and independent A/V synchronization remain unverified. No media was
+saved or played and no camera setting was changed. This does not establish
+native controller handoff or continuous recording.
+
+A second unchanged owner replay produced two fragments with 300 video and 155
+audio frames. The independent decoder returned exit 0 but reported a
+non-monotonic timestamp diagnostic, and a separate video-only decode also
+reported an error; audio-only decode was clean. The gate therefore failed the
+run. No packet-level diagnostic was retained for that capture, so the source of
+the timestamp warning remains unknown. A third unchanged replay passed with
+two fragments, 300 video frames and 156 audio frames; its initial sender-clock
+offset was -163 ms. A fourth unchanged replay also passed with two fragments,
+300 video and 156 audio frames, and an initial offset of -115 ms. A fifth
+replay failed the same strict decoder gate with the non-monotonic video warning;
+the independent packet probe found 455 packets, zero non-increasing decode
+timestamps and none missing, while video-only passthrough also reported an
+error and audio-only decode was clean. That narrows but does not resolve the
+warning's cause. A sixth unchanged replay again failed the original gate: 684
+packet decode timestamps and 450 decoded-frame best-effort timestamps were all
+present and strictly increasing, while the video-only passthrough diagnostic
+reported 129 non-monotonic warnings, each involving equal output timestamps.
+A video-only null-output diagnostic with a 1/1000-second encoder time base
+completed without reported errors; audio-only decoding was also clean. This is
+consistent with output time-base rounding in that diagnostic path, but does
+not prove that every earlier failure had that cause or establish independent
+A/V synchronization. A seventh replay passed the original gate, producing
+three fragments, 450 video frames and 234 audio frames with an initial
+sender-clock offset of -101 ms. An eighth unchanged replay passed with three
+fragments, 450 video frames and 233 audio frames, with an initial offset of
+-93 ms. A ninth unchanged replay passed with three fragments, 450 video frames
+and 234 audio frames, with an initial offset of -141 ms. A tenth passed with
+three fragments, 450 video frames and 234 audio frames, at -125 ms. The original
+gate remains unchanged: ten owner replays are seven passes and three failures,
+and none qualifies continuous operation.
+
+[FFmpeg's documentation](https://ffmpeg.org/ffmpeg.html) states that its
+default video encoder time base is the inverse output frame rate and allows an
+explicit encoder time base. That documented output behavior supports the
+rounding hypothesis for the instrumented warning; it does not authenticate the
+camera stream or explain uninstrumented failures.
 
 When an original in-band AAC configuration is actually observed, the audio
 track can now rebind its observation to the exact borrowed source record,
