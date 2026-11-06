@@ -65,7 +65,17 @@ plists() {
 }
 
 # iterate the union of root + user plists with the jeffreyemanuel label
-for pl in /Library/LaunchDaemons/com.jeffreyemanuel.*.plist ~/Library/LaunchAgents/com.jeffreyemanuel.*.plist; do
+# Fixture override for tests: PLIST_DOCTOR_ROOTS="dir1 dir2" scans those trees
+# (subdirs LaunchDaemons/ or any *.plist) instead of the live system paths.
+if [ -n "${PLIST_DOCTOR_ROOTS:-}" ]; then
+  SCAN=()
+  for r in $PLIST_DOCTOR_ROOTS; do
+    SCAN+=("$r"/*.plist)
+  done
+else
+  SCAN=(/Library/LaunchDaemons/com.jeffreyemanuel.*.plist ~/Library/LaunchAgents/com.jeffreyemanuel.*.plist)
+fi
+for pl in "${SCAN[@]}"; do
   [ -f "$pl" ] || continue
   label=$(basename "$pl" .plist)
   [ -n "$ONLY" ] && [ "$label" != "$ONLY" ] && continue
@@ -82,10 +92,12 @@ for pl in /Library/LaunchDaemons/com.jeffreyemanuel.*.plist ~/Library/LaunchAgen
     esac
     case "$arg" in
       *.sh|*/scripts/*|*/bin/*)
-        if [ ! -e "$arg" ]; then
-          add error "$pl" "P1-path-missing" "$arg does not exist"
-        elif printf '%s' "$arg" | grep -qE '/\.ntm/|worktree'; then
+        if printf '%s' "$arg" | grep -qE '/\.ntm/|worktree'; then
+          # worktree finding takes precedence: the path usually EXISTS but is
+          # the wrong copy — that is the root-cause class, not the symptom
           add error "$pl" "P1-worktree-path" "$arg is under a worktree — runtime truth must be the canonical checkout"
+        elif [ ! -e "$arg" ]; then
+          add error "$pl" "P1-path-missing" "$arg does not exist"
         fi
         ;;
     esac
@@ -99,13 +111,17 @@ for pl in /Library/LaunchDaemons/com.jeffreyemanuel.*.plist ~/Library/LaunchAgen
   esac
 
   # P3: env coherence for known labels
-  if printf '%s' "$label" | grep -q 'wyze-broker'; then
+  cap_any=$(/usr/libexec/PlistBuddy -c 'Print :EnvironmentVariables' "$pl" 2>/dev/null | grep -c 'CAP_PATH\|OTA_MD5\|CAM_MAC' || true)
+  if [ "${cap_any:-0}" -ge 1 ] || printf '%s' "$label" | grep -q 'wyze-broker'; then
     cap=$(/usr/libexec/PlistBuddy -c 'Print :EnvironmentVariables:CAP_PATH' "$pl" 2>/dev/null || true)
     md5v=$(/usr/libexec/PlistBuddy -c 'Print :EnvironmentVariables:OTA_MD5' "$pl" 2>/dev/null || true)
     cam=$(/usr/libexec/PlistBuddy -c 'Print :EnvironmentVariables:CAM_MAC' "$pl" 2>/dev/null || true)
     mac=$(/usr/libexec/PlistBuddy -c 'Print :EnvironmentVariables:MAC' "$pl" 2>/dev/null || true)
     if [ -n "$cap" ]; then
-      f="/tmp/fwserve/$cap"
+      case "$cap" in
+        /*) f="$cap" ;;            # absolute path used as-is (fixtures, moved stores)
+        *)  f="/tmp/fwserve/$cap" ;;  # live-fleet convention: relative to the served tree
+      esac
       if [ ! -s "$f" ]; then
         add error "$pl" "P3-capsule-missing" "CAP_PATH=$cap but $f is missing/empty"
       elif [ -n "$md5v" ]; then

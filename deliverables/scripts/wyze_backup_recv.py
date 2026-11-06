@@ -20,24 +20,34 @@ def serve(port, path, done):
     # minutes at a time — a race against assis's install window (measured 2026-11-05).
     # The LaunchDaemon KeepAlive restarts the process if it exits for any other reason.
     s.settimeout(None)
-    try:
-        c, peer = s.accept()
-    except socket.timeout:
-        print(f"{port}: no connection", flush=True)
-        return
-    n = 0
-    with open(path, "wb") as fh:
-        while True:
-            d = c.recv(1 << 20)
-            if not d:
-                break
-            fh.write(d)
-            n += len(d)
-        fh.flush()
-        os.fsync(fh.fileno())
-    c.close()
-    print(f"{port}: {n} bytes -> {path}", flush=True)
-    done.append((port, n))
+    # LOOP: the original returned after ONE accept, so the slot's port went
+    # UNBOUND forever after the first connection — and assis's installer
+    # connects each port once per partition RETRY as well as per run. Measured
+    # 2026-11-06: after any single connect, 444-449 sat dead ("connection
+    # refused") while the daemon lived on. Serve forever; a new partition
+    # capture overwrites the file wholesale (wb), which is the intent.
+    while True:
+        try:
+            c, peer = s.accept()
+        except socket.timeout:
+            print(f"{port}: no connection", flush=True)
+            return
+        except OSError as e:
+            print(f"{port}: accept failed ({e}) — slot exiting", flush=True)
+            return
+        n = 0
+        with open(path, "wb") as fh:
+            while True:
+                d = c.recv(1 << 20)
+                if not d:
+                    break
+                fh.write(d)
+                n += len(d)
+            fh.flush()
+            os.fsync(fh.fileno())
+        c.close()
+        print(f"{port}: {n} bytes -> {path}", flush=True)
+        done.append((port, n))
 
 
 def main():
