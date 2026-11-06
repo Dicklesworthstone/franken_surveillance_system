@@ -16,7 +16,7 @@
     "ref_update": "Exact expected head; non-forced fast-forward.",
     "external_device_execution": false,
     "deployment_mutation_during_session": "Only isolated test deployments; no physical camera or user deployment accessed.",
-    "preserved_concurrent_head": "70e3f681b1d3eb75a6cb94de512f20cf92374587"
+    "preserved_concurrent_head": "88e0195e95544e09755cea9abc9134b62337612c"
   },
   "published_checkpoints": [
     {
@@ -28,8 +28,12 @@
       "change": "Pure movie-time interval planning with exact edit/PTS mappings, explicit gaps, source handles, decode prerequisites and cost limits; preserves concurrent mixed MP4/stz2 implementation."
     },
     {
-      "commit": "this_commit",
+      "commit": "826f2abed5b6c14d0f9e62b4e89aa61f0c17ebf2",
       "change": "Retained-source verification bridge, fss-file select-movie operator command, usage and bounded report delivery."
+    },
+    {
+      "commit": "this_commit",
+      "change": "Cross-layout movie-selection regression for exact AVC/HEVC source identity, edit mapping, extraction costs and discontinuity bootstrap, plus final native verification status."
     }
   ],
   "cases": [
@@ -82,7 +86,7 @@
       "profile": "default"
     },
     "container": {
-      "command": "cargo test --locked --offline -p fss-container -j 1 -- --test-threads=1",
+      "command": "cargo test --locked --offline -p fss-container -- --test-threads=1",
       "source_commit": "b3ec3a8e376fcd5aece28a121b018d6cfbc7bf5c",
       "passed": 125,
       "failed": 0,
@@ -99,34 +103,105 @@
         "mixed": 11,
         "native_boundary": 9
       },
-      "new_movie_selection_contracts": 16
+      "new_movie_selection_contracts": 16,
+      "log_sha256": "ba79c681ca83d258b05bb1fc31cbba93a40c54fee0dec025aa201099b86c22e6",
+      "additional_mixed_selector_test": {
+        "command": "cargo test --locked --offline -p fss-container --test mixed_mp4 movie_queries_preserve_mixed_source_identity_edit_mapping_and_gap_bootstrap -- --test-threads=1",
+        "passed": 1,
+        "failed": 0,
+        "filtered": 11,
+        "source_blob": "0bf2e4c7b0e3bcae239072d8a300892770450dc6",
+        "log_sha256": "7d7de3e75d71384b6d05e655f994a267d4123bff48785678883ed0a85effade8",
+        "test_name": "movie_queries_preserve_mixed_source_identity_edit_mapping_and_gap_bootstrap"
+      },
+      "unique_tests_passed": 126,
+      "environment": {
+        "CARGO_BUILD_JOBS": "1",
+        "profile": "default",
+        "incremental": "default",
+        "RUSTFLAGS": "unset"
+      }
     },
     "retained_cli": {
-      "status": "targeted production typecheck pending; new source not yet natively typechecked",
-      "retained_contracts_authored": 13,
-      "cli_parser_contracts_authored": 6,
-      "tests_executed": false
+      "typecheck": {
+        "status": "passed",
+        "exit_code": 0,
+        "reported_time": "9m56s",
+        "command": "cargo check --locked --offline -p fss-reference --test retained_movie_selection_contract -p fss-cli --bin fss-file",
+        "environment": {
+          "CARGO_BUILD_JOBS": "1",
+          "CARGO_PROFILE_DEV_DEBUG": "0",
+          "CARGO_PROFILE_TEST_DEBUG": "0",
+          "CARGO_INCREMENTAL": "0",
+          "RUSTFLAGS": "-Zthreads=1 -Zmir-opt-level=0"
+        },
+        "timeout_seconds": 600,
+        "scope": "fss-reference production library and retained_movie_selection_contract; fss-cli library and fss-file production binary. Does not execute tests or compile fss-file cfg(test) modules.",
+        "errors": 0,
+        "log_sha256": "78f41c19352f28160bbc48c2975d358551f659470559fda8f21d6584a369482a",
+        "source_commit": "826f2abed5b6c14d0f9e62b4e89aa61f0c17ebf2"
+      },
+      "actual_retained_integration_attempt": {
+        "command": "cargo test --locked --offline -p fss-reference --test retained_movie_selection_contract -- --test-threads=1",
+        "environment": {
+          "CARGO_BUILD_JOBS": "1",
+          "CARGO_PROFILE_DEV_DEBUG": "0",
+          "CARGO_PROFILE_TEST_DEBUG": "0",
+          "CARGO_INCREMENTAL": "0",
+          "RUSTFLAGS": "-Zthreads=1 -Zmir-opt-level=0"
+        },
+        "timeout_guard_seconds": 1200,
+        "status": "dependency code generation terminated before tests executed",
+        "failed_dependency": "asupersync v0.5.0",
+        "compiler_termination": "signal: 9, SIGKILL: kill",
+        "signal_sender_or_cause": "not established by the log; shared-memory exhaustion is an inference, not proven",
+        "overall_shell_exit_code": "not retained in terminal tool output; not asserted",
+        "test_executable_started": false,
+        "tests_executed": 0,
+        "log_sha256": "c8a89af1ba0bbfdfbe582d4251071e23c9fb2cd234e9a62630e112dad1a6c2a5",
+        "no_dependency_or_gate_changes": true
+      },
+      "new_retained_integration_contracts": {
+        "authored": 9,
+        "typechecked": true,
+        "executed": false
+      },
+      "new_retained_private_unit_contracts": {
+        "authored": 4,
+        "typechecked": false,
+        "executed": false
+      },
+      "new_cli_parser_contracts": {
+        "authored": 6,
+        "typechecked": false,
+        "executed": false,
+        "reason": "Production cargo check excludes cfg(test) binary modules; additional build stopped after dependency codegen failure."
+      }
     },
     "qualify_sh": "not run; no release or production approval claimed",
     "environment": "Shared 8 GiB host; serialized builds; production dependency closure unchanged.",
     "review": "Independent read-only review found no actionable custody, cancellation or decoder-handoff bug; source review is not execution proof.",
     "selected_rustfmt": "passed",
-    "whitespace": "passed"
+    "whitespace": "passed",
+    "changed_file_integrity": "Integration checkpoint: 14 staged paths covered. Final validation checkpoint: exact native/GitHub blob/SHA-256 values and staged delta coverage checked before publication."
   },
   "unknowns": [
+    "The new bridge and production CLI typecheck, but the nine retained integration contracts have not executed; dependency codegen was killed before their executable started.",
+    "Six CLI/parser and four private retained-unit contracts remain authored/static-reviewed, without native test-target typechecking or execution.",
     "Movie-time ticks are not wall-clock capture timestamps; container gaps are not physical absence or acquisition coverage.",
-    "Pure selection does not certify codec pixel decodability or export authorization.",
-    "Original ADP-FILE-001 mp4avc/mp4hevc imports only; native reconstructed origins are explicitly unsupported.",
-    "CLI/reference integration execution and complete repository qualification remain separate requirements."
+    "Pure selection does not certify codec pixel decodability or export authorization; HEVC CRA/BLA leading-picture behavior still applies.",
+    "Only original ADP-FILE-001 mp4avc/mp4hevc imports are supported; native reconstructed origins refuse.",
+    "Complete fss-reference/fss-cli, scripts/qualify.sh, physical-camera and production qualification remain open."
   ],
   "obligations": {
     "external_effects": [],
     "leases": [],
     "indeterminate_publications": [],
-    "beads_closed": []
+    "beads_closed": [],
+    "active_builds": []
   },
   "continuation": {
-    "next_validation": "Run the full retained-source and fss-file contract suites on the pinned complete production dependency closure; retain any compile/runtime failures honestly.",
+    "next_validation": "Execute retained_movie_selection_contract and fss-file movie/parser tests on a native host that completes code generation for the unchanged pinned Asupersync dependency; then run broader required qualification. Do not treat the successful metadata-only typecheck as runtime proof.",
     "next_functionality": "Connect bounded footage selection to the remaining incident/review/export workflow with current privacy checks and exact original custody.",
     "blocked_product_decisions": "Always-on recorder standing authority and D6/D7 owner decisions remain unresolved; no new authority or source-envelope contract was invented."
   }

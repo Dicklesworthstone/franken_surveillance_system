@@ -28,13 +28,26 @@ It does not replace the sealed canonical metadata reader, export media, decode
 pixels, establish UTC or certify coverage/absence. Native reconstructed origins
 remain outside this original `ADP-FILE-001` import contract.
 
-**Verification scope:** all 125 native `fss-container` tests pass on the combined
-published tree under pinned nightly `2026-08-31`, locked/offline dependencies and
-serial compilation. This includes 16 movie-selection contracts plus existing
-indexed, mixed, compact-table, in-band, mux and malformed-media tests. The 13
-retained-library and six CLI/parser contracts are authored, formatted and
-independently reviewed; they have not executed. The new reference/CLI source has
-not yet passed native typechecking; its targeted production check is pending.
+**Verification scope:** the complete combined `fss-container` suite passes 125
+native tests, followed by one additional passing mixed-layout selector contract.
+The 16 pure timeline contracts cover edit/PTS mapping, exact costs, gaps, limits
+and cancellation. The added AVC/HEVC regression verifies original sample indices
+and bytes across indexed/fragment joins, different edit mappings, exact Annex-B
+quotes, and a forward gap that cannot borrow the preceding bootstrap.
+
+The targeted production `cargo check` passes under pinned nightly
+`2026-08-31`, locked/offline dependencies, one build job, debug/incremental
+compilation disabled and `-Zthreads=1 -Zmir-opt-level=0`. It typechecks the
+retained bridge, the nine-test retained integration target, and production
+`fss-file`. The actual retained test build was then attempted with the same
+settings: code generation for unchanged `asupersync v0.5.0` ended with
+`signal: 9, SIGKILL` before any test executable started. The log does not
+establish the signal sender/cause; shared-memory pressure is not asserted as a
+proven cause. The nine retained contracts therefore remain **unexecuted**.
+Six CLI/parser contracts and four private retained-unit contracts are authored,
+formatted and reviewed but have not been natively typechecked or executed;
+production `cargo check --bin` does not compile its `cfg(test)` modules.
+No dependency, feature set or qualification gate was removed to obtain a pass.
 The scoped codec and container tests do not qualify the complete asynchronous
 reference/CLI dependency closure or the repository. See
 `docs/RETAINED_MOVIE_SELECTION.md` for usage, bounds and current timing admission.

@@ -2,7 +2,10 @@
 //! A real indexed first GOP followed by movie fragments, with original AVC/HEVC and audio
 //! bytes. Frozen laboratory fixtures exercise native parsing and pixels without subprocesses.
 
-use fss_container::demux::{AvcMp4, DemuxError, DemuxLimits, VideoCodec};
+use fss_container::demux::{
+    AvcMp4, DemuxError, DemuxLimits, MovieGapKind, MovieSelectionLimits, VideoCodec,
+    length_prefixed_nals,
+};
 use fss_core::ContentDigest;
 use std::error::Error;
 
@@ -449,6 +452,126 @@ fn mixed_avc3_configurations_cover_the_indexed_and_fragment_samples() -> Test {
     assert_eq!(
         inband.annex_b(0, 10)?.bytes(),
         static_movie.annex_b(0, 10)?.bytes()
+    );
+    Ok(())
+}
+
+#[test]
+fn movie_queries_preserve_mixed_source_identity_edit_mapping_and_gap_bootstrap() -> Test {
+    // Independent fixture tables: indexed movies shift media by 4096/10240 seconds;
+    // the mixed remuxes have no edit list. Their corresponding movie queries differ by
+    // 400 ticks. The frozen packet positions below straddle each layout's coding boundary.
+    for (bytes, indexed, expected, positions, spans) in [
+        (AVC, INDEXED_AVC, [4, 5], [4238, 4753], vec![(0, 5), (5, 1)]),
+        (HEVC, INDEXED_HEVC, [4, 3], [4546, 3571], vec![(3, 2)]),
+    ] {
+        let mixed = AvcMp4::parse(bytes, None, DemuxLimits::default())?;
+        let original = AvcMp4::parse(indexed, None, DemuxLimits::default())?;
+        assert_eq!((mixed.movie_timescale(), mixed.timescale()), (1000, 10240));
+        assert!(mixed.edits().is_empty());
+        assert_eq!(original.edits().len(), 1);
+        assert_eq!(original.edits()[0].media_time, 4096);
+        let selected = mixed.select_movie_interval(1300..1500, MovieSelectionLimits::default())?;
+        let reference =
+            original.select_movie_interval(900..1100, MovieSelectionLimits::default())?;
+        assert_eq!(selected.samples.len(), 2);
+        assert_eq!(reference.samples.len(), 2);
+        assert!(selected.gaps.is_empty());
+        assert!(reference.gaps.is_empty());
+        for (at, (actual, old)) in selected.samples.iter().zip(&reference.samples).enumerate() {
+            assert_eq!(
+                (actual.sample_index, old.sample_index),
+                (expected[at], expected[at])
+            );
+            assert_eq!(actual.source.start, positions[at]);
+            assert_eq!(actual.source, mixed.samples()[expected[at]].source);
+            assert_eq!(bytes[actual.source.clone()], indexed[old.source.clone()]);
+            assert_eq!((actual.edit_index, old.edit_index), (None, Some(0)));
+            assert_eq!(actual.interval.denominator, 10240);
+            assert_eq!(
+                actual.interval.start_numerator,
+                old.interval.start_numerator + 400 * 10240
+            );
+            assert_eq!(
+                actual.interval.end_numerator,
+                old.interval.end_numerator + 400 * 10240
+            );
+        }
+        assert_eq!(
+            selected
+                .decode_spans
+                .iter()
+                .map(|span| (span.first_sample, span.sample_count))
+                .collect::<Vec<_>>(),
+            spans
+        );
+        let mut source_bytes = 0;
+        let mut annex_b_bytes = 0;
+        for span in &selected.decode_spans {
+            let end = span.first_sample + span.sample_count;
+            let extraction = mixed.annex_b(span.first_sample, span.sample_count)?;
+            assert_eq!(
+                extraction.bytes(),
+                original
+                    .annex_b(span.first_sample, span.sample_count)?
+                    .bytes()
+            );
+            assert_eq!(span.annex_b_bytes, extraction.bytes().len() as u64);
+            assert_eq!(
+                span.source_bytes,
+                mixed.samples()[span.first_sample..end]
+                    .iter()
+                    .map(|sample| sample.source.len() as u64)
+                    .sum::<u64>()
+            );
+            source_bytes += span.source_bytes;
+            annex_b_bytes += span.annex_b_bytes;
+        }
+        assert_eq!(
+            selected.sample_bytes,
+            expected
+                .iter()
+                .map(|index| mixed.samples()[*index].source.len() as u64)
+                .sum::<u64>()
+        );
+        assert_eq!(selected.decode_bytes, source_bytes);
+        assert_eq!(selected.annex_b_bytes, annex_b_bytes);
+        // HEVC's requested RASL remains a source selection. The quote preserves existing
+        // CRA admission; this does not claim that isolated CRA decoding emits that picture.
+    }
+
+    let mut gapped = AVC.to_vec();
+    let tfdt = tag(AVC, b"tfdt")?;
+    gapped[tfdt + 8..tfdt + 16].copy_from_slice(&20_480_u64.to_be_bytes());
+    let parsed = AvcMp4::parse(&gapped, None, DemuxLimits::default())?;
+    let selection = parsed.select_movie_interval(1300..2500, MovieSelectionLimits::default())?;
+    assert_eq!(
+        selection
+            .samples
+            .iter()
+            .map(|sample| sample.sample_index)
+            .collect::<Vec<_>>(),
+        [4, 5]
+    );
+    assert_eq!(selection.gaps.len(), 1);
+    assert_eq!(selection.gaps[0].kind, MovieGapKind::Unrepresented);
+    assert_eq!(selection.gaps[0].interval.start_numerator, 1400 * 10240);
+    assert_eq!(selection.gaps[0].interval.end_numerator, 2400 * 10240);
+    let first_fragment = parsed.samples()[5].source.clone();
+    let headers = length_prefixed_nals(&gapped[first_fragment.clone()], parsed.nal_length_bytes())?
+        .into_iter()
+        .filter(|nal| gapped[first_fragment.start + nal.start] & 31 == 5)
+        .map(|nal| first_fragment.start + nal.start)
+        .collect::<Vec<_>>();
+    assert!(!headers.is_empty());
+    for at in headers {
+        gapped[at] = 0x41;
+    }
+    let missing = AvcMp4::parse(&gapped, None, DemuxLimits::default())?;
+    assert!(missing.annex_b(0, 10).is_ok());
+    assert_eq!(
+        missing.select_movie_interval(2400..2500, MovieSelectionLimits::default()),
+        Err(DemuxError::RandomAccessRequired)
     );
     Ok(())
 }
