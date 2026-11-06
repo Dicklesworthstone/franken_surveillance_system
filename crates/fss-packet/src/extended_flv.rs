@@ -10,6 +10,14 @@
 
 use std::{fmt, ops::Range};
 
+/// Borrowed AAC-LC configuration and access-unit views over original FLV tags.
+pub mod aac;
+/// Allocation-free ADTS headers for explicitly configured AAC-LC samples.
+pub mod aac_adts;
+/// Bounded AAC sample-clock reconciliation against sender FLV timestamps.
+pub mod aac_clock;
+/// Connection-relative AAC configuration epochs and access-unit source spans.
+pub mod aac_track;
 /// Borrowed AVC configuration and NAL views over original extended-FLV tags.
 pub mod avc;
 /// Incremental framing that returns original bytes and stream-relative ranges.
