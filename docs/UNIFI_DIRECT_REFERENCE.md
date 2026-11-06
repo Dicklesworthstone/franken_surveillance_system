@@ -1112,6 +1112,40 @@ pixel decoding, direct-camera media path, or cadence compatibility is claimed.
 Both attempts left their protected archive and journal state for inspection;
 the working recorder was not reconfigured.
 
+A third attempt used the same relay and the same laboratory binary, requesting
+one picture with the same 3,003-tick declared cadence. It completed with a
+normal requested stop, one collected and durable picture, one durable window,
+and a published catalog. The terminal receipt reports no pixel decode, no
+certified continuity or coverage, and no verified server identity. The sample
+is too short to validate inter-picture cadence; it does not overturn the
+15-picture timing refusal. This is native Rust capture through the transitional
+relay, not a successful Scrypted-free camera session. The root-only journal is
+on `trj`, with the protected trial archive under the authorized bulk recording
+directory. The recorder, upload, fallback and discovery services remained active.
+
+Another 15-picture attempt declared 3,000 ticks, as a bounded alternative
+suggested by an earlier nominal 30 fps observation. It also stopped with the
+timing error after one collected picture and no durable picture. In a separate,
+short, read-only RTSP session, an independent payload-free diagnostic observed
+31 distinct video RTP timestamps: of 30 consecutive differences, 20 were
+2,970 ticks and 10 were 3,060 ticks on the 90 kHz clock. This is direct evidence
+of nonuniform timestamp spacing in that sample, not a measurement of camera
+exposure times or a guarantee about other sessions. The existing fixed-cadence
+recording contract cannot represent that sample as-is. A correct variable-
+duration design must retain a bounded complete-picture lookahead to derive each
+previous duration from a later source timestamp, and must explicitly account
+for the unresolved final picture, loss, reordering, source changes, deadlines,
+and crash recovery. The default capture bridge holds one picture until timing
+is supplied, so simply relaxing its cadence check or inventing durations would
+misrepresent the source. A draft opt-in complete-picture lookahead is not yet
+wired into the RTSP recorder or qualified against a physical camera. This
+fixed-cadence constraint belongs to the RTSP
+capture route, not the direct UniFi FLV owner: that owner already derives
+sample durations from subsequent source timestamps using bounded lookahead.
+Neither path has yet established a native live G4 recording. An instrumented
+laboratory rebuild was not produced: two strict-remote jobs failed during
+source transfer before Cargo started.
+
 The discovery CLI source now accepts up to 64 distinct, subnet-checked
 `--target` IPv4 addresses in one window; without them the existing broadcast
 behavior is unchanged. This is intended to rediscover an owner-authorized camera
