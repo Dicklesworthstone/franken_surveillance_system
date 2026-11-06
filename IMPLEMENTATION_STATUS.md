@@ -4,7 +4,27 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
-## Fractional and shrinking ONNX Resize (2026-11-06; native integration pending)
+## Static ONNX Pad and crop execution (2026-11-06)
+
+The opset-13 importer admits constant-mode Pad for static F32 tensors of rank
+one through four. Positive values add exact constant borders on any axis;
+negative values crop those axes. An optional finite scalar fill preserves its
+bits, including negative zero and subnormals; omission selects positive zero.
+Cropping precedes expansion, followed by at most one Concat per padded axis.
+No-op padding uses Reshape. Existing native operators, original ONNX custody,
+shared resource limits and cancellation remain in force. Empty retained axes,
+dynamic controls, reflect/edge mode and unsupported ranks refuse explicitly.
+
+**Native validation:** the dedicated `onnx_pad_execution` target passed all 12
+tests (10 authored integration tests and two included production executor tests)
+with pinned nightly `2026-08-31` and the unchanged locked dependency set. Literal
+mixed-sign cases and an independent coordinate oracle check ranks 1–4, exact
+bits, canonical artifact export/reload, Pad-to-Conv execution, control/data dual
+use, helper-name collisions, malformed controls, budgets and cancellation.
+The production Model IR library target also passed all 20 tests. This advances
+`fss-x4a.14.10`; general ONNX coverage and deployment qualification remain open.
+
+## Fractional and shrinking ONNX Resize (2026-11-06; native integration verified)
 
 The bounded opset-13 importer now lowers static nearest-neighbor fractional
 scales, downsampling, explicit size ratios, and mixed shrinking/enlarging spatial
@@ -31,21 +51,22 @@ over input lengths 1–32, literal ties and adjacent values, actual run expansio
 resource extrema and every planning cancellation checkpoint. Full artifact
 integration tests cover canonical export/reload, production scalar execution,
 bit preservation, detector-style graphs, legacy bytes, quotas and cancellation,
-but have not executed. Complete Cargo tests and metadata checks were killed in
-unchanged `fss-core` before any model diagnostics, including serialized retries
-with debug information and incremental compilation disabled.
+and have now executed successfully after the build environment was restored.
+The dedicated target passed all 17 tests. Its scale-rounding fixture needed an
+explicit F32 input literal; no production Resize correction was required.
 
 **Published recovery scope:** the executor became unavailable before publication.
 Production source and tests were recovered through GitHub from recorded edits
 and complete source-review snapshots. The module and importer-identity changes
 match their recorded final Git blob prefixes; the integer lowering is identical
-to the baseline. Recovered source received independent review, but these exact
-published files have not been natively recompiled or rerun. The standalone
-pre-outage result does not establish full graph/artifact integration or complete
+to the baseline. The recovered production files and corrected fixture were
+natively recompiled against real locked dependencies. Before adding Pad, the
+complete `fss-model-ir` package passed 278 tests with zero failures or ignored
+tests. These are native package and artifact-integration results, not complete
 repository/runtime qualification. This advances `fss-x4a.14.10`; the broad bead
 remains open.
 
-## Inherited byte offsets in multiplexed fragmented MP4 (2026-11-06; recovery verification pending)
+## Inherited byte offsets in multiplexed fragmented MP4 (2026-11-06; recovery verified)
 
 Native AVC/HEVC import now resolves selected video fragments whose byte base
 depends on preceding track fragments. It traces only the required dependency
@@ -76,13 +97,14 @@ could be committed. Production files were recovered from recorded diffs and
 re-reviewed through GitHub. The original 13-contract source was not fully
 recoverable; the published target retains five complete original contracts for
 source preservation, default precedence, continued/backward-positioned runs,
-multi-fragment dependency chains, and signed explicit offsets. This recovered tree has not been recompiled or rerun; the
-development results above must not be interpreted as a pass for these exact
-published bytes. The complete container suite remains a required next check.
-Full targeted Cargo tests and a model Cargo check had already been killed while
-compiling unchanged `fss-core`, including a serial frontend retry with debug
-information and incremental compilation disabled. No repository, codec,
-retained-store/file-adapter, or production qualification is claimed.
+multi-fragment dependency chains, and signed explicit offsets. The recovered
+tree has now been natively rebuilt with pinned nightly `2026-08-31` and the
+unchanged locked dependency set. The complete container package passed 133
+tests, with one existing ignored test; the complete packet package passed 329,
+with two existing ignored tests. These results cover the five published
+contracts and the current upstream AAC additions. They do not recover the
+other eight original test sources or claim complete repository, codec,
+retained-store/file-adapter or production qualification.
 This advances `fss-x4a.12.14` and `fss-x4a.12.2`; both broad beads remain open.
 
 ## Retained movie-time footage selection (2026-11-06)

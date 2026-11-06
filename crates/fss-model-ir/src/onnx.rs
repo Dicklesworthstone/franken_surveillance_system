@@ -20,6 +20,7 @@ mod constants;
 mod dfl;
 mod export;
 mod gemm;
+mod pad;
 mod padding;
 mod pooling;
 mod preprocess;
@@ -495,7 +496,7 @@ fn source_node<'a>(
     let id = format!("onnx-node-{ordinal:04}");
     if !matches!(
         op.as_str(),
-        "Gemm" | "Squeeze" | "Slice" | "Resize" | "Split"
+        "Gemm" | "Squeeze" | "Slice" | "Resize" | "Split" | "Pad"
     ) && inputs.iter().any(String::is_empty)
     {
         return Err(OnnxError::Limit);
@@ -968,6 +969,8 @@ pub fn import_onnx<'a>(
             pooling::lower(source, &mut lowering)?;
         } else if source.op == "Resize" {
             resize::lower(source, &mut lowering)?;
+        } else if source.op == "Pad" {
+            pad::lower(source, &mut lowering)?;
         } else if source.op == "Split" {
             split::lower(source, &mut lowering)?;
         } else if matches!(

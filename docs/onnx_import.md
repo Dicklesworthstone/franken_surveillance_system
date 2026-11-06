@@ -44,7 +44,7 @@ including hand-computed dense and convolution/pooling results.
   declared outputs and intermediate value information must match native inference.
 - Add, Sub, Mul, Div, Relu, Sigmoid, Tanh, MatMul, Gemm, Softmax, Conv, BatchNormalization,
   MaxPool, AveragePool, GlobalAveragePool, Transpose,
-  Concat, Constant, Reshape, Squeeze, Unsqueeze, Slice, Split, Resize, Identity and Flatten.
+  Concat, Constant, Reshape, Squeeze, Unsqueeze, Slice, Split, Resize, Pad, Identity and Flatten.
   Shape and constant-only INT64 Gather are admitted for the bounded shape programs below.
   Identity/Flatten lower to checked native Reshape
   nodes without changing the frozen operator set or canonical Model IR v1 encoding.
@@ -69,6 +69,55 @@ weight files, custom functions, training graphs and model activation are not
 implemented by this profile. Initializers that are also graph inputs refuse rather
 than silently freezing an overridable weight. An unused initializer cannot be made
 executable merely by mentioning it in value-info metadata.
+
+## Static constant padding and cropping
+
+The importer admits [Pad-13](https://onnx.ai/onnx/operators/onnx__Pad.html#pad-13)
+for static F32 tensors of rank one through four, including padding or cropping
+batch and channel axes. `mode` must be absent or `"constant"`. The second input
+must be an embedded INT64 vector containing exactly twice the input rank in the
+order `[begin_axis_0, ..., begin_axis_n, end_axis_0, ..., end_axis_n]`.
+Initializers, Constant nodes and the bounded static shape programs below may
+supply this control; its existing eight-element ceiling remains unchanged.
+
+Positive values add constant borders and negative values remove samples from
+the corresponding side. All cropping happens before padding, and every retained
+axis must contain at least one source sample. An entirely cropped axis refuses
+with `Unsupported`, even when padding on the opposite side would make the final
+shape positive. For example, input `[1,2,3,4]`, pads `[-1,2]` and fill `9` produce
+`[2,3,4,9,9]`; pads `[2,-1]` produce `[9,9,1,2,3]`.
+
+The optional third input is a finite embedded F32 **scalar**, not a length-one
+vector. An omitted input or empty optional input name selects positive zero;
+an empty tensor is not a scalar and refuses. Explicit negative zero and subnormal
+fill values retain their exact F32 bits. A fill also consumed as ordinary model
+data remains an exported parameter, while control-only values are removed from
+the runtime graph without changing the retained original ONNX bytes.
+
+Conversion emits at most one positive-stride Slice for cropping, followed by one
+Concat per padded axis with generated constant border tensors. A no-op Pad emits
+a Reshape; crop-only Pad needs no generated parameters. These existing native
+operators move data without floating-point arithmetic, so source sample bits are
+preserved. No frozen operator ID, runtime dependency or package format changes.
+Cropping first also keeps every intermediate tensor within the final output's
+size. Checked output and generated-parameter byte counts, node and tensor counts,
+shared work limits, cancellation and reserved helper names apply before and
+during expansion. Signed pad magnitude and shape overflow produce typed refusals.
+
+Dynamic pads or fill, reflect/edge modes, scalar data, ranks above four, non-F32
+data, later-schema axes inputs and zero-sized retained axes are outside this
+profile. Malformed control rank/type/length, conflicting declared shapes and
+unsupported attributes also refuse conversion.
+
+The `onnx_pad_execution` target exercises the production scalar executor before
+and after canonical Model IR and Safetensors export/reload. Literal mixed-sign
+examples and an independent output-to-input coordinate oracle cover all four
+ranks, default and explicit fills, negative zero, subnormals and a Pad-to-Conv
+block. Additional cases cover static shape controls, a scalar's simultaneous
+control/data use, helper-name collisions, crop-first resource bounds, exact
+quota boundaries and cancellation at every import checkpoint. The importer
+identity includes this lowering source. Native results and their scope are
+recorded in `IMPLEMENTATION_STATUS.md`.
 
 ## Static automatic spatial padding
 
@@ -410,16 +459,20 @@ serialization and scalar execution are exercised by
 passed with the pinned compiler before the execution environment became unavailable.
 They cover all input lengths 1–24 and output lengths 1–64 under both profiles,
 21 F32 scales over input lengths 1–32, literal ties, expanded run plans, limits,
-and every planning cancellation checkpoint. The complete model Cargo build/check
-was killed while compiling unchanged `fss-core`, before model diagnostics;
-the new full graph/export/reload/scalar-execution cases have not run.
+and every planning cancellation checkpoint. The first complete model Cargo build
+was killed in unchanged `fss-core`, before model diagnostics. The restored build
+environment has now run all 17 tests in `onnx_resize_execution`, including full
+graph/export/reload/scalar execution. One input fixture was explicitly typed F32
+after native execution detected an inferred F64 tensor; production lowering was
+unchanged.
 
 After the outage, the source was recovered from recorded edits and complete review
 snapshots. The tiny module/identity edits match their recorded final Git blob
 identifiers, and the old integer lowering matches the original source. The recovered
-tree, including its test files, has not been natively recompiled or rerun. Run both
-targets above before treating these exact published bytes as verified; the standalone
-planner result alone does not establish artifact integration or model qualification.
+production tree and corrected fixture now pass the complete native Model IR package
+(278 tests before Pad was added), using pinned nightly `2026-08-31` and the unchanged
+locked dependencies. These package results do not establish model-quality or
+deployment qualification.
 
 ## Static tensor controls and detector heads
 
@@ -526,7 +579,7 @@ because that name is reserved by Safetensors; it is never silently changed. The
 weights header records the source digest and importer identity.
 
 The separate `onnx_importer_identity()` record uses `fss.onnx_importer.v1` and hashes
-the exact ONNX parser, constants, static shape programs, structural, Split, Resize and Gemm lowering,
+the exact ONNX parser, constants, static shape programs, structural, Split, Resize, Pad and Gemm lowering,
 artifact exporter and canonical encoder source.
 Existing Model IR bytes, operator IDs and the operator-table freeze remain unchanged.
 

@@ -947,7 +947,7 @@ fn original_scale_rounding_ties_and_adjacent_f32_values_select_the_right_samples
         );
         let input = Tensor::from_values(
             Shape::new(vec![1, 1, 1, 7])?,
-            &[0., 1., 2., 3., 4., 5., 6.],
+            &[0.0_f32, 1., 2., 3., 4., 5., 6.],
             GENERATION,
         )?;
         assert_eq!(
