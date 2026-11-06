@@ -261,6 +261,22 @@ impl Recorder {
         self.mux.as_ref().map(Muxer::initialization)
     }
 
+    /// Derive an A/V initialization for the observed video configuration and
+    /// caller-supplied AAC configuration. The caller remains responsible for
+    /// binding that audio configuration and clock to this connection and epoch.
+    /// The returned bytes have a distinct digest from the video-only
+    /// initialization in [`ConfigurationBinding`]; the caller must bind and
+    /// retain the new initialization separately.
+    pub fn av_initialization(
+        &self,
+        audio: &fss_packet::extended_flv::aac::Configuration<'_>,
+    ) -> Result<Option<fss_container::flv_av::Initialization>, Mp4Error> {
+        self.mux
+            .as_ref()
+            .map(|mux| mux.av_initialization(audio))
+            .transpose()
+    }
+
     /// Admit one original record without losing it on refusal. On an error the
     /// owner is fenced; recover its pending source with [`Self::retire`].
     pub fn push(&mut self, record: SourceRecord) -> Result<Push, Refusal> {

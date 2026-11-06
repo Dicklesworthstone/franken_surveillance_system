@@ -346,6 +346,10 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Session<'scope, 'task, I
         self.controller.time_sync_counts()
     }
 
+    pub(crate) fn startup_time_sync_limit(&self) -> usize {
+        self.controller.startup_time_sync_limit()
+    }
+
     /// Prepare a hello reply for a previously observed camera hello.
     pub fn prepare_hello(&mut self, timestamp: &str) -> Result<(u64, MessageKind), Error> {
         if self.in_flight.is_some() || self.socket.is_none() {

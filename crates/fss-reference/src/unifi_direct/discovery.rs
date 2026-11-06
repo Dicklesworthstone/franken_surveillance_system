@@ -235,6 +235,9 @@ pub struct ClaimAssessment {
     pub conflicting_metadata: bool,
     /// The datagram did not advertise its actual source address.
     pub source_not_advertised: bool,
+    /// Another claim from this source address lacks a usable MAC or does not
+    /// advertise that address, so the reports cannot be safely reconciled.
+    pub incomplete_claim_at_address: bool,
 }
 
 impl Report {
@@ -252,6 +255,10 @@ impl Report {
         };
         for other in &self.cameras {
             let same_ip = candidate.source.ip() == other.source.ip();
+            if same_ip && !std::ptr::eq(candidate, other) {
+                result.incomplete_claim_at_address |=
+                    !other.mac.is_some_and(valid_mac) || !other.source_advertised;
+            }
             if let (Some(mac), Some(other_mac)) = (candidate.mac, other.mac) {
                 if valid_mac(mac) && valid_mac(other_mac) {
                     result.conflicting_macs_at_address |= same_ip && mac != other_mac;
@@ -608,5 +615,42 @@ mod tests {
                 .same_mac_at_multiple_addresses
         );
         assert!(report.assess_claims(2).unwrap().missing_or_invalid_mac);
+    }
+
+    #[test]
+    fn incomplete_same_address_claim_blocks_the_other_candidate() {
+        let candidate = |last, mac, advertised| CameraCandidate {
+            source: SocketAddrV4::new(Ipv4Addr::new(192, 168, 1, last), 10001),
+            platform: "UVC G4".into(),
+            firmware: None,
+            mac,
+            source_advertised: advertised,
+        };
+        let good = Some([0x10, 2, 3, 4, 5, 6]);
+        for incomplete in [None, Some([0, 0, 0, 0, 0, 0]), Some([1, 2, 3, 4, 5, 6])] {
+            let report = Report {
+                cameras: vec![candidate(4, good, true), candidate(4, incomplete, true)],
+                datagrams: 2,
+                malformed: 0,
+                out_of_scope: 0,
+                stop: Stop::WindowElapsed,
+            };
+            assert!(report.assess_claims(0).unwrap().incomplete_claim_at_address);
+            assert!(report.assess_claims(1).unwrap().missing_or_invalid_mac);
+        }
+        let report = Report {
+            cameras: vec![
+                candidate(4, good, true),
+                candidate(4, good, false),
+                candidate(5, None, false),
+            ],
+            datagrams: 3,
+            malformed: 0,
+            out_of_scope: 0,
+            stop: Stop::WindowElapsed,
+        };
+        assert!(report.assess_claims(0).unwrap().incomplete_claim_at_address);
+        assert!(!report.assess_claims(1).unwrap().incomplete_claim_at_address);
+        assert!(!report.assess_claims(2).unwrap().incomplete_claim_at_address);
     }
 }

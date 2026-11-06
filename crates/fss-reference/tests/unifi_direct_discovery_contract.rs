@@ -482,9 +482,49 @@ fn conflicting_udp_claims_remain_separate_and_are_flagged() -> TestResult {
     assert_eq!(report.cameras.len(), 4);
     let first = report.assess_claims(0).ok_or("missing first claim")?;
     assert!(first.conflicting_macs_at_address && first.conflicting_metadata);
+    assert!(first.incomplete_claim_at_address);
     assert!(!first.missing_or_invalid_mac && !first.same_mac_at_multiple_addresses);
     let missing = report.assess_claims(3).ok_or("missing fourth claim")?;
     assert!(missing.missing_or_invalid_mac && missing.source_not_advertised);
+    Ok(())
+}
+
+#[test]
+fn incomplete_same_address_udp_claim_marks_the_other_candidate() -> TestResult {
+    let server = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))?;
+    server.set_read_timeout(Some(Duration::from_secs(5)))?;
+    let destination = match server.local_addr()? {
+        std::net::SocketAddr::V4(v) => v,
+        _ => return Err("not IPv4".into()),
+    };
+    let worker = std::thread::spawn(move || -> std::io::Result<()> {
+        let mut query = [0_u8; 32];
+        let (_, peer) = server.recv_from(&mut query)?;
+        server.send_to(&packet(), peer)?;
+        server.send_to(&packet_with(None, b"UVC.v4.example", true), peer)?;
+        Ok(())
+    });
+    let config = Config::new(
+        Ipv4Addr::LOCALHOST,
+        8,
+        destination,
+        "fixture:discovery",
+        Duration::from_millis(300),
+        4,
+    )?;
+    let report = execute(&config)?;
+    worker.join().map_err(|_| "fixture thread panicked")??;
+    assert_eq!(report.cameras.len(), 2);
+    let first = report.assess_claims(0).ok_or("missing first claim")?;
+    assert!(first.incomplete_claim_at_address);
+    assert!(!first.missing_or_invalid_mac && !first.conflicting_macs_at_address);
+    assert_ne!(first, Default::default());
+    assert!(
+        report
+            .assess_claims(1)
+            .ok_or("missing second claim")?
+            .missing_or_invalid_mac
+    );
     Ok(())
 }
 

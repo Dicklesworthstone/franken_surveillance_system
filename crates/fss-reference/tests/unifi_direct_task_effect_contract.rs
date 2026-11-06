@@ -338,9 +338,9 @@ impl conversation::Approval for FixtureApproval<'_> {
     }
 }
 
-fn conversation_scenario(revoke_stream: bool, revoke_after_start: bool) -> Test {
+fn conversation_scenario(revoke_stream: bool, revoke_after_start: bool, revoke_audio_pending: bool) -> Test {
     let path = std::fs::canonicalize(std::env::temp_dir())?.join(format!(
-        "fss-unifi-task-conversation-{}-{revoke_stream}-{revoke_after_start}",
+        "fss-unifi-task-conversation-{}-{revoke_stream}-{revoke_after_start}-{revoke_audio_pending}",
         std::process::id(),
     ));
     std::fs::create_dir(&path)?;
@@ -499,7 +499,12 @@ fn conversation_scenario(revoke_stream: bool, revoke_after_start: bool) -> Test 
                 policy.listen.set(true);
                 let controller_listener=controller_listener::Listener::bind(task,cx,clock,&policy,bind,"fixture:camera",Duration::from_secs(5)).await?;
                 let address=SocketAddr::V4(controller_listener.local_addr());
-                let wire=media_fixture()?;
+                let mut wire=media_fixture()?;
+                if revoke_audio_pending {
+                    let mut audio=flv_tag(0,&[0xaf,0,0x14,0x08]);
+                    audio[0]=8;
+                    drop(wire.splice(13..13,audio));
+                }
                 let expected=wire.clone();
                 let peer=std::thread::spawn(move || -> io::Result<()> {
                     let mut socket=std::net::TcpStream::connect_timeout(&address,Duration::from_secs(5))?;
@@ -529,7 +534,7 @@ fn conversation_scenario(revoke_stream: bool, revoke_after_start: bool) -> Test 
                     let mut media=std::net::TcpStream::connect_timeout(&destination,Duration::from_secs(5))?;
                     let split=wire.len().min(100);
                     media.write_all(&wire[..split])?;
-                    if revoke_after_start {
+                    if revoke_after_start || revoke_audio_pending {
                         let mut last=[0u8;1];
                         return match socket.read(&mut last) { Ok(0)=>Ok(()), _=>Err(io::Error::other("revoked controller did not retire")) };
                     }
@@ -573,6 +578,35 @@ fn conversation_scenario(revoke_stream: bool, revoke_after_start: bool) -> Test 
                 let started=started?;
                 assert_eq!(started.reply,conversation::Reply { status_code:None, success:None, time_syncs:1 });
                 let mut supervisor=supervisor::Supervisor::new(session,started.pipeline,conditions);
+                if revoke_audio_pending {
+                    supervisor.enable_audio_tracking()?;
+                    let mut retained=Vec::new();
+                    let mut pending=false;
+                    for _ in 0..64 {
+                        match supervisor.step(&mut owner,&operations[4],Duration::from_secs(5)).await {
+                            supervisor::Step::Media(pipeline::Step::Progress {..})=>(),
+                            supervisor::Step::Media(pipeline::Step::Recording(recording::Push::Source {record,..}))=>retained.extend_from_slice(record.bytes()),
+                            supervisor::Step::Observation(_)=>(),
+                            supervisor::Step::AudioPending=>{pending=true;break;},
+                            other=>return Err(format!("expected pending audio: {other:?}").into()),
+                        }
+                    }
+                    if !pending {return Err("audio event was not produced".into());}
+                    policy.peer.set(false);
+                    assert!(supervisor.take_audio_event(&owner).is_none());
+                    assert!(matches!(supervisor.step(&mut owner,&operations[4],Duration::from_secs(5)).await,
+                        supervisor::Step::ControllerStopped(fss_reference::unifi_direct::receive::Stop::AdmissionRevoked)));
+                    let retired=supervisor.retire();
+                    assert!(matches!(retired.media.pending_audio,Some(pipeline::AudioEvent::Observed(fss_packet::extended_flv::aac_track::Observation::Configuration {epoch:1,..}))));
+                    for record in retired.media.recorder.pending {retained.extend_from_slice(record.bytes());}
+                    retained.extend_from_slice(retired.media.ingress.framing.bytes());
+                    if let Some(buffered)=retired.media.ingress.buffered {retained.extend_from_slice(&buffered.source.bytes()[buffered.appended..]);}
+                    if let Some(pending)=retired.media.ingress.source.pending {retained.extend_from_slice(pending.bytes());}
+                    assert_eq!(retained.len() as u64,retired.media.ingress.source.received);
+                    assert_eq!(retained,expected[..retained.len()]);
+                    peer.join().map_err(|_|"fixture peer panic")??;
+                    return Ok(());
+                }
                 if revoke_after_start {
                     let mut retained=Vec::new();
                     match supervisor.step(&mut owner,&operations[4],Duration::from_secs(5)).await {
@@ -676,7 +710,7 @@ fn conversation_scenario(revoke_stream: bool, revoke_after_start: bool) -> Test 
         }).await?;
         result.receipt?; result.output
     })?;
-    for operation in &operations[..if revoke_stream || revoke_after_start {
+    for operation in &operations[..if revoke_stream || revoke_after_start || revoke_audio_pending {
         4
     } else {
         5
@@ -696,15 +730,206 @@ fn conversation_scenario(revoke_stream: bool, revoke_after_start: bool) -> Test 
 
 #[test]
 fn owned_conversation_requests_a_stream_that_reaches_the_recording_pipeline() -> Test {
-    conversation_scenario(false, false)
+    conversation_scenario(false, false, false)
 }
 
 #[test]
 fn revoked_listener_policy_prevents_stream_setting_dispatch() -> Test {
-    conversation_scenario(true, false)
+    conversation_scenario(true, false, false)
 }
 
 #[test]
 fn revoked_controller_admission_stops_buffered_media_and_retains_it() -> Test {
-    conversation_scenario(false, true)
+    conversation_scenario(false, true, false)
+}
+
+#[test]
+fn revoked_controller_withholds_pending_audio_and_returns_it_at_retirement() -> Test {
+    conversation_scenario(false, false, true)
+}
+
+/// Exercise a correlated pre-hello chain through the real owned conversation,
+/// local TCP, per-reply effect journal and the camera-shaped peer.
+#[test]
+fn correlated_clock_chain_reaches_hello_and_stream_with_distinct_effects() -> Test {
+    let path = std::fs::canonicalize(std::env::temp_dir())?
+        .join(format!("fss-unifi-clock-chain-{}", std::process::id()));
+    std::fs::create_dir(&path)?;
+    let temp = Temp(path);
+    let store = FileEffectJournal::create(
+        temp.0.join("journal"),
+        EffectJournalLimits::default(),
+        Arc::new(HostSpoolIo),
+    )?;
+    let mut effects = EffectCoordinator::with_journal(Box::new(store))?;
+    let mut budget = BudgetVector::ZERO;
+    budget.network_bytes = 1_000_000;
+    budget.bytes = 1_000_000;
+    let (mut authority, mut tree) = AuthorityCx::root(
+        RootAuthoritySpec {
+            trace_id: "trace:unifi-clock-chain".into(),
+            operation_id: OperationId::parse("operation:unifi-clock-chain")?,
+            principal: "principal:fixture".into(),
+            capabilities: vec![
+                RuntimeGrant::AdapterNet.as_str().into(),
+                RuntimeGrant::CameraManagementPrepare.as_str().into(),
+                RuntimeGrant::CameraManagementCommit.as_str().into(),
+                RuntimeGrant::CameraSettingPrepare.as_str().into(),
+                RuntimeGrant::CameraSettingCommit.as_str().into(),
+            ],
+            deadline: Some(TimestampNs(60_000_000_000)),
+            priority: 1,
+            budgets: budget,
+            privacy_scope: "privacy:test".into(),
+            retention_scope: "retention:test".into(),
+            anchor_universe: ContentDigest::sha256(b"fixture"),
+            generation: 1,
+        },
+        RegionId::new("region:unifi-clock-chain")?,
+        RegionKind::Process,
+        budget,
+        TimestampNs(1),
+    )?;
+    let camera = ContentDigest::sha256(b"verified fixture camera");
+    let resource = format!("camera:{}", camera.to_text());
+    let mut leases = LeaseRegistry::new();
+    let fence = leases
+        .acquire(&resource, authority.region().as_str(), None, TimestampNs(2))?
+        .fence;
+    let leases = RefCell::new(leases);
+    let management = Preconditions {
+        camera,
+        peer_admission: ContentDigest::sha256(b"fixture admission"),
+        session_generation: 1,
+        previous_association: None,
+        previous_clock: None,
+        lease_fence: fence,
+    };
+    let stream_conditions = intent::Preconditions {
+        camera,
+        peer_admission: management.peer_admission,
+        stream_generation: 1,
+        previous_settings: None,
+        lease_fence: fence,
+    };
+    let hello = OperationId::parse("operation:clock-chain-hello")?;
+    let agreement = OperationId::parse("operation:clock-chain-agreement")?;
+    let stream = OperationId::parse("operation:clock-chain-stream")?;
+    let syncs: Vec<_> = (0..32)
+        .map(|i| OperationId::parse(format!("operation:clock-chain-sync-{i:02}")))
+        .collect::<Result<_, _>>()?;
+    let runtime = RuntimeBuilder::current_thread().build()?;
+    runtime.block_on(async {
+        let cx = asupersync::Cx::current().ok_or("missing runtime")?;
+        let result = run_owned_async(
+            &mut authority,
+            &mut tree,
+            TaskSpec {
+                task_id: TaskId::new("task:unifi-clock-chain")?,
+                started_at: TimestampNs(3),
+            },
+            &cx,
+            async |task, cx| {
+                let output: Test = async {
+                    let clock = MeteredClock::new(task, cx, TimestampNs(4))?;
+                    let policy = FixtureMediaAdmission {
+                        listen: Cell::new(true),
+                        peer: Cell::new(true),
+                    };
+                    let listener = controller_listener::Listener::bind(
+                        task, cx, clock, &policy,
+                        SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0),
+                        "fixture:camera", Duration::from_secs(10),
+                    ).await?;
+                    let address = SocketAddr::V4(listener.local_addr());
+                    let peer = std::thread::spawn(move || -> io::Result<()> {
+                        fn field(bytes: &[u8], name: &str) -> io::Result<u64> {
+                            let text = std::str::from_utf8(bytes).map_err(io::Error::other)?;
+                            let value = fss_core::json_input::parse(text).map_err(io::Error::other)?;
+                            let number = value.object().and_then(|v| v.get(name))
+                                .and_then(fss_core::json_input::Value::integer)
+                                .ok_or_else(|| io::Error::other("missing integer field"))?;
+                            u64::try_from(number).map_err(io::Error::other)
+                        }
+                        let mut socket = std::net::TcpStream::connect_timeout(&address, Duration::from_secs(5))?;
+                        socket.set_read_timeout(Some(Duration::from_secs(15)))?;
+                        socket.write_all(HEAD.as_bytes())?;
+                        let mut header = Vec::new();
+                        let mut byte = [0u8; 1];
+                        while !header.ends_with(b"\r\n\r\n") {
+                            socket.read_exact(&mut byte)?;
+                            header.push(byte[0]);
+                            if header.len() > 4096 { return Err(io::Error::other("upgrade limit")); }
+                        }
+                        if !header.starts_with(b"HTTP/1.1 101 ") { return Err(io::Error::other("upgrade refused")); }
+                        let mut correlation = 777u64;
+                        for camera_id in 100..112u64 {
+                            let message = format!("{{\"from\":\"ubnt_avclient\",\"to\":\"UniFiVideo\",\"functionName\":\"ubnt_avclient_timeSync\",\"messageId\":{camera_id},\"inResponseTo\":{correlation}}}");
+                            socket.write_all(&frame(message.as_bytes()))?;
+                            let reply = receive_binary(&mut socket)?;
+                            if field(&reply, "inResponseTo")? != camera_id { return Err(io::Error::other("clock correlation")); }
+                            correlation = field(&reply, "messageId")?;
+                        }
+                        socket.write_all(&frame(HELLO))?;
+                        let reply = receive_binary(&mut socket)?;
+                        if !reply.windows(b"ubnt_avclient_hello".len()).any(|w| w == b"ubnt_avclient_hello") { return Err(io::Error::other("hello reply")); }
+                        let agreement = receive_binary(&mut socket)?;
+                        let agreement_id = field(&agreement, "messageId")?;
+                        let reply = format!("{{\"from\":\"ubnt_avclient\",\"to\":\"UniFiVideo\",\"functionName\":\"ubnt_avclient_paramAgreement\",\"messageId\":300,\"inResponseTo\":{agreement_id}}}");
+                        socket.write_all(&frame(reply.as_bytes()))?;
+                        let stream = receive_binary(&mut socket)?;
+                        if !stream.windows(b"ChangeVideoSettings".len()).any(|w| w == b"ChangeVideoSettings") { return Err(io::Error::other("stream request")); }
+                        let stream_id = field(&stream, "messageId")?;
+                        let reply = format!("{{\"from\":\"ubnt_avclient\",\"to\":\"UniFiVideo\",\"functionName\":\"ChangeVideoSettings\",\"messageId\":301,\"inResponseTo\":{stream_id}}}");
+                        socket.write_all(&frame(reply.as_bytes()))?;
+                        let mut last = [0u8; 1];
+                        match socket.read(&mut last) { Ok(0) => Ok(()), _ => Err(io::Error::other("controller did not retire")) }
+                    });
+                    let (io, gate) = listener.accept(4096, Duration::from_secs(10)).await?;
+                    let controller = Controller::new_with_time_sync_policy(
+                        Identity::new("FSS", "12345678-1234-4abc-9abc-123456789abc", "1.20.0")?,
+                        1,
+                        fss_reference::unifi_direct::TimeSyncPolicy::BoundedPreHelloClockExchange,
+                    )?;
+                    let mut session = owner::accept_guarded(io, ProtocolPolicy::RequireOffer, &FixtureAdmission, gate, controller, Duration::from_secs(10)).await?;
+                    let guard = Guard { leases: &leases, clock };
+                    let approval = FixtureApproval { revoke_stream: None };
+                    let mut owner = conversation::Owner {
+                        cx, task, clock, effects: &mut effects, leases: &leases,
+                        approval: &approval, management_authority: &guard,
+                        stream_authority: &guard, wall: &FixtureClock,
+                    };
+                    let request = StreamStart::new(
+                        VideoChannel::Video2, SocketAddrV4::new(Ipv4Addr::LOCALHOST, 17551),
+                        VideoCodec::H264, AudioCodec::Aac, "0123456789abcdef",
+                    )?;
+                    let cfg = conversation::Config {
+                        hello: &hello, agreement: &agreement, stream: &stream, time_sync: &syncs,
+                        management, stream_conditions, request: &request, wait: Duration::from_secs(20),
+                    };
+                    let reply = owner.start(&mut session, &cfg).await?;
+                    assert_eq!(reply.time_syncs, 12);
+                    drop(session);
+                    peer.join().map_err(|_| "fixture peer panic")??;
+                    Ok(())
+                }.await;
+                let outcome = if output.is_ok() {
+                    TaskOutcome::Indeterminate("fixture changes require reconciliation".into())
+                } else {
+                    TaskOutcome::Failed("clock chain fixture failed".into())
+                };
+                TaskCompletion { output, outcome, completed_at: TimestampNs(59_000_000_000) }
+            },
+        ).await?;
+        result.receipt?;
+        result.output
+    })?;
+    for operation in [&hello, &agreement, &stream].into_iter().chain(syncs[..12].iter()) {
+        assert_eq!(effects.journal().operation(operation).ok_or("missing effect")?.state, fss_core::EffectState::Committed);
+    }
+    for operation in &syncs[12..] {
+        assert!(effects.journal().operation(operation).is_none());
+    }
+    assert!(!authority.finalize_report(&tree)?.is_empty());
+    Ok(())
 }

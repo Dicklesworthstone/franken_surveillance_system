@@ -991,6 +991,23 @@ was present. A separate recorder-journal classification returned unknown and
 took 15.4 seconds, exceeding the watchdog's eight-second journal timeout; this
 is a plausible explanation, not a proven cause. Fresh staging writes and
 uploads were observed independently after the original controller returned.
+A subsequent disposable-loopback TLS fixture exercised the revised watchdog
+against a synthetic camera with a real private certificate, credential file and
+exclusive marker. Six cases passed on the Mac and on `trj`: rejection before
+login for a wrong pin, abstention for a different controller or recovered
+recorder, a marker before one reboot request, refusal with an existing marker,
+and retention of the marker after a dropped reboot response. All three fixture
+source files had identical SHA-256 digests on both hosts. The fixture controls
+the recorder-state input; it does not exercise systemd scheduling, a real
+journal query, device authentication, physical reboot, or recovery from the
+prior indeterminate trial. No physical camera was contacted by this fixture.
+On `trj`, a separate read-only run of the same revised watchdog source as root
+queried the real recorder journal for the preceding hour and returned `unknown`
+after 9.58 seconds. It did not connect to the camera. This exceeds the former
+eight-second timeout and remains below the revised 30-second limit, but is a
+single measurement and does not establish the earlier service failure's cause
+or guarantee that future journal queries complete within the new limit. The
+prior trial's recovery service still reports failed, with exit status 1.
 A subsequent isolated trial-source change adds payload-free phase reports for
 both the conversation deadline and the overall startup deadline. On `ovh-b`,
 the lab and its test executable compiled, and two encrypted synthetic
@@ -1070,8 +1087,56 @@ to one of its own previous time-sync replies and limits the session to eight
 time-sync replies in total; the existing conservative default is unchanged. The working
 relay answers correlated time-sync messages, but no physical G4 evidence yet
 establishes whether this more selective policy resolves the native handshake.
-The policy, revised trial and synthetic peer remain unqualified until their
-tests complete. No camera handoff was performed for this draft.
+On `ts1`, a strict-remote build of the revised trial completed with terminal
+acknowledgment and source release; its executable SHA-256 was
+`928698dba130589b5307698ea7c89ec1b75617f7c493da22655ac0dd71f92512`.
+An independent loopback TLS/WebSocket peer passed four cases: coalesced and
+sequential messages under both the default and explicit-correlated policies.
+The opt-in cases also sent a message correlated to the controller's own reply
+with `responseExpected: true`; no reply loop occurred and each conversation
+reached a stream request. The fixture sent no video. The source snapshot used
+the `bcab915a` baseline plus selected overlay files, and the controller,
+trial, and fixture files matched the working files by SHA-256. The revised
+unit-contract suite and physical G4 handoff remain unqualified; no camera
+handoff was performed for this draft.
+An additional independent loopback process fixture sent eight eligible
+correlated requests and an echo of each reply, then a ninth eligible request.
+The same executable sent eight replies, ignored the echoes, and stopped with
+`TimeSyncLimit` on the ninth request. The retained
+[`sync_quota_fixture.py`](../experiments/unifi_tls_05_server_lab/sync_quota_fixture.py)
+had SHA-256 `2a3c1e3b1ad7bb8aeb7f33dbe4aff5a512dc40ea8bd00dcf655576bd67eacf2b`
+both locally and on `ts1`. This remains synthetic protocol evidence.
+
+A separate controller project reports a pre-hello clock exchange on a G5 PTZ
+where successive messages correlate to the controller's previous reply; it
+answers those messages until the camera sends hello. See the pinned
+[controller implementation](https://github.com/rjmotion/cuckoo/blob/2e18666e9d9998b31d908e3a8f1d9ebb658c467f/controller.py).
+That is a plausible explanation for the earlier G4 timeout, not evidence that
+this G4 behaves the same way. The Rust source now has an experimental opt-in
+pre-hello policy: after the first message it follows only the latest reply's
+correlation, rejects repeated camera message IDs and stops after 32 replies.
+Each reply still requires a distinct journaled operation, current admission
+and the existing total deadline. The conservative default and its eight-operation
+startup bound remain unchanged. The laboratory trial has a separate explicit
+flag for the new policy. A scope-filtered build `30096834294711771` on
+`vmi1264463` passed all 22 controller contract tests and all six task-effect
+tests, with terminal acknowledgment and source release. The latter includes a
+12-message correlated exchange over a loopback socket, with a distinct durable
+operation for each reply, followed by hello, agreement and a stream request.
+The peer is synthetic. This policy has not been exercised on the physical G4;
+its numeric bound is a safety limit, not an assertion that 32 rounds are
+sufficient for every device. An independent TLS process fixture is retained at
+[`clock_chain_fixture.py`](../experiments/unifi_tls_05_server_lab/clock_chain_fixture.py);
+it passed both a 12-reply handshake through the stream request and a 32-reply
+quota stop on `vmi1149989` using disposable loopback certificates. The trial
+binary SHA-256 was
+`3e27f6df97042249e451b64915a2825a4266de93f3248720932a072da2dd64d9`.
+The scoped laboratory's 24 corresponding source files matched the working tree;
+the module entry point and dependencies were deliberately filtered. Cargo build
+`30096834294711772` reported exit 0 and source release. After the daemon stopped,
+same-ID recovery later acknowledged the exit and release; the daemon had
+previously recorded exit 130. The fixture result is independent process
+evidence, not a physical-camera test.
 
 A separate `discovery_observe_trial` laboratory binary connects a bounded UDP
 discovery result, an owner-selected address and MAC claim, a pinned TLS
@@ -1104,6 +1169,334 @@ The certificate
 and discovery claims were observed on the same network and do not independently
 authenticate the camera. This observation does not establish native streaming,
 automatic adoption, or gap-free recording.
+
+A later read-only check on 2026-11-06 found the USB archive mounted with 1,528
+segment files and a newest file about 42 seconds old. A follow-up SSH connection
+to that host timed out before a separate decode check. On `trj`, an independent
+FFmpeg check of a closed fallback file decoded one frame from a 60.000326-second
+1280x720 H.264 segment without saving an extra media file. This verifies a
+playable fallback sample from the existing recorder, not direct Rust recording,
+continuous coverage, or 30 days of observed retention.
+
+A separate eight-minute, passive observation on 2026-11-06 watched only the
+authorized G4 media connection for a new TCP connection and its original FLV
+header and codec configuration. No new connection was observed, so no replay
+was attempted and this provides no same-connection configuration evidence. The
+camera and recorder were not restarted or reconfigured to produce a connection.
+That observer's test-binary digest had a transcription error that was corrected
+afterward; its check would have run only after a complete connection start, so
+the error did not affect the no-reconnect observation.
+The pipeline replay test now labels its input and configuration as
+caller-supplied rather than asserting their provenance; its existing compiled
+laboratory binary predates that reporting-only correction.
+
+A read-only RTSP `DESCRIBE` of the active recorder's relay session on
+2026-11-06 returned two H.264 parameter sets. Both matched, byte for byte, the
+parameter sets extracted independently from one recent closed fallback segment.
+The stream address and parameter sets remained in memory. This is agreement
+between two observations, not proof that the segment and live stream share a
+configuration epoch or that the physical camera is authenticated.
+
+In a subsequent read-only test, two `DESCRIBE` observations bracketing a
+20-second passive G4 capture returned matching parameter sets from the active
+relay. The laboratory synthesized an AVC configuration from those sets using a
+four-byte NAL-length field, selected a structurally framed IDR from the capture,
+and inserted a synthetic FLV header, configuration tag, and 16-byte trailer.
+The previously documented Rust laboratory binary
+`2e69f85a813f35208e3d55ec45dd8a27d6fccad42bab28862cf75e7806440d23`
+then replayed that input over task-owned Asupersync loopback TCP, producing
+three in-memory segments containing 450 samples and decoding nine frames at
+1280x720. Parameter sets and video remained in memory. This is fresh real-G4
+media, but the selected boundary and configuration are synthetic; matching
+observations do not prove the capture's configuration epoch or device identity.
+It does not establish a direct camera controller or sustained native recording.
+The recorder and its upload, fallback, and discovery timers were active after
+the test, with the recorder restart count unchanged at 53.
+
+A separate concurrent comparison then collected complete H.264 video NAL units
+from the active relay's interleaved RTP and from a 12-second passive G4 FLV
+capture. All 327 distinct captured FLV video NAL digests matched NAL digests
+among the 689 distinct relay units observed. Digest and media bytes stayed in
+memory; only aggregate counts were retained. This is strong evidence the two
+observations carried the same video, not an authenticated camera identity or
+proof that either observation establishes a codec-configuration epoch.
+
+A following test combined those checks in one capture: the RTP session's own
+SDP supplied parameter sets, and all 329 distinct video NAL digests extracted
+from the concurrent passive FLV capture matched among 652 distinct RTP NAL
+digests. Selected source bytes from that capture were then replayed through the
+same documented Rust laboratory binary, which produced one in-memory segment
+with 150 samples and decoded three frames at 1280x720. The test synthesized a
+four-byte-length AVC configuration, FLV header and trailer and selected an IDR
+boundary. It did not save media and did not authenticate the camera or prove
+configuration-epoch identity. It does not establish that the Rust controller can adopt the camera,
+receive its own live connection, or record continuously without the relay.
+The disposable comparators are retained outside this repository under
+`/Users/jemanuel/Documents/Codex/2026-11-04/new-chat/work/`:
+`g4-source-rtp-compare.py` SHA-256
+`e46aa3b1b668382d36b8edeb15db70d5145b61b1efcba10cf42e44bd7bcee187`
+and `g4-rtp-nal-probe.py` SHA-256
+`950eb80e5b7baac2183127af251d600211a0800d00884b3689895001427ef920`.
+They depend on the local recorder, its current container namespace and the
+existing passive-capture helper; they are laboratory tooling, not an installer.
+A later read-only check found the USB archive mounted with 1,573 segment files
+and its newest file about 17 seconds old. The most recent upload and fallback
+service results were successful. This shows recent file activity, not a proof
+of gap-free coverage or 30-day retention.
+
+The active relay's SDP advertised an MPEG-4 audio track at 16 kHz, one channel;
+its two-byte AudioSpecificConfig reported AAC-LC object type 2, indexed rate 8,
+channel configuration 1 and a 1024-sample frame flag. An independent eight-second
+passive FLV inspection found 110 AAC raw tags, no configuration tag and no
+type-10 tags. A later passive sample was replayed through the new Rust
+`extended_flv::aac` parser: it accepted 105 raw AAC tags, checked their original
+source ranges across 310 records and retained a 16-byte unparsed tail. The FLV
+header and initial boundary were synthetic, and no AAC configuration appeared
+in that capture. Audio was neither saved nor played, decoded, muxed, or
+associated with an authenticated camera identity.
+
+The parser currently supports bounded, two-byte indexed AAC-LC configurations;
+explicit rates, configuration extensions and program-configured channel layouts
+are refused rather than guessed. Five synthetic parser contracts passed on
+`trj` in an isolated lab using hash-matched copies of the actual packet modules;
+the matching test build was acknowledged and its sources released. Its test
+binary SHA-256 was
+`a4b8e006005c809febe9cdb90224d979ee7e7dedf244a8e6d32abea2c9efcde5`.
+This is not a full workspace test, an AAC decoder, or a native A/V recorder.
+
+The source-aware AAC track now carries connection-relative tag and body spans,
+configuration epochs and provisional-boundary status; unsupported type-10
+audio explicitly fences this AAC track. Ten synthetic parser and track tests
+passed on `trj` in a hash-matched isolated packet-module lab; two separately
+authorized live replay tests were ignored in that run. RCH build
+`30096834294711634` finished with exit zero, terminal acknowledgment and source
+release. The track test binary SHA-256 was
+`4b75c2114f1d9efc3f004453d8d6809aa469b4f4c308f3f8dd3c39ce7a931841`.
+An explicitly invoked subsequent replay of fresh passive G4 bytes passed using
+that binary: all 110 observed audio samples remained unconfigured because the
+capture contained no original AAC configuration. This correctly avoids
+assigning an inferred epoch. The capture used a synthetic FLV header and
+initial boundary; audio was not decoded, played or saved.
+After a test-helper-only lint cleanup, a second isolated build using matching
+current packet modules and tests again passed 10 synthetic cases with the two
+live tests ignored. RCH build `30096834294711656` exited zero with terminal
+acknowledgment and source release; this did not rerun the camera capture.
+
+The source also adds an opt-in AAC observation slot to the native media
+pipeline and supervisor. It stops further reads until each observation is
+transferred, returns an undrained observation at retirement, and fences audio
+interpretation separately from the video owner. These changes are not yet
+qualified for production or deployed. A strict-remote isolated integration build
+using the real packet, runtime, container, core and pipeline modules ran on `trj`
+as build `30096834294711646`. It hit its external deadline during compilation and
+exited 137 with terminal acknowledgment and source release; it produced no test
+verdict. An earlier build
+`30096834294711632` was cancelled after its test was found to use a gated
+Asupersync test constructor; same-ID recovery confirmed exit 137, terminal
+acknowledgment and source release. The corrected test uses the runtime-owned
+context and canonical cancellation. Both attempts excluded the full workspace
+and supervisor integration. Audio muxing, playback, retention and
+sustained camera recording remain unimplemented.
+The supervisor's admission-revocation scenario and an ignored combined A/V
+camera replay were added afterward. Isolated build `30096834294711666` compiled
+the supervisor but could not compile the test because that laboratory omitted
+its existing H.264 fixture and crate. It exited 101 with terminal acknowledgment
+and source release. The lab was amended with those source-matched dependencies;
+replacement build `30096834294711680` passed its one selected admission-revocation
+case. The entire five-test supervisor fixture subsequently passed in build
+`30096834294711682`; both builds had terminal acknowledgment and source release.
+Thirteen direct-UniFi modules, the test and its H.264 fixture matched the current
+tree. In the same isolated laboratory, build `30096834294711683` passed four
+synthetic A/V pipeline tests with the separately invoked camera test ignored;
+terminal acknowledgment and source release were confirmed. The independent
+`trj` build `30096834294711663` timed out before a test verdict. Its remote
+process group was verified dead, and same-ID recovery acknowledged exit 137 and
+released the sources; the daemon had earlier reported exit 130. These do not establish
+full-workspace qualification. The supervisor
+withholds pending observations when its owning task is cancelled or the bound
+session's admission is revoked; the cancellation-specific supervisor boundary
+has not yet been independently exercised.
+
+A fresh 20-second passive G4 capture was subsequently replayed through that
+laboratory's actual Asupersync TCP ingress, audio tracker and video recorder on
+`trj`. It yielded three video-only fragments containing 450 video samples and
+293 audio observations; no original AAC configuration appeared, so those
+observations remained unconfigured. The complete ordered input was accounted
+for in returned records, pending source and a 16-byte framing tail. The test
+used a synthetic header, a relay-SDP-derived synthetic video configuration and
+trailer, and a selected IDR start. Equal relay configurations bracketed the
+capture but do not prove the source's identity or configuration epoch. It did
+not decode or mux audio, prove sustained capture, or save or play media. The
+copied stripped test executable's SHA-256 was
+`6bee31a1de253dd0106426c19d03ccc3ed029977b1a7389f74988229975d02ae`;
+the source executable built on `vmi1153651` had SHA-256
+`4ca89bfeff8d9f4ec1735d19a13d5496f9f5324590a600dc0e18600ffadbe350`.
+Only the executable was transferred from the build worker to `trj`; the camera
+media remained in memory on the owner-controlled capture and recorder hosts.
+
+The source also includes allocation-free ADTS header generation for an explicitly
+supplied AAC-LC configuration and raw tag. It rejects short-frame configurations
+and oversized frames. Three ADTS cases plus ten parser and track cases passed in
+isolated build `30096834294711688`, with terminal acknowledgment and source
+release; two live tests were ignored in that run. The ADTS contract also passed
+isolated Clippy with `-D warnings` in acknowledged and released build
+`30096834294711694`. The framing profile was checked
+against [FFmpeg's ADTS writer](https://github.com/FFmpeg/FFmpeg/blob/master/libavformat/adtsenc.c).
+For a separate fresh eight-second passive G4 capture, a laboratory binary using
+the new Rust header generator framed 111 raw audio tags using the separately
+observed relay SDP configuration. An independent FFmpeg probe and decode reported
+111 decoded 16 kHz mono frames without errors. No original AAC configuration
+appeared in the capture; the relay configuration matched before and after it but
+its epoch and the camera's identity remain unverified. The FLV header and
+initial boundary were synthetic; audio was not saved or played. The laboratory
+binary built by acknowledged and released job `30096834294711691` had SHA-256
+`d824406f96b8918650f492916e2deeb916d7370c0812d04d826d552112c8e7ac`.
+The source now additionally permits parsing explicitly supplied two-byte
+AudioSpecificConfig bytes directly, with an origin distinguishing them from a
+configuration observed inside an FLV tag. The caller must still bind external
+bytes to the correct camera, connection and configuration epoch; this parser
+does not establish that binding. Scope-filtered job `30097627437596673` passed
+14 synthetic parser, framing and track cases, with two live-only cases ignored;
+its exit and source release were acknowledged. A separate laboratory executable
+used this new parser on another bounded passive G4 capture: it framed 109 raw
+samples with the separately observed relay SDP configuration and an independent
+decoder accepted 109 frames at 16 kHz mono. No original AAC configuration was
+present in that capture, and the relay configuration's connection epoch and
+camera identity remain unverified. The FLV header and initial boundary were
+synthetic; no audio was saved or played. The executable SHA-256 was
+`313dd573338837f77e8fca55017dda3c6592f45ed873db80110dc694cbd5d0e6`;
+build `30097629769629697` was acknowledged and released after same-ID recovery
+(the daemon earlier reported 130, while recovered delivery reported 0).
+The exact laboratory source is retained at
+[`unifi_aac_adts_replay.rs`](../experiments/unifi_tls_05_server_lab/src/bin/unifi_aac_adts_replay.rs).
+The parser does not itself retain, decode or mux audio.
+
+An experimental source-linked AVC/AAC MP4 path now builds a two-track
+initialization and adds an AAC track fragment to an existing FLV AVC fragment.
+It retains the original video mapping through an explicit output shift and
+records each copied AAC body's source and output ranges. The caller must bind
+the audio configuration, connection, epoch and common A/V clock and account
+for gaps; the writer does not authenticate the camera, establish those facts,
+or publish recordings. It rejects provisional audio records, configuration
+mismatch, audio timing inconsistencies and configured sample/source limits.
+The initialization also binds the caller-supplied source key, video
+configuration ranges and exact AAC configuration bytes; a fragment with a
+different binding is refused. Scope-filtered build `30097686090743809` passed four structural tests with one
+oracle test ignored; the scoped copy omitted the video decoder portion of an
+existing test. Terminal exit 0 and source release were acknowledged. Running
+the ignored fixture separately with generated synthetic AAC, an independent
+FFmpeg probe and decoder accepted three H.264 video frames and two 16 kHz mono
+AAC frames from the Rust-produced MP4. The test executable SHA-256 was
+`90e1adf4eccf4c09adc611d57248c2bb4ba12bf2bc7629e9aa78fd66ffc1c121`.
+The synthetic oracle is retained at
+[`synthetic_av_oracle.py`](../experiments/unifi_tls_05_server_lab/synthetic_av_oracle.py).
+The recorder and pipeline now expose A/V initialization; a scope-filtered
+recorder test build `30097679933505538` passed six relevant cases, omitting the
+unrelated evidence and archive tests. Same-ID recovery acknowledged its exit 0
+and source release after the daemon had recorded exit 130.
+
+Two separate bounded passive G4 captures were then replayed through the Rust
+recorder and the new A/V writer, using the existing relay and keeping media in
+memory. In the first, an independent probe accepted the streams and frame
+counts, but the combined decoder emitted errors despite exit 0; that capture
+failed the preselected gate and its decoder errors were not retained. A second
+fresh capture passed the unchanged gate: the decoder accepted 150 H.264 frames
+and 78 AAC frames. The second capture used relay SDP configuration, a synthetic
+FLV header and AVC configuration, a synthetic initial boundary and IDR
+selection. The reported initial sender-clock audio/video difference was
+-113 ms; this is not independently verified synchronization. Configuration
+epoch and camera identity remain unverified. Neither capture saved or played
+media, changed the camera, or used the new native controller for acquisition.
+The executable's original SHA-256 was
+`3cff93e299613fb502beb984dccddb196c7db552096cd277c77aa8503f227f00`;
+the stripped copy used for the replay was
+`5fbae304623319ea8797284c57814149e67ad22ef545ef7a793e5f0eb28c8cb3`.
+Its laboratory source is retained at
+[`unifi_flv_av_replay.rs`](../experiments/unifi_tls_05_server_lab/src/bin/unifi_flv_av_replay.rs).
+These results do not establish sustained recording, independent A/V clock
+alignment, recovery, or a native controller handoff.
+
+Three additional fresh captures ran the same binary, acquisition method and
+decoder gate, with diagnostic classification added only for any failure. All
+three passed: each had 150 decoded video frames, and their audio counts were
+78, 78 and 77. Their initial sender-clock audio/video offsets were -120, -120
+and -72 ms. Together with the two preceding captures this is four passes and
+one decoder-error failure out of five; the first failure's cause remains
+unknown. The repetitions used the existing relay, the same synthetic header,
+video configuration and boundary selection, and an unverified audio
+configuration epoch. They did not save or play media or change the camera.
+These short observations do not establish continuous coverage or independent
+synchronization.
+
+A separate bounded experiment concatenated consecutive Rust-generated A/V
+fragments in one in-memory MP4 while carrying one AAC sample clock across the
+fragment boundaries. Two fresh passive G4 captures passed the independent
+decoder gate: the first had three fragments, 450 video frames and 234 audio
+frames; the second had two fragments, 300 video frames and 155 audio frames.
+They used the existing relay, synthetic FLV header/video configuration and
+initial IDR selection, and separately observed relay AAC configuration. The
+configuration epoch and camera identity remain unverified, and A/V alignment
+was inferred from the sender's timestamps rather than independently measured.
+No media was saved or played, and the camera was not changed. Build
+`30097695737643009` had acknowledged exit 0 and source release. Its original
+binary SHA-256 was
+`ad2afeffd4fc36beea732fe26fcecde6eb5995c803cca483669972d889fae64a`, and the
+stripped binary used for both captures was
+`329f374b6be7a790f12c9e602510bf58dc4afffe3e8381bdc5eab70cea42a2b5`.
+
+The production A/V module now also contains a sequential session owner that
+checks fragment sequence, video continuity, audio-clock continuity and source
+order before advancing its state. It is intended to prevent silent resets and
+gaps at fragment boundaries. Scope-filtered remote test job `30097707280367617`
+passed five tests, with one external-decoder test ignored; its terminal result
+and source release were acknowledged. The scope omitted an independent codec
+decoder block, and the two live experiments above used the earlier stateless
+fragment API, not this new session owner. Neither path constitutes a continuous
+recorder or native camera controller.
+
+The ADTS helper now also derives a borrowed source frame directly from an
+original FLV `SourceRecord`. It returns a connection-relative body range, the
+sender timestamp and the record's provisional-boundary flag, while retaining
+the original record with the caller. It explicitly stops on an in-stream
+configuration tag so the caller must handle the new epoch; it also refuses
+unsupported vendor audio. The helper is stateless: ordering, configuration
+provenance, prior provisional configuration, identity and continuity remain the
+owner's responsibility. Scope-filtered job `30097635557769217` passed 15
+synthetic cases, with two live tests ignored, and its terminal exit and source
+release were acknowledged. The relevant source, test and laboratory replay file
+hashes matched the working tree. The laboratory executable had SHA-256
+`3b412c3eeb2f1fa303d3ddf485e85f39752e587188aa7e7cf22fa671fa2608ae`.
+In another eight-second passive G4 capture, that executable validated each
+source-body range, framed 108 samples and an independent decoder accepted 108
+16 kHz mono frames. The separate relay SDP configuration remained unchanged
+before and after the capture, but its exact epoch and the camera's identity
+remain unverified; no original AAC configuration was observed. The FLV header
+and initial boundary were synthetic, no audio was saved or played, and no
+camera settings were changed. The result does not establish audio/video muxing,
+continuous retention or a direct native controller session.
+
+The AAC source now has a bounded sample clock that compares each wrapping FLV
+timestamp with the exact AAC sample-rate fraction and a caller-selected initial
+tick. It rejects repeats, reversals, timestamps outside the configured jitter,
+and tolerance at least half a nominal frame; a refusal does not advance the
+clock. The jitter bound does not prove that no frame is missing. The owner must
+still bind the configuration and connection epoch and
+establish the relationship to the video clock. It does not infer UTC, prove
+sample completeness, resample drift, or mux audio. Scope-filtered job
+`30097641194913793` passed 19 synthetic AAC cases, with two live-only cases
+ignored; terminal exit 0 and source release were acknowledged. Four relevant
+source and fixture files matched the working tree at that time. A fresh bounded G4 capture
+was then processed by the same clock with a preselected 5 ms tolerance: all
+110 source audio samples passed the clock check, and an independent decoder
+accepted 110 frames at 16 kHz mono. The separate relay SDP configuration's
+epoch and sender identity remain unverified, the FLV header and initial
+boundary were synthetic, and no media was saved or played. The laboratory
+executable SHA-256 was
+`b7c5a967444cad3edc868a51e946a104d6f12955a1e6e7a2aee4cfeb357f4e20`.
+After a documentation-only source clarification that the tolerance does not
+prove completeness, job `30097644634243073` again passed the same 19 synthetic
+cases with two ignored; its exit and source release were acknowledged. The
+brief live capture does not prove long-term stability or A/V synchronization.
 
 A subsequent bounded RTSP test used the existing transitional Scrypted relay
 and a laboratory build of the Rust capture CLI from `f2678a1d`. The laboratory
@@ -1155,6 +1548,23 @@ Neither path has yet established a native live G4 recording. An instrumented
 laboratory rebuild was not produced: two strict-remote jobs failed during
 source transfer before Cargo started.
 
+An opt-in draft of complete-picture lookahead was tested on `ts1`: 21 of 22
+capture contracts passed, and the EOF case failed because the fixture expected
+the unresolved-picture stop before the receiver's metadata-only EOF tail.
+The fixture was corrected to require both ownership transfers; that correction
+has not yet passed a completed run. A follow-up strict-remote job
+`rchw-9a2a4798-70b1-4ff1-8b4d-7cc054460565` (build `30096834294711380`)
+timed out on `trj` after 3,630 seconds on 2026-11-06; RCH verified that its
+remote process group was dead. Same-ID recovery returned exit 137 with terminal
+acknowledgment and source release; it reported an earlier daemon exit of 130,
+which differs from the recovered delivery exit.
+It used the `bcab915a` baseline with the selected lookahead,
+direct-controller and synthetic-recording test overlays. Its snapshot predates
+the additional uncertain-time-sync-write test. It did not produce a test
+verdict, despite its recovered and released job custody.
+Neither the lookahead nor the time-sync option is
+an automated production camera setup path.
+
 The discovery CLI source now accepts up to 64 distinct, subnet-checked
 `--target` IPv4 addresses in one window; without them the existing broadcast
 behavior is unchanged. This is intended to rediscover an owner-authorized camera
@@ -1194,6 +1604,57 @@ and budget exhaustion after one query. The job acknowledged completion and
 released its source; the test executable SHA-256 was
 `9dd99bcce3391effa74474785081f3f437ee8f2c641f119ecea59939624f878e`.
 No automatic camera inventory or setup supervisor consumes the new API.
+
+The source now also marks a candidate ambiguous if another reply from the same
+address has no usable MAC or fails to advertise that source address. Setup's
+existing nonconflicting-claims check consequently refuses that candidate, and
+the discovery CLI reports `incomplete_claim_at_address`. A new loopback UDP
+fixture and unit cases cover incomplete claims. A strict-remote contract run was submitted on
+2026-11-06 at base `88e0195e`; workers `hz4` and `vmi1152480` refused disk
+admission before starting, and RCH retried the same invocation on `trj` as
+build `30096834294711505`. It exceeded the external deadline during compilation
+and exited 137; terminal acknowledgment and source release were confirmed. No
+test verdict was produced. The invocation targeted the integration fixture only,
+not the CLI or the new unit cases. An independent CLI fixture also checks this
+ambiguity; subsequent results and the service installation are described below.
+An isolated, scope-filtered reference laboratory copied the current discovery
+module and integration fixture. Build `30096834294711714` on `vmi1152480`
+passed nine synthetic cases, with one live test ignored; the terminal result
+was acknowledged and sources released. Seven relevant source and fixture files
+matched the current working tree. A separate isolated build
+`30096834294711721` passed the new incomplete-claim unit test and also had
+terminal acknowledgment and source release. Build `30096834294711697` on `trj`
+exceeded its external compilation deadline and produced no test verdict; the
+remote process group was verified dead, and same-ID recovery reported exit 255,
+terminal acknowledgment and source release. The daemon had recorded 130. A
+stripped copy of the successful test executable, SHA-256
+`e18ccb12550b7dc1349646c0f4b4bfafd3c1da56698eb78a3b0f31115e17d021`, was then
+run on `trj` under the existing bounded broadcast authorization. It received
+one candidate claiming a G4 model, with no flagged claim conflicts, and ended
+when its observation window elapsed. This is a live but unauthenticated
+discovery claim; the probe performed no camera login or configuration change.
+An earlier attempt on `vmi1149989` was refused before Cargo started because
+the worker's protected disk reservation could not be satisfied.
+The current discovery CLI source was built in a separate scope-filtered
+laboratory as `30096834294711722`, with terminal acknowledgment and source
+release. Of 212 corresponding Rust files, 210 matched the working tree; the
+two laboratory entry modules were deliberately filtered to the relevant UniFi
+dependencies. The independently exercised loopback CLI fixture passed 5/5
+cases both before and after stripping. The stripped executable's SHA-256 is
+`57082bca370a059d73dbaa1b7b391b0e17dc418fab7ef9fcbf5825a68e857cec`.
+
+The exact stripped executable then passed the existing authorized broadcast and
+unicast wrapper on `trj`, reporting one unverified G4 claim and no flagged
+conflicts. A new root-owned versioned binary and wrapper were staged without
+overwriting the prior ones; the wrapper passed again as the service user. A new
+systemd drop-in selected the verified wrapper for the existing discovery service,
+and a service invocation succeeded with the G4 claim and the new ambiguity
+field present. The timer remained active and the recorder restart count remained
+53. The original binary, wrapper, scope and earlier drop-in were retained for
+rollback. The timer then fired independently at 03:59 EST on 2026-11-06; that
+service invocation succeeded and reported one unverified G4 claim with the new
+ambiguity field. This is automatic discovery only: it does not authenticate or
+adopt the camera.
 
 The external recording volume later disappeared from the Mac's mounted
 volumes and several uploads were deferred, with the staging files preserved.

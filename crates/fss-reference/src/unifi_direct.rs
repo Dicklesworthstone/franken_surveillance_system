@@ -63,6 +63,8 @@ pub const MAX_MESSAGE_ID: u64 = 9_007_199_254_740_991;
 /// Conservative minimum owner-measured delay after the local hello write.
 pub const AGREEMENT_DELAY_NS: u64 = 500_000_000;
 const MAX_OPT_IN_TIME_SYNC_REPLIES: usize = 8;
+/// Maximum replies in the explicitly selected pre-hello clock exchange.
+pub const MAX_PRE_HELLO_TIME_SYNC_REPLIES: usize = 32;
 
 /// Static, payload-free failure categories.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -392,6 +394,15 @@ pub enum TimeSyncPolicy {
     /// and at most eight replies are admitted. The owner must retain its
     /// existing effect, rate and message limits.
     ExplicitCorrelatedRequests,
+    /// Permit a bounded pre-hello clock exchange in which each message after
+    /// the first correlates to the preceding locally written reply. This is
+    /// experimental, does not authenticate the peer, and grants no authority.
+    /// A distinct operation and a live admission are still required for each
+    /// reply. Duplicate camera message IDs and exchanges over 32 replies stop.
+    /// The exchange was reported for a different camera model in
+    /// <https://github.com/rjmotion/cuckoo/blob/2e18666e9d9998b31d908e3a8f1d9ebb658c467f/controller.py>;
+    /// compatibility with any particular device remains unproven.
+    BoundedPreHelloClockExchange,
 }
 
 /// One owner-driven session. No socket, clock, task, or peer identity is held.
@@ -407,8 +418,10 @@ pub struct Controller {
     rejected_message: Option<RejectedMessage>,
     time_sync_counts: TimeSyncCounts,
     time_sync_policy: TimeSyncPolicy,
-    time_sync_reply_ids: [u64; MAX_OPT_IN_TIME_SYNC_REPLIES],
+    time_sync_reply_ids: [u64; MAX_PRE_HELLO_TIME_SYNC_REPLIES],
+    time_sync_request_ids: [u64; MAX_PRE_HELLO_TIME_SYNC_REPLIES],
     time_sync_reply_count: usize,
+    pending_pre_hello_sync: bool,
 }
 
 impl fmt::Debug for Controller {
@@ -450,8 +463,10 @@ impl Controller {
             rejected_message: None,
             time_sync_counts: TimeSyncCounts::default(),
             time_sync_policy,
-            time_sync_reply_ids: [0; MAX_OPT_IN_TIME_SYNC_REPLIES],
+            time_sync_reply_ids: [0; MAX_PRE_HELLO_TIME_SYNC_REPLIES],
+            time_sync_request_ids: [0; MAX_PRE_HELLO_TIME_SYNC_REPLIES],
             time_sync_reply_count: 0,
+            pending_pre_hello_sync: false,
         })
     }
 
@@ -463,6 +478,16 @@ impl Controller {
     /// Payload-free time-sync observations; these do not prove message delivery.
     pub fn time_sync_counts(&self) -> TimeSyncCounts {
         self.time_sync_counts
+    }
+
+    /// Largest caller-supplied startup reply quota for this session policy.
+    /// The caller must still supply a distinct authorized operation per reply.
+    pub fn startup_time_sync_limit(&self) -> usize {
+        if self.time_sync_policy == TimeSyncPolicy::BoundedPreHelloClockExchange {
+            MAX_PRE_HELLO_TIME_SYNC_REPLIES
+        } else {
+            MAX_OPT_IN_TIME_SYNC_REPLIES
+        }
     }
 
     /// Exact outstanding local message, if one was prepared.
@@ -530,8 +555,11 @@ impl Controller {
             }
             "ubnt_avclient_timeSync" => {
                 // Blindly echoing correlated replies can create a response loop.
-                // The optional policy admits only the remote's explicit request
-                // claim; existing one-slot and owner-wide limits still apply.
+                // Both opt-in policies retain finite quotas and the single
+                // pending-reply slot; the chain policy applies only before hello.
+                let pre_hello_exchange = self.time_sync_policy
+                    == TimeSyncPolicy::BoundedPreHelloClockExchange
+                    && self.phase == Phase::AwaitHello;
                 if response_to != 0 {
                     self.time_sync_counts.correlated =
                         self.time_sync_counts.correlated.saturating_add(1);
@@ -541,18 +569,31 @@ impl Controller {
                             .correlated_response_expected
                             .saturating_add(1);
                     }
-                    if self.time_sync_reply_ids[..self.time_sync_reply_count].contains(&response_to)
-                    {
-                        return Ok(Observation::Other);
-                    }
-                    if !response_expected
-                        || self.time_sync_policy != TimeSyncPolicy::ExplicitCorrelatedRequests
-                    {
-                        return Ok(Observation::Other);
+                    if pre_hello_exchange {
+                        if self.time_sync_reply_count > 0
+                            && self.time_sync_reply_ids[self.time_sync_reply_count - 1]
+                                != response_to
+                        {
+                            return Ok(Observation::Other);
+                        }
+                    } else {
+                        if self.time_sync_reply_ids[..self.time_sync_reply_count]
+                            .contains(&response_to)
+                        {
+                            return Ok(Observation::Other);
+                        }
+                        if !response_expected
+                            || self.time_sync_policy != TimeSyncPolicy::ExplicitCorrelatedRequests
+                        {
+                            return Ok(Observation::Other);
+                        }
                     }
                 } else {
                     self.time_sync_counts.uncorrelated =
                         self.time_sync_counts.uncorrelated.saturating_add(1);
+                    if pre_hello_exchange && self.time_sync_reply_count > 0 {
+                        return Ok(Observation::Other);
+                    }
                 }
                 if self.time_sync_policy == TimeSyncPolicy::ExplicitCorrelatedRequests
                     && self.time_sync_reply_count == MAX_OPT_IN_TIME_SYNC_REPLIES
@@ -561,6 +602,16 @@ impl Controller {
                 }
                 if self.time_sync.is_some() {
                     return Err(Error::TimeSyncLimit);
+                }
+                if pre_hello_exchange {
+                    if self.time_sync_reply_count == MAX_PRE_HELLO_TIME_SYNC_REPLIES {
+                        return Err(Error::TimeSyncLimit);
+                    }
+                    if self.time_sync_request_ids[..self.time_sync_reply_count].contains(&id) {
+                        return Err(Error::UnexpectedMessage);
+                    }
+                    self.time_sync_request_ids[self.time_sync_reply_count] = id;
+                    self.pending_pre_hello_sync = true;
                 }
                 self.time_sync = Some(id);
                 Ok(Observation::TimeSyncRequested)
@@ -770,10 +821,13 @@ impl Controller {
                         self.phase = Phase::AwaitAgreementReply;
                     }
                     MessageKind::TimeSyncReply => {
-                        if self.time_sync_policy == TimeSyncPolicy::ExplicitCorrelatedRequests {
+                        if self.time_sync_policy == TimeSyncPolicy::ExplicitCorrelatedRequests
+                            || self.pending_pre_hello_sync
+                        {
                             self.time_sync_reply_ids[self.time_sync_reply_count] = id;
                             self.time_sync_reply_count += 1;
                         }
+                        self.pending_pre_hello_sync = false;
                         self.time_sync = None;
                     }
                     MessageKind::StartStream(channel) => {

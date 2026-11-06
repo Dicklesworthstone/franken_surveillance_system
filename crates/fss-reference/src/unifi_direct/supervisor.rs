@@ -33,6 +33,8 @@ pub enum Step {
     Observation(Observation),
     /// Neither source produced a result before the bounded deadline.
     Idle,
+    /// A pending audio observation must be transferred before further polling.
+    AudioPending,
     /// Controller stopped; the original controller retirement is retained by this owner.
     ControllerStopped(receive::Stop),
     /// Controller refused the receive operation.
@@ -67,6 +69,7 @@ pub struct Supervisor<'scope, 'task, IO> {
 enum Ready {
     Controller(Result<receive::Step, receive::Error>),
     Media(Result<pipeline::Step, pipeline::Error>),
+    AudioPending,
     Clock,
 }
 
@@ -92,6 +95,31 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Supervisor<'scope, 'task
         self.pipeline.initialization()
     }
 
+    /// Attach bounded AAC observation before this pipeline starts processing.
+    pub fn enable_audio_tracking(&mut self) -> Result<(), pipeline::AudioSetupError> {
+        if self.stopped {
+            return Err(pipeline::AudioSetupError::AlreadyStarted);
+        }
+        self.pipeline.enable_audio_tracking()
+    }
+
+    /// Transfer a pending audio result only while the bound task and controller
+    /// admission remain live. Withheld observations return at retirement.
+    pub fn take_audio_event(
+        &mut self,
+        owner: &conversation::Owner<'_, '_, '_>,
+    ) -> Option<pipeline::AudioEvent> {
+        if self.stopped
+            || !owner.clock.matches(owner.task, owner.cx)
+            || !self.session.matches_clock(&owner.clock)
+            || owner.cx.checkpoint().is_err()
+            || !self.session.admission_current()
+        {
+            return None;
+        }
+        self.pipeline.take_audio_event()
+    }
+
     /// Poll both sources fairly for at most `wait`, then allow up to another
     /// `wait` to write a requested time-sync reply. Each request requires a
     /// fresh operation identity; reuse is refused by the effect journal.
@@ -112,6 +140,10 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Supervisor<'scope, 'task
             self.stopped = true;
             return Step::ConversationError(conversation::Error::Configuration);
         }
+        if owner.cx.checkpoint().is_err() {
+            self.stopped = true;
+            return Step::ConversationError(conversation::Error::Clock);
+        }
         let mut media_first = self.media_first;
         let result = timeout_at(
             owner.cx.now() + wait,
@@ -124,6 +156,9 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Supervisor<'scope, 'task
                 if !self.session.admission_current() {
                     let mut control = pin!(self.session.next(wait));
                     return control.as_mut().poll(context).map(Ready::Controller);
+                }
+                if self.pipeline.has_pending_audio() {
+                    return Poll::Ready(Ready::AudioPending);
                 }
                 if !media_first {
                     let mut control = pin!(self.session.next(wait));
@@ -161,6 +196,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Supervisor<'scope, 'task
                 self.stopped = true;
                 Step::ConversationError(conversation::Error::Clock)
             }
+            Ok(Ready::AudioPending) => Step::AudioPending,
             Ok(Ready::Controller(Err(error))) => {
                 self.stopped = true;
                 Step::ControllerError(error)

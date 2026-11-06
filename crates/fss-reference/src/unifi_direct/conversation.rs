@@ -24,7 +24,6 @@ use fss_runtime::{
 };
 use std::{cell::RefCell, fmt, time::Duration};
 
-const MAX_SYNC: usize = 8;
 const MAX_MESSAGES: usize = 128;
 
 /// Current wall-clock data for outgoing controller messages.
@@ -303,7 +302,7 @@ impl Owner<'_, '_, '_> {
     ) -> Result<Reply, Error> {
         if cfg.wait.is_zero()
             || cfg.wait > Duration::from_secs(30)
-            || cfg.time_sync.len() > MAX_SYNC
+            || cfg.time_sync.len() > session.startup_time_sync_limit()
             || !self.clock.matches(self.task, self.cx)
             || !session.matches_clock(&self.clock)
             || cfg.management.camera != cfg.stream_conditions.camera

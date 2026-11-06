@@ -109,6 +109,9 @@ fn direct_flv_recording_retains_variable_camera_shaped_intervals() -> TestResult
     // a retained physical camera stream or evidence of a direct handshake.
     let (wire, records) = fixture_with_variable_intervals(u32::MAX - 50, false, false, true)?;
     let mut recorder = Recorder::new(KEY, Limits::default())?;
+    let audio_bytes = [0x14, 0x08];
+    let audio = fss_packet::extended_flv::aac::Configuration::parse_explicit(&audio_bytes)?;
+    assert!(recorder.av_initialization(&audio)?.is_none());
     let mut durations = Vec::new();
     let mut original = Vec::new();
     let mut initialization = None;
@@ -122,6 +125,9 @@ fn direct_flv_recording_retains_variable_camera_shaped_intervals() -> TestResult
                 if disposition == SourceDisposition::Configuration {
                     initialization =
                         Some(recorder.initialization().ok_or("init")?.bytes().to_vec());
+                    let av = recorder.av_initialization(&audio)?.ok_or("A/V init")?;
+                    assert_eq!(&av.bytes()[av.audio_configuration_range()], &audio_bytes);
+                    assert_ne!(av.bytes(), recorder.initialization().ok_or("init")?.bytes());
                 }
                 original.extend_from_slice(record.bytes());
             }

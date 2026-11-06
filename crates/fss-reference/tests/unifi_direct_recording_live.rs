@@ -414,7 +414,7 @@ fn owner_camera_pipeline_replay() -> Result<(), Box<dyn Error>> {
         }).await?;
         result.receipt?;
         let (segments,samples,frames,tail)=result.output?;
-        println!("segments={segments} samples={samples} decoded_frames={frames} dimensions=1280x720 unparsed_tail_bytes={tail} source=passive_g4 replay=asupersync_tcp_loopback configuration=synthetic_from_separate_recording idr_start=synthetically_selected authenticity=unverified media_persisted=no");
+        println!("segments={segments} samples={samples} decoded_frames={frames} dimensions=1280x720 unparsed_tail_bytes={tail} source=caller_supplied replay=asupersync_tcp_loopback configuration=caller_supplied authenticity=unverified media_persisted=no");
         Ok::<(),Box<dyn Error>>(())
     })
 }

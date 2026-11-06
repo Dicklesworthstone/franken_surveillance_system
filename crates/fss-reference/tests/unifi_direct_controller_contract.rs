@@ -236,6 +236,150 @@ fn explicit_correlated_time_sync_policy_has_a_hard_reply_bound() -> TestResult {
 }
 
 #[test]
+fn bounded_pre_hello_clock_exchange_follows_correlated_chain() -> TestResult {
+    let identity = Identity::new("FSS", "12345678-1234-4abc-9abc-123456789abc", "1.20.0")?;
+    let mut c = Controller::new_with_time_sync_policy(
+        identity,
+        1,
+        TimeSyncPolicy::BoundedPreHelloClockExchange,
+    )?;
+    assert_eq!(c.startup_time_sync_limit(), 32);
+    assert_eq!(controller(1)?.startup_time_sync_limit(), 8);
+    let mut correlation = 777;
+    for camera_id in 100..112 {
+        let request = message("ubnt_avclient_timeSync", camera_id, correlation, "{}");
+        assert_eq!(c.observe(&request)?, Observation::TimeSyncRequested);
+        let prepared = c.prepare_time_sync(123_456, TIME)?;
+        let reply_id = prepared.id();
+        let reply = fields(prepared.bytes())?;
+        assert_eq!(
+            reply
+                .object()
+                .and_then(|v| v.get("inResponseTo"))
+                .and_then(Value::integer),
+            Some(i128::from(camera_id))
+        );
+        c.finish_dispatch(reply_id, Dispatch::Written)?;
+        correlation = reply_id;
+    }
+    assert_eq!(c.phase(), Phase::AwaitHello);
+    assert_eq!(
+        c.observe(&message("ubnt_avclient_hello", 500, 0, "{}"))?,
+        Observation::Hello
+    );
+    assert_eq!(
+        c.observe(&message("ubnt_avclient_timeSync", 501, correlation, "{}"))?,
+        Observation::Other
+    );
+    Ok(())
+}
+
+#[test]
+fn bounded_pre_hello_exchange_rejects_replayed_ids_and_ignores_other_chains() -> TestResult {
+    let mut c = Controller::new_with_time_sync_policy(
+        Identity::new("FSS", "12345678-1234-4abc-9abc-123456789abc", "1.20.0")?,
+        1,
+        TimeSyncPolicy::BoundedPreHelloClockExchange,
+    )?;
+    assert_eq!(
+        c.observe(&message("ubnt_avclient_timeSync", 10, 0, "{}"))?,
+        Observation::TimeSyncRequested
+    );
+    let first = c.prepare_time_sync(123_456, TIME)?.id();
+    c.finish_dispatch(first, Dispatch::Written)?;
+    assert_eq!(
+        c.observe(&message("ubnt_avclient_timeSync", 11, 999, "{}"))?,
+        Observation::Other
+    );
+    assert_eq!(
+        c.observe(&message("ubnt_avclient_timeSync", 11, 0, "{}"))?,
+        Observation::Other
+    );
+    assert_eq!(
+        c.observe(&message("ubnt_avclient_timeSync", 11, first, "{}"))?,
+        Observation::TimeSyncRequested
+    );
+    let second = c.prepare_time_sync(123_456, TIME)?.id();
+    c.finish_dispatch(second, Dispatch::Written)?;
+    assert_eq!(
+        c.observe(&message("ubnt_avclient_timeSync", 10, second, "{}")),
+        Err(Error::UnexpectedMessage)
+    );
+    assert!(c.prepared().is_none());
+    Ok(())
+}
+
+#[test]
+fn bounded_pre_hello_exchange_stops_at_its_reply_quota() -> TestResult {
+    let mut c = Controller::new_with_time_sync_policy(
+        Identity::new("FSS", "12345678-1234-4abc-9abc-123456789abc", "1.20.0")?,
+        1,
+        TimeSyncPolicy::BoundedPreHelloClockExchange,
+    )?;
+    let mut correlation = 0;
+    for camera_id in 100..132 {
+        assert_eq!(
+            c.observe(&message(
+                "ubnt_avclient_timeSync",
+                camera_id,
+                correlation,
+                "{}"
+            ))?,
+            Observation::TimeSyncRequested
+        );
+        correlation = c.prepare_time_sync(123_456, TIME)?.id();
+        c.finish_dispatch(correlation, Dispatch::Written)?;
+    }
+    assert_eq!(
+        c.observe(&message("ubnt_avclient_timeSync", 132, correlation, "{}")),
+        Err(Error::TimeSyncLimit)
+    );
+    assert!(c.prepared().is_none());
+    assert_eq!(c.phase(), Phase::AwaitHello);
+    Ok(())
+}
+
+#[test]
+fn bounded_clock_exchange_retains_pending_reply_if_hello_arrives() -> TestResult {
+    let mut c = Controller::new_with_time_sync_policy(
+        Identity::new("FSS", "12345678-1234-4abc-9abc-123456789abc", "1.20.0")?,
+        1,
+        TimeSyncPolicy::BoundedPreHelloClockExchange,
+    )?;
+    assert_eq!(
+        c.observe(&message("ubnt_avclient_timeSync", 100, 0, "{}"))?,
+        Observation::TimeSyncRequested
+    );
+    let reply = c.prepare_time_sync(123_456, TIME)?.id();
+    assert_eq!(
+        c.observe(&message("ubnt_avclient_hello", 101, 0, "{}"))?,
+        Observation::Hello
+    );
+    c.finish_dispatch(reply, Dispatch::Written)?;
+    assert_eq!(c.phase(), Phase::HelloObserved);
+    assert_eq!(c.prepare_hello(TIME)?.kind(), MessageKind::HelloReply);
+    Ok(())
+}
+
+#[test]
+fn bounded_clock_exchange_uncertain_write_fences_the_session() -> TestResult {
+    let mut c = Controller::new_with_time_sync_policy(
+        Identity::new("FSS", "12345678-1234-4abc-9abc-123456789abc", "1.20.0")?,
+        1,
+        TimeSyncPolicy::BoundedPreHelloClockExchange,
+    )?;
+    let request = message("ubnt_avclient_timeSync", 100, 0, "{}");
+    assert_eq!(c.observe(&request)?, Observation::TimeSyncRequested);
+    let reply = c.prepare_time_sync(123_456, TIME)?.id();
+    c.finish_dispatch(reply, Dispatch::NotWritten)?;
+    assert_eq!(c.prepared().ok_or("pending reply")?.id(), reply);
+    c.finish_dispatch(reply, Dispatch::Indeterminate)?;
+    assert_eq!(c.phase(), Phase::Indeterminate);
+    assert_eq!(c.observe(&request), Err(Error::InvalidState));
+    Ok(())
+}
+
+#[test]
 fn correlated_time_sync_uncertain_write_fences_the_session() -> TestResult {
     let mut c = Controller::new_with_time_sync_policy(
         Identity::new("FSS", "12345678-1234-4abc-9abc-123456789abc", "1.20.0")?,
