@@ -506,13 +506,14 @@ existing controller, no effect and a completed task receipt; the unused
 journal path remained absent. The run created a camera login session with
 unknown expiry. The claim remains unverified, and it does not settle the
 earlier ambiguous handoff or prove an earlier request's timing or cause.
-The project setup owner subsequently gained a source-level `observe` method
+The project setup owner subsequently gained an `observe` method
 that composes scoped discovery admission with two settings reads and no effect
 preparation. Socket fixture cases for matching and changing claims were also
-added. These changes have only been syntax-parsed: a remote test started on
+added. A separate strict-remote `cargo check --locked -p fss-reference --lib`
+passed on `ovh-a`; it did not run the fixture cases. A remote test started on
 `trj` but was terminated after disk telemetry became unavailable. Same-job
-recovery later acknowledged exit 137 and source release. Neither the new
-project method nor its fixture cases have been qualified by that run.
+recovery later acknowledged exit 137 and source release. The fixture cases
+remain unqualified.
 
 `unifi_direct::handoff` now prepares an inert controller-address change bound
 to the exact semantic request, reported prior IPv4 address, camera and peer
