@@ -24,7 +24,8 @@ use fss_reference::rtsp::avc_client::{AvcClientError, AvcClientPoll};
 use fss_reference::rtsp::campaign_history::{
     CampaignRetryReason, NativeAttemptObservation, NativeBindings,
 };
-use fss_reference::rtsp::client::{ClientCommand, ClientProgress, ClientState};
+use fss_reference::rtsp::client::{ClientCommand, ClientError, ClientProgress, ClientState};
+use fss_reference::rtsp::client::replay::ReplayRejection;
 use fss_reference::rtsp::live_archive::{LiveArchiveCompletion, LiveArchiveError, LiveArchiveStep};
 use fss_reference::rtsp::live_avc::recording::{LiveRecordingError, LiveRecordingStep};
 use fss_reference::rtsp::live_avc::{LiveAvcError, LiveAvcStep, SocketReadiness};
@@ -75,6 +76,10 @@ use runtime::{CaptureRuntime, Resources, TaskClock};
 mod node_clock;
 use node_clock::CaptureClock;
 
+#[path = "replay_capture.rs"]
+mod recorder_replay;
+use recorder_replay::CaptureReplay;
+
 #[derive(Clone, Copy, Debug)]
 enum Failure {
     Configuration,
@@ -91,6 +96,8 @@ enum Failure {
     Credentials,
     Entropy,
     Protocol,
+    ReplayAcknowledgement,
+    ReplayRejected(ReplayRejection),
     Timing,
     Clock,
     Deadline,
@@ -130,6 +137,16 @@ impl Failure {
             // Keep the original source failure visible even when a separately
             // approved controller may start a new, independent recording.
             Self::Protocol | Self::ReadInterrupted => "ERR-CAPTURE-RTSP-SOURCE-001",
+            Self::ReplayAcknowledgement => "ERR-CAPTURE-RTSP-REPLAY-ACK-001",
+            Self::ReplayRejected(ReplayRejection::HeaderNotValidForResource) => {
+                "ERR-CAPTURE-RTSP-REPLAY-HEADER-456"
+            }
+            Self::ReplayRejected(ReplayRejection::RangeRejected) => {
+                "ERR-CAPTURE-RTSP-REPLAY-RANGE-457"
+            }
+            Self::ReplayRejected(ReplayRejection::OptionNotSupported) => {
+                "ERR-CAPTURE-RTSP-REPLAY-OPTION-551"
+            }
             Self::Timing => "ERR-CAPTURE-RTSP-TIMING-001",
             Self::Clock => "ERR-CAPTURE-RTSP-CLOCK-001",
             Self::Deadline => "ERR-CAPTURE-RTSP-DEADLINE-001",
@@ -161,6 +178,14 @@ impl Failure {
             Self::Connect | Self::ConnectionUnavailable => "connection_failure",
             Self::Configuration | Self::State => "configuration_or_state_refused",
             Self::Protocol | Self::ReadInterrupted => "protocol_failure",
+            Self::ReplayAcknowledgement => "replay_acknowledgement_refused",
+            Self::ReplayRejected(ReplayRejection::HeaderNotValidForResource) => {
+                "replay_header_not_valid_for_resource"
+            }
+            Self::ReplayRejected(ReplayRejection::RangeRejected) => "replay_range_rejected",
+            Self::ReplayRejected(ReplayRejection::OptionNotSupported) => {
+                "replay_option_not_supported"
+            }
         }
     }
 }
@@ -171,6 +196,26 @@ fn secret_failure(error: SecretError) -> Failure {
         SecretError::Revoked | SecretError::Authority => Failure::Authority,
         SecretError::Entropy => Failure::Entropy,
         SecretError::Deadline => Failure::Deadline,
+    }
+}
+
+fn client_failure(error: &AvcClientError) -> Failure {
+    match error {
+        AvcClientError::Session(ClientError::ReplayRejected(reason)) => {
+            Failure::ReplayRejected(*reason)
+        }
+        AvcClientError::Session(ClientError::Replay(_)) => Failure::ReplayAcknowledgement,
+        _ => Failure::Protocol,
+    }
+}
+
+fn digest_failure(error: &DigestAvcError) -> Failure {
+    match error {
+        DigestAvcError::Authentication(_) | DigestAvcError::AuthenticationAtEof => {
+            Failure::AuthenticationRefused
+        }
+        DigestAvcError::Client(error) => client_failure(error),
+        _ => Failure::Protocol,
     }
 }
 
@@ -530,6 +575,9 @@ fn failure(error: JournaledLiveFailure, stats: &mut Statistics) -> Failure {
                 LiveRecordingError::Network(LiveAvcError::Protocol(
                     DigestAvcError::Authentication(_) | DigestAvcError::AuthenticationAtEof,
                 )) => Failure::AuthenticationRefused,
+                LiveRecordingError::Network(LiveAvcError::Protocol(error)) => {
+                    digest_failure(&error)
+                }
                 LiveRecordingError::Network(LiveAvcError::Transport(error))
                     if abrupt_read_failure(&error) =>
                 {
@@ -653,13 +701,16 @@ fn observe_stopped(step: &LiveRecordingStep, stats: &mut Statistics) {
 fn network_stop_failure(step: &LiveAvcStep) -> Failure {
     match step {
         LiveAvcStep::Protocol {
-            event:
-                DigestAvcPoll::Fault {
-                    reason: DigestAvcError::Authentication(_) | DigestAvcError::AuthenticationAtEof,
-                    ..
-                },
+            event: DigestAvcPoll::Fault { reason, .. },
             ..
-        } => Failure::AuthenticationRefused,
+        } => digest_failure(reason),
+        LiveAvcStep::Protocol {
+            event: DigestAvcPoll::Client { event, .. },
+            ..
+        } => match event.as_ref() {
+            AvcClientPoll::Fault { reason, .. } => client_failure(reason),
+            _ => Failure::Protocol,
+        },
         _ => Failure::Protocol,
     }
 }
@@ -707,18 +758,20 @@ fn network_step<W: Write>(
                 }
             }
             DigestAvcPoll::Fault { reason, .. } => {
-                return Err(match reason {
-                    DigestAvcError::Authentication(_) | DigestAvcError::AuthenticationAtEof => {
-                        Failure::AuthenticationRefused
-                    }
-                    _ => Failure::Protocol,
-                });
+                return Err(digest_failure(&reason));
             }
             DigestAvcPoll::Client { event, .. } => match *event {
                 AvcClientPoll::Control(ClientProgress::Accepted(state)) => {
                     *next_command = match state {
-                        ClientState::Described => Some(ClientCommand::Setup),
-                        ClientState::Ready => Some(ClientCommand::Play),
+                        ClientState::Described => Some(if stats.replay.is_some() {
+                            ClientCommand::SetupReplay
+                        } else {
+                            ClientCommand::Setup
+                        }),
+                        ClientState::Ready => Some(stats.replay.as_ref().map_or(
+                            ClientCommand::Play,
+                            |replay| ClientCommand::PlayReplay(replay.window()),
+                        )),
                         _ => None,
                     };
                     log.emit(
@@ -727,14 +780,20 @@ fn network_step<W: Write>(
                         false,
                     )?;
                 }
+                AvcClientPoll::Control(ClientProgress::ReplayAccepted(acceptance)) => {
+                    let replay = stats.replay.as_mut().ok_or(Failure::State)?;
+                    replay.accept(acceptance)?;
+                    *next_command = None;
+                    log.emit("replay_accepted", replay.acknowledgement_json(), false)?;
+                }
                 AvcClientPoll::Control(ClientProgress::KeepAliveDue) => {
                     *next_command = Some(ClientCommand::KeepAlive);
                 }
+                AvcClientPoll::Fault { reason, .. } => return Err(client_failure(&reason)),
                 AvcClientPoll::Rtp {
                     retirement: Some(_),
                     ..
-                }
-                | AvcClientPoll::Fault { .. } => return Err(Failure::Protocol),
+                } => return Err(Failure::Protocol),
                 AvcClientPoll::Ended { .. } => stats.input_ended = true,
                 AvcClientPoll::Pending { wake_at_ns }
                 | AvcClientPoll::Backpressure { wake_at_ns } => return Ok(Some(wake_at_ns)),
@@ -796,6 +855,9 @@ fn archive_progress<C: ArchiveCodec, W: Write>(
             let source_only_nals = std::mem::take(&mut stats.pending_source_only_nals);
             stats.durable_source_only_nals += source_only_nals;
             stats.snapshot(snapshot);
+            if let Some(replay) = &mut stats.replay {
+                replay.durable(receipt.root)?;
+            }
             if let Some(clock) = owner.node_clock.borrow_mut().as_mut() {
                 let result = clock.durable(receipt.root);
                 if owner.drain_deadline.get().is_none() {
@@ -1231,6 +1293,9 @@ fn drive<W: Write>(
                 }
                 stats.pending_window =
                     Some((admission.root, pending.objects().source.len() as u64));
+                if let Some(replay) = &mut stats.replay {
+                    replay.prepare_window(admission.slot.clone(), pending)?;
+                }
                 if let Some(clock) = owner.node_clock.borrow_mut().as_mut() {
                     let result = clock.accept_avc(admission.slot.clone(), pending);
                     if owner.drain_deadline.get().is_none() {
@@ -1621,13 +1686,42 @@ fn run_owned<W: Write>(
         // A native clock callback travels through the transport's capability
         // denial type. Recover its actual known cause without reclassifying an
         // independent source, storage, timing, cancellation or budget failure.
-        if clock_interrupted
+        let capture_result = if clock_interrupted
             && matches!(
                 capture_result,
                 Err(Failure::Authority | Failure::Protocol | Failure::Connect)
             )
         {
-            return Err(Failure::Clock);
+            Err(Failure::Clock)
+        } else {
+            capture_result
+        };
+        // Retain the acknowledged request and durable prefix after the socket closes,
+        // including failed attempts. Original-root checks and storage authority still
+        // apply; neither companion publication nor logging replaces a source failure.
+        if let Some(mut replay) = stats.replay.take() {
+            let publication_complete = capture_result.is_ok()
+                && stats.collected_pictures == stats.durable_pictures
+                && stats.indexed_windows == stats.durable_windows;
+            let receipt = replay.publish(
+                options,
+                &mut publisher,
+                &owner,
+                &capture_result,
+                publication_complete,
+            );
+            stats.replay = Some(replay);
+            match receipt {
+                Ok(Some(detail)) => {
+                    let emitted = log.emit("replay_receipt_published", detail, false);
+                    if capture_result.is_ok() {
+                        emitted?;
+                    }
+                }
+                Ok(None) => {}
+                Err(error) if capture_result.is_ok() => return Err(error),
+                Err(_) => {}
+            }
         }
         // Preserve a source/storage refusal even if its teardown also makes a
         // new clock observation unavailable. Neither failure erases custody.
@@ -1775,6 +1869,7 @@ pub(super) fn execute_observed_attempt(
     };
     let mut stats = Statistics {
         retain_campaign_bindings: observer.is_some(),
+        replay: options.replay.clone().map(CaptureReplay::new),
         ..Statistics::default()
     };
     let execution = runtime.run(&mut stats, |task, clock, resources, stats| {

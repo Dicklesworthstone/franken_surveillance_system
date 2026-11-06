@@ -51,6 +51,7 @@ impl AttemptOutcome {
             && stats.durable_windows == 0
             && stats.unpublished_prepared_bytes == 0;
         let recovery_required = stats.clock_index_unsettled
+            || stats.replay.as_ref().is_some_and(super::CaptureReplay::unsettled)
             || stats.source_custody_unsettled
             || stats.pins.candidate().is_some()
             || stats.unrecorded_work_receipt.is_some()

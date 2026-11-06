@@ -132,6 +132,9 @@ impl SinglePlan {
         }
         let recovery_timeout_ns = recover.then_some(recovery_timeout_ns.unwrap_or(30_000_000_000));
         let capture = Options::parse(&native)?;
+        if recover && capture.replay.is_some() {
+            return Err("replay receipts currently require a completed single attempt; automatic replay recovery is unsupported");
+        }
         if let Some(minimum) = &minimum_pins {
             minimum.validate(std::slice::from_ref(&capture))?;
         }

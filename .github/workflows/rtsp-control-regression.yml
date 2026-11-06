@@ -13,6 +13,7 @@ on:
       - 'crates/fss-reference/tests/automatic_live_archive_contract.rs'
       - 'crates/fss-reference/tests/rtsp_keepalive_contract.rs'
       - 'crates/fss-reference/tests/rtsp_replay_contract.rs'
+      - 'crates/fss-reference/tests/recording_replay_contract.rs'
       - 'crates/fss-reference/tests/rtsp_prefix_recovery_contract.rs'
       - 'crates/fss-reference/tests/rtsp_read_reset_contract.rs'
       - 'crates/fss-cli/src/bin/fss-capture-rtsp/**'
@@ -48,6 +49,9 @@ jobs:
         run: bash scripts/bootstrap_toolchain.sh
       - name: Execute repository-owned Rust lane
         run: bash scripts/qualify.sh --lane rust --receipt-dir "${{ runner.temp }}/qualification-receipt"
+      - name: Bounded replay protocol and retained original-custody receipts
+        if: success() || failure()
+        run: cargo +nightly-2026-08-31 test --no-fail-fast --locked --offline -p fss-reference --test rtsp_replay_contract --test recording_replay_contract
       - name: Explicit keepalive signatures, approval boundaries and native AVC/HEVC capture
         if: success() || failure()
         run: bash scripts/qualify_rtsp_keepalive.sh
@@ -61,4 +65,4 @@ jobs:
           --test automatic_control_backpressure --test automatic_archive_control_backpressure
       - name: Existing protected archives and exact payload selection
         if: success() || failure()
-        run: cargo +nightly-2026-08-31 test --no-fail-fast --locked --offline -p fss-reference --test automatic_live_archive_contract --test rtsp_payload_selection_streaming --test rtsp_replay_contract
+        run: cargo +nightly-2026-08-31 test --no-fail-fast --locked --offline -p fss-reference --test automatic_live_archive_contract --test rtsp_payload_selection_streaming

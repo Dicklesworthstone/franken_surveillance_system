@@ -777,3 +777,89 @@ fn owner_hevc_tuple_refuses_partial_wrong_codec_and_unbounded_nals() -> Result<(
     }
     Ok(())
 }
+
+
+#[test]
+fn replay_request_binds_approval_and_archive_clock_without_replacing_observation_scope()
+-> Result<(), &'static str> {
+    let mut input = args();
+    let live = Options::parse(&input)?;
+    assert!(live.replay.is_none());
+    set(&mut input, "--replay-start", "20261101T120000Z");
+    set(&mut input, "--replay-end", "20261101T120100Z");
+    let replay = Options::parse(&input)?;
+    let request = replay.replay.as_ref().ok_or("missing replay request")?;
+    assert_eq!(live.recording.scope, replay.recording.scope);
+    assert_eq!(request.base_decode_clock(), live.catalog_scope().decode_clock);
+    assert_eq!(request.decode_clock(), replay.catalog_scope().decode_clock);
+    assert_ne!(live.catalog_scope(), replay.catalog_scope());
+    assert_ne!(live.digest()?, replay.digest()?);
+    assert!(replay.preview()?.contains("\"complete_interval_retrieval\":false"));
+    assert!(replay.preview()?.contains("\"historical_frame_time\":\"unknown\""));
+
+    // Equivalent spelling is normalized before identity construction.
+    set(&mut input, "--replay-start", "20261101T120000.000Z");
+    set(&mut input, "--replay-end", "20261101T120100.000000000Z");
+    let normalized = Options::parse(&input)?;
+    assert_eq!(replay.digest()?, normalized.digest()?);
+    assert_eq!(replay.replay, normalized.replay);
+
+    let approved = replay.digest()?;
+    set(&mut input, "--approve", &approved.to_text());
+    set(&mut input, "--replay-end", "20261101T120101Z");
+    let changed = Options::parse(&input)?;
+    assert_eq!(changed.approve, Some(approved));
+    assert_ne!(changed.digest()?, approved);
+    assert_ne!(changed.catalog_scope().decode_clock, replay.catalog_scope().decode_clock);
+    assert_ne!(
+        changed.replay.as_ref().ok_or("missing changed request")?.digest(),
+        request.digest(),
+    );
+    Ok(())
+}
+
+#[test]
+fn replay_route_and_fixed_cadence_are_part_of_request_provenance()
+-> Result<(), &'static str> {
+    let mut input = args();
+    set(&mut input, "--replay-start", "20261101T120000Z");
+    set(&mut input, "--replay-end", "20261101T120100Z");
+    let initial = Options::parse(&input)?;
+    let request = initial.replay.as_ref().ok_or("missing replay")?;
+    set(&mut input, "--peer", "127.0.0.2:8554");
+    let route = Options::parse(&input)?;
+    assert_ne!(route.replay.as_ref().ok_or("missing route replay")?.route(), request.route());
+    assert_ne!(route.catalog_scope().decode_clock, initial.catalog_scope().decode_clock);
+    set(&mut input, "--peer", "127.0.0.1:8554");
+    set(&mut input, "--frame-duration-ticks", "3000");
+    let cadence = Options::parse(&input)?;
+    assert_ne!(
+        cadence.replay.as_ref().ok_or("missing cadence replay")?.base_decode_clock(),
+        request.base_decode_clock(),
+    );
+    assert_ne!(cadence.catalog_scope().decode_clock, initial.catalog_scope().decode_clock);
+    Ok(())
+}
+
+#[test]
+fn replay_options_refuse_partial_intervals_and_unimplemented_modes() -> Result<(), &'static str> {
+    let mut input = args();
+    set(&mut input, "--replay-start", "20261101T120000Z");
+    assert!(Options::parse(&input).is_err());
+    set(&mut input, "--replay-end", "20261101T120100Z");
+    assert!(Options::parse(&input).is_ok());
+    for (key, value) in [
+        ("--replay-end", "20261108T120000.000000001Z"),
+        ("--codec", "hevc"),
+        ("--ssrc", "auto"),
+        ("--max-windows", "65"),
+    ] {
+        let mut refused = input.clone();
+        set(&mut refused, key, value);
+        assert!(Options::parse(&refused).is_err(), "{key} admitted {value}");
+    }
+    let mut end_only = args();
+    set(&mut end_only, "--replay-end", "20261101T120100Z");
+    assert!(Options::parse(&end_only).is_err());
+    Ok(())
+}

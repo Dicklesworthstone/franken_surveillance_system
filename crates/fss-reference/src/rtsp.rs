@@ -63,6 +63,8 @@ pub mod recording_clock;
 pub mod recording_collector;
 /// Portable codec/timing recipes and exact source-verified recording reconstruction.
 pub mod recording_recipe;
+/// Immutable recorder replay requests, acknowledgements and original-custody receipts.
+pub mod recording_replay;
 pub mod sdp;
 /// Exact bounded AVC, HEVC, JPEG and ONVIF selection from multi-payload SDP descriptions.
 pub mod selection;

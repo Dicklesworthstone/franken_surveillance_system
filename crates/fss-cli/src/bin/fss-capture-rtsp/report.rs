@@ -84,6 +84,7 @@ impl<W: Write> Transcript<'_, W> {
 
 #[derive(Default)]
 pub(super) struct Statistics {
+    pub(super) replay: Option<super::CaptureReplay>,
     pub(super) bound_source: Option<fss_packet::StreamKey>,
     pub(super) retain_campaign_bindings: bool,
     pub(super) runtime: Option<String>,
@@ -491,6 +492,13 @@ pub(super) fn terminal(
     }
     if let Some(preview) = &stats.live_preview {
         fields.push(("live_preview", preview.clone()));
+    }
+    if let Some(replay) = &stats.replay {
+        fields.push(("recorder_replay", replay.report()));
+    }
+    if let Err(Failure::ReplayRejected(reason)) = result {
+        fields.push(("rtsp_status", reason.status_code().to_string()));
+        fields.push(("upstream_retention_known", "false".into()));
     }
     if options.binding().ssrc_policy() == fss_reference::rtsp::tcp::SsrcPolicy::LearnOnce {
         let selection = match stats.bound_source {

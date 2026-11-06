@@ -4,26 +4,41 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
-## Bounded recorder replay protocol (2026-11-06; native validation pending)
+## Bounded AVC recorder replay capture and durable receipt (2026-11-06; native validation pending)
 
-The native AVC session now exposes explicit replay SETUP/PLAY commands for an
-owner-supplied recorder URI and one closed forward UTC interval of at most seven
-days. Required replay headers, exact normalized ranges and unpaced playback
-survive Digest challenges. A matching response must acknowledge one contained
-closed clock range before media admission. Optional contradictory rate/scale
-echoes and typed 456/457/551 failures refuse without live fallback or widened
-authority. Ordinary live request bytes and deadlines are preserved.
+Direct single AVC capture accepts an explicitly supplied recorder replay URI and
+`--replay-start`/`--replay-end` compact UTC endpoints. Pure preview and exact
+approval bind the route, request, fixed timing and finite native resource limits.
+The request derives a distinct archive decode clock and namespace while
+preserving the original authority anchor and packet receive clock. Live plans
+remain unchanged when replay is absent; unsupported wrapper/codec/recovery modes
+refuse before effects.
 
-Fifteen native contracts cover calendar/nanosecond bounds, exact request bytes,
-mode isolation, response/session/CSeq validation, failure classifications and
-Digest retries. The executor became unavailable before their native build; these
-tests are authored and source-reviewed, not reported as passing. Supplementary
-RTSP control checks now invoke the target without weakening the existing
-qualification lane. Durable replay receipts and explicit CLI selection remain
-integration work at this checkpoint. No historical frame-time, interval coverage,
-upstream retention or hardware qualification is claimed. See
-`docs/RTSP_RECORDER_REPLAY.md`. This advances
-`fss-vit022-recorder-retrieval-5js5o`; the broad bead remains open.
+Replay SETUP/PLAY require the ONVIF replay option and an unpaced, closed forward
+clock range of at most seven days. Before Playing, the recorder must acknowledge
+one contained range. Digest retries preserve intent while reporting the successful
+CSeq. Contradictory echoes, widened/malformed responses and typed 456/457/551
+refusals never trigger live fallback or broader authority.
+
+A root-last receipt retains requested and accepted ranges, successful PLAY CSeq,
+approval, original authority/scope, exact durable window/leaf closure, termination
+and separate publication completeness. At most 64 windows/64 KiB are admitted.
+Each slot must belong to the exact replay namespace. Publication and cold loading
+repeat native original-source verification plus slot/tombstone checks. Failed
+attempts can retain receipts over their durable prefixes without changing their
+capture error. No requested-interval completion, historical frame timestamp,
+upstream retention inventory or device qualification is inferred.
+
+The local execution environment disconnected before replay builds. Supplementary
+native run 42270744851 at protocol checkpoint 8bc2267 then passed all 15 new
+protocol contracts, all 298 existing capture-binary unit tests and the selected
+keepalive/reconnect integrations. The overall job retains unchanged qualification
+failures and a HEVC description-refusal test already failing before replay.
+The 15 receipt contracts and new CLI planning/loopback contracts are authored
+and independently source-reviewed; their native execution is pending here.
+See `docs/RTSP_RECORDER_REPLAY.md`. This advances
+`fss-vit022-recorder-retrieval-5js5o`; discovery, frame-time indexing,
+retention inventory and general recorder qualification keep the broad bead open.
 
 ## Static ONNX Pad and crop execution (2026-11-06)
 

@@ -10,6 +10,9 @@
 #[path = "capture_rtsp_cli/clock.rs"]
 mod clock;
 
+#[path = "capture_rtsp_cli/replay.rs"]
+mod replay;
+
 #[path = "capture_rtsp_cli/runtime.rs"]
 mod runtime;
 

@@ -128,6 +128,7 @@ fn timestamp(value: &str) -> Result<TimestampNs, &'static str> {
 
 impl Options {
     pub fn parse(args: &[OsString]) -> Result<Self, &'static str> {
+        super::super::plan::replay::reject_wrapped(args)?;
         if args.is_empty() || args.len() > MAX_ARGUMENTS || !args.len().is_multiple_of(2) {
             return Err("bounded option/value pairs required");
         }

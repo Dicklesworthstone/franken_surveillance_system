@@ -106,6 +106,7 @@ fn digest(value: &str) -> Result<ContentDigest, &'static str> {
 
 impl SourcePlan {
     pub(super) fn parse(args: &[OsString]) -> Result<Self, &'static str> {
+        super::plan::replay::reject_wrapped(args)?;
         if args.len() > MAX_ARGUMENTS
             || !args.len().is_multiple_of(2)
             || args.iter().any(|arg| arg.as_encoded_bytes().len() > 4096)

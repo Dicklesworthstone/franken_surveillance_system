@@ -25,6 +25,7 @@ use fss_reference::rtsp::recording_archive::{
     checkpoint::{ArchiveWorkLimits, MAX_ARCHIVE_WORK_BYTES},
 };
 use fss_reference::rtsp::recording_catalog::CatalogScope;
+use fss_reference::rtsp::recording_replay::ReplayRequest;
 use fss_reference::rtsp::recording_collector::{CollectorLimits, RecordingCollector};
 use fss_reference::rtsp::tcp::{SsrcPolicy, TcpBinding, TcpLimits, TcpSecurityPolicy};
 
@@ -41,6 +42,9 @@ use live_preview::PreviewPlan;
 #[path = "clock_plan.rs"]
 pub(super) mod node_clock;
 use node_clock::ClockPlan;
+
+#[path = "replay_plan.rs"]
+pub(super) mod replay;
 
 pub(super) const MAX_ARGUMENTS: usize = 128;
 pub(super) const FORMAT: &str = "fss.rtsp_capture_cli.v1";
@@ -89,6 +93,18 @@ an empty GET_PARAMETER to the negotiated session URI, never parameter queries or
 The selection is approval-bound for AVC and HEVC and preserved across reconnect attempts.\n\
 No rejection, missing reply or advertised server method enables automatic fallback.\n\
 Omitting the option or selecting options preserves existing approval and recording identities.\n\
+\n\
+Recorder playback: --replay-start 20261101T120000Z --replay-end 20261101T120100Z\n\
+Supply an explicit recorder replay URI using the ordinary route options. AVC and a pinned\n\
+SSRC are required. Closed forward UTC ranges may span at most seven days; compact UTC\n\
+timestamps support up to nine fractional digits. There is no recorder search or URI discovery.\n\
+SETUP and PLAY require onvif-replay; PLAY sends the exact range and Rate-Control: no.\n\
+A single contained closed clock range must be acknowledged before media is admitted.\n\
+Existing picture, time, source and storage ceilings still stop this finite received prefix.\n\
+The requested interval never implies complete retrieval, upstream retention, or frame UTC.\n\
+Original windows bind the request in their decode-clock identity. A durable replay_receipt\n\
+retains requested/acknowledged ranges and exact saved windows without credentials or URIs.\n\
+Replay has no live fallback, reconnect, retain-source, sentinel or onboarding-wrapper mode.\n\
 \n\
 The operator supplies a fixed 90000 Hz cadence (for example 3600 ticks for 25 pictures/s)\n\
 and evidence identifying that timing policy. Default mode requires monotonic RTP cadence.\n\
@@ -168,6 +184,7 @@ pub(super) struct Options {
     pub(super) authentication: Option<AuthPlan>,
     pub(super) live_preview: Option<PreviewPlan>,
     pub(super) node_clock: Option<ClockPlan>,
+    pub(super) replay: Option<ReplayRequest>,
 }
 
 // Keep every byte of the legacy policy/clock/approval when the option is absent or zero.
@@ -310,6 +327,8 @@ impl Options {
             "--frame-duration-ticks",
             "--max-reorder-pictures",
             "--keepalive-method",
+            "--replay-start",
+            "--replay-end",
             "--stop-after-pictures",
             "--owner-authorized",
             "--plaintext",
@@ -566,9 +585,24 @@ impl Options {
         let clock_bytes = clock
             .finish_checked()
             .map_err(|_| "timing encoding refused")?;
+        let base_decode_clock = ContentDigest::sha256(&clock_bytes);
+        let replay = replay::parse(
+            &values,
+            &binding,
+            &protocol,
+            &scope,
+            payload_type,
+            is_hevc,
+            base_decode_clock,
+        )?;
+        // Historical request identity is part of archive media-clock provenance.
+        // It never replaces the authority anchor or local packet receive clock.
+        let decode_clock = replay
+            .as_ref()
+            .map_or(base_decode_clock, ReplayRequest::decode_clock);
         let namespace = ArchiveNamespace::new(CatalogScope {
             recording: scope,
-            decode_clock: ContentDigest::sha256(&clock_bytes),
+            decode_clock,
             time_scale,
         })
         .map_err(|_| "native archive scope refused")?;
@@ -579,6 +613,11 @@ impl Options {
         let drain_timeout_ns = number("--drain-timeout-ms", 10_000, 1, 60_000)? * 1_000_000;
         let max_steps = number("--max-steps", 100_000, 1, 1_000_000)?;
         let max_windows = number("--max-windows", 32, 1, 128)? as usize;
+        if replay.is_some()
+            && max_windows > fss_reference::rtsp::recording_replay::MAX_REPLAY_WINDOWS
+        {
+            return Err("recorder replay permits at most 64 recording windows");
+        }
         let max_roots = 8 * max_windows + 32;
         let archive = LiveArchiveConfig {
             namespace,
@@ -672,6 +711,7 @@ impl Options {
             authentication,
             live_preview: PreviewPlan::parse(&values)?,
             node_clock: ClockPlan::parse(&values, timeout_ns, max_windows)?,
+            replay,
             approve: values
                 .get("--approve")
                 .map(|text| digest(text))
@@ -734,6 +774,10 @@ impl Options {
         if self.binding.ssrc_policy() == SsrcPolicy::LearnOnce {
             policy.push(':');
             policy.push_str(SSRC_AUTO_POLICY);
+        }
+        if self.replay.is_some() {
+            policy.push(':');
+            policy.push_str(replay::POLICY);
         }
         policy
     }
@@ -863,6 +907,22 @@ impl Options {
         if let Some(preview) = &self.live_preview {
             numbers.extend(preview.numbers());
         }
+        if self.replay.is_some() {
+            numbers.extend([
+                (
+                    "replay_maximum_range_seconds",
+                    fss_reference::rtsp::client::replay::MAX_REPLAY_DURATION_SECONDS,
+                ),
+                (
+                    "replay_maximum_windows",
+                    fss_reference::rtsp::recording_replay::MAX_REPLAY_WINDOWS as u64,
+                ),
+                (
+                    "replay_maximum_receipt_bytes",
+                    fss_reference::rtsp::recording_replay::MAX_REPLAY_RECEIPT_BYTES as u64,
+                ),
+            ]);
+        }
         if self.binding.ssrc_policy() == SsrcPolicy::LearnOnce {
             // Unobserved is not the valid numeric SSRC zero.
             numbers.retain(|(name, _)| *name != "ssrc");
@@ -934,6 +994,10 @@ impl Options {
         }
         if let Some(clock) = self.node_clock {
             clock.encode(&mut e);
+        }
+        if let Some(request) = &self.replay {
+            e.text(replay::POLICY);
+            e.digest(request.digest());
         }
         let bytes = e
             .finish_checked()
@@ -1051,6 +1115,9 @@ impl Options {
         }
         if let Some(clock) = self.node_clock {
             fields.push(("node_clock", clock.preview()));
+        }
+        if let Some(request) = &self.replay {
+            fields.push(("recorder_replay", replay::preview(request)));
         }
         if self.binding.ssrc_policy() == SsrcPolicy::LearnOnce {
             fields.push((

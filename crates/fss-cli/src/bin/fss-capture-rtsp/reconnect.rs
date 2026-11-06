@@ -386,6 +386,9 @@ impl ReconnectPlan {
             return Err("minimum source pins require the original source-retention options");
         }
         let base = Options::parse(&arguments(&values))?;
+        if base.replay.is_some() {
+            return Err("recorder replay currently requires a single capture without reconnect");
+        }
         if base.binding().ssrc_policy() != fss_reference::rtsp::tcp::SsrcPolicy::Pinned {
             return Err(
                 "automatic SSRC selection currently requires a single capture; reconnect needs an explicitly pinned SSRC",
