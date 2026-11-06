@@ -1,18 +1,20 @@
 #![forbid(unsafe_code)]
 //! Deterministic AVC/HEVC fragmented MP4 without transcoding or ambient I/O (FSS-115).
 //!
-//! Narrow single-video-track, avc1 or hev1, IDR-led fragment writers. Timing is
-//! explicitly supplied in track ticks, never guessed from RTP, VUI, or arrival
+//! Narrow IDR-led AVC/HEVC video writers and an explicit FLV AVC/AAC A/V
+//! derivative. Timing is supplied in track ticks, never guessed from RTP, VUI, or arrival
 //! clocks. Picture grouping is not decoding or a complete-picture certificate.
 //! Source custody, privacy, storage publication, and authentication remain with
 //! the owner. No codec, socket, filesystem, worker, or external runtime is used.
 
 mod boxes;
-/// FLV-source-specific AVC fragmented MP4, preserving connection byte ranges.
-pub mod flv_avc;
 /// Indexed or fragmented AVC/HEVC MP4 sample index, source-preserving Annex-B extraction and
 /// exact byte maps.
 pub mod demux;
+/// Source-linked FLV AVC plus AAC fragmented MP4 derivatives.
+pub mod flv_av;
+/// FLV-source-specific AVC fragmented MP4, preserving connection byte ranges.
+pub mod flv_avc;
 mod hevc;
 mod init;
 mod mux;

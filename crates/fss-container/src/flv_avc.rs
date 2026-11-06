@@ -75,6 +75,7 @@ pub struct SampleMapping {
 #[derive(Eq, PartialEq)]
 pub struct Fragment {
     key: SourceKey,
+    configuration_sources: [Range<u64>; 2],
     sequence: u32,
     bytes: Vec<u8>,
     samples: Vec<SampleMapping>,
@@ -85,6 +86,10 @@ impl Fragment {
     /// Explicit caller-supplied connection and generation identity.
     pub fn key(&self) -> SourceKey {
         self.key
+    }
+    /// Source ranges of the SPS and PPS for this fragment's video epoch.
+    pub fn configuration_sources(&self) -> [Range<u64>; 2] {
+        self.configuration_sources.clone()
     }
     /// Local monotonically increasing fragment sequence.
     pub fn sequence(&self) -> u32 {
@@ -198,6 +203,27 @@ impl Muxer {
     /// Initialization bytes for this exact configuration epoch.
     pub fn initialization(&self) -> &InitializationSegment {
         &self.initialization
+    }
+    /// Derive an AVC plus AAC initialization for the same video configuration.
+    /// The caller must independently bind the audio configuration and its
+    /// clock to this source connection before publishing any A/V derivative.
+    pub fn av_initialization(
+        &self,
+        audio: &fss_packet::extended_flv::aac::Configuration<'_>,
+    ) -> Result<crate::flv_av::Initialization, Mp4Error> {
+        let (video, audio_range) = init::build_av(
+            &self.sps,
+            &self.pps,
+            1000,
+            self.limits.max_initialization_bytes,
+            audio,
+        )?;
+        Ok(crate::flv_av::Initialization::new(
+            video,
+            audio_range,
+            self.key,
+            self.config_sources.clone(),
+        ))
     }
     /// Original SPS and PPS ranges in the current connection, respectively.
     pub fn configuration_sources(&self) -> &[Range<u64>; 2] {
@@ -417,6 +443,7 @@ impl Muxer {
             .map(|end| end..samples[0].decode_time_ms);
         let output = Fragment {
             key: self.key,
+            configuration_sources: self.config_sources.clone(),
             sequence,
             bytes: writer.data,
             samples: sample_mappings,
