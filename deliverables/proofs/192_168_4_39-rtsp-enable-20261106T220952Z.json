@@ -1,0 +1,17 @@
+{
+ "camera": "192.168.4.39",
+ "ip": "192.168.4.39",
+ "vector": "rtsp-enable",
+ "timestamp_utc": "20261106T220952Z",
+ "pass": true,
+ "checks": [
+  {
+   "name": "tcp554-expect:RTSP/1\\.0 200",
+   "expect": "RTSP/1\\.0 200",
+   "got": "RTSP/1.0 200 OK\r\nCSeq: 1\r\nPublic: DESCRIBE, SETUP, TEARDOWN, PLAY\r\n\r\n",
+   "pass": true
+  }
+ ],
+ "notes": "",
+ "tool": "root_proof.py"
+}

@@ -1013,6 +1013,12 @@ journal bounds completed successfully in 10.48 seconds and contained two
 recording-start markers and no startup-failure markers among 16 lines. This
 is a current healthy-window observation, not a test of the watchdog service,
 an effect reconciliation, or proof that automatic recovery will work.
+A further read-only check completed in 13.15 seconds with zero journal entries
+in the preceding hour, so the actual classifier returned `unknown` as designed.
+The recorder unit was active and had been running since 13:46 EST; the Mac and
+recorder host clocks differed by about one second. An empty bounded journal
+window is not evidence of a stopped recorder or of camera recovery, and this
+later observation does not explain the earlier `unknown` result.
 A subsequent isolated trial-source change adds payload-free phase reports for
 both the conversation deadline and the overall startup deadline. On `ovh-b`,
 the lab and its test executable compiled, and two encrypted synthetic
@@ -1516,12 +1522,14 @@ has been changed to exercise it; the two successful captures above exercised
 the lower-level session directly, not this owner. Scoped recorder-contract job
 `30098049032257609` passed seven synthetic tests with no failures or ignored
 cases, with acknowledged exit and source release. Its A/V owner and recorder
-source hashes matched the working tree. The lab AAC-clock source differed by a
+source hashes matched the working tree at the time; the owner was subsequently
+extended with source binding. The lab AAC-clock source differed by a
 later documentation comment, the test source by a later assertion that removes
 a warning, and the framing source by the later evidence-ID refactor. The
 integration-test build also produced a laboratory replay executable with
 SHA-256 `08d281e1a35a1d9b359c80fee3e66245c7873904b0d47345f20d677ee7ce8839`;
-its owner, recorder and replay source hashes matched the working tree. A fresh
+its owner, recorder and replay source hashes matched the working tree at the
+time; the owner was subsequently extended with source binding. A fresh
 passive G4 replay through that owner produced three fragments with 450 video
 and 233 audio frames, all accepted by an independent probe and decoder without
 reported errors. Its initial sender-clock A/V offset was -91 ms. The source
@@ -1582,7 +1590,10 @@ the claimed epoch, record digest, length, offset and configuration-byte range.
 The caller still retains the original record and must establish that the audio
 observation and video initialization belong to the same connection and epoch.
 The new owner-level integration test is pending; no G4 capture has exercised
-this source-binding path.
+this source-binding path. The full-workspace recorder-contract request
+`rchw-a87451cd-884c-4ba0-b951-7979b2123b15` exited 103 before admission:
+the requested worker had no free slots and local fallback was refused. It did
+not run the test and is not a pass.
 
 The ADTS helper now also derives a borrowed source frame directly from an
 original FLV `SourceRecord`. It returns a connection-relative body range, the
@@ -1967,6 +1978,31 @@ TLS are still needed before this can replace the existing recorder. A single
 step may spend up to the configured wait polling and another configured wait on
 a time-sync write.
 
+The joint supervisor now exposes the pipeline's A/V initialization from its
+observed video parameters and caller-supplied AAC configuration. The caller
+still owns the configuration and clock binding; the accessor does not establish
+either. The updated loopback contract checks absence before video configuration
+and the AAC bytes after a segment is available. Its newer revision also feeds
+synthetic audio records through the supervisor into the A/V muxer and checks
+its writer-profile output. Those synthetic AAC bodies are not claimed to decode
+or to be synchronized with the video.
+The single loopback case is running as strict-remote job `30098049032257824`
+in a scope-filtered lab; its supervisor, earlier test, packet-module and
+fixture hashes matched the checkout at transfer. It predates the additional
+audio-mux assertions. The worker's disk guard subsequently stopped the build
+on a telemetry deadline, before tests ran; it exited 137 with acknowledgment and
+source release. The updated full task-effect target was submitted as job
+`30098049032257843` on `vmi1152480`, using the same scope-filtered lab. Five
+modified source and fixture hashes matched the checkout, but the worker-local
+disk guard refused to start Cargo because existing reservations and the protected
+floor could not be covered. The job exited 120 with acknowledgment and source
+release; no test ran. A subsequent run of the updated full target on
+`vmi1264463`, job `30098049032257846`, passed all six tests with terminal
+acknowledgment and source release. The supervisor, A/V muxer, AAC clock, test
+and fixture hashes matched the checkout on the worker. The lab omits unrelated
+reference modules and cannot establish a full-workspace or physical-camera
+result.
+
 `unifi_direct::setup` now drives one completed, nonconflicting discovery
 candidate through an independently admitted camera session, login, status,
 settings, a journaled controller change and readback under one task and total
@@ -2327,3 +2363,326 @@ probe-profile Rust tests; the capability registry checker passed 28 Python
 tests. A separate runtime test refused a management-prepare/settings-commit
 grant pair. These results do not establish device authentication, independent
 camera readback, live controller operation or general camera compatibility.
+
+### A/V archive candidate and publication (qualification pending)
+
+A separate A/V graph candidate composes the existing source-linked video graph
+with the AAC configuration, two-track initialization, A/V fragment and exact
+audio body mappings. When available it retains the original in-band AAC record
+and the claimed epoch. It can also retain separately supplied codec bytes while
+explicitly labeling their original source and epoch unverified; that mode does
+not pretend to have an in-band record. It refuses provisional audio
+configuration or sample boundaries, mismatched source bodies, video mappings,
+configuration bytes, claimed video connection or configuration ranges, limits,
+and an audio configuration that does not precede the segment. The claimed
+shared connection and audio epoch remain the caller's
+responsibility. The existing retention, cancellation, tombstone, root-last and
+ledger gates now have an A/V publication entry point; the A/V child-object reader
+checks authorization, the ledgered root, content identities and metadata prefix,
+but does not independently replay all source mappings or validate A/V sync. A
+separate typed configuration reader returns the stored source class and claimed
+epoch; for the in-band case it also verifies the original record, tag and exact
+configuration range. The supplied case remains explicitly unverified. A new
+video-only readback verifies that the nested video manifest and all its children
+belong to the ledgered A/V root, then replays the existing video source and MP4
+checks. A separate bounded audio mapping verifier replays the video source graph,
+checks every original audio tag against its fragment byte range, and verifies
+contiguous supplied AAC decode ticks and forward sender timestamps. It rebuilds
+the writer-profile A/V initialization from verified video parameters and the
+declared AAC configuration, and checks the fragment's writer-profile audio
+sample table and copied video payload. It preserves the configuration's source
+class. These are writer-profile and source-byte checks, not an independent MP4
+conformance test, audio decode, independent A/V sync, device identity or
+continuity. A combined A/V reader now runs these checks before returning the
+two-track initialization and fragment, rechecks authorization and content
+hashes, and reports whether the AAC configuration was in-band or unverified.
+Child-membership checks use the manifest's sorted digest list and charge an
+explicit work bound; this change is also awaiting test qualification.
+The AAC clock and A/V muxer now expose an explicit, bounded frame-allowance
+renewal without resetting the prior sender timestamp, decode origin or drift
+checks. This removes the hard 16-million-frame epoch ceiling when a caller
+authorizes additional work. At 16 kHz and 1,024 samples per frame, 30 days
+requires 40.5 million frames; a synthetic case checks the allowance
+arithmetic and a second checks retry after a budget refusal. Renewal does not
+prove 30 days of recording, resolve long-term clock drift, or provide a running
+recorder service. On `ts1`, job `30098049032257841` compiled the full packet
+library with pinned nightly and ran the five packet-clock tests, including
+renewal across timestamp wrap and overflow refusal; all five passed, with
+terminal acknowledgment and source release. The clock and test hashes matched
+the checkout. The A/V retry case remains untested and is not in the earlier
+recorder-contract snapshot.
+Known-length source, configuration, initialization and fragment reads now use
+the spool's per-read bound and charge that bound plus framing overhead before
+I/O. An object larger than the committed length is refused; unknown-length
+manifest and metadata reads retain the spool-wide ceiling. A synthetic test
+sets an end-to-end work budget for small records. A second unrun fixture forges
+a shorter initialization length in an otherwise content-addressed, ledgered
+graph and requires the precise spool length-bound refusal. This has not been
+benchmarked or exercised on a retained physical-camera segment.
+An additional synthetic adversarial case creates a fully content-addressed and
+ledgered graph with a deliberately wrong audio target that still points to an
+identical byte; the reader must refuse it. Additional cases require refusal on
+mid-read authorization revocation, an incorrect capture pin and insufficient
+work budget. The nested readback, audio mapping verifier, combined reader and
+their fault cases have not yet completed a test run.
+The live G4 capture has not supplied an original in-band AAC configuration, and
+the separately supplied mode has not been exercised on that camera or qualified
+for continuous recording. Full-workspace job
+`30098049032257703` was refused by a worker disk reservation; its automatic retry
+`30098049032257704` failed source namespace initialization before compilation.
+Neither attempt is a test pass. The separate scoped evidence test is pending.
+The later full-workspace attempt `30098049032257706` also exited 120 at disk
+admission before compilation. The separate scoped graph-construction job
+`30098049032257705` on `trj` exited 137 when the disk telemetry monitor timed
+out during dependency compilation. Its terminal status and source release were acknowledged; it
+produced no test verdict and would have covered only the earlier in-band-only
+version, not the supplied-configuration mode or archive publication.
+
+A further owner-scoped, read-only G4 connection-start observer was running on
+`trj` at 20:10 UTC on 2026-11-06 (local session 9259). It waits at most eight
+minutes for a natural reconnect, then may replay up to 20 seconds of source
+bytes through the previously pinned video-only Rust laboratory binary. It does
+not save media or change the camera. The observer script SHA-256 is
+`10a9ef2f9d4dba4cc17fc9a25d4d45ae92ba1b00847ec4e9f83e4d96e503b8c9`.
+It exited successfully with no new TCP SYN or complete connection header in
+its window, so no native replay ran. This is not evidence that a reconnect
+cannot occur, nor proof of native controller handoff, the new A/V evidence code,
+or continuous recording.
+
+A separate full-workspace snapshot was assembled from Git baseline `f53e4d5a`
+and exact overlays for the A/V candidate, archive, video initialization and
+integration test. Its six overlaid source hashes matched the working tree at
+submission. The first off-root request failed before admission while `trj`'s
+headroom sample needed refreshing; after an explicit read-only worker probe,
+strict-remote job `30098049032257717` was admitted on `trj` and began compiling.
+Those six source hashes also matched on the worker after transfer. The nested
+video readback was added afterward and is not in that snapshot. A disk telemetry
+deadline interrupted this job during compilation, and its wrapper retained
+source ownership after a source-authority lock timeout. Exact-ID recovery of
+`rchw-328f10fd-311b-4504-b971-2bfcb6aa52b6` reported delivery exit 137,
+terminal acknowledgment and source release; the daemon had recorded exit 130.
+Neither exit is a test verdict. The nested readback remains untested.
+
+### First-time Wi-Fi provisioning: protocol evidence and boundary
+
+The existing LAN setup owner starts after a camera is network-reachable. It
+cannot discover an unprovisioned Bluetooth-only camera or send Wi-Fi settings.
+The author of [UniFi BLE Client](https://github.com/zerotypic/unifi-ble-client)
+reports a separately reverse-engineered onboarding protocol and tests only a G3
+Instant. Its [protocol description](https://github.com/zerotypic/unifi-ble-client/blob/main/doc/protocol.md)
+describes a notification byte stream, a write-with-response byte stream,
+bounded big-endian packet lengths, a key exchange, authenticated encryption,
+ordered packet sequence numbers and an API-message layer. The author also
+reports a G3 MTU interoperability problem with strict Linux Bluetooth stacks.
+These are third-party observations, not proof that the owned G4 or other models
+use the identical behavior. The earlier G4 Bluetooth connection attempts in
+this conversation timed out; they did not demonstrate successful BLE provisioning.
+
+A native implementation needs a task-owned, cancellable BLE transport with
+explicit adapter and device scope; source-preserving, bounded reassembly that
+survives notification fragmentation; independently qualified pure-Rust crypto
+and a strict sequence/nonce exhaustion policy; bounded message decoding and
+response correlation; and a one-use, journaled Wi-Fi setting effect with secret
+inputs that never enter logs or retained packet evidence. A locally observed BLE
+address, model name, or use of a protocol default key is not independent camera
+identity or owner authorization. An uncertain write must remain indeterminate
+until independently reconciled; it cannot be blindly retried or silently
+triggered for every broadcast candidate. The current lockfile does not contain
+an XSalsa20-Poly1305 implementation or an X25519 API dependency, and the current
+FSS source has no UniFi BLE transport. An experimental
+`fss_packet::unifi_ble` framer handles the documented two-byte packet length,
+preserves incomplete input at retirement, and refuses invalid or oversized
+lengths without guessing a new boundary. Its companion write cursor splits an
+already-framed packet into bounded characteristic values and tracks explicit
+transport outcomes: acknowledged, definitely not submitted, or indeterminate.
+An uncertain write fences further writes, and retirement preserves the pending
+range for the owner; acknowledgment is not proof of device processing. Four
+standalone synthetic tests of the earlier framer passed
+on `ts1` in strict-remote job `30098049032257790`, including split and combined
+notifications, backpressure, bad lengths and retirement. The tested source
+SHA-256 was `0aa441fbfc8bb282684ec89316223bf94698c536e1e2734d645e2406cf329739`;
+the worker's result was acknowledged and source custody released. This was not
+a full-workspace build or a physical-camera test. A second `ts1` job,
+`30098049032257792`, checked all 39 packet-source hashes, compiled the complete
+dependency-free packet library with the repository's pinned nightly, and passed
+the same four standalone tests. Its result was acknowledged and source custody
+released; it did not run the complete workspace tests. Framing alone does not
+connect or authenticate a camera. Follow-up pinned-nightly job
+`30098049032257796` checked all 39 packet-source hashes, compiled the packet
+library, and passed all six standalone tests including write acknowledgment,
+retry, indeterminate outcome and cancellation. Its result was acknowledged and
+source custody released. The tested current BLE module SHA-256 was
+`fc7c36732ea965d92b1d4862c78628d2a251f10aaf6a977a883cc87bd519b5a9`.
+The module was then revised to eliminate production `expect` and test `unwrap`
+calls. Job `30098049032257815` compiled the packet library from 39 verified
+source files, ran the pinned-nightly Clippy driver with `unwrap_used`,
+`expect_used` and `panic` denied, and passed all six standalone tests. The
+result was acknowledged and source custody released. The revised module hash is
+`f29eb822a995496c5fc14d997b2ad05b69fc05dc9fc53a8791e591ce5ebd2340`.
+Neither the framer nor the cursor implements crypto or configures Wi-Fi. No real-device success for this
+provisioning path is claimed here. The existing working G4 must not be reset or
+re-provisioned merely to obtain a fixture.
+
+For eventual Linux Bluetooth access, `fss_packet::dbus_handshake` implements
+a bounded restricted profile for D-Bus EXTERNAL authentication, `Hello`, and a
+read-only `NameHasOwner` query for `org.bluez`. Unsupported variant types are
+explicitly refused; this is not a complete D-Bus client. On `ts1`, strict-remote
+job `30098049032257855` compiled the complete packet library, passed five
+focused handshake/parser tests with warnings denied, authenticated to the real
+local system bus and observed that the BlueZ name had an owner. The probe made
+no BlueZ or camera calls. Its result was acknowledged and source released.
+The tested module SHA-256 was
+`7e669be964ae734e58da1ec56b682dc80d77a6e6ad0e3525a80db89823f821fd`.
+After stricter unique-name validation and additional partial/false-response
+cases, job `30098049032257859` again compiled the packet library, passed all
+five focused tests with warnings denied, and observed the BlueZ name on `ts1`.
+The updated module SHA-256 is
+`c97c445219aa777ba390885b056ab4953f483e35ec21f163f5db95c1cfb14c86`.
+This is a synchronous standalone process probe, not Asupersync transport,
+adapter enumeration, BLE communication, or Wi-Fi provisioning. BlueZ's
+[adapter API](https://bluez.readthedocs.io/en/latest/adapter-api/) and
+[GATT API](https://bluez.readthedocs.io/en/latest/gatt-api/) remain separate
+protocol work, as do the previously identified crypto and device-identity
+requirements.
+
+After both interrupted jobs were reconciled and their source ownership was
+released, `trj` was observed under heavy load and marked unreachable. A fresh
+probe found `vmi1264463` healthy with sufficient reported free space. The
+snapshot was updated with the nested video readback and its fault cases, then
+strict-remote job `30098049032257738` was admitted there for the entire
+`unifi_direct_recording_contract` target. The six modified source and test
+hashes matched the checkout on the worker after transfer. The worker's disk
+guard then refused to start compilation because active reservations and its
+protected free-space floor could not be covered together; the job exited 120
+with terminal acknowledgment and source release. It produced no test verdict.
+A subsequent probe found `vmi1152480` healthy with 46.7 GiB reported free, and
+strict-remote job `30098049032257742` was submitted there for the same current
+full recorder-contract snapshot. Its disk guard refused to start compilation
+because active reservations and the protected free-space floor exceeded the
+available space. The job exited 120 with terminal acknowledgment and source
+release; it produced no test verdict. Repeating that admission without a
+meaningful capacity change would not test the code.
+
+The A/V audio mapping path was subsequently extended to compare its retained
+initialization with a reconstruction from the verified video parameters and
+AAC configuration, and to check the writer-profile audio fragment table and
+copied video payload. Added synthetic cases alter the initialization and audio
+sample table. A five-sample `trj` filesystem telemetry check then succeeded
+without timeouts, and an explicit worker probe reported healthy. A fresh
+strict-remote full recorder-contract request was started against the updated
+snapshot (local session 31347, wrapper process 38863); it was later admitted
+as build `30098049032257758`, wrapper `rchw-7ecc0e68-19fc-4a0f-adde-5a8e5895445d`.
+The combined A/V reader and the video-shift metadata check were added after its
+snapshot, so this build cannot qualify them. It has no test verdict yet; check
+that exact request and source release before retrying.
+Additional unrun fragment-verifier cases now cover truncated container boxes
+and impossible target/time values without treating a refusal as a decode test.
+
+A separate generic MP4-box oracle was prepared to inspect a bounded passive G4
+replay's track identifiers, `trun` sample extents, AAC decode-tick continuity
+and independent `ffprobe` stream types without saving or printing media. Its
+local script SHA-256 is
+`9751bef17a1133f64084556562a372237ca040634c89a2e282ae343e8c262f35`.
+The attempt stopped at its initial binary-presence check: the previously pinned
+G4 A/V replay executable was no longer available on `trj`. It did not contact
+the camera or produce a media or validation verdict. A new, source-verified
+replay executable is required before this oracle can be used.
+Three separate in-memory synthetic checks of the oracle passed: two-track
+sample extents, rejection of a truncated box, and rejection of a data offset
+outside `mdat`. These exercise only the Python oracle, not the Rust reader or
+the physical camera.
+The prepared replay driver now calls the new Rust initialization and fragment
+validators for each derived segment before emitting its in-memory output. Its
+source SHA-256 is
+`c9c80d4f33e5a24f4a714ca340941112be4bbcc33d0278df2b0294ea944d0bda`.
+The box oracle was changed to require a caller-supplied verified binary identity
+and that validator-success marker; its new script SHA-256 is
+`d7369b81c37a2f777d920e7e7ef9d12830d22ac57e687ab3c780252fd0e889ab`.
+The prior three synthetic oracle checks cover the unchanged box parser only.
+The current replay driver has not yet been compiled or run. In its scoped lab,
+all 19 container and 38 packet Rust source files match the checkout; this does
+not assert a full-workspace match.
+
+Continuation order: once build `30098049032257758` has a terminal result and
+its source ownership is released, refresh the isolated full-workspace snapshot
+with the current archive and integration-test sources and run the entire
+recorder-contract target again. Only the later run can qualify the combined
+reader, work-budget membership checks and newly added adversarial cases. After
+that source custody is released, build the prepared scoped G4 replay driver,
+verify its source and binary hashes, and use the passive box oracle. Neither
+step authorizes a controller handoff or a camera setting change.
+
+The prepared G4 replay driver was subsequently submitted as strict-remote job
+`30098049032257780`, wrapper `rchw-6f0cd48e-1b84-4b0a-9a57-4887f307af31`, on
+`trj` in a separate scoped lab. After transfer, the driver and seven key owner,
+container, demux and packet source hashes matched the local snapshot. The
+existing recorder and upload/discovery timers were active at a contemporaneous
+check. The build has no terminal result yet; verify its exact result, source
+release and binary hash before attempting the passive oracle. A successful lab
+build would not itself establish full-workspace or live-camera qualification.
+
+The full recorder-contract build subsequently reported missing snapshot inputs
+`architecture/device_adapters.json` and `models/fss-activity/fss_activity_v1.fmpk`.
+They exist in the checkout but were not copied into the isolated snapshot. It
+exited 101 with terminal acknowledgment and source release; no contract tests
+ran. The snapshot was refreshed with eight current modified Rust files and 95
+missing repository-local `include_str!`/`include_bytes!` targets, and strict
+remote job `30098049032257804` was submitted to `trj` for the full contract.
+Its source transfer timed out before Cargo started. The wrapper returned 103;
+the durable job recorded exit 1 with terminal acknowledgment and source release.
+It produced no contract-test verdict. A subsequent request for `ts1` was refused
+before submission: the worker reported 32 GiB free against 40 GiB required by
+its current admission policy. No reservation or protected floor was changed.
+On `vmi1264463`, a newly probed worker with approximately 54 GiB free admitted
+job `30098049032257812` but its worker-local guard refused to start Cargo because
+active reservations and the protected floor could not be covered. It exited
+120 with terminal acknowledgment and source release. After a separate read-only
+streaming transfer of the 63 MiB snapshot to `trj` succeeded, the latest
+snapshot was submitted again there as job `30098049032257817`; its result is
+now terminal. After transfer, eight modified source files and the two previously
+missing compile-time inputs matched the checkout by SHA-256. During compilation
+the worker's free-space telemetry timed out and its disk guard stopped the job.
+The wrapper and durable job both recorded exit 137, with terminal acknowledgment
+and source release. No contract-test result was produced; the resource guard
+was not changed.
+After the scope-filtered loopback succeeded on `vmi1264463`, a refreshed full
+snapshot was submitted there as strict-remote job `30098049032257857`. It
+includes the current A/V retry case and an earlier D-Bus handshake revision;
+its terminal result is pending and it cannot qualify subsequent source edits.
+
+The prepared passive camera capture helper was also revised to separate TCP
+flows, handle wraparound and reordering, reject conflicting retransmissions,
+preserve gaps as distinct runs and reject truncated packets or IPv4 fragments.
+Two live capture attempts with an initial 2,048-byte snap length were refused;
+the second identified a truncated IP packet. The helper was changed to allow
+full-sized IPv4 packets while capping the entire capture at 32 MiB and imposing
+a deadline; a subsequent read-only 20-second capture produced one contiguous
+run. Six synthetic fault tests of the revised helper passed. The helper SHA-256 is
+`f27aefcf4be874d1f84e27c336c1792967173d8a20cb57556f0075b780763780`,
+and the revised independent oracle using it is
+`356e0c6a4084dc1bdfc88a9bc829964b6b91bfe78d008db70e2dc2d9c221e2c3`.
+These changes do not authenticate the source or establish complete capture.
+
+The scoped driver build `30098049032257780` completed successfully, with its
+terminal result acknowledged and source released. Its executable SHA-256 is
+`809c8692dd236e6c42e1a15eb49e5c549268334a045a783640ff8a3fd21fc27f`.
+One fresh passive G4-derived replay with the revised helper passed the Rust
+writer-profile checks and independent box/stream probe: three A/V fragments,
+450 video samples and 235 audio samples. The FLV header, initial AVC tag and
+trailer were synthesized; AVC and AAC configurations came from the separate
+relay with epoch and source identity unverified. The initial probe recognized
+H.264 and AAC but did not decode them. Three subsequent fresh passive captures
+passed the same box/stream checks and an independent FFmpeg strict decode of
+both tracks, with no decoder stderr. Each produced three fragments with 450
+video samples and 233 audio samples. The strict-decode oracle SHA-256 is
+`0e9d70e6c4dd7b2889ea6f66946b0d9faf2d4a9908f3773ac5e732effb72739a`.
+These bounded trials did not change camera settings or save media. They do not
+establish authenticated native controller operation, configuration-epoch
+identity, A/V synchronization or continuous recording.
+One further fresh strict-decode trial also passed, making this revised series
+four passes in four completed trials. A planned continuation was interrupted
+while the next capture was in progress after `trj` reported heavy load; that
+incomplete capture has no result. These results do not supersede the separate
+earlier series of seven passes and three failures.
+Afterward, a read-only service check reported the G4 recorder and the upload,
+bulk-fallback and discovery timers active; it does not verify recording coverage.
