@@ -4,6 +4,27 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Bounded recorder replay protocol (2026-11-06; native validation pending)
+
+The native AVC session now exposes explicit replay SETUP/PLAY commands for an
+owner-supplied recorder URI and one closed forward UTC interval of at most seven
+days. Required replay headers, exact normalized ranges and unpaced playback
+survive Digest challenges. A matching response must acknowledge one contained
+closed clock range before media admission. Optional contradictory rate/scale
+echoes and typed 456/457/551 failures refuse without live fallback or widened
+authority. Ordinary live request bytes and deadlines are preserved.
+
+Fifteen native contracts cover calendar/nanosecond bounds, exact request bytes,
+mode isolation, response/session/CSeq validation, failure classifications and
+Digest retries. The executor became unavailable before their native build; these
+tests are authored and source-reviewed, not reported as passing. Supplementary
+RTSP control checks now invoke the target without weakening the existing
+qualification lane. Durable replay receipts and explicit CLI selection remain
+integration work at this checkpoint. No historical frame-time, interval coverage,
+upstream retention or hardware qualification is claimed. See
+`docs/RTSP_RECORDER_REPLAY.md`. This advances
+`fss-vit022-recorder-retrieval-5js5o`; the broad bead remains open.
+
 ## Static ONNX Pad and crop execution (2026-11-06)
 
 The opset-13 importer admits constant-mode Pad for static F32 tensors of rank

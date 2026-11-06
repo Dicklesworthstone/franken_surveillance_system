@@ -115,8 +115,10 @@ fn session_in(state: ClientState) -> Result<RtspClientSession, ClientError> {
 fn oracle_legal(state: ClientState, command: ClientCommand) -> bool {
     match command {
         ClientCommand::Options | ClientCommand::Describe => state == ClientState::Idle,
-        ClientCommand::Setup => state == ClientState::Described,
+        ClientCommand::Setup | ClientCommand::SetupReplay => state == ClientState::Described,
         ClientCommand::Play => state == ClientState::Ready,
+        // This matrix uses the existing ordinary SETUP fixture. It cannot authorize replay.
+        ClientCommand::PlayReplay(_) => false,
         ClientCommand::KeepAlive
         | ClientCommand::KeepAliveGetParameter
         | ClientCommand::Teardown => {

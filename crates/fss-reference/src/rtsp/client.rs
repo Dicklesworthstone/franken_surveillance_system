@@ -17,12 +17,16 @@ pub mod metadata;
 /// Pure validation of supplied video DESCRIBE evidence without a live transaction.
 #[path = "client/observed.rs"]
 pub mod observed;
+/// Closed forward recorder playback with explicit request and acknowledgement bounds.
+#[path = "client/replay.rs"]
+pub mod replay;
 
 use super::selection::{
     select_h264_description, select_h265_description, select_jpeg_description,
     select_onvif_metadata_description,
 };
 use super::{AuthScheme, RtspHeaders, RtspResponse};
+use replay::{ReplayAcceptance, ReplayError, ReplayRejection, ReplayWindow};
 use std::fmt;
 
 const SECOND: u64 = 1_000_000_000;
@@ -82,8 +86,12 @@ pub enum ClientCommand {
     Describe,
     /// Negotiate the selected TCP-interleaved media track.
     Setup,
+    /// Negotiate AVC recorder playback with the required ONVIF replay option.
+    SetupReplay,
     /// Start the negotiated session.
     Play,
+    /// Request one bounded forward recorder interval after an accepted replay SETUP.
+    PlayReplay(ReplayWindow),
     /// Refresh a session using OPTIONS, preserving the original default wire contract.
     KeepAlive,
     /// Explicit empty-body GET_PARAMETER liveness request (RFC 2326 section 10.8).
@@ -99,8 +107,8 @@ impl ClientCommand {
         match self {
             Self::Options | Self::KeepAlive => "OPTIONS",
             Self::Describe => "DESCRIBE",
-            Self::Setup => "SETUP",
-            Self::Play => "PLAY",
+            Self::Setup | Self::SetupReplay => "SETUP",
+            Self::Play | Self::PlayReplay(_) => "PLAY",
             Self::KeepAliveGetParameter => "GET_PARAMETER",
             Self::Teardown => "TEARDOWN",
         }
@@ -108,6 +116,15 @@ impl ClientCommand {
     /// Whether this command only requests session liveness, not a media transition.
     pub const fn is_keepalive(self) -> bool {
         matches!(self, Self::KeepAlive | Self::KeepAliveGetParameter)
+    }
+    const fn is_setup(self) -> bool {
+        matches!(self, Self::Setup | Self::SetupReplay)
+    }
+    const fn is_play(self) -> bool {
+        matches!(self, Self::Play | Self::PlayReplay(_))
+    }
+    const fn is_replay(self) -> bool {
+        matches!(self, Self::SetupReplay | Self::PlayReplay(_))
     }
 }
 
@@ -142,6 +159,10 @@ pub enum ClientError {
     Authentication(Option<AuthScheme>),
     /// A non-success response; redirects are never followed.
     Rejected(u16),
+    /// Malformed, missing, ambiguous or widened replay acknowledgement.
+    Replay(ReplayError),
+    /// Specific recorder replay rejection; none proves upstream retention expiry.
+    ReplayRejected(ReplayRejection),
     /// A frame arrived outside Playing or on an unnegotiated channel.
     MediaNotAdmitted,
 }
@@ -247,6 +268,9 @@ pub enum ClientProgress {
     Interim,
     /// An exact final response advanced local state.
     Accepted(ClientState),
+    /// A matching replay PLAY was accepted within its requested interval. The local
+    /// state is Playing; this does not certify received media or historical coverage.
+    ReplayAccepted(ReplayAcceptance),
     /// Owner should issue an explicitly selected keepalive or close; nothing was sent.
     KeepAliveDue,
     /// No action due yet.
@@ -299,6 +323,7 @@ pub struct RtspClientSession {
     expires_ns: Option<u64>,
     keepalive_ns: Option<u64>,
     remote_may_exist: bool,
+    replay_setup: bool,
     ssrc: Option<u32>,
     digest: Option<authenticated::DigestState>,
 }
@@ -362,6 +387,7 @@ impl RtspClientSession {
             expires_ns: None,
             keepalive_ns: None,
             remote_may_exist: false,
+            replay_setup: false,
             ssrc: None,
             digest: None,
         })
@@ -517,8 +543,9 @@ impl RtspClientSession {
     fn request_target(&self, command: ClientCommand) -> (&'static str, &str) {
         let uri = match command {
             ClientCommand::Options | ClientCommand::Describe => &self.config.presentation_uri,
-            ClientCommand::Setup => &self.track_uri,
+            ClientCommand::Setup | ClientCommand::SetupReplay => &self.track_uri,
             ClientCommand::Play
+            | ClientCommand::PlayReplay(_)
             | ClientCommand::KeepAlive
             | ClientCommand::KeepAliveGetParameter
             | ClientCommand::Teardown => &self.aggregate_uri,
@@ -537,7 +564,11 @@ impl RtspClientSession {
         let valid = match command {
             ClientCommand::Options | ClientCommand::Describe => self.state == ClientState::Idle,
             ClientCommand::Setup => self.state == ClientState::Described,
-            ClientCommand::Play => self.state == ClientState::Ready,
+            ClientCommand::SetupReplay => {
+                self.state == ClientState::Described && self.codec == ClientCodec::H264
+            }
+            ClientCommand::Play => self.state == ClientState::Ready && !self.replay_setup,
+            ClientCommand::PlayReplay(_) => self.state == ClientState::Ready && self.replay_setup,
             ClientCommand::KeepAlive
             | ClientCommand::KeepAliveGetParameter
             | ClientCommand::Teardown => {
@@ -567,13 +598,20 @@ impl RtspClientSession {
         if command == ClientCommand::Describe {
             bytes.push_str("Accept: application/sdp\r\n");
         }
-        if command == ClientCommand::Setup {
+        if command.is_setup() {
             write!(
                 &mut bytes,
                 "Transport: RTP/AVP/TCP;unicast;interleaved={}-{}\r\n",
                 self.config.channels.0, self.config.channels.1
             )
             .map_err(|_| ClientError::Exhausted)?;
+        }
+        if command.is_replay() {
+            bytes.push_str("Require: onvif-replay\r\n");
+        }
+        if let ClientCommand::PlayReplay(window) = command {
+            write!(&mut bytes, "Range: {window}\r\nRate-Control: no\r\n")
+                .map_err(|_| ClientError::Exhausted)?;
         }
         if command == ClientCommand::KeepAliveGetParameter {
             // No parameter names or arbitrary body can cross this liveness-only API.
@@ -588,7 +626,7 @@ impl RtspClientSession {
             deadline_ns: deadline,
         });
         self.next_cseq = next;
-        if command == ClientCommand::Setup {
+        if command.is_setup() {
             self.remote_may_exist = true;
         }
         if command == ClientCommand::Teardown {
@@ -649,8 +687,28 @@ impl RtspClientSession {
             return Err(ClientError::Authentication(response.auth_challenge));
         }
         if response.status_code != 200 {
+            if p.command.is_replay()
+                && let Some(rejection) = ReplayRejection::from_status(response.status_code)
+            {
+                return Err(ClientError::ReplayRejected(rejection));
+            }
             return Err(ClientError::Rejected(response.status_code));
         }
+        // Validate the historical interval before renewing a session or admitting media.
+        // Digest retries retain the original command and range while advancing CSeq.
+        let replay = if let ClientCommand::PlayReplay(requested) = p.command {
+            replay::validate_response_policy(&response.headers).map_err(ClientError::Replay)?;
+            let value = singleton(&response.headers, "Range")
+                .map_err(|_| ClientError::Replay(ReplayError::DuplicateRange))?
+                .ok_or(ClientError::Replay(ReplayError::MissingRange))?;
+            let acknowledged = ReplayWindow::parse(value).map_err(ClientError::Replay)?;
+            Some(
+                ReplayAcceptance::new(p.cseq, requested, acknowledged)
+                    .map_err(ClientError::Replay)?,
+            )
+        } else {
+            None
+        };
         if p.command == ClientCommand::Describe {
             let (media, track, aggregate) = description(
                 &self.config,
@@ -662,7 +720,7 @@ impl RtspClientSession {
             self.track_uri = track;
             self.aggregate_uri = aggregate;
             self.state = ClientState::Described;
-        } else if p.command == ClientCommand::Setup {
+        } else if p.command.is_setup() {
             let value = singleton(&response.headers, "Session")?.ok_or(ClientError::Session)?;
             let (id, timeout) = session(value, self.timeout_ns)?;
             let transport =
@@ -671,9 +729,11 @@ impl RtspClientSession {
             self.renew(p.sent_ns, now, timeout)?;
             self.session_id = Some(id.to_string());
             self.ssrc = ssrc;
+            self.replay_setup = p.command == ClientCommand::SetupReplay;
             self.state = ClientState::Ready;
         } else if p.command.is_keepalive()
-            || matches!(p.command, ClientCommand::Play | ClientCommand::Teardown)
+            || p.command.is_play()
+            || p.command == ClientCommand::Teardown
         {
             let value = singleton(&response.headers, "Session")?;
             if value.is_none() && !p.command.is_keepalive() {
@@ -696,12 +756,15 @@ impl RtspClientSession {
                 self.session_id = None;
             } else {
                 self.renew(p.sent_ns, now, timeout)?;
-                if p.command == ClientCommand::Play {
+                if p.command.is_play() {
                     self.state = ClientState::Playing;
                 }
             }
         }
-        Ok(ClientProgress::Accepted(self.state))
+        Ok(match replay {
+            Some(acceptance) => ClientProgress::ReplayAccepted(acceptance),
+            None => ClientProgress::Accepted(self.state),
+        })
     }
     fn renew(&mut self, sent: u64, now: u64, timeout: u64) -> Result<(), ClientError> {
         // Start at request issue, not ACK receipt: delayed responses cannot manufacture lifetime.

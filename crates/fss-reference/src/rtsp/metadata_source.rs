@@ -474,7 +474,7 @@ impl NativeMetadataSource {
             None
         };
         let mut encoded = CanonicalEncoder::new();
-        encode_control(&mut encoded, &control);
+        encode_control(&mut encoded, &control)?;
         let mut extra = encoded.finish_checked()?.len();
         if let Some(value) = &description {
             let mut encoded = CanonicalEncoder::new();
@@ -1019,7 +1019,7 @@ impl NativeMetadataSource {
         encode_description(&mut e, self.description.as_ref());
         e.u32(self.controls.len() as u32);
         for value in &self.controls {
-            encode_control(&mut e, value);
+            encode_control(&mut e, value)?;
         }
         e.u32(self.records.len() as u32);
         for value in &self.records {
@@ -1154,7 +1154,10 @@ fn control_transition(
         _ => Err(NativeMetadataSourceError::Control),
     }
 }
-fn encode_progress(e: &mut CanonicalEncoder, progress: Option<ClientProgress>) {
+fn encode_progress(
+    e: &mut CanonicalEncoder,
+    progress: Option<ClientProgress>,
+) -> Result<(), NativeMetadataSourceError> {
     match progress {
         None => e.u8(0),
         Some(ClientProgress::Interim) => e.u8(1),
@@ -1172,7 +1175,11 @@ fn encode_progress(e: &mut CanonicalEncoder, progress: Option<ClientProgress>) {
         }
         Some(ClientProgress::KeepAliveDue) => e.u8(3),
         Some(ClientProgress::Pending) => e.u8(4),
+        // Replay is AVC-only. Never coerce its acknowledgement into this existing
+        // metadata source format or add a tag its decoder cannot interpret.
+        Some(ClientProgress::ReplayAccepted(_)) => return Err(NativeMetadataSourceError::Control),
     }
+    Ok(())
 }
 fn decode_progress(
     d: &mut CanonicalDecoder<'_>,
@@ -1191,7 +1198,10 @@ fn decode_progress(
         _ => return Err(NativeMetadataSourceError::Control),
     })
 }
-fn encode_control(e: &mut CanonicalEncoder, value: &NativeMetadataControl) {
+fn encode_control(
+    e: &mut CanonicalEncoder,
+    value: &NativeMetadataControl,
+) -> Result<(), NativeMetadataSourceError> {
     e.u32(value.ordinal);
     e.u64(value.received_ns);
     e.u32(u32::from(value.status));
@@ -1199,9 +1209,10 @@ fn encode_control(e: &mut CanonicalEncoder, value: &NativeMetadataControl) {
     if let Some(cseq) = value.cseq {
         e.u32(cseq);
     }
-    encode_progress(e, value.progress);
+    encode_progress(e, value.progress)?;
     e.u64(value.wire_bytes as u64);
     e.digest(value.wire_digest);
+    Ok(())
 }
 fn encode_description(e: &mut CanonicalEncoder, value: Option<&NativeMetadataDescription>) {
     e.bool(value.is_some());

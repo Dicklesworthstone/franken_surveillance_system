@@ -624,6 +624,10 @@ impl<'a> LiveSiteProbe<'a> {
                         }
                     }
                     ClientCommand::Teardown => return self.complete(),
+                    // This live probe never requests or admits recorder playback.
+                    ClientCommand::SetupReplay | ClientCommand::PlayReplay(_) => {
+                        return Err(ProbeError::UnexpectedResponse);
+                    }
                 }
             }
             RtspEvent::Interleaved { channel, span } => self.media(*channel, span, now)?,

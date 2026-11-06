@@ -5,6 +5,7 @@ All notable changes to Franken Surveillance System are recorded here. The projec
 ## Unreleased
 
 ### Added
+- Added explicit bounded AVC recorder replay SETUP/PLAY with closed UTC ranges, contained acknowledgements, preserved Digest retry identity and typed replay refusals. Live request bytes remain unchanged; native contracts are authored, while durable receipt/CLI integration and hardware qualification remain open.
 - Added static ONNX Pad-13 constant padding and negative cropping on all axes of rank 1–4 F32 tensors, using exact-bit fill tensors and bounded native Slice/Concat lowering. Native artifact/execution contracts pass; restored native builds also verify the previously recovered Resize and fragmented-MP4 changes.
 - Extended static ONNX Resize import to fractional nearest-neighbor scales, downsampling and mixed spatial directions with exact source-scale coordinates, bounded Slice/Concat lowering, shared quotas and cancellation, and unchanged canonical integer-upsample graphs.
 - Extended native AVC/HEVC fragmented MP4 import to inherited cross-track byte offsets, with bounded predecessor metadata, same-file reference checks, exact source ranges, shared quotas and cancellation. Empty-duration fragments and conflicting first/per-sample flags refuse explicitly; unrelated tracks remain outside independent video selections.

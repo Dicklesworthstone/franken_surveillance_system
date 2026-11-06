@@ -12,6 +12,7 @@ on:
       - 'crates/fss-reference/tests/automatic_archive_control_backpressure.rs'
       - 'crates/fss-reference/tests/automatic_live_archive_contract.rs'
       - 'crates/fss-reference/tests/rtsp_keepalive_contract.rs'
+      - 'crates/fss-reference/tests/rtsp_replay_contract.rs'
       - 'crates/fss-reference/tests/rtsp_prefix_recovery_contract.rs'
       - 'crates/fss-reference/tests/rtsp_read_reset_contract.rs'
       - 'crates/fss-cli/src/bin/fss-capture-rtsp/**'
@@ -60,4 +61,4 @@ jobs:
           --test automatic_control_backpressure --test automatic_archive_control_backpressure
       - name: Existing protected archives and exact payload selection
         if: success() || failure()
-        run: cargo +nightly-2026-08-31 test --no-fail-fast --locked --offline -p fss-reference --test automatic_live_archive_contract --test rtsp_payload_selection_streaming
+        run: cargo +nightly-2026-08-31 test --no-fail-fast --locked --offline -p fss-reference --test automatic_live_archive_contract --test rtsp_payload_selection_streaming --test rtsp_replay_contract
