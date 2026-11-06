@@ -367,6 +367,18 @@ impl fmt::Debug for PreparedMessage {
     }
 }
 
+/// Payload-free counts of valid camera time-sync messages on one session.
+/// Correlation and response expectation are untrusted protocol claims.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct TimeSyncCounts {
+    /// Messages with a zero or absent `inResponseTo` field.
+    pub uncorrelated: u32,
+    /// Messages with a nonzero `inResponseTo` field.
+    pub correlated: u32,
+    /// Correlated messages explicitly asserting `responseExpected: true`.
+    pub correlated_response_expected: u32,
+}
+
 /// One owner-driven session. No socket, clock, task, or peer identity is held.
 pub struct Controller {
     identity: Identity,
@@ -378,6 +390,7 @@ pub struct Controller {
     stream_request: Option<(u64, VideoChannel)>,
     prepared: Option<PreparedMessage>,
     rejected_message: Option<RejectedMessage>,
+    time_sync_counts: TimeSyncCounts,
 }
 
 impl fmt::Debug for Controller {
@@ -406,12 +419,18 @@ impl Controller {
             stream_request: None,
             prepared: None,
             rejected_message: None,
+            time_sync_counts: TimeSyncCounts::default(),
         })
     }
 
     /// Current local protocol state, independent of physical camera health.
     pub fn phase(&self) -> Phase {
         self.phase
+    }
+
+    /// Payload-free time-sync observations; these do not prove message delivery.
+    pub fn time_sync_counts(&self) -> TimeSyncCounts {
+        self.time_sync_counts
     }
 
     /// Exact outstanding local message, if one was prepared.
@@ -449,11 +468,10 @@ impl Controller {
         } else {
             0
         };
-        if let Some(value) = fields.get("responseExpected")
-            && value.boolean().is_none()
-        {
-            return Err(Error::InvalidEnvelope);
-        }
+        let response_expected = match fields.get("responseExpected") {
+            Some(value) => value.boolean().ok_or(Error::InvalidEnvelope)?,
+            None => false,
+        };
         match name {
             "ubnt_avclient_hello" => {
                 if self.phase != Phase::AwaitHello || response_to != 0 {
@@ -479,12 +497,22 @@ impl Controller {
                 Ok(Observation::Hello)
             }
             "ubnt_avclient_timeSync" => {
-                // A correlated time-sync is a camera reply, not a fresh
-                // request. Never resolve a local operation from it or reply
-                // again; doing so can create an endless response loop.
+                // Conservatively do not answer a correlated time-sync: blindly
+                // echoing it can create a response loop. The remote flag is an
+                // untrusted claim and does not resolve the protocol ambiguity.
                 if response_to != 0 {
+                    self.time_sync_counts.correlated =
+                        self.time_sync_counts.correlated.saturating_add(1);
+                    if response_expected {
+                        self.time_sync_counts.correlated_response_expected = self
+                            .time_sync_counts
+                            .correlated_response_expected
+                            .saturating_add(1);
+                    }
                     return Ok(Observation::Other);
                 }
+                self.time_sync_counts.uncorrelated =
+                    self.time_sync_counts.uncorrelated.saturating_add(1);
                 if self.time_sync.is_some() {
                     return Err(Error::TimeSyncLimit);
                 }

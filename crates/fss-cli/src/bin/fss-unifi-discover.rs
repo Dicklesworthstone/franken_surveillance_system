@@ -19,17 +19,19 @@ use std::{
     time::{Duration, Instant},
 };
 
-const USAGE: &str = "fss-unifi-discover --iface IPV4 --prefix 1..32 --principal PRINCIPAL --approval sha256:DIGEST --owner-authorized";
+const USAGE: &str = "fss-unifi-discover --iface IPV4 --prefix 1..32 [--target IPV4] --principal PRINCIPAL --approval sha256:DIGEST --owner-authorized";
 
 struct Options {
     iface: Ipv4Addr,
     prefix: u8,
+    target: Ipv4Addr,
     principal: String,
     approval: ContentDigest,
 }
 
 fn options(args: &[String]) -> Result<Options, &'static str> {
-    let (mut iface, mut prefix, mut principal, mut approval) = (None, None, None, None);
+    let (mut iface, mut prefix, mut target, mut principal, mut approval) =
+        (None, None, None, None, None);
     let mut authorized = false;
     let mut i = 0;
     while i < args.len() {
@@ -46,6 +48,9 @@ fn options(args: &[String]) -> Result<Options, &'static str> {
             }
             "--prefix" if prefix.is_none() => {
                 prefix = Some(value.parse().map_err(|_| "invalid prefix")?)
+            }
+            "--target" if target.is_none() => {
+                target = Some(value.parse().map_err(|_| "invalid target")?)
             }
             "--principal"
                 if principal.is_none() && value.starts_with("principal:") && value.len() <= 128 =>
@@ -69,6 +74,7 @@ fn options(args: &[String]) -> Result<Options, &'static str> {
     Ok(Options {
         iface: iface.ok_or("interface is required")?,
         prefix: prefix.ok_or("prefix is required")?,
+        target: target.unwrap_or(Ipv4Addr::BROADCAST),
         principal: principal.ok_or("principal is required")?,
         approval: approval.ok_or("approval digest is required")?,
     })
@@ -87,7 +93,7 @@ fn execute(options: &Options) -> Result<Report, &'static str> {
     let config = Config::new(
         options.iface,
         options.prefix,
-        SocketAddrV4::new(Ipv4Addr::BROADCAST, 10001),
+        SocketAddrV4::new(options.target, 10001),
         &resource,
         Duration::from_secs(3),
         64,
@@ -180,7 +186,7 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args == ["--help"] {
         println!(
-            "{USAGE}\nSends one bounded local broadcast; setup and authentication are not implemented. The approval digest must identify the operator's existing authorization."
+            "{USAGE}\nSends one bounded local broadcast, or one scoped unicast when --target is provided; setup and authentication are not implemented. The approval digest must identify the operator's existing authorization."
         );
         return ExitCode::SUCCESS;
     }
@@ -235,5 +241,52 @@ mod tests {
     #[test]
     fn json_escapes_device_control_characters() {
         assert_eq!(json("a\"\n\\"), "\"a\\\"\\u000a\\\\\"");
+    }
+
+    #[test]
+    fn optional_target_is_scoped_and_cannot_be_repeated() {
+        let mut args = [
+            "--iface",
+            "192.168.1.4",
+            "--prefix",
+            "24",
+            "--principal",
+            "principal:owner",
+            "--approval",
+            "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "--owner-authorized",
+            "--target",
+            "192.168.1.20",
+        ]
+        .map(str::to_owned)
+        .to_vec();
+        let selected = options(&args).expect("valid unicast target");
+        assert_eq!(selected.target, Ipv4Addr::new(192, 168, 1, 20));
+        assert!(
+            Config::new(
+                selected.iface,
+                selected.prefix,
+                SocketAddrV4::new(selected.target, 10001),
+                "fixture",
+                Duration::from_secs(1),
+                1
+            )
+            .is_ok()
+        );
+        args[10] = "192.168.2.20".into();
+        let outside = options(&args).expect("well-formed address");
+        assert!(
+            Config::new(
+                outside.iface,
+                outside.prefix,
+                SocketAddrV4::new(outside.target, 10001),
+                "fixture",
+                Duration::from_secs(1),
+                1
+            )
+            .is_err()
+        );
+        args.extend(["--target".into(), "192.168.1.21".into()]);
+        assert!(options(&args).is_err());
     }
 }

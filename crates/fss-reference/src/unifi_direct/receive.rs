@@ -341,6 +341,11 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Session<'scope, 'task, I
         }
     }
 
+    /// Payload-free counts of camera time-sync frames observed by this session.
+    pub fn time_sync_counts(&self) -> super::TimeSyncCounts {
+        self.controller.time_sync_counts()
+    }
+
     /// Prepare a hello reply for a previously observed camera hello.
     pub fn prepare_hello(&mut self, timestamp: &str) -> Result<(u64, MessageKind), Error> {
         if self.in_flight.is_some() || self.socket.is_none() {

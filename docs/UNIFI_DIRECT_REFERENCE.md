@@ -1021,11 +1021,64 @@ alone as a sufficient reproduction of the earlier physical timeout, not other
 differences in firmware, timing, delivery or connection state.
 An independently repeated run of the
 [`prehello_fixture.py`](../experiments/unifi_tls_05_server_lab/prehello_fixture.py)
-peer on `ts1` again reached a stream request in both cases. Its observed
-time-to-sync-reply was 104 ms coalesced and 93 ms sequential, measured from
-the upgrade request; hello replies arrived at 185 ms and 169 ms respectively.
+peer on `ts1` again reached a stream request in both cases and verified the
+time-sync reply envelope and wall-clock fields. Its observed time-to-sync-reply
+was 94 ms coalesced and 67 ms sequential, measured from the upgrade request;
+hello replies arrived at 217 ms and 133 ms respectively.
 These are synthetic single-run timings and do not establish the physical
 trial's journal latency or response delivery.
+The encrypted Rust process fixture was then expanded to cover an uncorrelated
+time-sync request immediately before hello, alongside its earlier correlated
+time-sync control. On `ovh-b`, both process cases passed: each completed the
+controller exchange, received synthetic media, created a private MP4 and
+decoded frames from it. The test executable SHA-256 was
+`651b18c44d85c1804a1f69208847723f88f8e948538de7d004efa8a42d9b4228`,
+and the corresponding trial binary SHA-256 was
+`abb4d4f7bfc6ac46ad6ac291093f998d3fecc21b4593f5ebd0196c812f0625e6`.
+This is synthetic end-to-end evidence, not a physical-camera video result.
+The controller source now also counts uncorrelated time-sync messages,
+correlated messages, and correlated messages that explicitly request a
+response. These are payload-free, untrusted observations; the conservative
+policy still does not answer correlated messages. The isolated trial source
+includes the counts in deadline and early-EOF reports. This diagnostic change
+and its controller-contract test target passed strict-remote `cargo check` on
+`ts1`. A later strict-remote test job completed on `ovh-b` with exit code zero,
+a terminal acknowledgment, and source resources released. The retained test
+executables were then run directly to recover their detailed output: all 14
+controller tests and all 5 receive tests passed. These tests cover the counts
+without changing the correlated-message response policy. Earlier targeted
+attempts were refused before Cargo started because disk reservations could not
+be satisfied. The updated trial's deadline-reporting source has not yet been
+compiled, deployed to the camera trial host, or exercised against the G4.
+
+A separate `discovery_observe_trial` laboratory binary connects a bounded UDP
+discovery result, an owner-selected address and MAC claim, a pinned TLS
+connection, and `setup::Owner::observe`. Its only setup operation is read-only;
+management authority and approvals are denied. A strict-remote build on `ovh-a`
+completed with a terminal acknowledgment and released sources. Four independent
+disposable UDP/TLS fixture cases passed: normal observation, changed settings,
+a mismatched claim, and a rejected pin. The built binary SHA-256 was
+`809890bf2486c341ac55be5d55e1cb683bb2f56d6c62e2496ecf4936b47e2d09`.
+
+The same binary was run read-only on `trj` against the physical G4 on 2026-11-05.
+A scoped unicast discovery query selected the expected address and neighbor MAC
+claim; the pinned TLS session, local login, status and two matching settings
+reads completed with a task receipt. The reported controller matched the existing
+recorder, and no management effect was attempted. Immediately afterward the
+recorder, upload, bulk fallback, and discovery timers remained active, the
+recorder restart count remained 53, and the most recent upload had succeeded.
+A separate broadcast discovery window shortly beforehand returned no datagrams;
+this does not prove camera absence or explain the difference. The certificate
+and discovery claims were observed on the same network and do not independently
+authenticate the camera. This observation does not establish native streaming,
+automatic adoption, or gap-free recording.
+
+The discovery CLI source now accepts one optional, subnet-checked `--target`
+IPv4 address for a unicast query; without it the existing broadcast behavior is
+unchanged. This is intended to rediscover an owner-known address when broadcast
+replies are absent. The new CLI change has not yet passed its tests or been
+installed in the periodic discovery service, and it does not discover devices
+whose addresses are unknown.
 
 The external recording volume later disappeared from the Mac's mounted
 volumes and several uploads were deferred, with the staging files preserved.

@@ -4,8 +4,8 @@
 use fss_core::json_input::{self, Value};
 use fss_reference::unifi_direct::{
     AGREEMENT_DELAY_NS, AudioCodec, Controller, Dispatch, Error, Identity, MAX_MESSAGE_BYTES,
-    MAX_MESSAGE_ID, MessageKind, Observation, Phase, RejectedMessage, StreamStart, VideoChannel,
-    VideoCodec,
+    MAX_MESSAGE_ID, MessageKind, Observation, Phase, RejectedMessage, StreamStart, TimeSyncCounts,
+    VideoChannel, VideoCodec,
 };
 use std::net::{Ipv4Addr, SocketAddrV4};
 
@@ -130,6 +130,45 @@ fn hello_agreement_and_time_sync_are_correlated_without_authentication_claims() 
     assert_eq!(c.observe(&reply)?, Observation::AgreementReply);
     assert_eq!(c.phase(), Phase::AgreementReplyObserved);
     assert!(!format!("{c:?}").contains("PRIVATE_VALUE"));
+    Ok(())
+}
+
+#[test]
+fn time_sync_counts_preserve_payload_free_correlation_observations() -> TestResult {
+    let mut c = controller(1)?;
+    assert_eq!(c.time_sync_counts(), TimeSyncCounts::default());
+    assert_eq!(
+        c.observe(&message("ubnt_avclient_timeSync", 40, 99, "{}"))?,
+        Observation::Other
+    );
+    let expects_reply = br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"ubnt_avclient_timeSync","messageId":41,"inResponseTo":99,"responseExpected":true}"#;
+    assert_eq!(c.observe(expects_reply)?, Observation::Other);
+    assert_eq!(
+        c.observe(&message("ubnt_avclient_timeSync", 42, 0, "{}"))?,
+        Observation::TimeSyncRequested
+    );
+    assert_eq!(
+        c.observe(&message("ubnt_avclient_timeSync", 43, 0, "{}")),
+        Err(Error::TimeSyncLimit)
+    );
+    assert_eq!(
+        c.time_sync_counts(),
+        TimeSyncCounts {
+            uncorrelated: 2,
+            correlated: 2,
+            correlated_response_expected: 1
+        }
+    );
+    let malformed = br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"ubnt_avclient_timeSync","messageId":44,"inResponseTo":99,"responseExpected":"yes"}"#;
+    assert_eq!(c.observe(malformed), Err(Error::InvalidEnvelope));
+    assert_eq!(
+        c.time_sync_counts(),
+        TimeSyncCounts {
+            uncorrelated: 2,
+            correlated: 2,
+            correlated_response_expected: 1
+        }
+    );
     Ok(())
 }
 
