@@ -23,6 +23,9 @@ media ticks are not capture-time or UTC evidence.
 - Fragments require `mvex` and valid selected-track `trex` defaults. A missing `tfdt`
   continues from the previous decode end, including the end of the indexed prefix.
   An explicit forward gap remains a gap; backwards decode time refuses the whole parse.
+- Selected video may inherit its byte base from preceding track fragments under the
+  bounded [cross-track addressing profile](IMPLICIT_MP4_FRAGMENT_OFFSETS.md). Only
+  required predecessor extents are interpreted; video timing remains independent.
 - Sample limits, table entries, box visits, NAL work, and extraction output limits cover
   the complete selection. Indexed and fragmented byte ranges cannot overlap each other.
 - Strict parsing refuses incomplete boxes and sample ranges. A complete indexed prefix

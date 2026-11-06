@@ -4,6 +4,46 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Inherited byte offsets in multiplexed fragmented MP4 (2026-11-06; recovery verification pending)
+
+Native AVC/HEVC import now resolves selected video fragments whose byte base
+depends on preceding track fragments. It traces only the required dependency
+chain, validates each predecessor's own defaults and self-contained sample
+reference, and inherits the final run cursor with checked signed offsets.
+Selected video retains original ranges, media ticks and Annex-B mappings.
+Independent bases stop dependency tracing; every movie fragment starts a fresh
+addressing context. Supporting entries share the existing table allowance and
+cancellation owner. All consumed sample ranges must fit complete media boxes
+and must not overlap. Empty-duration fragments, required empty predecessors,
+and contradictory first/per-sample flags refuse explicitly. See
+`docs/IMPLICIT_MP4_FRAGMENT_OFFSETS.md` for the supported profile.
+
+**Development validation:** before the executor became unavailable, the original
+working copy passed 87 native tests: 13 new inherited-offset contracts, all
+48 container unit tests and 26 existing AVC/HEVC regression tests. The three
+malformed-media gauntlets exercised 58,000 mutants. Tests used pinned nightly
+`2026-08-31`, the complete production packet/container libraries and their real
+standard-library dependency closure, without source or feature substitutions.
+Both retained AVC/HEVC recordings preserved all ten video samples, media ticks
+and Annex-B bytes. The original new target checked exact shared budgets, every
+parser cancellation checkpoint and every truncated prefix. Independent source
+review, selected formatting, whitespace and the eight-path staged manifest gate
+passed before the outage.
+
+**Published recovery scope:** the executor went offline before the staged change
+could be committed. Production files were recovered from recorded diffs and
+re-reviewed through GitHub. The original 13-contract source was not fully
+recoverable; the published target retains five complete original contracts for
+source preservation, default precedence, continued/backward-positioned runs,
+multi-fragment dependency chains, and signed explicit offsets. This recovered tree has not been recompiled or rerun; the
+development results above must not be interpreted as a pass for these exact
+published bytes. The complete container suite remains a required next check.
+Full targeted Cargo tests and a model Cargo check had already been killed while
+compiling unchanged `fss-core`, including a serial frontend retry with debug
+information and incremental compilation disabled. No repository, codec,
+retained-store/file-adapter, or production qualification is claimed.
+This advances `fss-x4a.12.14` and `fss-x4a.12.2`; both broad beads remain open.
+
 ## Retained movie-time footage selection (2026-11-06)
 
 `fss-file select-movie` now maps a half-open MP4/MOV movie-time interval to

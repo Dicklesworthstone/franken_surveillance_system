@@ -7,14 +7,17 @@
 //! shape as the indexed sample-table join and extends any initial indexed samples, so timeline,
 //! aggregate limits, source overlap, NAL validation and custody stay shared.
 use super::DemuxError;
-use super::reader::{BoxRef, Reader, be32, be64, full, one, optional};
+use super::reader::{BoxRef, Reader, be16, be32, be64, full, one, optional};
+use super::tables::validate_data_reference;
+use std::collections::BTreeMap;
 use std::ops::Range;
 
 /// One sample before NAL validation: source range, decode time, duration, composition offset
 /// and the container's sync assertion.
 pub(super) type FragmentSample = (Range<usize>, u64, u32, i64, bool);
 
-/// `trex` defaults of the selected track.
+/// `trex` defaults belonging to exactly one track.
+#[derive(Clone, Copy)]
 struct Defaults {
     duration: u32,
     size: u32,
@@ -24,10 +27,14 @@ struct Defaults {
 /// `sample_is_non_sync_sample` in ISO/IEC 14496-12 8.8.3.1 sample flags.
 const NON_SYNC: u32 = 0x0001_0000;
 
-fn defaults(r: &mut Reader<'_, '_>, mvex: &BoxRef, track: u32) -> Result<Defaults, DemuxError> {
-    let children = r.children(mvex.body.clone(), false)?;
+fn defaults(
+    r: &mut Reader<'_, '_>,
+    children: &[BoxRef],
+    track: u32,
+) -> Result<Defaults, DemuxError> {
     let mut found = None;
     for trex in children.iter().filter(|b| b.kind == *b"trex") {
+        r.checkpoint()?;
         let b = r.body(trex);
         full(b, 0, 0)?;
         if b.len() != 24 {
@@ -56,6 +63,7 @@ struct TrackFragment {
     track: u32,
     base: Option<u64>,
     default_base_is_moof: bool,
+    duration_is_empty: bool,
     duration: Option<u32>,
     size: Option<u32>,
     flags: Option<u32>,
@@ -98,10 +106,51 @@ fn track_fragment_header(b: &[u8]) -> Result<TrackFragment, DemuxError> {
         track: be32(b, 4)?,
         base,
         default_base_is_moof: flags & 0x0002_0000 != 0,
+        duration_is_empty: flags & 0x0001_0000 != 0,
         duration,
         size,
         flags: sample_flags,
     })
+}
+
+/// Prove that a predecessor's generic sample entry addresses this same file. This checks
+/// layout only: its codec, payload, decode times and audio policy stay outside the selection.
+fn inherited_source(
+    r: &mut Reader<'_, '_>,
+    sources: &[(u32, BoxRef)],
+    track: u32,
+) -> Result<(), DemuxError> {
+    let (_, mdia) = sources
+        .iter()
+        .find(|(id, _)| *id == track)
+        .ok_or(DemuxError::TrackSelection)?;
+    let media = r.children(mdia.body.clone(), false)?;
+    let minf = one(&media, b"minf")?;
+    let info = r.children(minf.body, false)?;
+    validate_data_reference(r, &info)?;
+    let stbl = one(&info, b"stbl")?;
+    let tables = r.children(stbl.body, false)?;
+    let stsd = one(&tables, b"stsd")?;
+    let body = r.body(&stsd);
+    full(body, 0, 0)?;
+    if be32(body, 4)? != 1 {
+        return Err(DemuxError::Unsupported);
+    }
+    r.entries(1)?;
+    let entries = r.children(stsd.body.start + 8..stsd.body.end, false)?;
+    if entries.len() != 1 {
+        return Err(DemuxError::Layout);
+    }
+    let entry = r.body(&entries[0]);
+    if entry.get(..6) != Some(&[0; 6]) || be16(entry, 6)? != 1 {
+        return Err(DemuxError::Unsupported);
+    }
+    Ok(())
+}
+
+struct Fragment {
+    header: TrackFragment,
+    boxes: Vec<BoxRef>,
 }
 
 /// Append the selected track's movie fragments after its initial indexed samples, in decode
@@ -111,10 +160,15 @@ pub(super) fn append(
     top: &[BoxRef],
     mvex: &BoxRef,
     track: u32,
+    track_sources: &[(u32, BoxRef)],
     media: &[Range<usize>],
     samples: &mut Vec<FragmentSample>,
 ) -> Result<(), DemuxError> {
-    let trex = defaults(r, mvex, track)?;
+    let default_boxes = r.children(mvex.body.clone(), false)?;
+    let mut track_defaults = BTreeMap::from([(track, defaults(r, &default_boxes, track)?)]);
+    // Runs are contiguous, so one span per consumed run suffices for overlap detection.
+    // Initial indexed samples share the same check with selected and dependency fragments.
+    let mut extents: Vec<Range<usize>> = samples.iter().map(|sample| sample.0.clone()).collect();
     let mut sequence = None;
     let mut next_decode = match samples.last() {
         Some((_, decode, duration, _, _)) => decode
@@ -136,12 +190,48 @@ pub(super) fn append(
             return Err(DemuxError::Layout);
         }
         sequence = Some(number);
-        for (position, traf) in children.iter().filter(|b| b.kind == *b"traf").enumerate() {
+        let mut fragments = Vec::new();
+        for traf in children.iter().filter(|b| b.kind == *b"traf") {
             let boxes = r.children(traf.body.clone(), false)?;
             let header = track_fragment_header(r.body(&one(&boxes, b"tfhd")?))?;
-            if header.track != track {
+            fragments.push(Fragment { header, boxes });
+        }
+        // Trace only addressing dependencies. An independently addressed video selection
+        // must not start interpreting unrelated audio or other track payloads.
+        let mut required_end = vec![false; fragments.len()];
+        for index in (0..fragments.len()).rev() {
+            r.checkpoint()?;
+            let header = &fragments[index].header;
+            if (header.track == track || required_end[index])
+                && header.base.is_none()
+                && !header.default_base_is_moof
+                && index > 0
+            {
+                required_end[index - 1] = true;
+            }
+        }
+        let mut previous_end = None;
+        for (index, Fragment { header, boxes }) in fragments.into_iter().enumerate() {
+            r.checkpoint()?;
+            let selected = header.track == track;
+            if !selected && !required_end[index] {
+                previous_end = None;
                 continue;
             }
+            // Empty-duration fragments have separate timeline semantics (and forbid runs).
+            // Do not reinterpret them as ordinary media, even when sample fields are present.
+            if header.duration_is_empty {
+                return Err(DemuxError::Unsupported);
+            }
+            let trex = match track_defaults.get(&header.track) {
+                Some(defaults) => *defaults,
+                None => {
+                    inherited_source(r, track_sources, header.track)?;
+                    let defaults = defaults(r, &default_boxes, header.track)?;
+                    track_defaults.insert(header.track, defaults);
+                    defaults
+                }
+            };
             // Encryption and sample-group side tables change interpretation; never ignored.
             if boxes.iter().any(|b| {
                 matches!(
@@ -153,11 +243,14 @@ pub(super) fn append(
             }
             let base = match header.base {
                 Some(base) => usize::try_from(base).map_err(|_| DemuxError::Layout)?,
-                // Without either flag only the first track fragment starts at the moof.
-                None if header.default_base_is_moof || position == 0 => moof.start,
-                None => return Err(DemuxError::Unsupported),
+                None if header.default_base_is_moof || index == 0 => moof.start,
+                None => previous_end.ok_or(DemuxError::Unsupported)?,
             };
-            if let Some(tfdt) = optional(&boxes, b"tfdt")? {
+            if let Some(tfdt) = if selected {
+                optional(&boxes, b"tfdt")?
+            } else {
+                None
+            } {
                 let b = r.body(&tfdt);
                 let (version, width) = match b.first() {
                     Some(0) => (0, 4),
@@ -179,6 +272,7 @@ pub(super) fn append(
                 next_decode = start;
             }
             let mut at = base;
+            let mut has_samples = false;
             for (run_index, trun) in boxes.iter().filter(|b| b.kind == *b"trun").enumerate() {
                 r.checkpoint()?;
                 let b = r.body(trun);
@@ -187,9 +281,15 @@ pub(super) fn append(
                 if version > 1 || flags & !0x0f05 != 0 {
                     return Err(DemuxError::Unsupported);
                 }
+                if flags & 0x4 != 0 && flags & 0x400 != 0 {
+                    return Err(DemuxError::Layout);
+                }
                 let count = be32(b, 4)? as usize;
-                if count > r.limits.maximum_samples.saturating_sub(samples.len()) {
+                if selected && count > r.limits.maximum_samples.saturating_sub(samples.len()) {
                     return Err(DemuxError::Limit);
+                }
+                if count == 0 && required_end[index] {
+                    return Err(DemuxError::Unsupported);
                 }
                 r.entries(count)?;
                 let mut position = 8;
@@ -221,7 +321,9 @@ pub(super) fn append(
                 if b.len() != expected {
                     return Err(DemuxError::Layout);
                 }
+                let run_start = at;
                 for index in 0..count {
+                    r.checkpoint()?;
                     let mut value = |present: bool| -> Result<Option<u32>, DemuxError> {
                         if !present {
                             return Ok(None);
@@ -248,7 +350,7 @@ pub(super) fn append(
                         .or(listed)
                         .or(header.flags)
                         .unwrap_or(trex.flags);
-                    if duration == 0 {
+                    if selected && duration == 0 {
                         return Err(DemuxError::Timeline);
                     }
                     if size == 0 {
@@ -262,27 +364,38 @@ pub(super) fn append(
                     if containing.is_none_or(|m| end > m.end) {
                         return Err(DemuxError::Layout);
                     }
-                    samples.push((
-                        at..end,
-                        next_decode,
-                        duration,
-                        composition,
-                        sample_flags & NON_SYNC == 0,
-                    ));
+                    if selected {
+                        samples.push((
+                            at..end,
+                            next_decode,
+                            duration,
+                            composition,
+                            sample_flags & NON_SYNC == 0,
+                        ));
+                        next_decode = next_decode
+                            .checked_add(u64::from(duration))
+                            .ok_or(DemuxError::Timeline)?;
+                    }
                     at = end;
-                    next_decode = next_decode
-                        .checked_add(u64::from(duration))
-                        .ok_or(DemuxError::Timeline)?;
+                    has_samples = true;
+                }
+                if count > 0 {
+                    extents.push(run_start..at);
                 }
             }
+            if required_end[index] && !has_samples {
+                return Err(DemuxError::Unsupported);
+            }
+            previous_end = Some(at);
         }
     }
     if samples.is_empty() {
         return Err(DemuxError::Layout);
     }
-    let mut order: Vec<&Range<usize>> = samples.iter().map(|sample| &sample.0).collect();
-    order.sort_by_key(|range| range.start);
-    if order.windows(2).any(|pair| pair[0].end > pair[1].start) {
+    r.checkpoint()?;
+    extents.sort_by_key(|range| range.start);
+    r.checkpoint()?;
+    if extents.windows(2).any(|pair| pair[0].end > pair[1].start) {
         return Err(DemuxError::Layout);
     }
     Ok(())

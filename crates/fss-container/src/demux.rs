@@ -6,7 +6,9 @@
 //! `avc1` or `hvc1`/`hev1` video sample
 //! description. Decode/composition ticks, edit lists and the track matrix are
 //! preserved, not interpreted as capture time or silently applied to an elementary stream.
-//! Other tracks are explicitly outside the selection. No decoder, filesystem or effect runs.
+//! Other tracks remain outside the selection. Their bounded extents may be inspected when
+//! a selected fragment inherits its byte base; their payloads are not decoded or exported.
+//! No decoder, filesystem or effect runs.
 //!
 //! The historical `parse*` entrypoints preserve that profile. Explicit `parse_inband*`
 //! entrypoints additionally admit bounded `avc3`/`hev1` parameter updates, source-linked
@@ -51,7 +53,7 @@ pub struct DemuxLimits {
     pub maximum_tracks: usize,
     /// Selected video samples.
     pub maximum_samples: usize,
-    /// Sum of declared entries across all selected sample/configuration/edit tables.
+    /// Sum of selected sample/configuration/edit and required predecessor table entries.
     pub maximum_table_entries: usize,
     /// Configuration and selected-track NAL units, across the complete parse.
     pub maximum_nals: usize,
@@ -352,6 +354,7 @@ impl<'a> AvcMp4<'a> {
         let mvhd = one(&movie, b"mvhd")?;
         let movie_timescale = time_header(r.body(&mvhd))?.0;
         let mut tracks = Vec::new();
+        let mut track_sources = Vec::new();
         let mut selected = None;
         let mut videos = 0;
         for trak in movie.iter().filter(|b| b.kind == *b"trak") {
@@ -365,7 +368,7 @@ impl<'a> AvcMp4<'a> {
                 return Err(DemuxError::Layout);
             }
             let mdia = one(&children, b"mdia")?;
-            let contents = r.children(mdia.body, false)?;
+            let contents = r.children(mdia.body.clone(), false)?;
             let handler = one(&contents, b"hdlr")?;
             let h = r.body(&handler);
             full(h, 0, 0)?;
@@ -374,6 +377,7 @@ impl<'a> AvcMp4<'a> {
             }
             let handler: [u8; 4] = h[8..12].try_into().map_err(|_| DemuxError::Layout)?;
             tracks.push(Mp4Track { id, handler });
+            track_sources.push((id, mdia));
             if handler == *b"vide" {
                 videos += 1;
                 if track.is_none() || track == Some(id) {
@@ -462,7 +466,15 @@ impl<'a> AvcMp4<'a> {
         if let Some(mvex) = mvex {
             // ISO BMFF fragments extend the indexed movie. Reuse one sample vector so decode
             // continuity, sample limits and source-range overlap checks include both parts.
-            fragments::append(&mut r, &top, &mvex, track, &media, &mut entries)?;
+            fragments::append(
+                &mut r,
+                &top,
+                &mvex,
+                track,
+                &track_sources,
+                &media,
+                &mut entries,
+            )?;
         }
         if entries.is_empty() {
             return Err(DemuxError::Layout);
