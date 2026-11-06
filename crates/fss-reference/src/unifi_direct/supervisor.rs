@@ -95,6 +95,17 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Supervisor<'scope, 'task
         self.pipeline.initialization()
     }
 
+    /// Derive an A/V initialization for this pipeline's observed video
+    /// configuration and a caller-supplied AAC configuration. The caller must
+    /// establish or explicitly retain uncertainty about the configuration's
+    /// source epoch and its relationship to the video clock.
+    pub fn av_initialization(
+        &self,
+        audio: &fss_packet::extended_flv::aac::Configuration<'_>,
+    ) -> Result<Option<fss_container::flv_av::Initialization>, fss_container::Mp4Error> {
+        self.pipeline.av_initialization(audio)
+    }
+
     /// Attach bounded AAC observation before this pipeline starts processing.
     pub fn enable_audio_tracking(&mut self) -> Result<(), pipeline::AudioSetupError> {
         if self.stopped {

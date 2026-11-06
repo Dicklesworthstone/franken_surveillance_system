@@ -300,9 +300,14 @@ fn media_fixture() -> Result<Vec<u8>, Box<dyn Error>> {
     config.push(1);
     config.extend_from_slice(&u16::try_from(pps.len())?.to_be_bytes());
     config.extend_from_slice(pps);
-    let mut result = b"FLV\x01\x01\x00\x00\x00\x09\x00\x00\x00\x00".to_vec();
+    let mut result = b"FLV\x01\x05\x00\x00\x00\x09\x00\x00\x00\x00".to_vec();
     result.extend(flv_tag(0, &config));
     for index in 0..7 {
+        // Synthetic AAC bodies exercise source custody and muxing only; they
+        // are not claimed to be decodable audio or synchronized with video.
+        let mut audio=flv_tag(index as u32 * 64,&[0xaf,1,2]);
+        audio[0]=8;
+        result.extend(audio);
         let nal = pictures[index % 3];
         let mut payload = vec![0x17, 1, 0, 0, 0];
         payload.extend_from_slice(&u32::try_from(nal.len())?.to_be_bytes());
@@ -578,6 +583,9 @@ fn conversation_scenario(revoke_stream: bool, revoke_after_start: bool, revoke_a
                 let started=started?;
                 assert_eq!(started.reply,conversation::Reply { status_code:None, success:None, time_syncs:1 });
                 let mut supervisor=supervisor::Supervisor::new(session,started.pipeline,conditions);
+                let audio_bytes=[0x14,0x08];
+                let audio_config=fss_packet::extended_flv::aac::Configuration::parse_explicit(&audio_bytes)?;
+                assert!(supervisor.av_initialization(&audio_config)?.is_none());
                 if revoke_audio_pending {
                     supervisor.enable_audio_tracking()?;
                     let mut retained=Vec::new();
@@ -634,6 +642,7 @@ fn conversation_scenario(revoke_stream: bool, revoke_after_start: bool, revoke_a
                 let mut originals=Vec::new();
                 let mut segments=0;
                 let mut frames=0;
+                let mut av_muxer=None;
                 loop {
                     match supervisor.step(&mut owner,&operations[4],Duration::from_secs(5)).await {
                         supervisor::Step::Media(pipeline::Step::Recording(recording::Push::Source {record,..})) => originals.extend_from_slice(record.bytes()),
@@ -642,7 +651,17 @@ fn conversation_scenario(revoke_stream: bool, revoke_after_start: bool, revoke_a
                         supervisor::Step::Media(pipeline::Step::Recording(recording::Push::Segment(segment))) => {
                             for record in segment.source() { originals.extend_from_slice(record.bytes()); }
                             let mut movie=supervisor.initialization().ok_or("missing initialization")?.bytes().to_vec();
+                            let av_init=supervisor.av_initialization(&audio_config)?.ok_or("missing A/V initialization")?;
+                            assert_eq!(av_init.bytes().get(av_init.audio_configuration_range()),Some(audio_config.bytes()));
                             movie.extend_from_slice(segment.fragment().bytes());
+                            if av_muxer.is_none() {
+                                av_muxer=Some(fss_reference::unifi_direct::av_recording::Muxer::new(
+                                    &av_init,&audio_config,0,0,8,8,fss_container::Mp4Limits::default())?);
+                            }
+                            let av_fragment=av_muxer.as_mut().ok_or("missing A/V muxer")?.fragment(&av_init,&segment)?;
+                            assert!(!av_fragment.audio().is_empty());
+                            fss_container::flv_av::verify_archived_initialization(&movie,av_init.bytes(),&audio_config,fss_container::Mp4Limits::default())?;
+                            fss_container::flv_av::verify_archived_fragment(segment.fragment().bytes(),av_fragment.bytes(),av_fragment.audio(),fss_container::Mp4Limits::default())?;
                             let demux=AvcMp4::parse(&movie,None,DemuxLimits::default())?;
                             let annex=demux.annex_b(0,3)?;
                             let mut decoder=fss_codec_h264::Decoder::new(fss_codec_h264::DecoderLimits::default())?;

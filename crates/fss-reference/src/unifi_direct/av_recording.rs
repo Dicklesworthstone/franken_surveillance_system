@@ -147,6 +147,22 @@ impl Muxer {
         self.source_binding.as_ref()
     }
 
+    /// Extend the AAC frame allowance without resetting this session's
+    /// timestamp or source continuity checks. The caller must authorize and
+    /// account for each extension under the same configuration epoch.
+    /// A failed fragment may be retried after renewal because its input remains
+    /// borrowed and neither timing nor mux state advanced on refusal.
+    pub fn extend_audio_limit(&mut self, additional_frames: u64) -> Result<(), Error> {
+        self.clock
+            .extend_limit(additional_frames)
+            .map_err(Error::Clock)
+    }
+
+    /// Remaining AAC frame observations under the current caller allowance.
+    pub fn remaining_audio_frames(&self) -> u64 {
+        self.clock.remaining()
+    }
+
     /// Derive one fragment while borrowing all original records from `segment`.
     ///
     /// A refusal leaves both the AAC clock and A/V session unchanged. In-stream

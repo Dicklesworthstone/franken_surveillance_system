@@ -13,7 +13,10 @@ use fss_publication::{
     PublishCancellation, PublishCutPoint, RootLedgerReceipt, RootLedgerState, SlotName,
 };
 
-use super::evidence::{DOMAIN, KIND, Prepared};
+use super::{
+    av_evidence::{self, AudioConfigurationOrigin, PreparedAv},
+    evidence::{DOMAIN, KIND, Prepared},
+};
 use crate::{ReferenceDeployment, ReplayCx, reference_deployment::ReplayCancellationBridge};
 
 /// Revalidated authority to retain original camera bytes under the exact scope.
@@ -43,6 +46,14 @@ pub struct Pin {
 impl Pin {
     /// Obtain a candidate pin only if physical capture bounds were supplied.
     pub fn from_plan(plan: &Prepared<'_>) -> Option<Self> {
+        Some(Self {
+            root: plan.manifest().root(),
+            retention: plan.retention(),
+            capture: plan.capture()?,
+        })
+    }
+    /// Obtain an A/V graph pin only when physical capture bounds were supplied.
+    pub fn from_av_plan(plan: &PreparedAv<'_>) -> Option<Self> {
         Some(Self {
             root: plan.manifest().root(),
             retention: plan.retention(),
@@ -151,6 +162,65 @@ pub fn publish(
     work: &mut WorkBudget<'_>,
     cx: &ReplayCx,
 ) -> Result<RootLedgerReceipt, Error> {
+    publish_graph(plan, deployment, authority, limits, work, cx)
+}
+
+/// Publish an A/V evidence graph under the same retention and ledger gates.
+/// This does not establish synchronization, decoding, identity or coverage.
+pub fn publish_av(
+    plan: &PreparedAv<'_>,
+    deployment: &mut ReferenceDeployment,
+    authority: &dyn RetainAuthority,
+    limits: Limits,
+    work: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+) -> Result<RootLedgerReceipt, Error> {
+    publish_graph(plan, deployment, authority, limits, work, cx)
+}
+
+trait Graph {
+    fn manifest(&self) -> &ObjectManifest;
+    fn capture(&self) -> Option<CaptureInterval>;
+    fn retention(&self) -> ContentDigest;
+    fn payloads(&self) -> Box<dyn Iterator<Item = &[u8]> + '_>;
+}
+impl Graph for Prepared<'_> {
+    fn manifest(&self) -> &ObjectManifest {
+        self.manifest()
+    }
+    fn capture(&self) -> Option<CaptureInterval> {
+        self.capture()
+    }
+    fn retention(&self) -> ContentDigest {
+        self.retention()
+    }
+    fn payloads(&self) -> Box<dyn Iterator<Item = &[u8]> + '_> {
+        Box::new(self.payloads())
+    }
+}
+impl Graph for PreparedAv<'_> {
+    fn manifest(&self) -> &ObjectManifest {
+        self.manifest()
+    }
+    fn capture(&self) -> Option<CaptureInterval> {
+        self.capture()
+    }
+    fn retention(&self) -> ContentDigest {
+        self.retention()
+    }
+    fn payloads(&self) -> Box<dyn Iterator<Item = &[u8]> + '_> {
+        Box::new(self.payloads())
+    }
+}
+
+fn publish_graph(
+    plan: &impl Graph,
+    deployment: &mut ReferenceDeployment,
+    authority: &dyn RetainAuthority,
+    limits: Limits,
+    work: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+) -> Result<RootLedgerReceipt, Error> {
     let capture = plan.capture().ok_or(Error::UnknownCapture)?;
     authorize(plan, authority, cx)?;
     if !(1024..=64 * 1024 * 1024).contains(&limits.maximum_spool_object_bytes)
@@ -200,11 +270,16 @@ pub fn publish(
     };
     deployment
         .ledgered_publisher()
-        .publish_and_commit_cancellable(&slot(plan)?, plan.manifest(), capture, &gate)
+        .publish_and_commit_cancellable(
+            &slot_for_root(plan.manifest().root())?,
+            plan.manifest(),
+            capture,
+            &gate,
+        )
         .map_err(storage)
 }
 
-fn authorize(plan: &Prepared<'_>, auth: &dyn RetainAuthority, cx: &ReplayCx) -> Result<(), Error> {
+fn authorize(plan: &impl Graph, auth: &dyn RetainAuthority, cx: &ReplayCx) -> Result<(), Error> {
     cx.checkpoint("unifi-flv-archive:authority")
         .map_err(|_| Error::Cancelled)?;
     if !auth.permits(plan.retention(), plan.manifest().root()) {
@@ -212,12 +287,12 @@ fn authorize(plan: &Prepared<'_>, auth: &dyn RetainAuthority, cx: &ReplayCx) -> 
     }
     Ok(())
 }
-struct Gate<'a, 'b> {
-    plan: &'a Prepared<'b>,
+struct Gate<'a, G> {
+    plan: &'a G,
     authority: &'a dyn RetainAuthority,
     cx: &'a ReplayCx,
 }
-impl PublishCancellation for Gate<'_, '_> {
+impl<G: Graph> PublishCancellation for Gate<'_, G> {
     fn cancel_requested(&self, point: PublishCutPoint) -> bool {
         ReplayCancellationBridge(self.cx).cancel_requested(point)
             || !self
@@ -241,10 +316,151 @@ pub fn read_object(
     cx: &ReplayCx,
 ) -> Result<Vec<u8>, Error> {
     let (manifest, _) = open_graph(deployment, pin, authority, limits, work, cx)?;
-    if !manifest.children().contains(&object) {
+    require_child(&manifest, object, work)?;
+    read_part(deployment, pin, object, authority, work, cx)
+}
+
+/// Read a child of a ledgered A/V graph. This verifies the graph's authority,
+/// content addresses and prefix, but does not replay media mappings or decode.
+pub fn read_av_object(
+    deployment: &mut ReferenceDeployment,
+    pin: Pin,
+    object: ContentDigest,
+    authority: &dyn ReadAuthority,
+    limits: Limits,
+    work: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+) -> Result<Vec<u8>, Error> {
+    let (manifest, _) = open_graph_kind(
+        deployment,
+        pin,
+        authority,
+        limits,
+        work,
+        cx,
+        av_evidence::KIND,
+        av_evidence::DOMAIN,
+    )?;
+    require_child(&manifest, object, work)?;
+    read_part(deployment, pin, object, authority, work, cx)
+}
+
+fn require_child(
+    manifest: &ObjectManifest,
+    child: ContentDigest,
+    work: &mut WorkBudget<'_>,
+) -> Result<(), Error> {
+    work.charge(u64::from(usize::BITS) + 1)?;
+    if manifest.children().binary_search(&child).is_err() {
         return Err(Error::Mismatch);
     }
-    read_part(deployment, pin, object, authority, work, cx)
+    Ok(())
+}
+
+/// Verified graph-local AAC configuration classification. An in-band record
+/// and claimed epoch still do not authenticate the camera or shared epoch.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AvAudioConfiguration {
+    /// Whether a source record was retained or the codec bytes were supplied.
+    pub origin: AudioConfigurationOrigin,
+    /// Content identity of the exact two configuration bytes.
+    pub digest: ContentDigest,
+    /// Claimed track-local epoch, present only with an in-band record.
+    pub claimed_epoch: Option<u64>,
+}
+
+/// Reopen the A/V configuration classification and verify its bytes. For an
+/// in-band configuration this also verifies the original FLV record and exact
+/// byte range. This does not validate all mappings, identity or A/V timing.
+pub fn read_av_audio_configuration(
+    deployment: &mut ReferenceDeployment,
+    pin: Pin,
+    authority: &dyn ReadAuthority,
+    limits: Limits,
+    work: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+) -> Result<AvAudioConfiguration, Error> {
+    use fss_packet::extended_flv::{self, Parse, Tag, aac};
+
+    let (manifest, metadata) = open_graph_kind(
+        deployment,
+        pin,
+        authority,
+        limits,
+        work,
+        cx,
+        av_evidence::KIND,
+        av_evidence::DOMAIN,
+    )?;
+    work.charge(metadata.len() as u64 * 4)?;
+    let mut d = CanonicalDecoder::new(&metadata);
+    check_prefix_kind(&mut d, pin, av_evidence::DOMAIN)?;
+    let video_root = d.digest().map_err(storage)?;
+    require_child(&manifest, video_root, work)?;
+    let (origin, claimed_epoch, source) = match d.u8().map_err(storage)? {
+        0 => {
+            let epoch = d.u64().map_err(storage)?;
+            let entry = record(&mut d, limits.maximum_spool_object_bytes)?;
+            let start = d.u64().map_err(storage)?;
+            let end = d.u64().map_err(storage)?;
+            if epoch == 0 || start >= end {
+                return Err(Error::Mismatch);
+            }
+            require_child(&manifest, entry.digest, work)?;
+            (
+                AudioConfigurationOrigin::InBand,
+                Some(epoch),
+                Some((entry, start..end)),
+            )
+        }
+        1 => (AudioConfigurationOrigin::SuppliedUnverified, None, None),
+        _ => return Err(Error::Mismatch),
+    };
+    let digest = d.digest().map_err(storage)?;
+    require_child(&manifest, digest, work)?;
+    let bytes = read_part_bounded(deployment, pin, digest, 2, authority, work, cx)?;
+    aac::Configuration::parse_explicit(&bytes).map_err(storage)?;
+    if let Some((entry, range)) = source {
+        let source_bytes = checked_record_bytes(deployment, pin, &entry, authority, work, cx)?;
+        let (tag_offset, kind, timestamp) = entry.tag.ok_or(Error::Mismatch)?;
+        let tag_bytes = source_bytes.get(tag_offset..).ok_or(Error::Mismatch)?;
+        let Parse::Complete(tag) =
+            Tag::parse(tag_bytes, extended_flv::Limits::default()).map_err(storage)?
+        else {
+            return Err(Error::Mismatch);
+        };
+        if kind != 8
+            || tag.kind() != kind
+            || tag.timestamp_ms() != timestamp
+            || tag.wire_bytes().len() != tag_bytes.len()
+        {
+            return Err(Error::Mismatch);
+        }
+        let audio = aac::AudioTag::parse(tag, aac::Limits::default()).map_err(storage)?;
+        if audio.packet_type() != aac::PacketType::Configuration || audio.body() != bytes {
+            return Err(Error::Mismatch);
+        }
+        let body = audio.body_range();
+        let start = entry
+            .offset
+            .checked_add(tag_offset as u64)
+            .and_then(|offset| offset.checked_add(body.start as u64))
+            .ok_or(Error::Limit)?;
+        let end = entry
+            .offset
+            .checked_add(tag_offset as u64)
+            .and_then(|offset| offset.checked_add(body.end as u64))
+            .ok_or(Error::Limit)?;
+        if range != (start..end) {
+            return Err(Error::Mismatch);
+        }
+    }
+    read_authorize(pin, authority, cx)?;
+    Ok(AvAudioConfiguration {
+        origin,
+        digest,
+        claimed_epoch,
+    })
 }
 
 fn open_graph(
@@ -254,6 +470,19 @@ fn open_graph(
     limits: Limits,
     work: &mut WorkBudget<'_>,
     cx: &ReplayCx,
+) -> Result<(ObjectManifest, Vec<u8>), Error> {
+    open_graph_kind(deployment, pin, authority, limits, work, cx, KIND, DOMAIN)
+}
+
+fn open_graph_kind(
+    deployment: &mut ReferenceDeployment,
+    pin: Pin,
+    authority: &dyn ReadAuthority,
+    limits: Limits,
+    work: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+    kind: &str,
+    domain: &str,
 ) -> Result<(ObjectManifest, Vec<u8>), Error> {
     read_authorize(pin, authority, cx)?;
     if !(1024..=64 * 1024 * 1024).contains(&limits.maximum_spool_object_bytes)
@@ -283,18 +512,25 @@ fn open_graph(
     }
     let root_bytes = read_part(deployment, pin, pin.root, authority, work, cx)?;
     let manifest = ObjectManifest::from_canonical_bytes(&root_bytes).map_err(storage)?;
-    if manifest.root() != pin.root || manifest.kind() != KIND {
+    if manifest.root() != pin.root || manifest.kind() != kind {
         return Err(Error::Mismatch);
     }
     let metadata = manifest.metadata_digest().ok_or(Error::Mismatch)?;
     let metadata_bytes = read_part(deployment, pin, metadata, authority, work, cx)?;
     let mut decoder = CanonicalDecoder::new(&metadata_bytes);
-    check_prefix(&mut decoder, pin)?;
+    check_prefix_kind(&mut decoder, pin, domain)?;
     Ok((manifest, metadata_bytes))
 }
 
 fn check_prefix(decoder: &mut CanonicalDecoder<'_>, pin: Pin) -> Result<(), Error> {
-    if decoder.text().map_err(storage)? != DOMAIN
+    check_prefix_kind(decoder, pin, DOMAIN)
+}
+fn check_prefix_kind(
+    decoder: &mut CanonicalDecoder<'_>,
+    pin: Pin,
+    domain: &str,
+) -> Result<(), Error> {
+    if decoder.text().map_err(storage)? != domain
         || decoder.digest().map_err(storage)? != pin.retention
         || !decoder.bool().map_err(storage)?
     {
@@ -327,7 +563,30 @@ fn read_part(
     work: &mut WorkBudget<'_>,
     cx: &ReplayCx,
 ) -> Result<Vec<u8>, Error> {
+    read_part_bounded(
+        deployment,
+        pin,
+        digest,
+        deployment.publisher().limits().spool.max_object_bytes,
+        authority,
+        work,
+        cx,
+    )
+}
+
+fn read_part_bounded(
+    deployment: &ReferenceDeployment,
+    pin: Pin,
+    digest: ContentDigest,
+    maximum_payload_bytes: usize,
+    authority: &dyn ReadAuthority,
+    work: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+) -> Result<Vec<u8>, Error> {
     read_authorize(pin, authority, cx)?;
+    if maximum_payload_bytes > deployment.publisher().limits().spool.max_object_bytes {
+        return Err(Error::Limit);
+    }
     work.charge(deployment.publisher().limits().max_tombstones as u64 + 1)?;
     if deployment
         .publisher()
@@ -336,11 +595,16 @@ fn read_part(
     {
         return Err(Error::Tombstoned);
     }
-    work.charge(deployment.publisher().limits().spool.max_object_bytes as u64 * 3)?;
+    let read_bound = (fss_object::SPOOL_OBJECT_HEADER_LEN as u64)
+        .checked_add(u64::try_from(maximum_payload_bytes).map_err(|_| Error::Limit)?)
+        .and_then(|n| n.checked_add(1))
+        .and_then(|n| n.checked_mul(4))
+        .ok_or(Error::Limit)?;
+    work.charge(read_bound)?;
     let bytes = deployment
         .publisher()
         .spool()
-        .read(digest)
+        .read_bounded(digest, maximum_payload_bytes)
         .map_err(storage)?;
     if ContentDigest::sha256(&bytes) != digest {
         return Err(Error::Mismatch);
@@ -464,7 +728,15 @@ fn checked_record_bytes(
     work: &mut WorkBudget<'_>,
     cx: &ReplayCx,
 ) -> Result<Vec<u8>, Error> {
-    let bytes = read_part(deployment, pin, entry.digest, authority, work, cx)?;
+    let bytes = read_part_bounded(
+        deployment,
+        pin,
+        entry.digest,
+        entry.length,
+        authority,
+        work,
+        cx,
+    )?;
     if bytes.len() != entry.length {
         return Err(Error::Mismatch);
     }
@@ -484,11 +756,551 @@ pub fn read_clip(
     work: &mut WorkBudget<'_>,
     cx: &ReplayCx,
 ) -> Result<RecoveredClip, Error> {
-    use fss_container::demux::{AvcMp4, DemuxLimits};
-    use std::collections::BTreeSet;
     let (manifest, metadata) = open_graph(deployment, pin, authority, limits, work, cx)?;
+    recover_video_graph(
+        deployment, pin, &manifest, &metadata, authority, limits, work, cx,
+    )
+}
+
+/// Recover the independently source-checked video derivative nested in a
+/// ledgered A/V graph. This returns video only, not the A/V fragment, and does
+/// not validate audio mappings, synchronization, peer identity or capture time.
+pub fn read_av_video_clip(
+    deployment: &mut ReferenceDeployment,
+    pin: Pin,
+    authority: &dyn ReadAuthority,
+    limits: Limits,
+    work: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+) -> Result<RecoveredClip, Error> {
+    let (_, _, video, video_metadata) =
+        open_av_video_graph(deployment, pin, authority, limits, work, cx)?;
+    recover_video_graph(
+        deployment,
+        pin,
+        &video,
+        &video_metadata,
+        authority,
+        limits,
+        work,
+        cx,
+    )
+}
+
+fn open_av_video_graph(
+    deployment: &mut ReferenceDeployment,
+    pin: Pin,
+    authority: &dyn ReadAuthority,
+    limits: Limits,
+    work: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+) -> Result<(ObjectManifest, Vec<u8>, ObjectManifest, Vec<u8>), Error> {
+    let (outer, metadata) = open_graph_kind(
+        deployment,
+        pin,
+        authority,
+        limits,
+        work,
+        cx,
+        av_evidence::KIND,
+        av_evidence::DOMAIN,
+    )?;
+    work.charge(metadata.len() as u64 * 4)?;
+    let mut decoder = CanonicalDecoder::new(&metadata);
+    check_prefix_kind(&mut decoder, pin, av_evidence::DOMAIN)?;
+    let video_root = decoder.digest().map_err(storage)?;
+    work.charge(u64::from(usize::BITS) + 1)?;
+    if outer.children().binary_search(&video_root).is_err() {
+        return Err(Error::Mismatch);
+    }
+    let bytes = read_part(deployment, pin, video_root, authority, work, cx)?;
+    let video = ObjectManifest::from_canonical_bytes(&bytes).map_err(storage)?;
+    work.charge(
+        (video.children().len() as u64)
+            .checked_mul(u64::from(usize::BITS) + 1)
+            .ok_or(Error::Limit)?,
+    )?;
+    if video.root() != video_root
+        || video.kind() != KIND
+        || video
+            .children()
+            .iter()
+            .any(|child| outer.children().binary_search(child).is_err())
+    {
+        return Err(Error::Mismatch);
+    }
+    let digest = video.metadata_digest().ok_or(Error::Mismatch)?;
+    let video_metadata = read_part(deployment, pin, digest, authority, work, cx)?;
+    Ok((outer, metadata, video, video_metadata))
+}
+
+/// Evidence that retained AAC bodies match the writer-profile A/V sample table.
+/// This is not audio decoding, independent clock alignment, source
+/// authentication, or proof of continuous coverage.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AvAudioSourceMapping {
+    /// Whether the codec configuration had a retained in-band source record.
+    pub configuration_origin: AudioConfigurationOrigin,
+    /// Number of matching AAC bodies.
+    pub frames: usize,
+    /// Caller-bound AAC sample clock at the first body.
+    pub first_decode_ticks: u64,
+    /// Exclusive end of the contiguous caller-bound AAC sample clock.
+    pub end_decode_ticks: u64,
+    /// Sample rate declared by the configuration, not independently measured.
+    pub sample_rate: u32,
+}
+
+/// A/V bytes recovered after source-mapping and writer-profile checks.
+/// Capture, identity, codec decoding and independent synchronization remain
+/// separate claims; audio configuration provenance is exposed explicitly.
+#[must_use]
+pub struct RecoveredAvClip {
+    bytes: Vec<u8>,
+    capture: CaptureInterval,
+    video_samples: usize,
+    audio: AvAudioSourceMapping,
+}
+impl RecoveredAvClip {
+    /// Two-track initialization followed by its checked media fragment.
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+    /// Transfer the authorized media bytes to the caller.
+    pub fn into_bytes(self) -> Vec<u8> {
+        self.bytes
+    }
+    /// Caller-supplied bounds encoded in the ledgered root.
+    pub fn capture(&self) -> CaptureInterval {
+        self.capture
+    }
+    /// Structurally checked video sample count, not a decode guarantee.
+    pub fn video_samples(&self) -> usize {
+        self.video_samples
+    }
+    /// Checked audio source mapping and configuration provenance.
+    pub fn audio(&self) -> AvAudioSourceMapping {
+        self.audio
+    }
+}
+impl fmt::Debug for RecoveredAvClip {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RecoveredAvClip")
+            .field("bytes", &"<redacted>")
+            .field("capture", &self.capture)
+            .field("video_samples", &self.video_samples)
+            .field("audio", &self.audio)
+            .finish()
+    }
+}
+
+struct StoredAudioMapping {
+    source: std::ops::Range<u64>,
+    target: std::ops::Range<usize>,
+    decode_ticks: u64,
+    duration_ticks: u32,
+}
+
+/// Recheck every retained audio source tag against its emitted AAC body.
+/// The A/V fragment remains in private memory and no media bytes are returned.
+/// The generated initialization and audio fragment table are checked against
+/// the writer's supported profile. A/V sync and decodability are not checked.
+pub fn verify_av_audio_source_mapping(
+    deployment: &mut ReferenceDeployment,
+    pin: Pin,
+    authority: &dyn ReadAuthority,
+    limits: Limits,
+    work: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+) -> Result<AvAudioSourceMapping, Error> {
+    Ok(verify_av_graph(deployment, pin, authority, limits, work, cx)?.audio)
+}
+
+struct VerifiedAvGraph {
+    audio: AvAudioSourceMapping,
+    video_samples: usize,
+    initialization_digest: ContentDigest,
+    initialization_len: usize,
+    fragment_digest: ContentDigest,
+    fragment_len: usize,
+}
+
+/// Recover the two-track derivative after checking its retained video, audio
+/// source ranges, configuration class and the supported writer-profile table.
+/// This neither decodes the samples nor authenticates or synchronizes the camera.
+/// No bytes are returned after policy revocation or content mismatch.
+pub fn read_av_clip(
+    deployment: &mut ReferenceDeployment,
+    pin: Pin,
+    authority: &dyn ReadAuthority,
+    limits: Limits,
+    work: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+) -> Result<RecoveredAvClip, Error> {
+    let verified = verify_av_graph(deployment, pin, authority, limits, work, cx)?;
+    let media_len = verified
+        .initialization_len
+        .checked_add(verified.fragment_len)
+        .ok_or(Error::Limit)?;
+    if media_len > 129 * 1024 * 1024 {
+        return Err(Error::Limit);
+    }
+    let mut bytes = read_part_bounded(
+        deployment,
+        pin,
+        verified.initialization_digest,
+        verified.initialization_len,
+        authority,
+        work,
+        cx,
+    )?;
+    let fragment = read_part_bounded(
+        deployment,
+        pin,
+        verified.fragment_digest,
+        verified.fragment_len,
+        authority,
+        work,
+        cx,
+    )?;
+    if bytes.len() != verified.initialization_len || fragment.len() != verified.fragment_len {
+        return Err(Error::Mismatch);
+    }
+    work.charge((media_len as u64).checked_mul(2).ok_or(Error::Limit)?)?;
+    bytes
+        .try_reserve_exact(fragment.len())
+        .map_err(|_| Error::Limit)?;
+    bytes.extend_from_slice(&fragment);
+    read_authorize(pin, authority, cx)?;
+    Ok(RecoveredAvClip {
+        bytes,
+        capture: pin.capture,
+        video_samples: verified.video_samples,
+        audio: verified.audio,
+    })
+}
+
+fn verify_av_graph(
+    deployment: &mut ReferenceDeployment,
+    pin: Pin,
+    authority: &dyn ReadAuthority,
+    limits: Limits,
+    work: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+) -> Result<VerifiedAvGraph, Error> {
+    use fss_packet::extended_flv::{self, Parse, Tag, aac};
+
+    let configuration = read_av_audio_configuration(deployment, pin, authority, limits, work, cx)?;
+    let (outer, metadata, video, video_metadata) =
+        open_av_video_graph(deployment, pin, authority, limits, work, cx)?;
+    let verified_video = recover_video_graph(
+        deployment,
+        pin,
+        &video,
+        &video_metadata,
+        authority,
+        limits,
+        work,
+        cx,
+    )?;
     work.charge(metadata.len() as u64 * 4)?;
     let mut d = CanonicalDecoder::new(&metadata);
+    check_prefix_kind(&mut d, pin, av_evidence::DOMAIN)?;
+    if d.digest().map_err(storage)? != video.root() {
+        return Err(Error::Mismatch);
+    }
+    match d.u8().map_err(storage)? {
+        0 if configuration.origin == AudioConfigurationOrigin::InBand => {
+            if Some(d.u64().map_err(storage)?) != configuration.claimed_epoch {
+                return Err(Error::Mismatch);
+            }
+            let _ = record(&mut d, limits.maximum_spool_object_bytes)?;
+            let _ = d.u64().map_err(storage)?;
+            let _ = d.u64().map_err(storage)?;
+        }
+        1 if configuration.origin == AudioConfigurationOrigin::SuppliedUnverified => {}
+        _ => return Err(Error::Mismatch),
+    }
+    if d.digest().map_err(storage)? != configuration.digest {
+        return Err(Error::Mismatch);
+    }
+    let initialization_digest = d.digest().map_err(storage)?;
+    let initialization_len = read_size(&mut d, limits.maximum_spool_object_bytes)?;
+    let fragment_digest = d.digest().map_err(storage)?;
+    let fragment_len = read_size(&mut d, limits.maximum_spool_object_bytes)?;
+    let video_shift = read_size(&mut d, fragment_len)?;
+    work.charge(2 * (u64::from(usize::BITS) + 1))?;
+    if initialization_len == 0
+        || fragment_len == 0
+        || outer
+            .children()
+            .binary_search(&initialization_digest)
+            .is_err()
+        || outer.children().binary_search(&fragment_digest).is_err()
+    {
+        return Err(Error::Mismatch);
+    }
+    let count = read_size(&mut d, 8192)?;
+    if count == 0 || count > 4096 {
+        return Err(Error::Mismatch);
+    }
+    if count.checked_mul(8).and_then(|n| n.checked_add(64)) != Some(video_shift) {
+        return Err(Error::Mismatch);
+    }
+    let mut mappings = Vec::new();
+    mappings
+        .try_reserve_exact(count)
+        .map_err(|_| Error::Limit)?;
+    for _ in 0..count {
+        let source = d.u64().map_err(storage)?..d.u64().map_err(storage)?;
+        let target = read_size(&mut d, fragment_len)?..read_size(&mut d, fragment_len)?;
+        let decode_ticks = d.u64().map_err(storage)?;
+        let duration_ticks = d.u32().map_err(storage)?;
+        if source.start >= source.end || target.start >= target.end || duration_ticks == 0 {
+            return Err(Error::Mismatch);
+        }
+        mappings.push(StoredAudioMapping {
+            source,
+            target,
+            decode_ticks,
+            duration_ticks,
+        });
+    }
+    d.ensure_finished().map_err(storage)?;
+    let fragment = read_part_bounded(
+        deployment,
+        pin,
+        fragment_digest,
+        fragment_len,
+        authority,
+        work,
+        cx,
+    )?;
+    if fragment.len() != fragment_len {
+        return Err(Error::Mismatch);
+    }
+    let config_bytes = read_part_bounded(
+        deployment,
+        pin,
+        configuration.digest,
+        2,
+        authority,
+        work,
+        cx,
+    )?;
+    let config = aac::Configuration::parse_explicit(&config_bytes).map_err(storage)?;
+    let initialization = read_part_bounded(
+        deployment,
+        pin,
+        initialization_digest,
+        initialization_len,
+        authority,
+        work,
+        cx,
+    )?;
+    if initialization.len() != initialization_len {
+        return Err(Error::Mismatch);
+    }
+    let mp4_limits = fss_container::Mp4Limits {
+        max_samples: 4096,
+        max_nals: 65_536,
+        max_source_spans: 262_144,
+        max_fragment_bytes: 128 * 1024 * 1024,
+        max_initialization_bytes: 1024 * 1024,
+    };
+    work.charge(
+        (verified_video.bytes().len() as u64)
+            .checked_add(initialization.len() as u64)
+            .and_then(|n| n.checked_mul(4))
+            .ok_or(Error::Limit)?,
+    )?;
+    fss_container::flv_av::verify_archived_initialization(
+        verified_video.bytes(),
+        &initialization,
+        &config,
+        mp4_limits,
+    )
+    .map_err(storage)?;
+
+    work.charge(video_metadata.len() as u64 * 4)?;
+    let mut source = CanonicalDecoder::new(&video_metadata);
+    check_prefix(&mut source, pin)?;
+    if source.u64().map_err(storage)? == 0
+        || source.u64().map_err(storage)? == 0
+        || source.u32().map_err(storage)? == 0
+    {
+        return Err(Error::Mismatch);
+    }
+    let _ = record(&mut source, limits.maximum_spool_object_bytes)?;
+    let _ = source.digest().map_err(storage)?;
+    let _ = read_size(&mut source, limits.maximum_spool_object_bytes)?;
+    let video_fragment_digest = source.digest().map_err(storage)?;
+    let video_fragment_len = read_size(&mut source, limits.maximum_spool_object_bytes)?;
+    work.charge(u64::from(usize::BITS) + 1)?;
+    if video
+        .children()
+        .binary_search(&video_fragment_digest)
+        .is_err()
+    {
+        return Err(Error::Mismatch);
+    }
+    let video_fragment = read_part_bounded(
+        deployment,
+        pin,
+        video_fragment_digest,
+        video_fragment_len,
+        authority,
+        work,
+        cx,
+    )?;
+    if video_fragment.len() != video_fragment_len {
+        return Err(Error::Mismatch);
+    }
+    let mut container_mappings = Vec::new();
+    container_mappings
+        .try_reserve_exact(count)
+        .map_err(|_| Error::Limit)?;
+    for mapping in &mappings {
+        container_mappings.push(fss_container::flv_av::AudioMapping {
+            source: mapping.source.clone(),
+            target: mapping.target.clone(),
+            decode_ticks: mapping.decode_ticks,
+            duration_ticks: u16::try_from(mapping.duration_ticks).map_err(|_| Error::Limit)?,
+        });
+    }
+    work.charge(
+        (video_fragment.len() as u64)
+            .checked_add(fragment.len() as u64)
+            .and_then(|n| n.checked_mul(4))
+            .ok_or(Error::Limit)?,
+    )?;
+    fss_container::flv_av::verify_archived_fragment(
+        &video_fragment,
+        &fragment,
+        &container_mappings,
+        mp4_limits,
+    )
+    .map_err(storage)?;
+    let source_count = read_size(&mut source, 8192)?;
+    if source_count == 0 {
+        return Err(Error::Mismatch);
+    }
+    let mut index = 0usize;
+    let mut next_offset = None;
+    let mut previous_target = None;
+    let mut previous_tick = None;
+    let mut previous_sender: Option<u32> = None;
+    for _ in 0..source_count {
+        let entry = record(&mut source, limits.maximum_spool_object_bytes)?;
+        work.charge(u64::from(usize::BITS) + 1)?;
+        if video.children().binary_search(&entry.digest).is_err()
+            || next_offset.is_some_and(|offset| offset != entry.offset)
+        {
+            return Err(Error::Mismatch);
+        }
+        next_offset = Some(
+            entry
+                .offset
+                .checked_add(entry.length as u64)
+                .ok_or(Error::Limit)?,
+        );
+        let bytes = checked_record_bytes(deployment, pin, &entry, authority, work, cx)?;
+        let Some((tag_offset, kind, timestamp)) = entry.tag else {
+            let Parse::Complete(header) =
+                extended_flv::Header::parse(&bytes, extended_flv::Limits::default())
+                    .map_err(storage)?
+            else {
+                return Err(Error::Mismatch);
+            };
+            if header.wire_bytes().len() != bytes.len() {
+                return Err(Error::Mismatch);
+            }
+            continue;
+        };
+        let tag_bytes = bytes.get(tag_offset..).ok_or(Error::Mismatch)?;
+        let Parse::Complete(tag) =
+            Tag::parse(tag_bytes, extended_flv::Limits::default()).map_err(storage)?
+        else {
+            return Err(Error::Mismatch);
+        };
+        if tag.wire_bytes().len() != tag_bytes.len()
+            || tag.kind() != kind
+            || tag.timestamp_ms() != timestamp
+            || kind == 10
+        {
+            return Err(Error::Mismatch);
+        }
+        if kind != 8 {
+            continue;
+        }
+        let audio = aac::AudioTag::parse(tag, aac::Limits::default()).map_err(storage)?;
+        if audio.packet_type() != aac::PacketType::Raw {
+            return Err(Error::Mismatch);
+        }
+        let mapping = mappings.get(index).ok_or(Error::Mismatch)?;
+        let body = audio.body_range();
+        let base = entry
+            .offset
+            .checked_add(tag_offset as u64)
+            .ok_or(Error::Limit)?;
+        let start = base.checked_add(body.start as u64).ok_or(Error::Limit)?;
+        let end = base.checked_add(body.end as u64).ok_or(Error::Limit)?;
+        if mapping.source != (start..end)
+            || fragment.get(mapping.target.clone()) != Some(audio.body())
+            || mapping.duration_ticks != u32::from(config.frame_samples())
+            || previous_target.is_some_and(|end| end != mapping.target.start)
+            || previous_tick.is_some_and(|end| end != mapping.decode_ticks)
+            || previous_sender.is_some_and(|last| {
+                let delta = timestamp.wrapping_sub(last);
+                delta == 0 || delta >= (1 << 31)
+            })
+        {
+            return Err(Error::Mismatch);
+        }
+        previous_target = Some(mapping.target.end);
+        previous_tick = Some(
+            mapping
+                .decode_ticks
+                .checked_add(u64::from(mapping.duration_ticks))
+                .ok_or(Error::Limit)?,
+        );
+        previous_sender = Some(timestamp);
+        index = index.checked_add(1).ok_or(Error::Limit)?;
+    }
+    if index != count {
+        return Err(Error::Mismatch);
+    }
+    read_authorize(pin, authority, cx)?;
+    Ok(VerifiedAvGraph {
+        audio: AvAudioSourceMapping {
+            configuration_origin: configuration.origin,
+            frames: count,
+            first_decode_ticks: mappings[0].decode_ticks,
+            end_decode_ticks: previous_tick.ok_or(Error::Mismatch)?,
+            sample_rate: config.sample_rate(),
+        },
+        video_samples: verified_video.samples(),
+        initialization_digest,
+        initialization_len,
+        fragment_digest,
+        fragment_len,
+    })
+}
+
+fn recover_video_graph(
+    deployment: &mut ReferenceDeployment,
+    pin: Pin,
+    manifest: &ObjectManifest,
+    metadata: &[u8],
+    authority: &dyn ReadAuthority,
+    limits: Limits,
+    work: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+) -> Result<RecoveredClip, Error> {
+    use fss_container::demux::{AvcMp4, DemuxLimits};
+    use std::collections::BTreeSet;
+    work.charge(metadata.len() as u64 * 4)?;
+    let mut d = CanonicalDecoder::new(metadata);
     check_prefix(&mut d, pin)?;
     if d.u64().map_err(storage)? == 0
         || d.u64().map_err(storage)? == 0
@@ -626,8 +1438,16 @@ pub fn read_clip(
         .map_err(storage)?
         .configuration(fss_packet::extended_flv::avc::Limits::default())
         .map_err(storage)?;
-    let mut media = read_part(deployment, pin, init_digest, authority, work, cx)?;
-    let fragment = read_part(deployment, pin, fragment_digest, authority, work, cx)?;
+    let mut media = read_part_bounded(deployment, pin, init_digest, init_len, authority, work, cx)?;
+    let fragment = read_part_bounded(
+        deployment,
+        pin,
+        fragment_digest,
+        fragment_len,
+        authority,
+        work,
+        cx,
+    )?;
     if media.len() != init_len || fragment.len() != fragment_len {
         return Err(Error::Mismatch);
     }

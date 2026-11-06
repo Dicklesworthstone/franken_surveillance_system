@@ -274,6 +274,12 @@ impl<'a> Prepared<'a> {
     pub(super) fn capture(&self) -> Option<CaptureInterval> {
         self.capture
     }
+    pub(super) fn segment(&self) -> &Segment {
+        self.segment
+    }
+    pub(super) fn initialization(&self) -> &InitializationSegment {
+        self.initialization
+    }
     pub(super) fn payloads(&self) -> impl Iterator<Item = &[u8]> {
         std::iter::once(self.configuration.bytes())
             .chain(
