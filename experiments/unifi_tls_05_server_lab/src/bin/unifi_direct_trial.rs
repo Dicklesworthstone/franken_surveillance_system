@@ -51,7 +51,7 @@ use std::{
 use unifi_tls_05_server_lab::server::Server;
 
 type ResultBox<T> = Result<T, Box<dyn Error>>;
-const USAGE: &str = "usage: unifi_direct_trial LISTEN_IPV4:PORT CAMERA_IPV4 CAMERA_MAC_HEX CERT_DER KEY_DER JOURNAL_DIR OUTPUT_MP4 CONTROLLER_UUID [WAIT_SECONDS] [--allow-correlated-timesync] --owner-authorized";
+const USAGE: &str = "usage: unifi_direct_trial LISTEN_IPV4:PORT CAMERA_IPV4 CAMERA_MAC_HEX CERT_DER KEY_DER JOURNAL_DIR OUTPUT_MP4 CONTROLLER_UUID [WAIT_SECONDS] [--allow-correlated-timesync|--bounded-prehello-clock] --owner-authorized";
 const MAX_SOURCE: u64 = 32 * 1024 * 1024;
 const MAX_INITIAL_CONNECTIONS: usize = 8;
 const MAX_IO_WAIT: Duration = Duration::from_secs(30);
@@ -73,14 +73,16 @@ fn options() -> ResultBox<Options> {
     if args.pop().as_deref() != Some("--owner-authorized") {
         return Err(USAGE.into());
     }
-    let time_sync_policy = if args
-        .last()
-        .is_some_and(|arg| arg == "--allow-correlated-timesync")
-    {
-        args.pop();
-        TimeSyncPolicy::ExplicitCorrelatedRequests
-    } else {
-        TimeSyncPolicy::UncorrelatedOnly
+    let time_sync_policy = match args.last().map(String::as_str) {
+        Some("--allow-correlated-timesync") => {
+            args.pop();
+            TimeSyncPolicy::ExplicitCorrelatedRequests
+        }
+        Some("--bounded-prehello-clock") => {
+            args.pop();
+            TimeSyncPolicy::BoundedPreHelloClockExchange
+        }
+        _ => TimeSyncPolicy::UncorrelatedOnly,
     };
     if !(args.len() == 8 || args.len() == 9) {
         return Err(USAGE.into());
@@ -341,6 +343,7 @@ fn run(args: Options) -> ResultBox<()> {
                 let mut owner=conversation::Owner {cx,task,clock,effects:&mut effects,leases:&leases,approval:&approval,management_authority:&guard,stream_authority:&guard,wall:&wall};
                 let hello=OperationId::parse("operation:unifi-trial-hello")?; let agreement=OperationId::parse("operation:unifi-trial-agreement")?; let stream=OperationId::parse("operation:unifi-trial-stream")?;
                 let syncs:Vec<_>=(0..128).map(|i|OperationId::parse(format!("operation:unifi-trial-sync-{i:04}"))).collect::<Result<_,_>>()?;
+                let startup_sync_limit=if args.time_sync_policy==TimeSyncPolicy::BoundedPreHelloClockExchange { fss_reference::unifi_direct::MAX_PRE_HELLO_TIME_SYNC_REPLIES } else { 8 };
                 let mut attempts=0;
                 let (session,started)=loop {
                     let remaining=Duration::from_nanos(deadline.as_nanos().saturating_sub(cx.now().as_nanos()));
@@ -368,7 +371,7 @@ fn run(args: Options) -> ResultBox<()> {
                     let remaining=Duration::from_nanos(deadline.as_nanos().saturating_sub(cx.now().as_nanos()));
                     if remaining.is_zero() {return Err("controller startup deadline elapsed".into());}
                     let io_wait=remaining.min(MAX_IO_WAIT);
-                    let request=listener::Start {bind:SocketAddrV4::new(*args.listen.ip(),0),resource:&resource,admission:&policy,channel:VideoChannel::Video2,video:VideoCodec::H264,audio:AudioCodec::Aac,stream_name:"0123456789abcdef",hello:&hello,agreement:&agreement,stream:&stream,time_sync:&syncs[..8],management,stream_conditions,chunk_bytes:16*1024,max_bytes:MAX_SOURCE,bind_wait:io_wait,conversation_wait:io_wait,accept_wait:io_wait};
+                    let request=listener::Start {bind:SocketAddrV4::new(*args.listen.ip(),0),resource:&resource,admission:&policy,channel:VideoChannel::Video2,video:VideoCodec::H264,audio:AudioCodec::Aac,stream_name:"0123456789abcdef",hello:&hello,agreement:&agreement,stream:&stream,time_sync:&syncs[..startup_sync_limit],management,stream_conditions,chunk_bytes:16*1024,max_bytes:MAX_SOURCE,bind_wait:io_wait,conversation_wait:io_wait,accept_wait:io_wait};
                     let framer=Framer::new(FlvLimits::default(),1024*1024)?; let recorder=recording::Recorder::new(SourceKey {connection:attempts as u64,generation:1},recording::Limits::default())?;
                     match timeout_at(deadline,listener::start(&mut owner,&mut session,&request,framer,recorder)).await {
                         Ok(Ok(started))=>break (session,started),
@@ -393,7 +396,7 @@ fn run(args: Options) -> ResultBox<()> {
                 };
                 drop(controller_listener);
                 let mut supervisor=supervisor::Supervisor::new(session,started.pipeline,management);
-                let mut sync_index=8usize; let mut source_omitted=0usize; let mut steps=0u32;
+                let mut sync_index=startup_sync_limit; let mut source_omitted=0usize; let mut steps=0u32;
                 let capture:ResultBox<(usize,usize,u32,u32)> = async {
                     loop {
                         steps=steps.checked_add(1).ok_or("step count overflow")?; if steps>200_000 { return Err("step limit reached".into()); }

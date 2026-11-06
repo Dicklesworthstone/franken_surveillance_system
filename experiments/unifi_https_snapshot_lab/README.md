@@ -217,8 +217,13 @@ An indeterminate request must not be automatically retried. The LAN-observed
 certificate pin is not independent device identity, and these checks do not
 establish continuous recording during a handoff.
 
-Five unit tests cover recorder-state classification, abstention, pin checks,
-marker reuse and revalidation. A real systemd preflight on the recorder host
+Six unit tests cover recorder-state classification, abstention, pin checks,
+marker reuse and revalidation. Six additional loopback TLS cases passed on the
+Mac and `trj` with a synthetic camera and real private files: pin mismatch,
+different controller, recovered recorder, marker-before-reboot, existing
+marker, and a dropped reboot response. The loopback fixture controls recorder
+status and does not qualify systemd, live journal access or actual recovery.
+A real systemd preflight on the recorder host
 abstained without contacting the camera or creating a marker while the recorder
 was healthy. In the later protected G4 trial it again abstained on recorder
 state and created no marker; the independent restoration check observed the
