@@ -6,16 +6,22 @@ STATE=/tmp/c460_sweep_incremental.idx
 BURST=12
 LOG=/tmp/c460_incremental_sweep.log
 PY=/opt/homebrew/bin/python3
+TELEMETRY="deliverables/scripts/sweeper_telemetry.py"
+emit() { # emit <event> <details-json> — best-effort, never blocks the sweep
+  [ -f "$TELEMETRY" ] && $PY "$TELEMETRY" emit --cam c460 --event "$1" --details "$2" >/dev/null 2>&1 || true
+}
 log() { echo "$(date '+%H:%M:%S') $*" >> "$LOG"; }
 
 log "incremental sweep v4 starting from index $IDX (burst=$BURST)"
+emit ds_state "{\"sweep\":\"start\",\"idx\":$IDX,\"burst\":$BURST}"
 while true; do
   OUT=$(sudo -n $PY deliverables/scripts/rop_burst.py $IDX $BURST 2>&1 | tail -1)
   log "burst result: $OUT"
+  emit rop_result "{\"burst_result\":\"$OUT\",\"idx\":$IDX}"
   # refresh state from the tool (it persists idx per shot)
   [ -s "$STATE" ] && IDX=$(cat "$STATE") || IDX=0
   case "$OUT" in
-    *shell*) log "SHELL CHAIN COMPLETE — sweep exiting"; exit 0 ;;
+    *shell*) log "SHELL CHAIN COMPLETE — sweep exiting"; emit shell '{"outcome":"sweep-shell"}'; exit 0 ;;
     *no-login*) sleep 10 ;;
     *burst-done*) sleep 20 ;;
     *) sleep 20 ;;

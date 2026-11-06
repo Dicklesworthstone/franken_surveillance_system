@@ -2688,3 +2688,52 @@ incomplete capture has no result. These results do not supersede the separate
 earlier series of seven passes and three failures.
 Afterward, a read-only service check reported the G4 recorder and the upload,
 bulk-fallback and discovery timers active; it does not verify recording coverage.
+
+The full recorder-contract snapshot subsequently completed on `vmi1264463`:
+job `30098049032257857` passed 12/12 tests, with terminal acknowledgment and
+source release. The snapshot included the source-matched A/V archive, evidence,
+muxer, recorder contracts and AAC clock described above, but an earlier D-Bus
+revision. These fixture results are not a physical native-controller session,
+an operational native recorder, or a 30-day retention or continuity proof.
+
+On `ts1`, packet job `30098049032257872` verified all 40 packet source files
+against its snapshot, passed 5/5 restricted D-Bus handshake tests under the
+pinned nightly Clippy gate, and performed a standalone synchronous system-bus
+probe. The local bus reported an owner for `org.bluez`; the probe made no
+BlueZ adapter or camera calls. This does not qualify the newer task-owned
+asynchronous observation transport or establish Bluetooth device availability.
+
+The task-owned asynchronous BlueZ-name observer and fragmented-transport,
+policy-revocation, deadline and signal-limit fixtures are present in the
+workspace. They are not yet qualified: a scoped Cargo test request to
+`vmi1264463` expired in the admission queue before a worker was assigned
+(`rchw-a844e498-488a-4eaf-beae-b9cdebd8c381`, exit 103). A subsequent request
+to `vmi1152480` also expired before admission with exit 103. Neither request
+produced a compilation or test result. The scoped
+laboratory excludes unrelated reference modules and is not a full-workspace
+build. A separate read-only Asupersync system-bus probe is prepared but has not
+yet been built or run. None of these changes perform adapter enumeration,
+GATT, camera adoption or Wi-Fi provisioning.
+
+The next Bluetooth inventory owner needs a longer-lived bus session than this
+one-shot observer. The D-Bus [ObjectManager contract](https://dbus.freedesktop.org/doc/dbus-specification.html#standard-interfaces-objectmanager)
+describes `GetManagedObjects` and advises installing a signal match before
+fetching the snapshot; a one-time snapshot or discarded signals cannot establish
+continuous adapter/device coverage. BlueZ's
+[adapter API](https://bluez.readthedocs.io/en/latest/adapter-api/) also treats
+discovery as a shared session, while its
+[GATT API](https://bluez.readthedocs.io/en/latest/gatt-api/) distinguishes
+characteristic write modes. Enumerating objects, owning and releasing discovery
+sessions, handling signals and reconciling uncertain GATT writes therefore need
+separate bounded, task-owned contracts before automated provisioning can claim
+success. The present observer deliberately does none of those things.
+
+A read-only `busctl` ObjectManager query on `ts1` returned signature
+`a{oa{sa{sv}}}` and reported one `org.bluez.Adapter1` interface. It did not
+start discovery, connect to a device, or call a camera; it is a snapshot from
+the system's tool, not an execution of the Rust observer. The absence of a
+device from that snapshot is not evidence that no camera is nearby.
+The adapter's returned property variants included `as`, `b`, `q`, `s`, `u`,
+and `y` in that snapshot. This is direct evidence that the present restricted
+reply-header decoder is insufficient for parsing the ObjectManager body; it
+does not establish that those are the only types BlueZ may return.

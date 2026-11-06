@@ -162,6 +162,24 @@ pub fn bluez_name_has_owner(serial: u32) -> Result<Vec<u8>, Error> {
     Ok(out)
 }
 
+/// Encode a read-only BlueZ ObjectManager snapshot request. The response is
+/// untrusted; this call neither starts discovery nor connects to a device.
+pub fn bluez_managed_objects(serial: u32) -> Result<Vec<u8>, Error> {
+    if serial == 0 {
+        return Err(Error::Invalid);
+    }
+    let mut out = vec![b'l', 1, 0, 1];
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&serial.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    string_field(&mut out, 1, b'o', b"/");
+    string_field(&mut out, 2, b's', b"org.freedesktop.DBus.ObjectManager");
+    string_field(&mut out, 3, b's', b"GetManagedObjects");
+    string_field(&mut out, 6, b's', b"org.bluez");
+    finish_header(&mut out)?;
+    Ok(out)
+}
+
 fn read_u32(bytes: &[u8], at: usize, little: bool) -> Result<u32, Error> {
     let end = at.checked_add(4).ok_or(Error::Limit)?;
     let a: [u8; 4] = bytes
@@ -436,6 +454,45 @@ pub fn parse_bluez_owner_reply(
     };
     Ok(Some(BluezOwnerReply {
         present,
+        consumed: reply.total,
+    }))
+}
+
+/// Body of a correlated ObjectManager response, without peer authentication or
+/// interpretation of its nested values.
+pub struct ManagedObjectsBody<'a> {
+    /// Complete marshalled body; still requires bounded structural validation.
+    pub body: &'a [u8],
+    /// True for little-endian values; false for big-endian values.
+    pub little_endian: bool,
+    /// Total frame bytes consumed.
+    pub consumed: usize,
+}
+impl fmt::Debug for ManagedObjectsBody<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ManagedObjectsBody")
+            .field("body_bytes", &self.body.len())
+            .field("little_endian", &self.little_endian)
+            .field("consumed", &self.consumed)
+            .finish()
+    }
+}
+
+/// Correlate a bounded ObjectManager response and expose its still-untrusted
+/// body. Caller must independently authenticate the bus and intended sender.
+pub fn parse_bluez_managed_objects_reply(
+    input: &[u8],
+    expected_serial: u32,
+) -> Result<Option<ManagedObjectsBody<'_>>, Error> {
+    let Some(reply) = parse_return(input, expected_serial)? else {
+        return Ok(None);
+    };
+    if reply.signature != b"a{oa{sa{sv}}}" {
+        return Err(Error::Invalid);
+    }
+    Ok(Some(ManagedObjectsBody {
+        body: &input[reply.body_at..reply.total],
+        little_endian: reply.little,
         consumed: reply.total,
     }))
 }
