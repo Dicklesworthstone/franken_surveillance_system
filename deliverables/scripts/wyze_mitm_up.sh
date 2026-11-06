@@ -309,6 +309,8 @@ if [ "${FOREGROUND:-0}" = 1 ]; then
     OTA_URL="$OTA_URL" OTA_MD5="$OTA_MD5" \
     OTA_ACTIONS="${OTA_ACTIONS:-}" PROC_NAME="${PROC_NAME:-}" \
     OTA_ENC="${OTA_ENC:-3}" OTA_ENR="${OTA_ENR:-}" \
+    rm -f "$LOCK";  # the exec replaces this process — the EXIT trap never fires,
+                    # leaving a stale lock that blocks all future generations forever
     exec "$PY" "$HERE/wyze_mqtt_mitm.py"
 fi
 sudo env NO_UPSTREAM="${NO_UPSTREAM:-}" THING="$THING" D="$CERTDIR" CHAIN=/tmp/ota/chain.pem INJECT=1 REWRITE="${REWRITE:-1}" \
