@@ -2741,3 +2741,104 @@ fn overlapping_prior_liveness_cannot_be_hidden_by_a_new_coverage_basis() -> Test
     quiet.cleanup();
     Ok(())
 }
+
+/// The metadata-only reader cannot infer an object role from a model_receipts digest: a
+/// self-consistent event can name a retained raw frame there. Ordinary orientation keeps its
+/// existing analysis-based absence behavior, while metadata queries must remain conservative.
+#[test]
+fn metadata_query_skips_untyped_model_receipts_and_keeps_absence_unknown() -> TestResult {
+    use crate::agent_footage::{
+        FootageQueryFilter, FootageQueryLimits, FootageQueryRequest, query_footage,
+    };
+
+    let request = FootageQueryRequest {
+        filter: FootageQueryFilter::default(),
+        principal: PrincipalId::parse("principal:metadata-source-boundary")?,
+        max_entries: 2,
+        expected_anchor: None,
+        continuation: None,
+    };
+    let limits = FootageQueryLimits::default();
+
+    // First prove the same valid retained analyses still certify through the ordinary reader.
+    let mut ordinary = Quiet::run("metadata-analysis-separation", everything, true)?;
+    ordinary.deployment = None;
+    let snapshot = read_deployment(&ordinary.root, &OrientLimits::default())?;
+    assert!(snapshot.doctor_inspected);
+    assert!(
+        snapshot
+            .retained_absences
+            .contains_key(ordinary.event_id.as_str())
+    );
+    let metadata = query_footage(&ordinary.root, &request, &limits, &mut |_| true)?;
+    assert!(!metadata.snapshot.doctor_inspected);
+    assert!(metadata.snapshot.retained_absences.is_empty());
+    assert!(
+        metadata
+            .snapshot
+            .source_coverage
+            .iter()
+            .all(|record| record.verdict.is_err())
+    );
+    ordinary.cleanup();
+
+    fn source_alias(
+        event_id: &EventId,
+        record: &SourceCoverageRecord,
+        _: Vec<ReferenceModelObservation>,
+    ) -> Result<ReferencePolicyDecision, Box<dyn Error>> {
+        let mut decision = rejected(event_id, record.witness_object(), &record.witness, 1, None)?;
+        let frame = record.frames.first().ok_or("source frame missing")?;
+        // The writer verifies custody of this digest but does not confer a typed model role.
+        decision.event.model_receipts = vec![frame.source_digest];
+        decision.event.validate()?;
+        Ok(decision)
+    }
+    let mut aliased = Quiet::run_plan(
+        "metadata-raw-receipt",
+        Plan {
+            analyse: |_, _| None,
+            decide: source_alias,
+            ..Plan::new(everything, true)
+        },
+    )?;
+    let source = aliased
+        .record
+        .frames
+        .first()
+        .ok_or("source frame missing")?
+        .source_digest;
+    assert_eq!(aliased.decision.event.model_receipts, vec![source]);
+    let source_path = aliased
+        .deployment()?
+        .publisher()
+        .spool()
+        .object_path(source);
+    aliased.deployment = None;
+
+    // A corrupt or missing source would fail if the metadata path attempted to hydrate it.
+    // The query remains usable and never turns missing analyses into certified absence.
+    for missing in [false, true] {
+        if missing {
+            fs::remove_file(&source_path)?;
+        } else {
+            fs::write(&source_path, b"intentionally corrupted source frame")?;
+        }
+        let result = query_footage(&aliased.root, &request, &limits, &mut |_| true)?;
+        assert_eq!(result.snapshot.events.len(), 1);
+        assert_eq!(result.snapshot.events[0].event.model_receipts, vec![source]);
+        assert_eq!(result.snapshot.source_coverage.len(), 1);
+        assert!(result.snapshot.source_coverage[0].verdict.is_err());
+        assert!(result.snapshot.retained_absences.is_empty());
+        assert!(
+            result
+                .epistemic()
+                .propositions
+                .iter()
+                .any(|p| p.state == KnowledgeState::Unknown
+                    && p.statement.contains("No source-media bytes were read"))
+        );
+    }
+    aliased.cleanup();
+    Ok(())
+}

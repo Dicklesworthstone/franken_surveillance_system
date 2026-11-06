@@ -1286,9 +1286,12 @@ impl DeploymentHistory {
         // The hydrated results of each rejected event's model receipts (fss-f8jls): the shared
         // rule requires them to analyse every frame of the record. A receipt that is deleted,
         // unreadable or not a mock model result stays unhydrated, so the rule refuses the
-        // certification; it never fails the read.
+        // certification; it never fails the ordinary read. Metadata-only queries deliberately
+        // skip this optional hydration: these are untyped event-supplied digests and can alias
+        // raw source payloads. No analysis is therefore offered to the absence rule in that
+        // mode, preserving unknown absence without silently acquiring media-read authority.
         let mut event_analyses: BTreeMap<String, Vec<MockModelResult>> = BTreeMap::new();
-        if !source_records.is_empty() {
+        if self.metadata_budget.is_none() && !source_records.is_empty() {
             for retained in &events {
                 if retained.event.state != EventState::Rejected {
                     continue;
@@ -1298,15 +1301,10 @@ impl DeploymentHistory {
                     if deletions.object(*receipt).is_some() {
                         continue;
                     }
-                    let bytes = match reader.read_object(objects, *receipt, limits.max_object_bytes)
+                    if let Ok(bytes) =
+                        reader.read_object(objects, *receipt, limits.max_object_bytes)
+                        && let Ok(result) = MockModelResult::from_retained_bytes(&bytes, *receipt)
                     {
-                        Ok(bytes) => bytes,
-                        // A bounded query cannot hide failed reads and then spend the same
-                        // allowance again. Ordinary orientation retains its prior behavior.
-                        Err(error) if self.metadata_budget.is_some() => return Err(error),
-                        Err(_) => continue,
-                    };
-                    if let Ok(result) = MockModelResult::from_retained_bytes(&bytes, *receipt) {
                         hydrated.push(result);
                     }
                 }

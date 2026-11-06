@@ -5,6 +5,7 @@ All notable changes to Franken Surveillance System are recorded here. The projec
 ## Unreleased
 
 ### Added
+- Added canonical read-only footage metadata queries through `fss query --target footage` and MCP, with verified completed-import/partition custody, source and time predicates, exact continuations, protected context, explicit metadata privacy domains and shared final-pass I/O bounds. Media availability and physical absence remain unknown. Native contracts are authored; execution remains blocked by Asupersync compiler memory exhaustion.
 - Added an opt-in same-capture node-clock producer for bounded native AVC/HEVC sessions, a root-last clock index over exact retained originals, and `fss-archive query-utc` with dual root pins, source replay, conservative candidate handles, explicit unavailable clocks and atomic costs. Original media identities and camera-time unknowns are preserved. Native integration contracts are authored but remain unexecuted under the documented build-resource blocker.
 - Exposed reusable raw local NTP exchange evidence and an owned native sampler with explicit endpoint authority, byte accounting, deadlines and permanent discontinuity/finalization refusal; existing site-proof v1 identities are preserved.
 - Added a tested transitional `/bulk` fallback for staged G4 recordings, with create-only hash-verified copies, scoped 30-day archive cleanup, and failure reporting. Native continuous recording remains unqualified.

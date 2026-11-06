@@ -1,8 +1,45 @@
 # Implementation status
 
-**As of:** 2026-11-05 (dated feature sections retain their original verification scope)
+**As of:** 2026-11-06 (dated feature sections retain their original verification scope)
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
+
+## Canonical retained-footage metadata query (2026-11-06, native execution pending)
+
+`fss query --target footage` and the MCP `query` tool now select completed
+`ADP-FILE-001` import/capsule metadata by exact sensor, stream and inclusive recorded
+capture-interval overlap. Existing queries still default to events. The canonical
+query/case envelope retains exact source handles, native query/read receipts,
+protected deployment knowledge, a complete-index selection witness and bounded
+continuations. Footage-specific privacy domains are explicit; raw media remains
+redacted and its current availability stays unknown.
+
+The native reader verifies canonical import and capsule metadata, source ranges,
+flat and partitioned publication custody, current deletion restrictions and local
+tombstones. One shared metadata allowance covers initial history, index reads and
+final custody/head revalidation. It neither opens the writable deployment nor runs
+normal recovery or a global media scan. A separate `doctor_inspected` marker keeps
+ordinary doctor/context output unchanged and identifies the metadata-only read's
+uninspected storage health. Failed/corrupt/over-budget reads cannot become empty
+successes. Metadata context also skips optional untyped model-receipt hydration: a
+bare digest may alias media, so analysis-dependent absence stays uncertified. See `docs/AGENT_FOOTAGE_QUERY.md` for usage and exact boundaries.
+
+**Verification scope:** selected Rust formatting/syntax and whitespace checks pass.
+Twelve native engine/context contracts, four CLI grammar contracts, MCP dispatch/discovery
+contracts and a real-process three-page import/CLI/MCP parity contract are authored.
+They have **not been executed**: both full production checks, including a serial
+`-Zthreads=1 -Zmir-opt-level=0` retry with debug information and incremental
+compilation disabled, were killed while compiling unchanged `asupersync 0.5.0`,
+before any FSS diagnostics. No dependency source, feature set or required target was
+removed to obtain a pass. Three targeted Python registry tests pass; the two broader
+constitution/drift checks retain the same 51 pre-existing error signatures, with
+no additional errors from the seven new domains.
+
+This advances `fss-vit-je36t.15` and the agent-access portion of
+`fss-vit-je36t.8`; both remain open. Live archive UTC queries and retained QSR still
+have separate owners with normal startup semantics. This slice does not claim
+always-on recording, live camera qualification, POS-linked metrics, trusted UTC,
+physical coverage or absence, repository qualification, or production readiness.
 
 ## Acquisition admission authority and lifecycle time (2026-11-06)
 

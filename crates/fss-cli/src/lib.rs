@@ -46,6 +46,8 @@ pub mod feedback_cmd;
 pub mod finding_cmd;
 /// Read-only `follow` (AOP-004 `session.follow`) since an earlier committed anchor.
 pub mod follow_cmd;
+/// Read-only retained footage metadata under the canonical query operation.
+pub mod footage_query_cmd;
 pub mod fss_cmd;
 /// Pure canonical JSON rendering of numerical and source-once fusion receipts.
 pub mod fusion_json;

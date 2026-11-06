@@ -27,7 +27,7 @@ const CORE_TOOLS: &str = r#"{"name":"session_open","description":"AOP-001: open 
 {"name":"session_orient","description":"Read-only AOP-003: inspect an existing deployment through its anchor-pinned SituationCapsule. Returns the existing fss/1 AgentResponseEnvelope unchanged, including coverage gaps, uncertainty, obligations and affordances. Optional session reads the current situation for that owned durable session, preserving its mission and workspace without rebasing or writing a journal. No affordance is executed.","inputSchema":{"type":"object","properties":{"session":{"type":"string","minLength":1,"maxLength":128,"description":"Optional existing session owned by the fixed principal; omitted for deployment-only orientation."},"view":{"type":"string","enum":["pulse","brief","epistemic_map"]},"budget_tokens":{"type":"integer","minimum":1,"maximum":4096}},"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
 {"name":"explain","description":"Read-only AOP-011: explain one published event, or inspect one exact captured-learning publication under a currently admitted session of the same principal and immutable mission; the source session may be closed. Learning reads preserve the literal candidate, applicability, counterexamples, validation, expiry and uncertainty after verifying complete custody; no original feedback request, promotion or effect is required. Returns the existing native fss/1 AgentResponseEnvelope unchanged.","inputSchema":{"type":"object","properties":{"event_id":{"type":"string","minLength":1,"maxLength":128},"session":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"learning_root":{"type":"string","pattern":"^sha256:[0-9a-f]{64}$","minLength":71,"maxLength":71},"view":{"type":"string","enum":["decision_diff","forensic"]},"budget_tokens":{"type":"integer","minimum":1,"maximum":16000},"at":{"type":"string","minLength":1,"maxLength":256,"description":"Event-only exact historical anchor; current restrictions apply."},"custody":{"type":"string","enum":["yes","no"],"description":"Event-only option; selected learning custody is always verified."}},"oneOf":[{"required":["event_id"],"not":{"anyOf":[{"required":["session"]},{"required":["learning_root"]}]}},{"required":["session","learning_root"],"not":{"anyOf":[{"required":["event_id"]},{"required":["at"]},{"required":["custody"]}]}}],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
 {"name":"session_follow","description":"AOP-004: return one exact page of meaningful changes in the unchanged fss/1 envelope. Ordinary follow is read-only; wait_ms bounds synchronous waiting on certified quiet. With session and subscription, retain pending adjacent-history delivery in the agent journal and advance only with its exact acknowledge receipt. Unacknowledged pages survive disconnect and restart. wait_ms also waits at the acknowledged head without a parked journal lock or an implicit acknowledgement; every adjacent history transition returns immediately. Both journals advancing without retained interleaving requires resnapshot; no transition order is invented.","inputSchema":{"type":"object","properties":{"since":{"type":"string","minLength":1,"maxLength":256},"view":{"type":"string","enum":["pulse","brief"]},"max_entries":{"type":"integer","minimum":1,"maximum":4096},"continuation":{"type":"string","minLength":1,"maxLength":256},"wait_ms":{"type":"integer","minimum":1,"maximum":10000},"session":{"type":"string","minLength":1,"maxLength":128},"subscription":{"type":"string","minLength":1,"maxLength":128},"acknowledge":{"type":"string","minLength":71,"maxLength":71}},"required":["since"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
-{"name":"query","description":"Read-only AOP-005: exact conjunctive query of verified committed event records at the current head or explicit historical at token. Returns the unchanged CLI AgentResponseEnvelope with protected context. Empty matches never certify physical absence. Nanosecond endpoints are canonical decimal strings to preserve signed 128-bit precision. Continuations require unchanged filters, principal, page size and selected authority/effect-history prefix.","inputSchema":{"type":"object","properties":{"event_id":{"type":"string","minLength":1,"maxLength":128},"kind":{"type":"string","enum":["perimeter_breach","covert_approach","sensor_tamper","unknown_presence","benign_routine","unclassified"]},"state":{"type":"string","enum":["hypothesized","witnessed","corroborated","adjudicated","alert_delivered","resolved","indeterminate","rejected"]},"zone":{"type":"string","minLength":1,"maxLength":64},"from_ns":{"type":"string","pattern":"^(0|-?[1-9][0-9]*)$","maxLength":40},"through_ns":{"type":"string","pattern":"^(0|-?[1-9][0-9]*)$","maxLength":40},"max_entries":{"type":"integer","minimum":1,"maximum":32},"at":{"type":"string","minLength":1,"maxLength":256,"description":"Optional exact retained historical anchor; mutually exclusive with the current-head anchor precondition. Current deletion restrictions apply."},"anchor":{"type":"string","minLength":1,"maxLength":256},"continuation":{"type":"string","minLength":1,"maxLength":256}},"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
+{"name":"query","description":"Read-only AOP-005: exact conjunctive query of verified retained records. target defaults to events; footage selects retained capsule H0 metadata at the current head with source identities and declared capture intervals, never media bytes. Footage does not certify current source availability, UTC synchronization, continuous coverage or physical absence. Event queries additionally allow an explicit historical at token. Returns the unchanged CLI AgentResponseEnvelope with protected context. Nanosecond endpoints are canonical signed 128-bit decimal strings. Continuations require unchanged target, filters, principal, page size and selected authority/effect-history prefix.","inputSchema":{"type":"object","properties":{"target":{"type":"string","enum":["events","footage"],"default":"events","description":"Typed AOP-005 target. Events supports event_id, kind, state, zone and historical at; footage supports sensor and stream at the current head only."},"sensor":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$","description":"Footage-only exact sensor identity; no substring or label matching."},"stream":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$","description":"Footage-only exact stream identity."},"event_id":{"type":"string","minLength":1,"maxLength":128},"kind":{"type":"string","enum":["perimeter_breach","covert_approach","sensor_tamper","unknown_presence","benign_routine","unclassified"]},"state":{"type":"string","enum":["hypothesized","witnessed","corroborated","adjudicated","alert_delivered","resolved","indeterminate","rejected"]},"zone":{"type":"string","minLength":1,"maxLength":64},"from_ns":{"type":"string","pattern":"^(0|-?[1-9][0-9]*)$","maxLength":40},"through_ns":{"type":"string","pattern":"^(0|-?[1-9][0-9]*)$","maxLength":40},"max_entries":{"type":"integer","minimum":1,"maximum":32},"at":{"type":"string","minLength":1,"maxLength":256,"description":"Event-only exact retained historical anchor; mutually exclusive with the current-head anchor precondition. Current deletion restrictions apply. Footage refuses historical at."},"anchor":{"type":"string","minLength":1,"maxLength":256},"continuation":{"type":"string","minLength":1,"maxLength":256}},"additionalProperties":false,"oneOf":[{"properties":{"target":{"const":"events"}},"not":{"anyOf":[{"required":["sensor"]},{"required":["stream"]}]}},{"properties":{"target":{"const":"footage"}},"required":["target"],"not":{"anyOf":[{"required":["event_id"]},{"required":["kind"]},{"required":["state"]},{"required":["zone"]},{"required":["at"]}]}}]},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
 {"name":"investigate","description":"AOP-006: maintain a durable investigation in one existing session. Supports open, inspect, list, activate, cite, assess, set-state, conclude, rebase, readmit and expand. Draft and expansion are literal objects, never files. Mutations require the exact expected case revision; native evidence, authority, deadline and rebase/readmission checks remain in force. Returns the native fss/1 envelope. Ordinary case transitions record cognition only and execute no probe, plan or external effect. Also coordinates native work claims and immutable findings, with exact revision/lease fences and verified retry receipts; these intents grant no effect authority. Explicit probe transitions recover one existing retained-source supervision subscription: complete cognitive context in the explicit case (default, 5000 tokens) or forensic (16000 tokens) view, exact pending receipts, explicit ACK/discard/adjacent advance, cumulative source work and durable quoted session-token charges. No recipe registration, live acquisition, automatic assessment or effect. Optional exact case linkage requires case, expected, hypothesis, side and subscription_state. probe-citation recovers that historical link without source work; missing linkage never authorizes retry.","inputSchema":{"type":"object","oneOf":[{"type":"object","properties":{"session":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"transition":{"type":"string","enum":["open","inspect","list","activate","cite","assess","set-state","conclude","rebase","readmit","expand"]},"draft":{"type":"object","properties":{"caseId":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"question":{"type":"string","minLength":1,"maxLength":8192},"decisionInformed":{"type":"string","minLength":1,"maxLength":1024},"hypotheses":{"type":"array","minItems":2,"maxItems":64,"items":{"type":"object","properties":{"hypothesisId":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"description":{"type":"string","minLength":1,"maxLength":8192},"epistemicState":{"type":"string","enum":["known","estimated","unknown","conflicted","stale","not_observable","redacted","indeterminate","not_applicable"]},"predictions":{"type":"array","maxItems":256,"items":{"type":"string","minLength":1,"maxLength":1024}}},"required":["hypothesisId","description"],"additionalProperties":false}},"knowns":{"type":"array","maxItems":256,"items":{"type":"object","properties":{"statementId":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"text":{"type":"string","minLength":1,"maxLength":8192},"epistemicState":{"type":"string","enum":["known","estimated","unknown","conflicted","stale","not_observable","redacted","indeterminate","not_applicable"]},"basis":{"type":"array","maxItems":256,"items":{"type":"string","minLength":1,"maxLength":1024}}},"required":["statementId","text"],"additionalProperties":false}},"unknowns":{"type":"array","maxItems":256,"items":{"type":"object","properties":{"statementId":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"text":{"type":"string","minLength":1,"maxLength":8192},"epistemicState":{"type":"string","enum":["known","estimated","unknown","conflicted","stale","not_observable","redacted","indeterminate","not_applicable"]},"basis":{"type":"array","maxItems":256,"items":{"type":"string","minLength":1,"maxLength":1024}}},"required":["statementId","text"],"additionalProperties":false}},"discriminators":{"type":"array","maxItems":128,"items":{"type":"object","properties":{"discriminatorId":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"description":{"type":"string","minLength":1,"maxLength":8192},"separates":{"type":"array","maxItems":64,"items":{"type":"string","minLength":1,"maxLength":128},"minItems":2},"expectedOutcomes":{"type":"array","maxItems":64,"items":{"type":"string","minLength":1,"maxLength":1024},"minItems":2}},"required":["discriminatorId","description","separates","expectedOutcomes"],"additionalProperties":false}},"probes":{"type":"array","maxItems":128,"items":{"type":"string","minLength":1,"maxLength":1024}},"stopRules":{"type":"array","maxItems":64,"items":{"type":"string","minLength":1,"maxLength":1024},"minItems":1},"decisionDeadlineNs":{"anyOf":[{"type":"integer"},{"type":"string","pattern":"^(0|-?[1-9][0-9]*)$","maxLength":40}],"description":"Exact signed 128-bit nanoseconds; decimal strings preserve full precision."},"decisionWindowNs":{"anyOf":[{"type":"integer"},{"type":"string","pattern":"^(0|-?[1-9][0-9]*)$","maxLength":40}],"description":"Exact signed 128-bit nanoseconds; decimal strings preserve full precision."}},"required":["caseId","question","decisionInformed","hypotheses","stopRules"],"additionalProperties":false,"oneOf":[{"required":["decisionDeadlineNs"],"not":{"required":["decisionWindowNs"]}},{"required":["decisionWindowNs"],"not":{"required":["decisionDeadlineNs"]}}]},"expansion":{"type":"object","properties":{"hypothesis":{"type":"object","properties":{"hypothesisId":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"description":{"type":"string","minLength":1,"maxLength":8192},"epistemicState":{"type":"string","enum":["known","estimated","unknown","conflicted","stale","not_observable","redacted","indeterminate","not_applicable"]},"predictions":{"type":"array","maxItems":256,"items":{"type":"string","minLength":1,"maxLength":1024}}},"required":["hypothesisId","description"],"additionalProperties":false},"discriminator":{"type":"object","properties":{"discriminatorId":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"description":{"type":"string","minLength":1,"maxLength":8192},"separates":{"type":"array","maxItems":64,"items":{"type":"string","minLength":1,"maxLength":128},"minItems":2},"expectedOutcomes":{"type":"array","maxItems":64,"items":{"type":"string","minLength":1,"maxLength":1024},"minItems":2}},"required":["discriminatorId","description","separates","expectedOutcomes"],"additionalProperties":false},"probe":{"type":"string","minLength":1,"maxLength":1024}},"required":["hypothesis","discriminator","probe"],"additionalProperties":false},"case":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"expected":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71},"revision":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71},"hypothesis":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"evidence":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71},"side":{"type":"string","enum":["support","contradiction"]},"disposition":{"type":"string","enum":["supported","disfavored","refuted"]},"state":{"type":"string","enum":["awaiting_evidence","awaiting_approval","blocked","indeterminate","cancelled","closed"]},"reason":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71},"conclusion":{"type":"string","enum":["resolved","refuted"]},"stop_rule":{"type":"string","minLength":1,"maxLength":1024},"assessment":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71},"residual_unknowns":{"type":"array","maxItems":256,"uniqueItems":true,"items":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"}},"witness":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71}},"required":["session","transition"],"additionalProperties":false,"oneOf":[{"properties":{"transition":{"const":"open"}},"required":["draft"],"propertyNames":{"enum":["session","transition","draft"]}},{"properties":{"transition":{"const":"inspect"}},"required":["case"],"propertyNames":{"enum":["session","transition","case","revision"]}},{"properties":{"transition":{"const":"list"}},"required":[],"propertyNames":{"enum":["session","transition"]}},{"properties":{"transition":{"const":"activate"}},"required":["case","expected"],"propertyNames":{"enum":["session","transition","case","expected"]}},{"properties":{"transition":{"const":"cite"}},"required":["case","expected","hypothesis","evidence","side"],"propertyNames":{"enum":["session","transition","case","expected","hypothesis","evidence","side"]}},{"properties":{"transition":{"const":"assess"}},"required":["case","expected","hypothesis","disposition","evidence"],"propertyNames":{"enum":["session","transition","case","expected","hypothesis","disposition","evidence"]}},{"properties":{"transition":{"const":"set-state"}},"required":["case","expected","state","reason"],"propertyNames":{"enum":["session","transition","case","expected","state","reason"]}},{"properties":{"transition":{"const":"conclude"}},"required":["case","expected","conclusion","stop_rule","assessment","residual_unknowns"],"propertyNames":{"enum":["session","transition","case","expected","conclusion","stop_rule","assessment","residual_unknowns"]}},{"properties":{"transition":{"const":"rebase"}},"required":["case","expected"],"propertyNames":{"enum":["session","transition","case","expected"]}},{"properties":{"transition":{"const":"readmit"}},"required":["case","expected","hypothesis","evidence","side","witness"],"propertyNames":{"enum":["session","transition","case","expected","hypothesis","evidence","side","witness"]}},{"properties":{"transition":{"const":"expand"}},"required":["case","expected","expansion"],"propertyNames":{"enum":["session","transition","case","expected","expansion"]}}]},{"type":"object","oneOf":[{"type":"object","properties":{"session":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"transition":{"const":"claim"},"case":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"work":{"type":"string","minLength":1,"maxLength":270,"pattern":"^(case|(hypothesis|discriminator|probe):[\\s\\S]{1,256})$","description":"Exact native work spelling: case or <kind>:<literal work item>. The item is bounded to 256 UTF-8 bytes and must exist in the visible case."},"lease_ms":{"type":"integer","minimum":1,"maximum":300000,"default":60000,"description":"Evidence-clock milliseconds, bounded by the native session expiry. Supply an unsigned decimal JSON integer without fractional or exponent notation."},"depends":{"type":"array","maxItems":64,"uniqueItems":true,"items":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"}}},"required":["session","transition","case","work"],"additionalProperties":false},{"type":"object","properties":{"session":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"transition":{"const":"claim-inspect"},"claim":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"}},"required":["session","transition","claim"],"additionalProperties":false},{"type":"object","properties":{"session":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"transition":{"const":"claim-list"}},"required":["session","transition"],"additionalProperties":false},{"type":"object","properties":{"session":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"transition":{"const":"claim-activate"},"claim":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"expected":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71}},"required":["session","transition","claim","expected"],"additionalProperties":false},{"type":"object","properties":{"session":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"transition":{"const":"claim-release"},"claim":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"expected":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71}},"required":["session","transition","claim","expected"],"additionalProperties":false},{"type":"object","properties":{"session":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"transition":{"const":"claim-expire"},"claim":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"expected":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71}},"required":["session","transition","claim","expected"],"additionalProperties":false},{"type":"object","properties":{"session":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"transition":{"const":"claim-progress"},"claim":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"expected":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71},"artifact":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71}},"required":["session","transition","claim","expected","artifact"],"additionalProperties":false},{"type":"object","properties":{"session":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"transition":{"const":"claim-block"},"claim":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"expected":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71},"artifact":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71}},"required":["session","transition","claim","expected","artifact"],"additionalProperties":false},{"type":"object","properties":{"session":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"transition":{"const":"claim-complete"},"claim":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"expected":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71},"result":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71}},"required":["session","transition","claim","expected","result"],"additionalProperties":false},{"type":"object","properties":{"session":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"transition":{"const":"claim-renew"},"claim":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"expected":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71},"lease_ms":{"type":"integer","minimum":1,"maximum":300000,"default":60000,"description":"Evidence-clock milliseconds, bounded by the native session expiry. Supply an unsigned decimal JSON integer without fractional or exponent notation."}},"required":["session","transition","claim","expected"],"additionalProperties":false},{"type":"object","properties":{"session":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"transition":{"const":"claim-reclaim"},"claim":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"expected":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71},"lease_ms":{"type":"integer","minimum":1,"maximum":300000,"default":60000,"description":"Evidence-clock milliseconds, bounded by the native session expiry. Supply an unsigned decimal JSON integer without fractional or exponent notation."}},"required":["session","transition","claim","expected"],"additionalProperties":false},{"type":"object","properties":{"session":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"transition":{"const":"claim-transfer"},"claim":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"expected":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71},"recipient":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"}},"required":["session","transition","claim","expected","recipient"],"additionalProperties":false},{"type":"object","properties":{"session":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"transition":{"const":"finding"},"case":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"claim":{"type":"string","minLength":1,"maxLength":8192,"description":"Literal statement, at most 8192 UTF-8 bytes; never a host-file path to read."},"state":{"type":"string","enum":["known","estimated","unknown","conflicted","stale","not_observable","redacted","indeterminate","not_applicable"]},"supporting":{"type":"array","maxItems":256,"uniqueItems":true,"items":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71},"minItems":1},"contradicting":{"type":"array","maxItems":256,"uniqueItems":true,"items":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71}},"hypothesis":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"follow_up":{"type":"array","maxItems":64,"uniqueItems":true,"items":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"}},"disagrees_with":{"type":"array","maxItems":64,"uniqueItems":true,"items":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"}},"supersedes":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"}},"required":["session","transition","case","claim","state","supporting"],"additionalProperties":false},{"type":"object","properties":{"session":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"transition":{"const":"finding-withdraw"},"finding":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"claim":{"type":"string","minLength":1,"maxLength":8192,"description":"Literal statement, at most 8192 UTF-8 bytes; never a host-file path to read."},"supporting":{"type":"array","maxItems":256,"uniqueItems":true,"items":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71},"minItems":1}},"required":["session","transition","finding","claim","supporting"],"additionalProperties":false},{"type":"object","properties":{"session":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"transition":{"const":"finding-list"},"case":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"}},"required":["session","transition"],"additionalProperties":false}]},{"type":"object","oneOf":[{"type":"object","properties":{"session":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"transition":{"const":"probe"},"subscription":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"authority_root":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71},"view":{"type":"string","enum":["case","forensic"],"default":"case","description":"Explicit output view; full proof-bearing reports may require forensic. Never promoted automatically."}},"required":["session","transition","subscription","authority_root"],"additionalProperties":false},{"type":"object","properties":{"session":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"transition":{"const":"probe-inspect"},"subscription":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"authority_root":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71},"view":{"type":"string","enum":["case","forensic"],"default":"case","description":"Explicit output view; full proof-bearing reports may require forensic. Never promoted automatically."}},"required":["session","transition","subscription","authority_root"],"additionalProperties":false},{"type":"object","properties":{"session":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"transition":{"const":"probe-ack"},"subscription":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"authority_root":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71},"receipt":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71},"view":{"type":"string","enum":["case","forensic"],"default":"case","description":"Explicit output view; full proof-bearing reports may require forensic. Never promoted automatically."}},"required":["session","transition","subscription","authority_root","receipt"],"additionalProperties":false},{"type":"object","properties":{"session":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"transition":{"const":"probe-discard"},"subscription":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"authority_root":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71},"receipt":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71},"view":{"type":"string","enum":["case","forensic"],"default":"case","description":"Explicit output view; full proof-bearing reports may require forensic. Never promoted automatically."}},"required":["session","transition","subscription","authority_root","receipt"],"additionalProperties":false},{"type":"object","properties":{"session":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"transition":{"const":"probe-advance"},"subscription":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"authority_root":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71},"window_index":{"type":"integer","minimum":1,"maximum":31},"after_receipt":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71},"view":{"type":"string","enum":["case","forensic"],"default":"case","description":"Explicit output view; full proof-bearing reports may require forensic. Never promoted automatically."}},"required":["session","transition","subscription","authority_root","window_index","after_receipt"],"additionalProperties":false},{"type":"object","properties":{"session":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"transition":{"const":"probe"},"subscription":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"authority_root":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71},"view":{"type":"string","enum":["case","forensic"],"default":"case","description":"Explicit output view; full proof-bearing reports may require forensic. Never promoted automatically."},"case":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"expected":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71},"hypothesis":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"side":{"type":"string","enum":["support","contradiction"]},"subscription_state":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71}},"required":["session","transition","subscription","authority_root","case","expected","hypothesis","side","subscription_state"],"additionalProperties":false,"description":"One existing native probe with exact case/hypothesis/predecessor and pre-work subscription-state. Case link is separate from native work and never implies assessment or ACK."},{"type":"object","properties":{"session":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"transition":{"const":"probe-citation"},"subscription":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"authority_root":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71},"view":{"type":"string","enum":["case","forensic"],"default":"case","description":"Explicit output view; full proof-bearing reports may require forensic. Never promoted automatically."},"case":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"expected":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71},"hypothesis":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"side":{"type":"string","enum":["support","contradiction"]}},"required":["session","transition","subscription","authority_root","case","expected","hypothesis","side"],"additionalProperties":false,"description":"Exact historical case-link metadata under current case-reader authority; no native source work, retry, relink or original-session renewal."}]}]},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":false,"openWorldHint":false}},
 {"name":"wait","description":"Read-only AOP-009: wait, bounded to 10 s, until one effect operation leaves its current state, polling the committed effect journal without writing or locking. Returns the unchanged fss/1 AgentResponseEnvelope carrying the operation receipt; an unchanged operation at the deadline is a partial answer with ERR-OP-TIMEOUT-001 (silence is not completion). Never prepares, commits, resends or cancels anything.","inputSchema":{"type":"object","properties":{"operation_id":{"type":"string","minLength":1,"maxLength":128},"deadline_ms":{"type":"integer","minimum":1,"maximum":10000}},"required":["operation_id","deadline_ms"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
 {"name":"doctor","description":"Read-only AOP-014 reference diagnosis of the fixed deployment. Returns the existing fss.doctor.v1 report, not an AgentResponseEnvelope. Does not repair, create directories, acquire locks or execute affordances.","inputSchema":{"type":"object","properties":{},"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}}"#;
@@ -404,6 +404,9 @@ impl Server {
                 if !only(
                     args,
                     &[
+                        "target",
+                        "sensor",
+                        "stream",
                         "event_id",
                         "kind",
                         "state",
@@ -420,6 +423,9 @@ impl Server {
                 }
                 let mut argv = self.base_args("query");
                 for (key, flag, bound) in [
+                    ("target", "target", 7),
+                    ("sensor", "sensor", 128),
+                    ("stream", "stream", 128),
                     ("event_id", "event-id", 128),
                     ("kind", "kind", 64),
                     ("state", "state", 64),
@@ -433,7 +439,8 @@ impl Server {
                     if let Some(value) = args.get(key) {
                         let value = bounded_text(Some(value), bound)?;
                         // Inline values remain data; the native CLI parser validates every
-                        // enum, integer, interval and token without a parallel interpretation.
+                        // target, field combination, enum, integer, interval and token without
+                        // a parallel interpretation. In particular historical at is event-only.
                         argv.push(format!("--{flag}={value}").into());
                     }
                 }
@@ -505,6 +512,7 @@ fn execute_admitted(
             | FssCommand::Explain(_)
             | FssCommand::Follow(_)
             | FssCommand::Query(_)
+            | FssCommand::FootageQuery(_)
             | FssCommand::Investigate(_)
             | FssCommand::Probe(_)
             | FssCommand::Claim(_)
@@ -1282,6 +1290,232 @@ mod tests {
     }
 
     #[test]
+    fn footage_query_dispatch_equals_native_command_and_preserves_exact_response()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut server = ready();
+        let token = format!("anchor:{}:0:none:{}", "a".repeat(16), "b".repeat(64));
+        let native = parse_fss_args(
+            [
+                "query",
+                "--json",
+                "--root",
+                "/owner/deployment",
+                "--principal",
+                "principal:local-operator",
+                "--target",
+                "footage",
+                "--sensor",
+                "sensor:register",
+                "--stream",
+                "stream:main",
+                "--from-ns",
+                "-170141183460469231731687303715884105728",
+                "--through-ns",
+                "170141183460469231731687303715884105727",
+                "--max-entries",
+                "32",
+                "--anchor",
+                &token,
+                "--continuation",
+                "continuation:footage-page-2",
+            ]
+            .map(OsString::from),
+        )?;
+        assert!(matches!(native, FssCommand::FootageQuery(_)));
+        let request = format!(
+            r#"{{"jsonrpc":"2.0","id":90,"method":"tools/call","params":{{"name":"query","arguments":{{"target":"footage","sensor":"sensor:register","stream":"stream:main","from_ns":"-170141183460469231731687303715884105728","through_ns":"170141183460469231731687303715884105727","max_entries":32,"anchor":{},"continuation":"continuation:footage-page-2"}}}}}}"#,
+            quote(&token)
+        );
+        let expected = r#"{"schema":"fss.agent_response_envelope.v1","warnings":["declared clock basis only"],"payload":{"hydrationLevel":"H0","mediaBytes":false}}"#;
+        let mut calls = 0;
+        let response = server.handle_with(&request, |command| {
+            calls += 1;
+            assert_eq!(command, native);
+            (expected.to_owned(), ExitIdentity::SUCCESS)
+        });
+        assert_eq!(calls, 1);
+        assert!(response.is_some_and(|text| {
+            text.contains(&quote(expected)) && text.contains("\"isError\":false")
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_event_target_matches_the_default_native_command()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut server = ready();
+        let native = parse_fss_args(
+            [
+                "query",
+                "--root",
+                "/owner/deployment",
+                "--principal",
+                "principal:local-operator",
+                "--kind",
+                "unclassified",
+                "--max-entries",
+                "1",
+            ]
+            .map(OsString::from),
+        )?;
+        assert!(matches!(native, FssCommand::Query(_)));
+        let mut calls = 0;
+        for arguments in [
+            r#"{"kind":"unclassified","max_entries":1}"#,
+            r#"{"target":"events","kind":"unclassified","max_entries":1}"#,
+        ] {
+            let request = format!(
+                r#"{{"jsonrpc":"2.0","id":91,"method":"tools/call","params":{{"name":"query","arguments":{arguments}}}}}"#
+            );
+            let response = server.handle_with(&request, |command| {
+                calls += 1;
+                assert_eq!(command, native);
+                ("event metadata".to_owned(), ExitIdentity::SUCCESS)
+            });
+            assert!(response.is_some_and(|text| text.contains("\"isError\":false")));
+        }
+        assert_eq!(calls, 2);
+        Ok(())
+    }
+
+    #[test]
+    fn footage_query_invalid_targets_combinations_and_values_never_execute() {
+        let mut server = ready();
+        let mut calls = 0;
+        for arguments in [
+            r#"{"target":"Footage"}"#,
+            r#"{"target":"unknown"}"#,
+            r#"{"target":"footage "}"#,
+            r#"{"target":null}"#,
+            r#"{"target":1}"#,
+            r#"{"sensor":"sensor:register"}"#,
+            r#"{"stream":"stream:main"}"#,
+            r#"{"target":"events","sensor":"sensor:register"}"#,
+            r#"{"target":"events","stream":"stream:main"}"#,
+            r#"{"target":"footage","event_id":"event:one"}"#,
+            r#"{"target":"footage","kind":"unclassified"}"#,
+            r#"{"target":"footage","state":"hypothesized"}"#,
+            r#"{"target":"footage","zone":"door"}"#,
+            r#"{"target":"footage","at":"anchor:aaaaaaaaaaaaaaaa:0:none:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}"#,
+            r#"{"target":"footage","sensor":""}"#,
+            r#"{"target":"footage","stream":"stream:main\nsecret"}"#,
+            r#"{"target":"footage","sensor":["sensor:register"]}"#,
+            r#"{"target":"footage","stream":false}"#,
+            r#"{"target":"footage","from_ns":9007199254740993}"#,
+            r#"{"target":"footage","through_ns":"170141183460469231731687303715884105728"}"#,
+            r#"{"target":"footage","from_ns":"-170141183460469231731687303715884105729"}"#,
+            r#"{"target":"footage","from_ns":"-0"}"#,
+            r#"{"target":"footage","from_ns":"01"}"#,
+            r#"{"target":"footage","from_ns":"1e3"}"#,
+            r#"{"target":"footage","from_ns":"2","through_ns":"1"}"#,
+            r#"{"target":"footage","max_entries":0}"#,
+            r#"{"target":"footage","max_entries":33}"#,
+            r#"{"target":"footage","max_entries":1.0}"#,
+            r#"{"target":"footage","max_entries":"1"}"#,
+            r#"{"target":"footage","anchor":"latest"}"#,
+            r#"{"target":"footage","root":"/other"}"#,
+            r#"{"target":"footage","principal":"principal:other"}"#,
+            r#"{"target":"footage","hydrate":"H3"}"#,
+            r#"{"target":"footage","target":"events"}"#,
+        ] {
+            let request = format!(
+                r#"{{"jsonrpc":"2.0","id":92,"method":"tools/call","params":{{"name":"query","arguments":{arguments}}}}}"#
+            );
+            let response = server.handle_with(&request, |_| {
+                calls += 1;
+                (String::new(), ExitIdentity::SUCCESS)
+            });
+            assert!(
+                response.is_some_and(|text| text.contains("\"error\"")),
+                "{arguments}"
+            );
+        }
+        assert_eq!(
+            server.handle_with(
+                r#"{"jsonrpc":"2.0","method":"tools/call","params":{"name":"query","arguments":{"target":"footage","sensor":"sensor:register"}}}"#,
+                |_| {
+                    calls += 1;
+                    (String::new(), ExitIdentity::SUCCESS)
+                },
+            ),
+            None
+        );
+        assert_eq!(calls, 0);
+    }
+
+    #[test]
+    fn query_discovery_names_typed_targets_and_preserves_read_only_bounds()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use fss_cli::json_input::{self as input, Value as Input};
+
+        let discovery = input::parse(&tools_list())?;
+        let tool = discovery
+            .object()
+            .and_then(|value| value.get("tools"))
+            .and_then(Input::array)
+            .ok_or("tool list")?
+            .iter()
+            .filter_map(Input::object)
+            .find(|tool| tool.get("name").and_then(Input::text) == Some("query"))
+            .ok_or("query tool")?;
+        let annotations = tool
+            .get("annotations")
+            .and_then(Input::object)
+            .ok_or("query annotations")?;
+        assert_eq!(
+            annotations.get("readOnlyHint").and_then(Input::boolean),
+            Some(true)
+        );
+        assert_eq!(
+            annotations.get("destructiveHint").and_then(Input::boolean),
+            Some(false)
+        );
+        let schema = tool
+            .get("inputSchema")
+            .and_then(Input::object)
+            .ok_or("query input schema")?;
+        assert_eq!(
+            schema.get("additionalProperties").and_then(Input::boolean),
+            Some(false)
+        );
+        assert_eq!(
+            schema.get("oneOf").and_then(Input::array).map(<[_]>::len),
+            Some(2)
+        );
+        let properties = schema
+            .get("properties")
+            .and_then(Input::object)
+            .ok_or("query properties")?;
+        let target = properties
+            .get("target")
+            .and_then(Input::object)
+            .ok_or("query target")?;
+        assert_eq!(target.get("default").and_then(Input::text), Some("events"));
+        assert_eq!(
+            target.get("enum").and_then(Input::array),
+            Some([Input::Text("events".into()), Input::Text("footage".into())].as_slice())
+        );
+        for key in ["sensor", "stream"] {
+            let value = properties
+                .get(key)
+                .and_then(Input::object)
+                .ok_or("footage identity")?;
+            assert_eq!(value.get("maxLength").and_then(Input::integer), Some(128));
+        }
+        for key in ["from_ns", "through_ns"] {
+            let value = properties
+                .get(key)
+                .and_then(Input::object)
+                .ok_or("time endpoint")?;
+            assert_eq!(value.get("type").and_then(Input::text), Some("string"));
+        }
+        assert!(!properties.contains_key("root"));
+        assert!(!properties.contains_key("principal"));
+        assert!(!properties.contains_key("hydrate"));
+        Ok(())
+    }
+
+    #[test]
     fn query_invalid_types_scope_overrides_and_notifications_never_execute() {
         let mut server = ready();
         let mut calls = 0;
@@ -1357,13 +1591,17 @@ mod tests {
     fn query_native_refusal_bytes_and_error_flag_survive_transport() {
         let mut server = ready();
         let expected = r#"{"schema":"fss.agent_response_envelope.v1","outcome":"refused","warnings":["continuation_wrong_stream"],"payload":null}"#;
-        let response = server.handle_with(
-            r#"{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"query","arguments":{"continuation":"continuation:wrong-stream"}}}"#,
-            |_| (expected.to_owned(), ExitIdentity::AGENT_REFUSED),
-        );
-        assert!(response.is_some_and(
-            |text| text.contains(&quote(expected)) && text.contains("\"isError\":true")
-        ));
+        for target in ["events", "footage"] {
+            let request = format!(
+                r#"{{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{{"name":"query","arguments":{{"target":"{target}","continuation":"continuation:wrong-stream"}}}}}}"#
+            );
+            let response = server.handle_with(&request, |_| {
+                (expected.to_owned(), ExitIdentity::AGENT_REFUSED)
+            });
+            assert!(response.is_some_and(
+                |text| text.contains(&quote(expected)) && text.contains("\"isError\":true")
+            ));
+        }
     }
 
     #[test]

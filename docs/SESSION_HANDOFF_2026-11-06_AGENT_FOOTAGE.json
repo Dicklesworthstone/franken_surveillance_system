@@ -1,0 +1,143 @@
+{
+  "format": "engineering-session-handoff",
+  "date": "2026-11-06",
+  "mission": {
+    "goal": "Implement consequential remaining product functionality from the comprehensive plan and beads; commit meaningful checkpoints directly to main through GitHub without PRs.",
+    "inputs": [
+      "AGENTS.md",
+      "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md",
+      ".beads/issues.jsonl",
+      "docs/VITTLES_FOOTAGE_PLANE_PLAN.md"
+    ],
+    "initial_head": "1e231b7787fca656c9ab157214739972c1bf426a"
+  },
+  "authority": {
+    "git": "Explicit user authorization for direct main commits through the GitHub connector; no PRs.",
+    "external_device_execution": false,
+    "deployment_mutation": false,
+    "concurrent_changes": "Preserved UniFi/Wyze commits through 431bf51da2d6a7e84ab0a77044cc4dce2cd418db before publishing the native checkpoint; main ref updates use exact expected heads without force."
+  },
+  "published_checkpoints": [
+    {
+      "commit": "e13bfe6e2bfddbba808597c2ba714b24ab9c691d",
+      "change": "Read-only retained-file footage metadata engine, bounded metadata history, exact custody/pagination/deletion semantics, eleven native contracts and canonical identities."
+    },
+    {
+      "commit": "this_commit",
+      "change": "Canonical CLI/MCP target, explicit privacy projection, transport/grammar/process contracts and usage/status documentation."
+    }
+  ],
+  "cases": [
+    {
+      "bead": "fss-vit-je36t.15",
+      "status": "advanced_open",
+      "finding": "Existing event-only canonical query did not expose completed retained file-capsule metadata; normal archive/QSR startup could not be relabelled read-only.",
+      "implemented": "Native bounded metadata owner plus query --target footage and MCP target=footage, preserving the existing operation/view/schema universe."
+    },
+    {
+      "bead": "fss-vit-je36t.8",
+      "status": "advanced_open",
+      "implemented": "Agent discovery of completed recorded-file segments by sensor/stream/source-native intervals.",
+      "remaining": "Native archive UTC agent access, continuous recorder retrieval and measured coverage semantics."
+    },
+    {
+      "bead": "fss-vit019-clock-witness-r6d9t",
+      "status": "open_execution_blocked",
+      "finding": "Producer and UTC-query review found no isolated defect warranting a speculative edit; full native integration remains unexecuted."
+    },
+    {
+      "bead": "fss-vit-je36t.5",
+      "status": "open_not_relabelled",
+      "remaining": "Always-on recorder requires unresolved owner/source-envelope/standing-authority decisions; no such decision was fabricated."
+    }
+  ],
+  "contracts": {
+    "operation": "AOP-005 query",
+    "view": "AVIEW-003 case",
+    "response_schema": "fss.agent_response_envelope.v1",
+    "payload_schema": "fss.agent_cognitive_envelope.v1",
+    "scope": "Completed non-deleted ADP-FILE-001 import/capsule metadata only",
+    "time": "Inclusive overlap in declared source-native capture coordinates; no clock conversion or UTC inference",
+    "custody": "Canonical manifests, partition closure, ledger/root membership, capsule/range bindings, current deletion and local tombstone checks",
+    "budget": {
+      "imports": 1024,
+      "capsules": 16384,
+      "ledger_objects": 65536,
+      "metadata_payload_bytes": 268435456,
+      "metadata_read_attempts": 65536,
+      "maximum_page_entries": 32,
+      "default_page_entries": 16,
+      "output_bytes": 262144,
+      "cooperative_read_deadline_seconds": 60
+    },
+    "no_source_media_hydration": true,
+    "no_writes_locks_or_recovery": true,
+    "source_payload_availability": "unknown",
+    "physical_absence": "not_established",
+    "untyped_model_receipts": "Not hydrated during metadata-only context reads; required analyses stay unavailable and cannot certify absence."
+  },
+  "verification": {
+    "toolchain": "nightly-2026-08-31",
+    "native_contracts_authored": 12,
+    "cli_grammar_contracts_authored": 4,
+    "native_contracts_status": "not_executed_dependency_compiler_SIGKILL",
+    "selected_rustfmt": "passed",
+    "whitespace": "passed",
+    "MCP_discovery_JSON": "parsed",
+    "targeted_python_registry_tests": {
+      "passed": 3,
+      "blocked_by_existing_errors": 2,
+      "baseline_and_current_error_signatures": 51,
+      "new_footage_domains_valid": 7,
+      "new_registry_errors": 0
+    },
+    "native_attempts": [
+      {
+        "name": "baseline-check.log",
+        "sha256": "657b5f0711a2fa5cdc0efc1291276de179259cb7ddd4880a74c8970be628ca2b",
+        "outcome": "compiler_resource_failure_before_FSS_diagnostics",
+        "dependency": "asupersync 0.5.0",
+        "signal": "SIGKILL (9)",
+        "native_tests_executed": false
+      },
+      {
+        "name": "clock-conservative-check.log",
+        "sha256": "4abd81f7dbf6eec14b6866e3d9c182e2df594be4b9cc80aaed37981baa29e7c2",
+        "outcome": "compiler_resource_failure_before_FSS_diagnostics",
+        "dependency": "asupersync 0.5.0",
+        "signal": "SIGKILL (9)",
+        "native_tests_executed": false
+      }
+    ],
+    "scope": "Developer formatting/static/registry differential checks, not full repository qualification or production approval."
+  },
+  "unknowns": [
+    "Native type-check and execution of the new feature under the full production runtime remain required.",
+    "Source payload bytes and their current availability are not verified by metadata discovery.",
+    "No physical camera, live UTC accuracy, QSR quality, POS join or continuous-recording qualification was performed.",
+    "Existing broader registry errors remain unresolved."
+  ],
+  "obligations": [
+    {
+      "state": "blocked",
+      "work": "Execute full native check and focused footage/CLI/MCP/retained-clock contracts on a host with sufficient compiler memory.",
+      "reason": "Two full-source checks were killed in unchanged Asupersync before FSS diagnostics; no gate was weakened."
+    }
+  ],
+  "continuation": {
+    "commands": [
+      "cargo check --locked --offline -p fss-cli --lib --bin fss --bin fss-mcp --bin fss-archive --bin fss-capture-rtsp",
+      "cargo test --locked --offline -p fss-reference --lib agent_footage::tests",
+      "cargo test --locked --offline -p fss-reference --lib ingest::source_coverage::tests::metadata_query_skips_untyped_model_receipts_and_keeps_absence_unknown",
+      "cargo test --locked --offline -p fss-cli --lib footage_query_cmd::tests",
+      "cargo test --locked --offline -p fss-cli --bin fss-mcp footage",
+      "cargo test --locked --offline -p fss-cli --test mcp_cli_contract footage",
+      "cargo test --locked --offline -p fss-cli --test query_surface_contract",
+      "cargo test --locked --offline -p fss-cli --test session_cli_contract",
+      "cargo test --locked --offline -p fss-reference --test recording_clock_contract",
+      "cargo test --locked --offline -p fss-cli --test native_clock_contract",
+      "cargo test --locked --offline -p fss-cli --lib archive_cmd::tests::utc_tests::"
+    ],
+    "next_feature": "A sealed read-only retained-owner interface can extend canonical discovery to archive UTC/QSR without implicit recovery; preserve existing custody/privacy/deletion proofs."
+  }
+}

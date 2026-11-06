@@ -12,6 +12,7 @@ use std::process::{Command, Output, Stdio};
 
 use fss_cli::{ExitIdentity, escape_json_str, execute_fss_with_exit, parse_fss_args};
 use fss_core::{ContentDigest, ContextAuthority, OperationId, RootAuthoritySpec};
+use fss_reference::media_fixture::jpeg::{JpegConfig, Subsampling, encode_jpeg};
 use fss_reference::{ADP_REPLAY_ROW_ID, ReferenceDeployment, ReplayCx, ReplayIoAuthority};
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
@@ -56,6 +57,49 @@ impl Directory {
         )?);
         drop(ReferenceDeployment::open(&root, "site:mcp-contract", &cx)?);
         Ok(root.canonicalize()?)
+    }
+
+    /// Synthetic source bytes exercise retained-capsule custody and pagination only.
+    /// Declared capture times do not establish UTC alignment or physical coverage.
+    fn import_footage(&self, root: &Path) -> TestResult {
+        let config = JpegConfig {
+            quality: 90,
+            subsampling: Subsampling::Grayscale,
+            restart_interval: 0,
+            custom_markers: Vec::new(),
+        };
+        let mut recording = Vec::new();
+        for value in [24_u8, 80, 144] {
+            recording.extend(encode_jpeg(96, 48, &vec![value; 96 * 48], &config)?);
+        }
+        let input = self.0.join("retained-footage.mjpeg");
+        fs::write(&input, recording)?;
+        let output = Command::new(env!("CARGO_BIN_EXE_fss-file"))
+            .args(["import", "--root"])
+            .arg(root)
+            .args(["--site", "site:mcp-contract", "--input"])
+            .arg(input)
+            .args(["--sensor", "sensor:mcp-footage", "--stream", "stream:main"])
+            .args([
+                "--media-format",
+                "mjpeg",
+                "--receive-time-ns",
+                "10000000000000",
+                "--capture-start-ns",
+                "1000000000",
+                "--capture-uncertainty-ns",
+                "1000000",
+                "--assumed-fps",
+                "10",
+            ])
+            .output()?;
+        assert!(
+            output.status.success(),
+            "stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        Ok(())
     }
 }
 
@@ -179,6 +223,182 @@ fn actual_stdio_reads_match_cli_and_leave_all_deployment_bytes_unchanged() -> Te
     );
     for (line, (semantic, exit)) in lines.iter().skip(1).zip([orient, follow, explain, doctor]) {
         // Exact text equality after MCP string encoding, not an approximation of selected fields.
+        assert!(
+            line.contains(&format!("\"text\":{}", quote(&semantic))),
+            "{line}"
+        );
+        assert!(line.contains(&format!("\"isError\":{}", exit.code != 0)));
+    }
+    assert_eq!(snapshot(&root)?, before);
+    Ok(())
+}
+
+#[test]
+fn retained_footage_pages_and_cursor_refusals_match_cli_without_writes() -> TestResult {
+    use fss_cli::json_input::{Value, parse};
+
+    fn privacy_domains(envelope: &Value) -> TestResult<(&[Value], &[Value])> {
+        let projection = envelope
+            .object()
+            .and_then(|value| value.get("effectivePrivacyProjection"))
+            .and_then(Value::object)
+            .ok_or("effective privacy projection")?;
+        Ok((
+            projection
+                .get("allowedDomains")
+                .and_then(Value::array)
+                .ok_or("allowed data domains")?,
+            projection
+                .get("redactedDomains")
+                .and_then(Value::array)
+                .ok_or("redacted data domains")?,
+        ))
+    }
+
+    let directory = Directory::new("footage-parity")?;
+    let root = directory.deployment()?;
+    directory.import_footage(&root)?;
+    let before = snapshot(&root)?;
+    let mut requests = format!("{INIT}\n{READY}\n");
+    let mut expected = Vec::new();
+    let mut continuation: Option<String> = None;
+    let mut first_cursor = None;
+    for id in 2..6 {
+        let mut extra = vec![
+            "--target",
+            "footage",
+            "--sensor",
+            "sensor:mcp-footage",
+            "--stream",
+            "stream:main",
+            "--from-ns",
+            "0",
+            "--through-ns",
+            "2000000000",
+            "--max-entries",
+            "1",
+        ];
+        let cursor_argument = if let Some(cursor) = continuation.as_deref() {
+            extra.extend(["--continuation", cursor]);
+            format!(",\"continuation\":{}", quote(cursor))
+        } else {
+            String::new()
+        };
+        let response = cli(&root, "query", &extra)?;
+        let envelope = parse(&response.0)?;
+        let (allowed, redacted) = privacy_domains(&envelope)?;
+        for domain in ["retained-import-metadata", "sensor-capsule-metadata"] {
+            assert!(allowed.iter().any(|value| value.text() == Some(domain)));
+        }
+        assert!(
+            redacted
+                .iter()
+                .any(|value| value.text() == Some("media-payloads"))
+        );
+        let next = envelope
+            .object()
+            .ok_or("query envelope")?
+            .get("continuation")
+            .ok_or("query continuation field")?;
+        continuation = match next {
+            Value::Null => None,
+            Value::Text(token) => Some(token.clone()),
+            _ => return Err("unexpected query continuation type".into()),
+        };
+        if id == 2 {
+            first_cursor.clone_from(&continuation);
+        }
+        requests.push_str(&call(
+            id,
+            "query",
+            &format!(
+                r#"{{"target":"footage","sensor":"sensor:mcp-footage","stream":"stream:main","from_ns":"0","through_ns":"2000000000","max_entries":1{cursor_argument}}}"#
+            ),
+        ));
+        requests.push('\n');
+        expected.push(response);
+        if continuation.is_none() {
+            break;
+        }
+    }
+    assert_eq!(expected.len(), 3, "one retained frame per bounded page");
+    assert!(
+        continuation.is_none(),
+        "last page must exhaust the selection"
+    );
+    let first_cursor = first_cursor.ok_or("missing bounded-page continuation")?;
+
+    // The same cursor cannot cross query targets or silently change its source predicate.
+    for (target, sensor) in [("events", None), ("footage", Some("sensor:other"))] {
+        let mut extra = vec![
+            "--target",
+            target,
+            "--max-entries",
+            "1",
+            "--continuation",
+            &first_cursor,
+        ];
+        let source_arguments = if let Some(sensor) = sensor {
+            extra.extend([
+                "--sensor",
+                sensor,
+                "--stream",
+                "stream:main",
+                "--from-ns",
+                "0",
+                "--through-ns",
+                "2000000000",
+            ]);
+            format!(
+                r#", "sensor":{}, "stream":"stream:main", "from_ns":"0", "through_ns":"2000000000""#,
+                quote(sensor)
+            )
+        } else {
+            String::new()
+        };
+        let response = cli(&root, "query", &extra)?;
+        assert_ne!(
+            response.1.code, 0,
+            "a changed cursor binding must be refused"
+        );
+        requests.push_str(&call(
+            expected.len() as u64 + 2,
+            "query",
+            &format!(
+                r#"{{"target":{},"max_entries":1,"continuation":{}{source_arguments}}}"#,
+                quote(target),
+                quote(&first_cursor)
+            ),
+        ));
+        requests.push('\n');
+        expected.push(response);
+    }
+    // The new target declares its additional metadata domains without extending events.
+    let events = cli(&root, "query", &[])?;
+    let event_envelope = parse(&events.0)?;
+    let (allowed, redacted) = privacy_domains(&event_envelope)?;
+    for domain in ["retained-import-metadata", "sensor-capsule-metadata"] {
+        assert!(!allowed.iter().any(|value| value.text() == Some(domain)));
+    }
+    assert!(
+        redacted
+            .iter()
+            .any(|value| value.text() == Some("media-payloads"))
+    );
+    requests.push_str(&call(expected.len() as u64 + 2, "query", "{}"));
+    requests.push('\n');
+    expected.push(events);
+    let output = exchange(&root, &requests)?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stderr.is_empty());
+    let text = String::from_utf8(output.stdout)?;
+    let lines: Vec<_> = text.lines().collect();
+    assert_eq!(lines.len(), expected.len() + 1);
+    for (line, (semantic, exit)) in lines.iter().skip(1).zip(expected) {
         assert!(
             line.contains(&format!("\"text\":{}", quote(&semantic))),
             "{line}"

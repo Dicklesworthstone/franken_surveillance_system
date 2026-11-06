@@ -82,6 +82,7 @@ pub fn parse_query_args(tokens: &[ArgToken]) -> Result<QueryArgs, CliError> {
         "query",
         tokens,
         &[
+            "--target",
             "--root",
             "--principal",
             "--event-id",
@@ -96,6 +97,16 @@ pub fn parse_query_args(tokens: &[ArgToken]) -> Result<QueryArgs, CliError> {
             "--continuation",
         ],
     )?;
+    if let Some((_, target, index)) = take(&values, "--target")
+        && target != "events"
+    {
+        return Err(malformed(
+            "--target",
+            target,
+            "expected events for an event-record query",
+            *index,
+        ));
+    }
     let event_id = take(&values, "--event-id")
         .map(|(_, value, index)| {
             EventId::parse(value.clone())
@@ -309,9 +320,8 @@ fn query_response(
     // Keep verified warnings even when this page matches no events. Current deletion
     // denials and custody limits apply to historical metadata too.
     let mut warnings = orientation.warnings.clone();
-    warnings.push(
-        "Metadata-only query; no certified physical absence or effect authority.".to_owned(),
-    );
+    warnings
+        .push("Metadata-only query; no certified physical absence or effect authority.".to_owned());
     if let Some(scope) = historical {
         warnings.push(scope.warning());
     }
