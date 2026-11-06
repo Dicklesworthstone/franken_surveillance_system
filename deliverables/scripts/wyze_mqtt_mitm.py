@@ -85,8 +85,11 @@ def _rewrite(d):
             # field the handler may skip the 0x1fe (no version to compare).
             des["firmware_ver"] = os.environ["OTA_URL"].rsplit("/", 1)[-1].split(".tar")[0]
             # the cloud re-pushes the same version every ~18 s and the device ignores a
-            # delta that is not newer, so lift it out of the cloud's range
-            doc["version"] = int(doc.get("version", 0)) + 1000000
+            # delta that is not newer, so lift it out of the cloud's range AND increment
+            # per rewrite — a fixed offset produces the same version every cycle, which
+            # the camera ignores as stale after the first processing
+            _rewrite._vsn = getattr(_rewrite, "_vsn", 1000000) + 1
+            doc["version"] = int(doc.get("version", 0)) + _rewrite._vsn
             new = json.dumps(doc, separators=(",", ":")).encode()
         except Exception as e:
             print("rewrite delta:", e, flush=True)
