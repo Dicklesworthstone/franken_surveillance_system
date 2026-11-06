@@ -305,12 +305,13 @@ if [ "${FOREGROUND:-0}" = 1 ]; then
   # REWRITE edits the cloud's own wyze-service delta in flight — it is the delivery that has
   # actually produced fetches, and it was never passed by this script.
   THING="$THING" D="$CERTDIR" CHAIN=/tmp/ota/chain.pem INJECT=1 REWRITE="${REWRITE:-1}" \
+    NO_UPSTREAM="${NO_UPSTREAM:-}" \
     OTA_URL="$OTA_URL" OTA_MD5="$OTA_MD5" \
     OTA_ACTIONS="${OTA_ACTIONS:-}" PROC_NAME="${PROC_NAME:-}" \
     OTA_ENC="${OTA_ENC:-3}" OTA_ENR="${OTA_ENR:-}" \
     exec "$PY" "$HERE/wyze_mqtt_mitm.py"
 fi
-sudo THING="$THING" D="$CERTDIR" CHAIN=/tmp/ota/chain.pem INJECT=1 REWRITE="${REWRITE:-1}" \
+sudo env NO_UPSTREAM="${NO_UPSTREAM:-}" THING="$THING" D="$CERTDIR" CHAIN=/tmp/ota/chain.pem INJECT=1 REWRITE="${REWRITE:-1}" \
   OTA_URL="$OTA_URL" OTA_MD5="$OTA_MD5" \
   OTA_ACTIONS="${OTA_ACTIONS:-}" PROC_NAME="${PROC_NAME:-}" \
   OTA_ENC="${OTA_ENC:-3}" OTA_ENR="${OTA_ENR:-}" \
