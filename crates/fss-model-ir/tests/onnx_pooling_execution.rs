@@ -653,7 +653,7 @@ fn malformed_and_unimplemented_pooling_attributes_refuse() {
         (
             [
                 ints_attr("kernel_shape", &[2, 2]),
-                text_attr("auto_pad", "SAME_UPPER"),
+                text_attr("auto_pad", "SAME"),
             ]
             .concat(),
             OnnxError::Unsupported,
@@ -661,7 +661,7 @@ fn malformed_and_unimplemented_pooling_attributes_refuse() {
         (
             [
                 ints_attr("kernel_shape", &[2, 2]),
-                text_attr("auto_pad", "VALID"),
+                text_attr("auto_pad", "same_upper"),
             ]
             .concat(),
             OnnxError::Unsupported,

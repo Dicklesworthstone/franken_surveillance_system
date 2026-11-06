@@ -20,6 +20,7 @@ mod constants;
 mod dfl;
 mod export;
 mod gemm;
+mod padding;
 mod pooling;
 mod preprocess;
 mod resize;
@@ -587,15 +588,40 @@ fn node(source: SourceNode<'_>, known: &BTreeMap<String, TensorPort>) -> Result<
         "Concat" => OpCode::Concat,
         _ => return Err(OnnxError::Unsupported),
     };
+    if matches!(opcode, OpCode::Conv2d | OpCode::MaxPool2d) {
+        let input = inputs
+            .first()
+            .and_then(|name| known.get(name))
+            .ok_or(OnnxError::Graph)?;
+        let dims: [usize; 4] = input
+            .shape()
+            .dims()
+            .try_into()
+            .map_err(|_| OnnxError::Unsupported)?;
+        let kernel = if opcode == OpCode::Conv2d {
+            let weight = inputs
+                .get(1)
+                .and_then(|name| known.get(name))
+                .ok_or(OnnxError::Graph)?;
+            let shape: [usize; 4] = weight
+                .shape()
+                .dims()
+                .try_into()
+                .map_err(|_| OnnxError::Unsupported)?;
+            [shape[2], shape[3]]
+        } else {
+            if !attrs.contains_key("kernel_shape") {
+                return Err(OnnxError::Graph);
+            }
+            padding::pair(&attrs, "kernel_shape", [1, 1])?
+        };
+        let strides = padding::pair(&attrs, "strides", [1, 1])?;
+        let dilations = padding::pair(&attrs, "dilations", [1, 1])?;
+        padding::resolve(&mut attrs, [dims[2], dims[3]], kernel, strides, dilations)?;
+    }
     let mut lowered = AttributeMap::new();
     for (key, value) in attrs {
         let target = match (op.as_str(), key.as_str()) {
-            ("Conv", "auto_pad") | ("MaxPool", "auto_pad") => {
-                if value != AttrValue::String("NOTSET".into()) {
-                    return Err(OnnxError::Unsupported);
-                }
-                continue;
-            }
             ("Conv", "kernel_shape") => {
                 let shape = value
                     .as_usize_list(&id, "kernel_shape")

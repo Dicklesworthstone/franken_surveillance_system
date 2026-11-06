@@ -50,7 +50,8 @@ including hand-computed dense and convolution/pooling results.
   nodes without changing the frozen operator set or canonical Model IR v1 encoding.
 - MatMul requires rank-two-or-higher inputs. Conv is 2-D; declared `kernel_shape`
   must agree with the actual weight tensor. Explicit strides, dilation, pads and
-  groups use native validation. `auto_pad`, when present, must be `NOTSET`.
+  groups use native validation. Static `auto_pad` modes `VALID`, `SAME_UPPER`, and
+  `SAME_LOWER` lower to exact explicit native padding as described below.
 - MaxPool is 2-D, single-output, with explicit nonnegative padding smaller than
   each corresponding kernel dimension, no dilation other than one, no ceil mode,
   and default storage order. Concat requires an explicit axis.
@@ -69,6 +70,45 @@ implemented by this profile. Initializers that are also graph inputs refuse rath
 than silently freezing an overridable weight. An unused initializer cannot be made
 executable merely by mentioning it in value-info metadata.
 
+## Static automatic spatial padding
+
+Conv, MaxPool and AveragePool accept `auto_pad: "VALID"`, `"SAME_UPPER"`, and
+`"SAME_LOWER"` for their admitted static two-dimensional profiles. Conversion
+resolves these into the existing native `padding` attribute; inference does not
+need another operator or a dynamic padding implementation. The definitions are
+the opset-13 selections of [Conv-11](https://onnx.ai/onnx/operators/onnx__Conv.html#conv-11),
+[MaxPool-12](https://onnx.ai/onnx/operators/onnx__MaxPool.html#maxpool-12), and
+[AveragePool-11](https://onnx.ai/onnx/operators/onnx__AveragePool.html#averagepool-11).
+
+`VALID` inserts no padding. Both `SAME` modes produce `ceil(input / stride)`
+outputs along each spatial axis. Conv accounts for the effective kernel
+`dilation * (kernel - 1) + 1`. Any odd extra padding goes at the end for
+`SAME_UPPER`, or at the beginning for `SAME_LOWER`. For a 4×4 input, 3×3 kernel
+and stride two, the explicit top/left/bottom/right pads are `[0,0,1,1]` and
+`[1,1,0,0]`, respectively. Strides wider than the effective kernel can require
+zero padding; no negative pad or artificial crop is introduced.
+
+An automatic mode combined with explicit `pads` is refused, including an
+all-zero `pads` declaration. Absent `auto_pad` and `NOTSET` keep the existing
+explicit-padding behavior and canonical native graph representation. Unknown
+modes, malformed attributes, nonpositive strides/dilations, arithmetic overflow,
+unsupported ranks, and a declared output shape inconsistent with the computed
+shape refuse conversion. Existing size, work and cancellation ceilings apply.
+
+This does not widen the pooling numeric profile: MaxPool still skips padded
+positions, including for entirely negative input, and admits only unit dilation
+and floor output sizing. AveragePool keeps its explicit include/exclude-padding
+denominator and floor sizing. Both preserve the rule that every admitted pooling
+window contains a real sample. Existing grouped/dilated Conv, bias, parameter
+bits and scalar accumulation order remain intact.
+
+The `onnx_padding_execution` target compares real native execution with an
+independent spatial oracle, then repeats execution after canonical graph and
+Safetensors export/reload. It also covers incompatible declarations, resource
+bounds and cancellation. The importer identity includes the padding resolver;
+the original model bytes remain retained, and existing package/IR formats do not
+change. Test results and their scope are recorded in `IMPLEMENTATION_STATUS.md`.
+
 ## Spatial and global average pooling
 
 The importer admits [AveragePool-11](https://onnx.ai/onnx/operators/onnx__AveragePool.html#averagepool-11)
@@ -85,8 +125,8 @@ Output dimensions use floor sizing, so these conditions guarantee that every
 admitted window contains a real input sample. `count_include_pad=0`, the default,
 divides each window's sum by its real sample count. Setting it to one divides by
 the full kernel area, including padded positions. Asymmetric padding and spatial
-strides apply independently. `auto_pad` must be absent or `NOTSET`; `ceil_mode`
-must be absent or zero. Automatic padding, ceil mode, dilation attributes from
+strides apply independently. `auto_pad` can select the static automatic modes
+above; `ceil_mode` must be absent or zero. Ceil mode, dilation attributes from
 later AveragePool schemas and malformed attribute types explicitly refuse.
 
 GlobalAveragePool accepts rank three through eight in `N,C,D1,...` layout and
@@ -279,8 +319,8 @@ pad is smaller than its kernel dimension and output sizing uses floor mode, ever
 admitted window contains a real input sample; the executor's empty-window fallback
 is unreachable. This matters for negative feature maps: padding must not introduce
 zeros that can become the maximum. Asymmetric pads and spatial strides follow
-native shape validation. Automatic padding, ceil mode, dilated pooling and indices
-remain outside this profile.
+native shape validation. Automatic padding uses the static resolver described above. Ceil mode,
+dilated pooling and indices remain outside this profile.
 
 The retained untrained numerical fixture
 `crates/fss-model-ir/tests/fixtures/onnx/detector_split_pool.onnx` is 1,190 bytes with

@@ -9,7 +9,7 @@
 
 use fss_tensor::{DType, Tensor};
 
-use super::{Lowering, OnnxError, Result, SourceNode, port};
+use super::{Lowering, OnnxError, Result, SourceNode, padding, port};
 use crate::{AttrValue, AttributeMap, GraphNode, OpCode};
 
 fn dimensions<const N: usize>(
@@ -68,18 +68,19 @@ fn plan(source: &mut SourceNode<'_>, dims: &[usize]) -> Result<Pool> {
     let input: [usize; 4] = dims.try_into().map_err(|_| OnnxError::Unsupported)?;
     let kernel = dimensions(&mut source.attrs, "kernel_shape", None::<[usize; 2]>)?;
     let strides = dimensions(&mut source.attrs, "strides", Some([1, 1]))?;
+    padding::resolve(
+        &mut source.attrs,
+        [input[2], input[3]],
+        kernel,
+        strides,
+        [1, 1],
+    )?;
     let pads = dimensions(&mut source.attrs, "pads", Some([0; 4]))?;
     let include_padding = match source.attrs.remove("count_include_pad") {
         None | Some(AttrValue::Int(0)) => false,
         Some(AttrValue::Int(1)) => true,
         Some(_) => return Err(OnnxError::Graph),
     };
-    match source.attrs.remove("auto_pad") {
-        None => {}
-        Some(AttrValue::String(value)) if value == "NOTSET" => {}
-        Some(AttrValue::String(_)) => return Err(OnnxError::Unsupported),
-        Some(_) => return Err(OnnxError::Graph),
-    }
     match source.attrs.remove("ceil_mode") {
         None | Some(AttrValue::Int(0)) => {}
         Some(AttrValue::Int(_)) => return Err(OnnxError::Unsupported),

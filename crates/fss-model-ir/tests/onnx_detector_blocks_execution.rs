@@ -897,7 +897,8 @@ fn padded_pooling_retains_all_other_profile_and_shape_refusals() {
         (ints_attr("dilations", &[2, 1]), OnnxError::Unsupported),
         (int_attr("ceil_mode", 1), OnnxError::Unsupported),
         (int_attr("storage_order", 1), OnnxError::Unsupported),
-        (text_attr("auto_pad", "SAME_UPPER"), OnnxError::Unsupported),
+        // SAME produces 4x4 here; the declared 2x2 output remains a shape error.
+        (text_attr("auto_pad", "SAME_UPPER"), OnnxError::Graph),
         (int_attr("unknown", 0), OnnxError::Unsupported),
     ] {
         let source = model(

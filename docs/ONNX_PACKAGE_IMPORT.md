@@ -327,6 +327,13 @@ Runtime/data-dependent shapes, external tensors, custom operators, raw detector-
 profiles outside the explicit v3 DFL contract and unsupported operators refuse explicitly. The command does
 not claim that an arbitrary ONNX detector can be imported.
 
+Conv, MaxPool and AveragePool can use static `VALID`, `SAME_UPPER` or `SAME_LOWER`
+automatic padding. The importer freezes the exact spatial pads into the native
+graph, including Conv dilation and the declared odd-pad placement. An automatic
+mode combined with explicit `pads` refuses. The existing pooling restrictions,
+output-shape checks and import limits remain in force; see
+[automatic spatial padding](onnx_import.md#static-automatic-spatial-padding).
+
 Default source and parameter limits are 16 MiB each. Export additionally limits the canonical
 graph to 16 MiB, complete Safetensors to 16 MiB, its JSON header to 256 KiB and the parameter
 count to 256. Original source plus exported graph and weights are bounded together. Each

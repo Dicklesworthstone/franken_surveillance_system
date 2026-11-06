@@ -4,6 +4,32 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Static automatic padding for native ONNX import (2026-11-06)
+
+The bounded opset-13 importer now lowers `VALID`, `SAME_UPPER`, and `SAME_LOWER`
+for `Conv`, `MaxPool`, and `AveragePool` into the existing explicit native padding.
+Static input dimensions, strides, and convolution dilation determine checked pads;
+odd padding goes to the end for UPPER and the beginning for LOWER. Conflicting
+explicit pads, malformed attributes, overflow, and output-shape disagreement refuse.
+Absent/`NOTSET` graphs retain their existing canonical graph and parameter semantics;
+artifact metadata continues to bind the exact original source.
+The importer identity includes the new source; no native operator, schema, or
+production dependency changes. See `docs/onnx_import.md`.
+
+**Verification scope:** 59 targeted native tests pass under pinned nightly
+`2026-08-31` with locked/offline dependencies, serial compilation, zero debug
+information, and incremental compilation disabled: 20 Model IR unit tests,
+16 detector-block, 11 automatic-padding, and 12 existing pooling tests. The new
+target includes nine padding contracts plus two unchanged scalar-executor smoke
+contracts; it checks 207 pooling and 90 grouped/dilated convolution combinations
+against independent coordinate oracles, production scalar execution,
+graph/Safetensors reload, exact source retention, budgets, and cancellation.
+Independent source review, selected Rust formatting, whitespace, and staged-file
+integrity checks pass. This target imports the unchanged production scalar
+executor and weight parser; it does not qualify the full asynchronous reference
+runtime, package CLI, model accuracy, or a detector deployment. This advances
+`fss-x4a.14.10`; the broad bead remains open.
+
 ## Canonical retained-footage metadata query (2026-11-06, native execution pending)
 
 `fss query --target footage` and the MCP `query` tool now select completed
