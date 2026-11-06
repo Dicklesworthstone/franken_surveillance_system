@@ -11,6 +11,7 @@ fn snapshot() -> DeploymentSnapshot {
     DeploymentSnapshot {
         site_lineage: "site:mission-projection".to_owned(),
         doctor_verdict: DoctorVerdict::Healthy,
+        doctor_inspected: true,
         position: HistoryPosition {
             commit_sequence: 0,
             effect_records: None,

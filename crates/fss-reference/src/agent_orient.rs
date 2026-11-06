@@ -302,8 +302,11 @@ pub struct HistoryPosition {
 pub struct DeploymentSnapshot {
     /// Site lineage from `LAYOUT`.
     pub site_lineage: String,
-    /// Read-only doctor verdict for the root, as read now (it classifies the current files).
+    /// Read-only doctor verdict when inspected; otherwise the conservative attention sentinel.
     pub doctor_verdict: DoctorVerdict,
+    /// Whether the full read-only spool doctor actually ran. Metadata-only reads leave this
+    /// false and cannot claim whole-spool health or source-payload verification.
+    pub doctor_inspected: bool,
     /// Committed authority position this snapshot was compiled at.
     pub position: HistoryPosition,
     /// Committed authority anchor at [`Self::position`].
@@ -425,14 +428,92 @@ pub const fn obligation_state_str(state: ObligationState) -> &'static str {
     }
 }
 
+/// Shared, non-replenishing payload-read allowance for synchronous metadata queries.
+/// Counts bytes actually returned by bounded readers, excluding filesystem framing/syscalls.
+#[derive(Clone, Debug)]
+pub(crate) struct MetadataReadBudget {
+    state: std::sync::Arc<std::sync::Mutex<(u64, u64, bool)>>,
+    max_bytes: u64,
+    max_objects: u64,
+}
+
+impl MetadataReadBudget {
+    pub(crate) fn new(max_bytes: usize, max_objects: usize) -> Self {
+        Self {
+            state: Default::default(),
+            max_bytes: max_bytes as u64,
+            max_objects: max_objects as u64,
+        }
+    }
+    pub(crate) fn allowance(&self, maximum: usize) -> io::Result<usize> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| io::Error::other("metadata read budget poisoned"))?;
+        let (bytes, objects, failed) = *state;
+        if failed {
+            return Err(io::Error::other("previous metadata read failed"));
+        }
+        if objects >= self.max_objects || bytes >= self.max_bytes {
+            return Err(io::Error::other("metadata read budget exhausted"));
+        }
+        state.1 += 1;
+        Ok(maximum.min((self.max_bytes - bytes) as usize))
+    }
+    pub(crate) fn charge(&self, length: usize) -> io::Result<()> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| io::Error::other("metadata read budget poisoned"))?;
+        let bytes = state
+            .0
+            .checked_add(length as u64)
+            .ok_or_else(|| io::Error::other("metadata read budget exhausted"))?;
+        let objects = state.1;
+        if bytes > self.max_bytes || objects > self.max_objects {
+            return Err(io::Error::other("metadata read budget exhausted"));
+        }
+        *state = (bytes, objects, state.2);
+        Ok(())
+    }
+    pub(crate) fn consumed(&self) -> (u64, u64) {
+        self.state
+            .lock()
+            .map_or((self.max_bytes, self.max_objects), |state| {
+                (state.0, state.1)
+            })
+    }
+    fn fail(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.2 = true;
+        }
+    }
+    pub(crate) fn ensure_valid(&self) -> io::Result<()> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| io::Error::other("metadata read budget poisoned"))?;
+        if state.2 {
+            Err(io::Error::other("previous metadata read failed"))
+        } else {
+            Ok(())
+        }
+    }
+}
+
 struct Reader {
     files_read: u64,
     bytes_read: u64,
+    budget: Option<MetadataReadBudget>,
 }
 
 impl Reader {
     /// Reads at most `max` bytes from a regular, non-symlink file; `Ok(None)` when absent.
     fn read_file(&mut self, path: &Path, max: usize) -> io::Result<Option<Vec<u8>>> {
+        let max = match &self.budget {
+            Some(budget) => budget.allowance(max)?,
+            None => max,
+        };
         let meta = match fs::symlink_metadata(path) {
             Ok(meta) => meta,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -451,6 +532,9 @@ impl Reader {
         if bytes.len() > max {
             return Err(io::Error::other("file exceeds its read bound"));
         }
+        if let Some(budget) = &self.budget {
+            budget.charge(bytes.len())?;
+        }
         self.files_read += 1;
         self.bytes_read += bytes.len() as u64;
         Ok(Some(bytes))
@@ -462,11 +546,25 @@ impl Reader {
         digest: ContentDigest,
         max: usize,
     ) -> Result<Vec<u8>, DeploymentReadError> {
+        let max = match &self.budget {
+            Some(budget) => budget
+                .allowance(max)
+                .map_err(|_| corrupt("metadata read budget exhausted"))?,
+            None => max,
+        };
         let bytes = fss_publication::read_verified(objects, digest, max).map_err(|error| {
+            if let Some(budget) = &self.budget {
+                budget.fail();
+            }
             DeploymentReadError::Corrupt {
                 reason: format!("spool object {digest} is unavailable or corrupt: {error}"),
             }
         })?;
+        if let Some(budget) = &self.budget {
+            budget
+                .charge(bytes.len())
+                .map_err(|_| corrupt("metadata read budget exhausted"))?;
+        }
         self.files_read += 1;
         self.bytes_read += bytes.len() as u64;
         Ok(bytes)
@@ -497,6 +595,7 @@ pub struct DeploymentHistory {
     objects: std::path::PathBuf,
     doctor_verdict: DoctorVerdict,
     layout_bytes: u64,
+    layout_digest: ContentDigest,
     genesis_anchor: LedgerAnchor,
     batches: Vec<EvidenceDeltaBatch>,
     ledger_positions: Vec<fss_ledger::CommittedBatchPosition>,
@@ -506,6 +605,7 @@ pub struct DeploymentHistory {
     effect_records: Vec<fss_ledger::JournalRecord>,
     effect_tail_uncommitted: bool,
     limits: OrientLimits,
+    metadata_budget: Option<MetadataReadBudget>,
 }
 
 impl DeploymentHistory {
@@ -533,9 +633,45 @@ impl DeploymentHistory {
             }
             DoctorVerdict::Healthy | DoctorVerdict::AttentionRequired => {}
         }
+        Self::read_inner(root, limits, doctor_verdict, None)
+    }
+
+    /// Bounded metadata-only history. Skips the global spool doctor (which hydrates media).
+    /// The conservative doctor verdict deliberately does not claim a full health inspection.
+    pub(crate) fn read_metadata(
+        root: &Path,
+        limits: &OrientLimits,
+        budget: &MetadataReadBudget,
+    ) -> Result<Self, DeploymentReadError> {
+        if !fs::symlink_metadata(root)
+            .map_err(|_| DeploymentReadError::NotADeployment {
+                reason: "missing deployment root".to_owned(),
+            })?
+            .file_type()
+            .is_dir()
+        {
+            return Err(DeploymentReadError::NotADeployment {
+                reason: "deployment root is not a non-symlink directory".to_owned(),
+            });
+        }
+        Self::read_inner(
+            root,
+            limits,
+            DoctorVerdict::AttentionRequired,
+            Some(budget.clone()),
+        )
+    }
+
+    fn read_inner(
+        root: &Path,
+        limits: &OrientLimits,
+        doctor_verdict: DoctorVerdict,
+        budget: Option<MetadataReadBudget>,
+    ) -> Result<Self, DeploymentReadError> {
         let mut reader = Reader {
             files_read: 0,
             bytes_read: 0,
+            budget: budget.clone(),
         };
         let layout_bytes = reader
             .read_file(
@@ -549,6 +685,7 @@ impl DeploymentHistory {
                 reason: "missing LAYOUT".to_owned(),
             })?;
         let layout_len = layout_bytes.len() as u64;
+        let layout_digest = ContentDigest::sha256(&layout_bytes);
         let layout_text =
             String::from_utf8(layout_bytes).map_err(|_| DeploymentReadError::NotADeployment {
                 reason: "LAYOUT is not UTF-8".to_owned(),
@@ -560,11 +697,69 @@ impl DeploymentHistory {
         })?;
         let site = layout.site_lineage.clone();
 
-        let ledger = fss_ledger::inspect_durable(
-            root.join(&layout.ledger_relpath),
-            site.clone(),
-            limits.max_journal_bytes,
-        )
+        // Metadata-only callers admit all path components before following the descriptor.
+        if budget.is_some() {
+            for relative in [
+                &layout.objects_relpath,
+                &layout.ledger_relpath,
+                &layout.effects_relpath,
+            ] {
+                let mut path = root.to_path_buf();
+                let components: Vec<_> = Path::new(relative).components().collect();
+                for (index, component) in components.iter().enumerate() {
+                    path.push(component.as_os_str());
+                    let directory =
+                        index + 1 < components.len() || relative == &layout.objects_relpath;
+                    match fs::symlink_metadata(&path) {
+                        Ok(meta)
+                            if !meta.file_type().is_symlink()
+                                && (!directory || meta.file_type().is_dir()) => {}
+                        Err(error) if !directory && error.kind() == io::ErrorKind::NotFound => {}
+                        _ => {
+                            return Err(corrupt(
+                                "deployment metadata path is unavailable or symlinked",
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        let ledger = if budget.is_some() {
+            let path = root.join(&layout.ledger_relpath);
+            let bytes = reader
+                .read_file(&path, limits.max_journal_bytes)
+                .map_err(|error| corrupt(format!("authority ledger: {error}")))?
+                .ok_or_else(|| corrupt("authority ledger is absent"))?;
+            // Replay through the native inspector using the already metered immutable bytes.
+            struct BufferedJournal<'a>(&'a [u8]);
+            impl fss_ledger::JournalReadIo for BufferedJournal<'_> {
+                fn symlink_metadata(
+                    &self,
+                    _: &Path,
+                ) -> io::Result<fss_ledger::JournalFileMetadata> {
+                    Ok(fss_ledger::JournalFileMetadata {
+                        is_file: true,
+                        is_symlink: false,
+                        len: self.0.len() as u64,
+                    })
+                }
+                fn read_bounded(&self, _: &Path, maximum: usize) -> io::Result<Vec<u8>> {
+                    Ok(self.0[..self.0.len().min(maximum)].to_vec())
+                }
+            }
+            fss_ledger::inspect_durable_with_io(
+                &BufferedJournal(&bytes),
+                &path,
+                site.clone(),
+                limits.max_journal_bytes,
+            )
+        } else {
+            fss_ledger::inspect_durable(
+                root.join(&layout.ledger_relpath),
+                site.clone(),
+                limits.max_journal_bytes,
+            )
+        }
         .map_err(|error| corrupt(format!("authority ledger replay failed: {error}")))?;
         if ledger.status == fss_ledger::DurableLedgerStatus::Absent {
             return Err(DeploymentReadError::Unreadable {
@@ -614,6 +809,7 @@ impl DeploymentHistory {
             objects: root.join(&layout.objects_relpath),
             doctor_verdict,
             layout_bytes: layout_len,
+            layout_digest,
             genesis_anchor,
             batches: ledger.batches.clone(),
             ledger_positions,
@@ -622,7 +818,12 @@ impl DeploymentHistory {
             effect_records,
             effect_tail_uncommitted,
             limits: *limits,
+            metadata_budget: budget,
         })
+    }
+
+    pub(crate) fn metadata_layout_digest(&self) -> ContentDigest {
+        self.layout_digest
     }
 
     /// Site lineage from `LAYOUT`.
@@ -735,6 +936,7 @@ impl DeploymentHistory {
         Reader {
             files_read: 0,
             bytes_read: 0,
+            budget: self.metadata_budget.clone(),
         }
         .read_file(&directory.join(name), maximum)
         .map_err(|_| corrupt(format!("source custody publication {slot} cannot be read")))?
@@ -851,6 +1053,7 @@ impl DeploymentHistory {
         let mut reader = Reader {
             files_read: 2,
             bytes_read: self.layout_bytes + ledger_len,
+            budget: self.metadata_budget.clone(),
         };
         let (effect_journal_digest, obligations, operations) = match effect_count {
             None => (ContentDigest::sha256(&[]), Vec::new(), Vec::new()),
@@ -1095,10 +1298,15 @@ impl DeploymentHistory {
                     if deletions.object(*receipt).is_some() {
                         continue;
                     }
-                    if let Ok(bytes) =
-                        reader.read_object(objects, *receipt, limits.max_object_bytes)
-                        && let Ok(result) = MockModelResult::from_retained_bytes(&bytes, *receipt)
+                    let bytes = match reader.read_object(objects, *receipt, limits.max_object_bytes)
                     {
+                        Ok(bytes) => bytes,
+                        // A bounded query cannot hide failed reads and then spend the same
+                        // allowance again. Ordinary orientation retains its prior behavior.
+                        Err(error) if self.metadata_budget.is_some() => return Err(error),
+                        Err(_) => continue,
+                    };
+                    if let Ok(result) = MockModelResult::from_retained_bytes(&bytes, *receipt) {
                         hydrated.push(result);
                     }
                 }
@@ -1202,6 +1410,7 @@ impl DeploymentHistory {
         Ok(DeploymentSnapshot {
             site_lineage: self.site_lineage.clone(),
             doctor_verdict: self.doctor_verdict,
+            doctor_inspected: self.metadata_budget.is_none(),
             position,
             anchor,
             ledger_root,
@@ -2469,11 +2678,21 @@ fn compile_capsule(
         ));
     }
     if snapshot.doctor_verdict == DoctorVerdict::AttentionRequired {
-        at_risk.push("fss doctor: attention_required.".to_owned());
-        degradation.push(
-            "The deployment doctor reports attention_required; only the committed prefix was read."
-                .to_owned(),
-        );
+        if snapshot.doctor_inspected {
+            // Preserve the canonical ordinary-orientation output and its existing fingerprints.
+            at_risk.push("fss doctor: attention_required.".to_owned());
+            degradation.push(
+                "The deployment doctor reports attention_required; only the committed prefix was read."
+                    .to_owned(),
+            );
+        } else {
+            at_risk
+                .push("Deployment health is not inspected by this metadata-only read.".to_owned());
+            degradation.push(
+                "The full spool doctor was not run; the attention verdict is conservative. Only committed metadata was verified."
+                    .to_owned(),
+            );
+        }
     }
     if snapshot.ledger_tail_uncommitted || snapshot.effect_tail_uncommitted {
         at_risk.push("A journal ends with bytes beyond its committed prefix.".to_owned());
