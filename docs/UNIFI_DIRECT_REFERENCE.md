@@ -1502,11 +1502,22 @@ lookahead. This owner does not authenticate a source, measure A/V sync, decode,
 publish, or establish continuous recording. The multi-segment laboratory replay
 has been changed to exercise it; the two successful captures above exercised
 the lower-level session directly, not this owner. Scoped recorder-contract job
-`30098049032257609` was observed running on `trj`; inspect or recover that exact
-job before replaying it or modifying the task-owned laboratory source. Its
-synthetic tests and a fresh camera replay remain pending. The lab AAC-clock
-source differs from the working tree by a documentation comment; compare exact
-source hashes before attributing any result to the current tree.
+`30098049032257609` passed seven synthetic tests with no failures or ignored
+cases, with acknowledged exit and source release. Its A/V owner and recorder
+source hashes matched the working tree. The lab AAC-clock source differed by a
+later documentation comment, the test source by a later assertion that removes
+a warning, and the framing source by the later evidence-ID refactor. A fresh
+camera replay of the owner remains pending.
+
+When an original in-band AAC configuration is actually observed, the audio
+track can now rebind its observation to the exact borrowed source record,
+checking the reported spans, format and provisional state. This binds bytes to
+the supplied record; it does not authenticate the source or independently prove
+the claimed track epoch. Scoped packet job `30098049032257674` passed seven
+tests, with one live-capture test ignored, and had acknowledged exit and source
+release. Its AAC track and test hashes matched the working tree. Earlier G4
+replays observed no original AAC configuration and therefore do not establish
+that this new in-band binding has been exercised on that camera.
 
 The ADTS helper now also derives a borrowed source frame directly from an
 original FLV `SourceRecord`. It returns a connection-relative body range, the
