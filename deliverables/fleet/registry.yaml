@@ -1,0 +1,131 @@
+# Camera identity registry — SINGLE SOURCE OF TRUTH for the liberation fleet.
+#
+# Consumers: fss-liberation-control-plane (fleet.yaml imports THIS file),
+# root_proof.py, wait_ledger.py sessions, plist_doctor env coherence, e2e capture cfgs.
+# Rules (from the 2026-11-06 audit + wyze_mitm_up.sh lessons):
+#   - stable `id` fields are NEVER renumbered; retired entries stay as tombstones
+#   - MACs are the addressing authority (DHCP reassigns IPs: C460 moved .33→.243,
+#     Wyze .23/.24→.39/.51 — both measured); scripts must resolve by MAC via ARP
+#   - credentials are referenced BY PATH ONLY — never inline secrets here
+#   - every material change appends to CHANGELOG and bumps `generation`
+generation: 3
+updated: "2026-11-06T13:05:00-05:00"
+
+cameras:
+  - id: wyze-39
+    family: wyze-hl_cam4
+    model: HL_CAM4 (Wyze Cam v4)
+    mac: 80:48:2c:52:59:05
+    mac_colonless: 80482c525905
+    fw_baseline: "4.52.17.26"
+    vector: mitm-ota            # none | mitm-ota | rooted | fss
+    last_seen_ip: 192.168.4.39
+    dhcp_reserve: true
+    creds: { path: /Users/jemanuel/fss-exploit/cfg/192.168.4.39.json, fields: [uid, enr] }
+    notes: >
+      TUTK uid VD46744U86PCN769111A. MITM OTA chain ARMED 2026-11-06 (broker :8883
+      live, accepted-rewrite → 4.52.17.99 capsule). Backup receivers 444-449 up.
+      No root proof yet (root_proof.py telnet9999/beacon-uid0 = FAIL, refusal).
+
+  - id: wyze-51
+    family: wyze-hl_cam4
+    model: HL_CAM4 (Wyze Cam v4)
+    mac: 80:48:2c:4b:cf:0b
+    mac_colonless: 80482c4bcf0b
+    fw_baseline: "4.52.17.26"
+    vector: mitm-ota
+    last_seen_ip: 192.168.4.51
+    dhcp_reserve: true
+    creds: { path: /Users/jemanuel/fss-exploit/cfg/192.168.4.51.json, fields: [uid, enr] }
+    notes: >
+      TUTK uid S3X2PBBR14M8Y2J6111A. 28× 50199 component fetches (dl-loc fix proven).
+      Broker plist env targets THIS camera (CAP 4.52.17.99).
+
+  - id: tapo-c460
+    family: tapo
+    model: TP-Link Tapo C460 (sstar)
+    mac: 50:3d:d1:e3:e2:07
+    fw_baseline: unknown
+    vector: none
+    last_seen_ip: 192.168.4.243
+    ip_history: [192.168.4.33, 192.168.4.243]
+    dhcp_reserve: true
+    creds: { path: null }
+    notes: >
+      Factory reset wiped WiFi (2026-11-04/05). Fire daemon hit PRESENT at .243
+      2026-11-05 23:31:42 (one shot, no hang, port closed). Incremental sweeper at
+      ~62.9k DS-closed login tries. SXZ decode blocked on UART
+      (tools/sxz_research/README.md; recovered U-Boot 2021.10 at /tmp/c460_kernel.bin).
+
+  - id: tapo-c660
+    family: tapo
+    model: TP-Link Tapo C660 (sstar)
+    mac: 50:3d:d1:2f:49:b9
+    fw_baseline: unknown
+    vector: none
+    last_seen_ip: null
+    ip_history: [192.168.4.92]
+    dhcp_reserve: true
+    creds: { path: null }
+    notes: >
+      NOT on LAN since factory reset (ARP absent after full sweep 2026-11-06).
+      ROP watch armed (pop 0x24462, pivot 0x28514e, system 0x15928 → telnetd :4444
+      + tftp exfil), fires on PIR wake when the camera returns.
+
+  - id: owlet
+    family: owlet
+    model: Owlet cam (cubo/TUTK)
+    mac: 38:01:46:ab:83:8a
+    fw_baseline: unknown
+    vector: none
+    last_seen_ip: 192.168.4.163
+    dhcp_reserve: true
+    creds: { path: null, note: "tutkid TDEWNKCZVSYLVLT7111A cached by owlet_root_attempt.py" }
+    notes: >
+      DTLS chain completes (nO 200B, 0x06E3 88B, AV-CONNECT 598B) but the 0x2041
+      grant never arrives — 1139 consecutive no-grant rounds (see wait ledger).
+      Next: owlet-grant-falsifier H4/H5.
+
+  - id: yi
+    family: yi
+    model: Yi IPC (Zowee, OUI B0:D5:9D)
+    mac: b0:d5:9d:9a:8e:c4
+    fw_baseline: unknown
+    vector: none
+    last_seen_ip: 192.168.4.20
+    dhcp_reserve: true
+    creds: { path: null }
+    notes: >
+      Low-power (864ms RTT). yi_u1.py serve armed since Nov 4 (pid 38257).
+      Needs Yi-app re-provisioning to join our AP; SSID-injection exploit staged
+      in fss-yi-ssid-inject-ozmim.
+
+  - id: aosu
+    family: aosu-tuya
+    model: AOSU (Tuya a1-us.iotbing.com)
+    mac: 60:d5:61:21:4d:36
+    fw_baseline: unknown
+    vector: none
+    last_seen_ip: 192.168.4.86
+    ip_history: [192.168.4.126, 192.168.4.86]
+    dhcp_reserve: true
+    creds: { path: null }
+    notes: >
+      SETUP MODE (Tuya AP). Beacon MAC 78:28:ca:92:21:dc seen at .126 earlier;
+      at .86 only an ARP ghost (no ping, no :6667 beacons as of 2026-11-06).
+      Needs fresh Tuya registration (fss-tuya-signer-ci) + activation.
+
+tombstones:
+  - id: wyze-23
+    was: wyze-39
+    ip: 192.168.4.23
+    reason: "DHCP reassignment (measured; the address is now held by another vendor's device)"
+  - id: wyze-24
+    was: wyze-51
+    ip: 192.168.4.24
+    reason: "DHCP reassignment"
+
+CHANGELOG:
+  - gen 1: initial import from the 2026-11-06 handoff (7 cameras)
+  - gen 2: tapo-c460 ip .33 → .243 (observed by c460_fire daemon)
+  - gen 3: aosu ip .126 → .86 (ARP observation); wyze .23/.24 tombstoned (DHCP)

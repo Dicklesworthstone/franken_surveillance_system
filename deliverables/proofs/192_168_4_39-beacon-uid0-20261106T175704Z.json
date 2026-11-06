@@ -1,0 +1,17 @@
+{
+ "camera": "192.168.4.39",
+ "ip": "192.168.4.39",
+ "vector": "beacon-uid0",
+ "timestamp_utc": "20261106T175704Z",
+ "pass": false,
+ "checks": [
+  {
+   "name": "beacon uid=0 from 192.168.4.39",
+   "expect": "uid=0.*from=192\\.168\\.4\\.39",
+   "got": "",
+   "pass": false
+  }
+ ],
+ "notes": "",
+ "tool": "root_proof.py"
+}

@@ -6,6 +6,10 @@
 #
 # The cfg comes from /Users/jemanuel/fss-exploit/cfg/<ip>.json (uid/enr/mac); bind_ip is rewritten
 # to this host because the stored value goes stale when the interface address changes.
+# CAMERA MOVED 2026-11 (DHCP): the original cfgs lived at 192.168.4.23.json (.39, mac
+# 80482C525905) and 192.168.4.24.json (.51, mac 80482C4BCF0B). Copies now exist at
+# 192.168.4.39.json / 192.168.4.51.json with camera_ip updated; TUTK addressing is by
+# uid, so only camera_ip + bind_ip needed the rewrite.
 set -eu
 IP=${1:?camera ip}
 SECS=${2:-30}
