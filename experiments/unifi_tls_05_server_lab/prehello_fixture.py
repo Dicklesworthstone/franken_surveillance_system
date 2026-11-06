@@ -112,8 +112,10 @@ def run_case(binary, cert_der, key_der, directory, coalesced, explicit_correlate
                     or abs(payload["t1"] - int(time.time() * 1000)) > 60_000):
                 raise ValueError("time-sync reply envelope or wall time invalid")
             if explicit_correlated:
-                # A correlated response without an explicit request must not produce a reply loop.
-                sock.sendall(frame(message("ubnt_avclient_timeSync", 11, first["messageId"])))
+                # Even an echoed reply claiming it expects another response must not loop.
+                echo = message("ubnt_avclient_timeSync", 11, first["messageId"])
+                echo["responseExpected"] = True
+                sock.sendall(frame(echo))
             if not coalesced:
                 sock.sendall(hello)
             second = received(sock)

@@ -62,6 +62,7 @@ pub const MAX_MESSAGE_BYTES: usize = 64 * 1024;
 pub const MAX_MESSAGE_ID: u64 = 9_007_199_254_740_991;
 /// Conservative minimum owner-measured delay after the local hello write.
 pub const AGREEMENT_DELAY_NS: u64 = 500_000_000;
+const MAX_OPT_IN_TIME_SYNC_REPLIES: usize = 8;
 
 /// Static, payload-free failure categories.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -387,7 +388,9 @@ pub enum TimeSyncPolicy {
     UncorrelatedOnly,
     /// Also treat a correlated message as a request when it explicitly says
     /// `responseExpected: true`. This untrusted flag does not prove intent;
-    /// the owner must retain its existing effect, rate and message limits.
+    /// messages correlated to one of our own time-sync replies are ignored,
+    /// and at most eight replies are admitted. The owner must retain its
+    /// existing effect, rate and message limits.
     ExplicitCorrelatedRequests,
 }
 
@@ -404,6 +407,8 @@ pub struct Controller {
     rejected_message: Option<RejectedMessage>,
     time_sync_counts: TimeSyncCounts,
     time_sync_policy: TimeSyncPolicy,
+    time_sync_reply_ids: [u64; MAX_OPT_IN_TIME_SYNC_REPLIES],
+    time_sync_reply_count: usize,
 }
 
 impl fmt::Debug for Controller {
@@ -445,6 +450,8 @@ impl Controller {
             rejected_message: None,
             time_sync_counts: TimeSyncCounts::default(),
             time_sync_policy,
+            time_sync_reply_ids: [0; MAX_OPT_IN_TIME_SYNC_REPLIES],
+            time_sync_reply_count: 0,
         })
     }
 
@@ -534,6 +541,10 @@ impl Controller {
                             .correlated_response_expected
                             .saturating_add(1);
                     }
+                    if self.time_sync_reply_ids[..self.time_sync_reply_count].contains(&response_to)
+                    {
+                        return Ok(Observation::Other);
+                    }
                     if !response_expected
                         || self.time_sync_policy != TimeSyncPolicy::ExplicitCorrelatedRequests
                     {
@@ -542,6 +553,11 @@ impl Controller {
                 } else {
                     self.time_sync_counts.uncorrelated =
                         self.time_sync_counts.uncorrelated.saturating_add(1);
+                }
+                if self.time_sync_policy == TimeSyncPolicy::ExplicitCorrelatedRequests
+                    && self.time_sync_reply_count == MAX_OPT_IN_TIME_SYNC_REPLIES
+                {
+                    return Err(Error::TimeSyncLimit);
                 }
                 if self.time_sync.is_some() {
                     return Err(Error::TimeSyncLimit);
@@ -754,6 +770,10 @@ impl Controller {
                         self.phase = Phase::AwaitAgreementReply;
                     }
                     MessageKind::TimeSyncReply => {
+                        if self.time_sync_policy == TimeSyncPolicy::ExplicitCorrelatedRequests {
+                            self.time_sync_reply_ids[self.time_sync_reply_count] = id;
+                            self.time_sync_reply_count += 1;
+                        }
                         self.time_sync = None;
                     }
                     MessageKind::StartStream(channel) => {

@@ -72,7 +72,11 @@ fn fixture_with_variable_intervals(
     wire.extend(tag(9, 0, &config));
     let count = if duplicate_idr { 2 } else { 7 };
     for i in 0..count {
-        let offset = if variable { (i as u32 * 100) / 3 } else { i as u32 * 40 };
+        let offset = if variable {
+            (i as u32 * 100) / 3
+        } else {
+            i as u32 * 40
+        };
         let timestamp = start.wrapping_add(offset);
         wire.extend([0x77; 3]);
         wire.extend(tag(8, timestamp, &[0xaf, 1, 2]));
@@ -111,21 +115,28 @@ fn direct_flv_recording_retains_variable_camera_shaped_intervals() -> TestResult
     let mut segments = 0;
     for record in records {
         match recorder.push(record).map_err(|r| r.reason)? {
-            Push::Source { record, disposition } => {
+            Push::Source {
+                record,
+                disposition,
+            } => {
                 if disposition == SourceDisposition::Configuration {
-                    initialization = Some(recorder.initialization().ok_or("init")?.bytes().to_vec());
+                    initialization =
+                        Some(recorder.initialization().ok_or("init")?.bytes().to_vec());
                 }
                 original.extend_from_slice(record.bytes());
             }
             Push::Buffered => {}
             Push::Segment(segment) => {
                 durations.extend(segment.fragment().samples().iter().map(|s| s.duration_ms));
-                for source in segment.source() { original.extend_from_slice(source.bytes()); }
+                for source in segment.source() {
+                    original.extend_from_slice(source.bytes());
+                }
                 let mut mp4 = initialization.as_ref().ok_or("init")?.clone();
                 mp4.extend_from_slice(segment.fragment().bytes());
                 let movie = AvcMp4::parse(&mp4, None, DemuxLimits::default())?;
                 let raw = movie.annex_b(0, 3)?;
-                let mut decoder = fss_codec_h264::Decoder::new(fss_codec_h264::DecoderLimits::default())?;
+                let mut decoder =
+                    fss_codec_h264::Decoder::new(fss_codec_h264::DecoderLimits::default())?;
                 let mut frames = decoder.decode_annex_b(raw.bytes())?;
                 frames.extend(decoder.finish()?);
                 assert_eq!(frames.len(), 3);
@@ -133,7 +144,9 @@ fn direct_flv_recording_retains_variable_camera_shaped_intervals() -> TestResult
             }
         }
     }
-    for source in recorder.retire().pending { original.extend_from_slice(source.bytes()); }
+    for source in recorder.retire().pending {
+        original.extend_from_slice(source.bytes());
+    }
     assert_eq!(segments, 2);
     assert_eq!(durations, [33, 33, 34, 33, 33, 34]);
     assert_eq!(original, wire);

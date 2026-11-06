@@ -1064,6 +1064,15 @@ stream request in each. The fixture sent no video. The trial has not been
 exercised against the G4; these synthetic tests do not establish physical-camera
 video.
 
+The current working tree also contains a draft opt-in time-sync policy for a
+correlated message that explicitly requests a reply. It ignores messages tied
+to one of its own previous time-sync replies and limits the session to eight
+such replies; the existing conservative default is unchanged. The working
+relay answers correlated time-sync messages, but no physical G4 evidence yet
+establishes whether this more selective policy resolves the native handshake.
+The policy, revised trial and synthetic peer remain unqualified until their
+tests complete. No camera handoff was performed for this draft.
+
 A separate `discovery_observe_trial` laboratory binary connects a bounded UDP
 discovery result, an owner-selected address and MAC claim, a pinned TLS
 connection, and `setup::Owner::observe`. Its only setup operation is read-only;

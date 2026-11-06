@@ -197,13 +197,41 @@ fn explicit_correlated_time_sync_policy_answers_only_an_explicit_request() -> Te
     );
     c.finish_dispatch(1, Dispatch::Written)?;
     assert_eq!(c.phase(), Phase::AwaitHello);
+    let echo = br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"ubnt_avclient_timeSync","messageId":43,"inResponseTo":1,"responseExpected":true}"#;
+    assert_eq!(c.observe(echo)?, Observation::Other);
     // A correlated response to our response cannot trigger another reply.
     assert_eq!(
         c.observe(&message("ubnt_avclient_timeSync", 42, 1, "{}"))?,
         Observation::Other
     );
     assert_eq!(c.prepare_time_sync(123_456, TIME), Err(Error::InvalidState));
-    assert_eq!(c.time_sync_counts().correlated_response_expected, 2);
+    assert_eq!(c.time_sync_counts().correlated_response_expected, 3);
+    Ok(())
+}
+
+#[test]
+fn explicit_correlated_time_sync_policy_has_a_hard_reply_bound() -> TestResult {
+    let mut c = Controller::new_with_time_sync_policy(
+        Identity::new("FSS", "12345678-1234-4abc-9abc-123456789abc", "1.20.0")?,
+        1,
+        TimeSyncPolicy::ExplicitCorrelatedRequests,
+    )?;
+    for id in 40..48 {
+        let request = format!(
+            "{{\"from\":\"ubnt_avclient\",\"to\":\"UniFiVideo\",\"functionName\":\"ubnt_avclient_timeSync\",\"messageId\":{id},\"inResponseTo\":99,\"responseExpected\":true}}"
+        );
+        assert_eq!(
+            c.observe(request.as_bytes())?,
+            Observation::TimeSyncRequested
+        );
+        let output_id = c.prepare_time_sync(123_456, TIME)?.id();
+        c.finish_dispatch(output_id, Dispatch::Written)?;
+    }
+    let late_echo = br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"ubnt_avclient_timeSync","messageId":49,"inResponseTo":8,"responseExpected":true}"#;
+    assert_eq!(c.observe(late_echo)?, Observation::Other);
+    let ninth = br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"ubnt_avclient_timeSync","messageId":48,"inResponseTo":99,"responseExpected":true}"#;
+    assert_eq!(c.observe(ninth), Err(Error::TimeSyncLimit));
+    assert!(c.prepared().is_none());
     Ok(())
 }
 
