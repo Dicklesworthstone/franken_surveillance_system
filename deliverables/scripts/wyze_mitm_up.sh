@@ -86,8 +86,7 @@ ARP_CMD="${ARP_CMD:-sudo -n /usr/sbin/arp}"
 # The cert files are NOT zeroed here: this run may defer at the single-flight lock before
 # rebuilding them, and an empty /tmp/iot2.pem breaks every TLS spawn with "PEM lib"
 # (measured 2026-11-04). They are chowned and rebuilt at the cert section instead.
-for f in /tmp/ota/chain.pem /tmp/serve443.pem \
-         /tmp/dns.log /tmp/arp.log /tmp/ota/tls.log /tmp/mqproxy.log; do
+for f in /tmp/dns.log /tmp/arp.log /tmp/ota/tls.log /tmp/mqproxy.log; do
   sudo -n install -m 0644 -o "$(id -un)" -g "$(id -gn)" /dev/null "$f" 2>/dev/null || true
 done
 
@@ -108,6 +107,14 @@ if [ -s "$LOCK" ]; then
 fi
 echo $$ > "$LOCK"
 trap 'rm -f "$LOCK"' EXIT
+
+# Cert files are chowned here, AFTER the lock gate: zeroing (install /dev/null) before the
+# lock let every deferring generation truncate the LIVE chain.pem while the lock holder's
+# proxy was loading it — the proxy died with "PEM lib", KeepAlive respawned, and the next
+# generation truncated again (measured 2026-11-06: chain.pem 0 bytes, 8883 crash-loop).
+for f in /tmp/ota/chain.pem /tmp/serve443.pem; do
+  sudo -n touch "$f" 2>/dev/null && sudo -n chown "$(id -u)" "$f" 2>/dev/null
+done
 
 # camera address: arp is the authority, and a sweep is the only way to find a moved unit
 CAM=""
