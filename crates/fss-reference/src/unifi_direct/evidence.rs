@@ -10,7 +10,7 @@ use std::{collections::BTreeSet, fmt};
 use fss_container::InitializationSegment;
 use fss_core::{CanonicalEncoder, CaptureInterval, ContentDigest, DigestAlgorithm};
 use fss_object::ObjectManifest;
-use fss_packet::extended_flv::stream::{RecordKind, SearchMode, SourceRecord};
+use fss_packet::extended_flv::stream::{RecordKind, SourceRecord};
 
 use super::recording::Segment;
 
@@ -316,7 +316,7 @@ impl<'a> Prepared<'a> {
     }
 }
 
-fn encode_record(e: &mut CanonicalEncoder, record: &SourceRecord) {
+pub(super) fn encode_record(e: &mut CanonicalEncoder, record: &SourceRecord) {
     e.u64(record.offset());
     e.u64(record.bytes().len() as u64);
     e.digest(ContentDigest::sha256(record.bytes()));
@@ -344,11 +344,7 @@ fn encode_record(e: &mut CanonicalEncoder, record: &SourceRecord) {
             e.u32(timestamp_ms);
             e.bool(earlier_incomplete);
             e.bool(provisional);
-            e.u8(match policy {
-                SearchMode::Conservative => 0,
-                SearchMode::Provisional => 1,
-                SearchMode::StructuredTrailer16 => 2,
-            });
+            e.u8(policy.evidence_id());
         }
     }
 }

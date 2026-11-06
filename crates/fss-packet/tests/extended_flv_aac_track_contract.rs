@@ -99,6 +99,70 @@ fn configuration_and_sample_keep_connection_relative_source_spans() -> TestResul
 }
 
 #[test]
+fn configuration_binding_requires_the_matching_original_record_and_claims() -> TestResult {
+    let mut wire = HEADER.to_vec();
+    wire.extend(tag(8, 0, &[0xaf, 0, 0x14, 0x08]));
+    wire.extend(tag(8, 64, &[0xaf, 1, 0xde, 0xad]));
+    let records = records(&wire)?;
+    let mut track = Track::new(Limits::default(), aac::Limits::default());
+    track.observe(&records[0])?;
+    let observation = track.observe(&records[1])?;
+    let binding =
+        observation.bind_configuration(&records[1], Limits::default(), aac::Limits::default())?;
+    assert_eq!(binding.epoch(), 1);
+    assert!(!binding.provisional());
+    assert_eq!(binding.configuration().bytes(), &[0x14, 0x08]);
+    assert_eq!(
+        binding.configuration().origin(),
+        aac::ConfigurationOrigin::AudioTag
+    );
+    assert_eq!(
+        selected(&wire, &binding.source()),
+        binding.configuration().bytes()
+    );
+    assert_eq!(binding.record().bytes(), records[1].bytes());
+    assert!(matches!(
+        observation.bind_configuration(&records[2], Limits::default(), aac::Limits::default()),
+        Err(Error::BindingMismatch)
+    ));
+    assert!(matches!(
+        Observation::Other.bind_configuration(
+            &records[1],
+            Limits::default(),
+            aac::Limits::default()
+        ),
+        Err(Error::BindingMismatch)
+    ));
+    let Observation::Configuration {
+        epoch,
+        provisional,
+        tag,
+        mut configuration,
+        sample_rate,
+        channels,
+        frame_samples,
+    } = observation
+    else {
+        return Err("expected configuration".into());
+    };
+    configuration.start += 1;
+    let forged = Observation::Configuration {
+        epoch,
+        provisional,
+        tag,
+        configuration,
+        sample_rate,
+        channels,
+        frame_samples,
+    };
+    assert!(matches!(
+        forged.bind_configuration(&records[1], Limits::default(), aac::Limits::default()),
+        Err(Error::BindingMismatch)
+    ));
+    Ok(())
+}
+
+#[test]
 fn raw_before_configuration_stays_unconfigured_and_changes_create_epochs() -> TestResult {
     let mut wire = HEADER.to_vec();
     wire.extend(tag(8, 1, &[0xaf, 1, 0x21]));
@@ -258,13 +322,17 @@ fn provisional_configuration_taints_dependent_audio() -> TestResult {
     let Next::Record(candidate) = framer.take()? else {
         return Err("candidate".into());
     };
+    let observation = track.observe(&candidate)?;
     assert!(matches!(
-        track.observe(&candidate)?,
+        &observation,
         Observation::Configuration {
             provisional: true,
             ..
         }
     ));
+    let binding = observation.bind_configuration(&candidate, limits, aac::Limits::default())?;
+    assert!(binding.provisional());
+    assert_eq!(binding.configuration().bytes(), &[0x14, 0x08]);
     framer.append(framer.next_offset(), &tag(8, 4, &[0xaf, 1, 0x44]))?;
     let Next::Record(sample) = framer.take()? else {
         return Err("sample".into());

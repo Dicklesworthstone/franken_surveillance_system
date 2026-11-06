@@ -8,6 +8,7 @@ use std::fmt;
 use fss_core::{CanonicalDecoder, CaptureInterval, ContentDigest, DigestAlgorithm, TimestampNs};
 use fss_geometry::{GeometryError, WorkBudget};
 use fss_object::ObjectManifest;
+use fss_packet::extended_flv::stream::SearchMode;
 use fss_publication::{
     PublishCancellation, PublishCutPoint, RootLedgerReceipt, RootLedgerState, SlotName,
 };
@@ -441,7 +442,7 @@ fn record(decoder: &mut CanonicalDecoder<'_>, limit: usize) -> Result<StoredReco
             if decoder.bool().map_err(storage)? {
                 return Err(Error::Mismatch);
             }
-            if decoder.u8().map_err(storage)? > 2 {
+            if SearchMode::from_evidence_id(decoder.u8().map_err(storage)?).is_none() {
                 return Err(Error::Mismatch);
             }
             Some((trailer, kind, timestamp))
@@ -737,4 +738,69 @@ pub fn read_clip(
         capture: pin.capture,
         samples: count,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Error, record};
+    use crate::unifi_direct::evidence::encode_record;
+    use fss_core::{CanonicalDecoder, CanonicalEncoder};
+    use fss_packet::extended_flv::{
+        Limits,
+        stream::{Framer, Next, SearchMode},
+    };
+
+    #[test]
+    fn archive_record_accepts_av_flag_policy_and_rejects_unknown_policy()
+    -> Result<(), Box<dyn std::error::Error>> {
+        fn tag(kind: u8, timestamp: u32, body: &[u8]) -> Vec<u8> {
+            let len = body.len();
+            let mut out = vec![
+                kind,
+                (len >> 16) as u8,
+                (len >> 8) as u8,
+                len as u8,
+                (timestamp >> 16) as u8,
+                (timestamp >> 8) as u8,
+                timestamp as u8,
+                (timestamp >> 24) as u8,
+                0,
+                0,
+                0,
+            ];
+            out.extend_from_slice(body);
+            out.extend_from_slice(&(11_u32 + len as u32).to_be_bytes());
+            out
+        }
+        let mut wire = b"FLV\x01\x01\x00\x00\x00\x09\x00\x00\x00\x00".to_vec();
+        wire.extend(tag(9, 0, b"video"));
+        let mut trailer = [0; 16];
+        trailer[11] = 1;
+        wire.extend(trailer);
+        wire.extend(tag(8, 40, b"audio"));
+        let mut framer = Framer::with_mode(
+            Limits::default(),
+            1024,
+            SearchMode::StructuredTrailer16AvFlag,
+        )?;
+        framer.append(0, &wire)?;
+        framer.take()?;
+        framer.take()?;
+        let Next::Record(source) = framer.take()? else {
+            return Err("missing source record".into());
+        };
+        let mut encoder = CanonicalEncoder::new();
+        encode_record(&mut encoder, &source);
+        let mut bytes = encoder.finish_checked()?;
+        let parsed = record(&mut CanonicalDecoder::new(&bytes), 1024)?;
+        assert_eq!(parsed.offset, source.offset());
+        assert_eq!(parsed.length, source.bytes().len());
+        assert_eq!(parsed.tag, Some((16, 8, 40)));
+        *bytes.last_mut().ok_or("empty encoded record")? = 4;
+        assert!(matches!(
+            record(&mut CanonicalDecoder::new(&bytes), 1024),
+            Err(Error::Mismatch)
+        ));
+        Ok(())
+    }
 }

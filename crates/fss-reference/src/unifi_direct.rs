@@ -18,6 +18,8 @@ use fss_core::json_input::{self, Value};
 
 /// Authorized ledgered FLV evidence publication.
 pub mod archive;
+/// Transactional, source-preserving A/V fragment derivation.
+pub mod av_recording;
 /// Bounded camera-local HTTPS request/response state without transport or trust policy.
 pub mod camera_api;
 /// Task-scoped, bounded camera-local HTTP over an independently admitted transport.

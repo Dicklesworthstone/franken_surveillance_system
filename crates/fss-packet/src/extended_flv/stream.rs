@@ -63,6 +63,33 @@ pub enum SearchMode {
     /// reflects observed devices; it does not authenticate the sender or prove
     /// that another model or firmware uses this trailer format.
     StructuredTrailer16,
+    /// Require a 16-byte trailer with seven zero bytes followed by a flag
+    /// matching the preceding audio (0), video (1), or metadata (1) tag, then
+    /// a zero-stream-ID successor. This opt-in heuristic reflects a bounded G4
+    /// observation; it rejects other preceding kinds and authenticates nothing.
+    StructuredTrailer16AvFlag,
+}
+impl SearchMode {
+    /// Stable policy identity used in source-evidence metadata.
+    pub const fn evidence_id(self) -> u8 {
+        match self {
+            Self::Conservative => 0,
+            Self::Provisional => 1,
+            Self::StructuredTrailer16 => 2,
+            Self::StructuredTrailer16AvFlag => 3,
+        }
+    }
+
+    /// Decode a known source-evidence policy identity; unknown IDs stay unknown.
+    pub const fn from_evidence_id(id: u8) -> Option<Self> {
+        match id {
+            0 => Some(Self::Conservative),
+            1 => Some(Self::Provisional),
+            2 => Some(Self::StructuredTrailer16),
+            3 => Some(Self::StructuredTrailer16AvFlag),
+            _ => None,
+        }
+    }
 }
 
 /// Why a range of source bytes was surfaced.
@@ -204,6 +231,7 @@ pub struct Framer {
     max_buffer: usize,
     phase: Phase,
     mode: SearchMode,
+    last_tag_kind: Option<u8>,
     provisional: bool,
     base: u64,
     buffer: Vec<u8>,
@@ -230,7 +258,10 @@ impl Framer {
     pub fn with_mode(limits: Limits, max_buffer: usize, mode: SearchMode) -> Result<Self, Error> {
         if !(13..=MAX_BUFFER_BYTES).contains(&max_buffer)
             || Header::parse(&[], limits).is_err()
-            || (mode == SearchMode::StructuredTrailer16 && limits.max_trailer < 16)
+            || (matches!(
+                mode,
+                SearchMode::StructuredTrailer16 | SearchMode::StructuredTrailer16AvFlag
+            ) && limits.max_trailer < 16)
         {
             return Err(Error::Configuration);
         }
@@ -239,6 +270,7 @@ impl Framer {
             max_buffer,
             phase: Phase::Header,
             mode,
+            last_tag_kind: None,
             provisional: false,
             base: 0,
             buffer: Vec::new(),
@@ -314,7 +346,15 @@ impl Framer {
                 SearchMode::Provisional => {
                     find_next_provisional(input, self.limits).map_err(Error::Parse)
                 }
-                SearchMode::StructuredTrailer16 => structured_trailer_16(input, self.limits),
+                SearchMode::StructuredTrailer16 => structured_trailer_16(input, self.limits, None),
+                SearchMode::StructuredTrailer16AvFlag => {
+                    let flag = match self.last_tag_kind {
+                        Some(8) => 0,
+                        Some(9 | 18) => 1,
+                        _ => return Err(Error::TrailerPolicyMismatch),
+                    };
+                    structured_trailer_16(input, self.limits, Some(flag))
+                }
             }? {
                 Parse::NeedMore => return Ok(Next::NeedMore),
                 Parse::Complete(candidate) => (
@@ -348,6 +388,12 @@ impl Framer {
         };
         self.base = end;
         self.phase = next_phase;
+        match kind {
+            RecordKind::FirstTag { tag_kind, .. } | RecordKind::Candidate { tag_kind, .. } => {
+                self.last_tag_kind = Some(tag_kind);
+            }
+            RecordKind::Header => {}
+        }
         if let RecordKind::Candidate {
             provisional: true, ..
         } = kind
@@ -373,11 +419,12 @@ impl Framer {
 fn structured_trailer_16(
     input: &[u8],
     limits: Limits,
+    flag: Option<u8>,
 ) -> Result<Parse<super::Candidate<'_>>, Error> {
     if input.len() < 16 {
         return Ok(Parse::NeedMore);
     }
-    if input[4..12] != [0; 8] {
+    if input[4..11] != [0; 7] || input[11] != flag.unwrap_or(0) {
         return Err(Error::TrailerPolicyMismatch);
     }
     if input.len() >= 27 && input[24..27] != [0; 3] {

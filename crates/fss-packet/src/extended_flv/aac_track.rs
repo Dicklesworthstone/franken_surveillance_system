@@ -66,6 +66,115 @@ pub enum Observation {
     },
 }
 
+/// AAC configuration borrowed from one exact original source record.
+/// This binds bytes and the track's claimed epoch to that record; the caller
+/// still binds the track to its connection, identity and retained source.
+pub struct BoundConfiguration<'a> {
+    record: &'a SourceRecord,
+    configuration: aac::Configuration<'a>,
+    epoch: u64,
+    provisional: bool,
+    source: SourceSpan,
+}
+impl<'a> BoundConfiguration<'a> {
+    /// The original immutable record containing the configuration.
+    pub fn record(&self) -> &'a SourceRecord {
+        self.record
+    }
+    /// Parsed configuration borrowing bytes from that original record.
+    pub fn configuration(&self) -> &aac::Configuration<'a> {
+        &self.configuration
+    }
+    /// Track-local epoch claimed by the observation.
+    pub fn epoch(&self) -> u64 {
+        self.epoch
+    }
+    /// Whether the enclosing source boundary was marked provisional.
+    pub fn provisional(&self) -> bool {
+        self.provisional
+    }
+    /// Exact connection-relative configuration byte range.
+    pub fn source(&self) -> SourceSpan {
+        self.source.clone()
+    }
+}
+
+impl Observation {
+    /// Rebind a configuration observation to the exact source record that
+    /// produced it. Other observations, mismatched records or inconsistent
+    /// spans and format claims are refused; no source is consumed.
+    ///
+    /// Observations are caller-visible values, so this method does not prove
+    /// that the claimed epoch came from a particular `Track` instance.
+    pub fn bind_configuration<'a>(
+        &self,
+        record: &'a SourceRecord,
+        flv_limits: FlvLimits,
+        aac_limits: aac::Limits,
+    ) -> Result<BoundConfiguration<'a>, Error> {
+        let Self::Configuration {
+            epoch,
+            provisional,
+            tag: expected_tag,
+            configuration: expected_configuration,
+            sample_rate,
+            channels,
+            frame_samples,
+        } = self
+        else {
+            return Err(Error::BindingMismatch);
+        };
+        let range = record.tag_range().ok_or(Error::BindingMismatch)?;
+        let bytes = record
+            .bytes()
+            .get(range.clone())
+            .ok_or(Error::BindingMismatch)?;
+        let Parse::Complete(tag) =
+            Tag::parse(bytes, flv_limits).map_err(|_| Error::BindingMismatch)?
+        else {
+            return Err(Error::BindingMismatch);
+        };
+        if tag.wire_bytes().len() != bytes.len() {
+            return Err(Error::BindingMismatch);
+        }
+        let audio = aac::AudioTag::parse(tag, aac_limits).map_err(|_| Error::BindingMismatch)?;
+        let configuration = audio.configuration().map_err(|_| Error::BindingMismatch)?;
+        let tag_start = record
+            .offset()
+            .checked_add(u64::try_from(range.start).map_err(|_| Error::Overflow)?)
+            .ok_or(Error::Overflow)?;
+        let tag_end = record
+            .offset()
+            .checked_add(u64::try_from(record.bytes().len()).map_err(|_| Error::Overflow)?)
+            .ok_or(Error::Overflow)?;
+        let source = absolute(tag_start, audio.body_range())?;
+        let source_provisional = matches!(
+            record.kind(),
+            RecordKind::Candidate {
+                provisional: true,
+                ..
+            }
+        );
+        if *epoch == 0
+            || *expected_tag != (tag_start..tag_end)
+            || *expected_configuration != source
+            || *provisional != source_provisional
+            || *sample_rate != configuration.sample_rate()
+            || *channels != configuration.channels()
+            || *frame_samples != configuration.frame_samples()
+        {
+            return Err(Error::BindingMismatch);
+        }
+        Ok(BoundConfiguration {
+            record,
+            configuration,
+            epoch: *epoch,
+            provisional: *provisional,
+            source,
+        })
+    }
+}
+
 /// Payload-free refusal. The caller retains the original record on failure.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {
@@ -81,6 +190,8 @@ pub enum Error {
     Aac(aac::Error),
     /// Vendor audio type 10 requires a different codec profile.
     UnsupportedAudioKind,
+    /// A configuration observation does not describe the supplied source record.
+    BindingMismatch,
 }
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

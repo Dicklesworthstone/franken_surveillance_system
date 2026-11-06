@@ -304,3 +304,129 @@ fn structured_trailer_mismatch_is_fenced_without_discarding_bytes() -> TestResul
     ));
     Ok(())
 }
+
+#[test]
+fn av_flag_trailer_policy_binds_preceding_tag_and_preserves_source() -> TestResult {
+    let mut initial = b"FLV\x01\x01\x00\x00\x00\x09\x00\x00\x00\x00".to_vec();
+    initial.extend_from_slice(&tag(9, 0, b"video"));
+    let mut first = vec![0; 16];
+    first[11] = 1;
+    first.extend_from_slice(&tag(8, 40, b"audio"));
+    let mut second = vec![0; 16];
+    second.extend_from_slice(&tag(9, 80, b"video"));
+    let mut input = first.clone();
+    input.extend_from_slice(&second);
+    for cut in 0..=input.len() {
+        let mut framer = Framer::with_mode(
+            Limits::default(),
+            1024,
+            SearchMode::StructuredTrailer16AvFlag,
+        )?;
+        framer.append(0, &initial)?;
+        framer.take()?;
+        framer.take()?;
+        framer.append(framer.next_offset(), &input[..cut])?;
+        let one = framer.take()?;
+        let first_record = match one {
+            Next::Record(record) => record,
+            Next::NeedMore => {
+                framer.append(framer.next_offset(), &input[cut..])?;
+                let Next::Record(record) = framer.take()? else {
+                    return Err("missing first AV flag record".into());
+                };
+                record
+            }
+        };
+        assert_eq!(first_record.bytes(), first);
+        assert!(matches!(
+            first_record.kind(),
+            RecordKind::Candidate {
+                policy: SearchMode::StructuredTrailer16AvFlag,
+                provisional: false,
+                ..
+            }
+        ));
+        if cut >= first.len() {
+            framer.append(framer.next_offset(), &input[cut..])?;
+        }
+        let Next::Record(second_record) = framer.take()? else {
+            return Err("missing second AV flag record".into());
+        };
+        assert_eq!(second_record.bytes(), second);
+    }
+    for corrupt in [4, 7, 10, 11] {
+        let mut source = first.clone();
+        source[corrupt] ^= 1;
+        let mut framer = Framer::with_mode(
+            Limits::default(),
+            1024,
+            SearchMode::StructuredTrailer16AvFlag,
+        )?;
+        framer.append(0, &initial)?;
+        framer.take()?;
+        framer.take()?;
+        framer.append(framer.next_offset(), &source)?;
+        assert_eq!(framer.take(), Err(Error::TrailerPolicyMismatch));
+        assert_eq!(framer.retire().bytes(), source);
+    }
+    let mut wrong_after_audio = second.clone();
+    wrong_after_audio[11] = 1;
+    let mut framer = Framer::with_mode(
+        Limits::default(),
+        1024,
+        SearchMode::StructuredTrailer16AvFlag,
+    )?;
+    framer.append(0, &initial)?;
+    framer.take()?;
+    framer.take()?;
+    framer.append(framer.next_offset(), &first)?;
+    assert!(matches!(framer.take()?, Next::Record(_)));
+    framer.append(framer.next_offset(), &wrong_after_audio)?;
+    assert_eq!(framer.take(), Err(Error::TrailerPolicyMismatch));
+    assert_eq!(framer.retire().bytes(), wrong_after_audio);
+    let mut metadata = b"FLV\x01\x01\x00\x00\x00\x09\x00\x00\x00\x00".to_vec();
+    metadata.extend_from_slice(&tag(18, 0, b"metadata"));
+    let mut metadata_framer = Framer::with_mode(
+        Limits::default(),
+        1024,
+        SearchMode::StructuredTrailer16AvFlag,
+    )?;
+    metadata_framer.append(0, &metadata)?;
+    metadata_framer.take()?;
+    metadata_framer.take()?;
+    metadata_framer.append(metadata_framer.next_offset(), &first)?;
+    let Next::Record(metadata_successor) = metadata_framer.take()? else {
+        return Err("missing successor after metadata".into());
+    };
+    assert_eq!(metadata_successor.bytes(), first);
+    let mut unsupported = b"FLV\x01\x01\x00\x00\x00\x09\x00\x00\x00\x00".to_vec();
+    unsupported.extend_from_slice(&tag(10, 0, b"vendor audio"));
+    let mut framer = Framer::with_mode(
+        Limits::default(),
+        1024,
+        SearchMode::StructuredTrailer16AvFlag,
+    )?;
+    framer.append(0, &unsupported)?;
+    framer.take()?;
+    framer.take()?;
+    framer.append(framer.next_offset(), &first)?;
+    assert_eq!(framer.take(), Err(Error::TrailerPolicyMismatch));
+    assert_eq!(framer.retire().bytes(), first);
+    Ok(())
+}
+
+#[test]
+fn framing_policy_evidence_ids_remain_stable_and_reject_unknown() {
+    let policies = [
+        SearchMode::Conservative,
+        SearchMode::Provisional,
+        SearchMode::StructuredTrailer16,
+        SearchMode::StructuredTrailer16AvFlag,
+    ];
+    for (id, policy) in policies.into_iter().enumerate() {
+        assert_eq!(policy.evidence_id(), id as u8);
+        assert_eq!(SearchMode::from_evidence_id(id as u8), Some(policy));
+    }
+    assert_eq!(SearchMode::from_evidence_id(4), None);
+    assert_eq!(SearchMode::from_evidence_id(u8::MAX), None);
+}

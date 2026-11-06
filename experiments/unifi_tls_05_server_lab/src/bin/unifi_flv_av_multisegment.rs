@@ -4,16 +4,15 @@
 //! The caller must capture them privately in memory. This experiment does not
 //! authenticate a camera, save media, or qualify continuous recording.
 
-use fss_container::{
-    Mp4Limits,
-    flv_av::{self, TimedAudio},
-    flv_avc::SourceKey,
-};
+use fss_container::{Mp4Limits, flv_avc::SourceKey};
 use fss_packet::extended_flv::{
-    Limits as FlvLimits, aac, aac_adts, aac_clock,
+    Limits as FlvLimits, aac, aac_adts,
     stream::{Framer, Next, SearchMode},
 };
-use fss_reference::unifi_direct::recording::{self, Push, Recorder};
+use fss_reference::unifi_direct::{
+    av_recording,
+    recording::{self, Push, Recorder},
+};
 use std::{
     error::Error,
     io::{Read, Write},
@@ -51,7 +50,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut framer = Framer::with_mode(
         FlvLimits::default(),
         MAX_INPUT,
-        SearchMode::StructuredTrailer16,
+        SearchMode::StructuredTrailer16AvFlag,
     )?;
     framer.append(0, &input[2..])?;
     let mut recorder = Recorder::new(
@@ -63,7 +62,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     )?;
     let mut init = None;
     let mut av_session = None;
-    let mut clock = None;
     let mut movie = Vec::new();
     let (mut offset, mut records, mut segments, mut video_samples, mut audio_samples) =
         (0usize, 0usize, 0usize, 0usize, 0usize);
@@ -116,7 +114,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                         frames.push(frame);
                     }
                 }
-                if clock.is_none() {
+                if av_session.is_none() {
                     let first = frames.first().ok_or("missing audio")?.timestamp_ms();
                     let delta = i64::from(first.wrapping_sub(video_start as u32) as i32);
                     if delta.unsigned_abs() > 2_000 {
@@ -129,45 +127,33 @@ fn main() -> Result<(), Box<dyn Error>> {
                         .checked_mul(u64::from(config.sample_rate()))
                         .ok_or("clock overflow")?
                         / 1000;
-                    clock = Some(aac_clock::Clock::new(&config, start_ticks, 5, 4096)?);
                     initial_delta = Some(delta);
-                }
-                if frames.is_empty() {
-                    return Err("missing segment audio".into());
-                }
-                if init.is_none() {
                     let value = recorder
                         .av_initialization(&config)?
                         .ok_or("missing A/V initialization")?;
-                    av_session = Some(flv_av::Session::new(&value)?);
+                    av_session = Some(av_recording::Muxer::new(
+                        &value,
+                        &config,
+                        start_ticks,
+                        5,
+                        4096,
+                        Mp4Limits::default().max_samples,
+                        Mp4Limits::default(),
+                    )?);
                     append(&mut movie, value.bytes())?;
                     init = Some(value);
                 }
-                let mut audio = Vec::new();
-                audio.try_reserve_exact(frames.len())?;
-                for frame in &frames {
-                    audio.push(TimedAudio {
-                        frame,
-                        time: clock
-                            .as_mut()
-                            .ok_or("missing clock")?
-                            .observe(frame.timestamp_ms())?,
-                    });
-                }
-                let av = av_session.as_mut().ok_or("missing A/V session")?.fragment(
-                    init.as_ref().ok_or("missing init")?,
-                    video,
-                    &config,
-                    &audio,
-                    Mp4Limits::default(),
-                )?;
+                let av = av_session
+                    .as_mut()
+                    .ok_or("missing A/V session")?
+                    .fragment(init.as_ref().ok_or("missing init")?, &segment)?;
                 append(&mut movie, av.bytes())?;
                 segments += 1;
                 video_samples = video_samples
                     .checked_add(video.samples().len())
                     .ok_or("sample count")?;
                 audio_samples = audio_samples
-                    .checked_add(audio.len())
+                    .checked_add(av.audio().len())
                     .ok_or("sample count")?;
             }
         }

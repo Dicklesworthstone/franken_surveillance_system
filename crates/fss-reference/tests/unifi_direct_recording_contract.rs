@@ -52,6 +52,16 @@ fn fixture_with_variable_intervals(
     duplicate_idr: bool,
     variable: bool,
 ) -> Result<(Vec<u8>, Vec<SourceRecord>), Box<dyn std::error::Error>> {
+    fixture_with_audio_intervals(start, preroll, duplicate_idr, variable, None)
+}
+
+fn fixture_with_audio_intervals(
+    start: u32,
+    preroll: bool,
+    duplicate_idr: bool,
+    variable: bool,
+    audio_step: Option<u32>,
+) -> Result<(Vec<u8>, Vec<SourceRecord>), Box<dyn std::error::Error>> {
     let nals: Vec<_> = fss_codec_h264::annex_b_nal_units(BASELINE).collect();
     let sps = nals.iter().copied().find(|n| n[0] & 31 == 7).ok_or("SPS")?;
     let pps = nals.iter().copied().find(|n| n[0] & 31 == 8).ok_or("PPS")?;
@@ -79,7 +89,10 @@ fn fixture_with_variable_intervals(
         };
         let timestamp = start.wrapping_add(offset);
         wire.extend([0x77; 3]);
-        wire.extend(tag(8, timestamp, &[0xaf, 1, 2]));
+        let audio_timestamp = audio_step
+            .map(|step| start.wrapping_add(i as u32 * step))
+            .unwrap_or(timestamp);
+        wire.extend(tag(8, audio_timestamp, &[0xaf, 1, 2]));
         let nal = if duplicate_idr {
             vcl[0]
         } else if preroll && i == 0 {
@@ -156,6 +169,83 @@ fn direct_flv_recording_retains_variable_camera_shaped_intervals() -> TestResult
     assert_eq!(segments, 2);
     assert_eq!(durations, [33, 33, 34, 33, 33, 34]);
     assert_eq!(original, wire);
+    Ok(())
+}
+
+#[test]
+fn av_owner_preserves_segment_source_and_rolls_back_failed_clock_attempts() -> TestResult {
+    use fss_container::{Mp4Error, Mp4Limits};
+    use fss_packet::extended_flv::{aac, aac_clock};
+    use fss_reference::unifi_direct::av_recording;
+
+    // Deliberately synthetic: 40 ms video and 64 ms AAC timestamps exercise
+    // independent clocks without claiming these samples are synchronized.
+    let (wire, records) = fixture_with_audio_intervals(0, false, false, false, Some(64))?;
+    let bytes = [0x14, 0x08];
+    let config = aac::Configuration::parse_explicit(&bytes)?;
+    let mut recorder = Recorder::new(KEY, Limits::default())?;
+    let mut initialization = None;
+    let mut segments = Vec::new();
+    for record in records {
+        match recorder.push(record).map_err(|refusal| refusal.reason)? {
+            Push::Source {
+                disposition: SourceDisposition::Configuration,
+                ..
+            } => initialization = recorder.av_initialization(&config)?,
+            Push::Segment(segment) => segments.push(segment),
+            _ => {}
+        }
+    }
+    assert_eq!(segments.len(), 2);
+    let init = initialization.ok_or("missing initialization")?;
+    let limits = Mp4Limits::default();
+    let mut too_small = av_recording::Muxer::new(&init, &config, 0, 0, 8, 1, limits)?;
+    assert!(matches!(
+        too_small.fragment(&init, &segments[0]),
+        Err(av_recording::Error::Limit)
+    ));
+    let mut muxer = av_recording::Muxer::new(&init, &config, 0, 0, 8, 8, limits)?;
+    let first = muxer.fragment(&init, &segments[0])?;
+    assert_eq!(first.audio().len(), 2);
+    for mapping in first.audio() {
+        assert_eq!(
+            &wire[mapping.source.start as usize..mapping.source.end as usize],
+            &first.bytes()[mapping.target.clone()]
+        );
+    }
+    assert!(matches!(
+        muxer.fragment(&init, &segments[0]),
+        Err(av_recording::Error::Clock(aac_clock::Error::Timeline))
+    ));
+    let (_, other_records) = fixture_with_audio_intervals(0, false, false, false, Some(64))?;
+    let mut other = Recorder::new(
+        SourceKey {
+            connection: 8,
+            generation: 1,
+        },
+        Limits::default(),
+    )?;
+    for record in other_records.into_iter().take(2) {
+        assert!(matches!(
+            other.push(record).map_err(|refusal| refusal.reason)?,
+            Push::Source { .. }
+        ));
+    }
+    let wrong_init = other.av_initialization(&config)?.ok_or("other init")?;
+    assert!(matches!(
+        muxer.fragment(&wrong_init, &segments[1]),
+        Err(av_recording::Error::Mux(Mp4Error::StreamMismatch))
+    ));
+    let second = muxer.fragment(&init, &segments[1])?;
+    assert_eq!(second.audio().len(), 3);
+    assert_eq!(second.video().sequence(), 2);
+    for mapping in second.audio() {
+        assert_eq!(
+            &wire[mapping.source.start as usize..mapping.source.end as usize],
+            &second.bytes()[mapping.target.clone()]
+        );
+    }
+    assert!(!recorder.retire().pending.is_empty());
     Ok(())
 }
 

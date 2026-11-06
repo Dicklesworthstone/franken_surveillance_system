@@ -44,7 +44,9 @@ pub struct SampleTime {
 }
 
 /// One non-resampling clock for a caller-bound AAC connection/configuration epoch.
-#[derive(Debug)]
+/// A clone is an independent timing hypothesis; it does not duplicate source
+/// custody or grant authority to publish another recording.
+#[derive(Clone, Debug)]
 pub struct Clock {
     rate: u32,
     frame_samples: u16,

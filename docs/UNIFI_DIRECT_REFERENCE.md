@@ -1454,6 +1454,60 @@ decoder block, and the two live experiments above used the earlier stateless
 fragment API, not this new session owner. Neither path constitutes a continuous
 recorder or native camera controller.
 
+The session-enabled laboratory replay initially stopped in the existing
+`StructuredTrailer16` framer. A separate, in-memory G4 boundary inspection
+found 777 consecutive structurally valid successors at offset 16. The first
+seven bytes of the policy's eight-byte padding field were zero throughout;
+its last byte was 0 after audio tags and 1 after video and metadata tags. This
+does not authenticate the sender or establish the field's meaning. The opt-in
+`StructuredTrailer16AvFlag` policy checks that relationship, refuses unobserved
+preceding tag kinds, and preserves source bytes and policy identity. The
+original, stricter policy remains available. Scoped packet-framer job
+`30098049032257593` passed seven tests with no failures or ignored cases;
+its terminal result and source release were acknowledged, and both tested
+source hashes matched the working tree at that time. The subsequent policy-ID
+refactor changes the framer source and is awaiting its own test result.
+
+Source review found that evidence preparation encoded the new policy as ID 3,
+but archive reading rejected IDs above 2. The encoder and reader now share a
+stable policy-ID conversion, preserving IDs 0–3 and rejecting unknown values.
+Scoped packet job `30098049032257657` passed all eight framing tests, including
+the compatibility test, with acknowledged exit and source release; its
+framer and test source hashes matched the working tree. An archive-record
+regression test has been added but has not run. It checks metadata decoding,
+not an end-to-end A/V archive or durable publication.
+
+Replay build `30097323753209913` succeeded with acknowledged terminal status
+and source release; the framer and replay source hashes matched the working
+tree at the time. Its unstripped binary SHA-256 was
+`2434ad3341445aed50ab58191b4c317a5f5139d0ad6723dbc03368846a1fc704`;
+the stripped binary used for both captures was
+`b70ba5d4000b4193a851e76e12b1393d45ce59636a9e2c857a03bbd5b5df63fe`.
+Two session-enabled passive G4 replays passed independent probe and decode
+checks: three consecutive fragments with 450 video and 235 audio frames, then
+two fragments with 300 video and 156 audio frames. The initial A/V sender-clock
+offsets were -148 ms and -118 ms. The FLV header, AVC configuration and initial
+trailer were synthetic; AVC and AAC configuration came separately from the
+existing relay, with configuration epoch unverified. Sender identity and A/V
+synchronization were not independently verified; no media was saved or played
+and the camera was not changed. These brief observations do not establish
+continuous recording or native controller handoff.
+
+The reference path also includes a bounded `av_recording::Muxer` that derives
+AAC frames from a borrowed `recording::Segment`, maintaining a transactional
+clock and sequential A/V session. A refusal preserves the input and does not
+advance the clock or session. The caller must bind the audio configuration and
+initial clock origin to an epoch and retain or account for original records and
+lookahead. This owner does not authenticate a source, measure A/V sync, decode,
+publish, or establish continuous recording. The multi-segment laboratory replay
+has been changed to exercise it; the two successful captures above exercised
+the lower-level session directly, not this owner. Scoped recorder-contract job
+`30098049032257609` was observed running on `trj`; inspect or recover that exact
+job before replaying it or modifying the task-owned laboratory source. Its
+synthetic tests and a fresh camera replay remain pending. The lab AAC-clock
+source differs from the working tree by a documentation comment; compare exact
+source hashes before attributing any result to the current tree.
+
 The ADTS helper now also derives a borrowed source frame directly from an
 original FLV `SourceRecord`. It returns a connection-relative body range, the
 sender timestamp and the record's provisional-boundary flag, while retaining
@@ -1679,6 +1733,24 @@ resumed; an earlier scheduled pass had no eligible copies. Neither path proves
 gap-free recording or an actual 30-day deletion. If the external drive
 stays absent, staging originals accumulate because the fallback does not
 delete them; free space must be monitored.
+
+On a later read-only check, `/bulk` was mounted and the recorder, discovery,
+upload and fallback units were active. The primary upload destination on the
+USB NVMe at `mac-mini-old` contained 2,290 MP4 segments totaling about 10.1 GB;
+the newest was 33 seconds old and the oldest about 38 hours old at inspection.
+The originally requested `/bulk/unifi_camera_recordings` fallback had no files
+modified in the preceding day, consistent with the configured primary upload
+path taking precedence. A separate probe of one recently uploaded segment
+reported approximately 60 seconds of H.264 video and no audio stream. This is
+one sampled file and a point-in-time inventory, not proof of gap-free coverage,
+30-day retention or audio absence from every file. No media was played or
+modified by the probe. A separate, subsequently selected recent uploaded
+segment was decoded to a null sink without reported errors, using one decoder
+thread and without playing or copying the media; this is one file, not a
+continuity check. Read-only inspection of the uploader found a configured
+30-day age check for regular files at the primary destination; that source
+inspection is not evidence that deletion has occurred or that every retention
+obligation is satisfied.
 
 The failed recovery helper has a revised version installed separately for
 future guarded trials. Its journal read allows 30 seconds, and a timeout or
