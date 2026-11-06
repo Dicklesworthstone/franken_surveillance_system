@@ -18,7 +18,7 @@ Original oracle / encoder: `ffmpeg version 8.0.1-3ubuntu2` with libx264, one thr
 Other FFmpeg/x264 versions may encode different bytes; the committed bytes
 and digests are the reference.
 
-Regenerate everything (streams and digests) with:
+Regenerate the original encoder corpus (streams and digests) with:
 
 ```sh
 scripts/generate_h264_decode_fixtures.sh
@@ -62,6 +62,7 @@ parameters are given in full, `threads=1:lookahead_threads=1:scenecut=0`):
 | `h_cqm_jvt` | High | 176x144 | 6 | `cqm=jvt`: PPS scaling matrices using the default lists |
 | `h_cavlc_8x8` | High | 176x144 | 6 | CAVLC 8x8 residual (four interleaved 4x4), B slices |
 | `h_cqm_custom_100x60` | High | 100x60 | 5 | custom 4x4/8x8 scaling lists, fall-back rule A, cropping |
+| `h_cavlc_level_escape` | High | 48x32 | 1 | Six CAVLC slices: prefixes 15/16/17, both signs, QP 0 and SPS scaling weight 1 |
 
 Coverage gaps the encoder cannot produce, and how they are covered instead:
 
@@ -96,6 +97,50 @@ It rewrites only parameter-set and slice-header fields and copies the
 macroblock data verbatim, because libx264 cannot emit those syntax paths.
 Their pixels still come only from FFmpeg. As a sanity check, FFmpeg decodes
 `ip_100x60_poc0` to exactly the same frame digests as `ip_100x60_crop`.
+
+## High-profile CAVLC level escapes
+
+`h_cavlc_level_escape.h264` is a 108-byte synthetic, hand-assembled stream.
+Its additive generator writes syntax only and does not invoke this decoder:
+
+```sh
+python3 -B crates/fss-codec-h264/tests/fixtures/decode/generate_high_cavlc_escape.py
+```
+
+The one picture has six single-macroblock I slices in raster order, using
+`level_prefix` 15, 16 and 17, each with suffix 0 and 1. A sequence scaling
+list of ones and QP 0 keep the extended-escape samples away from clipping:
+the six constant luma blocks are independently expected to be 128, 128,
+133, 123, 143 and 113; both chroma planes are 128. The boundary controls
+and distinct signed extended levels therefore survive full reconstruction.
+
+The frozen `.sha256` value was independently produced offline by
+`ffmpeg version 6.1.1-3ubuntu5`, with one decoder and one encoder thread.
+The file records the exact source digest and FFmpeg executable digest.
+Reproduce the oracle frame hash without re-encoding the source with:
+
+```sh
+ffmpeg -nostdin -hide_banner -loglevel error -threads 1 \
+  -i crates/fss-codec-h264/tests/fixtures/decode/h_cavlc_level_escape.h264 \
+  -fps_mode passthrough -c:v rawvideo -threads 1 -pix_fmt yuv420p \
+  -f framehash -hash sha256 -
+```
+
+Expected output is one 2304-byte I420 frame with SHA-256
+`248c0778097b49327f40b9a4ffa443eb039523a5527f4483d8cbc5313775709b`.
+The committed source SHA-256 is
+`7e7fbf5f2ca2a3233e153190adc14a14a88d843f14b6ec3a6488e30ee2ca6ce8`.
+No Rust test starts a foreign process or derives its oracle digest from
+the Rust decoder's output.
+
+The algorithm and profile restrictions follow
+[ITU-T H.264 V15 (08/2024)](https://www.itu.int/rec/T-REC-H.264-202408-I/en),
+clauses 7.4.2.1.1, 9.2.2, 9.2.2.1 and Annex A.2. Unit vectors separately
+exercise the first nontrailing coefficient adjustment, suffix-length
+adaptation, the bounded 8-bit prefix 19 endpoints, truncation, and overlong
+prefix refusal. Baseline/Main/Extended residual contexts retain their
+prefix-15 limit; this addition does not admit higher bit depths, additional
+custody profiles, or a complete-profile qualification claim.
 
 ## Progressive picture order count type 1
 

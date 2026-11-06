@@ -6,7 +6,7 @@ use crate::DecodeError;
 use crate::bits::BitReader;
 use crate::cavlc::context_nc;
 use crate::macroblock::{MbDecoder, ResidualBlock, SyntaxReader};
-use crate::residual::{ResidualKind, decode_coefficients};
+use crate::residual::{CavlcProfile, ResidualKind, decode_coefficients};
 use crate::slice::SliceKind;
 
 /// coded_block_pattern mapping for Intra_4x4 / Intra_8x8 macroblocks
@@ -125,30 +125,38 @@ impl SyntaxReader for CavlcReader<'_, '_> {
         out: &mut [i32; 64],
     ) -> Result<u8, DecodeError> {
         *out = [0; 64];
+        let profile = CavlcProfile::from_profile_idc(mb.ctx.sps.profile_idc)?;
         let mut scan = [0i32; 16];
         let count = match block {
-            ResidualBlock::LumaDc => {
-                decode_coefficients(self.reader, ResidualKind::Max16, luma_nc(mb, 0), &mut scan)?
-            }
+            ResidualBlock::LumaDc => decode_coefficients(
+                self.reader,
+                ResidualKind::Max16,
+                luma_nc(mb, 0),
+                profile,
+                &mut scan,
+            )?,
             ResidualBlock::LumaAc(raster) => decode_coefficients(
                 self.reader,
                 ResidualKind::Max15,
                 luma_nc(mb, raster),
+                profile,
                 &mut scan,
             )?,
             ResidualBlock::Luma4x4(raster) => decode_coefficients(
                 self.reader,
                 ResidualKind::Max16,
                 luma_nc(mb, raster),
+                profile,
                 &mut scan,
             )?,
             ResidualBlock::ChromaDc(_) => {
-                decode_coefficients(self.reader, ResidualKind::ChromaDC, -1, &mut scan)?
+                decode_coefficients(self.reader, ResidualKind::ChromaDC, -1, profile, &mut scan)?
             }
             ResidualBlock::ChromaAc(component, blk) => decode_coefficients(
                 self.reader,
                 ResidualKind::Max15,
                 chroma_nc(mb, component, blk),
+                profile,
                 &mut scan,
             )?,
             // CAVLC codes 8x8 blocks as four interleaved 4x4 blocks.

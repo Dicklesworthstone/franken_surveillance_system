@@ -411,6 +411,12 @@ pub fn parse_sps(rbsp: &[u8]) -> Result<SeqParams, DecodeError> {
     let mut r = BitReader::new(rbsp, rbsp.len() * 8);
     let profile_idc = u8::try_from(r.uint(8)?).map_err(|_| DecodeError::Malformed)?;
     let constraints = r.uint(8)?;
+    // Clause 7.4.2.1.1: these High-family profiles cannot signal
+    // constraint_set0/1/2. In particular, a High SPS must not both claim
+    // a legacy profile's prefix cap and select extended CAVLC escapes.
+    if matches!(profile_idc, 44 | 100 | 110 | 122 | 244) && constraints & 0xe0 != 0 {
+        return Err(DecodeError::Malformed);
+    }
     let level_idc = u8::try_from(r.uint(8)?).map_err(|_| DecodeError::Malformed)?;
     let id = u8::try_from(r.ue(31)?).map_err(|_| DecodeError::Malformed)?;
     let mut scaling = None;

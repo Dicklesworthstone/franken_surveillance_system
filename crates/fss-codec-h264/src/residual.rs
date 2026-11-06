@@ -6,6 +6,43 @@ use crate::cavlc::VlcTable;
 use crate::tables::tables;
 use crate::{DecodeError, UnsupportedFeature};
 
+/// CAVLC level syntax admitted for the active sequence parameter set.
+/// This selects a residual budget, not whole-stream profile admission.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CavlcProfile {
+    /// Baseline, Constrained Baseline, Main and Extended retain the
+    /// `level_prefix <= 15` restriction (Annex A.2.1--A.2.3).
+    BaselineMainExtended,
+    /// High profile with 8-bit samples admits the extended level escape.
+    /// The unary prefix is bounded to 19: clause 9.2.2.1 notes the bound
+    /// `11 + bitDepth` for profiles without the legacy restriction.
+    High8Bit,
+}
+
+impl CavlcProfile {
+    /// Selects the residual syntax for an already validated 8-bit SPS.
+    /// The pixel decoder's separate custody and sample-format checks are
+    /// still required; this does not admit Extended-profile streams or
+    /// higher bit depths to [`crate::Decoder`].
+    ///
+    /// # Errors
+    /// [`DecodeError::Unsupported`] for any other `profile_idc`.
+    pub const fn from_profile_idc(profile_idc: u8) -> Result<Self, DecodeError> {
+        match profile_idc {
+            66 | 77 | 88 => Ok(Self::BaselineMainExtended),
+            100 => Ok(Self::High8Bit),
+            _ => Err(DecodeError::Unsupported(UnsupportedFeature::Profile)),
+        }
+    }
+
+    const fn max_level_prefix(self) -> u32 {
+        match self {
+            Self::BaselineMainExtended => 15,
+            Self::High8Bit => 19,
+        }
+    }
+}
+
 /// Which residual block variant is being decoded. Selects the maximum
 /// coefficient count and the total_zeros table family.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -58,6 +95,8 @@ enum TokenSource<'a> {
 /// table (luma contexts 0..=2 are table indices 0..=2; ChromaDC is index 3
 /// with [`ResidualKind::ChromaDC`]). See [`decode_residual_block_nc`] for
 /// selection by `nC`, which also covers the `nC >= 8` fixed-length code.
+/// This compatibility helper retains the Baseline/Main/Extended prefix
+/// bound. Use [`decode_residual_block_nc_for_profile`] for High syntax.
 ///
 /// # Errors
 /// [`DecodeError::Unsupported`] for a `level_prefix` above 15;
@@ -68,7 +107,12 @@ pub fn decode_residual_block(
     kind: ResidualKind,
     coeff_token_table: &VlcTable,
 ) -> Result<ResidualBlock, DecodeError> {
-    decode_to_block(reader, kind, TokenSource::Table(coeff_token_table))
+    decode_to_block(
+        reader,
+        kind,
+        TokenSource::Table(coeff_token_table),
+        CavlcProfile::BaselineMainExtended,
+    )
 }
 
 /// Decodes one residual block, selecting the coeff_token code from the
@@ -84,18 +128,37 @@ pub fn decode_residual_block_nc(
     kind: ResidualKind,
     nc: i32,
 ) -> Result<ResidualBlock, DecodeError> {
+    decode_residual_block_nc_for_profile(reader, kind, nc, CavlcProfile::BaselineMainExtended)
+}
+
+/// Decodes a residual block using the active sequence's CAVLC profile.
+/// Unlike [`decode_residual_block_nc`], this explicitly admits High-profile
+/// extended level prefixes when selected by the caller.
+///
+/// # Errors
+/// As [`decode_residual_block_nc`], except that [`CavlcProfile::High8Bit`]
+/// accepts prefixes through 19 and refuses longer prefixes as
+/// [`DecodeError::Limit`] before reading a suffix or shifting by its size.
+pub fn decode_residual_block_nc_for_profile(
+    reader: &mut BitReader<'_>,
+    kind: ResidualKind,
+    nc: i32,
+    profile: CavlcProfile,
+) -> Result<ResidualBlock, DecodeError> {
     let source = token_source(kind, nc)?;
-    decode_to_block(reader, kind, source)
+    decode_to_block(reader, kind, source, profile)
 }
 
 fn decode_to_block(
     reader: &mut BitReader<'_>,
     kind: ResidualKind,
     source: TokenSource<'_>,
+    profile: CavlcProfile,
 ) -> Result<ResidualBlock, DecodeError> {
     let mut coeffs = [0i32; 16];
     let mut levels = [0i32; 16];
-    let (total_coeff, trailing_ones) = decode_core(reader, kind, source, &mut coeffs, &mut levels)?;
+    let (total_coeff, trailing_ones) =
+        decode_core(reader, kind, source, profile, &mut coeffs, &mut levels)?;
     let max = kind.max_num_coeff();
     Ok(ResidualBlock {
         total_coeff,
@@ -122,16 +185,17 @@ fn token_source(kind: ResidualKind, nc: i32) -> Result<TokenSource<'static>, Dec
 /// into `coeffs` and returns TotalCoeff.
 ///
 /// # Errors
-/// As [`decode_residual_block_nc`].
+/// As [`decode_residual_block_nc_for_profile`].
 pub(crate) fn decode_coefficients(
     reader: &mut BitReader<'_>,
     kind: ResidualKind,
     nc: i32,
+    profile: CavlcProfile,
     coeffs: &mut [i32; 16],
 ) -> Result<u8, DecodeError> {
     let source = token_source(kind, nc)?;
     let mut levels = [0i32; 16];
-    let (total, _) = decode_core(reader, kind, source, coeffs, &mut levels)?;
+    let (total, _) = decode_core(reader, kind, source, profile, coeffs, &mut levels)?;
     u8::try_from(total).map_err(|_| DecodeError::Malformed)
 }
 
@@ -162,6 +226,7 @@ fn decode_core(
     reader: &mut BitReader<'_>,
     kind: ResidualKind,
     source: TokenSource<'_>,
+    profile: CavlcProfile,
     coeffs: &mut [i32; 16],
     levels: &mut [i32; 16],
 ) -> Result<(usize, usize), DecodeError> {
@@ -196,11 +261,13 @@ fn decode_core(
         let mut level_prefix: u32 = 0;
         while reader.bit()? == 0 {
             level_prefix += 1;
-            if level_prefix > 15 {
-                // 8-bit Baseline/Main/Extended cap level_prefix at 15.
-                return Err(DecodeError::Unsupported(
-                    UnsupportedFeature::LevelPrefixEscape,
-                ));
+            if level_prefix > profile.max_level_prefix() {
+                return Err(match profile {
+                    CavlcProfile::BaselineMainExtended => {
+                        DecodeError::Unsupported(UnsupportedFeature::LevelPrefixEscape)
+                    }
+                    CavlcProfile::High8Bit => DecodeError::Limit,
+                });
             }
         }
         let level_suffix_size: u32 = if level_prefix == 14 && suffix_length == 0 {
@@ -220,6 +287,17 @@ fn decode_core(
         let mut level_code = (level_prefix.min(15) << suffix_length) + level_suffix;
         if level_prefix >= 15 && suffix_length == 0 {
             level_code += 15;
+        }
+        if level_prefix >= 16 {
+            // Clause 9.2.2 step 6. Prefix admission above bounds this
+            // shift to 13..=16 for the supported 8-bit sample format.
+            let escape = 1u32
+                .checked_shl(level_prefix - 3)
+                .and_then(|value| value.checked_sub(4096))
+                .ok_or(DecodeError::Malformed)?;
+            level_code = level_code
+                .checked_add(escape)
+                .ok_or(DecodeError::Malformed)?;
         }
         if index == trailing_ones && trailing_ones < 3 {
             level_code += 2;
@@ -305,6 +383,243 @@ mod tests {
             .chunks(8)
             .map(|chunk| chunk.iter().fold(0u8, |acc, &b| (acc << 1) | b))
             .collect()
+    }
+
+    /// Write only the escape syntax, not a level-to-code implementation.
+    /// Expected levels below are independently hand-computed from 9.2.2.
+    fn push_escape(bits: &mut Vec<u8>, prefix: u32, suffix: u32) {
+        bits.extend(std::iter::repeat_n(0, prefix as usize));
+        bits.push(1);
+        for shift in (0..prefix - 3).rev() {
+            bits.push(((suffix >> shift) & 1) as u8);
+        }
+    }
+
+    fn single_escape(prefix: u32, suffix: u32) -> Vec<u8> {
+        let mut bits = Vec::new();
+        push_bits(&mut bits, "000000"); // nC >= 8: TotalCoeff=1, TrailingOnes=0.
+        push_escape(&mut bits, prefix, suffix);
+        push_bits(&mut bits, "1"); // total_zeros=0 for TotalCoeff=1.
+        bits
+    }
+
+    #[test]
+    fn profile_selection_preserves_legacy_restrictions() {
+        for profile_idc in [66, 77, 88] {
+            let profile = CavlcProfile::from_profile_idc(profile_idc).unwrap();
+            assert_eq!(profile, CavlcProfile::BaselineMainExtended);
+            let bits = single_escape(16, 0);
+            let bytes = to_bytes(&bits);
+            let mut reader = BitReader::new(&bytes, bits.len());
+            assert_eq!(
+                decode_residual_block_nc_for_profile(&mut reader, ResidualKind::Max16, 8, profile)
+                    .unwrap_err(),
+                DecodeError::Unsupported(UnsupportedFeature::LevelPrefixEscape)
+            );
+            assert_eq!(reader.position(), 6 + 16);
+        }
+        assert_eq!(
+            CavlcProfile::from_profile_idc(100),
+            Ok(CavlcProfile::High8Bit)
+        );
+        for unsupported in [0, 44, 110, 122, 244, 255] {
+            assert_eq!(
+                CavlcProfile::from_profile_idc(unsupported),
+                Err(DecodeError::Unsupported(UnsupportedFeature::Profile))
+            );
+        }
+    }
+
+    /// With suffixLength=0 and the first-level +2 adjustment, suffix 0
+    /// gives levels 17, 2065 and 6161 at prefixes 15, 16 and 17. Suffix 1
+    /// changes only the sign. These cross both extended-escape thresholds.
+    #[test]
+    fn high_escape_prefixes_decode_exact_signed_levels() {
+        for (prefix, magnitude) in [(15, 17), (16, 2065), (17, 6161)] {
+            for (suffix, expected) in [(0, magnitude), (1, -magnitude)] {
+                let bits = single_escape(prefix, suffix);
+                let bytes = to_bytes(&bits);
+                let mut reader = BitReader::new(&bytes, bits.len());
+                let block = decode_residual_block_nc_for_profile(
+                    &mut reader,
+                    ResidualKind::Max16,
+                    8,
+                    CavlcProfile::High8Bit,
+                )
+                .unwrap();
+                assert_eq!(block.levels, [expected], "prefix={prefix}, suffix={suffix}");
+                assert_eq!(block.coeff_level[0], expected);
+                assert!(block.coeff_level[1..].iter().all(|&level| level == 0));
+                assert_eq!(reader.position(), bits.len());
+                if prefix == 15 {
+                    let mut legacy_reader = BitReader::new(&bytes, bits.len());
+                    assert_eq!(
+                        decode_residual_block_nc(&mut legacy_reader, ResidualKind::Max16, 8)
+                            .unwrap(),
+                        block
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn high_escape_first_level_bias_depends_on_trailing_ones() {
+        for (prefix, magnitude) in [(15, 16), (16, 2064), (17, 6160)] {
+            for (suffix, expected) in [(0, magnitude), (1, -magnitude)] {
+                let mut bits = Vec::new();
+                // ChromaDC: TotalCoeff=4, TrailingOnes=3, so no +2
+                // adjustment and no total_zeros/run_before syntax.
+                push_bits(&mut bits, "0000000");
+                push_bits(&mut bits, "010");
+                push_escape(&mut bits, prefix, suffix);
+                let bytes = to_bytes(&bits);
+                let mut reader = BitReader::new(&bytes, bits.len());
+                let block = decode_residual_block_nc_for_profile(
+                    &mut reader,
+                    ResidualKind::ChromaDC,
+                    -1,
+                    CavlcProfile::High8Bit,
+                )
+                .unwrap();
+                assert_eq!(block.levels, [1, -1, 1, expected]);
+                assert_eq!(block.coeff_level, [expected, 1, -1, 1]);
+                assert_eq!(reader.position(), bits.len());
+            }
+        }
+
+        // One trailing one still requires the +2 first-nontrailing bias.
+        let mut bits = Vec::new();
+        push_bits(&mut bits, "0001011"); // nC>=8: tc=2,to=1; sign=-1.
+        push_escape(&mut bits, 16, 0);
+        push_bits(&mut bits, "111"); // tc=2,total_zeros=0.
+        let bytes = to_bytes(&bits);
+        let mut reader = BitReader::new(&bytes, bits.len());
+        let block = decode_residual_block_nc_for_profile(
+            &mut reader,
+            ResidualKind::Max15,
+            8,
+            CavlcProfile::High8Bit,
+        )
+        .unwrap();
+        assert_eq!(block.levels, [-1, 2065]);
+        assert_eq!(&block.coeff_level[..2], &[2065, -1]);
+        assert_eq!(reader.position(), bits.len());
+    }
+
+    #[test]
+    fn high_escape_adapts_zero_suffix_length_before_next_level() {
+        for (prefix, first_level) in [(15, 17), (16, 2065), (17, 6161)] {
+            let mut bits = Vec::new();
+            push_bits(&mut bits, "000100"); // nC>=8: tc=2,to=0.
+            push_escape(&mut bits, prefix, 0);
+            push_bits(&mut bits, "111"); // prefix=0, two-bit suffix=3 -> -2.
+            push_bits(&mut bits, "111"); // tc=2,total_zeros=0.
+            let bytes = to_bytes(&bits);
+            let mut reader = BitReader::new(&bytes, bits.len());
+            let block = decode_residual_block_nc_for_profile(
+                &mut reader,
+                ResidualKind::Max16,
+                8,
+                CavlcProfile::High8Bit,
+            )
+            .unwrap();
+            assert_eq!(block.levels, [first_level, -2]);
+            assert_eq!(&block.coeff_level[..2], &[-2, first_level]);
+            assert_eq!(reader.position(), bits.len());
+        }
+    }
+
+    #[test]
+    fn high_escape_adapts_initial_one_suffix_length_up_to_six() {
+        let mut bits = Vec::new();
+        push_bits(&mut bits, "111100"); // nC>=8: tc=16,to=0; suffixLength=1.
+        for _ in 0..16 {
+            push_escape(&mut bits, 16, 0);
+        }
+        let bytes = to_bytes(&bits);
+        let mut reader = BitReader::new(&bytes, bits.len());
+        let block = decode_residual_block_nc_for_profile(
+            &mut reader,
+            ResidualKind::Max16,
+            8,
+            CavlcProfile::High8Bit,
+        )
+        .unwrap();
+        let expected = [
+            2065, 2079, 2109, 2169, 2289, 2529, 2529, 2529, 2529, 2529, 2529, 2529, 2529, 2529,
+            2529, 2529,
+        ];
+        assert_eq!(block.levels, expected);
+        assert!(block.coeff_level.iter().eq(expected.iter().rev()));
+        assert_eq!(reader.position(), bits.len());
+    }
+
+    #[test]
+    fn high_escape_accepts_last_bounded_prefix_and_suffix_endpoints() {
+        for (suffix, expected) in [
+            (0, 30_737),
+            (1, -30_737),
+            (65_534, 63_504),
+            (65_535, -63_504),
+        ] {
+            let bits = single_escape(19, suffix);
+            let bytes = to_bytes(&bits);
+            let mut reader = BitReader::new(&bytes, bits.len());
+            let block = decode_residual_block_nc_for_profile(
+                &mut reader,
+                ResidualKind::Max16,
+                8,
+                CavlcProfile::High8Bit,
+            )
+            .unwrap();
+            assert_eq!(block.levels, [expected]);
+            assert_eq!(reader.position(), bits.len());
+        }
+    }
+
+    #[test]
+    fn high_escape_refuses_overlong_prefix_before_suffix_or_shift() {
+        let mut bits = Vec::new();
+        push_bits(&mut bits, "000000");
+        bits.extend(std::iter::repeat_n(0, 1024));
+        bits.push(1);
+        let bytes = to_bytes(&bits);
+        let mut reader = BitReader::new(&bytes, bits.len());
+        assert_eq!(
+            decode_residual_block_nc_for_profile(
+                &mut reader,
+                ResidualKind::Max16,
+                8,
+                CavlcProfile::High8Bit,
+            )
+            .unwrap_err(),
+            DecodeError::Limit
+        );
+        assert_eq!(reader.position(), 6 + 20);
+    }
+
+    #[test]
+    fn high_escape_truncated_prefix_suffix_and_zero_count_are_refused() {
+        for prefix in [15, 16, 17, 19] {
+            let bits = single_escape(prefix, 1);
+            let bytes = to_bytes(&bits);
+            for limit in 6..bits.len() {
+                let mut reader = BitReader::new(&bytes, limit);
+                assert_eq!(
+                    decode_residual_block_nc_for_profile(
+                        &mut reader,
+                        ResidualKind::Max16,
+                        8,
+                        CavlcProfile::High8Bit,
+                    )
+                    .unwrap_err(),
+                    DecodeError::Limit,
+                    "prefix={prefix}, bit limit={limit}"
+                );
+                assert_eq!(reader.position(), limit);
+            }
+        }
     }
 
     /// tc=2, to=2 via the nC<2 table ("001"), signs 0,1 (+1,-1),

@@ -129,8 +129,8 @@ pub enum UnsupportedFeature {
     /// the decoded picture buffer; no longer produced, kept for API
     /// stability.
     OutputReordering,
-    /// A CAVLC `level_prefix` above 15 (the escape only High profiles at
-    /// bit depths above 8 need; not implemented).
+    /// A CAVLC `level_prefix` above 15 in a Baseline/Main/Extended
+    /// context. High-profile 8-bit escapes are admitted through prefix 19.
     LevelPrefixEscape,
 }
 

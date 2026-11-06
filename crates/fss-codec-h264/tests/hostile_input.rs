@@ -77,7 +77,13 @@ const TINY: SpsSpec = SpsSpec {
 
 fn sps(spec: &SpsSpec) -> Vec<u8> {
     let mut w = W::default();
-    w.u(8, spec.profile).u(8, 0x40).u(8, 30).ue(0);
+    // High-family SPSs must not claim constraint_set0/1/2 (7.4.2.1.1).
+    let constraints = if matches!(spec.profile, 66 | 77 | 88) {
+        0x40
+    } else {
+        0
+    };
+    w.u(8, spec.profile).u(8, constraints).u(8, 30).ue(0);
     if let Some((chroma, depth, scaling)) = spec.high {
         w.ue(chroma)
             .ue(depth)
@@ -117,6 +123,7 @@ struct PpsSpec {
     slice_groups: u64,
     weighted_pred: bool,
     transform_8x8: bool,
+    pic_init_qp_minus26: i64,
 }
 
 fn pps(spec: PpsSpec) -> Vec<u8> {
@@ -129,7 +136,7 @@ fn pps(spec: PpsSpec) -> Vec<u8> {
         }
     }
     w.ue(0).ue(0).u(1, u64::from(spec.weighted_pred)).u(2, 0);
-    w.se(0).se(0).se(0); // pic_init_qp 26, qs, chroma offset
+    w.se(spec.pic_init_qp_minus26).se(0).se(0); // pic_init_qp, qs, chroma offset
     w.u(1, 1).u(1, 0).u(1, 0); // deblocking control, constrained intra, redundant
     if spec.transform_8x8 {
         w.u(1, 1).u(1, 0).se(0);
@@ -242,6 +249,93 @@ fn tiny_hand_assembled_stream_decodes_to_mid_grey() {
         assert_flat(picture, 128, 128);
     }
     assert_eq!((pictures[0].poc(), pictures[1].poc()), (0, 2));
+}
+
+/// High cannot simultaneously signal Baseline/Main/Extended compatibility
+/// (7.4.2.1.1). Progressive High and Constrained High remain admitted.
+#[test]
+fn high_sps_rejects_legacy_constraint_flags_without_rejecting_high_constraints() {
+    let spec = SpsSpec {
+        profile: 100,
+        high: Some((1, 0, false)),
+        ..TINY
+    };
+    for constraints in [0, 0x08, 0x0c] {
+        let mut nal = sps(&spec);
+        nal[2] = constraints;
+        assert_eq!(fresh().decode_nal(&nal), Ok(None));
+    }
+    for forbidden in [0x80, 0x40, 0x20, 0xe0] {
+        for high_flags in [0, 0x08, 0x0c] {
+            let mut nal = sps(&spec);
+            nal[2] = forbidden | high_flags;
+            assert_eq!(fresh().decode_nal(&nal), Err(DecodeError::Malformed));
+        }
+    }
+}
+
+fn i_slice_with_level_prefix(prefix: u32, suffix: u64) -> Vec<u8> {
+    let mut w = W::default();
+    w.ue(0).ue(7).ue(0).u(4, 0).ue(0); // first MB, IDR I slice, POC type 2
+    w.u(1, 0).u(1, 0).se(0).ue(1); // IDR marking, QP delta 0, no deblocking
+    w.ue(3).ue(0).se(0); // I_16x16 DC, no AC/chroma residual
+    w.u(6, 0b000101); // nC=0: TotalCoeff=1, TrailingOnes=0
+    w.u(prefix, 0).u(1, 1).u(prefix - 3, suffix);
+    w.u(1, 1); // total_zeros=0
+    w.nal(0x65)
+}
+
+/// The active SPS reaches the allocation-free production macroblock path.
+/// A refused picture must neither publish partial pixels nor poison a new IDR.
+#[test]
+fn cavlc_escape_uses_active_profile_and_refusal_discards_partial_picture() {
+    for profile in [66, 77, 100] {
+        for prefix in [16, 17, 20] {
+            let spec = SpsSpec {
+                profile,
+                high: (profile == 100).then_some((1, 0, false)),
+                ..TINY
+            };
+            let mut decoder = fresh();
+            decoder.decode_nal(&sps(&spec)).unwrap();
+            decoder
+                .decode_nal(&pps(PpsSpec {
+                    pic_init_qp_minus26: -26,
+                    ..PpsSpec::default()
+                }))
+                .unwrap();
+            let result = decoder.decode_nal(&i_slice_with_level_prefix(prefix, 0));
+            if profile == 100 && prefix < 20 {
+                let mut pictures: Vec<_> = result.unwrap().into_iter().collect();
+                pictures.extend(decoder.finish().unwrap());
+                assert_eq!(pictures.len(), 1);
+                // Flat scaling=16, QP=0: DC inverse scaling followed by
+                // the 4x4 transform gives +81 or +241 over prediction 128.
+                assert_flat(&pictures[0], if prefix == 16 { 209 } else { 255 }, 128);
+            } else {
+                assert_eq!(
+                    result,
+                    Err(if profile == 100 {
+                        DecodeError::Limit
+                    } else {
+                        unsupported(UnsupportedFeature::LevelPrefixEscape)
+                    })
+                );
+                assert_eq!(decoder.pictures_decoded(), 0);
+                assert!(!decoder.has_incomplete_picture());
+                assert!(decoder.next_output().is_none());
+                assert!(decoder.finish().unwrap().is_empty());
+                let mut pictures: Vec<_> = decoder
+                    .decode_nal(&i_slice(true, 0, 0, 1, None))
+                    .unwrap()
+                    .into_iter()
+                    .collect();
+                pictures.extend(decoder.finish().unwrap());
+                assert_eq!(pictures.len(), 1);
+                assert_flat(&pictures[0], 128, 128);
+            }
+        }
+    }
 }
 
 // ----- unsupported tools: typed refusals -----

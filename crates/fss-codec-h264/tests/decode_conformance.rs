@@ -263,6 +263,7 @@ oracle_test!(high_8x8_intra_bit_exact, "h_8x8dct_i");
 oracle_test!(high_8x8_b_pyramid_bit_exact, "h_8x8dct_b", Order::Reordered);
 oracle_test!(high_cqm_jvt_bit_exact, "h_cqm_jvt", Order::Reordered);
 oracle_test!(high_cavlc_8x8_bit_exact, "h_cavlc_8x8", Order::Reordered);
+oracle_test!(high_cavlc_level_escapes_bit_exact, "h_cavlc_level_escape");
 oracle_test!(
     high_custom_cqm_cropped_bit_exact,
     "h_cqm_custom_100x60",
