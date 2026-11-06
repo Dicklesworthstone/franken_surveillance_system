@@ -1577,6 +1577,12 @@ tests, with one live-capture test ignored, and had acknowledged exit and source
 release. Its AAC track and test hashes matched the working tree. Earlier G4
 replays observed no original AAC configuration and therefore do not establish
 that this new in-band binding has been exercised on that camera.
+The A/V owner can now accept such a non-provisional source binding and retain
+the claimed epoch, record digest, length, offset and configuration-byte range.
+The caller still retains the original record and must establish that the audio
+observation and video initialization belong to the same connection and epoch.
+The new owner-level integration test is pending; no G4 capture has exercised
+this source-binding path.
 
 The ADTS helper now also derives a borrowed source frame directly from an
 original FLV `SourceRecord`. It returns a connection-relative body range, the
