@@ -69,6 +69,8 @@ pub enum Error {
     Configuration,
     /// Untrusted discovery claims conflict or the window was incomplete.
     Claims,
+    /// The two camera settings observations did not agree.
+    Changed,
     /// Current admission or runtime authority refused setup.
     Denied,
     /// The bounded total deadline elapsed.
@@ -141,6 +143,18 @@ pub enum Outcome {
         /// Permit retained for independent reconciliation.
         permit: CommittedEffect,
     },
+}
+
+/// Two matching read-only observations of one discovered camera.
+///
+/// The camera's claims and discovery identity remain untrusted; this does not
+/// prove adoption, authorize a handoff, or settle any previous effect.
+#[derive(Debug)]
+pub struct Observation {
+    /// The camera's status response shape.
+    pub status: camera_api::StatusShape,
+    /// The matching camera-local controller claim and session binding.
+    pub settings: camera_api::SettingsObservation,
 }
 
 /// Task resources and policies for the setup attempt.
@@ -220,6 +234,104 @@ fn valid_claims(report: &discovery::Report, index: usize) -> bool {
 }
 
 impl Owner<'_, '_, '_> {
+    /// Observe one admitted discovered camera without preparing or sending a
+    /// management effect. Settings are read twice and must agree.
+    pub async fn observe<IO: AsyncRead + AsyncWrite + Unpin>(
+        &self,
+        camera: &mut camera_http::Owner<'_, '_, '_, IO>,
+        cfg: &Config<'_>,
+    ) -> Result<Observation, Error> {
+        if cfg.wait.is_zero()
+            || cfg.wait > MAX_WAIT
+            || cfg.generation == 0
+            || cfg.fence == 0
+            || !valid_digest(cfg.camera)
+            || !valid_digest(cfg.peer_admission)
+            || !self.clock.matches(self.task, self.cx)
+            || camera.phase() != camera_api::Phase::Login
+        {
+            return Err(Error::Configuration);
+        }
+        let candidate = cfg
+            .report
+            .cameras
+            .get(cfg.index)
+            .ok_or(Error::Configuration)?;
+        if !valid_claims(cfg.report, cfg.index) {
+            return Err(Error::Claims);
+        }
+        let resource = format!("camera:{}", cfg.camera.to_text());
+        if !camera.matches_setup(
+            self.task,
+            self.cx,
+            self.clock,
+            *candidate.source().ip(),
+            cfg.generation,
+            &resource,
+        ) {
+            return Err(Error::Configuration);
+        }
+        let admitted = || {
+            self.admission.permits(
+                candidate,
+                cfg.camera,
+                cfg.peer_admission,
+                cfg.generation,
+                cfg.fence,
+            )
+        };
+        if !admitted() {
+            return Err(Error::Denied);
+        }
+        let deadline = self
+            .cx
+            .now()
+            .as_nanos()
+            .checked_add(u64::try_from(cfg.wait.as_nanos()).map_err(|_| Error::Configuration)?)
+            .ok_or(Error::Configuration)?;
+        camera
+            .login(cfg.credential, remaining(self.cx, deadline)?)
+            .await
+            .map_err(Error::Camera)?;
+        if !admitted() {
+            return Err(Error::Denied);
+        }
+        let status = camera
+            .status(remaining(self.cx, deadline)?)
+            .await
+            .map_err(Error::Camera)?;
+        if !admitted() {
+            return Err(Error::Denied);
+        }
+        let settings = camera
+            .settings(remaining(self.cx, deadline)?)
+            .await
+            .map_err(Error::Camera)?;
+        if !admitted() {
+            return Err(Error::Denied);
+        }
+        let fresh = camera
+            .settings(remaining(self.cx, deadline)?)
+            .await
+            .map_err(Error::Camera)?;
+        if !admitted() {
+            return Err(Error::Denied);
+        }
+        if fresh != settings {
+            return Err(Error::Changed);
+        }
+        let binding = camera_api::controller_binding(
+            settings.controller,
+            *candidate.source().ip(),
+            cfg.generation,
+        )
+        .map_err(|_| Error::Configuration)?;
+        if settings.binding != binding {
+            return Err(Error::Configuration);
+        }
+        Ok(Observation { status, settings })
+    }
+
     /// Orchestrate one explicitly authorized candidate through journaled
     /// handoff and readback. No retry is performed after an indeterminate write.
     /// Dropping this future after preparation or commit leaves durable journal

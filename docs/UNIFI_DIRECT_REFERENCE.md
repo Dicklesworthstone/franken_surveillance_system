@@ -489,6 +489,30 @@ Separately, the transitional recorder restarted at 18:42 Eastern before that
 snapshot check. Its journal subsequently reported recording started, and seven
 upload runs reported eight verified segments copied without a deferral. These
 observations do not establish that recording was gap-free around the restart.
+The recorder later restarted again at 19:01 Eastern and was active after the
+subsequent observation below; its upload service's most recent run reported
+success. Its journal shows that FFmpeg exited with code zero before the
+recorder service restarted; the inspected log categories did not identify why
+the stream ended. This likewise does not establish uninterrupted coverage.
+
+The isolated handoff lab now has an explicit `--observe-only` mode that reads
+controller settings twice and exits before journal creation or any settings
+write. On `vmi1153651`, the binary compiled and its independent encrypted
+fixture passed 14 cases, including expected, destination, different and
+changing controller claims in read-only mode. The exact binary SHA-256 was
+`bbb5499ab306d567b5c09d52538ca6d1b06e9b5fdd725b7e0a8031fae8bd7602`.
+On the owner's G4, it reported two matching observations of the expected
+existing controller, no effect and a completed task receipt; the unused
+journal path remained absent. The run created a camera login session with
+unknown expiry. The claim remains unverified, and it does not settle the
+earlier ambiguous handoff or prove an earlier request's timing or cause.
+The project setup owner subsequently gained a source-level `observe` method
+that composes scoped discovery admission with two settings reads and no effect
+preparation. Socket fixture cases for matching and changing claims were also
+added. These changes have only been syntax-parsed: a remote test started on
+`trj` but was terminated after disk telemetry became unavailable, and the
+same job's source release has not yet been acknowledged. Neither the new
+project method nor its fixture cases have been qualified by that run.
 
 `unifi_direct::handoff` now prepares an inert controller-address change bound
 to the exact semantic request, reported prior IPv4 address, camera and peer

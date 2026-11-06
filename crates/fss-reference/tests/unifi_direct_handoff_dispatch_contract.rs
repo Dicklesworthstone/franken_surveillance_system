@@ -703,16 +703,29 @@ fn http_fixture(
     already: bool,
     fail_readback: bool,
     framing: Framing,
+    observe: bool,
+    changed: bool,
 ) -> std::io::Result<()> {
     let mut socket = std::net::TcpStream::connect_timeout(&address, Duration::from_secs(5))?;
     socket.set_read_timeout(Some(Duration::from_secs(8)))?;
-    let routes = [
+    let handoff_routes = [
         "POST /api/1.1/login ",
         "GET /api/1.1/status ",
         "GET /api/1.1/settings ",
         "PUT /api/1.1/settings ",
         "GET /api/1.1/settings ",
     ];
+    let observe_routes = [
+        "POST /api/1.1/login ",
+        "GET /api/1.1/status ",
+        "GET /api/1.1/settings ",
+        "GET /api/1.1/settings ",
+    ];
+    let routes: &[&str] = if observe {
+        &observe_routes
+    } else {
+        &handoff_routes
+    };
     for (index, route) in routes.iter().enumerate() {
         let request = http_request(&mut socket)?;
         if !request.starts_with(route.as_bytes()) {
@@ -725,10 +738,13 @@ fn http_fixture(
         {
             return Err(std::io::Error::other("fixture cookie missing"));
         }
-        if index == 3 && !request.ends_with(br#"{"controller":{"addr":"192.168.1.40"}}"#) {
+        if index == 3
+            && !observe
+            && !request.ends_with(br#"{"controller":{"addr":"192.168.1.40"}}"#)
+        {
             return Err(std::io::Error::other("fixture handoff mismatch"));
         }
-        if index == 3 {
+        if index == 3 && !observe {
             let chunked = request
                 .windows(b"\r\nTransfer-Encoding: chunked\r\n".len())
                 .any(|window| window == b"\r\nTransfer-Encoding: chunked\r\n");
@@ -736,7 +752,7 @@ fn http_fixture(
                 return Err(std::io::Error::other("fixture wrong handoff framing"));
             }
         }
-        if index == 3 && cancel_reply {
+        if index == 3 && !observe && cancel_reply {
             let mut b = [0u8; 1];
             return if socket.read(&mut b)? == 0 {
                 Ok(())
@@ -750,6 +766,9 @@ fn http_fixture(
         let body: &[u8] = match index {
             2 if already => br#"{"controller":{"addr":"192.168.1.40"}}"#,
             2 => br#"{"controller":{"addr":"192.168.1.10"}}"#,
+            3 if observe && changed => br#"{"controller":{"addr":"192.168.1.99"}}"#,
+            3 if observe && already => br#"{"controller":{"addr":"192.168.1.40"}}"#,
+            3 if observe => br#"{"controller":{"addr":"192.168.1.10"}}"#,
             3 => br#"{"success":false,"statusCode":17,"secret":"fixture-private"}"#,
             4 => br#"{"controller":{"addr":"192.168.1.40"}}"#,
             _ => b"{}",
@@ -765,7 +784,7 @@ fn http_fixture(
         );
         socket.write_all(header.as_bytes())?;
         socket.write_all(body)?;
-        if index == 2 && already {
+        if index == 2 && already && !observe {
             return Ok(());
         }
     }
@@ -810,7 +829,7 @@ fn owned_http_handoff(cancel_reply: bool, framing: Framing) -> Test {
                     let listener = TcpListener::bind("127.0.0.1:0").await?;
                     let address = listener.local_addr()?;
                     let peer = std::thread::spawn(move || {
-                        http_fixture(address, cancel_reply, false, false, framing)
+                        http_fixture(address, cancel_reply, false, false, framing, false, false)
                     });
                     let (socket, _) =
                         timeout(cx.now(), Duration::from_secs(5), listener.accept()).await??;
@@ -1032,10 +1051,12 @@ fn run_discovered_setup(
     already: bool,
     fail_readback: bool,
     framing: Framing,
+    observe: bool,
+    changed: bool,
 ) -> Test {
     use fss_reference::unifi_direct::{discovery, setup};
     let path = std::fs::canonicalize(std::env::temp_dir())?.join(format!(
-        "fss-unifi-setup-{}-{cancel_reply}-{already}-{fail_readback}-{framing:?}",
+        "fss-unifi-setup-{}-{cancel_reply}-{already}-{fail_readback}-{framing:?}-{observe}-{changed}",
         std::process::id()
     ));
     std::fs::create_dir(&path)?;
@@ -1123,7 +1144,15 @@ fn run_discovered_setup(
                     let listener = TcpListener::bind("127.0.0.1:0").await?;
                     let address = listener.local_addr()?;
                     let peer = std::thread::spawn(move || {
-                        http_fixture(address, cancel_reply, already, fail_readback, framing)
+                        http_fixture(
+                            address,
+                            cancel_reply,
+                            already,
+                            fail_readback,
+                            framing,
+                            observe,
+                            changed,
+                        )
                     });
                     let (socket, _) =
                         timeout(cx.now(), Duration::from_secs(5), listener.accept()).await??;
@@ -1174,6 +1203,12 @@ fn run_discovered_setup(
                         owner.run(&mut http, &config!(&report)).await,
                         Err(setup::Error::Denied)
                     ));
+                    if observe {
+                        assert!(matches!(
+                            owner.observe(&mut http, &config!(&report)).await,
+                            Err(setup::Error::Denied)
+                        ));
+                    }
                     assert_eq!(http.phase(), Phase::Login);
                     admission.allowed.set(true);
                     report.stop = discovery::Stop::PacketLimit;
@@ -1181,8 +1216,30 @@ fn run_discovered_setup(
                         owner.run(&mut http, &config!(&report)).await,
                         Err(setup::Error::Claims)
                     ));
+                    if observe {
+                        assert!(matches!(
+                            owner.observe(&mut http, &config!(&report)).await,
+                            Err(setup::Error::Claims)
+                        ));
+                    }
                     assert_eq!(http.phase(), Phase::Login);
                     report.stop = discovery::Stop::WindowElapsed;
+                    if observe {
+                        let result = owner.observe(&mut http, &config!(&report)).await;
+                        if changed {
+                            assert!(matches!(result, Err(setup::Error::Changed)));
+                        } else {
+                            let observed = result?;
+                            let expected = if already { 40 } else { 10 };
+                            assert_eq!(
+                                observed.settings.controller,
+                                ControllerAddress::Reported(Ipv4Addr::new(192, 168, 1, expected))
+                            );
+                        }
+                        drop(http);
+                        peer.join().map_err(|_| "HTTP fixture panic")??;
+                        return Ok(());
+                    }
                     let outcome = owner
                         .run_with_framing(&mut http, &config!(&report), framing)
                         .await?;
@@ -1246,7 +1303,7 @@ fn run_discovered_setup(
                     Ok(())
                 }
                 .await;
-                let outcome = if output.is_ok() && already {
+                let outcome = if output.is_ok() && (already || observe) {
                     TaskOutcome::Success
                 } else if output.is_ok() {
                     TaskOutcome::Indeterminate("effect requires reconciliation".into())
@@ -1265,7 +1322,7 @@ fn run_discovered_setup(
         run.output
     })?;
     let journal_entry = effects.journal().operation(&operation);
-    if already {
+    if already || observe {
         assert!(journal_entry.is_none());
     } else {
         assert_eq!(
@@ -1278,23 +1335,34 @@ fn run_discovered_setup(
 
 #[test]
 fn discovered_candidate_runs_owned_setup_through_journal_and_readback() -> Test {
-    run_discovered_setup(false, false, false, Framing::ContentLength)
+    run_discovered_setup(false, false, false, Framing::ContentLength, false, false)
 }
 #[test]
 fn discovered_setup_uses_authorized_chunked_handoff() -> Test {
-    run_discovered_setup(false, false, false, Framing::Chunked)
+    run_discovered_setup(false, false, false, Framing::Chunked, false, false)
 }
 #[test]
 fn discovered_setup_reply_timeout_preserves_committed_obligation() -> Test {
-    run_discovered_setup(true, false, false, Framing::ContentLength)
+    run_discovered_setup(true, false, false, Framing::ContentLength, false, false)
 }
 
 #[test]
 fn discovered_setup_already_associated_does_not_prepare_an_effect() -> Test {
-    run_discovered_setup(false, true, false, Framing::ContentLength)
+    run_discovered_setup(false, true, false, Framing::ContentLength, false, false)
 }
 
 #[test]
 fn discovered_setup_retains_response_if_readback_is_interrupted() -> Test {
-    run_discovered_setup(false, false, true, Framing::ContentLength)
+    run_discovered_setup(false, false, true, Framing::ContentLength, false, false)
+}
+
+#[test]
+fn discovered_camera_observation_never_writes_for_either_controller() -> Test {
+    run_discovered_setup(false, false, false, Framing::ContentLength, true, false)?;
+    run_discovered_setup(false, true, false, Framing::ContentLength, true, false)
+}
+
+#[test]
+fn discovered_camera_observation_refuses_changing_settings_without_effect() -> Test {
+    run_discovered_setup(false, false, false, Framing::ContentLength, true, true)
 }
