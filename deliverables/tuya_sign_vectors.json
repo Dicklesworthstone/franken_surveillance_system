@@ -1,0 +1,33 @@
+{
+ "schema": "fss.tuya_sign_vectors.v1",
+ "source": "com.glazero.android 5.10.12 on Android emulator API34 arm64; Frida hooks: ThingApiSignManager.generateSignatureSdk (map+sign) and SecureNativeApi.doCommandNative (native canon + result)",
+ "golden": [
+  {
+   "name": "captured-canonical-2026-10-27",
+   "canonical": "a=smartlife.m.user.username.token.get||appVersion=5.10.12||chKey=19d68b18||clientId=7hvgpakg784c3pj5qe3e||deviceId=8534c8ec0ed0c0ca08ca9bf210a0e7e9e16da223892b||et=3||lang=en_US||os=Android||postData=054a54fe671c8b1a5681eb5448d15d02||requestId=82a44695-b52c-4362-8ff8-546b494f5123||time=1793079105||ttid=android||v=2.0",
+   "expected_sign": "5c5acd8b688ff45c92eae2b0e8f69806769128a81089ad5f4045c998312f7792",
+   "harness_verified": true
+  }
+ ],
+ "negative": [
+  {
+   "name": "illegal-client-id",
+   "when": "Tuya gateway returns ILLEGAL_CLIENT_ID for the app_id registration",
+   "meaning": "the registration is BURNED (repeated sign-ins from one IP invalidate it) \u2014 remediation is a FRESH Tuya IoT platform app_id/secret, NOT a signing fix",
+   "observed": "2026-11-05 on a1-us.iotbing.com for app_id 7hvg\u2026",
+   "remediation_doc": "see fss-fkkpw notes + this file"
+  }
+ ],
+ "app_identity": {
+  "appId": "7hvgpakg784c3pj5qe3e",
+  "ttid": "android",
+  "channel": "sdk",
+  "et": "3",
+  "v": "2.0",
+  "appVersion": "5.10.12"
+ },
+ "harness": {
+  "dockerfile": "tools/thing-sign/Dockerfile.jvm",
+  "lib": "libthing_security.so"
+ }
+}
