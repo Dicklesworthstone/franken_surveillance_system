@@ -277,7 +277,7 @@ for port in 443 8443; do
     # python + ssl cert load takes 2-4 s; a single 1 s check raced the bind and
     # free_port then killed the freshly-spawned forge every attempt (measured
     # 2026-11-05 once the fast netstat helper removed the old 22 s lsof delay).
-    for _ in 1 2 3 4 5 6; do
+    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
       sleep 1
       forge_ok "$port" && break
     done
