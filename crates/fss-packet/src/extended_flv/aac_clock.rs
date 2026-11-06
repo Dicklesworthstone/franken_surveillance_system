@@ -91,6 +91,33 @@ impl Clock {
         })
     }
 
+    /// Extend this owner's sample allowance without resetting its source
+    /// timeline, decode origin, timestamp-wrap history, or drift check.
+    /// Each explicit renewal adds at most 16 million samples. The caller must
+    /// account for the additional work and retain the same authorized source
+    /// and configuration epoch. A refused renewal leaves the clock unchanged.
+    pub fn extend_limit(&mut self, additional_samples: u64) -> Result<(), Error> {
+        if additional_samples == 0 || additional_samples > MAX_SAMPLES {
+            return Err(Error::Configuration);
+        }
+        let maximum = self
+            .max_samples
+            .checked_add(additional_samples)
+            .ok_or(Error::Limit)?;
+        maximum
+            .checked_mul(u64::from(self.frame_samples))
+            .and_then(|ticks| self.start_ticks.checked_add(ticks))
+            .ok_or(Error::Limit)?;
+        self.max_samples = maximum;
+        Ok(())
+    }
+
+    /// Number of further frame observations currently authorized by this
+    /// clock's caller-supplied limit.
+    pub fn remaining(&self) -> u64 {
+        self.max_samples - self.count
+    }
+
     /// Reconcile one complete caller-ordered raw tag. A successful result is a
     /// bounded timing hypothesis, not proof that no unobserved samples exist.
     pub fn observe(&mut self, timestamp_ms: u32) -> Result<SampleTime, Error> {

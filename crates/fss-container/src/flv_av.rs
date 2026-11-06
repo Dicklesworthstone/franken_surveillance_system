@@ -37,6 +37,15 @@ impl Initialization {
     pub fn bytes(&self) -> &[u8] {
         self.inner.bytes()
     }
+    /// Caller-supplied connection and generation associated with this initialization.
+    /// This is an identity claim, not authentication of the device.
+    pub fn source_key(&self) -> flv_avc::SourceKey {
+        self.key
+    }
+    /// Original connection-relative video parameter-set ranges.
+    pub fn video_configuration_sources(&self) -> [Range<u64>; 2] {
+        self.video_configuration_sources.clone()
+    }
     /// Exact source SPS bytes in the initialization.
     pub fn sps_range(&self) -> Range<usize> {
         self.inner.sps_range()
@@ -401,6 +410,174 @@ pub fn fragment<'a>(
 fn read_u32(bytes: &[u8], at: usize) -> Result<u32, Mp4Error> {
     let end = at.checked_add(4).ok_or(Mp4Error::Layout)?;
     Ok(u32::from_be_bytes(
+        bytes
+            .get(at..end)
+            .ok_or(Mp4Error::Layout)?
+            .try_into()
+            .map_err(|_| Mp4Error::Layout)?,
+    ))
+}
+
+/// Reconstruct this writer's A/V initialization from a verified video clip
+/// and supplied AAC configuration, then compare every encoded byte. This is a
+/// deterministic writer-profile check, not independent codec, clock, identity,
+/// or source-provenance verification.
+pub fn verify_archived_initialization(
+    video_clip: &[u8],
+    av_initialization: &[u8],
+    audio: &Configuration<'_>,
+    limits: Mp4Limits,
+) -> Result<(), Mp4Error> {
+    use crate::demux::{AvcMp4, DemuxLimits, VideoCodec};
+    use fss_packet::avc::{AvcSyntaxLimits, parse_pps, parse_sps};
+
+    limits.validate()?;
+    if av_initialization.len() > limits.max_initialization_bytes {
+        return Err(Mp4Error::Limit);
+    }
+    let movie =
+        AvcMp4::parse(video_clip, None, DemuxLimits::default()).map_err(|_| Mp4Error::Layout)?;
+    if movie.codec() != VideoCodec::Avc
+        || movie.timescale() != 1000
+        || movie.parameter_sets().len() != 2
+    {
+        return Err(Mp4Error::ParameterSet);
+    }
+    let sps_bytes = video_clip
+        .get(movie.parameter_sets()[0].clone())
+        .ok_or(Mp4Error::Layout)?;
+    let pps_bytes = video_clip
+        .get(movie.parameter_sets()[1].clone())
+        .ok_or(Mp4Error::Layout)?;
+    let sps =
+        parse_sps(sps_bytes, AvcSyntaxLimits::default()).map_err(|_| Mp4Error::ParameterSet)?;
+    let pps = parse_pps(pps_bytes, &sps, AvcSyntaxLimits::default())
+        .map_err(|_| Mp4Error::ParameterSet)?;
+    let (expected, _) =
+        crate::init::build_av(&sps, &pps, 1000, limits.max_initialization_bytes, audio)?;
+    if expected.bytes() != av_initialization {
+        return Err(Mp4Error::Layout);
+    }
+    Ok(())
+}
+
+/// Verify this writer's fragment layout and AAC sample table against a video
+/// fragment and caller-supplied source mappings. It does not establish source
+/// custody, audio decoding, physical time, or independent A/V synchronization.
+pub fn verify_archived_fragment(
+    video: &[u8],
+    av: &[u8],
+    audio: &[AudioMapping],
+    limits: Mp4Limits,
+) -> Result<(), Mp4Error> {
+    limits.validate()?;
+    if audio.is_empty()
+        || audio.len() > limits.max_samples
+        || video.len() > limits.max_fragment_bytes
+        || av.len() > limits.max_fragment_bytes
+    {
+        return Err(Mp4Error::Limit);
+    }
+    let old_moof = read_u32(video, 0)? as usize;
+    let extra = audio
+        .len()
+        .checked_mul(8)
+        .and_then(|v| v.checked_add(64))
+        .ok_or(Mp4Error::Limit)?;
+    let new_moof = old_moof.checked_add(extra).ok_or(Mp4Error::Limit)?;
+    let old_video = old_moof.checked_add(8).ok_or(Mp4Error::Limit)?;
+    let new_video = new_moof.checked_add(8).ok_or(Mp4Error::Limit)?;
+    let payload = video.get(old_video..).ok_or(Mp4Error::Layout)?;
+    let audio_start = new_video
+        .checked_add(payload.len())
+        .ok_or(Mp4Error::Limit)?;
+    if old_moof < 88
+        || video.get(4..8) != Some(b"moof")
+        || video.get(72..76) != Some(b"trun")
+        || read_u32(video, 84)? as usize != old_video
+        || video.get(old_moof.checked_add(4).ok_or(Mp4Error::Limit)?..old_video) != Some(b"mdat")
+        || read_u32(video, old_moof)? as usize
+            != video.len().checked_sub(old_moof).ok_or(Mp4Error::Layout)?
+        || read_u32(av, 0)? as usize != new_moof
+        || av.get(4..8) != Some(b"moof")
+        || av.get(8..84) != video.get(8..84)
+        || av.get(88..old_moof) != video.get(88..old_moof)
+        || read_u32(av, 84)? as usize != new_video
+        || av.get(new_moof.checked_add(4).ok_or(Mp4Error::Limit)?..new_video) != Some(b"mdat")
+        || read_u32(av, new_moof)? as usize
+            != av.len().checked_sub(new_moof).ok_or(Mp4Error::Layout)?
+        || av.get(new_video..audio_start) != Some(payload)
+    {
+        return Err(Mp4Error::Layout);
+    }
+    let tfhd = old_moof.checked_add(8).ok_or(Mp4Error::Limit)?;
+    let tfdt = tfhd.checked_add(16).ok_or(Mp4Error::Limit)?;
+    let trun = tfdt.checked_add(20).ok_or(Mp4Error::Limit)?;
+    let entries = trun.checked_add(20).ok_or(Mp4Error::Limit)?;
+    let trun_size = audio
+        .len()
+        .checked_mul(8)
+        .and_then(|v| v.checked_add(20))
+        .ok_or(Mp4Error::Limit)?;
+    if read_u32(av, old_moof)? as usize != extra
+        || av.get(old_moof + 4..tfhd) != Some(b"traf")
+        || read_u32(av, tfhd)? != 16
+        || av.get(tfhd + 4..tfhd + 8) != Some(b"tfhd")
+        || read_u32(av, tfhd + 8)? != 0x0002_0000
+        || read_u32(av, tfhd + 12)? != 2
+        || read_u32(av, tfdt)? != 20
+        || av.get(tfdt + 4..tfdt + 8) != Some(b"tfdt")
+        || read_u32(av, tfdt + 8)? != 0x0100_0000
+        || read_u64(av, tfdt + 12)? != audio[0].decode_ticks
+        || read_u32(av, trun)? as usize != trun_size
+        || av.get(trun + 4..trun + 8) != Some(b"trun")
+        || read_u32(av, trun + 8)? != 0x0000_0301
+        || read_u32(av, trun + 12)? as usize != audio.len()
+        || read_u32(av, trun + 16)? as usize != audio_start
+        || entries.checked_add(audio.len() * 8) != Some(new_moof)
+    {
+        return Err(Mp4Error::Layout);
+    }
+    let mut cursor = audio_start;
+    let mut next_tick = audio[0].decode_ticks;
+    let mut previous_source_end = None;
+    for (index, mapping) in audio.iter().enumerate() {
+        let at = entries
+            .checked_add(index.checked_mul(8).ok_or(Mp4Error::Limit)?)
+            .ok_or(Mp4Error::Limit)?;
+        let size = mapping
+            .target
+            .end
+            .checked_sub(mapping.target.start)
+            .ok_or(Mp4Error::Layout)?;
+        if size == 0
+            || mapping.target.start != cursor
+            || mapping.target.end > av.len()
+            || mapping.source.start >= mapping.source.end
+            || mapping.source.end - mapping.source.start != size as u64
+            || previous_source_end.is_some_and(|end| mapping.source.start < end)
+            || mapping.duration_ticks == 0
+            || mapping.decode_ticks != next_tick
+            || read_u32(av, at)? != u32::from(mapping.duration_ticks)
+            || read_u32(av, at + 4)? as usize != size
+        {
+            return Err(Mp4Error::Layout);
+        }
+        cursor = mapping.target.end;
+        next_tick = next_tick
+            .checked_add(u64::from(mapping.duration_ticks))
+            .ok_or(Mp4Error::Timeline)?;
+        previous_source_end = Some(mapping.source.end);
+    }
+    if cursor != av.len() {
+        return Err(Mp4Error::Layout);
+    }
+    Ok(())
+}
+
+fn read_u64(bytes: &[u8], at: usize) -> Result<u64, Mp4Error> {
+    let end = at.checked_add(8).ok_or(Mp4Error::Layout)?;
+    Ok(u64::from_be_bytes(
         bytes
             .get(at..end)
             .ok_or(Mp4Error::Layout)?

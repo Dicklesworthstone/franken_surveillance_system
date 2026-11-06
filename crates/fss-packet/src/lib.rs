@@ -10,6 +10,8 @@
 pub mod access_unit;
 pub mod avc;
 pub mod cadence;
+/// Restricted, bounded local D-Bus handshake framing for future BlueZ access.
+pub mod dbus_handshake;
 /// Bounded, source-preserving parsing of the experimental UniFi extended-FLV wire format.
 pub mod extended_flv;
 /// Bounded H.265 access-unit/VPS/SPS/PPS parser (FSS-114).
@@ -21,6 +23,8 @@ pub mod jpeg;
 pub mod ntp;
 /// Bounded uncompressed ONVIF metadata documents over owner-scoped RTP.
 pub mod onvif_metadata;
+/// Bounded reassembly of the experimental UniFi BLE packet stream.
+pub mod unifi_ble;
 /// Bounded, untrusted Ubiquiti discovery datagram parsing.
 pub mod unifi_discovery;
 

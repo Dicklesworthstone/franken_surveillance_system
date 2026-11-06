@@ -72,3 +72,36 @@ fn rejects_unbounded_or_ambiguous_clock_policies() -> Test {
     ));
     Ok(())
 }
+
+#[test]
+fn explicit_renewal_preserves_clock_history_and_checks_overflow() -> Test {
+    let config = Configuration::parse_explicit(&[0x14, 0x08])?;
+    let mut clock = Clock::new(&config, 7_000, 0, 2)?;
+    assert_eq!(clock.observe(u32::MAX - 31)?.decode_ticks, 7_000);
+    assert_eq!(clock.observe(32)?.decode_ticks, 8_024);
+    assert_eq!(clock.remaining(), 0);
+    assert_eq!(clock.observe(96), Err(Error::Limit));
+    assert_eq!(clock.extend_limit(0), Err(Error::Configuration));
+    assert_eq!(clock.extend_limit(16_000_001), Err(Error::Configuration));
+    assert_eq!(clock.remaining(), 0);
+    clock.extend_limit(1)?;
+    assert_eq!(clock.observe(95), Err(Error::Timeline));
+    let third = clock.observe(96)?;
+    assert_eq!((third.decode_ticks, third.elapsed_ms), (9_048, 128));
+    assert_eq!(clock.remaining(), 0);
+
+    // Thirty days at 16 kHz and 1,024 samples per AAC frame requires
+    // 40.5 million frames. Renewal increases the budget without iterating
+    // through or pretending to have observed those frames.
+    let mut long = Clock::new(&config, 0, 0, 16_000_000)?;
+    long.extend_limit(16_000_000)?;
+    long.extend_limit(16_000_000)?;
+    assert_eq!(long.remaining(), 48_000_000);
+    assert!(long.remaining() > 40_500_000);
+
+    let mut near_end = Clock::new(&config, u64::MAX - 1_024, 0, 1)?;
+    assert_eq!(near_end.extend_limit(1), Err(Error::Limit));
+    assert_eq!(near_end.remaining(), 1);
+    assert_eq!(near_end.observe(1)?.decode_ticks, u64::MAX - 1_024);
+    Ok(())
+}
