@@ -276,6 +276,70 @@ fn av_owner_preserves_segment_source_and_rolls_back_failed_clock_attempts() -> T
 }
 
 #[test]
+fn av_owner_retains_in_band_audio_configuration_binding() -> TestResult {
+    use fss_container::Mp4Limits;
+    use fss_core::ContentDigest;
+    use fss_packet::extended_flv::{aac, aac_track};
+    use fss_reference::unifi_direct::av_recording;
+
+    let (mut wire, original) = fixture(0, false, false)?;
+    let insertion = usize::try_from(original[1].offset())? + original[1].bytes().len();
+    let mut audio_configuration = vec![0x77; 3];
+    audio_configuration.extend(tag(8, 0, &[0xaf, 0, 0x14, 0x08]));
+    wire.splice(insertion..insertion, audio_configuration);
+    let mut framer = Framer::new(FlvLimits::default(), 1024 * 1024)?;
+    framer.append(0, &wire)?;
+    let mut track = aac_track::Track::new(FlvLimits::default(), aac::Limits::default());
+    let mut recorder = Recorder::new(KEY, Limits::default())?;
+    let mut captured = None;
+    while let Next::Record(record) = framer.take()? {
+        let observation = track.observe(&record)?;
+        if let Push::Source { record, .. } = recorder.push(record).map_err(|r| r.reason)?
+            && matches!(&observation, aac_track::Observation::Configuration { .. })
+        {
+            captured = Some((observation, record));
+            break;
+        }
+    }
+    let (observation, record) = captured.ok_or("missing audio configuration")?;
+    let binding =
+        observation.bind_configuration(&record, FlvLimits::default(), aac::Limits::default())?;
+    let initialization = recorder
+        .av_initialization(binding.configuration())?
+        .ok_or("missing A/V initialization")?;
+    let owner = av_recording::Muxer::from_source(
+        &initialization,
+        &binding,
+        0,
+        0,
+        8,
+        8,
+        Mp4Limits::default(),
+    )?;
+    let source = owner.source_binding().ok_or("missing source binding")?;
+    assert_eq!(source.epoch, 1);
+    assert_eq!(source.record_offset, record.offset());
+    assert_eq!(source.record_bytes, record.bytes().len());
+    assert_eq!(source.record_digest, ContentDigest::sha256(record.bytes()));
+    assert_eq!(source.configuration_source, binding.source());
+    assert_eq!(
+        &wire[source.configuration_source.start as usize..source.configuration_source.end as usize],
+        binding.configuration().bytes()
+    );
+    let explicit = av_recording::Muxer::new(
+        &initialization,
+        binding.configuration(),
+        0,
+        0,
+        8,
+        8,
+        Mp4Limits::default(),
+    )?;
+    assert!(explicit.source_binding().is_none());
+    Ok(())
+}
+
+#[test]
 fn idr_segments_preserve_every_record_across_rollover_and_decode() -> TestResult {
     let (wire, records) = fixture(u32::MAX - 50, false, false)?;
     let mut recorder = Recorder::new(KEY, Limits::default())?;

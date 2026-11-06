@@ -6,10 +6,11 @@
 //! publish a recording, or prove that compressed samples decode. The caller
 //! must establish those facts or record them as unverified.
 
-use std::fmt;
+use std::{fmt, ops::Range};
 
 use fss_container::{Mp4Error, Mp4Limits, flv_av};
-use fss_packet::extended_flv::{self, aac, aac_adts, aac_clock};
+use fss_core::ContentDigest;
+use fss_packet::extended_flv::{self, aac, aac_adts, aac_clock, aac_track};
 
 use super::recording::Segment;
 
@@ -38,6 +39,22 @@ impl fmt::Display for Error {
 }
 impl std::error::Error for Error {}
 
+/// A source-record claim for the AAC configuration used by this owner.
+/// It does not authenticate the sender or independently prove the epoch.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AudioSourceBinding {
+    /// Track-local epoch claimed by the observation.
+    pub epoch: u64,
+    /// Connection-relative offset of the original configuration record.
+    pub record_offset: u64,
+    /// Length of that original record, including its trailer.
+    pub record_bytes: usize,
+    /// Digest of the exact original record; custody remains caller-owned.
+    pub record_digest: ContentDigest,
+    /// Connection-relative byte range of the AudioSpecificConfig.
+    pub configuration_source: Range<u64>,
+}
+
 /// One caller-bound A/V initialization, source epoch and AAC clock hypothesis.
 ///
 /// The supplied origin is expressed in AAC sample-rate ticks. It is a caller
@@ -48,6 +65,7 @@ pub struct Muxer {
     session: flv_av::Session,
     limits: Mp4Limits,
     max_audio_frames: usize,
+    source_binding: Option<AudioSourceBinding>,
 }
 impl Muxer {
     /// Bind the exact A/V initialization and an explicit AAC clock origin.
@@ -83,7 +101,50 @@ impl Muxer {
             session: flv_av::Session::new(initialization).map_err(Error::Mux)?,
             limits,
             max_audio_frames,
+            source_binding: None,
         })
+    }
+
+    /// Bind an observed in-band AAC configuration to its exact source record.
+    /// Provisional source boundaries are refused. The caller must still bind
+    /// the observation's track and the video initialization to one connection
+    /// and epoch, retain the original record and establish clock alignment.
+    pub fn from_source(
+        initialization: &flv_av::Initialization,
+        bound: &aac_track::BoundConfiguration<'_>,
+        origin_ticks: u64,
+        jitter_ms: u32,
+        max_epoch_frames: u64,
+        max_audio_frames: usize,
+        limits: Mp4Limits,
+    ) -> Result<Self, Error> {
+        if bound.provisional() {
+            return Err(Error::Configuration);
+        }
+        let mut owner = Self::new(
+            initialization,
+            bound.configuration(),
+            origin_ticks,
+            jitter_ms,
+            max_epoch_frames,
+            max_audio_frames,
+            limits,
+        )?;
+        let record = bound.record();
+        owner.source_binding = Some(AudioSourceBinding {
+            epoch: bound.epoch(),
+            record_offset: record.offset(),
+            record_bytes: record.bytes().len(),
+            record_digest: ContentDigest::sha256(record.bytes()),
+            configuration_source: bound.source(),
+        });
+        Ok(owner)
+    }
+
+    /// Source binding for an in-band configuration, if one was supplied.
+    /// `None` means the configuration was explicitly supplied without one.
+    pub fn source_binding(&self) -> Option<&AudioSourceBinding> {
+        self.source_binding.as_ref()
     }
 
     /// Derive one fragment while borrowing all original records from `segment`.
