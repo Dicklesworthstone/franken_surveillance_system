@@ -233,7 +233,13 @@ for port in 443 8443 8883 8080 9101; do
   # 8883 is served by an exec'd wyze_mqtt_mitm from a PRIOR generation: free_port only waits,
   # so a stale proxy here makes this generation's proxy die at bind (measured: 3700+ restart
   # loop) and KeepAlive restarts the whole plane stack forever.
-  if [ "$port" = 8883 ]; then sudo pkill -f 'wyze_mqtt_mitm.py' 2>/dev/null; fi
+  if [ "$port" = 8883 ]; then
+    # ADOPT the running proxy instead of killing it — the running proxy has the latest
+    # code and the camera's MQTT session. Killing it drops the session and the camera's
+    # MQTT backoff restarts (measured 2026-11-05: the camera went silent for 2+ hours).
+    pids=$(port_pids 8883)
+    [ -n "$pids" ] && { echo "adopting running proxy (pids:$pids)"; continue; }
+  fi
   free_port "$port" || echo "WARN: port $port still held after 5 s"
 done
 sudo pkill -f 'wyze_dns_redirect.py' 2>/dev/null
