@@ -1478,12 +1478,16 @@ but archive reading rejected IDs above 2. The encoder and reader now share a
 stable policy-ID conversion, preserving IDs 0–3 and rejecting unknown values.
 Scoped packet job `30098049032257657` passed all eight framing tests, including
 the compatibility test, with acknowledged exit and source release; its
-framer and test source hashes matched the working tree. An archive-record
-regression test has been added but has not run. It checks metadata decoding,
-not an end-to-end A/V archive or durable publication. Full-workspace targeted
-job `30098049032257691` was observed compiling on `vmi1264463`; its archive,
-evidence and framer source hashes matched the working tree at admission. Its
-terminal result and source release must be checked before retrying it.
+framer and test source hashes matched the working tree. Full-workspace targeted
+job `30098049032257691` passed the archive-record metadata regression, with
+2,313 other tests filtered out. Full-workspace job `30098049032257696` then
+passed both synthetic ledger publication/readback cases, including a segment
+with the G4-style policy, with eight other integration tests filtered out.
+Both jobs had acknowledged exit and source release; the archive, evidence,
+framer and integration-test source hashes matched the working tree. These
+video-only fixtures check source-linked publication, readback and refusal of
+unauthorized or corrupted data; they do not establish an A/V archive or actual
+camera recording retention. The builds reported unrelated warnings.
 
 Replay build `30097323753209913` succeeded with acknowledged terminal status
 and source release; the framer and replay source hashes matched the working
