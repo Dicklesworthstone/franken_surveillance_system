@@ -379,6 +379,18 @@ pub struct TimeSyncCounts {
     pub correlated_response_expected: u32,
 }
 
+/// Explicit policy for ambiguous correlated camera time-sync messages.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum TimeSyncPolicy {
+    /// Ignore every correlated message, preserving the conservative default.
+    #[default]
+    UncorrelatedOnly,
+    /// Also treat a correlated message as a request when it explicitly says
+    /// `responseExpected: true`. This untrusted flag does not prove intent;
+    /// the owner must retain its existing effect, rate and message limits.
+    ExplicitCorrelatedRequests,
+}
+
 /// One owner-driven session. No socket, clock, task, or peer identity is held.
 pub struct Controller {
     identity: Identity,
@@ -391,12 +403,14 @@ pub struct Controller {
     prepared: Option<PreparedMessage>,
     rejected_message: Option<RejectedMessage>,
     time_sync_counts: TimeSyncCounts,
+    time_sync_policy: TimeSyncPolicy,
 }
 
 impl fmt::Debug for Controller {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Controller")
             .field("phase", &self.phase)
+            .field("time_sync_policy", &self.time_sync_policy)
             .field("has_time_sync", &self.time_sync.is_some())
             .field("prepared", &self.prepared)
             .finish_non_exhaustive()
@@ -406,6 +420,16 @@ impl fmt::Debug for Controller {
 impl Controller {
     /// Start an isolated session with an explicitly supplied first controller ID.
     pub fn new(identity: Identity, first_message_id: u64) -> Result<Self, Error> {
+        Self::new_with_time_sync_policy(identity, first_message_id, TimeSyncPolicy::default())
+    }
+
+    /// Start with an explicit time-sync policy for this one controller session.
+    /// Selecting a policy grants no network, clock, or management authority.
+    pub fn new_with_time_sync_policy(
+        identity: Identity,
+        first_message_id: u64,
+        time_sync_policy: TimeSyncPolicy,
+    ) -> Result<Self, Error> {
         if !(1..=MAX_MESSAGE_ID).contains(&first_message_id) {
             return Err(Error::InvalidConfiguration);
         }
@@ -420,6 +444,7 @@ impl Controller {
             prepared: None,
             rejected_message: None,
             time_sync_counts: TimeSyncCounts::default(),
+            time_sync_policy,
         })
     }
 
@@ -497,9 +522,9 @@ impl Controller {
                 Ok(Observation::Hello)
             }
             "ubnt_avclient_timeSync" => {
-                // Conservatively do not answer a correlated time-sync: blindly
-                // echoing it can create a response loop. The remote flag is an
-                // untrusted claim and does not resolve the protocol ambiguity.
+                // Blindly echoing correlated replies can create a response loop.
+                // The optional policy admits only the remote's explicit request
+                // claim; existing one-slot and owner-wide limits still apply.
                 if response_to != 0 {
                     self.time_sync_counts.correlated =
                         self.time_sync_counts.correlated.saturating_add(1);
@@ -509,10 +534,15 @@ impl Controller {
                             .correlated_response_expected
                             .saturating_add(1);
                     }
-                    return Ok(Observation::Other);
+                    if !response_expected
+                        || self.time_sync_policy != TimeSyncPolicy::ExplicitCorrelatedRequests
+                    {
+                        return Ok(Observation::Other);
+                    }
+                } else {
+                    self.time_sync_counts.uncorrelated =
+                        self.time_sync_counts.uncorrelated.saturating_add(1);
                 }
-                self.time_sync_counts.uncorrelated =
-                    self.time_sync_counts.uncorrelated.saturating_add(1);
                 if self.time_sync.is_some() {
                     return Err(Error::TimeSyncLimit);
                 }

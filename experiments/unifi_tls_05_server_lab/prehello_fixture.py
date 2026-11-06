@@ -19,10 +19,11 @@ HEAD = (b"GET / HTTP/1.1\r\nHost: camera.local\r\nUpgrade: websocket\r\n"
 
 def frame(obj):
     data = json.dumps(obj, separators=(",", ":")).encode()
-    if len(data) >= 126:
+    if len(data) > 4096:
         raise ValueError("fixture message too long")
     mask = b"\x01\x02\x03\x04"
-    return bytes((0x82, 0x80 | len(data))) + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(data))
+    length = bytes((0x80 | len(data),)) if len(data) < 126 else b"\xfe" + len(data).to_bytes(2, "big")
+    return b"\x82" + length + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(data))
 
 
 def message(name, message_id, response_to=None, payload=None):
@@ -56,16 +57,16 @@ def received(sock):
     return json.loads(exact(sock, length))
 
 
-def run_case(binary, cert_der, key_der, directory, coalesced):
+def run_case(binary, cert_der, key_der, directory, coalesced, explicit_correlated=False):
     reserve = socket.socket()
     reserve.bind(("127.0.0.1", 0))
     port = reserve.getsockname()[1]
     reserve.close()
-    root = Path(directory) / ("coalesced" if coalesced else "sequential")
+    root = Path(directory) / (("coalesced" if coalesced else "sequential") + ("-correlated" if explicit_correlated else "-ordinary"))
     root.mkdir(mode=0o700)
     cmd = [binary, f"127.0.0.1:{port}", "127.0.0.1", "001122aabbcc", cert_der, key_der,
            str(root / "journal"), str(root / "clip.mp4"), "12345678-1234-4abc-9abc-123456789abc",
-           "60", "--owner-authorized"]
+           "60"] + (["--allow-correlated-timesync"] if explicit_correlated else []) + ["--owner-authorized"]
     child = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     try:
         deadline = time.monotonic() + 15
@@ -82,7 +83,10 @@ def run_case(binary, cert_der, key_der, directory, coalesced):
         ctx.verify_mode = ssl.CERT_NONE  # Disposable loopback certificate only.
         with ctx.wrap_socket(raw, server_hostname="localhost") as sock:
             sock.settimeout(40)
-            sync = frame(message("ubnt_avclient_timeSync", 10))
+            sync_message = message("ubnt_avclient_timeSync", 10, 99 if explicit_correlated else None)
+            if explicit_correlated:
+                sync_message["responseExpected"] = True
+            sync = frame(sync_message)
             hello = frame(message("ubnt_avclient_hello", 7, payload={}))
             started = time.monotonic()
             sock.sendall(HEAD + (sync + hello if coalesced else b""))
@@ -107,6 +111,9 @@ def run_case(binary, cert_der, key_der, directory, coalesced):
                     or payload["t1"] != payload["t2"]
                     or abs(payload["t1"] - int(time.time() * 1000)) > 60_000):
                 raise ValueError("time-sync reply envelope or wall time invalid")
+            if explicit_correlated:
+                # A correlated response without an explicit request must not produce a reply loop.
+                sock.sendall(frame(message("ubnt_avclient_timeSync", 11, first["messageId"])))
             if not coalesced:
                 sock.sendall(hello)
             second = received(sock)
@@ -120,7 +127,7 @@ def run_case(binary, cert_der, key_der, directory, coalesced):
             stream = received(sock)
             if stream.get("functionName") != "ChangeVideoSettings":
                 raise ValueError("stream request missing")
-            print(f"case={'coalesced' if coalesced else 'sequential'} sync=correlated hello=correlated agreement=observed stream_request=observed sync_ms={sync_ms} hello_ms={hello_ms}", flush=True)
+            print(f"case={'coalesced' if coalesced else 'sequential'} policy={'explicit_correlated' if explicit_correlated else 'default'} sync=correlated hello=correlated agreement=observed stream_request=observed sync_ms={sync_ms} hello_ms={hello_ms}", flush=True)
     finally:
         if child.poll() is None:
             child.terminate()
@@ -146,6 +153,8 @@ def main():
         os.chmod(key_der, 0o600)
         run_case(sys.argv[1], str(cert_der), str(key_der), directory, True)
         run_case(sys.argv[1], str(cert_der), str(key_der), directory, False)
+        run_case(sys.argv[1], str(cert_der), str(key_der), directory, True, True)
+        run_case(sys.argv[1], str(cert_der), str(key_der), directory, False, True)
 
 
 if __name__ == "__main__":

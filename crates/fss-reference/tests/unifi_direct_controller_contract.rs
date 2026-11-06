@@ -5,7 +5,7 @@ use fss_core::json_input::{self, Value};
 use fss_reference::unifi_direct::{
     AGREEMENT_DELAY_NS, AudioCodec, Controller, Dispatch, Error, Identity, MAX_MESSAGE_BYTES,
     MAX_MESSAGE_ID, MessageKind, Observation, Phase, RejectedMessage, StreamStart, TimeSyncCounts,
-    VideoChannel, VideoCodec,
+    TimeSyncPolicy, VideoChannel, VideoCodec,
 };
 use std::net::{Ipv4Addr, SocketAddrV4};
 
@@ -169,6 +169,41 @@ fn time_sync_counts_preserve_payload_free_correlation_observations() -> TestResu
             correlated_response_expected: 1
         }
     );
+    Ok(())
+}
+
+#[test]
+fn explicit_correlated_time_sync_policy_answers_only_an_explicit_request() -> TestResult {
+    let mut c = Controller::new_with_time_sync_policy(
+        Identity::new("FSS", "12345678-1234-4abc-9abc-123456789abc", "1.20.0")?,
+        1,
+        TimeSyncPolicy::ExplicitCorrelatedRequests,
+    )?;
+    let correlated_reply = message("ubnt_avclient_timeSync", 40, 99, "{}");
+    assert_eq!(c.observe(&correlated_reply)?, Observation::Other);
+    let request = br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"ubnt_avclient_timeSync","messageId":41,"inResponseTo":99,"responseExpected":true}"#;
+    assert_eq!(c.observe(request)?, Observation::TimeSyncRequested);
+    assert_eq!(c.observe(request), Err(Error::TimeSyncLimit));
+    let prepared = c.prepare_time_sync(123_456, TIME)?;
+    let value = fields(prepared.bytes())?;
+    let object = value.object().ok_or("response object")?;
+    assert_eq!(
+        object.get("inResponseTo").and_then(Value::integer),
+        Some(41)
+    );
+    assert_eq!(
+        object.get("responseExpected").and_then(Value::boolean),
+        Some(false)
+    );
+    c.finish_dispatch(1, Dispatch::Written)?;
+    assert_eq!(c.phase(), Phase::AwaitHello);
+    // A correlated response to our response cannot trigger another reply.
+    assert_eq!(
+        c.observe(&message("ubnt_avclient_timeSync", 42, 1, "{}"))?,
+        Observation::Other
+    );
+    assert_eq!(c.prepare_time_sync(123_456, TIME), Err(Error::InvalidState));
+    assert_eq!(c.time_sync_counts().correlated_response_expected, 2);
     Ok(())
 }
 

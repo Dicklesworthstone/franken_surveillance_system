@@ -43,6 +43,15 @@ fn fixture(
     preroll: bool,
     duplicate_idr: bool,
 ) -> Result<(Vec<u8>, Vec<SourceRecord>), Box<dyn std::error::Error>> {
+    fixture_with_variable_intervals(start, preroll, duplicate_idr, false)
+}
+
+fn fixture_with_variable_intervals(
+    start: u32,
+    preroll: bool,
+    duplicate_idr: bool,
+    variable: bool,
+) -> Result<(Vec<u8>, Vec<SourceRecord>), Box<dyn std::error::Error>> {
     let nals: Vec<_> = fss_codec_h264::annex_b_nal_units(BASELINE).collect();
     let sps = nals.iter().copied().find(|n| n[0] & 31 == 7).ok_or("SPS")?;
     let pps = nals.iter().copied().find(|n| n[0] & 31 == 8).ok_or("PPS")?;
@@ -63,7 +72,8 @@ fn fixture(
     wire.extend(tag(9, 0, &config));
     let count = if duplicate_idr { 2 } else { 7 };
     for i in 0..count {
-        let timestamp = start.wrapping_add(i as u32 * 40);
+        let offset = if variable { (i as u32 * 100) / 3 } else { i as u32 * 40 };
+        let timestamp = start.wrapping_add(offset);
         wire.extend([0x77; 3]);
         wire.extend(tag(8, timestamp, &[0xaf, 1, 2]));
         let nal = if duplicate_idr {
@@ -86,6 +96,48 @@ fn fixture(
         records.push(record);
     }
     Ok((wire, records))
+}
+
+#[test]
+fn direct_flv_recording_retains_variable_camera_shaped_intervals() -> TestResult {
+    // Independent synthetic NAL data with 33/34 ms intervals, motivated by
+    // the live G4 relay's observed 2,970/3,060 tick RTP spacings. This is not
+    // a retained physical camera stream or evidence of a direct handshake.
+    let (wire, records) = fixture_with_variable_intervals(u32::MAX - 50, false, false, true)?;
+    let mut recorder = Recorder::new(KEY, Limits::default())?;
+    let mut durations = Vec::new();
+    let mut original = Vec::new();
+    let mut initialization = None;
+    let mut segments = 0;
+    for record in records {
+        match recorder.push(record).map_err(|r| r.reason)? {
+            Push::Source { record, disposition } => {
+                if disposition == SourceDisposition::Configuration {
+                    initialization = Some(recorder.initialization().ok_or("init")?.bytes().to_vec());
+                }
+                original.extend_from_slice(record.bytes());
+            }
+            Push::Buffered => {}
+            Push::Segment(segment) => {
+                durations.extend(segment.fragment().samples().iter().map(|s| s.duration_ms));
+                for source in segment.source() { original.extend_from_slice(source.bytes()); }
+                let mut mp4 = initialization.as_ref().ok_or("init")?.clone();
+                mp4.extend_from_slice(segment.fragment().bytes());
+                let movie = AvcMp4::parse(&mp4, None, DemuxLimits::default())?;
+                let raw = movie.annex_b(0, 3)?;
+                let mut decoder = fss_codec_h264::Decoder::new(fss_codec_h264::DecoderLimits::default())?;
+                let mut frames = decoder.decode_annex_b(raw.bytes())?;
+                frames.extend(decoder.finish()?);
+                assert_eq!(frames.len(), 3);
+                segments += 1;
+            }
+        }
+    }
+    for source in recorder.retire().pending { original.extend_from_slice(source.bytes()); }
+    assert_eq!(segments, 2);
+    assert_eq!(durations, [33, 33, 34, 33, 33, 34]);
+    assert_eq!(original, wire);
+    Ok(())
 }
 
 #[test]

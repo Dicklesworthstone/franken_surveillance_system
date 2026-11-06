@@ -20,7 +20,7 @@ use fss_packet::extended_flv::{Limits as FlvLimits, stream::Framer};
 use fss_reference::{
     onvif::wire::UtcDateTime,
     unifi_direct::{
-        AudioCodec, Controller, Identity, VideoChannel, VideoCodec, controller_listener,
+        AudioCodec, Controller, Identity, TimeSyncPolicy, VideoChannel, VideoCodec, controller_listener,
         conversation, intent, listener, management,
         metered::{MeteredClock, MeteredIo},
         owner, pipeline, receive, recording, supervisor,
@@ -51,7 +51,7 @@ use std::{
 use unifi_tls_05_server_lab::server::Server;
 
 type ResultBox<T> = Result<T, Box<dyn Error>>;
-const USAGE: &str = "usage: unifi_direct_trial LISTEN_IPV4:PORT CAMERA_IPV4 CAMERA_MAC_HEX CERT_DER KEY_DER JOURNAL_DIR OUTPUT_MP4 CONTROLLER_UUID [WAIT_SECONDS] --owner-authorized";
+const USAGE: &str = "usage: unifi_direct_trial LISTEN_IPV4:PORT CAMERA_IPV4 CAMERA_MAC_HEX CERT_DER KEY_DER JOURNAL_DIR OUTPUT_MP4 CONTROLLER_UUID [WAIT_SECONDS] [--allow-correlated-timesync] --owner-authorized";
 const MAX_SOURCE: u64 = 32 * 1024 * 1024;
 const MAX_INITIAL_CONNECTIONS: usize = 8;
 const MAX_IO_WAIT: Duration = Duration::from_secs(30);
@@ -66,14 +66,20 @@ struct Options {
     output: PathBuf,
     uuid: String,
     wait: Duration,
+    time_sync_policy: TimeSyncPolicy,
 }
 fn options() -> ResultBox<Options> {
-    let args: Vec<_> = std::env::args().skip(1).collect();
-    if !(args.len() == 9 || args.len() == 10)
-        || args.last().is_none_or(|arg| arg != "--owner-authorized")
-    {
+    let mut args: Vec<_> = std::env::args().skip(1).collect();
+    if args.pop().as_deref() != Some("--owner-authorized") {
         return Err(USAGE.into());
     }
+    let time_sync_policy = if args.last().is_some_and(|arg| arg == "--allow-correlated-timesync") {
+        args.pop();
+        TimeSyncPolicy::ExplicitCorrelatedRequests
+    } else {
+        TimeSyncPolicy::UncorrelatedOnly
+    };
+    if !(args.len() == 8 || args.len() == 9) { return Err(USAGE.into()); }
     let listen: SocketAddrV4 = args[0].parse()?;
     let camera: Ipv4Addr = args[1].parse()?;
     if listen.port() == 0
@@ -102,7 +108,7 @@ fn options() -> ResultBox<Options> {
     if output.exists() || journal.exists() {
         return Err("output and journal paths must not exist".into());
     }
-    let wait_seconds = if args.len() == 10 {
+    let wait_seconds = if args.len() == 9 {
         args[8].parse::<u64>()?
     } else {
         30
@@ -120,6 +126,7 @@ fn options() -> ResultBox<Options> {
         output,
         uuid: args[7].clone(),
         wait: Duration::from_secs(wait_seconds),
+        time_sync_policy,
     })
 }
 fn bounded_read(path: &Path, private: bool) -> ResultBox<Vec<u8>> {
@@ -254,6 +261,7 @@ fn write_clip(path: &Path, bytes: &[u8]) -> ResultBox<()> {
     Ok(())
 }
 fn run(args: Options) -> ResultBox<()> {
+    println!("trial_time_sync_policy={:?}", args.time_sync_policy);
     let (start, _) = epoch()?;
     let deadline = TimestampNs(
         start
@@ -347,7 +355,7 @@ fn run(args: Options) -> ResultBox<()> {
                     };
                     println!("trial_stage=tls_handshake_completed");
                     let plaintext=MeteredIo::with_clock(gate.wrap(tls),clock,&resource,16*1024)?;
-                    let controller=Controller::new(Identity::new("FSS",&args.uuid,"1.20.0")?,1)?;
+                    let controller=Controller::new_with_time_sync_policy(Identity::new("FSS",&args.uuid,"1.20.0")?,1,args.time_sync_policy)?;
                     let remaining=Duration::from_nanos(deadline.as_nanos().saturating_sub(cx.now().as_nanos()));
                     if remaining.is_zero() {return Err("controller startup deadline elapsed".into());}
                     let mut session=owner::accept_guarded(plaintext,ProtocolPolicy::RequireOffer,&policy,gate,controller,remaining.min(MAX_IO_WAIT)).await?;
