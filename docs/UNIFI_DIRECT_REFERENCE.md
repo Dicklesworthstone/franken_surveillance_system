@@ -510,8 +510,8 @@ The project setup owner subsequently gained a source-level `observe` method
 that composes scoped discovery admission with two settings reads and no effect
 preparation. Socket fixture cases for matching and changing claims were also
 added. These changes have only been syntax-parsed: a remote test started on
-`trj` but was terminated after disk telemetry became unavailable, and the
-same job's source release has not yet been acknowledged. Neither the new
+`trj` but was terminated after disk telemetry became unavailable. Same-job
+recovery later acknowledged exit 137 and source release. Neither the new
 project method nor its fixture cases have been qualified by that run.
 
 `unifi_direct::handoff` now prepares an inert controller-address change bound
