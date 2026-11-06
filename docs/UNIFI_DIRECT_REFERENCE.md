@@ -2648,7 +2648,9 @@ was not changed.
 After the scope-filtered loopback succeeded on `vmi1264463`, a refreshed full
 snapshot was submitted there as strict-remote job `30098049032257857`. It
 includes the current A/V retry case and an earlier D-Bus handshake revision;
-its terminal result is pending and it cannot qualify subsequent source edits.
+the archive, A/V evidence, muxer, recorder test, AAC clock and two previously
+missing compile-time inputs matched the checkout by worker SHA-256. Its
+terminal result is pending and it cannot qualify subsequent source edits.
 
 The prepared passive camera capture helper was also revised to separate TCP
 flows, handle wraparound and reordering, reject conflicting retransmissions,

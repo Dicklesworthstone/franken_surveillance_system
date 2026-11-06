@@ -11,6 +11,9 @@ use std::fmt;
 const MAX_AUTH_LINE: usize = 128;
 const MAX_HELLO_MESSAGE: usize = 8192;
 
+/// Maximum complete D-Bus message accepted by this restricted handshake.
+pub const MAX_MESSAGE_BYTES: usize = MAX_HELLO_MESSAGE;
+
 /// Payload-free refusal in the restricted handshake profile.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {
@@ -174,6 +177,31 @@ fn read_u32(bytes: &[u8], at: usize, little: bool) -> Result<u32, Error> {
 }
 fn aligned(at: usize, alignment: usize) -> Result<usize, Error> {
     Ok(at.checked_add(alignment - 1).ok_or(Error::Limit)? & !(alignment - 1))
+}
+
+/// Compute a bounded message length from the 16-byte fixed header. `None`
+/// means the fixed header is incomplete; `Some` does not assert that the rest
+/// of the message has arrived or that its fields or sender are valid.
+pub fn declared_message_len(input: &[u8]) -> Result<Option<usize>, Error> {
+    if input.len() < 16 {
+        return Ok(None);
+    }
+    let little = match input[0] {
+        b'l' => true,
+        b'B' => false,
+        _ => return Err(Error::Invalid),
+    };
+    if input[3] != 1 || read_u32(input, 8, little)? == 0 {
+        return Err(Error::Invalid);
+    }
+    let body = usize::try_from(read_u32(input, 4, little)?).map_err(|_| Error::Limit)?;
+    let fields = usize::try_from(read_u32(input, 12, little)?).map_err(|_| Error::Limit)?;
+    let header = aligned(16usize.checked_add(fields).ok_or(Error::Limit)?, 8)?;
+    let total = header.checked_add(body).ok_or(Error::Limit)?;
+    if total > MAX_MESSAGE_BYTES {
+        return Err(Error::Limit);
+    }
+    Ok(Some(total))
 }
 
 /// A correlated `Hello` method return. Debug intentionally redacts the name.
@@ -468,6 +496,10 @@ mod tests {
         assert_eq!(&out[..4], b"l\x01\x00\x01");
         assert_eq!(read_u32(&out, 8, true)?, 17);
         assert_eq!(read_u32(&out, 4, true)?, 0);
+        for split in 0..16 {
+            assert_eq!(declared_message_len(&out[..split])?, None);
+        }
+        assert_eq!(declared_message_len(&out[..16])?, Some(out.len()));
         let query = bluez_name_has_owner(18)?;
         assert_eq!(read_u32(&query, 8, true)?, 18);
         assert_eq!(read_u32(&query, 4, true)?, 14);

@@ -22,6 +22,8 @@ pub mod archive;
 pub mod av_evidence;
 /// Transactional, source-preserving A/V fragment derivation.
 pub mod av_recording;
+/// Task-owned, bounded local D-Bus observation for future BlueZ transport.
+pub mod bluez_bus;
 /// Bounded camera-local HTTPS request/response state without transport or trust policy.
 pub mod camera_api;
 /// Task-scoped, bounded camera-local HTTP over an independently admitted transport.
