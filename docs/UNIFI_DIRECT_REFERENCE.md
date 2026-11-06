@@ -511,10 +511,12 @@ that composes scoped discovery admission with two settings reads and no effect
 preparation. Socket fixture cases for matching and changing claims were also
 added. A separate strict-remote `cargo check --locked -p fss-reference --lib`
 passed on `ovh-a`, and a strict-remote `cargo check` of the contract test target
-passed on `ts1`; neither command ran the fixture cases. A remote test started on
-`trj` but was terminated after disk telemetry became unavailable. Same-job
-recovery later acknowledged exit 137 and source release. The fixture cases
-remain unqualified.
+passed on `ts1`. An earlier remote test started on `trj` but was terminated
+after disk telemetry became unavailable; same-job recovery later acknowledged
+exit 137 and source release. A subsequent strict-remote run on `ts1` completed
+all 14 contract tests successfully, including both new observation tests.
+These synthetic project tests do not establish live-camera execution of the
+project-level method or complete automated enrollment.
 
 `unifi_direct::handoff` now prepares an inert controller-address change bound
 to the exact semantic request, reported prior IPv4 address, camera and peer
