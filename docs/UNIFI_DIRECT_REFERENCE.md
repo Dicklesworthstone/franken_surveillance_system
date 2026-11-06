@@ -1096,6 +1096,22 @@ and discovery claims were observed on the same network and do not independently
 authenticate the camera. This observation does not establish native streaming,
 automatic adoption, or gap-free recording.
 
+A subsequent bounded RTSP test used the existing transitional Scrypted relay
+and a laboratory build of the Rust capture CLI from `f2678a1d`. The laboratory
+build changed argument loading so the stream capability was read from a
+root-only file rather than exposed in process arguments; its capture and timing
+implementation remained the same. The first attempt could not connect from the
+host network namespace. The second ran inside the relay's existing network
+namespace and completed RTSP setup, received 135,909 bytes, and collected one
+source-linked H.264 picture. It stopped with `ERR-CAPTURE-RTSP-TIMING-001`
+before publishing any durable picture: the next timestamp did not match the
+declared 3,003-tick cadence. The declaration came from an `ffprobe` observation
+of a recently archived segment reporting a nominal 30000/1001 frame rate; the
+sample alone does not establish exact RTP spacing. No successful recording,
+pixel decoding, direct-camera media path, or cadence compatibility is claimed.
+Both attempts left their protected archive and journal state for inspection;
+the working recorder was not reconfigured.
+
 The discovery CLI source now accepts up to 64 distinct, subnet-checked
 `--target` IPv4 addresses in one window; without them the existing broadcast
 behavior is unchanged. This is intended to rediscover an owner-authorized camera
