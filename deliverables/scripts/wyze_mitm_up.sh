@@ -317,14 +317,18 @@ if [ "${FOREGROUND:-0}" = 1 ]; then
   # launchd supervises the proxy in the foreground; the listeners above are its children.
   # REWRITE edits the cloud's own wyze-service delta in flight — it is the delivery that has
   # actually produced fetches, and it was never passed by this script.
-  THING="$THING" D="$CERTDIR" CHAIN=/tmp/ota/chain.pem INJECT=1 REWRITE="${REWRITE:-1}" \
-    NO_UPSTREAM="${NO_UPSTREAM:-}" \
-    OTA_URL="$OTA_URL" OTA_MD5="$OTA_MD5" \
-    OTA_ACTIONS="${OTA_ACTIONS:-}" PROC_NAME="${PROC_NAME:-}" \
-    OTA_ENC="${OTA_ENC:-3}" OTA_ENR="${OTA_ENR:-}" \
-    rm -f "$LOCK";  # the exec replaces this process — the EXIT trap never fires,
-                    # leaving a stale lock that blocks all future generations forever
-    exec "$PY" "$HERE/wyze_mqtt_mitm.py"
+  # BUG (measured 2026-11-06): "VAR=… \n rm -f $LOCK; exec python" applies the env-prefix to
+  # the `rm` command only — the exec'd proxy started with CHAIN/THING/D all UNSET and fell
+  # back to certs/emudhra/serve.pem (cert+intermediate, NO key) → "PEM lib" crash loop on
+  # 8883 (1094 crashes). Export first, then rm, then exec.
+  export THING D="$CERTDIR" CHAIN=/tmp/ota/chain.pem INJECT=1 REWRITE="${REWRITE:-1}"
+  export NO_UPSTREAM="${NO_UPSTREAM:-}"
+  export OTA_URL="$OTA_URL" OTA_MD5="$OTA_MD5"
+  export OTA_ACTIONS="${OTA_ACTIONS:-}" PROC_NAME="${PROC_NAME:-}"
+  export OTA_ENC="${OTA_ENC:-3}" OTA_ENR="${OTA_ENR:-}"
+  rm -f "$LOCK";  # the exec replaces this process — the EXIT trap never fires,
+                  # leaving a stale lock that blocks all future generations forever
+  exec "$PY" "$HERE/wyze_mqtt_mitm.py"
 fi
 sudo env NO_UPSTREAM="${NO_UPSTREAM:-}" THING="$THING" D="$CERTDIR" CHAIN=/tmp/ota/chain.pem INJECT=1 REWRITE="${REWRITE:-1}" \
   OTA_URL="$OTA_URL" OTA_MD5="$OTA_MD5" \

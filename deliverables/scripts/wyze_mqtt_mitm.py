@@ -11,7 +11,10 @@ def up_ctx():
     c=ssl.create_default_context(cafile=D+"/rootCA.crt"); c.load_cert_chain(D+"/cert.pem",D+"/privkey.pem")
     c.set_alpn_protocols(["x-amzn-mqtt-ca"]); return c
 def srv_ctx():
-    c=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER); c.load_cert_chain(CHAIN)
+    try:
+        c=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER); c.load_cert_chain(CHAIN)
+    except Exception as e:
+        print(f"srv_ctx: CHAIN={CHAIN!r} size={os.path.getsize(CHAIN) if os.path.exists(CHAIN) else 'MISSING'} err={e}",flush=True); raise
     c.minimum_version=ssl.TLSVersion.TLSv1_2; c.maximum_version=ssl.TLSVersion.TLSv1_2
     c.set_ciphers("ECDHE+AESGCM:ECDHE+CHACHA20:ECDHE+AES")
     c.set_alpn_protocols(["x-amzn-mqtt-ca"])
