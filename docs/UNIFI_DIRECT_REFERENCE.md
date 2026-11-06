@@ -510,7 +510,8 @@ The project setup owner subsequently gained an `observe` method
 that composes scoped discovery admission with two settings reads and no effect
 preparation. Socket fixture cases for matching and changing claims were also
 added. A separate strict-remote `cargo check --locked -p fss-reference --lib`
-passed on `ovh-a`; it did not run the fixture cases. A remote test started on
+passed on `ovh-a`, and a strict-remote `cargo check` of the contract test target
+passed on `ts1`; neither command ran the fixture cases. A remote test started on
 `trj` but was terminated after disk telemetry became unavailable. Same-job
 recovery later acknowledged exit 137 and source release. The fixture cases
 remain unqualified.
