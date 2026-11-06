@@ -1,0 +1,196 @@
+{
+  "scope": "targeted native developer validation; no release qualification claim",
+  "working_tree_base_commit": "aabf93d73d868220c5f2b7bcaf564b9d87b081b1",
+  "compiler": "rustc 1.100.0-nightly (908501772 2026-08-30)",
+  "environment": {
+    "CARGO_BUILD_JOBS": "1",
+    "CARGO_PROFILE_DEV_DEBUG": "0",
+    "CARGO_PROFILE_TEST_DEBUG": "0",
+    "CARGO_INCREMENTAL": "0",
+    "RUSTFLAGS": "-Zunstable-options --jobs-frontend=1 --jobs-backend=1 --jobs-linker=1 -Zmir-opt-level=0 -Zfewer-names=yes"
+  },
+  "profile_config": {
+    "profile.dev.package.asupersync.codegen-units": 256,
+    "profile.test.package.asupersync.codegen-units": 256
+  },
+  "runs": [
+    {
+      "log": "replay-reference-native-codegen-memory.log",
+      "sha256": "0e330c706f92cf22da578c0c1ef6784e66d2b1853d14246b15f88440d6ea6990",
+      "bytes": 22320,
+      "targets": [
+        {
+          "target": "tests/recording_replay_contract.rs",
+          "result": "ok",
+          "passed": 15,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 0
+        },
+        {
+          "target": "tests/rtsp_replay_contract.rs",
+          "result": "ok",
+          "passed": 15,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 0
+        }
+      ],
+      "native_exit_code": 0,
+      "wall_seconds": 311.901,
+      "child_max_rss_kib": 7379056
+    },
+    {
+      "log": "replay-capture-native-codegen-memory.log",
+      "sha256": "e45752f232e3a46461a64283bdaecfcb8c39716fba2e7d3858624e9b1033bbf5",
+      "bytes": 33264,
+      "targets": [
+        {
+          "target": "tests/capture_rtsp_cli.rs",
+          "result": "ok",
+          "passed": 6,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 100
+        }
+      ],
+      "native_exit_code": 0,
+      "wall_seconds": 198.409,
+      "child_max_rss_kib": 2964904
+    },
+    {
+      "log": "replay-operator-native-codegen-memory.log",
+      "sha256": "ea2240e3c88ecbec4f33545a3d5aab644ee8b5a8e7250a5761fb0cf67fdc0747",
+      "bytes": 76558,
+      "targets": [
+        {
+          "target": "unittests src/bin/fss-capture-rtsp.rs",
+          "result": "ok",
+          "passed": 302,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 0
+        },
+        {
+          "target": "tests/archive_operator_process.rs",
+          "result": "ok",
+          "passed": 4,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 0
+        },
+        {
+          "target": "tests/archive_replay_process.rs",
+          "result": "ok",
+          "passed": 8,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 0
+        }
+      ],
+      "native_exit_code": 0,
+      "wall_seconds": 14.702,
+      "child_max_rss_kib": 849616
+    }
+  ],
+  "passed": 350,
+  "failed": 0,
+  "ignored": 0,
+  "published_feature_commit": "9ae9a983711106e852912ebd4c0efa472946ee4c",
+  "source_scope": "The six overlay files below match the published feature blobs. The rest of the tested checkout is the stated base; these runs do not qualify concurrent unrelated upstream changes or the complete repository.",
+  "feature_overlay": [
+    {
+      "path": "crates/fss-cli/src/bin/fss-archive.rs",
+      "git_blob": "95662ef225c673883ccbccf86d862a2e5888d7d6"
+    },
+    {
+      "path": "crates/fss-cli/src/bin/fss-capture-rtsp/progress.rs",
+      "git_blob": "961a32f9480eee507fa42318cf057dd0485fb201"
+    },
+    {
+      "path": "crates/fss-cli/src/bin/fss-capture-rtsp/replay_capture.rs",
+      "git_blob": "782b53855ec91307fe96b5f1e40fd8cd36b9ca88"
+    },
+    {
+      "path": "crates/fss-cli/tests/capture_rtsp_cli/replay.rs",
+      "git_blob": "2d57f4cf24512cb346f750b58b8ceed605b38e17"
+    },
+    {
+      "path": "crates/fss-cli/src/bin/fss-archive/replay.rs",
+      "git_blob": "330d40e351c183dc0bdd0283f4ba484ebdb0e760"
+    },
+    {
+      "path": "crates/fss-cli/tests/archive_replay_process.rs",
+      "git_blob": "775c9b05317ab6190f16cab2f303848034b7173c"
+    }
+  ],
+  "cargo_lock_sha256": "5003ec3906fc0b592b785f78fb9f27be318d00699021443e4efc8c5a4d4fd656",
+  "reproduction_commands": [
+    [
+      "cargo",
+      "+nightly-2026-08-31",
+      "--config",
+      "profile.dev.package.asupersync.codegen-units=256",
+      "--config",
+      "profile.test.package.asupersync.codegen-units=256",
+      "test",
+      "--locked",
+      "--offline",
+      "--no-fail-fast",
+      "-p",
+      "fss-reference",
+      "--test",
+      "rtsp_replay_contract",
+      "--test",
+      "recording_replay_contract"
+    ],
+    [
+      "cargo",
+      "+nightly-2026-08-31",
+      "--config",
+      "profile.dev.package.asupersync.codegen-units=256",
+      "--config",
+      "profile.test.package.asupersync.codegen-units=256",
+      "test",
+      "--locked",
+      "--offline",
+      "-p",
+      "fss-cli",
+      "--test",
+      "capture_rtsp_cli",
+      "replay::"
+    ],
+    [
+      "cargo",
+      "+nightly-2026-08-31",
+      "--config",
+      "profile.dev.package.asupersync.codegen-units=256",
+      "--config",
+      "profile.test.package.asupersync.codegen-units=256",
+      "test",
+      "--locked",
+      "--offline",
+      "--no-fail-fast",
+      "-p",
+      "fss-cli",
+      "--bin",
+      "fss-capture-rtsp",
+      "--test",
+      "archive_replay_process",
+      "--test",
+      "archive_operator_process"
+    ]
+  ],
+  "log_retention": "Development logs retained in the session workspace build-validation directory; their names, byte sizes and SHA-256 values are recorded per run.",
+  "claim_boundaries": [
+    "No dependency/source/feature/assertion/panic-strategy or repository qualification gate was changed to obtain these results.",
+    "The six-loopback run filters 100 unrelated tests in that integration target; it is not a full capture_rtsp_cli-target run.",
+    "These fixtures establish native behavior, not hardware recorder interoperability, historical frame UTC, complete requested interval retrieval, or release qualification."
+  ]
+}

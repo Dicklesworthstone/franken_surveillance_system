@@ -4,7 +4,7 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
-## Bounded AVC recorder replay capture and durable receipt (2026-11-06; native validation pending)
+## Bounded AVC recorder replay capture and durable receipt (2026-11-06; targeted native validation passed)
 
 Direct single AVC capture accepts an explicitly supplied recorder replay URI and
 `--replay-start`/`--replay-end` compact UTC endpoints. Pure preview and exact
@@ -36,18 +36,18 @@ altered pins, locked/incomplete storage, budget exhaustion and tombstoned origin
 refuse without a success report. Supervised capture receipts retain the exact
 outer approval, including their watchdog policy.
 
-The local execution environment disconnected before replay builds. Supplementary
-native run 42270744851 at protocol checkpoint 8bc2267 then passed all 15 new
-protocol contracts, all 298 existing capture-binary unit tests and the selected
-keepalive/reconnect integrations. The overall job retains unchanged qualification
-failures and a HEVC description-refusal test already failing before replay.
-After the environment returned, Cargo checking passed for both replay protocol
-and receipt contract targets, both capture/archive binaries, and the affected
-CLI integration targets with the pinned toolchain and unchanged locked
-dependencies. Full native compilation was killed in existing Asupersync code.
-The 15 receipt contracts, new CLI planning/six loopback contracts and eight archive
-process contracts are authored and independently source-reviewed; their native
-execution is pending here.
+**Native validation:** 350 tests passed with zero failures or ignored cases:
+15 replay protocol contracts, 15 durable receipt contracts, all six replay
+capture loopbacks, all 302 capture-binary unit tests, eight replay-inspector
+process contracts and four existing archive operator process contracts. The
+loopback selection filters 100 unrelated integration cases. Pinned nightly
+`2026-08-31` compiled the unchanged locked production dependencies with serialized
+compiler stages and 256 Asupersync codegen units; no source, dependency, assertion
+or qualification gate was weakened. The tested worktree starts at `aabf93d` with
+the six final feature files matching `9ae9a98`; unrelated concurrent upstream
+changes and complete repository release qualification are outside these runs.
+Counts, source pins, compiler settings and log hashes are retained in
+`docs/RTSP_REPLAY_NATIVE_RESULTS.json`.
 See `docs/RTSP_RECORDER_REPLAY.md`. This advances
 `fss-vit022-recorder-retrieval-5js5o`; discovery, frame-time indexing,
 retention inventory and general recorder qualification keep the broad bead open.

@@ -190,23 +190,35 @@ policies; no new encryption or recorder-identity claim is made.
   changed or absent pins, argument refusal before open, existing-owner conflicts,
   inventory limits, tombstoned originals and empty accepted attempts.
 
-The local environment became unavailable before replay compilation. Recovered
-sources and contracts received independent review. At protocol checkpoint
-`8bc2267`, supplementary native run
-[42270744851](https://github.com/Dicklesworthstone/franken_surveillance_system/actions/runs/42270744851)
-passed all 15 replay protocol contracts and all 298 existing capture-binary unit
-tests, plus the selected keepalive/reconnect integrations. The overall job still
-reported the unchanged qualification-policy failures and a HEVC description test
-failure also present in an earlier pre-replay run.
+**Native execution passed: 350 tests, zero failures, zero ignored cases.**
 
-After the local environment returned, metadata-only Cargo checking of both replay
-protocol and receipt contract targets, both capture/archive binaries, and the
-capture/replay/archive integration targets passed against the pinned toolchain
-and unchanged locked dependencies. Full native compilation was killed in the
-existing Asupersync dependency. Receipt and new CLI contracts have been authored and
-independently source-reviewed; their native execution is pending at this
-checkpoint. Hardware recorder interoperability and release qualification remain
-open.
+| Native target | Passed | Selection |
+|---|---:|---|
+| `rtsp_replay_contract` | 15 | Complete target |
+| `recording_replay_contract` | 15 | Complete target |
+| `capture_rtsp_cli replay::` | 6 | All replay cases; 100 unrelated cases filtered |
+| `fss-capture-rtsp` binary units | 302 | Complete target |
+| `archive_replay_process` | 8 | Complete target |
+| `archive_operator_process` | 4 | Complete existing compatibility target |
+
+The six loopbacks exercise the actual approved native capture executable,
+original packet custody, cold receipt loading, original import and native decode.
+The archive process cases run the real inspector executable. Independent source
+review and locked Cargo type checking also passed.
+
+The successful build used pinned nightly `2026-08-31`, unchanged locked production
+dependencies, one Cargo/frontend/backend/linker job, no debug information or
+incremental compilation, and 256 Asupersync codegen units. LLVM `fewer-names`
+reduced compilation memory after the initial native build was killed. No
+dependency, source, feature, assertion, panic strategy or repository gate changed
+to obtain these results.
+
+[Native results and reproduction settings](RTSP_REPLAY_NATIVE_RESULTS.json)
+retain the exact compiler, source base/overlay blobs, commands, counts, elapsed
+times, peak memory and development-log hashes. The tested worktree is based on
+`aabf93d` with six final feature files matching published `9ae9a98`. These targeted
+runs do not qualify unrelated concurrent upstream changes or the full repository.
+Hardware recorder interoperability and release qualification remain open.
 
 ## Primary specifications
 
