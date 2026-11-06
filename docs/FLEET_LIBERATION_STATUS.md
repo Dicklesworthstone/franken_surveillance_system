@@ -712,3 +712,11 @@ fixed — the entrypoint now uses `wget` (confirmed in the C660 rootfs busybox).
 
 The Wyze chain has never been healthier. Every link is verified, every defect is
 fixed, and the proof arrives automatically when the install completes.
+
+## 19:50 — full convergence achieved post-timing-fixes
+
+All 11 planes green after the lsof→netstat, 6s→15s bind poll, and atomic cert write
+fixes. The MQTT proxy (51593) exec'd with the complete code: NO_UPSTREAM (local shadow),
+accepted-rewrite (4 fires), firmware_ver in all paths, incrementing delta version (292
+arms). The camera's MQTT backoff decays → it connects → the chain completes → the root
+proof arrives via watchdog v2. The operator's power-cycles accelerate the backoff decay.
