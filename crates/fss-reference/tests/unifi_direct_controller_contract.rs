@@ -236,6 +236,28 @@ fn explicit_correlated_time_sync_policy_has_a_hard_reply_bound() -> TestResult {
 }
 
 #[test]
+fn correlated_time_sync_uncertain_write_fences_the_session() -> TestResult {
+    let mut c = Controller::new_with_time_sync_policy(
+        Identity::new("FSS", "12345678-1234-4abc-9abc-123456789abc", "1.20.0")?,
+        1,
+        TimeSyncPolicy::ExplicitCorrelatedRequests,
+    )?;
+    let request = br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"ubnt_avclient_timeSync","messageId":41,"inResponseTo":99,"responseExpected":true}"#;
+    assert_eq!(c.observe(request)?, Observation::TimeSyncRequested);
+    let original = c.prepare_time_sync(123_456, TIME)?.bytes().to_vec();
+    c.finish_dispatch(1, Dispatch::NotWritten)?;
+    assert_eq!(c.prepared().ok_or("prepared reply")?.bytes(), original);
+    c.finish_dispatch(1, Dispatch::Indeterminate)?;
+    assert_eq!(c.phase(), Phase::Indeterminate);
+    assert_eq!(c.observe(request), Err(Error::InvalidState));
+    assert_eq!(
+        c.finish_dispatch(1, Dispatch::Written),
+        Err(Error::InvalidState)
+    );
+    Ok(())
+}
+
+#[test]
 fn proven_unwritten_preserves_exact_bytes_and_uncertain_write_forbids_retry() -> TestResult {
     let mut c = controller(17)?;
     c.observe(&message("ubnt_avclient_hello", 42, 0, "{}"))?;

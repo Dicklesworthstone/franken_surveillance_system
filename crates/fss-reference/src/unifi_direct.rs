@@ -75,7 +75,7 @@ pub enum Error {
     UnexpectedMessage,
     /// A required response is not pending, or another message is already prepared.
     InvalidState,
-    /// A second time-sync request cannot fit in the single bounded pending slot.
+    /// The single pending time-sync slot or the opt-in reply bound is exhausted.
     TimeSyncLimit,
     /// Prepared message identity did not match the supplied dispatch receipt.
     WrongPreparedMessage,

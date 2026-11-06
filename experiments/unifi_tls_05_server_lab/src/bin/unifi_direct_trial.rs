@@ -20,8 +20,8 @@ use fss_packet::extended_flv::{Limits as FlvLimits, stream::Framer};
 use fss_reference::{
     onvif::wire::UtcDateTime,
     unifi_direct::{
-        AudioCodec, Controller, Identity, TimeSyncPolicy, VideoChannel, VideoCodec, controller_listener,
-        conversation, intent, listener, management,
+        AudioCodec, Controller, Identity, TimeSyncPolicy, VideoChannel, VideoCodec,
+        controller_listener, conversation, intent, listener, management,
         metered::{MeteredClock, MeteredIo},
         owner, pipeline, receive, recording, supervisor,
         upgrade::ProtocolPolicy,
@@ -73,13 +73,18 @@ fn options() -> ResultBox<Options> {
     if args.pop().as_deref() != Some("--owner-authorized") {
         return Err(USAGE.into());
     }
-    let time_sync_policy = if args.last().is_some_and(|arg| arg == "--allow-correlated-timesync") {
+    let time_sync_policy = if args
+        .last()
+        .is_some_and(|arg| arg == "--allow-correlated-timesync")
+    {
         args.pop();
         TimeSyncPolicy::ExplicitCorrelatedRequests
     } else {
         TimeSyncPolicy::UncorrelatedOnly
     };
-    if !(args.len() == 8 || args.len() == 9) { return Err(USAGE.into()); }
+    if !(args.len() == 8 || args.len() == 9) {
+        return Err(USAGE.into());
+    }
     let listen: SocketAddrV4 = args[0].parse()?;
     let camera: Ipv4Addr = args[1].parse()?;
     if listen.port() == 0

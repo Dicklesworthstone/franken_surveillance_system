@@ -1067,7 +1067,7 @@ video.
 The current working tree also contains a draft opt-in time-sync policy for a
 correlated message that explicitly requests a reply. It ignores messages tied
 to one of its own previous time-sync replies and limits the session to eight
-such replies; the existing conservative default is unchanged. The working
+time-sync replies in total; the existing conservative default is unchanged. The working
 relay answers correlated time-sync messages, but no physical G4 evidence yet
 establishes whether this more selective policy resolves the native handshake.
 The policy, revised trial and synthetic peer remain unqualified until their
