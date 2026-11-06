@@ -1070,9 +1070,15 @@ recorder restart count remained 53, and the most recent upload had succeeded.
 A later staging inspection found a recently closed 60.024-second H.264
 segment at 1280x720 that `ffprobe` could read, along with an actively written
 segment and an older incomplete segment that lacked an MP4 index. The incomplete
-file was preserved; it cannot establish continuous coverage.
-A separate broadcast discovery window shortly beforehand returned no datagrams;
-this does not prove camera absence or explain the difference. The certificate
+file was preserved; it cannot establish continuous coverage. A later read-only
+USB archive check found the volume mounted, 1,328 segment files, a newest file
+about five seconds old, and approximately 1.11 TB free. Ten recent segment
+sizes imply about 390 GB per 30 days if the one-minute cadence and observed rate
+remain stable; other disk use and bitrate changes affect actual capacity.
+A separate limited-broadcast discovery window shortly beforehand returned no
+datagrams, and a subsequent directed-broadcast trial did not select the camera.
+These bounded observations do not prove camera absence or explain the difference.
+The certificate
 and discovery claims were observed on the same network and do not independently
 authenticate the camera. This observation does not establish native streaming,
 automatic adoption, or gap-free recording.
@@ -1083,6 +1089,14 @@ unchanged. This is intended to rediscover an owner-known address when broadcast
 replies are absent. The new CLI change has not yet passed its tests or been
 installed in the periodic discovery service, and it does not discover devices
 whose addresses are unknown.
+
+The discovery library source also has a bounded multi-target configuration for
+up to 64 distinct destinations on the same port, including broadcasts and
+owner-scoped unicast destinations. Each query is separately budgeted; a send sequence interrupted
+after an earlier query is reported as indeterminate. One report evaluates
+conflicting claims across all replies. The multi-target source and its synthetic
+socket tests have not yet been compiled or executed, and no automatic neighbor
+inventory or setup supervisor consumes the new API.
 
 The external recording volume later disappeared from the Mac's mounted
 volumes and several uploads were deferred, with the staging files preserved.
@@ -1113,8 +1127,10 @@ future guarded trials. Its journal read allows 30 seconds, and a timeout or
 journal error becomes `unknown`, which abstains from reboot. Six synthetic
 tests passed locally and on `trj`. An independent read on `trj` returned
 `unknown` after 9.7 seconds, and the new wrapper's prior-marker and invalid-time
-checks abstained without touching the camera. The failed earlier timer remains
-a failure, and the revised helper is not evidence of automatic recovery.
+checks abstained without touching the camera. A subsequent read-only check of
+the helper against the current recorder journal also returned `unknown`; this
+alone does not identify why. The failed earlier timer remains a failure, and
+the revised helper is not evidence of automatic recovery.
 
 The transitional recorder separately showed several stream exits at roughly
 four-minute intervals and another after about 100 seconds, followed by

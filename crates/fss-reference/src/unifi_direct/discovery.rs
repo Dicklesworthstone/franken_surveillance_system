@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 //! Bounded, explicitly scoped Ubiquiti v1 LAN discovery over Asupersync UDP.
 //!
-//! One query is sent to the supplied local destination. Replies are
+//! One query is sent to each supplied local destination. Replies are
 //! unauthenticated candidate observations; this module does not enroll,
 //! configure, log into, or take over any device. A timeout or packet limit
 //! never proves that the rest of the network lacks cameras.
@@ -18,6 +18,7 @@ use std::{
 };
 
 const MAX_PACKETS: usize = 128;
+const MAX_TARGETS: usize = 64;
 const MAX_WINDOW: Duration = Duration::from_secs(30);
 const MAX_RESOURCE: usize = 1024;
 
@@ -38,7 +39,7 @@ pub enum Error {
     IncompleteSend,
     /// Socket setup did not finish before the bounded deadline.
     SetupDeadline,
-    /// The send was interrupted or timed out and may have been emitted.
+    /// The send sequence stopped after a query may have been emitted.
     IndeterminateSend,
 }
 impl fmt::Display for Error {
@@ -53,7 +54,7 @@ impl std::error::Error for Error {}
 pub struct Config {
     bind: Ipv4Addr,
     mask: u32,
-    target: SocketAddrV4,
+    targets: Vec<SocketAddrV4>,
     broadcast: bool,
     resource: String,
     window: Duration,
@@ -81,13 +82,27 @@ impl Config {
         window: Duration,
         max_packets: usize,
     ) -> Result<Self, Error> {
+        Self::new_many(bind, prefix, &[target], resource, window, max_packets)
+    }
+
+    /// Construct one bounded discovery window over at most 64 distinct local
+    /// destinations on the same port. A broadcast can be combined with
+    /// owner-scoped unicast targets. Replies remain unauthenticated and a
+    /// completed window does not prove that all devices have been found.
+    pub fn new_many(
+        bind: Ipv4Addr,
+        prefix: u8,
+        targets: &[SocketAddrV4],
+        resource: &str,
+        window: Duration,
+        max_packets: usize,
+    ) -> Result<Self, Error> {
         if !(1..=32).contains(&prefix)
             || !(bind.is_private() || bind.is_loopback() || bind.is_link_local())
             || bind.is_unspecified()
             || bind.is_multicast()
-            || target.port() == 0
-            || target.ip().is_unspecified()
-            || target.ip().is_multicast()
+            || targets.is_empty()
+            || targets.len() > MAX_TARGETS
             || resource.is_empty()
             || resource.len() > MAX_RESOURCE
             || window.is_zero()
@@ -97,19 +112,32 @@ impl Config {
             return Err(Error::Configuration);
         }
         let mask = u32::MAX << (32 - prefix);
-        if *target.ip() != Ipv4Addr::BROADCAST
-            && (u32::from(*target.ip()) & mask) != (u32::from(bind) & mask)
-        {
-            return Err(Error::Configuration);
+        let port = targets[0].port();
+        let mut broadcast = false;
+        for (i, target) in targets.iter().enumerate() {
+            if target.port() == 0
+                || target.port() != port
+                || target.ip().is_unspecified()
+                || target.ip().is_multicast()
+                || targets[..i].contains(target)
+                || (*target.ip() != Ipv4Addr::BROADCAST
+                    && (u32::from(*target.ip()) & mask) != (u32::from(bind) & mask))
+            {
+                return Err(Error::Configuration);
+            }
+            // /31 and /32 have no directed broadcast address.
+            broadcast |= *target.ip() == Ipv4Addr::BROADCAST
+                || (prefix <= 30 && u32::from(*target.ip()) == (u32::from(bind) | !mask));
         }
-        // /31 and /32 have no directed broadcast address. Do not treat their
-        // last address as a multi-source destination.
-        let broadcast = *target.ip() == Ipv4Addr::BROADCAST
-            || (prefix <= 30 && u32::from(*target.ip()) == (u32::from(bind) | !mask));
+        let mut owned_targets = Vec::new();
+        owned_targets
+            .try_reserve_exact(targets.len())
+            .map_err(|_| Error::Allocation)?;
+        owned_targets.extend_from_slice(targets);
         Ok(Self {
             bind,
             mask,
-            target,
+            targets: owned_targets,
             broadcast,
             resource: resource.to_owned(),
             window,
@@ -118,7 +146,7 @@ impl Config {
     }
     fn in_scope(&self, ip: Ipv4Addr) -> bool {
         (u32::from(ip) & self.mask) == (u32::from(self.bind) & self.mask)
-            && (self.broadcast || ip == *self.target.ip())
+            && (self.broadcast || self.targets.iter().any(|target| ip == *target.ip()))
     }
 }
 
@@ -239,7 +267,7 @@ impl Report {
     }
 }
 
-/// Send one scoped v1 query and collect a finite set of untrusted camera claims.
+/// Send scoped v1 queries and collect a finite set of untrusted camera claims.
 ///
 /// The supplied `now` is the current observation in the task's canonical clock
 /// domain, co-observed with this runtime context. Elapsed runtime time advances
@@ -298,33 +326,46 @@ pub async fn discover(
     }
     let mut send_cost = BudgetVector::ZERO;
     send_cost.network_bytes = unifi_discovery::V1_QUERY.len() as u64;
-    owner
-        .checkpoint_for(
-            RuntimeGrant::AdapterNet,
-            &config.resource,
-            clock.now().map_err(|_| Error::Authority)?,
-            &send_cost,
-        )
-        .map_err(|_| Error::Authority)?;
-    runtime_cx.checkpoint().map_err(|_| Error::Authority)?;
-    if runtime_cx.now() >= deadline {
-        return Err(Error::SetupDeadline);
-    }
-    let sent = match timeout_at(
-        deadline,
-        socket.send_to(&unifi_discovery::V1_QUERY, config.target),
-    )
-    .await
-    {
-        Err(_) => return Err(Error::IndeterminateSend),
-        Ok(Err(error)) if error.kind() == io::ErrorKind::Interrupted => {
-            return Err(Error::IndeterminateSend);
+    for (index, target) in config.targets.iter().enumerate() {
+        let admission = clock.now().map_err(|_| Error::Authority).and_then(|now| {
+            owner
+                .checkpoint_for(RuntimeGrant::AdapterNet, &config.resource, now, &send_cost)
+                .map_err(|_| Error::Authority)
+        });
+        if admission.is_err() || runtime_cx.checkpoint().is_err() {
+            return Err(if index == 0 {
+                Error::Authority
+            } else {
+                Error::IndeterminateSend
+            });
         }
-        Ok(Err(error)) => return Err(Error::Io(error.kind())),
-        Ok(Ok(sent)) => sent,
-    };
-    if sent != unifi_discovery::V1_QUERY.len() {
-        return Err(Error::IncompleteSend);
+        if runtime_cx.now() >= deadline {
+            return Err(if index == 0 {
+                Error::SetupDeadline
+            } else {
+                Error::IndeterminateSend
+            });
+        }
+        let sent = match timeout_at(
+            deadline,
+            socket.send_to(&unifi_discovery::V1_QUERY, *target),
+        )
+        .await
+        {
+            Err(_) => return Err(Error::IndeterminateSend),
+            Ok(Err(error)) if error.kind() == io::ErrorKind::Interrupted || index != 0 => {
+                return Err(Error::IndeterminateSend);
+            }
+            Ok(Err(error)) => return Err(Error::Io(error.kind())),
+            Ok(Ok(sent)) => sent,
+        };
+        if sent != unifi_discovery::V1_QUERY.len() {
+            return Err(if index == 0 {
+                Error::IncompleteSend
+            } else {
+                Error::IndeterminateSend
+            });
+        }
     }
     let mut report = Report {
         cameras,
@@ -434,7 +475,7 @@ pub async fn discover(
             report.out_of_scope += 1;
             continue;
         };
-        if !config.in_scope(*source.ip()) || source.port() != config.target.port() {
+        if !config.in_scope(*source.ip()) || source.port() != config.targets[0].port() {
             report.out_of_scope += 1;
             continue;
         }
@@ -490,6 +531,47 @@ mod tests {
         let point_to_point = make(31, Ipv4Addr::new(192, 168, 1, 5))?;
         assert!(!point_to_point.in_scope(Ipv4Addr::new(192, 168, 1, 4)));
         assert!(point_to_point.in_scope(Ipv4Addr::new(192, 168, 1, 5)));
+        Ok(())
+    }
+
+    #[test]
+    fn multi_target_scope_rejects_invalid_or_ambiguous_inputs() -> Result<(), Error> {
+        let address = |last, port| SocketAddrV4::new(Ipv4Addr::new(192, 168, 1, last), port);
+        let make = |targets: &[SocketAddrV4]| {
+            Config::new_many(
+                Ipv4Addr::new(192, 168, 1, 4),
+                24,
+                targets,
+                "fixture:network",
+                Duration::from_secs(1),
+                8,
+            )
+        };
+        let selected = make(&[address(5, 10001), address(6, 10001)])?;
+        assert!(selected.in_scope(Ipv4Addr::new(192, 168, 1, 5)));
+        assert!(selected.in_scope(Ipv4Addr::new(192, 168, 1, 6)));
+        assert!(!selected.in_scope(Ipv4Addr::new(192, 168, 1, 7)));
+        assert!(make(&[]).is_err());
+        assert!(make(&[address(5, 10001), address(5, 10001)]).is_err());
+        assert!(make(&[address(5, 10001), address(6, 10002)]).is_err());
+        assert!(
+            make(&[
+                address(5, 10001),
+                SocketAddrV4::new(Ipv4Addr::new(192, 168, 2, 1), 10001)
+            ])
+            .is_err()
+        );
+        assert!(
+            make(
+                &(1..=65)
+                    .map(|last| address(last, 10001))
+                    .collect::<Vec<_>>()
+            )
+            .is_err()
+        );
+        let mixed = make(&[address(5, 10001), address(255, 10001)])?;
+        assert!(mixed.in_scope(Ipv4Addr::new(192, 168, 1, 7)));
+        assert!(!mixed.in_scope(Ipv4Addr::new(192, 168, 2, 7)));
         Ok(())
     }
 

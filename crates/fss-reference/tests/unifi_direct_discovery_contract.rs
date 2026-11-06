@@ -127,6 +127,74 @@ fn execute(config: &Config) -> Result<Report, Box<dyn Error>> {
 }
 
 #[test]
+fn multi_target_discovery_collects_and_cross_checks_both_peers() -> TestResult {
+    let first = UdpSocket::bind((Ipv4Addr::new(127, 0, 0, 1), 0))?;
+    let port = first.local_addr()?.port();
+    let second = UdpSocket::bind((Ipv4Addr::new(127, 0, 0, 2), port))?;
+    first.set_read_timeout(Some(Duration::from_secs(5)))?;
+    second.set_read_timeout(Some(Duration::from_secs(5)))?;
+    let mut second_packet = packet();
+    let address = [0x10, 2, 3, 4, 5, 6, 127, 0, 0, 1];
+    let offset = second_packet
+        .windows(address.len())
+        .position(|v| v == address)
+        .ok_or("fixture address missing")?;
+    second_packet[offset + address.len() - 1] = 2;
+    let workers: Vec<_> = [(first, packet()), (second, second_packet)]
+        .into_iter()
+        .map(|(socket, reply)| {
+            std::thread::spawn(move || -> std::io::Result<()> {
+                let mut query = [0_u8; 32];
+                let (count, peer) = socket.recv_from(&mut query)?;
+                if &query[..count] != fss_packet::unifi_discovery::V1_QUERY.as_slice() {
+                    return Err(std::io::Error::other("unexpected discovery query"));
+                }
+                socket.send_to(&reply, peer)?;
+                Ok(())
+            })
+        })
+        .collect();
+    let targets = [
+        SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), port),
+        SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 2), port),
+    ];
+    let config = Config::new_many(
+        Ipv4Addr::new(127, 0, 0, 3),
+        8,
+        &targets,
+        "fixture:discovery",
+        Duration::from_millis(300),
+        8,
+    )?;
+    let report = execute(&config)?;
+    for worker in workers {
+        worker.join().map_err(|_| "fixture thread panicked")??;
+    }
+    assert_eq!(report.stop, Stop::WindowElapsed);
+    assert_eq!(report.datagrams, 2);
+    assert_eq!(report.cameras.len(), 2);
+    assert!(
+        report
+            .cameras
+            .iter()
+            .all(|candidate| candidate.source_advertised())
+    );
+    assert!(
+        report
+            .assess_claims(0)
+            .ok_or("first claim missing")?
+            .same_mac_at_multiple_addresses
+    );
+    assert!(
+        report
+            .assess_claims(1)
+            .ok_or("second claim missing")?
+            .same_mac_at_multiple_addresses
+    );
+    Ok(())
+}
+
+#[test]
 fn discovery_advances_the_owned_task_clock_during_the_window() -> TestResult {
     let server = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))?;
     server.set_read_timeout(Some(Duration::from_secs(5)))?;
