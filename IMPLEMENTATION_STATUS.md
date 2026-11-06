@@ -4,6 +4,27 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Acquisition admission authority and lifecycle time (2026-11-06)
+
+Live acquisition now enforces the receipt credential method and adapter buffer ceiling at
+admission, matching the independent checkpoint verifier. Adapter acceptance, first-frame
+admission and every new continuity window revalidate the receipt's identity, capabilities and
+inclusive expiry interval. New coverage through reconciliation uses the same gate. Expired
+receipts still permit loss, uncertainty, failure and quiescence records; restoring exact
+historical evidence never renews acquisition authority or removes the sticky absence barrier.
+
+Lifecycle times cannot be negative or precede the request or last retained transition.
+Checkpoint encoding rejects a reversing audit tail, and recovery refuses a time earlier than
+retained history. These lifecycle times remain distinct from media presentation timestamps;
+the existing canonical witness/checkpoint formats are unchanged. All refusals precede state
+and audit mutation. See `docs/ACQUISITION_CONTINUITY_RECOVERY.md` for the contract and limits.
+
+**Verification scope:** 254 targeted native tests pass under pinned nightly `2026-08-31`
+with locked/offline dependencies: 193 core unit tests, 32 acquisition lifecycle contracts,
+14 reconnect guards and 15 recovery contracts. Independent source review, formatting and
+changed-file integrity checks also pass. These are scoped developer results, not a completed
+repository qualification or production approval.
+
 ## Retained capture clock index and UTC footage candidates (2026-11-05, native execution pending)
 
 Clock-enabled bounded AVC/HEVC capture now carries a measured same-session node

@@ -780,6 +780,11 @@ impl AcquisitionRequest {
 
     /// Validates field invariants and mutual consistency across identities.
     pub fn verify(&self) -> Result<(), AcquisitionError> {
+        if self.requested_at_ns.0 < 0 {
+            return Err(AcquisitionError::InvalidTimestamp {
+                detail: "acquisition request timestamp must be nonnegative".to_owned(),
+            });
+        }
         self.source_identity
             .verify()
             .map_err(AcquisitionError::Contract)?;
@@ -2547,7 +2552,8 @@ impl AcquisitionSession {
         timestamp_ns: TimestampNs,
         witness_digest: ContentDigest,
         note: &str,
-    ) {
+    ) -> Result<(), AcquisitionError> {
+        self.verify_transition_time(timestamp_ns)?;
         if self.history.len() >= MAX_HISTORY_LEN {
             self.history.remove(0);
         }
@@ -2567,6 +2573,48 @@ impl AcquisitionSession {
             witness_digest,
             note: bounded_note,
         });
+        Ok(())
+    }
+
+    // Lifecycle admission uses the caller's acquisition clock, never media PTS. Equal
+    // timestamps are valid; an older timestamp cannot backdate a later state transition.
+    fn verify_transition_time(&self, now_ns: TimestampNs) -> Result<(), AcquisitionError> {
+        if now_ns.0 < 0
+            || now_ns < self.request().requested_at_ns
+            || self
+                .history
+                .last()
+                .is_some_and(|record| record.timestamp_ns > now_ns)
+        {
+            return Err(AcquisitionError::InvalidTimestamp {
+                detail: "acquisition transition must not precede its request or retained history"
+                    .to_owned(),
+            });
+        }
+        Ok(())
+    }
+
+    // A retained authentication receipt is historical evidence, not an indefinite grant.
+    // Only admission/positive progress requires current authority: recording degradation,
+    // uncertainty, failure and quiescence must remain possible after credentials expire.
+    fn verify_authority_at(
+        request: &AcquisitionRequest,
+        auth: &AuthReceipt,
+        now_ns: TimestampNs,
+    ) -> Result<(), AcquisitionError> {
+        auth.verify(
+            &request.adapter_identity.adapter_id,
+            &request.device_identity.device_id,
+            request.requested_capabilities,
+            now_ns,
+        )?;
+        if auth.method != request.adapter_identity.credential_method {
+            return Err(AcquisitionError::WitnessMismatch {
+                detail: "auth receipt credential method differs from the acquisition request"
+                    .to_owned(),
+            });
+        }
+        Ok(())
     }
 
     /// Transitions from [`AcquisitionStateKind::Requested`] to [`AcquisitionStateKind::Authenticated`].
@@ -2583,19 +2631,14 @@ impl AcquisitionSession {
             });
         }
         let req = self.request().clone();
-        auth.verify(
-            &req.adapter_identity.adapter_id,
-            &req.device_identity.device_id,
-            req.requested_capabilities,
-            now_ns,
-        )?;
+        Self::verify_authority_at(&req, &auth, now_ns)?;
         self.record_transition(
             from_kind,
             AcquisitionStateKind::Authenticated,
             now_ns,
             auth.receipt_digest(),
             "authentication verified",
-        );
+        )?;
         self.state = AcquisitionState::Authenticated {
             request: Box::new(req),
             auth,
@@ -2625,6 +2668,14 @@ impl AcquisitionSession {
             &request.request_digest(),
             &request.adapter_identity.adapter_id,
         )?;
+        Self::verify_authority_at(&request, &auth, now_ns)?;
+        if ack.allocated_buffer_frames > request.adapter_identity.max_buffer_frames {
+            return Err(AcquisitionError::BoundsViolation {
+                field: "allocated_buffer_frames",
+                max: request.adapter_identity.max_buffer_frames as usize,
+                actual: ack.allocated_buffer_frames as usize,
+            });
+        }
         if request.is_dji_flip()
             && request
                 .requested_capabilities
@@ -2641,7 +2692,7 @@ impl AcquisitionSession {
             now_ns,
             ack.ack_digest(),
             "adapter accepted acquisition request",
-        );
+        )?;
         self.state = AcquisitionState::AdapterAccepted { request, auth, ack };
         Ok(())
     }
@@ -2675,13 +2726,14 @@ impl AcquisitionSession {
             &request.device_identity.device_id,
             &request.adapter_identity.adapter_id,
         )?;
+        Self::verify_authority_at(&request, &auth, now_ns)?;
         self.record_transition(
             from_kind,
             AcquisitionStateKind::FirstFrameObserved,
             now_ns,
             witness.witness_digest(),
             "first decodable frame observed",
-        );
+        )?;
         self.state = AcquisitionState::FirstFrameObserved {
             request,
             auth,
@@ -2840,13 +2892,14 @@ impl AcquisitionSession {
             &request.device_identity.device_id,
             &request.adapter_identity.adapter_id,
         )?;
+        Self::verify_authority_at(&request, &auth, now_ns)?;
         self.record_transition(
             from_kind,
             AcquisitionStateKind::ContinuityVerified,
             now_ns,
             witness.witness_digest(),
             "stream continuity verified",
-        );
+        )?;
         self.state = AcquisitionState::ContinuityVerified {
             request,
             auth,
@@ -2984,7 +3037,7 @@ impl AcquisitionSession {
             now_ns,
             evidence.evidence_digest(),
             "stream entered degraded mode",
-        );
+        )?;
         self.state = AcquisitionState::Degraded {
             request,
             auth,
@@ -3022,7 +3075,7 @@ impl AcquisitionSession {
             now_ns,
             failure.witness_digest(),
             "acquisition failed",
-        );
+        )?;
         self.state = AcquisitionState::Failed {
             request: Box::new(request),
             failure,
@@ -3056,7 +3109,7 @@ impl AcquisitionSession {
             now_ns,
             quiescence.receipt_digest(),
             "acquisition cleanly cancelled with quiescence",
-        );
+        )?;
         self.state = AcquisitionState::Cancelled {
             request: Box::new(request),
             quiescence,
@@ -3090,7 +3143,7 @@ impl AcquisitionSession {
             now_ns,
             witness.witness_digest(),
             "acquisition state became indeterminate",
-        );
+        )?;
         let prior_state = Box::new(self.state.clone());
         self.state = AcquisitionState::Indeterminate {
             request: Box::new(request),
@@ -3209,7 +3262,7 @@ impl AcquisitionSession {
             now_ns,
             witness_digest,
             note,
-        );
+        )?;
         self.has_windowed_gap |= matches!(
             &resolved_state,
             AcquisitionState::Degraded {
@@ -3327,7 +3380,7 @@ impl AcquisitionSession {
             now_ns,
             digest,
             "session reconnected with incremented stream generation",
-        );
+        )?;
         self.state = AcquisitionState::Requested(Box::new(new_request));
         self.has_windowed_gap = false;
         Ok(())

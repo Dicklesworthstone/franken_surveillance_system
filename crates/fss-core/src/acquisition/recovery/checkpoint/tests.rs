@@ -8,7 +8,9 @@ use crate::{
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 const NOW: TimestampNs = TimestampNs(2_000_000_000);
-const RESTART: TimestampNs = TimestampNs(4_000_000_000);
+// New coverage after restart still requires a currently valid receipt. Expired
+// historical restoration is tested separately below.
+const RESTART: TimestampNs = TimestampNs(2_500_000_000);
 
 fn request() -> TestResult<AcquisitionRequest> {
     let device_id = DeviceId::parse("device:checkpoint-camera")?;
@@ -520,25 +522,16 @@ fn rolling_audit_tail_does_not_drop_sticky_gap_memory() -> TestResult {
 
 #[test]
 fn checkpoint_refuses_credential_method_mismatch() -> TestResult {
-    // The receipt's credential method must equal the request's configured
-    // method; the check lives in checkpoint verification (encode + restore
-    // share it), because authenticate() alone does not compare methods.
-    let req = request()?;
-    let mut session = AcquisitionSession::new(req.clone())?;
-    session.authenticate(
-        AuthReceipt {
-            adapter_id: req.adapter_identity.adapter_id.clone(),
-            device_id: req.device_identity.device_id.clone(),
-            // Fixture request configures CredentialMethod::None; this receipt
-            // claims DigestAuth — mismatched at the checkpoint boundary.
-            method: CredentialMethod::DigestAuth,
-            principal_digest: ContentDigest::sha256(b"fixture:authorized-reader"),
-            authorized_capabilities: req.requested_capabilities,
-            authorized_at_ns: req.requested_at_ns,
-            expires_at_ns: TimestampNs(3_000_000_000),
-        },
-        NOW,
-    )?;
+    // Live authentication now rejects this too. Mutate retained state directly
+    // to keep exercising independent checkpoint validation of damaged history.
+    let mut session = authenticated()?;
+    if let AcquisitionState::Authenticated { auth, .. } = &mut session.state {
+        auth.method = CredentialMethod::DigestAuth;
+    }
+    let digest = state_digest(&session.state);
+    if let Some(last) = session.history.last_mut() {
+        last.witness_digest = digest;
+    }
     let r = session.checkpoint_bytes();
     assert!(
         r.is_err(),
@@ -549,35 +542,88 @@ fn checkpoint_refuses_credential_method_mismatch() -> TestResult {
 
 #[test]
 fn checkpoint_refuses_over_ceiling_buffer_allocation() -> TestResult {
-    // An adapter ack allocating more frames than the identity's ceiling is
-    // a contract violation at the checkpoint boundary.
-    let req = request()?;
-    let mut session = AcquisitionSession::new(req.clone())?;
-    session.authenticate(
-        AuthReceipt {
-            adapter_id: req.adapter_identity.adapter_id.clone(),
-            device_id: req.device_identity.device_id.clone(),
-            method: CredentialMethod::None,
-            principal_digest: ContentDigest::sha256(b"fixture:authorized-reader"),
-            authorized_capabilities: req.requested_capabilities,
-            authorized_at_ns: req.requested_at_ns,
-            expires_at_ns: TimestampNs(3_000_000_000),
-        },
-        NOW,
-    )?;
-    let over = req.adapter_identity.max_buffer_frames + 1;
-    let ack = AdapterAck {
-        adapter_id: req.adapter_identity.adapter_id.clone(),
-        request_digest: req.request_digest(),
-        ack_timestamp_ns: NOW,
-        session_handle: "fixture:session".to_string(),
-        allocated_buffer_frames: over,
-    };
-    session.accept(ack, NOW)?;
+    // Independently validate a corrupted retained ack, even though the live
+    // acceptance boundary now refuses this allocation before changing state.
+    let mut session = accepted()?;
+    let over = session.request().adapter_identity.max_buffer_frames + 1;
+    if let AcquisitionState::AdapterAccepted { ack, .. } = &mut session.state {
+        ack.allocated_buffer_frames = over;
+    }
+    let digest = state_digest(&session.state);
+    if let Some(last) = session.history.last_mut() {
+        last.witness_digest = digest;
+    }
     let r = session.checkpoint_bytes();
     assert!(
         r.is_err(),
         "over-ceiling allocation must refuse to checkpoint"
     );
+    Ok(())
+}
+
+#[test]
+fn expired_restart_can_restore_history_but_cannot_add_coverage() -> TestResult {
+    let original = clean()?;
+    let bytes = original.checkpoint_bytes()?;
+    let expired = TimestampNs(4_000_000_000);
+    let mut restored = AcquisitionSession::restore_checkpoint(
+        &bytes,
+        ContentDigest::sha256(&bytes),
+        original.request().request_digest(),
+        expired,
+    )?;
+    assert!(!restored.is_streaming());
+    restored.reconcile(
+        original.state().clone(),
+        "retain historical window only",
+        expired,
+    )?;
+    assert!(restored.check_absence_claim_allowed().is_err());
+    let before = restored.clone();
+    assert!(matches!(
+        restored.verify_continuity(continuity(restored.request(), 20, 29), expired),
+        Err(AcquisitionError::WitnessMismatch { .. })
+    ));
+    assert_eq!(restored, before);
+    Ok(())
+}
+
+#[test]
+fn checkpoint_refuses_negative_or_reversing_audit_timestamps() -> TestResult {
+    let original = clean()?;
+    let mut negative = original.clone();
+    negative.history[0].timestamp_ns = TimestampNs(-1);
+    assert!(negative.checkpoint_bytes().is_err());
+    let mut reversed = original;
+    reversed.history[2].timestamp_ns = TimestampNs(NOW.0 - 1);
+    assert!(reversed.checkpoint_bytes().is_err());
+    Ok(())
+}
+
+#[test]
+fn recovery_time_cannot_precede_any_retained_lifecycle_state() -> TestResult {
+    let active = clean()?;
+    let indeterminate = restore(&active)?;
+    let failed = restore(&authenticated()?)?;
+    for session in [
+        AcquisitionSession::new(request()?)?,
+        active,
+        indeterminate,
+        failed,
+    ] {
+        let bytes = session.checkpoint_bytes()?;
+        let Some(last) = session.history().last() else {
+            return Err("fixture has no lifecycle history".into());
+        };
+        assert!(matches!(
+            AcquisitionSession::restore_checkpoint(
+                &bytes,
+                ContentDigest::sha256(&bytes),
+                session.request().request_digest(),
+                TimestampNs(last.timestamp_ns.0 - 1),
+            ),
+            Err(AcquisitionError::InvalidTimestamp { .. })
+        ));
+    }
     Ok(())
 }

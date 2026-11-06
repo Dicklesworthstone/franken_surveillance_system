@@ -57,6 +57,35 @@ the last verified continuity witness separately. Another degraded span chains to
 a clean span must follow its end and must still pass every original continuity check. A new
 window does not relax loss, reconstruction, jitter, completeness or first-frame requirements.
 
+### Admission authority and lifecycle time
+
+Authentication receipts must use the credential method configured by the exact acquisition
+request. Adapter acceptance also checks that the acknowledged frame-buffer allocation fits
+the adapter's declared ceiling. These checks run at live admission, before an invalid state
+could be retained and later rejected by the checkpoint verifier.
+
+Acceptance, first-frame admission and every new continuity window revalidate the retained
+receipt's identity, capability scope and inclusive validity interval at the supplied lifecycle
+time. An expired receipt cannot authorize new progress, including progress proposed through
+indeterminate-state reconciliation. Recording degradation, uncertainty, failure or verified
+quiescence remains available after expiry so cleanup and evidence accounting are not blocked.
+Reinstating an exact historical state still preserves its old evidence; it does not renew the
+receipt, permit another continuity window or establish current transport authority.
+
+Lifecycle transition times are nonnegative and cannot precede the request or the most recent
+accepted transition. Equal timestamps are allowed. These are caller-supplied times in the
+acquisition lifecycle's declared clock domain, independent of media presentation timestamps.
+Checkpoint verification rejects negative or reversing audit times, and restoration refuses a
+time earlier than the retained history. A process must not substitute an unrelated clock origin.
+All admission checks precede state/history mutation. Existing canonical witness and checkpoint
+encodings remain unchanged; invalid authority, allocations and time histories now fail earlier.
+
+The admission/time change was verified on pinned nightly `2026-08-31` with
+`cargo test --locked --offline -p fss-core --lib --test acquisition_lifecycle_contract
+--test acquisition_reconnect_guard_contract --test acquisition_recovery_contract`:
+254 tests passed (193 unit, 32 lifecycle, 14 reconnect, 15 recovery). This is targeted
+developer verification, not a full qualification result.
+
 The current state retains one wrapper. Callers retaining a replayable session must also retain
 the earlier wrapper objects referenced by transition digests; a digest alone cannot reconstruct
 an unavailable interval. The added work per transition is bounded by the existing degradation

@@ -98,6 +98,9 @@ impl AcquisitionSession {
         if session.checkpoint_bytes()? != bytes {
             return Err(malformed("checkpoint encoding is not canonical"));
         }
+        // Recovery uses the same declared lifecycle time domain. A new process's
+        // unrelated clock origin cannot backdate an already retained transition.
+        session.verify_transition_time(now_ns)?;
         match session.state_kind() {
             AcquisitionStateKind::Requested
             | AcquisitionStateKind::Failed
@@ -156,6 +159,9 @@ fn verify_history(session: &AcquisitionSession) -> Result<(), AcquisitionError> 
         });
     }
     for record in &session.history {
+        if record.timestamp_ns.0 < 0 {
+            return Err(malformed("checkpoint audit contains a negative timestamp"));
+        }
         if record.note.len() > MAX_NOTE_LEN {
             return Err(AcquisitionError::BoundsViolation {
                 field: "acquisition_checkpoint_note",
@@ -173,9 +179,11 @@ fn verify_history(session: &AcquisitionSession) -> Result<(), AcquisitionError> 
     if session
         .history
         .windows(2)
-        .any(|pair| pair[0].to != pair[1].from)
+        .any(|pair| pair[0].to != pair[1].from || pair[0].timestamp_ns > pair[1].timestamp_ns)
     {
-        return Err(malformed("checkpoint audit tail is not contiguous"));
+        return Err(malformed(
+            "checkpoint audit tail is not contiguous or reverses lifecycle time",
+        ));
     }
     let Some(last) = session.history.last() else {
         return Err(malformed("checkpoint audit tail is missing"));
@@ -185,6 +193,7 @@ fn verify_history(session: &AcquisitionSession) -> Result<(), AcquisitionError> 
             "checkpoint audit does not terminate at its retained state",
         ));
     }
+    session.verify_transition_time(last.timestamp_ns)?;
     Ok(())
 }
 

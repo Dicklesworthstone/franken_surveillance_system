@@ -3,6 +3,9 @@
 
 use std::collections::BTreeSet;
 
+#[path = "acquisition_lifecycle/authority.rs"]
+mod authority;
+
 use fss_core::{
     ACQUISITION_TRANSITION_TABLE, AcquisitionError, AcquisitionRequest, AcquisitionSession,
     AcquisitionState, AcquisitionStateKind, AcquisitionTransitionRecord, AdapterAck,
@@ -441,7 +444,11 @@ fn test_reconnect_strictly_monotonic_generation() -> Result<(), Box<dyn std::err
 fn test_degradation_and_recovery_lifecycle() -> Result<(), Box<dyn std::error::Error>> {
     let req = sample_request()?;
     let mut session = AcquisitionSession::new(req.clone())?;
-    session.authenticate(sample_auth(&req), TimestampNs(1_001_000_000))?;
+    let mut auth = sample_auth(&req);
+    // This scenario admits new coverage through 3s, so its authority must cover
+    // that full lifecycle. Expired recovery is covered by the authority tests.
+    auth.expires_at_ns = TimestampNs(3_000_000_000);
+    session.authenticate(auth, TimestampNs(1_001_000_000))?;
     session.accept(sample_ack(&req), TimestampNs(1_005_000_000))?;
     session.observe_first_frame(sample_first_frame(&req), TimestampNs(1_033_000_000))?;
     session.verify_continuity(sample_continuity(&req, true), TimestampNs(2_000_000_000))?;
