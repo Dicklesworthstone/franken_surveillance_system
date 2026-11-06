@@ -1048,8 +1048,21 @@ executables were then run directly to recover their detailed output: all 14
 controller tests and all 5 receive tests passed. These tests cover the counts
 without changing the correlated-message response policy. Earlier targeted
 attempts were refused before Cargo started because disk reservations could not
-be satisfied. The updated trial's deadline-reporting source has not yet been
-compiled, deployed to the camera trial host, or exercised against the G4.
+be satisfied. A later strict-remote build of the updated laboratory trial on
+`vmi1153651` completed with acknowledgment and source release. Four synthetic
+process tests then passed: two deadline cases checked the payload-free
+correlation counters, and two cases produced decodable synthetic clips. The
+test executable SHA-256 was
+`7b3eedccd880c8feac2c3e3143b7d3f1269ba8b304c730e526acb9906a8179c8`;
+the trial binary SHA-256 was
+`cc00b29d160c96cc1cee25605b873ac2a707e3523c957c72977144db50050e88`.
+The trial binary was subsequently staged on `ts1`; its hash matched, dynamic
+dependencies resolved, and its argument parser returned the expected usage
+error for `--help`. An independent disposable TLS/WebSocket peer on `ts1` then
+passed both coalesced and sequential time-sync-before-hello cases, reaching a
+stream request in each. The fixture sent no video. The trial has not been
+exercised against the G4; these synthetic tests do not establish physical-camera
+video.
 
 A separate `discovery_observe_trial` laboratory binary connects a bounded UDP
 discovery result, an owner-selected address and MAC claim, a pinned TLS
@@ -1083,20 +1096,24 @@ and discovery claims were observed on the same network and do not independently
 authenticate the camera. This observation does not establish native streaming,
 automatic adoption, or gap-free recording.
 
-The discovery CLI source now accepts one optional, subnet-checked `--target`
-IPv4 address for a unicast query; without it the existing broadcast behavior is
-unchanged. This is intended to rediscover an owner-known address when broadcast
-replies are absent. The new CLI change has not yet passed its tests or been
-installed in the periodic discovery service, and it does not discover devices
-whose addresses are unknown.
+The discovery CLI source now accepts up to 64 distinct, subnet-checked
+`--target` IPv4 addresses in one window; without them the existing broadcast
+behavior is unchanged. This is intended to rediscover an owner-authorized camera
+inventory when broadcast replies are absent. The new CLI change has not yet
+passed its tests or been installed in the periodic discovery service, and it
+does not discover devices whose addresses are unknown.
 
-The discovery library source also has a bounded multi-target configuration for
-up to 64 distinct destinations on the same port, including broadcasts and
-owner-scoped unicast destinations. Each query is separately budgeted; a send sequence interrupted
-after an earlier query is reported as indeterminate. One report evaluates
-conflicting claims across all replies. The multi-target source and its synthetic
-socket tests have not yet been compiled or executed, and no automatic neighbor
-inventory or setup supervisor consumes the new API.
+The discovery library has a bounded multi-target configuration for up to 64
+distinct destinations on the same port, including broadcasts and owner-scoped
+unicast destinations. Each query is separately budgeted; a send sequence
+interrupted after an earlier query is reported as indeterminate. One report
+evaluates conflicting claims across all replies. A strict-remote contract run on
+`vmi1264463` passed 8 tests, with one separately authorized live-network test
+ignored. The executed cases included two simulated UDP peers, conflicting claims,
+and budget exhaustion after one query. The job acknowledged completion and
+released its source; the test executable SHA-256 was
+`9dd99bcce3391effa74474785081f3f437ee8f2c641f119ecea59939624f878e`.
+No automatic camera inventory or setup supervisor consumes the new API.
 
 The external recording volume later disappeared from the Mac's mounted
 volumes and several uploads were deferred, with the staging files preserved.

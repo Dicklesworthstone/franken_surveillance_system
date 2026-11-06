@@ -19,19 +19,19 @@ use std::{
     time::{Duration, Instant},
 };
 
-const USAGE: &str = "fss-unifi-discover --iface IPV4 --prefix 1..32 [--target IPV4] --principal PRINCIPAL --approval sha256:DIGEST --owner-authorized";
+const USAGE: &str = "fss-unifi-discover --iface IPV4 --prefix 1..32 [--target IPV4]... --principal PRINCIPAL --approval sha256:DIGEST --owner-authorized";
 
 struct Options {
     iface: Ipv4Addr,
     prefix: u8,
-    target: Ipv4Addr,
+    targets: Vec<Ipv4Addr>,
     principal: String,
     approval: ContentDigest,
 }
 
 fn options(args: &[String]) -> Result<Options, &'static str> {
-    let (mut iface, mut prefix, mut target, mut principal, mut approval) =
-        (None, None, None, None, None);
+    let (mut iface, mut prefix, mut principal, mut approval) = (None, None, None, None);
+    let mut targets = Vec::new();
     let mut authorized = false;
     let mut i = 0;
     while i < args.len() {
@@ -49,8 +49,12 @@ fn options(args: &[String]) -> Result<Options, &'static str> {
             "--prefix" if prefix.is_none() => {
                 prefix = Some(value.parse().map_err(|_| "invalid prefix")?)
             }
-            "--target" if target.is_none() => {
-                target = Some(value.parse().map_err(|_| "invalid target")?)
+            "--target" => {
+                let target = value.parse().map_err(|_| "invalid target")?;
+                if targets.len() == 64 || targets.contains(&target) {
+                    return Err("duplicate target or too many targets");
+                }
+                targets.push(target);
             }
             "--principal"
                 if principal.is_none() && value.starts_with("principal:") && value.len() <= 128 =>
@@ -74,7 +78,11 @@ fn options(args: &[String]) -> Result<Options, &'static str> {
     Ok(Options {
         iface: iface.ok_or("interface is required")?,
         prefix: prefix.ok_or("prefix is required")?,
-        target: target.unwrap_or(Ipv4Addr::BROADCAST),
+        targets: if targets.is_empty() {
+            vec![Ipv4Addr::BROADCAST]
+        } else {
+            targets
+        },
         principal: principal.ok_or("principal is required")?,
         approval: approval.ok_or("approval digest is required")?,
     })
@@ -90,10 +98,15 @@ fn execute(options: &Options) -> Result<Report, &'static str> {
         "unifi-discovery:{}:{}/{}",
         options.approval, options.iface, options.prefix
     );
-    let config = Config::new(
+    let targets: Vec<_> = options
+        .targets
+        .iter()
+        .map(|ip| SocketAddrV4::new(*ip, 10001))
+        .collect();
+    let config = Config::new_many(
         options.iface,
         options.prefix,
-        SocketAddrV4::new(options.target, 10001),
+        &targets,
         &resource,
         Duration::from_secs(3),
         64,
@@ -186,7 +199,7 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args == ["--help"] {
         println!(
-            "{USAGE}\nSends one bounded local broadcast, or one scoped unicast when --target is provided; setup and authentication are not implemented. The approval digest must identify the operator's existing authorization."
+            "{USAGE}\nSends a bounded local broadcast by default, or scoped queries to up to 64 distinct targets; setup and authentication are not implemented. The approval digest must identify the operator's existing authorization."
         );
         return ExitCode::SUCCESS;
     }
@@ -244,7 +257,7 @@ mod tests {
     }
 
     #[test]
-    fn optional_target_is_scoped_and_cannot_be_repeated() {
+    fn targets_are_scoped_and_duplicates_are_rejected() {
         let mut args = [
             "--iface",
             "192.168.1.4",
@@ -261,12 +274,12 @@ mod tests {
         .map(str::to_owned)
         .to_vec();
         let selected = options(&args).expect("valid unicast target");
-        assert_eq!(selected.target, Ipv4Addr::new(192, 168, 1, 20));
+        assert_eq!(selected.targets, [Ipv4Addr::new(192, 168, 1, 20)]);
         assert!(
             Config::new(
                 selected.iface,
                 selected.prefix,
-                SocketAddrV4::new(selected.target, 10001),
+                SocketAddrV4::new(selected.targets[0], 10001),
                 "fixture",
                 Duration::from_secs(1),
                 1
@@ -279,13 +292,15 @@ mod tests {
             Config::new(
                 outside.iface,
                 outside.prefix,
-                SocketAddrV4::new(outside.target, 10001),
+                SocketAddrV4::new(outside.targets[0], 10001),
                 "fixture",
                 Duration::from_secs(1),
                 1
             )
             .is_err()
         );
+        args.extend(["--target".into(), "192.168.1.21".into()]);
+        assert_eq!(options(&args).expect("distinct targets").targets.len(), 2);
         args.extend(["--target".into(), "192.168.1.21".into()]);
         assert!(options(&args).is_err());
     }

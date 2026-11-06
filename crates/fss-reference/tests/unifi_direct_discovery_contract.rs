@@ -26,8 +26,15 @@ fn root() -> Result<(AuthorityCx, fss_core::RegionTree), Box<dyn Error>> {
 fn root_with_deadline(
     deadline: TimestampNs,
 ) -> Result<(AuthorityCx, fss_core::RegionTree), Box<dyn Error>> {
+    root_with_budget(deadline, 1_000_000)
+}
+
+fn root_with_budget(
+    deadline: TimestampNs,
+    network_bytes: u64,
+) -> Result<(AuthorityCx, fss_core::RegionTree), Box<dyn Error>> {
     let mut budget = BudgetVector::ZERO;
-    budget.network_bytes = 1_000_000;
+    budget.network_bytes = network_bytes;
     budget.bytes = 1_000_000;
     let spec = RootAuthoritySpec {
         trace_id: "trace:unifi-discovery".into(),
@@ -49,6 +56,76 @@ fn root_with_deadline(
         budget,
         TimestampNs(1),
     )?)
+}
+
+#[test]
+fn multi_target_budget_exhaustion_reports_partial_send_without_more_queries() -> TestResult {
+    let first = UdpSocket::bind((Ipv4Addr::new(127, 0, 0, 1), 0))?;
+    let port = first.local_addr()?.port();
+    let second = UdpSocket::bind((Ipv4Addr::new(127, 0, 0, 2), port))?;
+    first.set_read_timeout(Some(Duration::from_secs(2)))?;
+    second.set_read_timeout(Some(Duration::from_millis(250)))?;
+    let targets = [
+        SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), port),
+        SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 2), port),
+    ];
+    let config = Config::new_many(
+        Ipv4Addr::new(127, 0, 0, 3),
+        8,
+        &targets,
+        "fixture:discovery",
+        Duration::from_secs(2),
+        8,
+    )?;
+    let (mut authority, mut tree) = root_with_budget(TimestampNs(60_000_000_000), 4)?;
+    let runtime = RuntimeBuilder::current_thread().build()?;
+    let run = runtime.block_on(async {
+        let cx = asupersync::Cx::current().ok_or("missing runtime context")?;
+        let run = run_owned_async(
+            &mut authority,
+            &mut tree,
+            TaskSpec {
+                task_id: TaskId::new("task:discovery-budget")?,
+                started_at: TimestampNs(2),
+            },
+            &cx,
+            async |owner, runtime_cx| {
+                let start = runtime_cx.now().as_nanos();
+                let output = discovery::discover(owner, runtime_cx, TimestampNs(3), &config).await;
+                let elapsed = runtime_cx
+                    .now()
+                    .as_nanos()
+                    .checked_sub(start)
+                    .expect("runtime clock regressed");
+                TaskCompletion {
+                    output,
+                    outcome: TaskOutcome::Success,
+                    completed_at: TimestampNs(3 + i128::from(elapsed)),
+                }
+            },
+        )
+        .await?;
+        Ok::<_, Box<dyn Error>>(run)
+    })?;
+    assert!(matches!(
+        run.output,
+        Err(discovery::Error::IndeterminateSend)
+    ));
+    run.receipt?;
+    let mut query = [0_u8; 32];
+    let (count, _) = first.recv_from(&mut query)?;
+    assert_eq!(
+        &query[..count],
+        fss_packet::unifi_discovery::V1_QUERY.as_slice()
+    );
+    let error = second
+        .recv_from(&mut query)
+        .expect_err("second query was emitted");
+    assert!(matches!(
+        error.kind(),
+        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+    ));
+    Ok(())
 }
 
 fn packet_with(mac: Option<[u8; 6]>, firmware: &[u8], advertised: bool) -> Vec<u8> {
@@ -137,7 +214,7 @@ fn multi_target_discovery_collects_and_cross_checks_both_peers() -> TestResult {
     let address = [0x10, 2, 3, 4, 5, 6, 127, 0, 0, 1];
     let offset = second_packet
         .windows(address.len())
-        .position(|v| v == address)
+        .position(|v| v == address.as_slice())
         .ok_or("fixture address missing")?;
     second_packet[offset + address.len() - 1] = 2;
     let workers: Vec<_> = [(first, packet()), (second, second_packet)]
