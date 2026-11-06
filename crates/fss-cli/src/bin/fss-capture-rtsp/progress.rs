@@ -48,6 +48,11 @@ seal-and-drain-before-completion:not-camera-time:not-eof:not-coverage:v1";
         })
     }
 
+    /// Exact outer approval that delegated this additional stop policy.
+    pub(super) const fn approval(self) -> ContentDigest {
+        self.approval
+    }
+
     fn policy(self) -> &'static str {
         if self.duration_ns.is_some() {
             Self::TIMED_POLICY

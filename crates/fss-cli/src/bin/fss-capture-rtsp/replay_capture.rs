@@ -152,10 +152,17 @@ impl CaptureReplay {
         let result = (|| {
             owner.begin_drain()?;
             owner.storage_check()?;
+            // Supervised single capture admits the complete outer approval before
+            // delegating its nested capture digest. Retain the caller's exact
+            // approval, including the watchdog policy, in the durable companion.
+            let approval = match owner.supervision {
+                Some(supervision) => supervision.approval(),
+                None => options.digest().map_err(|_| Failure::Configuration)?,
+            };
             let receipt = ReplayReceipt::prepare(
                 self.request.clone(),
                 options.catalog_scope().clone(),
-                options.digest().map_err(|_| Failure::Configuration)?,
+                approval,
                 acceptance,
                 std::mem::take(&mut self.windows),
                 termination(capture_result),

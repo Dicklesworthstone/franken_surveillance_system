@@ -52,6 +52,8 @@ Replay is refused in HEVC/JPEG, automatic-SSRC, reconnect, retain-source,
 sentinel, onboarding-wrapper and offline recovery modes. There is no live
 fallback, alternate URI, widened request, reverse playback or implicit seek.
 The existing single-attempt progress watchdog can still stop a stalled replay.
+When that watchdog is selected, the durable receipt retains the admitted outer
+approval that binds its stop policy together with the nested capture plan.
 
 ## Protocol contract
 
@@ -115,7 +117,26 @@ separately. A receipt does not settle unfinished archive work or grant recovery.
 Preserve the `replay_receipt_published` event's slot, root and request identity,
 along with the original capture preview and both stores. The terminal
 `recorder_replay` object also reports the receipt state. Independently pinned
-cold retrieval is available through:
+cold retrieval is available from the operator CLI:
+
+```sh
+fss-archive inspect-replay \
+  --root /private/new-replay-archive --codec avc \
+  --sensor sensor:front-door --stream stream:recorder-channel1 --generation 1 \
+  --anchor sha256:OWNER_AUTHORITY_DIGEST \
+  --receive-clock sha256:THIS_CAPTURE_RECEIVE_CLOCK_DIGEST \
+  --decode-clock sha256:REPLAY_BOUND_DECODE_CLOCK_DIGEST --time-scale 90000 \
+  --expected-replay-root sha256:RETAINED_RECEIPT_ROOT \
+  --expected-replay-request sha256:RETAINED_REQUEST_IDENTITY
+```
+
+Replace the labels with the independently retained preview/event values. The
+decode clock is the replay-bound clock from the capture preview. The existing
+archive owner takes exclusive locks and performs its normal recovery and source
+verification. Invalid pins or incomplete verification produce no success report.
+The JSON report is at most 64 KiB and describes the request, acknowledgement,
+approval, termination and original window roots without emitting media payloads.
+`--help` lists the deadline and inventory/byte limits. The library equivalent is:
 
 ```rust
 load_replay_receipt(
@@ -164,7 +185,10 @@ policies; no new encryption or recorder-identity claim is made.
 - CLI planning contracts check canonical approval, route/cadence provenance,
   incompatible modes and replay-specific resource limits. Native loopback
   recorder tests exercise real approved capture, receipt readback, original
-  import/decode, incomplete EOF and response/refusal handling.
+  import/decode, incomplete EOF, supervised outer approval and response/refusal
+  handling. Eight archive process contracts exercise cold operator inspection,
+  changed or absent pins, argument refusal before open, existing-owner conflicts,
+  inventory limits, tombstoned originals and empty accepted attempts.
 
 The local environment became unavailable before replay compilation. Recovered
 sources and contracts received independent review. At protocol checkpoint
@@ -175,9 +199,14 @@ tests, plus the selected keepalive/reconnect integrations. The overall job still
 reported the unchanged qualification-policy failures and a HEVC description test
 failure also present in an earlier pre-replay run.
 
-Receipt and new CLI integration contracts have been authored and source-reviewed;
-their native execution is pending at this checkpoint. Hardware recorder
-interoperability and release qualification remain open.
+After the local environment returned, metadata-only Cargo checking of both replay
+protocol and receipt contract targets, both capture/archive binaries, and the
+capture/replay/archive integration targets passed against the pinned toolchain
+and unchanged locked dependencies. Full native compilation was killed in the
+existing Asupersync dependency. Receipt and new CLI contracts have been authored and
+independently source-reviewed; their native execution is pending at this
+checkpoint. Hardware recorder interoperability and release qualification remain
+open.
 
 ## Primary specifications
 

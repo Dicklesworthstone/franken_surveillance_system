@@ -13,6 +13,8 @@ mod http;
 mod pins;
 #[path = "fss-archive/recipes.rs"]
 mod recipes;
+#[path = "fss-archive/replay.rs"]
+mod replay;
 #[path = "fss-archive/upload.rs"]
 mod upload;
 #[path = "fss-archive/work.rs"]
@@ -29,6 +31,9 @@ fn main() -> ExitCode {
     if recipes::handles(&args) {
         return recipes::dispatch(&args);
     }
+    if replay::handles(&args) {
+        return replay::dispatch(&args);
+    }
     if pins::handles(&args) {
         return pins::dispatch(&args);
     }
@@ -40,13 +45,14 @@ fn main() -> ExitCode {
     } else {
         match parse_archive_args(&args) {
             Ok(None) => Ok(format!(
-                "{HELP}\n{}\n{}\n{}\n{}\n{}\n{}",
+                "{HELP}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
                 work::HELP,
                 pins::HELP,
                 recipes::HELP,
                 http::HELP,
                 hevc_author::HELP,
-                upload::HELP
+                upload::HELP,
+                replay::HELP
             )),
             Ok(Some(options)) => execute_archive(&options),
             Err(error) => Err(error),

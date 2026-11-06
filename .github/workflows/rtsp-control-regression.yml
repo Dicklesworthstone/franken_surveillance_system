@@ -18,6 +18,9 @@ on:
       - 'crates/fss-reference/tests/rtsp_read_reset_contract.rs'
       - 'crates/fss-cli/src/bin/fss-capture-rtsp/**'
       - 'crates/fss-cli/src/bin/fss-capture-rtsp.rs'
+      - 'crates/fss-cli/src/bin/fss-archive.rs'
+      - 'crates/fss-cli/src/bin/fss-archive/replay.rs'
+      - 'crates/fss-cli/tests/archive_replay_process.rs'
       - 'crates/fss-cli/tests/capture_rtsp_keepalive_cli.rs'
       - 'crates/fss-cli/tests/capture_rtsp_reset_cli.rs'
       - 'crates/fss-cli/tests/capture_rtsp_progress_cli.rs'
@@ -52,6 +55,9 @@ jobs:
       - name: Bounded replay protocol and retained original-custody receipts
         if: success() || failure()
         run: cargo +nightly-2026-08-31 test --no-fail-fast --locked --offline -p fss-reference --test rtsp_replay_contract --test recording_replay_contract
+      - name: Cold replay receipts and existing archive operator behavior
+        if: success() || failure()
+        run: cargo +nightly-2026-08-31 test --no-fail-fast --locked --offline -p fss-cli --test archive_replay_process --test archive_operator_process
       - name: Explicit keepalive signatures, approval boundaries and native AVC/HEVC capture
         if: success() || failure()
         run: bash scripts/qualify_rtsp_keepalive.sh

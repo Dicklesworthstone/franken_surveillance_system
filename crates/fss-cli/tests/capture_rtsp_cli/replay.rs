@@ -8,9 +8,7 @@ use fss_publication::{LocalPublicationLimits, LocalRootPublisher, NeverCancel};
 use fss_reference::rtsp::recording::RecordingScope;
 use fss_reference::rtsp::recording::local::load_recording;
 use fss_reference::rtsp::recording_catalog::CatalogScope;
-use fss_reference::rtsp::recording_replay::{
-    ReplayTermination, load_replay_receipt, replay_slot,
-};
+use fss_reference::rtsp::recording_replay::{ReplayTermination, load_replay_receipt, replay_slot};
 use std::collections::BTreeMap;
 
 const REPLAY_START: &str = "20261101T120000Z";
@@ -126,7 +124,12 @@ fn serve_replay(listener: TcpListener, behavior: ReplayBehavior) -> Test<ReplayT
     let describe = replay_request(&mut peer)?.ok_or("no replay DESCRIBE")?;
     assert_eq!(describe.method, "DESCRIBE");
     assert!(header(&describe.wire, "Range")?.is_none());
-    response(&mut peer, describe.cseq, "Content-Type: application/sdp\r\n", SDP)?;
+    response(
+        &mut peer,
+        describe.cseq,
+        "Content-Type: application/sdp\r\n",
+        SDP,
+    )?;
     transcript.requests.push(describe);
 
     let setup = replay_request(&mut peer)?.ok_or("no replay SETUP")?;
@@ -167,7 +170,11 @@ fn serve_replay(listener: TcpListener, behavior: ReplayBehavior) -> Test<ReplayT
     )
     .into_bytes();
     if !matches!(behavior, ReplayBehavior::Rejected(_)) {
-        let pictures = if matches!(behavior, ReplayBehavior::EofAfterOne) { 1 } else { 2 };
+        let pictures = if matches!(behavior, ReplayBehavior::EofAfterOne) {
+            1
+        } else {
+            2
+        };
         transcript.video = video(pictures, 3600, 96, false)?;
         // Invalid acknowledgements also carry real video in the same write: a
         // bad control response must fence media already waiting in native intake.
@@ -195,7 +202,11 @@ fn serve_replay(listener: TcpListener, behavior: ReplayBehavior) -> Test<ReplayT
             return Ok(transcript);
         };
         if refused || transcript.source_eof {
-            return Err(format!("unexpected request after replay termination: {}", request.method).into());
+            return Err(format!(
+                "unexpected request after replay termination: {}",
+                request.method
+            )
+            .into());
         }
         match request.method.as_str() {
             "TEARDOWN" | "GET_PARAMETER" | "OPTIONS" => {
@@ -216,14 +227,17 @@ fn capture_replay(
     thread::scope(|scope| {
         let server = scope.spawn(move || serve_replay(listener, behavior));
         let output = run("capture", arguments);
-        let server = server.join().map_err(|_| "replay fixture thread panicked")?;
+        let server = server
+            .join()
+            .map_err(|_| "replay fixture thread panicked")?;
         match (output, server) {
             (Ok(output), Ok(transcript)) => Ok((output, transcript)),
             (Ok(output), Err(error)) => Err(format!(
                 "replay fixture failed: {error}; stdout={} stderr={}",
                 String::from_utf8_lossy(&output.stdout),
                 String::from_utf8_lossy(&output.stderr)
-            ).into()),
+            )
+            .into()),
             (Err(error), _) => Err(error),
         }
     })
@@ -253,7 +267,8 @@ fn publication_limits(preview: &Value) -> Test<LocalPublicationLimits> {
             bound_usize(bounds, "spool_object_bytes")?,
             bound_usize(bounds, "spool_scan_entries")?,
         ),
-    ).validate()?)
+    )
+    .validate()?)
 }
 
 fn catalog_scope(preview: &Value) -> Test<CatalogScope> {
@@ -275,14 +290,19 @@ fn sent_packets(video: &[u8]) -> Test<BTreeMap<u16, &[u8]>> {
     let mut packets = BTreeMap::new();
     let mut offset = 0;
     while offset < video.len() {
-        let header = video.get(offset..offset + 4).ok_or("fixture interleaved header")?;
+        let header = video
+            .get(offset..offset + 4)
+            .ok_or("fixture interleaved header")?;
         assert_eq!(&header[..2], &[b'$', 0]);
         let length = usize::from(u16::from_be_bytes([header[2], header[3]]));
         let end = offset + 4 + length;
         let packet = video.get(offset + 4..end).ok_or("fixture RTP payload")?;
         let sequence = packet.get(2..4).ok_or("fixture RTP sequence")?;
         let sequence = u16::from_be_bytes([sequence[0], sequence[1]]);
-        assert!(packets.insert(sequence, packet).is_none(), "duplicate fixture sequence");
+        assert!(
+            packets.insert(sequence, packet).is_none(),
+            "duplicate fixture sequence"
+        );
         offset = end;
     }
     assert!(!packets.is_empty());
@@ -298,8 +318,18 @@ fn verify_saved_receipt(
     complete: bool,
     pictures: usize,
 ) -> Test {
+    let approved = ContentDigest::parse(text(preview, "approval")?)?;
+    // A watchdog plan delegates its nested native capture only after the outer
+    // approval is admitted. Keep that approval while reading native scope/bounds.
+    let preview = preview
+        .object()
+        .and_then(|fields| fields.get("capture"))
+        .unwrap_or(preview);
     let accepted = detail(rows, "replay_accepted")?;
-    assert_eq!(integer(accepted, "play_cseq")?, i128::from(transcript.play_cseq));
+    assert_eq!(
+        integer(accepted, "play_cseq")?,
+        i128::from(transcript.play_cseq)
+    );
     assert_eq!(text(accepted, "requested_range")?, REQUESTED_RANGE);
     assert_eq!(text(accepted, "acknowledged_range")?, ACKNOWLEDGED_RANGE);
     assert_eq!(text(accepted, "historical_frame_time")?, "unknown");
@@ -311,7 +341,10 @@ fn verify_saved_receipt(
     assert_eq!(integer(published, "windows")?, 1);
     assert_eq!(text(published, "requested_range")?, REQUESTED_RANGE);
     assert_eq!(text(published, "acknowledged_range")?, ACKNOWLEDGED_RANGE);
-    assert_eq!(integer(published, "play_cseq")?, i128::from(transcript.play_cseq));
+    assert_eq!(
+        integer(published, "play_cseq")?,
+        i128::from(transcript.play_cseq)
+    );
     assert_eq!(text(published, "historical_frame_time")?, "unknown");
     assert!(!boolean(published, "complete_interval_retrieval")?);
     let replay = value(detail(rows, "terminal")?, "recorder_replay")?;
@@ -331,7 +364,10 @@ fn verify_saved_receipt(
     assert_eq!(text(replay, "request_identity")?, request.to_text());
     let root = ContentDigest::parse(text(published, "root")?)?;
     let scope = catalog_scope(preview)?;
-    assert_eq!(replay_slot(&scope, request)?.as_str(), text(published, "slot")?);
+    assert_eq!(
+        replay_slot(&scope, request)?.as_str(),
+        text(published, "slot")?
+    );
     let publisher = LocalRootPublisher::open(&directory.root(), publication_limits(preview)?)?;
     let receipt = load_replay_receipt(&publisher, root, &scope, request, &NeverCancel)?;
     assert_eq!(receipt.root(), root);
@@ -339,10 +375,16 @@ fn verify_saved_receipt(
     assert_eq!(receipt.request().digest(), request);
     assert_eq!(receipt.request().window().to_string(), REQUESTED_RANGE);
     assert_eq!(receipt.request().scope(), &scope.recording);
-    assert_eq!(receipt.approval(), ContentDigest::parse(text(preview, "approval")?)?);
+    assert_eq!(receipt.approval(), approved);
     assert_eq!(receipt.acceptance().cseq(), transcript.play_cseq);
-    assert_eq!(receipt.acceptance().requested().to_string(), REQUESTED_RANGE);
-    assert_eq!(receipt.acceptance().acknowledged().to_string(), ACKNOWLEDGED_RANGE);
+    assert_eq!(
+        receipt.acceptance().requested().to_string(),
+        REQUESTED_RANGE
+    );
+    assert_eq!(
+        receipt.acceptance().acknowledged().to_string(),
+        ACKNOWLEDGED_RANGE
+    );
     assert_eq!(receipt.termination(), termination);
     assert_eq!(receipt.publication_complete(), complete);
     assert_eq!(receipt.rate_control(), "no");
@@ -354,7 +396,11 @@ fn verify_saved_receipt(
     assert_eq!(window.root(), ContentDigest::parse(text(durable, "root")?)?);
     assert_eq!(window.samples(), pictures);
     let original = load_recording(
-        &publisher, window.slot(), window.root(), &scope.recording, &NeverCancel,
+        &publisher,
+        window.slot(),
+        window.root(),
+        &scope.recording,
+        &NeverCancel,
     )?;
     assert_eq!(original.summary().samples, pictures);
     assert_eq!(original.summary().scope, scope.recording);
@@ -367,7 +413,9 @@ fn verify_saved_receipt(
         let sequence = u16::from_be_bytes([sequence[0], sequence[1]]);
         assert_eq!(
             packet.bytes,
-            *sent.get(&sequence).ok_or("retained packet absent from recorder transmission")?,
+            *sent
+                .get(&sequence)
+                .ok_or("retained packet absent from recorder transmission")?,
             "original recorder datagram changed"
         );
         assert!(
@@ -392,8 +440,14 @@ fn replay_preview_is_read_only_and_interval_changes_require_new_approval() -> Te
     for field in ["sensor", "stream", "anchor", "receive_clock"] {
         assert_eq!(text(&preview, field)?, text(&live, field)?);
     }
-    assert_ne!(text(&preview, "decode_clock")?, text(&live, "decode_clock")?);
-    assert_ne!(text(&preview, "archive_namespace")?, text(&live, "archive_namespace")?);
+    assert_ne!(
+        text(&preview, "decode_clock")?,
+        text(&live, "decode_clock")?
+    );
+    assert_ne!(
+        text(&preview, "archive_namespace")?,
+        text(&live, "archive_namespace")?
+    );
     no_connection(&listener)?;
     assert!(!directory.root().exists());
     assert!(!directory.pins().exists());
@@ -403,7 +457,10 @@ fn replay_preview_is_read_only_and_interval_changes_require_new_approval() -> Te
     let (changed_preview, changed_approval) = plan(&changed)?;
     assert_ne!(changed_approval, approval);
     assert_ne!(
-        text(value(&changed_preview, "recorder_replay")?, "request_identity")?,
+        text(
+            value(&changed_preview, "recorder_replay")?,
+            "request_identity"
+        )?,
         text(replay, "request_identity")?
     );
     changed.extend(["--approve".into(), approval.into()]);
@@ -431,7 +488,10 @@ fn recorder_replay_target_stop_retains_receipt_and_cold_decodable_originals() ->
     );
     assert!(!transcript.source_eof);
     assert_eq!(
-        transcript.requests[..3].iter().map(|request| request.method.as_str()).collect::<Vec<_>>(),
+        transcript.requests[..3]
+            .iter()
+            .map(|request| request.method.as_str())
+            .collect::<Vec<_>>(),
         ["DESCRIBE", "SETUP", "PLAY"]
     );
     let rows = saved_rows(&directory, output)?;
@@ -442,9 +502,59 @@ fn recorder_replay_target_stop_retains_receipt_and_cold_decodable_originals() ->
     assert!(!boolean(terminal, "input_end_observed")?);
     assert_eq!(integer(terminal, "durable_pictures")?, 2);
     verify_saved_receipt(
-        &directory, &preview, &rows, &transcript, ReplayTermination::RequestedStop, true, 2,
+        &directory,
+        &preview,
+        &rows,
+        &transcript,
+        ReplayTermination::RequestedStop,
+        true,
+        2,
     )?;
     import_and_decode(&directory, &rows, 2)
+}
+
+#[test]
+fn recorder_replay_supervised_receipt_retains_the_admitted_outer_approval() -> Test {
+    let directory = Directory::new("replay-supervised")?;
+    let listener = listener()?;
+    let mut arguments = replay_args(&directory, listener.local_addr()?);
+    arguments.extend(["--progress-timeout-ms".into(), "4000".into()]);
+    let preview = parse(&good(run("capture", &arguments)?)?)?;
+    assert_eq!(
+        text(&preview, "schema")?,
+        "fss.rtsp_supervised_capture_cli.v1"
+    );
+    assert_eq!(text(&preview, "phase")?, "planned");
+    let approval = text(&preview, "approval")?.to_owned();
+    let nested = value(&preview, "capture")?;
+    assert_ne!(approval, text(nested, "approval")?);
+    no_connection(&listener)?;
+    assert!(!directory.root().exists());
+    assert!(!directory.pins().exists());
+
+    arguments.extend(["--approve".into(), approval.into()]);
+    let (output, transcript) = capture_replay(listener, &arguments, ReplayBehavior::Target)?;
+    assert!(
+        output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!transcript.source_eof);
+    let rows = saved_rows(&directory, output)?;
+    let terminal = detail(&rows, "terminal")?;
+    assert!(boolean(terminal, "complete")?);
+    assert_eq!(text(terminal, "stop_cause")?, "owner_stopped");
+    assert_eq!(integer(terminal, "durable_pictures")?, 2);
+    verify_saved_receipt(
+        &directory,
+        &preview,
+        &rows,
+        &transcript,
+        ReplayTermination::RequestedStop,
+        true,
+        2,
+    )
 }
 
 #[test]
@@ -456,7 +566,10 @@ fn recorder_replay_early_eof_preserves_durable_prefix_without_completeness_upgra
     let mut approved = arguments;
     approved.extend(["--approve".into(), approval.into()]);
     let (output, transcript) = capture_replay(listener, &approved, ReplayBehavior::EofAfterOne)?;
-    assert!(!output.status.success(), "one historical picture met a two-picture target");
+    assert!(
+        !output.status.success(),
+        "one historical picture met a two-picture target"
+    );
     assert!(transcript.source_eof);
     let rows = saved_rows(&directory, output)?;
     let terminal = detail(&rows, "terminal")?;
@@ -466,7 +579,13 @@ fn recorder_replay_early_eof_preserves_durable_prefix_without_completeness_upgra
     assert!(boolean(terminal, "input_end_observed")?);
     assert_eq!(integer(terminal, "durable_pictures")?, 1);
     verify_saved_receipt(
-        &directory, &preview, &rows, &transcript, ReplayTermination::InputEnded, false, 1,
+        &directory,
+        &preview,
+        &rows,
+        &transcript,
+        ReplayTermination::InputEnded,
+        false,
+        1,
     )?;
     import_and_decode(&directory, &rows, 1)
 }
@@ -484,15 +603,30 @@ fn recorder_replay_bad_acknowledgements_fence_already_offered_video() -> Test {
         let listener = listener()?;
         let approved = approve(&replay_args(&directory, listener.local_addr()?))?;
         let (output, transcript) = capture_replay(
-            listener, &approved, ReplayBehavior::BadAcknowledgement(headers),
+            listener,
+            &approved,
+            ReplayBehavior::BadAcknowledgement(headers),
         )?;
         assert!(!output.status.success());
-        assert_eq!(transcript.requests.len(), 3, "invalid replay acknowledgement caused fallback");
-        assert!(!transcript.video.is_empty(), "fixture never challenged media admission");
+        assert_eq!(
+            transcript.requests.len(),
+            3,
+            "invalid replay acknowledgement caused fallback"
+        );
+        assert!(
+            !transcript.video.is_empty(),
+            "fixture never challenged media admission"
+        );
         let rows = saved_rows(&directory, output)?;
         let terminal = detail(&rows, "terminal")?;
-        assert_eq!(text(terminal, "error_id")?, "ERR-CAPTURE-RTSP-REPLAY-ACK-001");
-        assert_eq!(text(terminal, "stop_cause")?, "replay_acknowledgement_refused");
+        assert_eq!(
+            text(terminal, "error_id")?,
+            "ERR-CAPTURE-RTSP-REPLAY-ACK-001"
+        );
+        assert_eq!(
+            text(terminal, "stop_cause")?,
+            "replay_acknowledgement_refused"
+        );
         assert_eq!(integer(terminal, "collected_pictures")?, 0);
         assert_eq!(integer(terminal, "durable_windows")?, 0);
         assert!(!boolean(terminal, "complete")?);
@@ -502,7 +636,10 @@ fn recorder_replay_bad_acknowledgements_fence_already_offered_video() -> Test {
         assert_eq!(value(replay, "receipt")?, &Value::Null);
         assert!(!rows.iter().any(|row| {
             text(row, "kind").is_ok_and(|kind| {
-                matches!(kind, "replay_accepted" | "replay_receipt_published" | "window_durable")
+                matches!(
+                    kind,
+                    "replay_accepted" | "replay_receipt_published" | "window_durable"
+                )
             })
         }));
     }
@@ -512,17 +649,34 @@ fn recorder_replay_bad_acknowledgements_fence_already_offered_video() -> Test {
 #[test]
 fn recorder_replay_status_refusals_are_typed_and_never_fall_back_to_live() -> Test {
     for (status, error_id, cause) in [
-        (456, "ERR-CAPTURE-RTSP-REPLAY-HEADER-456", "replay_header_not_valid_for_resource"),
-        (457, "ERR-CAPTURE-RTSP-REPLAY-RANGE-457", "replay_range_rejected"),
-        (551, "ERR-CAPTURE-RTSP-REPLAY-OPTION-551", "replay_option_not_supported"),
+        (
+            456,
+            "ERR-CAPTURE-RTSP-REPLAY-HEADER-456",
+            "replay_header_not_valid_for_resource",
+        ),
+        (
+            457,
+            "ERR-CAPTURE-RTSP-REPLAY-RANGE-457",
+            "replay_range_rejected",
+        ),
+        (
+            551,
+            "ERR-CAPTURE-RTSP-REPLAY-OPTION-551",
+            "replay_option_not_supported",
+        ),
     ] {
         let directory = Directory::new("replay-status")?;
         let listener = listener()?;
         let approved = approve(&replay_args(&directory, listener.local_addr()?))?;
-        let (output, transcript) = capture_replay(listener, &approved, ReplayBehavior::Rejected(status))?;
+        let (output, transcript) =
+            capture_replay(listener, &approved, ReplayBehavior::Rejected(status))?;
         assert!(!output.status.success());
         assert_eq!(
-            transcript.requests.iter().map(|request| request.method.as_str()).collect::<Vec<_>>(),
+            transcript
+                .requests
+                .iter()
+                .map(|request| request.method.as_str())
+                .collect::<Vec<_>>(),
             ["DESCRIBE", "SETUP", "PLAY"]
         );
         assert!(transcript.video.is_empty());

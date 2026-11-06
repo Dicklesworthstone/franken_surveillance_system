@@ -29,13 +29,25 @@ attempts can retain receipts over their durable prefixes without changing their
 capture error. No requested-interval completion, historical frame timestamp,
 upstream retention inventory or device qualification is inferred.
 
+`fss-archive inspect-replay` exposes pinned cold retrieval as an operator command.
+It requires the existing archive and independent request/root/scope identities,
+re-verifies every original, then emits at most 64 KiB of metadata. Missing or
+altered pins, locked/incomplete storage, budget exhaustion and tombstoned originals
+refuse without a success report. Supervised capture receipts retain the exact
+outer approval, including their watchdog policy.
+
 The local execution environment disconnected before replay builds. Supplementary
 native run 42270744851 at protocol checkpoint 8bc2267 then passed all 15 new
 protocol contracts, all 298 existing capture-binary unit tests and the selected
 keepalive/reconnect integrations. The overall job retains unchanged qualification
 failures and a HEVC description-refusal test already failing before replay.
-The 15 receipt contracts and new CLI planning/loopback contracts are authored
-and independently source-reviewed; their native execution is pending here.
+After the environment returned, Cargo checking passed for both replay protocol
+and receipt contract targets, both capture/archive binaries, and the affected
+CLI integration targets with the pinned toolchain and unchanged locked
+dependencies. Full native compilation was killed in existing Asupersync code.
+The 15 receipt contracts, new CLI planning/six loopback contracts and eight archive
+process contracts are authored and independently source-reviewed; their native
+execution is pending here.
 See `docs/RTSP_RECORDER_REPLAY.md`. This advances
 `fss-vit022-recorder-retrieval-5js5o`; discovery, frame-time indexing,
 retention inventory and general recorder qualification keep the broad bead open.
@@ -57,7 +69,9 @@ with pinned nightly `2026-08-31` and the unchanged locked dependency set. Litera
 mixed-sign cases and an independent coordinate oracle check ranks 1–4, exact
 bits, canonical artifact export/reload, Pad-to-Conv execution, control/data dual
 use, helper-name collisions, malformed controls, budgets and cancellation.
-The production Model IR library target also passed all 20 tests. This advances
+The recovered complete post-Pad Model IR package run passed all 290 tests with
+zero failures or ignored tests, including the 20 production library tests. Its
+tested Pad/importer/Resize sources match the published blobs. This advances
 `fss-x4a.14.10`; general ONNX coverage and deployment qualification remain open.
 
 ## Fractional and shrinking ONNX Resize (2026-11-06; native integration verified)
