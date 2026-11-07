@@ -8,6 +8,97 @@ use crate::{FssCommand, parse_fss_args};
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
+fn set_pins() -> Vec<(String, String)> {
+    let mut values = pins();
+    values.retain(|(key, _)| key != "--catalog-slot" && key != "--catalog-root");
+    values.push((
+        "--catalogs".to_owned(),
+        format!(
+            "catalog-b={},catalog-a={}",
+            ContentDigest::sha256(b"catalog b"),
+            ContentDigest::sha256(b"catalog a"),
+        ),
+    ));
+    values
+}
+
+#[test]
+fn catalog_set_grammar_preserves_source_scope_and_exact_integers() -> TestResult {
+    let values = set_pins();
+    let command = parse(&values, false)?;
+    assert_eq!(command, parse(&values, true)?);
+    let FssCommand::RecordingSetQuery(args) = command else {
+        return Err("catalog set dispatched to a singleton or UTC owner".into());
+    };
+    assert_eq!(args.request.recording.catalogs.len(), 2);
+    assert_eq!(
+        args.request.recording.catalogs[0].slot.as_str(),
+        "catalog-b"
+    );
+    assert_eq!(
+        args.request.recording.catalogs[1].root,
+        ContentDigest::sha256(b"catalog a")
+    );
+    assert_eq!(args.request.recording.interval, 0..u64::MAX);
+    assert_eq!(args.request.recording.scope.time_scale, 90_000);
+    assert_eq!(args.request.recording.max_windows, 32);
+    assert_eq!(args.archive_root, PathBuf::from("/owner/archive"));
+    Ok(())
+}
+
+#[test]
+fn catalog_set_rejects_ambiguous_pins_mixed_clocks_and_unbounded_inputs() -> TestResult {
+    let valid = set_pins();
+    for (name, value) in [
+        ("--catalog-slot", "single"),
+        ("--catalog-root", "sha256:bad"),
+        ("--clock-slot", "clock"),
+        ("--clock-root", "sha256:bad"),
+        ("--start-utc-ns", "0"),
+        ("--end-utc-ns", "1"),
+        ("--from-ns", "0"),
+        ("--at", "latest"),
+        ("--hydrate", "H3"),
+    ] {
+        let mut values = valid.clone();
+        values.push((name.to_owned(), value.to_owned()));
+        assert!(parse(&values, false).is_err(), "accepted {name}");
+    }
+    let digest = ContentDigest::sha256(b"same").to_text();
+    let different = ContentDigest::sha256(b"different").to_text();
+    for value in [
+        String::new(),
+        "catalog".to_owned(),
+        format!("catalog={digest},"),
+        format!("../catalog={digest}"),
+        format!("catalog={digest},catalog={different}"),
+        format!("first={digest},second={digest}"),
+        format!("catalog = {digest}"),
+        (0..9)
+            .map(|i| format!("catalog-{i}={}", ContentDigest::sha256(&[i])))
+            .collect::<Vec<_>>()
+            .join(","),
+        "x".repeat(2000),
+    ] {
+        let mut values = valid.clone();
+        values
+            .iter_mut()
+            .find(|(name, _)| name == "--catalogs")
+            .ok_or("missing test catalogs")?
+            .1 = value;
+        assert!(parse(&values, false).is_err());
+    }
+    for missing in valid.iter().map(|(name, _)| name) {
+        let values = valid
+            .iter()
+            .filter(|(name, _)| name != missing)
+            .cloned()
+            .collect::<Vec<_>>();
+        assert!(parse(&values, false).is_err(), "accepted missing {missing}");
+    }
+    Ok(())
+}
+
 fn pins() -> Vec<(String, String)> {
     [
         ("--target", "recordings".to_owned()),

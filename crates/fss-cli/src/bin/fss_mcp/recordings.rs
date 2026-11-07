@@ -18,6 +18,7 @@ pub(super) fn arguments(
             "codec",
             "catalog_slot",
             "catalog_root",
+            "catalogs",
             "sensor",
             "stream",
             "generation",
@@ -46,6 +47,15 @@ pub(super) fn arguments(
     let utc = ["clock_slot", "clock_root", "start_utc_ns", "end_utc_ns"]
         .iter()
         .any(|field| fields.contains_key(*field));
+    let catalog_set = fields.contains_key("catalogs");
+    if catalog_set
+        && (utc || fields.contains_key("catalog_slot") || fields.contains_key("catalog_root"))
+    {
+        return Err((
+            -32602,
+            "Catalog sets require decode-clock bounds and exclude singleton or UTC pins",
+        ));
+    }
     if utc
         && ["start_tick", "end_tick"]
             .iter()
@@ -61,10 +71,52 @@ pub(super) fn arguments(
         "--archive-root".into(),
         archive_root.to_os_string(),
     ]);
+    if let Some(value) = fields.get("catalogs") {
+        let Value::Array(pins) = value else {
+            return Err((-32602, "Expected a bounded array of exact catalog pins"));
+        };
+        if !(1..=8).contains(&pins.len()) {
+            return Err((-32602, "Expected one to eight catalog pins"));
+        }
+        let mut tokens = Vec::with_capacity(pins.len());
+        for pin in pins {
+            let object = pin
+                .object()
+                .filter(|object| object.len() == 2)
+                .ok_or((-32602, "Catalog pins contain only slot and root"))?;
+            let slot = object
+                .get("slot")
+                .and_then(Value::text)
+                .filter(|text| {
+                    !text.is_empty()
+                        && text.len() <= 128
+                        && text.bytes().all(|byte| {
+                            byte.is_ascii_lowercase()
+                                || byte.is_ascii_digit()
+                                || byte == b'_'
+                                || byte == b'-'
+                        })
+                })
+                .ok_or((-32602, "Expected an exact catalog publication slot"))?;
+            let root = object
+                .get("root")
+                .and_then(Value::text)
+                .filter(|text| {
+                    text.len() == 71
+                        && text.starts_with("sha256:")
+                        && text[7..]
+                            .bytes()
+                            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                })
+                .ok_or((-32602, "Expected a canonical SHA-256 catalog root"))?;
+            tokens.push(format!("{slot}={root}"));
+        }
+        argv.push(format!("--catalogs={}", tokens.join(",")).into());
+    }
     for (field, option, bound, required) in [
         ("codec", "codec", 4, true),
-        ("catalog_slot", "catalog-slot", 128, true),
-        ("catalog_root", "catalog-root", 71, true),
+        ("catalog_slot", "catalog-slot", 128, !catalog_set),
+        ("catalog_root", "catalog-root", 71, !catalog_set),
         ("sensor", "sensor", 128, true),
         ("stream", "stream", 128, true),
         ("generation", "generation", 20, true),

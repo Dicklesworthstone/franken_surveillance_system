@@ -14,6 +14,8 @@ mod recording_support;
 mod clock_support;
 #[path = "recording_query_contract/utc.rs"]
 mod utc;
+#[path = "recording_query_contract/set.rs"]
+mod set;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
@@ -263,6 +265,7 @@ fn prepare_archive(
             publish(root, &b, second.manifest())?;
             let leaves = first
                 .children()
+                .into_iter()
                 .chain(second.children())
                 .map(|(_, digest, _)| digest)
                 .collect();
@@ -290,6 +293,7 @@ fn prepare_archive(
             let leaves = first
                 .publication_plan()
                 .children()
+                .into_iter()
                 .chain(second.publication_plan().children())
                 .map(|(_, digest, _)| digest)
                 .collect();

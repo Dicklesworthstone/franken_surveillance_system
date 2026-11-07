@@ -103,6 +103,7 @@ pub(crate) fn parse_query_command(tokens: &[ArgToken]) -> Result<FssCommand, Cli
             "--codec",
             "--catalog-slot",
             "--catalog-root",
+            "--catalogs",
             "--generation",
             "--source-anchor",
             "--receive-clock",
@@ -127,6 +128,10 @@ pub(crate) fn parse_query_command(tokens: &[ArgToken]) -> Result<FssCommand, Cli
             parse_footage_query_args(tokens).map(FssCommand::FootageQuery)
         }
         Some((_, target, _)) if target == "recordings" => {
+            if take(&values, "--catalogs").is_some() {
+                return crate::recording_query_cmd::set::parse_recording_set_query_args(tokens)
+                    .map(FssCommand::RecordingSetQuery);
+            }
             if [
                 "--clock-slot",
                 "--clock-root",

@@ -13,6 +13,131 @@ const DECODE: &str = "sha256:444444444444444444444444444444444444444444444444444
 const CLOCK: &str = "sha256:5555555555555555555555555555555555555555555555555555555555555555";
 const ANCHOR: &str = "anchor:aaaaaaaaaaaaaaaa:0:none:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
+fn set_fields(codec: &str) -> Fields {
+    let mut values = fields(codec);
+    values.remove("catalog_slot");
+    values.remove("catalog_root");
+    values.insert("catalogs", format!(
+        r#"[{{"slot":"camera_catalog-1","root":"{CATALOG}"}},{{"slot":"camera_catalog-2","root":"{CLOCK}"}}]"#,
+    ));
+    values
+}
+
+fn native_set(codec: &str) -> Test<FssCommand> {
+    use fss_reference::agent_recording_context::set::RecordingSetContextRequest;
+    use fss_reference::agent_recordings::set::{RecordingCatalogPin, RecordingSetQueryRequest};
+    let FssCommand::RecordingQuery(base) = native(codec, false)? else {
+        return Err("expected singleton fixture".into());
+    };
+    let source = base.request.recording;
+    Ok(FssCommand::RecordingSetQuery(
+        fss_cli::recording_query_cmd::set::RecordingSetQueryArgs {
+            root: base.root,
+            archive_root: base.archive_root,
+            request: RecordingSetContextRequest {
+                principal: base.request.principal,
+                expected_anchor: base.request.expected_anchor,
+                recording: RecordingSetQueryRequest {
+                    codec: source.codec,
+                    scope: source.scope,
+                    interval: source.interval,
+                    max_windows: source.max_windows,
+                    max_hydration_bytes: source.max_hydration_bytes,
+                    catalogs: vec![
+                        RecordingCatalogPin {
+                            slot: source.catalog_slot,
+                            root: source.catalog_root,
+                        },
+                        RecordingCatalogPin {
+                            slot: fss_publication::SlotName::parse("camera_catalog-2")?,
+                            root: fss_core::ContentDigest::parse(CLOCK)?,
+                        },
+                    ],
+                },
+            },
+        },
+    ))
+}
+
+#[test]
+fn catalog_set_dispatch_preserves_native_identity_responses_and_owner_binding() -> Test {
+    for codec in ["avc", "hevc"] {
+        let expected = native_set(codec)?;
+        let values = set_fields(codec);
+        let mut server = ready(true);
+        for exit in [ExitIdentity::SUCCESS, ExitIdentity::AGENT_REFUSED] {
+            let bytes =
+                "{\"catalogs\":2,\"payloadAvailability\":\"unknown\",\"sourceBytesRead\":false}\n";
+            let mut calls = 0;
+            let answer = server
+                .handle_with(&request(&values), |command| {
+                    calls += 1;
+                    assert_eq!(command, expected);
+                    (bytes.to_owned(), exit)
+                })
+                .ok_or("missing catalog-set response")?;
+            assert_eq!(calls, 1);
+            assert_eq!(
+                response_text(&answer)?,
+                (bytes.to_owned(), exit != ExitIdentity::SUCCESS)
+            );
+        }
+        refused(&mut ready(false), &values);
+    }
+    Ok(())
+}
+
+#[test]
+fn catalog_set_mcp_refuses_mixed_modes_nested_overrides_and_delimiter_injection() {
+    let valid = set_fields("avc");
+    let mut server = ready(true);
+    for (field, value) in [
+        ("catalog_slot", quote("single")),
+        ("catalog_root", quote(CATALOG)),
+        ("clock_slot", quote("clock")),
+        ("clock_root", quote(CLOCK)),
+        ("start_utc_ns", quote("0")),
+        ("end_utc_ns", quote("1")),
+        ("archive_root", quote("/other/archive")),
+        ("root", quote("/other")),
+        ("principal", quote("principal:other")),
+        ("from_ns", quote("0")),
+    ] {
+        let mut values = valid.clone();
+        values.insert(field, value);
+        refused(&mut server, &values);
+    }
+    for pins in [
+        "null".to_owned(),
+        "[]".to_owned(),
+        "{}".to_owned(),
+        "[null]".to_owned(),
+        format!(r#"[{{"slot":"first","root":"{CATALOG}","path":"/other"}}]"#),
+        format!(r#"[{{"slot":"first,second=bad","root":"{CATALOG}"}}]"#),
+        format!(r#"[{{"slot":"first","root":"{CATALOG},second={CLOCK}"}}]"#),
+        format!(
+            r#"[{{"slot":"first","root":"{CATALOG}"}},{{"slot":"second","root":"{CATALOG}"}}]"#
+        ),
+        format!(r#"[{{"slot":"first","root":"{CATALOG}"}},{{"slot":"first","root":"{CLOCK}"}}]"#),
+        format!(
+            "[{}]",
+            (0..9)
+                .map(|i| format!(r#"{{"slot":"catalog-{i}","root":"{CATALOG}"}}"#))
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+    ] {
+        let mut values = valid.clone();
+        values.insert("catalogs", pins);
+        refused(&mut server, &values);
+    }
+    for missing in valid.keys() {
+        let mut values = valid.clone();
+        values.remove(missing);
+        refused(&mut server, &values);
+    }
+}
+
 fn ready(archive: bool) -> Server {
     let mut server = Server::new(
         "/owner/deployment".into(),

@@ -4,6 +4,9 @@
 /// Explicit retained-clock UTC selection, separate from the legacy decode-clock request.
 pub mod utc;
 
+/// One shared decode-clock query over explicitly pinned catalogs.
+pub mod set;
+
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -135,7 +138,9 @@ fn expected_anchor(values: &[(String, String, usize)]) -> Result<Option<AnchorTo
         .transpose()
 }
 
-fn recording_pins(values: &[(String, String, usize)]) -> Result<RecordingPins, CliError> {
+fn recording_source_pins(
+    values: &[(String, String, usize)],
+) -> Result<(RecordingQueryCodec, CatalogScope, usize, u64), CliError> {
     let (target, target_index) = required(values, "--target")?;
     if target != "recordings" {
         return Err(malformed(
@@ -157,9 +162,6 @@ fn recording_pins(values: &[(String, String, usize)]) -> Result<RecordingPins, C
     let (stream, index) = required(values, "--stream")?;
     let stream = StreamId::parse(stream)
         .map_err(|_| malformed("--stream", stream, "invalid stream identity", index))?;
-    let (slot, index) = required(values, "--catalog-slot")?;
-    let catalog_slot = SlotName::parse(slot)
-        .map_err(|_| malformed("--catalog-slot", slot, "invalid publication slot", index))?;
     let (time_scale, index) = required(values, "--time-scale")?;
     let time_scale = number::<u32>("--time-scale", time_scale, index)?;
     let max_windows = take(values, "--max-windows")
@@ -178,9 +180,9 @@ fn recording_pins(values: &[(String, String, usize)]) -> Result<RecordingPins, C
         .map(|(_, value, index)| number::<u64>("--max-hydration-bytes", value, *index))
         .transpose()?
         .unwrap_or((32 * MAX_RECORDING_BYTES) as u64);
-    Ok(RecordingPins {
+    Ok((
         codec,
-        scope: CatalogScope {
+        CatalogScope {
             recording: RecordingScope {
                 sensor,
                 stream,
@@ -191,6 +193,19 @@ fn recording_pins(values: &[(String, String, usize)]) -> Result<RecordingPins, C
             decode_clock: pin_digest(values, "--decode-clock")?,
             time_scale,
         },
+        max_windows,
+        max_hydration_bytes,
+    ))
+}
+
+fn recording_pins(values: &[(String, String, usize)]) -> Result<RecordingPins, CliError> {
+    let (codec, scope, max_windows, max_hydration_bytes) = recording_source_pins(values)?;
+    let (slot, index) = required(values, "--catalog-slot")?;
+    let catalog_slot = SlotName::parse(slot)
+        .map_err(|_| malformed("--catalog-slot", slot, "invalid publication slot", index))?;
+    Ok(RecordingPins {
+        codec,
+        scope,
         catalog_slot,
         catalog_root: pin_digest(values, "--catalog-root")?,
         max_windows,

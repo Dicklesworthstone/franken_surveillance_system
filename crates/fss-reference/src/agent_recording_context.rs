@@ -10,6 +10,9 @@
 /// Conditional UTC metadata queries with the same protected deployment owner.
 pub mod utc;
 
+/// Bounded multi-catalog decode-clock queries with the same protected deployment owner.
+pub mod set;
+
 use std::path::Path;
 
 use fss_core::{

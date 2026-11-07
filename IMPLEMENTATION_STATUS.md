@@ -4,6 +4,38 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Queries across pinned recording catalogs
+
+The reference recording query now accepts one to eight explicitly pinned AVC or
+HEVC catalogs in the same exact sensor, stream generation, historical anchor and
+receive/decode-clock scope. One shared metadata allowance and final revalidation
+cover every catalog and member. Identical recording windows retain all immutable
+catalog memberships while sharing one result row and whole-window byte quote.
+Indexed gaps come from the interval union; conflicts or incomplete observations
+refuse the entire request.
+
+`fss query --target recordings --catalogs slot=root,...` and the MCP `query`
+`catalogs` array use the same native path and existing AOP-005 response envelope.
+Current deployment context brackets the archive read, and committed deletion of
+any referenced source, including an unselected member, refuses discovery. Current
+hypotheses, obligations, explicit uncertainty and H0-only metadata handles remain
+in the protected response. CLI output is bounded to 32 unique windows and 256 KiB;
+no successful prefix is emitted on quota or final-validation failure.
+
+This advances VIT-008 (`fss-vit-je36t.8`) while leaving global archive discovery,
+cross-clock/UTC catalog sets, source-media hydration, continuous operation and
+live qualification open. See [the exact API, CLI and MCP contract](docs/RECORDING_CATALOG_SET_QUERY.md).
+
+**Validation:** 30 new native contracts are authored: 14 catalog-set, nine
+current-deployment, two CLI grammar, two MCP dispatch and three actual CLI process
+cases. Scoped pinned-toolchain formatting, independent source review and the
+changed-file unsafe-prohibition check pass. The MCP schema passes 299 acceptance
+and refusal checks under each of JSON Schema Draft 7 and Draft 2020-12, and the
+complete discovery response remains within its native parser bounds. The exact
+pinned-toolchain native test build was killed (SIGKILL) while compiling unchanged
+Asupersync 0.5.0, before the new recording targets were reached. Those native
+contracts remain unexecuted; no release or live-device qualification is claimed.
+
 ## Webhook deadlines after source validation
 
 Native webhook dispatch now retains the monotonic timestamp returned by its

@@ -60,14 +60,70 @@ Before a result is released, every admitted metadata object is rehashed and
 every exact publication binding and referenced deletion marker is checked
 again. An earlier catalog binding, metadata object, or deletion marker that
 differs at final revalidation invalidates the whole request. Cancellation,
-missing metadata, conflicting
-descriptors, pending publication or exhausted allowance returns a refusal,
+missing metadata, conflicting descriptors, pending publication or exhausted allowance returns a refusal,
 never a successful prefix.
 
 The result also carries the complete reference union, including unselected
 member roots and source leaves, for a protected caller to check against its
 current deletion authority. These filesystem observations do not create an
 atomic snapshot or grant authority to hydrate or disclose media.
+
+## CLI and MCP entrypoints
+
+The existing `fss query --target recordings` command accepts `--catalogs` in
+place of `--catalog-slot` and `--catalog-root`. Supply a comma-separated list
+of exact `slot=sha256:<64 lowercase hexadecimal digits>` pairs. The other
+source pins have their existing meanings. For example, with shell variables
+set to actual approved roots and exact source identities:
+
+```bash
+fss query --json --target recordings \
+  --root "$deployment_root" --archive-root "$archive_root" \
+  --codec avc \
+  --catalogs "catalog-one=$catalog_one_root,catalog-two=$catalog_two_root" \
+  --sensor sensor:front-door --stream stream:primary --generation 1 \
+  --source-anchor "$source_anchor" --receive-clock "$receive_clock" \
+  --decode-clock "$decode_clock" --time-scale 90000 \
+  --start-tick 0 --end-tick 180000 \
+  --max-windows 32 --max-hydration-bytes 67108864
+```
+
+Use `--codec hevc` for the same HEVC metadata path. Optional `--principal` and
+`--anchor` keep their existing current-deployment meanings. The catalog set
+uses one native decode clock; singleton catalog flags and UTC/clock companion
+flags cannot be mixed into this mode. Existing singleton tick and UTC queries
+retain their grammars and owners.
+
+The MCP `query` tool exposes `catalogs` as an array of one to eight closed
+objects with `slot` and `root` fields. Send the same source pins and tick bounds
+as in the CLI, using decimal strings for exact large integer pins. Its archive
+root is fixed when the server launches; a request cannot override the deployment
+or archive owner. MCP dispatches through the same native parser, execution and
+response projection as the CLI. Both return the existing AOP-005 envelope,
+not a separate export or media interface.
+
+## Current deployment context and output
+
+The protected reader is
+`fss_reference::agent_recording_context::set::query_recording_set_in_deployment`.
+It reads current deployment metadata before and after the complete native query
+using one nonrefillable deployment allowance. An obsolete expected anchor,
+changed current effect history or layout, or any committed deletion intersecting
+the complete archive reference union refuses the whole query. Unselected member
+sources participate in that check. Matching observations still do not promise an
+atomic snapshot across the independently owned archive and deployment.
+
+The response retains the current situation frame, hypotheses and obligations.
+Catalog propositions identify every admitted catalog. Each unique window
+proposition lists all immutable catalog memberships; overlap-derived indexed
+gaps remain distinct from physical absence. Source payload availability and
+trusted UTC stay unknown. Metadata handles are unique and H0-only. A whole-window
+byte quote estimates later work and grants no media hydration or disclosure.
+
+The CLI defaults to at most 32 selected unique windows. Its complete response
+must fit within 256 KiB, and reads have a cooperative 60-second deadline.
+Selection, budget, cancellation or output-size failure returns a refusal instead
+of a truncated success.
 
 ## Regression scope
 
@@ -77,6 +133,15 @@ order, catalog-bound row identity, scope and pin refusal, shared budgets,
 overlapping intervals, conflicting rehashed descriptors, cancellation,
 unselected members, and mutations that require final global revalidation.
 
-The initial implementation has passed scoped pinned-toolchain Rust formatting
-and independent source review. Native execution and deployment qualification
-must be reported separately; authored tests are not a test pass.
+Nine deployment-context tests exercise current hypotheses, anchor changes,
+shared budgets, writer locks, unread payload corruption, in-flight deployment
+changes, and an actual committed deletion that leaves independent archive bytes
+intact. CLI and MCP contracts cover strict grammar, both codecs, immutable owner
+binding, refusal propagation and byte-identical native dispatch. Three process
+contracts exercise the real CLI executable, canonical pin order, shared windows
+and late-catalog refusal.
+
+Validation results are recorded in the session handoff. Authored regression cases
+and source review are not substitutes for native execution or deployment
+qualification. VIT-008 remains open for broader archive discovery, cross-clock
+and UTC catalog-set selection, continuous operation and live qualification.

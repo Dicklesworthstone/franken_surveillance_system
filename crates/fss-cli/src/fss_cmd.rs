@@ -22,6 +22,7 @@ use crate::orient_cmd::{
 use crate::query_cmd::{QueryArgs, execute_query};
 use crate::recording_query_cmd::utc::{RecordingUtcQueryArgs, execute_recording_utc_query};
 use crate::recording_query_cmd::{RecordingQueryArgs, execute_recording_query};
+use crate::recording_query_cmd::set::{RecordingSetQueryArgs, execute_recording_set_query};
 use crate::session_cmd::{SessionCommand, execute_session, parse_handoff, parse_session_args};
 use crate::site_cmd::{SiteCommand, execute_site, parse_site_args};
 use crate::status_cmd::{StatusArgs, execute_status, parse_status_args};
@@ -65,6 +66,8 @@ pub enum FssCommand {
     FootageQuery(FootageQueryArgs),
     /// Read-only AOP-005 exact native AVC/HEVC recording catalog metadata.
     RecordingQuery(RecordingQueryArgs),
+    /// One bounded query over explicitly pinned recording catalogs in one decode clock.
+    RecordingSetQuery(RecordingSetQueryArgs),
     /// Read-only AOP-005 UTC candidates under one exact retained node-clock companion.
     RecordingUtcQuery(RecordingUtcQueryArgs),
     /// AOP-006 investigate: durable mission-scoped investigation cases (agent-plane cognition writes; no probe is executed and no effect authority is granted).
@@ -98,6 +101,7 @@ impl FssCommand {
             | Self::Query(_)
             | Self::FootageQuery(_)
             | Self::RecordingQuery(_)
+            | Self::RecordingSetQuery(_)
             | Self::RecordingUtcQuery(_)
             | Self::Investigate(_)
             | Self::Probe(_)
@@ -461,6 +465,7 @@ pub fn execute_fss_with_exit(command: FssCommand) -> (String, ExitIdentity) {
         FssCommand::Query(ref args) => execute_query(args),
         FssCommand::FootageQuery(ref args) => execute_footage_query(args),
         FssCommand::RecordingQuery(ref args) => execute_recording_query(args),
+        FssCommand::RecordingSetQuery(ref args) => execute_recording_set_query(args),
         FssCommand::RecordingUtcQuery(ref args) => execute_recording_utc_query(args),
         FssCommand::Investigate(ref args) => execute_investigate(args),
         FssCommand::Probe(ref args) => crate::probe_cmd::execute_probe(args),

@@ -1,0 +1,154 @@
+{
+  "format": "engineering-session-handoff",
+  "date": "2026-11-07",
+  "state": "session_complete_scoped_validation_native_blocked",
+  "mission": {
+    "goal": "Implement consequential remaining functionality from the comprehensive plan and beads through meaningful direct-main commits.",
+    "basis": [
+      "AGENTS.md",
+      "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md",
+      ".beads/issues.jsonl",
+      "docs/SESSION_HANDOFF_2026-11-07_UTC_RECORDINGS.json"
+    ],
+    "base_commit": "ef7972ad2f773fecc501a907dbc2f87bda21c8fa",
+    "requirement": "VIT-008",
+    "bead": "fss-vit-je36t.8",
+    "bead_state": "remains_open"
+  },
+  "authority": {
+    "git": "User explicitly authorized direct-main GitHub commits, without PRs; non-force expected-head updates.",
+    "live_device_execution": false,
+    "deployed_storage_mutation": false
+  },
+  "implemented": [
+    "Bounded metadata query over one to eight exact same-scope AVC/HEVC catalog pins.",
+    "One shared metadata allowance and final revalidation; unique windows retain immutable catalog memberships and are quoted once; indexed gaps use the interval union.",
+    "Current deployment context and complete-reference deletion fencing, including unselected source leaves.",
+    "Canonical CLI --catalogs and fixed-root MCP catalogs array through the existing AOP-005 envelope; current hypotheses, obligations, H0 handles and explicit unknowns.",
+    "Closed mode selection, exact integer and pin grammar, refusal without a successful prefix, and strict discovery-schema slot terminators.",
+    "Five existing recording-test array iterator compile defects repaired."
+  ],
+  "budgets": {
+    "catalogs": 8,
+    "aggregate_admitted_descriptors": 64,
+    "archive_read_bytes": 8388608,
+    "archive_io_calls": 10000,
+    "cli_selected_unique_windows": 32,
+    "cli_response_bytes": 262144,
+    "cli_cooperative_deadline_seconds": 60
+  },
+  "published_checkpoints": [
+    {
+      "commit": "a5affcdce4f2a8d85a6718e245f309228278b26b",
+      "change": "Native catalog-set query, fourteen contracts, three existing fixture repairs and exact contract documentation."
+    },
+    {
+      "commit": "this_commit",
+      "change": "Current-deployment, CLI and MCP integration, sixteen more native contracts, two existing fixture repairs, strict schemas and usage guidance."
+    }
+  ],
+  "verification": {
+    "toolchain": "nightly-2026-08-31; rustc 1.100.0-nightly (908501772 2026-08-30)",
+    "native_contracts_authored": {
+      "catalog_set": 14,
+      "deployment_context": 9,
+      "cli_grammar": 2,
+      "mcp_dispatch": 2,
+      "cli_process": 3,
+      "total": 30
+    },
+    "new_native_contracts_executed": 0,
+    "native_build": {
+      "command": "cargo test --locked --offline -p fss-reference --test agent_recordings_set_contract --test agent_recording_set_context_contract --test agent_recordings_contract --test agent_recordings_utc_contract",
+      "exit_code": 101,
+      "result": "Unchanged asupersync 0.5.0 rustc was killed by SIGKILL before recording target typechecking or execution; no completed Asupersync metadata artifact was emitted.",
+      "log_sha256": "fed3010a39264177f876ba00a5b41043c47b5d0f62c316d6d0d6732187662dad",
+      "build_flags": "jobs=1; debug=0; incremental=0; -Zunstable-options --jobs-frontend=1 --jobs-backend=1 --jobs-linker=1 -Zmir-opt-level=0 -Zfewer-names=yes -Ccodegen-units=256",
+      "checkout_synchronized_to_before_application_crates": "8a09094c6e7d4cd759b86bf87d1f2c4a05a38600"
+    },
+    "scoped_rustfmt": "Passed with pinned rustfmt on all new standalone modules/tests and changed recording/MCP helper tests. No full-workspace formatting pass is claimed.",
+    "changed_rust_unsafe_prohibition": {
+      "files": 18,
+      "findings": 0
+    },
+    "independent_source_reviews": "Core selection, deployment deletion fencing, grammar/projection and test API review completed; no remaining concrete blocker identified.",
+    "digest_domains": {
+      "new": 7,
+      "registered_once": true
+    },
+    "mcp_schema": {
+      "validator": "jsonschema 4.26.0",
+      "drafts": [
+        "Draft 7",
+        "Draft 2020-12"
+      ],
+      "cases_passed_per_draft": 299,
+      "total_case_validations_passed": 598,
+      "tool_schemas_validated": 14,
+      "script_sha256": "fe85349efbad59fefb7072910595f23fff01c1429c12948ab98af80e47371d45",
+      "primary_report_sha256": "03d4d8c8b324220219caa9095d65e43402f3e9b30f5150ba15f1af719d19d059",
+      "additional_boundary_report_sha256": "f944618da51562e1de0c2af1199f37f180c3a6374d00b0323f856802406b6f36",
+      "full_discovery_frame": {
+        "bytes": 50092,
+        "value_nodes": 2447,
+        "depth": 15,
+        "sha256": "57bcd7a326e3ea209e33cb98ee191c12dcd374a80d17747f16474d467775e8d2"
+      },
+      "worst_valid_escaped_id_frame": {
+        "bytes": 50861,
+        "value_nodes": 2447,
+        "depth": 15,
+        "sha256": "f27650f67f1319437632db6d50b807b82d3ffb7d151bf87b72fa8e123fc85a21"
+      },
+      "measurement_scope": "Python JSON/schema validation and traversal; not native parser or transport execution."
+    },
+    "native_discovery_parser_probe": {
+      "result": "Pinned std-only rustc compilation exceeded its 120-second timeout; zero tests executed; no retry.",
+      "authored_tests": 6,
+      "unchanged_production_parser_sha256": "d7fbd9834ca7c395206fff016c44669a610e713419f058381290926d5fb0e04d"
+    },
+    "release_qualified": false,
+    "integration_source_sha256": {
+      "crates/fss-cli/src/bin/fss_mcp/recording_tests.rs": "ef61f7333586ccca10644d0979a85ba22eb072438a71118dcbf5f2f84375717b",
+      "crates/fss-cli/src/bin/fss_mcp/recordings.rs": "e43a8310dab4be9e3c6b5fb095bb8cc8cb0e72ea4610cb33468660b50ea0cdec",
+      "crates/fss-cli/src/bin/fss_mcp/server.rs": "56e3a838b990db3ce0501e783e40b730a2863ce369f95af01595e80d9649ad87",
+      "crates/fss-cli/src/footage_query_cmd.rs": "cfba2bee85b8775c3c92fc4e9e062a0ba0badae92ee6b5390e98ebad77f4fa8e",
+      "crates/fss-cli/src/fss_cmd.rs": "c078c196faf41951cd64a67ee1998c815eb5c4950580a42c339e4f65b19296e3",
+      "crates/fss-cli/src/recording_query_cmd.rs": "8131a4346435418b0b0dbe080f2cd681b1ff2a2503396e66d42289349fa07b8c",
+      "crates/fss-cli/src/recording_query_cmd/tests.rs": "ad2865f7f85aa2092b21689867567212cb30740eca96790db51205d086fafda0",
+      "crates/fss-cli/src/recording_query_cmd/set.rs": "f56e166c047926bdf8a92ace061ca5e1f5c78025bddedc5d9d86c7395d6ca726",
+      "crates/fss-cli/tests/recording_query_contract.rs": "b9fe363dd6ac9bda50327c79b289b29d1aec5fea99f35bfa695bd3a11221b276",
+      "crates/fss-cli/tests/recording_query_contract/set.rs": "ed57a78cf1f8b8a24715d8b556a480c1d6b7a227ff012ef6fb3bfa216d58a430",
+      "crates/fss-reference/src/agent_recording_context.rs": "f9b9090bc8e53ac3b4e47de0fd936d75a054e8c1b94e8cfd699f2c4c716e81b5",
+      "crates/fss-reference/src/agent_recording_context/set.rs": "e5b84e10447f1b0041f460a856b73a7a6a0c5937089fbdff7dd06465be50a400",
+      "crates/fss-reference/tests/agent_recording_set_context_contract.rs": "fde189c210d58dec1b9fa51fa786c81dedaa5244aa18d080d5a3fbb236b4e4a6"
+    }
+  },
+  "unknowns": [
+    "Final native typechecking and all thirty feature runtime contracts remain unverified.",
+    "Global archive discovery, cross-clock/UTC catalog sets, continuous operation and live qualification remain separate open work.",
+    "Metadata selection does not establish source payload availability, physical absence or authority to hydrate/disclose media.",
+    "Archive and deployment bracketing reads do not form an atomic cross-owner snapshot."
+  ],
+  "active_work": [],
+  "obligations": [
+    {
+      "state": "blocked",
+      "work": "Run the exact production recording/context/CLI/MCP tests and resolve concrete compiler or runtime failures.",
+      "reason": "Production dependency compiler SIGKILL; independent std-only native probe timed out. No known-failing build was repeated."
+    }
+  ],
+  "continuation": {
+    "commands": [
+      "cargo test --locked -p fss-reference --test agent_recordings_set_contract --test agent_recording_set_context_contract --test agent_recordings_contract --test agent_recordings_utc_contract",
+      "cargo test --locked -p fss-cli --lib recording_query_cmd",
+      "cargo test --locked -p fss-cli --test recording_query_contract",
+      "cargo test --locked -p fss-cli --bin fss-mcp recording_tests"
+    ],
+    "next_affordance": "On a host where the exact dependency closure compiles, execute the authored focused contracts before extending archive discovery or qualifying this reference path."
+  },
+  "concurrent_changes": {
+    "integration_parent": "b457e821ccdf414a2121a3cd1baf52436304ce99",
+    "policy": "Preserved concurrent main changes, merged fresh status and manifest rows, and used exact expected-head non-force updates. Workspace interruption did not require source reconstruction."
+  }
+}
