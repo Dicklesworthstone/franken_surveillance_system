@@ -2066,6 +2066,27 @@ counts do not identify the sender, prove another track is unconfigured, or
 establish that requesting a second G4 track is non-disruptive. No camera setting
 was changed in this check, and the recorder and archive timers remained active.
 
+A subsequent authenticated read-only G4 HTTPS settings inspection found the
+serializer fields under `av.video`, rather than at the response root. At that
+instant `video2` reported an `extendedFlv` serializer with a TCP destination
+list; `video1` and `video3` reported an `extendedFlv` serializer whose
+destination field was not an array. This inspection did not distinguish a
+missing field from null or another non-array value. It cannot establish that a
+track is inactive or safe to redirect, or recover its prior settings. Three
+camera login sessions were created during these shape checks; their expiry is
+unknown. The certificate was checked against a previously observed same-LAN
+pin, not an independent physical identity. No camera setting was written. The
+recorder remained active with its restart counter unchanged, and both archive
+timers remained active; this is not proof of uninterrupted coverage.
+
+The Rust camera settings observation now projects the reported destination
+shape of `video1` through `video3` without exposing destination values. Missing
+or null is distinct from an explicitly empty array, while mixed, malformed or
+oversized arrays remain unsupported. The projection is an untrusted point-in-time
+claim, not a rollback record or permission to modify a track. A safe second
+track test still needs a proven way to restore the full prior settings and
+avoid interfering with the existing recorder and shared audio encoder.
+
 ### Controller TCP listener
 
 The controller's default observation API still classifies event messages as
@@ -2076,15 +2097,49 @@ view interprets selected motion edges and smart-detection descriptors without
 claiming detection truth or peer identity. The caller must retain or explicitly
 omit that source under its privacy policy. By default events received during
 startup are still discarded as `Other`. A new opt-in caller-owned bounded
-startup inbox is intended to retain them across a failed or cancelled startup
-and drain them through the supervisor on success; it applies backpressure before
-reading a message if capacity is unavailable. Its source-matched build and
-tests are pending. Direct inbox access does not itself revalidate authority; the
+startup inbox retains parsed frames across a failed or cancelled startup
+and drains them through the supervisor on success; it applies backpressure before
+requesting another message if capacity is unavailable. Already buffered but
+unparsed WebSocket bytes remain transport-owned and may be lost on retirement;
+the inbox does not establish complete event coverage. Direct inbox access does
+not itself revalidate authority; the
 caller owns the retained data and must apply its privacy and retention policy.
 A camera-requested event reply is exposed but not sent;
 the trial stops after explicitly omitting such a source. No event publication,
 motion-state lifecycle, audio linkage, physical G4 event, or complete Scrypted
 detection parity is claimed. Scope-filtered strict-remote job
+`30098575685845164` built the inbox revision and its event, controller, receiver
+and task-owned contracts; its executables passed **3/3**, **23/23**, **6/6**
+and **14/14**, respectively. They include bounded backpressure, draining into
+the supervisor and source recovery after peer close. A subsequent additional
+cancellation case was built by job `30098575685845166`; its test executable
+SHA-256 `935d5e3b5b764364e29c78f8470e524e774e49cc9fa97ca7fe0a7a6b5049726b`
+passed **15/15**. Both jobs had terminal acknowledgment and source release;
+the tested event and receiver source hashes were
+`64aa698842361fa15d6a5fa4c73be863e028181c67c7251f402264fea17c5c7d` and
+`31d0e3ca604579eb5ff45555344e616890edc85f9d75e307e9923beaa54d9a41`.
+Only documentation comments in those two source files changed afterward. Job
+`30098575685845168` compiled the revised snapshot, initially returned 102 on
+artifact retrieval, and was recovered under its original wrapper identity with
+exit 0, terminal acknowledgment and source release; its tests have not yet run.
+These are synthetic results from a reduced workspace, not a G4 event or full
+workspace qualification. The standalone trial now opts into the inbox.
+Strict-remote job `30098575685845172` compiled the updated trial, initially
+returned 102 on artifact retrieval, and was recovered under the same wrapper
+with exit 0, terminal acknowledgment and source release. Its Linux executable
+SHA-256 was
+`5eeb0cc92bb1ea23c734f7229a69679568a152ab43aa203c495a93a34cd281c5`.
+The independent fixture SHA-256
+`7ff761cc0ae14089926c4f24697ba7701766da2c3337ad8717030569b523b898`
+passed **6/6** process cases, including an event before hello delivered after
+startup, and a peer close after a startup event with explicit omission counts
+and no private payload printed. Event, receiver and trial source hashes were
+`8980fdff5c1d08deb845ad8dc9d57ee8a95f423204de432e5a61681b2e162f33`,
+`f247e34bf4f8ba309cfa7d59899de003059870364fdb356316eb7623c2704d6c` and
+`980e00a95f30193dae5b2cbcc4d4b3309d07ae35bc73a4fbe67368781636e6ce`.
+This fixture is synthetic and does not establish a real G4 session.
+
+Earlier scope-filtered strict-remote job
 `30098575685845154` built the event, controller, receiver and task-owned
 contracts and released source custody. Its executables passed **3/3**, **23/23**
 and **5/5** event, controller and receiver tests. The first task-owned run

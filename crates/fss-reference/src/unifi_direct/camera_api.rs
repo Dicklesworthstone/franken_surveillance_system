@@ -168,6 +168,23 @@ impl fmt::Debug for ControllerAddress {
     }
 }
 
+/// The shape of one camera-reported serializer destination list.
+/// This is an untrusted observation; none of these variants proves whether a
+/// track is active, available, or safe to modify.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VideoDestinationShape {
+    /// The track, serializer, or destination list was missing or null.
+    NotReported,
+    /// The camera explicitly reported an empty destination list.
+    Empty,
+    /// Every reported destination was the discard sink.
+    DiscardOnly,
+    /// Every reported destination had the TCP scheme.
+    TcpOnly,
+    /// The list or its contents were mixed, malformed, or unsupported.
+    Other,
+}
+
 /// One sanitized settings observation and, when representable, its local binding.
 /// A digest binds claimed values to the caller-supplied peer and generation; it
 /// does not authenticate, timestamp, retain, or revalidate that observation.
@@ -177,6 +194,9 @@ pub struct SettingsObservation {
     pub controller: ControllerAddress,
     /// Digest only for a supported IPv4 or explicit unset value.
     pub binding: Option<ContentDigest>,
+    /// Destination shapes for video1, video2 and video3, in that order.
+    /// This omits destination values and is not a rollback record.
+    pub video_destinations: [VideoDestinationShape; 3],
 }
 
 /// Bounded, payload-free shape of a camera's handoff HTTP response body.
@@ -814,6 +834,39 @@ fn settings(body: &[u8], peer: Ipv4Addr, generation: u64) -> Result<SettingsObse
     }
     let mut value = json_input::parse(std::str::from_utf8(body).map_err(|_| Error::Settings)?)
         .map_err(|_| Error::Settings)?;
+    let video_destinations = ["video1", "video2", "video3"].map(|track| {
+        let mut current = &value;
+        for key in ["av", "video", track, "avSerializer", "destinations"] {
+            current = match current {
+                Value::Object(fields) => match fields.get(key) {
+                    Some(value) => value,
+                    None => return VideoDestinationShape::NotReported,
+                },
+                Value::Null => return VideoDestinationShape::NotReported,
+                _ => return VideoDestinationShape::Other,
+            };
+        }
+        match current {
+            Value::Null => VideoDestinationShape::NotReported,
+            Value::Array(items) if items.is_empty() => VideoDestinationShape::Empty,
+            Value::Array(items) if items.len() <= 16 => {
+                if items
+                    .iter()
+                    .all(|item| matches!(item, Value::Text(s) if s == "file:///dev/null"))
+                {
+                    VideoDestinationShape::DiscardOnly
+                } else if items
+                    .iter()
+                    .all(|item| matches!(item, Value::Text(s) if s.starts_with("tcp://")))
+                {
+                    VideoDestinationShape::TcpOnly
+                } else {
+                    VideoDestinationShape::Other
+                }
+            }
+            _ => VideoDestinationShape::Other,
+        }
+    });
     let parsed = value
         .object()
         .map(|root| {
@@ -842,6 +895,7 @@ fn settings(body: &[u8], peer: Ipv4Addr, generation: u64) -> Result<SettingsObse
     Ok(SettingsObservation {
         controller,
         binding,
+        video_destinations,
     })
 }
 

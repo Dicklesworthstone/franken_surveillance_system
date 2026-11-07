@@ -708,7 +708,8 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Session<'scope, 'task, I
 
     /// Observe at most one management message, or return after a finite wait.
     /// A dropped pending receive follows Asupersync's documented cancel-safe
-    /// receive contract; no camera payload is included in the result.
+    /// receive contract. Enabled event capture transfers exact source bytes;
+    /// callers must enforce privacy and retention on those bytes.
     pub async fn next(&mut self, wait: Duration) -> Result<Step, Error> {
         if wait.is_zero() || wait > MAX_WAIT {
             return Err(Error::WaitLimit);

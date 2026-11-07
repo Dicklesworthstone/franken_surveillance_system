@@ -3,7 +3,7 @@
 use asupersync::http::h1::Response;
 use fss_core::ContentDigest;
 use fss_reference::unifi_direct::camera_api::{
-    ControllerAddress, Error, Phase, Session, StatusShape, WriteOutcome,
+    ControllerAddress, Error, Phase, Session, StatusShape, VideoDestinationShape, WriteOutcome,
 };
 use std::{error::Error as StdError, net::Ipv4Addr};
 
@@ -194,6 +194,29 @@ fn settings_preserve_known_unset_and_unknown_controller_claims() -> Test {
         .is_err()
     );
     assert_eq!(s.phase(), Phase::Fenced);
+    Ok(())
+}
+
+#[test]
+fn settings_report_video_destination_shapes_without_exposing_destinations() -> Test {
+    use VideoDestinationShape::{DiscardOnly, Empty, NotReported, Other, TcpOnly};
+    let mut session = Session::new(Ipv4Addr::LOCALHOST, 1)?;
+    login(&mut session)?;
+    status(&mut session)?;
+    let cases: [(&[u8], [VideoDestinationShape; 3]); 5] = [
+        (br#"{}"#, [NotReported, NotReported, NotReported]),
+        (br#"{"av":{"video":{"video1":{"avSerializer":{"destinations":null}},"video2":{"avSerializer":{"destinations":["tcp://private-host:99"]}},"video3":{"avSerializer":{"destinations":[]}}}}}"#, [NotReported, TcpOnly, Empty]),
+        (br#"{"av":{"video":{"video1":{"avSerializer":{"destinations":["file:///dev/null"]}},"video2":{"avSerializer":{"destinations":["tcp://a","file:///dev/null"]}},"video3":{"avSerializer":{"destinations":[null]}}}}}"#, [DiscardOnly, Other, Other]),
+        (br#"{"av":{"video":{"video1":4,"video2":{"avSerializer":{"destinations":"tcp://a"}},"video3":null}}}"#, [Other, Other, NotReported]),
+        (br#"{"av":{"video":{"video1":{"avSerializer":{"destinations":["tcp://a","tcp://a","tcp://a","tcp://a","tcp://a","tcp://a","tcp://a","tcp://a","tcp://a","tcp://a","tcp://a","tcp://a","tcp://a","tcp://a","tcp://a","tcp://a","tcp://a"]}}}}}"#, [Other, NotReported, NotReported]),
+    ];
+    for (body, expected) in cases {
+        let request = session.prepare_settings()?;
+        session.finish_write(request, WriteOutcome::Written)?;
+        let observed = session.accept_settings(Response::new(200, "OK", body.to_vec()))?;
+        assert_eq!(observed.video_destinations, expected);
+        assert!(!format!("{observed:?}").contains("private-host"));
+    }
     Ok(())
 }
 

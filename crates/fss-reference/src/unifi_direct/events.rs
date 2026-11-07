@@ -24,7 +24,9 @@ const MAX_INBOX_BYTES: usize = 4 * 1024 * 1024;
 ///
 /// One session may bind it at a time. The owner retains this inbox after a
 /// session failure or cancellation and must apply its own privacy policy when
-/// accessing or disposing of retained frames. It does not establish identity.
+/// accessing or disposing of retained frames. Already buffered but unparsed
+/// transport bytes may be lost on retirement; this inbox does not establish
+/// complete event coverage or identity.
 pub struct StartupInbox {
     frames: RefCell<VecDeque<Frame>>,
     bytes: Cell<usize>,

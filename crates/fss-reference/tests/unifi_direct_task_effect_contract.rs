@@ -899,6 +899,11 @@ fn startup_event_remains_owned_after_peer_closes() -> Test {
 }
 
 #[test]
+fn startup_event_remains_owned_after_future_is_cancelled() -> Test {
+    conversation_scenario_with_event(false, false, false, true, false, true, 2, true)
+}
+
+#[test]
 fn startup_trace_retains_reply_when_peer_closes_before_media() -> Test {
     conversation_scenario_with_stop(false, false, false, true, false, true, 1)
 }
