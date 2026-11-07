@@ -31,6 +31,12 @@ pub enum Phase {
     AuthWrite,
     /// Both reference messages have completed; identity remains unverified.
     Ready,
+    /// An API request packet awaits its transport write outcome.
+    ApiWrite,
+    /// A locally written API request awaits a matching response packet.
+    AwaitApi,
+    /// A MAC-checked, sequence-matched response awaits its owner.
+    ResponseReady,
     /// Malformed input or an indeterminate write fenced this attempt.
     Fenced,
 }
@@ -69,7 +75,10 @@ pub struct Handshake {
     pending: Option<Vec<u8>>,
     early: VecDeque<Vec<u8>>,
     early_bytes: usize,
+    next_api_send: u32,
     next_api_receive: u32,
+    response: Option<Vec<u8>>,
+    outstanding_request: Option<Vec<u8>>,
 }
 
 impl fmt::Debug for Handshake {
@@ -92,7 +101,10 @@ impl Handshake {
             pending: None,
             early: VecDeque::new(),
             early_bytes: 0,
+            next_api_send: 2,
             next_api_receive: 2,
+            response: None,
+            outstanding_request: None,
         }
     }
 
@@ -104,6 +116,11 @@ impl Handshake {
     /// A pending ciphertext frame, including an indeterminate one for reconciliation.
     pub fn pending_frame(&self) -> Option<&[u8]> {
         self.pending.as_deref()
+    }
+
+    /// A locally written API request retained until its response is taken.
+    pub fn outstanding_request(&self) -> Option<&[u8]> {
+        self.outstanding_request.as_deref()
     }
 
     /// Prepare the synthetic host's public-key frame once.
@@ -129,12 +146,36 @@ impl Handshake {
         self.pending_frame().ok_or(Error::Phase)
     }
 
+    /// Prepare a single synthetic API request after the key exchange. A new
+    /// request cannot overtake an unconsumed response or a retained early frame.
+    /// No authority to configure a camera or to handle real secrets is granted.
+    pub fn prepare_synthetic_api(&mut self, payload: &[u8]) -> Result<&[u8], Error> {
+        if self.phase != Phase::Ready || !self.early.is_empty() {
+            return Err(Error::Phase);
+        }
+        if self.next_api_send != self.next_api_receive {
+            self.phase = Phase::Fenced;
+            return Err(Error::Frame);
+        }
+        let Ok(sequence) = u16::try_from(self.next_api_send) else {
+            self.phase = Phase::Fenced;
+            return Err(Error::Limit);
+        };
+        let key = self.derived.as_ref().ok_or(Error::Phase)?;
+        self.pending = Some(pack_packet(key, sequence, 3, payload).ok_or(Error::Limit)?);
+        self.phase = Phase::ApiWrite;
+        self.pending_frame().ok_or(Error::Phase)
+    }
+
     /// Resolve the pending write. Acknowledgment is not device acceptance.
     pub fn resolve_write(&mut self, outcome: WriteOutcome) -> Result<(), Error> {
         if self.phase == Phase::Fenced {
             return Err(Error::Fenced);
         }
-        if !matches!(self.phase, Phase::PublicWrite | Phase::AuthWrite) {
+        if !matches!(
+            self.phase,
+            Phase::PublicWrite | Phase::AuthWrite | Phase::ApiWrite
+        ) {
             return Err(Error::Phase);
         }
         match outcome {
@@ -149,18 +190,39 @@ impl Handshake {
             WriteOutcome::DefinitelyNotSubmitted => return Ok(()),
             WriteOutcome::Written => (),
         }
-        self.pending = None;
-        self.phase = if self.phase == Phase::PublicWrite {
-            Phase::PeerPublic
-        } else {
-            Phase::Ready
+        self.phase = match self.phase {
+            Phase::PublicWrite => {
+                self.pending = None;
+                Phase::PeerPublic
+            }
+            Phase::AuthWrite => {
+                self.pending = None;
+                Phase::Ready
+            }
+            Phase::ApiWrite => {
+                let Some(frame) = self.pending.take() else {
+                    self.phase = Phase::Fenced;
+                    return Err(Error::Phase);
+                };
+                self.outstanding_request = Some(frame);
+                self.next_api_send += 1;
+                Phase::AwaitApi
+            }
+            _ => return Err(Error::Phase),
         };
-        while matches!(self.phase, Phase::PeerPublic | Phase::PeerAuth) {
+        while matches!(
+            self.phase,
+            Phase::PeerPublic | Phase::PeerAuth | Phase::AwaitApi
+        ) {
             let Some(frame) = self.early.pop_front() else {
                 break;
             };
             self.early_bytes -= frame.len();
-            self.process_auth(&frame)?;
+            if self.phase == Phase::AwaitApi {
+                self.process_api(&frame)?;
+            } else {
+                self.process_auth(&frame)?;
+            }
         }
         Ok(())
     }
@@ -171,7 +233,7 @@ impl Handshake {
     pub fn offer(&mut self, frame: &[u8]) -> Result<(), Error> {
         match self.phase {
             Phase::Fenced => Err(Error::Fenced),
-            Phase::PublicWrite | Phase::AuthWrite => {
+            Phase::PublicWrite | Phase::AuthWrite | Phase::ApiWrite => {
                 if frame.len() < 2
                     || usize::from(u16::from_be_bytes([frame[0], frame[1]])) != frame.len()
                     || self.early.len() == MAX_EARLY_FRAMES
@@ -193,6 +255,7 @@ impl Handshake {
                 Ok(())
             }
             Phase::PeerPublic | Phase::PeerAuth => self.process_auth(frame),
+            Phase::AwaitApi => self.process_api(frame),
             _ => Err(Error::Phase),
         }
     }
@@ -244,22 +307,46 @@ impl Handshake {
         Some(frame)
     }
 
-    /// Decrypt the next synthetic API packet in sequence; failure fences the
-    /// attempt. Response correlation remains the caller's responsibility.
-    pub fn open_synthetic_api(&mut self, frame: &[u8]) -> Option<Vec<u8>> {
-        if self.phase != Phase::Ready {
-            return None;
+    fn process_api(&mut self, frame: &[u8]) -> Result<(), Error> {
+        if self.phase != Phase::AwaitApi || self.next_api_send != self.next_api_receive + 1 {
+            self.phase = Phase::Fenced;
+            return Err(Error::Frame);
         }
-        let Some(sequence) = u16::try_from(self.next_api_receive).ok() else {
+        let Ok(sequence) = u16::try_from(self.next_api_receive) else {
             self.phase = Phase::Fenced;
-            return None;
+            return Err(Error::Limit);
         };
-        let Some(plaintext) = open_packet(self.derived.as_ref()?, sequence, 3, frame) else {
+        let Some(key) = self.derived.as_ref() else {
             self.phase = Phase::Fenced;
-            return None;
+            return Err(Error::Phase);
+        };
+        // The legacy wire profile reuses directional keys and nonces. Reject a
+        // byte-for-byte reflection of our request; this does not make the
+        // protocol cryptographically authenticated or resistant to forgery.
+        if self.outstanding_request.as_deref() == Some(frame) {
+            self.phase = Phase::Fenced;
+            return Err(Error::Frame);
+        }
+        let Some(plaintext) = open_packet(key, sequence, 3, frame) else {
+            self.phase = Phase::Fenced;
+            return Err(Error::Frame);
         };
         self.next_api_receive += 1;
-        Some(plaintext)
+        self.response = Some(plaintext);
+        self.phase = Phase::ResponseReady;
+        Ok(())
+    }
+
+    /// Take the matched response. Its inner API status and device state remain
+    /// untrusted and require separate parsing and reconciliation.
+    pub fn take_synthetic_response(&mut self) -> Option<Vec<u8>> {
+        if self.phase != Phase::ResponseReady {
+            return None;
+        }
+        let response = self.response.take()?;
+        self.outstanding_request = None;
+        self.phase = Phase::Ready;
+        Some(response)
     }
 }
 
@@ -289,6 +376,9 @@ mod tests {
     fn api() -> Result<Vec<u8>, std::num::ParseIntError> {
         unhex("001e2f7bdd0bf21fecde1e19e32419a7f6b37c23ad7cbe66c1a2db3a31ae")
     }
+    fn response() -> Result<Vec<u8>, std::num::ParseIntError> {
+        unhex("001d0d1900c1c8978614d3c4ceec2ff143d27c23ad7da27bc5a5d03d3d")
+    }
     fn private() -> [u8; 32] {
         std::array::from_fn(|i| i as u8)
     }
@@ -307,9 +397,24 @@ mod tests {
         assert_eq!(h.offer(&api), Ok(()));
         assert_eq!(h.resolve_write(WriteOutcome::Written), Ok(()));
         assert_eq!(h.phase(), Phase::Ready);
+        assert_eq!(h.prepare_synthetic_api(b"synthetic"), Err(Error::Phase));
         let retained = h.take_early_ready().ok_or("missing queued API packet")?;
-        assert_eq!(h.open_synthetic_api(&retained), Some(b"synthetic".to_vec()));
-        assert_eq!(h.open_synthetic_api(&retained), None);
+        assert_eq!(retained, api);
+        assert_eq!(
+            h.prepare_synthetic_api(b"synthetic")
+                .map_err(|e| format!("{e:?}"))?,
+            api
+        );
+        // A response may arrive before its write acknowledgment as well.
+        assert_eq!(h.offer(&response()?), Ok(()));
+        assert_eq!(h.resolve_write(WriteOutcome::Written), Ok(()));
+        assert_eq!(h.outstanding_request(), Some(api.as_slice()));
+        assert_eq!(h.take_synthetic_response(), Some(b"response".to_vec()));
+        assert!(h.outstanding_request().is_none());
+        h.prepare_synthetic_api(b"next")
+            .map_err(|e| format!("{e:?}"))?;
+        assert_eq!(h.resolve_write(WriteOutcome::Written), Ok(()));
+        assert_eq!(h.offer(&retained), Err(Error::Frame));
         assert_eq!(h.phase(), Phase::Fenced);
         Ok(())
     }
@@ -392,16 +497,55 @@ mod tests {
         h.prepare_auth().map_err(|e| format!("{e:?}"))?;
         h.resolve_write(WriteOutcome::Written)
             .map_err(|e| format!("{e:?}"))?;
+        h.next_api_send = u32::from(u16::MAX);
         h.next_api_receive = u32::from(u16::MAX);
-        let frame = pack_packet(
+        let request = pack_packet(
             h.derived.as_ref().ok_or("missing key")?,
             u16::MAX,
             3,
             b"last",
         )
         .ok_or("frame")?;
-        assert_eq!(h.open_synthetic_api(&frame), Some(b"last".to_vec()));
-        assert_eq!(h.open_synthetic_api(&frame), None);
+        let response = pack_packet(
+            h.derived.as_ref().ok_or("missing key")?,
+            u16::MAX,
+            3,
+            b"last-response",
+        )
+        .ok_or("response")?;
+        assert_eq!(
+            h.prepare_synthetic_api(b"last")
+                .map_err(|e| format!("{e:?}"))?,
+            request
+        );
+        assert_eq!(h.resolve_write(WriteOutcome::Written), Ok(()));
+        assert_eq!(h.offer(&response), Ok(()));
+        assert_eq!(h.take_synthetic_response(), Some(b"last-response".to_vec()));
+        assert_eq!(h.prepare_synthetic_api(b"wrap"), Err(Error::Limit));
+        assert_eq!(h.phase(), Phase::Fenced);
+        Ok(())
+    }
+
+    #[test]
+    fn reflected_request_fences_even_when_mac_and_sequence_match()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut h = Handshake::new(private());
+        h.prepare_public().map_err(|e| format!("{e:?}"))?;
+        h.resolve_write(WriteOutcome::Written)
+            .map_err(|e| format!("{e:?}"))?;
+        h.offer(&peer()?).map_err(|e| format!("{e:?}"))?;
+        h.offer(&auth()?).map_err(|e| format!("{e:?}"))?;
+        h.prepare_auth().map_err(|e| format!("{e:?}"))?;
+        h.resolve_write(WriteOutcome::Written)
+            .map_err(|e| format!("{e:?}"))?;
+        let request = h
+            .prepare_synthetic_api(b"synthetic")
+            .map_err(|e| format!("{e:?}"))?
+            .to_vec();
+        h.resolve_write(WriteOutcome::Written)
+            .map_err(|e| format!("{e:?}"))?;
+        assert_eq!(h.offer(&request), Err(Error::Frame));
+        assert_eq!(h.outstanding_request(), Some(request.as_slice()));
         assert_eq!(h.phase(), Phase::Fenced);
         Ok(())
     }
