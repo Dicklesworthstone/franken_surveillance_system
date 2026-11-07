@@ -162,20 +162,162 @@ pub fn bluez_name_has_owner(serial: u32) -> Result<Vec<u8>, Error> {
     Ok(out)
 }
 
+fn bus_string_call(serial: u32, member: &[u8], value: &str) -> Result<Vec<u8>, Error> {
+    if value.len() > 1024 || value.as_bytes().contains(&0) {
+        return Err(Error::Limit);
+    }
+    let mut out = bus_call(serial, member)?;
+    pad(&mut out, 8);
+    out.extend_from_slice(&[8, 1, b'g', 0, 1, b's', 0]);
+    finish_header(&mut out)?;
+    let body_at = out.len();
+    let value_len = u32::try_from(value.len()).map_err(|_| Error::Limit)?;
+    out.extend_from_slice(&value_len.to_le_bytes());
+    out.extend_from_slice(value.as_bytes());
+    out.push(0);
+    let body_len = u32::try_from(out.len() - body_at).map_err(|_| Error::Limit)?;
+    out[4..8].copy_from_slice(&body_len.to_le_bytes());
+    Ok(out)
+}
+
+/// Ask the local bus for the unique current owner of the BlueZ service name.
+/// The returned name remains a bus claim and does not authenticate a camera.
+pub fn bluez_get_name_owner(serial: u32) -> Result<Vec<u8>, Error> {
+    bus_string_call(serial, b"GetNameOwner", "org.bluez")
+}
+
+/// A fixed, scoped subscription used by a future task-owned BlueZ session.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BluezMatch {
+    /// ObjectManager interface additions and removals at the manager path.
+    Interfaces,
+    /// Property changes under the chosen BlueZ object namespace.
+    Properties,
+    /// Changes to the owner of the BlueZ well-known name.
+    OwnerChange,
+}
+
+fn valid_unique_owner(owner: &str) -> bool {
+    owner.len() <= 255
+        && owner.strip_prefix(':').is_some_and(|rest| {
+            rest.contains('.')
+                && rest.split('.').all(|part| {
+                    !part.is_empty()
+                        && part
+                            .bytes()
+                            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
+                })
+        })
+}
+fn valid_object_path(path: &str) -> bool {
+    path.len() <= 255
+        && (path == "/"
+            || (path.starts_with('/')
+                && !path.ends_with('/')
+                && path[1..].split('/').all(|part| {
+                    !part.is_empty() && part.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+                })))
+}
+
+/// Encode `AddMatch` for an exact, validated owner and namespace. This prepares
+/// bytes only: transmitting them installs a subscription on that bus session
+/// and requires task authority, bounded lifetime and explicit result handling.
+pub fn bluez_add_match(
+    serial: u32,
+    owner: &str,
+    namespace: &str,
+    manager_path: &str,
+    kind: BluezMatch,
+) -> Result<Vec<u8>, Error> {
+    if !valid_unique_owner(owner)
+        || !valid_object_path(namespace)
+        || !valid_object_path(manager_path)
+    {
+        return Err(Error::Invalid);
+    }
+    let rule = match kind {
+        BluezMatch::Interfaces => format!("type='signal',sender='{owner}',interface='org.freedesktop.DBus.ObjectManager',path='{manager_path}'"),
+        BluezMatch::Properties => format!("type='signal',sender='{owner}',interface='org.freedesktop.DBus.Properties',path_namespace='{namespace}'"),
+        BluezMatch::OwnerChange => "type='signal',sender='org.freedesktop.DBus',interface='org.freedesktop.DBus',member='NameOwnerChanged',arg0='org.bluez'".to_owned(),
+    };
+    bus_string_call(serial, b"AddMatch", &rule)
+}
+
 /// Encode a read-only BlueZ ObjectManager snapshot request. The response is
 /// untrusted; this call neither starts discovery nor connects to a device.
 pub fn bluez_managed_objects(serial: u32) -> Result<Vec<u8>, Error> {
+    managed_objects(serial, "org.bluez")
+}
+
+/// Prepare a snapshot request addressed to one previously resolved unique owner.
+pub fn bluez_managed_objects_for_owner(serial: u32, owner: &str) -> Result<Vec<u8>, Error> {
+    if !valid_unique_owner(owner) {
+        return Err(Error::Invalid);
+    }
+    managed_objects(serial, owner)
+}
+
+fn managed_objects(serial: u32, destination: &str) -> Result<Vec<u8>, Error> {
     if serial == 0 {
         return Err(Error::Invalid);
     }
-    let mut out = vec![b'l', 1, 0, 1];
+    // Do not activate BlueZ if its owner exits between presence and this call.
+    let mut out = vec![b'l', 1, 2, 1];
     out.extend_from_slice(&0u32.to_le_bytes());
     out.extend_from_slice(&serial.to_le_bytes());
     out.extend_from_slice(&0u32.to_le_bytes());
     string_field(&mut out, 1, b'o', b"/");
     string_field(&mut out, 2, b's', b"org.freedesktop.DBus.ObjectManager");
     string_field(&mut out, 3, b's', b"GetManagedObjects");
-    string_field(&mut out, 6, b's', b"org.bluez");
+    string_field(&mut out, 6, b's', destination.as_bytes());
+    finish_header(&mut out)?;
+    Ok(out)
+}
+
+/// The connection-scoped BlueZ adapter discovery lifecycle operation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DiscoveryMethod {
+    /// Acquire one discovery session on the admitted adapter.
+    Start,
+    /// Release the session acquired by this connection.
+    Stop,
+}
+
+/// Prepare an adapter discovery call; sending it is an externally visible effect.
+/// Adapter paths are restricted to the conventional BlueZ local adapter names.
+pub fn bluez_adapter_discovery(
+    serial: u32,
+    owner: &str,
+    adapter: &str,
+    method: DiscoveryMethod,
+) -> Result<Vec<u8>, Error> {
+    let suffix = adapter
+        .strip_prefix("/org/bluez/hci")
+        .ok_or(Error::Invalid)?;
+    if serial == 0
+        || !valid_unique_owner(owner)
+        || suffix.is_empty()
+        || !suffix.bytes().all(|b| b.is_ascii_digit())
+        || !valid_object_path(adapter)
+    {
+        return Err(Error::Invalid);
+    }
+    let mut out = vec![b'l', 1, 2, 1];
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&serial.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    string_field(&mut out, 1, b'o', adapter.as_bytes());
+    string_field(&mut out, 2, b's', b"org.bluez.Adapter1");
+    string_field(
+        &mut out,
+        3,
+        b's',
+        match method {
+            DiscoveryMethod::Start => b"StartDiscovery",
+            DiscoveryMethod::Stop => b"StopDiscovery",
+        },
+    );
+    string_field(&mut out, 6, b's', owner.as_bytes());
     finish_header(&mut out)?;
     Ok(out)
 }
@@ -250,6 +392,7 @@ struct ParsedReturn<'a> {
     body_at: usize,
     total: usize,
     signature: &'a [u8],
+    sender: Option<&'a str>,
 }
 
 fn parse_return(input: &[u8], expected_serial: u32) -> Result<Option<ParsedReturn<'_>>, Error> {
@@ -287,6 +430,7 @@ fn parse_return(input: &[u8], expected_serial: u32) -> Result<Option<ParsedRetur
     let mut position = 16;
     let mut reply = None;
     let mut signature = None;
+    let mut sender = None;
     let mut seen = 0u16;
     while position < header_end {
         let next = aligned(position, 8)?;
@@ -347,6 +491,11 @@ fn parse_return(input: &[u8], expected_serial: u32) -> Result<Option<ParsedRetur
                 {
                     return Err(Error::Invalid);
                 }
+                if code == 7 {
+                    sender = Some(
+                        std::str::from_utf8(&input[position..end]).map_err(|_| Error::Invalid)?,
+                    );
+                }
                 position = end + 1;
             }
             b'g' => {
@@ -381,8 +530,46 @@ fn parse_return(input: &[u8], expected_serial: u32) -> Result<Option<ParsedRetur
         little,
         body_at,
         total,
-        signature: signature.ok_or(Error::Invalid)?,
+        signature: signature.unwrap_or_default(),
+        sender,
     }))
+}
+
+/// Parse an empty, serial-correlated method return. A missing signature header
+/// is permitted only when the body is empty. No peer identity is established.
+pub fn parse_empty_method_reply(
+    input: &[u8],
+    expected_serial: u32,
+) -> Result<Option<usize>, Error> {
+    let Some(reply) = parse_return(input, expected_serial)? else {
+        return Ok(None);
+    };
+    if reply.body_at != reply.total || !reply.signature.is_empty() {
+        return Err(Error::Invalid);
+    }
+    Ok(Some(reply.total))
+}
+
+/// Correlate an empty return and require its bus-reported sender to match the
+/// previously resolved unique owner. The caller still authenticates the bus.
+pub fn parse_empty_method_reply_from(
+    input: &[u8],
+    expected_serial: u32,
+    expected_sender: &str,
+) -> Result<Option<usize>, Error> {
+    if !valid_unique_owner(expected_sender) {
+        return Err(Error::Invalid);
+    }
+    let Some(reply) = parse_return(input, expected_serial)? else {
+        return Ok(None);
+    };
+    if reply.body_at != reply.total
+        || !reply.signature.is_empty()
+        || reply.sender != Some(expected_sender)
+    {
+        return Err(Error::Invalid);
+    }
+    Ok(Some(reply.total))
 }
 
 /// Parse a bounded, correlated `Hello` return. `None` means more stream bytes
@@ -421,6 +608,15 @@ pub fn parse_hello_reply(
         name,
         consumed: reply.total,
     }))
+}
+
+/// Parse the unique-name body of a correlated `GetNameOwner` return. The same
+/// wire shape is used by `Hello`; the name is an untrusted bus observation.
+pub fn parse_bluez_get_name_owner_reply(
+    input: &[u8],
+    expected_serial: u32,
+) -> Result<Option<HelloReply<'_>>, Error> {
+    parse_hello_reply(input, expected_serial)
 }
 
 /// A correlated bus response reporting whether `org.bluez` has an owner.
@@ -467,6 +663,8 @@ pub struct ManagedObjectsBody<'a> {
     pub little_endian: bool,
     /// Total frame bytes consumed.
     pub consumed: usize,
+    /// Sender supplied by the admitted bus, when present.
+    pub sender: Option<&'a str>,
 }
 impl fmt::Debug for ManagedObjectsBody<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -494,6 +692,167 @@ pub fn parse_bluez_managed_objects_reply(
         body: &input[reply.body_at..reply.total],
         little_endian: reply.little,
         consumed: reply.total,
+        sender: reply.sender,
+    }))
+}
+
+/// A bounded signal frame. All header values are untrusted until the owner
+/// binds them to the admitted bus, sender, signal type and subscription.
+pub struct Signal<'a> {
+    /// Claimed D-Bus object path.
+    pub path: &'a str,
+    /// Claimed signal interface.
+    pub interface: &'a str,
+    /// Claimed signal member.
+    pub member: &'a str,
+    /// Claimed sender supplied by the message bus.
+    pub sender: &'a str,
+    /// Claimed body signature; the body still needs its own parser.
+    pub signature: &'a [u8],
+    /// Untrusted marshalled body.
+    pub body: &'a [u8],
+    /// True for little-endian values.
+    pub little_endian: bool,
+    /// Total bytes consumed from the input.
+    pub consumed: usize,
+}
+impl fmt::Debug for Signal<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Signal")
+            .field("body_bytes", &self.body.len())
+            .field("little_endian", &self.little_endian)
+            .field("consumed", &self.consumed)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Decode one complete signal using the restricted basic-header profile.
+/// `None` means more frame bytes are required. It does not authenticate the
+/// sender, verify a subscription, or interpret the body.
+pub fn parse_signal(input: &[u8]) -> Result<Option<Signal<'_>>, Error> {
+    let Some(total) = declared_message_len(input)? else {
+        return Ok(None);
+    };
+    if input.len() < total {
+        return Ok(None);
+    }
+    let little = input[0] == b'l';
+    if input[1] != 4 {
+        return Err(Error::Invalid);
+    }
+    let header_len = usize::try_from(read_u32(input, 12, little)?).map_err(|_| Error::Limit)?;
+    let header_end = 16usize.checked_add(header_len).ok_or(Error::Limit)?;
+    let body_at = aligned(header_end, 8)?;
+    if input[header_end..body_at].iter().any(|byte| *byte != 0) {
+        return Err(Error::Invalid);
+    }
+    let mut position = 16;
+    let mut seen = [false; 256];
+    let mut path = None;
+    let mut interface = None;
+    let mut member = None;
+    let mut sender = None;
+    let mut signature = None;
+    while position < header_end {
+        let next = aligned(position, 8)?;
+        if next >= header_end || input[position..next].iter().any(|byte| *byte != 0) {
+            return Err(Error::Invalid);
+        }
+        position = next;
+        if position.checked_add(4).is_none_or(|end| end > header_end) {
+            return Err(Error::Invalid);
+        }
+        let code = input[position];
+        let variant = &input[position + 1..position + 4];
+        if code == 0 || variant[0] != 1 || variant[2] != 0 {
+            return Err(Error::Invalid);
+        }
+        if std::mem::replace(&mut seen[usize::from(code)], true) {
+            return Err(Error::Invalid);
+        }
+        let kind = variant[1];
+        position += 4;
+        match kind {
+            b'u' => {
+                position = aligned(position, 4)?;
+                if position.checked_add(4).is_none_or(|end| end > header_end) {
+                    return Err(Error::Invalid);
+                }
+                if code == 9 && read_u32(input, position, little)? != 0 {
+                    return Err(Error::Unsupported);
+                }
+                position += 4;
+            }
+            b's' | b'o' => {
+                position = aligned(position, 4)?;
+                if position.checked_add(4).is_none_or(|end| end > header_end) {
+                    return Err(Error::Invalid);
+                }
+                let length = usize::try_from(read_u32(input, position, little)?)
+                    .map_err(|_| Error::Limit)?;
+                position += 4;
+                let end = position.checked_add(length).ok_or(Error::Limit)?;
+                if end >= header_end || input[end] != 0 || input[position..end].contains(&0) {
+                    return Err(Error::Invalid);
+                }
+                let value =
+                    std::str::from_utf8(&input[position..end]).map_err(|_| Error::Invalid)?;
+                if value.is_empty() {
+                    return Err(Error::Invalid);
+                }
+                match code {
+                    1 => path = Some(value),
+                    2 => interface = Some(value),
+                    3 => member = Some(value),
+                    7 => sender = Some(value),
+                    _ => {}
+                }
+                position = end + 1;
+            }
+            b'g' => {
+                let length = usize::from(*input.get(position).ok_or(Error::Invalid)?);
+                position += 1;
+                let end = position.checked_add(length).ok_or(Error::Limit)?;
+                if end >= header_end || input[end] != 0 || input[position..end].contains(&0) {
+                    return Err(Error::Invalid);
+                }
+                if code == 8 {
+                    signature = Some(&input[position..end]);
+                }
+                position = end + 1;
+            }
+            _ => return Err(Error::Unsupported),
+        }
+        let expected_kind = match code {
+            1 => Some(b'o'),
+            2..=4 | 6..=7 => Some(b's'),
+            5 | 9 => Some(b'u'),
+            8 => Some(b'g'),
+            _ => None,
+        };
+        if expected_kind.is_some_and(|expected| expected != kind) {
+            return Err(Error::Invalid);
+        }
+    }
+    let path = path.ok_or(Error::Invalid)?;
+    if path != "/"
+        && (!path.starts_with('/')
+            || path.ends_with('/')
+            || path[1..].split('/').any(|part| {
+                part.is_empty() || !part.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+            }))
+    {
+        return Err(Error::Invalid);
+    }
+    Ok(Some(Signal {
+        path,
+        interface: interface.ok_or(Error::Invalid)?,
+        member: member.ok_or(Error::Invalid)?,
+        sender: sender.ok_or(Error::Invalid)?,
+        signature: signature.ok_or(Error::Invalid)?,
+        body: &input[body_at..total],
+        little_endian: little,
+        consumed: total,
     }))
 }
 
@@ -561,6 +920,261 @@ mod tests {
         assert_eq!(read_u32(&query, 8, true)?, 18);
         assert_eq!(read_u32(&query, 4, true)?, 14);
         assert!(query.ends_with(b"org.bluez\0"));
+        Ok(())
+    }
+
+    #[test]
+    fn bluez_snapshot_request_and_correlated_reply_are_bounded() -> Result<(), Error> {
+        assert!(matches!(bluez_managed_objects(0), Err(Error::Invalid)));
+        let request = bluez_managed_objects(3)?;
+        assert_eq!(request[2], 2); // NO_AUTO_START: a vanished service stays stopped.
+        assert_eq!(read_u32(&request, 8, true)?, 3);
+        assert!(
+            request
+                .windows(b"GetManagedObjects".len())
+                .any(|s| s == b"GetManagedObjects")
+        );
+        assert!(
+            request
+                .windows(b"org.bluez".len())
+                .any(|s| s == b"org.bluez")
+        );
+        let body = [0_u8; 8];
+        let mut response = vec![b'l', 2, 0, 1];
+        response.extend_from_slice(&(body.len() as u32).to_le_bytes());
+        response.extend_from_slice(&4_u32.to_le_bytes());
+        response.extend_from_slice(&0_u32.to_le_bytes());
+        response.extend_from_slice(&[5, 1, b'u', 0]);
+        response.extend_from_slice(&3_u32.to_le_bytes());
+        let signature = b"a{oa{sa{sv}}}";
+        response.extend_from_slice(&[8, 1, b'g', 0, signature.len() as u8]);
+        response.extend_from_slice(signature);
+        response.push(0);
+        finish_header(&mut response)?;
+        response.extend_from_slice(&body);
+        for split in 0..response.len() {
+            assert!(parse_bluez_managed_objects_reply(&response[..split], 3)?.is_none());
+        }
+        let reply = parse_bluez_managed_objects_reply(&response, 3)?.ok_or(Error::Invalid)?;
+        assert_eq!(reply.body, body);
+        assert_eq!(reply.consumed, response.len());
+        assert!(reply.little_endian);
+        assert!(matches!(
+            parse_bluez_managed_objects_reply(&response, 4),
+            Err(Error::Invalid)
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn owner_scoped_inventory_and_adapter_calls_reject_bad_destinations() -> Result<(), Error> {
+        let request = bluez_managed_objects_for_owner(7, ":1.42")?;
+        assert!(request.windows(5).any(|part| part == b":1.42"));
+        assert!(bluez_managed_objects_for_owner(7, "org.bluez").is_err());
+        for (method, name) in [
+            (DiscoveryMethod::Start, b"StartDiscovery".as_slice()),
+            (DiscoveryMethod::Stop, b"StopDiscovery".as_slice()),
+        ] {
+            let call = bluez_adapter_discovery(8, ":1.42", "/org/bluez/hci0", method)?;
+            assert_eq!(call[2], 2);
+            assert!(call.windows(name.len()).any(|part| part == name));
+            assert!(call.windows(5).any(|part| part == b":1.42"));
+            for invalid in [
+                "/org/bluez/hci",
+                "/org/bluez/hci0/dev_AA",
+                "/org/bluez/hciX",
+                "/other/hci0",
+            ] {
+                assert!(bluez_adapter_discovery(8, ":1.42", invalid, method).is_err());
+            }
+            assert!(bluez_adapter_discovery(8, "org.bluez", "/org/bluez/hci0", method).is_err());
+            assert!(bluez_adapter_discovery(0, ":1.42", "/org/bluez/hci0", method).is_err());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn empty_return_requires_the_exact_unique_sender() -> Result<(), Error> {
+        let mut frame = vec![b'l', 2, 0, 1];
+        frame.extend_from_slice(&0u32.to_le_bytes());
+        frame.extend_from_slice(&7u32.to_le_bytes());
+        frame.extend_from_slice(&0u32.to_le_bytes());
+        frame.extend_from_slice(&[5, 1, b'u', 0]);
+        frame.extend_from_slice(&8u32.to_le_bytes());
+        string_field(&mut frame, 7, b's', b":1.42");
+        finish_header(&mut frame)?;
+        assert_eq!(
+            parse_empty_method_reply_from(&frame, 8, ":1.42")?,
+            Some(frame.len())
+        );
+        assert!(parse_empty_method_reply_from(&frame, 8, ":1.99").is_err());
+        assert!(parse_empty_method_reply_from(&frame, 9, ":1.42").is_err());
+        assert!(parse_empty_method_reply_from(&frame, 8, "org.bluez").is_err());
+        for n in 0..frame.len() {
+            assert!(parse_empty_method_reply_from(&frame[..n], 8, ":1.42")?.is_none());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn unique_owner_and_fixed_match_rules_reject_injection() -> Result<(), Error> {
+        let owner_query = bluez_get_name_owner(7)?;
+        assert!(
+            owner_query
+                .windows(b"GetNameOwner".len())
+                .any(|s| s == b"GetNameOwner")
+        );
+        assert!(owner_query.ends_with(b"org.bluez\0"));
+        let reply = reply(true);
+        let owner = parse_bluez_get_name_owner_reply(&reply, 1)?.ok_or(Error::Invalid)?;
+        assert_eq!(owner.name(), ":1.42");
+        for (kind, expected_rule) in [
+            (
+                BluezMatch::Interfaces,
+                "type='signal',sender=':1.42',interface='org.freedesktop.DBus.ObjectManager',path='/'",
+            ),
+            (
+                BluezMatch::Properties,
+                "type='signal',sender=':1.42',interface='org.freedesktop.DBus.Properties',path_namespace='/org/bluez'",
+            ),
+            (
+                BluezMatch::OwnerChange,
+                "type='signal',sender='org.freedesktop.DBus',interface='org.freedesktop.DBus',member='NameOwnerChanged',arg0='org.bluez'",
+            ),
+        ] {
+            let call = bluez_add_match(8, ":1.42", "/org/bluez", "/", kind)?;
+            assert_eq!(read_u32(&call, 8, true)?, 8);
+            assert!(call.windows(b"AddMatch".len()).any(|s| s == b"AddMatch"));
+            assert!(call.ends_with(format!("{expected_rule}\0").as_bytes()));
+        }
+        assert!(matches!(
+            bluez_add_match(0, ":1.42", "/org/bluez", "/", BluezMatch::Interfaces),
+            Err(Error::Invalid)
+        ));
+        assert!(matches!(
+            bluez_add_match(
+                1,
+                ":1.42',sender='x",
+                "/org/bluez",
+                "/",
+                BluezMatch::Interfaces
+            ),
+            Err(Error::Invalid)
+        ));
+        assert!(matches!(
+            bluez_add_match(1, ":1.42", "/org/bluez'", "/", BluezMatch::Properties),
+            Err(Error::Invalid)
+        ));
+        assert!(matches!(
+            bluez_add_match(1, ":1.42", "/org//bluez", "/", BluezMatch::Properties),
+            Err(Error::Invalid)
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn empty_method_return_requires_matching_serial_and_no_body() -> Result<(), Error> {
+        for little in [true, false] {
+            let mut frame = vec![if little { b'l' } else { b'B' }, 2, 0, 1];
+            frame.extend_from_slice(&number(0, little));
+            frame.extend_from_slice(&number(9, little));
+            frame.extend_from_slice(&number(8, little));
+            frame.extend_from_slice(&[5, 1, b'u', 0]);
+            frame.extend_from_slice(&number(3, little));
+            for split in 0..frame.len() {
+                assert_eq!(parse_empty_method_reply(&frame[..split], 3)?, None);
+            }
+            assert_eq!(parse_empty_method_reply(&frame, 3)?, Some(frame.len()));
+            assert!(matches!(
+                parse_empty_method_reply(&frame, 4),
+                Err(Error::Invalid)
+            ));
+            frame[4..8].copy_from_slice(&number(4, little));
+            frame.extend_from_slice(&number(0, little));
+            assert!(matches!(
+                parse_empty_method_reply(&frame, 3),
+                Err(Error::Invalid)
+            ));
+        }
+        let mut explicit_empty = vec![b'l', 2, 0, 1];
+        explicit_empty.extend_from_slice(&0_u32.to_le_bytes());
+        explicit_empty.extend_from_slice(&9_u32.to_le_bytes());
+        explicit_empty.extend_from_slice(&0_u32.to_le_bytes());
+        explicit_empty.extend_from_slice(&[5, 1, b'u', 0]);
+        explicit_empty.extend_from_slice(&3_u32.to_le_bytes());
+        explicit_empty.extend_from_slice(&[8, 1, b'g', 0, 0, 0]);
+        finish_header(&mut explicit_empty)?;
+        assert_eq!(
+            parse_empty_method_reply(&explicit_empty, 3)?,
+            Some(explicit_empty.len())
+        );
+        Ok(())
+    }
+
+    fn signal_frame(
+        path: &[u8],
+        include_sender: bool,
+        duplicate: bool,
+        unknown_duplicate: bool,
+    ) -> Result<Vec<u8>, Error> {
+        let body = [0_u8; 8];
+        let mut out = vec![b'l', 4, 0, 1];
+        out.extend_from_slice(&(body.len() as u32).to_le_bytes());
+        out.extend_from_slice(&11_u32.to_le_bytes());
+        out.extend_from_slice(&0_u32.to_le_bytes());
+        string_field(&mut out, 1, b'o', path);
+        string_field(&mut out, 2, b's', b"org.freedesktop.DBus.ObjectManager");
+        string_field(&mut out, 3, b's', b"InterfacesAdded");
+        if include_sender {
+            string_field(&mut out, 7, b's', b":1.42");
+        }
+        if duplicate {
+            string_field(&mut out, 7, b's', b":1.43");
+        }
+        if unknown_duplicate {
+            string_field(&mut out, 99, b's', b"ignored");
+            string_field(&mut out, 99, b's', b"ignored-again");
+        }
+        pad(&mut out, 8);
+        let signature = b"oa{sa{sv}}";
+        out.extend_from_slice(&[8, 1, b'g', 0, signature.len() as u8]);
+        out.extend_from_slice(signature);
+        out.push(0);
+        finish_header(&mut out)?;
+        out.extend_from_slice(&body);
+        Ok(out)
+    }
+
+    #[test]
+    fn bounded_signal_header_is_incremental_and_redacted() -> Result<(), Error> {
+        let frame = signal_frame(b"/org/bluez", true, false, false)?;
+        for split in 0..frame.len() {
+            assert!(parse_signal(&frame[..split])?.is_none());
+        }
+        let signal = parse_signal(&frame)?.ok_or(Error::Invalid)?;
+        assert_eq!(signal.path, "/org/bluez");
+        assert_eq!(signal.sender, ":1.42");
+        assert_eq!(signal.member, "InterfacesAdded");
+        assert_eq!(signal.signature, b"oa{sa{sv}}");
+        assert_eq!(signal.body, &[0_u8; 8]);
+        assert_eq!(signal.consumed, frame.len());
+        assert!(!format!("{signal:?}").contains(":1.42"));
+        assert!(matches!(
+            parse_signal(&signal_frame(b"/org//bluez", true, false, false)?),
+            Err(Error::Invalid)
+        ));
+        assert!(matches!(
+            parse_signal(&signal_frame(b"/org/bluez", false, false, false)?),
+            Err(Error::Invalid)
+        ));
+        assert!(matches!(
+            parse_signal(&signal_frame(b"/org/bluez", true, true, false)?),
+            Err(Error::Invalid)
+        ));
+        assert!(matches!(
+            parse_signal(&signal_frame(b"/org/bluez", true, false, true)?),
+            Err(Error::Invalid)
+        ));
         Ok(())
     }
 

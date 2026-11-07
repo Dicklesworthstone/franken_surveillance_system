@@ -2703,17 +2703,28 @@ probe. The local bus reported an owner for `org.bluez`; the probe made no
 BlueZ adapter or camera calls. This does not qualify the newer task-owned
 asynchronous observation transport or establish Bluetooth device availability.
 
-The task-owned asynchronous BlueZ-name observer and fragmented-transport,
-policy-revocation, deadline and signal-limit fixtures are present in the
-workspace. They are not yet qualified: a scoped Cargo test request to
-`vmi1264463` expired in the admission queue before a worker was assigned
-(`rchw-a844e498-488a-4eaf-beae-b9cdebd8c381`, exit 103). A subsequent request
-to `vmi1152480` also expired before admission with exit 103. Neither request
-produced a compilation or test result. The scoped
-laboratory excludes unrelated reference modules and is not a full-workspace
-build. A separate read-only Asupersync system-bus probe is prepared but has not
-yet been built or run. None of these changes perform adapter enumeration,
-GATT, camera adoption or Wi-Fi provisioning.
+The task-owned asynchronous BlueZ-name observer passed five scoped Cargo
+fixtures on `vmi1264463` (job `30098049032257881`): fragmented traffic,
+absent-name observation, stage-specific policy revocation, deadline retirement,
+and the signal limit. Its observer, meter, test and then-current packet sources
+matched the worker snapshot by SHA-256; the result was acknowledged and source
+custody released. This scoped laboratory excludes unrelated reference modules
+and is not a full-workspace build. Two earlier requests had timed out before
+admission and produced no test result.
+
+A separate read-only Asupersync process using that observer connected to the
+system bus on `ts1`, passed its task receipt, observed one skipped signal and
+reported that BlueZ had a name owner. It sent no BlueZ adapter or camera call.
+The probe source SHA-256 was
+`abf6db2e8925c48b376fdda5bb48b5875f6ca60fdb015d4c25282dc5918e38e9`.
+On `vmi1264463`, job `30098049032257890` compiled the executable, but its
+wrapper returned exit 102 because the Linux binary could not be downloaded as
+a Mac artifact. The result was acknowledged and sources released. The compiled
+Linux binary, SHA-256
+`d92b8d405eb964671a5541b0d9655a9aed3011eb61139c3c9b5d0fd217c5f66c`,
+was copied to the intended Linux host and independently hash-verified before
+the successful probe. This establishes neither device identity nor camera
+discovery, GATT, adoption, or Wi-Fi provisioning.
 
 The next Bluetooth inventory owner needs a longer-lived bus session than this
 one-shot observer. The D-Bus [ObjectManager contract](https://dbus.freedesktop.org/doc/dbus-specification.html#standard-interfaces-objectmanager)
@@ -2737,3 +2748,405 @@ The adapter's returned property variants included `as`, `b`, `q`, `s`, `u`,
 and `y` in that snapshot. This is direct evidence that the present restricted
 reply-header decoder is insufficient for parsing the ObjectManager body; it
 does not establish that those are the only types BlueZ may return.
+
+An experimental bounded ObjectManager body parser now validates complete nested
+values and exposes adapter-path claims without printing them. A separate scoped
+Cargo fixture on `trj` (job `30098049032257891`) passed five body tests and
+six correlated-handshake tests, with acknowledged exit and source release.
+The body parser SHA-256 was
+`e505c2b2d9953f658e310f123cfa6665cf6e25251daa17efbc0efb08bcda3bc7`
+and the extended handshake SHA-256 was
+`7f855fa3abe344591495bac59c8583037c34a4d7b9689899781c8351987319fd`.
+The body parser requires a separately correlated and admitted response; its
+refusals are not evidence of device absence. A separate synchronous Rust probe
+then issued a read-only ObjectManager request to the actual `ts1` system bus,
+correlated its reply and parsed two objects including one adapter. It did not
+start discovery or call a camera. The diagnostic binary SHA-256 was
+`6c9d40521226d55a0c2f90386aa2bf923ef9112dbe4bb21245878cd200e29cf1`;
+job `30098049032257892` compiled it on `trj`, but its wrapper returned 102
+because the Linux executable was refused as a local Mac artifact. The result
+was acknowledged and sources released; the binary was copied to `ts1` and
+verified by hash before the probe. This is not a full-workspace qualification
+or an asynchronous inventory test. An integration of the parser into the
+task-owned asynchronous observer is under test; a first test submission failed
+before Cargo started when its source transfer timed out (job
+`30098049032257893`, sources released), as did a second submission on the same
+worker (`30098049032257897`, sources released). A third submission to `trj`
+also timed out in source transfer before Cargo started (`30098049032257900`,
+sources released). A local copy of the small source tree was also unusually
+slow. Job `30098049032257901` was submitted with an explicit 120-second source
+transfer timeout instead of the automatically derived 36-second timeout; disk
+and remote-execution guards remained unchanged. Source transfer took 55.9
+seconds, then the job passed all eight scoped async tests with acknowledged
+exit and released sources. The worker hashes matched the packet entrypoint,
+handshake, body parser, async observer and test snapshot. This includes
+successful and malformed inventory replies plus missing-service and denied
+inventory-request cases, but not continuous discovery. A separate read-only
+probe using the same task-owned asynchronous inventory path then connected to
+the real `ts1` system bus and parsed two objects including one adapter; it made
+no discovery or camera calls. The matching [probe source](../experiments/unifi_https_snapshot_lab/bluez_async_inventory_probe.rs)
+is retained outside the experiment's automatic Cargo targets. Its SHA-256 was
+`0d2e811c433e6ad9c678e2618bd174d6d4abe9681f3b608cac307a404bb3fa3d`.
+Job `30098049032257902` compiled its Linux binary but returned wrapper exit 102
+because that foreign binary was not accepted as a local Mac artifact. Its
+terminal result was acknowledged and sources released. The compiled binary,
+SHA-256 `67909dcd215fe7bc71bec17566dce31210e84be1ff380eb4c3db09a4df0daf50`,
+was copied to the intended Linux host and independently hash-verified before
+the successful probe. This is one untrusted snapshot, not authentication,
+Bluetooth scanning, camera adoption, or a continuous inventory guarantee.
+After that probe, the snapshot request was revised to set the D-Bus
+`NO_AUTO_START` flag so a service that disappears after the name check is not
+started by the request. The revised handshake source SHA-256 is
+`6222596f3b1df6ff23882e4b917e37f8a92b570d9804e649f8a6381f3afcc8e7`.
+Scoped packet fixture job `30098049032257906` passed six handshake and five
+body-parser tests, with matching worker source hashes, terminal acknowledgment
+and source release. Scoped async fixture job `30098049032257907` then passed
+eight tests, with matching handshake, observer and test hashes, terminal
+acknowledgment and source release; the observer SHA-256 was
+`5aaccb765f61742805992cc4f3fc9fe0243dcaba03b23e3808c8d96f5a1aca87`.
+The resulting async inventory probe was also run read-only on `ts1`: it again
+reported two objects, one adapter and one skipped signal, with no discovery or
+camera calls. Job `30098049032257908` built the Linux executable and then
+returned exit 102 because it refused to download the Linux artifact onto the
+Mac; sources were released and the result acknowledged. The binary was copied
+to `ts1` and its SHA-256
+`e162b2320fd760be1f0453855517e262d0ce9fd08429b8abb34e1a13b25ede29`
+matched before execution. The probe source was unchanged from the earlier
+async inventory trial. This still does not demonstrate camera discovery or
+setup.
+
+The current async frame reader accepts at most 8 KiB per complete message, so
+a larger legitimate BlueZ inventory is refused rather than silently truncated.
+Parsing is synchronous and structurally bounded, but its CPU work is not yet
+separately charged to the task's CPU budget. The observer does not bind the
+reply to an independently authenticated BlueZ owner and drops interleaved
+signals; neither this snapshot nor an empty result establishes device absence
+or continuous discovery coverage.
+
+The standalone ObjectManager body parser passed a scoped Clippy invocation
+with warnings denied on `trj` (`30098049032257910`, acknowledged and released).
+The broader scope-filtered reference lint with `too_many_arguments` denied did
+not pass: job `30098049032257912` reported an existing eight-argument method
+in `unifi_direct/conversation.rs`. That failure is retained as a failure of
+the broader lint scope, not attributed to or hidden by the BlueZ fixture.
+A narrower `-D warnings` observer check also stopped before reaching the
+observer: `30098049032257914` reported eight existing Clippy errors in
+`fss-runtime`, with acknowledged exit and source release. Observer lint
+qualification remains pending. A further `--no-deps` isolated check
+(`30098049032257920`) reached the reference crate but failed because that
+filtered harness omitted all users of `MeteredIo::runtime_context`, making
+the otherwise used method appear dead under `-D warnings`. This is a harness
+artifact and not a passing lint result.
+
+The inventory parser and async owner were subsequently extended to retain
+untrusted `org.bluez.Device1` paths as well as adapter paths, with payload-free
+debug output. Scoped async job `30098049032257916` passed eight tests,
+including exact preservation and debug redaction of a synthetic device path;
+scoped packet job `30098049032257917` passed five body and six handshake tests.
+Both results were acknowledged and source custody released. The worker source
+hashes for the body parser, async owner and async tests were respectively
+`07a246a724c7909dab5d9af49f2b27defac1f75ecfd78c9cfe4878742bc6bee6`,
+`dfb65f2d194575e82b4c8503f87c23545a8988d4322d9ed5cb1b29b65f0c74be`, and
+`06d6b177a0273bd15a09691f6148f90a5432dd9c7f4ba37cd7329a50d659a95e`.
+The revised body parser also passed scoped Clippy with warnings denied on
+`trj` in job `30098049032257919`, with matching source hash, terminal
+acknowledgment and source release.
+
+The [device inventory probe](../experiments/unifi_https_snapshot_lab/bluez_async_device_inventory_probe.rs)
+used the revised task-owned path against `ts1`'s live system bus and reported
+two objects, one adapter and zero cached device objects. It started no scan and
+made no camera call; the zero is not evidence that no camera is nearby. The
+source SHA-256 was
+`ad334007a71b2c504d71162a0d56d8d15b7d0ad1348a40d1648b3fbe76ffc4e7`.
+Job `30098049032257918` compiled its Linux executable, then returned exit 102
+because the Mac rejected the foreign artifact. Its terminal result was
+acknowledged and sources released. The binary was copied to `ts1` and verified
+as `e78fc0c21323b26e210d6654b24cb3005da598ddc9870c7091482de5d5e3ad99`
+before execution. A cached device path alone does not authenticate the device,
+prove reachability, or authorize a connection or Wi-Fi setting.
+
+The BlueZ `Device1.UUIDs` property is now retained as a bounded, untrusted
+per-device claim. A missing property remains `None`, while an observed empty
+list is distinct; case-insensitive service matching does not identify a device
+or prove a current advertisement. A wrong property type refuses the entire
+snapshot. The implementation follows BlueZ's documented
+[Device API](https://bluez.readthedocs.io/en/latest/device-api/); the G3
+Instant UUID noted by the separate UniFi BLE client is not established as a
+universal camera identifier.
+
+Scoped packet job `30098049032257921` passed seven ObjectManager body tests and
+six handshake tests; scoped async job `30098049032257922` passed eight tests,
+including a synthetic device/service claim and debug redaction. Both results
+were acknowledged and source custody released. The worker hashes for the
+body parser, async owner and async test were respectively
+`2fdd0ddea6640b2de7888333a5b233a888f4d5794154a291e86ad753cfe636a5`,
+`ee5ea55d7888b688ff4afce9cfce37745271aea4d63be0adf65c08fa7dd04582`, and
+`69ee0b46a535cc716bab18f1d5bd4d2525840f5f36b1dd87249ee2f777041b0b`.
+A separate build request (`30098049032257923`) was refused by the remote disk
+reservation guard before compilation; its result was acknowledged and sources
+released. The executable produced during the successful test job, SHA-256
+`d312e1814444fdbcc780b4ac5234472b04dc0cefa5aed537ed1215ca851a8d6f`,
+was hash-verified on `ts1` and ran the read-only task-owned inventory probe.
+It saw one adapter and zero cached device objects, with no scan or camera call.
+The real-bus run therefore did not exercise a physical device's UUID property.
+The revised body parser also passed scoped Clippy with warnings denied in job
+`30098049032257925` on `trj`, with acknowledged exit and released sources.
+
+The packet code is now being extended to retain scoped `InterfacesAdded`,
+`InterfacesRemoved` and `PropertiesChanged` signal bodies, including distinct
+unchanged, invalidated and present service-list states. A restricted signal
+header decoder and a caller-supplied sender/path scope dispatcher are also in
+progress. These are not yet a subscription, a scanner or camera onboarding.
+The first packet fixture request (`30098049032257930`) was interrupted by a
+remote free-space telemetry deadline and initially retained source custody;
+it produced no test verdict. Full signal-stream integration remains
+unqualified. Two recovery attempts of the same wrapper
+(`rchw-e779a461-63a0-4e37-8985-745f5f556c7d`) timed out waiting on the remote
+source-authority lock; a later same-ID recovery returned delivery exit 137,
+terminal acknowledgment and source release, while the daemon recorded exit
+130. Neither exit is a test pass. No manual lock removal or replay was performed.
+Independent signal-router test requests `30098049032257935` and
+`30098049032257937` were both refused by the remote disk reservation guard
+before compilation and have acknowledged terminal results with sources
+released. A smaller, separate metadata-only `cargo check --tests` request
+(`30098049032257939`) compiled the fixture and test targets on `vmi1264463`,
+with matching source hashes, acknowledged exit and source release; it did not
+execute the tests. A subsequent direct pinned-nightly `rustc --test` compile
+(`30098049032257943`) used one codegen unit and a smaller compiler reservation
+without changing the free-space floor. It succeeded with acknowledged exit
+and source release. The resulting runner SHA-256 was
+`d671efd5ea7731404f0c2ab046c7f733de7a4536804dab29af67b1154dd13a20`.
+Executed directly on that Linux worker, three scoped routing tests passed and
+the new incremental/redacted signal-header test passed; all other tests were
+filtered out. Those tests use synthetic frames and do not resolve the retained
+earlier job or prove a live BlueZ subscription. Scoped job
+`30098049032257944` also passed Clippy with warnings denied for the three
+source-matched packet modules, with acknowledged exit and source release.
+After the interrupted older test was reconciled and its source custody
+released, the same hash-verified standalone runner executed the nine
+ObjectManager body tests on `vmi1264463`; all nine passed, including added,
+removed, changed and invalidated synthetic signal bodies. These are scoped
+fixtures, not a full-workspace run.
+
+A separate [signal-header probe](../experiments/unifi_https_snapshot_lab/bluez_signal_header_probe.rs)
+was built against the matching handshake source on `vmi1264463` using the
+pinned nightly (`30098049032257947`, acknowledged and released). Its source
+SHA-256 is `19891b434e2cfbf2bf00a38bc2e4d4830cfdcf66e89b6864fb70715572a581fb`.
+The retained file is not an automatic Cargo target: the test fixture placed it
+under `src/bin` with the matching handshake source at `src/dbus_handshake.rs`.
+The Linux binary, SHA-256
+`1c6ef43885c0af1722026ca30f89e766737fcab75b4970214ce8d81919cce324`,
+was hash-verified on `ts1` and successfully decoded that bus's real
+`NameAcquired` signal. This was a synchronous diagnostic, not a BlueZ device
+signal, subscription owner, scan or camera call. The full async scanner and
+onboarding path remain unimplemented.
+
+The signal-header parser was then tightened to reject duplicate unknown header
+fields as well as duplicate known fields. The updated packet source hashes are
+`2b0bc9041d0fffbf1e5bd96cde9a0fc3bd0a30f814aacc3e57ff64cc58302903`
+for the handshake/signal header,
+`cf1bf8912b88859a69998f17f65a5662775550f789de2c3f7cb04ad49812b9b0`
+for ObjectManager bodies, and
+`9acb83d56789b71c103f4935084a17cb64c7d2cbea786153fa9d03d99f85645e`
+for scoped signal dispatch. Pinned-nightly `rustc --test` job
+`30098049032257948` compiled these source-matched modules with a one-codegen-
+unit budget, acknowledged the result and released sources. The resulting
+runner, SHA-256
+`15a146676c8cf3ddefb68e5f706ac149135e0322f6a6caacd5a8047e419ad1b9`,
+was run on the Linux worker: all 19 focused tests passed. They include
+truncation, invalidation, scope separation, duplicate headers and single-byte
+corruptions; they are not a full-workspace or live-discovery test.
+
+The retained header probe was rebuilt against this exact handshake source by
+job `30098049032257949` (acknowledged and sources released). Its binary SHA-256
+`caa79e0304dd9a7188fdff5b305e53a57238783c4743d4467f4fbcc835690418`
+was verified on `ts1` before it again decoded a real `NameAcquired` bus signal.
+No Bluetooth discovery or camera call was made. The revised packet modules
+also passed scoped Clippy with warnings denied in job `30098049032257950`,
+with terminal acknowledgment and released sources.
+A `cargo check --tests` request for all packet source files under the filtered
+laboratory manifest was submitted as job `30098049032257951`; its result is
+terminal without a check: source synchronization stalled for 120 seconds and
+Cargo did not start. The result was acknowledged and sources released. The
+local source comparison found all 42 packet Rust files byte-identical to the
+scoped snapshot at submission, but the laboratory manifest and workspace differ
+from the project. This is not a packet-crate compile or test pass.
+
+A separate immutable scratch export of all 42 current packet Rust source files
+was then compiled as a test binary with the pinned-nightly `rustc --test`, one
+codegen unit and the normal compiler disk guard (`30098049032257953`, terminal
+acknowledged and sources released). A deterministic aggregate over source paths
+and file hashes matched the project and worker:
+`c7d7d06512d113668bb5acf2661a7b4727856df4e1300a72bcdb8194d83c2a7d`.
+The resulting Linux test binary SHA-256
+`0947b43f91df1c54846b73d25353379f76fff3f7b0d4735ecbebb87f88fc1dd5`
+was executed on the worker, and all 37 included unit tests passed. This is
+direct compiler and unit-test evidence for the packet sources, not the
+project's Cargo manifest, integration tests, or full-workspace qualification.
+
+The packet profile now prepares `GetNameOwner` and three fixed `AddMatch`
+rules for BlueZ ObjectManager signals, property signals and BlueZ owner changes.
+It validates the owner and object paths before constructing rules, rejects rule
+injection, and parses correlated empty method returns with either an omitted
+or empty signature. Preparing a rule has no effect; sending `AddMatch` creates
+a connection-scoped subscription and needs an authorized session owner.
+Pinned-nightly compiler job `30098049032257957` built a source-matched test
+runner and released its sources; the runner passed all 21 focused packet tests
+on `vmi1149989`. The handshake source SHA-256 was
+`1bcd46a0235187282a98b4143d0a25d40ca9ad458d29843b4d74f5840237aa35`
+and the runner SHA-256 was
+`1871e17414f5b6b556248520802c3ae44248862ba84f4cd0659963dec9461966`.
+
+A [short-lived bus subscription probe](../experiments/unifi_https_snapshot_lab/bluez_subscription_probe.rs)
+was built with the pinned compiler in job `30098049032257960` (acknowledged and
+sources released). Its source SHA-256 was
+`02a79b991a07fdd152ad83d96044e9baebd4d515ba3a2993becac08314ecb1b1`;
+like the earlier probe, it was compiled in the isolated fixture layout. The
+binary SHA-256
+`da8eb100e8da1a7646cbb9922f3ba347d4d004c9927a8f86f2d687c98ddb1aff`
+was verified on `ts1`, where it resolved BlueZ's owner, received successful
+replies to all three subscriptions and rechecked the owner before closing the
+bus connection. One unrelated bus signal was observed. It did not start
+Bluetooth discovery or call a camera. This synchronous diagnostic does not
+provide a production session owner, continuous event coverage or onboarding.
+The `trj` recorder was active
+during this work, but load rose above
+120 and a one-hour journal query timed out, so this is not evidence of recent
+recording continuity and no additional workload was intentionally sent there.
+
+The packet-only subscription fixture also passed scoped `cargo clippy --offline
+-j 1 --lib -- -D warnings` in remote job `30098049032257965`; its terminal
+result was acknowledged and its source lease released. This is a lint result
+for that isolated fixture, not the full workspace or the asynchronous owner.
+
+The reference adapter now contains an experimental task-owned `Watch` session.
+It resolves a unique BlueZ owner, installs owner-change, ObjectManager and
+property matches, checks the owner again, and retains bounded validated changes
+interleaved with subscription replies. The caller owns the stream until it
+drops the session. Revocation, cancellation, owner changes, malformed or
+out-of-scope signals, queue exhaustion, and timeouts retire the stream; a
+partly read frame cannot be retried as if no gap occurred. This does not take
+an initial snapshot, start a Bluetooth scan, identify a camera, or implement
+provisioning. A bounded [asynchronous watch probe](../experiments/unifi_https_snapshot_lab/bluez_async_watch_probe.rs)
+was compiled in a source-matched, isolated remote fixture. Job
+`30098049032257976` passed all 12 bus contract tests; its terminal result was
+acknowledged and its source lease released. The tests include interleaved
+changes, an owner-change notification, a 33-event overflow, policy revocation,
+and a timeout after a partial frame. The bus source SHA-256 was
+`2ebcfc85737366d6cb1608b2b0d8fb3fbe892506f76843cd65ff8e8b9daefd31`.
+The resulting probe binary SHA-256
+`d656d4af4e669ba8622427ac75b4f967f19bc76338fc72a927625d0ae8bc4549`
+matched on `ts1`; there it successfully opened the task-owned subscription and
+retired after the bounded wait returned `Interrupted`. No actual BlueZ device
+event arrived in that short window. It did not start a scan or call a camera.
+These observations do not demonstrate complete event coverage or onboarding.
+
+The task-owned watch can now request an inventory on the subscribed connection,
+addressing its independently resolved unique owner and requiring the reply's
+sender to match. It retains changes received before the inventory reply and
+reports their count as overlap; callers must reconcile them rather than assume
+they occurred after the snapshot. Job `30098049032257977` passed 13 scoped bus
+contract tests and released its source lease. A hash-matched `ts1` probe observed
+one adapter, no cached devices and no overlapping changes. This is not evidence
+that no cameras are nearby.
+
+The experimental discovery handle prepares explicit start and stop calls on a
+caller-admitted adapter and requires a correlated reply from the selected
+unique owner. It treats unconfirmed effects as `DiscoveryUncertain`; dropping a
+handle or cancelling an operation is not proof that BlueZ stopped. The owner
+must explicitly stop an acquired session. Job `30098049032257979` passed 14
+scoped tests. A later equivalent source snapshot passed the same 14 tests in
+job `30098049032257981` with acknowledgment and source release. On `ts1`, a
+probe first refused to start because its adapter allowlist named the wrong
+interface; it then started and immediately stopped an authorized scan on the
+correct adapter. The adapter reported `Discovering: no` both before and after.
+This confirmed the two method replies, not receipt of a device event or camera
+discovery. The rejected attempt did not start a scan.
+
+The packet handshake changes separately passed all 11 source-matched direct
+pinned-compiler unit tests. Cargo job `30098049032257978` was refused at disk
+admission and did not run; the disk guard was not changed. Job
+`30098049032257980` compiled the Linux diagnostic remotely, but its wrapper
+returned 102 when it refused to import a Linux binary into the macOS target
+directory. The binary used on `ts1` was separately copied and hash-verified.
+
+The discovery handle can also read changes while a scan is active. An idle
+deadline keeps the session only if no frame bytes were consumed; a deadline
+after a partial frame or a revoked adapter grant reports an uncertain scan
+outcome. Adapter authority and bus authority are checked at every transport
+poll. Job `30098049032257986` recompiled the exact sources and passed all 15
+bus tests, including the idle, partial-frame and adapter-revocation cases; its
+terminal result was acknowledged and source lease released. The bus source
+SHA-256 was `39f6b059be6eb40c1b096fc26a923f90c6ed9d66eecb0866692faf35393165cd`.
+
+The [bounded live scan probe](../experiments/unifi_https_snapshot_lab/bluez_async_scan_probe.rs)
+was compiled in the same isolated fixture and its binary SHA-256
+`6a9111c5d0e1a9b86b0fad35896ceba34a6a6c5c0333553e492440f9a50bfb5b`
+was matched on `ts1`. It started discovery, processed 32 scoped changes
+(31 on device interfaces), then stopped after reaching its event cap; the
+adapter reported discovery off afterward. None of those changes claimed the
+single candidate service UUID used in the probe. The candidate is illustrated
+by the [UniFi BLE client](https://github.com/zerotypic/unifi-ble-client), but
+service UUIDs vary by model and a claim is not device identity. This bounded
+scan did not prove that the owned G4 is absent or detect that camera, and it
+did not contact or configure any camera. The 32 changes are events, not unique
+devices. It does not implement continuous discovery or automatic onboarding.
+
+The experimental Asupersync 0.5 TLS server previously stalled when its
+underlying writer needed an explicit flush before accepting more ciphertext.
+The [buffered transport regression](../experiments/unifi_tls_05_server_lab/tests/buffered_transport.rs)
+reproduced the timeout before the fix. After the drain-loop change, all three
+bounded-buffer tests passed, including an independent OpenSSL client and a
+permanently blocked writer; two existing task-owned OpenSSL trust controls also
+passed. See the [TLS laboratory record](../experiments/unifi_tls_05_server_lab/README.md)
+for source hashes and precise qualification limits. This fixes an observed
+loopback failure, not the unexplained physical G4 controller timeout; provider
+admission, entropy authority and direct recording remain open.
+
+The new `unifi_direct::bluez_registry` projects a no-overlap subscribed
+inventory and ordered scoped changes into at most 128 path claims for one
+adapter. Caller-selected candidate UUIDs are matching policy, not a complete
+model list. An absent or invalidated service list is unknown; a removed
+interface is only a removal claim. Wrong-owner, inconsistent, malformed or
+overflowing changes invalidate the projection, and an externally detected
+session gap must be passed to `mark_gap`. Snapshot overlap is refused rather
+than replayed as if it happened afterward. It does not authenticate devices,
+persist a discovery history, supervise the watch, or provision cameras.
+
+Remote job `30098049032257994` recompiled the final reducer and passed its
+three scoped tests, including raw signal add/change/remove, wrong-owner and
+malformed-path cases. Job `30098049032257996` passed the 15 bus integration
+contracts; both terminal results were acknowledged and source leases released.
+The reducer source SHA-256 was
+`03d3a9d891599b072f4a128899e409f3f6104dd8d2ca96e517f8e7e8e2be08d6`.
+The corresponding probe binary SHA-256
+`3925ae005dba44e4d7e47786a73e2862b6206488ccd08d94e17602d73b9e88eb`
+matched on `ts1`. Its capped scan processed 32 events into 30 distinct path
+claims, with no reported projection gap and no match for the one candidate
+UUID; it received an acknowledged stop and the adapter reported discovery off.
+No camera was contacted or identified. Counts are bounded claims in one scan,
+not a census, a negative detection, or durable evidence.
+
+The task-owned `unifi_direct::bluez_monitor` now holds a scan and registry
+together. It obtains a baseline on the subscribed connection, refuses a
+snapshot with overlapping changes before starting the scan, updates the
+projection on received changes, and marks the retained registry gapped when
+the monitor stops or observation fails. On a projection error it attempts a
+stop and distinguishes an acknowledged stop from uncertain cleanup. An idle
+window leaves the monitor active. Dropping a future can still interrupt an
+active scan without an acknowledged stop, and unread events can make the
+last processed claims stale. The monitor does not authenticate a camera,
+provide a durable scan supervisor, reconnect automatically, or provision one.
+
+Job `30098049032258015` passed all 16 scoped bus/monitor contracts, including
+refusal before scan-start on overlapping inventory, retirement of a candidate
+claim, projection-error cleanup, and partial-frame uncertainty. Job
+`30098049032258014` separately passed all three registry unit tests. Both
+terminal results were acknowledged and sources released. The monitor source
+SHA-256 was `40aff5dc7b2d84062ad5405494a3c7b0da5bab1a864ec3cf6c6744b07cae344c`.
+The matching live probe binary SHA-256
+`80792636f342dd861c0616412b944a23c892d2df632da89e182b9e07bc499363`
+was verified on `ts1`. Its capped scan processed 32 events into 30 path
+claims, with no reported projection gap and no matching claim for the one
+candidate UUID. Stop was acknowledged and discovery was off afterward. The
+probe neither contacted the camera nor proves any device was absent.

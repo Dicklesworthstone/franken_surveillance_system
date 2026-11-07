@@ -24,6 +24,10 @@ pub mod av_evidence;
 pub mod av_recording;
 /// Task-owned, bounded local D-Bus observation for future BlueZ transport.
 pub mod bluez_bus;
+/// Task-owned BlueZ scan and claim-projection lifecycle.
+pub mod bluez_monitor;
+/// Bounded reconciliation of scoped BlueZ inventory and device changes.
+pub mod bluez_registry;
 /// Bounded camera-local HTTPS request/response state without transport or trust policy.
 pub mod camera_api;
 /// Task-scoped, bounded camera-local HTTP over an independently admitted transport.

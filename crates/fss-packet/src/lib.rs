@@ -12,6 +12,10 @@ pub mod avc;
 pub mod cadence;
 /// Restricted, bounded local D-Bus handshake framing for future BlueZ access.
 pub mod dbus_handshake;
+/// Scoped, bounded BlueZ signal decoding without I/O or authority inference.
+pub mod dbus_bluez_signal;
+/// Bounded read-only D-Bus ObjectManager body parsing for BlueZ inventory.
+pub mod dbus_object_manager;
 /// Bounded, source-preserving parsing of the experimental UniFi extended-FLV wire format.
 pub mod extended_flv;
 /// Bounded H.265 access-unit/VPS/SPS/PPS parser (FSS-114).
