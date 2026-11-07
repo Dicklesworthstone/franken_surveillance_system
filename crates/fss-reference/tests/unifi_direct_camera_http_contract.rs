@@ -101,6 +101,8 @@ fn fixture(address: SocketAddr) -> io::Result<()> {
             br#"{"controller":{"addr":"127.0.0.1"}}"#.as_slice(),
         ),
         ("GET /snap.jpeg ", [0xff, 0xd8, 0xff, 0xd9].as_slice()),
+        ("GET /snap.jpeg ", [0xff, 0xd8, 0xff, 0xd9].as_slice()),
+        ("GET /snap.jpeg ", [0xff, 0xd8, 0xff, 0xd9].as_slice()),
     ]
     .iter()
     .enumerate()
@@ -266,9 +268,11 @@ fn owned_camera_http_sequences_and_fences_interruption() -> Test {
                         settings.controller,
                         ControllerAddress::Reported(Ipv4Addr::LOCALHOST)
                     );
-                    let snapshot = owner.snapshot(Duration::from_secs(5)).await?;
-                    assert_eq!(snapshot.bytes(), [0xff, 0xd8, 0xff, 0xd9]);
-                    assert_eq!(owner.phase(), Phase::Snapshot);
+                    for _ in 0..3 {
+                        let snapshot = owner.snapshot(Duration::from_secs(5)).await?;
+                        assert_eq!(snapshot.bytes(), [0xff, 0xd8, 0xff, 0xd9]);
+                        assert_eq!(owner.phase(), Phase::Snapshot);
+                    }
                     peer.join().map_err(|_| "fixture peer panicked")??;
                     drop(owner);
                     let writes = Rc::new(RefCell::new(Vec::new()));

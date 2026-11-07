@@ -4,8 +4,14 @@ This isolated Linux laboratory extends `../unifi_https_auth_lab` with one
 authenticated `GET /snap.jpeg`, followed by the FSS pure-Rust MJPEG decoder's
 bounded luma reconstruction. It owns the TCP connection through Asupersync
 0.5 and FSS task metering, checks network, authentication, status, media-read
-and decode grants, and makes at most one login, one status and one snapshot
-request per run. It does not command or replace the camera's controller. By
+and decode grants, and makes at most one login, one status, one settings and
+one snapshot request per default run. An explicit `--three-snapshots` option
+requests three snapshots over the same session, at least one second apart.
+Every JPEG is decoded in memory; only the last may be written to the optional
+output. A failed or interrupted sequence is not reported as complete. The
+reported adjacent digest changes indicate differences between received JPEG
+bytes, not capture times or continuous video. It does not command or replace
+the camera's controller. By
 default the raw camera image and decoded pixels are held in memory and not
 deliberately written to disk or printed. An explicitly authorized optional
 output writes the JPEG to a new mode-600 file directly under `/tmp`, then
@@ -93,6 +99,10 @@ the snapshot and in-memory decode. To request a viewable output, insert an
 explicit `/tmp/fss-unifi-snapshot-*.jpg` path before `--owner-authorized` and
 include that exact destination in the scope. A loopback-only fixture can use
 another port. No credential or camera image belongs in a repository fixture.
+Place the optional `--three-snapshots` immediately before `--owner-authorized`
+and include all three reads and decodes in the owner-authorized scope. The
+fixture accepts `--three-snapshots` to verify the repeated request sequence or
+`--disconnect-after-first` to verify the failure boundary.
 
 ## Task-owned HTTP integration (2026-11-05)
 
