@@ -48,6 +48,27 @@ The isolated fixture does not qualify the entire workspace, arbitrary
 full-duplex backpressure, the provider, or a physical camera. No camera or
 recorder was contacted or changed for this regression.
 
+## Media before settings reply
+
+The trial's opt-in `--media-before-reply` mode supervises controller messages
+while accepting the media connection. On `vmi1152480`, the independent
+`media_before_reply_fixture.py` loopback peer exercised the built trial with
+disposable TLS keys and synthetic AVC. It required a clock reply before
+opening media, then tested both an early settings reply and no reply. Both
+cases produced an MP4 from which FFprobe read three H.264 frames. The exact
+binary and fixture hashes, scoped Rust contract results, and remaining
+qualification limits are in the [UniFi reference notes](../../docs/UNIFI_DIRECT_REFERENCE.md).
+Run the peer only with a Linux trial binary and the synthetic AVC fixture:
+
+```text
+python3 experiments/unifi_tls_05_server_lab/media_before_reply_fixture.py TRIAL_BINARY crates/fss-packet/tests/fixtures/avc/baseline.264
+```
+
+The loopback result does not establish physical camera identity, successful
+controller handoff, continuous recording, or settlement of a camera effect.
+
+## Additional TLS fixtures
+
 The ignored tests require a disposable localhost certificate and PKCS#8 key in
 `FSS_LAB_CERT_DER` and `FSS_LAB_KEY_DER`; the OpenSSL controls additionally
 require `FSS_LAB_CERT_PEM` and `FSS_LAB_BAD_CERT_PEM`. They must never use

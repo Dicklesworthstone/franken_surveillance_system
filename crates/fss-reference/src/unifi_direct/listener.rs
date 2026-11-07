@@ -291,6 +291,55 @@ pub struct StartedBeforeReply {
     pub pipeline: Pipeline,
 }
 
+/// Caller-owned, bounded observations from a media-before-reply startup.
+///
+/// The owner retains this value if the startup future fails or is dropped.
+/// It does not replace the effect journal or establish remote state. A missing
+/// dispatch observation also does not prove that no effect was attempted.
+#[derive(Debug, Default)]
+pub struct StartTrace {
+    attempted: bool,
+    dispatched: Option<super::conversation::Dispatched>,
+    clock_requests: usize,
+    clock_replies_written: usize,
+    observations: Vec<super::Observation>,
+}
+
+impl StartTrace {
+    /// Whether the caller began polling an attempt with this trace.
+    pub fn attempted(&self) -> bool {
+        self.attempted
+    }
+
+    /// Locally completed stream dispatch, if its completion was observed.
+    pub fn dispatched(&self) -> Option<super::conversation::Dispatched> {
+        self.dispatched
+    }
+
+    /// Clock requests observed after stream dispatch, including an unfinished reply.
+    pub fn clock_requests(&self) -> usize {
+        self.clock_requests
+    }
+
+    /// Clock replies locally written; a write is not proof of peer receipt.
+    pub fn clock_replies_written(&self) -> usize {
+        self.clock_replies_written
+    }
+
+    /// Other untrusted management observations made while accepting media.
+    pub fn observations(&self) -> &[super::Observation] {
+        &self.observations
+    }
+
+    fn is_empty(&self) -> bool {
+        !self.attempted
+            && self.dispatched.is_none()
+            && self.clock_requests == 0
+            && self.clock_replies_written == 0
+            && self.observations.is_empty()
+    }
+}
+
 enum StartProgress {
     Confirmed(super::conversation::Reply),
     Dispatched {
@@ -330,7 +379,9 @@ pub async fn start<IO: asupersync::io::AsyncRead + asupersync::io::AsyncWrite + 
     framer: Framer,
     recorder: Recorder,
 ) -> Result<Started, StartError> {
-    let (progress, pipeline) = start_inner(owner, session, cfg, framer, recorder, true).await?;
+    let mut trace = StartTrace::default();
+    let (progress, pipeline) =
+        start_inner(owner, session, cfg, framer, recorder, true, &mut trace).await?;
     match progress {
         StartProgress::Confirmed(reply) => Ok(Started { reply, pipeline }),
         StartProgress::Dispatched { .. } => Err(StartError::Conversation(
@@ -354,7 +405,29 @@ pub async fn start_before_reply<
     framer: Framer,
     recorder: Recorder,
 ) -> Result<StartedBeforeReply, StartError> {
-    let (progress, pipeline) = start_inner(owner, session, cfg, framer, recorder, false).await?;
+    let mut trace = StartTrace::default();
+    start_before_reply_tracked(owner, session, cfg, framer, recorder, &mut trace).await
+}
+
+/// Start as [`start_before_reply`] while retaining observations in `trace` on
+/// ordinary failure or cancellation. Supply a fresh trace for each attempt.
+/// An interrupted write remains subject to independent journal reconciliation.
+pub async fn start_before_reply_tracked<
+    IO: asupersync::io::AsyncRead + asupersync::io::AsyncWrite + Unpin,
+>(
+    owner: &mut super::conversation::Owner<'_, '_, '_>,
+    session: &mut super::receive::Session<'_, '_, IO>,
+    cfg: &Start<'_>,
+    framer: Framer,
+    recorder: Recorder,
+    trace: &mut StartTrace,
+) -> Result<StartedBeforeReply, StartError> {
+    if !trace.is_empty() {
+        return Err(StartError::Listener(Error::Configuration));
+    }
+    trace.attempted = true;
+    let (progress, pipeline) =
+        start_inner(owner, session, cfg, framer, recorder, false, trace).await?;
     match progress {
         StartProgress::Dispatched {
             dispatched,
@@ -379,6 +452,7 @@ async fn start_inner<IO: asupersync::io::AsyncRead + asupersync::io::AsyncWrite 
     framer: Framer,
     recorder: Recorder,
     wait_for_reply: bool,
+    trace: &mut StartTrace,
 ) -> Result<(StartProgress, Pipeline), StartError> {
     if !valid_wait(cfg.bind_wait)
         || !valid_wait(cfg.conversation_wait)
@@ -466,6 +540,7 @@ async fn start_inner<IO: asupersync::io::AsyncRead + asupersync::io::AsyncWrite 
         .start_dispatched(session, &conversation)
         .await
         .map_err(StartError::Conversation)?;
+    trace.dispatched = Some(dispatched);
     let deadline = guarded_owner.cx.now() + cfg.accept_wait;
     let mut accept = pin!(listener.accept(
         framer,
@@ -474,9 +549,16 @@ async fn start_inner<IO: asupersync::io::AsyncRead + asupersync::io::AsyncWrite 
         cfg.max_bytes,
         cfg.accept_wait
     ));
-    let mut observations = Vec::new();
-    let mut accept_syncs = 0_usize;
     loop {
+        // Reserve before receiving: a completed observation has already
+        // advanced controller state and cannot be recovered from the socket.
+        if trace.observations.len() == MAX_ACCEPT_OBSERVATIONS {
+            return Err(StartError::Conversation(super::conversation::Error::Limit));
+        }
+        trace
+            .observations
+            .try_reserve(1)
+            .map_err(|_| StartError::Conversation(super::conversation::Error::Limit))?;
         let left = deadline
             .as_nanos()
             .checked_sub(guarded_owner.cx.now().as_nanos())
@@ -504,8 +586,8 @@ async fn start_inner<IO: asupersync::io::AsyncRead + asupersync::io::AsyncWrite 
                 return Ok((
                     StartProgress::Dispatched {
                         dispatched,
-                        time_syncs_during_accept: accept_syncs,
-                        observations_during_accept: observations,
+                        time_syncs_during_accept: trace.clock_replies_written,
+                        observations_during_accept: trace.observations.clone(),
                     },
                     result.map_err(StartError::Listener)?,
                 ));
@@ -530,9 +612,13 @@ async fn start_inner<IO: asupersync::io::AsyncRead + asupersync::io::AsyncWrite 
             Ready::Control(Ok(super::receive::Step::Observation(
                 super::Observation::TimeSyncRequested,
             ))) => {
+                trace.clock_requests = trace
+                    .clock_requests
+                    .checked_add(1)
+                    .ok_or(StartError::Conversation(super::conversation::Error::Limit))?;
                 let index = dispatched
                     .time_syncs
-                    .checked_add(accept_syncs)
+                    .checked_add(trace.clock_replies_written)
                     .ok_or(StartError::Conversation(super::conversation::Error::Limit))?;
                 let operation = cfg
                     .time_sync
@@ -548,13 +634,10 @@ async fn start_inner<IO: asupersync::io::AsyncRead + asupersync::io::AsyncWrite 
                     .answer_time_sync(session, operation, cfg.management, left)
                     .await
                     .map_err(StartError::Conversation)?;
-                accept_syncs += 1;
+                trace.clock_replies_written += 1;
             }
             Ready::Control(Ok(super::receive::Step::Observation(observation))) => {
-                if observations.len() == MAX_ACCEPT_OBSERVATIONS {
-                    return Err(StartError::Conversation(super::conversation::Error::Limit));
-                }
-                observations.push(observation);
+                trace.observations.push(observation);
             }
         }
     }

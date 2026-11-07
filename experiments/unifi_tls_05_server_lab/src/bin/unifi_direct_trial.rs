@@ -380,9 +380,10 @@ fn run(args: Options) -> ResultBox<()> {
                     let io_wait=remaining.min(MAX_IO_WAIT);
                     let request=listener::Start {bind:SocketAddrV4::new(*args.listen.ip(),0),resource:&resource,admission:&policy,channel:VideoChannel::Video2,video:VideoCodec::H264,audio:AudioCodec::Aac,stream_name:"0123456789abcdef",hello:&hello,agreement:&agreement,stream:&stream,time_sync:&syncs[..startup_sync_limit],management,stream_conditions,chunk_bytes:16*1024,max_bytes:MAX_SOURCE,bind_wait:io_wait,conversation_wait:io_wait,accept_wait:io_wait};
                     let framer=Framer::new(FlvLimits::default(),1024*1024)?; let recorder=recording::Recorder::new(SourceKey {connection:attempts as u64,generation:1},recording::Limits::default())?;
+                    let mut startup_trace=listener::StartTrace::default();
                     let startup=async {
                         if args.media_before_reply {
-                            listener::start_before_reply(&mut owner,&mut session,&request,framer,recorder).await.and_then(|started| {
+                            listener::start_before_reply_tracked(&mut owner,&mut session,&request,framer,recorder,&mut startup_trace).await.and_then(|started| {
                                 for observation in started.observations_during_accept {
                                     if let Observation::StreamSettingsReply {success,..}=observation {
                                         if success==Some(false) {return Err(listener::StartError::Conversation(conversation::Error::Unexpected));}
@@ -395,7 +396,12 @@ fn run(args: Options) -> ResultBox<()> {
                             listener::start(&mut owner,&mut session,&request,framer,recorder).await.map(|started| started.pipeline)
                         }
                     };
-                    match timeout_at(deadline,startup).await {
+                    let startup_result=timeout_at(deadline,startup).await;
+                    if startup_trace.attempted() && !matches!(&startup_result,Ok(Ok(_))) {
+                        let settings_replies=startup_trace.observations().iter().filter(|observation|matches!(observation,Observation::StreamSettingsReply {..})).count();
+                        println!("trial_stage=startup_trace dispatch_observed={} clock_requests={} clock_replies_written={} settings_replies={} effects_require_reconciliation=true",startup_trace.dispatched().is_some(),startup_trace.clock_requests(),startup_trace.clock_replies_written(),settings_replies);
+                    }
+                    match startup_result {
                         Ok(Ok(pipeline))=>break (session,pipeline),
                         Ok(Err(error @ listener::StartError::Conversation(conversation::Error::Deadline)))=>{
                             let counts=session.time_sync_counts();

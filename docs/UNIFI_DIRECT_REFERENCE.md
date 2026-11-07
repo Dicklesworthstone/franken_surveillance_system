@@ -1575,8 +1575,8 @@ before accepting the media connection. The pinned reference sends the setting
 without waiting for that reply before media startup; a camera that delays its
 reply until media is consumed could therefore stall the original ordering.
 An experimental `start_before_reply` path now returns after the journaled
-local stream write and accepts the media connection with the reply still
-pending on the caller-owned controller session. A supervisor must continue to
+local stream write and accepts media without requiring that reply. The reply
+may remain pending on the caller-owned controller session. A supervisor must continue to
 poll that same session, observe any later reply, and reconcile the effect; the
 local write and a TCP connection do not prove the camera accepted the setting
 or produced valid video. While waiting for the initial media connection, the
@@ -1585,12 +1585,23 @@ requests with distinct operations, and returns other bounded observations.
 Accumulated observations are returned only after media acceptance; if accept
 fails or is cancelled, they can be omitted and the effect requires independent
 reconciliation. This revision has not been qualified on the physical G4.
-Task-owned fixtures that delay the settings reply until after a
-media read, or never send it and retain the outstanding request at retirement,
-have been added; their test results are pending.
+The new opt-in `start_before_reply_tracked` instead records locally observed
+dispatch, clock requests and replies, and other bounded management replies in
+a caller-owned `StartTrace`. That trace survives an ordinary startup failure or
+dropping the startup future. It reserves observation capacity before consuming
+the next frame and refuses trace reuse. A missing local dispatch observation
+still does not establish that no effect occurred: the effect journal and
+independent reconciliation remain authoritative. The legacy convenience API
+still discards its private trace on failure. The standalone trial now reports
+payload-free trace counts when tracked startup fails. Focused build and fixture
+qualification of this revision is pending.
+Task-owned fixtures that delay the settings reply until after a media read,
+or never send it and retain the outstanding request at retirement, passed in
+the scoped run described below.
 The standalone controller trial also exposes the explicitly selected
 `--media-before-reply` mode and records whether a settings reply was observed;
-its synthetic TLS/process clip test with no settings reply remains unrun. This
+its Rust TLS/process clip test with no settings reply remains unrun; the
+independent loopback fixture described below passed. This
 mode does not claim that a missing reply is success or that an effect is settled.
 In strict-remote job `30098575685845043` the new listener and conversation
 code compiled, but the test target failed to compile because the isolated
@@ -1600,8 +1611,8 @@ disk reservation. These are not a passing integration result. The compiled
 snapshot predates formatting-only changes and a fixture assertion rewrite.
 A later refreshed submission, job `30098575685845057`, was also refused at
 the protected disk-reservation boundary before compilation; its terminal
-result and source release were acknowledged. The no-reply fixture and trial
-mode added afterward likewise have no passing run yet.
+result and source release were acknowledged. At that point the no-reply
+fixture and trial mode added afterward had no passing run.
 Strict-remote job `30098575685845060` subsequently type-checked the current
 task-owned integration target, including the delayed- and absent-reply cases;
 job `30098575685845072` type-checked the standalone trial binary, and job
@@ -1609,8 +1620,8 @@ job `30098575685845072` type-checked the standalone trial binary, and job
 scope-filtered laboratory. All three results were acknowledged and sources
 released. The process fixture was extracted from the current test file and
 does not qualify the entire original test target. These were `cargo check`
-results: no fixture or clip was executed by those jobs. The full test remains
-unrun under the worker disk-reservation guards.
+results: no fixture or clip was executed by those jobs. The test harness was
+subsequently built and executed as described below.
 After the accept loop gained concurrent controller polling, strict-remote job
 `30098575685845087` type-checked the source-matched trial binary and job
 `30098575685845092` type-checked the expanded task-owned fixture, including
@@ -1630,6 +1641,15 @@ trial retained the effect-reconciliation qualification. The fixture source
 SHA-256 was `0a8fd9bf2dff84de4596fdc61d2eee048f0e94fb48c76f2f71f222bd5b4b85a4`.
 This proves the synthetic process paths only, not live G4 behavior,
 authenticated identity, continuous recording or actual effect settlement.
+The current task-owned contract was also built in scope-filtered strict-remote
+job `30098575685845103`, with terminal acknowledgment and source release.
+The resulting Linux test executable, SHA-256
+`76a1045ff6b230773403a70509211640e4ec286c8e3bb4ffe1128a37f0a8c1f0`,
+was then run explicitly on the worker: all 10 tests passed, none ignored.
+These include early, late and absent settings replies; pre-media clock
+requests; replay and effect controls; and retained media on admission
+revocation. The listener, conversation and test sources matched the working
+tree. The scope-filtered build is not a full-workspace qualification.
 
 A second unchanged owner replay produced two fragments with 300 video and 155
 audio frames. The independent decoder returned exit 0 but reported a
@@ -2556,6 +2576,14 @@ terminal acknowledgment and source release; the daemon had recorded exit 130.
 Neither exit is a test verdict. The nested readback remains untested.
 
 ### First-time Wi-Fi provisioning: protocol evidence and boundary
+
+Update: the repository now contains first-party X25519 and Poly1305 source in
+`fss-tutk`. An isolated [BLE crypto lab](../experiments/unifi_ble_crypto_lab/README.md)
+reuses those files and independently compares synthetic packet, cipher, and
+key-derivation vectors. It is not an admitted provider and cannot provision a
+camera. The earlier statements below describe the state at that earlier point.
+The reference's public default key and repeated direction/session nonces do not
+establish device identity or a safe boundary for sending real Wi-Fi secrets.
 
 The existing LAN setup owner starts after a camera is network-reachable. It
 cannot discover an unprovisioned Bluetooth-only camera or send Wi-Fi settings.

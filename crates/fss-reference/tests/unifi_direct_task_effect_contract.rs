@@ -344,6 +344,10 @@ impl conversation::Approval for FixtureApproval<'_> {
 }
 
 fn conversation_scenario(revoke_stream: bool, revoke_after_start: bool, revoke_audio_pending: bool, reply_after_media: bool, never_reply: bool, early_reply: bool) -> Test {
+    conversation_scenario_with_stop(revoke_stream, revoke_after_start, revoke_audio_pending, reply_after_media, never_reply, early_reply, 0)
+}
+
+fn conversation_scenario_with_stop(revoke_stream: bool, revoke_after_start: bool, revoke_audio_pending: bool, reply_after_media: bool, never_reply: bool, early_reply: bool, stop_mode: u8) -> Test {
     let path = std::fs::canonicalize(std::env::temp_dir())?.join(format!(
         "fss-unifi-task-conversation-{}-{revoke_stream}-{revoke_after_start}-{revoke_audio_pending}-{reply_after_media}-{never_reply}-{early_reply}",
         std::process::id(),
@@ -545,6 +549,11 @@ fn conversation_scenario(revoke_stream: bool, revoke_after_start: bool, revoke_a
                             socket.write_all(&frame(br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"ChangeVideoSettings","messageId":9,"inResponseTo":4}"#))?;
                             socket.write_all(&frame(br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"ubnt_avclient_timeSync","messageId":13}"#))?;
                             if !receive_binary(&mut socket)?.windows(b"ubnt_avclient_timeSync".len()).any(|w|w==b"ubnt_avclient_timeSync") { return Err(io::Error::other("missing second pre-media time-sync reply")); }
+                            if stop_mode == 1 { return Ok(()); }
+                            if stop_mode == 2 {
+                                let mut byte=[0u8;1];
+                                return match socket.read(&mut byte) { Ok(0)=>Ok(()), _=>Err(io::Error::other("cancelled controller did not close")) };
+                            }
                         }
                     }
                     if !reply_after_media {
@@ -593,7 +602,33 @@ fn conversation_scenario(revoke_stream: bool, revoke_after_start: bool, revoke_a
                 let framer=Framer::new(FlvLimits::default(),1024*1024)?;
                 let recorder=recording::Recorder::new(SourceKey {connection:1,generation:1},recording::Limits::default())?;
                 let started=if reply_after_media {
-                    let started=listener::start_before_reply(&mut owner,&mut session,&start,framer,recorder).await?;
+                    let mut trace=listener::StartTrace::default();
+                    let future=listener::start_before_reply_tracked(&mut owner,&mut session,&start,framer,recorder,&mut trace);
+                    let result=if stop_mode==2 {
+                        match timeout(cx.now(),Duration::from_millis(500),future).await {
+                            Err(_)=>None,
+                            Ok(result)=>Some(result),
+                        }
+                    } else { Some(future.await) };
+                    if stop_mode != 0 {
+                        if stop_mode == 1 { assert!(matches!(result,Some(Err(listener::StartError::Conversation(conversation::Error::SessionRetired {..}))))); }
+                        else { assert!(result.is_none()); }
+                        assert!(trace.attempted());
+                        assert!(trace.dispatched().is_some());
+                        assert_eq!(trace.clock_requests(),2);
+                        assert_eq!(trace.clock_replies_written(),2);
+                        assert!(matches!(trace.observations(),[Observation::StreamSettingsReply {request_id:4,..}]));
+                        let retry_framer=Framer::new(FlvLimits::default(),1024*1024)?;
+                        let retry_recorder=recording::Recorder::new(SourceKey {connection:9,generation:1},recording::Limits::default())?;
+                        assert!(matches!(listener::start_before_reply_tracked(&mut owner,&mut session,&start,retry_framer,retry_recorder,&mut trace).await,Err(listener::StartError::Listener(listener::Error::Configuration))));
+                        let _ = session.retire();
+                        peer.join().map_err(|_|"fixture peer panic")??;
+                        return Ok(());
+                    }
+                    let started=result.ok_or("unexpected timeout")??;
+                    assert!(trace.dispatched().is_some());
+                    assert_eq!(trace.clock_requests(),if early_reply {2} else {1});
+                    assert_eq!(trace.clock_replies_written(),if early_reply {2} else {1});
                     assert_eq!(started.dispatched.time_syncs,1);
                     assert_eq!(started.time_syncs_during_accept,if early_reply {2} else {1});
                     if early_reply {
@@ -776,7 +811,7 @@ fn conversation_scenario(revoke_stream: bool, revoke_after_start: bool, revoke_a
     for (index, operation) in operations.iter().enumerate() {
         if index == 4 && !reply_after_media { continue; }
         if index == 5 && !early_reply { continue; }
-        if index == 6 && (revoke_stream || revoke_after_start || revoke_audio_pending) { continue; }
+        if index == 6 && (revoke_stream || revoke_after_start || revoke_audio_pending || stop_mode != 0) { continue; }
         assert_eq!(
             effects
                 .journal()
@@ -808,6 +843,16 @@ fn media_can_be_processed_when_camera_never_replies() -> Test {
 #[test]
 fn settings_reply_before_media_is_returned_to_the_caller() -> Test {
     conversation_scenario(false, false, false, true, false, true)
+}
+
+#[test]
+fn startup_trace_retains_reply_when_peer_closes_before_media() -> Test {
+    conversation_scenario_with_stop(false, false, false, true, false, true, 1)
+}
+
+#[test]
+fn startup_trace_retains_reply_when_future_is_cancelled() -> Test {
+    conversation_scenario_with_stop(false, false, false, true, false, true, 2)
 }
 
 #[test]
