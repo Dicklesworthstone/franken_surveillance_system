@@ -29,6 +29,12 @@ pub struct Preconditions {
     pub lease_fence: u64,
 }
 
+impl Preconditions {
+    pub(crate) fn validate(self) -> Result<(), Error> {
+        digest_preconditions(self).map(|_| ())
+    }
+}
+
 /// Payload-free refusal of a management intent.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {
@@ -57,6 +63,7 @@ pub struct Intent {
     fence: u64,
     request: ContentDigest,
     preconditions: ContentDigest,
+    source: Option<ContentDigest>,
 }
 impl Intent {
     /// Bind the prepared message to current caller-supplied claims.
@@ -64,9 +71,13 @@ impl Intent {
         let kind = message.kind();
         if !matches!(
             kind,
-            MessageKind::HelloReply | MessageKind::AgreementRequest | MessageKind::TimeSyncReply
+            MessageKind::HelloReply
+                | MessageKind::AgreementRequest
+                | MessageKind::TimeSyncReply
+                | MessageKind::EventReply
         ) || message.bytes().is_empty()
             || message.bytes().len() > MAX_MESSAGE_BYTES
+            || (kind == MessageKind::EventReply) != message.source_digest().is_some()
         {
             return Err(Error::WrongMessage);
         }
@@ -76,7 +87,8 @@ impl Intent {
             camera: conditions.camera,
             fence: conditions.lease_fence,
             request: ContentDigest::sha256(message.bytes()),
-            preconditions: digest_preconditions(conditions)?,
+            preconditions: digest_with_source(conditions, message.source_digest())?,
+            source: message.source_digest(),
         })
     }
     /// The exact outbound message identity.
@@ -95,6 +107,10 @@ impl Intent {
     pub fn kind(self) -> MessageKind {
         self.kind
     }
+    /// The exact observed event source, if this is an event echo.
+    pub fn source_digest(self) -> Option<ContentDigest> {
+        self.source
+    }
     /// Lease fence captured at preparation.
     pub fn fence(self) -> u64 {
         self.fence
@@ -111,7 +127,7 @@ impl Intent {
     }
     /// Compare freshly observed conditions without asserting their authenticity.
     pub fn check_preconditions(self, current: Preconditions) -> Result<(), Error> {
-        if digest_preconditions(current)? != self.preconditions {
+        if digest_with_source(current, self.source)? != self.preconditions {
             return Err(Error::Mismatch);
         }
         Ok(())
@@ -120,12 +136,32 @@ impl Intent {
     pub fn check_message(self, message: &PreparedMessage) -> Result<(), Error> {
         if message.id() != self.id
             || message.kind() != self.kind
+            || message.source_digest() != self.source
             || ContentDigest::sha256(message.bytes()) != self.request
         {
             return Err(Error::Mismatch);
         }
         Ok(())
     }
+}
+fn digest_with_source(
+    value: Preconditions,
+    source: Option<ContentDigest>,
+) -> Result<ContentDigest, Error> {
+    let base = digest_preconditions(value)?;
+    let Some(source) = source else {
+        return Ok(base);
+    };
+    if !valid_digest(source) {
+        return Err(Error::Preconditions);
+    }
+    let mut enc = CanonicalEncoder::new();
+    enc.text("fss.unifi-direct.event-reply-precondition.v1");
+    enc.digest(base);
+    enc.digest(source);
+    Ok(ContentDigest::sha256(
+        &enc.finish_checked().map_err(|_| Error::Encoding)?,
+    ))
 }
 fn valid_digest(value: ContentDigest) -> bool {
     value.algorithm() == DigestAlgorithm::Sha256

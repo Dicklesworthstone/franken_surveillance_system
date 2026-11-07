@@ -271,7 +271,7 @@ impl fmt::Debug for Candidate<'_> {
 /// intentionally keeps such a candidate incomplete. The supplied slice begins
 /// immediately after the previous tag's four-byte back-reference.
 pub fn find_next(bytes: &[u8], limits: Limits) -> Result<Parse<Candidate<'_>>, Error> {
-    search(bytes, limits, false)
+    search(bytes, limits, false, false)
 }
 
 /// Find a complete candidate without waiting for earlier incomplete candidates.
@@ -282,14 +282,37 @@ pub fn find_next(bytes: &[u8], limits: Limits) -> Result<Parse<Candidate<'_>>, E
 /// This mode is suitable only for explicitly provisional derivatives; it does
 /// not prove a stable source boundary, continuity or retained evidence.
 pub fn find_next_provisional(bytes: &[u8], limits: Limits) -> Result<Parse<Candidate<'_>>, Error> {
-    search(bytes, limits, true)
+    search(bytes, limits, true, false)
 }
 
-fn search(bytes: &[u8], limits: Limits, provisional: bool) -> Result<Parse<Candidate<'_>>, Error> {
+/// Search conservatively under the explicit assumption that accepted FLV tag
+/// headers have a zero stream ID. A candidate whose complete header violates
+/// that assumption is excluded even if its payload is incomplete. A partial
+/// header remains unresolved. The caller must record the policy and cannot
+/// infer device identity, source completeness, or an authentic boundary.
+pub(crate) fn find_next_zero_stream_id(
+    bytes: &[u8],
+    limits: Limits,
+) -> Result<Parse<Candidate<'_>>, Error> {
+    search(bytes, limits, false, true)
+}
+
+fn search(
+    bytes: &[u8],
+    limits: Limits,
+    provisional: bool,
+    zero_stream_id: bool,
+) -> Result<Parse<Candidate<'_>>, Error> {
     limits.validate()?;
     let mut pending = false;
     let count = bytes.len().min(limits.max_trailer + 1);
     for offset in 0..count {
+        if zero_stream_id
+            && bytes.len() - offset >= TAG_HEADER
+            && bytes[offset + 8..offset + 11] != [0; 3]
+        {
+            continue;
+        }
         match Tag::parse(&bytes[offset..], limits) {
             Ok(Parse::Complete(tag)) if !pending || provisional => {
                 return Ok(Parse::Complete(Candidate {

@@ -5,23 +5,28 @@
 //! service. It uses experimental TLS and unverified IP/MAC admission.
 use asupersync::{runtime::RuntimeBuilder, time::timeout_at};
 use fss_container::{
+    Mp4Limits,
     demux::{AvcMp4, DemuxLimits},
+    flv_av,
     flv_avc::SourceKey,
 };
 use fss_core::{
-    BudgetVector, ContentDigest, OperationId, RegionId, RegionKind, RootAuthoritySpec,
-    RuntimeGrant, TaskId, TaskOutcome, TimestampNs,
+    BudgetVector, ContentDigest, IdempotencyKey, OperationId, RegionId, RegionKind,
+    RootAuthoritySpec, RuntimeGrant, TaskId, TaskOutcome, TimestampNs,
 };
 use fss_object::{
     HostSpoolIo,
     effect_journal::{EffectJournalLimits, FileEffectJournal},
 };
-use fss_packet::extended_flv::{Limits as FlvLimits, stream::Framer};
+use fss_packet::extended_flv::{
+    Limits as FlvLimits, aac, aac_track,
+    stream::{Framer, SearchMode},
+};
 use fss_reference::{
     onvif::wire::UtcDateTime,
     unifi_direct::{
         AudioCodec, Controller, Identity, Observation, TimeSyncPolicy, VideoChannel, VideoCodec,
-        controller_listener, conversation, intent, listener, management,
+        av_recording, controller_listener, conversation, intent, listener, management,
         metered::{MeteredClock, MeteredIo},
         owner, pipeline, receive, recording, supervisor,
         upgrade::ProtocolPolicy,
@@ -29,7 +34,7 @@ use fss_reference::{
 };
 use fss_runtime::{
     authority::AuthorityCx,
-    effect::{CommitApproval, CommittedEffect, EffectCoordinator, PreparedEffect},
+    effect::{CommitApproval, CommittedEffect, EffectCoordinator, PrepareSpec, PreparedEffect},
     execution::{TaskCompletion, TaskSpec, run_owned_async},
     lease::LeaseRegistry,
 };
@@ -51,8 +56,9 @@ use std::{
 use unifi_tls_05_server_lab::server::Server;
 
 type ResultBox<T> = Result<T, Box<dyn Error>>;
-const USAGE: &str = "usage: unifi_direct_trial LISTEN_IPV4:PORT CAMERA_IPV4 CAMERA_MAC_HEX CERT_DER KEY_DER JOURNAL_DIR OUTPUT_MP4 CONTROLLER_UUID [WAIT_SECONDS] [--allow-correlated-timesync|--bounded-prehello-clock] [--media-before-reply] --owner-authorized";
+const USAGE: &str = "usage: unifi_direct_trial LISTEN_IPV4:PORT CAMERA_IPV4 CAMERA_MAC_HEX CERT_DER KEY_DER JOURNAL_DIR OUTPUT_MP4 CONTROLLER_UUID [WAIT_SECONDS] [--allow-correlated-timesync|--bounded-prehello-clock] [--media-before-reply] [--reply-events] [--lab-aac-config=HEX|--lab-aac-source] [--lab-trailer16-av-flag|--lab-zero-stream-id] [--lab-segments=N] --owner-authorized";
 const MAX_SOURCE: u64 = 32 * 1024 * 1024;
+const MAX_CLIP: usize = 32 * 1024 * 1024;
 const MAX_INITIAL_CONNECTIONS: usize = 8;
 const MAX_IO_WAIT: Duration = Duration::from_secs(30);
 
@@ -68,15 +74,76 @@ struct Options {
     wait: Duration,
     time_sync_policy: TimeSyncPolicy,
     media_before_reply: bool,
+    reply_events: bool,
+    lab_aac_config: Option<[u8; 2]>,
+    lab_aac_source: bool,
+    lab_g4_trailer: bool,
+    lab_zero_stream_id: bool,
+    lab_segments: usize,
 }
 fn options() -> ResultBox<Options> {
     let mut args: Vec<_> = std::env::args().skip(1).collect();
     if args.pop().as_deref() != Some("--owner-authorized") {
         return Err(USAGE.into());
     }
+    let lab_segments =
+        if let Some(value) = args.last().and_then(|s| s.strip_prefix("--lab-segments=")) {
+            let count = value
+                .parse::<usize>()
+                .map_err(|_| "laboratory segment count must be 1 to 8")?;
+            if !(1..=8).contains(&count) {
+                return Err("laboratory segment count must be 1 to 8".into());
+            }
+            args.pop();
+            count
+        } else {
+            1
+        };
+    let lab_zero_stream_id = args.last().is_some_and(|s| s == "--lab-zero-stream-id");
+    if lab_zero_stream_id {
+        args.pop();
+    }
+    let lab_g4_trailer = args.last().is_some_and(|s| s == "--lab-trailer16-av-flag");
+    if lab_g4_trailer {
+        args.pop();
+    }
+    if lab_zero_stream_id && lab_g4_trailer {
+        return Err("choose one laboratory framing policy".into());
+    }
+    let lab_aac_source = args.last().is_some_and(|s| s == "--lab-aac-source");
+    if lab_aac_source {
+        args.pop();
+    }
+    let lab_aac_config = if let Some(hex) = args
+        .last()
+        .and_then(|s| s.strip_prefix("--lab-aac-config="))
+    {
+        if hex.len() != 4 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err("laboratory AAC configuration must be four hexadecimal digits".into());
+        }
+        let config = [
+            u8::from_str_radix(&hex[..2], 16)?,
+            u8::from_str_radix(&hex[2..], 16)?,
+        ];
+        aac::Configuration::parse_explicit(&config)?;
+        args.pop();
+        Some(config)
+    } else {
+        None
+    };
+    if lab_aac_source && lab_aac_config.is_some() {
+        return Err("choose one laboratory AAC configuration source".into());
+    }
+    let reply_events = args.last().is_some_and(|s| s == "--reply-events");
+    if reply_events {
+        args.pop();
+    }
     let media_before_reply = args.last().is_some_and(|s| s == "--media-before-reply");
     if media_before_reply {
         args.pop();
+    }
+    if reply_events && !media_before_reply {
+        return Err("event replies require --media-before-reply in this trial".into());
     }
     let time_sync_policy = match args.last().map(String::as_str) {
         Some("--allow-correlated-timesync") => {
@@ -140,6 +207,12 @@ fn options() -> ResultBox<Options> {
         wait: Duration::from_secs(wait_seconds),
         time_sync_policy,
         media_before_reply,
+        reply_events,
+        lab_aac_config,
+        lab_aac_source,
+        lab_g4_trailer,
+        lab_zero_stream_id,
+        lab_segments,
     })
 }
 fn bounded_read(path: &Path, private: bool) -> ResultBox<Vec<u8>> {
@@ -196,6 +269,7 @@ struct Guard<'a, 'scope, 'task> {
     clock: MeteredClock<'scope, 'task>,
     mac: [u8; 6],
     management_gate_passed: Cell<bool>,
+    reply_events: bool,
 }
 impl receive::ManagementAuthority for Guard<'_, '_, '_> {
     fn permits(&self, mac: [u8; 6], intent: management::Intent, permit: &CommittedEffect) -> bool {
@@ -212,6 +286,16 @@ impl receive::ManagementAuthority for Guard<'_, '_, '_> {
             self.management_gate_passed.set(true);
         }
         permitted
+    }
+    fn permits_event_reply(
+        &self,
+        mac: [u8; 6],
+        intent: management::Intent,
+        permit: &CommittedEffect,
+    ) -> bool {
+        self.reply_events
+            && intent.source_digest().is_some()
+            && receive::ManagementAuthority::permits(self, mac, intent, permit)
     }
 }
 impl receive::StreamAuthority for Guard<'_, '_, '_> {
@@ -273,9 +357,76 @@ fn write_clip(path: &Path, bytes: &[u8]) -> ResultBox<()> {
     }
     Ok(())
 }
+struct TrialAv {
+    initialization: flv_av::Initialization,
+    muxer: av_recording::Muxer,
+    configuration: [u8; 2],
+    source_label: &'static str,
+}
+
+fn append_bounded(output: &mut Vec<u8>, bytes: &[u8]) -> ResultBox<()> {
+    if output
+        .len()
+        .checked_add(bytes.len())
+        .is_none_or(|size| size > MAX_CLIP)
+    {
+        return Err("laboratory clip byte limit exceeded".into());
+    }
+    output.try_reserve(bytes.len())?;
+    output.extend_from_slice(bytes);
+    Ok(())
+}
+
+fn derive_av_fragment(
+    init: &flv_av::Initialization,
+    config: &aac::Configuration<'_>,
+    muxer: &mut av_recording::Muxer,
+    segment: &recording::Segment,
+    video_movie: &[u8],
+    source_label: &str,
+) -> ResultBox<Vec<u8>> {
+    let limits = Mp4Limits::default();
+    let fragment = muxer.fragment(init, segment)?;
+    flv_av::verify_archived_initialization(video_movie, init.bytes(), config, limits)?;
+    flv_av::verify_archived_fragment(
+        segment.fragment().bytes(),
+        fragment.bytes(),
+        fragment.audio(),
+        limits,
+    )?;
+    let mut output = Vec::new();
+    append_bounded(&mut output, fragment.bytes())?;
+    println!(
+        "trial_stage=av_fragment audio_samples={} configuration_source={source_label} av_alignment=unverified",
+        fragment.audio().len()
+    );
+    Ok(output)
+}
 fn run(args: Options) -> ResultBox<()> {
     println!("trial_time_sync_policy={:?}", args.time_sync_policy);
     println!("trial_media_before_reply={}", args.media_before_reply);
+    println!("trial_event_replies={}", args.reply_events);
+    println!("trial_segment_limit={}", args.lab_segments);
+    println!(
+        "trial_framing={}",
+        if args.lab_zero_stream_id {
+            "zero_stream_id_heuristic"
+        } else if args.lab_g4_trailer {
+            "trailer16_av_flag_heuristic"
+        } else {
+            "conservative"
+        }
+    );
+    if args.lab_aac_config.is_some() {
+        println!(
+            "trial_audio=experimental_explicit_config configuration_epoch=unverified av_alignment=unverified"
+        );
+    }
+    if args.lab_aac_source {
+        println!(
+            "trial_audio=experimental_in_band_config configuration_epoch=connection_claim av_alignment=unverified"
+        );
+    }
     let (start, _) = epoch()?;
     let deadline = TimestampNs(
         start
@@ -345,15 +496,17 @@ fn run(args: Options) -> ResultBox<()> {
                 println!("controller_listener_ready identity=network_claim tls=experimental timeout_seconds={}",args.wait.as_secs());
                 let deadline=cx.now()+args.wait;
                 let config=Arc::new(config);
-                let guard=Guard {leases:&leases,clock,mac:args.mac,management_gate_passed:Cell::new(false)};
+                let guard=Guard {leases:&leases,clock,mac:args.mac,management_gate_passed:Cell::new(false),reply_events:args.reply_events};
                 let wall=Wall {task,clock}; let approval=Approval(Cell::new(false));
                 let mut owner=conversation::Owner {cx,task,clock,effects:&mut effects,leases:&leases,approval:&approval,management_authority:&guard,stream_authority:&guard,wall:&wall};
                 let hello=OperationId::parse("operation:unifi-trial-hello")?; let agreement=OperationId::parse("operation:unifi-trial-agreement")?; let stream=OperationId::parse("operation:unifi-trial-stream")?;
                 let syncs:Vec<_>=(0..128).map(|i|OperationId::parse(format!("operation:unifi-trial-sync-{i:04}"))).collect::<Result<_,_>>()?;
+                let event_ops:Vec<_>=(0..64).map(|i|OperationId::parse(format!("operation:unifi-trial-event-{i:04}"))).collect::<Result<_,_>>()?;
+                let event_replies=conversation::StartupEventReplies {operations:&event_ops};
                 let startup_events=fss_reference::unifi_direct::events::StartupInbox::new(8,8*fss_reference::unifi_direct::MAX_MESSAGE_BYTES)?;
                 let startup_sync_limit=if args.time_sync_policy==TimeSyncPolicy::BoundedPreHelloClockExchange { fss_reference::unifi_direct::MAX_PRE_HELLO_TIME_SYNC_REPLIES } else { 8 };
                 let mut attempts=0;
-                let (session,started)=loop {
+                let (session,started,event_trace)=loop {
                     let remaining=Duration::from_nanos(deadline.as_nanos().saturating_sub(cx.now().as_nanos()));
                     if remaining.is_zero() { return Err("controller TLS deadline elapsed".into()); }
                     let (raw,gate)=match controller_listener.accept_next(16*1024,remaining.min(MAX_IO_WAIT)).await {
@@ -381,11 +534,18 @@ fn run(args: Options) -> ResultBox<()> {
                     if remaining.is_zero() {return Err("controller startup deadline elapsed".into());}
                     let io_wait=remaining.min(MAX_IO_WAIT);
                     let request=listener::Start {bind:SocketAddrV4::new(*args.listen.ip(),0),resource:&resource,admission:&policy,channel:VideoChannel::Video2,video:VideoCodec::H264,audio:AudioCodec::Aac,stream_name:"0123456789abcdef",hello:&hello,agreement:&agreement,stream:&stream,time_sync:&syncs[..startup_sync_limit],management,stream_conditions,chunk_bytes:16*1024,max_bytes:MAX_SOURCE,bind_wait:io_wait,conversation_wait:io_wait,accept_wait:io_wait};
-                    let framer=Framer::new(FlvLimits::default(),1024*1024)?; let recorder=recording::Recorder::new(SourceKey {connection:attempts as u64,generation:1},recording::Limits::default())?;
+                    let framing=if args.lab_zero_stream_id {SearchMode::ZeroStreamId} else if args.lab_g4_trailer {SearchMode::StructuredTrailer16AvFlag} else {SearchMode::Conservative};
+                    let framer=Framer::with_mode(FlvLimits::default(),1024*1024,framing)?; let recorder=recording::Recorder::new(SourceKey {connection:attempts as u64,generation:1},recording::Limits::default())?;
                     let mut startup_trace=listener::StartTrace::default();
+                    let mut event_trace=conversation::StartupEventTrace::default();
                     let startup=async {
                         if args.media_before_reply {
-                            listener::start_before_reply_tracked(&mut owner,&mut session,&request,framer,recorder,&mut startup_trace).await.and_then(|started| {
+                            let result=if args.reply_events {
+                                listener::start_before_reply_with_events_tracked(&mut owner,&mut session,&request,framer,recorder,&mut startup_trace,None,&event_replies,&mut event_trace).await
+                            } else {
+                                listener::start_before_reply_tracked(&mut owner,&mut session,&request,framer,recorder,&mut startup_trace).await
+                            };
+                            result.and_then(|started| {
                                 for observation in started.observations_during_accept {
                                     if let Observation::StreamSettingsReply {success,..}=observation {
                                         if success==Some(false) {return Err(listener::StartError::Conversation(conversation::Error::Unexpected));}
@@ -399,6 +559,9 @@ fn run(args: Options) -> ResultBox<()> {
                         }
                     };
                     let startup_result=timeout_at(deadline,startup).await;
+                    if event_trace.attempted() {
+                        println!("trial_stage=startup_event_replies attempts={} effects_require_reconciliation=true",event_trace.attempts().len());
+                    }
                     if !matches!(&startup_result,Ok(Ok(_))) && !startup_events.is_empty() {
                         println!("trial_stage=startup_events_omitted frames={} source_bytes={} identity=network_claim",startup_events.len(),startup_events.source_bytes());
                     }
@@ -407,7 +570,7 @@ fn run(args: Options) -> ResultBox<()> {
                         println!("trial_stage=startup_trace dispatch_observed={} clock_requests={} clock_replies_written={} settings_replies={} effects_require_reconciliation=true",startup_trace.dispatched().is_some(),startup_trace.clock_requests(),startup_trace.clock_replies_written(),settings_replies);
                     }
                     match startup_result {
-                        Ok(Ok(pipeline))=>break (session,pipeline),
+                        Ok(Ok(pipeline))=>break (session,pipeline,event_trace),
                         Ok(Err(error @ listener::StartError::Conversation(conversation::Error::Deadline)))=>{
                             let counts=session.time_sync_counts();
                             println!("trial_stage=conversation_deadline phase={:?} effect_prepared={} attempts={} management_gate_passed={} sync_uncorrelated={} sync_correlated={} sync_correlated_expected={}",session.phase(),approval.0.get(),attempts,guard.management_gate_passed.get(),counts.uncorrelated,counts.correlated,counts.correlated_response_expected);
@@ -428,8 +591,14 @@ fn run(args: Options) -> ResultBox<()> {
                     }
                 };
                 drop(controller_listener);
+                let mut startup_answered:Vec<ContentDigest>=event_trace.attempts().iter().map(|attempt|attempt.source()).collect();
+                let mut event_index=event_trace.attempts().len();
                 let mut supervisor=supervisor::Supervisor::new(session,started,management);
                 let mut sync_index=startup_sync_limit; let mut source_omitted=0usize; let mut steps=0u32;
+                let mut audio_track=aac_track::Track::new(FlvLimits::default(),aac::Limits::default());
+                let mut in_band_config=None;
+                let mut assembled=Vec::new(); let mut av_owner:Option<TrialAv>=None;
+                let mut segments_completed=0usize; let mut decoded_total=0usize; let mut dimensions=None;
                 let capture:ResultBox<(usize,usize,u32,u32)> = async {
                     loop {
                         steps=steps.checked_add(1).ok_or("step count overflow")?; if steps>200_000 { return Err("step limit reached".into()); }
@@ -438,29 +607,97 @@ fn run(args: Options) -> ResultBox<()> {
                             supervisor::Step::TimeSyncWritten=>sync_index+=1,
                             supervisor::Step::CameraEvent(frame)=>{
                                 println!("trial_stage=camera_event kind={:?} source_bytes_omitted={} response_expected={}",frame.kind(),frame.source().len(),frame.response_expected());
-                                if frame.response_expected() {return Err("camera event reply required; reconcile before continuing".into());}
+                                if let Some(index)=startup_answered.iter().position(|digest|*digest==frame.digest()) {
+                                    startup_answered.remove(index);
+                                    println!("trial_stage=startup_event_already_answered");
+                                } else if frame.response_expected() {
+                                    if !args.reply_events {return Err("camera event reply required; reconcile before continuing".into());}
+                                    let operation=event_ops.get(event_index).ok_or("event reply limit reached")?;
+                                    let wall=owner.wall.observe().ok_or("event reply clock unavailable")?;
+                                    let intent=supervisor.prepare_event_reply(&owner,&frame,&wall.timestamp)?;
+                                    let prepared=task.prepare_effect(cx,&mut *owner.effects,&mut leases.borrow_mut(),PrepareSpec {
+                                        operation,idempotency_key:IdempotencyKey::parse(operation.as_str())?,request_digest:intent.request_digest(),precondition_digest:intent.precondition_digest(),resource:&resource,fence,
+                                        prepare_grant:RuntimeGrant::CameraManagementPrepare,commit_grant:RuntimeGrant::CameraManagementCommit,terminal_predicate:"independent event-reply reconciliation",
+                                    },clock.now()?)?;
+                                    let approval=owner.approval.approve(&prepared).ok_or("event reply approval refused")?;
+                                    let permit=task.commit_effect(cx,&mut *owner.effects,&mut leases.borrow_mut(),prepared,clock.now()?,approval)?;
+                                    match supervisor.dispatch_event_reply(&owner,intent,management,permit,args.wait.min(MAX_IO_WAIT)).await {
+                                        Ok(receive::ManagementWrite::Written {..})=>{event_index+=1;println!("trial_stage=event_reply_written effects_require_reconciliation=true");},
+                                        Ok(receive::ManagementWrite::Indeterminate {..})=>return Err("event reply indeterminate; reconcile before continuing".into()),
+                                        Err(_)=>return Err("event reply refused; reconcile before continuing".into()),
+                                    }
+                                }
                             },
                             supervisor::Step::Observation(Observation::StreamSettingsReply {success,..}) if args.media_before_reply=>{
                                 if success==Some(false) {return Err("camera reported stream-setting failure".into());}
                                 println!("trial_stage=stream_reply_observed success_claim_present={}",success.is_some());
                             },
                             supervisor::Step::Media(pipeline::Step::Progress {..}) | supervisor::Step::Media(pipeline::Step::Recording(recording::Push::Buffered))=>(),
-                            supervisor::Step::Media(pipeline::Step::Recording(recording::Push::Source {record,..}))=>source_omitted=source_omitted.saturating_add(record.bytes().len()),
+                            supervisor::Step::Media(pipeline::Step::Recording(recording::Push::Source {record,..}))=>{
+                                source_omitted=source_omitted.saturating_add(record.bytes().len());
+                                if args.lab_aac_source {
+                                    let observation=audio_track.observe(&record)?;
+                                    if matches!(observation,aac_track::Observation::Configuration {..}) {
+                                        let bound=observation.bind_configuration(&record,FlvLimits::default(),aac::Limits::default())?;
+                                        if bound.provisional() {return Err("provisional AAC source configuration".into());}
+                                        in_band_config=Some((observation,record));
+                                    }
+                                }
+                            },
                             supervisor::Step::Media(pipeline::Step::Recording(recording::Push::Segment(segment)))=>{
                                 for record in segment.source() {source_omitted=source_omitted.saturating_add(record.bytes().len());}
                                 let initialization=supervisor.initialization().ok_or("missing initialization")?;
-                                let mut movie=initialization.bytes().to_vec(); movie.extend_from_slice(segment.fragment().bytes());
-                                let demux=AvcMp4::parse(&movie,None,DemuxLimits::default())?;
+                                let mut video_movie=initialization.bytes().to_vec(); video_movie.extend_from_slice(segment.fragment().bytes());
+                                let demux=AvcMp4::parse(&video_movie,None,DemuxLimits::default())?;
                                 let count=demux.samples().len().min(3); if count==0 {return Err("no video samples".into());}
                                 let annex=demux.annex_b(0,count)?;
                                 task.checkpoint_for(RuntimeGrant::MediaDecode,&resource,clock.now()?,&BudgetVector::ZERO)?;
                                 let mut decoder=fss_codec_h264::Decoder::new(fss_codec_h264::DecoderLimits::default())?;
                                 let mut frames=decoder.decode_annex_b(annex.bytes())?; frames.extend(decoder.finish()?);
                                 let frame=frames.first().ok_or("no decoded frame")?;
-                                let mut cost=BudgetVector::ZERO; cost.bytes=u64::try_from(movie.len())?; cost.storage_operations=5;
-                                task.checkpoint_for(RuntimeGrant::ObjectStage,&args.output.to_string_lossy(),clock.now()?,&cost)?;
-                                write_clip(&args.output,&movie)?;
-                                return Ok((movie.len(),frames.len(),frame.width(),frame.height()));
+                                let current_dimensions=(frame.width(),frame.height());
+                                if dimensions.is_some_and(|previous|previous!=current_dimensions) {return Err("video dimensions changed".into());}
+                                dimensions=Some(current_dimensions);
+                                decoded_total=decoded_total.checked_add(frames.len()).ok_or("decoded frame count overflow")?;
+                                if av_owner.is_none() && (args.lab_aac_config.is_some() || args.lab_aac_source) {
+                                    let limits=Mp4Limits::default();
+                                    let owner=if let Some(config_bytes)=args.lab_aac_config {
+                                        let config=aac::Configuration::parse_explicit(&config_bytes)?;
+                                        let initialization=supervisor.av_initialization(&config)?.ok_or("missing A/V initialization")?;
+                                        let origin=av_recording::segment_sender_clock_origin(&segment,&config,2000)?;
+                                        println!("trial_stage=sender_clock_hypothesis audio_minus_video_ms={} fractional_tick_thousandths={} sync=unverified",origin.audio_minus_video_ms,origin.fractional_tick_thousandths);
+                                        let muxer=av_recording::Muxer::new(&initialization,&config,origin.audio_ticks,5,1_000_000,limits.max_samples,limits)?;
+                                        TrialAv {initialization,muxer,configuration:config_bytes,source_label:"external_unverified"}
+                                    } else {
+                                        let (observation,record)=in_band_config.as_ref().ok_or("no pre-video in-band AAC configuration")?;
+                                        let bound=observation.bind_configuration(record,FlvLimits::default(),aac::Limits::default())?;
+                                        let config=bound.configuration();
+                                        let configuration:[u8;2]=config.bytes().try_into().map_err(|_|"invalid AAC configuration")?;
+                                        let initialization=supervisor.av_initialization(config)?.ok_or("missing A/V initialization")?;
+                                        let origin=av_recording::segment_sender_clock_origin(&segment,config,2000)?;
+                                        println!("trial_stage=sender_clock_hypothesis audio_minus_video_ms={} fractional_tick_thousandths={} sync=unverified",origin.audio_minus_video_ms,origin.fractional_tick_thousandths);
+                                        let muxer=av_recording::Muxer::from_source(&initialization,&bound,origin.audio_ticks,5,1_000_000,limits.max_samples,limits)?;
+                                        TrialAv {initialization,muxer,configuration,source_label:"in_band_connection_claim"}
+                                    };
+                                    append_bounded(&mut assembled,owner.initialization.bytes())?;
+                                    av_owner=Some(owner);
+                                }
+                                if let Some(owner)=av_owner.as_mut() {
+                                    let config=aac::Configuration::parse_explicit(&owner.configuration)?;
+                                    let fragment=derive_av_fragment(&owner.initialization,&config,&mut owner.muxer,&segment,&video_movie,owner.source_label)?;
+                                    append_bounded(&mut assembled,&fragment)?;
+                                } else {
+                                    if segments_completed==0 {append_bounded(&mut assembled,initialization.bytes())?;}
+                                    append_bounded(&mut assembled,segment.fragment().bytes())?;
+                                }
+                                segments_completed+=1;
+                                println!("trial_stage=segment_assembled count={segments_completed}");
+                                if segments_completed==args.lab_segments {
+                                    let mut cost=BudgetVector::ZERO; cost.bytes=u64::try_from(assembled.len())?; cost.storage_operations=5;
+                                    task.checkpoint_for(RuntimeGrant::ObjectStage,&args.output.to_string_lossy(),clock.now()?,&cost)?;
+                                    write_clip(&args.output,&assembled)?;
+                                    return Ok((assembled.len(),decoded_total,current_dimensions.0,current_dimensions.1));
+                                }
                             }
                             supervisor::Step::Idle=>return Err("camera media timed out".into()),
                             other=>return Err(format!("controller or media stopped: {other:?}").into()),

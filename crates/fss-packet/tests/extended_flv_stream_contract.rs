@@ -156,6 +156,153 @@ fn earlier_incomplete_candidate_is_not_skipped_when_chunked() -> TestResult {
 }
 
 #[test]
+fn long_incomplete_trailer_candidate_waits_until_it_can_be_disproved() -> TestResult {
+    // Synthetic reconstruction of the observed ambiguity: the last byte of a
+    // trailer looks like an audio tag, and the next real audio header makes
+    // that earlier candidate claim 524,289 bytes. No camera bytes are used.
+    let mut initial = b"FLV\x01\x01\x00\x00\x00\x09\x00\x00\x00\x00".to_vec();
+    initial.extend(tag(9, 0, b"video"));
+    let mut source = vec![0_u8; 16];
+    source[15] = 8;
+    source.extend(tag(8, 40, &[0x33; 256]));
+    assert_eq!(&source[15..19], &[8, 8, 0, 1]);
+
+    let mut conservative = Framer::new(Limits::default(), 1024 * 1024)?;
+    conservative.append(0, &initial)?;
+    assert!(matches!(conservative.take()?, Next::Record(_)));
+    assert!(matches!(conservative.take()?, Next::Record(_)));
+    conservative.append(conservative.next_offset(), &source)?;
+    assert_eq!(conservative.take()?, Next::NeedMore);
+
+    let mut provisional =
+        Framer::with_mode(Limits::default(), 1024 * 1024, SearchMode::Provisional)?;
+    provisional.append(0, &initial)?;
+    assert!(matches!(provisional.take()?, Next::Record(_)));
+    assert!(matches!(provisional.take()?, Next::Record(_)));
+    provisional.append(provisional.next_offset(), &source)?;
+    let Next::Record(candidate) = provisional.take()? else {
+        return Err("expected provisional successor".into());
+    };
+    assert_eq!(candidate.bytes(), source);
+    assert!(matches!(
+        candidate.kind(),
+        RecordKind::Candidate {
+            trailer_bytes: 16,
+            earlier_incomplete: true,
+            provisional: true,
+            ..
+        }
+    ));
+
+    // Enough later bytes make the earlier candidate complete with an invalid
+    // back-reference; only then may conservative search return the successor.
+    let false_candidate_end = 15 + 11 + 524_289 + 4;
+    let extra = vec![0_u8; false_candidate_end - source.len()];
+    conservative.append(conservative.next_offset(), &extra)?;
+    let Next::Record(candidate) = conservative.take()? else {
+        return Err("expected resolved successor".into());
+    };
+    assert_eq!(candidate.bytes(), source);
+    assert!(matches!(
+        candidate.kind(),
+        RecordKind::Candidate {
+            trailer_bytes: 16,
+            earlier_incomplete: false,
+            provisional: false,
+            ..
+        }
+    ));
+    assert_eq!(conservative.retire().bytes(), extra);
+    Ok(())
+}
+
+#[test]
+fn zero_stream_id_policy_rejects_only_disproved_headers_across_chunk_cuts() -> TestResult {
+    let mut initial = b"FLV\x01\x01\x00\x00\x00\x09\x00\x00\x00\x00".to_vec();
+    initial.extend(tag(9, 0, b"video"));
+    let mut source = vec![0_u8; 16];
+    source[15] = 8;
+    source.extend(tag(8, 0x0100_0000, &[0x33; 256]));
+    // Candidate 15 is incomplete, but has a complete, nonzero stream ID.
+    assert_ne!(&source[15 + 8..15 + 11], &[0, 0, 0]);
+    for cut in 0..=source.len() {
+        let mut framer =
+            Framer::with_mode(Limits::default(), 1024 * 1024, SearchMode::ZeroStreamId)?;
+        framer.append(0, &initial)?;
+        assert!(matches!(framer.take()?, Next::Record(_)));
+        assert!(matches!(framer.take()?, Next::Record(_)));
+        framer.append(framer.next_offset(), &source[..cut])?;
+        let first = framer.take()?;
+        let candidate = match first {
+            Next::Record(record) => record,
+            Next::NeedMore => {
+                framer.append(framer.next_offset(), &source[cut..])?;
+                let Next::Record(record) = framer.take()? else {
+                    return Err("expected zero-ID candidate".into());
+                };
+                record
+            }
+        };
+        assert_eq!(candidate.bytes(), source);
+        assert!(matches!(
+            candidate.kind(),
+            RecordKind::Candidate {
+                policy: SearchMode::ZeroStreamId,
+                trailer_bytes: 16,
+                earlier_incomplete: false,
+                provisional: false,
+                ..
+            }
+        ));
+    }
+
+    // A zero-ID earlier candidate is still ambiguous and must not be skipped.
+    let mut ambiguous = vec![0_u8; 16];
+    ambiguous[15] = 8;
+    ambiguous.extend(tag(8, 0, &[0x33; 256]));
+    let mut framer = Framer::with_mode(Limits::default(), 1024 * 1024, SearchMode::ZeroStreamId)?;
+    framer.append(0, &initial)?;
+    framer.take()?;
+    framer.take()?;
+    framer.append(framer.next_offset(), &ambiguous)?;
+    assert_eq!(framer.take()?, Next::NeedMore);
+    assert_eq!(framer.retire().bytes(), ambiguous);
+
+    // This profile can also exclude a complete nonzero-ID tag. Its bytes
+    // remain in the returned trailer, but this mode does not interpret it;
+    // choosing the profile is therefore an explicit source assumption.
+    let mut excluded = tag(8, 0, b"a");
+    excluded[10] = 1;
+    let next = tag(8, 0, b"b");
+    let mut combined = excluded.clone();
+    combined.extend_from_slice(&next);
+    let mut framer = Framer::with_mode(Limits::default(), 1024, SearchMode::ZeroStreamId)?;
+    framer.append(0, &initial)?;
+    framer.take()?;
+    framer.take()?;
+    framer.append(framer.next_offset(), &combined)?;
+    let Next::Record(record) = framer.take()? else {
+        return Err("expected profile-compatible successor".into());
+    };
+    assert_eq!(record.bytes(), combined);
+    assert!(matches!(record.kind(), RecordKind::Candidate {
+        policy: SearchMode::ZeroStreamId, trailer_bytes, ..
+    } if trailer_bytes == excluded.len()));
+
+    // The first tag must satisfy the same profile; refusal retains its bytes.
+    let mut invalid = tag(9, 0, b"video");
+    invalid[10] = 1;
+    let header = b"FLV\x01\x01\x00\x00\x00\x09\x00\x00\x00\x00";
+    let mut framer = Framer::with_mode(Limits::default(), 1024, SearchMode::ZeroStreamId)?;
+    framer.append(0, header)?;
+    framer.take()?;
+    framer.append(framer.next_offset(), &invalid)?;
+    assert_eq!(framer.take(), Err(Error::StreamIdMismatch));
+    assert_eq!(framer.retire().bytes(), invalid);
+    Ok(())
+}
+
+#[test]
 fn refused_offsets_capacity_and_invalid_tags_never_discard_source() -> TestResult {
     let mut framer = Framer::new(Limits::default(), 13)?;
     assert_eq!(framer.append(1, b"bad"), Err(Error::OffsetMismatch));
@@ -422,11 +569,12 @@ fn framing_policy_evidence_ids_remain_stable_and_reject_unknown() {
         SearchMode::Provisional,
         SearchMode::StructuredTrailer16,
         SearchMode::StructuredTrailer16AvFlag,
+        SearchMode::ZeroStreamId,
     ];
     for (id, policy) in policies.into_iter().enumerate() {
         assert_eq!(policy.evidence_id(), id as u8);
         assert_eq!(SearchMode::from_evidence_id(id as u8), Some(policy));
     }
-    assert_eq!(SearchMode::from_evidence_id(4), None);
+    assert_eq!(SearchMode::from_evidence_id(5), None);
     assert_eq!(SearchMode::from_evidence_id(u8::MAX), None);
 }

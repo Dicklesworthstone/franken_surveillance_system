@@ -28,6 +28,8 @@
 pub mod authority;
 pub mod budget;
 pub mod cancellation;
+/// Native blocking-pool handoff with an explicit completion drain.
+pub mod drained_blocking;
 pub mod effect;
 pub mod effect_journal;
 pub mod execution;

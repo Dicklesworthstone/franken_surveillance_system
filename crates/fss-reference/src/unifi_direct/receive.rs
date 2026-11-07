@@ -10,15 +10,19 @@
 
 use asupersync::{
     Cx,
-    io::{AsyncRead, AsyncWrite},
+    io::{AsyncRead, AsyncWrite, ReadBuf},
     net::websocket::{Message, ServerWebSocket, WsError},
     time::timeout_at,
 };
 use fss_runtime::effect::CommittedEffect;
 use std::{
+    cell::Cell,
     fmt,
     future::{Future, poll_fn},
-    task::Poll,
+    io,
+    pin::Pin,
+    rc::Rc,
+    task::{Context, Poll},
     time::Duration,
 };
 
@@ -29,10 +33,71 @@ use super::{
     intent::{self, Intent, Preconditions},
     management,
     metered::{MeteredClock, MeteredIo},
+    motion,
     upgrade::{self, PreparedUpgrade},
 };
 
 const MAX_WAIT: Duration = Duration::from_secs(30);
+
+// One plaintext write/flush poll per policy check. Outside an effect send,
+// control-frame I/O is not throttled by this gate.
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum SendGate {
+    Open,
+    Armed,
+    Used,
+}
+
+struct SendGatedIo<IO> {
+    inner: IO,
+    gate: Rc<Cell<SendGate>>,
+}
+impl<IO: AsyncRead + Unpin> AsyncRead for SendGatedIo<IO> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        out: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.inner).poll_read(cx, out)
+    }
+}
+impl<IO: AsyncWrite + Unpin> AsyncWrite for SendGatedIo<IO> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bytes: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        if !admit_send_poll(&self.gate, cx) {
+            return Poll::Pending;
+        }
+        Pin::new(&mut self.inner).poll_write(cx, bytes)
+    }
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        if !admit_send_poll(&self.gate, cx) {
+            return Poll::Pending;
+        }
+        Pin::new(&mut self.inner).poll_flush(cx)
+    }
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        if !admit_send_poll(&self.gate, cx) {
+            return Poll::Pending;
+        }
+        Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+}
+fn admit_send_poll(gate: &Cell<SendGate>, cx: &mut Context<'_>) -> bool {
+    match gate.get() {
+        SendGate::Open => true,
+        SendGate::Armed => {
+            gate.set(SendGate::Used);
+            true
+        }
+        SendGate::Used => {
+            cx.waker().wake_by_ref();
+            false
+        }
+    }
+}
 
 /// Payload-free classification of a WebSocket or underlying I/O failure.
 /// No peer-provided text, frame bytes, lengths, or opcode values are retained.
@@ -113,6 +178,8 @@ pub enum Step {
     CameraEvent(super::events::Frame),
     /// The caller-owned startup event inbox must be drained before more input.
     StartupEventBackpressure,
+    /// An observed event reply must be written or explicitly omitted.
+    EventReplyBackpressure,
     /// The wait ended without a message; this does not prove absence.
     WaitElapsed,
     /// The socket was dropped and unresolved controller facts are returned.
@@ -145,6 +212,8 @@ pub enum Error {
     Intent(intent::Error),
     /// Prepared management intent or current preconditions differ.
     ManagementIntent(management::Error),
+    /// Prepared motion intent or current preconditions differ.
+    MotionIntent(motion::Error),
     /// The committed permit is for another request, effect, resource or fence.
     PermitMismatch,
     /// The permit did not come from an acknowledged configured journal store.
@@ -200,6 +269,51 @@ pub trait ManagementAuthority {
         intent: management::Intent,
         permit: &CommittedEffect,
     ) -> bool;
+
+    /// Separately authorize echoing the event source's potentially private
+    /// payload to this peer. Existing authorities deny this by default.
+    fn permits_event_reply(
+        &self,
+        _claimed_mac: [u8; 6],
+        _intent: management::Intent,
+        _permit: &CommittedEffect,
+    ) -> bool {
+        false
+    }
+}
+
+/// Separately scoped permission for an exact motion-setting change.
+pub trait MotionAuthority {
+    /// Revalidate peer, settings, authority, and live lease for this request.
+    fn permits(
+        &self,
+        claimed_mac: [u8; 6],
+        intent: motion::Intent,
+        permit: &CommittedEffect,
+    ) -> bool;
+}
+
+/// Refusal before a motion write, retaining its committed permit.
+#[must_use]
+#[derive(Debug)]
+pub struct MotionRefusal {
+    /// Payload-free refusal.
+    pub reason: Error,
+    /// Original committed permit.
+    pub permit: CommittedEffect,
+}
+
+/// Outcome of a claimed motion write; neither variant proves camera state.
+#[must_use]
+#[derive(Debug)]
+pub enum MotionWrite {
+    /// Bytes were accepted locally; retain the effect for reconciliation.
+    Written { permit: CommittedEffect },
+    /// Some bytes may have been sent; the session was fenced.
+    Indeterminate {
+        permit: CommittedEffect,
+        controller: Retirement,
+    },
 }
 
 /// Refusal before a management write was attempted, retaining its permit.
@@ -281,7 +395,8 @@ pub enum WriteStep {
 
 /// One task-owned connection and its untrusted controller observations.
 pub struct Session<'scope, 'task, IO> {
-    socket: Option<ServerWebSocket<MeteredIo<'scope, 'task, IO>>>,
+    socket: Option<ServerWebSocket<SendGatedIo<MeteredIo<'scope, 'task, IO>>>>,
+    send_gate: Rc<Cell<SendGate>>,
     controller: Controller,
     cx: &'scope Cx,
     clock: MeteredClock<'scope, 'task>,
@@ -318,9 +433,19 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Session<'scope, 'task, I
         let cx = io.runtime_context();
         let clock = io.clock();
         let claimed_mac = prepared.claimed_mac();
-        let socket = prepared.finish(io, outcome).map_err(Error::Upgrade)?;
+        let send_gate = Rc::new(Cell::new(SendGate::Open));
+        let socket = prepared
+            .finish(
+                SendGatedIo {
+                    inner: io,
+                    gate: send_gate.clone(),
+                },
+                outcome,
+            )
+            .map_err(Error::Upgrade)?;
         Ok(Self {
             socket: Some(socket),
+            send_gate,
             controller,
             cx,
             clock,
@@ -351,6 +476,24 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Session<'scope, 'task, I
         self.admission
             .as_ref()
             .is_none_or(|gate| gate.check().is_ok())
+    }
+
+    pub(crate) fn has_startup_inbox(&self) -> bool {
+        self.startup_events.is_some() && !self.capture_events
+    }
+
+    /// Borrow a shared copy of the pending event while retaining inbox custody.
+    pub(crate) fn pending_startup_event(&self) -> Result<Option<super::events::Frame>, Error> {
+        if self.socket.is_none() || self.in_flight.is_some() {
+            return Err(Error::Retired);
+        }
+        if !self.admission_current() || self.cx.checkpoint().is_err() {
+            return Err(Error::Denied);
+        }
+        let Some((id, digest)) = self.controller.pending_event_reply() else {
+            return Ok(None);
+        };
+        Ok(self.startup_events.and_then(|inbox| inbox.find(id, digest)))
     }
 
     /// Bind one empty caller-owned event inbox before receiving startup frames.
@@ -488,6 +631,52 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Session<'scope, 'task, I
         Ok((value.id(), value.kind()))
     }
 
+    /// Prepare a reply to the exact event received in this session. The
+    /// management authority must separately permit disclosure of its payload.
+    pub fn prepare_event_reply(
+        &mut self,
+        frame: &super::events::Frame,
+        timestamp: &str,
+    ) -> Result<(u64, MessageKind), Error> {
+        if self.in_flight.is_some() || self.socket.is_none() {
+            return Err(Error::Retired);
+        }
+        if !self.admission_current() || self.cx.checkpoint().is_err() {
+            return Err(Error::Denied);
+        }
+        let value = self
+            .controller
+            .prepare_event_reply(frame.source(), timestamp)
+            .map_err(Error::Controller)?;
+        Ok((value.id(), value.kind()))
+    }
+
+    /// Explicitly omit an observed event reply without a network write.
+    pub fn omit_event_reply(&mut self, frame: &super::events::Frame) -> Result<(), Error> {
+        if self.in_flight.is_some() || self.socket.is_none() {
+            return Err(Error::Retired);
+        }
+        if !self.admission_current() || self.cx.checkpoint().is_err() {
+            return Err(Error::Denied);
+        }
+        self.controller
+            .omit_event_reply(frame.digest())
+            .map_err(Error::Controller)
+    }
+
+    /// Abandon an event reply known not to have been dispatched locally.
+    pub fn abandon_event_reply(&mut self, frame: &super::events::Frame) -> Result<u64, Error> {
+        if self.in_flight.is_some() || self.socket.is_none() {
+            return Err(Error::Retired);
+        }
+        if !self.admission_current() || self.cx.checkpoint().is_err() {
+            return Err(Error::Denied);
+        }
+        self.controller
+            .abandon_event_reply(frame.digest())
+            .map_err(Error::Controller)
+    }
+
     /// Bind the currently prepared management message to exact preconditions.
     /// This creates no permission and performs no I/O.
     pub fn management_intent(
@@ -504,7 +693,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Session<'scope, 'task, I
         management::Intent::new(message, conditions).map_err(Error::ManagementIntent)
     }
 
-    /// Dispatch one exact association, agreement, or clock message with a
+    /// Dispatch one exact association, agreement, clock or event reply with a
     /// journal-backed one-use permit. A local write is not a verified effect.
     pub async fn dispatch_management(
         &mut self,
@@ -551,6 +740,127 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Session<'scope, 'task, I
         if let Err(error) = intent.check_message(message) {
             refuse!(Error::ManagementIntent(error));
         }
+        if !authority.permits(self.claimed_mac, intent, &permit)
+            || (intent.kind() == MessageKind::EventReply
+                && !authority.permits_event_reply(self.claimed_mac, intent, &permit))
+        {
+            refuse!(Error::Denied);
+        }
+        if self.cx.checkpoint().is_err() {
+            refuse!(Error::Retired);
+        }
+        let mut bytes = Vec::new();
+        if bytes.try_reserve_exact(message.bytes().len()).is_err() {
+            refuse!(Error::Allocation);
+        }
+        bytes.extend_from_slice(message.bytes());
+        if !permit.try_claim_dispatch() {
+            refuse!(Error::PermitUsed);
+        }
+        let Some(socket) = self.socket.as_mut() else {
+            refuse!(Error::Retired);
+        };
+        self.in_flight = Some(intent.message_id());
+        let outcome = {
+            let mut send = std::pin::pin!(socket.send(self.cx, Message::binary(bytes)));
+            timeout_at(
+                self.cx.now() + wait,
+                poll_fn(|task| {
+                    if !authority.permits(self.claimed_mac, intent, &permit)
+                        || (intent.kind() == MessageKind::EventReply
+                            && !authority.permits_event_reply(self.claimed_mac, intent, &permit))
+                    {
+                        return Poll::Ready(None);
+                    }
+                    self.send_gate.set(SendGate::Armed);
+                    send.as_mut().poll(task).map(Some)
+                }),
+            )
+            .await
+        };
+        if matches!(outcome, Ok(Some(Ok(()))))
+            && self
+                .controller
+                .finish_dispatch(intent.message_id(), Dispatch::Written)
+                .is_ok()
+        {
+            self.send_gate.set(SendGate::Open);
+            self.in_flight = None;
+            return Ok(ManagementWrite::Written { permit });
+        }
+        Ok(ManagementWrite::Indeterminate {
+            permit,
+            controller: self.fence_interrupted(),
+        })
+    }
+    /// Prepare a motion setting using this session's untrusted camera claim.
+    pub fn prepare_motion(
+        &mut self,
+        enabled: bool,
+        timestamp: &str,
+        conditions: motion::Preconditions,
+    ) -> Result<motion::Intent, Error> {
+        if self.in_flight.is_some() || self.socket.is_none() {
+            return Err(Error::Retired);
+        }
+        if !self.admission_current() {
+            return Err(Error::Denied);
+        }
+        conditions.validate().map_err(Error::MotionIntent)?;
+        let message = self
+            .controller
+            .prepare_motion(self.claimed_mac, enabled, timestamp)
+            .map_err(Error::Controller)?;
+        motion::Intent::new(message, conditions).map_err(Error::MotionIntent)
+    }
+
+    /// Send one exact journal-backed motion effect under current scoped authority.
+    /// A local write or correlated reply does not establish the camera state.
+    pub async fn dispatch_motion(
+        &mut self,
+        intent: motion::Intent,
+        current: motion::Preconditions,
+        mut permit: CommittedEffect,
+        authority: &dyn MotionAuthority,
+        wait: Duration,
+    ) -> Result<MotionWrite, MotionRefusal> {
+        macro_rules! refuse {
+            ($reason:expr) => {
+                return Err(MotionRefusal {
+                    reason: $reason,
+                    permit,
+                });
+            };
+        }
+        if wait.is_zero() || wait > MAX_WAIT {
+            refuse!(Error::WaitLimit);
+        }
+        if self.socket.is_none() || self.in_flight.is_some() {
+            refuse!(Error::Retired);
+        }
+        if !self.admission_current() {
+            refuse!(Error::Denied);
+        }
+        if !permit.journal_backed() {
+            refuse!(Error::JournalRequired);
+        }
+        if permit.prepared().effect_class() != motion::EFFECT_CLASS
+            || permit.prepared().request_digest() != intent.request_digest()
+            || permit.prepared().precondition_digest() != intent.precondition_digest()
+            || permit.fence() != intent.fence()
+            || permit.resource() != intent.resource()
+        {
+            refuse!(Error::PermitMismatch);
+        }
+        if let Err(error) = intent.check_preconditions(current) {
+            refuse!(Error::MotionIntent(error));
+        }
+        let Some(message) = self.controller.prepared() else {
+            refuse!(Error::NoPrepared);
+        };
+        if let Err(error) = intent.check_message(message) {
+            refuse!(Error::MotionIntent(error));
+        }
         if !authority.permits(self.claimed_mac, intent, &permit) {
             refuse!(Error::Denied);
         }
@@ -577,6 +887,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Session<'scope, 'task, I
                     if !authority.permits(self.claimed_mac, intent, &permit) {
                         return Poll::Ready(None);
                     }
+                    self.send_gate.set(SendGate::Armed);
                     send.as_mut().poll(task).map(Some)
                 }),
             )
@@ -588,14 +899,16 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Session<'scope, 'task, I
                 .finish_dispatch(intent.message_id(), Dispatch::Written)
                 .is_ok()
         {
+            self.send_gate.set(SendGate::Open);
             self.in_flight = None;
-            return Ok(ManagementWrite::Written { permit });
+            return Ok(MotionWrite::Written { permit });
         }
-        Ok(ManagementWrite::Indeterminate {
+        Ok(MotionWrite::Indeterminate {
             permit,
             controller: self.fence_interrupted(),
         })
     }
+
     /// Prepare a stream-setting request and its exact inert precondition binding.
     /// This does not change camera settings or confer authority to dispatch.
     pub fn prepare_stream_start(
@@ -740,6 +1053,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Session<'scope, 'task, I
                     {
                         return Poll::Ready(None);
                     }
+                    self.send_gate.set(SendGate::Armed);
                     send.as_mut().poll(task).map(Some)
                 }),
             )
@@ -751,6 +1065,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Session<'scope, 'task, I
                 .finish_dispatch(intent.message_id(), Dispatch::Written)
                 .is_ok()
         {
+            self.send_gate.set(SendGate::Open);
             self.in_flight = None;
             return Ok(StreamWrite::Written { permit });
         }
@@ -815,9 +1130,16 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Session<'scope, 'task, I
                 if let Some(frame) = inbox.take() {
                     return Ok(Step::CameraEvent(frame));
                 }
-            } else if !inbox.can_receive() {
-                return Ok(Step::StartupEventBackpressure);
             }
+        }
+        if self.controller.has_pending_event_reply() {
+            return Ok(Step::EventReplyBackpressure);
+        }
+        if self
+            .startup_events
+            .is_some_and(|inbox| !self.capture_events && !inbox.can_receive())
+        {
+            return Ok(Step::StartupEventBackpressure);
         }
         let Some(socket) = self.socket.as_mut() else {
             return Err(Error::Retired);

@@ -7,7 +7,7 @@
 
 use super::{
     AudioCodec, MessageKind, Observation, Retirement as ControllerRetirement, VideoChannel,
-    conversation, intent, management, pipeline, receive,
+    conversation, intent, management, motion, pipeline, receive,
 };
 use asupersync::{
     io::{AsyncRead, AsyncWrite},
@@ -37,6 +37,8 @@ pub enum Step {
     CameraEvent(super::events::Frame),
     /// Startup event custody must be drained before more input is read.
     StartupEventBackpressure,
+    /// The observed event reply needs a write or an explicit omission.
+    EventReplyBackpressure,
     /// Neither source produced a result before the bounded deadline.
     Idle,
     /// A pending audio observation must be transferred before further polling.
@@ -97,6 +99,11 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Supervisor<'scope, 'task
         }
     }
 
+    /// Check that a handoff uses the exact clock bound to this session.
+    pub(crate) fn matches_clock(&self, clock: &super::metered::MeteredClock<'_, '_>) -> bool {
+        self.session.matches_clock(clock)
+    }
+
     /// Borrow the current initialization segment for any returned media fragment.
     pub fn initialization(&self) -> Option<&InitializationSegment> {
         self.pipeline.initialization()
@@ -136,6 +143,169 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Supervisor<'scope, 'task
             return None;
         }
         self.pipeline.take_audio_event()
+    }
+
+    /// Prepare a source-bound event reply without sending it. The caller must
+    /// journal a fresh operation and authorize disclosure before dispatch.
+    pub fn prepare_event_reply(
+        &mut self,
+        owner: &conversation::Owner<'_, '_, '_>,
+        frame: &super::events::Frame,
+        timestamp: &str,
+    ) -> Result<management::Intent, receive::Error> {
+        if self.stopped {
+            return Err(receive::Error::Retired);
+        }
+        if !owner.clock.matches(owner.task, owner.cx)
+            || !self.session.matches_clock(&owner.clock)
+            || owner.cx.checkpoint().is_err()
+        {
+            return Err(receive::Error::Denied);
+        }
+        self.management
+            .validate()
+            .map_err(receive::Error::ManagementIntent)?;
+        self.session.prepare_event_reply(frame, timestamp)?;
+        self.session.management_intent(self.management)
+    }
+
+    /// Abandon a locally unwritten reply while retaining its observed request.
+    pub fn abandon_event_reply(
+        &mut self,
+        owner: &conversation::Owner<'_, '_, '_>,
+        frame: &super::events::Frame,
+    ) -> Result<u64, receive::Error> {
+        if self.stopped {
+            return Err(receive::Error::Retired);
+        }
+        if !owner.clock.matches(owner.task, owner.cx)
+            || !self.session.matches_clock(&owner.clock)
+            || owner.cx.checkpoint().is_err()
+        {
+            return Err(receive::Error::Denied);
+        }
+        self.session.abandon_event_reply(frame)
+    }
+
+    /// Explicitly omit an observed reply; this makes no remote-delivery claim.
+    pub fn omit_event_reply(
+        &mut self,
+        owner: &conversation::Owner<'_, '_, '_>,
+        frame: &super::events::Frame,
+    ) -> Result<(), receive::Error> {
+        if self.stopped {
+            return Err(receive::Error::Retired);
+        }
+        if !owner.clock.matches(owner.task, owner.cx)
+            || !self.session.matches_clock(&owner.clock)
+            || owner.cx.checkpoint().is_err()
+        {
+            return Err(receive::Error::Denied);
+        }
+        self.session.omit_event_reply(frame)
+    }
+
+    /// Dispatch the prepared reply only with its journaled permit and the
+    /// management authority's separate event-disclosure approval.
+    pub async fn dispatch_event_reply(
+        &mut self,
+        owner: &conversation::Owner<'_, '_, '_>,
+        intent: management::Intent,
+        current: management::Preconditions,
+        permit: CommittedEffect,
+        wait: Duration,
+    ) -> Result<receive::ManagementWrite, receive::ManagementRefusal> {
+        if self.stopped {
+            return Err(receive::ManagementRefusal {
+                reason: receive::Error::Retired,
+                permit,
+            });
+        }
+        if !owner.clock.matches(owner.task, owner.cx)
+            || !self.session.matches_clock(&owner.clock)
+            || owner.cx.checkpoint().is_err()
+            || current != self.management
+            || intent.kind() != MessageKind::EventReply
+            || intent.source_digest().is_none()
+        {
+            return Err(receive::ManagementRefusal {
+                reason: receive::Error::Denied,
+                permit,
+            });
+        }
+        let result = self
+            .session
+            .dispatch_management(intent, current, permit, owner.management_authority, wait)
+            .await;
+        if let Ok(receive::ManagementWrite::Indeterminate { controller, .. }) = &result {
+            self.stopped = true;
+            self.controller_retirement = Some(*controller);
+        }
+        result
+    }
+
+    /// Prepare an inert baseline motion setting while retaining the media pipeline.
+    pub fn prepare_motion(
+        &mut self,
+        owner: &conversation::Owner<'_, '_, '_>,
+        enabled: bool,
+        timestamp: &str,
+        conditions: motion::Preconditions,
+    ) -> Result<motion::Intent, receive::Error> {
+        if self.stopped {
+            return Err(receive::Error::Retired);
+        }
+        if !owner.clock.matches(owner.task, owner.cx)
+            || !self.session.matches_clock(&owner.clock)
+            || owner.cx.checkpoint().is_err()
+            || conditions.camera != self.management.camera
+            || conditions.peer_admission != self.management.peer_admission
+            || conditions.session_generation != self.management.session_generation
+            || conditions.lease_fence != self.management.lease_fence
+        {
+            return Err(receive::Error::Denied);
+        }
+        self.session.prepare_motion(enabled, timestamp, conditions)
+    }
+
+    /// Dispatch an explicitly authorized, journal-backed motion setting.
+    pub async fn dispatch_motion(
+        &mut self,
+        owner: &conversation::Owner<'_, '_, '_>,
+        intent: motion::Intent,
+        current: motion::Preconditions,
+        permit: CommittedEffect,
+        authority: &dyn receive::MotionAuthority,
+        wait: Duration,
+    ) -> Result<receive::MotionWrite, receive::MotionRefusal> {
+        if self.stopped {
+            return Err(receive::MotionRefusal {
+                reason: receive::Error::Retired,
+                permit,
+            });
+        }
+        if !owner.clock.matches(owner.task, owner.cx)
+            || !self.session.matches_clock(&owner.clock)
+            || owner.cx.checkpoint().is_err()
+            || current.camera != self.management.camera
+            || current.peer_admission != self.management.peer_admission
+            || current.session_generation != self.management.session_generation
+            || current.lease_fence != self.management.lease_fence
+        {
+            return Err(receive::MotionRefusal {
+                reason: receive::Error::Denied,
+                permit,
+            });
+        }
+        let result = self
+            .session
+            .dispatch_motion(intent, current, permit, authority, wait)
+            .await;
+        if let Ok(receive::MotionWrite::Indeterminate { controller, .. }) = &result {
+            self.stopped = true;
+            self.controller_retirement = Some(*controller);
+        }
+        result
     }
 
     /// Prepare a one-track discard request while retaining the media pipeline.
@@ -234,6 +404,28 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Supervisor<'scope, 'task
         operation: &OperationId,
         wait: Duration,
     ) -> Step {
+        self.step_mode(owner, operation, wait, true).await
+    }
+
+    /// Service controller input without polling or consuming media. This uses
+    /// the same task, admission, cancellation and time-sync effect checks as
+    /// [`Self::step`]; each reply still requires a fresh operation identity.
+    pub async fn step_control(
+        &mut self,
+        owner: &mut conversation::Owner<'_, '_, '_>,
+        operation: &OperationId,
+        wait: Duration,
+    ) -> Step {
+        self.step_mode(owner, operation, wait, false).await
+    }
+
+    async fn step_mode(
+        &mut self,
+        owner: &mut conversation::Owner<'_, '_, '_>,
+        operation: &OperationId,
+        wait: Duration,
+        allow_media: bool,
+    ) -> Step {
         if self.stopped {
             return Step::Stopped;
         }
@@ -258,7 +450,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Supervisor<'scope, 'task
                 }
                 // A buffered media record must not bypass a revoked controller
                 // session merely because media happened to be polled first.
-                if !self.session.admission_current() {
+                if !allow_media || !self.session.admission_current() {
                     let mut control = pin!(self.session.next(wait));
                     return control.as_mut().poll(context).map(Ready::Controller);
                 }
@@ -290,7 +482,9 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Supervisor<'scope, 'task
             }),
         )
         .await;
-        self.media_first = !self.media_first;
+        if allow_media {
+            self.media_first = !self.media_first;
+        }
         match result {
             Err(_) if owner.cx.is_cancelled() => {
                 self.stopped = true;
@@ -304,6 +498,9 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Supervisor<'scope, 'task
             Ok(Ready::AudioPending) => Step::AudioPending,
             Ok(Ready::Controller(Ok(receive::Step::StartupEventBackpressure))) => {
                 Step::StartupEventBackpressure
+            }
+            Ok(Ready::Controller(Ok(receive::Step::EventReplyBackpressure))) => {
+                Step::EventReplyBackpressure
             }
             Ok(Ready::Controller(Err(error))) => {
                 self.stopped = true;

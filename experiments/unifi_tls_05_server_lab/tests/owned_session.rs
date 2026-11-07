@@ -48,6 +48,9 @@ use std::{
 };
 use unifi_tls_05_server_lab::server::Server;
 
+#[path = "support/buffered.rs"]
+mod buffered;
+
 type Test = Result<(), Box<dyn Error>>;
 const HEAD: &str = "GET / HTTP/1.1\r\nHost: camera.local\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nCamera-Mac: 001122aabbcc\r\nSec-WebSocket-Protocol: secure_transfer\r\n\r\n";
 const HELLO:&[u8]=br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"ubnt_avclient_hello","messageId":7,"payload":{}}"#;
@@ -132,7 +135,7 @@ fn frame(payload: &[u8]) -> Vec<u8> {
     bytes
 }
 
-fn observed_hello_case(interrupt: bool) -> Test {
+fn observed_hello_case(interrupt: bool, buffered: bool) -> Test {
     let cert = std::fs::read(std::env::var("FSS_LAB_CERT_DER")?)?;
     let key = std::fs::read(std::env::var("FSS_LAB_KEY_DER")?)?;
     if cert.is_empty() || cert.len() > 8192 || key.is_empty() || key.len() > 8192 {
@@ -153,7 +156,7 @@ fn observed_hello_case(interrupt: bool) -> Test {
         .with_root_certificates(roots)
         .with_no_client_auth();
     let path = std::fs::canonicalize(std::env::temp_dir())?.join(format!(
-        "fss-unifi-task-effect-{}-{interrupt}",
+        "fss-unifi-task-effect-{}-{interrupt}-{buffered}",
         std::process::id()
     ));
     std::fs::create_dir(&path)?;
@@ -237,11 +240,14 @@ fn observed_hello_case(interrupt: bool) -> Test {
                 let raw=MeteredIo::with_clock(socket,clock,"fixture:camera",37)?;
                 let armed=Rc::new(Cell::new(false));let wrote=Rc::new(Cell::new(false));
                 let gate=Gate {inner:raw,armed:armed.clone(),wrote:wrote.clone()};
-                let tls=timeout(cx.now(),Duration::from_secs(5),Server::new(ServerConnection::new(Arc::new(server_config))?,gate).handshake(cx)).await??;
+                let blocked=Rc::new(Cell::new(0));
+                let transport=buffered::Buffered::new(gate,if buffered {32} else {65536},blocked.clone());
+                let tls=timeout(cx.now(),Duration::from_secs(5),Server::new(ServerConnection::new(Arc::new(server_config))?,transport).handshake(cx)).await??;
                 let io=MeteredIo::with_clock(tls,clock,"fixture:camera",4096)?;
                 let controller=Controller::new(Identity::new("FSS","12345678-1234-4abc-9abc-123456789abc","1.20.0")?,1)?;
                 let mut session=owner::accept(io,ProtocolPolicy::RequireOffer,&FixtureAdmission,controller,Duration::from_secs(5)).await?;
                 assert_eq!(session.next(Duration::from_secs(3)).await?,Step::Observation(Observation::Hello));
+                let blocked_before_hello=blocked.get();
                 session.prepare_hello("2026-11-05T10:00:00.000Z")?;
                 let intent=session.management_intent(conditions)?;
                 let prepared=task.prepare_effect(cx,&mut effects,&mut leases.borrow_mut(),PrepareSpec {
@@ -265,6 +271,7 @@ fn observed_hello_case(interrupt: bool) -> Test {
                 }
                 let result=session.dispatch_management(intent,conditions,permit,&guard,Duration::from_secs(3)).await.map_err(|_|"management dispatch refused")?;
                 assert!(matches!(result,ManagementWrite::Written {..}));
+                if buffered { assert!(blocked.get()>blocked_before_hello, "hello did not encounter buffered backpressure"); }
                 peer.join().map_err(|_|"fixture peer panic")??;
                 let retirement=session.retire();assert_eq!(retirement.previous_phase,fss_reference::unifi_direct::Phase::AwaitAgreementPreparation);
                 Ok(())
@@ -289,13 +296,19 @@ fn observed_hello_case(interrupt: bool) -> Test {
 #[test]
 #[ignore = "requires disposable cert and key fixture paths"]
 fn observed_hello_gets_its_own_durable_permit_inside_task() -> Test {
-    observed_hello_case(false)
+    observed_hello_case(false, false)
+}
+
+#[test]
+#[ignore = "requires disposable cert and key fixture paths"]
+fn buffered_transport_completes_task_owned_hello() -> Test {
+    observed_hello_case(false, true)
 }
 
 #[test]
 #[ignore = "requires disposable cert and key fixture paths"]
 fn interrupted_ciphertext_write_fences_the_session() -> Test {
-    observed_hello_case(true)
+    observed_hello_case(true, false)
 }
 
 #[test]

@@ -380,8 +380,10 @@ pub async fn start<IO: asupersync::io::AsyncRead + asupersync::io::AsyncWrite + 
     recorder: Recorder,
 ) -> Result<Started, StartError> {
     let mut trace = StartTrace::default();
-    let (progress, pipeline) =
-        start_inner(owner, session, cfg, framer, recorder, true, &mut trace).await?;
+    let (progress, pipeline) = start_inner(
+        owner, session, cfg, framer, recorder, true, &mut trace, None, None,
+    )
+    .await?;
     match progress {
         StartProgress::Confirmed(reply) => Ok(Started { reply, pipeline }),
         StartProgress::Dispatched { .. } => Err(StartError::Conversation(
@@ -426,8 +428,111 @@ pub async fn start_before_reply_tracked<
         return Err(StartError::Listener(Error::Configuration));
     }
     trace.attempted = true;
-    let (progress, pipeline) =
-        start_inner(owner, session, cfg, framer, recorder, false, trace).await?;
+    let (progress, pipeline) = start_inner(
+        owner, session, cfg, framer, recorder, false, trace, None, None,
+    )
+    .await?;
+    match progress {
+        StartProgress::Dispatched {
+            dispatched,
+            time_syncs_during_accept,
+            observations_during_accept,
+        } => Ok(StartedBeforeReply {
+            dispatched,
+            time_syncs_during_accept,
+            observations_during_accept,
+            pipeline,
+        }),
+        StartProgress::Confirmed(_) => Err(StartError::Conversation(
+            super::conversation::Error::Configuration,
+        )),
+    }
+}
+
+/// Start the media listener while also requesting an explicitly authorized
+/// baseline motion setting. Both traces remain caller-owned on cancellation.
+pub async fn start_before_reply_with_motion_tracked<
+    IO: asupersync::io::AsyncRead + asupersync::io::AsyncWrite + Unpin,
+>(
+    owner: &mut super::conversation::Owner<'_, '_, '_>,
+    session: &mut super::receive::Session<'_, '_, IO>,
+    cfg: &Start<'_>,
+    framer: Framer,
+    recorder: Recorder,
+    trace: &mut StartTrace,
+    motion: &super::conversation::StartupMotion<'_>,
+    motion_trace: &mut super::conversation::StartupMotionTrace,
+) -> Result<StartedBeforeReply, StartError> {
+    if !trace.is_empty() || motion_trace.attempted() {
+        return Err(StartError::Listener(Error::Configuration));
+    }
+    trace.attempted = true;
+    let (progress, pipeline) = start_inner(
+        owner,
+        session,
+        cfg,
+        framer,
+        recorder,
+        false,
+        trace,
+        Some((motion, motion_trace)),
+        None,
+    )
+    .await?;
+    match progress {
+        StartProgress::Dispatched {
+            dispatched,
+            time_syncs_during_accept,
+            observations_during_accept,
+        } => Ok(StartedBeforeReply {
+            dispatched,
+            time_syncs_during_accept,
+            observations_during_accept,
+            pipeline,
+        }),
+        StartProgress::Confirmed(_) => Err(StartError::Conversation(
+            super::conversation::Error::Configuration,
+        )),
+    }
+}
+
+/// Start with bounded event replies, optionally alongside a motion setting.
+/// A caller-owned inbox must already be bound, and both traces survive failure.
+pub async fn start_before_reply_with_events_tracked<
+    IO: asupersync::io::AsyncRead + asupersync::io::AsyncWrite + Unpin,
+>(
+    owner: &mut super::conversation::Owner<'_, '_, '_>,
+    session: &mut super::receive::Session<'_, '_, IO>,
+    cfg: &Start<'_>,
+    framer: Framer,
+    recorder: Recorder,
+    trace: &mut StartTrace,
+    motion: Option<(
+        &super::conversation::StartupMotion<'_>,
+        &mut super::conversation::StartupMotionTrace,
+    )>,
+    events: &super::conversation::StartupEventReplies<'_>,
+    event_trace: &mut super::conversation::StartupEventTrace,
+) -> Result<StartedBeforeReply, StartError> {
+    if !trace.is_empty()
+        || event_trace.attempted()
+        || motion.as_ref().is_some_and(|(_, t)| t.attempted())
+    {
+        return Err(StartError::Listener(Error::Configuration));
+    }
+    trace.attempted = true;
+    let (progress, pipeline) = start_inner(
+        owner,
+        session,
+        cfg,
+        framer,
+        recorder,
+        false,
+        trace,
+        motion,
+        Some((events, event_trace)),
+    )
+    .await?;
     match progress {
         StartProgress::Dispatched {
             dispatched,
@@ -453,6 +558,14 @@ async fn start_inner<IO: asupersync::io::AsyncRead + asupersync::io::AsyncWrite 
     recorder: Recorder,
     wait_for_reply: bool,
     trace: &mut StartTrace,
+    startup_motion: Option<(
+        &super::conversation::StartupMotion<'_>,
+        &mut super::conversation::StartupMotionTrace,
+    )>,
+    mut event_replies: Option<(
+        &super::conversation::StartupEventReplies<'_>,
+        &mut super::conversation::StartupEventTrace,
+    )>,
 ) -> Result<(StartProgress, Pipeline), StartError> {
     if !valid_wait(cfg.bind_wait)
         || !valid_wait(cfg.conversation_wait)
@@ -537,7 +650,14 @@ async fn start_inner<IO: asupersync::io::AsyncRead + asupersync::io::AsyncWrite 
         return Ok((StartProgress::Confirmed(reply), pipeline));
     }
     let dispatched = guarded_owner
-        .start_dispatched(session, &conversation)
+        .start_dispatched_with_options(
+            session,
+            &conversation,
+            startup_motion,
+            event_replies
+                .as_mut()
+                .map(|(events, trace)| (*events, &mut **trace)),
+        )
         .await
         .map_err(StartError::Conversation)?;
     trace.dispatched = Some(dispatched);
@@ -613,6 +733,23 @@ async fn start_inner<IO: asupersync::io::AsyncRead + asupersync::io::AsyncWrite 
                 return Err(StartError::Conversation(
                     super::conversation::Error::EventBackpressure,
                 ));
+            }
+            Ready::Control(Ok(super::receive::Step::EventReplyBackpressure)) => {
+                let Some((events, event_trace)) = event_replies.as_mut() else {
+                    return Err(StartError::Conversation(
+                        super::conversation::Error::EventBackpressure,
+                    ));
+                };
+                let left = deadline
+                    .as_nanos()
+                    .checked_sub(guarded_owner.cx.now().as_nanos())
+                    .filter(|v| *v > 0)
+                    .map(Duration::from_nanos)
+                    .ok_or(StartError::Listener(Error::Deadline))?;
+                guarded_owner
+                    .answer_startup_event(session, cfg.management, events, event_trace, left)
+                    .await
+                    .map_err(StartError::Conversation)?;
             }
             // This listener runs before the supervisor enables event capture.
             Ready::Control(Ok(super::receive::Step::CameraEvent(_))) => {

@@ -111,6 +111,9 @@ impl<'a> Fragment<'a> {
 /// It rejects gaps, repeated fragments and audio clock resets across fragment
 /// boundaries. It performs no persistence, I/O, identity verification or
 /// independent A/V clock alignment.
+/// A clone is an independent in-memory hypothesis, not duplicate source
+/// custody or permission to publish.
+#[derive(Clone)]
 pub struct Session {
     key: flv_avc::SourceKey,
     video_configuration_sources: [Range<u64>; 2],

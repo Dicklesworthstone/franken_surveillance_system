@@ -62,6 +62,48 @@ fn stream(channel: VideoChannel, audio: AudioCodec) -> Result<StreamStart, Error
 }
 
 #[test]
+fn motion_setting_is_correlated_and_kept_distinct_from_video() -> TestResult {
+    use fss_core::ContentDigest;
+    use fss_reference::unifi_direct::motion;
+    let mut c = ready()?;
+    assert_eq!(c.prepare_motion([0; 6], true, TIME), Err(Error::InvalidConfiguration));
+    let p = c.prepare_motion([0, 0x11, 0x22, 0xaa, 0xbb, 0xcc], true, TIME)?;
+    assert_eq!((p.id(), p.kind()), (3, MessageKind::SetMotion(true)));
+    let v = fields(p.bytes())?;
+    let o = v.object().ok_or("missing envelope")?;
+    assert_eq!(o.get("functionName").and_then(Value::text), Some("ChangeSmartMotionSettings"));
+    let payload = o.get("payload").and_then(Value::object).ok_or("missing payload")?;
+    assert_eq!(payload.get("deviceID").and_then(Value::text), Some("001122AABBCC"));
+    assert_eq!(payload.get("enable").and_then(Value::boolean), Some(true));
+    let conditions = motion::Preconditions { camera: ContentDigest::sha256(b"camera"), peer_admission: ContentDigest::sha256(b"peer"), session_generation: 1, previous_motion: None, lease_fence: 1 };
+    let intent = motion::Intent::new(p, conditions)?;
+    assert!(intent.enabled());
+    assert!(intent.check_preconditions(motion::Preconditions { lease_fence: 2, ..conditions }).is_err());
+    c.finish_dispatch(3, Dispatch::Written)?;
+    assert_eq!(c.prepare_motion([0, 0x11, 0x22, 0xaa, 0xbb, 0xcc], false, TIME), Err(Error::InvalidState));
+    assert_eq!(c.observe(&message("ChangeSmartMotionSettings", 9, 4, "{}")), Err(Error::UnexpectedMessage));
+    let p = c.prepare_stream_start(&stream(VideoChannel::Video2, AudioCodec::Aac)?, TIME)?;
+    assert_eq!(p.id(), 4);
+    c.finish_dispatch(4, Dispatch::Written)?;
+    assert_eq!(c.observe(&message("ChangeSmartMotionSettings", 10, 3, "{\"success\":true,\"statusCode\":200}"))?, Observation::MotionSettingsReply { request_id: 3, enabled: true, status_code: Some(200), success: Some(true) });
+    let retired = c.close();
+    assert_eq!(retired.motion_request, None);
+    assert_eq!(retired.stream_request, Some((4, VideoChannel::Video2)));
+    Ok(())
+}
+
+#[test]
+fn motion_uncertain_write_retains_prepared_identity() -> TestResult {
+    let mut c = ready()?;
+    c.prepare_motion([0, 0x11, 0x22, 0xaa, 0xbb, 0xcc], false, TIME)?;
+    c.finish_dispatch(3, Dispatch::Indeterminate)?;
+    let retired = c.close();
+    assert_eq!(retired.prepared, Some((3, MessageKind::SetMotion(false))));
+    assert_eq!(retired.previous_phase, Phase::Indeterminate);
+    Ok(())
+}
+
+#[test]
 fn hello_agreement_and_time_sync_are_correlated_without_authentication_claims() -> TestResult {
     let mut c = controller(1)?;
     let reply = message("ubnt_avclient_timeSync", 40, 99, "{\"timeDelta\":0}");

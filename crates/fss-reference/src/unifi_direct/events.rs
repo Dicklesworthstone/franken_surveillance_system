@@ -89,6 +89,14 @@ impl StartupInbox {
         self.len() < self.max_frames
             && self.bytes.get() <= self.max_bytes - super::MAX_MESSAGE_BYTES
     }
+    // A shared immutable reference keeps the source in the caller's inbox.
+    pub(crate) fn find(&self, id: u64, digest: ContentDigest) -> Option<Frame> {
+        self.frames
+            .borrow()
+            .iter()
+            .find(|frame| frame.message_id() == id && frame.digest() == digest)
+            .cloned()
+    }
     // Only the one bound session calls push, after can_receive and before any
     // further await. The pre-reserved queue never allocates on this path.
     pub(crate) fn push(&self, frame: Frame) {
@@ -114,6 +122,8 @@ pub enum Kind {
     SmartDetectZone,
     /// Explicit motion event.
     SmartMotion,
+    /// Camera-claimed smart-audio event; its content and meaning remain unverified.
+    SmartAudio,
     /// Analytics event; its meaning depends on the supplied payload.
     Analytics,
     /// Another event whose exact name remains in the source bytes.
@@ -126,6 +136,7 @@ impl Kind {
             "EventSmartDetect" => Self::SmartDetect,
             "EventSmartDetectZone" => Self::SmartDetectZone,
             "EventSmartMotion" => Self::SmartMotion,
+            "EventSmartAudio" => Self::SmartAudio,
             "EventAnalytics" => Self::Analytics,
             _ => Self::Other,
         }
@@ -177,6 +188,122 @@ impl Frame {
     /// Parse bounded optional fields. On refusal the original source remains owned.
     pub fn interpret(&self) -> Result<Parsed, Error> {
         parse(&self.source)
+    }
+    /// Interpret bounded smart-audio claims without establishing their meaning.
+    pub fn interpret_smart_audio(&self) -> Result<SmartAudio, Error> {
+        if self.kind != Kind::SmartAudio {
+            return Err(Error::Invalid);
+        }
+        interpret_smart_audio_source(&self.source)
+    }
+}
+
+/// The exact, bounded payload for an explicitly requested event reply.
+/// This is untrusted camera content and must not be logged.
+pub(crate) struct ReplyParts {
+    pub function: String,
+    pub message_id: u64,
+    pub payload: String,
+}
+
+/// Recheck the source envelope and construct the reference's echo payload.
+/// The caller must separately bind these bytes to an observed session request.
+pub(crate) fn reply_parts(source: &[u8]) -> Result<ReplyParts, super::Error> {
+    if source.len() > super::MAX_MESSAGE_BYTES {
+        return Err(super::Error::InvalidJson);
+    }
+    let text = std::str::from_utf8(source).map_err(|_| super::Error::InvalidJson)?;
+    let parsed = json_input::parse(text).map_err(|_| super::Error::InvalidJson)?;
+    let fields = parsed.object().ok_or(super::Error::InvalidEnvelope)?;
+    if super::text_field(fields, "from")? != "ubnt_avclient"
+        || super::text_field(fields, "to")? != "UniFiVideo"
+        || fields.get("responseExpected").and_then(Value::boolean) != Some(true)
+    {
+        return Err(super::Error::InvalidEnvelope);
+    }
+    let name = super::text_field(fields, "functionName")?;
+    if !name.starts_with("Event")
+        || name.len() > 96
+        || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+    {
+        return Err(super::Error::InvalidEnvelope);
+    }
+    if fields.contains_key("inResponseTo") && super::number(fields, "inResponseTo", true)? != 0 {
+        return Err(super::Error::UnexpectedMessage);
+    }
+    let message_id = super::number(fields, "messageId", false)?;
+    let payload = match fields.get("payload") {
+        None | Some(Value::Null | Value::Bool(false)) => "{}".to_owned(),
+        Some(Value::Text(value)) if value.is_empty() => "{}".to_owned(),
+        Some(Value::Number(value)) if value.parse::<f64>().ok() == Some(0.0) => "{}".to_owned(),
+        Some(value) => {
+            let mut out = String::new();
+            write_json(value, &mut out)?;
+            out
+        }
+    };
+    Ok(ReplyParts {
+        function: name.to_owned(),
+        message_id,
+        payload,
+    })
+}
+
+fn append_json(out: &mut String, value: &str) -> Result<(), super::Error> {
+    if out
+        .len()
+        .checked_add(value.len())
+        .is_none_or(|n| n > super::MAX_MESSAGE_BYTES)
+    {
+        return Err(super::Error::InvalidJson);
+    }
+    out.try_reserve(value.len())
+        .map_err(|_| super::Error::InvalidJson)?;
+    out.push_str(value);
+    Ok(())
+}
+
+fn write_json_string(out: &mut String, value: &str) -> Result<(), super::Error> {
+    append_json(out, "\"")?;
+    for ch in value.chars() {
+        match ch {
+            '"' => append_json(out, "\\\"")?,
+            '\\' => append_json(out, "\\\\")?,
+            '\u{0}'..='\u{1f}' => append_json(out, &format!("\\u{:04x}", u32::from(ch)))?,
+            _ => append_json(out, ch.encode_utf8(&mut [0; 4]))?,
+        }
+    }
+    append_json(out, "\"")
+}
+
+fn write_json(value: &Value, out: &mut String) -> Result<(), super::Error> {
+    match value {
+        Value::Null => append_json(out, "null"),
+        Value::Bool(value) => append_json(out, if *value { "true" } else { "false" }),
+        Value::Number(value) => append_json(out, value),
+        Value::Text(value) => write_json_string(out, value),
+        Value::Array(values) => {
+            append_json(out, "[")?;
+            for (i, value) in values.iter().enumerate() {
+                if i != 0 {
+                    append_json(out, ",")?;
+                }
+                write_json(value, out)?;
+            }
+            append_json(out, "]")
+        }
+        Value::Object(values) => {
+            append_json(out, "{")?;
+            for (i, (key, value)) in values.iter().enumerate() {
+                if i != 0 {
+                    append_json(out, ",")?;
+                }
+                write_json_string(out, key)?;
+                append_json(out, ":")?;
+                write_json(value, out)?;
+            }
+            append_json(out, "}")
+        }
     }
 }
 impl fmt::Debug for Frame {
@@ -242,6 +369,181 @@ pub struct Parsed {
     pub edge: Edge,
     /// Descriptor field, preserving absent versus present-empty.
     pub descriptors: Option<Vec<Descriptor>>,
+}
+
+/// Known fields in the observed smart-audio payload profile.
+/// Names describe protocol fields, not validated clock or detection semantics.
+#[repr(usize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SmartAudioField {
+    /// Camera monotonic-clock claim.
+    ClockMonotonic,
+    /// Camera stream-clock claim.
+    ClockStream,
+    /// Camera stream-rate claim.
+    ClockStreamRate,
+    /// Camera wall-clock claim.
+    ClockWall,
+    /// Camera event identifier claim.
+    EventId,
+    /// Camera level claim labeled in decibels.
+    LevelDb,
+    /// Camera levels claim of unknown interpretation.
+    Levels,
+    /// Baby-cry alarm text.
+    AlarmBabyCry,
+    /// Bark alarm text.
+    AlarmBark,
+    /// Burglar alarm text.
+    AlarmBurglar,
+    /// Car-horn alarm text.
+    AlarmCarHorn,
+    /// Camera `alrmCmonx` text of unknown interpretation.
+    AlarmCmonx,
+    /// Glass-break alarm text.
+    AlarmGlassBreak,
+    /// Siren alarm text.
+    AlarmSiren,
+    /// Smoke alarm text.
+    AlarmSmoke,
+    /// Speech alarm text.
+    AlarmSpeak,
+    /// Loud-noise text.
+    LoudNoise,
+    /// Sound-loss text.
+    SoundLoss,
+}
+const SMART_AUDIO_FIELDS: [(&str, bool); 18] = [
+    ("clockMonotonic", true),
+    ("clockStream", true),
+    ("clockStreamRate", true),
+    ("clockWall", true),
+    ("eventId", true),
+    ("leveldB", true),
+    ("levels", true),
+    ("alrmBabyCry", false),
+    ("alrmBark", false),
+    ("alrmBurglar", false),
+    ("alrmCarHorn", false),
+    ("alrmCmonx", false),
+    ("alrmGlassBreak", false),
+    ("alrmSiren", false),
+    ("alrmSmoke", false),
+    ("alrmSpeak", false),
+    ("loudNoise", false),
+    ("soundLoss", false),
+];
+
+/// Presence and source type of one untrusted camera field.
+#[derive(Clone, PartialEq, Eq)]
+pub enum SmartAudioClaim {
+    /// Field absent from the payload.
+    Missing,
+    /// Field explicitly null.
+    Null,
+    /// An exact JSON number spelling; no units or numeric range are asserted.
+    Number(String),
+    /// An exact bounded text claim; no detection state is inferred.
+    Text(String),
+    /// A different type was present; the original source remains with the caller.
+    Unsupported,
+}
+impl fmt::Debug for SmartAudioClaim {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Missing => "Missing",
+            Self::Null => "Null",
+            Self::Number(_) => "Number(<redacted>)",
+            Self::Text(_) => "Text(<redacted>)",
+            Self::Unsupported => "Unsupported",
+        })
+    }
+}
+
+/// Whether the event supplied an object payload.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SmartAudioPayload {
+    /// Payload absent.
+    Missing,
+    /// Payload explicitly null.
+    Null,
+    /// Payload was an object.
+    Object,
+}
+
+/// Bounded interpreted claims; original message custody remains separate.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SmartAudio {
+    payload: SmartAudioPayload,
+    fields: [SmartAudioClaim; SMART_AUDIO_FIELDS.len()],
+    unknown_fields: usize,
+}
+impl SmartAudio {
+    /// Presence of the payload itself.
+    pub fn payload(&self) -> SmartAudioPayload {
+        self.payload
+    }
+    /// A protocol field's claim; reading the value requires caller privacy authority.
+    pub fn get(&self, field: SmartAudioField) -> &SmartAudioClaim {
+        &self.fields[field as usize]
+    }
+    /// Number of other top-level payload fields; their source remains with the caller.
+    pub fn unknown_fields(&self) -> usize {
+        self.unknown_fields
+    }
+}
+
+/// Interpret a bounded smart-audio envelope without establishing identity,
+/// clock units, event truth, audio content, or status-string semantics.
+pub fn interpret_smart_audio_source(source: &[u8]) -> Result<SmartAudio, Error> {
+    if source.len() > super::MAX_MESSAGE_BYTES {
+        return Err(Error::Limit);
+    }
+    let text = std::str::from_utf8(source).map_err(|_| Error::Invalid)?;
+    let value = json_input::parse(text).map_err(|_| Error::Invalid)?;
+    let fields = value.object().ok_or(Error::Invalid)?;
+    if fields.get("functionName").and_then(Value::text) != Some("EventSmartAudio") {
+        return Err(Error::Invalid);
+    }
+    let (payload, object) = match fields.get("payload") {
+        None => (SmartAudioPayload::Missing, None),
+        Some(Value::Null) => (SmartAudioPayload::Null, None),
+        Some(Value::Object(v)) => (SmartAudioPayload::Object, Some(v)),
+        _ => return Err(Error::Invalid),
+    };
+    let mut claims = std::array::from_fn(|_| SmartAudioClaim::Missing);
+    let mut unknown_fields = 0;
+    if let Some(object) = object {
+        unknown_fields = object
+            .keys()
+            .filter(|key| {
+                !SMART_AUDIO_FIELDS
+                    .iter()
+                    .any(|(known, _)| *known == key.as_str())
+            })
+            .count();
+        for (index, (key, number)) in SMART_AUDIO_FIELDS.iter().enumerate() {
+            claims[index] = match object.get(*key) {
+                None => SmartAudioClaim::Missing,
+                Some(Value::Null) => SmartAudioClaim::Null,
+                Some(Value::Number(v)) if *number && v.len() <= MAX_LABEL_BYTES => {
+                    SmartAudioClaim::Number(v.clone())
+                }
+                Some(Value::Text(v)) if !*number && v.len() <= MAX_LABEL_BYTES => {
+                    SmartAudioClaim::Text(v.clone())
+                }
+                Some(Value::Number(v) | Value::Text(v)) if v.len() > MAX_LABEL_BYTES => {
+                    return Err(Error::Limit);
+                }
+                Some(_) => SmartAudioClaim::Unsupported,
+            };
+        }
+    }
+    Ok(SmartAudio {
+        payload,
+        fields: claims,
+        unknown_fields,
+    })
 }
 
 /// Static, payload-free parse refusal.

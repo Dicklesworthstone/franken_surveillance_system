@@ -20,8 +20,16 @@ use fss_core::json_input::{self, Value};
 pub mod archive;
 /// Source-linked A/V evidence graph preparation.
 pub mod av_evidence;
+/// Owned A/V archival inputs suitable for a separately supervised worker.
+pub mod av_owned_sink;
 /// Transactional, source-preserving A/V fragment derivation.
 pub mod av_recording;
+/// Bounded ownership and backpressure for A/V archive handoff.
+pub mod av_sink;
+/// Region-owned asynchronous handoff to the archival persistence worker.
+pub mod av_worker;
+/// Supervised camera-to-worker handoff with bounded backpressure.
+pub mod av_worker_guard;
 /// Task-owned, bounded local D-Bus observation for future BlueZ transport.
 pub mod bluez_bus;
 /// Task-owned BlueZ scan and claim-projection lifecycle.
@@ -54,6 +62,8 @@ pub mod listener;
 pub mod management;
 /// Task-scoped byte admission for controller transport I/O.
 pub mod metered;
+/// Inert, digest-bound motion-setting effect intent.
+pub mod motion;
 /// Bounded task-owned WebSocket upgrade orchestration.
 pub mod owner;
 /// Bounded task-owned TCP ingress to in-memory recording pipeline.
@@ -75,6 +85,7 @@ pub const MAX_MESSAGE_ID: u64 = 9_007_199_254_740_991;
 /// Conservative minimum owner-measured delay after the local hello write.
 pub const AGREEMENT_DELAY_NS: u64 = 500_000_000;
 const MAX_OPT_IN_TIME_SYNC_REPLIES: usize = 8;
+const MAX_EVENT_REPLIES: usize = 64;
 /// Maximum replies in the explicitly selected pre-hello clock exchange.
 pub const MAX_PRE_HELLO_TIME_SYNC_REPLIES: usize = 32;
 
@@ -91,6 +102,8 @@ pub enum Error {
     InvalidState,
     /// The single pending time-sync slot or the opt-in reply bound is exhausted.
     TimeSyncLimit,
+    /// An event reply is pending, repeated, or exceeds this session's bound.
+    EventReplyLimit,
     /// Prepared message identity did not match the supplied dispatch receipt.
     WrongPreparedMessage,
     /// The controller identity or output timestamp is not within the allowed syntax.
@@ -139,6 +152,8 @@ pub enum RejectedMessage {
     Agreement,
     /// Video-settings response.
     VideoSettings,
+    /// Motion-settings response.
+    MotionSettings,
 }
 
 /// Sanitized classification of one incoming management envelope.
@@ -164,6 +179,17 @@ pub enum Observation {
         /// Uninterpreted optional camera success field.
         success: Option<bool>,
     },
+    /// A correlated motion-settings reply, without asserting the effect succeeded.
+    MotionSettingsReply {
+        /// Controller-local request ID.
+        request_id: u64,
+        /// Requested motion enable state.
+        enabled: bool,
+        /// Untrusted optional status code.
+        status_code: Option<i64>,
+        /// Untrusted optional success field.
+        success: Option<bool>,
+    },
     /// A camera-originated event claim. Its payload is retained by the
     /// receiving owner when event capture is enabled, not by this value.
     CameraEvent {
@@ -187,10 +213,14 @@ pub enum MessageKind {
     AgreementRequest,
     /// Correlated time-sync response.
     TimeSyncReply,
+    /// Correlated reply to a separately observed camera event.
+    EventReply,
     /// Request to change one track's serializer destination.
     StartStream(VideoChannel),
     /// Request to route one track's serializer to the discard sink.
     QuiesceStream(VideoChannel),
+    /// Request to enable or disable baseline motion detection.
+    SetMotion(bool),
 }
 
 /// The camera video track targeted by a stream-start effect.
@@ -331,6 +361,10 @@ pub struct Retirement {
     pub stream_request: Option<(u64, VideoChannel)>,
     /// The kind of that outstanding request, if known.
     pub stream_request_kind: Option<MessageKind>,
+    /// Motion request whose reply has not been observed.
+    pub motion_request: Option<(u64, bool)>,
+    /// Observed event request awaiting a reply or explicit omission.
+    pub event_reply: Option<(u64, fss_core::ContentDigest)>,
 }
 
 /// Exact owner-supplied controller identity; strings are validated before use.
@@ -382,6 +416,7 @@ pub struct PreparedMessage {
     id: u64,
     kind: MessageKind,
     bytes: Vec<u8>,
+    source: Option<fss_core::ContentDigest>,
 }
 
 impl PreparedMessage {
@@ -396,6 +431,10 @@ impl PreparedMessage {
     /// Borrow the exact JSON message; framing and I/O remain the owner's responsibility.
     pub fn bytes(&self) -> &[u8] {
         &self.bytes
+    }
+    /// Exact observed event source, if this is an event reply.
+    pub fn source_digest(&self) -> Option<fss_core::ContentDigest> {
+        self.source
     }
 }
 
@@ -453,6 +492,7 @@ pub struct Controller {
     time_sync: Option<u64>,
     agreement_id: Option<u64>,
     stream_request: Option<(u64, MessageKind)>,
+    motion_request: Option<(u64, bool)>,
     prepared: Option<PreparedMessage>,
     rejected_message: Option<RejectedMessage>,
     time_sync_counts: TimeSyncCounts,
@@ -461,6 +501,9 @@ pub struct Controller {
     time_sync_request_ids: [u64; MAX_PRE_HELLO_TIME_SYNC_REPLIES],
     time_sync_reply_count: usize,
     pending_pre_hello_sync: bool,
+    event_reply: Option<(u64, fss_core::ContentDigest)>,
+    replied_event_ids: [u64; MAX_EVENT_REPLIES],
+    replied_event_count: usize,
 }
 
 impl fmt::Debug for Controller {
@@ -498,6 +541,7 @@ impl Controller {
             time_sync: None,
             agreement_id: None,
             stream_request: None,
+            motion_request: None,
             prepared: None,
             rejected_message: None,
             time_sync_counts: TimeSyncCounts::default(),
@@ -506,6 +550,9 @@ impl Controller {
             time_sync_request_ids: [0; MAX_PRE_HELLO_TIME_SYNC_REPLIES],
             time_sync_reply_count: 0,
             pending_pre_hello_sync: false,
+            event_reply: None,
+            replied_event_ids: [0; MAX_EVENT_REPLIES],
+            replied_event_count: 0,
         })
     }
 
@@ -517,6 +564,15 @@ impl Controller {
     /// Payload-free time-sync observations; these do not prove message delivery.
     pub fn time_sync_counts(&self) -> TimeSyncCounts {
         self.time_sync_counts
+    }
+
+    /// Whether an observed event requires an explicit reply or omission.
+    pub fn has_pending_event_reply(&self) -> bool {
+        self.event_reply.is_some()
+    }
+
+    pub(crate) fn pending_event_reply(&self) -> Option<(u64, fss_core::ContentDigest)> {
+        self.event_reply
     }
 
     /// Largest caller-supplied startup reply quota for this session policy.
@@ -713,13 +769,115 @@ impl Controller {
                     success,
                 })
             }
-            _ if event_claims && name.starts_with("Event") => Ok(Observation::CameraEvent {
-                kind: events::Kind::from_name(name),
-                message_id: id,
-                response_expected,
-            }),
+            "ChangeSmartMotionSettings" => {
+                let Some((request_id, enabled)) = self.motion_request else {
+                    self.rejected_message = Some(RejectedMessage::MotionSettings);
+                    return Err(Error::UnexpectedMessage);
+                };
+                if self.phase != Phase::AgreementReplyObserved || response_to != request_id {
+                    self.rejected_message = Some(RejectedMessage::MotionSettings);
+                    return Err(Error::UnexpectedMessage);
+                }
+                let payload = match fields.get("payload") {
+                    None | Some(Value::Null) => None,
+                    Some(Value::Object(payload)) => Some(payload),
+                    Some(_) => return Err(Error::InvalidEnvelope),
+                };
+                let status_code = match payload.and_then(|p| p.get("statusCode")) {
+                    None | Some(Value::Null) => None,
+                    Some(Value::Number(raw)) => {
+                        Some(raw.parse::<i64>().map_err(|_| Error::InvalidEnvelope)?)
+                    }
+                    Some(_) => return Err(Error::InvalidEnvelope),
+                };
+                let success = match payload.and_then(|p| p.get("success")) {
+                    None | Some(Value::Null) => None,
+                    Some(v) => Some(v.boolean().ok_or(Error::InvalidEnvelope)?),
+                };
+                self.motion_request = None;
+                Ok(Observation::MotionSettingsReply {
+                    request_id,
+                    enabled,
+                    status_code,
+                    success,
+                })
+            }
+            _ if event_claims && name.starts_with("Event") => {
+                if response_expected && response_to == 0 {
+                    if self.event_reply.is_some()
+                        || self.replied_event_count == MAX_EVENT_REPLIES
+                        || self.replied_event_ids[..self.replied_event_count].contains(&id)
+                    {
+                        return Err(Error::EventReplyLimit);
+                    }
+                    self.event_reply = Some((id, fss_core::ContentDigest::sha256(bytes)));
+                }
+                Ok(Observation::CameraEvent {
+                    kind: events::Kind::from_name(name),
+                    message_id: id,
+                    response_expected,
+                })
+            }
             _ => Ok(Observation::Other),
         }
+    }
+
+    /// Prepare an echo only for the exact event source observed by this
+    /// controller. This is inert and confers no authority to send private data.
+    pub fn prepare_event_reply(
+        &mut self,
+        source: &[u8],
+        timestamp: &str,
+    ) -> Result<&PreparedMessage, Error> {
+        let digest = fss_core::ContentDigest::sha256(source);
+        let parts = events::reply_parts(source)?;
+        if self.event_reply != Some((parts.message_id, digest)) {
+            return Err(Error::InvalidState);
+        }
+        // Account for the bounded envelope before consuming a message ID.
+        if parts
+            .function
+            .len()
+            .checked_add(parts.payload.len())
+            .and_then(|n| n.checked_add(timestamp.len()))
+            .is_none_or(|n| n > MAX_MESSAGE_BYTES - 256)
+        {
+            return Err(Error::InvalidJson);
+        }
+        self.prepare(
+            MessageKind::EventReply,
+            &parts.function,
+            parts.message_id,
+            false,
+            &parts.payload,
+            timestamp,
+        )?;
+        let message = self.prepared.as_mut().ok_or(Error::InvalidState)?;
+        message.source = Some(digest);
+        Ok(message)
+    }
+
+    /// Explicitly omit a reply without claiming the camera received one.
+    pub fn omit_event_reply(&mut self, source: fss_core::ContentDigest) -> Result<(), Error> {
+        if self.prepared.is_some() || self.event_reply.is_none_or(|(_, digest)| digest != source) {
+            return Err(Error::InvalidState);
+        }
+        let (id, _) = self.event_reply.take().ok_or(Error::InvalidState)?;
+        self.replied_event_ids[self.replied_event_count] = id;
+        self.replied_event_count += 1;
+        Ok(())
+    }
+
+    /// Abandon only a locally unwritten event reply. A committed permit still
+    /// belongs to the caller and must be reconciled separately.
+    pub fn abandon_event_reply(&mut self, source: fss_core::ContentDigest) -> Result<u64, Error> {
+        let message = self.prepared.as_ref().ok_or(Error::InvalidState)?;
+        if message.kind != MessageKind::EventReply || message.source != Some(source) {
+            return Err(Error::InvalidState);
+        }
+        let mut message = self.prepared.take().ok_or(Error::InvalidState)?;
+        message.bytes.fill(0);
+        Ok(message.id)
     }
 
     /// Prepare the exact hello response without writing it.
@@ -857,6 +1015,33 @@ impl Controller {
         )
     }
 
+    /// Prepare a baseline motion-setting request for the supplied camera claim.
+    /// The claim is not identity or authority; the caller must bind it to the
+    /// admitted session and separately authorize the effect.
+    pub fn prepare_motion(
+        &mut self,
+        mac: [u8; 6],
+        enabled: bool,
+        timestamp: &str,
+    ) -> Result<&PreparedMessage, Error> {
+        if self.phase != Phase::AgreementReplyObserved || self.motion_request.is_some() {
+            return Err(Error::InvalidState);
+        }
+        if mac == [0; 6] || mac[0] & 1 != 0 {
+            return Err(Error::InvalidConfiguration);
+        }
+        let device_id: String = mac.iter().map(|b| format!("{b:02X}")).collect();
+        let payload = format!("{{\"deviceID\":\"{device_id}\",\"enable\":{enabled}}}");
+        self.prepare(
+            MessageKind::SetMotion(enabled),
+            "ChangeSmartMotionSettings",
+            0,
+            true,
+            &payload,
+            timestamp,
+        )
+    }
+
     /// Abandon a prepared stream request only when the owner knows no bytes
     /// were sent. This does not dispose of any journaled effect permit.
     pub fn abandon_prepared_stream(&mut self) -> Result<AbandonedStream, Error> {
@@ -901,7 +1086,12 @@ impl Controller {
         } else {
             Some(id + 1)
         };
-        self.prepared = Some(PreparedMessage { id, kind, bytes });
+        self.prepared = Some(PreparedMessage {
+            id,
+            kind,
+            bytes,
+            source: None,
+        });
         self.prepared.as_ref().ok_or(Error::InvalidState)
     }
 
@@ -940,9 +1130,15 @@ impl Controller {
                         self.pending_pre_hello_sync = false;
                         self.time_sync = None;
                     }
+                    MessageKind::EventReply => {
+                        let (request_id, _) = self.event_reply.take().ok_or(Error::InvalidState)?;
+                        self.replied_event_ids[self.replied_event_count] = request_id;
+                        self.replied_event_count += 1;
+                    }
                     kind @ (MessageKind::StartStream(_) | MessageKind::QuiesceStream(_)) => {
                         self.stream_request = Some((id, kind));
                     }
+                    MessageKind::SetMotion(enabled) => self.motion_request = Some((id, enabled)),
                 }
                 self.prepared = None;
                 Ok(())
@@ -967,12 +1163,16 @@ impl Controller {
                 _ => None,
             }),
             stream_request_kind: self.stream_request.map(|(_, kind)| kind),
+            motion_request: self.motion_request,
+            event_reply: self.event_reply,
         };
         self.prepared = None;
         self.hello = None;
         self.time_sync = None;
         self.agreement_id = None;
         self.stream_request = None;
+        self.motion_request = None;
+        self.event_reply = None;
         self.rejected_message = None;
         self.phase = Phase::Closed;
         retirement

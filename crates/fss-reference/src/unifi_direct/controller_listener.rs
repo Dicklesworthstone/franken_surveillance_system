@@ -215,6 +215,29 @@ impl<'scope, 'task, 'policy> Listener<'scope, 'task, 'policy> {
         self.bound
     }
 
+    /// Revalidate this exact bound socket against its task, clock, resource,
+    /// endpoint and live listener policy. This does not prove reachability.
+    pub(crate) fn ready_for(
+        &self,
+        task: &TaskCx<'_>,
+        cx: &Cx,
+        clock: &MeteredClock<'_, '_>,
+        resource: &str,
+        endpoint: SocketAddrV4,
+    ) -> bool {
+        endpoint.port() != 0
+            && self.bound == endpoint
+            && self.resource == resource
+            && std::ptr::eq(
+                std::ptr::from_ref(self.task).cast::<()>(),
+                std::ptr::from_ref(task).cast::<()>(),
+            )
+            && std::ptr::eq(self.cx, cx)
+            && self.clock.same_mapping(clock)
+            && Self::check(self.task, self.cx, self.clock, &self.resource).is_ok()
+            && self.policy.listener(self.requested, Some(self.bound))
+    }
+
     /// Accept one currently admitted peer and meter ciphertext at the raw socket.
     /// Dropping the pending future closes its listener. Returned sockets still
     /// recheck this policy at every raw poll. Wrap the resulting TLS stream

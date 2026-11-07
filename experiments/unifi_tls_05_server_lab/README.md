@@ -48,6 +48,31 @@ The isolated fixture does not qualify the entire workspace, arbitrary
 full-duplex backpressure, the provider, or a physical camera. No camera or
 recorder was contacted or changed for this regression.
 
+The task-owned session fixture now also wraps its metered transport in a
+32-byte buffer. It verifies that the journal-backed hello response itself
+encounters backpressure and is delivered through the TLS and WebSocket stack.
+On `hz2`, all **5/5** ignored session tests passed with a disposable
+certificate, including the new case and the interrupted-write fence. The
+scope-filtered build was job `30098575685845511`, acknowledged with source
+release; the test binary SHA-256 was
+`b35667dbf3ea7a31e3716637ebcf255e2c805492dd99a2a0c3982e1c19ec525a`.
+As a negative control, the earlier drain behavior was restored only in the
+isolated fixture: the same new test timed out during TLS startup. Control job
+`30098575685845517` initially returned 102 during artifact transfer; same-ID
+recovery returned exit 0, acknowledgment and source release. Its test binary
+SHA-256 was
+`298b8ce45745b1438ce80dd2505f5453b0a3f7ee9cfbb6e0514c278c70d344b3`.
+The fixed source was restored and rebuilt in acknowledged, released job
+`30098575685845521`; all five tests passed again with the same fixed binary hash.
+The initial build `30098575685845500` failed before tests because the reduced
+fixture tried to compile an unrelated excluded ONVIF-dependent binary. The
+rerun disabled automatic binary targets only in the fixture manifest. Test
+and helper source SHA-256 values were
+`7b2f88be2de878ba1f0f876e7b5f871153b65c9cdf5eac87c4ac2b31faa9f403` and
+`a2485555ad99e8e5033d3b58656e31ca887f915b64a85ae40b8595315db16c7a`.
+This remains synthetic, same-provider evidence and does not establish a native
+physical-camera session, ongoing recording, or production TLS admission.
+
 ## Media before settings reply
 
 The trial's opt-in `--media-before-reply` mode supervises controller messages
@@ -70,6 +95,15 @@ The next revision adds two pre-hello event cases: one delivers the retained
 event after startup, and the other closes before media and verifies explicit
 omission accounting. All six cases passed on the source-matched inbox revision;
 exact build and fixture hashes are in the reference notes.
+With the explicit `--reply-events` option, which requires
+`--media-before-reply`, the trial also answers requested events before hello,
+while accepting media, and during streaming. It uses separately authorized,
+journal-backed operations and preserves startup events without replying twice.
+The option is off by default. The expanded loopback fixture passed ten peer
+scenarios and one command-line rejection check; seven cases produced clips
+with three independently probed H.264 frames each. The remaining peer cases
+verify close or reply-denial behavior and produce no clip. The detailed build
+identity and scope are recorded in the reference notes.
 Run the peer only with a Linux trial binary and the synthetic AVC fixture:
 
 ```text
@@ -78,6 +112,70 @@ python3 experiments/unifi_tls_05_server_lab/media_before_reply_fixture.py TRIAL_
 
 The loopback result does not establish physical camera identity, successful
 controller handoff, continuous recording, or settlement of a camera effect.
+
+The optional `--lab-aac-config=HEX` argument derives a two-track clip
+from completed video segments and AAC records within them.
+`HEX` is a caller-supplied two-byte AAC-LC AudioSpecificConfig; its source and
+connection epoch are unverified. This laboratory mode places the first audio
+sample using its sender timestamp relative to the first video decode timestamp,
+with a 5 ms audio clock tolerance and at most two seconds of initial separation.
+This mapping assumes a shared sender clock. A separate synthetic segment test
+and FFprobe check passed; the updated standalone trial also passed synthetic
+10 ms offset checks with both AAC configuration modes. Three later passive
+G4-derived replays matched the source sender-time offsets under a simulated
+controller. Earlier camera-derived replays used the tick-zero mapping. None
+establishes
+physical audio/video alignment, completeness, or that the supplied configuration
+belongs to the camera. Alternatively, `--lab-aac-source` uses an observed,
+non-provisional in-band configuration received before video starts, binding it
+to its original source record and claimed connection epoch. The original
+record is omitted when this lab finishes; source identity and A/V alignment
+remain unverified. Both modes refuse missing audio, a configuration appearing
+inside the completed segment and timing violations rather than silently
+producing a video-only clip. Source mode also refuses a missing or late initial
+configuration. The default remains video-only. This is neither a continuous
+recorder nor an audio setup procedure for a physical camera.
+
+With generated 16 kHz mono AAC and synthetic AVC, the updated independent
+loopback fixture produced an H.264/AAC clip; FFprobe identified both tracks and
+FFmpeg decoded the audio. An in-band configuration case produced a separately
+probed two-track clip; missing or late configuration and a second configuration
+inside the segment were refused without a clip. Missing audio and a two-sample
+timing violation were also refused. The current suite passed 35 synthetic CLI
+and loopback checks, including sender-clock offset and excessive-skew cases.
+These are results from a scope-filtered build. Build identities, earlier
+fixture failures and limits are in the reference notes.
+
+The opt-in `--lab-segments=N` requests one through eight segments in a single
+clip (default one), maintaining the same A/V muxer across fragments. The output
+is bounded to 32 MiB and is written only after all requested segments assemble;
+an early EOF or a later audio clock violation is refused without a completed
+clip. This is a bounded laboratory operation, not continuous recording or a
+durable segment-retention service. Two passive G4-derived two-segment replays
+decoded both tracks through a simulated controller and existing relay; they do
+not establish a direct physical camera handoff or measured A/V synchronization.
+
+`--lab-trailer16-av-flag` selects the existing strict 16-byte trailer
+heuristic. It is an experimental diagnostic, not a general G4 setting. In two
+passive replays using G4-derived media, this policy refused after the first
+selected IDR; a later boundary-only observation showed a flag value of 2
+where the heuristic expects 1. The reference implementation documents
+variable-length trailers after large frames. The default remains the
+conservative variable-length search, which also failed to produce a clip in
+three bounded passive replays. A separate read-only diagnostic found an earlier
+incomplete plausible candidate blocking a later complete candidate; this is a
+specific reason to investigate, not a proven explanation for every failure.
+See the reference notes for the synthetic boundaries and qualification limits.
+`--lab-zero-stream-id` instead uses a conservative variable-trailer search
+under an explicit zero-FLV-stream-ID profile. It remains a structural
+heuristic; this profile is not established for every camera, and a zero-ID
+earlier incomplete candidate still blocks. Do not combine the two framing
+options. The default is unchanged. The prior trial passed 25 synthetic
+checks. Three subsequent passive G4-derived replays under this profile each
+produced an H.264/AAC clip with decoded video and audio. They used a simulated
+controller, a synthetic start, and relay-supplied configuration whose epoch
+and A/V alignment are unverified. They do not establish a native controller
+handoff or continuous recording; see the reference notes for exact boundaries.
 
 ## Additional TLS fixtures
 
@@ -291,7 +389,7 @@ abstained and created no reboot marker. Fresh recorder segments were verified
 and uploaded after the attempt.
 
 ```text
-unifi_direct_trial LISTEN_IPV4:PORT CAMERA_IPV4 CAMERA_MAC_HEX CERT_DER KEY_DER JOURNAL_DIR OUTPUT_MP4 CONTROLLER_UUID [WAIT_SECONDS] --owner-authorized
+unifi_direct_trial LISTEN_IPV4:PORT CAMERA_IPV4 CAMERA_MAC_HEX CERT_DER KEY_DER JOURNAL_DIR OUTPUT_MP4 CONTROLLER_UUID [WAIT_SECONDS] [--allow-correlated-timesync|--bounded-prehello-clock] [--media-before-reply] [--reply-events] [--lab-aac-config=HEX|--lab-aac-source] [--lab-trailer16-av-flag|--lab-zero-stream-id] [--lab-segments=N] --owner-authorized
 ```
 
 The key and clip can contain private material; use an owner-controlled private

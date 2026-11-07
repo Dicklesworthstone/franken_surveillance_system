@@ -30,6 +30,8 @@ pub enum Error {
     Parse(ParseError),
     /// Explicit 16-byte trailer policy did not match; buffered bytes remain available.
     TrailerPolicyMismatch,
+    /// The first tag violates the explicitly selected zero-stream-ID profile.
+    StreamIdMismatch,
 }
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -68,6 +70,10 @@ pub enum SearchMode {
     /// a zero-stream-ID successor. This opt-in heuristic reflects a bounded G4
     /// observation; it rejects other preceding kinds and authenticates nothing.
     StructuredTrailer16AvFlag,
+    /// Search variable trailers conservatively while excluding candidates
+    /// whose complete FLV header has a nonzero stream ID. This is an explicit
+    /// source-profile assumption, not proof of a tag boundary or identity.
+    ZeroStreamId,
 }
 impl SearchMode {
     /// Stable policy identity used in source-evidence metadata.
@@ -77,6 +83,7 @@ impl SearchMode {
             Self::Provisional => 1,
             Self::StructuredTrailer16 => 2,
             Self::StructuredTrailer16AvFlag => 3,
+            Self::ZeroStreamId => 4,
         }
     }
 
@@ -87,6 +94,7 @@ impl SearchMode {
             1 => Some(Self::Provisional),
             2 => Some(Self::StructuredTrailer16),
             3 => Some(Self::StructuredTrailer16AvFlag),
+            4 => Some(Self::ZeroStreamId),
             _ => None,
         }
     }
@@ -330,6 +338,13 @@ impl Framer {
                     Phase::FirstTag,
                 ),
             },
+            Phase::FirstTag
+                if self.mode == SearchMode::ZeroStreamId
+                    && input.len() >= 11
+                    && input[8..11] != [0; 3] =>
+            {
+                return Err(Error::StreamIdMismatch);
+            }
             Phase::FirstTag => match Tag::parse(input, self.limits).map_err(Error::Parse)? {
                 Parse::NeedMore => return Ok(Next::NeedMore),
                 Parse::Complete(tag) => (
@@ -354,6 +369,9 @@ impl Framer {
                         _ => return Err(Error::TrailerPolicyMismatch),
                     };
                     structured_trailer_16(input, self.limits, Some(flag))
+                }
+                SearchMode::ZeroStreamId => {
+                    super::find_next_zero_stream_id(input, self.limits).map_err(Error::Parse)
                 }
             }? {
                 Parse::NeedMore => return Ok(Next::NeedMore),

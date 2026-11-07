@@ -705,7 +705,11 @@ fn http_fixture(
     framing: Framing,
     observe: bool,
     changed: bool,
+    setup_preflight: bool,
+    destination: Ipv4Addr,
+    revoke: Option<Arc<std::sync::atomic::AtomicBool>>,
 ) -> std::io::Result<()> {
+    let target_body = format!(r#"{{"controller":{{"addr":"{destination}"}}}}"#);
     let mut socket = std::net::TcpStream::connect_timeout(&address, Duration::from_secs(5))?;
     socket.set_read_timeout(Some(Duration::from_secs(8)))?;
     let handoff_routes = [
@@ -721,8 +725,20 @@ fn http_fixture(
         "GET /api/1.1/settings ",
         "GET /api/1.1/settings ",
     ];
+    let setup_routes = [
+        "POST /api/1.1/login ",
+        "GET /api/1.1/status ",
+        "GET /api/1.1/settings ",
+        "GET /api/1.1/settings ",
+        "PUT /api/1.1/settings ",
+        "GET /api/1.1/settings ",
+    ];
+    let double_read = observe || setup_preflight;
+    let handoff_index = if setup_preflight { 4 } else { 3 };
     let routes: &[&str] = if observe {
         &observe_routes
+    } else if setup_preflight {
+        &setup_routes
     } else {
         &handoff_routes
     };
@@ -738,13 +754,10 @@ fn http_fixture(
         {
             return Err(std::io::Error::other("fixture cookie missing"));
         }
-        if index == 3
-            && !observe
-            && !request.ends_with(br#"{"controller":{"addr":"192.168.1.40"}}"#)
-        {
+        if index == handoff_index && !observe && !request.ends_with(target_body.as_bytes()) {
             return Err(std::io::Error::other("fixture handoff mismatch"));
         }
-        if index == 3 && !observe {
+        if index == handoff_index && !observe {
             let chunked = request
                 .windows(b"\r\nTransfer-Encoding: chunked\r\n".len())
                 .any(|window| window == b"\r\nTransfer-Encoding: chunked\r\n");
@@ -752,7 +765,7 @@ fn http_fixture(
                 return Err(std::io::Error::other("fixture wrong handoff framing"));
             }
         }
-        if index == 3 && !observe && cancel_reply {
+        if index == handoff_index && !observe && cancel_reply {
             let mut b = [0u8; 1];
             return if socket.read(&mut b)? == 0 {
                 Ok(())
@@ -760,17 +773,19 @@ fn http_fixture(
                 Err(std::io::Error::other("fixture expected closure"))
             };
         }
-        if index == 4 && fail_readback {
+        if index == handoff_index + 1 && fail_readback {
             return Ok(());
         }
         let body: &[u8] = match index {
-            2 if already => br#"{"controller":{"addr":"192.168.1.40"}}"#,
+            2 if already => target_body.as_bytes(),
             2 => br#"{"controller":{"addr":"192.168.1.10"}}"#,
-            3 if observe && changed => br#"{"controller":{"addr":"192.168.1.99"}}"#,
-            3 if observe && already => br#"{"controller":{"addr":"192.168.1.40"}}"#,
-            3 if observe => br#"{"controller":{"addr":"192.168.1.10"}}"#,
-            3 => br#"{"success":false,"statusCode":17,"secret":"fixture-private"}"#,
-            4 => br#"{"controller":{"addr":"192.168.1.40"}}"#,
+            3 if double_read && changed => br#"{"controller":{"addr":"192.168.1.99"}}"#,
+            3 if double_read && already => target_body.as_bytes(),
+            3 if double_read => br#"{"controller":{"addr":"192.168.1.10"}}"#,
+            i if i == handoff_index => {
+                br#"{"success":false,"statusCode":17,"secret":"fixture-private"}"#
+            }
+            i if i == handoff_index + 1 => target_body.as_bytes(),
             _ => b"{}",
         };
         let cookie = if index == 0 {
@@ -778,13 +793,39 @@ fn http_fixture(
         } else {
             ""
         };
+        if index == 3 && double_read {
+            if let Some(policy) = &revoke {
+                policy.store(false, std::sync::atomic::Ordering::Release);
+            }
+        }
         let header = format!(
             "HTTP/1.1 200 OK\r\n{cookie}Content-Length: {}\r\nConnection: keep-alive\r\n\r\n",
             body.len()
         );
         socket.write_all(header.as_bytes())?;
         socket.write_all(body)?;
-        if index == 2 && already && !observe {
+        if index == 2 && already && !double_read {
+            return Ok(());
+        }
+        if index == 3 && double_read && revoke.is_some() {
+            let mut byte = [0u8; 1];
+            return if socket.read(&mut byte)? == 0 {
+                Ok(())
+            } else {
+                Err(std::io::Error::other("revoked listener allowed a write"))
+            };
+        }
+        if index == 3 && double_read && (already || changed) {
+            if changed && setup_preflight && !observe {
+                let mut byte = [0u8; 1];
+                return if socket.read(&mut byte)? == 0 {
+                    Ok(())
+                } else {
+                    Err(std::io::Error::other(
+                        "changing settings caused an unexpected write",
+                    ))
+                };
+            }
             return Ok(());
         }
     }
@@ -829,7 +870,18 @@ fn owned_http_handoff(cancel_reply: bool, framing: Framing) -> Test {
                     let listener = TcpListener::bind("127.0.0.1:0").await?;
                     let address = listener.local_addr()?;
                     let peer = std::thread::spawn(move || {
-                        http_fixture(address, cancel_reply, false, false, framing, false, false)
+                        http_fixture(
+                            address,
+                            cancel_reply,
+                            false,
+                            false,
+                            framing,
+                            false,
+                            false,
+                            false,
+                            Ipv4Addr::new(192, 168, 1, 40),
+                            None,
+                        )
                     });
                     let (socket, _) =
                         timeout(cx.now(), Duration::from_secs(5), listener.accept()).await??;
@@ -1054,7 +1106,40 @@ fn run_discovered_setup(
     observe: bool,
     changed: bool,
 ) -> Test {
-    use fss_reference::unifi_direct::{discovery, setup};
+    run_discovered_setup_with_listener(
+        cancel_reply,
+        already,
+        fail_readback,
+        framing,
+        observe,
+        changed,
+        None,
+    )
+}
+
+struct ReadyPolicy(Arc<std::sync::atomic::AtomicBool>);
+impl fss_reference::unifi_direct::listener::Admission for ReadyPolicy {
+    fn listener(&self, _: std::net::SocketAddrV4, _: Option<std::net::SocketAddrV4>) -> bool {
+        self.0.load(std::sync::atomic::Ordering::Acquire)
+    }
+    fn peer(&self, _: std::net::SocketAddrV4, _: std::net::SocketAddrV4) -> bool {
+        self.0.load(std::sync::atomic::Ordering::Acquire)
+    }
+}
+
+fn run_discovered_setup_with_listener(
+    cancel_reply: bool,
+    already: bool,
+    fail_readback: bool,
+    framing: Framing,
+    observe: bool,
+    changed: bool,
+    ready: Option<(Ipv4Addr, bool)>,
+) -> Test {
+    use fss_reference::unifi_direct::{controller_listener, discovery, setup};
+    let destination = ready.map_or(Ipv4Addr::new(192, 168, 1, 40), |value| value.0);
+    let revoked = ready.is_some_and(|value| value.1);
+    let live = Arc::new(std::sync::atomic::AtomicBool::new(true));
     let path = std::fs::canonicalize(std::env::temp_dir())?.join(format!(
         "fss-unifi-setup-{}-{cancel_reply}-{already}-{fail_readback}-{framing:?}-{observe}-{changed}",
         std::process::id()
@@ -1143,6 +1228,7 @@ fn run_discovered_setup(
                     assert_eq!(report.cameras.len(), 1);
                     let listener = TcpListener::bind("127.0.0.1:0").await?;
                     let address = listener.local_addr()?;
+                    let revoke_policy = revoked.then(|| Arc::clone(&live));
                     let peer = std::thread::spawn(move || {
                         http_fixture(
                             address,
@@ -1152,6 +1238,9 @@ fn run_discovered_setup(
                             framing,
                             observe,
                             changed,
+                            true,
+                            destination,
+                            revoke_policy,
                         )
                     });
                     let (socket, _) =
@@ -1192,7 +1281,7 @@ fn run_discovered_setup(
                                 peer_admission,
                                 generation: 1,
                                 fence,
-                                destination: Ipv4Addr::new(192, 168, 1, 40),
+                                destination,
                                 operation: &operation,
                                 credential: br#"{"username":"fixture","password":"synthetic"}"#,
                                 wait: Duration::from_secs(5),
@@ -1240,14 +1329,148 @@ fn run_discovered_setup(
                         peer.join().map_err(|_| "HTTP fixture panic")??;
                         return Ok(());
                     }
-                    let outcome = owner
-                        .run_with_framing(&mut http, &config!(&report), framing)
-                        .await?;
+                    let result = if ready.is_some() {
+                        let policy = ReadyPolicy(Arc::clone(&live));
+                        let mut control = controller_listener::Listener::bind(
+                            task,
+                            cx,
+                            clock,
+                            &policy,
+                            std::net::SocketAddrV4::new(destination, 0),
+                            &resource,
+                            Duration::from_secs(5),
+                        )
+                        .await
+                        .map_err(|error| format!("controller listener bind: {error:?}"))?;
+                        let port = control.local_addr().port();
+                        assert!(matches!(
+                            owner
+                                .run_when_listening(
+                                    &control,
+                                    0,
+                                    &mut http,
+                                    &config!(&report),
+                                    framing
+                                )
+                                .await,
+                            Err(setup::Error::ControllerUnavailable)
+                        ));
+                        let wrong_port = if port == u16::MAX { port - 1 } else { port + 1 };
+                        assert!(matches!(
+                            owner
+                                .run_when_listening(
+                                    &control,
+                                    wrong_port,
+                                    &mut http,
+                                    &config!(&report),
+                                    framing
+                                )
+                                .await,
+                            Err(setup::Error::ControllerUnavailable)
+                        ));
+                        let wrong_destination = setup::Config {
+                            destination: Ipv4Addr::LOCALHOST,
+                            ..config!(&report)
+                        };
+                        assert!(matches!(
+                            owner
+                                .run_when_listening(
+                                    &control,
+                                    port,
+                                    &mut http,
+                                    &wrong_destination,
+                                    framing
+                                )
+                                .await,
+                            Err(setup::Error::ControllerUnavailable)
+                        ));
+                        assert_eq!(http.phase(), Phase::Login);
+                        live.store(false, std::sync::atomic::Ordering::Release);
+                        assert!(matches!(
+                            owner
+                                .run_when_listening(
+                                    &control,
+                                    port,
+                                    &mut http,
+                                    &config!(&report),
+                                    framing
+                                )
+                                .await,
+                            Err(setup::Error::ControllerUnavailable)
+                        ));
+                        assert_eq!(http.phase(), Phase::Login);
+                        live.store(true, std::sync::atomic::Ordering::Release);
+                        let outcome = owner
+                            .run_when_listening(
+                                &control,
+                                port,
+                                &mut http,
+                                &config!(&report),
+                                framing,
+                            )
+                            .await;
+                        if !revoked {
+                            if let Err(error) = &outcome {
+                                return Err(format!("listener-bound setup: {error:?}").into());
+                            }
+                            let address = SocketAddr::V4(control.local_addr());
+                            let client = asupersync::net::TcpSocket::new_v4()?;
+                            client.bind(SocketAddr::V4(std::net::SocketAddrV4::new(
+                                destination,
+                                0,
+                            )))?;
+                            let client =
+                                timeout(cx.now(), Duration::from_secs(5), client.connect(address))
+                                    .await??;
+                            let source = client.local_addr()?;
+                            let source_is_local = match source {
+                                SocketAddr::V4(addr) => {
+                                    addr.ip().is_private()
+                                        || addr.ip().is_loopback()
+                                        || addr.ip().is_link_local()
+                                }
+                                _ => false,
+                            };
+                            assert!(
+                                source_is_local,
+                                "fixture source is not a permitted local address"
+                            );
+                            assert!(
+                                live.load(std::sync::atomic::Ordering::Acquire),
+                                "listener policy revoked before accept"
+                            );
+                            let (_accepted, _gate) = control
+                                .accept_next(4096, Duration::from_secs(5))
+                                .await
+                                .map_err(|error| {
+                                    format!("controller listener accept: {error:?}")
+                                })?;
+                            drop(client);
+                        }
+                        outcome
+                    } else {
+                        owner
+                            .run_with_framing(&mut http, &config!(&report), framing)
+                            .await
+                    };
+                    if revoked {
+                        assert!(matches!(result, Err(setup::Error::Denied)));
+                        drop(http);
+                        peer.join().map_err(|_| "HTTP fixture panic")??;
+                        return Ok(());
+                    }
+                    if changed {
+                        assert!(matches!(result, Err(setup::Error::Changed)));
+                        drop(http);
+                        peer.join().map_err(|_| "HTTP fixture panic")??;
+                        return Ok(());
+                    }
+                    let outcome = result?;
                     match outcome {
                         setup::Outcome::AlreadyAssociated { observation, .. } if already => {
                             assert_eq!(
                                 observation.controller,
-                                ControllerAddress::Reported(Ipv4Addr::new(192, 168, 1, 40))
+                                ControllerAddress::Reported(destination)
                             );
                             assert_eq!(http.phase(), Phase::Snapshot);
                         }
@@ -1303,7 +1526,7 @@ fn run_discovered_setup(
                     Ok(())
                 }
                 .await;
-                let outcome = if output.is_ok() && (already || observe) {
+                let outcome = if output.is_ok() && (already || observe || changed || revoked) {
                     TaskOutcome::Success
                 } else if output.is_ok() {
                     TaskOutcome::Indeterminate("effect requires reconciliation".into())
@@ -1322,7 +1545,7 @@ fn run_discovered_setup(
         run.output
     })?;
     let journal_entry = effects.journal().operation(&operation);
-    if already || observe {
+    if already || observe || changed || revoked {
         assert!(journal_entry.is_none());
     } else {
         assert_eq!(
@@ -1365,4 +1588,38 @@ fn discovered_camera_observation_never_writes_for_either_controller() -> Test {
 #[test]
 fn discovered_camera_observation_refuses_changing_settings_without_effect() -> Test {
     run_discovered_setup(false, false, false, Framing::ContentLength, true, true)
+}
+
+#[test]
+fn discovered_setup_refuses_changed_controller_before_effect_or_write() -> Test {
+    run_discovered_setup(false, false, false, Framing::ContentLength, false, true)?;
+    run_discovered_setup(false, true, false, Framing::ContentLength, false, true)
+}
+
+/// Requires a private IPv4 address assigned to an isolated test worker.
+#[test]
+#[ignore = "requires FSS_TEST_CONTROLLER_BIND_IP on the test worker"]
+fn discovered_setup_requires_current_bound_controller_listener() -> Test {
+    let ip: Ipv4Addr = std::env::var("FSS_TEST_CONTROLLER_BIND_IP")?.parse()?;
+    if !(ip.is_private() || ip.is_link_local()) || ip == Ipv4Addr::new(192, 168, 1, 10) {
+        return Err("test controller interface is not a suitable private address".into());
+    }
+    run_discovered_setup_with_listener(
+        false,
+        false,
+        false,
+        Framing::ContentLength,
+        false,
+        false,
+        Some((ip, false)),
+    )?;
+    run_discovered_setup_with_listener(
+        false,
+        false,
+        false,
+        Framing::ContentLength,
+        false,
+        false,
+        Some((ip, true)),
+    )
 }

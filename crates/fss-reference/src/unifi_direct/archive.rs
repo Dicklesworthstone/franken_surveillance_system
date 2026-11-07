@@ -5,7 +5,9 @@
 
 use std::fmt;
 
-use fss_core::{CanonicalDecoder, CaptureInterval, ContentDigest, DigestAlgorithm, TimestampNs};
+use fss_core::{
+    CanonicalDecoder, CanonicalEncode, CaptureInterval, ContentDigest, DigestAlgorithm, TimestampNs,
+};
 use fss_geometry::{GeometryError, WorkBudget};
 use fss_object::ObjectManifest;
 use fss_packet::extended_flv::stream::SearchMode;
@@ -15,9 +17,13 @@ use fss_publication::{
 
 use super::{
     av_evidence::{self, AudioConfigurationOrigin, PreparedAv},
+    av_recording,
     evidence::{DOMAIN, KIND, Prepared},
 };
 use crate::{ReferenceDeployment, ReplayCx, reference_deployment::ReplayCancellationBridge};
+
+/// Dedicated metadata-only publication intent history.
+pub mod journal;
 
 /// Revalidated authority to retain original camera bytes under the exact scope.
 pub trait RetainAuthority {
@@ -88,6 +94,8 @@ pub enum Error {
     Limit,
     /// No durable, ledgered root matches the supplied pin.
     NotCommitted,
+    /// A pending-intent journal must be reopened or does not name a candidate.
+    RecoveryRequired,
     /// A deletion tombstone prohibits resurrection.
     Tombstoned,
     /// The operation's owner cancelled.
@@ -106,6 +114,7 @@ impl fmt::Display for Error {
             Self::UnknownCapture => "FLV physical capture bounds unavailable",
             Self::Limit => "FLV archive publication limit exceeded",
             Self::NotCommitted => "FLV archive root is not durably ledgered",
+            Self::RecoveryRequired => "FLV pending source recovery requires an open intent",
             Self::Tombstoned => "FLV archive object tombstoned",
             Self::Cancelled => "FLV archive owner cancelled",
             Self::Mismatch => "FLV archive content mismatch",
@@ -178,6 +187,354 @@ pub fn publish_av(
     publish_graph(plan, deployment, authority, limits, work, cx)
 }
 
+/// Codec configuration with its explicit provenance for one publication.
+pub enum AvSegmentAudio<'a> {
+    /// Original non-provisional FLV configuration record and track claim.
+    InBand(&'a fss_packet::extended_flv::aac_track::BoundConfiguration<'a>),
+    /// Exact codec bytes supplied without an original configuration record.
+    SuppliedUnverified(&'a fss_packet::extended_flv::aac::Configuration<'a>),
+}
+
+/// Original segment, decoder initialization, and caller-established policy and
+/// capture bounds. The borrowed originals remain caller-owned on every outcome.
+pub struct AvSegmentPublication<'a> {
+    /// Completed source-linked video segment.
+    pub segment: &'a super::recording::Segment,
+    /// Original record containing the video configuration.
+    pub video_configuration: &'a fss_packet::extended_flv::stream::SourceRecord,
+    /// Initialization tied to the video configuration and segment.
+    pub video_initialization: &'a fss_container::InitializationSegment,
+    /// A/V initialization tied to the same video and audio configurations.
+    pub av_initialization: &'a fss_container::flv_av::Initialization,
+    /// Audio configuration and its retained or explicitly unverified source.
+    pub audio: AvSegmentAudio<'a>,
+    /// Identity of the separately authorized retention decision.
+    pub retention: ContentDigest,
+    /// Independently established physical capture bounds.
+    pub capture: CaptureInterval,
+    /// Bounds for candidate evidence construction.
+    pub evidence_limits: super::evidence::Limits,
+}
+
+/// Refusal at a specific stage of segment derivation or archive publication.
+/// An archive error can be indeterminate and requires exact-root reconciliation.
+#[derive(Debug)]
+pub enum AvSegmentPublishError {
+    /// Audio provenance does not match the muxer's bound configuration.
+    Binding,
+    /// A journal-bound muxer cannot switch scopes or use an unjournaled path.
+    JournalScope,
+    /// The muxer refused the segment without advancing.
+    Media(av_recording::Error),
+    /// Video source evidence could not be prepared.
+    Video(super::evidence::Error),
+    /// A/V source evidence could not be prepared.
+    AudioVideo(av_evidence::Error),
+    /// A different root is still unresolved; neither root is authorized here.
+    PendingMismatch {
+        /// Root that must be reconciled before the owner can advance.
+        expected: Pin,
+        /// Root proposed by the current input.
+        proposed: Pin,
+    },
+    /// Intent could not be durably prepared; its outcome can be indeterminate.
+    JournalBefore {
+        /// Exact proposed root.
+        pin: Pin,
+        /// Journal refusal or uncertain persistence result.
+        source: journal::Error,
+    },
+    /// The intent exists but its separate anchor could not be retained.
+    AnchorBefore {
+        /// Exact proposed root; archive effects have not started in this call.
+        pin: Pin,
+        /// Retention of the journal prefix failed or is indeterminate.
+        source: journal::Error,
+    },
+    /// The archive returned a receipt, but journaling confirmation failed.
+    JournalAfterCommit {
+        /// Exact published root.
+        pin: Pin,
+        /// Actual archive receipt retained for reconciliation.
+        receipt: Box<RootLedgerReceipt>,
+        /// Journal refusal or uncertain persistence result.
+        source: journal::Error,
+    },
+    /// A receipt exists, but confirmation's separate anchor is unresolved.
+    AnchorAfterCommit {
+        /// Exact published root.
+        pin: Pin,
+        /// Actual archive receipt retained for reconciliation.
+        receipt: Box<RootLedgerReceipt>,
+        /// Retention of the confirmation prefix failed or is indeterminate.
+        source: journal::Error,
+    },
+    /// Publication failed, possibly after an indeterminate effect. The exact
+    /// pin identifies the root to reconcile; it grants no read authority.
+    Archive {
+        /// Exact candidate root and caller-supplied bounds for reconciliation.
+        pin: Pin,
+        /// Failure from the archive publication path.
+        source: Error,
+    },
+}
+impl fmt::Display for AvSegmentPublishError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Binding => "UniFi A/V audio binding refused",
+            Self::JournalScope => "UniFi A/V publication journal scope refused",
+            Self::Media(_) => "UniFi A/V segment derivation refused",
+            Self::Video(_) => "UniFi video evidence preparation refused",
+            Self::AudioVideo(_) => "UniFi A/V evidence preparation refused",
+            Self::PendingMismatch { .. } => "UniFi A/V earlier publication requires reconciliation",
+            Self::JournalBefore { .. } => "UniFi A/V publication intent requires recovery",
+            Self::AnchorBefore { .. } => "UniFi A/V intent anchor requires recovery",
+            Self::JournalAfterCommit { .. } => {
+                "UniFi A/V publication confirmation requires recovery"
+            }
+            Self::AnchorAfterCommit { .. } => "UniFi A/V confirmation anchor requires recovery",
+            Self::Archive { .. } => "UniFi A/V archive publication requires reconciliation",
+        })
+    }
+}
+impl std::error::Error for AvSegmentPublishError {}
+
+/// A ledgered result and its exact root/capture pin.
+pub struct PublishedAvSegment {
+    /// Pin for independently authorized archive reads.
+    pub pin: Pin,
+    /// Actual ledger receipt, including committed versus already-ledgered.
+    pub receipt: RootLedgerReceipt,
+}
+
+/// Derive and publish one segment before advancing the in-memory A/V muxer.
+/// All source, identity, clock, retention and capture claims remain the
+/// caller's responsibility. On error the segment and muxer remain usable for
+/// reconciliation; an archive error or panic does not prove that no root was
+/// staged or committed. Reconcile or retry the same exact input and root before
+/// proceeding. This synchronous reference path is not a production async
+/// persistence worker or a continuous recording service.
+pub fn publish_next_av_segment(
+    input: &AvSegmentPublication<'_>,
+    muxer: &mut av_recording::Muxer,
+    deployment: &mut ReferenceDeployment,
+    authority: &dyn RetainAuthority,
+    limits: Limits,
+    work: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+) -> Result<PublishedAvSegment, AvSegmentPublishError> {
+    if muxer.publication_scope().is_some() {
+        return Err(AvSegmentPublishError::JournalScope);
+    }
+    publish_next_av_segment_inner(
+        input, muxer, deployment, authority, limits, work, cx, None, None,
+    )
+}
+
+/// Publish with a separately owned intent journal. The journal records the
+/// exact candidate before the archive effect and confirmation after its receipt.
+/// The caller must independently retain journal anchors, source media and muxer
+/// reconstruction state. This is synchronous reference I/O, not a running
+/// recorder or a complete crash-recovery protocol.
+pub fn publish_next_av_segment_journaled(
+    input: &AvSegmentPublication<'_>,
+    muxer: &mut av_recording::Muxer,
+    deployment: &mut ReferenceDeployment,
+    authority: &dyn RetainAuthority,
+    limits: Limits,
+    work: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+    journal: &mut journal::Journal,
+) -> Result<PublishedAvSegment, AvSegmentPublishError> {
+    if !muxer.bind_publication_scope(journal.scope()) {
+        return Err(AvSegmentPublishError::JournalScope);
+    }
+    if let Some(expected) = journal.pending().or(journal.replay_pin()) {
+        if let Some(proposed) = muxer.pending_publication() {
+            if expected != proposed {
+                return Err(AvSegmentPublishError::PendingMismatch { expected, proposed });
+            }
+        }
+        muxer.restore_publication_fence(expected);
+    }
+    publish_next_av_segment_inner(
+        input,
+        muxer,
+        deployment,
+        authority,
+        limits,
+        work,
+        cx,
+        Some(journal),
+        None,
+    )
+}
+
+/// Publish while independently journaling each intent and confirmation prefix
+/// before proceeding. Both stores need exclusive ownership and the keeper's
+/// minimum must be independently retained; this does not reconstruct a muxer.
+pub fn publish_next_av_segment_anchored(
+    input: &AvSegmentPublication<'_>,
+    muxer: &mut av_recording::Muxer,
+    deployment: &mut ReferenceDeployment,
+    authority: &dyn RetainAuthority,
+    limits: Limits,
+    work: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+    journal: &mut journal::Journal,
+    keeper: &mut journal::AnchorKeeper,
+) -> Result<PublishedAvSegment, AvSegmentPublishError> {
+    if !muxer.bind_publication_scope(journal.scope()) {
+        return Err(AvSegmentPublishError::JournalScope);
+    }
+    if let Some(expected) = journal.pending().or(journal.replay_pin()) {
+        if let Some(proposed) = muxer.pending_publication() {
+            if expected != proposed {
+                return Err(AvSegmentPublishError::PendingMismatch { expected, proposed });
+            }
+        }
+        muxer.restore_publication_fence(expected);
+    }
+    publish_next_av_segment_inner(
+        input,
+        muxer,
+        deployment,
+        authority,
+        limits,
+        work,
+        cx,
+        Some(journal),
+        Some(keeper),
+    )
+}
+
+fn publish_next_av_segment_inner(
+    input: &AvSegmentPublication<'_>,
+    muxer: &mut av_recording::Muxer,
+    deployment: &mut ReferenceDeployment,
+    authority: &dyn RetainAuthority,
+    limits: Limits,
+    work: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+    mut journal: Option<&mut journal::Journal>,
+    mut keeper: Option<&mut journal::AnchorKeeper>,
+) -> Result<PublishedAvSegment, AvSegmentPublishError> {
+    match (&input.audio, muxer.source_binding()) {
+        (AvSegmentAudio::SuppliedUnverified(_), None) => {}
+        (AvSegmentAudio::InBand(bound), Some(binding)) => {
+            let record = bound.record();
+            if binding.epoch != bound.epoch()
+                || binding.record_offset != record.offset()
+                || binding.record_bytes != record.bytes().len()
+                || binding.record_digest != ContentDigest::sha256(record.bytes())
+                || binding.configuration_source != bound.source()
+            {
+                return Err(AvSegmentPublishError::Binding);
+            }
+        }
+        _ => return Err(AvSegmentPublishError::Binding),
+    }
+    muxer
+        .with_fragment(
+            input.av_initialization,
+            input.segment,
+            |fragment, pending| {
+                let video = Prepared::new_with_capture(
+                    input.segment,
+                    input.video_configuration,
+                    input.video_initialization,
+                    input.retention,
+                    Some(input.capture),
+                    input.evidence_limits,
+                )
+                .map_err(AvSegmentPublishError::Video)?;
+                let av = match &input.audio {
+                    AvSegmentAudio::InBand(configuration) => PreparedAv::new(
+                        &video,
+                        configuration,
+                        input.av_initialization,
+                        fragment,
+                        input.evidence_limits,
+                    ),
+                    AvSegmentAudio::SuppliedUnverified(configuration) => {
+                        PreparedAv::new_with_unverified_audio_configuration(
+                            &video,
+                            configuration,
+                            input.av_initialization,
+                            fragment,
+                            input.evidence_limits,
+                        )
+                    }
+                }
+                .map_err(AvSegmentPublishError::AudioVideo)?;
+                let pin = Pin {
+                    root: av.manifest().root(),
+                    retention: input.retention,
+                    capture: input.capture,
+                };
+                if let Some(expected) = *pending {
+                    if expected != pin {
+                        return Err(AvSegmentPublishError::PendingMismatch {
+                            expected,
+                            proposed: pin,
+                        });
+                    }
+                }
+                // Establish the reconciliation fence before entering any archive
+                // effect. It survives both ordinary errors and unwinding in this
+                // process; it is not a durable crash-recovery journal.
+                *pending = Some(pin);
+                if let Some(journal) = journal.as_deref_mut() {
+                    journal
+                        .prepare(pin, cx)
+                        .map_err(|source| AvSegmentPublishError::JournalBefore { pin, source })?;
+                    if let Some(keeper) = keeper.as_deref_mut() {
+                        keeper.retain(journal, cx).map_err(|source| {
+                            AvSegmentPublishError::AnchorBefore { pin, source }
+                        })?;
+                    }
+                    // Keep the complete source graph and its manifest in the
+                    // verified spool before attempting root publication. A crash
+                    // before this completes leaves an unresolved intent, not a
+                    // claim that every source object is recoverable.
+                    stage_graph(&av, deployment, authority, limits, work, cx, true)
+                        .map_err(|source| AvSegmentPublishError::Archive { pin, source })?;
+                }
+                let receipt = publish_av(&av, deployment, authority, limits, work, cx)
+                    .map_err(|source| AvSegmentPublishError::Archive { pin, source })?;
+                if receipt.root != pin.root {
+                    return Err(AvSegmentPublishError::Archive {
+                        pin,
+                        source: Error::Mismatch,
+                    });
+                }
+                if let Some(journal) = journal.as_deref_mut() {
+                    if let Err(source) = journal.confirm(pin, cx) {
+                        return Err(AvSegmentPublishError::JournalAfterCommit {
+                            pin,
+                            receipt: Box::new(receipt),
+                            source,
+                        });
+                    }
+                    if let Some(keeper) = keeper.as_deref_mut() {
+                        if let Err(source) = keeper.retain(journal, cx) {
+                            return Err(AvSegmentPublishError::AnchorAfterCommit {
+                                pin,
+                                receipt: Box::new(receipt),
+                                source,
+                            });
+                        }
+                    }
+                }
+                Ok(PublishedAvSegment { pin, receipt })
+            },
+        )
+        .map_err(|error| match error {
+            av_recording::TransactionError::Media(error) => AvSegmentPublishError::Media(error),
+            av_recording::TransactionError::Consumer(error) => error,
+        })
+}
+
 trait Graph {
     fn manifest(&self) -> &ObjectManifest;
     fn capture(&self) -> Option<CaptureInterval>;
@@ -222,6 +579,33 @@ fn publish_graph(
     cx: &ReplayCx,
 ) -> Result<RootLedgerReceipt, Error> {
     let capture = plan.capture().ok_or(Error::UnknownCapture)?;
+    stage_graph(plan, deployment, authority, limits, work, cx, false)?;
+    let gate = Gate {
+        plan,
+        authority,
+        cx,
+    };
+    deployment
+        .ledgered_publisher()
+        .publish_and_commit_cancellable(
+            &slot_for_root(plan.manifest().root())?,
+            plan.manifest(),
+            capture,
+            &gate,
+        )
+        .map_err(storage)
+}
+
+fn stage_graph(
+    plan: &impl Graph,
+    deployment: &mut ReferenceDeployment,
+    authority: &dyn RetainAuthority,
+    limits: Limits,
+    work: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+    include_manifest: bool,
+) -> Result<(), Error> {
+    let _ = plan.capture().ok_or(Error::UnknownCapture)?;
     authorize(plan, authority, cx)?;
     if !(1024..=64 * 1024 * 1024).contains(&limits.maximum_spool_object_bytes)
         || !(1..=262_144).contains(&limits.maximum_ledger_deltas)
@@ -263,20 +647,18 @@ fn publish_graph(
             return Err(Error::Mismatch);
         }
     }
-    let gate = Gate {
-        plan,
-        authority,
-        cx,
-    };
-    deployment
-        .ledgered_publisher()
-        .publish_and_commit_cancellable(
-            &slot_for_root(plan.manifest().root())?,
-            plan.manifest(),
-            capture,
-            &gate,
-        )
-        .map_err(storage)
+    if include_manifest {
+        authorize(plan, authority, cx)?;
+        let bytes = plan.manifest().canonical_bytes();
+        if bytes.len() > object_ceiling {
+            return Err(Error::Limit);
+        }
+        work.charge((bytes.len() as u64).checked_mul(3).ok_or(Error::Limit)?)?;
+        if deployment.stage_payload(&bytes).map_err(storage)? != plan.manifest().root() {
+            return Err(Error::Mismatch);
+        }
+    }
+    Ok(())
 }
 
 fn authorize(plan: &impl Graph, auth: &dyn RetainAuthority, cx: &ReplayCx) -> Result<(), Error> {
@@ -613,6 +995,398 @@ fn read_part_bounded(
     Ok(bytes)
 }
 
+/// Explicit limits for verifying a pending A/V source graph.
+#[derive(Clone, Copy, Debug)]
+pub struct StagedAvLimits {
+    /// Maximum manifest children, at most 8,192.
+    pub max_objects: usize,
+    /// Maximum bytes in one object, at most the archive spool limit.
+    pub max_object_bytes: usize,
+    /// Maximum combined verified manifest and child bytes, at most 256 MiB.
+    pub max_total_bytes: usize,
+}
+
+/// A verified source-graph inventory, not a publication or camera receipt.
+#[must_use]
+pub struct StagedAvCandidate {
+    pin: Pin,
+    children: Vec<ContentDigest>,
+    total_bytes: usize,
+    object_limit: usize,
+    source: StagedSourceIndex,
+}
+
+/// One source object's claimed connection-relative position and exact digest.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StagedSourceRecord {
+    /// Original connection-relative byte offset.
+    pub offset: u64,
+    /// Exact stored byte count, including any source trailer.
+    pub length: usize,
+    /// Digest address for authorized retrieval.
+    pub digest: ContentDigest,
+}
+
+struct StagedSourceIndex {
+    connection: u64,
+    generation: u64,
+    sequence: u32,
+    configuration: StagedSourceRecord,
+    records: Vec<StagedSourceRecord>,
+    witness: Vec<StagedSourceRecord>,
+}
+impl StagedAvCandidate {
+    /// Exact journaled candidate, including caller-supplied capture bounds.
+    pub fn pin(&self) -> Pin {
+        self.pin
+    }
+    /// Verified direct object identities in canonical order.
+    pub fn children(&self) -> &[ContentDigest] {
+        &self.children
+    }
+    /// Total verified payload bytes including the manifest.
+    pub fn total_bytes(&self) -> usize {
+        self.total_bytes
+    }
+    /// Unauthenticated caller-bound connection, generation and local fragment sequence.
+    pub fn claimed_source(&self) -> (u64, u64, u32) {
+        (
+            self.source.connection,
+            self.source.generation,
+            self.source.sequence,
+        )
+    }
+    /// Original video-configuration source record descriptor.
+    pub fn configuration(&self) -> StagedSourceRecord {
+        self.source.configuration
+    }
+    /// Original source records in claimed connection order.
+    pub fn records(&self) -> &[StagedSourceRecord] {
+        &self.source.records
+    }
+    /// Duplicated boundary witness records in claimed connection order.
+    pub fn witness(&self) -> &[StagedSourceRecord] {
+        &self.source.witness
+    }
+}
+
+/// Verify that a still-pending journal root and every direct child are present
+/// and digest-correct in the reopened spool. The caller must separately check
+/// device identity, source-to-derivative semantics, capture time, publication
+/// state, and muxer reconstruction. This is not an archive commit receipt.
+pub fn verify_staged_av_candidate(
+    deployment: &ReferenceDeployment,
+    journal: &journal::Journal,
+    authority: &dyn ReadAuthority,
+    limits: StagedAvLimits,
+    work: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+) -> Result<StagedAvCandidate, Error> {
+    if journal.is_fenced() {
+        return Err(Error::RecoveryRequired);
+    }
+    let pin = journal.pending().ok_or(Error::RecoveryRequired)?;
+    let _ = pin.slot()?;
+    if !(1..=8192).contains(&limits.max_objects)
+        || limits.max_object_bytes == 0
+        || limits.max_object_bytes > deployment.publisher().limits().spool.max_object_bytes
+        || !(1..=256 * 1024 * 1024).contains(&limits.max_total_bytes)
+    {
+        return Err(Error::Limit);
+    }
+    let root = read_part_bounded(
+        deployment,
+        pin,
+        pin.root,
+        limits.max_object_bytes,
+        authority,
+        work,
+        cx,
+    )?;
+    let manifest = ObjectManifest::from_canonical_bytes(&root).map_err(storage)?;
+    if manifest.root() != pin.root || manifest.kind() != av_evidence::KIND {
+        return Err(Error::Mismatch);
+    }
+    if manifest.children().len() > limits.max_objects {
+        return Err(Error::Limit);
+    }
+    let metadata = manifest.metadata_digest().ok_or(Error::Mismatch)?;
+    if manifest.children().binary_search(&metadata).is_err() {
+        return Err(Error::Mismatch);
+    }
+    let mut total_bytes = root.len();
+    if total_bytes > limits.max_total_bytes {
+        return Err(Error::Limit);
+    }
+    let mut lengths = Vec::new();
+    lengths
+        .try_reserve_exact(manifest.children().len())
+        .map_err(|_| Error::Limit)?;
+    for &digest in manifest.children() {
+        let bytes = read_part_bounded(
+            deployment,
+            pin,
+            digest,
+            limits.max_object_bytes,
+            authority,
+            work,
+            cx,
+        )?;
+        total_bytes = total_bytes.checked_add(bytes.len()).ok_or(Error::Limit)?;
+        if total_bytes > limits.max_total_bytes {
+            return Err(Error::Limit);
+        }
+        lengths.push((digest, bytes.len()));
+        if digest == metadata {
+            let mut decoder = CanonicalDecoder::new(&bytes);
+            check_prefix_kind(&mut decoder, pin, av_evidence::DOMAIN)?;
+        }
+    }
+    let source = staged_source_index(
+        deployment,
+        pin,
+        &manifest,
+        &lengths,
+        metadata,
+        limits.max_object_bytes,
+        authority,
+        work,
+        cx,
+    )?;
+    read_authorize(pin, authority, cx)?;
+    if journal.is_fenced() || journal.pending() != Some(pin) {
+        return Err(Error::RecoveryRequired);
+    }
+    work.charge(u64::try_from(manifest.children().len()).map_err(|_| Error::Limit)?)?;
+    let mut children = Vec::new();
+    children
+        .try_reserve_exact(manifest.children().len())
+        .map_err(|_| Error::Limit)?;
+    children.extend_from_slice(manifest.children());
+    Ok(StagedAvCandidate {
+        pin,
+        children,
+        total_bytes,
+        object_limit: limits.max_object_bytes,
+        source,
+    })
+}
+
+fn staged_source_index(
+    deployment: &ReferenceDeployment,
+    pin: Pin,
+    outer: &ObjectManifest,
+    lengths: &[(ContentDigest, usize)],
+    av_metadata: ContentDigest,
+    object_limit: usize,
+    authority: &dyn ReadAuthority,
+    work: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+) -> Result<StagedSourceIndex, Error> {
+    let metadata = read_part_bounded(
+        deployment,
+        pin,
+        av_metadata,
+        object_limit,
+        authority,
+        work,
+        cx,
+    )?;
+    let mut decoder = CanonicalDecoder::new(&metadata);
+    check_prefix_kind(&mut decoder, pin, av_evidence::DOMAIN)?;
+    let video_root = decoder.digest().map_err(storage)?;
+    if outer.children().binary_search(&video_root).is_err() {
+        return Err(Error::Mismatch);
+    }
+    let video_bytes = read_part_bounded(
+        deployment,
+        pin,
+        video_root,
+        object_limit,
+        authority,
+        work,
+        cx,
+    )?;
+    let video = ObjectManifest::from_canonical_bytes(&video_bytes).map_err(storage)?;
+    if video.root() != video_root || video.kind() != KIND {
+        return Err(Error::Mismatch);
+    }
+    for child in video.children() {
+        work.charge(u64::from(usize::BITS) + 1)?;
+        if outer.children().binary_search(child).is_err() {
+            return Err(Error::Mismatch);
+        }
+    }
+    let video_metadata = video.metadata_digest().ok_or(Error::Mismatch)?;
+    if video.children().binary_search(&video_metadata).is_err() {
+        return Err(Error::Mismatch);
+    }
+    let bytes = read_part_bounded(
+        deployment,
+        pin,
+        video_metadata,
+        object_limit,
+        authority,
+        work,
+        cx,
+    )?;
+    let mut decoder = CanonicalDecoder::new(&bytes);
+    check_prefix(&mut decoder, pin)?;
+    let connection = decoder.u64().map_err(storage)?;
+    let generation = decoder.u64().map_err(storage)?;
+    let sequence = decoder.u32().map_err(storage)?;
+    if connection == 0 || generation == 0 || sequence == 0 {
+        return Err(Error::Mismatch);
+    }
+    let configuration = record(&mut decoder, object_limit)?;
+    work.charge(2 * (u64::from(usize::BITS) + 1))?;
+    if video
+        .children()
+        .binary_search(&configuration.digest)
+        .is_err()
+        || staged_length(lengths, configuration.digest) != Some(configuration.length)
+    {
+        return Err(Error::Mismatch);
+    }
+    for _ in 0..2 {
+        let digest = decoder.digest().map_err(storage)?;
+        let length = read_size(&mut decoder, object_limit)?;
+        work.charge(2 * (u64::from(usize::BITS) + 1))?;
+        if length == 0
+            || video.children().binary_search(&digest).is_err()
+            || staged_length(lengths, digest) != Some(length)
+        {
+            return Err(Error::Mismatch);
+        }
+    }
+    let count = read_size(&mut decoder, 8192)?;
+    if count == 0 {
+        return Err(Error::Mismatch);
+    }
+    work.charge(u64::try_from(count).map_err(|_| Error::Limit)?)?;
+    let mut records = Vec::new();
+    records.try_reserve_exact(count).map_err(|_| Error::Limit)?;
+    let mut next = None;
+    for _ in 0..count {
+        let item = record(&mut decoder, object_limit)?;
+        work.charge(2 * (u64::from(usize::BITS) + 1))?;
+        if video.children().binary_search(&item.digest).is_err()
+            || staged_length(lengths, item.digest) != Some(item.length)
+            || next.is_some_and(|offset| offset != item.offset)
+        {
+            return Err(Error::Mismatch);
+        }
+        next = Some(
+            item.offset
+                .checked_add(item.length as u64)
+                .ok_or(Error::Limit)?,
+        );
+        records.push(StagedSourceRecord {
+            offset: item.offset,
+            length: item.length,
+            digest: item.digest,
+        });
+    }
+    let witness_count = read_size(&mut decoder, 8192 - count)?;
+    if witness_count == 0 {
+        return Err(Error::Mismatch);
+    }
+    work.charge(u64::try_from(witness_count).map_err(|_| Error::Limit)?)?;
+    let mut witness = Vec::new();
+    witness
+        .try_reserve_exact(witness_count)
+        .map_err(|_| Error::Limit)?;
+    for _ in 0..witness_count {
+        let item = record(&mut decoder, object_limit)?;
+        work.charge(2 * (u64::from(usize::BITS) + 1))?;
+        if video.children().binary_search(&item.digest).is_err()
+            || staged_length(lengths, item.digest) != Some(item.length)
+            || next != Some(item.offset)
+        {
+            return Err(Error::Mismatch);
+        }
+        next = Some(
+            item.offset
+                .checked_add(item.length as u64)
+                .ok_or(Error::Limit)?,
+        );
+        witness.push(StagedSourceRecord {
+            offset: item.offset,
+            length: item.length,
+            digest: item.digest,
+        });
+    }
+    Ok(StagedSourceIndex {
+        connection,
+        generation,
+        sequence,
+        configuration: StagedSourceRecord {
+            offset: configuration.offset,
+            length: configuration.length,
+            digest: configuration.digest,
+        },
+        records,
+        witness,
+    })
+}
+
+fn staged_length(lengths: &[(ContentDigest, usize)], digest: ContentDigest) -> Option<usize> {
+    lengths
+        .binary_search_by_key(&digest, |(candidate, _)| *candidate)
+        .ok()
+        .map(|index| lengths[index].1)
+}
+
+/// Read one object from a previously verified pending graph, rechecking current
+/// authority, journal state, membership, tombstones and the object's digest.
+/// The returned bytes are original source or derivatives and require privacy
+/// handling by the caller; no semantic mapping or publication is asserted.
+pub fn read_staged_av_object(
+    deployment: &ReferenceDeployment,
+    journal: &journal::Journal,
+    candidate: &StagedAvCandidate,
+    digest: ContentDigest,
+    authority: &dyn ReadAuthority,
+    work: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+) -> Result<Vec<u8>, Error> {
+    if journal.is_fenced() || journal.pending() != Some(candidate.pin) {
+        return Err(Error::RecoveryRequired);
+    }
+    if digest != candidate.pin.root && candidate.children.binary_search(&digest).is_err() {
+        return Err(Error::Mismatch);
+    }
+    let root = read_part_bounded(
+        deployment,
+        candidate.pin,
+        candidate.pin.root,
+        candidate.object_limit,
+        authority,
+        work,
+        cx,
+    )?;
+    let manifest = ObjectManifest::from_canonical_bytes(&root).map_err(storage)?;
+    if manifest.root() != candidate.pin.root
+        || manifest.kind() != av_evidence::KIND
+        || manifest.children() != candidate.children.as_slice()
+    {
+        return Err(Error::Mismatch);
+    }
+    let bytes = read_part_bounded(
+        deployment,
+        candidate.pin,
+        digest,
+        candidate.object_limit,
+        authority,
+        work,
+        cx,
+    )?;
+    if journal.is_fenced() || journal.pending() != Some(candidate.pin) {
+        return Err(Error::RecoveryRequired);
+    }
+    Ok(bytes)
+}
+
 /// A recovered, source-checked AVC fragmented MP4. Its capture bounds are the
 /// independently supplied bounds in the pin, not a clock inferred from video.
 #[must_use]
@@ -620,6 +1394,7 @@ pub struct RecoveredClip {
     bytes: Vec<u8>,
     capture: CaptureInterval,
     samples: usize,
+    continuity: VideoContinuity,
 }
 impl RecoveredClip {
     /// Initialization segment followed by the validated media fragment.
@@ -649,12 +1424,23 @@ impl fmt::Debug for RecoveredClip {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Eq, PartialEq)]
 struct StoredRecord {
     offset: u64,
     length: usize,
     digest: ContentDigest,
     tag: Option<(usize, u8, u32)>,
+}
+
+#[derive(Clone)]
+struct VideoContinuity {
+    connection: u64,
+    generation: u64,
+    sequence: u32,
+    first_decode: u64,
+    end_decode: u64,
+    first_record: StoredRecord,
+    next_record: StoredRecord,
 }
 struct StoredSample {
     start: usize,
@@ -741,6 +1527,11 @@ fn checked_record_bytes(
         return Err(Error::Mismatch);
     }
     Ok(bytes)
+}
+
+fn fragment_sequence_matches(fragment: &[u8], sequence: u32) -> bool {
+    fragment.get(8..20) == Some(b"\x00\x00\x00\x10mfhd\x00\x00\x00\x00")
+        && fragment.get(20..24) == Some(sequence.to_be_bytes().as_slice())
 }
 
 /// Recover one ledgered segment, rechecking the graph, its source-object hashes,
@@ -860,6 +1651,8 @@ pub struct RecoveredAvClip {
     capture: CaptureInterval,
     video_samples: usize,
     audio: AvAudioSourceMapping,
+    initialization_len: usize,
+    continuity: VideoContinuity,
 }
 impl RecoveredAvClip {
     /// Two-track initialization followed by its checked media fragment.
@@ -894,6 +1687,160 @@ impl fmt::Debug for RecoveredAvClip {
     }
 }
 
+/// Owner-selected bounds for assembling checked A/V archive fragments.
+#[derive(Clone, Copy, Debug)]
+pub struct AvSequenceLimits {
+    /// At most 32 independently authorized roots.
+    pub max_fragments: usize,
+    /// At most 128 MiB of returned initialization and fragment bytes.
+    pub max_bytes: usize,
+}
+
+/// Per-root metadata retained alongside a recovered multi-fragment derivative.
+#[derive(Clone, Copy, Debug)]
+pub struct RecoveredAvPart {
+    /// The exact independently ledgered root and caller-supplied capture bounds.
+    pub pin: Pin,
+    /// Number of structurally checked video samples.
+    pub video_samples: usize,
+    /// Source mapping and configuration provenance for this fragment.
+    pub audio: AvAudioSourceMapping,
+}
+
+/// A bounded derivative assembled from independently verified A/V roots.
+/// Contiguous local source and decode coordinates do not establish physical
+/// capture continuity, camera identity, or synchronization.
+#[must_use]
+pub struct RecoveredAvSequence {
+    bytes: Vec<u8>,
+    parts: Vec<RecoveredAvPart>,
+}
+impl RecoveredAvSequence {
+    /// One checked initialization followed by the checked media fragments.
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+    /// Transfer the authorized derivative bytes to the caller.
+    pub fn into_bytes(self) -> Vec<u8> {
+        self.bytes
+    }
+    /// Ordered root identities and per-fragment provenance.
+    pub fn parts(&self) -> &[RecoveredAvPart] {
+        &self.parts
+    }
+}
+impl fmt::Debug for RecoveredAvSequence {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RecoveredAvSequence")
+            .field("bytes", &"<redacted>")
+            .field("parts", &self.parts)
+            .finish()
+    }
+}
+
+/// Read and join ordered, individually ledgered A/V fragments. This fails
+/// closed on a missing root, access denial, changed initialization, sequence or
+/// source discontinuity, or discontinuous audio/video decode clocks. Claimed
+/// connection keys, media timestamps and supplied capture bounds are not an
+/// independent camera identity, physical coverage, or A/V synchronization.
+pub fn read_av_sequence(
+    deployment: &mut ReferenceDeployment,
+    pins: &[Pin],
+    authority: &dyn ReadAuthority,
+    limits: Limits,
+    sequence_limits: AvSequenceLimits,
+    work: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+) -> Result<RecoveredAvSequence, Error> {
+    if !(1..=32).contains(&sequence_limits.max_fragments)
+        || !(1..=128 * 1024 * 1024).contains(&sequence_limits.max_bytes)
+        || pins.is_empty()
+        || pins.len() > sequence_limits.max_fragments
+    {
+        return Err(Error::Limit);
+    }
+    let mut bytes = Vec::new();
+    let mut parts = Vec::new();
+    parts
+        .try_reserve_exact(pins.len())
+        .map_err(|_| Error::Limit)?;
+    let mut previous: Option<(VideoContinuity, AvAudioSourceMapping)> = None;
+    let mut initialization_len = 0;
+    for &pin in pins {
+        let clip = read_av_clip(deployment, pin, authority, limits, work, cx)?;
+        let init = clip
+            .bytes
+            .get(..clip.initialization_len)
+            .ok_or(Error::Mismatch)?;
+        let fragment = clip
+            .bytes
+            .get(clip.initialization_len..)
+            .ok_or(Error::Mismatch)?;
+        if let Some((last, audio)) = previous.as_ref() {
+            let current = &clip.continuity;
+            if last.connection != current.connection
+                || last.generation != current.generation
+                || last.sequence.checked_add(1) != Some(current.sequence)
+                || last.end_decode != current.first_decode
+                || last.next_record != current.first_record
+                || audio.end_decode_ticks != clip.audio.first_decode_ticks
+                || audio.sample_rate != clip.audio.sample_rate
+                || initialization_len != init.len()
+                || bytes.get(..initialization_len) != Some(init)
+            {
+                return Err(Error::Mismatch);
+            }
+        } else {
+            initialization_len = init.len();
+            if init
+                .len()
+                .checked_add(fragment.len())
+                .is_none_or(|n| n > sequence_limits.max_bytes)
+            {
+                return Err(Error::Limit);
+            }
+            work.charge(u64::try_from(init.len()).map_err(|_| Error::Limit)?)?;
+            bytes
+                .try_reserve_exact(init.len())
+                .map_err(|_| Error::Limit)?;
+            bytes.extend_from_slice(init);
+        }
+        if bytes
+            .len()
+            .checked_add(fragment.len())
+            .is_none_or(|n| n > sequence_limits.max_bytes)
+        {
+            return Err(Error::Limit);
+        }
+        work.charge(u64::try_from(fragment.len()).map_err(|_| Error::Limit)?)?;
+        bytes
+            .try_reserve(fragment.len())
+            .map_err(|_| Error::Limit)?;
+        bytes.extend_from_slice(fragment);
+        parts.push(RecoveredAvPart {
+            pin,
+            video_samples: clip.video_samples,
+            audio: clip.audio,
+        });
+        previous = Some((clip.continuity, clip.audio));
+    }
+    // Recheck every root and its authority after assembly. These checks are
+    // sequential observations, not a claim of an atomic multi-root snapshot.
+    for &pin in pins {
+        let _ = open_graph_kind(
+            deployment,
+            pin,
+            authority,
+            limits,
+            work,
+            cx,
+            av_evidence::KIND,
+            av_evidence::DOMAIN,
+        )?;
+    }
+    Ok(RecoveredAvSequence { bytes, parts })
+}
+
 struct StoredAudioMapping {
     source: std::ops::Range<u64>,
     target: std::ops::Range<usize>,
@@ -923,6 +1870,7 @@ struct VerifiedAvGraph {
     initialization_len: usize,
     fragment_digest: ContentDigest,
     fragment_len: usize,
+    continuity: VideoContinuity,
 }
 
 /// Recover the two-track derivative after checking its retained video, audio
@@ -977,6 +1925,8 @@ pub fn read_av_clip(
         capture: pin.capture,
         video_samples: verified.video_samples,
         audio: verified.audio,
+        initialization_len: verified.initialization_len,
+        continuity: verified.continuity,
     })
 }
 
@@ -1284,6 +2234,7 @@ fn verify_av_graph(
         initialization_len,
         fragment_digest,
         fragment_len,
+        continuity: verified_video.continuity.clone(),
     })
 }
 
@@ -1302,10 +2253,10 @@ fn recover_video_graph(
     work.charge(metadata.len() as u64 * 4)?;
     let mut d = CanonicalDecoder::new(metadata);
     check_prefix(&mut d, pin)?;
-    if d.u64().map_err(storage)? == 0
-        || d.u64().map_err(storage)? == 0
-        || d.u32().map_err(storage)? == 0
-    {
+    let connection = d.u64().map_err(storage)?;
+    let generation = d.u64().map_err(storage)?;
+    let sequence = d.u32().map_err(storage)?;
+    if connection == 0 || generation == 0 || sequence == 0 {
         return Err(Error::Mismatch);
     }
     let config = record(&mut d, limits.maximum_spool_object_bytes)?;
@@ -1451,6 +2402,13 @@ fn recover_video_graph(
     if media.len() != init_len || fragment.len() != fragment_len {
         return Err(Error::Mismatch);
     }
+    if !fragment_sequence_matches(&fragment, sequence)
+        || samples.windows(2).any(|pair| {
+            pair[0].decode.checked_add(u64::from(pair[0].duration)) != Some(pair[1].decode)
+        })
+    {
+        return Err(Error::Mismatch);
+    }
     work.charge((media_len as u64).checked_mul(4).ok_or(Error::Limit)?)?;
     media
         .try_reserve_exact(fragment_len)
@@ -1557,18 +2515,44 @@ fn recover_video_graph(
         bytes: media,
         capture: pin.capture,
         samples: count,
+        continuity: VideoContinuity {
+            connection,
+            generation,
+            sequence,
+            first_decode: samples.first().ok_or(Error::Mismatch)?.decode,
+            end_decode: samples
+                .last()
+                .ok_or(Error::Mismatch)?
+                .decode
+                .checked_add(u64::from(samples.last().ok_or(Error::Mismatch)?.duration))
+                .ok_or(Error::Limit)?,
+            first_record: records.first().ok_or(Error::Mismatch)?.clone(),
+            next_record: witnesses.first().ok_or(Error::Mismatch)?.clone(),
+        },
     })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Error, record};
+    use super::{Error, fragment_sequence_matches, record};
     use crate::unifi_direct::evidence::encode_record;
     use fss_core::{CanonicalDecoder, CanonicalEncoder};
     use fss_packet::extended_flv::{
         Limits,
         stream::{Framer, Next, SearchMode},
     };
+
+    #[test]
+    fn archive_fragment_sequence_must_match_writer_header() {
+        let mut header = [0u8; 24];
+        header[8..20].copy_from_slice(b"\x00\x00\x00\x10mfhd\x00\x00\x00\x00");
+        header[20..24].copy_from_slice(&7u32.to_be_bytes());
+        assert!(fragment_sequence_matches(&header, 7));
+        assert!(!fragment_sequence_matches(&header, 8));
+        assert!(!fragment_sequence_matches(&header[..23], 7));
+        header[12] ^= 1;
+        assert!(!fragment_sequence_matches(&header, 7));
+    }
 
     #[test]
     fn archive_record_accepts_av_flag_policy_and_rejects_unknown_policy()

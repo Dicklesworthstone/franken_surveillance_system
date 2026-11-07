@@ -8,7 +8,10 @@
 //! controller, settle the effect, or guarantee recording continuity. Journal
 //! operations are synchronous and unsuitable for a latency-sensitive reactor.
 
-use super::{camera_api, camera_http, conversation, discovery, handoff, metered::MeteredClock};
+use super::{
+    camera_api, camera_http, controller_listener, conversation, discovery, handoff,
+    metered::MeteredClock,
+};
 use asupersync::{
     Cx,
     io::{AsyncRead, AsyncWrite},
@@ -19,7 +22,12 @@ use fss_runtime::{
     execution::TaskCx,
     lease::LeaseRegistry,
 };
-use std::{cell::RefCell, fmt, net::Ipv4Addr, time::Duration};
+use std::{
+    cell::RefCell,
+    fmt,
+    net::{Ipv4Addr, SocketAddrV4},
+    time::Duration,
+};
 
 const MAX_WAIT: Duration = Duration::from_secs(30);
 
@@ -71,6 +79,8 @@ pub enum Error {
     Claims,
     /// The two camera settings observations did not agree.
     Changed,
+    /// The expected controller socket is absent, mismatched or no longer admitted.
+    ControllerUnavailable,
     /// Current admission or runtime authority refused setup.
     Denied,
     /// The bounded total deadline elapsed.
@@ -175,6 +185,36 @@ pub struct Owner<'a, 'scope, 'task> {
     pub admission: &'a dyn Admission,
     /// Live handoff authority, rechecked on every write poll.
     pub handoff_authority: &'a dyn camera_api::HandoffAuthority,
+}
+
+struct ReadyAdmission<'a, 'listener_scope, 'listener_task, 'policy, 'scope, 'task> {
+    inner: &'a dyn Admission,
+    listener: &'a controller_listener::Listener<'listener_scope, 'listener_task, 'policy>,
+    task: &'scope TaskCx<'task>,
+    cx: &'scope Cx,
+    clock: MeteredClock<'scope, 'task>,
+    resource: &'a str,
+    endpoint: SocketAddrV4,
+}
+impl Admission for ReadyAdmission<'_, '_, '_, '_, '_, '_> {
+    fn permits(
+        &self,
+        candidate: &discovery::CameraCandidate,
+        camera: ContentDigest,
+        peer_admission: ContentDigest,
+        generation: u64,
+        fence: u64,
+    ) -> bool {
+        self.listener.ready_for(
+            self.task,
+            self.cx,
+            &self.clock,
+            self.resource,
+            self.endpoint,
+        ) && self
+            .inner
+            .permits(candidate, camera, peer_admission, generation, fence)
+    }
 }
 
 struct Guard<'a> {
@@ -345,6 +385,47 @@ impl Owner<'_, '_, '_> {
             .await
     }
 
+    /// Run one setup attempt while retaining the already-bound controller
+    /// listener. The caller supplies the camera's expected controller port;
+    /// the exact task, clock, resource, destination and live listener policy
+    /// are rechecked throughout the handoff and every dispatch poll. Keeping
+    /// the socket bound does not establish peer identity or reachability.
+    /// The borrowed listener remains caller-owned on every return or drop.
+    pub async fn run_when_listening<IO: AsyncRead + AsyncWrite + Unpin>(
+        &mut self,
+        listener: &controller_listener::Listener<'_, '_, '_>,
+        expected_port: u16,
+        camera: &mut camera_http::Owner<'_, '_, '_, IO>,
+        cfg: &Config<'_>,
+        framing: handoff::Framing,
+    ) -> Result<Outcome, Error> {
+        let resource = format!("camera:{}", cfg.camera.to_text());
+        let endpoint = SocketAddrV4::new(cfg.destination, expected_port);
+        if !listener.ready_for(self.task, self.cx, &self.clock, &resource, endpoint) {
+            return Err(Error::ControllerUnavailable);
+        }
+        let admitted = ReadyAdmission {
+            inner: self.admission,
+            listener,
+            task: self.task,
+            cx: self.cx,
+            clock: self.clock,
+            resource: &resource,
+            endpoint,
+        };
+        let mut owner = Owner {
+            cx: self.cx,
+            task: self.task,
+            clock: self.clock,
+            effects: &mut *self.effects,
+            leases: self.leases,
+            approval: self.approval,
+            admission: &admitted,
+            handoff_authority: self.handoff_authority,
+        };
+        owner.run_with_framing(camera, cfg, framing).await
+    }
+
     /// Run setup with an explicit framing choice bound to the prepared effect.
     /// An indeterminate write is never retried using another framing mode.
     pub async fn run_with_framing<IO: AsyncRead + AsyncWrite + Unpin>(
@@ -422,6 +503,16 @@ impl Owner<'_, '_, '_> {
             .map_err(Error::Camera)?;
         if !guard.current() {
             return Err(Error::Denied);
+        }
+        let fresh = camera
+            .settings(remaining(self.cx, deadline)?)
+            .await
+            .map_err(Error::Camera)?;
+        if !guard.current() {
+            return Err(Error::Denied);
+        }
+        if fresh != before {
+            return Err(Error::Changed);
         }
         if before.controller == camera_api::ControllerAddress::Reported(cfg.destination) {
             let expected = camera_api::controller_binding(
