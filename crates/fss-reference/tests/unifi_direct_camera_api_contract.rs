@@ -273,6 +273,40 @@ fn serializer_capture_requires_disclosure_and_preserves_null_and_absence() -> Te
 }
 
 #[test]
+fn serializer_binding_changes_with_values_peer_and_generation() -> Test {
+    fn binding(
+        peer: Ipv4Addr,
+        generation: u64,
+        body: &[u8],
+    ) -> Result<ContentDigest, Box<dyn StdError>> {
+        let mut session = Session::new(peer, generation)?;
+        login(&mut session)?;
+        status(&mut session)?;
+        let request = session.prepare_settings()?;
+        session.finish_write(request, WriteOutcome::Written)?;
+        let (_, values) =
+            session.accept_settings_with_serializers(Response::new(200, "OK", body.to_vec()))?;
+        assert_eq!(values.binding(|_, _| false), Err(Error::DisclosureDenied));
+        Ok(values.binding(|p, g| p == peer && g == generation)?)
+    }
+    let first = br#"{"av":{"video":{"video2":{"avSerializer":{"type":"extendedFlv","parameters":{"withOpus":false,"streamName":"private-test"},"destinations":["tcp://private-target"]}}}}}"#;
+    let reordered = br#"{"av":{"video":{"video2":{"avSerializer":{"destinations":["tcp://private-target"],"parameters":{"streamName":"private-test","withOpus":false},"type":"extendedFlv"}}}}}"#;
+    let changed = br#"{"av":{"video":{"video2":{"avSerializer":{"type":"extendedFlv","parameters":{"withOpus":false,"streamName":"changed-test"},"destinations":["tcp://private-target"]}}}}}"#;
+    let null = br#"{"av":{"video":{"video2":{"avSerializer":null}}}}"#;
+    let absent = br#"{"av":{"video":{"video2":{}}}}"#;
+    let original = binding(Ipv4Addr::LOCALHOST, 1, first)?;
+    assert_eq!(original, binding(Ipv4Addr::LOCALHOST, 1, reordered)?);
+    assert_ne!(original, binding(Ipv4Addr::LOCALHOST, 1, changed)?);
+    assert_ne!(original, binding(Ipv4Addr::new(127, 0, 0, 2), 1, first)?);
+    assert_ne!(original, binding(Ipv4Addr::LOCALHOST, 2, first)?);
+    assert_ne!(
+        binding(Ipv4Addr::LOCALHOST, 1, null)?,
+        binding(Ipv4Addr::LOCALHOST, 1, absent)?
+    );
+    Ok(())
+}
+
+#[test]
 fn settings_binding_changes_with_peer_and_generation() -> Test {
     fn observe(peer: Ipv4Addr, generation: u64) -> Result<ContentDigest, Box<dyn StdError>> {
         let mut s = Session::new(peer, generation)?;

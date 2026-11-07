@@ -153,10 +153,12 @@ pub enum Observation {
     /// A correlated settings reply. The optional status fields are untrusted
     /// observations, not proof that a stream is active or the change succeeded.
     StreamSettingsReply {
-        /// Controller-local ID of the stream-start request.
+        /// Controller-local ID of the stream-setting request.
         request_id: u64,
         /// The only requested video track.
         channel: VideoChannel,
+        /// The locally requested start or quiesce operation.
+        kind: MessageKind,
         /// Uninterpreted optional camera status code.
         status_code: Option<i64>,
         /// Uninterpreted optional camera success field.
@@ -187,6 +189,8 @@ pub enum MessageKind {
     TimeSyncReply,
     /// Request to change one track's serializer destination.
     StartStream(VideoChannel),
+    /// Request to route one track's serializer to the discard sink.
+    QuiesceStream(VideoChannel),
 }
 
 /// The camera video track targeted by a stream-start effect.
@@ -296,6 +300,17 @@ pub enum Dispatch {
     Indeterminate,
 }
 
+/// Local identity of a prepared stream request abandoned before any write.
+/// This does not settle a separately committed effect or prove remote state.
+#[must_use]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AbandonedStream {
+    /// The never-reused local message ID.
+    pub id: u64,
+    /// The abandoned start or quiesce request.
+    pub kind: MessageKind,
+}
+
 /// Payload-free retirement information that the owner must reconcile or retain.
 #[must_use]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -314,6 +329,8 @@ pub struct Retirement {
     pub time_sync_request_id: Option<u64>,
     /// Locally written stream request for which no matching reply was observed.
     pub stream_request: Option<(u64, VideoChannel)>,
+    /// The kind of that outstanding request, if known.
+    pub stream_request_kind: Option<MessageKind>,
 }
 
 /// Exact owner-supplied controller identity; strings are validated before use.
@@ -435,7 +452,7 @@ pub struct Controller {
     hello: Option<(u64, u32)>,
     time_sync: Option<u64>,
     agreement_id: Option<u64>,
-    stream_request: Option<(u64, VideoChannel)>,
+    stream_request: Option<(u64, MessageKind)>,
     prepared: Option<PreparedMessage>,
     rejected_message: Option<RejectedMessage>,
     time_sync_counts: TimeSyncCounts,
@@ -657,9 +674,15 @@ impl Controller {
                 Ok(Observation::AgreementReply)
             }
             "ChangeVideoSettings" => {
-                let Some((request_id, channel)) = self.stream_request else {
+                let Some((request_id, kind)) = self.stream_request else {
                     self.rejected_message = Some(RejectedMessage::VideoSettings);
                     return Err(Error::UnexpectedMessage);
+                };
+                let channel = match kind {
+                    MessageKind::StartStream(channel) | MessageKind::QuiesceStream(channel) => {
+                        channel
+                    }
+                    _ => return Err(Error::InvalidState),
                 };
                 if self.phase != Phase::AgreementReplyObserved || response_to != request_id {
                     self.rejected_message = Some(RejectedMessage::VideoSettings);
@@ -685,6 +708,7 @@ impl Controller {
                 Ok(Observation::StreamSettingsReply {
                     request_id,
                     channel,
+                    kind,
                     status_code,
                     success,
                 })
@@ -803,6 +827,58 @@ impl Controller {
         )
     }
 
+    /// Prepare a one-track request that routes its serializer to the discard
+    /// sink. The caller must authorize the track and shared audio mode. A
+    /// correlated reply is not proof of delivery, restoration or inactivity.
+    pub fn prepare_stream_quiesce(
+        &mut self,
+        channel: VideoChannel,
+        audio: AudioCodec,
+        timestamp: &str,
+    ) -> Result<&PreparedMessage, Error> {
+        if self.phase != Phase::AgreementReplyObserved || self.stream_request.is_some() {
+            return Err(Error::InvalidState);
+        }
+        let audio = match audio {
+            AudioCodec::Aac => "\"withOpus\":false",
+            AudioCodec::Opus => "\"withOpus\":true,\"opusSampleRate\":48000",
+        };
+        let payload = format!(
+            "{{\"video\":{{\"{}\":{{\"avSerializer\":{{\"type\":\"extendedFlv\",\"parameters\":{{{audio}}},\"destinations\":[\"file:///dev/null\"]}}}}}}}}",
+            channel.wire_name(),
+        );
+        self.prepare(
+            MessageKind::QuiesceStream(channel),
+            "ChangeVideoSettings",
+            0,
+            true,
+            &payload,
+            timestamp,
+        )
+    }
+
+    /// Abandon a prepared stream request only when the owner knows no bytes
+    /// were sent. This does not dispose of any journaled effect permit.
+    pub fn abandon_prepared_stream(&mut self) -> Result<AbandonedStream, Error> {
+        if self.phase != Phase::AgreementReplyObserved || self.stream_request.is_some() {
+            return Err(Error::InvalidState);
+        }
+        let prepared = self.prepared.as_ref().ok_or(Error::InvalidState)?;
+        if !matches!(
+            prepared.kind,
+            MessageKind::StartStream(_) | MessageKind::QuiesceStream(_)
+        ) {
+            return Err(Error::InvalidState);
+        }
+        let mut prepared = self.prepared.take().ok_or(Error::InvalidState)?;
+        let abandoned = AbandonedStream {
+            id: prepared.id,
+            kind: prepared.kind,
+        };
+        prepared.bytes.fill(0);
+        Ok(abandoned)
+    }
+
     fn prepare(
         &mut self,
         kind: MessageKind,
@@ -864,8 +940,8 @@ impl Controller {
                         self.pending_pre_hello_sync = false;
                         self.time_sync = None;
                     }
-                    MessageKind::StartStream(channel) => {
-                        self.stream_request = Some((id, channel));
+                    kind @ (MessageKind::StartStream(_) | MessageKind::QuiesceStream(_)) => {
+                        self.stream_request = Some((id, kind));
                     }
                 }
                 self.prepared = None;
@@ -884,7 +960,13 @@ impl Controller {
             agreement_id: self.agreement_id,
             hello_request_id: self.hello.map(|hello| hello.0),
             time_sync_request_id: self.time_sync,
-            stream_request: self.stream_request,
+            stream_request: self.stream_request.and_then(|(id, kind)| match kind {
+                MessageKind::StartStream(channel) | MessageKind::QuiesceStream(channel) => {
+                    Some((id, channel))
+                }
+                _ => None,
+            }),
+            stream_request_kind: self.stream_request.map(|(_, kind)| kind),
         };
         self.prepared = None;
         self.hello = None;

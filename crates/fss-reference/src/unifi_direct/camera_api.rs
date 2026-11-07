@@ -228,6 +228,31 @@ impl VideoSerializers {
         }
         Ok(inspect(self.tracks.each_ref().map(Option::as_ref)))
     }
+
+    /// Bind the exact parsed serializer values, peer and session generation for
+    /// later precondition comparison. The caller must authorize disclosure of
+    /// the digest, which can itself be sensitive. This is not device identity,
+    /// capture time, durable custody, or proof that restoration is possible.
+    pub fn binding(
+        &self,
+        authorize: impl FnOnce(Ipv4Addr, u64) -> bool,
+    ) -> Result<ContentDigest, Error> {
+        if !authorize(self.peer, self.generation) {
+            return Err(Error::DisclosureDenied);
+        }
+        let mut encoder = CanonicalEncoder::new();
+        encoder.text("fss.unifi.camera-video-serializers.v1");
+        encoder.bytes(&self.peer.octets());
+        encoder.u64(self.generation);
+        for track in &self.tracks {
+            encoder.bool(track.is_some());
+            if let Some(value) = track {
+                encode_serializer_value(&mut encoder, value)?;
+            }
+        }
+        let bytes = Private(encoder.finish_checked().map_err(|_| Error::Settings)?);
+        Ok(ContentDigest::sha256(&bytes.0))
+    }
 }
 impl fmt::Debug for VideoSerializers {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -1023,6 +1048,40 @@ fn field_mut<'a>(value: &'a mut Value, key: &str) -> Option<&'a mut Value> {
         Value::Object(fields) => fields.get_mut(key),
         _ => None,
     }
+}
+
+fn encode_serializer_value(encoder: &mut CanonicalEncoder, value: &Value) -> Result<(), Error> {
+    match value {
+        Value::Null => encoder.tag(0),
+        Value::Bool(value) => {
+            encoder.tag(1);
+            encoder.bool(*value);
+        }
+        Value::Number(value) => {
+            encoder.tag(2);
+            encoder.text(value);
+        }
+        Value::Text(value) => {
+            encoder.tag(3);
+            encoder.text(value);
+        }
+        Value::Array(values) => {
+            encoder.tag(4);
+            encoder.u64(u64::try_from(values.len()).map_err(|_| Error::Settings)?);
+            for value in values {
+                encode_serializer_value(encoder, value)?;
+            }
+        }
+        Value::Object(values) => {
+            encoder.tag(5);
+            encoder.u64(u64::try_from(values.len()).map_err(|_| Error::Settings)?);
+            for (key, value) in values {
+                encoder.text(key);
+                encode_serializer_value(encoder, value)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn controller_binding(

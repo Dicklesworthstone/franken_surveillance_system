@@ -6,7 +6,8 @@
 //! This does not reconnect, publish media, authenticate a peer or prove receipt.
 
 use super::{
-    Observation, Retirement as ControllerRetirement, conversation, management, pipeline, receive,
+    AudioCodec, MessageKind, Observation, Retirement as ControllerRetirement, VideoChannel,
+    conversation, intent, management, pipeline, receive,
 };
 use asupersync::{
     io::{AsyncRead, AsyncWrite},
@@ -14,6 +15,7 @@ use asupersync::{
 };
 use fss_container::InitializationSegment;
 use fss_core::OperationId;
+use fss_runtime::effect::CommittedEffect;
 use std::{
     future::{Future, poll_fn},
     pin::pin,
@@ -134,6 +136,93 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Supervisor<'scope, 'task
             return None;
         }
         self.pipeline.take_audio_event()
+    }
+
+    /// Prepare a one-track discard request while retaining the media pipeline.
+    /// This is inert; dispatch still requires a separately journaled permit and
+    /// explicit quiesce authority. It does not prove a prior state can be restored.
+    pub fn prepare_quiesce(
+        &mut self,
+        owner: &conversation::Owner<'_, '_, '_>,
+        channel: VideoChannel,
+        audio: AudioCodec,
+        timestamp: &str,
+        conditions: intent::Preconditions,
+    ) -> Result<intent::Intent, receive::Error> {
+        if self.stopped {
+            return Err(receive::Error::Retired);
+        }
+        if !owner.clock.matches(owner.task, owner.cx)
+            || !self.session.matches_clock(&owner.clock)
+            || owner.cx.checkpoint().is_err()
+            || conditions.camera != self.management.camera
+            || conditions.peer_admission != self.management.peer_admission
+            || conditions.lease_fence != self.management.lease_fence
+        {
+            return Err(receive::Error::Denied);
+        }
+        self.session
+            .prepare_stream_quiesce(channel, audio, timestamp, conditions)
+    }
+
+    /// Abandon a locally unwritten stream request while preserving the running
+    /// media owner. A previously committed permit remains a separate obligation.
+    pub fn abandon_prepared_stream(
+        &mut self,
+        owner: &conversation::Owner<'_, '_, '_>,
+        intent: intent::Intent,
+    ) -> Result<super::AbandonedStream, receive::Error> {
+        if self.stopped {
+            return Err(receive::Error::Retired);
+        }
+        if !owner.clock.matches(owner.task, owner.cx)
+            || !self.session.matches_clock(&owner.clock)
+            || owner.cx.checkpoint().is_err()
+        {
+            return Err(receive::Error::Denied);
+        }
+        self.session.abandon_prepared_stream(intent)
+    }
+
+    /// Dispatch a previously prepared quiesce without dropping the media owner.
+    /// A returned committed permit must be reconciled independently; a local
+    /// write or camera reply is not proof of restoration or stream inactivity.
+    pub async fn dispatch_quiesce(
+        &mut self,
+        owner: &conversation::Owner<'_, '_, '_>,
+        intent: intent::Intent,
+        current: intent::Preconditions,
+        permit: CommittedEffect,
+        wait: Duration,
+    ) -> Result<receive::StreamWrite, receive::StreamRefusal> {
+        if self.stopped {
+            return Err(receive::StreamRefusal {
+                reason: receive::Error::Retired,
+                permit,
+            });
+        }
+        if !matches!(intent.kind(), MessageKind::QuiesceStream(_))
+            || !owner.clock.matches(owner.task, owner.cx)
+            || !self.session.matches_clock(&owner.clock)
+            || owner.cx.checkpoint().is_err()
+            || current.camera != self.management.camera
+            || current.peer_admission != self.management.peer_admission
+            || current.lease_fence != self.management.lease_fence
+        {
+            return Err(receive::StreamRefusal {
+                reason: receive::Error::Denied,
+                permit,
+            });
+        }
+        let result = self
+            .session
+            .dispatch_stream(intent, current, permit, owner.stream_authority, wait)
+            .await;
+        if let Ok(receive::StreamWrite::Indeterminate { controller, .. }) = &result {
+            self.stopped = true;
+            self.controller_retirement = Some(*controller);
+        }
+        result
     }
 
     /// Poll both sources fairly for at most `wait`, then allow up to another

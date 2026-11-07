@@ -668,6 +668,7 @@ fn stream_start_targets_only_the_selected_track_and_correlates_reply() -> TestRe
         Observation::StreamSettingsReply {
             request_id: 3,
             channel: VideoChannel::Video2,
+            kind: MessageKind::StartStream(VideoChannel::Video2),
             status_code: Some(5),
             success: Some(false)
         }
@@ -715,7 +716,126 @@ fn stream_effect_retirement_distinguishes_unwritten_uncertain_and_awaiting_reply
     c.finish_dispatch(3, Dispatch::Written)?;
     let retired = c.close();
     assert_eq!(retired.stream_request, Some((3, VideoChannel::Video1)));
+    assert_eq!(
+        retired.stream_request_kind,
+        Some(MessageKind::StartStream(VideoChannel::Video1))
+    );
     assert_eq!(retired.prepared, None);
+    Ok(())
+}
+
+#[test]
+fn quiesce_targets_one_track_and_retains_operation_for_reconciliation() -> TestResult {
+    use fss_core::ContentDigest;
+    use fss_reference::unifi_direct::intent::{Error as IntentError, Intent, Preconditions};
+    let conditions = Preconditions {
+        camera: ContentDigest::sha256(b"fixture camera"),
+        peer_admission: ContentDigest::sha256(b"fixture peer"),
+        stream_generation: 2,
+        previous_settings: Some(ContentDigest::sha256(b"fixture previous settings")),
+        lease_fence: 3,
+    };
+    for (audio, expected_opus) in [(AudioCodec::Aac, false), (AudioCodec::Opus, true)] {
+        let mut c = ready()?;
+        let prepared = c.prepare_stream_quiesce(VideoChannel::Video3, audio, TIME)?;
+        let original = prepared.bytes().to_vec();
+        let intent = Intent::new(prepared, conditions)?;
+        assert_eq!(
+            intent.kind(),
+            MessageKind::QuiesceStream(VideoChannel::Video3)
+        );
+        let json = fields(&original)?;
+        let tracks = json
+            .object()
+            .and_then(|v| v.get("payload"))
+            .and_then(Value::object)
+            .and_then(|v| v.get("video"))
+            .and_then(Value::object)
+            .ok_or("tracks")?;
+        assert_eq!(tracks.len(), 1);
+        let track = tracks
+            .get("video3")
+            .and_then(Value::object)
+            .ok_or("track")?;
+        assert_eq!(track.len(), 1);
+        let serializer = track
+            .get("avSerializer")
+            .and_then(Value::object)
+            .ok_or("serializer")?;
+        let destinations = serializer
+            .get("destinations")
+            .and_then(Value::array)
+            .ok_or("destinations")?;
+        assert!(matches!(destinations, [Value::Text(value)] if value == "file:///dev/null"));
+        let parameters = serializer
+            .get("parameters")
+            .and_then(Value::object)
+            .ok_or("parameters")?;
+        assert_eq!(
+            parameters.get("withOpus").and_then(Value::boolean),
+            Some(expected_opus)
+        );
+        assert_eq!(
+            parameters.get("opusSampleRate").and_then(Value::integer),
+            if expected_opus { Some(48_000) } else { None }
+        );
+        assert!(!parameters.contains_key("streamName"));
+        let mut other = ready()?;
+        let start = stream(VideoChannel::Video3, audio)?;
+        assert_eq!(
+            intent.check_message(other.prepare_stream_start(&start, TIME)?),
+            Err(IntentError::Mismatch)
+        );
+        c.finish_dispatch(3, Dispatch::NotWritten)?;
+        assert_eq!(c.prepared().ok_or("prepared")?.bytes(), original);
+        c.finish_dispatch(3, Dispatch::Written)?;
+        assert_eq!(
+            c.observe(&message("ChangeVideoSettings", 9, 3, "{}"))?,
+            Observation::StreamSettingsReply {
+                request_id: 3,
+                channel: VideoChannel::Video3,
+                kind: MessageKind::QuiesceStream(VideoChannel::Video3),
+                status_code: None,
+                success: None,
+            }
+        );
+    }
+    let mut uncertain = ready()?;
+    uncertain.prepare_stream_quiesce(VideoChannel::Video3, AudioCodec::Aac, TIME)?;
+    uncertain.finish_dispatch(3, Dispatch::Indeterminate)?;
+    assert_eq!(
+        uncertain.abandon_prepared_stream(),
+        Err(Error::InvalidState)
+    );
+    let retired = uncertain.close();
+    assert_eq!(
+        retired.prepared,
+        Some((3, MessageKind::QuiesceStream(VideoChannel::Video3)))
+    );
+    assert_eq!(retired.stream_request_kind, None);
+    let mut awaiting = ready()?;
+    awaiting.prepare_stream_quiesce(VideoChannel::Video3, AudioCodec::Aac, TIME)?;
+    awaiting.finish_dispatch(3, Dispatch::Written)?;
+    let retired = awaiting.close();
+    assert_eq!(retired.stream_request, Some((3, VideoChannel::Video3)));
+    assert_eq!(
+        retired.stream_request_kind,
+        Some(MessageKind::QuiesceStream(VideoChannel::Video3))
+    );
+    let mut abandoned = ready()?;
+    abandoned.prepare_stream_quiesce(VideoChannel::Video3, AudioCodec::Aac, TIME)?;
+    abandoned.finish_dispatch(3, Dispatch::NotWritten)?;
+    let identity = abandoned.abandon_prepared_stream()?;
+    assert_eq!(
+        (identity.id, identity.kind),
+        (3, MessageKind::QuiesceStream(VideoChannel::Video3))
+    );
+    assert_eq!(
+        abandoned
+            .prepare_stream_quiesce(VideoChannel::Video3, AudioCodec::Aac, TIME)?
+            .id(),
+        4
+    );
     Ok(())
 }
 
@@ -793,6 +913,7 @@ fn hevc_request_uses_the_selected_track_and_an_empty_reply_is_not_success() -> T
         Observation::StreamSettingsReply {
             request_id: 3,
             channel: VideoChannel::Video3,
+            kind: MessageKind::StartStream(VideoChannel::Video3),
             status_code: None,
             success: None
         }
@@ -873,6 +994,54 @@ fn stream_intent_binds_exact_request_and_owner_supplied_preconditions() -> TestR
     assert_eq!(
         Intent::new(hello.prepare_hello(TIME)?, conditions),
         Err(IntentError::WrongMessage)
+    );
+    Ok(())
+}
+
+#[test]
+fn serializer_readback_binding_fences_a_stale_stream_intent() -> TestResult {
+    use asupersync::http::h1::Response;
+    use fss_core::ContentDigest;
+    use fss_reference::unifi_direct::{
+        camera_api::{Session, WriteOutcome},
+        intent::{Error as IntentError, Intent, Preconditions},
+    };
+    fn read_binding(body: &[u8]) -> Result<ContentDigest, Box<dyn std::error::Error>> {
+        let mut session = Session::new(Ipv4Addr::LOCALHOST, 7)?;
+        let request = session.prepare_login(br#"{"username":"fixture","password":"fixture"}"#)?;
+        session.finish_write(request, WriteOutcome::Written)?;
+        session.accept_login(
+            Response::new(200, "OK", Vec::new())
+                .with_header("Set-Cookie", "authId=fixture; Path=/"),
+        )?;
+        let request = session.prepare_status()?;
+        session.finish_write(request, WriteOutcome::Written)?;
+        session.accept_status(Response::new(200, "OK", b"{}".to_vec()))?;
+        let request = session.prepare_settings()?;
+        session.finish_write(request, WriteOutcome::Written)?;
+        let (_, serializers) =
+            session.accept_settings_with_serializers(Response::new(200, "OK", body.to_vec()))?;
+        Ok(serializers.binding(|peer, generation| peer.is_loopback() && generation == 7)?)
+    }
+    let original = read_binding(br#"{"av":{"video":{"video2":{"avSerializer":{"destinations":["tcp://prior"],"parameters":{"withOpus":false}}}}}}"#)?;
+    let changed = read_binding(br#"{"av":{"video":{"video2":{"avSerializer":{"destinations":["tcp://different"],"parameters":{"withOpus":false}}}}}}"#)?;
+    let conditions = Preconditions {
+        camera: ContentDigest::sha256(b"fixture camera"),
+        peer_admission: ContentDigest::sha256(b"fixture peer"),
+        stream_generation: 7,
+        previous_settings: Some(original),
+        lease_fence: 1,
+    };
+    let mut controller = ready()?;
+    let request = stream(VideoChannel::Video3, AudioCodec::Aac)?;
+    let intent = Intent::new(controller.prepare_stream_start(&request, TIME)?, conditions)?;
+    intent.check_preconditions(conditions)?;
+    assert_eq!(
+        intent.check_preconditions(Preconditions {
+            previous_settings: Some(changed),
+            ..conditions
+        }),
+        Err(IntentError::Mismatch)
     );
     Ok(())
 }

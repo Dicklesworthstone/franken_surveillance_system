@@ -104,6 +104,26 @@ and include all three reads and decodes in the owner-authorized scope. The
 fixture accepts `--three-snapshots` to verify the repeated request sequence or
 `--disconnect-after-first` to verify the failure boundary.
 
+An experimental `--serializer-inspect` flag may be placed immediately before
+`--owner-authorized` (after `--three-snapshots`, if used). It requests the
+separately authorized serializer-retention operation, temporarily holds the
+three selected JSON values in memory, rechecks disclosure authority and prints
+only destination-representation and `withOpus` categories. It does not print
+destination addresses or serializer parameters. The values are not exact
+source bytes, a durable recovery record, or a verified restoration command.
+The owner-authorized scope must specifically include this in-memory inspection.
+The revised lab passed three independent TLS fixture cases and one bounded,
+read-only G4 session; see the direct-UniFi reference for the evidence and
+remaining trust and recovery limitations.
+
+For an explicitly authorized repeat comparison, place `--repeat-serializers`
+before `--serializer-inspect`. The lab reads settings twice within the same
+camera session and prints only whether their serializer bindings match; it does
+not print the binding values. The scope must allow both settings reads. The
+fixture's `--repeat-settings` and `--changed-settings` modes independently
+exercise equal and changed comparisons. A matching pair is not proof of
+long-term camera stability or a restoration command.
+
 ## Task-owned HTTP integration (2026-11-05)
 
 The lab now imports the actual `camera_http` owner and wraps its existing

@@ -18,7 +18,8 @@ use fss_runtime::effect::CommittedEffect;
 use std::{fmt, time::Duration};
 
 use super::{
-    Controller, Dispatch, MessageKind, Observation, Phase, Retirement, StreamStart,
+    AudioCodec, Controller, Dispatch, MessageKind, Observation, Phase, Retirement, StreamStart,
+    VideoChannel,
     controller_listener::AdmissionGate,
     intent::{self, Intent, Preconditions},
     management,
@@ -170,6 +171,17 @@ pub trait DispatchAuthority {
 pub trait StreamAuthority {
     /// Check this exact claimed peer, request and committed permit.
     fn permits(&self, claimed_mac: [u8; 6], intent: Intent, permit: &CommittedEffect) -> bool;
+
+    /// Separately authorize quiescing this exact track. Existing authorities
+    /// default to refusal even if they allow stream starts.
+    fn permits_quiesce(
+        &self,
+        _claimed_mac: [u8; 6],
+        _intent: Intent,
+        _permit: &CommittedEffect,
+    ) -> bool {
+        false
+    }
 }
 
 /// Current policy and lease revalidation for a management effect.
@@ -593,6 +605,48 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Session<'scope, 'task, I
         Intent::new(message, conditions).map_err(Error::Intent)
     }
 
+    /// Prepare a one-track discard request; dispatch needs separate authority.
+    /// The caller must retain and reconcile its permit. This is not restoration.
+    pub fn prepare_stream_quiesce(
+        &mut self,
+        channel: VideoChannel,
+        audio: AudioCodec,
+        timestamp: &str,
+        conditions: Preconditions,
+    ) -> Result<Intent, Error> {
+        if self.in_flight.is_some() || self.socket.is_none() {
+            return Err(Error::Retired);
+        }
+        if !self.admission_current() {
+            return Err(Error::Denied);
+        }
+        conditions.validate().map_err(Error::Intent)?;
+        let message = self
+            .controller
+            .prepare_stream_quiesce(channel, audio, timestamp)
+            .map_err(Error::Controller)?;
+        Intent::new(message, conditions).map_err(Error::Intent)
+    }
+
+    /// Abandon a stream request that this owner has not sent. Any separately
+    /// committed permit remains the caller's reconciliation obligation.
+    pub fn abandon_prepared_stream(
+        &mut self,
+        intent: Intent,
+    ) -> Result<super::AbandonedStream, Error> {
+        if self.in_flight.is_some() || self.socket.is_none() {
+            return Err(Error::Retired);
+        }
+        if !self.admission_current() {
+            return Err(Error::Denied);
+        }
+        let message = self.controller.prepared().ok_or(Error::NoPrepared)?;
+        intent.check_message(message).map_err(Error::Intent)?;
+        self.controller
+            .abandon_prepared_stream()
+            .map_err(Error::Controller)
+    }
+
     /// Dispatch one exact stream-setting effect under a journal-backed, one-use
     /// permit and current caller-supplied peer, precondition and lease checks.
     /// Locally written bytes are not proof of a successful remote change.
@@ -641,7 +695,10 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Session<'scope, 'task, I
         if let Err(error) = intent.check_message(message) {
             refuse!(Error::Intent(error));
         }
-        if !authority.permits(self.claimed_mac, intent, &permit) {
+        if !authority.permits(self.claimed_mac, intent, &permit)
+            || (matches!(intent.kind(), MessageKind::QuiesceStream(_))
+                && !authority.permits_quiesce(self.claimed_mac, intent, &permit))
+        {
             refuse!(Error::Denied);
         }
         if self.cx.checkpoint().is_err() {

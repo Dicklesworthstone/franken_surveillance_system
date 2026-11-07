@@ -162,6 +162,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     if inspect_serializers {
         args.remove(args.len() - 2);
     }
+    let repeat_serializers = args.len() >= 2 && args[args.len() - 2] == "--repeat-serializers";
+    if repeat_serializers {
+        args.remove(args.len() - 2);
+        if !inspect_serializers {
+            return Err("repeat-serializers requires serializer-inspect".into());
+        }
+    }
     let three_snapshots = args.len() >= 2 && args[args.len() - 2] == "--three-snapshots";
     if three_snapshots {
         args.remove(args.len() - 2);
@@ -360,16 +367,24 @@ fn main() -> Result<(), Box<dyn Error>> {
         let mut api=camera_http::Owner::new(plaintext,task,cx,clock,&policy,peer,1,&resource)?;
         api.login(&lease.secret.0,Duration::from_secs(10)).await?;
         let shape=api.status(Duration::from_secs(10)).await?;
-        let (settings,serializer_fields) = if inspect_serializers {
+        let (settings,serializer_fields,serializer_binding_stable) = if inspect_serializers {
             let (settings,serializers)=api.settings_serializers(Duration::from_secs(10)).await?;
-            let fields=serializers.visit(|peer,generation| {
+            let authorize=|peer,generation| {
                 cx.checkpoint().is_ok()
-                    && camera_http::Authority::permits(&policy,peer,generation)
+                    && camera_http::Authority::permits(&policy,peer,generation,camera_http::Operation::SettingsSerializers)
                     && clock.now().ok().is_some_and(|now| task.checkpoint_for(RuntimeGrant::ObserveStatus,&resource,now,&BudgetVector::ZERO).is_ok())
-            },serializer_fields)?;
-            (settings,Some(fields))
+            };
+            let fields=serializers.visit(authorize,serializer_fields)?;
+            let stable=if repeat_serializers {
+                let first=serializers.binding(authorize)?;
+                drop(serializers);
+                let (_,again)=api.settings_serializers(Duration::from_secs(10)).await?;
+                let second=again.binding(authorize)?;
+                Some(first==second)
+            } else { None };
+            (settings,Some(fields),stable)
         } else {
-            (api.settings(Duration::from_secs(10)).await?,None)
+            (api.settings(Duration::from_secs(10)).await?,None,None)
         };
         let (controller_claim,controller_matches_route)=match settings.controller {
             camera_api::ControllerAddress::Reported(ip)=>("reported",if IpAddr::V4(ip)==local_ip {"true"} else {"false"}),
@@ -413,7 +428,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
         }
         let [width,height]=dimensions.ok_or("no decoded snapshots")?;
-        let outcome=format!("observed_pin=matched signature=verified tls={:?} login_http_status=200 status_http_status=200 settings_http_status=200 controller_address={controller_claim} controller_matches_connection_source={controller_matches_route} video_destinations={:?} serializer_fields={serializer_fields:?} snapshot_http_status=200 snapshots_decoded={count} adjacent_digest_changes={changed} decoded_luma={}x{} board_object={} firmware_object={} controller_object={} identity=unverified media_persisted={} runtime=asupersync transport=fss_metered",protocol,settings.video_destinations,width,height,shape.board,shape.firmware,shape.controller,output_path.is_some());
+        let outcome=format!("observed_pin=matched signature=verified tls={:?} login_http_status=200 status_http_status=200 settings_http_status=200 controller_address={controller_claim} controller_matches_connection_source={controller_matches_route} video_destinations={:?} serializer_fields={serializer_fields:?} serializer_binding_stable={serializer_binding_stable:?} snapshot_http_status=200 snapshots_decoded={count} adjacent_digest_changes={changed} decoded_luma={}x{} board_object={} firmware_object={} controller_object={} identity=unverified media_persisted={} runtime=asupersync transport=fss_metered",protocol,settings.video_destinations,width,height,shape.board,shape.firmware,shape.controller,output_path.is_some());
         drop(api);
         Ok(outcome)
         }.await;

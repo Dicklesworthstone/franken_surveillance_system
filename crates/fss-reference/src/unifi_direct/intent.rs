@@ -62,18 +62,20 @@ impl std::error::Error for Error {}
 pub struct Intent {
     message_id: u64,
     channel: VideoChannel,
+    kind: MessageKind,
     camera: ContentDigest,
     fence: u64,
     request: ContentDigest,
     preconditions: ContentDigest,
 }
 impl Intent {
-    /// Bind one prepared stream request to exact owner-supplied preconditions.
+    /// Bind one prepared start or quiesce request to exact owner-supplied preconditions.
     /// The optional prior settings may be absent; in that case reversibility
     /// is unknown and an owner must not promise an automatic restoration.
     pub fn new(message: &PreparedMessage, conditions: Preconditions) -> Result<Self, Error> {
-        let MessageKind::StartStream(channel) = message.kind() else {
-            return Err(Error::WrongMessage);
+        let channel = match message.kind() {
+            MessageKind::StartStream(channel) | MessageKind::QuiesceStream(channel) => channel,
+            _ => return Err(Error::WrongMessage),
         };
         if message.bytes().is_empty() || message.bytes().len() > MAX_MESSAGE_BYTES {
             return Err(Error::WrongMessage);
@@ -82,6 +84,7 @@ impl Intent {
         Ok(Self {
             message_id: message.id(),
             channel,
+            kind: message.kind(),
             camera: conditions.camera,
             fence: conditions.lease_fence,
             request: ContentDigest::sha256(message.bytes()),
@@ -103,6 +106,10 @@ impl Intent {
     /// Targeted video channel, without a camera capability assertion.
     pub fn channel(self) -> VideoChannel {
         self.channel
+    }
+    /// The exact locally prepared stream-setting operation.
+    pub fn kind(self) -> MessageKind {
+        self.kind
     }
     /// Compare a freshly observed precondition set to the prepared binding.
     /// Matching digests do not themselves prove that observations are authentic.
@@ -129,7 +136,7 @@ impl Intent {
     /// Refuse a different prepared request before any attempted dispatch.
     pub fn check_message(self, message: &PreparedMessage) -> Result<(), Error> {
         if message.id() != self.message_id
-            || message.kind() != MessageKind::StartStream(self.channel)
+            || message.kind() != self.kind
             || ContentDigest::sha256(message.bytes()) != self.request
         {
             return Err(Error::Mismatch);

@@ -2154,7 +2154,77 @@ the HTTP source SHA-256 was
 `3e1033a39f64355ffcc42c6967ad13061f199b999e6b6dc81ddd98afea34db49`;
 the former later received only a documentation correction about object keys.
 This is not full-workspace or physical-camera qualification of the new capture
-path.
+path. A separate snapshot-lab build for physical qualification was refused
+before admission on `ts1` due to memory pressure; a subsequent attempt on the
+other worker timed out in its queue, and a later `ts1` attempt
+(`30098575685845221`) was refused before execution by disk reservations. That
+job reached terminal acknowledgment and source release. A later lab build
+(`30098575685845223`) failed with a missing operation argument in the lab's
+disclosure check; its corrected retry was refused before execution when the
+worker's disk monitor could not finish. These jobs were acknowledged and their
+sources released. Corrected strict-remote job `30098575685845231` built on
+`hz4` with exit zero, terminal acknowledgment and source release. Its Linux
+binary SHA-256 was
+`847d8ac21b165b7097a6231e5e4d5c0d889b8681afdf85811703f6df9e43e220`;
+the independent TLS fixture passed single-snapshot, three-snapshot and
+disconnect cases while checking serializer-value redaction. The lab and
+fixture source hashes were
+`1ea40400fdaf3152400c351269fbb2c3dd2f6cd51212276f4345225dcb4fa96a` and
+`5b83a4d6f1e077ab8d1164f2146b5957b60e8d39cc56311bfd131fbc4a279193`.
+
+The same hash-verified binary then made one read-only G4 session on `trj`.
+The owner-authorized Rust path retained the three selected serializer values
+in memory and reported destination representations `null`, `array`, `null`
+and `withOpus: false` for each. It also decoded one 640×360 camera snapshot
+in memory. It printed no destinations and persisted neither the image nor the
+serializer values. The same-LAN pin does not independently identify the
+physical camera, the experimental TLS provider is not production admitted,
+and this login session's expiry is unknown. The recorder and archive and
+discovery timers remained active afterward, with restart count unchanged at
+70 and a recording segment 37 seconds old on the mounted primary volume.
+This proves a bounded physical read of the new path, not complete recording
+coverage, a safely restorable camera write, or direct native streaming.
+
+The retained serializer projection can now produce a disclosure-authorized,
+domain-separated digest of its three parsed JSON values, peer address and
+session generation. This lets a caller place that digest in the existing
+stream intent's `previous_settings` precondition and reject a different fresh
+readback. Object keys are ordered canonically; absent and null are distinct,
+and number spellings are retained. The digest can itself be sensitive. It is
+not a proof of independent device identity, freshness, durable storage or a
+restoration path, and this mechanism does not itself schedule fresh readbacks
+or force callers to supply them.
+
+Strict-remote reduced-workspace job `30098575685845239` compiled the camera,
+HTTP and controller contracts with terminal acknowledgment and source release.
+The three worker executables passed **9/9**, **1/1** and **24/24** tests;
+the controller test supplies a changed serializer binding and verifies that the
+prepared stream intent refuses it. The tested camera API, API test and
+controller test source hashes were
+`944c508c49a6666efdb81f5333757adb987e79830cfe52b96f0a53114f1e4050`,
+`6923afe4918c28c8e44be141120f1f5ca9c30164c68af83f48169e5c76e21bfe` and
+`150dccd2b2d1696cf358b9b7cfed73fa54ddf275e262163b050510c1d6646176`.
+
+The updated lab compiled in strict-remote job `30098575685845246`, whose
+initial artifact delivery returned 102. Recovery of the same wrapper
+completed with exit zero, acknowledgment and source release. The Linux binary
+SHA-256 was
+`fb270f8522dc0eb171a10a963f047b3b93d4050551ba17157fd4ade4ec3ce025`;
+its independent TLS fixture passed **5/5** cases, including equal repeated
+settings and a changed destination yielding a different binding without
+printing private values. The lab and fixture source hashes were
+`2113b71919b560108329dcaa89f53e5c71cb9db3d5fe54680b60e28b9dedf648` and
+`9a297e44ce2ec94791e51ec463b6a7c1a6c8987aeb66bd761e801980ef0ebe68`.
+
+The hash-verified executable then opened one read-only G4 session, performed
+two settings reads in that session, and reported matching serializer bindings
+without printing them. It decoded a single 640×360 snapshot in memory and did
+not change camera settings. The same-network pin and experimental TLS caveats
+above still apply, as does the unknown expiry of the one new login session.
+The recorder, archive and discovery timers were active afterward, restart
+count remained 70, and the primary volume contained a segment 37 seconds old.
+Two adjacent matching reads are a narrow observation, not proof of ongoing
+stability, gap-free recording, safe restoration or successful native takeover.
 
 ### Controller TCP listener
 

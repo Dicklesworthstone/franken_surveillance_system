@@ -236,6 +236,146 @@ fn observed_hello_gets_its_own_durable_permit_inside_task() -> Test {
     Ok(())
 }
 
+#[test]
+fn quiesce_requires_separate_authority_before_any_wire_write() -> Test {
+    use asupersync::io::{AsyncRead, AsyncWrite, ReadBuf};
+    use fss_reference::unifi_direct::{AGREEMENT_DELAY_NS, Dispatch, MessageKind};
+    use std::{pin::Pin, task::{Context, Poll}};
+
+    struct Counted<IO> { inner: IO, writes: Rc<Cell<usize>> }
+    impl<IO: AsyncRead + Unpin> AsyncRead for Counted<IO> {
+        fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context<'_>, out: &mut ReadBuf<'_>) -> Poll<io::Result<()>> {
+            Pin::new(&mut self.inner).poll_read(cx, out)
+        }
+    }
+    impl<IO: AsyncWrite + Unpin> AsyncWrite for Counted<IO> {
+        fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, bytes: &[u8]) -> Poll<io::Result<usize>> {
+            let result = Pin::new(&mut self.inner).poll_write(cx, bytes);
+            if matches!(&result, Poll::Ready(Ok(n)) if *n > 0) { self.writes.set(self.writes.get() + 1); }
+            result
+        }
+        fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> { Pin::new(&mut self.inner).poll_flush(cx) }
+        fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> { Pin::new(&mut self.inner).poll_shutdown(cx) }
+    }
+    struct ExplicitQuiesce;
+    impl StreamAuthority for ExplicitQuiesce {
+        fn permits(&self, _: [u8; 6], _: intent::Intent, _: &CommittedEffect) -> bool { true }
+        fn permits_quiesce(&self, _: [u8; 6], intent: intent::Intent, _: &CommittedEffect) -> bool {
+            intent.kind() == MessageKind::QuiesceStream(VideoChannel::Video3)
+        }
+    }
+
+    let path = std::fs::canonicalize(std::env::temp_dir())?.join(format!("fss-unifi-quiesce-effect-{}", std::process::id()));
+    std::fs::create_dir(&path)?;
+    let temp = Temp(path);
+    let store = FileEffectJournal::create(temp.0.join("journal"), EffectJournalLimits::default(), Arc::new(HostSpoolIo))?;
+    let mut effects = EffectCoordinator::with_journal(Box::new(store))?;
+    let mut budget = BudgetVector::ZERO;
+    budget.network_bytes = 1_000_000;
+    let (mut authority, mut tree) = AuthorityCx::root(RootAuthoritySpec {
+        trace_id: "trace:quiesce-fixture".into(), operation_id: OperationId::parse("operation:quiesce-owner")?,
+        principal: "principal:fixture".into(), capabilities: vec![RuntimeGrant::AdapterNet.as_str().into(), RuntimeGrant::CameraSettingPrepare.as_str().into(), RuntimeGrant::CameraSettingCommit.as_str().into(), RuntimeGrant::ReadMedia.as_str().into()],
+        deadline: Some(TimestampNs(60_000_000_000)), priority: 1, budgets: budget, privacy_scope: "privacy:test".into(), retention_scope: "retention:test".into(), anchor_universe: ContentDigest::sha256(b"fixture"), generation: 1,
+    }, RegionId::new("region:quiesce")?, RegionKind::Process, budget, TimestampNs(1))?;
+    let camera = ContentDigest::sha256(b"verified fixture camera");
+    let resource = format!("camera:{}", camera.to_text());
+    let mut leases = LeaseRegistry::new();
+    let fence = leases.acquire(&resource, authority.region().as_str(), None, TimestampNs(2))?.fence;
+    let leases = RefCell::new(leases);
+    let conditions = intent::Preconditions { camera, peer_admission: ContentDigest::sha256(b"fixture admission"), stream_generation: 1, previous_settings: Some(ContentDigest::sha256(b"fixture previous")), lease_fence: fence };
+    let operation = OperationId::parse("operation:fixture-quiesce")?;
+    let retry_operation = OperationId::parse("operation:fixture-quiesce-after-abandon")?;
+    let runtime = RuntimeBuilder::current_thread().build()?;
+    runtime.block_on(async {
+        let cx = asupersync::Cx::current().ok_or("missing runtime")?;
+        let result = run_owned_async(&mut authority, &mut tree, TaskSpec { task_id: TaskId::new("task:quiesce-fixture")?, started_at: TimestampNs(3) }, &cx, async |task, cx| {
+            let output: Test = async {
+                let listener = TcpListener::bind("127.0.0.1:0").await?;
+                let address = listener.local_addr()?;
+                let (release_tx, release_rx) = std::sync::mpsc::channel();
+                let peer = std::thread::spawn(move || -> io::Result<()> {
+                    let mut socket = std::net::TcpStream::connect_timeout(&address, Duration::from_secs(5))?;
+                    socket.set_read_timeout(Some(Duration::from_secs(5)))?;
+                    socket.write_all(HEAD.as_bytes())?;
+                    let mut header = Vec::new(); let mut byte = [0_u8; 1];
+                    while !header.ends_with(b"\r\n\r\n") { socket.read_exact(&mut byte)?; header.push(byte[0]); if header.len() > 4096 { return Err(io::Error::other("upgrade limit")); } }
+                    if !header.starts_with(b"HTTP/1.1 101 ") { return Err(io::Error::other("upgrade refused")); }
+                    let request = receive_binary(&mut socket)?;
+                    if !request.windows(b"file:///dev/null".len()).any(|w| w == b"file:///dev/null") || !request.windows(b"video3".len()).any(|w| w == b"video3") || request.windows(b"video2".len()).any(|w| w == b"video2") { return Err(io::Error::other("unexpected quiesce request")); }
+                    socket.write_all(&frame(br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"ChangeVideoSettings","messageId":9,"inResponseTo":4,"payload":{}}"#))?;
+                    release_rx.recv_timeout(Duration::from_secs(5)).map_err(io::Error::other)?;
+                    Ok(())
+                });
+                let (socket, _) = timeout(cx.now(), Duration::from_secs(5), listener.accept()).await??;
+                let writes = Rc::new(Cell::new(0));
+                let clock = MeteredClock::new(task, cx, TimestampNs(4))?;
+                let io = MeteredIo::with_clock(Counted { inner: socket, writes: writes.clone() }, clock, "fixture:camera", 4096)?;
+                let mut controller = Controller::new(Identity::new("FSS", "12345678-1234-4abc-9abc-123456789abc", "1.20.0")?, 1)?;
+                controller.observe(HELLO)?;
+                controller.prepare_hello("2026-11-05T10:00:00.000Z")?;
+                controller.finish_dispatch(1, Dispatch::Written)?;
+                controller.prepare_agreement("2026-11-05T10:00:00.000Z", AGREEMENT_DELAY_NS)?;
+                controller.finish_dispatch(2, Dispatch::Written)?;
+                controller.observe(br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"ubnt_avclient_paramAgreement","messageId":8,"inResponseTo":2,"payload":{}}"#)?;
+                let session = owner::accept(io, ProtocolPolicy::RequireOffer, &FixtureAdmission, controller, Duration::from_secs(5)).await?;
+                let media_listener = TcpListener::bind("127.0.0.1:0").await?;
+                let media_peer = std::net::TcpStream::connect_timeout(&media_listener.local_addr()?, Duration::from_secs(5))?;
+                let (media_socket, _) = timeout(cx.now(), Duration::from_secs(5), media_listener.accept()).await??;
+                let ingress = TcpIngress::new(media_socket, "fixture:camera", 4096, 1_000_000)?;
+                let framer = Framer::new(FlvLimits::default(), 1024 * 1024)?;
+                let recorder = recording::Recorder::new(SourceKey { connection: 1, generation: 1 }, recording::Limits::default())?;
+                let pipeline = pipeline::Pipeline::new(DirectIngress::new(ingress, framer), recorder);
+                let management = Preconditions { camera, peer_admission: conditions.peer_admission, session_generation: 1, previous_association: None, previous_clock: None, lease_fence: fence };
+                let mut supervisor = supervisor::Supervisor::new(session, pipeline, management);
+                let guard = Guard { leases: &leases, clock };
+                let explicit = ExplicitQuiesce;
+                let policy = FixtureApproval { revoke_stream: None };
+                let wall = FixtureClock;
+                let mut runner = conversation::Owner { cx, task, clock, effects: &mut effects, leases: &leases, approval: &policy, management_authority: &guard, stream_authority: &guard, wall: &wall };
+                let wrong = intent::Preconditions { camera: ContentDigest::sha256(b"wrong camera"), ..conditions };
+                assert!(matches!(supervisor.prepare_quiesce(&runner, VideoChannel::Video3, AudioCodec::Aac, "2026-11-05T10:00:00.000Z", wrong), Err(fss_reference::unifi_direct::receive::Error::Denied)));
+                let intent = supervisor.prepare_quiesce(&runner, VideoChannel::Video3, AudioCodec::Aac, "2026-11-05T10:00:00.000Z", conditions)?;
+                let prepared = task.prepare_effect(cx, &mut *runner.effects, &mut leases.borrow_mut(), PrepareSpec { operation: &operation, idempotency_key: IdempotencyKey::parse(operation.as_str())?, request_digest: intent.request_digest(), precondition_digest: intent.precondition_digest(), resource: &resource, fence, prepare_grant: RuntimeGrant::CameraSettingPrepare, commit_grant: RuntimeGrant::CameraSettingCommit, terminal_predicate: "independent observation or reconciliation" }, clock.now()?)?;
+                let approval = CommitApproval { prepared_digest: prepared.digest(), current_precondition_digest: intent.precondition_digest() };
+                let permit = task.commit_effect(cx, &mut *runner.effects, &mut leases.borrow_mut(), prepared, clock.now()?, approval)?;
+                assert!(StreamAuthority::permits(&guard, [0, 0x11, 0x22, 0xaa, 0xbb, 0xcc], intent, &permit));
+                assert!(!StreamAuthority::permits_quiesce(&guard, [0, 0x11, 0x22, 0xaa, 0xbb, 0xcc], intent, &permit));
+                let before = writes.get();
+                let refusal = supervisor.dispatch_quiesce(&runner, intent, conditions, permit, Duration::from_secs(5)).await.err().ok_or("default quiesce authority unexpectedly allowed")?;
+                assert!(matches!(refusal.reason, fss_reference::unifi_direct::receive::Error::Denied));
+                assert_eq!(writes.get(), before);
+                let _unresolved_first_permit = refusal.permit;
+                let abandoned = supervisor.abandon_prepared_stream(&runner, intent)?;
+                assert_eq!((abandoned.id, abandoned.kind), (3, MessageKind::QuiesceStream(VideoChannel::Video3)));
+                let retry_intent = supervisor.prepare_quiesce(&runner, VideoChannel::Video3, AudioCodec::Aac, "2026-11-05T10:00:00.000Z", conditions)?;
+                assert_eq!(retry_intent.message_id(), 4);
+                let retry_prepared = task.prepare_effect(cx, &mut *runner.effects, &mut leases.borrow_mut(), PrepareSpec { operation: &retry_operation, idempotency_key: IdempotencyKey::parse(retry_operation.as_str())?, request_digest: retry_intent.request_digest(), precondition_digest: retry_intent.precondition_digest(), resource: &resource, fence, prepare_grant: RuntimeGrant::CameraSettingPrepare, commit_grant: RuntimeGrant::CameraSettingCommit, terminal_predicate: "independent observation or reconciliation" }, clock.now()?)?;
+                let retry_approval = CommitApproval { prepared_digest: retry_prepared.digest(), current_precondition_digest: retry_intent.precondition_digest() };
+                let retry_permit = task.commit_effect(cx, &mut *runner.effects, &mut leases.borrow_mut(), retry_prepared, clock.now()?, retry_approval)?;
+                runner.stream_authority = &explicit;
+                let sent = supervisor.dispatch_quiesce(&runner, retry_intent, conditions, retry_permit, Duration::from_secs(5)).await.map_err(|_| "explicit quiesce refused")?;
+                assert!(matches!(sent, fss_reference::unifi_direct::receive::StreamWrite::Written { .. }));
+                assert!(writes.get() > before);
+                let reply = supervisor.step(&mut runner, &operation, Duration::from_secs(5)).await;
+                if !matches!(reply, supervisor::Step::Observation(Observation::StreamSettingsReply { kind: MessageKind::QuiesceStream(VideoChannel::Video3), .. })) {
+                    return Err(format!("unexpected supervisor quiesce reply: {reply:?}").into());
+                }
+                release_tx.send(()).map_err(io::Error::other)?;
+                peer.join().map_err(|_| "fixture peer panic")??;
+                let _retirement = supervisor.retire();
+                drop(media_peer);
+                Ok(())
+            }.await;
+            let outcome = if output.is_ok() { TaskOutcome::Indeterminate("fixture effect still needs reconciliation".into()) } else { TaskOutcome::Failed("quiesce fixture failed".into()) };
+            TaskCompletion { output, outcome, completed_at: TimestampNs(59_000_000_000) }
+        }).await?;
+        result.receipt?; result.output
+    })?;
+    assert_eq!(effects.journal().operation(&operation).ok_or("missing effect")?.state, fss_core::EffectState::Committed);
+    assert_eq!(effects.journal().operation(&retry_operation).ok_or("missing retry effect")?.state, fss_core::EffectState::Committed);
+    Ok(())
+}
+
 fn receive_binary(socket: &mut std::net::TcpStream) -> io::Result<Vec<u8>> {
     let mut head = [0u8; 2];
     socket.read_exact(&mut head)?;
