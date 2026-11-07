@@ -4670,3 +4670,47 @@ release. Worker and checkout SHA-256 matched:
 `7e138c9684a7fe8a3ce2150017681cede6c055a06239b1bcdae80213f4aa17e1`
 (handoff contract test). No physical camera or live controller handoff was
 attempted, and the existing recorder remained active.
+
+The archive-worker contract now also accepts a bounded private replay input.
+A new synthetic fixture passes the source through the owned asynchronous
+worker, reopens the A/V archive mapping and decodes the first three video
+frames with the Rust H.264 decoder. This laboratory fixture deliberately uses
+placeholder capture bounds; its temporary archive is not physical-time or
+identity evidence.
+
+Strict-remote job `30099060530610418` on `ts1` passed the focused synthetic
+fixture, and job `30099060530610432` passed 16/16 ordinary recording
+contracts with the camera-input fixture ignored. Both finished with exit 0,
+terminal acknowledgment and source release. The ignored fixture was then
+invoked separately with a fresh, bounded passive G4-derived sample. The exact
+tested executable SHA-256 was
+`7b4a55db41d1c5d362eccc27e457d4b4183cbd45b6e3b745e5cd1fdef0bac25d`.
+The worker published and reopened one temporary segment with 150 structurally
+checked video samples and 77 source-mapped AAC frames; the first three video
+frames decoded in Rust. The AAC frames were mapped, not independently
+decoded by this test. The bounded acquisition was passive and made no camera
+settings change; the existing recorder was active afterward with the same
+reported restart count as before the check.
+
+The FLV header, selected initial IDR boundary, video configuration tag and
+one trailer were synthetic; AVC/AAC configuration came from the existing relay
+and matched before and after capture, but its camera connection epoch was not
+verified. The zero-stream-ID successor policy is a framing hypothesis, and the
+fixed capture bounds are test placeholders. Source IP is not authenticated
+camera identity. The temporary archive was kept under a private `ts1` tmpfs,
+verified empty and removed; the private test-executable copy was removed.
+This is physical-camera-derived media replay, not a direct native camera
+session, production evidence, a continuous recorder, verified retention, or a
+replacement for the existing relay and controller.
+
+Jobs `30099060530610407` and `30099060530610409` were refused before test
+execution by worker disk admission and have no test verdict; the separately
+queued `hz3` request timed out without starting. The successful worker and
+checkout SHA-256 matched:
+`31e4e719e9248ef1065a15699dc7d8f630e5657c3f97b3a61e097cda036b909d`
+(recording contract test),
+`0bc60f7c6021e2c0e1fb7298381a05caecaf764a284ccbeff2d90f643a9138df`
+(`av_worker.rs`) and
+`cbf29aa0248aeb1b70356cf7b4fce4e75b4e78e0640df1382bb0272dc96fd095`
+(`drained_blocking.rs`). The private local acquisition helper's SHA-256 was
+`070ec86585758dc1341ea3179099c77d6bbcf0665bbb88426317b5fd78d143cc`.

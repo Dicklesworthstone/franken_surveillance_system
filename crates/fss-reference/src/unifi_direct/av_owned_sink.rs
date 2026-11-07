@@ -26,6 +26,72 @@ pub enum Audio {
     SuppliedUnverified([u8; 2]),
 }
 
+/// Explicit limits and sender-clock assumptions for the first A/V segment.
+#[derive(Clone, Copy, Debug)]
+pub struct BootstrapPolicy {
+    /// Maximum allowed sender-time separation between the first audio and video.
+    pub max_separation_ms: u32,
+    /// Allowed timestamp jitter under the selected AAC clock hypothesis.
+    pub jitter_ms: u32,
+    /// Maximum audio frames admitted for this muxer epoch.
+    pub max_epoch_frames: u64,
+    /// Maximum audio frames in a single fragment.
+    pub max_audio_frames: usize,
+    /// Media construction and source-mapping limits.
+    pub media_limits: Mp4Limits,
+    /// Bounds on source evidence preparation.
+    pub evidence_limits: evidence::Limits,
+}
+
+/// The exact original inputs returned if first-segment initialization fails.
+pub struct BootstrapInputs {
+    /// Original video configuration record, or a separately accounted copy.
+    pub video_configuration: SourceRecord,
+    /// Original in-band AAC configuration or explicitly unverified bytes.
+    pub audio: Audio,
+    /// First source segment, which remains caller-owned on every refusal.
+    pub first_segment: recording::Segment,
+    /// Caller-selected original-byte retention decision identity.
+    pub retention: ContentDigest,
+    /// Bounded media policy and explicitly selected clock assumptions.
+    pub policy: BootstrapPolicy,
+}
+
+/// Payload-free reason why first-segment initialization was refused.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BootstrapError {
+    /// This is not the first fragment of the source generation.
+    Sequence,
+    /// The video configuration does not match the segment's binding.
+    VideoBinding,
+    /// The AAC configuration could not be rebound or parsed.
+    AudioConfiguration,
+    /// Video initialization or its source mapping was refused.
+    Video(Mp4Error),
+    /// The selected sender-clock hypothesis or muxer limits were refused.
+    Media(av_recording::Error),
+}
+
+/// Refusal retaining every original input, including the first segment.
+#[must_use]
+pub struct BootstrapRefusal {
+    /// Payload-free refusal class.
+    pub reason: BootstrapError,
+    /// Every unconsumed input.
+    pub inputs: BootstrapInputs,
+}
+
+/// An idle sink, its first source segment and the selected timing hypothesis.
+#[must_use]
+pub struct Bootstrap {
+    /// Idle sink suitable for transfer into a supervised archive worker.
+    pub sink: OwnedSink,
+    /// Exact original segment, still awaiting independent capture bounds.
+    pub first_segment: recording::Segment,
+    /// Sender-clock hypothesis; not a physical synchronization observation.
+    pub origin: av_recording::SenderClockOrigin,
+}
+
 /// Inputs remain caller-owned when initialization is refused.
 pub struct Inputs {
     /// Original video configuration record or a separately accounted copy.
@@ -93,6 +159,117 @@ pub struct ResumeRefusal {
 }
 
 impl OwnedSink {
+    /// Initialize an idle owned sink from the first source segment. This
+    /// derives an AAC sender-clock hypothesis under caller-supplied limits;
+    /// it does not establish capture time, A/V synchronization, identity or
+    /// retention authority. Failure returns all original inputs unchanged.
+    pub fn bootstrap(inputs: BootstrapInputs) -> Result<Bootstrap, BootstrapRefusal> {
+        let built = (|| {
+            let segment = &inputs.first_segment;
+            if segment.fragment().sequence() != 1 {
+                return Err(BootstrapError::Sequence);
+            }
+            let binding = segment.configuration();
+            let source = &inputs.video_configuration;
+            if binding.source_offset != source.offset()
+                || binding.source_bytes != source.bytes().len()
+                || binding.source_digest != ContentDigest::sha256(source.bytes())
+            {
+                return Err(BootstrapError::VideoBinding);
+            }
+            let video =
+                flv_avc::Muxer::new(segment.fragment().key(), source, inputs.policy.media_limits)
+                    .map_err(BootstrapError::Video)?;
+            if *video.configuration_sources() != segment.fragment().configuration_sources() {
+                return Err(BootstrapError::VideoBinding);
+            }
+            let initialize =
+                |config: &aac::Configuration<'_>,
+                 bound: Option<&aac_track::BoundConfiguration<'_>>| {
+                    let origin = av_recording::segment_sender_clock_origin(
+                        segment,
+                        config,
+                        inputs.policy.max_separation_ms,
+                    )
+                    .map_err(BootstrapError::Media)?;
+                    let initialization = video
+                        .av_initialization(config)
+                        .map_err(BootstrapError::Video)?;
+                    let muxer = match bound {
+                        Some(bound) => av_recording::Muxer::from_source(
+                            &initialization,
+                            bound,
+                            origin.audio_ticks,
+                            inputs.policy.jitter_ms,
+                            inputs.policy.max_epoch_frames,
+                            inputs.policy.max_audio_frames,
+                            inputs.policy.media_limits,
+                        ),
+                        None => av_recording::Muxer::new(
+                            &initialization,
+                            config,
+                            origin.audio_ticks,
+                            inputs.policy.jitter_ms,
+                            inputs.policy.max_epoch_frames,
+                            inputs.policy.max_audio_frames,
+                            inputs.policy.media_limits,
+                        ),
+                    }
+                    .map_err(BootstrapError::Media)?;
+                    Ok((initialization, muxer, origin))
+                };
+            let (initialization, muxer, origin) = match &inputs.audio {
+                Audio::InBand {
+                    record,
+                    observation,
+                } => {
+                    let bound = observation
+                        .bind_configuration(
+                            record,
+                            extended_flv::Limits::default(),
+                            aac::Limits::default(),
+                        )
+                        .map_err(|_| BootstrapError::AudioConfiguration)?;
+                    initialize(bound.configuration(), Some(&bound))?
+                }
+                Audio::SuppliedUnverified(bytes) => {
+                    let config = aac::Configuration::parse_explicit(bytes)
+                        .map_err(|_| BootstrapError::AudioConfiguration)?;
+                    initialize(&config, None)?
+                }
+            };
+            Ok((video, initialization, muxer, origin))
+        })();
+        let (video, av_initialization, muxer, origin) = match built {
+            Ok(value) => value,
+            Err(reason) => return Err(BootstrapRefusal { reason, inputs }),
+        };
+        let BootstrapInputs {
+            video_configuration,
+            audio,
+            first_segment,
+            retention,
+            policy,
+        } = inputs;
+        Ok(Bootstrap {
+            sink: Self {
+                inputs: Inputs {
+                    video_configuration,
+                    av_initialization,
+                    audio,
+                    muxer,
+                    retention,
+                    evidence_limits: policy.evidence_limits,
+                    video_limits: policy.media_limits,
+                },
+                video,
+                pending: None,
+            },
+            first_segment,
+            origin,
+        })
+    }
+
     /// Reconstruct video initialization from the exact owned source record.
     /// Publication later verifies it against the segment and A/V initialization.
     pub fn new(inputs: Inputs) -> Result<Self, ConstructionRefusal> {
