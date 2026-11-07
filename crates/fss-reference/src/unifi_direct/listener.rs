@@ -17,14 +17,16 @@ use fss_runtime::{
 };
 use std::{
     fmt,
-    future::poll_fn,
+    future::{Future, poll_fn},
     net::{Ipv4Addr, SocketAddr, SocketAddrV4},
+    pin::pin,
     task::Poll,
     time::Duration,
 };
 
 const MAX_WAIT: Duration = Duration::from_secs(30);
 const MAX_RESOURCE: usize = 1024;
+const MAX_ACCEPT_OBSERVATIONS: usize = 128;
 
 /// Current bounded, nonblocking authorization for this listener and peer.
 /// The implementation must bind these addresses to the owner's independently
@@ -275,19 +277,27 @@ pub struct Started {
     pub pipeline: Pipeline,
 }
 
-/// A media connection accepted after a local stream write, while its camera
-/// settings reply remains outstanding on the caller-owned session.
+/// A media connection accepted after a local stream write. Any settings reply
+/// observed while waiting is returned separately as an untrusted observation.
 #[must_use]
 pub struct StartedBeforeReply {
     /// Local dispatch observation; it does not establish remote acceptance.
     pub dispatched: super::conversation::Dispatched,
+    /// Number of clock requests answered while waiting for the media connection.
+    pub time_syncs_during_accept: usize,
+    /// Bounded management observations received before the media connection.
+    pub observations_during_accept: Vec<super::Observation>,
     /// Accepted task-bound pipeline; no media has yet been read or retained.
     pub pipeline: Pipeline,
 }
 
 enum StartProgress {
     Confirmed(super::conversation::Reply),
-    Dispatched(super::conversation::Dispatched),
+    Dispatched {
+        dispatched: super::conversation::Dispatched,
+        time_syncs_during_accept: usize,
+        observations_during_accept: Vec<super::Observation>,
+    },
 }
 
 struct ScopedStreamAuthority<'a> {
@@ -323,7 +333,7 @@ pub async fn start<IO: asupersync::io::AsyncRead + asupersync::io::AsyncWrite + 
     let (progress, pipeline) = start_inner(owner, session, cfg, framer, recorder, true).await?;
     match progress {
         StartProgress::Confirmed(reply) => Ok(Started { reply, pipeline }),
-        StartProgress::Dispatched(_) => Err(StartError::Conversation(
+        StartProgress::Dispatched { .. } => Err(StartError::Conversation(
             super::conversation::Error::Configuration,
         )),
     }
@@ -341,8 +351,10 @@ pub async fn start_before_reply<IO: asupersync::io::AsyncRead + asupersync::io::
 ) -> Result<StartedBeforeReply, StartError> {
     let (progress, pipeline) = start_inner(owner, session, cfg, framer, recorder, false).await?;
     match progress {
-        StartProgress::Dispatched(dispatched) => Ok(StartedBeforeReply {
+        StartProgress::Dispatched { dispatched, time_syncs_during_accept, observations_during_accept } => Ok(StartedBeforeReply {
             dispatched,
+            time_syncs_during_accept,
+            observations_during_accept,
             pipeline,
         }),
         StartProgress::Confirmed(_) => Err(StartError::Conversation(
@@ -424,30 +436,61 @@ async fn start_inner<IO: asupersync::io::AsyncRead + asupersync::io::AsyncWrite 
         stream_authority: &stream_guard,
         wall: owner.wall,
     };
-    let progress = if wait_for_reply {
-        StartProgress::Confirmed(
-            guarded_owner
-                .start(session, &conversation)
-                .await
-                .map_err(StartError::Conversation)?,
-        )
-    } else {
-        StartProgress::Dispatched(
-            guarded_owner
-                .start_dispatched(session, &conversation)
-                .await
-                .map_err(StartError::Conversation)?,
-        )
-    };
-    let pipeline = listener
-        .accept(
-            framer,
-            recorder,
-            cfg.chunk_bytes,
-            cfg.max_bytes,
-            cfg.accept_wait,
-        )
-        .await
-        .map_err(StartError::Listener)?;
-    Ok((progress, pipeline))
+    if wait_for_reply {
+        let reply = guarded_owner.start(session, &conversation).await.map_err(StartError::Conversation)?;
+        let pipeline = listener.accept(framer, recorder, cfg.chunk_bytes, cfg.max_bytes, cfg.accept_wait)
+            .await.map_err(StartError::Listener)?;
+        return Ok((StartProgress::Confirmed(reply), pipeline));
+    }
+    let dispatched = guarded_owner.start_dispatched(session, &conversation).await.map_err(StartError::Conversation)?;
+    let deadline = guarded_owner.cx.now() + cfg.accept_wait;
+    let mut accept = pin!(listener.accept(framer, recorder, cfg.chunk_bytes, cfg.max_bytes, cfg.accept_wait));
+    let mut observations = Vec::new();
+    let mut accept_syncs = 0_usize;
+    loop {
+        let left = deadline.as_nanos().checked_sub(guarded_owner.cx.now().as_nanos())
+            .filter(|v| *v > 0).map(Duration::from_nanos)
+            .ok_or(StartError::Listener(Error::Deadline))?;
+        enum Ready {
+            Media(Result<Pipeline, Error>),
+            Control(Result<super::receive::Step, super::receive::Error>),
+        }
+        let ready = timeout_at(deadline, poll_fn(|cx| {
+            let mut control = pin!(session.next(left));
+            if let Poll::Ready(result) = control.as_mut().poll(cx) {
+                return Poll::Ready(Ready::Control(result));
+            }
+            accept.as_mut().poll(cx).map(Ready::Media)
+        })).await.map_err(|_| StartError::Listener(Error::Deadline))?;
+        match ready {
+            Ready::Media(result) => return Ok((StartProgress::Dispatched {
+                dispatched,
+                time_syncs_during_accept: accept_syncs,
+                observations_during_accept: observations,
+            }, result.map_err(StartError::Listener)?)),
+            Ready::Control(Err(error)) => return Err(StartError::Conversation(super::conversation::Error::SessionDetail(error))),
+            Ready::Control(Ok(super::receive::Step::Retired { reason, controller })) => return Err(StartError::Conversation(super::conversation::Error::SessionRetired {
+                reason, phase: controller.previous_phase, rejected_message: controller.rejected_message,
+            })),
+            Ready::Control(Ok(super::receive::Step::WaitElapsed)) => return Err(StartError::Listener(Error::Deadline)),
+            Ready::Control(Ok(super::receive::Step::Observation(super::Observation::TimeSyncRequested))) => {
+                let index = dispatched.time_syncs.checked_add(accept_syncs)
+                    .ok_or(StartError::Conversation(super::conversation::Error::Limit))?;
+                let operation = cfg.time_sync.get(index)
+                    .ok_or(StartError::Conversation(super::conversation::Error::Limit))?;
+                let left = deadline.as_nanos().checked_sub(guarded_owner.cx.now().as_nanos())
+                    .filter(|v| *v > 0).map(Duration::from_nanos)
+                    .ok_or(StartError::Listener(Error::Deadline))?;
+                guarded_owner.answer_time_sync(session, operation, cfg.management, left).await
+                    .map_err(StartError::Conversation)?;
+                accept_syncs += 1;
+            }
+            Ready::Control(Ok(super::receive::Step::Observation(observation))) => {
+                if observations.len() == MAX_ACCEPT_OBSERVATIONS {
+                    return Err(StartError::Conversation(super::conversation::Error::Limit));
+                }
+                observations.push(observation);
+            }
+        }
+    }
 }

@@ -382,7 +382,15 @@ fn run(args: Options) -> ResultBox<()> {
                     let framer=Framer::new(FlvLimits::default(),1024*1024)?; let recorder=recording::Recorder::new(SourceKey {connection:attempts as u64,generation:1},recording::Limits::default())?;
                     let startup=async {
                         if args.media_before_reply {
-                            listener::start_before_reply(&mut owner,&mut session,&request,framer,recorder).await.map(|started| started.pipeline)
+                            listener::start_before_reply(&mut owner,&mut session,&request,framer,recorder).await.and_then(|started| {
+                                for observation in started.observations_during_accept {
+                                    if let Observation::StreamSettingsReply {success,..}=observation {
+                                        if success==Some(false) {return Err(listener::StartError::Conversation(conversation::Error::Unexpected));}
+                                        println!("trial_stage=stream_reply_observed success_claim_present={}",success.is_some());
+                                    }
+                                }
+                                Ok(started.pipeline)
+                            })
                         } else {
                             listener::start(&mut owner,&mut session,&request,framer,recorder).await.map(|started| started.pipeline)
                         }

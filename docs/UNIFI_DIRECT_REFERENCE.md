@@ -1579,9 +1579,10 @@ local stream write and accepts the media connection with the reply still
 pending on the caller-owned controller session. A supervisor must continue to
 poll that same session, observe any later reply, and reconcile the effect; the
 local write and a TCP connection do not prove the camera accepted the setting
-or produced valid video. This path does not yet poll controller messages while
-waiting for the initial media connection, and it has not been qualified on the
-physical G4. Task-owned fixtures that delay the settings reply until after a
+or produced valid video. While waiting for the initial media connection, the
+experimental path now polls the controller as well, answers authorized clock
+requests with distinct operations, and returns other bounded observations.
+This revision has not been qualified on the physical G4. Task-owned fixtures that delay the settings reply until after a
 media read, or never send it and retain the outstanding request at retirement,
 have been added; their test results are pending.
 The standalone controller trial also exposes the explicitly selected
@@ -1598,6 +1599,15 @@ A later refreshed submission, job `30098575685845057`, was also refused at
 the protected disk-reservation boundary before compilation; its terminal
 result and source release were acknowledged. The no-reply fixture and trial
 mode added afterward likewise have no passing run yet.
+Strict-remote job `30098575685845060` subsequently type-checked the current
+task-owned integration target, including the delayed- and absent-reply cases;
+job `30098575685845072` type-checked the standalone trial binary, and job
+`30098575685845073` type-checked a source-extracted process fixture in the
+scope-filtered laboratory. All three results were acknowledged and sources
+released. The process fixture was extracted from the current test file and
+does not qualify the entire original test target. These were `cargo check`
+results: no fixture or clip was executed by those jobs. The full test remains
+unrun under the worker disk-reservation guards.
 
 A second unchanged owner replay produced two fragments with 300 video and 155
 audio frames. The independent decoder returned exit 0 but reported a
