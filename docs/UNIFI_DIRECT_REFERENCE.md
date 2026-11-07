@@ -2074,9 +2074,14 @@ now recognize `Event*` messages and transfer the exact bounded WebSocket JSON
 source to the caller with a digest and untrusted message metadata. A bounded
 view interprets selected motion edges and smart-detection descriptors without
 claiming detection truth or peer identity. The caller must retain or explicitly
-omit that source under its privacy policy. Capture is enabled only when the
-session enters the supervisor; events received during startup are still
-discarded as `Other`. A camera-requested event reply is exposed but not sent;
+omit that source under its privacy policy. By default events received during
+startup are still discarded as `Other`. A new opt-in caller-owned bounded
+startup inbox is intended to retain them across a failed or cancelled startup
+and drain them through the supervisor on success; it applies backpressure before
+reading a message if capacity is unavailable. Its source-matched build and
+tests are pending. Direct inbox access does not itself revalidate authority; the
+caller owns the retained data and must apply its privacy and retention policy.
+A camera-requested event reply is exposed but not sent;
 the trial stops after explicitly omitting such a source. No event publication,
 motion-state lifecycle, audio linkage, physical G4 event, or complete Scrypted
 detection parity is claimed. Scope-filtered strict-remote job
