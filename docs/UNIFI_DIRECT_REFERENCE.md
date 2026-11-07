@@ -1581,14 +1581,23 @@ poll that same session, observe any later reply, and reconcile the effect; the
 local write and a TCP connection do not prove the camera accepted the setting
 or produced valid video. This path does not yet poll controller messages while
 waiting for the initial media connection, and it has not been qualified on the
-physical G4. A task-owned fixture that withholds the settings reply until the
-pipeline reads media has been added; its test result is pending.
+physical G4. Task-owned fixtures that delay the settings reply until after a
+media read, or never send it and retain the outstanding request at retirement,
+have been added; their test results are pending.
+The standalone controller trial also exposes the explicitly selected
+`--media-before-reply` mode and records whether a settings reply was observed;
+its synthetic TLS/process clip test with no settings reply remains unrun. This
+mode does not claim that a missing reply is success or that an effect is settled.
 In strict-remote job `30098575685845043` the new listener and conversation
 code compiled, but the test target failed to compile because the isolated
 snapshot had an older container module. That module was refreshed; subsequent
 job `30098575685845044` was refused before compilation by the worker's protected
 disk reservation. These are not a passing integration result. The compiled
 snapshot predates formatting-only changes and a fixture assertion rewrite.
+A later refreshed submission, job `30098575685845057`, was also refused at
+the protected disk-reservation boundary before compilation; its terminal
+result and source release were acknowledged. The no-reply fixture and trial
+mode added afterward likewise have no passing run yet.
 
 A second unchanged owner replay produced two fragments with 300 video and 155
 audio frames. The independent decoder returned exit 0 but reported a

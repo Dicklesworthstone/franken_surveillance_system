@@ -343,9 +343,9 @@ impl conversation::Approval for FixtureApproval<'_> {
     }
 }
 
-fn conversation_scenario(revoke_stream: bool, revoke_after_start: bool, revoke_audio_pending: bool, reply_after_media: bool) -> Test {
+fn conversation_scenario(revoke_stream: bool, revoke_after_start: bool, revoke_audio_pending: bool, reply_after_media: bool, never_reply: bool) -> Test {
     let path = std::fs::canonicalize(std::env::temp_dir())?.join(format!(
-        "fss-unifi-task-conversation-{}-{revoke_stream}-{revoke_after_start}-{revoke_audio_pending}-{reply_after_media}",
+        "fss-unifi-task-conversation-{}-{revoke_stream}-{revoke_after_start}-{revoke_audio_pending}-{reply_after_media}-{never_reply}",
         std::process::id(),
     ));
     std::fs::create_dir(&path)?;
@@ -544,7 +544,9 @@ fn conversation_scenario(revoke_stream: bool, revoke_after_start: bool, revoke_a
                     media.write_all(&wire[..split])?;
                     if reply_after_media {
                         media_seen_rx.recv_timeout(Duration::from_secs(5)).map_err(io::Error::other)?;
-                        socket.write_all(&frame(br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"ChangeVideoSettings","messageId":9,"inResponseTo":4}"#))?;
+                        if !never_reply {
+                            socket.write_all(&frame(br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"ChangeVideoSettings","messageId":9,"inResponseTo":4}"#))?;
+                        }
                     }
                     if revoke_after_start || revoke_audio_pending {
                         let mut last=[0u8;1];
@@ -698,10 +700,10 @@ fn conversation_scenario(revoke_stream: bool, revoke_after_start: bool, revoke_a
                     }
                 }
                 assert_eq!(later_syncs,1);
-                assert_eq!(late_replies,if reply_after_media {1} else {0});
+                assert_eq!(late_replies,if reply_after_media && !never_reply {1} else {0});
                 let retired=supervisor.retire();
                 assert_eq!(retired.controller.previous_phase, fss_reference::unifi_direct::Phase::AgreementReplyObserved);
-                assert_eq!(retired.controller.stream_request, None);
+                assert_eq!(retired.controller.stream_request, if never_reply {Some((4,VideoChannel::Video2))} else {None});
                 let retired_media=retired.media;
                 assert!(retired_media.ingress.buffered.is_none());
                 assert!(retired_media.ingress.source.pending.is_none());
@@ -774,27 +776,32 @@ fn conversation_scenario(revoke_stream: bool, revoke_after_start: bool, revoke_a
 
 #[test]
 fn owned_conversation_requests_a_stream_that_reaches_the_recording_pipeline() -> Test {
-    conversation_scenario(false, false, false, false)
+    conversation_scenario(false, false, false, false, false)
 }
 
 #[test]
 fn media_can_be_processed_before_the_camera_settings_reply() -> Test {
-    conversation_scenario(false, false, false, true)
+    conversation_scenario(false, false, false, true, false)
+}
+
+#[test]
+fn media_can_be_processed_when_camera_never_replies() -> Test {
+    conversation_scenario(false, false, false, true, true)
 }
 
 #[test]
 fn revoked_listener_policy_prevents_stream_setting_dispatch() -> Test {
-    conversation_scenario(true, false, false, false)
+    conversation_scenario(true, false, false, false, false)
 }
 
 #[test]
 fn revoked_controller_admission_stops_buffered_media_and_retains_it() -> Test {
-    conversation_scenario(false, true, false, false)
+    conversation_scenario(false, true, false, false, false)
 }
 
 #[test]
 fn revoked_controller_withholds_pending_audio_and_returns_it_at_retirement() -> Test {
-    conversation_scenario(false, false, true, false)
+    conversation_scenario(false, false, true, false, false)
 }
 
 #[test]

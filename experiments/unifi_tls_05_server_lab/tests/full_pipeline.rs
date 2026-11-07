@@ -785,16 +785,22 @@ impl Drop for TrialChild {
 #[test]
 #[ignore = "requires disposable TLS certificate and key"]
 fn direct_trial_process_produces_a_private_decodable_clip() -> Test {
-    direct_trial_process_clip(false)
+    direct_trial_process_clip(false, false)
 }
 
 #[test]
 #[ignore = "requires disposable TLS certificate and key"]
 fn direct_trial_process_handles_time_sync_before_hello_and_produces_clip() -> Test {
-    direct_trial_process_clip(true)
+    direct_trial_process_clip(true, false)
 }
 
-fn direct_trial_process_clip(sync_before_hello: bool) -> Test {
+#[test]
+#[ignore = "requires disposable TLS certificate and key"]
+fn direct_trial_process_receives_media_without_settings_reply() -> Test {
+    direct_trial_process_clip(true, true)
+}
+
+fn direct_trial_process_clip(sync_before_hello: bool, media_before_reply: bool) -> Test {
     use std::{
         os::unix::fs::{DirBuilderExt, PermissionsExt},
         process::{Command, Stdio},
@@ -803,7 +809,7 @@ fn direct_trial_process_clip(sync_before_hello: bool) -> Test {
     let cert_path = PathBuf::from(std::env::var("FSS_LAB_CERT_DER")?);
     let key_path = PathBuf::from(std::env::var("FSS_LAB_KEY_DER")?);
     let root =
-        std::env::temp_dir().join(format!("fss-direct-trial-process-{}-{sync_before_hello}", std::process::id()));
+        std::env::temp_dir().join(format!("fss-direct-trial-process-{}-{sync_before_hello}-{media_before_reply}", std::process::id()));
     std::fs::DirBuilder::new().mode(0o700).create(&root)?;
     let temp = Temp(root);
     let reserve = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
@@ -811,14 +817,16 @@ fn direct_trial_process_clip(sync_before_hello: bool) -> Test {
     drop(reserve);
     let journal = temp.0.join("journal");
     let clip = temp.0.join("clip.mp4");
-    let child = Command::new(env!("CARGO_BIN_EXE_unifi_direct_trial"))
-        .arg(format!("127.0.0.1:{port}"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_unifi_direct_trial"));
+    command.arg(format!("127.0.0.1:{port}"))
         .args(["127.0.0.1", "001122aabbcc"])
         .arg(&cert_path)
         .arg(&key_path)
         .arg(&journal)
         .arg(&clip)
-        .args(["12345678-1234-4abc-9abc-123456789abc", "--owner-authorized"])
+        .arg("12345678-1234-4abc-9abc-123456789abc");
+    if media_before_reply { command.arg("--media-before-reply"); }
+    let child = command.arg("--owner-authorized")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()?;
@@ -956,8 +964,10 @@ fn direct_trial_process_clip(sync_before_hello: bool) -> Test {
     let setting_json = fss_core::json_input::parse(std::str::from_utf8(&setting)?)?;
     let setting_id = setting_json.object().and_then(|v| v.get("messageId")).and_then(|v| v.integer()).ok_or("missing setting ID")?;
     let setting_reply = format!(r#"{{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"ChangeVideoSettings","messageId":9,"inResponseTo":{setting_id}}}"#);
-    socket.write_all(&frame(setting_reply.as_bytes()))?;
-    socket.flush()?;
+    if !media_before_reply {
+        socket.write_all(&frame(setting_reply.as_bytes()))?;
+        socket.flush()?;
+    }
     let mut media = std::net::TcpStream::connect_timeout(&destination, Duration::from_secs(5))?;
     media.write_all(&media_fixture()?)?;
     drop(media);

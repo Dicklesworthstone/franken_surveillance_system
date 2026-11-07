@@ -20,7 +20,7 @@ use fss_packet::extended_flv::{Limits as FlvLimits, stream::Framer};
 use fss_reference::{
     onvif::wire::UtcDateTime,
     unifi_direct::{
-        AudioCodec, Controller, Identity, TimeSyncPolicy, VideoChannel, VideoCodec,
+        AudioCodec, Controller, Identity, Observation, TimeSyncPolicy, VideoChannel, VideoCodec,
         controller_listener, conversation, intent, listener, management,
         metered::{MeteredClock, MeteredIo},
         owner, pipeline, receive, recording, supervisor,
@@ -51,7 +51,7 @@ use std::{
 use unifi_tls_05_server_lab::server::Server;
 
 type ResultBox<T> = Result<T, Box<dyn Error>>;
-const USAGE: &str = "usage: unifi_direct_trial LISTEN_IPV4:PORT CAMERA_IPV4 CAMERA_MAC_HEX CERT_DER KEY_DER JOURNAL_DIR OUTPUT_MP4 CONTROLLER_UUID [WAIT_SECONDS] [--allow-correlated-timesync|--bounded-prehello-clock] --owner-authorized";
+const USAGE: &str = "usage: unifi_direct_trial LISTEN_IPV4:PORT CAMERA_IPV4 CAMERA_MAC_HEX CERT_DER KEY_DER JOURNAL_DIR OUTPUT_MP4 CONTROLLER_UUID [WAIT_SECONDS] [--allow-correlated-timesync|--bounded-prehello-clock] [--media-before-reply] --owner-authorized";
 const MAX_SOURCE: u64 = 32 * 1024 * 1024;
 const MAX_INITIAL_CONNECTIONS: usize = 8;
 const MAX_IO_WAIT: Duration = Duration::from_secs(30);
@@ -67,11 +67,16 @@ struct Options {
     uuid: String,
     wait: Duration,
     time_sync_policy: TimeSyncPolicy,
+    media_before_reply: bool,
 }
 fn options() -> ResultBox<Options> {
     let mut args: Vec<_> = std::env::args().skip(1).collect();
     if args.pop().as_deref() != Some("--owner-authorized") {
         return Err(USAGE.into());
+    }
+    let media_before_reply = args.last().is_some_and(|s| s == "--media-before-reply");
+    if media_before_reply {
+        args.pop();
     }
     let time_sync_policy = match args.last().map(String::as_str) {
         Some("--allow-correlated-timesync") => {
@@ -134,6 +139,7 @@ fn options() -> ResultBox<Options> {
         uuid: args[7].clone(),
         wait: Duration::from_secs(wait_seconds),
         time_sync_policy,
+        media_before_reply,
     })
 }
 fn bounded_read(path: &Path, private: bool) -> ResultBox<Vec<u8>> {
@@ -269,6 +275,7 @@ fn write_clip(path: &Path, bytes: &[u8]) -> ResultBox<()> {
 }
 fn run(args: Options) -> ResultBox<()> {
     println!("trial_time_sync_policy={:?}", args.time_sync_policy);
+    println!("trial_media_before_reply={}", args.media_before_reply);
     let (start, _) = epoch()?;
     let deadline = TimestampNs(
         start
@@ -373,8 +380,15 @@ fn run(args: Options) -> ResultBox<()> {
                     let io_wait=remaining.min(MAX_IO_WAIT);
                     let request=listener::Start {bind:SocketAddrV4::new(*args.listen.ip(),0),resource:&resource,admission:&policy,channel:VideoChannel::Video2,video:VideoCodec::H264,audio:AudioCodec::Aac,stream_name:"0123456789abcdef",hello:&hello,agreement:&agreement,stream:&stream,time_sync:&syncs[..startup_sync_limit],management,stream_conditions,chunk_bytes:16*1024,max_bytes:MAX_SOURCE,bind_wait:io_wait,conversation_wait:io_wait,accept_wait:io_wait};
                     let framer=Framer::new(FlvLimits::default(),1024*1024)?; let recorder=recording::Recorder::new(SourceKey {connection:attempts as u64,generation:1},recording::Limits::default())?;
-                    match timeout_at(deadline,listener::start(&mut owner,&mut session,&request,framer,recorder)).await {
-                        Ok(Ok(started))=>break (session,started),
+                    let startup=async {
+                        if args.media_before_reply {
+                            listener::start_before_reply(&mut owner,&mut session,&request,framer,recorder).await.map(|started| started.pipeline)
+                        } else {
+                            listener::start(&mut owner,&mut session,&request,framer,recorder).await.map(|started| started.pipeline)
+                        }
+                    };
+                    match timeout_at(deadline,startup).await {
+                        Ok(Ok(pipeline))=>break (session,pipeline),
                         Ok(Err(error @ listener::StartError::Conversation(conversation::Error::Deadline)))=>{
                             let counts=session.time_sync_counts();
                             println!("trial_stage=conversation_deadline phase={:?} effect_prepared={} attempts={} management_gate_passed={} sync_uncorrelated={} sync_correlated={} sync_correlated_expected={}",session.phase(),approval.0.get(),attempts,guard.management_gate_passed.get(),counts.uncorrelated,counts.correlated,counts.correlated_response_expected);
@@ -395,7 +409,7 @@ fn run(args: Options) -> ResultBox<()> {
                     }
                 };
                 drop(controller_listener);
-                let mut supervisor=supervisor::Supervisor::new(session,started.pipeline,management);
+                let mut supervisor=supervisor::Supervisor::new(session,started,management);
                 let mut sync_index=startup_sync_limit; let mut source_omitted=0usize; let mut steps=0u32;
                 let capture:ResultBox<(usize,usize,u32,u32)> = async {
                     loop {
@@ -403,6 +417,10 @@ fn run(args: Options) -> ResultBox<()> {
                         let operation=syncs.get(sync_index).ok_or("time-sync limit reached")?;
                         match supervisor.step(&mut owner,operation,args.wait.min(MAX_IO_WAIT)).await {
                             supervisor::Step::TimeSyncWritten=>sync_index+=1,
+                            supervisor::Step::Observation(Observation::StreamSettingsReply {success,..}) if args.media_before_reply=>{
+                                if success==Some(false) {return Err("camera reported stream-setting failure".into());}
+                                println!("trial_stage=stream_reply_observed success_claim_present={}",success.is_some());
+                            },
                             supervisor::Step::Media(pipeline::Step::Progress {..}) | supervisor::Step::Media(pipeline::Step::Recording(recording::Push::Buffered))=>(),
                             supervisor::Step::Media(pipeline::Step::Recording(recording::Push::Source {record,..}))=>source_omitted=source_omitted.saturating_add(record.bytes().len()),
                             supervisor::Step::Media(pipeline::Step::Recording(recording::Push::Segment(segment)))=>{
