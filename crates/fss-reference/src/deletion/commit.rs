@@ -197,7 +197,7 @@ fn completion_delta(
     })
 }
 
-/// Legacy digest-only lookup. Parameterized retention requests are supplied to commit_scope;
+/// Legacy digest-only lookup. Parameterized retention requests are supplied to commit_retention;
 /// they cannot be inferred by enumerating all possible durations and current-time assertions.
 fn current_plan(
     deployment: &ReferenceDeployment,
@@ -229,32 +229,41 @@ pub(super) fn commit(
     principal: &str,
     cx: &ReplayCx,
 ) -> Result<CommitReceipt, DeletionError> {
-    commit_with_scope(deployment, None, plan_digest, approval, principal, cx)
+    commit_request(deployment, PlanRequest::Digest, plan_digest, approval, principal, cx)
 }
 
-/// Explicit scope lookup still recomputes the complete plan and checks its exact digest before
-/// staging anything. No caller-supplied DeletionPlan is ever accepted as a write instruction.
-pub(super) fn commit_scope(
+/// Explicit retention request, recomputed once before a fresh commit. Durable retries bind
+/// the request already inside the retained plan and do not require deleted source bytes.
+pub(super) fn commit_retention(
     deployment: &mut ReferenceDeployment,
-    scope: &DeletionScope,
+    request: &super::retention::RetentionRequest,
     plan_digest: ContentDigest,
     approval: ContentDigest,
     principal: &str,
     cx: &ReplayCx,
 ) -> Result<CommitReceipt, DeletionError> {
-    commit_with_scope(
-        deployment,
-        Some(scope),
-        plan_digest,
-        approval,
-        principal,
-        cx,
-    )
+    commit_request(deployment, PlanRequest::Retention(request), plan_digest, approval, principal, cx)
 }
 
-fn commit_with_scope(
+enum PlanRequest<'a> {
+    Digest,
+    Retention(&'a super::retention::RetentionRequest),
+}
+
+impl PlanRequest<'_> {
+    fn matches(&self, scope: &DeletionScope) -> bool {
+        match self {
+            Self::Digest => true,
+            Self::Retention(request) => {
+                matches!(scope, DeletionScope::Retention(selection) if selection.request() == *request)
+            }
+        }
+    }
+}
+
+fn commit_request(
     deployment: &mut ReferenceDeployment,
-    requested_scope: Option<&DeletionScope>,
+    requested: PlanRequest<'_>,
     plan_digest: ContentDigest,
     approval: ContentDigest,
     principal: &str,
@@ -265,7 +274,7 @@ fn commit_with_scope(
     let index = DeletionIndex::read(deployment)?;
     if let Some(entry) = index.plan(plan_digest) {
         let plan = entry.plan.clone();
-        if requested_scope.is_some_and(|scope| scope != &plan.scope) {
+        if !requested.matches(&plan.scope) {
             return Err(DeletionError::StalePlan(plan_digest));
         }
         if approval_digest(plan_digest, &plan.site_lineage, principal)? != approval {
@@ -285,16 +294,14 @@ fn commit_with_scope(
         }
         return apply(deployment, plan, plan_digest, CommitOutcome::Resumed, cx);
     }
-    let plan = match requested_scope {
-        None => current_plan(deployment, &index, plan_digest, cx)?,
-        Some(scope) => {
-            let plan = super::plan_scope_deletion(deployment, scope, cx)?;
-            if plan.digest()? != plan_digest {
-                return Err(DeletionError::StalePlan(plan_digest));
-            }
-            plan
-        }
+    let plan = match requested {
+        PlanRequest::Digest => current_plan(deployment, &index, plan_digest, cx)?,
+        PlanRequest::Retention(request) => super::retention::plan_retention(deployment, request, cx)?
+            .deletion.ok_or(DeletionError::StalePlan(plan_digest))?,
     };
+    if plan.digest()? != plan_digest {
+        return Err(DeletionError::StalePlan(plan_digest));
+    }
     if plan.site_lineage != deployment.site_lineage()
         || approval_digest(plan_digest, &plan.site_lineage, principal)? != approval
     {

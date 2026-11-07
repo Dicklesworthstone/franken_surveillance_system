@@ -17,6 +17,7 @@ check() {
     cat "$out/$name.log"
 }
 check deletion-unit cargo test --locked --offline -j 2 -p fss-reference --lib deletion::
+check retention-cohort cargo test --locked --offline -j 2 -p fss-reference --test retention_cohort_contract
 check deletion-cli cargo test --locked --offline -j 2 -p fss-cli --bin fss-event delete::
 check retention-storage cargo test --locked --offline -j 2 -p fss-cli --no-fail-fast \
     --test retention_cli_contract --test deletion_cli_contract --test deletion_scope_cli_contract

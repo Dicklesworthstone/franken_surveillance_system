@@ -272,8 +272,10 @@ pub fn plan_scope_deletion(
     scope: &DeletionScope,
     cx: &ReplayCx,
 ) -> Result<DeletionPlan, DeletionError> {
-    if let DeletionScope::Retention(selection) = scope {
-        retention::revalidate_selection(deployment, selection, cx)?;
+    if let DeletionScope::Retention(selection) = scope
+        && let Some(plan) = retention::revalidate_plan(deployment, selection, cx)?
+    {
+        return Ok(plan);
     }
     let index = DeletionIndex::read(deployment)?;
     if let DeletionScope::Import(import) = scope

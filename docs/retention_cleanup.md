@@ -53,7 +53,7 @@ When something is eligible, the nested `deletion_plan` contains the complete clo
 kept and removed, derivative tombstones, root retractions, blocked effects, holds, unknown
 copies, plan digest, approval digest and exact `approve_command`. Inspect that plan before
 running its command. A blocked preview has no approve command. A preview with no eligible
-recordings returns `nothing_eligible` and `deletion_plan: null`, not a deletion approval.
+recordings returns `nothing_eligible` and `deletion_plan: null`. If expired recordings exist but every admissible closure is blocked, the preview returns `blocked` and explicit exclusions, with no deletion approval.
 
 The command has this shape; use the exact values returned by the preview:
 
@@ -72,12 +72,23 @@ selection and complete closure under the current authority/effect heads. A chang
 assertion, duration, sensor, later import, hold, or other head change does not inherit an old
 approval. No caller-supplied object list or deletion plan can directly authorize unlinking.
 
-The selected recordings form **one union closure**, not a sequence of per-import deletions
-whose later approvals would already be stale. Objects shared with retained recordings are
-kept and listed. An active hold on any selected import, or on a shared derivative that the
-plan would remove, blocks the whole cohort. Cleanup never expires or releases a hold, even
-when its requested age has elapsed. Releasing or expiring an existing hold remains a separate
-explicit owner action; changing a cleanup request is not a substitute.
+The selected recordings form **one union closure**. Objects shared with retained recordings
+are kept and listed. If the whole expired cohort is safe, planning keeps the original v1
+selection bytes. If it is blocked, candidates are evaluated in import-identity order. A
+candidate is added only if its union with the preceding accepted candidates remains safe.
+Independent expired recordings can therefore be cleaned up while held or otherwise blocked
+recordings remain retained.
+
+A rejected candidate receives the `closure_blocked` disposition, its exact blocker findings,
+and the digest of the attempted union plan. Holds on shared derivatives and source bytes
+needed by open effects still block every union that would affect them. An individual import
+being safe does not imply that a larger union is safe. The deterministic selection makes
+bounded progress; it does not claim to find the largest possible removable cohort. Final
+aggregate publication bounds remain enforceable even after candidate filtering.
+
+Cleanup never expires or releases a hold, even when its requested age has elapsed. Releasing
+or expiring a hold remains a separate owner action. A new or released hold, newly completed
+import, changed head or changed time assertion requires fresh approval.
 
 Once the deletion record is durable, retry uses its exact retained v3 plan instead of
 recalculating a larger age cohort. It needs neither the original input files nor source bytes
@@ -96,17 +107,23 @@ The selector admits at most 256 nondeleted import identities (including incomple
 16,384 capsule records and 64 MiB of manifest/capsule metadata per pass. Its own indexing and
 capsule-binding scan has a one-million-entry ceiling. The retained reader and deletion closure
 keep their existing limits; selector counters do not purport to measure all storage or closure
-work. Planning an eligible cohort performs two selection passes: assessment and independent
-revalidation before the closure scan; the preview reports both. An oversized inventory is
-refused, never sampled or truncated. This is not yet a paged large-installation retention
+work. Planning uses one age assessment, one reusable dependency scan, and one cached projection
+per distinct held closure. Candidate-union evaluations reuse those structures; they can still
+read retained event metadata, so the closure-scan counters are not a measurement of every
+physical I/O operation. The preview reports closure evaluations and held-closure counts.
+Fresh commit independently recomputes the selection and final plan. An oversized inventory
+is refused, never sampled or truncated. This is not yet a paged large-installation retention
 scheduler. It reads no media pixels to decide age.
 
 Version-1 import deletion and version-2 sensor/event deletion keep their canonical layouts.
 The new `DeletionScope::Retention` uses scope tag 4 only inside `fss.deletion_plan.v3` and
-`fss.deletion_completion.v3`. The entire `fss.retention_selection.v1` is embedded, binding both
-selected imports and exclusions. Readers check that the plan's import list equals precisely
-the eligible selection entries. A v3 scope relabelled v2 is refused. Old software that does not
-understand v3 must fail closed when opening its records; no down-conversion is provided.
+`fss.deletion_completion.v3`. Unblocked requests retain the entire `fss.retention_selection.v1`
+encoding. Requests with explicit closure exclusions use `fss.retention_selection.v2`, which
+adds each exclusion's trial-plan digest and bounded canonical blocker list. A blocked entry
+must be age-eligible and have both a witness and nonempty findings; v2 without any exclusion
+is refused. Readers check that the plan's member list equals precisely the eligible entries.
+Old readers reject an unknown inner domain. Existing v1 durable deletions retain their exact
+retry semantics; there is no down-conversion or rewriting of retained approvals.
 
 ## Focused regression checks
 
@@ -114,8 +131,9 @@ understand v3 must fail closed when opening its records; no down-conversion is p
 bash scripts/check_retention_reference.sh
 ```
 
-The script runs selector/codec and CLI unit tests, the new `retention_cli_contract` integration
-target, and existing import/sensor/event deletion integration targets, then formatting checks.
+The script runs selector/codec and CLI unit tests, `retention_cli_contract`,
+`retention_cohort_contract`, and existing import/sensor/event deletion integration targets,
+then formatting checks.
 The new tests cover real retained MJPEG imports, old versus recent and unknown-time recordings,
 shared source preservation, derived-frame deletion, holds, stale requests, version/member
 forgery, explicit no-op results, all six deletion interruption points, and cold exact retry.
@@ -125,3 +143,8 @@ Related contracts: FSS-037, GOAL-009, GOAL-010, CAP-DELETE-PREPARE-001 and
 CAP-DELETE-COMMIT-001. Standing `EFFECT-RETENTION-001` policy adoption, encrypted storage,
 automatic scheduling, live-capture archive selection, replica deletion and large-inventory
 pagination are not implemented by this slice.
+
+The cohort additions include nine real-import contracts for independent and shared holds,
+union-only effect blockers, unchanged v1 selections, stale approval, cancellation, all deletion
+cut points, cold retry and path independence. Their final compilation, execution and formatting
+were interrupted by execution-environment loss on 2026-11-07; authored tests are not a pass.

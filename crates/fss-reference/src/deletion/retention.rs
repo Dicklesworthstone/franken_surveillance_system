@@ -5,8 +5,10 @@
 //! entire recording whose latest possible capture plus the requested retention duration is
 //! no later than the earliest owner-attested current time is eligible. Unknown capture time,
 //! source gaps and substantive omissions retain the recording. Holds are not expired here.
-//! The selection, including exclusions and source-metadata bindings, travels inside the
-//! deletion scope; a commit re-reads it before using the existing tombstone-first protocol.
+//! A held or otherwise blocked expired recording stays explicit while independent expired
+//! closures remain selectable. Each proposed union is checked, since combining individually
+//! safe imports can make shared evidence deletable. The selection and its exclusion witnesses
+//! travel inside the deletion scope; commit re-reads them before the tombstone-first protocol.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -15,13 +17,15 @@ use fss_core::{
     ContentDigest, ContractError, DigestAlgorithm, Plane, SensorCapsule, SensorId, TimestampNs,
 };
 
-use super::{CommitReceipt, DeletionError, DeletionIndex, DeletionPlan, DeletionScope};
+use super::{CommitReceipt, DeletionError, DeletionIndex, DeletionPlan, DeletionScope, Finding};
 use crate::ingest::{RetainedFileImport, RetainedReadLimits};
 use crate::reference_deployment::FAMILY_SENSOR_CAPSULE;
 use crate::{ReferenceDeployment, ReplayCx};
 
 /// Stable selection encoding embedded in retention deletion plans.
 pub const RETENTION_SELECTION_DOMAIN: &str = "fss.retention_selection.v1";
+/// Selection with explicit closure-blocked exclusions. Legacy v1 bytes stay unchanged.
+pub const RETENTION_BLOCKER_SELECTION_DOMAIN: &str = "fss.retention_selection.v2";
 /// Maximum import identities inspected in one request, including unfinished imports.
 pub const MAX_RETENTION_IMPORTS: usize = 256;
 /// Maximum capsule records read across the complete inventory, not per import.
@@ -30,8 +34,20 @@ pub const MAX_RETENTION_CAPSULES: u64 = 16_384;
 pub const MAX_RETENTION_LEDGER_ENTRIES: u64 = 1_000_000;
 /// Maximum aggregate metadata bytes; source media is never read by the selector.
 pub const MAX_RETENTION_METADATA_BYTES: u64 = 64 * 1024 * 1024;
+/// Aggregate blocker findings retained across all excluded candidates; overflow refuses.
+pub const MAX_RETENTION_BLOCKERS: usize = 4096;
+/// Maximum bytes in one blocker field. Diagnostics never include source media.
+const MAX_BLOCKER_TEXT_BYTES: usize = 4096;
 /// Cancellation point before each inventory or metadata read.
 pub const STAGE_RETENTION_READ: &str = "retention:read";
+/// Cancellation point before each prospective union-closure evaluation.
+pub const STAGE_RETENTION_COHORT: &str = "retention:cohort";
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum SelectionVersion {
+    Age,
+    Blockers,
+}
 
 /// Explicit owner choice, including conservative current-time bounds. No host clock is read.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -132,6 +148,9 @@ pub enum RetentionDisposition {
     SourceOmission,
     /// Timestamp arithmetic cannot represent the retention deadline; retain, never wrap.
     DeadlineOverflow,
+    /// Old enough, but adding this import to the preceding selected cohort is blocked.
+    /// Exact reasons and the prospective plan digest remain on the candidate.
+    ClosureBlocked,
 }
 
 impl RetentionDisposition {
@@ -146,6 +165,7 @@ impl RetentionDisposition {
             Self::SourceGap => "source_gap",
             Self::SourceOmission => "source_omission",
             Self::DeadlineOverflow => "deadline_overflow",
+            Self::ClosureBlocked => "closure_blocked",
         }
     }
 
@@ -158,6 +178,7 @@ impl RetentionDisposition {
             "source_gap" => Ok(Self::SourceGap),
             "source_omission" => Ok(Self::SourceOmission),
             "deadline_overflow" => Ok(Self::DeadlineOverflow),
+            "closure_blocked" => Ok(Self::ClosureBlocked),
             _ => Err(DeletionError::RecordMismatch),
         }
     }
@@ -180,6 +201,8 @@ pub struct RetentionCandidate {
     timing_digest: ContentDigest,
     end: Option<CaptureEnd>,
     disposition: RetentionDisposition,
+    blockers: Vec<Finding>,
+    closure_witness: Option<ContentDigest>,
 }
 
 impl RetentionCandidate {
@@ -208,6 +231,18 @@ impl RetentionCandidate {
     pub const fn disposition(&self) -> RetentionDisposition {
         self.disposition
     }
+    /// Exact blockers for the attempted addition, in canonical order. These do not release
+    /// a hold, adjudicate an effect, or claim that every alternative cohort was searched.
+    #[must_use]
+    pub fn blockers(&self) -> &[Finding] {
+        &self.blockers
+    }
+    /// Digest of the read-only trial deletion plan, with this import and the preceding
+    /// accepted candidates. This is a recomputable witness, not a publication or approval.
+    #[must_use]
+    pub const fn closure_witness(&self) -> Option<ContentDigest> {
+        self.closure_witness
+    }
 }
 
 /// Complete, bounded selection. Fields are private; fresh deletion always recomputes it.
@@ -215,6 +250,7 @@ impl RetentionCandidate {
 pub struct RetentionSelection {
     request: RetentionRequest,
     candidates: Vec<RetentionCandidate>,
+    version: SelectionVersion,
 }
 
 impl RetentionSelection {
@@ -227,6 +263,14 @@ impl RetentionSelection {
     #[must_use]
     pub fn candidates(&self) -> &[RetentionCandidate] {
         &self.candidates
+    }
+    /// Exact canonical format. V2 is used only when at least one closure is excluded.
+    #[must_use]
+    pub const fn domain(&self) -> &'static str {
+        match self.version {
+            SelectionVersion::Age => RETENTION_SELECTION_DOMAIN,
+            SelectionVersion::Blockers => RETENTION_BLOCKER_SELECTION_DOMAIN,
+        }
     }
     /// Selected members, in strictly ascending import identity order.
     #[must_use]
@@ -244,7 +288,7 @@ impl RetentionSelection {
         Ok(ContentDigest::sha256(&e.finish_checked()?))
     }
     pub(super) fn encode(&self, e: &mut CanonicalEncoder) {
-        e.text(RETENTION_SELECTION_DOMAIN);
+        e.text(self.domain());
         self.request.encode(e);
         e.u64(self.candidates.len() as u64);
         for c in &self.candidates {
@@ -257,12 +301,26 @@ impl RetentionSelection {
                 TimestampNs(end.latest_ns).encode_canonical(e);
             }
             e.text(c.disposition.as_str());
+            if self.version == SelectionVersion::Blockers {
+                e.bool(c.closure_witness.is_some());
+                if let Some(witness) = c.closure_witness {
+                    e.digest(witness);
+                }
+                e.u64(c.blockers.len() as u64);
+                for finding in &c.blockers {
+                    e.text(&finding.kind);
+                    e.text(&finding.subject);
+                    e.text(&finding.detail);
+                }
+            }
         }
     }
     pub(super) fn decode(d: &mut CanonicalDecoder<'_>) -> Result<Self, DeletionError> {
-        if d.text()? != RETENTION_SELECTION_DOMAIN {
-            return Err(DeletionError::RecordMismatch);
-        }
+        let version = match d.text()? {
+            RETENTION_SELECTION_DOMAIN => SelectionVersion::Age,
+            RETENTION_BLOCKER_SELECTION_DOMAIN => SelectionVersion::Blockers,
+            _ => return Err(DeletionError::RecordMismatch),
+        };
         let request = RetentionRequest::decode(d)?;
         let n = usize::try_from(d.u64()?).map_err(|_| DeletionError::RecordMismatch)?;
         if n > MAX_RETENTION_IMPORTS || n > d.remaining() / 108 {
@@ -271,6 +329,7 @@ impl RetentionSelection {
             });
         }
         let mut candidates = Vec::with_capacity(n);
+        let mut total_blockers = 0;
         for _ in 0..n {
             let import_identity = read_digest(d)?;
             let manifest_digest = read_digest(d)?;
@@ -289,8 +348,42 @@ impl RetentionSelection {
                 None
             };
             let disposition = RetentionDisposition::decode(d)?;
+            let mut blockers = Vec::new();
+            let mut closure_witness = None;
+            if version == SelectionVersion::Blockers {
+                if d.bool()? {
+                    closure_witness = Some(read_digest(d)?);
+                }
+                let count = usize::try_from(d.u64()?).map_err(|_| DeletionError::RecordMismatch)?;
+                if count > MAX_RETENTION_BLOCKERS - total_blockers || count > d.remaining() / 24 {
+                    return Err(DeletionError::Bound { limit: "retention_blockers" });
+                }
+                total_blockers += count;
+                for _ in 0..count {
+                    let mut text = || -> Result<String, DeletionError> {
+                        let text = d.text()?;
+                        if text.is_empty() || text.len() > MAX_BLOCKER_TEXT_BYTES {
+                            return Err(DeletionError::RecordMismatch);
+                        }
+                        Ok(text.to_owned())
+                    };
+                    blockers.push(Finding { kind: text()?, subject: text()?, detail: text()? });
+                }
+                if blockers.windows(2).any(|w| w[0] >= w[1]) {
+                    return Err(ContractError::NonCanonicalOrdering.into());
+                }
+            }
+            let blocked = disposition == RetentionDisposition::ClosureBlocked;
+            if blocked != (closure_witness.is_some() && !blockers.is_empty())
+                || !blocked && (closure_witness.is_some() || !blockers.is_empty())
+            {
+                return Err(DeletionError::RecordMismatch);
+            }
             match (end, disposition) {
                 (Some(end), state) if request.classify(end) == state => {}
+                (Some(end), RetentionDisposition::ClosureBlocked)
+                    if version == SelectionVersion::Blockers
+                        && request.classify(end) == RetentionDisposition::Eligible => {}
                 (
                     None,
                     RetentionDisposition::CaptureTimeUnknown
@@ -305,6 +398,8 @@ impl RetentionSelection {
                 timing_digest,
                 end,
                 disposition,
+                blockers,
+                closure_witness,
             });
         }
         if candidates
@@ -313,9 +408,13 @@ impl RetentionSelection {
         {
             return Err(ContractError::NonCanonicalOrdering.into());
         }
+        if version == SelectionVersion::Blockers && total_blockers == 0 {
+            return Err(DeletionError::RecordMismatch);
+        }
         Ok(Self {
             request,
             candidates,
+            version,
         })
     }
 }
@@ -328,7 +427,7 @@ fn read_digest(d: &mut CanonicalDecoder<'_>) -> Result<ContentDigest, DeletionEr
     Ok(digest)
 }
 
-/// Actual selector work; graph-closure work is separately reported by the deletion plan.
+/// Actual selector and shared dependency-scan work, including all-blocked selections.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RetentionAssessment {
     /// Immutable selection, including each same-sensor exclusion.
@@ -343,6 +442,14 @@ pub struct RetentionAssessment {
     pub outside_sensor: usize,
     /// Incomplete imports were not age-classified and are never selected.
     pub incomplete_imports: usize,
+    /// Objects scanned once for the reusable dependency universe; zero with no age-eligible input.
+    pub closure_scanned_objects: u64,
+    /// Bytes in that one dependency scan, separate from the metadata selector's allowance.
+    pub closure_scanned_bytes: u64,
+    /// Prospective cohort plans evaluated, including the fast path and final exact selection.
+    pub closure_evaluations: usize,
+    /// Distinct held import closures evaluated once and reused across prospective cohorts.
+    pub held_closures: usize,
 }
 
 #[derive(Default)]
@@ -389,7 +496,7 @@ fn import_identity(batch: &str) -> Result<Option<(ContentDigest, &str)>, Deletio
 /// Inspect completed file imports without decoding pixels, reading a host clock, or writing.
 /// The caller authorizes the deployment as for `plan_scope_deletion`. The explicit replay
 /// context must own this root. Bad custody, cancellation or a bound refuses the whole selection.
-pub fn assess_retention(
+fn assess_age_retention(
     deployment: &ReferenceDeployment,
     request: &RetentionRequest,
     cx: &ReplayCx,
@@ -558,6 +665,8 @@ pub fn assess_retention(
             timing_digest: ContentDigest::sha256(&timing.finish_checked()?),
             end: if exclusion.is_some() { None } else { Some(end) },
             disposition: exclusion.unwrap_or_else(|| request.classify(end)),
+            blockers: Vec::new(),
+            closure_witness: None,
         });
     }
     checkpoint(cx)?;
@@ -565,55 +674,159 @@ pub fn assess_retention(
         selection: RetentionSelection {
             request: request.clone(),
             candidates,
+            version: SelectionVersion::Age,
         },
         ledger_entries: usage.entries,
         capsules: usage.capsules,
         metadata_bytes: usage.bytes,
         outside_sensor,
         incomplete_imports,
+        closure_scanned_objects: 0,
+        closure_scanned_bytes: 0,
+        closure_evaluations: 0,
+        held_closures: 0,
     })
 }
 
-/// Assessment plus one union-closure plan. No eligible imports means no deletion plan.
+/// Assessment plus one union-closure plan. No safely selectable imports means no deletion plan.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RetentionPlan {
     /// Selection and exclusions from verified retained metadata.
     pub assessment: RetentionAssessment,
-    /// One exact plan, including all existing hold and effect blockers, or nothing to delete.
+    /// One exact plan for the selected cohort, or no selectable recording. Final aggregate
+    /// publication bounds can still block a plan; no blocker is ignored at commit.
     pub deletion: Option<DeletionPlan>,
 }
 
-/// Prepare one union deletion. Shared derivatives are classified once for the whole cohort.
+/// Assess conservative age and closure safety without writing any custody or authority.
+pub fn assess_retention(
+    deployment: &ReferenceDeployment,
+    request: &RetentionRequest,
+    cx: &ReplayCx,
+) -> Result<RetentionAssessment, DeletionError> {
+    Ok(plan_retention(deployment, request, cx)?.assessment)
+}
+
+fn cohort_checkpoint(cx: &ReplayCx) -> Result<(), DeletionError> {
+    cx.checkpoint(STAGE_RETENTION_COHORT).map_err(|_| DeletionError::Cancelled {
+        stage: STAGE_RETENTION_COHORT,
+    })
+}
+
+/// Prepare one union deletion using one reusable dependency scan and held-closure projection.
+///
+/// If the whole age-eligible cohort is safe, its legacy v1 selection stays byte-identical.
+/// Otherwise candidates are considered in import-identity order. A candidate is selected only
+/// when its union with the preceding selected candidates is unblocked; rejected additions retain
+/// the complete blocker list and trial-plan digest. This deliberately favors deterministic safe
+/// progress over searching every possible cohort. Every selected union is checked, not merely
+/// its individual imports: combining imports can expose previously shared evidence to deletion.
 pub fn plan_retention(
     deployment: &ReferenceDeployment,
     request: &RetentionRequest,
     cx: &ReplayCx,
 ) -> Result<RetentionPlan, DeletionError> {
-    let assessment = assess_retention(deployment, request, cx)?;
-    let deletion = if assessment.selection.imports().is_empty() {
-        None
-    } else {
-        Some(super::plan_scope_deletion(
-            deployment,
-            &DeletionScope::Retention(assessment.selection.clone()),
-            cx,
-        )?)
+    let mut assessment = assess_age_retention(deployment, request, cx)?;
+    if assessment.selection.imports().is_empty() {
+        return Ok(RetentionPlan { assessment, deletion: None });
+    }
+    cohort_checkpoint(cx)?;
+    let index = DeletionIndex::read(deployment)?;
+    let holds = super::holds::HoldIndex::read(deployment, cx)?;
+    let universe = super::walk::Universe::scan(deployment, &index, cx)?;
+    let protection = holds.protection(&universe, deployment, cx)?;
+    assessment.held_closures = protection.len();
+    let mut evaluate = |selection: &RetentionSelection| -> Result<DeletionPlan, DeletionError> {
+        cohort_checkpoint(cx)?;
+        assessment.closure_evaluations += 1;
+        let plan = universe.plan(deployment, &DeletionScope::Retention(selection.clone()))?;
+        assessment.closure_scanned_objects = plan.scanned_objects;
+        assessment.closure_scanned_bytes = plan.scanned_bytes;
+        let plan = protection.protect(plan, cx)?;
+        super::commit::admit_plan(deployment, plan, cx)
     };
+    let whole = evaluate(&assessment.selection)?;
+    if whole.blockers.is_empty() {
+        return Ok(RetentionPlan { assessment, deletion: Some(whole) });
+    }
+
+    let age_selection = assessment.selection.clone();
+    let mut selection = age_selection.clone();
+    selection.version = SelectionVersion::Blockers;
+    let mut selected = BTreeSet::new();
+    let mut total_blockers = 0;
+    for candidate in &mut selection.candidates {
+        if candidate.disposition != RetentionDisposition::Eligible {
+            continue;
+        }
+        // This internal trial is not a publishable selector: the public planner always
+        // recomputes the complete inventory. Its exact bytes serve only as a refusal witness.
+        let proposed = RetentionSelection {
+            request: request.clone(),
+            version: SelectionVersion::Age,
+            candidates: age_selection.candidates.iter().filter(|c| {
+                selected.contains(&c.import_identity) || c.import_identity == candidate.import_identity
+            }).cloned().collect(),
+        };
+        let plan = evaluate(&proposed)?;
+        if plan.blockers.is_empty() {
+            selected.insert(candidate.import_identity);
+        } else {
+            if plan.blockers.len() > MAX_RETENTION_BLOCKERS - total_blockers {
+                return Err(DeletionError::Bound { limit: "retention_blockers" });
+            }
+            total_blockers += plan.blockers.len();
+            if plan.blockers.iter().any(|f| [&f.kind, &f.subject, &f.detail].iter()
+                .any(|text| text.is_empty() || text.len() > MAX_BLOCKER_TEXT_BYTES)) {
+                return Err(DeletionError::Bound { limit: "retention_blocker_text" });
+            }
+            candidate.disposition = RetentionDisposition::ClosureBlocked;
+            candidate.closure_witness = Some(plan.digest()?);
+            candidate.blockers = plan.blockers;
+        }
+    }
+    if total_blockers == 0 {
+        // The smaller trial selectors may fit an aggregate publication bound that the
+        // complete inventory does not. No exclusion was proved: retain the original v1
+        // blocked plan rather than minting a noncanonical empty-v2 selection or pretending
+        // that the full request became executable.
+        return Ok(RetentionPlan { assessment, deletion: Some(whole) });
+    }
+    // The final plan binds the complete selection and every exclusion, not the smaller
+    // internal trial. It passes the same hold and aggregate authority-admission gates.
+    let deletion = if selected.is_empty() { None } else { Some(evaluate(&selection)?) };
+    cohort_checkpoint(cx)?;
+    assessment.selection = selection;
     Ok(RetentionPlan {
         assessment,
         deletion,
     })
 }
 
-pub(super) fn revalidate_selection(
+/// Revalidate legacy age metadata, or return the already revalidated v2 union plan without
+/// rescanning all source bytes. A decoded selection never grants authority on its own.
+pub(super) fn revalidate_plan(
     deployment: &ReferenceDeployment,
     selection: &RetentionSelection,
     cx: &ReplayCx,
-) -> Result<(), DeletionError> {
-    if assess_retention(deployment, selection.request(), cx)?.selection != *selection {
-        return Err(DeletionError::RecordMismatch);
+) -> Result<Option<DeletionPlan>, DeletionError> {
+    match selection.version {
+        SelectionVersion::Age => {
+            if assess_age_retention(deployment, selection.request(), cx)?.selection != *selection {
+                return Err(DeletionError::RecordMismatch);
+            }
+            Ok(None)
+        }
+        SelectionVersion::Blockers => {
+            let current = plan_retention(deployment, selection.request(), cx)?;
+            if current.assessment.selection != *selection {
+                return Err(DeletionError::RecordMismatch);
+            }
+            current.deletion.map(Some).ok_or_else(|| DeletionError::ScopeEmpty(
+                DeletionScope::Retention(selection.clone()).text(),
+            ))
+        }
     }
-    Ok(())
 }
 
 /// Execute exactly the approved cohort, or resume its retained plan after an interruption.
@@ -628,16 +841,7 @@ pub fn commit_retention(
     cx: &ReplayCx,
 ) -> Result<CommitReceipt, DeletionError> {
     checkpoint(cx)?;
-    let index = DeletionIndex::read(deployment)?;
-    if let Some(entry) = index.plan(plan_digest) {
-        if !matches!(&entry.plan.scope, DeletionScope::Retention(s) if s.request() == request) {
-            return Err(DeletionError::StalePlan(plan_digest));
-        }
-        return super::commit_deletion(deployment, plan_digest, approval, principal, cx);
-    }
-    let assessment = assess_retention(deployment, request, cx)?;
-    let scope = DeletionScope::Retention(assessment.selection);
-    super::commit::commit_scope(deployment, &scope, plan_digest, approval, principal, cx)
+    super::commit::commit_retention(deployment, request, plan_digest, approval, principal, cx)
 }
 
 #[cfg(test)]
@@ -724,6 +928,7 @@ mod tests {
     fn canonical_selection_binds_request_and_rejects_forged_eligibility() -> TestResult {
         let mut selection = RetentionSelection {
             request: request(100, 110)?,
+            version: SelectionVersion::Age,
             candidates: vec![RetentionCandidate {
                 import_identity: ContentDigest::sha256(b"import"),
                 manifest_digest: ContentDigest::sha256(b"manifest"),
@@ -733,6 +938,8 @@ mod tests {
                     latest_ns: 90,
                 }),
                 disposition: RetentionDisposition::Eligible,
+                blockers: Vec::new(),
+                closure_witness: None,
             }],
         };
         let mut e = CanonicalEncoder::new();
@@ -742,6 +949,10 @@ mod tests {
         assert_eq!(RetentionSelection::decode(&mut d)?, selection);
         d.ensure_finished()?;
         let original = selection.digest()?;
+        // Frozen legacy bytes: no witness or blocker-count suffix is added to v1.
+        assert_eq!(bytes.len(), 246);
+        assert_eq!(original.to_text(),
+            "sha256:2b224eae38f5c61ee817923971d45e4972b05936fa486728db0253f9855b75e0");
         selection.request = request(101, 110)?;
         assert_ne!(selection.digest()?, original);
         selection.request = request(0, 1)?;
@@ -760,9 +971,12 @@ mod tests {
             timing_digest: ContentDigest::sha256(b"timing"),
             end: None,
             disposition: RetentionDisposition::CaptureTimeUnknown,
+            blockers: Vec::new(),
+            closure_witness: None,
         };
         let selection = RetentionSelection {
             request: request(100, 100)?,
+            version: SelectionVersion::Age,
             candidates: vec![c.clone()],
         };
         assert!(selection.imports().is_empty());
@@ -775,6 +989,83 @@ mod tests {
         );
         Ok(())
     }
+    fn blocked_selection() -> Result<RetentionSelection, DeletionError> {
+        Ok(RetentionSelection {
+            request: request(100, 110)?,
+            version: SelectionVersion::Blockers,
+            candidates: vec![RetentionCandidate {
+                import_identity: ContentDigest::sha256(b"held import"),
+                manifest_digest: ContentDigest::sha256(b"manifest"),
+                timing_digest: ContentDigest::sha256(b"timing"),
+                end: Some(CaptureEnd { earliest_ns: 80, latest_ns: 90 }),
+                disposition: RetentionDisposition::ClosureBlocked,
+                blockers: vec![Finding {
+                    kind: "evidence_hold".to_owned(),
+                    subject: "incident".to_owned(),
+                    detail: "Exact retained hold record requires explicit release".to_owned(),
+                }],
+                closure_witness: Some(ContentDigest::sha256(b"trial plan")),
+            }],
+        })
+    }
+
+    fn decoded(selection: &RetentionSelection) -> Result<RetentionSelection, DeletionError> {
+        let mut e = CanonicalEncoder::new();
+        selection.encode(&mut e);
+        let bytes = e.finish_checked()?;
+        let mut d = CanonicalDecoder::new(&bytes);
+        let decoded = RetentionSelection::decode(&mut d)?;
+        d.ensure_finished()?;
+        Ok(decoded)
+    }
+
+    #[test]
+    fn v2_exclusions_bind_the_exact_reasons_and_trial_closure_without_becoming_members() -> TestResult {
+        let selection = blocked_selection()?;
+        assert_eq!(decoded(&selection)?, selection);
+        assert_eq!(selection.domain(), RETENTION_BLOCKER_SELECTION_DOMAIN);
+        assert!(selection.imports().is_empty());
+        let digest = selection.digest()?;
+        let mut changed = selection.clone();
+        changed.candidates[0].blockers[0].subject = "another-hold".to_owned();
+        assert_ne!(changed.digest()?, digest);
+        changed = selection.clone();
+        changed.candidates[0].closure_witness = Some(ContentDigest::sha256(b"different closure"));
+        assert_ne!(changed.digest()?, digest);
+        changed = selection.clone();
+        changed.version = SelectionVersion::Age;
+        assert!(decoded(&changed).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_v2_never_drops_a_blocker_or_upgrades_nonexpired_recordings() -> TestResult {
+        let good = blocked_selection()?;
+        for mutation in 0..7 {
+            let mut bad = good.clone();
+            let candidate = &mut bad.candidates[0];
+            match mutation {
+                0 => candidate.blockers.clear(),
+                1 => candidate.closure_witness = None,
+                2 => candidate.disposition = RetentionDisposition::Eligible,
+                3 => candidate.end = None,
+                4 => candidate.end = Some(CaptureEnd { earliest_ns: 1000, latest_ns: 2000 }),
+                5 => candidate.blockers.push(candidate.blockers[0].clone()),
+                _ => candidate.blockers[0].detail = "x".repeat(MAX_BLOCKER_TEXT_BYTES + 1),
+            }
+            assert!(decoded(&bad).is_err(), "mutation {mutation}");
+        }
+        let mut empty = good.clone();
+        empty.candidates[0].disposition = RetentionDisposition::Eligible;
+        empty.candidates[0].blockers.clear();
+        empty.candidates[0].closure_witness = None;
+        assert!(decoded(&empty).is_err());
+        let mut over = good;
+        over.candidates[0].blockers = vec![over.candidates[0].blockers[0].clone(); MAX_RETENTION_BLOCKERS + 1];
+        assert!(matches!(decoded(&over), Err(DeletionError::Bound { limit: "retention_blockers" })));
+        Ok(())
+    }
+
     #[test]
     fn budgets_refuse_instead_of_truncating_and_identity_parser_is_exact() -> TestResult {
         let mut used = 9;

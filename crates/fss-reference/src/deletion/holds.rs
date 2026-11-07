@@ -569,23 +569,14 @@ impl HoldIndex {
             .count()
     }
 
-    /// Add blockers for every held closure touched by the requested deletion. No hold means
-    /// byte-identical legacy plans. A shared derivative can block deletion of another import.
-    pub(super) fn protect(
+    /// Scan each distinct held import's closure once, for reuse across candidate cohorts.
+    pub(super) fn protection(
         &self,
         universe: &Universe,
         deployment: &ReferenceDeployment,
-        mut plan: DeletionPlan,
         cx: &ReplayCx,
-    ) -> Result<DeletionPlan, DeletionError> {
-        let mut closures = BTreeMap::new();
-        let removed: BTreeSet<_> = plan.deletable.iter().map(|o| o.digest).collect();
-        let retracted: BTreeSet<_> = plan.retractions.iter().map(|r| r.slot.as_str()).collect();
-        let tombstoned: BTreeSet<_> = plan
-            .tombstones
-            .iter()
-            .map(|t| t.object_id.as_str())
-            .collect();
+    ) -> Result<HoldProtection, DeletionError> {
+        let mut closures: BTreeMap<ContentDigest, ProtectedClosure> = BTreeMap::new();
         for hold in self
             .current
             .values()
@@ -594,28 +585,72 @@ impl HoldIndex {
             checkpoint(cx, STAGE_HOLD_READ)?;
             let held_import = hold.request.import_identity;
             if let std::collections::btree_map::Entry::Vacant(entry) = closures.entry(held_import) {
-                entry
-                    .insert(universe.plan(deployment, &super::DeletionScope::Import(held_import))?);
-            }
-            let held = closures.get(&held_import).ok_or(HoldError::InvalidRecord)?;
-            // A sensor- or event-scope plan is blocked when any member import is held.
-            let overlap = plan.imports.contains(&held_import)
-                || held.deletable.iter().any(|o| removed.contains(&o.digest))
-                || held.retained.iter().any(|o| removed.contains(&o.digest))
-                || held
-                    .retractions
-                    .iter()
-                    .any(|r| retracted.contains(r.slot.as_str()))
-                || held
-                    .tombstones
-                    .iter()
-                    .any(|t| tombstoned.contains(t.object_id.as_str()));
-            if overlap {
-                plan.blockers.push(Finding {
-                    kind: "evidence_hold".to_owned(),
-                    subject: hold.request.hold_id.clone(),
-                    detail: format!("held import {held_import}; record {}; explicit release required before deleting overlapping evidence", hold.digest()),
+                let held = universe.plan(deployment, &super::DeletionScope::Import(held_import))?;
+                entry.insert(ProtectedClosure {
+                    objects: held.deletable.iter().map(|o| o.digest)
+                        .chain(held.retained.iter().map(|o| o.digest)).collect(),
+                    slots: held.retractions.into_iter().map(|r| r.slot).collect(),
+                    ledger_objects: held.tombstones.into_iter().map(|t| t.object_id).collect(),
+                    findings: Vec::new(),
                 });
+            }
+            closures.get_mut(&held_import).ok_or(HoldError::InvalidRecord)?.findings.push(Finding {
+                kind: "evidence_hold".to_owned(),
+                subject: hold.request.hold_id.clone(),
+                detail: format!("held import {held_import}; record {}; explicit release required before deleting overlapping evidence", hold.digest()),
+            });
+        }
+        Ok(HoldProtection { closures })
+    }
+
+    /// Add blockers for every held closure touched by the requested deletion. No hold means
+    /// byte-identical legacy plans. A shared derivative can block deletion of another import.
+    pub(super) fn protect(
+        &self,
+        universe: &Universe,
+        deployment: &ReferenceDeployment,
+        plan: DeletionPlan,
+        cx: &ReplayCx,
+    ) -> Result<DeletionPlan, DeletionError> {
+        self.protection(universe, deployment, cx)?.protect(plan, cx)
+    }
+}
+
+/// A snapshot-bound hold projection. It cannot grant deletion authority or release a hold.
+pub(super) struct HoldProtection {
+    closures: BTreeMap<ContentDigest, ProtectedClosure>,
+}
+
+struct ProtectedClosure {
+    objects: BTreeSet<ContentDigest>,
+    slots: BTreeSet<String>,
+    ledger_objects: BTreeSet<String>,
+    findings: Vec<Finding>,
+}
+
+impl HoldProtection {
+    /// Distinct held import closures evaluated while constructing this projection.
+    pub(super) fn len(&self) -> usize {
+        self.closures.len()
+    }
+
+    /// Apply the same closure-overlap rule to an individual import or a complete union.
+    pub(super) fn protect(
+        &self,
+        mut plan: DeletionPlan,
+        cx: &ReplayCx,
+    ) -> Result<DeletionPlan, DeletionError> {
+        let removed: BTreeSet<_> = plan.deletable.iter().map(|o| o.digest).collect();
+        let retracted: BTreeSet<_> = plan.retractions.iter().map(|r| r.slot.as_str()).collect();
+        let tombstoned: BTreeSet<_> = plan.tombstones.iter().map(|t| t.object_id.as_str()).collect();
+        for (held_import, held) in &self.closures {
+            checkpoint(cx, STAGE_HOLD_READ)?;
+            let overlap = plan.imports.contains(held_import)
+                || held.objects.iter().any(|digest| removed.contains(digest))
+                || held.slots.iter().any(|slot| retracted.contains(slot.as_str()))
+                || held.ledger_objects.iter().any(|object| tombstoned.contains(object.as_str()));
+            if overlap {
+                plan.blockers.extend(held.findings.iter().cloned());
             }
         }
         plan.blockers.sort();

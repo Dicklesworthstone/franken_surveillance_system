@@ -4,7 +4,8 @@
 //! Legacy plan/commit retain their semantics. `retention-plan` and `retention-commit` additionally
 //! require a sensor, a positive --retain-for-ns and --attested-now-ns EARLIEST:LATEST. They select
 //! whole recordings by conservative capture bounds, then use one existing union deletion.
-//! Source gaps and unknown time retain recordings; active holds block the whole cohort.
+//! Source gaps and unknown time retain recordings. Held or otherwise blocked additions remain
+//! explicit exclusions, so independent expired closures can proceed under their exact approval.
 //! No standing policy changes, host clock reads, automatic hold releases or remote erasure.
 
 use std::ffi::OsString;
@@ -215,11 +216,15 @@ fn retention_json(selection: &RetentionSelection) -> String {
         let end = c.capture_end().map_or_else(|| "null".to_owned(), |end| {
             format!("{{\"earliest_ns\":\"{}\",\"latest_ns\":\"{}\"}}", end.earliest_ns, end.latest_ns)
         });
-        format!("{{\"import_identity\":\"{}\",\"manifest_digest\":\"{}\",\"timing_digest\":\"{}\",\"capture_end\":{},\"disposition\":\"{}\"}}",
+        let blocked = c.closure_witness().map_or_else(String::new, |witness| {
+            format!(",\"trial_plan_digest\":\"{witness}\",\"blockers\":{}", findings(c.blockers()))
+        });
+        format!("{{\"import_identity\":\"{}\",\"manifest_digest\":\"{}\",\"timing_digest\":\"{}\",\"capture_end\":{},\"disposition\":\"{}\"{blocked}}}",
             c.import_identity(), c.manifest_digest(), c.timing_digest(), end, c.disposition().as_str())
     }).collect();
     format!(
-        "{{\"format\":\"fss.retention_selection.v1\",\"sensor_id\":{},\"retain_for_ns\":\"{}\",\"attested_now\":{{\"earliest_ns\":\"{}\",\"latest_ns\":\"{}\"}},\"time_provenance\":\"owner_assertions_not_observed_clock\",\"eligibility\":\"latest_capture_plus_retention_not_after_earliest_attested_now\",\"candidates\":[{}],\"standing_policy_changed\":false,\"holds_released\":false}}",
+        "{{\"format\":\"{}\",\"sensor_id\":{},\"retain_for_ns\":\"{}\",\"attested_now\":{{\"earliest_ns\":\"{}\",\"latest_ns\":\"{}\"}},\"time_provenance\":\"owner_assertions_not_observed_clock\",\"eligibility\":\"latest_capture_plus_retention_not_after_earliest_attested_now\",\"candidates\":[{}],\"standing_policy_changed\":false,\"holds_released\":false}}",
+        selection.domain(),
         quote(request.sensor().as_str()),
         request.retain_for_ns(),
         now.earliest.0,
@@ -429,23 +434,23 @@ fn retention_preview(
     let status = match &preview.deletion {
         Some(plan) if !plan.blockers.is_empty() => "blocked",
         Some(_) => "planned",
+        None if assessment.selection.candidates().iter().any(|c| !c.blockers().is_empty()) => "blocked",
         None => "nothing_eligible",
     };
     let plan = match &preview.deletion {
         Some(plan) => plan_json(action, plan)?,
         None => "null".to_owned(),
     };
-    let selection_passes = if preview.deletion.is_some() {
-        2_u64
-    } else {
-        1_u64
-    };
     Ok(format!(
-        "{{\"format\":\"fss.retention_cleanup_preview.v1\",\"status\":\"{status}\",\"selection\":{},\"selector_work\":{{\"passes\":{selection_passes},\"ledger_entries\":{},\"capsules\":{},\"metadata_bytes\":{}}},\"outside_sensor_imports\":{},\"incomplete_imports_not_selected\":{},\"deletion_plan\":{},\"writes\":\"none\",\"qualification\":\"implemented_not_qualified\"}}\n",
+        "{{\"format\":\"fss.retention_cleanup_preview.v1\",\"status\":\"{status}\",\"selection\":{},\"selector_work\":{{\"passes\":1,\"ledger_entries\":{},\"capsules\":{},\"metadata_bytes\":{}}},\"closure_work\":{{\"scanned_objects\":{},\"scanned_bytes\":{},\"cohort_evaluations\":{},\"held_closures\":{}}},\"outside_sensor_imports\":{},\"incomplete_imports_not_selected\":{},\"deletion_plan\":{},\"writes\":\"none\",\"qualification\":\"implemented_not_qualified\"}}\n",
         retention_json(&assessment.selection),
-        assessment.ledger_entries * selection_passes,
-        assessment.capsules * selection_passes,
-        assessment.metadata_bytes * selection_passes,
+        assessment.ledger_entries,
+        assessment.capsules,
+        assessment.metadata_bytes,
+        assessment.closure_scanned_objects,
+        assessment.closure_scanned_bytes,
+        assessment.closure_evaluations,
+        assessment.held_closures,
         assessment.outside_sensor,
         assessment.incomplete_imports,
         plan.trim()
