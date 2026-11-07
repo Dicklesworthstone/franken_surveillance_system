@@ -26,6 +26,15 @@ for pair in "wyzeedgeai_cam_v4_test_protocol:14.9.50039.r" "kvsWebrtcClientMaste
   done
 done
 
+# Camera identity: registry.yaml is the single truth. Resolve wyze-51's MAC by
+# id; fall back to the historical hardcoded default if the registry/python is
+# unavailable (the bring-up script itself ARP-sweeps by this MAC, so a moved
+# camera is found regardless — the MAC just has to be the right device).
+REG_PY="$(cd "$(dirname "$0")" && pwd)/registry.py"
+if [ -z "${CAM_MAC:-}" ] && [ -z "${MAC:-}" ] && [ -x "${PY:-/opt/homebrew/bin/python3}" ] && [ -f "$REG_PY" ]; then
+  REG_MAC=$("$PY" "$REG_PY" resolve wyze-51 2>/dev/null | awk -F'mac=' '{print $2}' | awk '{print $1}')
+  [ -n "$REG_MAC" ] && export CAM_MAC="$REG_MAC"
+fi
 export CAM_MAC="${CAM_MAC:-${MAC:-80:48:2c:4b:cf:0b}}"
 export OTA_ENC="${OTA_ENC:-3}"
 export OTA_ENR="${OTA_ENR:-Tt6RL78/0V0Pe1y2}"

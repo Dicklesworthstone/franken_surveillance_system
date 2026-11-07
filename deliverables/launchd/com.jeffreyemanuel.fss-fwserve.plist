@@ -11,6 +11,8 @@
 		<string>/opt/homebrew/bin/python3</string>
 		<string>/Users/jemanuel/projects/franken_surveillance_system/deliverables/scripts/fwserve_with_beacon.py</string>
 	</array>
+	<key>RunAtLoad</key>
+	<true/>
 	<key>StandardErrorPath</key>
 	<string>/tmp/ota/fwserve8080.log</string>
 	<key>StandardOutPath</key>
