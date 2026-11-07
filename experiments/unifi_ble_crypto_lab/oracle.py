@@ -35,6 +35,17 @@ def main():
     print("peer_pub", packet(default_key, 0, 0, msgpack.packb(("DHPK", True, peer_public))).hex())
     print("auth", packet(default_key, 1, 0, msgpack.packb(("AUTH", "DH"))).hex())
     print("api", packet(derived, 2, 3, b"synthetic").hex())
+    print("api_response", packet(derived, 2, 3, b"response").hex())
+    # Both directions use the same synthetic key and sequence-derived nonce.
+    # Show the shared ciphertext prefix reveals the XOR of plaintext bytes.
+    request = packet(derived, 2, 3, b"synthetic")[18:]
+    response = packet(derived, 2, 3, b"response")[18:]
+    request_plain = struct.pack(">HB", 2, 3) + b"synthetic"
+    response_plain = struct.pack(">HB", 2, 3) + b"response"
+    assert bytes(a ^ b for a, b in zip(request, response)) == bytes(
+        a ^ b for a, b in zip(request_plain, response_plain)
+    )
+    print("synthetic_directional_nonce_reuse_xor", "confirmed")
 
 
 if __name__ == "__main__":
