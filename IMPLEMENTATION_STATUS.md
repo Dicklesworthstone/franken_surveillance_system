@@ -4,6 +4,39 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Conditional source-time windows for local decoded output
+
+The decoded-frame CLI now accepts paired `--output-window-ns START:EXCLUSIVE_END`
+and `--output-clock-basis BASIS` options with an output file. JPEG decode/reopen/replay
+and native AVC/HEVC output share a pure bounded selector. Closed capture intervals
+must lie wholly inside or outside the requested half-open range; a straddling
+uncertainty interval refuses the entire operation. Missing capture-time provenance
+cannot be promoted by choosing a broad window. Current file-import hints remain
+explicit operator assumptions on the retained estimated clock.
+
+The native decoder still processes required IDR/IRAP dependencies through successful
+range EOF. Excluded frames never reach the output writer or JPEG encoder, and their
+pixel-plane receipt hashes are not needed. A fixed 1024-bit duplicate map and constant
+running digest state preserve display order, exact clock/source scope, independent
+capsule pins and nonrefillable source bounds. The request and ordered selection
+digests are distinct from media, custody and coverage claims. Empty selections,
+cancellation, incomplete owner counts and any prior refusal cannot produce completion.
+Completion is reported only after the owning output writer succeeds and syncs.
+
+This implements local conditional trimming, without embedded playback timing.
+Full VIT-023 remains open for FLDT grants, payment-mask attestation and custody
+publication. Lossy JPEG still does not prove exact reconstructed mask pixels.
+See [the source-time workflow](docs/RETAINED_DECODE_WORKFLOW.md#source-time-windows-for-decoded-output).
+
+**Validation:** twelve pure-core and five CLI contracts are authored, including
+signed bounds, uncertainty, unknown time, all clock bases, source/order drift,
+bounded duplicate detection, selected JPEG work and late refusal. The pure-core
+attempt returned exit 101 after its last visible fss-core compilation; its diagnostics
+became inaccessible with the execution workspace, so neither a passing run nor its
+failure cause is established. The separate full CLI build was SIGKILLed in unchanged
+Asupersync. Final recovered-source formatting, native and process execution remain
+pending; static source review is not execution evidence.
+
 ## Exact integer JPEG transform factorization
 
 The native JPEG encoder factors the Q14 transform by mirrored input symmetry:

@@ -20,6 +20,8 @@ const HEVC: &[u8] =
 
 #[path = "file_video_stream_cli/mjpeg.rs"]
 mod mjpeg;
+#[path = "file_video_stream_cli/window.rs"]
+mod window;
 
 struct Directory(PathBuf);
 impl Directory {

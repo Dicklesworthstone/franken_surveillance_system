@@ -58,12 +58,15 @@ fn field(output: &Output, name: &str) -> TestResult<String> {
         .ok_or_else(|| std::io::Error::other(format!("missing field {name}")).into())
 }
 fn imported(name: &str) -> TestResult<(OwnedDirectory, PathBuf, String)> {
+    imported_with_timing(name, false)
+}
+fn imported_with_timing(name: &str, timed: bool) -> TestResult<(OwnedDirectory, PathBuf, String)> {
     let directory = OwnedDirectory::new(name)?;
     let root = directory.0.join("deployment");
     let input = directory.0.join("recording.mjpeg");
     fs::write(&input, [JPEG, JPEG].concat())?;
-    let output = command(&root, "import")
-        .arg("--input")
+    let mut import = command(&root, "import");
+    import.arg("--input")
         .arg(&input)
         .args([
             "--sensor",
@@ -72,8 +75,14 @@ fn imported(name: &str) -> TestResult<(OwnedDirectory, PathBuf, String)> {
             "stream:media-cli",
             "--receive-time-ns",
             "1000000000",
-        ])
-        .output()?;
+        ]);
+    if timed {
+        import.args([
+            "--capture-start-ns", "100000000", "--capture-uncertainty-ns", "1000",
+            "--assumed-fps", "10",
+        ]);
+    }
+    let output = import.output()?;
     success(&output);
     let id = field(&output, "import_identity")?;
     fs::remove_file(input)?;
@@ -90,6 +99,52 @@ fn frame_command(root: &Path, action: &str, id: &str) -> Command {
         "gray",
     ]);
     command
+}
+
+#[test]
+fn retained_jpeg_decode_read_and_replay_apply_the_same_source_time_window() -> TestResult {
+    let (directory, root, id) = imported_with_timing("window-replay", true)?;
+    let mut first_bytes = None;
+    let mut first_selection = None;
+    for action in ["decode", "read-decoded", "verify-decoded"] {
+        let path = directory.0.join(format!("{action}.pgm"));
+        let output = frame_command(&root, action, &id)
+            .arg("--output").arg(&path)
+            .args(["--output-window-ns", "150000000:250000000", "--output-clock-basis", "estimated"])
+            .output()?;
+        success(&output);
+        assert_eq!(field(&output, "output_window_complete")?, "true");
+        assert_eq!(field(&output, "output_window_selected_frames")?, "1");
+        assert_eq!(field(&output, "output_window_selected_earliest_ns")?, "199999000");
+        assert_eq!(field(&output, "output_window_selected_latest_ns")?, "200001000");
+        let bytes = fs::read(path)?;
+        let selection = field(&output, "output_window_selection_digest")?;
+        if let Some(first) = &first_bytes {
+            assert_eq!(&bytes, first);
+            assert_eq!(Some(&selection), first_selection.as_ref());
+        } else {
+            first_bytes = Some(bytes);
+            first_selection = Some(selection);
+        }
+    }
+    for (name, interval, basis) in [
+        ("outside", "0:50000000", "estimated"),
+        ("boundary", "200000000:250000000", "estimated"),
+        ("wrong-clock", "150000000:250000000", "utc_disciplined"),
+    ] {
+        let path = directory.0.join(format!("{name}.jpg"));
+        let receipt = directory.0.join(format!("{name}.receipt"));
+        let output = frame_command(&root, "read-decoded", &id)
+            .arg("--output").arg(&path)
+            .arg("--receipt-out").arg(&receipt)
+            .args(["--output-format", "mjpeg", "--output-window-ns", interval, "--output-clock-basis", basis])
+            .output()?;
+        assert!(!output.status.success());
+        assert!(!path.exists());
+        assert!(!receipt.exists());
+        assert!(!String::from_utf8_lossy(&output.stdout).contains("output_window_complete=true"));
+    }
+    Ok(())
 }
 fn motion_command(root: &Path, id: &str, report: &Path, comparisons: &str) -> Command {
     let mut command = command(root, "motion");

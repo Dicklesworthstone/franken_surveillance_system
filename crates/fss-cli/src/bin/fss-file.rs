@@ -67,6 +67,10 @@ const HELP: &str = "fss-file <import|inspect|verify|extract|select-movie|decode|
           require mjpeg; encode work is cumulative and separate from decode work.\n\
           --max-output-bytes N caps the whole MJPEG stream (default 64 MiB, max 256 MiB);\n\
           it also caps native video PGM output. New private files only, no overwrite.\n\
+          [--output-window-ns START:EXCLUSIVE_END --output-clock-basis BASIS] requires --output.\n\
+          Selects only fully contained retained capture intervals on that exact clock basis;\n\
+          unknown timing, uncertain boundaries and empty results are refused. No UTC conversion.\n\
+          File timing remains an operator assumption; codec preroll is decoded but never exported.\n\
   decode of an H.264 (annexb/mp4avc/mkvavc) or H.265 (hevc/mp4hevc/mkvhevc) import:\n\
           --segment N must be an IDR access unit (H.265: IDR,\n\
           CRA or BLA) and [--segment-count M] (1..1024) decodes N..N+M in display order;\n\
@@ -1035,6 +1039,49 @@ mod tests {
         }
         for command in ["inspect", "verify", "extract", "motion", "select-movie"] {
             assert!(parse(&media_args(command, &["--output-format", "mjpeg"])).is_err());
+        }
+    }
+
+    #[test]
+    fn output_windows_require_paired_clock_and_output_and_exact_signed_bounds() {
+        let base = [
+            "--segment", "0", "--interpretation", "gray", "--output", "selected.pgm",
+        ];
+        for command in ["decode", "read-decoded", "verify-decoded"] {
+            for interval in ["0:1", "-20:-10", "100000000:200000000"] {
+                let mut args = base.to_vec();
+                args.extend([
+                    "--output-window-ns", interval, "--output-clock-basis", "estimated",
+                ]);
+                assert!(parse(&media_args(command, &args)).is_ok());
+            }
+            for interval in ["", "1", "1:1", "2:1", "1:2:3", "+1:2", "1.0:2", " 1:2",
+                "0:170141183460469231731687303715884105728",
+                "-170141183460469231731687303715884105728:170141183460469231731687303715884105727"] {
+                let mut args = base.to_vec();
+                args.extend([
+                    "--output-window-ns", interval, "--output-clock-basis", "estimated",
+                ]);
+                assert!(parse(&media_args(command, &args)).is_err());
+            }
+            for extra in [
+                vec!["--output-window-ns", "0:1"],
+                vec!["--output-clock-basis", "estimated"],
+                vec!["--output-window-ns", "0:1", "--output-clock-basis", "utc"],
+            ] {
+                let mut args = base.to_vec();
+                args.extend(extra);
+                assert!(parse(&media_args(command, &args)).is_err());
+            }
+            assert!(parse(&media_args(command, &[
+                "--segment", "0", "--interpretation", "gray",
+                "--output-window-ns", "0:1", "--output-clock-basis", "estimated",
+            ])).is_err());
+        }
+        for command in ["inspect", "verify", "extract", "motion", "select-movie"] {
+            assert!(parse(&media_args(command, &[
+                "--output-window-ns", "0:1", "--output-clock-basis", "estimated",
+            ])).is_err());
         }
     }
 }

@@ -1267,6 +1267,8 @@ mod video_access_unit;
 pub mod video_budget;
 /// Declared BT.601 limited-range conversion of retained H.264/H.265 4:2:0 pictures to RGB.
 pub mod video_rgb;
+/// Conservative source-time selection of decoded output with explicit clock and provenance pins.
+pub mod window;
 
 #[cfg(test)]
 mod tests;

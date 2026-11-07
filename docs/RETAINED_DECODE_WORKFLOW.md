@@ -95,6 +95,81 @@ change the pixels or silently replace an existing result. The canonical object g
 both raw-pixel and compressed-source identities. PGM rendering is a separate export, with a
 separate byte digest, and does not change the underlying evidence.
 
+## Source-time windows for decoded output
+
+The decoded-frame commands accept paired
+`--output-window-ns START:EXCLUSIVE_END --output-clock-basis BASIS` options
+with `--output FILE`. The interval uses signed integer nanoseconds on the
+retained source's declared coordinates. File imports with explicit capture hints
+currently use `estimated`; a timestamp that resembles Unix time does not change
+that basis or establish UTC accuracy.
+
+The retained manifest must classify capture timing as `operator_assumption`.
+An `unknown` time classification is refused even if a broad requested window
+contains its placeholder interval. Every decoded frame must retain the requested
+clock basis, source sensor and stream, and independently pinned capsule bytes.
+
+Selection compares the source's **closed** conservative capture interval to the
+requested **half-open** window. A frame is included only when its earliest capture
+is at least START and its latest capture is strictly before EXCLUSIVE_END. A wholly
+disjoint frame is skipped. A frame whose uncertainty crosses either boundary
+refuses the complete operation. Empty selections also refuse. Capture intervals
+are never narrowed to manufacture an exact match.
+
+For an imported three-frame AVC range with an explicit 100,000,000 ns start,
+1,000 ns uncertainty and 10 fps assumption, this selects the middle frame:
+
+```sh
+fss-file decode --root DEPLOYMENT --site SITE --import-id sha256:HEX \
+  --segment 0 --segment-count 3 --interpretation ycbcr \
+  --output selected.mjpeg --output-format mjpeg \
+  --output-window-ns 150000000:250000000 --output-clock-basis estimated \
+  --work-units 1000000000
+```
+
+The native decoder still starts at the required IDR/IRAP and decodes dependencies
+through successful range EOF. Excluded preroll and postroll are never passed to
+the output writer or JPEG encoder; their decoded pixel planes need no receipt
+hashing. The complete decode allowance still applies, while JPEG encoding work
+is spent only on selected frames. Existing display order is preserved, including
+when source segment or capture order differs. The selector visits the complete
+range instead of assuming that a late timestamp means all following frames can
+be omitted.
+
+The pure selector uses a fixed 1024-bit duplicate-segment bitmap, one bounded
+capsule encoding per decision, and constant-size running digest state. It retains
+no frame array or image buffer. Its request binds the import identity and root,
+requested source range, clock, timing classification and exact window. Its
+selection digest binds every ordered inclusion/exclusion decision and the final
+counts and selected capture envelope.
+
+After successful selection and output sync, the command emits
+`output_window_request_digest`, `output_window_selection_digest`, observed,
+selected and skipped frame counts, and the selected capture envelope.
+`output_window_complete=true` is emitted only after the output owner succeeds.
+A refusal after earlier frames were written may leave a private incomplete file;
+it never certifies that prefix as a shorter successful export. The existing
+single-JPEG PGM writer performs file sync; native video and MJPEG retain their
+existing private-path and directory-sync ownership.
+
+This is local conditional source-time trimming. The output streams retain their
+existing format: no playback timing is embedded, gaps are not filled, and the
+selected envelope is not coverage proof. Current privacy masks still precede all
+output. Lossy MJPEG remains unsuitable as proof of exact reconstructed mask
+values; FLDT grants, payment-mask attestations and custody publication remain
+outstanding for the full VIT-023 reviewer route.
+
+**Verification:** twelve pure-core contracts and five CLI contracts (three native
+video process cases, one JPEG decode/reopen/replay case, and one grammar case)
+are authored. They cover exhaustive small-interval containment, signed bounds,
+unknown time, clock/source drift, ordering, duplicates, cancellation, empty and
+incomplete ranges, selected native JPEG bytes/work, and late refusal fencing.
+The pure-core Cargo attempt exited 101 after its last visible fss-core compilation;
+its diagnostics became unavailable with the execution workspace. No passing
+window execution is established. The full CLI check was separately SIGKILLed in
+unchanged Asupersync before command tests could run. Recovered-source formatting,
+native contracts and process execution remain required.
+
 ## Private grayscale JPEG/MJPEG output
 
 `fss-file decode`, `read-decoded`, and `verify-decoded` accept an explicit

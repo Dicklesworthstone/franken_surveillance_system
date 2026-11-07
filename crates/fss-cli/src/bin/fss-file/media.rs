@@ -18,6 +18,7 @@ use fss_reference::ingest::recorded_decode::h265::{
 use fss_reference::ingest::recorded_decode::video_budget::{
     RecordedVideoDecodeBudget, VIDEO_DECODE_WORK_MODEL,
 };
+use fss_reference::ingest::recorded_decode::window::DecodedOutputWindow;
 use fss_reference::ingest::recorded_decode::{
     ComponentInterpretation, DecodeBudget, DecodeLimits, RecordedDecodeError,
     RecordedDecodeRequest, RecordedFrame,
@@ -31,6 +32,8 @@ use std::path::{Path, PathBuf};
 mod pgm_stream;
 #[path = "jpeg_stream.rs"]
 mod jpeg_stream;
+#[path = "output_window.rs"]
+mod output_window;
 
 const MAX_SCAN_FRAMES: usize = 128;
 
@@ -60,6 +63,7 @@ pub(super) struct FrameAction {
     output_format: OutputFormat,
     jpeg_quality: u8,
     encode_work_units: u64,
+    output_window: Option<DecodedOutputWindow>,
 }
 
 #[derive(Debug)]
@@ -116,6 +120,7 @@ pub(super) fn accepts_option(command: &str, option: &str) -> bool {
                 option,
                 "--segment" | "--output" | "--receipt-out" | "--output-format"
                     | "--jpeg-quality" | "--encode-work-units"
+                    | "--output-window-ns" | "--output-clock-basis"
             ))
         || (command == "decode" && matches!(option, "--segment-count" | "--max-output-bytes"))
         || (matches!(command, "read-decoded" | "verify-decoded")
@@ -279,6 +284,7 @@ pub(super) fn parse(
             output_format,
             jpeg_quality,
             encode_work_units,
+            output_window: output_window::parse(values)?,
         }))
     }
 }
@@ -298,7 +304,7 @@ pub(super) fn run(
                 "annexb" | "mp4avc" | "mkvavc"
             ) =>
         {
-            run_video_decode(action, false, deployment, root, cx, out)
+            run_video_decode(action, retained, false, deployment, root, cx, out)
         }
         Action::Frame(action)
             if matches!(
@@ -306,9 +312,9 @@ pub(super) fn run(
                 "hevc" | "mp4hevc" | "mkvhevc"
             ) =>
         {
-            run_video_decode(action, true, deployment, root, cx, out)
+            run_video_decode(action, retained, true, deployment, root, cx, out)
         }
-        Action::Frame(action) => run_frame(action, deployment, root, cx, out),
+        Action::Frame(action) => run_frame(action, retained, deployment, root, cx, out),
         Action::Motion(action) => run_motion(action, retained, deployment, root, cx, out),
     }
 }
@@ -334,6 +340,7 @@ fn source_selection_lines(
 
 fn run_frame(
     action: &FrameAction,
+    retained: &RetainedFileImport,
     deployment: &mut ReferenceDeployment,
     root: &Path,
     cx: &ReplayCx,
@@ -348,6 +355,7 @@ fn run_frame(
     if action.segment_count != 1 {
         return Err(std::io::Error::other("--segment-count applies only to H.264 and H.265 imports; JPEG frames decode one segment").into());
     }
+    let mut selection = output_window::prepare(action, retained)?;
     let mut jpeg_export = if action.output_format == OutputFormat::Mjpeg {
         prepare_video_export(action, root, cx)?
     } else {
@@ -365,6 +373,19 @@ fn run_frame(
     if matches!(action.mode, FrameMode::Verify) {
         frame.verify_by_replay(deployment, &action.request, &mut budget, cx)?;
     }
+    if let Some(selector) = &mut selection {
+        let capsule = frame.receipt().capsule();
+        selector.observe(
+            0,
+            action.request.segment_index as u64,
+            capsule,
+            ContentDigest::sha256(&capsule.try_canonical_bytes()?),
+            cx.is_cancelled(),
+        )?;
+    }
+    // A single JPEG outside the requested interval is an empty selection, not a successful
+    // zero-frame output. Finalize this decision before any image or receipt file is created.
+    let selection_receipt = output_window::finish(selection, 1, cx)?;
     if action.output_format == OutputFormat::Mjpeg {
         let cancelled = || cx.is_cancelled();
         let mut encode_budget =
@@ -394,6 +415,7 @@ fn run_frame(
     if let Some(path) = &action.receipt_output {
         write_new(path, &frame.receipt().encoded()?, root, cx)?;
     }
+    output_window::report(action.output_window.as_ref(), selection_receipt.as_ref(), out)?;
     let receipt = frame.receipt();
     let [width, height] = receipt.dimensions();
     writeln!(out, "decode_identity={}", receipt.identity())?;
@@ -455,6 +477,7 @@ fn run_frame(
 /// Failure retains consumed work and an explicit incomplete marker; no native frame is published.
 fn run_video_decode(
     action: &FrameAction,
+    retained: &RetainedFileImport,
     hevc: bool,
     deployment: &mut ReferenceDeployment,
     root: &Path,
@@ -475,9 +498,9 @@ fn run_video_decode(
     let mut encode_budget =
         EncodeBudget::with_cancellation_probe(action.encode_work_units, &cancelled);
     let result = if hevc {
-        run_h265(action, deployment, root, cx, out, &mut budget, &mut encode_budget)
+        run_h265(action, retained, deployment, root, cx, out, (&mut budget, &mut encode_budget))
     } else {
-        run_h264(action, deployment, root, cx, out, &mut budget, &mut encode_budget)
+        run_h264(action, retained, deployment, root, cx, out, (&mut budget, &mut encode_budget))
     };
     encode_usage_lines(action, &encode_budget, result.is_ok(), out)?;
     writeln!(out, "decode_work_units={}", budget.used())?;
@@ -584,13 +607,15 @@ fn finish_video_export(
 /// decode it is not published, so read-decoded/verify-decoded refuse Annex-B imports.
 fn run_h264(
     action: &FrameAction,
+    retained: &RetainedFileImport,
     deployment: &mut ReferenceDeployment,
     root: &Path,
     cx: &ReplayCx,
     out: &mut impl Write,
-    budget: &mut RecordedVideoDecodeBudget,
-    encode_budget: &mut EncodeBudget<'_>,
+    budgets: (&mut RecordedVideoDecodeBudget, &mut EncodeBudget<'_>),
 ) -> RunResult<()> {
+    let (budget, encode_budget) = budgets;
+    let mut selection = output_window::prepare(action, retained)?;
     let mut export = prepare_video_export(action, root, cx)?;
     let limits = action.request.decode_limits;
     let decoder_limits = DecoderLimits {
@@ -621,6 +646,17 @@ fn run_h264(
         action.request.segment_index, action.segment_count
     )?;
     while let Some(frame) = range.next_frame_with_budget(deployment, budget, cx)? {
+        if let Some(selector) = &mut selection
+            && !selector.observe(
+                frame.output_index(),
+                frame.segment_index(),
+                frame.capsule(),
+                frame.capsule_digest(),
+                cx.is_cancelled(),
+            )?
+        {
+            continue;
+        }
         if let Some(export) = &mut export {
             export.frame(
                 jpeg_stream::FrameInput {
@@ -662,7 +698,9 @@ fn run_h264(
             receipt.capsule().capture.latest.0
         )?;
     }
+    let selection_receipt = output_window::finish(selection, range.decoded(), cx)?;
     finish_video_export(export, cx, out)?;
+    output_window::report(action.output_window.as_ref(), selection_receipt.as_ref(), out)?;
     writeln!(
         out,
         "pixel_format=h264_yuv420p_luma\ndecoder_identity={}",
@@ -681,13 +719,15 @@ fn run_h264(
 /// a frame. Like H.264, the frames are a deterministic, unpublished derivation of custody.
 fn run_h265(
     action: &FrameAction,
+    retained: &RetainedFileImport,
     deployment: &mut ReferenceDeployment,
     root: &Path,
     cx: &ReplayCx,
     out: &mut impl Write,
-    budget: &mut RecordedVideoDecodeBudget,
-    encode_budget: &mut EncodeBudget<'_>,
+    budgets: (&mut RecordedVideoDecodeBudget, &mut EncodeBudget<'_>),
 ) -> RunResult<()> {
+    let (budget, encode_budget) = budgets;
+    let mut selection = output_window::prepare(action, retained)?;
     let mut export = prepare_video_export(action, root, cx)?;
     let limits = action.request.decode_limits;
     let decoder_limits = H265DecoderLimits {
@@ -719,6 +759,17 @@ fn run_h265(
         action.request.segment_index, action.segment_count
     )?;
     while let Some(frame) = range.next_frame_with_budget(deployment, budget, cx)? {
+        if let Some(selector) = &mut selection
+            && !selector.observe(
+                frame.output_index(),
+                frame.segment_index(),
+                frame.capsule(),
+                frame.capsule_digest(),
+                cx.is_cancelled(),
+            )?
+        {
+            continue;
+        }
         if let Some(export) = &mut export {
             export.frame(
                 jpeg_stream::FrameInput {
@@ -771,7 +822,9 @@ fn run_h265(
     for segment in range.skipped_rasl_segments() {
         writeln!(out, "skipped_rasl_segment={segment}")?;
     }
+    let selection_receipt = output_window::finish(selection, range.decoded(), cx)?;
     finish_video_export(export, cx, out)?;
+    output_window::report(action.output_window.as_ref(), selection_receipt.as_ref(), out)?;
     writeln!(
         out,
         "pixel_format=h265_yuv420p_luma\ndecoder_identity={}",
