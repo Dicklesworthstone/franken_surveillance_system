@@ -93,7 +93,11 @@ done
 ip="$(resolve_ip)"
 [ -n "$ip" ] || { log "FATAL: present but the MAC resolved to no address"; exit 4; }
 log "unit $ip — gap ${GUARD_GAP}s, then one shot"
-emit fire "{"ip":"$ip","gap_s":${GUARD_GAP},"addr":"$ADDR"}"
+# instrumented-fire classification (OMP review P2): every fire must carry
+# DS-open latency, time-since-wake, and the outcome signature so 579
+# ambiguous negatives become a stratified classifier corpus.
+FIRE_TS=$(date +%s)
+emit fire "{\"ip\":\"$ip\",\"gap_s\":${GUARD_GAP},\"addr\":\"$ADDR\",\"ts\":$FIRE_TS}"
 sleep "$GUARD_GAP"
 
 # state before the shot: a crash mid-fire must not produce a second payload
@@ -122,6 +126,8 @@ case "$out" in
   *"Traceback (most recent call last)"*|*"SyntaxError"*|*"TypeError"*)
     log "GUARD CRASHED (rc=$rc) before a usable verdict — not a payload miss; fix the guard, then FORCE=1"
     echo "crash $ip $(date '+%Y-%m-%d %H:%M:%S')" > "$STATE"
+    OUTCOME_TS=$(date +%s); LAT=$((OUTCOME_TS - FIRE_TS))
+    emit rop_result "{\"ip\":\"$ip\",\"outcome\":\"guard-crash\",\"latency_s\":$LAT,\"sig\":\"crash\",\"rc\":$rc}"
     exit 1
     ;;
 esac
