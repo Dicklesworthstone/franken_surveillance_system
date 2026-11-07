@@ -1617,6 +1617,19 @@ After the accept loop gained concurrent controller polling, strict-remote job
 the pre-media clock, early-reply, late-reply and absent-reply cases. Both
 results were acknowledged and source release was confirmed. These are still
 type-checks, not executed tests or physical-camera evidence.
+The current standalone trial was then built as strict-remote job
+`30098575685845093`; its terminal result was acknowledged and source released.
+The Linux executable SHA-256 was
+`0101c02fddb10da047cf20da3482da7b349e87a20a2c5d050f5a94230937d784`.
+An independent [loopback TLS peer](../experiments/unifi_tls_05_server_lab/media_before_reply_fixture.py)
+then passed two synthetic cases on that exact executable. In both it required a
+clock reply before opening media and sent disposable AVC data. One sent the
+settings reply before media; the other never sent it. Both produced a private
+MP4 which FFprobe independently read as H.264 with three decoded frames; the
+trial retained the effect-reconciliation qualification. The fixture source
+SHA-256 was `0a8fd9bf2dff84de4596fdc61d2eee048f0e94fb48c76f2f71f222bd5b4b85a4`.
+This proves the synthetic process paths only, not live G4 behavior,
+authenticated identity, continuous recording or actual effect settlement.
 
 A second unchanged owner replay produced two fragments with 300 video and 155
 audio frames. The independent decoder returned exit 0 but reported a
