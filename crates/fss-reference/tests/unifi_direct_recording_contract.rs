@@ -3847,17 +3847,12 @@ fn av_evidence_publishes_and_reopens_exact_source_objects() -> TestResult {
         HostSpoolIo,
         effect_journal::{EffectJournalLimits, FileEffectJournal},
     };
-    use fss_reference::unifi_direct::av_owned_sink;
+    use fss_reference::unifi_direct::{av_bootstrap, av_owned_sink, pipeline};
     use std::sync::Arc;
-    let bootstrap = av_owned_sink::OwnedSink::bootstrap(av_owned_sink::BootstrapInputs {
-        video_configuration: video_configuration.ok_or("missing owned video configuration")?,
-        audio: av_owned_sink::Audio::InBand {
-            record: audio_record,
-            observation,
-        },
-        first_segment: segment,
+    let mut collector = av_bootstrap::Collector::new(
+        None,
         retention,
-        policy: av_owned_sink::BootstrapPolicy {
+        av_owned_sink::BootstrapPolicy {
             max_separation_ms: 5_000,
             jitter_ms: 0,
             max_epoch_frames: 8,
@@ -3865,8 +3860,38 @@ fn av_evidence_publishes_and_reopens_exact_source_objects() -> TestResult {
             media_limits: Mp4Limits::default(),
             evidence_limits: EvidenceLimits::default(),
         },
-    })
-    .map_err(|_| "in-band owned sink bootstrap failed")?;
+    );
+    assert!(!collector.ready());
+    assert!(matches!(
+        collector.collect(
+            Push::Source {
+                record: video_configuration.ok_or("missing owned video configuration")?,
+                disposition: SourceDisposition::Configuration
+            },
+            None
+        ),
+        av_bootstrap::Collected::Retained
+    ));
+    assert!(matches!(
+        collector.collect(
+            Push::Source {
+                record: audio_record,
+                disposition: SourceDisposition::PreRoll
+            },
+            Some(pipeline::AudioEvent::Observed(observation))
+        ),
+        av_bootstrap::Collected::Retained
+    ));
+    assert!(matches!(
+        collector.collect(Push::Segment(segment), None),
+        av_bootstrap::Collected::Retained
+    ));
+    assert!(collector.ready());
+    let inputs = collector
+        .into_inputs()
+        .map_err(|_| "collector incomplete")?;
+    let bootstrap = av_owned_sink::OwnedSink::bootstrap(inputs)
+        .map_err(|_| "in-band owned sink bootstrap failed")?;
     assert_eq!(bootstrap.origin.audio_ticks, 1024);
     let mut owned = bootstrap.sink;
     assert!(owned.offer(bootstrap.first_segment, capture).is_ok());
@@ -4268,5 +4293,144 @@ fn owned_sink_bootstrap_rejects_late_or_mismatched_sources_without_losing_them()
         ContentDigest::sha256(retained.fragment().bytes()),
         first_digest
     );
+    Ok(())
+}
+
+#[test]
+fn collector_preserves_mismatches_later_segments_and_interrupted_custody() -> TestResult {
+    use fss_container::Mp4Limits;
+    use fss_core::ContentDigest;
+    use fss_packet::extended_flv::{aac, aac_track};
+    use fss_reference::unifi_direct::{av_bootstrap, av_owned_sink, evidence, pipeline};
+
+    let policy = av_owned_sink::BootstrapPolicy {
+        max_separation_ms: 5_000,
+        jitter_ms: 0,
+        max_epoch_frames: 8,
+        max_audio_frames: 8,
+        media_limits: Mp4Limits::default(),
+        evidence_limits: evidence::Limits::default(),
+    };
+    let retention = ContentDigest::sha256(b"collector retention");
+    let incomplete = av_bootstrap::Collector::new(Some([0x14, 0x08]), retention, policy);
+    let incomplete = match incomplete.into_inputs() {
+        Err(value) => value.0,
+        Ok(_) => return Err("incomplete collector accepted".into()),
+    };
+    let parts = incomplete.into_parts();
+    assert_eq!(parts.retention, retention);
+    assert!(parts.video.is_none() && parts.first_segment.is_none());
+    assert!(matches!(
+        parts.audio,
+        Some(av_owned_sink::Audio::SuppliedUnverified([0x14, 0x08]))
+    ));
+
+    let (mut wire, original) = fixture_with_audio_intervals(0, false, false, false, Some(64))?;
+    let insertion = usize::try_from(original[1].offset())? + original[1].bytes().len();
+    let mut config_wire = vec![0x77; 3];
+    config_wire.extend(tag(8, 0, &[0xaf, 0, 0x14, 0x08]));
+    wire.splice(insertion..insertion, config_wire);
+    let mut framer = Framer::new(FlvLimits::default(), 1024 * 1024)?;
+    framer.append(0, &wire)?;
+    let mut track = aac_track::Track::new(FlvLimits::default(), aac::Limits::default());
+    let mut recorder = Recorder::new(KEY, Limits::default())?;
+    let mut collector = av_bootstrap::Collector::new(None, retention, policy);
+    let mut other_record = None;
+    let mut mismatched = false;
+    let mut forwarded_header = false;
+    let mut forwarded_later = false;
+    while let Next::Record(record) = framer.take()? {
+        let observation = track.observe(&record)?;
+        let event = match observation {
+            aac_track::Observation::Header | aac_track::Observation::Other => None,
+            value => Some(pipeline::AudioEvent::Observed(value)),
+        };
+        let push = recorder.push(record).map_err(|r| r.reason)?;
+        if let Push::Source {
+            record,
+            disposition: SourceDisposition::Configuration,
+        } = &push
+        {
+            other_record = Some(record.try_duplicate()?);
+            let mut interrupted =
+                av_bootstrap::Collector::new(Some([0x14, 0x08]), retention, policy);
+            let digest = ContentDigest::sha256(record.bytes());
+            assert!(matches!(
+                interrupted.collect(
+                    Push::Source {
+                        record: record.try_duplicate()?,
+                        disposition: SourceDisposition::Configuration
+                    },
+                    None
+                ),
+                av_bootstrap::Collected::Retained
+            ));
+            let interrupted = match interrupted.into_inputs() {
+                Err(value) => value.0,
+                Ok(_) => return Err("interrupted collector accepted".into()),
+            };
+            assert_eq!(
+                ContentDigest::sha256(
+                    interrupted
+                        .into_parts()
+                        .video
+                        .ok_or("interrupted source lost")?
+                        .bytes()
+                ),
+                digest
+            );
+        }
+        let (push, event) = if matches!(
+            event,
+            Some(pipeline::AudioEvent::Observed(
+                aac_track::Observation::Configuration { .. }
+            ))
+        ) {
+            let wrong = other_record.take().ok_or("missing mismatched source")?;
+            let wrong_digest = ContentDigest::sha256(wrong.bytes());
+            let event = match collector.collect(
+                Push::Source {
+                    record: wrong,
+                    disposition: SourceDisposition::PreRoll,
+                },
+                event,
+            ) {
+                av_bootstrap::Collected::Forward {
+                    push: Push::Source { record, .. },
+                    audio: Some(event),
+                } => {
+                    assert_eq!(ContentDigest::sha256(record.bytes()), wrong_digest);
+                    event
+                }
+                _ => return Err("mismatched source or observation lost".into()),
+            };
+            mismatched = true;
+            (push, Some(event))
+        } else {
+            (push, event)
+        };
+        if let av_bootstrap::Collected::Forward { push, audio: _ } = collector.collect(push, event)
+        {
+            match push {
+                Push::Source {
+                    disposition: SourceDisposition::Header,
+                    ..
+                } => forwarded_header = true,
+                Push::Segment(_) => {
+                    forwarded_later = true;
+                    break;
+                }
+                _ => (),
+            }
+        }
+    }
+    assert!(mismatched && forwarded_header && forwarded_later && collector.ready());
+    let inputs = collector
+        .into_inputs()
+        .map_err(|_| "collector lost original inputs")?;
+    assert!(matches!(inputs.audio, av_owned_sink::Audio::InBand { .. }));
+    let bootstrap =
+        av_owned_sink::OwnedSink::bootstrap(inputs).map_err(|_| "collector inputs refused")?;
+    assert_eq!(bootstrap.origin.audio_ticks, 1024);
     Ok(())
 }

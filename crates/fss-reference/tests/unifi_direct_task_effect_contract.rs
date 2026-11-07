@@ -1291,8 +1291,10 @@ fn conversation_scenario_with_worker_guard(revoke_stream: bool, revoke_after_sta
                         }
                     }
                     if !pending {return Err("audio event was not produced".into());}
+                    assert!(supervisor.has_pending_audio());
                     policy.peer.set(false);
                     assert!(supervisor.take_audio_event(&owner).is_none());
+                    assert!(supervisor.has_pending_audio());
                     assert!(matches!(supervisor.step(&mut owner,&operations[6],Duration::from_secs(5)).await,
                         supervisor::Step::ControllerStopped(fss_reference::unifi_direct::receive::Stop::AdmissionRevoked)));
                     let retired=supervisor.retire();
@@ -1344,7 +1346,7 @@ fn conversation_scenario_with_worker_guard(revoke_stream: bool, revoke_after_sta
                                 use fss_reference::unifi_direct::{av_recording, av_sink, evidence};
                                 let av_init=supervisor.av_initialization(&audio_config)?.ok_or("missing A/V initialization")?;
                                 if async_archive {
-                                    use fss_reference::unifi_direct::{archive, av_owned_sink, av_worker, av_worker_guard};
+                                    use fss_reference::unifi_direct::{archive, av_bootstrap, av_owned_sink, av_worker, av_worker_guard};
                                     use std::sync::atomic::{AtomicBool, Ordering};
                                     struct Retention { block: AtomicBool, entered: AtomicBool, allow: AtomicBool }
                                     impl archive::RetainAuthority for Retention {
@@ -1359,23 +1361,28 @@ fn conversation_scenario_with_worker_guard(revoke_stream: bool, revoke_after_sta
                                     }
                                     struct Unblock(Arc<Retention>);
                                     impl Drop for Unblock { fn drop(&mut self) { self.0.block.store(false, Ordering::Release); } }
-                                    let mut first_segment=None;
+                                    let mut collector=av_bootstrap::Collector::new(Some(audio_bytes),
+                                        ContentDigest::sha256(b"worker guard retention"),
+                                        av_owned_sink::BootstrapPolicy { max_separation_ms:5_000, jitter_ms:0, max_epoch_frames:8, max_audio_frames:8,
+                                            media_limits:fss_container::Mp4Limits::default(), evidence_limits:evidence::Limits::default() });
+                                    assert!(matches!(collector.collect(recording::Push::Source {record,disposition},None),av_bootstrap::Collected::Retained));
                                     for _ in 0..128 {
                                         match supervisor.step(&mut owner,&operations[6],Duration::from_secs(5)).await {
-                                            supervisor::Step::Media(pipeline::Step::Recording(recording::Push::Segment(segment))) => {first_segment=Some(segment);break;},
-                                            supervisor::Step::Media(pipeline::Step::Recording(recording::Push::Source {record,..})) => originals.extend_from_slice(record.bytes()),
-                                            supervisor::Step::Media(pipeline::Step::Recording(recording::Push::Buffered)|pipeline::Step::Progress {..}) | supervisor::Step::TimeSyncWritten => (),
+                                            supervisor::Step::Media(pipeline::Step::Recording(push)) => {
+                                                if let recording::Push::Source {record,..}=&push { originals.extend_from_slice(record.bytes()); }
+                                                match collector.collect(push,None) {
+                                                    av_bootstrap::Collected::Retained => (),
+                                                    av_bootstrap::Collected::Forward {push: recording::Push::Source {..}|recording::Push::Buffered, audio:None} => (),
+                                                    _ => return Err("unexpected uncollected bootstrap result".into()),
+                                                }
+                                                if collector.ready() {break;}
+                                            },
+                                            supervisor::Step::Media(pipeline::Step::Progress {..}) | supervisor::Step::TimeSyncWritten => (),
                                             other => return Err(format!("unexpected bootstrap source result: {other:?}").into()),
                                         }
                                     }
-                                    let bootstrap=av_owned_sink::OwnedSink::bootstrap(av_owned_sink::BootstrapInputs {
-                                        video_configuration:record,
-                                        audio:av_owned_sink::Audio::SuppliedUnverified(audio_bytes),
-                                        first_segment:first_segment.ok_or("first source segment missing")?,
-                                        retention:ContentDigest::sha256(b"worker guard retention"),
-                                        policy:av_owned_sink::BootstrapPolicy { max_separation_ms:5_000, jitter_ms:0, max_epoch_frames:8, max_audio_frames:8,
-                                            media_limits:fss_container::Mp4Limits::default(), evidence_limits:evidence::Limits::default() },
-                                    }).map_err(|_|"owned sink bootstrap refused")?;
+                                    let inputs=collector.into_inputs().map_err(|_|"first source segment missing")?;
+                                    let bootstrap=av_owned_sink::OwnedSink::bootstrap(inputs).map_err(|_|"owned sink bootstrap refused")?;
                                     assert_eq!(bootstrap.origin.audio_ticks,1024);
                                     let sink=bootstrap.sink;
                                     let first_segment=bootstrap.first_segment;

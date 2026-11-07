@@ -128,6 +128,13 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Supervisor<'scope, 'task
         self.pipeline.enable_audio_tracking()
     }
 
+    /// Whether an audio result still belongs to this pipeline. This reports
+    /// backpressure only; transferring the event still requires current task
+    /// and controller admission through [`Self::take_audio_event`].
+    pub fn has_pending_audio(&self) -> bool {
+        self.pipeline.has_pending_audio()
+    }
+
     /// Transfer a pending audio result only while the bound task and controller
     /// admission remain live. Withheld observations return at retirement.
     pub fn take_audio_event(

@@ -22,6 +22,8 @@ pub mod archive;
 pub mod av_evidence;
 /// Owned A/V archival inputs suitable for a separately supervised worker.
 pub mod av_owned_sink;
+/// Source-preserving collection of the first A/V archive inputs.
+pub mod av_bootstrap;
 /// Transactional, source-preserving A/V fragment derivation.
 pub mod av_recording;
 /// Bounded ownership and backpressure for A/V archive handoff.
