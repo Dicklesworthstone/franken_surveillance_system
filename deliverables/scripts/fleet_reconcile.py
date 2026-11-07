@@ -27,6 +27,7 @@ import re
 import socket
 import subprocess
 import sys
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -156,8 +157,18 @@ def r3_backups(plan):
         return
 
     def fix():
+        # kickstart only works on a LOADED job; after a bootout (or first boot
+        # before bootstrap) the job must be (re)bootstrapped from its plist.
         sh("sudo -n launchctl kickstart -k system/com.jeffreyemanuel.fss-backup-recv")
-    action("R3-backups", f"ports down {missing} → kickstart fss-backup-recv", fix)
+        # kickstart works only on a LOADED job; after bootout, bootstrap needs a
+        # settle delay (measured: immediate bootstrap → error 5, +5 s → success)
+        for attempt in range(3):
+            time.sleep(5)
+            if all(port_open(p) for p in range(444, 450)):
+                return
+            sh("sudo -n launchctl bootstrap system /Library/LaunchDaemons/com.jeffreyemanuel.fss-backup-recv.plist")
+        time.sleep(5)
+    action("R3-backups", f"ports down {missing} → kickstart (bootstrap fallback)", fix)
 
 
 def r4_forge(plan):
