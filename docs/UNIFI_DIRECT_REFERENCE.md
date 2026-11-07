@@ -1570,6 +1570,26 @@ identity and independent A/V synchronization remain unverified. No media was
 saved or played and no camera setting was changed. This does not establish
 native controller handoff or continuous recording.
 
+The original listener startup waits for a correlated stream-setting reply
+before accepting the media connection. The pinned reference sends the setting
+without waiting for that reply before media startup; a camera that delays its
+reply until media is consumed could therefore stall the original ordering.
+An experimental `start_before_reply` path now returns after the journaled
+local stream write and accepts the media connection with the reply still
+pending on the caller-owned controller session. A supervisor must continue to
+poll that same session, observe any later reply, and reconcile the effect; the
+local write and a TCP connection do not prove the camera accepted the setting
+or produced valid video. This path does not yet poll controller messages while
+waiting for the initial media connection, and it has not been qualified on the
+physical G4. A task-owned fixture that withholds the settings reply until the
+pipeline reads media has been added; its test result is pending.
+In strict-remote job `30098575685845043` the new listener and conversation
+code compiled, but the test target failed to compile because the isolated
+snapshot had an older container module. That module was refreshed; subsequent
+job `30098575685845044` was refused before compilation by the worker's protected
+disk reservation. These are not a passing integration result. The compiled
+snapshot predates formatting-only changes and a fixture assertion rewrite.
+
 A second unchanged owner replay produced two fragments with 300 video and 155
 audio frames. The independent decoder returned exit 0 but reported a
 non-monotonic timestamp diagnostic, and a separate video-only decode also

@@ -343,9 +343,9 @@ impl conversation::Approval for FixtureApproval<'_> {
     }
 }
 
-fn conversation_scenario(revoke_stream: bool, revoke_after_start: bool, revoke_audio_pending: bool) -> Test {
+fn conversation_scenario(revoke_stream: bool, revoke_after_start: bool, revoke_audio_pending: bool, reply_after_media: bool) -> Test {
     let path = std::fs::canonicalize(std::env::temp_dir())?.join(format!(
-        "fss-unifi-task-conversation-{}-{revoke_stream}-{revoke_after_start}-{revoke_audio_pending}",
+        "fss-unifi-task-conversation-{}-{revoke_stream}-{revoke_after_start}-{revoke_audio_pending}-{reply_after_media}",
         std::process::id(),
     ));
     std::fs::create_dir(&path)?;
@@ -511,6 +511,7 @@ fn conversation_scenario(revoke_stream: bool, revoke_after_start: bool, revoke_a
                     drop(wire.splice(13..13,audio));
                 }
                 let expected=wire.clone();
+                let (media_seen_tx,media_seen_rx)=std::sync::mpsc::channel();
                 let peer=std::thread::spawn(move || -> io::Result<()> {
                     let mut socket=std::net::TcpStream::connect_timeout(&address,Duration::from_secs(5))?;
                     socket.set_read_timeout(Some(Duration::from_secs(5)))?;
@@ -535,10 +536,16 @@ fn conversation_scenario(revoke_stream: bool, revoke_after_start: bool, revoke_a
                     let destination=message.split_once("tcp://").and_then(|(_,suffix)|suffix.split_once('?')).map(|(addr,_)|addr).ok_or_else(||io::Error::other("missing stream destination"))?;
                     let destination:SocketAddr=destination.parse().map_err(io::Error::other)?;
                     if !matches!(destination,SocketAddr::V4(addr) if addr.ip().is_loopback() && addr.port()!=0) {return Err(io::Error::other("invalid stream destination"));}
-                    socket.write_all(&frame(br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"ChangeVideoSettings","messageId":9,"inResponseTo":4}"#))?;
+                    if !reply_after_media {
+                        socket.write_all(&frame(br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"ChangeVideoSettings","messageId":9,"inResponseTo":4}"#))?;
+                    }
                     let mut media=std::net::TcpStream::connect_timeout(&destination,Duration::from_secs(5))?;
-                    let split=wire.len().min(100);
+                    let split=if reply_after_media {1} else {wire.len().min(100)};
                     media.write_all(&wire[..split])?;
+                    if reply_after_media {
+                        media_seen_rx.recv_timeout(Duration::from_secs(5)).map_err(io::Error::other)?;
+                        socket.write_all(&frame(br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"ChangeVideoSettings","messageId":9,"inResponseTo":4}"#))?;
+                    }
                     if revoke_after_start || revoke_audio_pending {
                         let mut last=[0u8;1];
                         return match socket.read(&mut last) { Ok(0)=>Ok(()), _=>Err(io::Error::other("revoked controller did not retire")) };
@@ -572,7 +579,16 @@ fn conversation_scenario(revoke_stream: bool, revoke_after_start: bool, revoke_a
                 assert!(matches!(listener::start(&mut owner,&mut session,&invalid,framer,recorder).await,Err(listener::StartError::Listener(listener::Error::Configuration))));
                 let framer=Framer::new(FlvLimits::default(),1024*1024)?;
                 let recorder=recording::Recorder::new(SourceKey {connection:1,generation:1},recording::Limits::default())?;
-                let started=listener::start(&mut owner,&mut session,&start,framer,recorder).await;
+                let started=if reply_after_media {
+                    let started=listener::start_before_reply(&mut owner,&mut session,&start,framer,recorder).await?;
+                    assert_eq!(started.dispatched.time_syncs,1);
+                    Ok(started.pipeline)
+                } else {
+                    listener::start(&mut owner,&mut session,&start,framer,recorder).await.map(|started| {
+                        assert_eq!(started.reply,conversation::Reply { status_code:None, success:None, time_syncs:1 });
+                        started.pipeline
+                    })
+                };
                 if revoke_stream {
                     assert!(matches!(started,Err(listener::StartError::Conversation(conversation::Error::Effect))));
                     let retired=session.retire();
@@ -580,9 +596,15 @@ fn conversation_scenario(revoke_stream: bool, revoke_after_start: bool, revoke_a
                     peer.join().map_err(|_|"fixture peer panic")??;
                     return Ok(());
                 }
-                let started=started?;
-                assert_eq!(started.reply,conversation::Reply { status_code:None, success:None, time_syncs:1 });
-                let mut supervisor=supervisor::Supervisor::new(session,started.pipeline,conditions);
+                let pipeline=started?;
+                let mut supervisor=supervisor::Supervisor::new(session,pipeline,conditions);
+                if reply_after_media {
+                    match supervisor.step(&mut owner,&operations[4],Duration::from_secs(5)).await {
+                        supervisor::Step::Media(pipeline::Step::Progress {appended:1})=>(),
+                        other=>return Err(format!("expected media before the withheld reply: {other:?}").into()),
+                    }
+                    media_seen_tx.send(()).map_err(io::Error::other)?;
+                }
                 let audio_bytes=[0x14,0x08];
                 let audio_config=fss_packet::extended_flv::aac::Configuration::parse_explicit(&audio_bytes)?;
                 assert!(supervisor.av_initialization(&audio_config)?.is_none());
@@ -639,6 +661,7 @@ fn conversation_scenario(revoke_stream: bool, revoke_after_start: bool, revoke_a
                     return Ok(());
                 }
                 let mut later_syncs=0;
+                let mut late_replies=0;
                 let mut originals=Vec::new();
                 let mut segments=0;
                 let mut frames=0;
@@ -648,6 +671,7 @@ fn conversation_scenario(revoke_stream: bool, revoke_after_start: bool, revoke_a
                         supervisor::Step::Media(pipeline::Step::Recording(recording::Push::Source {record,..})) => originals.extend_from_slice(record.bytes()),
                         supervisor::Step::Media(pipeline::Step::Recording(recording::Push::Buffered) | pipeline::Step::Progress {..}) => (),
                         supervisor::Step::TimeSyncWritten => later_syncs+=1,
+                        supervisor::Step::Observation(Observation::StreamSettingsReply {..}) if reply_after_media => late_replies+=1,
                         supervisor::Step::Media(pipeline::Step::Recording(recording::Push::Segment(segment))) => {
                             for record in segment.source() { originals.extend_from_slice(record.bytes()); }
                             let mut movie=supervisor.initialization().ok_or("missing initialization")?.bytes().to_vec();
@@ -674,6 +698,7 @@ fn conversation_scenario(revoke_stream: bool, revoke_after_start: bool, revoke_a
                     }
                 }
                 assert_eq!(later_syncs,1);
+                assert_eq!(late_replies,if reply_after_media {1} else {0});
                 let retired=supervisor.retire();
                 assert_eq!(retired.controller.previous_phase, fss_reference::unifi_direct::Phase::AgreementReplyObserved);
                 assert_eq!(retired.controller.stream_request, None);
@@ -749,22 +774,27 @@ fn conversation_scenario(revoke_stream: bool, revoke_after_start: bool, revoke_a
 
 #[test]
 fn owned_conversation_requests_a_stream_that_reaches_the_recording_pipeline() -> Test {
-    conversation_scenario(false, false, false)
+    conversation_scenario(false, false, false, false)
+}
+
+#[test]
+fn media_can_be_processed_before_the_camera_settings_reply() -> Test {
+    conversation_scenario(false, false, false, true)
 }
 
 #[test]
 fn revoked_listener_policy_prevents_stream_setting_dispatch() -> Test {
-    conversation_scenario(true, false, false)
+    conversation_scenario(true, false, false, false)
 }
 
 #[test]
 fn revoked_controller_admission_stops_buffered_media_and_retains_it() -> Test {
-    conversation_scenario(false, true, false)
+    conversation_scenario(false, true, false, false)
 }
 
 #[test]
 fn revoked_controller_withholds_pending_audio_and_returns_it_at_retirement() -> Test {
-    conversation_scenario(false, false, true)
+    conversation_scenario(false, false, true, false)
 }
 
 #[test]

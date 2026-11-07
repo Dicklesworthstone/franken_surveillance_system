@@ -275,6 +275,21 @@ pub struct Started {
     pub pipeline: Pipeline,
 }
 
+/// A media connection accepted after a local stream write, while its camera
+/// settings reply remains outstanding on the caller-owned session.
+#[must_use]
+pub struct StartedBeforeReply {
+    /// Local dispatch observation; it does not establish remote acceptance.
+    pub dispatched: super::conversation::Dispatched,
+    /// Accepted task-bound pipeline; no media has yet been read or retained.
+    pub pipeline: Pipeline,
+}
+
+enum StartProgress {
+    Confirmed(super::conversation::Reply),
+    Dispatched(super::conversation::Dispatched),
+}
+
 struct ScopedStreamAuthority<'a> {
     inner: &'a dyn super::receive::StreamAuthority,
     policy: &'a dyn Admission,
@@ -305,6 +320,45 @@ pub async fn start<IO: asupersync::io::AsyncRead + asupersync::io::AsyncWrite + 
     framer: Framer,
     recorder: Recorder,
 ) -> Result<Started, StartError> {
+    let (progress, pipeline) = start_inner(owner, session, cfg, framer, recorder, true).await?;
+    match progress {
+        StartProgress::Confirmed(reply) => Ok(Started { reply, pipeline }),
+        StartProgress::Dispatched(_) => Err(StartError::Conversation(
+            super::conversation::Error::Configuration,
+        )),
+    }
+}
+
+/// Accept media after the local stream request write without waiting for a
+/// settings reply. The caller must supervise the same session for that reply,
+/// clock requests and admission changes, and reconcile the committed effects.
+pub async fn start_before_reply<IO: asupersync::io::AsyncRead + asupersync::io::AsyncWrite + Unpin>(
+    owner: &mut super::conversation::Owner<'_, '_, '_>,
+    session: &mut super::receive::Session<'_, '_, IO>,
+    cfg: &Start<'_>,
+    framer: Framer,
+    recorder: Recorder,
+) -> Result<StartedBeforeReply, StartError> {
+    let (progress, pipeline) = start_inner(owner, session, cfg, framer, recorder, false).await?;
+    match progress {
+        StartProgress::Dispatched(dispatched) => Ok(StartedBeforeReply {
+            dispatched,
+            pipeline,
+        }),
+        StartProgress::Confirmed(_) => Err(StartError::Conversation(
+            super::conversation::Error::Configuration,
+        )),
+    }
+}
+
+async fn start_inner<IO: asupersync::io::AsyncRead + asupersync::io::AsyncWrite + Unpin>(
+    owner: &mut super::conversation::Owner<'_, '_, '_>,
+    session: &mut super::receive::Session<'_, '_, IO>,
+    cfg: &Start<'_>,
+    framer: Framer,
+    recorder: Recorder,
+    wait_for_reply: bool,
+) -> Result<(StartProgress, Pipeline), StartError> {
     if !valid_wait(cfg.bind_wait)
         || !valid_wait(cfg.conversation_wait)
         || !valid_wait(cfg.accept_wait)
@@ -370,10 +424,21 @@ pub async fn start<IO: asupersync::io::AsyncRead + asupersync::io::AsyncWrite + 
         stream_authority: &stream_guard,
         wall: owner.wall,
     };
-    let reply = guarded_owner
-        .start(session, &conversation)
-        .await
-        .map_err(StartError::Conversation)?;
+    let progress = if wait_for_reply {
+        StartProgress::Confirmed(
+            guarded_owner
+                .start(session, &conversation)
+                .await
+                .map_err(StartError::Conversation)?,
+        )
+    } else {
+        StartProgress::Dispatched(
+            guarded_owner
+                .start_dispatched(session, &conversation)
+                .await
+                .map_err(StartError::Conversation)?,
+        )
+    };
     let pipeline = listener
         .accept(
             framer,
@@ -384,5 +449,5 @@ pub async fn start<IO: asupersync::io::AsyncRead + asupersync::io::AsyncWrite + 
         )
         .await
         .map_err(StartError::Listener)?;
-    Ok(Started { reply, pipeline })
+    Ok((progress, pipeline))
 }

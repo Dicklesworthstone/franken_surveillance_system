@@ -114,6 +114,19 @@ pub struct Reply {
     pub time_syncs: usize,
 }
 
+/// A locally written stream request whose camera reply remains outstanding.
+/// This does not prove that the camera applied the setting or sent media.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Dispatched {
+    /// Number of time-sync requests answered before the stream write.
+    pub time_syncs: usize,
+}
+
+enum StartResult {
+    Dispatched(Dispatched),
+    Reply(Reply),
+}
+
 /// Runtime resources and current policies for one owned conversation.
 pub struct Owner<'a, 'scope, 'task> {
     /// The already-owned runtime context.
@@ -300,6 +313,32 @@ impl Owner<'_, '_, '_> {
         session: &mut Session<'_, '_, IO>,
         cfg: &Config<'_>,
     ) -> Result<Reply, Error> {
+        match self.start_inner(session, cfg, true).await? {
+            StartResult::Reply(reply) => Ok(reply),
+            StartResult::Dispatched(_) => Err(Error::Configuration),
+        }
+    }
+
+    /// Write the stream request and return before waiting for its reply.
+    /// The caller must continue supervising the same session and reconcile
+    /// all committed effects; the request may still fail or never be answered.
+    pub async fn start_dispatched<IO: AsyncRead + AsyncWrite + Unpin>(
+        &mut self,
+        session: &mut Session<'_, '_, IO>,
+        cfg: &Config<'_>,
+    ) -> Result<Dispatched, Error> {
+        match self.start_inner(session, cfg, false).await? {
+            StartResult::Dispatched(dispatched) => Ok(dispatched),
+            StartResult::Reply(_) => Err(Error::Configuration),
+        }
+    }
+
+    async fn start_inner<IO: AsyncRead + AsyncWrite + Unpin>(
+        &mut self,
+        session: &mut Session<'_, '_, IO>,
+        cfg: &Config<'_>,
+        wait_for_reply: bool,
+    ) -> Result<StartResult, Error> {
         if cfg.wait.is_zero()
             || cfg.wait > Duration::from_secs(30)
             || cfg.time_sync.len() > session.startup_time_sync_limit()
@@ -413,6 +452,9 @@ impl Owner<'_, '_, '_> {
             StreamWrite::Written { .. } => (),
             StreamWrite::Indeterminate { .. } => return Err(Error::Indeterminate),
         }
+        if !wait_for_reply {
+            return Ok(StartResult::Dispatched(Dispatched { time_syncs: syncs }));
+        }
         loop {
             match self
                 .observe(session, cfg, deadline, cfg.wait, &mut syncs, &mut messages)
@@ -423,11 +465,11 @@ impl Owner<'_, '_, '_> {
                     success,
                     ..
                 }) => {
-                    return Ok(Reply {
+                    return Ok(StartResult::Reply(Reply {
                         status_code,
                         success,
                         time_syncs: syncs,
-                    });
+                    }));
                 }
                 Some(Observation::Other) | None => (),
                 Some(_) => return Err(Error::Unexpected),
