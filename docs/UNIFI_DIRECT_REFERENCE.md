@@ -2056,6 +2056,16 @@ establish the cause of the native failure or automatic setup.
 Automatic handoff, peer identity, TLS-provider qualification and native live
 recording remain open. See the [trial notes](../experiments/unifi_tls_05_server_lab/README.md).
 
+A later read-only socket inventory in the existing Scrypted network namespace
+found one established connection to the configured medium-track push port and
+none to the high or low push ports at that instant. The transitional recorder's
+source requests the medium profile. The reference plugin maps those ports to
+`video1`, `video2`, and `video3`, respectively, and documents partial per-track
+settings merges; it also notes a shared audio encoder constraint. The socket
+counts do not identify the sender, prove another track is unconfigured, or
+establish that requesting a second G4 track is non-disruptive. No camera setting
+was changed in this check, and the recorder and archive timers remained active.
+
 ### Controller TCP listener
 
 The controller's default observation API still classifies event messages as
@@ -2088,8 +2098,20 @@ SHA-256 hashes were
 The filtered main module matched the checkout after only those ten omitted
 module declarations were removed; its filtered SHA-256 was
 `db23f1fe01165a619c92302537301b06bf934b2817ec3a635c242e631281496a`.
-The changed standalone trial has not yet been rebuilt or exercised for this
-revision. These are synthetic tests, not a full-workspace qualification or G4 event.
+The changed standalone trial was built in strict-remote job
+`30098575685845160`, with terminal acknowledgment and source custody released.
+The Linux executable SHA-256 was
+`9482f0a2a77dc9024b967264ba21db0a7d5c6df0d512bacadfea77f8256fa5d1`.
+An expanded independent process fixture sent a synthetic event
+alongside media to the previous trial binary
+`1233a0161b897f243cb877e733196ae6a8476c8654c1a122e07b67524feedd4e`.
+The preceding three cases passed, while the event case ended with peer EOF; it
+did not deliver a passing event observation. On the new binary, the same
+fixture passed **4/4** cases, including event handling alongside media with
+three FFprobe-decoded synthetic H.264 frames and a check that the event payload
+did not appear in diagnostics. Fixture SHA-256:
+`fb63de0e16ceb86759b1aa6d98973a66b9aacbd5dae56637ef7229daf47645f4`.
+These are synthetic tests, not a full-workspace qualification or G4 event.
 
 `unifi_direct::controller_listener` binds an explicitly scoped IPv4 address,
 checks the task network grant and current listener and peer policies, and

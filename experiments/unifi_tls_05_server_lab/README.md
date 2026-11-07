@@ -61,7 +61,11 @@ qualification limits are in the [UniFi reference notes](../../docs/UNIFI_DIRECT_
 The updated fixture also closes the peer after the settings reply and clock
 exchange but before media: the controller reports the retained startup trace
 and a reconciliation obligation, and produces no clip. All three cases passed
-on the current source-matched trial binary as detailed in those notes.
+on the prior source-matched trial binary as detailed in those notes. A fourth
+case now sends a synthetic smart-detection event while media is flowing. It
+checks the event diagnostic is present, its private test payload is absent,
+and the clip remains decodable. All four cases passed on the updated binary;
+the event case failed on the previous binary. This is not a physical-camera test.
 Run the peer only with a Linux trial binary and the synthetic AVC fixture:
 
 ```text

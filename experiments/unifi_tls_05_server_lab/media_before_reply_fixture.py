@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import re
+import select
 import socket
 import ssl
 import subprocess
@@ -40,7 +41,7 @@ def media_fixture(path):
     return result
 
 
-def run_case(binary, cert, key, root, media, early_reply, close_before_media=False):
+def run_case(binary, cert, key, root, media, early_reply, close_before_media=False, event_case=False):
     root.mkdir(mode=0o700)
     reserve = socket.socket()
     reserve.bind(("127.0.0.1", 0))
@@ -51,6 +52,7 @@ def run_case(binary, cert, key, root, media, early_reply, close_before_media=Fal
                str(journal), str(clip), "12345678-1234-4abc-9abc-123456789abc", "30",
                "--media-before-reply", "--owner-authorized"]
     child = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    prefix = b""
     try:
         end = time.monotonic() + 15
         while True:
@@ -95,9 +97,35 @@ def run_case(binary, cert, key, root, media, early_reply, close_before_media=Fal
                 if parsed.scheme != "tcp" or parsed.hostname != "127.0.0.1" or not parsed.port:
                     raise ValueError("media destination escaped loopback")
                 with socket.create_connection((parsed.hostname, parsed.port), timeout=5) as stream:
-                    stream.sendall(media)
+                    if event_case:
+                        # The reply is logged only after the listener has accepted
+                        # media; wait for it before emitting a supervised event.
+                        stream.sendall(media[:1])
+                        control.sendall(frame(message("ChangeVideoSettings", 9, setting["messageId"])))
+                        end = time.monotonic() + 15
+                        while b"trial_stage=stream_reply_observed" not in prefix:
+                            remaining = end - time.monotonic()
+                            if remaining <= 0 or not select.select([child.stdout], [], [], remaining)[0]:
+                                raise RuntimeError("supervised reply marker timed out")
+                            chunk = os.read(child.stdout.fileno(), 4096)
+                            if not chunk:
+                                raise RuntimeError("controller exited before reply marker")
+                            prefix += chunk
+                            if len(prefix) > 16384:
+                                raise RuntimeError("controller diagnostic limit")
+                        control.sendall(frame(message("EventSmartDetect", 20, payload={
+                            "edgeType": "enter", "private": "TEST_PRIVATE_MARKER",
+                            "descriptors": [{"objectType": "person", "confidenceLevel": 80}],
+                        })))
+                        control.sendall(frame(message("ubnt_avclient_timeSync", 11)))
+                        sync = received(control)
+                        if sync.get("functionName") != "ubnt_avclient_timeSync" or sync.get("inResponseTo") != 11:
+                            raise ValueError("post-event clock request was not answered")
+                        stream.sendall(media[1:])
+                    else:
+                        stream.sendall(media)
             out, err = child.communicate(timeout=30)
-        report = out.decode("utf-8", "replace")
+        report = (prefix + out).decode("utf-8", "replace")
         if close_before_media:
             expected = ("trial_stage=startup_trace dispatch_observed=true clock_requests=1 "
                         "clock_replies_written=1 settings_replies=1 effects_require_reconciliation=true")
@@ -109,15 +137,19 @@ def run_case(binary, cert, key, root, media, early_reply, close_before_media=Fal
                 or "effects=reconciliation_required" not in report or "continuous_recording=false" not in report):
             raise RuntimeError("trial did not produce a completed clip: " + err.decode("utf-8", "replace")[-500:])
         observed = "trial_stage=stream_reply_observed" in report
-        if observed != early_reply or not clip.is_file() or not journal.is_dir():
+        if observed != (early_reply or event_case) or not clip.is_file() or not journal.is_dir():
             raise ValueError("reply observation or artifact mismatch")
+        if event_case and ("trial_stage=camera_event kind=SmartDetect" not in report
+                           or "TEST_PRIVATE_MARKER" in report):
+            raise ValueError("supervised event missing or payload leaked")
         probe = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-count_frames",
                                 "-show_entries", "stream=codec_name,width,height,nb_read_frames", "-of", "json", str(clip)],
                                capture_output=True, check=True, timeout=20)
         streams = json.loads(probe.stdout)["streams"]
         if len(streams) != 1 or streams[0]["codec_name"] != "h264" or int(streams[0]["nb_read_frames"]) < 1:
             raise ValueError("independent clip probe failed")
-        print(f"loopback case={'early_reply' if early_reply else 'no_reply'} pre_media_sync=answered clip=decoded frames={streams[0]['nb_read_frames']} identity=synthetic")
+        case = "camera_event" if event_case else ("early_reply" if early_reply else "no_reply")
+        print(f"loopback case={case} pre_media_sync=answered clip=decoded frames={streams[0]['nb_read_frames']} identity=synthetic")
     finally:
         if child.poll() is None:
             child.terminate()
@@ -146,6 +178,7 @@ def main():
         run_case(binary, cert, key, root / "early", media, True)
         run_case(binary, cert, key, root / "none", media, False)
         run_case(binary, cert, key, root / "closed", media, True, close_before_media=True)
+        run_case(binary, cert, key, root / "event", media, False, event_case=True)
 
 
 if __name__ == "__main__":
