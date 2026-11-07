@@ -42,7 +42,7 @@ including hand-computed dense and convolution/pooling results.
   become runtime integer inputs or exported weights.
 - Static positive dimensions, at most rank eight. Source-ordered acyclic graphs;
   declared outputs and intermediate value information must match native inference.
-- Add, Sub, Mul, Div, Relu, LeakyRelu, Sigmoid, Tanh, MatMul, Gemm, Softmax, Conv,
+- Add, Sub, Mul, Div, Relu, LeakyRelu, Clip, Sigmoid, Tanh, MatMul, Gemm, Softmax, Conv,
   BatchNormalization, InstanceNormalization, MaxPool, AveragePool, GlobalAveragePool, Transpose,
   Concat, Constant, Reshape, Squeeze, Unsqueeze, Slice, Split, Resize, Pad, Expand, Tile,
   Gather, ReduceMean, Identity and Flatten.
@@ -71,6 +71,54 @@ weight files, custom functions, training graphs and model activation are not
 implemented by this profile. Initializers that are also graph inputs refuse rather
 than silently freezing an overridable weight. An unused initializer cannot be made
 executable merely by mentioning it in value-info metadata.
+
+## Bounded clipping and ReLU6
+
+The importer admits [Clip-13](https://onnx.ai/onnx/operators/onnx__Clip.html#clip-13)
+for static F32 data from scalars through rank eight. Its optional minimum and
+maximum are F32 scalars (rank zero), supplied by initializers, Constant nodes
+or earlier runtime values. Missing inputs and empty optional input names omit
+the corresponding bound. Clip-13 attributes are not accepted: older attribute
+based Clip encodings belong to a different opset. A minimum of zero and maximum
+of six provides the ReLU6 activation used by exported mobile model graphs.
+
+For finite runtime operands, the result is exactly the input clamped first to
+the minimum and then to the maximum. An inverted interval returns the maximum,
+as the source operator specifies. Numeric ties select the bound, preserving its
+signed-zero bits; when both bounds compare equal, the maximum wins. An unbounded
+Clip is an identity Reshape and retains every finite input bit.
+
+The lowering uses the existing Reshape, Sub, Mul, Add, Concat and MaxPool
+operators. It compares values directly rather than subtracting a bound from an
+input, so opposite finite extrema cannot overflow a temporary. A negative-zero
+tensor broadcasts each bound without changing either signed zero. Negation and
+a second maximum implement the upper clamp. The expansion is constant in size:
+one node with no bounds, seven with a minimum, ten with a maximum, or thirteen
+with both bounds. A bounded Clip adds one four-byte scalar; the largest temporary
+contains twice the input element count. The full node, tensor, helper-name and
+parameter allowances are checked before expansion. Normal import cancellation,
+work charging and execution budgets still apply.
+
+This is a finite F32 numerical profile. Low-level executor APIs do not promise
+to reject nonfinite runtime bindings; callers must provide finite operands.
+The camera model publication path already requires finite frozen parameters and
+uses finite image-derived inputs. A runtime scalar bound at the importer API
+does not create an additional live input in an activated camera model: package
+construction must resolve every non-image binding through its existing contract.
+
+The authored regression suite in
+`crates/fss-model-ir/tests/onnx_clip_execution.rs`
+exercises the production scalar and optimized executors and canonical
+graph/Safetensors reload. It covers optional and runtime bounds, inverted
+intervals, ranks, signed zeros, subnormals, extrema, graph composition, helper
+collisions and resource/cancellation refusals. The implementation and tests
+were source-reviewed; native execution of this new suite remains unverified
+because the development workspace became unavailable after compiler resource
+failures. These fixtures do not qualify a trained detector.
+
+```sh
+cargo +nightly-2026-08-31 test --locked --offline -p fss-model-ir --test onnx_clip_execution
+```
 
 ## Exact leaky activations
 

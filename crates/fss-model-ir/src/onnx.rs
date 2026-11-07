@@ -17,6 +17,7 @@ use crate::{AttrValue, AttributeMap, GraphNode, ModelIrGraph, ModelIrVersion, Op
 
 mod batch_normalization;
 mod broadcast;
+mod clip;
 mod constants;
 mod dfl;
 mod export;
@@ -507,7 +508,7 @@ fn source_node<'a>(
     let id = format!("onnx-node-{ordinal:04}");
     if !matches!(
         op.as_str(),
-        "Gemm" | "Squeeze" | "Slice" | "Resize" | "Split" | "Pad"
+        "Gemm" | "Squeeze" | "Slice" | "Resize" | "Split" | "Pad" | "Clip"
     ) && inputs.iter().any(String::is_empty)
     {
         return Err(OnnxError::Limit);
@@ -797,6 +798,7 @@ fn opset(bytes: &[u8], a: &mut Admission<'_>) -> Result<()> {
 /// Gemm expands into bounded native transpose/matmul/multiply/add nodes and scalar parameters.
 /// Inference BatchNormalization uses constant channel parameters and ordered native F32 math.
 /// LeakyRelu admits exact finite F32 slopes in [0, 1] through existing native operators.
+/// Clip admits optional scalar F32 bounds, preserving finite values without overflow.
 /// Static shape programs evaluate only metadata and bounded constant INT64 controls;
 /// they never execute runtime integer tensors or read runtime F32 input values.
 /// Source names are reserved before expansion; no helper can alias any source tensor.
@@ -981,6 +983,8 @@ pub fn import_onnx<'a>(
             batch_normalization::lower(source, &mut lowering)?;
         } else if source.op == "InstanceNormalization" {
             instance_normalization::lower(source, &mut lowering)?;
+        } else if source.op == "Clip" {
+            clip::lower(source, &mut lowering)?;
         } else if source.op == "LeakyRelu" {
             leaky_relu::lower(source, &mut lowering)?;
         } else if matches!(source.op.as_str(), "Expand" | "Tile") {

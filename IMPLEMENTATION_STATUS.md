@@ -4,6 +4,32 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Native ONNX clipping and ReLU6
+
+The opset-13 importer now lowers Clip-13 for static F32 tensors from scalars
+through rank eight, including omitted bounds, empty optional input slots,
+constant or runtime scalar bounds and inverted intervals. ReLU6 graphs with
+bounds zero and six can now use the native import/export/execution path.
+The finite-input lowering preserves bound bits on ties, including signed zero,
+and compares opposite extrema without overflowing an unselected arithmetic
+branch. It uses only frozen operators and one four-byte generated scalar.
+
+The entire expansion is admitted before helper allocation: one, seven, ten or
+thirteen nodes for zero, lower, upper or both bounds, with at most twice the input
+element count in an intermediate. Existing source custody, cancellation,
+deterministic work charging, canonical reload and importer identity remain in
+place. Low-level runtime operands must be finite; an imported runtime bound
+still needs a resolved binding under the existing camera-package contract.
+See [the supported profile](docs/onnx_import.md).
+
+**Validation:** execution and artifact regression contracts are authored in
+`onnx_clip_execution`, with scalar and optimized execution, optional/runtime bounds,
+signed zeros, extrema, composition, resource limits and cancellation coverage.
+The new slice has received independent source review. Native compilation,
+rustfmt, Clippy and test execution remain pending: compiler attempts were killed
+for resource exhaustion before the execution workspace became unavailable.
+This does not qualify a trained model or close the full FSS-138 work package.
+
 ## Lossless playable local decoded output
 
 `fss-file` now exposes `--output-format gray-mkv --output-rate NUM/DEN`
