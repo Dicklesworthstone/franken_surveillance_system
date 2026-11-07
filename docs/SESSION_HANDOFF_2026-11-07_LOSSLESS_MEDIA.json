@@ -2,7 +2,7 @@
   "format": "engineering-session-handoff",
   "date": "2026-11-07",
   "timezone": "Etc/UTC",
-  "state": "active_implementation_execution_workspace_unavailable",
+  "state": "implementation_complete_native_validation_pending",
   "mission": {
     "goal": "Implement playable lossless local derivatives and consequential native model coverage, with direct-main GitHub checkpoints.",
     "base_commit": "edc1bb01247c341939a0fadbafdcb67f11537320",
@@ -21,7 +21,8 @@
   "completed": [
     "Ran 114 scoped native tests successfully against exact published edc1bb0 source.",
     "Implemented bounded allocation-free Matroska Y800 framing and explicit rational presentation intervals.",
-    "Implemented native InstanceNormalization lowering with constant affine storage and real scalar/optimized artifact contracts."
+    "Implemented native InstanceNormalization lowering with constant affine storage and real scalar/optimized artifact contracts.",
+    "Connected lossless gray-mkv output to retained JPEG decode/reopen/replay and AVC/HEVC source-window output, with private durable completion, bounded work and ordered source lineage."
   ],
   "verification": {
     "baseline_commit": "edc1bb01247c341939a0fadbafdcb67f11537320",
@@ -45,9 +46,15 @@
     "full_cli": "cargo check --locked --offline -p fss-cli --bin fss-file --test decoded_media_cli_contract --test file_video_stream_cli exited 101 after unchanged fss-core rustc was killed by SIGKILL. No CLI diagnostics or process test pass.",
     "matroska": {
       "authored_core_contracts": 8,
-      "source_review": "Independent API, integer arithmetic, fixed-buffer and EBML layout audits found no concrete blocker.",
-      "native_execution": "Not run: workspace disconnected during first source write.",
-      "prototype": "Separate 7x5 three-frame Y800 prototype: FFmpeg decoded all 105 sample bytes exactly; FFprobe reported explicit 0/100M/200M ns starts and 100M ns durations. Not the recovered Rust writer."
+      "source_review": "Independent core arithmetic/EBML, Rust API/lifetime, stream accounting, runtime ownership and actual process-test audits found no concrete blocker; source review is not native execution.",
+      "native_execution": "Pending for all new core, stream and CLI source: execution workspace remained unavailable throughout recovered implementation.",
+      "prototype": "Separate 7x5 three-frame Y800 prototype: FFmpeg decoded all 105 sample bytes exactly; FFprobe reported explicit 0/100M/200M ns starts and 100M ns durations. Not the recovered Rust writer.",
+      "authored_stream_contracts": 16,
+      "authored_cli_contracts": {
+        "video_process": 6,
+        "jpeg_decode_read_replay_process": 1,
+        "rate_grammar": 1
+      }
     },
     "release_qualified": false,
     "instance_normalization": {
@@ -55,21 +62,29 @@
       "expanded_existing_batch_normalization_contracts": 8,
       "source_review": "Independent production/API/fixture reviews found no concrete blocker; no native result is inferred from review.",
       "native_execution": "Pending: execution workspace disconnected before the first new build."
-    }
+    },
+    "new_contracts_total": 44,
+    "new_contracts_native_passes": 0,
+    "existing_normalization_contracts_expanded": 8
   },
-  "active_work": [
-    "Finish lossless gray-mkv CLI integration, bounded output and ordered lineage contracts."
-  ],
+  "active_work": [],
   "protected_limits": [
     "Presentation cadence is explicitly selected; it does not preserve or certify source capture timing or gaps.",
     "Raw grayscale can preserve screened samples exactly; it does not attest source payment masks or authorize delivery.",
     "VIT-023 remains open for actual FLDT grants, payment-zone protection attestations, derivative custody/expiry and authenticated reviewer delivery.",
     "New Matroska and InstanceNormalization code has not been compiled or run; prior baseline passes do not qualify it.",
-    "No native execution probes while the environment is explicitly unavailable."
+    "No native execution probes while the environment is explicitly unavailable.",
+    "The existing private-output owner syncs files on every target; parent-directory sync and device/inode identity checks are Unix-specific, with handle-relative creation on Linux."
   ],
   "continuation": {
-    "next": "Finish separate meaningful direct-main feature checkpoints through GitHub, preserve concurrent changes, and record native verification limits.",
-    "restored_checks": "Run pinned rustfmt and focused container/model/CLI tests against exact final source after execution is restored. Preserve dependency versions, architecture and qualification gates."
+    "next": "When native execution is restored, validate exact published Matroska, InstanceNormalization and CLI source on the pinned toolchain. Full VIT-023 grant, attestation, derivative-custody/expiry and authenticated delivery remain separate owner-backed feature work.",
+    "restored_checks": "Run pinned rustfmt and focused container/model/CLI checks, including actual scalar/optimized normalization artifact reload and retained JPEG/AVC/HEVC process contracts. Re-run after repairs. Keep dependency versions, architecture and qualification gates.",
+    "commands": [
+      "cargo test --locked --offline -p fss-container --lib --test matroska_gray_contract --test gray_matroska_stream_contract",
+      "cargo test --locked --offline -p fss-model-ir --test onnx_batch_normalization_execution",
+      "cargo test --locked --offline -p fss-cli --bin fss-file --test decoded_media_cli_contract --test file_video_stream_cli"
+    ],
+    "laboratory_oracle": "Generate fixtures through the actual published Matroska API, then independently compare decoded samples and packet timing through pinned FFmpeg/FFprobe; the completed 105-sample probe was a separate feasibility prototype."
   },
   "published_checkpoints": [
     {
@@ -77,8 +92,12 @@
       "change": "Bounded lossless Matroska container foundation; restored native baseline verification and recovered test fixes."
     },
     {
-      "commit": "this_commit",
+      "commit": "40e0c21b228d122b437001756387f8a578a6c075",
       "change": "Native ONNX InstanceNormalization lowering, bounded affine storage, actual-executor/artifact contracts and explicit numerical scope."
+    },
+    {
+      "commit": "this_commit",
+      "change": "Lossless timed gray-mkv CLI export, screened-source lineage, nonrefillable output bounds and real retained-media process contracts."
     }
   ]
 }

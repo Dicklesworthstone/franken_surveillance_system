@@ -152,23 +152,83 @@ it never certifies that prefix as a shorter successful export. The existing
 single-JPEG PGM writer performs file sync; native video and MJPEG retain their
 existing private-path and directory-sync ownership.
 
-This is local conditional source-time trimming. The output streams retain their
-existing format: no playback timing is embedded, gaps are not filled, and the
-selected envelope is not coverage proof. Current privacy masks still precede all
-output. Lossy MJPEG remains unsuitable as proof of exact reconstructed mask
-values; FLDT grants, payment-mask attestations and custody publication remain
-outstanding for the full VIT-023 reviewer route.
+This is local conditional source-time trimming. PGM and MJPEG retain their
+untimed formats. Lossless `gray-mkv` embeds the explicitly requested uniform
+playback cadence, starting selected frames at zero; it does not preserve capture
+times or source gaps. The selected envelope is not coverage proof. Current
+privacy masks still precede all output. Lossy MJPEG remains unsuitable as proof
+of exact reconstructed mask values; the lossless profile preserves screened
+samples exactly. FLDT grants, payment-mask attestations and custody publication
+remain outstanding for the full VIT-023 reviewer route.
 
 **Verification:** twelve pure-core contracts and five CLI contracts (three native
 video process cases, one JPEG decode/reopen/replay case, and one grammar case)
 are authored. They cover exhaustive small-interval containment, signed bounds,
 unknown time, clock/source drift, ordering, duplicates, cancellation, empty and
 incomplete ranges, selected native JPEG bytes/work, and late refusal fencing.
-The pure-core Cargo attempt exited 101 after its last visible fss-core compilation;
-its diagnostics became unavailable with the execution workspace. No passing
-window execution is established. The full CLI check was separately SIGKILLed in
-unchanged Asupersync before command tests could run. Recovered-source formatting,
-native contracts and process execution remain required.
+The original recovered window source subsequently passed all twelve pure-core
+contracts at published `edc1bb01247c341939a0fadbafdcb67f11537320` on 2026-11-07.
+The full CLI check was SIGKILLed in unchanged fss-core before CLI diagnostics.
+Native process validation remains pending, including the new lossless-output
+integration authored after the execution workspace disconnected.
+
+## Private lossless grayscale Matroska output
+
+`fss-file decode`, `read-decoded` and `verify-decoded` also accept
+`--output-format gray-mkv --output-rate NUM/DEN` with `--output FILE`.
+JPEG/MJPEG commands write one retained segment; AVC/HEVC decode writes selected
+frames in native display order. PGM remains the default.
+
+```sh
+fss-file decode --root DEPLOYMENT --site SITE --import-id sha256:HEX \
+  --segment 0 --segment-count 8 --interpretation ycbcr \
+  --output screened.mkv --output-format gray-mkv --output-rate 30000/1001 \
+  --work-units 1000000000 --max-output-bytes 67108864
+```
+
+The first-party Matroska writer stores packed gray8 as a progressive uncompressed
+Y800 track. It borrows the already-screened luma slice, preserving each sample
+without JPEG recompression, range expansion, RGB conversion or another image
+buffer. A current-policy mask sample of 16 remains 16 in the decoded output.
+
+Both positive rate components are bounded to 1,000,000 before reduction. Equivalent
+ratios, such as 60000/2002 and 30000/1001, produce identical presentation timing.
+The required rate is the operator's playback cadence; it never establishes source
+capture rate or UTC. Each timestamp and duration is calculated from absolute
+rational nanosecond boundaries, avoiding accumulated rounded-period drift.
+Source-time windows select frames before the writer; selected frames are retimed
+from zero without preserving skipped source intervals or gaps.
+
+All initialization, framing and pixel bytes count against one allowance: 64 MiB
+by default, at most 256 MiB. Dimensions and the 1024-frame/range ceilings remain
+bounded. Uncompressed size is `width*height*selected_frames` plus framing.
+A full first-frame allowance and independent luma pin are checked before file
+creation. Later quota, shape, pin, cancellation or write failure fences completion
+and may leave only a private incomplete prefix. No overwrite is permitted.
+
+The source owner completes decoder EOF and selection; the private-output owner
+then flushes and syncs the file before successful output/window reports. On Unix
+it also syncs the pinned parent and checks file/parent device and inode identities;
+Linux anchors creation to that directory handle. Unix creation requests mode
+0600; these platform-specific protections are not asserted for non-Unix targets.
+`gray_mkv_sha256` binds complete file bytes, and
+`gray_mkv_frame_receipts_sha256` binds ordered sealed decode receipts, exact luma,
+dimensions, requested cadence, source-bound encoder identity and final accounting.
+Hashing/writes are chunked and cancellation-aware; logical hash input work is
+bounded by the aggregate byte and frame ceilings. JPEG-only quality/work flags
+are refused for this format.
+
+`gray_mkv_lossy=false`, `gray_mkv_exact_luma_preserved=true`,
+`gray_mkv_timing=operator_requested_uniform_rate`,
+`gray_mkv_source_capture_timing_preserved=false` and `gray_mkv_published=false`
+make the file's scope explicit. Pixel preservation does not add FLDT release
+authority, source protection attestations, derivative custody or recipient delivery.
+
+**Validation:** new Rust and process contracts are authored and independently
+source-reviewed; native compilation, formatting, Clippy and execution are pending
+after workspace disconnection. A separate pre-outage 7×5 format prototype decoded
+all 105 samples exactly through FFmpeg, but did not execute this Rust writer.
+See [the exact profile, receipt wire and validation boundary](LOSSLESS_MATROSKA_OUTPUT.md).
 
 ## Private grayscale JPEG/MJPEG output
 

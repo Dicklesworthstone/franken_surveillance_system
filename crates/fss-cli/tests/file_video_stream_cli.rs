@@ -18,6 +18,8 @@ const AVC: &[u8] =
 const HEVC: &[u8] =
     include_bytes!("../../fss-codec-h265/tests/fixtures/decode/f_qcif_default.h265");
 
+#[path = "file_video_stream_cli/gray_matroska.rs"]
+mod gray_matroska;
 #[path = "file_video_stream_cli/mjpeg.rs"]
 mod mjpeg;
 #[path = "file_video_stream_cli/window.rs"]

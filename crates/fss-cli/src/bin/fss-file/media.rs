@@ -3,6 +3,7 @@
 
 use super::{ParseResult, RunResult, Values, malformed, number, text, value, write_new};
 use fss_codec_jpeg_encode::EncodeBudget;
+use fss_container::matroska_gray::PlaybackRate;
 use fss_core::{CanonicalEncode, ContentDigest, SensorCapsule};
 use fss_reference::ingest::pixel_change::{
     PixelChangeConfig, PixelChangeDetector, PixelChangeError, PixelChangeObservation,
@@ -34,6 +35,8 @@ mod pgm_stream;
 mod jpeg_stream;
 #[path = "output_window.rs"]
 mod output_window;
+#[path = "gray_matroska_stream.rs"]
+mod gray_matroska_stream;
 
 const MAX_SCAN_FRAMES: usize = 128;
 
@@ -48,6 +51,7 @@ enum FrameMode {
 enum OutputFormat {
     Pgm,
     Mjpeg,
+    GrayMatroska,
 }
 
 #[derive(Debug)]
@@ -61,6 +65,7 @@ pub(super) struct FrameAction {
     receipt_output: Option<PathBuf>,
     maximum_output_bytes: Option<u64>,
     output_format: OutputFormat,
+    output_rate: Option<PlaybackRate>,
     jpeg_quality: u8,
     encode_work_units: u64,
     output_window: Option<DecodedOutputWindow>,
@@ -120,7 +125,7 @@ pub(super) fn accepts_option(command: &str, option: &str) -> bool {
                 option,
                 "--segment" | "--output" | "--receipt-out" | "--output-format"
                     | "--jpeg-quality" | "--encode-work-units"
-                    | "--output-window-ns" | "--output-clock-basis"
+                    | "--output-window-ns" | "--output-clock-basis" | "--output-rate"
             ))
         || (command == "decode" && matches!(option, "--segment-count" | "--max-output-bytes"))
         || (matches!(command, "read-decoded" | "verify-decoded")
@@ -237,10 +242,32 @@ pub(super) fn parse(
             match text(values, "--output-format")? {
                 "pgm" => OutputFormat::Pgm,
                 "mjpeg" => OutputFormat::Mjpeg,
-                _ => return Err(malformed("output format must be pgm or mjpeg")),
+                "gray-mkv" => OutputFormat::GrayMatroska,
+                _ => return Err(malformed("output format must be pgm, mjpeg or gray-mkv")),
             }
         } else {
             OutputFormat::Pgm
+        };
+        let output_rate = if output_format == OutputFormat::GrayMatroska {
+            let value = text(values, "--output-rate")?;
+            if value.len() > 15 {
+                return Err(malformed("output rate requires NUM/DEN with components in 1..1000000"));
+            }
+            let (numerator, denominator) = value.split_once('/')
+                .ok_or_else(|| malformed("output rate requires NUM/DEN"))?;
+            let integer = |part: &str| {
+                if part.is_empty() || !part.bytes().all(|byte| byte.is_ascii_digit()) {
+                    return Err(malformed("output rate requires positive decimal components"));
+                }
+                part.parse::<u32>().map_err(|_| malformed("output rate component exceeds limit"))
+            };
+            Some(PlaybackRate::new(integer(numerator)?, integer(denominator)?)
+                .map_err(|_| malformed("output rate components must be in 1..1000000"))?)
+        } else {
+            if values.contains_key("--output-rate") {
+                return Err(malformed("--output-rate requires --output-format gray-mkv"));
+            }
+            None
         };
         if output_format != OutputFormat::Mjpeg
             && (values.contains_key("--jpeg-quality") || values.contains_key("--encode-work-units"))
@@ -266,8 +293,8 @@ pub(super) fn parse(
                     "--max-output-bytes requires --output and a value in 1..268435456",
                 ));
             }
-            if !matches!(mode, FrameMode::Decode) && output_format != OutputFormat::Mjpeg {
-                return Err(malformed("read/verify output byte bounds require --output-format mjpeg"));
+            if !matches!(mode, FrameMode::Decode) && output_format == OutputFormat::Pgm {
+                return Err(malformed("read/verify output byte bounds require mjpeg or gray-mkv output"));
             }
             Some(maximum)
         } else {
@@ -282,6 +309,7 @@ pub(super) fn parse(
             receipt_output: values.get("--receipt-out").map(PathBuf::from),
             maximum_output_bytes,
             output_format,
+            output_rate,
             jpeg_quality,
             encode_work_units,
             output_window: output_window::parse(values)?,
@@ -356,7 +384,7 @@ fn run_frame(
         return Err(std::io::Error::other("--segment-count applies only to H.264 and H.265 imports; JPEG frames decode one segment").into());
     }
     let mut selection = output_window::prepare(action, retained)?;
-    let mut jpeg_export = if action.output_format == OutputFormat::Mjpeg {
+    let mut image_export = if action.output_format != OutputFormat::Pgm {
         prepare_video_export(action, root, cx)?
     } else {
         None
@@ -386,12 +414,12 @@ fn run_frame(
     // A single JPEG outside the requested interval is an empty selection, not a successful
     // zero-frame output. Finalize this decision before any image or receipt file is created.
     let selection_receipt = output_window::finish(selection, 1, cx)?;
-    if action.output_format == OutputFormat::Mjpeg {
+    if action.output_format != OutputFormat::Pgm {
         let cancelled = || cx.is_cancelled();
         let mut encode_budget =
             EncodeBudget::with_cancellation_probe(action.encode_work_units, &cancelled);
         let result = (|| {
-            if let Some(export) = &mut jpeg_export {
+            if let Some(export) = &mut image_export {
                 export.frame(
                     jpeg_stream::FrameInput {
                         dimensions: frame.receipt().dimensions(),
@@ -403,7 +431,7 @@ fn run_frame(
                     cx,
                 )?;
             }
-            finish_video_export(jpeg_export, cx, out)
+            finish_video_export(image_export, cx, out)
         })();
         encode_usage_lines(action, &encode_budget, result.is_ok(), out)?;
         result?;
@@ -523,6 +551,8 @@ fn encode_usage_lines(
         writeln!(out, "maximum_encode_work_units={}", action.encode_work_units)?;
         writeln!(out, "remaining_encode_work_units={}", budget.remaining())?;
         writeln!(out, "mjpeg_export_complete={complete}")?;
+    } else if action.output_format == OutputFormat::GrayMatroska && !complete {
+        writeln!(out, "gray_mkv_export_complete=false")?;
     }
     Ok(())
 }
@@ -530,6 +560,7 @@ fn encode_usage_lines(
 enum FrameExport {
     Pgm(pgm_stream::PgmExport),
     Mjpeg(jpeg_stream::JpegExport),
+    GrayMatroska(gray_matroska_stream::MatroskaExport),
 }
 
 impl FrameExport {
@@ -542,6 +573,15 @@ impl FrameExport {
         match self {
             Self::Pgm(export) => export.frame(input.dimensions, input.pixels, cx),
             Self::Mjpeg(export) => export.frame(input, budget, cx),
+            Self::GrayMatroska(export) => export.frame(
+                gray_matroska_stream::FrameInput {
+                    dimensions: input.dimensions,
+                    pixels: input.pixels,
+                    luma_sha256: input.luma_sha256,
+                    decode_receipt: input.decode_receipt,
+                },
+                cx,
+            ),
         }
     }
 }
@@ -559,6 +599,7 @@ fn prepare_video_export(
             let maximum = action.maximum_output_bytes.unwrap_or(match action.output_format {
                 OutputFormat::Pgm => pgm_stream::DEFAULT_OUTPUT_BYTES,
                 OutputFormat::Mjpeg => jpeg_stream::DEFAULT_OUTPUT_BYTES,
+                OutputFormat::GrayMatroska => gray_matroska_stream::DEFAULT_OUTPUT_BYTES,
             });
             match action.output_format {
                 OutputFormat::Pgm => {
@@ -568,6 +609,10 @@ fn prepare_video_export(
                 OutputFormat::Mjpeg => jpeg_stream::JpegExport::prepare(
                     path, root, maximum, action.segment_count, action.jpeg_quality, cx,
                 ).map(FrameExport::Mjpeg),
+                OutputFormat::GrayMatroska => gray_matroska_stream::MatroskaExport::prepare(
+                    path, root, maximum, action.segment_count,
+                    action.output_rate.ok_or_else(|| std::io::Error::other("missing Matroska playback rate"))?, cx,
+                ).map(FrameExport::GrayMatroska),
             }
         })
         .transpose()?)
@@ -596,6 +641,9 @@ fn finish_video_export(
             writeln!(out, "mjpeg_pixel_format=grayscale_luma\nmjpeg_lossy=true")?;
             writeln!(out, "mjpeg_timing=not_embedded\nmjpeg_published=false")?;
             writeln!(out, "mjpeg_exact_redaction_pixels=false")?;
+        }
+        Some(FrameExport::GrayMatroska(export)) => {
+            gray_matroska_stream::report(export.finish(cx)?, out)?;
         }
         None => {}
     }

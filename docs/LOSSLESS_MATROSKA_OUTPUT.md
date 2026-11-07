@@ -1,10 +1,11 @@
 # Lossless timed grayscale Matroska output
 
 `fss-container::matroska_gray` frames unchanged, privacy-screened grayscale
-samples as a deterministic Matroska video track. It supplies the container
-foundation for a reviewer who needs both playback timing and exact reconstructed
-mask samples. The existing JPEG derivative remains lossy, including at quality
-100; this profile performs no image compression.
+samples as a deterministic Matroska video track. The `fss-file` decoded-output
+commands expose it as `--output-format gray-mkv --output-rate NUM/DEN`. It gives
+a local reviewer explicit playback timing and exact reconstructed screened sample
+values. The existing JPEG derivative remains lossy, including at quality 100;
+this profile performs no image compression.
 
 The core returns fixed-size metadata buffers. It does not receive pixel data,
 allocate an image, open a file, spawn a process or change a privacy policy. The
@@ -74,6 +75,136 @@ Equivalent ratios normalize to one value: 60000/2002 equals 30000/1001. Input
 component bounds are checked before normalization, so an oversized declaration
 cannot evade the bound by cancelling a common factor.
 
+## Local decoded-output CLI
+
+For an already retained AVC/HEVC range, request an explicit presentation rate:
+
+```sh
+fss-file decode --root DEPLOYMENT --site SITE --import-id sha256:HEX \
+  --segment 0 --segment-count 8 --interpretation ycbcr \
+  --output screened.mkv --output-format gray-mkv --output-rate 30000/1001 \
+  --work-units 1000000000 --max-output-bytes 67108864
+```
+
+Here `--segment 0` must be the range's valid decoder entry point (AVC IDR or
+HEVC IRAP). Existing source, decoder, pixel and segment bounds still apply.
+A retained JPEG/MJPEG segment produces one frame; its `decode`, `read-decoded`
+and `verify-decoded` commands share the same output owner. AVC/HEVC range
+receipts remain unpublished derivations and retain their existing command scope.
+
+`--output-rate` is mandatory for `gray-mkv` and refused for other formats.
+Its syntax is two positive decimal components separated by one slash, each
+bounded to 1,000,000 before reduction; signs, whitespace and decimal rates are
+refused. `--jpeg-quality` and `--encode-work-units` remain JPEG-only options.
+The default output remains PGM.
+
+The whole-file output allowance defaults to 64 MiB and is capped at 256 MiB.
+Initialization, every frame prefix and every sample byte count against it.
+One frame fits only when all its remaining bytes fit; the first complete frame
+is admitted before hashing the encoder implementation or creating the file. At most 1024
+selected frames are emitted, additionally bounded by the requested source range.
+The codec profile allows axes up to 4096 and at most 4,194,304 pixels per frame.
+
+This is uncompressed, so storage pressure is explicit: eight 1920×1080 frames
+need 16,588,800 sample bytes, plus framing. The writer borrows the screened luma
+slice instead of copying it into another image buffer. A lower allowance refuses
+the request; it never drops frames, changes resolution or substitutes compression.
+
+### Source-time selection and presentation
+
+The existing paired `--output-window-ns START:EXCLUSIVE_END` and
+`--output-clock-basis BASIS` options also apply. For example, a three-frame
+range imported with a 100,000,000 ns start, 1,000 ns uncertainty and 10 fps
+assumption can select its middle frame:
+
+```sh
+fss-file decode --root DEPLOYMENT --site SITE --import-id sha256:HEX \
+  --segment 0 --segment-count 3 --interpretation ycbcr \
+  --output selected.mkv --output-format gray-mkv --output-rate 30/1 \
+  --output-window-ns 150000000:250000000 --output-clock-basis estimated \
+  --work-units 1000000000
+```
+
+Selection uses the retained source clock and closed uncertainty intervals.
+Playback starts at zero and uses consecutive selected-frame ordinals. The selected
+source capture times, omitted intervals and gaps are **not** converted into
+Matroska timestamps. The separately reported window request/selection digests
+retain the source-time decisions. The decoder still processes all required
+dependencies through successful range EOF; an uncertain late boundary refuses
+the entire export even if an earlier selected frame is already on disk.
+
+### Output ownership and completion
+
+The CLI supplies only current-policy-screened luma and the owning decoder's
+sealed frame-receipt digest. The writer checks its independent luma SHA-256,
+positive bounded shape, stable dimensions and non-laboratory source pin before
+admitting a frame. Source order is retained, including display reordering.
+
+The existing private-output owner creates a new file outside the deployment
+and refuses overwrite. On Unix it requests mode 0600 and checks the opened file
+and pinned parent device/inode identities; Linux creates through the pinned
+directory handle. These platform-specific protections are not claimed for
+non-Unix targets.
+Hashing and writes use chunks of at most 4096 bytes with cancellation checkpoints.
+Short writes retain exact accounting; eight consecutive interrupted writes,
+zero progress or impossible progress fence completion. A first-frame quota or
+pin refusal creates no file. A later refusal can leave a private incomplete prefix.
+
+After successful source EOF and selection, the writer flushes and the private
+owner syncs the file; on Unix it also syncs the pinned parent directory.
+Only after those platform-owned durability steps does the command report
+`gray_mkv_export_complete=true`, output and lineage digests, and any successful
+window completion. A media-export failure cannot emit a successful output digest
+or completion receipt; the export error path reports `gray_mkv_export_complete=false`.
+An earlier source or destination refusal may stop before that status path.
+A complete frame or playable prefix is never promoted to a successful shorter
+export. The selected-output success report contains:
+
+| Fields | Meaning |
+|---|---|
+| `gray_mkv_sha256`, `gray_mkv_bytes`, `gray_mkv_frames` | Exact complete local file and count |
+| `gray_mkv_frame_receipts_sha256`, `gray_mkv_frame_receipts_domain` | Ordered source/output derivation |
+| `gray_mkv_encoder_identity` | Source-bound encoder/framing generation |
+| `gray_mkv_width`, `gray_mkv_height` | Stable packed-luma dimensions |
+| `gray_mkv_rate_numerator`, `gray_mkv_rate_denominator`, `gray_mkv_duration_ns` | Reduced requested cadence and final presentation boundary |
+| `gray_mkv_hashed_bytes`, `gray_mkv_work_unit_model` | Logical SHA-256 input accounting |
+| `gray_mkv_pixel_format=grayscale_luma`, `gray_mkv_lossy=false`, `gray_mkv_exact_luma_preserved=true` | Exact screened sample interpretation |
+| `gray_mkv_timing=operator_requested_uniform_rate`, `gray_mkv_source_capture_timing_preserved=false` | Explicit retiming scope |
+| `gray_mkv_published=false` | No retained derivative custody or delivery publication |
+
+### Ordered lineage and bounded work
+
+The implementation identity hashes the NUL-terminated domain
+`fss.file_gray_matroska_encoder.v1`, then each source's little-endian u64 byte
+length and exact UTF-8 bytes in this order: `gray_matroska_stream/encoder.rs`,
+`fss-container/src/matroska_gray.rs`, and its `matroska_gray/ebml.rs` helper.
+A change to framing or sample handling therefore changes the identity.
+
+The ordered receipt hashes the NUL-terminated domain
+`fss.file_gray_matroska_frame_receipts.v1`, then the encoder identity (32 bytes),
+reduced rate and dimensions (four little-endian u32 values). Each 96-byte row
+contains the selected-output ordinal (u64), owning decode-receipt digest (32 bytes),
+screened-luma digest (32 bytes), sample byte count (u64), timestamp (u64) and
+duration (u64), in that order. All integers are little-endian.
+Its 65-byte trailer is `0xff`, frame count, file byte count, presentation end,
+file digest, and total logical hash input bytes; integer counts are u64.
+Thus identical pixels from different source or privacy histories have different
+lineage, while the file digest continues to describe only exact media bytes.
+
+The work model is `logical_sha256_input_bytes`; it counts bytes supplied to the
+hashers, not SHA compression rounds or decoder work. For a successful file with
+`F` frames, `L` luma bytes, `B` output bytes, and `I` implementation-identity
+input bytes, the total is:
+
+```text
+I + receipt_domain_bytes_including_NUL + 48 + 96*F + L + B + 65
+```
+
+There is no user-refillable encode allowance. The fixed source closure, 1024-frame
+ceiling and aggregate byte ceiling bound this linear work; existing decode work
+remains separately charged. No image-sized encoder allocation or whole-range
+buffer is introduced.
+
 ## Public core API
 
 `PlaybackRate::new(numerator, denominator)` returns a validated ratio.
@@ -114,8 +245,9 @@ The file/stream owner must enforce the complete operation contract:
 4. Bound each write/hash chunk and observe cancellation. A partial write,
    zero-progress writer, changed shape, invalid source or exhausted budget
    fences successful completion; it must not certify a shorter stream.
-5. Bind output bytes, exact source order, screened sample digests, playback rate,
-   source-time selection and current transform generations into the receipt.
+5. Bind output bytes, exact source order, screened sample digests, playback rate
+   and current transform generations into derivative lineage. Retain source-time
+   request and selection receipts separately when selecting a window.
 6. Flush and complete the owner's durability operation before returning a
    successful completion receipt.
 
@@ -138,7 +270,7 @@ fixed buffers, EBML sizes and public API. No Rust compilation, formatter pass,
 Clippy pass, complete-CLI test or final-encoder differential result is established
 for these new files.
 
-The authored native tests comprise six public-API contracts and two internal
+The authored core tests comprise six public-API contracts and two internal
 EBML contracts. They cover:
 
 - positive bounded rates, normalization and out-of-profile declarations;
@@ -150,6 +282,17 @@ EBML contracts. They cover:
 - deterministic equivalent rates and fixed-storage bounds;
 - finite EBML size transitions that must skip reserved unknown-size values;
 - unsigned integer encoding and bounded-buffer refusal.
+
+The stream owner adds sixteen contracts with an independent EBML reader,
+exact odd-width mask samples and ordered/hash-work oracles. They cover exact and
+late quotas, lazy creation, the 1024-frame limit and extreme rates, source/dimension
+drift, short/invalid/zero/interrupted writes, partial headers and payloads,
+cancellation throughout, and flush/create failures. Six AVC/HEVC process contracts
+cover exact screened bytes/source receipts, current masks, rational rate
+normalization, quota limits, source-time selection and late refusal. One retained
+JPEG contract exercises decode/reopen/replay, exact output caps and stable roots.
+One parser contract closes rate syntax and incompatible option combinations.
+These are authored tests, not native pass results.
 
 ### Completed format feasibility observation
 
@@ -175,9 +318,13 @@ accuracy, live sources or privacy-attestation validity.
 On the pinned nightly and exact published source:
 
 ```sh
-cargo test --locked --offline -p fss-container --lib --test matroska_gray_contract
-cargo clippy --locked --offline -p fss-container --lib --test matroska_gray_contract \
+cargo test --locked --offline -p fss-container --lib \
+  --test matroska_gray_contract --test gray_matroska_stream_contract
+cargo clippy --locked --offline -p fss-container --lib \
+  --test matroska_gray_contract --test gray_matroska_stream_contract \
   --no-deps -- -D warnings
+cargo test --locked --offline -p fss-cli --bin fss-file \
+  --test decoded_media_cli_contract --test file_video_stream_cli
 ```
 
 Format the new source and contracts with the pinned formatter, then rerun after

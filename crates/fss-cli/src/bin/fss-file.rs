@@ -61,12 +61,15 @@ const HELP: &str = "fss-file <import|inspect|verify|extract|select-movie|decode|
           [--max-decode-bytes N --max-annex-b-bytes N]; source read bounds also apply.\n\
   decode/read-decoded/verify-decoded: --import-id sha256:HEX --segment N\n\
           --interpretation gray|ycbcr [--output FILE] [--receipt-out FILE]\n\
-          Output defaults to pgm; --output-format pgm|mjpeg requires --output.\n\
+          Output defaults to pgm; --output-format pgm|mjpeg|gray-mkv requires --output.\n\
           MJPEG is a lossy grayscale JPEG frame stream, with no embedded rate or UTC.\n\
           [--jpeg-quality 1..100] (default 85) and [--encode-work-units N] (default 2B)\n\
           require mjpeg; encode work is cumulative and separate from decode work.\n\
           --max-output-bytes N caps the whole MJPEG stream (default 64 MiB, max 256 MiB);\n\
-          it also caps native video PGM output. New private files only, no overwrite.\n\
+          it also caps native video PGM and lossless gray-mkv output. New private files only.\n\
+          gray-mkv requires --output-rate NUM/DEN (positive components <=1000000).\n\
+          It stores exact screened luma in Matroska with explicit uniform presentation timing;\n\
+          selected frames are retimed, not a preservation of capture times or gaps. No overwrite.\n\
           [--output-window-ns START:EXCLUSIVE_END --output-clock-basis BASIS] requires --output.\n\
           Selects only fully contained retained capture intervals on that exact clock basis;\n\
           unknown timing, uncertain boundaries and empty results are refused. No UTC conversion.\n\
@@ -75,7 +78,7 @@ const HELP: &str = "fss-file <import|inspect|verify|extract|select-movie|decode|
           --segment N must be an IDR access unit (H.265: IDR,\n\
           CRA or BLA) and [--segment-count M] (1..1024) decodes N..N+M in display order;\n\
           RASL pictures of a leading CRA/BLA are skipped and listed; --interpretation ycbcr;\n\
-          --output writes one PGM or JPEG luma image per frame in display order;\n\
+          --output writes PGM/JPEG images or a lossless gray-mkv video in display order;\n\
           the output is a local derivation; nothing is published\n\
   motion: --import-id sha256:HEX --start-segment N --frame-count N\n\
           --interpretation gray|ycbcr --pixel-delta N --minimum-changed-pixels N\n\
@@ -1081,6 +1084,46 @@ mod tests {
         for command in ["inspect", "verify", "extract", "motion", "select-movie"] {
             assert!(parse(&media_args(command, &[
                 "--output-window-ns", "0:1", "--output-clock-basis", "estimated",
+            ])).is_err());
+        }
+    }
+
+    #[test]
+    fn lossless_matroska_requires_explicit_bounded_presentation_rate() {
+        for command in ["decode", "read-decoded", "verify-decoded"] {
+            let base = ["--segment", "0", "--interpretation", "gray", "--output", "clip.mkv"];
+            for rate in ["1/1", "30/1", "30000/1001", "1000000/1", "1/1000000", "20/2"] {
+                let mut arguments = base.to_vec();
+                arguments.extend(["--output-format", "gray-mkv", "--output-rate", rate,
+                    "--max-output-bytes", "1"]);
+                assert!(parse(&media_args(command, &arguments)).is_ok(), "{rate}");
+            }
+            for rate in ["", "30", "0/1", "1/0", "1/1/1", "+1/1", "-1/1", "1.0/1",
+                " 1/1", "1000001/1", "1/1000001", "4294967296/1", "0000000000000001/1"] {
+                let mut arguments = base.to_vec();
+                arguments.extend(["--output-format", "gray-mkv", "--output-rate", rate]);
+                assert!(parse(&media_args(command, &arguments)).is_err(), "{rate}");
+            }
+            for extra in [
+                vec!["--output-format", "gray-mkv"],
+                vec!["--output-rate", "30/1"],
+                vec!["--output-format", "pgm", "--output-rate", "30/1"],
+                vec!["--output-format", "mjpeg", "--output-rate", "30/1"],
+                vec!["--output-format", "gray-mkv", "--output-rate", "30/1", "--jpeg-quality", "85"],
+                vec!["--output-format", "gray-mkv", "--output-rate", "30/1", "--encode-work-units", "1"],
+            ] {
+                let mut arguments = base.to_vec();
+                arguments.extend(extra);
+                assert!(parse(&media_args(command, &arguments)).is_err());
+            }
+            assert!(parse(&media_args(command, &[
+                "--segment", "0", "--interpretation", "gray",
+                "--output-format", "gray-mkv", "--output-rate", "30/1",
+            ])).is_err());
+        }
+        for command in ["inspect", "verify", "extract", "motion", "select-movie"] {
+            assert!(parse(&media_args(command, &[
+                "--output-format", "gray-mkv", "--output-rate", "30/1",
             ])).is_err());
         }
     }

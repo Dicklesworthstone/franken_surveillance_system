@@ -4,6 +4,49 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Lossless playable local decoded output
+
+`fss-file` now exposes `--output-format gray-mkv --output-rate NUM/DEN`
+for current-policy-screened JPEG output and native AVC/HEVC ranges. JPEG
+decode/reopen/replay and selected video frames share a bounded streaming owner.
+The single progressive Matroska Y800 track preserves every luma sample without
+recompression, inferred range conversion or another image-sized buffer.
+Playback uses an explicit reduced rational cadence; each absolute nanosecond
+boundary is calculated independently, with no accumulated rounded-period drift.
+
+The existing source-time window selects frames before output. Selected playback
+starts at zero; capture timestamps and gaps remain in separate source/window
+receipts rather than being asserted as the playback timeline. Native decoding
+still reaches successful range EOF before completion. Current source/privacy
+checks, sealed decoder receipts and independent luma pins remain enforced.
+
+Complete-frame byte admission precedes file creation. Headers and samples share
+the 64 MiB default / 256 MiB maximum allowance; the frame/range ceiling and fixed
+source closure also bound linear hashing work. Writes and hashing checkpoint in
+4096-byte chunks. Quota, pin, shape, cancellation, partial-write or sync failure
+fences completion, including after earlier frames reached the private file.
+Only successful source EOF, selection and file sync allow a completion report;
+the existing Unix owner additionally syncs and checks the pinned parent.
+No overwrite or shorter-prefix success is introduced.
+
+Separate SHA-256 identities bind exact media bytes and ordered derivation.
+The encoder identity includes the writer, framing core and EBML helper; its
+receipt binds source order, screened pixels, dimensions, requested cadence and
+final accounting. The local derivative remains unpublished. This completes a
+usable timed, lossless output path; VIT-023 remains open for actual FLDT grants,
+payment-zone protection attestations, expiring derivative custody and authorized
+recipient delivery. See [the CLI, profile and receipt contract](docs/LOSSLESS_MATROSKA_OUTPUT.md).
+
+**Validation:** 24 container/stream contracts and eight CLI contracts are authored:
+eight core cases, sixteen writer cases, six native-video process cases, one
+retained-JPEG decode/reopen/replay case and one closed rate-grammar case. They
+cover exact masked samples, rational timing, ordered lineage, quotas, lazy
+creation, short/failed writes, cancellation, current masks, source-time selection
+and late refusals. Independent source reviews found no concrete API or assertion
+blocker. These new files have not compiled, formatted or run while the execution
+workspace is unavailable. The completed 114-test baseline and separate 105-sample
+format feasibility probe below do not qualify this final production path.
+
 ## Native ONNX instance normalization
 
 The opset-13 importer now lowers InstanceNormalization-6 for static positive F32
@@ -46,8 +89,9 @@ nanosecond boundaries are floored independently, so fractional frame periods do
 not accumulate rounding drift. This is presentation timing, not inferred capture
 time or UTC. The source owner still enforces privacy, source/window lineage,
 aggregate budgets, cancellation, partial-write fencing and durable completion.
-CLI integration is the next active slice; this foundation alone does not
-complete VIT-023's grant-bound, attested, custody-tracked reviewer delivery.
+The decoded-output CLI consumes this core while preserving its existing source,
+privacy, cancellation and durability ownership. Neither the core nor the local
+CLI completes VIT-023's grant-bound, attested, custody-tracked reviewer delivery.
 See [the profile and remaining authority boundary](docs/LOSSLESS_MATROSKA_OUTPUT.md).
 
 **Validation:** six public contracts and two internal EBML cases are authored;

@@ -273,6 +273,162 @@ fn retained_jpeg_decode_reopen_and_replay_export_identical_bounded_mjpeg() -> Te
 }
 
 #[test]
+fn retained_jpeg_lossless_matroska_preserves_pixels_roots_and_selected_lineage() -> TestResult {
+    use fss_container::matroska_gray::{GrayMatroskaConfig, PlaybackRate};
+
+    let (directory, root, id) = imported_with_timing("gray-mkv", true)?;
+    let window = [
+        "--output-window-ns",
+        "150000000:250000000",
+        "--output-clock-basis",
+        "estimated",
+    ];
+    let pgm_path = directory.0.join("screened.pgm");
+    let receipt_path = directory.0.join("screened.receipt");
+    let decoded = frame_command(&root, "decode", &id)
+        .arg("--output")
+        .arg(&pgm_path)
+        .arg("--receipt-out")
+        .arg(&receipt_path)
+        .args(window)
+        .output()?;
+    success(&decoded);
+    let receipt = RecordedDecodeReceipt::decode(
+        &fs::read(&receipt_path)?,
+        ContentDigest::parse(field(&decoded, "decode_receipt_digest")?)?,
+    )?;
+    assert_eq!(receipt.identity().to_text(), field(&decoded, "decode_identity")?);
+    let width = field(&decoded, "width")?.parse::<u32>()?;
+    let height = field(&decoded, "height")?.parse::<u32>()?;
+    assert_eq!(receipt.dimensions(), [width, height]);
+    let pgm = fs::read(&pgm_path)?;
+    let header = format!("P5\n{width} {height}\n255\n");
+    assert!(pgm.starts_with(header.as_bytes()));
+    let luma = &pgm[header.len()..];
+    assert_eq!(ContentDigest::sha256(luma).to_text(), field(&decoded, "luma_sha256")?);
+
+    // Playback starts at zero at the explicitly requested cadence. The source
+    // remains segment 1 with its estimated capture interval near 200 ms.
+    let config = GrayMatroskaConfig::new([width, height], PlaybackRate::new(30_000, 1_001)?)?;
+    let initialization = config.initialization()?;
+    let framing = config.frame(0)?;
+    assert_eq!(framing.payload_bytes(), luma.len());
+    assert_eq!(framing.timestamp_ns(), 0);
+    assert_eq!(framing.duration_ns(), 33_366_666);
+    let expected = [initialization.bytes(), framing.prefix(), luma].concat();
+    let expected_digest = ContentDigest::sha256(&expected).to_text();
+    let exact_limit = expected.len().to_string();
+    let mut lineage = None;
+    for action in ["decode", "read-decoded", "verify-decoded"] {
+        let path = directory.0.join(format!("{action}.mkv"));
+        let output = frame_command(&root, action, &id)
+            .arg("--output")
+            .arg(&path)
+            .args([
+                "--output-format",
+                "gray-mkv",
+                "--output-rate",
+                "30000/1001",
+                "--max-output-bytes",
+                &exact_limit,
+            ])
+            .args(window)
+            .output()?;
+        success(&output);
+        assert_eq!(fs::read(&path)?, expected);
+        assert_eq!(field(&output, "gray_mkv_sha256")?, expected_digest);
+        assert_eq!(field(&output, "gray_mkv_bytes")?, exact_limit);
+        assert_eq!(field(&output, "gray_mkv_frames")?, "1");
+        assert_eq!(field(&output, "gray_mkv_width")?, width.to_string());
+        assert_eq!(field(&output, "gray_mkv_height")?, height.to_string());
+        assert_eq!(field(&output, "gray_mkv_rate_numerator")?, "30000");
+        assert_eq!(field(&output, "gray_mkv_rate_denominator")?, "1001");
+        assert_eq!(field(&output, "gray_mkv_duration_ns")?, "33366666");
+        assert_eq!(field(&output, "gray_mkv_pixel_format")?, "grayscale_luma");
+        assert_eq!(field(&output, "gray_mkv_lossy")?, "false");
+        assert_eq!(field(&output, "gray_mkv_exact_luma_preserved")?, "true");
+        assert_eq!(field(&output, "gray_mkv_timing")?, "operator_requested_uniform_rate");
+        assert_eq!(field(&output, "gray_mkv_source_capture_timing_preserved")?, "false");
+        assert_eq!(field(&output, "gray_mkv_export_complete")?, "true");
+        assert_eq!(field(&output, "decode_complete")?, "true");
+        for name in [
+            "decode_identity",
+            "decode_root",
+            "decode_receipt_digest",
+            "decode_authority_sequence",
+            "source_import_identity",
+            "source_segment",
+            "source_capsule_digest",
+            "source_encoded_digest",
+            "luma_sha256",
+            "privacy_mask_binding",
+            "privacy_mask_binding_digest",
+            "privacy_mask_policy",
+            "applied_redaction_transform",
+            "output_window_selection_digest",
+        ] {
+            assert_eq!(field(&output, name)?, field(&decoded, name)?, "{action}: {name}");
+        }
+        assert_eq!(field(&output, "clock_basis")?, "estimated");
+        assert_eq!(field(&output, "capture_earliest_ns")?, "199999000");
+        assert_eq!(field(&output, "capture_latest_ns")?, "200001000");
+        assert_eq!(field(&output, "output_window_complete")?, "true");
+        assert_eq!(field(&output, "output_window_selected_frames")?, "1");
+        assert_eq!(field(&output, "output_window_selected_earliest_ns")?, "199999000");
+        assert_eq!(field(&output, "output_window_selected_latest_ns")?, "200001000");
+        let this_lineage = field(&output, "gray_mkv_frame_receipts_sha256")?;
+        if let Some(previous) = &lineage {
+            assert_eq!(previous, &this_lineage);
+        }
+        lineage = Some(this_lineage);
+        if action == "read-decoded" {
+            assert_eq!(field(&output, "this_request_decode_work_units")?, "0");
+        }
+        assert_eq!(field(&output, "replay_verified")?, (action == "verify-decoded").to_string());
+    }
+
+    // The cap includes the initialization, Cluster/BlockGroup framing and luma.
+    // One byte short must fail before either output or receipt is created.
+    let short_path = directory.0.join("one-byte-short.mkv");
+    let short_receipt = directory.0.join("one-byte-short.receipt");
+    let short_limit = (expected.len() - 1).to_string();
+    let refused = frame_command(&root, "read-decoded", &id)
+        .arg("--output")
+        .arg(&short_path)
+        .arg("--receipt-out")
+        .arg(&short_receipt)
+        .args([
+            "--output-format",
+            "gray-mkv",
+            "--output-rate",
+            "30000/1001",
+            "--max-output-bytes",
+            &short_limit,
+        ])
+        .args(window)
+        .output()?;
+    assert!(!refused.status.success());
+    assert_eq!(field(&refused, "gray_mkv_export_complete")?, "false");
+    assert!(!short_path.exists());
+    assert!(!short_receipt.exists());
+    let stdout = String::from_utf8(refused.stdout)?;
+    for complete in [
+        "gray_mkv_sha256=",
+        "gray_mkv_frame_receipts_sha256=",
+        "gray_mkv_export_complete=true",
+        "output_window_complete=true",
+        "decode_complete=true",
+    ] {
+        assert!(!stdout.contains(complete), "{complete}");
+    }
+    let retained = frame_command(&root, "read-decoded", &id).output()?;
+    success(&retained);
+    assert_eq!(field(&retained, "decode_root")?, field(&decoded, "decode_root")?);
+    assert_eq!(field(&retained, "privacy_mask_binding_digest")?, field(&decoded, "privacy_mask_binding_digest")?);
+    Ok(())
+}
+
+#[test]
 fn motion_scan_retains_each_frame_and_distinguishes_baseline_from_zero_change() -> TestResult {
     let (directory, root, id) = imported("motion")?;
     let report_path = directory.0.join("motion.json");
