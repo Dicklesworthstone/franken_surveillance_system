@@ -1,16 +1,27 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-  <key>Label</key><string>com.jeffreyemanuel.c660-tftp</string>
-  <key>ProgramArguments</key><array>
-    <string>/opt/homebrew/bin/python3</string>
-    <string>/Users/jemanuel/projects/franken_surveillance_system/deliverables/scripts/tftp_serve.py</string>
-    <string>--dir</string><string>/tmp/tftp</string>
-    <string>--bind</string><string>192.168.4.160</string>
-    <string>--port</string><string>69</string>
-  </array>
-  <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><true/>
-  <key>StandardOutPath</key><string>/tmp/tftp_serve.log</string>
-  <key>StandardErrorPath</key><string>/tmp/tftp_serve.log</string>
-</dict></plist>
+<plist version="1.0">
+<dict>
+	<key>KeepAlive</key>
+	<true/>
+	<key>Label</key>
+	<string>com.jeffreyemanuel.c660-tftp</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/opt/homebrew/bin/python3</string>
+		<string>/Users/jemanuel/projects/franken_surveillance_system/deliverables/scripts/tftp_serve.py</string>
+		<string>--dir</string>
+		<string>/tmp/tftp</string>
+		<string>--bind</string>
+		<string>0.0.0.0</string>
+		<string>--port</string>
+		<string>69</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>StandardErrorPath</key>
+	<string>/tmp/tftp_serve.log</string>
+	<key>StandardOutPath</key>
+	<string>/tmp/tftp_serve.log</string>
+</dict>
+</plist>
