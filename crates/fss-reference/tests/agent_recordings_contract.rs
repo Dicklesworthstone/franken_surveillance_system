@@ -200,16 +200,13 @@ impl Drop for Fixture {
 
 fn avc_window(sequence: u64, decode_time: u64) -> TestResult<PreparedRecording> {
     let mut collector = collector_support::collector(CollectorLimits::default())?;
-    let sample = collector_support::sample(
-        sequence,
-        90_000 + sequence as u32 * 3600,
-        true,
-        false,
-    )?;
+    let sample = collector_support::sample(sequence, 90_000 + sequence as u32 * 3600, true, false)?;
     sample.source(&mut collector, 1)?;
     collector_support::accepted(collector.push_picture(sample.timed(decode_time), 1))?;
     collector.seal(2)?;
-    collector.take_ready().ok_or_else(|| "missing AVC window".into())
+    collector
+        .take_ready()
+        .ok_or_else(|| "missing AVC window".into())
 }
 
 #[test]
@@ -235,7 +232,11 @@ fn avc_and_hevc_return_exact_handles_gaps_and_whole_window_cost_without_media() 
         assert_eq!(query.read_usage.pinned_roots, 3);
         assert_eq!(
             query.quoted_hydration_bytes,
-            query.rows.iter().map(|r| r.entry.byte_len() as u64).sum::<u64>()
+            query
+                .rows
+                .iter()
+                .map(|r| r.entry.byte_len() as u64)
+                .sum::<u64>()
         );
         for (ordinal, row) in query.rows.iter().enumerate() {
             assert_eq!(row.ordinal, ordinal);
@@ -370,10 +371,24 @@ fn even_unselected_members_must_remain_currently_published() -> TestResult {
     assert!(empty.rows.is_empty());
     assert_eq!(empty.indexed_gaps, vec![0..1000]);
     assert_eq!(empty.scanned_windows, 2);
+    assert!(empty.reference_digests.contains(&fixture.catalog.root()));
+    assert!(
+        empty
+            .reference_digests
+            .contains(&ContentDigest::sha256(&fixture.index))
+    );
+    for (_, window) in &fixture.windows {
+        assert!(empty.reference_digests.contains(&window.root()));
+    }
+    for leaf in &fixture.leaves {
+        assert!(empty.reference_digests.contains(leaf));
+    }
     fs::remove_file(fixture.root.join("roots/second-window.root"))?;
     assert_eq!(
         fixture.query(),
-        Err(RecordingQueryError::Storage(PinnedMetadataError::RootBinding))
+        Err(RecordingQueryError::Storage(
+            PinnedMetadataError::RootBinding
+        ))
     );
     Ok(())
 }
@@ -383,14 +398,16 @@ fn selected_flat_closure_tombstones_are_denied_even_when_source_is_never_read() 
     let mut fixture = Fixture::new("tombstone", RecordingQueryCodec::Avc)?;
     fixture.request.interval = 0..1000;
     let leaf = fixture.leaves.first().ok_or("source leaf")?;
-    let marker = fixture.root.join("tombstones").join(format!(
-        "{}.tomb",
-        leaf.to_text().replacen(':', "-", 1)
-    ));
+    let marker = fixture
+        .root
+        .join("tombstones")
+        .join(format!("{}.tomb", leaf.to_text().replacen(':', "-", 1)));
     fs::write(marker, b"malformed still denies selected closure")?;
     assert_eq!(
         fixture.query(),
-        Err(RecordingQueryError::Storage(PinnedMetadataError::Tombstoned))
+        Err(RecordingQueryError::Storage(
+            PinnedMetadataError::Tombstoned
+        ))
     );
     Ok(())
 }
@@ -401,16 +418,14 @@ fn final_metadata_pass_detects_deletion_after_initial_catalog_verification() -> 
     let io = RecordingSpoolIo::new(Arc::new(HostSpoolIo));
     let injected = AtomicBool::new(false);
     let source = *fixture.leaves.first().ok_or("source leaf")?;
-    let marker = fixture.root.join("tombstones").join(format!(
-        "{}.tomb",
-        source.to_text().replacen(':', "-", 1)
-    ));
+    let marker = fixture
+        .root
+        .join("tombstones")
+        .join(format!("{}.tomb", source.to_text().replacen(':', "-", 1)));
     // The catalog manifest and index have already been read before the first window manifest.
     // Inject a deletion after initial catalog child checks; the final pass must still reject it.
     let cancelled = || {
-        if io.call_count(SpoolIoCall::OpenRead) >= 5
-            && !injected.swap(true, Ordering::SeqCst)
-        {
+        if io.call_count(SpoolIoCall::OpenRead) >= 5 && !injected.swap(true, Ordering::SeqCst) {
             return fs::write(&marker, b"new tombstone").is_err();
         }
         false
@@ -425,7 +440,9 @@ fn final_metadata_pass_detects_deletion_after_initial_catalog_verification() -> 
     assert!(injected.load(Ordering::SeqCst));
     assert_eq!(
         result,
-        Err(RecordingQueryError::Storage(PinnedMetadataError::Tombstoned))
+        Err(RecordingQueryError::Storage(
+            PinnedMetadataError::Tombstoned
+        ))
     );
     Ok(())
 }
@@ -461,7 +478,13 @@ fn atomic_selection_and_nonrefilling_metadata_budgets_never_truncate_a_catalog()
     assert_ne!(exact.request_digest, baseline.request_digest);
     limits.metadata.max_io_calls -= 1;
     assert_eq!(
-        query_recordings(&HostSpoolIo, &fixture.root, &fixture.request, limits, &|| false),
+        query_recordings(
+            &HostSpoolIo,
+            &fixture.root,
+            &fixture.request,
+            limits,
+            &|| false
+        ),
         Err(RecordingQueryError::Storage(PinnedMetadataError::Audit(
             CustodyAuditError::Limit("io_calls")
         )))
@@ -469,7 +492,13 @@ fn atomic_selection_and_nonrefilling_metadata_budgets_never_truncate_a_catalog()
     limits.metadata.max_io_calls += 1;
     limits.metadata.max_read_bytes -= 1;
     assert_eq!(
-        query_recordings(&HostSpoolIo, &fixture.root, &fixture.request, limits, &|| false),
+        query_recordings(
+            &HostSpoolIo,
+            &fixture.root,
+            &fixture.request,
+            limits,
+            &|| false
+        ),
         Err(RecordingQueryError::Storage(PinnedMetadataError::Audit(
             CustodyAuditError::Limit("read_bytes")
         )))
@@ -486,7 +515,10 @@ fn half_open_gaps_and_clipped_overlaps_never_lower_the_whole_window_quote() -> T
     assert_eq!(clipped.rows[0].overlap, 5000..7200);
     assert_eq!(clipped.rows[1].overlap, 10800..11000);
     assert_eq!(clipped.indexed_gaps, vec![7200..10800]);
-    assert_eq!(clipped.quoted_hydration_bytes, baseline.quoted_hydration_bytes);
+    assert_eq!(
+        clipped.quoted_hydration_bytes,
+        baseline.quoted_hydration_bytes
+    );
     assert_ne!(clipped.decision_digest, baseline.decision_digest);
     fixture.request.interval = 7200..10800;
     let gap = fixture.query()?;

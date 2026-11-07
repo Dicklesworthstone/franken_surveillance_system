@@ -4,6 +4,35 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Conditional UTC recording metadata lookup (2026-11-07; native execution pending)
+
+The native archive query now accepts an independently pinned catalog and retained clock
+index, reconstructs their canonical metadata and returns whole-window candidates for a
+half-open Unix-nanosecond request. Every clock row must match the catalog before filtering.
+Windows without clock evidence remain explicit, consume the same output/quote budgets and
+cannot be excluded by time. Both complete closures, member slots and metadata are checked
+under one nonrefillable read allowance and revalidated before return.
+
+A separate sealed metadata type preserves the distinction from original packet replay.
+NTP assertions, completed read brackets, signed clock correction, drift and lifetime are
+retained conditions; trusted UTC, camera exposure time, source availability and physical
+coverage remain unknown. The protected deployment wrapper brackets the read and checks
+current deletion authority over both complete closures. The earlier tick query now also
+checks source children and unselected members against deployment deletion authority.
+See [the native UTC metadata contract](docs/RECORDING_CLOCK_METADATA_QUERY.md).
+
+Fifteen native adversarial contracts are authored. Two fresh checks of the unchanged
+production dependency closure, including the recorded serialized low-memory configuration,
+were killed compiling Asupersync 0.5.0. Native UTC, earlier recording/retention integration
+and final CLI/MCP execution remain unverified; no qualification gate is weakened.
+CLI/MCP UTC integration is the next checkpoint. VIT-008/015/019 remain open.
+
+The earlier LeakyRelu implementation has now passed its focused native target: **25 passed,
+zero failed or ignored**, including nine importer/artifact contracts and sixteen actual
+scalar/optimized executor tests. An empty required ONNX input is refused by the existing
+wire parser as `Limit`; the reconstructed test expectation was corrected without changing
+production parser or numerical behavior. This does not qualify the broader runtime.
+
 ## Native recording queries, independent retention cleanup, and LeakyRelu (2026-11-07)
 
 Three functional slices advance the footage and model work without closing their broader
@@ -32,7 +61,7 @@ qualification beads:
   artifacts bind the implementation source. Other slopes refuse. See
   [ONNX import](docs/onnx_import.md).
 
-**Validation is incomplete.** The initial native baseline check was killed compiling unchanged
+**Original checkpoint validation was incomplete; the model result is updated above.** The initial native baseline check was killed compiling unchanged
 Asupersync 0.5.0. A lower-memory native check and model test reruns were then interrupted when
 the execution environment became unavailable. Initial model-test module-path/reexport errors
 were corrected, but the final rerun did not complete. No Rust test pass, final format pass,

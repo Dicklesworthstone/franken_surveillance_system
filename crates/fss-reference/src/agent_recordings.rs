@@ -8,6 +8,10 @@
 //! Neither a catalog interval nor a local root record proves camera coverage, payload
 //! availability, UTC time, a current deployment belief, or disclosure authority.
 
+/// Conditional UTC candidates from independently pinned retained clock metadata.
+pub mod utc;
+
+use std::collections::BTreeSet;
 use std::fmt;
 use std::ops::Range;
 use std::path::Path;
@@ -17,9 +21,7 @@ use fss_object::SpoolIo;
 use fss_publication::SlotName;
 use fss_publication::custody_audit::CustodyAuditLimits;
 pub use fss_publication::custody_audit::pinned_metadata::MetadataReadUsage;
-use fss_publication::custody_audit::pinned_metadata::{
-    PinnedMetadataError, PinnedMetadataReader,
-};
+use fss_publication::custody_audit::pinned_metadata::{PinnedMetadataError, PinnedMetadataReader};
 
 use crate::rtsp::recording::hevc::HEVC_RECORDING_KIND;
 use crate::rtsp::recording::{MAX_RECORDING_BYTES, RECORDING_KIND};
@@ -223,6 +225,9 @@ pub struct RecordingQuery {
     pub catalog_root: ContentDigest,
     /// Canonical catalog index payload, rehashed on both passes.
     pub catalog_metadata_digest: ContentDigest,
+    /// Complete pinned catalog closure, including unselected roots and source leaves.
+    /// Current deployment deletion authority must check every reference, not only output rows.
+    pub reference_digests: Vec<ContentDigest>,
     /// Chronological whole-window handles; never source bytes.
     pub rows: Vec<RecordingQueryRow>,
     /// Query intervals absent from this exact bounded index, never evidence of camera absence.
@@ -295,9 +300,13 @@ pub fn query_recordings(
     if manifest.kind() != request.codec.catalog_kind() {
         return Err(CatalogError::Malformed.into());
     }
-    let catalog_metadata_digest = manifest
-        .metadata_digest()
-        .ok_or(CatalogError::Malformed)?;
+    let catalog_metadata_digest = manifest.metadata_digest().ok_or(CatalogError::Malformed)?;
+    let reference_digests = std::iter::once(manifest.root())
+        .chain(manifest.children().iter().copied())
+        .chain(std::iter::once(catalog_metadata_digest))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
     let index = reader.metadata(&manifest)?;
     let selection_limits = CatalogQueryLimits {
         max_windows: request.max_windows,
@@ -355,6 +364,7 @@ pub fn query_recordings(
         decision_digest: ContentDigest::sha256(&encoder.finish()),
         catalog_root: request.catalog_root,
         catalog_metadata_digest,
+        reference_digests,
         rows,
         indexed_gaps,
         quoted_hydration_bytes,

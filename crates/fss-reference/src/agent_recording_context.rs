@@ -7,6 +7,9 @@
 //! entire operation. No writer, recovery handle, directory discovery or source-media read is
 //! admitted by the archive query.
 
+/// Conditional UTC metadata queries with the same protected deployment owner.
+pub mod utc;
+
 use std::path::Path;
 
 use fss_core::{
@@ -273,27 +276,43 @@ pub fn query_recordings_in_deployment(
     let snapshot = history
         .snapshot_at(history.head())
         .map_err(RecordingContextError::Deployment)?;
-    budget.ensure_valid().map_err(|_| RecordingContextError::OverBudget)?;
+    budget
+        .ensure_valid()
+        .map_err(|_| RecordingContextError::OverBudget)?;
     let anchor_token = snapshot_anchor_token(&snapshot);
-    if request.expected_anchor.as_ref().is_some_and(|a| a.as_str() != anchor_token) {
+    if request
+        .expected_anchor
+        .as_ref()
+        .is_some_and(|a| a.as_str() != anchor_token)
+    {
         return Err(RecordingContextError::AnchorChanged);
     }
     checkpoint()?;
-    let native = query_recordings(io, archive_root, &request.recording, limits.recording, cancelled)
-        .map_err(RecordingContextError::Recording)?;
+    let native = query_recordings(
+        io,
+        archive_root,
+        &request.recording,
+        limits.recording,
+        cancelled,
+    )
+    .map_err(RecordingContextError::Recording)?;
     checkpoint()?;
-    let final_history = DeploymentHistory::read_metadata(deployment_root, &limits.snapshot, &budget)
-        .map_err(RecordingContextError::Deployment)?;
+    let final_history =
+        DeploymentHistory::read_metadata(deployment_root, &limits.snapshot, &budget)
+            .map_err(RecordingContextError::Deployment)?;
     let final_snapshot = final_history
         .snapshot_at(final_history.head())
         .map_err(RecordingContextError::Deployment)?;
-    budget.ensure_valid().map_err(|_| RecordingContextError::OverBudget)?;
+    budget
+        .ensure_valid()
+        .map_err(|_| RecordingContextError::OverBudget)?;
     if snapshot_anchor_token(&final_snapshot) != anchor_token
         || final_history.metadata_layout_digest() != history.metadata_layout_digest()
         || final_snapshot.deletions != snapshot.deletions
-        || snapshot.deletions.object(native.catalog_root).is_some()
-        || snapshot.deletions.object(native.catalog_metadata_digest).is_some()
-        || native.rows.iter().any(|r| snapshot.deletions.object(r.entry.root()).is_some())
+        || native
+            .reference_digests
+            .iter()
+            .any(|digest| snapshot.deletions.object(*digest).is_some())
     {
         return Err(RecordingContextError::AnchorChanged);
     }
@@ -307,9 +326,12 @@ pub fn query_recordings_in_deployment(
     request.principal.encode_canonical(&mut e);
     e.digest(native.request_digest);
     for value in [
-        limits.deployment_bytes, limits.deployment_reads,
-        limits.snapshot.max_layout_bytes, limits.snapshot.max_journal_bytes,
-        limits.snapshot.max_object_bytes, limits.snapshot.max_events,
+        limits.deployment_bytes,
+        limits.deployment_reads,
+        limits.snapshot.max_layout_bytes,
+        limits.snapshot.max_journal_bytes,
+        limits.snapshot.max_object_bytes,
+        limits.snapshot.max_events,
         limits.snapshot.max_revisions_per_event,
     ] {
         e.u64(value as u64);
@@ -322,21 +344,40 @@ pub fn query_recordings_in_deployment(
     let mission_id = MissionId::parse(format!("mission:recordings:{suffix}"))
         .map_err(|_| RecordingContextError::Contract)?;
     let admission = admit_query_read(
-        &basis, &snapshot.anchor, "query", request.recording.max_windows as u32, allowance,
-    ).map_err(|_| RecordingContextError::Contract)?;
+        &basis,
+        &snapshot.anchor,
+        "query",
+        request.recording.max_windows as u32,
+        allowance,
+    )
+    .map_err(|_| RecordingContextError::Contract)?;
     let description = "Exact published native recording metadata in a half-open source decode-clock interval; no UTC conversion, payload availability or physical absence claim";
     let interpretation_id = "interpretation:pinned-native-recording-metadata";
     let interpretation = QueryInterpretation::new(interpretation_id, description, true, true, None)
         .map_err(|_| RecordingContextError::Contract)?;
     let plan = AgentQueryPlan::compile(
-        format!("query-plan:{suffix}"), mission_id.clone(), session_id.clone(), &basis,
-        "AOP-005", request_digest, vec!["taint:structured-operator-input".to_owned()],
-        snapshot.anchor.clone(), description,
-        vec![native.catalog_root.to_text()], vec!["recording_window".to_owned()],
-        vec![crate::agent_query::CAPABILITY_QUERY.to_owned()], vec!["metadata_only".to_owned()],
-        QueryCompletenessRequested::Bounded, allowance, vec![interpretation], interpretation_id,
-        allowance, AgentView::Case.id(), snapshot.latest_evidence_time.0,
-    ).map_err(|_| RecordingContextError::Contract)?;
+        format!("query-plan:{suffix}"),
+        mission_id.clone(),
+        session_id.clone(),
+        &basis,
+        "AOP-005",
+        request_digest,
+        vec!["taint:structured-operator-input".to_owned()],
+        snapshot.anchor.clone(),
+        description,
+        vec![native.catalog_root.to_text()],
+        vec!["recording_window".to_owned()],
+        vec![crate::agent_query::CAPABILITY_QUERY.to_owned()],
+        vec!["metadata_only".to_owned()],
+        QueryCompletenessRequested::Bounded,
+        allowance,
+        vec![interpretation],
+        interpretation_id,
+        allowance,
+        AgentView::Case.id(),
+        snapshot.latest_evidence_time.0,
+    )
+    .map_err(|_| RecordingContextError::Contract)?;
     let mut e = CanonicalEncoder::new();
     e.text("fss.agent_recordings.context_decision.v1");
     e.digest(request_digest);
@@ -345,7 +386,16 @@ pub fn query_recordings_in_deployment(
     let decision_digest = ContentDigest::sha256(&e.finish());
     let (deployment_bytes_read, deployment_metadata_reads) = budget.consumed();
     Ok(DeploymentRecordingQuery {
-        snapshot, anchor_token, native, plan, admission, request_digest, decision_digest,
-        session_id, mission_id, deployment_bytes_read, deployment_metadata_reads,
+        snapshot,
+        anchor_token,
+        native,
+        plan,
+        admission,
+        request_digest,
+        decision_digest,
+        session_id,
+        mission_id,
+        deployment_bytes_read,
+        deployment_metadata_reads,
     })
 }

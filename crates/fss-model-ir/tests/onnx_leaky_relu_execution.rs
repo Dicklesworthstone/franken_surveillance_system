@@ -213,14 +213,13 @@ fn execute(
         .iter()
         .map(|(name, tensor)| Ok((name.clone(), tensor.to_vec::<f32>()?)))
         .collect::<Result<BTreeMap<_, _>, fss_tensor::TensorError>>()?;
-    let optimized = optimized_executor::OptimizedGraph::prepare(
-        graph,
-        &constants,
-        &ScalarExecCx::new(),
-    )?;
+    let optimized =
+        optimized_executor::OptimizedGraph::prepare(graph, &constants, &ScalarExecCx::new())?;
     let fast = optimized.run(input, ExecBudget::unlimited(), &ScalarExecCx::new())?;
     inputs.extend(
-        input.iter().map(|(name, tensor)| ((*name).to_owned(), tensor.clone())),
+        input
+            .iter()
+            .map(|(name, tensor)| ((*name).to_owned(), tensor.clone())),
     );
     let values = inputs.into_iter().collect::<Vec<_>>();
     let scalar = ScalarExecutor::run(
@@ -231,12 +230,27 @@ fn execute(
     )?;
     assert_eq!(fast.executed_macs(), scalar.executed_macs());
     assert_eq!(fast.allocated_bytes(), scalar.allocated_bytes());
-    graph.outputs().iter().map(|port| {
-        let expected = scalar.get_output(port.name()).ok_or("missing scalar output")?.to_vec::<f32>()?;
-        let actual = fast.get_output(port.name()).ok_or("missing optimized output")?.to_vec::<f32>()?;
-        assert_eq!(bits(&actual), bits(&expected), "optimized output {}", port.name());
-        Ok((port.name().to_owned(), expected))
-    }).collect()
+    graph
+        .outputs()
+        .iter()
+        .map(|port| {
+            let expected = scalar
+                .get_output(port.name())
+                .ok_or("missing scalar output")?
+                .to_vec::<f32>()?;
+            let actual = fast
+                .get_output(port.name())
+                .ok_or("missing optimized output")?
+                .to_vec::<f32>()?;
+            assert_eq!(
+                bits(&actual),
+                bits(&expected),
+                "optimized output {}",
+                port.name()
+            );
+            Ok((port.name().to_owned(), expected))
+        })
+        .collect()
 }
 fn roundtrip(source: &[u8], input: &[(&str, Tensor)]) -> Test<Outputs> {
     let imported = import(source)?;
@@ -281,7 +295,10 @@ fn leaky_model(dims: &[usize], output: &[usize], attrs: &[u8]) -> Vec<u8> {
     )
 }
 fn oracle(input: &[f32], alpha: f32) -> Vec<f32> {
-    input.iter().map(|&x| if x < 0.0 { alpha * x } else { x }).collect()
+    input
+        .iter()
+        .map(|&x| if x < 0.0 { alpha * x } else { x })
+        .collect()
 }
 
 #[test]
@@ -296,7 +313,10 @@ fn default_and_explicit_alpha_preserve_every_admitted_rank() -> Test {
             let attrs = alpha.map_or_else(Vec::new, |value| float_attr("alpha", value));
             let source = leaky_model(&dims, &dims, &attrs);
             let result = roundtrip(&source, &[("input", data(&dims, &values)?)])?;
-            assert_eq!(bits(&result["output"]), bits(&oracle(&values, alpha.unwrap_or(0.01))));
+            assert_eq!(
+                bits(&result["output"]),
+                bits(&oracle(&values, alpha.unwrap_or(0.01)))
+            );
             assert_eq!(import(&source)?.graph().outputs()[0].shape().dims(), &dims);
         }
     }
@@ -326,21 +346,40 @@ fn all_finite_exponents_and_rounding_boundaries_match_exact_source_semantics() -
         f32::from_bits(1.0_f32.to_bits() - 1),
         1.0,
     ] {
-        let source = leaky_model(&[values.len()], &[values.len()], &float_attr("alpha", alpha));
+        let source = leaky_model(
+            &[values.len()],
+            &[values.len()],
+            &float_attr("alpha", alpha),
+        );
         let result = roundtrip(&source, &[("input", data(&[values.len()], &values)?)])?;
-        assert_eq!(bits(&result["output"]), bits(&oracle(&values, alpha)), "alpha={alpha:?}");
+        assert_eq!(
+            bits(&result["output"]),
+            bits(&oracle(&values, alpha)),
+            "alpha={alpha:?}"
+        );
     }
     Ok(())
 }
 
 #[test]
 fn signed_zero_parameters_and_input_ties_survive_export() -> Test {
-    let values = [-0.0_f32, 0.0, -f32::from_bits(1), f32::from_bits(1), -1.0, 1.0];
+    let values = [
+        -0.0_f32,
+        0.0,
+        -f32::from_bits(1),
+        f32::from_bits(1),
+        -1.0,
+        1.0,
+    ];
     let mut digests = Vec::new();
     for alpha in [0.0_f32, -0.0] {
         let source = leaky_model(&[6], &[6], &float_attr("alpha", alpha));
         let imported = import(&source)?;
-        let parameter = imported.parameters().values().next().ok_or("alpha parameter")?;
+        let parameter = imported
+            .parameters()
+            .values()
+            .next()
+            .ok_or("alpha parameter")?;
         assert_eq!(parameter.to_vec::<f32>()?[0].to_bits(), alpha.to_bits());
         digests.push(export(&imported)?.weights_digest());
         let result = roundtrip(&source, &[("input", data(&[6], &values)?)])?;
@@ -356,14 +395,33 @@ fn signed_zero_parameters_and_input_ties_survive_export() -> Test {
 fn conv_leaky_flatten_gemm_chain_and_branch_outputs_are_exact() -> Test {
     let source = model(
         &[
-            node("Conv", &["input", "conv-weight", "conv-bias"], &["raw"], &ints_attr("kernel_shape", &[1, 1])),
-            node("LeakyRelu", &["raw"], &["activated"], &float_attr("alpha", 0.25)),
+            node(
+                "Conv",
+                &["input", "conv-weight", "conv-bias"],
+                &["raw"],
+                &ints_attr("kernel_shape", &[1, 1]),
+            ),
+            node(
+                "LeakyRelu",
+                &["raw"],
+                &["activated"],
+                &float_attr("alpha", 0.25),
+            ),
             node("Flatten", &["activated"], &["flat"], &[]),
-            node("Gemm", &["flat", "gemm-weight", "gemm-bias"], &["projection"], &[]),
+            node(
+                "Gemm",
+                &["flat", "gemm-weight", "gemm-bias"],
+                &["projection"],
+                &[],
+            ),
             node("LeakyRelu", &["projection"], &["output"], &[]),
             weight("conv-weight", &[1, 1, 1, 1], &[2.0]),
             weight("conv-bias", &[1], &[1.0]),
-            weight("gemm-weight", &[4, 2], &[1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 1.0]),
+            weight(
+                "gemm-weight",
+                &[4, 2],
+                &[1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 1.0],
+            ),
             weight("gemm-bias", &[2], &[-1.25, -4.5]),
             bytes(11, &info("input", &[1, 1, 2, 2], 1)),
             bytes(12, &info("raw", &[1, 1, 2, 2], 1)),
@@ -371,7 +429,10 @@ fn conv_leaky_flatten_gemm_chain_and_branch_outputs_are_exact() -> Test {
         ]
         .concat(),
     );
-    let result = roundtrip(&source, &[("input", data(&[1, 1, 2, 2], &[1., -2., 3., -4.])?)])?;
+    let result = roundtrip(
+        &source,
+        &[("input", data(&[1, 1, 2, 2], &[1., -2., 3., -4.])?)],
+    )?;
     assert_eq!(bits(&result["raw"]), bits(&[3., -3., 7., -7.]));
     assert_eq!(bits(&result["output"]), bits(&[6.25, -0.0625]));
     Ok(())
@@ -382,13 +443,21 @@ fn initializer_inputs_and_future_source_name_collisions_remain_well_scoped() -> 
     let values = [-0.0_f32, -7., 5., -f32::from_bits(1)];
     let source = model(
         &[
-            node("LeakyRelu", &["constant"], &["output"], &float_attr("alpha", 0.5)),
+            node(
+                "LeakyRelu",
+                &["constant"],
+                &["output"],
+                &float_attr("alpha", 0.5),
+            ),
             weight("constant", &[4], &values),
             bytes(12, &info("output", &[4], 1)),
         ]
         .concat(),
     );
-    assert_eq!(bits(&roundtrip(&source, &[])?["output"]), bits(&oracle(&values, 0.5)));
+    assert_eq!(
+        bits(&roundtrip(&source, &[])?["output"]),
+        bits(&oracle(&values, 0.5))
+    );
     for suffix in ["alpha", "flat", "scaled", "stacked", "selected"] {
         let collision = format!("onnx-node-0000-leaky-{suffix}");
         let source = model(
@@ -420,18 +489,53 @@ fn initializer_inputs_and_future_source_name_collisions_remain_well_scoped() -> 
 
 #[test]
 fn unsupported_slopes_attributes_arity_and_output_shapes_refuse() {
-    for alpha in [-f32::from_bits(1), -0.1, -1.0, f32::from_bits(1.0_f32.to_bits() + 1), f32::MAX] {
-        assert_eq!(refusal(&leaky_model(&[2], &[2], &float_attr("alpha", alpha))), Some(OnnxError::Unsupported));
+    for alpha in [
+        -f32::from_bits(1),
+        -0.1,
+        -1.0,
+        f32::from_bits(1.0_f32.to_bits() + 1),
+        f32::MAX,
+    ] {
+        assert_eq!(
+            refusal(&leaky_model(&[2], &[2], &float_attr("alpha", alpha))),
+            Some(OnnxError::Unsupported)
+        );
     }
     for alpha in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
-        assert_eq!(refusal(&leaky_model(&[2], &[2], &float_attr("alpha", alpha))), Some(OnnxError::NonFinite));
+        assert_eq!(
+            refusal(&leaky_model(&[2], &[2], &float_attr("alpha", alpha))),
+            Some(OnnxError::NonFinite)
+        );
     }
-    for attrs in [int_attr("alpha", 1), text_attr("alpha", "0.1"), ints_attr("alpha", &[1])] {
-        assert_eq!(refusal(&leaky_model(&[2], &[2], &attrs)), Some(OnnxError::Graph));
+    for attrs in [
+        int_attr("alpha", 1),
+        text_attr("alpha", "0.1"),
+        ints_attr("alpha", &[1]),
+    ] {
+        assert_eq!(
+            refusal(&leaky_model(&[2], &[2], &attrs)),
+            Some(OnnxError::Graph)
+        );
     }
-    assert_eq!(refusal(&leaky_model(&[2], &[2], &float_attr("beta", 0.1))), Some(OnnxError::Unsupported));
-    assert_eq!(refusal(&leaky_model(&[2], &[2], &[float_attr("alpha", 0.1), float_attr("alpha", 0.2)].concat())), Some(OnnxError::Malformed));
-    for inputs in [vec![], vec![""], vec!["input", "input"]] {
+    assert_eq!(
+        refusal(&leaky_model(&[2], &[2], &float_attr("beta", 0.1))),
+        Some(OnnxError::Unsupported)
+    );
+    assert_eq!(
+        refusal(&leaky_model(
+            &[2],
+            &[2],
+            &[float_attr("alpha", 0.1), float_attr("alpha", 0.2)].concat()
+        )),
+        Some(OnnxError::Malformed)
+    );
+    for (inputs, expected) in [
+        (vec![], OnnxError::Graph),
+        // Required inputs cannot use the wire-level optional-input spelling.
+        // The shared source parser rejects this before operator admission.
+        (vec![""], OnnxError::Limit),
+        (vec!["input", "input"], OnnxError::Graph),
+    ] {
         let source = model(
             &[
                 node("LeakyRelu", &inputs, &["output"], &[]),
@@ -440,9 +544,12 @@ fn unsupported_slopes_attributes_arity_and_output_shapes_refuse() {
             ]
             .concat(),
         );
-        assert_eq!(refusal(&source), Some(OnnxError::Graph));
+        assert_eq!(refusal(&source), Some(expected));
     }
-    assert_eq!(refusal(&leaky_model(&[2], &[3], &[])), Some(OnnxError::Graph));
+    assert_eq!(
+        refusal(&leaky_model(&[2], &[3], &[])),
+        Some(OnnxError::Graph)
+    );
 }
 
 #[test]
@@ -459,21 +566,55 @@ fn exact_aggregate_limits_and_identity_shortcut_are_enforced() -> Test {
         work_units: imported.work_units(),
         ..OnnxLimits::default()
     };
-    assert!(import_onnx(&source, ContentDigest::sha256(&source), GENERATION, limits, &|| false).is_ok());
+    assert!(
+        import_onnx(
+            &source,
+            ContentDigest::sha256(&source),
+            GENERATION,
+            limits,
+            &|| false
+        )
+        .is_ok()
+    );
     for limits in [
         OnnxLimits { nodes: 4, ..limits },
-        OnnxLimits { tensors: 6, ..limits },
-        OnnxLimits { parameter_bytes: 3, ..limits },
-        OnnxLimits { tensor_bytes: 63, ..limits },
+        OnnxLimits {
+            tensors: 6,
+            ..limits
+        },
+        OnnxLimits {
+            parameter_bytes: 3,
+            ..limits
+        },
+        OnnxLimits {
+            tensor_bytes: 63,
+            ..limits
+        },
     ] {
-        assert_eq!(import_onnx(&source, ContentDigest::sha256(&source), GENERATION, limits, &|| false).err(), Some(OnnxError::Limit));
+        assert_eq!(
+            import_onnx(
+                &source,
+                ContentDigest::sha256(&source),
+                GENERATION,
+                limits,
+                &|| false
+            )
+            .err(),
+            Some(OnnxError::Limit)
+        );
     }
     let identity = leaky_model(&[8], &[8], &float_attr("alpha", 1.0));
     let imported = import_onnx(
         &identity,
         ContentDigest::sha256(&identity),
         GENERATION,
-        OnnxLimits { nodes: 1, tensors: 2, parameter_bytes: 0, tensor_bytes: 32, ..OnnxLimits::default() },
+        OnnxLimits {
+            nodes: 1,
+            tensors: 2,
+            parameter_bytes: 0,
+            tensor_bytes: 32,
+            ..OnnxLimits::default()
+        },
         &|| false,
     )?;
     assert_eq!(imported.graph().node_count(), 1);
@@ -485,22 +626,58 @@ fn exact_aggregate_limits_and_identity_shortcut_are_enforced() -> Test {
 fn cumulative_work_cancellation_and_source_digest_fail_closed() -> Test {
     let source = leaky_model(&[8], &[8], &[]);
     let imported = import(&source)?;
-    let limits = OnnxLimits { work_units: imported.work_units() - 1, ..OnnxLimits::default() };
-    assert_eq!(import_onnx(&source, ContentDigest::sha256(&source), GENERATION, limits, &|| false).err(), Some(OnnxError::WorkBudget));
-    assert_eq!(import_onnx(&source, ContentDigest::sha256(b"wrong-source"), GENERATION, OnnxLimits::default(), &|| false).err(), Some(OnnxError::Digest));
+    let limits = OnnxLimits {
+        work_units: imported.work_units() - 1,
+        ..OnnxLimits::default()
+    };
+    assert_eq!(
+        import_onnx(
+            &source,
+            ContentDigest::sha256(&source),
+            GENERATION,
+            limits,
+            &|| false
+        )
+        .err(),
+        Some(OnnxError::WorkBudget)
+    );
+    assert_eq!(
+        import_onnx(
+            &source,
+            ContentDigest::sha256(b"wrong-source"),
+            GENERATION,
+            OnnxLimits::default(),
+            &|| false
+        )
+        .err(),
+        Some(OnnxError::Digest)
+    );
     let calls = Cell::new(0);
-    import_onnx(&source, ContentDigest::sha256(&source), GENERATION, OnnxLimits::default(), &|| {
-        calls.set(calls.get() + 1);
-        false
-    })?;
+    import_onnx(
+        &source,
+        ContentDigest::sha256(&source),
+        GENERATION,
+        OnnxLimits::default(),
+        &|| {
+            calls.set(calls.get() + 1);
+            false
+        },
+    )?;
     let total = calls.get();
     for stop in 1..=total {
         calls.set(0);
         assert_eq!(
-            import_onnx(&source, ContentDigest::sha256(&source), GENERATION, OnnxLimits::default(), &|| {
-                calls.set(calls.get() + 1);
-                calls.get() == stop
-            }).err(),
+            import_onnx(
+                &source,
+                ContentDigest::sha256(&source),
+                GENERATION,
+                OnnxLimits::default(),
+                &|| {
+                    calls.set(calls.get() + 1);
+                    calls.get() == stop
+                }
+            )
+            .err(),
             Some(OnnxError::Cancelled),
             "checkpoint {stop}/{total}"
         );
@@ -513,28 +690,56 @@ fn both_executors_enforce_work_allocation_and_cancellation_without_outputs() -> 
     let source = leaky_model(&[8], &[8], &[]);
     let imported = import(&source)?;
     let input = [("input", data(&[8], &[-1., 2., -3., 4., -5., 6., -7., 8.])?)];
-    let constants = imported.parameters().iter()
+    let constants = imported
+        .parameters()
+        .iter()
         .map(|(name, value)| Ok((name.clone(), value.to_vec::<f32>()?)))
         .collect::<Result<BTreeMap<_, _>, fss_tensor::TensorError>>()?;
-    let optimized = optimized_executor::OptimizedGraph::prepare(imported.graph(), &constants, &ScalarExecCx::new())?;
+    let optimized = optimized_executor::OptimizedGraph::prepare(
+        imported.graph(),
+        &constants,
+        &ScalarExecCx::new(),
+    )?;
     let mut bindings = imported.parameters().clone();
     bindings.insert("input".into(), input[0].1.clone());
     let bindings = bindings.into_iter().collect::<Vec<_>>();
-    let outcome = ScalarExecutor::run(imported.graph(), &bindings, ExecBudget::unlimited(), &ScalarExecCx::new())?;
+    let outcome = ScalarExecutor::run(
+        imported.graph(),
+        &bindings,
+        ExecBudget::unlimited(),
+        &ScalarExecCx::new(),
+    )?;
     for budget in [
         ExecBudget::new(outcome.executed_macs() - 1, outcome.allocated_bytes()),
         ExecBudget::new(outcome.executed_macs(), outcome.allocated_bytes() - 1),
     ] {
-        assert!(matches!(ScalarExecutor::run(imported.graph(), &bindings, budget, &ScalarExecCx::new()), Err(ExecError::BudgetExceeded { .. })));
-        assert!(matches!(optimized.run(&input, budget, &ScalarExecCx::new()), Err(ExecError::BudgetExceeded { .. })));
+        assert!(matches!(
+            ScalarExecutor::run(imported.graph(), &bindings, budget, &ScalarExecCx::new()),
+            Err(ExecError::BudgetExceeded { .. })
+        ));
+        assert!(matches!(
+            optimized.run(&input, budget, &ScalarExecCx::new()),
+            Err(ExecError::BudgetExceeded { .. })
+        ));
     }
     let scalar_cx = ScalarExecCx::new();
     scalar_cx.request_cancellation();
-    assert!(matches!(ScalarExecutor::run(imported.graph(), &bindings, ExecBudget::unlimited(), &scalar_cx), Err(ExecError::CancellationRequested { .. })));
+    assert!(matches!(
+        ScalarExecutor::run(
+            imported.graph(),
+            &bindings,
+            ExecBudget::unlimited(),
+            &scalar_cx
+        ),
+        Err(ExecError::CancellationRequested { .. })
+    ));
     assert!(scalar_cx.is_drain_completed());
     let optimized_cx = ScalarExecCx::new();
     optimized_cx.request_cancellation();
-    assert!(matches!(optimized.run(&input, ExecBudget::unlimited(), &optimized_cx), Err(ExecError::CancellationRequested { .. })));
+    assert!(matches!(
+        optimized.run(&input, ExecBudget::unlimited(), &optimized_cx),
+        Err(ExecError::CancellationRequested { .. })
+    ));
     assert!(optimized_cx.is_drain_completed());
     Ok(())
 }

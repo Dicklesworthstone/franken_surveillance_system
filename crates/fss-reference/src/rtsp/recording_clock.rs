@@ -8,6 +8,7 @@
 //! A receive-clock identity binds one caller-owned monotonic session; a probe or
 //! another capture's clock cannot be substituted for that session.
 
+mod metadata;
 mod prepare;
 mod storage;
 mod wire;
@@ -30,6 +31,7 @@ use super::recording::{
 };
 use super::recording_catalog::{CatalogQueryLimits, CatalogScope};
 
+pub use metadata::{RecordingClockMetadata, verify_clock_metadata};
 pub use storage::{load_clock_index, publish_clock_index};
 
 /// Maximum complete recording windows in one immutable clock index.
@@ -278,6 +280,21 @@ impl ClockIndexEntry {
     #[must_use]
     pub const fn byte_len(&self) -> usize {
         self.window.byte_len()
+    }
+    /// Retained source-packet count; a metadata-only read does not verify source bytes.
+    #[must_use]
+    pub const fn packets(&self) -> usize {
+        self.window.summary.packets
+    }
+    /// Retained coded-sample count; a metadata-only read does not verify media bytes.
+    #[must_use]
+    pub const fn samples(&self) -> usize {
+        self.window.summary.samples
+    }
+    /// Retained source-NAL count; a metadata-only read does not verify source bytes.
+    #[must_use]
+    pub const fn nals(&self) -> usize {
+        self.window.summary.nals
     }
     /// Every unique source packet coordinate, including retained boundary lookahead.
     #[must_use]

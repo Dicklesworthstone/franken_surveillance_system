@@ -38,10 +38,7 @@ fn reshape(
 }
 
 pub(super) fn lower(mut source: SourceNode<'_>, lowering: &mut Lowering<'_, '_>) -> Result<()> {
-    if source.inputs.len() != 1
-        || source.outputs.len() != 1
-        || source.inputs[0].is_empty()
-    {
+    if source.inputs.len() != 1 || source.outputs.len() != 1 || source.inputs[0].is_empty() {
         return Err(OnnxError::Graph);
     }
     let alpha = match source.attrs.remove("alpha") {
@@ -81,10 +78,28 @@ pub(super) fn lower(mut source: SourceNode<'_>, lowering: &mut Lowering<'_, '_>)
     // Five nodes add one scalar and five outputs; the source output is reserved.
     let limits = lowering.admission.limits;
     if elements.checked_mul(8).ok_or(OnnxError::Limit)? > limits.tensor_bytes
-        || lowering.nodes.len().checked_add(5).ok_or(OnnxError::Limit)? > limits.nodes
-        || lowering.known.len().checked_add(6).ok_or(OnnxError::Limit)? > limits.tensors
-        || lowering.reserved.len().checked_add(5).ok_or(OnnxError::Limit)? > limits.tensors
-        || lowering.parameter_bytes.checked_add(4).ok_or(OnnxError::Limit)?
+        || lowering
+            .nodes
+            .len()
+            .checked_add(5)
+            .ok_or(OnnxError::Limit)?
+            > limits.nodes
+        || lowering
+            .known
+            .len()
+            .checked_add(6)
+            .ok_or(OnnxError::Limit)?
+            > limits.tensors
+        || lowering
+            .reserved
+            .len()
+            .checked_add(5)
+            .ok_or(OnnxError::Limit)?
+            > limits.tensors
+        || lowering
+            .parameter_bytes
+            .checked_add(4)
+            .ok_or(OnnxError::Limit)?
             > limits.parameter_bytes
     {
         return Err(OnnxError::Limit);

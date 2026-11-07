@@ -1,0 +1,75 @@
+{
+  "format": "engineering-session-handoff",
+  "date": "2026-11-07",
+  "state": "active_checkpoint",
+  "mission": {
+    "goal": "Deliver critically important remaining footage and inference functionality; meaningful direct-main GitHub commits, no PRs.",
+    "basis": [
+      "AGENTS.md",
+      "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md",
+      ".beads/issues.jsonl",
+      "docs/SESSION_HANDOFF_2026-11-07_RECORDING_RETENTION.json"
+    ],
+    "base_commit": "830fcac67ddcf053c4ed5654a4b5a39b35e4f0b7"
+  },
+  "authority": {
+    "git": "User explicitly authorized direct-main commits; exact expected-head non-force ref updates.",
+    "live_device_execution": false,
+    "deployed_storage_mutation": false
+  },
+  "implemented": [
+    "Pinned native AVC/HEVC UTC metadata candidates, complete clock/catalog descriptor binding, unknown-clock rows and atomic output bounds.",
+    "Separate sealed conditional clock metadata type; no packet replay or trusted-time promotion.",
+    "Protected deployment metadata context with full catalog/clock closure deletion-authority checks.",
+    "Earlier tick query rejects committed deletions of source children and unselected members."
+  ],
+  "verification": {
+    "model_leaky_relu": {
+      "passed": 25,
+      "failed": 0,
+      "ignored": 0,
+      "compiler": "nightly-2026-08-31",
+      "scope": "Nine importer/artifact contracts and sixteen included production scalar/optimized executor tests; no numerical behavior changed.",
+      "log_sha256": "d6a64ad429706b89385bfca94898fc0065b8da3bb061db61250f6242245722c2",
+      "test_seconds": 63.55,
+      "source_sha256": {
+        "crates/fss-model-ir/src/onnx/leaky_relu.rs": "bf45b4d9a23db66b6e913c47fd50b9e5aff57189d264a2614f209c23b32a340f",
+        "crates/fss-model-ir/tests/onnx_leaky_relu_execution.rs": "0288721455d39445fbfb817319670af2b9e2cb375785369b8ec72c24e62fdfcc"
+      }
+    },
+    "native_utc_tests_authored": 15,
+    "native_production_typecheck": "Two attempts killed compiling unchanged asupersync 0.5.0 before FSS diagnostics.",
+    "second_build_flags": "-Zunstable-options --jobs-frontend=1 --jobs-backend=1 --jobs-linker=1 -Zmir-opt-level=0 -Zfewer-names=yes; jobs1; debug0; incremental0; asupersync codegen-units256",
+    "source_review": "Independent native UTC/context review found no blocking semantic defect; scoped rustfmt parser checks pass.",
+    "release_qualified": false
+  },
+  "unknowns": [
+    "Final native Rust typechecking and all UTC runtime/fault contracts are pending.",
+    "NTP/host-clock/packet-coordinate metadata is supplied retained evidence; no source replay, trusted UTC, camera exposure time, payload availability or physical coverage is established.",
+    "Archive and deployment reads do not form an atomic cross-owner snapshot."
+  ],
+  "active_work": [
+    "Canonical CLI/MCP UTC grammar, response projection and process contracts.",
+    "Static ONNX Expand/Tile importer implementation and real executor/artifact contracts."
+  ],
+  "obligations": [
+    {
+      "state": "blocked",
+      "work": "Run pinned production compilation and native recording/retention/UTC contracts.",
+      "reason": "Unchanged Asupersync dependency compilation exceeded available environment memory."
+    },
+    {
+      "state": "in_progress",
+      "work": "Complete canonical UTC CLI/MCP integration and separate model checkpoint."
+    }
+  ],
+  "continuation": {
+    "commands": [
+      "cargo test --locked --offline -p fss-reference --test agent_recordings_utc_contract",
+      "cargo test --locked --offline -p fss-model-ir --test onnx_leaky_relu_execution",
+      "cargo check --locked --offline -p fss-cli --lib --bin fss --bin fss-mcp --bin fss-event",
+      "bash scripts/check_retention_reference.sh"
+    ],
+    "next_affordance": "Finish canonical UTC CLI/MCP integration and compile/run the exact production targets when enough native memory is available; keep source-replayed and metadata-only clock claims separate."
+  }
+}
