@@ -354,6 +354,22 @@ This does not establish a trained model's quality or deployment qualification. S
 [static attention selection and pooled features](onnx_import.md#static-attention-selection-and-pooled-features)
 for the numerical and shape profile, controls, artifact identity and validation scope.
 
+Static NCHW Resize also admits `mode="linear"` for bilinear feature maps,
+with `half_pixel`, `pytorch_half_pixel`, `align_corners` and `asymmetric`
+coordinates. It preserves original F32 scales, clamps source neighbors and lowers
+separable interpolation to native Slice/Concat/Reshape/Mul/Add. Each output spatial
+axis is bounded to 4,096 coordinates; generated coefficients occupy at most
+`8 * (output_height + output_width)` bytes. Existing global node, parameter,
+tensor, work and inference budgets remain enforced. Unsupported ROI, cubic,
+antialias and coordinate modes refuse. Source identity includes the new modules.
+
+The new linear slice has independent source review and authored scalar/optimized
+execution plus artifact-reload contracts. Its Rust compile, rustfmt and native test
+runs are **pending** after the execution environment became unavailable on
+2026-11-07. Passing earlier nearest/attention tests do not validate this addition.
+See [linear spatial resampling](onnx_import.md#linear-spatial-resampling) for exact
+coordinate, numerical, bound and validation details.
+
 Conv, MaxPool and AveragePool can use static `VALID`, `SAME_UPPER` or `SAME_LOWER`
 automatic padding. The importer freezes the exact spatial pads into the native
 graph, including Conv dilation and the declared odd-pad placement. An automatic

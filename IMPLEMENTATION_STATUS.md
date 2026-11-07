@@ -4,6 +4,40 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Bounded bilinear ONNX feature-map resampling
+
+Static NCHW Resize-13 now admits linear interpolation with half-pixel, PyTorch
+half-pixel, align-corners and asymmetric coordinates. Original F32 scales and
+sizes ratios retain their exact rational coordinates; separately rounded F32
+coefficients feed a fixed separable multiply/multiply/add order. Edge clamping,
+singleton modes and exact copy-only grids have explicit semantics.
+
+The importer lowers through existing Slice, Concat, Reshape, Mul and Add operators.
+Arithmetic index runs and bounded residue phases compact common feature-map scales
+without constructing dense interpolation matrices. A shrinking axis runs first in
+mixed resizing, keeping each intermediate tensor within the larger input/output
+element count. Output axes are bounded to 4,096 coordinates, and coefficient storage
+is at most eight times the sum of output axis lengths: 65,536 bytes at the ceiling,
+independent of batch and channel counts.
+
+Complete helper, named-value and parameter costs are checked before emission.
+Existing graph, tensor, work, cancellation and inference budgets remain enforced.
+The source-bound importer identity includes both new modules; frozen native operator
+IDs and runtime dependencies remain unchanged. Cubic, ROI cropping, antialias and
+unadmitted coordinate modes remain explicit refusals. General interpolation follows
+the specified F32 operations, without a cross-backend bitwise equivalence claim.
+See [linear resampling and numerical scope](docs/onnx_import.md#linear-spatial-resampling).
+
+**Validation:** ten real scalar/optimized execution and artifact-reload contracts,
+six standalone planner cases and two coefficient-rounding cases are authored.
+The execution cases include an independent four-neighbor binary64 oracle and a
+Conv -> Resize -> AveragePool -> Gemm graph. Fifteen existing nearest cases remain.
+Independent source reviews found no concrete production API, coordinate, topology
+or admission-count blocker. The environment became unavailable before the new Rust
+could be compiled or formatted, so these tests have no native pass result. Earlier
+32-test attention/broadcast/activation results apply to their separate checkpoint,
+not this addition or a qualified trained model.
+
 ## Conditional source-time windows for local decoded output
 
 The decoded-frame CLI now accepts paired `--output-window-ns START:EXCLUSIVE_END`

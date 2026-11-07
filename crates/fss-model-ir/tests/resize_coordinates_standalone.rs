@@ -82,6 +82,8 @@ fn f32_scales_match_coordinate_formulas_without_replacing_the_source_scale() -> 
             }
             let scale = Scale::from_f32(value, input).map_err(|error| format!("{error:?}"))?;
             assert_eq!(scale.output, output);
+            let (numerator, denominator) = scale.ratio();
+            assert_eq!(numerator as f64 / denominator as f64, f64::from(value));
             for coordinates in [Coordinates::AsymmetricFloor, Coordinates::HalfPixelRoundPreferFloor] {
                 let expected: Vec<_> = (0..output).map(|x| {
                     let selected = match coordinates {

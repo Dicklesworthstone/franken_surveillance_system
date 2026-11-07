@@ -2,7 +2,7 @@
   "format": "engineering-session-handoff",
   "date": "2026-11-06",
   "timezone": "America/New_York",
-  "state": "active_implementation_native_workspace_unavailable",
+  "state": "functional_checkpoints_published_native_reruns_pending",
   "mission": {
     "goal": "Implement consequential review-output and model-import gaps, with meaningful direct-main GitHub checkpoints.",
     "base_commit": "c0c3448e605b2c8036b3d4b8327b1cf5be3675f1",
@@ -22,7 +22,8 @@
     "Admitted valid empty ONNX integer-list attributes while retaining malformed-type and mixed-payload refusal.",
     "Corrected the practical attention fixture's parameter-byte accounting and verified empty-list artifact equivalence.",
     "Factored native integer JPEG transform from 64 to 22 multiplications per pass, with original matrix oracle and unchanged compressed bytes.",
-    "Added bounded conditional source-time window selection to local JPEG and native AVC/HEVC PGM/MJPEG output, with ordered request/selection digests and completion only after owner sync."
+    "Added bounded conditional source-time window selection to local JPEG and native AVC/HEVC PGM/MJPEG output, with ordered request/selection digests and completion only after owner sync.",
+    "Added bounded separable bilinear ONNX Resize-13 lowering for four coordinate modes, using compact native sampling operators and one-dimensional F32 coefficient vectors."
   ],
   "verification": {
     "attention_native_passed": 13,
@@ -58,21 +59,33 @@
       "cli": 5
     },
     "window_execution": "No passing window execution established. Pure-core Cargo returned exit 101 after its last visible fss-core compilation; diagnostics inaccessible following workspace disconnection. Full CLI separately SIGKILLed in unchanged Asupersync.",
-    "window_review": "Independent source review performed; final recovered-source native and process checks plus formatting remain pending."
+    "window_review": "Independent source review performed; final recovered-source native and process checks plus formatting remain pending.",
+    "linear_resize": {
+      "authored_executor_and_artifact_contracts": 10,
+      "authored_standalone_planner_contracts": 6,
+      "authored_coefficient_contracts": 2,
+      "existing_nearest_contracts_retained": 15,
+      "native_execution": "Not run: execution environment unavailable before the new Rust was compiled.",
+      "formatting": "Pinned rustfmt pending for recovered source.",
+      "review": "Independent source audit found no concrete production compile/API, coordinate, topology, naming or admission-count blocker; this is not a native build result."
+    }
   },
-  "active_work": [
-    "Separable bilinear Resize lowering with bounded parameter/helper expansion and real executor tests."
-  ],
+  "active_work": [],
   "protected_limits": [
     "VIT-023 remains open: signed FLDT access-grant and payment-mask attestation consumers are absent; local decode output cannot invent them.",
     "Window selection is conditional on retained time assumptions, not a claim of UTC accuracy or complete coverage.",
     "Lossy JPEG does not establish pixel-exact post-decode masks.",
     "Full CLI/runtime execution remains blocked by dependency compiler termination.",
-    "Execution environment is unavailable again; remaining feature code is being recovered through GitHub, with native verification explicitly pending."
+    "Execution environment is unavailable again; remaining feature code is being recovered through GitHub, with native verification explicitly pending.",
+    "Bilinear import support does not qualify a complete trained detector, embedding quality or RF-DETR model; unsupported operator/profile cases still refuse."
   ],
   "continuation": {
-    "model_tests": "cargo test --locked --offline -p fss-model-ir --test onnx_attention_execution --test onnx_broadcast_execution --test onnx_leaky_relu_execution -- --test-threads=1 --skip scalar_executor:: --skip optimized_executor::",
-    "next": "Finish and publish bilinear Resize after source review. When execution returns, run final recovered-source formatting and focused contracts; do not repeat runtime probes during an explicitly unavailable environment."
+    "next": "Restore pinned native execution, format and run the exact final-source focused tests, then resolve actual diagnostics without changing dependency versions, limits or qualification gates.",
+    "model_tests": "cargo +nightly-2026-08-31 test --locked --offline -p fss-model-ir --test onnx_resize_execution --test resize_linear_coordinates_standalone --test onnx_attention_execution --test onnx_broadcast_execution --test onnx_leaky_relu_execution -- --test-threads=1 --skip scalar_executor:: --skip optimized_executor::",
+    "media_tests": "cargo +nightly-2026-08-31 test --locked --offline -p fss-codec-jpeg-encode -- --test-threads=1",
+    "cli_tests": "cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --bin fss-file --test decoded_media_cli_contract --test file_video_stream_cli -- --test-threads=1",
+    "outstanding_functional_owners": "Full VIT-023: actual FLDT grant and payment-mask attestation consumers, timing-bearing media, custody publication/expiry and independently qualified reviewer delivery. Model feature coverage and real trained-model qualification remain open.",
+    "runtime_policy": "Do not repeat native execution probes while the environment is explicitly unavailable."
   },
   "published_checkpoints": [
     {
@@ -84,8 +97,12 @@
       "change": "Exact integer JPEG transform factorization and equivalence contracts."
     },
     {
-      "commit": "this_commit",
+      "commit": "99c406c9d9a9bfeaeae54d6849fe18853b1c2fbf",
       "change": "Conditional source-time output windows with fixed bounded selection state, skipped-frame encode avoidance and terminal completion fencing."
+    },
+    {
+      "commit": "this_commit",
+      "change": "Bounded separable bilinear ONNX Resize-13, compact native sampling and coefficient vectors, real executor/artifact and independent numerical contracts."
     }
   ]
 }

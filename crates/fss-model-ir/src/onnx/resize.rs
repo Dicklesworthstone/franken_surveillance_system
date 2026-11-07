@@ -1,14 +1,16 @@
 #![forbid(unsafe_code)]
-//! Static ONNX Resize-13 nearest-neighbor spatial resampling.
+//! Static ONNX Resize-13 nearest-neighbor and linear spatial resampling.
 //!
 //! https://onnx.ai/onnx/operators/onnx__Resize.html#resize-13
 //! Source scales retain their exact F32 value; sizes define an exact ratio.
-//! Selection is lowered to existing Slice/Concat operators without arithmetic
-//! on image values. The original integer Reshape/Concat lowering is unchanged.
+//! Nearest selection uses existing Slice/Concat operators without arithmetic on
+//! image values. Linear interpolation adds bounded one-dimensional coefficients
+//! and native Mul/Add. The original integer nearest lowering is unchanged.
 
 use super::resize_coordinates::{
     AxisPlan, CoordinateError, Coordinates, PlanningError, Run, Scale, plan_axis,
 };
+use super::resize_linear_coordinates::LinearCoordinates;
 use super::{Lowering, OnnxError, Result, SourceNode};
 use crate::{AttrValue, AttributeMap, GraphNode, OpCode};
 
@@ -29,16 +31,38 @@ fn text_attribute(attrs: &mut AttributeMap, name: &str, default: &str) -> Result
     }
 }
 
-fn attributes(attrs: &mut AttributeMap) -> Result<Coordinates> {
+enum Interpolation {
+    Nearest(Coordinates),
+    Linear(LinearCoordinates),
+}
+
+fn attributes(attrs: &mut AttributeMap) -> Result<Interpolation> {
     let mode = text_attribute(attrs, "mode", "nearest")?;
     let coordinates = text_attribute(attrs, "coordinate_transformation_mode", "half_pixel")?;
     let nearest = text_attribute(attrs, "nearest_mode", "round_prefer_floor")?;
-    if mode != "nearest" {
-        return Err(OnnxError::Unsupported);
-    }
-    let coordinates = match (coordinates.as_str(), nearest.as_str()) {
-        ("asymmetric", "floor") => Coordinates::AsymmetricFloor,
-        ("half_pixel", "round_prefer_floor") => Coordinates::HalfPixelRoundPreferFloor,
+    let interpolation = match mode.as_str() {
+        "nearest" => Interpolation::Nearest(match (coordinates.as_str(), nearest.as_str()) {
+            ("asymmetric", "floor") => Coordinates::AsymmetricFloor,
+            ("half_pixel", "round_prefer_floor") => Coordinates::HalfPixelRoundPreferFloor,
+            _ => return Err(OnnxError::Unsupported),
+        }),
+        "linear" => {
+            // nearest_mode has no numerical effect in linear interpolation;
+            // validate even an unused exporter-emitted attribute against its enum.
+            if !matches!(
+                nearest.as_str(),
+                "round_prefer_floor" | "round_prefer_ceil" | "floor" | "ceil"
+            ) {
+                return Err(OnnxError::Unsupported);
+            }
+            Interpolation::Linear(match coordinates.as_str() {
+                "half_pixel" => LinearCoordinates::HalfPixel,
+                "pytorch_half_pixel" => LinearCoordinates::PytorchHalfPixel,
+                "align_corners" => LinearCoordinates::AlignCorners,
+                "asymmetric" => LinearCoordinates::Asymmetric,
+                _ => return Err(OnnxError::Unsupported),
+            })
+        }
         _ => return Err(OnnxError::Unsupported),
     };
     match attrs.remove("exclude_outside") {
@@ -46,7 +70,7 @@ fn attributes(attrs: &mut AttributeMap) -> Result<Coordinates> {
         Some(AttrValue::Int(_)) => return Err(OnnxError::Unsupported),
         Some(_) => return Err(OnnxError::Graph),
     }
-    // These attributes do not affect either admitted nearest profile. Validate
+    // These attributes do not affect either admitted interpolation mode. Validate
     // their source types, rather than letting exporter-emitted defaults fail.
     for name in ["cubic_coeff_a", "extrapolation_value"] {
         match attrs.remove(name) {
@@ -58,7 +82,7 @@ fn attributes(attrs: &mut AttributeMap) -> Result<Coordinates> {
     if !attrs.is_empty() {
         return Err(OnnxError::Unsupported);
     }
-    Ok(coordinates)
+    Ok(interpolation)
 }
 
 fn reshape(
@@ -310,7 +334,7 @@ pub(super) fn lower(mut source: SourceNode<'_>, lowering: &mut Lowering<'_, '_>)
     {
         return Err(OnnxError::Graph);
     }
-    let coordinates = attributes(&mut source.attrs)?;
+    let interpolation = attributes(&mut source.attrs)?;
     let input = lowering
         .known
         .get(&source.inputs[0])
@@ -370,6 +394,12 @@ pub(super) fn lower(mut source: SourceNode<'_>, lowering: &mut Lowering<'_, '_>)
     if bytes > lowering.admission.limits.tensor_bytes {
         return Err(OnnxError::Limit);
     }
+    let coordinates = match interpolation {
+        Interpolation::Nearest(coordinates) => coordinates,
+        Interpolation::Linear(coordinates) => {
+            return super::resize_linear::lower(&source, lowering, dims, scales, coordinates);
+        }
+    };
     let factors = match (scales[0].integer_factor(), scales[1].integer_factor()) {
         (Some(height), Some(width)) => [height, width],
         _ => return resample(&source, lowering, dims, scales, coordinates),

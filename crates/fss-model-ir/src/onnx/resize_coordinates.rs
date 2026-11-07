@@ -41,6 +41,12 @@ pub(super) struct Scale {
 }
 
 impl Scale {
+    /// Exact positive scale ratio, retained instead of reconstructed from the
+    /// rounded output length. Shared with the bounded linear-coordinate owner.
+    pub(super) fn ratio(self) -> (u128, u128) {
+        (self.numerator, self.denominator)
+    }
+
     pub(super) fn from_f32(value: f32, input: usize) -> CoordinateResult<Self> {
         if input == 0 || input > MAX_INPUT_ELEMENTS {
             return Err(CoordinateError::Limit);

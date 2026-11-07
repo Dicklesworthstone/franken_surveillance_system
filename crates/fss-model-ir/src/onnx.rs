@@ -30,6 +30,8 @@ mod preprocess;
 mod reduce;
 mod resize;
 mod resize_coordinates;
+mod resize_linear;
+mod resize_linear_coordinates;
 mod shape_program;
 mod split;
 mod structure;

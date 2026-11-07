@@ -65,7 +65,7 @@ including hand-computed dense and convolution/pooling results.
 
 Unknown features refuse rather than being skipped or approximated. In particular,
 runtime or data-dependent shape inputs/computation, negative Slice strides,
-non-nearest or dynamic Resize,
+cubic or dynamic Resize and unsupported linear coordinate modes,
 other opsets/domains/dtypes, symbolic or zero-sized shapes, sparse data, external
 weight files, custom functions, training graphs and model activation are not
 implemented by this profile. Initializers that are also graph inputs refuse rather
@@ -581,8 +581,9 @@ Checked integer rational arithmetic applies the coordinate transform and nearest
 rounding without losing ties. `asymmetric/floor` selects `floor(x / scale)`;
 `half_pixel/round_prefer_floor` rounds `(x + 0.5) / scale - 0.5` to the nearest integer,
 with exact halfway cases selecting the lower index. Selected indices are clamped to
-the input axis. Other coordinate/rounding combinations,
-linear/cubic interpolation and `exclude_outside=1` refuse. Exporter-supplied finite
+the input axis. Other nearest coordinate/rounding combinations and
+`exclude_outside=1` refuse. Linear interpolation has the separate profile below;
+cubic interpolation remains unsupported. Exporter-supplied finite
 `cubic_coeff_a` and `extrapolation_value` attributes are validated but have no effect
 under these admitted nearest profiles.
 
@@ -648,6 +649,107 @@ production tree and corrected fixture now pass the complete native Model IR pack
 (278 tests before Pad was added), using pinned nightly `2026-08-31` and the unchanged
 locked dependencies. These package results do not establish model-quality or
 deployment qualification.
+
+## Linear spatial resampling
+
+Static NCHW `Resize-13` with an explicit `mode="linear"` admits bilinear feature-map
+resampling using the same constant scales/sizes, preserved batch/channel dimensions,
+optional empty ROI, source ordering and shape checks as nearest resampling.
+Each output spatial dimension is at most **4,096**, including identity and integer
+scales. All ordinary import ceilings still apply. This extends feature and decoder
+graphs that interpolate intermediate activations before pooling or prediction.
+
+The coordinate modes follow the [ONNX Resize-13 specification](https://onnx.ai/onnx/operators/onnx__Resize.html#resize-13).
+Here `x` is an output coordinate, `I` the input length, `O` the integer output length,
+and `s` the exact supplied scale (or the exact `O/I` ratio for a sizes control).
+
+| Coordinate mode | Source coordinate |
+|---|---|
+| `half_pixel` | `(x + 0.5) / s - 0.5` |
+| `pytorch_half_pixel` | The half-pixel formula when `O > 1`; otherwise zero |
+| `align_corners` | `x * (I - 1) / (O - 1)` when `O > 1`; otherwise zero |
+| `asymmetric` | `x / s` |
+
+Coordinates clamp to `[0, I-1]`. The importer retains an original F32 scale exactly,
+including when it produces the same integer output size as a different sizes ratio.
+All coordinate and neighbor calculations use checked rational integer arithmetic.
+The two complementary interpolation coefficients round separately, directly to
+nearest-even F32 using integer arithmetic. A small period used to group indices is
+only a planning hint: every selected source index still comes from its exact
+coordinate, including decimal F32 factors near short rational ratios.
+
+The lowering interpolates one spatial axis at a time. When one axis shrinks and
+the other grows, the shrinking axis runs first; otherwise width runs before height.
+For each interpolated axis the frozen arithmetic is a separate F32 multiplication
+of each neighbor by its coefficient, followed by F32 addition. There is no fused
+multiply-add or dense interpolation matrix. An axis whose coordinates are all exact
+samples needs only selection, and a complete identity becomes one Reshape with no
+generated weights. Those copy-only cases retain exact source bits, including
+negative zero and subnormals. General interpolation follows the declared F32
+operations; it is not a bitwise guarantee for backends with different rounding,
+precision or operation order.
+
+Neighbor selections use existing positive-stride Slice, Concat and Reshape
+operators. Consecutive arithmetic runs and repeated samples share helpers.
+When cheaper, the planner selects up to 64 residue classes, then interleaves them
+with singleton dimensions and Concat/Reshape. These are compact index selections,
+not materialized selection matrices. Mul and Add apply one-dimensional broadcast
+coefficient vectors of shape `[1,1,O,1]` or `[1,1,1,O]`.
+
+Generated coefficient storage is at most `8 * (output_height + output_width)` bytes,
+independent of batch, channels and input area: at most 65,536 bytes for both axes.
+For example, 80×80 to 160×160 interpolation uses 2,560 coefficient bytes, while
+480×640 to 360×480 uses 6,720. Every intermediate tensor stays within the larger
+input/output element count because of the axis order. Total execution allocations
+and arithmetic across all helpers still consume the ordinary inference budget;
+the per-tensor bound is not a claim about peak process memory.
+
+The complete lowered node, named-value and generated-parameter costs are checked
+before runtime tensors and helper names are constructed. Irregular selections can
+exceed the unchanged 512-node global ceiling and refuse even below the coordinate
+ceiling. Consumed source controls remain quota-charged alongside coefficients.
+Bounded coordinate planning, coefficient creation and graph append operations retain
+work and cancellation checks. Every helper and coefficient name is reserved against
+all source names, including later source values.
+
+`nearest_mode` has no numerical effect for linear interpolation, but any supplied
+value must still be one of the four Resize-13 enum values and have the proper type.
+Finite `cubic_coeff_a` and `extrapolation_value` attributes are validated but unused.
+Cubic interpolation, nonempty ROI, `exclude_outside=1`, crop/extrapolation modes,
+`tf_half_pixel_for_nn`, later-opset antialias/axes attributes and unknown attributes
+remain explicit refusals. No native operator ID, canonical graph version, production
+runtime dependency or model-activation authority changes. The new lowering/planner
+sources participate in the source-bound importer identity; original ONNX bytes remain
+intact.
+
+**Validation status (2026-11-07): new linear Rust execution is pending.** The execution
+environment became unavailable after the separate attention correction passed its
+13 attention, 10 broadcast and 9 leaky-activation contracts. The linear modules and
+integration received independent source review; they have not been compiled, formatted
+with rustfmt, or reported as passing native tests in this session.
+
+Ten new cases in `onnx_resize_execution::linear` are authored to run both unchanged
+production CPU executors before and after real canonical graph/Safetensors reload.
+They cover literal coordinate/singleton profiles, direct four-neighbor binary64
+oracles across batches/channels and mixed axes, original scale versus size ratios,
+exact copy-only bits, practical coefficient/helper bounds, all quota/cancellation
+boundaries, source-name collisions, and a Conv → Resize → AveragePool → Gemm model.
+The existing 15 focused nearest cases remain, including their historical integer
+canonical-byte contract; the old linear-refusal fixture is replaced by these tests.
+The standalone linear target adds six planner contracts and includes two production
+coefficient-rounding tests, without replacing artifact or native executor coverage.
+
+Run these focused checks when the pinned execution environment is available:
+
+```sh
+cargo +nightly-2026-08-31 test --locked --offline -p fss-model-ir \
+  --test onnx_resize_execution --test resize_linear_coordinates_standalone -- \
+  --skip scalar_executor:: --skip optimized_executor::
+rustc +nightly-2026-08-31 --edition 2024 --test \
+  crates/fss-model-ir/tests/resize_linear_coordinates_standalone.rs \
+  -o /tmp/fss-linear-resize-coordinates
+/tmp/fss-linear-resize-coordinates
+```
 
 ## Static tensor controls and detector heads
 

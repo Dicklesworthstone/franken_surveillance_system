@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! ONNX Resize-13 -> native artifacts -> unmodified production scalar execution.
+//! ONNX Resize-13 -> native artifacts -> unchanged scalar/optimized execution.
 //! The production Safetensors parser is included unchanged with its small data-only
 //! host types below. This isolates the actual parser/kernel path from unrelated async
 //! dependencies; it does not claim to compile the full reference crate or package CLI.
@@ -18,6 +18,13 @@ use fss_tensor::{Shape, Tensor};
 mod safetensors;
 #[path = "../../fss-reference/src/scalar_executor.rs"]
 pub mod scalar_executor;
+pub use scalar_executor::{
+    ExecBudget, ExecError, ExecOutcome, ScalarExecCx, ScalarExecutor, deterministic_sigmoid_f32,
+};
+#[path = "../../fss-reference/src/optimized_executor.rs"]
+pub mod optimized_executor;
+#[path = "onnx_resize_execution/linear.rs"]
+mod linear;
 
 // These are only the limits, refusal variants and policy expected by the unchanged
 // production parser. All byte parsing, escaping, span checks and F32 decoding are
@@ -432,7 +439,6 @@ fn convolution_feature_map_upsampling_becomes_an_executable_dense_head() -> Test
 fn unsupported_interpolation_coordinate_profiles_and_dynamic_controls_refuse() {
     let controls = weight("scales", &[4], &[1., 1., 2., 2.]);
     for attrs in [
-        text_attr("mode", "linear"),
         text_attr("mode", "cubic"),
         text_attr("coordinate_transformation_mode", "align_corners"),
         text_attr("coordinate_transformation_mode", "tf_crop_and_resize"),
