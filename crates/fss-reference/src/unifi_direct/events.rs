@@ -4,6 +4,7 @@
 //! An event is not a verified identity, a confirmed detection, or evidence of
 //! continuous coverage. The caller must bind source, admission and task time.
 
+use asupersync::bytes::Bytes;
 use fss_core::{
     ContentDigest,
     json_input::{self, Value},
@@ -47,17 +48,12 @@ pub struct Frame {
     kind: Kind,
     message_id: u64,
     response_expected: bool,
-    source: Vec<u8>,
+    source: Bytes,
     digest: ContentDigest,
 }
 
 impl Frame {
-    pub(crate) fn new(
-        kind: Kind,
-        message_id: u64,
-        response_expected: bool,
-        source: Vec<u8>,
-    ) -> Self {
+    pub(crate) fn new(kind: Kind, message_id: u64, response_expected: bool, source: Bytes) -> Self {
         let digest = ContentDigest::sha256(&source);
         Self {
             kind,
@@ -81,7 +77,7 @@ impl Frame {
     }
     /// Exact received JSON bytes. The owner must apply its privacy policy.
     pub fn source(&self) -> &[u8] {
-        &self.source
+        self.source.as_ref()
     }
     /// Digest of exactly [`Self::source`].
     pub fn digest(&self) -> ContentDigest {
@@ -196,7 +192,9 @@ fn bounded_number(value: &Value, max: f64) -> Result<f64, Error> {
     }
 }
 
-fn parse(source: &[u8]) -> Result<Parsed, Error> {
+/// Interpret selected fields from a bounded source message. This does not
+/// validate the envelope or establish the message's provenance.
+pub fn interpret_source(source: &[u8]) -> Result<Parsed, Error> {
     if source.len() > super::MAX_MESSAGE_BYTES {
         return Err(Error::Limit);
     }
@@ -290,6 +288,10 @@ fn parse(source: &[u8]) -> Result<Parsed, Error> {
     Ok(Parsed { edge, descriptors })
 }
 
+fn parse(source: &[u8]) -> Result<Parsed, Error> {
+    interpret_source(source)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -297,7 +299,7 @@ mod tests {
     #[test]
     fn smart_event_keeps_source_and_interprets_bounded_descriptor() -> Result<(), Error> {
         let source=br#"{"payload":{"edgeType":"enter","descriptors":[{"objectType":"person","trackerID":42,"confidenceLevel":80,"coord":[0,1,500,1000],"stationary":"false"}]}}"#.to_vec();
-        let event = Frame::new(Kind::SmartDetect, 7, false, source.clone());
+        let event = Frame::new(Kind::SmartDetect, 7, false, source.clone().into());
         let parsed = event.interpret()?;
         assert_eq!(event.source(), source);
         assert_eq!(event.digest(), ContentDigest::sha256(&source));
@@ -328,7 +330,7 @@ mod tests {
     #[test]
     fn invalid_or_overflowing_claims_do_not_destroy_source() {
         let source = br#"{"payload":{"descriptors":[{"coord":[0,0,1001,1]}]}}"#.to_vec();
-        let frame = Frame::new(Kind::SmartDetect, 3, true, source.clone());
+        let frame = Frame::new(Kind::SmartDetect, 3, true, source.clone().into());
         assert_eq!(frame.interpret(), Err(Error::Invalid));
         assert_eq!(frame.source(), source);
         assert!(frame.response_expected());

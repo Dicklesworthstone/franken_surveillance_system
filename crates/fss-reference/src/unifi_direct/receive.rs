@@ -337,8 +337,13 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Session<'scope, 'task, I
         self.capture_events = true;
     }
 
-    fn observe_message(&mut self, bytes: Vec<u8>) -> Step {
-        match self.controller.observe(&bytes) {
+    fn observe_message(&mut self, bytes: asupersync::bytes::Bytes) -> Step {
+        let observed = if self.capture_events {
+            self.controller.observe_event_claims(&bytes)
+        } else {
+            self.controller.observe(&bytes)
+        };
+        match observed {
             Ok(Observation::CameraEvent {
                 kind,
                 message_id,
@@ -700,7 +705,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Session<'scope, 'task, I
             Ok(Err(error)) => Ok(self.stop(Stop::TransportDetail(error.into()))),
             Ok(Ok(None | Some(Message::Close(_)))) => Ok(self.stop(Stop::PeerClosed)),
             Ok(Ok(Some(Message::Binary(bytes)))) => Ok(self.observe_message(bytes)),
-            Ok(Ok(Some(Message::Text(text)))) => Ok(self.observe_message(text.into_bytes())),
+            Ok(Ok(Some(Message::Text(text)))) => Ok(self.observe_message(text.into())),
             Ok(Ok(Some(Message::Ping(_) | Message::Pong(_)))) => {
                 Ok(self.stop(Stop::UnexpectedFrame))
             }

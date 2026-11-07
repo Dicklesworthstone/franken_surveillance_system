@@ -519,6 +519,16 @@ impl Controller {
 
     /// Parse one complete WebSocket message, never retaining its raw JSON or payload.
     pub fn observe(&mut self, bytes: &[u8]) -> Result<Observation, Error> {
+        self.observe_inner(bytes, false)
+    }
+
+    /// Parse a message and classify event claims. The caller must separately
+    /// retain source bytes if it needs event custody; no event is verified.
+    pub fn observe_event_claims(&mut self, bytes: &[u8]) -> Result<Observation, Error> {
+        self.observe_inner(bytes, true)
+    }
+
+    fn observe_inner(&mut self, bytes: &[u8], event_claims: bool) -> Result<Observation, Error> {
         self.rejected_message = None;
         if matches!(self.phase, Phase::Indeterminate | Phase::Closed) {
             return Err(Error::InvalidState);
@@ -679,7 +689,7 @@ impl Controller {
                     success,
                 })
             }
-            _ if name.starts_with("Event") => Ok(Observation::CameraEvent {
+            _ if event_claims && name.starts_with("Event") => Ok(Observation::CameraEvent {
                 kind: events::Kind::from_name(name),
                 message_id: id,
                 response_expected,
