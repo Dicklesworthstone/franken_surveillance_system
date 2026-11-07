@@ -38,10 +38,14 @@ use fss_tensor::{DType, Tensor};
 use crate::scalar_executor::compute_node_macs;
 use crate::{ExecBudget, ExecError, ExecOutcome, ScalarExecCx, ScalarExecutor};
 
+#[path = "optimized_executor/conv.rs"]
 mod conv;
+#[path = "optimized_executor/layout.rs"]
 mod layout;
+#[path = "optimized_executor/pointwise.rs"]
 mod pointwise;
 #[cfg(test)]
+#[path = "optimized_executor/tests.rs"]
 mod tests;
 
 /// Largest admitted [`ExecThreads`] request. Execution never spawns more scoped threads than

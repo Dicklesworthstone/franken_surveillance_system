@@ -20,6 +20,7 @@ mod constants;
 mod dfl;
 mod export;
 mod gemm;
+mod leaky_relu;
 mod pad;
 mod padding;
 mod pooling;
@@ -785,6 +786,7 @@ fn opset(bytes: &[u8], a: &mut Admission<'_>) -> Result<()> {
 /// Unused initializers, duplicate outputs, forward references and custom facilities refuse.
 /// Gemm expands into bounded native transpose/matmul/multiply/add nodes and scalar parameters.
 /// Inference BatchNormalization uses constant channel parameters and ordered native F32 math.
+/// LeakyRelu admits exact finite F32 slopes in [0, 1] through existing native operators.
 /// Static shape programs evaluate only metadata and bounded constant INT64 controls;
 /// they never execute runtime integer tensors or read runtime F32 input values.
 /// Source names are reserved before expansion; no helper can alias any source tensor.
@@ -965,6 +967,8 @@ pub fn import_onnx<'a>(
             gemm::lower(source, &mut lowering)?;
         } else if source.op == "BatchNormalization" {
             batch_normalization::lower(source, &mut lowering)?;
+        } else if source.op == "LeakyRelu" {
+            leaky_relu::lower(source, &mut lowering)?;
         } else if matches!(source.op.as_str(), "AveragePool" | "GlobalAveragePool") {
             pooling::lower(source, &mut lowering)?;
         } else if source.op == "Resize" {

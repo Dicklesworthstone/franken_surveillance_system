@@ -318,7 +318,7 @@ use v1 or v2 recipes without a DFL conversion.
 
 The command uses the existing ONNX IR 7–9, default-domain opset-13 static finite F32 profile.
 Supported operators and their restrictions are specified in [onnx_import.md](onnx_import.md):
-Add, Sub, Mul, Div, Relu, Sigmoid, Tanh, MatMul, Gemm, Softmax, Conv, BatchNormalization,
+Add, Sub, Mul, Div, Relu, LeakyRelu, Sigmoid, Tanh, MatMul, Gemm, Softmax, Conv, BatchNormalization,
 MaxPool, AveragePool, GlobalAveragePool, Transpose,
 Concat, Constant, Reshape, Squeeze, Unsqueeze, Slice, Split, Resize, Identity and Flatten.
 Bounded static Shape/Gather/INT64 control programs can supply layout and partition controls;
@@ -326,6 +326,12 @@ their values are evaluated during import and never require runtime integer execu
 Runtime/data-dependent shapes, external tensors, custom operators, raw detector-head
 profiles outside the explicit v3 DFL contract and unsupported operators refuse explicitly. The command does
 not claim that an arbitrary ONNX detector can be imported.
+
+LeakyRelu accepts the default F32 alpha `0.01` or a finite alpha in `[0, 1]`.
+Its exact native lowering adds five nodes and one scalar, with a temporary
+containing twice the input elements; alpha one uses a single Reshape. Existing
+import limits still apply. See [exact leaky activations](onnx_import.md#exact-leaky-activations)
+for signed-zero, rounding, admitted-rank and source-identity semantics.
 
 Conv, MaxPool and AveragePool can use static `VALID`, `SAME_UPPER` or `SAME_LOWER`
 automatic padding. The importer freezes the exact spatial pads into the native

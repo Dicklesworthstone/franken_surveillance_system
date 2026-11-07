@@ -42,7 +42,7 @@ including hand-computed dense and convolution/pooling results.
   become runtime integer inputs or exported weights.
 - Static positive dimensions, at most rank eight. Source-ordered acyclic graphs;
   declared outputs and intermediate value information must match native inference.
-- Add, Sub, Mul, Div, Relu, Sigmoid, Tanh, MatMul, Gemm, Softmax, Conv, BatchNormalization,
+- Add, Sub, Mul, Div, Relu, LeakyRelu, Sigmoid, Tanh, MatMul, Gemm, Softmax, Conv, BatchNormalization,
   MaxPool, AveragePool, GlobalAveragePool, Transpose,
   Concat, Constant, Reshape, Squeeze, Unsqueeze, Slice, Split, Resize, Pad, Identity and Flatten.
   Shape and constant-only INT64 Gather are admitted for the bounded shape programs below.
@@ -69,6 +69,44 @@ weight files, custom functions, training graphs and model activation are not
 implemented by this profile. Initializers that are also graph inputs refuse rather
 than silently freezing an overridable weight. An unused initializer cannot be made
 executable merely by mentioning it in value-info metadata.
+
+## Exact leaky activations
+
+The importer admits [LeakyRelu-6](https://onnx.ai/onnx/operators/onnx__LeakyRelu.html#leakyrelu-6),
+the operator version selected by opset 13, for static F32 tensors from scalars
+through rank eight. It accepts an omitted alpha (exact F32 `0.01`) or a finite
+F32 alpha in `[0, 1]`, including either signed zero. Other slopes refuse:
+the bounded lowering must preserve the full admitted finite input range,
+without overflowing an intermediate whose result would later be discarded.
+
+For every admitted finite input, the source branch is `alpha * x` when
+`x < 0`, and the unchanged input otherwise. The lowering flattens the tensor,
+multiplies by one generated scalar, stacks the original and scaled values,
+and selects their maximum with the existing two-row MaxPool. It restores the
+original shape afterward. The original value is first in each pool window;
+both CPU executors retain that first value on numeric ties. This preserves
+negative zero inputs and exact subnormal rounding without epsilon comparisons.
+Alpha one uses a single identity Reshape with no generated parameter.
+
+A nonidentity activation adds five native nodes and one four-byte scalar.
+Its largest temporary has twice the input element count. Checked tensor,
+aggregate node, parameter and value bounds apply before expansion, with
+the existing cumulative work and cancellation checks during conversion.
+All source names are reserved before private helpers are allocated. Model IR
+v1 encodings and frozen operator IDs remain unchanged; new conversions bind
+the LeakyRelu lowering source in the importer identity.
+
+The nine authored cases in `onnx_leaky_relu_execution` run the production scalar
+and optimized executors before and after real canonical graph/Safetensors reload.
+They cover all admitted ranks, 4,080 values across every finite F32 exponent
+and nine slopes, signed zeros, subnormal ties, extrema, Conv/Gemm composition,
+initializer inputs, helper-name collisions, refusals and resource/cancellation
+boundaries. They establish a focused numerical contract when executed; they
+do not qualify a trained detector or expand the supported ONNX profile.
+
+```sh
+cargo +nightly-2026-08-31 test --locked --offline -p fss-model-ir --test onnx_leaky_relu_execution
+```
 
 ## Static constant padding and cropping
 
@@ -579,7 +617,7 @@ because that name is reserved by Safetensors; it is never silently changed. The
 weights header records the source digest and importer identity.
 
 The separate `onnx_importer_identity()` record uses `fss.onnx_importer.v1` and hashes
-the exact ONNX parser, constants, static shape programs, structural, Split, Resize, Pad and Gemm lowering,
+the exact ONNX parser, constants, static shape programs, structural, Split, Resize, Pad, Gemm and LeakyRelu lowering,
 artifact exporter and canonical encoder source.
 Existing Model IR bytes, operator IDs and the operator-table freeze remain unchanged.
 
