@@ -40,7 +40,7 @@ def media_fixture(path):
     return result
 
 
-def run_case(binary, cert, key, root, media, early_reply):
+def run_case(binary, cert, key, root, media, early_reply, close_before_media=False):
     root.mkdir(mode=0o700)
     reserve = socket.socket()
     reserve.bind(("127.0.0.1", 0))
@@ -87,14 +87,24 @@ def run_case(binary, cert, key, root, media, early_reply):
             sync = received(control)
             if sync.get("functionName") != "ubnt_avclient_timeSync" or sync.get("inResponseTo") != 10:
                 raise ValueError("pre-media clock request was not answered")
-            dest = setting["payload"]["video"]["video2"]["avSerializer"]["destinations"][0]
-            parsed = urlsplit(dest)
-            if parsed.scheme != "tcp" or parsed.hostname != "127.0.0.1" or not parsed.port:
-                raise ValueError("media destination escaped loopback")
-            with socket.create_connection((parsed.hostname, parsed.port), timeout=5) as stream:
-                stream.sendall(media)
+            if close_before_media:
+                control.shutdown(socket.SHUT_RDWR)
+            else:
+                dest = setting["payload"]["video"]["video2"]["avSerializer"]["destinations"][0]
+                parsed = urlsplit(dest)
+                if parsed.scheme != "tcp" or parsed.hostname != "127.0.0.1" or not parsed.port:
+                    raise ValueError("media destination escaped loopback")
+                with socket.create_connection((parsed.hostname, parsed.port), timeout=5) as stream:
+                    stream.sendall(media)
             out, err = child.communicate(timeout=30)
         report = out.decode("utf-8", "replace")
+        if close_before_media:
+            expected = ("trial_stage=startup_trace dispatch_observed=true clock_requests=1 "
+                        "clock_replies_written=1 settings_replies=1 effects_require_reconciliation=true")
+            if child.returncode == 0 or expected not in report or clip.exists() or not journal.is_dir():
+                raise RuntimeError("failure trace or reconciliation evidence missing: " + report[-1000:])
+            print("loopback case=peer_closed trace=retained effects=reconciliation_required clip=absent identity=synthetic")
+            return
         if (child.returncode or "trial_complete" not in report or "trial_media_before_reply=true" not in report
                 or "effects=reconciliation_required" not in report or "continuous_recording=false" not in report):
             raise RuntimeError("trial did not produce a completed clip: " + err.decode("utf-8", "replace")[-500:])
@@ -135,6 +145,7 @@ def main():
         os.chmod(key, 0o600)
         run_case(binary, cert, key, root / "early", media, True)
         run_case(binary, cert, key, root / "none", media, False)
+        run_case(binary, cert, key, root / "closed", media, True, close_before_media=True)
 
 
 if __name__ == "__main__":

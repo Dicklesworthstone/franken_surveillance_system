@@ -1605,10 +1605,19 @@ with the synthetic peer. The current listener and test SHA-256 hashes were
 `2d31f3d52d22d590f8a07a94e13adc62288e551bbb9db61c6277a61d1af47fa7` and
 `62f9206e6b806f8ac85ae6ba8a91d11c6ed46bd03ba7e9c57cd33e1da3217f5f`.
 This is a synthetic scoped test, not a full-workspace qualification or a
-physical camera session. A separate strict-remote trial-binary build,
-`30098575685845133`, is running; inspect that exact job and release state before
-using its output. It includes trial source SHA-256
-`34f3213368136d8f476075a215d6ab37d922a1ebbe8aa75e589e1cbc759aef07`.
+physical camera session. Separate strict-remote trial-binary build
+`30098575685845133` completed with terminal acknowledgment and source release.
+It includes trial source SHA-256
+`34f3213368136d8f476075a215d6ab37d922a1ebbe8aa75e589e1cbc759aef07` and
+produced Linux executable SHA-256
+`1233a0161b897f243cb877e733196ae6a8476c8654c1a122e07b67524feedd4e`.
+An independent, source-matched TLS loopback fixture passed three cases on that
+binary: an early settings reply and no reply each produced a synthetic clip
+with three FFprobe-decoded H.264 frames; a peer close after an early reply
+retained the trace, reported outstanding reconciliation and produced no clip.
+The fixture SHA-256 was
+`ab0ac40f761bc370bfcb606d60482d665518dae4f4e52b198c4fed0d6ac19d4c`.
+These are synthetic results and do not prove G4 streaming or a settled effect.
 Task-owned fixtures that delay the settings reply until after a media read,
 or never send it and retain the outstanding request at retirement, passed in
 the scoped run described below.

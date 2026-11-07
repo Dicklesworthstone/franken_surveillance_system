@@ -58,6 +58,10 @@ opening media, then tested both an early settings reply and no reply. Both
 cases produced an MP4 from which FFprobe read three H.264 frames. The exact
 binary and fixture hashes, scoped Rust contract results, and remaining
 qualification limits are in the [UniFi reference notes](../../docs/UNIFI_DIRECT_REFERENCE.md).
+The updated fixture also closes the peer after the settings reply and clock
+exchange but before media: the controller reports the retained startup trace
+and a reconciliation obligation, and produces no clip. All three cases passed
+on the current source-matched trial binary as detailed in those notes.
 Run the peer only with a Linux trial binary and the synthetic AVC fixture:
 
 ```text
