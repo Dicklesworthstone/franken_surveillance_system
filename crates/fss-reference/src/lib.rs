@@ -26,6 +26,10 @@ pub mod agent_footage;
 pub mod agent_orient;
 /// Bounded AOP-005 queries of committed event records, with exact continuations.
 pub mod agent_query;
+/// Protected deployment context for exact native recording metadata queries.
+pub mod agent_recording_context;
+/// Read-only, exactly pinned native AVC/HEVC catalog metadata discovery.
+pub mod agent_recordings;
 pub mod agent_session;
 mod alert;
 /// Exact owner-approved cancellation of prepared alerts, never a resend or delivery claim.

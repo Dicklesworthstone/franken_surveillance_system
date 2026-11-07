@@ -642,6 +642,30 @@ pub(crate) fn build_footage_response(
     )
 }
 
+/// Explicit privacy projection for native archive metadata, scoped to AOP-005 only.
+pub(crate) fn build_recording_response(
+    parts: ResponseParts,
+) -> Result<String, Box<dyn std::error::Error>> {
+    if parts.operation != "query"
+        || parts.view != AgentView::Case
+        || parts.payload_schema != fss_core::AgentCognitiveEnvelope::SCHEMA
+    {
+        return Err(RenderError("invalid recording query response profile").into());
+    }
+    let mut projection = privacy_projection(&parts.anchor);
+    projection.purpose = "read-only agent query of pinned native recording metadata".to_owned();
+    projection.visible_domains.extend([
+        "native-recording-catalog-metadata".to_owned(),
+        "native-recording-window-metadata".to_owned(),
+    ]);
+    build_response_for_basis_and_privacy(
+        parts,
+        false,
+        fss_core::reference_contract_basis(),
+        projection.envelope_json(),
+    )
+}
+
 fn build_response_for_basis_and_privacy(
     parts: ResponseParts,
     resnapshot_required: bool,

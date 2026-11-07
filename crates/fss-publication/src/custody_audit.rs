@@ -30,6 +30,9 @@ use io::AuditIo;
 /// Bounded native disk-custody capture for independently rederived beliefs.
 pub mod belief_snapshot;
 
+/// Exact-slot metadata observations without media reads, publication locks, or spool scans.
+pub mod pinned_metadata;
+
 /// Maximum selected root digests.
 pub const MAX_AUDIT_ROOTS: usize = 128;
 /// Maximum entries per publication metadata directory, including foreign/pending entries.

@@ -99,6 +99,19 @@ pub(crate) fn parse_query_command(tokens: &[ArgToken]) -> Result<FssCommand, Cli
             "--anchor",
             "--at",
             "--continuation",
+            "--archive-root",
+            "--codec",
+            "--catalog-slot",
+            "--catalog-root",
+            "--generation",
+            "--source-anchor",
+            "--receive-clock",
+            "--decode-clock",
+            "--time-scale",
+            "--start-tick",
+            "--end-tick",
+            "--max-windows",
+            "--max-hydration-bytes",
         ],
     )?;
     match take(&values, "--target") {
@@ -109,10 +122,14 @@ pub(crate) fn parse_query_command(tokens: &[ArgToken]) -> Result<FssCommand, Cli
         Some((_, target, _)) if target == "footage" => {
             parse_footage_query_args(tokens).map(FssCommand::FootageQuery)
         }
+        Some((_, target, _)) if target == "recordings" => {
+            crate::recording_query_cmd::parse_recording_query_args(tokens)
+                .map(FssCommand::RecordingQuery)
+        }
         Some((_, target, index)) => Err(malformed(
             "--target",
             target,
-            "expected events or footage",
+            "expected events, footage or recordings",
             *index,
         )),
     }

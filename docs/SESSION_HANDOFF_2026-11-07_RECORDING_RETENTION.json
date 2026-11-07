@@ -1,0 +1,142 @@
+{
+  "format": "engineering-session-handoff",
+  "date": "2026-11-07",
+  "mission": {
+    "goal": "Implement consequential remaining functional gaps from the comprehensive plan and beads; commit meaningful checkpoints directly to main through GitHub without PRs.",
+    "inputs": [
+      "AGENTS.md",
+      "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md",
+      ".beads/issues.jsonl",
+      "IMPLEMENTATION_STATUS.md",
+      "docs/SESSION_HANDOFF_2026-11-06_AGENT_FOOTAGE.json"
+    ],
+    "initial_head": "a0a8a728e2c34be5d00717c178e37dfe0f991033"
+  },
+  "authority": {
+    "git": "Explicit user authorization for direct-main commits; no PRs. Ref updates use exact expected heads and force=false.",
+    "external_device_execution": false,
+    "deployment_mutation": false,
+    "concurrent_changes": "Preserved concurrent UniFi/fleet commits by inspecting and building on the live main head; no concurrent feature was overwritten."
+  },
+  "published_checkpoints": [
+    {
+      "commit": "cd888de35daf7595ec4d61216924815adc862e16",
+      "change": "Bounded exact LeakyRelu import, artifact identity, native executor roundtrip tests and admitted-profile documentation."
+    },
+    {
+      "commit": "f8213bc1882ff873004bcdde4b43ec46e55964b8",
+      "change": "Deterministic safe retention cohorts around holds, witnessed exclusions, v1 compatibility and exact durable retry."
+    },
+    {
+      "commit": "this_commit",
+      "change": "Sealed native recording metadata query, current deployment context, CLI/MCP integration, focused contracts, domains and usage/status documentation."
+    }
+  ],
+  "cases": [
+    {
+      "bead": "fss-vit-je36t.8",
+      "status": "advanced_open_execution_pending",
+      "implemented": "One exact published AVC/HEVC catalog, complete bounded member verification, half-open native decode-clock selection, H0 metadata handles, indexed gaps and declared hydration quote.",
+      "remaining": "Cross-catalog discovery, UTC agent access, continuous recording and physical coverage/quality qualification."
+    },
+    {
+      "bead": "fss-vit-je36t.15",
+      "status": "advanced_open_execution_pending",
+      "implemented": "Canonical query target recordings through existing AOP-005/AVIEW-003 and both CLI/MCP, fixed MCP archive binding and preserved protected context."
+    },
+    {
+      "bead": "fss-vit-je36t.6",
+      "status": "advanced_open_execution_pending",
+      "implemented": "Independent expired file-import cleanup around held/shared/effect-blocked closures; conservative time metadata and explicit approval retained.",
+      "remaining": "Standing retention-policy adoption, native live archive retention, scheduling, large-inventory pagination and replica erasure."
+    },
+    {
+      "bead": "fss-x4a.14.10",
+      "status": "advanced_open_execution_pending",
+      "implemented": "LeakyRelu in the admitted static opset-13 F32 importer profile with unchanged frozen operators and exact finite branch semantics.",
+      "remaining": "Broader operator/model execution and release qualification."
+    }
+  ],
+  "contracts": {
+    "operation": "AOP-005 query",
+    "view": "AVIEW-003 case",
+    "response_schema": "fss.agent_response_envelope.v1",
+    "payload_schema": "fss.agent_cognitive_envelope.v1",
+    "scope": "One explicitly pinned native AVC/HEVC catalog, original exact source scope and half-open decode-clock interval",
+    "no_source_media_hydration": true,
+    "no_archive_writes_locks_recovery_or_discovery": true,
+    "source_payload_availability": "unknown",
+    "physical_absence": "not_established",
+    "trusted_utc": "not_established",
+    "owner_boundary": "Archive and deployment observations are independently verified; no atomic cross-owner snapshot or inferred source registration.",
+    "budget": {
+      "catalog_members": 64,
+      "returned_windows": 32,
+      "archive_read_bytes": 8388608,
+      "archive_io_calls": 10000,
+      "deployment_metadata_bytes": 268435456,
+      "deployment_payload_read_attempts": 65536,
+      "output_bytes": 262144,
+      "cooperative_deadline_seconds": 60
+    },
+    "retention": "One reused dependency scan with cached held closures; canonical witnessed exclusions; each proposed union and final complete plan remains gated; exact retained-plan retry after durable record."
+  },
+  "verification": {
+    "toolchain": "nightly-2026-08-31",
+    "native_rust_tests": "not_completed",
+    "final_rustfmt": "not_verified_after_recovery",
+    "initial_baseline": "Asupersync dependency rustc exited on SIGKILL before the feature integration could be checked.",
+    "subsequent_attempts": "One-job/thread native check and focused model reruns interrupted by execution-environment loss; session recovery reported no usable environment.",
+    "model_test_diagnostics": "Initial included-module path and deterministic_sigmoid_f32 reexport errors corrected; final execution result unavailable.",
+    "recovery": "Exact recorded patches recovered where retained; model new lowering/tests/documentation reconstructed from preserved detailed summary. Final file bytes, GitHub blob identities and SHA-256 manifest rows verified; reconstructed sources still need formatting and native validation.",
+    "independent_static_reviews": [
+      "Native metadata/publication/context/CLI API and authority/bounds review found no concrete blocker.",
+      "Retention closure/witness/version/revalidation/retry review found no concrete blocker.",
+      "Existing CLI hold regression was updated to exercise independent cleanup, held-only refusal, explicit release and exact stale-approval behavior; unchanged retention suites were inspected for obsolete assumptions."
+    ],
+    "mcp_discovery": "JSON parsed and checked for three target branches and existing frame/node/depth ceilings; not a Rust transport test.",
+    "authored_contracts": {
+      "publication": 8,
+      "native_recording_query": 10,
+      "cli_parser": 4,
+      "cli_context_integration": 6,
+      "mcp_server": 7,
+      "mcp_launcher": 1,
+      "retention_cohort_integration": 9,
+      "retention_codec_additions": 2,
+      "leaky_relu_integration": 9
+    },
+    "hosted_workflows": "Queued/pending when inspected; not counted as validation.",
+    "release_qualified": false
+  },
+  "obligations": [
+    {
+      "state": "blocked",
+      "work": "Run native compilation, focused regression contracts, formatting, registry checks and repository qualification on an available host.",
+      "reason": "Execution environment became unavailable before final validation; no gate was weakened."
+    }
+  ],
+  "unknowns": [
+    "Final Rust compilation and all newly authored runtime/fault tests remain unverified.",
+    "Recovered source formatting remains unverified.",
+    "Metadata discovery does not establish payload availability, current camera liveness, trusted UTC or physical absence.",
+    "Retained policy/clock inputs remain owner assertions within their declared contracts."
+  ],
+  "continuation": {
+    "commands": [
+      "cargo check --locked --offline -p fss-cli --lib --bin fss --bin fss-mcp --bin fss-event",
+      "cargo test --locked --offline -p fss-model-ir --test onnx_leaky_relu_execution",
+      "cargo test --locked --offline -p fss-publication --test pinned_metadata_contract",
+      "cargo test --locked --offline -p fss-reference --test agent_recordings_contract",
+      "cargo test --locked --offline -p fss-cli --lib recording_query_cmd",
+      "cargo test --locked --offline -p fss-cli --test recording_query_contract",
+      "cargo test --locked --offline -p fss-cli --bin fss-mcp",
+      "bash scripts/check_retention_reference.sh",
+      "cargo test --locked --offline -p fss-reference --test evidence_hold_contract --test retention_deadline_contract --test deletion_effect_lifecycle_contract",
+      "cargo fmt --all -- --check",
+      "bash scripts/qualify.sh --lane policy",
+      "bash scripts/qualify.sh --lane rust"
+    ],
+    "next_feature": "Extend the sealed exact metadata owner to explicitly pinned archive clock-index mappings and UTC selections while preserving clock residuals, custody, cancellation and physical-observability limits."
+  }
+}

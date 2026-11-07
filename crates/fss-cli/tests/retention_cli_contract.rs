@@ -445,7 +445,7 @@ fn exact_old_cohort_deletes_derivatives_but_preserves_recent_unknown_and_shared_
 }
 
 #[test]
-fn member_hold_blocks_every_cohort_member_and_invalidates_old_approval() -> TestResult {
+fn member_hold_retains_protected_import_and_invalidates_old_approval() -> TestResult {
     let dir = Directory::new("held")?;
     let first = import(&dir, "a", SENSOR, Some(1_000_000_000), &movie(40)?)?;
     let second = import(&dir, "b", SENSOR, Some(2_000_000_000), &movie(60)?)?;
@@ -464,34 +464,79 @@ fn member_hold_blocks_every_cohort_member_and_invalidates_old_approval() -> Test
         )?,
         "ERR-DELETION-PLAN-STALE-001",
     );
-    let blocked = plan(&root, NOW)?;
-    assert_eq!(
-        blocked.imports.iter().copied().collect::<BTreeSet<_>>(),
-        BTreeSet::from([first, second])
-    );
-    assert!(
-        blocked
-            .blockers
+    let selected = {
+        let cx = context(&root)?;
+        let deployment = open(&root, &cx)?;
+        let preview = plan_retention(&deployment, &request(NOW)?, &cx)?;
+        assert_eq!(
+            preview.assessment.selection.domain(),
+            "fss.retention_selection.v2"
+        );
+        let candidates = preview.assessment.selection.candidates();
+        let retained = candidates
             .iter()
-            .any(|b| b.kind == "evidence_hold" && b.subject == "incident")
-    );
+            .find(|candidate| candidate.import_identity() == second)
+            .ok_or("missing held candidate")?;
+        assert_eq!(retained.disposition(), RetentionDisposition::ClosureBlocked);
+        assert!(retained.closure_witness().is_some());
+        assert!(retained.blockers().iter().any(|blocker| {
+            blocker.kind == "evidence_hold" && blocker.subject == "incident"
+        }));
+        let selected = preview.deletion.ok_or("missing independent cleanup")?;
+        assert_eq!(selected.imports, vec![first]);
+        assert!(selected.blockers.is_empty());
+        selected
+    };
     let rendered = cli(&root, "retention-plan", NOW, None)?;
     success(&rendered);
-    assert!(std::str::from_utf8(&rendered.stdout)?.contains("\"approve_command\":null"));
-    refused(
-        &cli(
-            &root,
-            "retention-commit",
-            NOW,
-            Some((blocked.digest()?, blocked.approval_digest(PRINCIPAL)?)),
-        )?,
-        "ERR-DELETION-BLOCKED-001",
+    let text = std::str::from_utf8(&rendered.stdout)?;
+    assert!(text.contains("\"status\":\"planned\""));
+    assert!(text.contains("\"disposition\":\"closure_blocked\""));
+    assert!(text.contains("\"trial_plan_digest\":"));
+    assert!(text.contains("\"holds_released\":false"));
+    assert!(text.contains("\"selector_work\":{\"passes\":1,"));
+    assert_eq!(digest_field(&rendered, "plan_digest")?, selected.digest()?);
+    assert_eq!(
+        digest_field(&rendered, "approval_digest")?,
+        selected.approval_digest(PRINCIPAL)?
     );
     assert_eq!(
         files(&root)?,
         before,
-        "no member is deleted and no hold is expired"
+        "stale approval and previews do not delete a member or expire a hold"
     );
+    success(&cli(
+        &root,
+        "retention-commit",
+        NOW,
+        Some((selected.digest()?, selected.approval_digest(PRINCIPAL)?)),
+    )?);
+    {
+        let cx = context(&root)?;
+        let deployment = open(&root, &cx)?;
+        let index = DeletionIndex::read(&deployment)?;
+        assert!(index.import(first).is_some());
+        assert!(index.import(second).is_none());
+        RetainedFileImport::open(&deployment, second, RetainedReadLimits::default(), &cx)?;
+        let held_only = plan_retention(&deployment, &request(NOW)?, &cx)?;
+        assert!(held_only.deletion.is_none());
+        assert!(held_only.assessment.selection.imports().is_empty());
+        assert_eq!(held_only.assessment.selection.candidates().len(), 1);
+        assert_eq!(
+            held_only.assessment.selection.candidates()[0].disposition(),
+            RetentionDisposition::ClosureBlocked
+        );
+    }
+    let before = files(&root)?;
+    let rendered = cli(&root, "retention-plan", NOW, None)?;
+    success(&rendered);
+    let text = std::str::from_utf8(&rendered.stdout)?;
+    assert!(text.contains("\"status\":\"blocked\""));
+    assert!(text.contains("\"deletion_plan\":null"));
+    assert!(text.contains("\"disposition\":\"closure_blocked\""));
+    assert!(text.contains("\"kind\":\"evidence_hold\""));
+    assert!(!text.contains("approval_digest"));
+    assert_eq!(files(&root)?, before, "held-only preview writes nothing");
     let release = hold(&root, "release", second, None)?;
     success(&hold(
         &root,
@@ -500,6 +545,7 @@ fn member_hold_blocks_every_cohort_member_and_invalidates_old_approval() -> Test
         Some(digest_field(&release, "approval_digest")?),
     )?);
     let current = plan(&root, NOW)?;
+    assert_eq!(current.imports, vec![second]);
     assert!(current.blockers.is_empty());
     success(&cli(
         &root,

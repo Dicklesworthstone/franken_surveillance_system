@@ -1,8 +1,57 @@
 # Implementation status
 
-**As of:** 2026-11-06 (dated feature sections retain their original verification scope)
+**As of:** 2026-11-07 (dated feature sections retain their original verification scope)
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
+
+## Native recording queries, independent retention cleanup, and LeakyRelu (2026-11-07)
+
+Three functional slices advance the footage and model work without closing their broader
+qualification beads:
+
+- **Native archive metadata through AOP-005:** `fss query --target recordings` and MCP
+  `query` with `target=recordings` read one exactly pinned AVC/HEVC catalog. They return H0
+  metadata handles, half-open decode-clock overlaps, indexed gaps and declared whole-window
+  hydration byte quotes. A sealed publication reader verifies metadata, exact member slots
+  and the flat reference closure's local tombstones with one nonrefillable allowance and
+  final revalidation. Current protected deployment context is independently bracketed.
+  The MCP operator must bind an archive root at launch; clients cannot override paths or
+  principal. Source availability, live/physical coverage, absence and UTC remain unknown.
+  See [native recording query usage](docs/AGENT_NATIVE_RECORDING_QUERY.md).
+- **Retention progress around holds:** deterministic candidate-union selection can remove
+  independent expired imports while retaining explicit `closure_blocked` candidates.
+  Shared-source/derivative holds and open effects are checked on each proposed union and
+  the final complete selection. Unblocked requests preserve v1 bytes; witnessed exclusions
+  use the registered retention-selection v2 inside existing deletion v3 envelopes. Fresh
+  approval recomputes all decisions, while durable retries keep the original retained plan.
+  See [retention cleanup](docs/retention_cleanup.md).
+- **Bounded ONNX LeakyRelu:** the opset-13 importer admits finite F32 activations with a
+  finite slope in [0,1], including default 0.01, using the existing frozen native operators.
+  Original-first strict pooling preserves signed-zero/subnormal ties; alpha one takes an
+  identity path. Helper storage, nodes, constants and work remain bounded, and exported
+  artifacts bind the implementation source. Other slopes refuse. See
+  [ONNX import](docs/onnx_import.md).
+
+**Validation is incomplete.** The initial native baseline check was killed compiling unchanged
+Asupersync 0.5.0. A lower-memory native check and model test reruns were then interrupted when
+the execution environment became unavailable. Initial model-test module-path/reexport errors
+were corrected, but the final rerun did not complete. No Rust test pass, final format pass,
+full repository qualification, live-camera result or release approval is claimed.
+
+The prepared changes were recovered into GitHub objects and committed directly to main with
+exact expected-head checks. Recovery bytes and SHA-256 manifest rows were fetched back and
+verified. Independent source review checked the new recording/publication/CLI APIs and
+retention closure/revalidation/retry paths. MCP discovery JSON parsed within the adapter's
+existing frame/node/depth bounds. These static checks do not replace execution.
+
+Authored contracts cover publication metadata custody and final races, both codecs,
+source leaves absent/corrupt, exact scopes, gaps, quotas, cancellation, protected context,
+fixed MCP bindings, independent/shared holds, union-only effect blockers, stale approvals,
+all deletion cut points and cold retry, and bitwise model/artifact execution over finite
+F32 boundary cases. The focused targets and pending gates are retained in
+[the session handoff](docs/SESSION_HANDOFF_2026-11-07_RECORDING_RETENTION.json).
+VIT-008, VIT-015, VIT-006 and broader model qualification remain open.
+
 
 ## Bounded AVC recorder replay capture and durable receipt (2026-11-06; targeted native validation passed)
 

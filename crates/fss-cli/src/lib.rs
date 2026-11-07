@@ -70,6 +70,7 @@ pub mod orient_cmd;
 pub mod probe_cmd;
 /// Read-only AOP-005 projection of the verified event-record query engine.
 pub mod query_cmd;
+pub mod recording_query_cmd;
 pub mod redact;
 /// Import explicitly bound camera poses from an authored property scene.
 pub mod scene_rig;
