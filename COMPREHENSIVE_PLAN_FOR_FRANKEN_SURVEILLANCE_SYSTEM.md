@@ -14,6 +14,11 @@
 
 ## Document control
 
+**Live fleet state**: `deliverables/fleet/CURRENT-WAITS.md` (auto-generated from the wait
+ledger — which waits are OPEN vs CLOSED with evidence) and `deliverables/fleet/registry.yaml`
+(camera identity truth). A new session reads those two files plus `fleet_status.py --gate`
+**before** touching anything: do not re-run closed waits, do not double-arm open ones.
+
 This plan is intentionally more demanding than a normal camera/NVR roadmap. A home-security system
 observes a partially visible physical world through lossy sensors and fallible models. A stream may
 be accepted without producing frames; frames may exist without trustworthy time; a detector may
