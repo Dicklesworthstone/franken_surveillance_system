@@ -365,4 +365,44 @@ mod tests {
         assert_eq!(h.phase(), Phase::Fenced);
         Ok(())
     }
+
+    #[test]
+    fn invalid_public_key_fences_before_auth() -> Result<(), Box<dyn std::error::Error>> {
+        let mut h = Handshake::new(private());
+        h.prepare_public().map_err(|e| format!("{e:?}"))?;
+        h.resolve_write(WriteOutcome::Written)
+            .map_err(|e| format!("{e:?}"))?;
+        let mut msg = vec![0x93, 0xa4, b'D', b'H', b'P', b'K', 0xc2, 0xc4, 0x20];
+        msg.extend_from_slice(&[0; 32]);
+        let frame = pack_packet(&DEFAULT_KEY, 0, 0, &msg).ok_or("frame")?;
+        assert_eq!(h.offer(&frame), Err(Error::Frame));
+        assert_eq!(h.phase(), Phase::Fenced);
+        assert_eq!(h.prepare_auth(), Err(Error::Phase));
+        Ok(())
+    }
+
+    #[test]
+    fn receive_sequence_exhaustion_fences_without_wrap() -> Result<(), Box<dyn std::error::Error>> {
+        let mut h = Handshake::new(private());
+        h.prepare_public().map_err(|e| format!("{e:?}"))?;
+        h.resolve_write(WriteOutcome::Written)
+            .map_err(|e| format!("{e:?}"))?;
+        h.offer(&peer()?).map_err(|e| format!("{e:?}"))?;
+        h.offer(&auth()?).map_err(|e| format!("{e:?}"))?;
+        h.prepare_auth().map_err(|e| format!("{e:?}"))?;
+        h.resolve_write(WriteOutcome::Written)
+            .map_err(|e| format!("{e:?}"))?;
+        h.next_api_receive = u32::from(u16::MAX);
+        let frame = pack_packet(
+            h.derived.as_ref().ok_or("missing key")?,
+            u16::MAX,
+            3,
+            b"last",
+        )
+        .ok_or("frame")?;
+        assert_eq!(h.open_synthetic_api(&frame), Some(b"last".to_vec()));
+        assert_eq!(h.open_synthetic_api(&frame), None);
+        assert_eq!(h.phase(), Phase::Fenced);
+        Ok(())
+    }
 }
