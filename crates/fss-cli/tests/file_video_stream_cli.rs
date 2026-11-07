@@ -18,6 +18,9 @@ const AVC: &[u8] =
 const HEVC: &[u8] =
     include_bytes!("../../fss-codec-h265/tests/fixtures/decode/f_qcif_default.h265");
 
+#[path = "file_video_stream_cli/mjpeg.rs"]
+mod mjpeg;
+
 struct Directory(PathBuf);
 impl Directory {
     fn new(label: &str) -> Test<Self> {

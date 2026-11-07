@@ -60,12 +60,19 @@ const HELP: &str = "fss-file <import|inspect|verify|extract|select-movie|decode|
           [--selection-work-units N --max-selection-rows N --max-decode-samples N]\n\
           [--max-decode-bytes N --max-annex-b-bytes N]; source read bounds also apply.\n\
   decode/read-decoded/verify-decoded: --import-id sha256:HEX --segment N\n\
-          --interpretation gray|ycbcr [--output IMAGE.pgm] [--receipt-out FILE]\n\
+          --interpretation gray|ycbcr [--output FILE] [--receipt-out FILE]\n\
+          Output defaults to pgm; --output-format pgm|mjpeg requires --output.\n\
+          MJPEG is a lossy grayscale JPEG frame stream, with no embedded rate or UTC.\n\
+          [--jpeg-quality 1..100] (default 85) and [--encode-work-units N] (default 2B)\n\
+          require mjpeg; encode work is cumulative and separate from decode work.\n\
+          --max-output-bytes N caps the whole MJPEG stream (default 64 MiB, max 256 MiB);\n\
+          it also caps native video PGM output. New private files only, no overwrite.\n\
   decode of an H.264 (annexb/mp4avc/mkvavc) or H.265 (hevc/mp4hevc/mkvhevc) import:\n\
           --segment N must be an IDR access unit (H.265: IDR,\n\
           CRA or BLA) and [--segment-count M] (1..1024) decodes N..N+M in display order;\n\
           RASL pictures of a leading CRA/BLA are skipped and listed; --interpretation ycbcr;\n\
-          --output writes one binary PGM luma image per frame; nothing is published\n\
+          --output writes one PGM or JPEG luma image per frame in display order;\n\
+          the output is a local derivation; nothing is published\n\
   motion: --import-id sha256:HEX --start-segment N --frame-count N\n\
           --interpretation gray|ycbcr --pixel-delta N --minimum-changed-pixels N\n\
           --report-out FILE [--minimum-changed-ppm N] [--max-comparisons N]\n\
@@ -107,6 +114,8 @@ const HELP: &str = "fss-file <import|inspect|verify|extract|select-movie|decode|
   starts a new decode lineage; a decode retained under no or another policy is refused\n\
   (ERR-PRIVACY-UNMASKED-ACCESS-REFUSED-001), as is extract of raw source for a masked sensor.\n\
   read-decoded reopens it; verify-decoded reproduces the decode without changing authority.\n\
+  MJPEG encodes these already screened pixels; lossy edges need not retain exact mask values.\n\
+  --receipt-out still exports the retained JPEG decode receipt, not MJPEG custody.\n\
   motion measures pixel changes across at most 128 frames, resetting on source gaps.\n\
   None certifies coverage, absence, capture precision, person identity or threat severity.\n";
 
@@ -988,5 +997,44 @@ mod tests {
         let mut bad = valid.to_vec();
         bad.extend(["--minimum-changed-ppm", "1000001"]);
         assert!(parse(&media_args("motion", &bad)).is_err());
+    }
+
+    #[test]
+    fn mjpeg_export_options_are_explicit_bounded_and_command_scoped() {
+        let base = [
+            "--segment", "0", "--interpretation", "gray", "--output", "frames.mjpeg",
+        ];
+        for command in ["decode", "read-decoded", "verify-decoded"] {
+            for quality in ["1", "85", "100"] {
+                let mut args = base.to_vec();
+                args.extend([
+                    "--output-format", "mjpeg", "--jpeg-quality", quality,
+                    "--encode-work-units", "0", "--max-output-bytes", "1",
+                ]);
+                assert!(parse(&media_args(command, &args)).is_ok());
+            }
+            for extra in [
+                vec!["--output-format", "jpeg"],
+                vec!["--output-format", "mjpeg", "--jpeg-quality", "0"],
+                vec!["--output-format", "mjpeg", "--jpeg-quality", "101"],
+                vec!["--output-format", "mjpeg", "--jpeg-quality", "256"],
+                vec!["--output-format", "mjpeg", "--encode-work-units", "18446744073709551616"],
+                vec!["--output-format", "mjpeg", "--max-output-bytes", "0"],
+                vec!["--output-format", "mjpeg", "--max-output-bytes", "268435457"],
+                vec!["--jpeg-quality", "85"],
+                vec!["--encode-work-units", "1000"],
+                vec!["--output-format", "pgm", "--jpeg-quality", "85"],
+            ] {
+                let mut args = base.to_vec();
+                args.extend(extra);
+                assert!(parse(&media_args(command, &args)).is_err());
+            }
+            assert!(parse(&media_args(command, &[
+                "--segment", "0", "--interpretation", "gray", "--output-format", "mjpeg",
+            ])).is_err());
+        }
+        for command in ["inspect", "verify", "extract", "motion", "select-movie"] {
+            assert!(parse(&media_args(command, &["--output-format", "mjpeg"])).is_err());
+        }
     }
 }

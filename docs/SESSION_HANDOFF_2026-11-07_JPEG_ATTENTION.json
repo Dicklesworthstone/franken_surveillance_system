@@ -1,7 +1,7 @@
 {
   "format": "engineering-session-handoff",
   "date": "2026-11-07",
-  "state": "implementation_checkpoint_validation_blocked",
+  "state": "session_complete_implementation_committed_validation_blocked",
   "mission": {
     "goal": "Implement consequential remaining media/model functionality and publish meaningful direct-main GitHub checkpoints, without PRs.",
     "basis": [
@@ -19,13 +19,14 @@
   },
   "implemented": [
     "Independent first-party baseline JPEG encoder with grayscale/RGB 4:4:4, exact DC/fixed Q14 AC, complete source-bound receipts, bounded output/work and cancellation.",
-    "Static F32 Gather and ReduceMean lowerings for imported attention, token pooling and feature heads without new native operators."
+    "Static F32 Gather and ReduceMean lowerings for imported attention, token pooling and feature heads without new native operators.",
+    "Existing privacy-screened fss-file decode/reopen/replay outputs bounded local MJPEG streams with complete source lineage, lazy protected creation, shared work, refusal fencing and sync-before-receipt."
   ],
   "verification": {
     "native_tests": "Not executed. The execution environment disappeared before any new Cargo test process could start.",
     "locked_offline_metadata": "cargo metadata --locked --offline --no-deps succeeded with the new workspace member and CLI dependency before the outage.",
     "recovery": "Production files reconstructed from recorded edits into GitHub blobs; formatter-only layout from the unavailable worktree is not claimed byte-identical.",
-    "source_review": "Encoder/profile bounds and arithmetic reviewed; exact DC calculation repairs Q14 half-tie drift. Static inspection of all four Huffman tables confirms counts, unique symbols, prefix freedom and no all-ones code. Independent model review confirms ordered F32 overflow behavior, unchanged executor MAC/allocation accounting, helper bounds and Rust initializer cast forms; no native execution is claimed.",
+    "source_review": "Encoder/profile bounds and arithmetic reviewed; exact DC calculation repairs Q14 half-tie drift. Static inspection of all four Huffman tables confirms counts, unique symbols, prefix freedom and no all-ones code. Independent model review confirms ordered F32 overflow behavior, unchanged executor MAC/allocation accounting, helper bounds and Rust initializer cast forms; no native execution is claimed. Independent consumer review confirmed exact JPEG/video receipt APIs, privacy-screened luma selection, unchanged display order, shared stream budget, private-output ownership and failure fencing. A code-arithmetic work bound identified that the draft 100M default could not encode one 1080p frame; the final finite 2B default exceeds the bound for eight such frames, with existing per-frame and aggregate byte ceilings retained.",
     "release_qualified": false,
     "encoder_contracts_authored": {
       "inline": 6,
@@ -47,11 +48,35 @@
       "crates/fss-model-ir/src/onnx/reduce.rs": "4cedceae2d76b41fce304e0a14f5b909e1451cd0a3d9631c97a251ebc4b8e75a",
       "crates/fss-model-ir/tests/onnx_attention_execution.rs": "b94e8437572198e1d09b3b626e9d1bc08f902ba0402831d1d3e4866caece993b",
       "docs/onnx_import.md": "796d6ca6998078823c33d6949f4ab2de4ad8c510a9d99bba03606db30ad81fc5",
-      "docs/ONNX_PACKAGE_IMPORT.md": "298012a48b327e9e0583e6a033f06148e1186923d6d9a7bdf702cf480da6ba7d"
+      "docs/ONNX_PACKAGE_IMPORT.md": "298012a48b327e9e0583e6a033f06148e1186923d6d9a7bdf702cf480da6ba7d",
+      "crates/fss-cli/src/bin/fss-file.rs": "4d15e1f5d16dddeee2306bf0a5e843fd9cb7472e8453b3087fc09ea0c7c3700b",
+      "crates/fss-cli/src/bin/fss-file/media.rs": "b0259b5b238741aea6b47283e19b5e6d7737558683b80e342159eb07540729ab",
+      "crates/fss-cli/src/bin/fss-file/jpeg_stream.rs": "43e87c5280c5b39fcbd608956820eb138b489efb2c618c007b57cb1befed561f",
+      "crates/fss-cli/src/bin/fss-file/jpeg_stream/encoder.rs": "a7a90122a0cd4b2b5a1af51e46fc3055e6f62b0d6fa5f64d983eb407d47c0f59",
+      "crates/fss-codec-jpeg-encode/tests/mjpeg_stream_contract.rs": "7c5fbb6f4b36ff3dfc35b10acb595fb894107266f3b352eb874368950caed125",
+      "crates/fss-cli/tests/decoded_media_cli_contract.rs": "1f971a0a530d7e210f0c5ccb5a96014b32376a537c5db2ee83558d3cbe0bbaf9",
+      "crates/fss-cli/tests/file_video_stream_core.rs": "ebdbba2ce66ab7599919798b26ae01fc0c76c480ee94b6ad65872c6c38316af9",
+      "crates/fss-cli/tests/file_video_stream_cli.rs": "4e4797abe638cab03aa9eb564df7f7b258005493835729af52271d7d8f2680bc",
+      "crates/fss-cli/tests/file_video_stream_cli/mjpeg.rs": "3c0d604ca4b5a420807a4b7e5d19a413795008e224deeebd47f632d1bb13e31e",
+      "docs/RETAINED_DECODE_WORKFLOW.md": "ccbbea2345c515fd440f814700e176c3535ef628a2f41e1e82b69f02992772ee"
     },
     "attention_contracts_authored": {
       "authored": 12,
       "executed": 0
+    },
+    "stream_contracts_authored": {
+      "pure_stream_core": 8,
+      "runtime_and_process": 5,
+      "closed_grammar": 1,
+      "total": 14,
+      "executed": 0
+    },
+    "encoder_source_identity": "f6b0606030f5dd4ed80cd3fc653f65a8587f78e5736a71f0c3ac6f863d131a53",
+    "encoder_source_identity_scope": "Documented hash preimage recomputed over recovered source; this is hash arithmetic, not Rust execution.",
+    "stream_default_work_bound": {
+      "default": 2000000000,
+      "eight_1920x1080_grayscale_frames": 1377889152,
+      "scope": "Evaluated documented work-bound arithmetic over exact recovered source lengths; not native execution or an output-size guarantee."
     }
   },
   "unknowns": [
@@ -71,17 +96,14 @@
       "reason": "Earlier unchanged Asupersync compilation exceeded available environment resources; current execution environment also unavailable."
     }
   ],
-  "active_work": [
-    {
-      "work": "Connect native JPEG compression to existing privacy-screened fss-file decode output.",
-      "state": "implemented_recovery_and_publication_in_progress"
-    }
-  ],
+  "active_work": [],
   "continuation": {
     "commands": [
-      "cargo test --locked --offline -p fss-codec-jpeg-encode",
-      "cargo test --locked --offline -p fss-model-ir --test onnx_attention_execution -- --skip scalar_executor:: --skip optimized_executor::",
-      "cargo test --locked --offline -p fss-cli --bin fss-file --test file_video_stream_cli",
+      "cargo test --locked --offline -p fss-codec-jpeg-encode --lib --test encode_contract --test mjpeg_stream_contract",
+      "cargo test --locked --offline -p fss-model-ir --test onnx_attention_execution -- --test-threads=1 --skip scalar_executor:: --skip optimized_executor::",
+      "cargo test --locked --offline -p fss-model-ir --test onnx_broadcast_execution --test onnx_leaky_relu_execution",
+      "cargo test --locked --offline -p fss-cli --bin fss-file --test decoded_media_cli_contract --test file_video_stream_core --test file_video_stream_cli",
+      "cargo test --locked --offline -p fss-reference --test agent_recordings_utc_contract",
       "bash scripts/qualify.sh --lane rust"
     ],
     "next_affordance": "Restore a native workspace, fetch exact main, run scoped formatting and focused contracts first, repair concrete diagnostics, then run full qualification on the required host. Do not reinterpret a committed implementation or metadata check as runtime qualification."
@@ -92,8 +114,13 @@
       "change": "Bounded native JPEG encoder and its contracts."
     },
     {
-      "commit": "this_commit",
+      "commit": "dbfd1be586db09f00f146de98b7aadda72e9b1eb",
       "change": "Static ONNX attention selection and pooled feature import."
+    },
+    {
+      "commit": "this_commit",
+      "change": "Private privacy-screened MJPEG decode output, ordered source lineage and stream/runtime/process contracts."
     }
-  ]
+  ],
+  "concurrent_changes": "Preserved concurrent UniFi direct listener/event, synthetic BLE lab, fleet evidence and dueling-ideas report changes. Both attention and MJPEG ref updates encountered newer main commits; refreshed heads and diffs, verified no selected-file overlap, rebuilt trees and parents on those heads and published with expected_sha and force=false. No PRs."
 }

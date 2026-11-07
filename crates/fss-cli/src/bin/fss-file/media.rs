@@ -2,6 +2,7 @@
 //! Operator commands using the same retained-source and canonical codec path as the library.
 
 use super::{ParseResult, RunResult, Values, malformed, number, text, value, write_new};
+use fss_codec_jpeg_encode::EncodeBudget;
 use fss_core::{CanonicalEncode, ContentDigest, SensorCapsule};
 use fss_reference::ingest::pixel_change::{
     PixelChangeConfig, PixelChangeDetector, PixelChangeError, PixelChangeObservation,
@@ -28,6 +29,8 @@ use std::path::{Path, PathBuf};
 
 #[path = "pgm_stream.rs"]
 mod pgm_stream;
+#[path = "jpeg_stream.rs"]
+mod jpeg_stream;
 
 const MAX_SCAN_FRAMES: usize = 128;
 
@@ -36,6 +39,12 @@ enum FrameMode {
     Decode,
     Read,
     Verify,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OutputFormat {
+    Pgm,
+    Mjpeg,
 }
 
 #[derive(Debug)]
@@ -48,6 +57,9 @@ pub(super) struct FrameAction {
     output: Option<PathBuf>,
     receipt_output: Option<PathBuf>,
     maximum_output_bytes: Option<u64>,
+    output_format: OutputFormat,
+    jpeg_quality: u8,
+    encode_work_units: u64,
 }
 
 #[derive(Debug)]
@@ -99,8 +111,15 @@ pub(super) fn accepts_option(command: &str, option: &str) -> bool {
         option,
         "--interpretation" | "--max-pixels" | "--max-dimension" | "--max-markers"
     ) || (command != "read-decoded" && option == "--work-units")
-        || (command != "motion" && matches!(option, "--segment" | "--output" | "--receipt-out"))
+        || (command != "motion"
+            && matches!(
+                option,
+                "--segment" | "--output" | "--receipt-out" | "--output-format"
+                    | "--jpeg-quality" | "--encode-work-units"
+            ))
         || (command == "decode" && matches!(option, "--segment-count" | "--max-output-bytes"))
+        || (matches!(command, "read-decoded" | "verify-decoded")
+            && option == "--max-output-bytes")
         || (command == "motion"
             && matches!(
                 option,
@@ -206,6 +225,32 @@ pub(super) fn parse(
                 "segment count must be 1..1024 and its source range must not overflow",
             ));
         }
+        let output_format = if values.contains_key("--output-format") {
+            if !values.contains_key("--output") {
+                return Err(malformed("--output-format requires --output"));
+            }
+            match text(values, "--output-format")? {
+                "pgm" => OutputFormat::Pgm,
+                "mjpeg" => OutputFormat::Mjpeg,
+                _ => return Err(malformed("output format must be pgm or mjpeg")),
+            }
+        } else {
+            OutputFormat::Pgm
+        };
+        if output_format != OutputFormat::Mjpeg
+            && (values.contains_key("--jpeg-quality") || values.contains_key("--encode-work-units"))
+        {
+            return Err(malformed("JPEG quality and encode work require --output-format mjpeg"));
+        }
+        let jpeg_quality: u8 = number(values, "--jpeg-quality", Some(jpeg_stream::DEFAULT_QUALITY))?;
+        if !(1..=100).contains(&jpeg_quality) {
+            return Err(malformed("JPEG quality must be 1..100"));
+        }
+        let encode_work_units = number(
+            values,
+            "--encode-work-units",
+            Some(jpeg_stream::DEFAULT_ENCODE_WORK_UNITS),
+        )?;
         let maximum_output_bytes = if values.contains_key("--max-output-bytes") {
             let maximum: u64 = number(values, "--max-output-bytes", None)?;
             if !values.contains_key("--output")
@@ -215,6 +260,9 @@ pub(super) fn parse(
                 return Err(malformed(
                     "--max-output-bytes requires --output and a value in 1..268435456",
                 ));
+            }
+            if !matches!(mode, FrameMode::Decode) && output_format != OutputFormat::Mjpeg {
+                return Err(malformed("read/verify output byte bounds require --output-format mjpeg"));
             }
             Some(maximum)
         } else {
@@ -228,6 +276,9 @@ pub(super) fn parse(
             output: values.get("--output").map(PathBuf::from),
             receipt_output: values.get("--receipt-out").map(PathBuf::from),
             maximum_output_bytes,
+            output_format,
+            jpeg_quality,
+            encode_work_units,
         }))
     }
 }
@@ -288,15 +339,20 @@ fn run_frame(
     cx: &ReplayCx,
     out: &mut impl Write,
 ) -> RunResult<()> {
-    if action.maximum_output_bytes.is_some() {
+    if action.maximum_output_bytes.is_some() && action.output_format == OutputFormat::Pgm {
         return Err(std::io::Error::other(
-            "--max-output-bytes applies only to native video decoding",
+            "PGM --max-output-bytes applies only to native video decoding",
         )
         .into());
     }
     if action.segment_count != 1 {
         return Err(std::io::Error::other("--segment-count applies only to H.264 and H.265 imports; JPEG frames decode one segment").into());
     }
+    let mut jpeg_export = if action.output_format == OutputFormat::Mjpeg {
+        prepare_video_export(action, root, cx)?
+    } else {
+        None
+    };
     let mut budget = DecodeBudget::new(action.work_units);
     let frame = match action.mode {
         FrameMode::Decode => {
@@ -309,7 +365,28 @@ fn run_frame(
     if matches!(action.mode, FrameMode::Verify) {
         frame.verify_by_replay(deployment, &action.request, &mut budget, cx)?;
     }
-    if let Some(path) = &action.output {
+    if action.output_format == OutputFormat::Mjpeg {
+        let cancelled = || cx.is_cancelled();
+        let mut encode_budget =
+            EncodeBudget::with_cancellation_probe(action.encode_work_units, &cancelled);
+        let result = (|| {
+            if let Some(export) = &mut jpeg_export {
+                export.frame(
+                    jpeg_stream::FrameInput {
+                        dimensions: frame.receipt().dimensions(),
+                        pixels: frame.pixels(),
+                        luma_sha256: frame.receipt().codec().luma_sha256,
+                        decode_receipt: frame.receipt().digest()?,
+                    },
+                    &mut encode_budget,
+                    cx,
+                )?;
+            }
+            finish_video_export(jpeg_export, cx, out)
+        })();
+        encode_usage_lines(action, &encode_budget, result.is_ok(), out)?;
+        result?;
+    } else if let Some(path) = &action.output {
         let bytes = frame.pgm_bytes();
         write_new(path, &bytes, root, cx)?;
         writeln!(out, "pgm_sha256={}", ContentDigest::sha256(&bytes))?;
@@ -394,11 +471,15 @@ fn run_video_decode(
         .into());
     }
     let mut budget = RecordedVideoDecodeBudget::new(action.work_units);
+    let cancelled = || cx.is_cancelled();
+    let mut encode_budget =
+        EncodeBudget::with_cancellation_probe(action.encode_work_units, &cancelled);
     let result = if hevc {
-        run_h265(action, deployment, root, cx, out, &mut budget)
+        run_h265(action, deployment, root, cx, out, &mut budget, &mut encode_budget)
     } else {
-        run_h264(action, deployment, root, cx, out, &mut budget)
+        run_h264(action, deployment, root, cx, out, &mut budget, &mut encode_budget)
     };
+    encode_usage_lines(action, &encode_budget, result.is_ok(), out)?;
     writeln!(out, "decode_work_units={}", budget.used())?;
     writeln!(out, "decode_work_unit_model={VIDEO_DECODE_WORK_MODEL}")?;
     writeln!(out, "maximum_decode_work_units={}", action.work_units)?;
@@ -407,42 +488,93 @@ fn run_video_decode(
     result
 }
 
+fn encode_usage_lines(
+    action: &FrameAction,
+    budget: &EncodeBudget<'_>,
+    complete: bool,
+    out: &mut impl Write,
+) -> RunResult<()> {
+    if action.output_format == OutputFormat::Mjpeg {
+        writeln!(out, "encode_work_units={}", budget.used())?;
+        writeln!(out, "encode_work_unit_model={}", fss_codec_jpeg_encode::ENCODE_WORK_MODEL)?;
+        writeln!(out, "maximum_encode_work_units={}", action.encode_work_units)?;
+        writeln!(out, "remaining_encode_work_units={}", budget.remaining())?;
+        writeln!(out, "mjpeg_export_complete={complete}")?;
+    }
+    Ok(())
+}
+
+enum FrameExport {
+    Pgm(pgm_stream::PgmExport),
+    Mjpeg(jpeg_stream::JpegExport),
+}
+
+impl FrameExport {
+    fn frame(
+        &mut self,
+        input: jpeg_stream::FrameInput<'_>,
+        budget: &mut EncodeBudget<'_>,
+        cx: &ReplayCx,
+    ) -> std::io::Result<()> {
+        match self {
+            Self::Pgm(export) => export.frame(input.dimensions, input.pixels, cx),
+            Self::Mjpeg(export) => export.frame(input, budget, cx),
+        }
+    }
+}
+
 fn prepare_video_export(
     action: &FrameAction,
     root: &Path,
     cx: &ReplayCx,
-) -> RunResult<Option<pgm_stream::PgmExport>> {
+) -> RunResult<Option<FrameExport>> {
     // With no export requested there is no output buffer, destination, or output hash.
     Ok(action
         .output
         .as_deref()
         .map(|path| {
-            pgm_stream::PgmExport::prepare(
-                path,
-                root,
-                action
-                    .maximum_output_bytes
-                    .unwrap_or(pgm_stream::DEFAULT_OUTPUT_BYTES),
-                action.segment_count,
-                cx,
-            )
+            let maximum = action.maximum_output_bytes.unwrap_or(match action.output_format {
+                OutputFormat::Pgm => pgm_stream::DEFAULT_OUTPUT_BYTES,
+                OutputFormat::Mjpeg => jpeg_stream::DEFAULT_OUTPUT_BYTES,
+            });
+            match action.output_format {
+                OutputFormat::Pgm => {
+                    pgm_stream::PgmExport::prepare(path, root, maximum, action.segment_count, cx)
+                        .map(FrameExport::Pgm)
+                }
+                OutputFormat::Mjpeg => jpeg_stream::JpegExport::prepare(
+                    path, root, maximum, action.segment_count, action.jpeg_quality, cx,
+                ).map(FrameExport::Mjpeg),
+            }
         })
         .transpose()?)
 }
 
 fn finish_video_export(
-    export: Option<pgm_stream::PgmExport>,
+    export: Option<FrameExport>,
     cx: &ReplayCx,
     out: &mut impl Write,
 ) -> RunResult<()> {
-    if let Some(export) = export {
-        let receipt = export.finish(cx)?;
-        writeln!(out, "pgm_sha256={}", receipt.digest)?;
-        writeln!(
-            out,
-            "pgm_bytes={}\npgm_frames={}",
-            receipt.bytes, receipt.frames
-        )?;
+    match export {
+        Some(FrameExport::Pgm(export)) => {
+            let receipt = export.finish(cx)?;
+            writeln!(out, "pgm_sha256={}", receipt.digest)?;
+            writeln!(out, "pgm_bytes={}\npgm_frames={}", receipt.bytes, receipt.frames)?;
+        }
+        Some(FrameExport::Mjpeg(export)) => {
+            let receipt = export.finish(cx)?;
+            writeln!(out, "mjpeg_sha256={}", receipt.digest)?;
+            writeln!(out, "mjpeg_bytes={}\nmjpeg_frames={}", receipt.bytes, receipt.frames)?;
+            writeln!(out, "mjpeg_frame_receipts_sha256={}", receipt.frame_receipts_digest)?;
+            writeln!(out, "mjpeg_frame_receipts_domain={}", jpeg_stream::FRAME_RECEIPTS_DOMAIN)?;
+            writeln!(out, "mjpeg_encoder_identity={}", receipt.encoder)?;
+            writeln!(out, "mjpeg_quality={}", receipt.quality)?;
+            writeln!(out, "mjpeg_recorded_work_units={}", receipt.work_units)?;
+            writeln!(out, "mjpeg_pixel_format=grayscale_luma\nmjpeg_lossy=true")?;
+            writeln!(out, "mjpeg_timing=not_embedded\nmjpeg_published=false")?;
+            writeln!(out, "mjpeg_exact_redaction_pixels=false")?;
+        }
+        None => {}
     }
     Ok(())
 }
@@ -457,6 +589,7 @@ fn run_h264(
     cx: &ReplayCx,
     out: &mut impl Write,
     budget: &mut RecordedVideoDecodeBudget,
+    encode_budget: &mut EncodeBudget<'_>,
 ) -> RunResult<()> {
     let mut export = prepare_video_export(action, root, cx)?;
     let limits = action.request.decode_limits;
@@ -489,7 +622,16 @@ fn run_h264(
     )?;
     while let Some(frame) = range.next_frame_with_budget(deployment, budget, cx)? {
         if let Some(export) = &mut export {
-            export.frame(frame.dimensions(), frame.pixels(), cx)?;
+            export.frame(
+                jpeg_stream::FrameInput {
+                    dimensions: frame.dimensions(),
+                    pixels: frame.pixels(),
+                    luma_sha256: frame.receipt().luma_sha256().bytes(),
+                    decode_receipt: frame.receipt().digest(),
+                },
+                encode_budget,
+                cx,
+            )?;
         }
         let receipt = frame.receipt();
         source_selection_lines(
@@ -544,6 +686,7 @@ fn run_h265(
     cx: &ReplayCx,
     out: &mut impl Write,
     budget: &mut RecordedVideoDecodeBudget,
+    encode_budget: &mut EncodeBudget<'_>,
 ) -> RunResult<()> {
     let mut export = prepare_video_export(action, root, cx)?;
     let limits = action.request.decode_limits;
@@ -577,7 +720,16 @@ fn run_h265(
     )?;
     while let Some(frame) = range.next_frame_with_budget(deployment, budget, cx)? {
         if let Some(export) = &mut export {
-            export.frame(frame.dimensions(), frame.pixels(), cx)?;
+            export.frame(
+                jpeg_stream::FrameInput {
+                    dimensions: frame.dimensions(),
+                    pixels: frame.pixels(),
+                    luma_sha256: frame.receipt().luma_sha256().bytes(),
+                    decode_receipt: frame.receipt().digest(),
+                },
+                encode_budget,
+                cx,
+            )?;
         }
         let receipt = frame.receipt();
         source_selection_lines(

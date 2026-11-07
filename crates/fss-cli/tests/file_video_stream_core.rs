@@ -3,6 +3,8 @@
 
 #[path = "../src/bin/fss-file/pgm_stream.rs"]
 mod pgm_stream;
+#[path = "../src/bin/fss-file/jpeg_stream.rs"]
+mod jpeg_stream;
 
 use fss_core::{BudgetVector, ContentDigest, ContextAuthority, OperationId, RootAuthoritySpec};
 use fss_reference::ReplayCx;
@@ -132,6 +134,58 @@ fn renamed_export_parent_refuses_before_first_write() -> Test {
     }
     #[cfg(not(unix))]
     drop(export);
+    cx.drain_and_finalize();
+    Ok(())
+}
+
+#[test]
+fn mjpeg_runtime_adapter_is_lazy_private_cancellable_and_create_only() -> Test {
+    use fss_codec_jpeg_encode::EncodeBudget;
+    use jpeg_stream::{FrameInput, JpegExport};
+    let directory = Directory::new()?;
+    let cx = directory.context()?;
+    let root = directory.0.join("deployment");
+    let path = directory.0.join("frames.mjpeg");
+    let input = || FrameInput {
+        dimensions: [8, 8], pixels: &[33; 64],
+        luma_sha256: ContentDigest::sha256(&[33; 64]).bytes(),
+        decode_receipt: ContentDigest::sha256(b"retained current-mask frame receipt"),
+    };
+    let mut zero = JpegExport::prepare(&path, &root, DEFAULT_OUTPUT_BYTES, 2, 85, &cx)?;
+    assert!(!path.exists());
+    assert!(zero.frame(input(), &mut EncodeBudget::new(0), &cx).is_err());
+    assert!(zero.finish(&cx).is_err());
+    assert!(!path.exists());
+    let cancelled = || cx.checkpoint("test:mjpeg_encode").is_err();
+    let mut budget = EncodeBudget::with_cancellation_probe(100_000_000, &cancelled);
+    let mut export = JpegExport::prepare(&path, &root, DEFAULT_OUTPUT_BYTES, 2, 85, &cx)?;
+    export.frame(input(), &mut budget, &cx)?;
+    let before = fs::read(&path)?;
+    cx.request_cancellation();
+    assert!(export.frame(input(), &mut budget, &cx).is_err());
+    assert!(export.finish(&cx).is_err());
+    assert_eq!(fs::read(&path)?, before);
+    cx.drain_and_finalize();
+
+    let cx = directory.context()?;
+    assert!(JpegExport::prepare(&path, &root, DEFAULT_OUTPUT_BYTES, 1, 85, &cx).is_err());
+    assert!(JpegExport::prepare(&root.join("forbidden"), &root, DEFAULT_OUTPUT_BYTES, 1, 85, &cx).is_err());
+    let complete_path = directory.0.join("complete.mjpeg");
+    let mut complete = JpegExport::prepare(&complete_path, &root, DEFAULT_OUTPUT_BYTES, 1, 85, &cx)?;
+    let mut budget = EncodeBudget::new(100_000_000);
+    complete.frame(input(), &mut budget, &cx)?;
+    let receipt = complete.finish(&cx)?;
+    assert_eq!(receipt.digest, ContentDigest::sha256(&fs::read(&complete_path)?));
+    assert_eq!(receipt.frames, 1);
+    assert_eq!(receipt.work_units, budget.used());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(fs::metadata(complete_path)?.permissions().mode() & 0o777, 0o600);
+        let alias = directory.0.join("mjpeg-alias");
+        std::os::unix::fs::symlink(&root, &alias)?;
+        assert!(JpegExport::prepare(&alias.join("forbidden"), &root, DEFAULT_OUTPUT_BYTES, 1, 85, &cx).is_err());
+    }
     cx.drain_and_finalize();
     Ok(())
 }

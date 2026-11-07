@@ -170,6 +170,54 @@ fn decode_reopen_export_and_verify_run_in_separate_processes() -> TestResult {
 }
 
 #[test]
+fn retained_jpeg_decode_reopen_and_replay_export_identical_bounded_mjpeg() -> TestResult {
+    use fss_codec_jpeg_encode::{EncodeBudget, EncodeConfig, EncodeLimits, PixelFormat, encode_jpeg};
+    let (directory, root, id) = imported("mjpeg")?;
+    let pgm_path = directory.0.join("screened.pgm");
+    let decoded = frame_command(&root, "decode", &id).arg("--output").arg(&pgm_path).output()?;
+    success(&decoded);
+    let width = field(&decoded, "width")?.parse::<u32>()?;
+    let height = field(&decoded, "height")?.parse::<u32>()?;
+    let pgm = fs::read(pgm_path)?;
+    let header = format!("P5\n{width} {height}\n255\n");
+    assert!(pgm.starts_with(header.as_bytes()));
+    let luma = &pgm[header.len()..];
+    let mut budget = EncodeBudget::new(100_000_000);
+    let expected = encode_jpeg(width, height, luma,
+        ContentDigest::parse(field(&decoded, "luma_sha256")?)?.bytes(),
+        EncodeConfig { quality: 85, format: PixelFormat::Grayscale },
+        &EncodeLimits::default(), &mut budget)?;
+    let mut lineage = None;
+    for command in ["decode", "read-decoded", "verify-decoded"] {
+        let path = directory.0.join(format!("{command}.mjpeg"));
+        let output = frame_command(&root, command, &id).arg("--output").arg(&path)
+            .args(["--output-format", "mjpeg", "--jpeg-quality", "85", "--encode-work-units", &budget.used().to_string(),
+                "--max-output-bytes", &expected.bytes().len().to_string()]).output()?;
+        success(&output);
+        assert_eq!(fs::read(&path)?, expected.bytes());
+        assert_eq!(field(&output, "mjpeg_sha256")?, ContentDigest::sha256(expected.bytes()).to_text());
+        assert_eq!(field(&output, "mjpeg_frames")?, "1");
+        assert_eq!(field(&output, "remaining_encode_work_units")?, "0");
+        assert_eq!(field(&output, "mjpeg_export_complete")?, "true");
+        assert_eq!(field(&output, "decode_root")?, field(&decoded, "decode_root")?);
+        assert_eq!(field(&output, "decode_receipt_digest")?, field(&decoded, "decode_receipt_digest")?);
+        assert_eq!(field(&output, "privacy_mask_binding")?, field(&decoded, "privacy_mask_binding")?);
+        let this_lineage = field(&output, "mjpeg_frame_receipts_sha256")?;
+        if let Some(previous) = &lineage { assert_eq!(previous, &this_lineage); }
+        lineage = Some(this_lineage);
+    }
+    let path = directory.0.join("zero.mjpeg");
+    let refused = frame_command(&root, "read-decoded", &id).arg("--output").arg(&path)
+        .args(["--output-format", "mjpeg", "--encode-work-units", "0"]).output()?;
+    assert!(!refused.status.success());
+    assert_eq!(field(&refused, "mjpeg_export_complete")?, "false");
+    assert!(!String::from_utf8_lossy(&refused.stdout).contains("mjpeg_sha256="));
+    assert!(!path.exists());
+    success(&frame_command(&root, "read-decoded", &id).output()?);
+    Ok(())
+}
+
+#[test]
 fn motion_scan_retains_each_frame_and_distinguishes_baseline_from_zero_change() -> TestResult {
     let (directory, root, id) = imported("motion")?;
     let report_path = directory.0.join("motion.json");

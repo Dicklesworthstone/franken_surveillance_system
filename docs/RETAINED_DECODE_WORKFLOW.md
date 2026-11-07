@@ -95,6 +95,63 @@ change the pixels or silently replace an existing result. The canonical object g
 both raw-pixel and compressed-source identities. PGM rendering is a separate export, with a
 separate byte digest, and does not change the underlying evidence.
 
+## Private grayscale JPEG/MJPEG output
+
+`fss-file decode`, `read-decoded`, and `verify-decoded` accept an explicit
+`--output-format mjpeg` beside `--output FILE`. The default remains `pgm`. For a retained
+JPEG/MJPEG segment, this writes one new grayscale JPEG of the current-policy-screened luma.
+For an AVC or HEVC decode range, it writes consecutive standalone grayscale JPEG images in
+the native decoder's display order. The stream carries no frame rate, capture timestamps,
+UTC mapping, audio, or original camera metadata. Existing source-selection and decoded-frame
+receipt fields retain those source links separately. `--receipt-out` continues to export the
+retained JPEG **decode** receipt; it is not a receipt granting custody over this new file.
+
+```sh
+fss-file decode --root DEPLOYMENT --site SITE --import-id sha256:HEX \
+  --segment 0 --segment-count 8 --interpretation ycbcr \
+  --output preview.mjpeg --output-format mjpeg --jpeg-quality 85 \
+  --work-units 1000000000 --encode-work-units 2000000000 \
+  --max-output-bytes 67108864
+```
+
+The first-party `fss-codec-jpeg-encode` kernel performs baseline JPEG encoding. Quality is
+explicitly bounded to 1..100, with default 85. A request has one cumulative encode-work
+allowance across all frames (default two billion units), separate from decode work, and one
+aggregate output-byte allowance (default 64 MiB, at most 256 MiB). The codec's 4096-axis,
+4,194,304-pixel and 16-MiB-per-frame bounds also apply. `--jpeg-quality` and
+`--encode-work-units` are refused unless MJPEG is selected; selecting any output format
+requires an output path. Zero encode work is a valid refusal probe and cannot create the
+requested export file. A JPEG decode completed before export refusal remains retained.
+
+The default work allowance exceeds the conservative codec bound for eight 1920x1080
+grayscale frames, even charging each frame's full 16-MiB encoded-output ceiling. Frame
+sizes, image content and quality still independently determine whether the aggregate
+byte allowance fits; explicit lower work allowances remain valid refusal probes.
+
+The exporter buffers one encoded frame, never the entire range. It verifies each luma input
+against its independently supplied decode receipt digest. A new file is created only after
+the complete first JPEG fits; writes are bounded, cancellation-aware, and create-only with
+private permissions outside the deployment. The pinned parent directory and opened file
+are checked and synced by the same private-output owner as the PGM exporter. Any failed
+encode, write, checkpoint or sync prevents a completion receipt. Complete earlier frames,
+or a partial final frame after an I/O failure, may remain in the new file; a later refusal
+cannot certify that prefix as a successful shorter stream.
+
+On success, `mjpeg_sha256`, `mjpeg_bytes`, `mjpeg_frames`, `mjpeg_encoder_identity`, quality,
+and charged encode work describe the exact local file. `mjpeg_frame_receipts_sha256` binds
+its ordered input/output receipt sequence under `fss.file_mjpeg_frame_receipts.v1`. Each
+row also binds the owning decoder's sealed frame receipt digest, preserving its import,
+segment, decoder and current privacy-mask lineage even when sources have identical screened
+pixels. AVC/HEVC frame receipts remain unpublished derivations of retained source custody.
+`mjpeg_published=false` and `mjpeg_timing=not_embedded` make the output's limits explicit.
+It is a local derived preview, with no publication, FLDT release grant, or new source evidence.
+
+Privacy masks are applied by the existing retained decode owner **before encoding**. JPEG
+is lossy: reconstructed samples at mask edges can differ from the constant mask value, so
+`mjpeg_exact_redaction_pixels=false` is explicit. Encoding cannot recover the removed input
+pixels; it does not establish a pixel-exact downstream redaction transform. Video luma values
+are preserved as the encoder input without a guessed video-to-full-range color conversion.
+
 This implementation and its adversarial/restart/cancellation tests do not establish production
 qualification. Run the repository's pinned-nightly Rust and local qualification lanes before
 promoting a release claim.

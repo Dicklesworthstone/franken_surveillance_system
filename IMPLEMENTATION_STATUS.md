@@ -4,6 +4,42 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Privacy-screened local MJPEG output (2026-11-07; native execution pending)
+
+`fss-file decode` now accepts `--output-format mjpeg` for retained JPEG and
+native AVC/HEVC ranges; retained JPEG `read-decoded` and `verify-decoded` can
+produce the same derivative. PGM remains the default. Explicit quality, one
+nonrefillable encode-work allowance and an aggregate output-byte ceiling govern
+the complete request. The two-billion-unit default covers the conservative encode
+work bound for eight 1080p grayscale frames; independent byte ceilings still apply. The existing decode owner supplies current privacy-screened
+luma and the exact sealed frame receipt; no raw-source bypass is introduced.
+
+The stream core encodes one frame at a time, creates the protected output only
+after the first complete JPEG fits, and keeps bounded writes with finite
+interruption handling. Any encoding, write, cancellation or path refusal fences
+the entire stream. Final stream and ordered lineage digests are reported only
+after flush and sync. Lineage binds source-frame receipts, screened pixels,
+encoded frames, configuration and work, so equal JPEG bytes from different
+sources retain distinct histories. Finalization reuses the encoder identity
+already sealed under the work allowance, and frequent cancellation probes retain
+current-owner checks without taking the diagnostic checkpoint mutex per byte.
+
+This is a lossy grayscale JPEG frame stream, with display order but no embedded
+frame rate or UTC. A single-frame output is a standalone JPEG. Existing local
+decode/output authority applies; this does not complete VIT-023's grant-bound,
+time-trimmed, custody-tracked reviewer clip or pixel-exact post-JPEG redaction.
+The native AVC/HEVC frame receipts are unpublished derivations of retained
+source custody. See [the workflow](docs/RETAINED_DECODE_WORKFLOW.md).
+
+**Validation:** eight independently runnable stream-core contracts, five runtime/
+process contracts and one closed-grammar unit test are authored. They cover
+actual native encoding, exact quotas, shared work, source pins/order, lazy
+creation, partial/zero/interrupted writes, failure fencing, aliases, masks and
+cancellation. None ran: the test request failed before process creation when the
+execution workspace disappeared. Final published-source compilation, formatting
+and native/process execution remain pending. Independent source review found no
+concrete encoder or consumer API blocker; it is not an execution result.
+
 ## Static attention selection and pooled features (2026-11-07; native execution pending)
 
 The opset-13 importer now admits runtime F32 `Gather` with bounded static INT64
