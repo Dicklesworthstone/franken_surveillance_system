@@ -378,7 +378,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
         }
         let [width,height]=dimensions.ok_or("no decoded snapshots")?;
-        let outcome=format!("observed_pin=matched signature=verified tls={:?} login_http_status=200 status_http_status=200 settings_http_status=200 controller_address={controller_claim} controller_matches_connection_source={controller_matches_route} snapshot_http_status=200 snapshots_decoded={count} adjacent_digest_changes={changed} decoded_luma={}x{} board_object={} firmware_object={} controller_object={} identity=unverified media_persisted={} runtime=asupersync transport=fss_metered",protocol,width,height,shape.board,shape.firmware,shape.controller,output_path.is_some());
+        let outcome=format!("observed_pin=matched signature=verified tls={:?} login_http_status=200 status_http_status=200 settings_http_status=200 controller_address={controller_claim} controller_matches_connection_source={controller_matches_route} video_destinations={:?} snapshot_http_status=200 snapshots_decoded={count} adjacent_digest_changes={changed} decoded_luma={}x{} board_object={} firmware_object={} controller_object={} identity=unverified media_persisted={} runtime=asupersync transport=fss_metered",protocol,settings.video_destinations,width,height,shape.board,shape.firmware,shape.controller,output_path.is_some());
         drop(api);
         Ok(outcome)
         }.await;

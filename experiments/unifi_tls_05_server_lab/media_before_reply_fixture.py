@@ -41,7 +41,7 @@ def media_fixture(path):
     return result
 
 
-def run_case(binary, cert, key, root, media, early_reply, close_before_media=False, event_case=False):
+def run_case(binary, cert, key, root, media, early_reply, close_before_media=False, event_case=False, startup_event_case=False):
     root.mkdir(mode=0o700)
     reserve = socket.socket()
     reserve.bind(("127.0.0.1", 0))
@@ -68,7 +68,13 @@ def run_case(binary, cert, key, root, media, early_reply, close_before_media=Fal
         context.verify_mode = ssl.CERT_NONE  # Disposable loopback certificate only.
         with context.wrap_socket(raw, server_hostname="localhost") as control:
             control.settimeout(20)
-            control.sendall(HEAD + frame(message("ubnt_avclient_hello", 7, payload={})))
+            request = HEAD
+            if startup_event_case:
+                request += frame(message("EventSmartDetect", 19, payload={
+                    "edgeType": "enter", "private": "TEST_PRIVATE_MARKER",
+                    "descriptors": [{"objectType": "person", "confidenceLevel": 80}],
+                }))
+            control.sendall(request + frame(message("ubnt_avclient_hello", 7, payload={})))
             header = bytearray()
             while not header.endswith(b"\r\n\r\n"):
                 header.extend(exact(control, 1))
@@ -131,7 +137,11 @@ def run_case(binary, cert, key, root, media, early_reply, close_before_media=Fal
                         "clock_replies_written=1 settings_replies=1 effects_require_reconciliation=true")
             if child.returncode == 0 or expected not in report or clip.exists() or not journal.is_dir():
                 raise RuntimeError("failure trace or reconciliation evidence missing: " + report[-1000:])
-            print("loopback case=peer_closed trace=retained effects=reconciliation_required clip=absent identity=synthetic")
+            if startup_event_case and ("trial_stage=startup_events_omitted frames=1" not in report
+                                       or "TEST_PRIVATE_MARKER" in report):
+                raise RuntimeError("startup event omission accounting missing or payload leaked")
+            case = "peer_closed_after_startup_event" if startup_event_case else "peer_closed"
+            print(f"loopback case={case} trace=retained effects=reconciliation_required clip=absent identity=synthetic")
             return
         if (child.returncode or "trial_complete" not in report or "trial_media_before_reply=true" not in report
                 or "effects=reconciliation_required" not in report or "continuous_recording=false" not in report):
@@ -139,8 +149,8 @@ def run_case(binary, cert, key, root, media, early_reply, close_before_media=Fal
         observed = "trial_stage=stream_reply_observed" in report
         if observed != (early_reply or event_case) or not clip.is_file() or not journal.is_dir():
             raise ValueError("reply observation or artifact mismatch")
-        if event_case and ("trial_stage=camera_event kind=SmartDetect" not in report
-                           or "TEST_PRIVATE_MARKER" in report):
+        if (event_case or startup_event_case) and ("trial_stage=camera_event kind=SmartDetect" not in report
+                                                   or "TEST_PRIVATE_MARKER" in report):
             raise ValueError("supervised event missing or payload leaked")
         probe = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-count_frames",
                                 "-show_entries", "stream=codec_name,width,height,nb_read_frames", "-of", "json", str(clip)],
@@ -148,7 +158,7 @@ def run_case(binary, cert, key, root, media, early_reply, close_before_media=Fal
         streams = json.loads(probe.stdout)["streams"]
         if len(streams) != 1 or streams[0]["codec_name"] != "h264" or int(streams[0]["nb_read_frames"]) < 1:
             raise ValueError("independent clip probe failed")
-        case = "camera_event" if event_case else ("early_reply" if early_reply else "no_reply")
+        case = "startup_event" if startup_event_case else ("camera_event" if event_case else ("early_reply" if early_reply else "no_reply"))
         print(f"loopback case={case} pre_media_sync=answered clip=decoded frames={streams[0]['nb_read_frames']} identity=synthetic")
     finally:
         if child.poll() is None:
@@ -179,6 +189,8 @@ def main():
         run_case(binary, cert, key, root / "none", media, False)
         run_case(binary, cert, key, root / "closed", media, True, close_before_media=True)
         run_case(binary, cert, key, root / "event", media, False, event_case=True)
+        run_case(binary, cert, key, root / "startup", media, False, startup_event_case=True)
+        run_case(binary, cert, key, root / "startup_closed", media, True, close_before_media=True, startup_event_case=True)
 
 
 if __name__ == "__main__":

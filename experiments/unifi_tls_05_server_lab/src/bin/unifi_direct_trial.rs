@@ -350,6 +350,7 @@ fn run(args: Options) -> ResultBox<()> {
                 let mut owner=conversation::Owner {cx,task,clock,effects:&mut effects,leases:&leases,approval:&approval,management_authority:&guard,stream_authority:&guard,wall:&wall};
                 let hello=OperationId::parse("operation:unifi-trial-hello")?; let agreement=OperationId::parse("operation:unifi-trial-agreement")?; let stream=OperationId::parse("operation:unifi-trial-stream")?;
                 let syncs:Vec<_>=(0..128).map(|i|OperationId::parse(format!("operation:unifi-trial-sync-{i:04}"))).collect::<Result<_,_>>()?;
+                let startup_events=fss_reference::unifi_direct::events::StartupInbox::new(8,8*fss_reference::unifi_direct::MAX_MESSAGE_BYTES)?;
                 let startup_sync_limit=if args.time_sync_policy==TimeSyncPolicy::BoundedPreHelloClockExchange { fss_reference::unifi_direct::MAX_PRE_HELLO_TIME_SYNC_REPLIES } else { 8 };
                 let mut attempts=0;
                 let (session,started)=loop {
@@ -374,6 +375,7 @@ fn run(args: Options) -> ResultBox<()> {
                     let remaining=Duration::from_nanos(deadline.as_nanos().saturating_sub(cx.now().as_nanos()));
                     if remaining.is_zero() {return Err("controller startup deadline elapsed".into());}
                     let mut session=owner::accept_guarded(plaintext,ProtocolPolicy::RequireOffer,&policy,gate,controller,remaining.min(MAX_IO_WAIT)).await?;
+                    session.bind_startup_events(&startup_events)?;
                     println!("trial_stage=websocket_accepted");
                     let remaining=Duration::from_nanos(deadline.as_nanos().saturating_sub(cx.now().as_nanos()));
                     if remaining.is_zero() {return Err("controller startup deadline elapsed".into());}
@@ -397,6 +399,9 @@ fn run(args: Options) -> ResultBox<()> {
                         }
                     };
                     let startup_result=timeout_at(deadline,startup).await;
+                    if !matches!(&startup_result,Ok(Ok(_))) && !startup_events.is_empty() {
+                        println!("trial_stage=startup_events_omitted frames={} source_bytes={} identity=network_claim",startup_events.len(),startup_events.source_bytes());
+                    }
                     if startup_trace.attempted() && !matches!(&startup_result,Ok(Ok(_))) {
                         let settings_replies=startup_trace.observations().iter().filter(|observation|matches!(observation,Observation::StreamSettingsReply {..})).count();
                         println!("trial_stage=startup_trace dispatch_observed={} clock_requests={} clock_replies_written={} settings_replies={} effects_require_reconciliation=true",startup_trace.dispatched().is_some(),startup_trace.clock_requests(),startup_trace.clock_replies_written(),settings_replies);
@@ -408,7 +413,7 @@ fn run(args: Options) -> ResultBox<()> {
                             println!("trial_stage=conversation_deadline phase={:?} effect_prepared={} attempts={} management_gate_passed={} sync_uncorrelated={} sync_correlated={} sync_correlated_expected={}",session.phase(),approval.0.get(),attempts,guard.management_gate_passed.get(),counts.uncorrelated,counts.correlated,counts.correlated_response_expected);
                             return Err(error.into());
                         },
-                        Ok(Err(listener::StartError::Conversation(conversation::Error::SessionRetired {reason:receive::Stop::TransportDetail(receive::TransportFailure::Io(std::io::ErrorKind::UnexpectedEof)),phase:fss_reference::unifi_direct::Phase::AwaitHello,..}))) if !approval.0.get() && attempts<MAX_INITIAL_CONNECTIONS && cx.now()<deadline=>println!("trial_stage=pre_effect_websocket_eof_retry"),
+                        Ok(Err(listener::StartError::Conversation(conversation::Error::SessionRetired {reason:receive::Stop::TransportDetail(receive::TransportFailure::Io(std::io::ErrorKind::UnexpectedEof)),phase:fss_reference::unifi_direct::Phase::AwaitHello,..}))) if !approval.0.get() && startup_events.is_empty() && attempts<MAX_INITIAL_CONNECTIONS && cx.now()<deadline=>println!("trial_stage=pre_effect_websocket_eof_retry"),
                         Ok(Err(error @ listener::StartError::Conversation(conversation::Error::SessionRetired {reason:receive::Stop::TransportDetail(receive::TransportFailure::Io(std::io::ErrorKind::UnexpectedEof)),phase:fss_reference::unifi_direct::Phase::AwaitHello,..})))=>{
                             let counts=session.time_sync_counts();
                             println!("trial_stage=pre_hello_eof_stop effect_prepared={} attempts={} deadline_elapsed={} sync_uncorrelated={} sync_correlated={} sync_correlated_expected={}",approval.0.get(),attempts,cx.now()>=deadline,counts.uncorrelated,counts.correlated,counts.correlated_response_expected);
@@ -463,6 +468,9 @@ fn run(args: Options) -> ResultBox<()> {
                     }
                 }.await;
                 let retirement=supervisor.retire();
+                if !startup_events.is_empty() {
+                    println!("trial_stage=startup_events_omitted frames={} source_bytes={} identity=network_claim",startup_events.len(),startup_events.source_bytes());
+                }
                 for record in retirement.media.recorder.pending { source_omitted=source_omitted.saturating_add(record.bytes().len()); }
                 source_omitted=source_omitted.saturating_add(retirement.media.ingress.framing.bytes().len());
                 if let Some(buffered)=retirement.media.ingress.buffered {source_omitted=source_omitted.saturating_add(buffered.source.bytes().len().saturating_sub(buffered.appended));}

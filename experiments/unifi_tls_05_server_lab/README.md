@@ -66,6 +66,10 @@ case now sends a synthetic smart-detection event while media is flowing. It
 checks the event diagnostic is present, its private test payload is absent,
 and the clip remains decodable. All four cases passed on the updated binary;
 the event case failed on the previous binary. This is not a physical-camera test.
+The next revision adds two pre-hello event cases: one delivers the retained
+event after startup, and the other closes before media and verifies explicit
+omission accounting. All six cases passed on the source-matched inbox revision;
+exact build and fixture hashes are in the reference notes.
 Run the peer only with a Linux trial binary and the synthetic AVC fixture:
 
 ```text

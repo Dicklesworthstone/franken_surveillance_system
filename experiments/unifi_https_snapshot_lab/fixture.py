@@ -75,7 +75,7 @@ def main():
                 if line != b"GET /api/1.1/settings HTTP/1.1" or headers.get(b"cookie") != b"authId=" + token.encode() or body:
                     raise RuntimeError("incorrect settings request")
                 requests.append("settings")
-                reply = b'{"controller":{"addr":"127.0.0.1"},"password":"synthetic-settings-canary","padding":"' + b'x' * 60000 + b'"}'
+                reply = b'{"controller":{"addr":"127.0.0.1"},"av":{"video":{"video1":{"avSerializer":{"destinations":null}},"video2":{"avSerializer":{"destinations":["tcp://synthetic-private-destination:1234"]}},"video3":{"avSerializer":{"destinations":["file:///dev/null"]}}}},"password":"synthetic-settings-canary","padding":"' + b'x' * 60000 + b'"}'
                 peer.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: " + str(len(reply)).encode() + b"\r\nConnection: keep-alive\r\n\r\n" + reply)
                 for index in range(1 if disconnect else count):
                     line, headers, body = request(peer)
@@ -110,15 +110,15 @@ def main():
         if disconnect:
             if run.returncode == 0 or "snapshots_decoded=3" in run.stdout or output.exists():
                 raise SystemExit("partial sequence was reported or persisted as complete")
-            if any(secret in run.stdout or secret in run.stderr for secret in (username, password, token, "synthetic-settings-canary")):
+            if any(secret in run.stdout or secret in run.stderr for secret in (username, password, token, "synthetic-settings-canary", "synthetic-private-destination")):
                 raise SystemExit("loopback fixture secret reached process output")
             print("loopback fixture: disconnected sequence failed without completed receipt or output")
             return
         if run.returncode:
             raise SystemExit("loopback fixture failed: client")
-        if "login_http_status=200" not in run.stdout or "status_http_status=200" not in run.stdout or "settings_http_status=200" not in run.stdout or "controller_address=reported" not in run.stdout or "controller_matches_connection_source=true" not in run.stdout or "snapshot_http_status=200" not in run.stdout or f"snapshots_decoded={count}" not in run.stdout or "adjacent_digest_changes=0" not in run.stdout or "decoded_luma=16x16" not in run.stdout or "media_persisted=true" not in run.stdout:
+        if "login_http_status=200" not in run.stdout or "status_http_status=200" not in run.stdout or "settings_http_status=200" not in run.stdout or "controller_address=reported" not in run.stdout or "controller_matches_connection_source=true" not in run.stdout or "video_destinations=[NotReported, TcpOnly, DiscardOnly]" not in run.stdout or "snapshot_http_status=200" not in run.stdout or f"snapshots_decoded={count}" not in run.stdout or "adjacent_digest_changes=0" not in run.stdout or "decoded_luma=16x16" not in run.stdout or "media_persisted=true" not in run.stdout:
             raise SystemExit("loopback fixture did not decode the expected image")
-        if any(secret in run.stdout or secret in run.stderr for secret in (username, password, token, "synthetic-settings-canary")):
+        if any(secret in run.stdout or secret in run.stderr for secret in (username, password, token, "synthetic-settings-canary", "synthetic-private-destination")):
             raise SystemExit("loopback fixture secret reached process output")
         if output.stat().st_mode & 0o777 != 0o600 or output.read_bytes() != pathlib.Path(jpeg_fixture).read_bytes():
             raise SystemExit("loopback fixture output mismatch")
