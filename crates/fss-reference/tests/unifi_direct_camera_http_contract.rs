@@ -36,6 +36,12 @@ struct Access {
     calls: Cell<usize>,
     deny_at: Cell<usize>,
 }
+struct PublicOnlyAccess;
+impl camera_http::Authority for PublicOnlyAccess {
+    fn permits(&self, peer: Ipv4Addr, generation: u64, operation: Operation) -> bool {
+        peer.is_loopback() && generation == 1 && operation != Operation::SettingsSerializers
+    }
+}
 impl camera_http::Authority for Access {
     fn permits(&self, peer: Ipv4Addr, generation: u64, _: Operation) -> bool {
         let n = self.calls.get() + 1;
@@ -98,7 +104,7 @@ fn fixture(address: SocketAddr) -> io::Result<()> {
         ),
         (
             "GET /api/1.1/settings ",
-            br#"{"controller":{"addr":"127.0.0.1"}}"#.as_slice(),
+            br#"{"controller":{"addr":"127.0.0.1"},"av":{"video":{"video1":{"avSerializer":{"destinations":null}},"video2":{"avSerializer":{"destinations":["tcp://private-fixture"]}}}}}"#.as_slice(),
         ),
         ("GET /snap.jpeg ", [0xff, 0xd8, 0xff, 0xd9].as_slice()),
         ("GET /snap.jpeg ", [0xff, 0xd8, 0xff, 0xd9].as_slice()),
@@ -263,11 +269,17 @@ fn owned_camera_http_sequences_and_fences_interruption() -> Test {
                     owner.login(CREDENTIAL, Duration::from_secs(5)).await?;
                     let status = owner.status(Duration::from_secs(5)).await?;
                     assert!(status.board && status.firmware && status.controller);
-                    let settings = owner.settings(Duration::from_secs(5)).await?;
+                    let (settings, serializers) = owner.settings_serializers(Duration::from_secs(5)).await?;
                     assert_eq!(
                         settings.controller,
                         ControllerAddress::Reported(Ipv4Addr::LOCALHOST)
                     );
+                    assert!(serializers.visit(|peer, generation| peer.is_loopback() && generation == 1, |tracks| {
+                        use fss_core::json_input::Value;
+                        let first=tracks[0].and_then(Value::object).and_then(|o|o.get("destinations"));
+                        let second=tracks[1].and_then(Value::object).and_then(|o|o.get("destinations")).and_then(Value::array);
+                        matches!(first,Some(Value::Null)) && matches!(second,Some([Value::Text(value)]) if value=="tcp://private-fixture") && tracks[2].is_none()
+                    })?);
                     for _ in 0..3 {
                         let snapshot = owner.snapshot(Duration::from_secs(5)).await?;
                         assert_eq!(snapshot.bytes(), [0xff, 0xd8, 0xff, 0xd9]);
@@ -275,6 +287,13 @@ fn owned_camera_http_sequences_and_fences_interruption() -> Test {
                     }
                     peer.join().map_err(|_| "fixture peer panicked")??;
                     drop(owner);
+                    let denied_writes = Rc::new(RefCell::new(Vec::new()));
+                    let denied_io = MeteredIo::with_clock(PendingSocket { writes: denied_writes.clone() }, clock, "fixture:camera", 4096)?;
+                    let mut denied_owner = camera_http::Owner::new(denied_io, task, cx, clock, &PublicOnlyAccess, Ipv4Addr::LOCALHOST, 1, "fixture:camera")?;
+                    assert!(matches!(denied_owner.settings_serializers(Duration::from_secs(5)).await, Err(camera_http::Error::Denied)));
+                    assert!(denied_writes.borrow().is_empty());
+                    assert_eq!(denied_owner.phase(), Phase::Fenced);
+                    drop(denied_owner);
                     let writes = Rc::new(RefCell::new(Vec::new()));
                     let io = MeteredIo::with_clock(
                         PendingSocket {

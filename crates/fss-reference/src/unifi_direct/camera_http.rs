@@ -44,6 +44,8 @@ pub enum Operation {
     Status,
     /// Read the camera's reported controller address.
     Settings,
+    /// Read private serializer values for a separately authorized inspection.
+    SettingsSerializers,
     /// Read one JPEG frame.
     Snapshot,
     /// Commit one separately journaled controller-association change.
@@ -53,7 +55,9 @@ impl Operation {
     fn grant(self) -> RuntimeGrant {
         match self {
             Self::Login => RuntimeGrant::AdapterAuth,
-            Self::Status | Self::Settings => RuntimeGrant::ObserveStatus,
+            Self::Status | Self::Settings | Self::SettingsSerializers => {
+                RuntimeGrant::ObserveStatus
+            }
             Self::Snapshot => RuntimeGrant::ReadMedia,
             Self::Handoff => RuntimeGrant::CameraManagementCommit,
         }
@@ -358,6 +362,34 @@ impl<'scope, 'task, 'policy, IO: AsyncRead + AsyncWrite + Unpin> Owner<'scope, '
         let observation = self
             .session
             .accept_settings(response)
+            .map_err(Error::Camera)?;
+        self.pending_handoff = None;
+        Ok(observation)
+    }
+    /// Read camera settings and retain the three private serializer values.
+    /// This is separately authorized from the ordinary sanitized settings
+    /// operation and does not prove a track can be safely restored.
+    pub async fn settings_serializers(
+        &mut self,
+        wait: Duration,
+    ) -> Result<
+        (
+            camera_api::SettingsObservation,
+            camera_api::VideoSerializers,
+        ),
+        Error,
+    > {
+        self.admit(Operation::SettingsSerializers, wait)?;
+        let request = self.session.prepare_settings()?;
+        let mut response = SensitiveResponse(Some(
+            self.perform(request, Operation::SettingsSerializers, wait)
+                .await?,
+        ));
+        self.admit(Operation::SettingsSerializers, wait)?;
+        let response = response.0.take().ok_or(Error::Protocol)?;
+        let observation = self
+            .session
+            .accept_settings_with_serializers(response)
             .map_err(Error::Camera)?;
         self.pending_handoff = None;
         Ok(observation)

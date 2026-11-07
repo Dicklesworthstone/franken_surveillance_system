@@ -49,6 +49,8 @@ pub enum Error {
     Status,
     /// The settings response was not a bounded, strict JSON object.
     Settings,
+    /// Current authority refused disclosure of retained serializer values.
+    DisclosureDenied,
     /// The response was not a bounded JPEG-framed byte sequence.
     Image,
 }
@@ -186,8 +188,9 @@ pub enum VideoDestinationShape {
 }
 
 /// One sanitized settings observation and, when representable, its local binding.
-/// A digest binds claimed values to the caller-supplied peer and generation; it
-/// does not authenticate, timestamp, retain, or revalidate that observation.
+/// The controller digest binds only the controller claim to the caller-supplied
+/// peer and generation. It does not cover the video shapes or authenticate,
+/// timestamp, retain, or revalidate any observation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SettingsObservation {
     /// The reported controller destination or explicit reason it is unknown.
@@ -197,6 +200,46 @@ pub struct SettingsObservation {
     /// Destination shapes for video1, video2 and video3, in that order.
     /// This omits destination values and is not a rollback record.
     pub video_destinations: [VideoDestinationShape; 3],
+}
+
+/// Caller-owned, untrusted serializer values from one settings response.
+///
+/// Values may contain private destinations or tokens. This is a semantic JSON
+/// projection, not the original response bytes, a durable recovery record, or
+/// evidence that sending the values back will restore the camera. Dropping it
+/// clears owned string buffers on a best-effort basis; allocators, parsers and
+/// transports may have retained other copies.
+pub struct VideoSerializers {
+    peer: Ipv4Addr,
+    generation: u64,
+    tracks: [Option<Value>; 3],
+}
+impl VideoSerializers {
+    /// Revalidate current caller-owned disclosure authority, then inspect the
+    /// three optional values in video1/video2/video3 order. The caller is
+    /// responsible for privacy, further retention, and any copies it makes.
+    pub fn visit<R>(
+        &self,
+        authorize: impl FnOnce(Ipv4Addr, u64) -> bool,
+        inspect: impl FnOnce([Option<&Value>; 3]) -> R,
+    ) -> Result<R, Error> {
+        if !authorize(self.peer, self.generation) {
+            return Err(Error::DisclosureDenied);
+        }
+        Ok(inspect(self.tracks.each_ref().map(Option::as_ref)))
+    }
+}
+impl fmt::Debug for VideoSerializers {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("VideoSerializers(<redacted>)")
+    }
+}
+impl Drop for VideoSerializers {
+    fn drop(&mut self) {
+        for value in self.tracks.iter_mut().flatten() {
+            clear_value(value);
+        }
+    }
 }
 
 /// Bounded, payload-free shape of a camera's handoff HTTP response body.
@@ -547,7 +590,7 @@ impl Session {
             }
         }
     }
-    /// Consume settings while exposing only the controller destination claim.
+    /// Consume settings while exposing only sanitized controller and track shapes.
     /// Other settings, including possible secrets, are not returned or logged.
     pub fn accept_settings(&mut self, response: Response) -> Result<SettingsObservation, Error> {
         let response = PrivateResponse(response);
@@ -564,6 +607,34 @@ impl Session {
                 self.last_settings = Some(observation);
                 self.phase = Phase::Snapshot;
                 Ok(observation)
+            }
+            Err(error) => {
+                self.phase = Phase::Fenced;
+                Err(error)
+            }
+        }
+    }
+    /// Consume a settings response and retain its three serializer values in
+    /// caller-owned memory. A transport owner must separately authorize this
+    /// higher-disclosure operation before and during I/O. No value is write-ready.
+    pub fn accept_settings_with_serializers(
+        &mut self,
+        response: Response,
+    ) -> Result<(SettingsObservation, VideoSerializers), Error> {
+        let response = PrivateResponse(response);
+        if self.phase != Phase::AwaitSettings {
+            return Err(Error::State);
+        }
+        let result = if response.0.status == 200 {
+            settings_with_serializers(&response.0.body, self.peer, self.generation)
+        } else {
+            Err(Error::HttpStatus)
+        };
+        match result {
+            Ok((observation, serializers)) => {
+                self.last_settings = Some(observation);
+                self.phase = Phase::Snapshot;
+                Ok((observation, serializers))
             }
             Err(error) => {
                 self.phase = Phase::Fenced;
@@ -829,6 +900,24 @@ fn handoff_response_observation(body: &[u8]) -> HandoffResponseObservation {
 }
 
 fn settings(body: &[u8], peer: Ipv4Addr, generation: u64) -> Result<SettingsObservation, Error> {
+    settings_inner(body, peer, generation, false).map(|(observation, _)| observation)
+}
+
+fn settings_with_serializers(
+    body: &[u8],
+    peer: Ipv4Addr,
+    generation: u64,
+) -> Result<(SettingsObservation, VideoSerializers), Error> {
+    let (observation, serializers) = settings_inner(body, peer, generation, true)?;
+    serializers.map(|s| (observation, s)).ok_or(Error::Settings)
+}
+
+fn settings_inner(
+    body: &[u8],
+    peer: Ipv4Addr,
+    generation: u64,
+    retain_serializers: bool,
+) -> Result<(SettingsObservation, Option<VideoSerializers>), Error> {
     if body.len() > MAX_STATUS {
         return Err(Error::Settings);
     }
@@ -889,14 +978,51 @@ fn settings(body: &[u8], peer: Ipv4Addr, generation: u64) -> Result<SettingsObse
             }
         })
         .ok_or(Error::Settings);
+    let controller = match parsed {
+        Ok(controller) => controller,
+        Err(error) => {
+            clear_value(&mut value);
+            return Err(error);
+        }
+    };
+    let binding = match controller_binding(controller, peer, generation) {
+        Ok(binding) => binding,
+        Err(error) => {
+            clear_value(&mut value);
+            return Err(error);
+        }
+    };
+    let serializers = retain_serializers.then(|| {
+        let mut tracks = [None, None, None];
+        if let Some(video) = field_mut(&mut value, "av").and_then(|v| field_mut(v, "video")) {
+            for (index, name) in ["video1", "video2", "video3"].into_iter().enumerate() {
+                if let Some(Value::Object(track)) = field_mut(video, name) {
+                    tracks[index] = track.remove("avSerializer");
+                }
+            }
+        }
+        VideoSerializers {
+            peer,
+            generation,
+            tracks,
+        }
+    });
     clear_value(&mut value);
-    let controller = parsed?;
-    let binding = controller_binding(controller, peer, generation)?;
-    Ok(SettingsObservation {
-        controller,
-        binding,
-        video_destinations,
-    })
+    Ok((
+        SettingsObservation {
+            controller,
+            binding,
+            video_destinations,
+        },
+        serializers,
+    ))
+}
+
+fn field_mut<'a>(value: &'a mut Value, key: &str) -> Option<&'a mut Value> {
+    match value {
+        Value::Object(fields) => fields.get_mut(key),
+        _ => None,
+    }
 }
 
 pub(super) fn controller_binding(

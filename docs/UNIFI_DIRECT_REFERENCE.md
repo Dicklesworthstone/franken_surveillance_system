@@ -2086,6 +2086,44 @@ oversized arrays remain unsupported. The projection is an untrusted point-in-tim
 claim, not a rollback record or permission to modify a track. A safe second
 track test still needs a proven way to restore the full prior settings and
 avoid interfering with the existing recorder and shared audio encoder.
+The focused reduced-workspace build compiled the camera module but failed
+before running the contract test because Cargo also selected an unrelated
+replay binary absent from that reduced workspace. Automatic binary discovery
+was disabled in the isolated test workspace. The corrected retry and separate
+snapshot-lab builds were refused before execution by remote disk reservations;
+the affected jobs reached terminal acknowledgment and source release. Once
+capacity changed, strict-remote job `30098575685845193` built the corrected
+reduced workspace with exit zero, terminal acknowledgment and source release.
+The resulting Linux test executable SHA-256
+`f3b7c7fcd69bedf8aea7f2ede7b62f7509d93266d3220213725cc026d1386ac1`
+was run separately on the worker: **7/7 tests passed**, including nested
+destination-shape classification and redaction. The matching `camera_api.rs`
+source SHA-256 was
+`0432a6bdf1973f41530a6b84b4133781d4efac5a0354510dea3f8c8627e69df9`;
+only a documentation comment changed afterward to clarify that the controller
+binding does not cover video shapes.
+These are synthetic contract tests, not the full workspace. Strict-remote job
+`30098575685845197` then built the separate snapshot lab with exit zero,
+terminal acknowledgment and source release. The Linux binary SHA-256 was
+`8b1fb114673b4d41dea87845065b96237330f4b5d25e0223fea91f7d769c3eab`;
+the independent TLS fixture passed single-snapshot, three-snapshot and
+disconnect cases, including destination-value redaction. The lab main and
+fixture source hashes were
+`40c6bddba79d2e5a5ef0ccd8e3acfe7d947081ce36805dd92b26239e5cf95346` and
+`a58166689655d3ce5697198f2e25958533013e9763070eb126b30520e4e1747f`.
+
+The same hash-verified binary then made one read-only G4 HTTPS session from
+`trj`: TLS 1.3 and the same-LAN certificate pin matched; login, status,
+settings and snapshot returned HTTP 200; the Rust settings API returned
+`[NotReported, TcpOnly, NotReported]`; and the in-memory Rust decoder
+reconstructed one 640×360 image. No image was persisted by this test, no
+camera setting was changed, and the new camera session's expiry is unknown.
+Afterward the recorder and archive and discovery timers were active, the
+recorder restart counter was unchanged at 70, and the primary volume was
+mounted with a recording segment 33 seconds old. This confirms a bounded
+physical-device readback through the experimental Rust path, not independent
+identity, safe stream takeover, sustained native video, gap-free recording,
+or automatic camera setup.
 
 ### Controller TCP listener
 

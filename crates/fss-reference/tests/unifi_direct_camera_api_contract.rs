@@ -221,6 +221,58 @@ fn settings_report_video_destination_shapes_without_exposing_destinations() -> T
 }
 
 #[test]
+fn serializer_capture_requires_disclosure_and_preserves_null_and_absence() -> Test {
+    use fss_core::json_input::Value;
+    use std::cell::Cell;
+    let mut session = Session::new(Ipv4Addr::LOCALHOST, 3)?;
+    login(&mut session)?;
+    status(&mut session)?;
+    let request = session.prepare_settings()?;
+    session.finish_write(request, WriteOutcome::Written)?;
+    let (shape, serializers) = session.accept_settings_with_serializers(Response::new(
+        200,
+        "OK",
+        br#"{"password":"outside-canary","av":{"video":{"video1":{"avSerializer":{"destinations":null}},"video2":{"avSerializer":{"destinations":["tcp://private-destination:1234"],"parameters":{"withOpus":false}}},"video3":{"avSerializer":null}}}}"#.to_vec(),
+    ))?;
+    assert_eq!(
+        shape.video_destinations,
+        [
+            VideoDestinationShape::NotReported,
+            VideoDestinationShape::TcpOnly,
+            VideoDestinationShape::NotReported
+        ]
+    );
+    assert!(!format!("{serializers:?}").contains("private-destination"));
+    let called = Cell::new(false);
+    assert_eq!(
+        serializers.visit(|_, _| false, |_| called.set(true)),
+        Err(Error::DisclosureDenied)
+    );
+    assert!(!called.get());
+    let recognized = serializers.visit(
+        |peer, generation| peer == Ipv4Addr::LOCALHOST && generation == 3,
+        |tracks| {
+            let first = tracks[0].and_then(Value::object).and_then(|v| v.get("destinations"));
+            let second = tracks[1].and_then(Value::object).and_then(|v| v.get("destinations")).and_then(Value::array);
+            matches!(first, Some(Value::Null))
+                && matches!(second, Some([Value::Text(destination)]) if destination == "tcp://private-destination:1234")
+                && matches!(tracks[2], Some(Value::Null))
+        },
+    )?;
+    assert!(recognized);
+    assert_eq!(session.phase(), Phase::Snapshot);
+    let request = session.prepare_settings()?;
+    session.finish_write(request, WriteOutcome::Written)?;
+    let (_, absent) = session.accept_settings_with_serializers(Response::new(
+        200,
+        "OK",
+        br#"{"av":{"video":{"video3":{}}}}"#.to_vec(),
+    ))?;
+    assert!(absent.visit(|_, _| true, |tracks| tracks.iter().all(Option::is_none))?);
+    Ok(())
+}
+
+#[test]
 fn settings_binding_changes_with_peer_and_generation() -> Test {
     fn observe(peer: Ipv4Addr, generation: u64) -> Result<ContentDigest, Box<dyn StdError>> {
         let mut s = Session::new(peer, generation)?;
