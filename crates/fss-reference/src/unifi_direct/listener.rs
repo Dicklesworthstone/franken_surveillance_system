@@ -609,6 +609,12 @@ async fn start_inner<IO: asupersync::io::AsyncRead + asupersync::io::AsyncWrite 
             Ready::Control(Ok(super::receive::Step::WaitElapsed)) => {
                 return Err(StartError::Listener(Error::Deadline));
             }
+            // This listener runs before the supervisor enables event capture.
+            Ready::Control(Ok(super::receive::Step::CameraEvent(_))) => {
+                return Err(StartError::Conversation(
+                    super::conversation::Error::Unexpected,
+                ));
+            }
             Ready::Control(Ok(super::receive::Step::Observation(
                 super::Observation::TimeSyncRequested,
             ))) => {

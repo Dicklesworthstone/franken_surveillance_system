@@ -99,10 +99,12 @@ pub enum Stop {
 }
 
 /// One bounded observation step.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Step {
     /// A syntactically valid, unauthenticated controller observation.
     Observation(Observation),
+    /// A source-preserving camera event transferred to the caller.
+    CameraEvent(super::events::Frame),
     /// The wait ended without a message; this does not prove absence.
     WaitElapsed,
     /// The socket was dropped and unresolved controller facts are returned.
@@ -267,6 +269,7 @@ pub struct Session<'scope, 'task, IO> {
     claimed_mac: [u8; 6],
     in_flight: Option<u64>,
     admission: Option<AdmissionGate<'scope>>,
+    capture_events: bool,
 }
 impl<IO> fmt::Debug for Session<'_, '_, IO> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -304,6 +307,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Session<'scope, 'task, I
             claimed_mac,
             in_flight: None,
             admission: None,
+            capture_events: false,
         })
     }
 
@@ -326,6 +330,30 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Session<'scope, 'task, I
         self.admission
             .as_ref()
             .is_none_or(|gate| gate.check().is_ok())
+    }
+
+    // Enabled only after startup has handed the session to its supervisor.
+    pub(crate) fn enable_event_capture(&mut self) {
+        self.capture_events = true;
+    }
+
+    fn observe_message(&mut self, bytes: Vec<u8>) -> Step {
+        match self.controller.observe(&bytes) {
+            Ok(Observation::CameraEvent {
+                kind,
+                message_id,
+                response_expected,
+            }) if self.capture_events => Step::CameraEvent(super::events::Frame::new(
+                kind,
+                message_id,
+                response_expected,
+                bytes,
+            )),
+            // Startup does not yet provide an event-custody lane.
+            Ok(Observation::CameraEvent { .. }) => Step::Observation(Observation::Other),
+            Ok(value) => Step::Observation(value),
+            Err(error) => self.stop(Stop::Protocol(error)),
+        }
     }
 
     /// Unauthenticated claimed MAC, never a verified device identity.
@@ -671,14 +699,8 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Session<'scope, 'task, I
             Ok(Err(_)) if self.cx.is_cancelled() => Ok(self.stop(Stop::Cancelled)),
             Ok(Err(error)) => Ok(self.stop(Stop::TransportDetail(error.into()))),
             Ok(Ok(None | Some(Message::Close(_)))) => Ok(self.stop(Stop::PeerClosed)),
-            Ok(Ok(Some(Message::Binary(bytes)))) => match self.controller.observe(&bytes) {
-                Ok(value) => Ok(Step::Observation(value)),
-                Err(error) => Ok(self.stop(Stop::Protocol(error))),
-            },
-            Ok(Ok(Some(Message::Text(text)))) => match self.controller.observe(text.as_bytes()) {
-                Ok(value) => Ok(Step::Observation(value)),
-                Err(error) => Ok(self.stop(Stop::Protocol(error))),
-            },
+            Ok(Ok(Some(Message::Binary(bytes)))) => Ok(self.observe_message(bytes)),
+            Ok(Ok(Some(Message::Text(text)))) => Ok(self.observe_message(text.into_bytes())),
             Ok(Ok(Some(Message::Ping(_) | Message::Pong(_)))) => {
                 Ok(self.stop(Stop::UnexpectedFrame))
             }

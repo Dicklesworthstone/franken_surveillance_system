@@ -38,6 +38,8 @@ pub mod controller_listener;
 pub mod conversation;
 /// Bounded owner-scoped UniFi LAN discovery.
 pub mod discovery;
+/// Source-preserving camera event observations and bounded interpretation.
+pub mod events;
 /// Source-linked FLV segment evidence graph preparation.
 pub mod evidence;
 /// Inert, exact controller-address handoff planning.
@@ -159,6 +161,16 @@ pub enum Observation {
         status_code: Option<i64>,
         /// Uninterpreted optional camera success field.
         success: Option<bool>,
+    },
+    /// A camera-originated event claim. Its payload is retained by the
+    /// receiving owner when event capture is enabled, not by this value.
+    CameraEvent {
+        /// Bounded event category; unknown event names remain in source bytes.
+        kind: events::Kind,
+        /// Untrusted camera-provided message identity.
+        message_id: u64,
+        /// The camera requested a reply; this observation does not send one.
+        response_expected: bool,
     },
     /// A different function was not interpreted or echoed.
     Other,
@@ -667,6 +679,11 @@ impl Controller {
                     success,
                 })
             }
+            _ if name.starts_with("Event") => Ok(Observation::CameraEvent {
+                kind: events::Kind::from_name(name),
+                message_id: id,
+                response_expected,
+            }),
             _ => Ok(Observation::Other),
         }
     }

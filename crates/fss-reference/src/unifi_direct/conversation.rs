@@ -247,6 +247,8 @@ impl Owner<'_, '_, '_> {
         let wait = self.remaining(deadline)?.min(slice);
         match session.next(wait).await.map_err(Error::SessionDetail)? {
             Step::WaitElapsed => Ok(None),
+            // Event capture is enabled only after this startup owner is retired.
+            Step::CameraEvent(_) => Err(Error::Unexpected),
             Step::Retired { reason, controller } => Err(Error::SessionRetired {
                 reason,
                 phase: controller.previous_phase,

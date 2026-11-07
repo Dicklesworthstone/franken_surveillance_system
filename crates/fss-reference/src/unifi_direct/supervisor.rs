@@ -31,6 +31,8 @@ pub enum Step {
     TimeSyncWritten,
     /// A different, untrusted management observation.
     Observation(Observation),
+    /// Camera event with exact source bytes; this is an unverified claim.
+    CameraEvent(super::events::Frame),
     /// Neither source produced a result before the bounded deadline.
     Idle,
     /// A pending audio observation must be transferred before further polling.
@@ -76,10 +78,11 @@ enum Ready {
 impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Supervisor<'scope, 'task, IO> {
     /// Join an established controller and pipeline; caller binds them to the same camera.
     pub fn new(
-        session: receive::Session<'scope, 'task, IO>,
+        mut session: receive::Session<'scope, 'task, IO>,
         pipeline: pipeline::Pipeline,
         management: management::Preconditions,
     ) -> Self {
+        session.enable_event_capture();
         Self {
             session,
             pipeline,
@@ -233,6 +236,9 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Supervisor<'scope, 'task
             }
             Ok(Ready::Controller(Ok(receive::Step::Observation(value)))) => {
                 Step::Observation(value)
+            }
+            Ok(Ready::Controller(Ok(receive::Step::CameraEvent(frame)))) => {
+                Step::CameraEvent(frame)
             }
             Ok(Ready::Media(Err(error))) => {
                 self.stopped = true;

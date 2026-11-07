@@ -22,7 +22,7 @@ indeterminate writes, and checks the next received API sequence through
 exhaustion. It retains an uncertain pending ciphertext for reconciliation.
 The next experimental revision also owns a single synthetic API request and
 sequence-matched response, retains the written request until its response is
-taken, and rejects a byte-for-byte reflection. Its tests are pending. It does
+taken, and rejects a byte-for-byte reflection. It does
 not implement BLE I/O, semantic response correlation, a write journal, or
 camera identity. Matching this synthetic handshake is not a physical device
 setup.
@@ -61,6 +61,21 @@ was executed separately and passed **14/14** tests. Its `handshake.rs`
 SHA-256 was `773d0704f441001273f50eaa053b2dcdc3bf67cb542c5ee10dd77fbaa0f2128b`;
 the previously listed `lib.rs` hash remains unchanged. This still does not
 establish BLE transport behavior, authenticated identity, or real-device use.
+
+The request/response revision built in strict-remote job `30098575685845144`,
+with terminal acknowledgment and source custody released. The worker executed
+the resulting binary (SHA-256
+`2e477faab2a5b268f5f9295eaaa4193938fd3590d136fb0b5006413292a01f11`)
+and passed **15/15** tests, including early response, sequence exhaustion,
+replay and exact-reflection rejection. The tested `handshake.rs` SHA-256 was
+`21b426f97e8ddc782d01fd0357b525b56bf88fba51e674d479ac625cec9e0879`.
+The independent synthetic oracle SHA-256
+`428332e5a125d5bfa2dabdb86e0449fcd7c64f98d905a45593ac8c58aca615c8`
+confirmed the reference request/response and nonce-reuse XOR observation.
+An earlier worker refused the build at its protected disk-reservation gate;
+another requested worker timed out in the queue before job submission. No
+resource guard was changed. These tests do not repair the protocol's nonce
+reuse or qualify the lab for camera credentials or deployment.
 
 On 2026-11-06, strict-remote RCH build job `30098575685845120` completed and
 was acknowledged with source custody released. The matching Linux test binary

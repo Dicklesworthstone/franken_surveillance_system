@@ -431,6 +431,10 @@ fn run(args: Options) -> ResultBox<()> {
                         let operation=syncs.get(sync_index).ok_or("time-sync limit reached")?;
                         match supervisor.step(&mut owner,operation,args.wait.min(MAX_IO_WAIT)).await {
                             supervisor::Step::TimeSyncWritten=>sync_index+=1,
+                            supervisor::Step::CameraEvent(frame)=>{
+                                println!("trial_stage=camera_event kind={:?} source_bytes_omitted={} response_expected={}",frame.kind(),frame.source().len(),frame.response_expected());
+                                if frame.response_expected() {return Err("camera event reply required; reconcile before continuing".into());}
+                            },
                             supervisor::Step::Observation(Observation::StreamSettingsReply {success,..}) if args.media_before_reply=>{
                                 if success==Some(false) {return Err("camera reported stream-setting failure".into());}
                                 println!("trial_stage=stream_reply_observed success_claim_present={}",success.is_some());

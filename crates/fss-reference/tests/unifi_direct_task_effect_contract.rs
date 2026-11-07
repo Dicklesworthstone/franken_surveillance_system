@@ -52,6 +52,7 @@ use std::{
 type Test = Result<(), Box<dyn Error>>;
 const HEAD: &str = "GET / HTTP/1.1\r\nHost: camera.local\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nCamera-Mac: 001122aabbcc\r\nSec-WebSocket-Protocol: secure_transfer\r\n\r\n";
 const HELLO:&[u8]=br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"ubnt_avclient_hello","messageId":7,"payload":{}}"#;
+const EVENT:&[u8]=br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"EventSmartDetect","messageId":20,"payload":{"edgeType":"enter","descriptors":[{"objectType":"person","trackerID":1,"confidenceLevel":80,"coord":[0,1,500,1000]}]}}"#;
 struct Temp(PathBuf);
 impl Drop for Temp {
     fn drop(&mut self) {
@@ -348,6 +349,10 @@ fn conversation_scenario(revoke_stream: bool, revoke_after_start: bool, revoke_a
 }
 
 fn conversation_scenario_with_stop(revoke_stream: bool, revoke_after_start: bool, revoke_audio_pending: bool, reply_after_media: bool, never_reply: bool, early_reply: bool, stop_mode: u8) -> Test {
+    conversation_scenario_with_event(revoke_stream, revoke_after_start, revoke_audio_pending, reply_after_media, never_reply, early_reply, stop_mode, false)
+}
+
+fn conversation_scenario_with_event(revoke_stream: bool, revoke_after_start: bool, revoke_audio_pending: bool, reply_after_media: bool, never_reply: bool, early_reply: bool, stop_mode: u8, emit_event: bool) -> Test {
     let path = std::fs::canonicalize(std::env::temp_dir())?.join(format!(
         "fss-unifi-task-conversation-{}-{revoke_stream}-{revoke_after_start}-{revoke_audio_pending}-{reply_after_media}-{never_reply}-{early_reply}",
         std::process::id(),
@@ -576,6 +581,7 @@ fn conversation_scenario_with_stop(revoke_stream: bool, revoke_after_start: bool
                         let mut last=[0u8;1];
                         return match socket.read(&mut last) { Ok(0)=>Ok(()), _=>Err(io::Error::other("revoked controller did not retire")) };
                     }
+                    if emit_event { socket.write_all(&frame(EVENT))?; }
                     socket.write_all(&frame(br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"ubnt_avclient_timeSync","messageId":11}"#))?;
                     if !receive_binary(&mut socket)?.windows(b"ubnt_avclient_timeSync".len()).any(|w|w==b"ubnt_avclient_timeSync") { return Err(io::Error::other("missing post-start time-sync reply")); }
                     media.write_all(&wire[split..])?;
@@ -724,6 +730,7 @@ fn conversation_scenario_with_stop(revoke_stream: bool, revoke_after_start: bool
                     return Ok(());
                 }
                 let mut later_syncs=0;
+                let mut camera_events=0;
                 let mut late_replies=0;
                 let mut originals=Vec::new();
                 let mut segments=0;
@@ -734,6 +741,16 @@ fn conversation_scenario_with_stop(revoke_stream: bool, revoke_after_start: bool
                         supervisor::Step::Media(pipeline::Step::Recording(recording::Push::Source {record,..})) => originals.extend_from_slice(record.bytes()),
                         supervisor::Step::Media(pipeline::Step::Recording(recording::Push::Buffered) | pipeline::Step::Progress {..}) => (),
                         supervisor::Step::TimeSyncWritten => later_syncs+=1,
+                        supervisor::Step::CameraEvent(event) => {
+                            assert_eq!(event.kind(),fss_reference::unifi_direct::events::Kind::SmartDetect);
+                            assert_eq!(event.source(),EVENT);
+                            assert_eq!(event.message_id(),20);
+                            assert_eq!(event.digest(),ContentDigest::sha256(EVENT));
+                            let parsed=event.interpret()?;
+                            assert_eq!(parsed.edge,fss_reference::unifi_direct::events::Edge::Enter);
+                            assert_eq!(parsed.descriptors.ok_or("missing descriptors")?.len(),1);
+                            camera_events+=1;
+                        },
                         supervisor::Step::Observation(Observation::StreamSettingsReply {..}) if reply_after_media => late_replies+=1,
                         supervisor::Step::Media(pipeline::Step::Recording(recording::Push::Segment(segment))) => {
                             for record in segment.source() { originals.extend_from_slice(record.bytes()); }
@@ -761,6 +778,7 @@ fn conversation_scenario_with_stop(revoke_stream: bool, revoke_after_start: bool
                     }
                 }
                 assert_eq!(later_syncs,1);
+                assert_eq!(camera_events,usize::from(emit_event));
                 assert_eq!(late_replies,if reply_after_media && !never_reply && !early_reply {1} else {0});
                 let retired=supervisor.retire();
                 assert_eq!(retired.controller.previous_phase, fss_reference::unifi_direct::Phase::AgreementReplyObserved);
@@ -852,6 +870,11 @@ fn media_can_be_processed_when_camera_never_replies() -> Test {
 #[test]
 fn settings_reply_before_media_is_returned_to_the_caller() -> Test {
     conversation_scenario(false, false, false, true, false, true)
+}
+
+#[test]
+fn supervised_camera_event_preserves_source_and_interprets_claims() -> Test {
+    conversation_scenario_with_event(false, false, false, false, false, false, 0, true)
 }
 
 #[test]
