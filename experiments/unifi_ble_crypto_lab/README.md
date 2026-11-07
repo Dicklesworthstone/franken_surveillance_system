@@ -20,14 +20,21 @@ oversized input. The experimental host-side handshake now advances through
 those messages, keeps at most two early frames while a write is pending, fences
 indeterminate writes, and checks the next received API sequence through
 exhaustion. It retains an uncertain pending ciphertext for reconciliation.
-It does not implement BLE I/O, outgoing API sequence ownership, response
-correlation, a write journal, or camera identity. Matching this synthetic
-handshake is not a physical device setup.
+The next experimental revision also owns a single synthetic API request and
+sequence-matched response, retains the written request until its response is
+taken, and rejects a byte-for-byte reflection. Its tests are pending. It does
+not implement BLE I/O, semantic response correlation, a write journal, or
+camera identity. Matching this synthetic handshake is not a physical device
+setup.
 
 The reference initializes both direction counters at zero under the same
 public default key and derives the nonce from the counter. The reference's
-first host and device packets therefore reuse a key and nonce; the public
-default also does not authenticate either peer. Camera identity and a safe
+first host and device packets therefore reuse a key and nonce; the reference
+also uses the same derived key and matching sequence nonces for a sequential
+API request and response. The synthetic PyNaCl oracle confirms their
+ciphertext XOR exposes the plaintext XOR. Rejecting an exact reflection does
+not repair this confidentiality or integrity flaw. The public default also
+does not authenticate either peer. Camera identity and a safe
 secret-provisioning boundary require separate evidence and design. Do not
 interpret successful decryption or receipt of `AUTH` as device authentication.
 The reference documentation describes a two-byte API-part size, while its
