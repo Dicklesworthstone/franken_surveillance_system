@@ -76,6 +76,8 @@ pub enum Error {
     Deadline,
     /// The bounded message or time-sync quota was exhausted.
     Limit,
+    /// Caller-owned startup event custody is full; drain it before further reads.
+    EventBackpressure,
     /// The session retired or a protocol step was refused.
     Session,
     /// The session retired with a payload-free observation of the reason.
@@ -247,6 +249,7 @@ impl Owner<'_, '_, '_> {
         let wait = self.remaining(deadline)?.min(slice);
         match session.next(wait).await.map_err(Error::SessionDetail)? {
             Step::WaitElapsed => Ok(None),
+            Step::StartupEventBackpressure => Err(Error::EventBackpressure),
             // Event capture is enabled only after this startup owner is retired.
             Step::CameraEvent(_) => Err(Error::Unexpected),
             Step::Retired { reason, controller } => Err(Error::SessionRetired {

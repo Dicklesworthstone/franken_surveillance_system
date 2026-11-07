@@ -437,3 +437,121 @@ fn permitless_management_stays_silent_on_loopback() -> TestResult {
         result.receipt?;result.output
     })
 }
+
+#[test]
+fn startup_event_backpressure_preserves_sources_after_retirement() -> TestResult {
+    use fss_reference::unifi_direct::{
+        MAX_MESSAGE_BYTES, events,
+        owner::{self, PeerAdmission},
+    };
+    struct Allow;
+    impl PeerAdmission for Allow {
+        fn permits(&self, _: [u8; 6]) -> bool {
+            true
+        }
+    }
+    const FIRST:&[u8]=br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"EventSmartMotion","messageId":8}"#;
+    const SECOND:&[u8]=br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"EventAnalytics","messageId":9}"#;
+    let runtime = RuntimeBuilder::current_thread().build()?;
+    let (mut owner_context, mut tree) = root()?;
+    runtime.block_on(async {
+        let cx = asupersync::Cx::current().ok_or("missing runtime")?;
+        let result = run_owned_async(
+            &mut owner_context,
+            &mut tree,
+            TaskSpec {
+                task_id: TaskId::new("task:startup-inbox")?,
+                started_at: TimestampNs(2),
+            },
+            &cx,
+            async |task, cx| {
+                let output: TestResult = async {
+                    let inbox = events::StartupInbox::new(1, MAX_MESSAGE_BYTES)?;
+                    let listener = TcpListener::bind("127.0.0.1:0").await?;
+                    let address = listener.local_addr()?;
+                    let client = std::thread::spawn(move || -> std::io::Result<()> {
+                        let mut stream =
+                            std::net::TcpStream::connect_timeout(&address, Duration::from_secs(5))?;
+                        stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+                        let mut request = HEAD.as_bytes().to_vec();
+                        request.extend(frame(2, FIRST));
+                        request.extend(frame(2, SECOND));
+                        stream.write_all(&request)?;
+                        let mut response = Vec::new();
+                        let mut one = [0u8; 1];
+                        while !response.ends_with(b"\r\n\r\n") {
+                            stream.read_exact(&mut one)?;
+                            response.push(one[0]);
+                            if response.len() > 4096 {
+                                return Err(std::io::Error::other("upgrade limit"));
+                            }
+                        }
+                        match stream.read(&mut one) {
+                            Ok(0) => Ok(()),
+                            other => {
+                                Err(std::io::Error::other(format!("expected close: {other:?}")))
+                            }
+                        }
+                    });
+                    let (stream, _) =
+                        timeout(cx.now(), Duration::from_secs(5), listener.accept()).await??;
+                    let io =
+                        MeteredIo::new(stream, task, cx, TimestampNs(3), "fixture:camera", 4096)?;
+                    let controller = Controller::new(
+                        Identity::new("FSS", "12345678-1234-4abc-9abc-123456789abc", "1.20.0")?,
+                        1,
+                    )?;
+                    let mut session = owner::accept(
+                        io,
+                        ProtocolPolicy::RequireOffer,
+                        &Allow,
+                        controller,
+                        Duration::from_secs(5),
+                    )
+                    .await?;
+                    session.bind_startup_events(&inbox)?;
+                    assert_eq!(
+                        session.bind_startup_events(&inbox),
+                        Err(ReceiveError::Denied)
+                    );
+                    assert_eq!(
+                        session.next(Duration::from_secs(2)).await?,
+                        Step::Observation(Observation::Other)
+                    );
+                    assert_eq!(inbox.len(), 1);
+                    assert_eq!(
+                        session.next(Duration::from_secs(2)).await?,
+                        Step::StartupEventBackpressure
+                    );
+                    let first = inbox.take().ok_or("first event missing")?;
+                    assert_eq!(first.source(), FIRST);
+                    assert_eq!(
+                        session.next(Duration::from_secs(2)).await?,
+                        Step::Observation(Observation::Other)
+                    );
+                    assert_eq!(inbox.len(), 1);
+                    let _ = session.retire();
+                    let second = inbox.take().ok_or("second event missing after retire")?;
+                    assert_eq!(second.source(), SECOND);
+                    assert!(inbox.is_empty());
+                    client.join().map_err(|_| "fixture client panicked")??;
+                    Ok(())
+                }
+                .await;
+                let outcome = if output.is_ok() {
+                    TaskOutcome::Success
+                } else {
+                    TaskOutcome::Failed("startup inbox fixture failed".into())
+                };
+                TaskCompletion {
+                    output,
+                    outcome,
+                    completed_at: TimestampNs(59_000_000_000),
+                }
+            },
+        )
+        .await?;
+        result.receipt?;
+        result.output
+    })
+}

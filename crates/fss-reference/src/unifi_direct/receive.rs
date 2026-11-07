@@ -105,6 +105,8 @@ pub enum Step {
     Observation(Observation),
     /// A source-preserving camera event transferred to the caller.
     CameraEvent(super::events::Frame),
+    /// The caller-owned startup event inbox must be drained before more input.
+    StartupEventBackpressure,
     /// The wait ended without a message; this does not prove absence.
     WaitElapsed,
     /// The socket was dropped and unresolved controller facts are returned.
@@ -270,6 +272,7 @@ pub struct Session<'scope, 'task, IO> {
     in_flight: Option<u64>,
     admission: Option<AdmissionGate<'scope>>,
     capture_events: bool,
+    startup_events: Option<&'scope super::events::StartupInbox>,
 }
 impl<IO> fmt::Debug for Session<'_, '_, IO> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -308,6 +311,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Session<'scope, 'task, I
             in_flight: None,
             admission: None,
             capture_events: false,
+            startup_events: None,
         })
     }
 
@@ -332,13 +336,33 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Session<'scope, 'task, I
             .is_none_or(|gate| gate.check().is_ok())
     }
 
+    /// Bind one empty caller-owned event inbox before receiving startup frames.
+    /// The inbox remains caller-owned across session retirement or cancellation.
+    pub fn bind_startup_events(
+        &mut self,
+        inbox: &'scope super::events::StartupInbox,
+    ) -> Result<(), Error> {
+        if self.startup_events.is_some()
+            || self.capture_events
+            || self.socket.is_none()
+            || self.in_flight.is_some()
+            || self.controller.phase() != Phase::AwaitHello
+            || !self.admission_current()
+            || !inbox.bind()
+        {
+            return Err(Error::Denied);
+        }
+        self.startup_events = Some(inbox);
+        Ok(())
+    }
+
     // Enabled only after startup has handed the session to its supervisor.
     pub(crate) fn enable_event_capture(&mut self) {
         self.capture_events = true;
     }
 
     fn observe_message(&mut self, bytes: asupersync::bytes::Bytes) -> Step {
-        let observed = if self.capture_events {
+        let observed = if self.capture_events || self.startup_events.is_some() {
             self.controller.observe_event_claims(&bytes)
         } else {
             self.controller.observe(&bytes)
@@ -354,8 +378,21 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Session<'scope, 'task, I
                 response_expected,
                 bytes,
             )),
-            // Startup does not yet provide an event-custody lane.
-            Ok(Observation::CameraEvent { .. }) => Step::Observation(Observation::Other),
+            Ok(Observation::CameraEvent {
+                kind,
+                message_id,
+                response_expected,
+            }) => {
+                if let Some(inbox) = self.startup_events {
+                    inbox.push(super::events::Frame::new(
+                        kind,
+                        message_id,
+                        response_expected,
+                        bytes,
+                    ));
+                }
+                Step::Observation(Observation::Other)
+            }
             Ok(value) => Step::Observation(value),
             Err(error) => self.stop(Stop::Protocol(error)),
         }
@@ -691,6 +728,15 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Session<'scope, 'task, I
         if !self.admission_current() {
             return Ok(self.stop(Stop::AdmissionRevoked));
         }
+        if let Some(inbox) = self.startup_events {
+            if self.capture_events {
+                if let Some(frame) = inbox.take() {
+                    return Ok(Step::CameraEvent(frame));
+                }
+            } else if !inbox.can_receive() {
+                return Ok(Step::StartupEventBackpressure);
+            }
+        }
         let Some(socket) = self.socket.as_mut() else {
             return Err(Error::Retired);
         };
@@ -715,5 +761,13 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Session<'scope, 'task, I
     /// Close the local socket and return outstanding controller facts.
     pub fn retire(mut self) -> Retirement {
         self.fence_interrupted()
+    }
+}
+
+impl<IO> Drop for Session<'_, '_, IO> {
+    fn drop(&mut self) {
+        if let Some(inbox) = self.startup_events.take() {
+            inbox.unbind();
+        }
     }
 }

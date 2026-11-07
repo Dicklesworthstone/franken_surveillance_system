@@ -33,6 +33,8 @@ pub enum Step {
     Observation(Observation),
     /// Camera event with exact source bytes; this is an unverified claim.
     CameraEvent(super::events::Frame),
+    /// Startup event custody must be drained before more input is read.
+    StartupEventBackpressure,
     /// Neither source produced a result before the bounded deadline.
     Idle,
     /// A pending audio observation must be transferred before further polling.
@@ -211,6 +213,9 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Supervisor<'scope, 'task
                 Step::ConversationError(conversation::Error::Clock)
             }
             Ok(Ready::AudioPending) => Step::AudioPending,
+            Ok(Ready::Controller(Ok(receive::Step::StartupEventBackpressure))) => {
+                Step::StartupEventBackpressure
+            }
             Ok(Ready::Controller(Err(error))) => {
                 self.stopped = true;
                 Step::ControllerError(error)

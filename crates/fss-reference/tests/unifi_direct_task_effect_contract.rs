@@ -533,7 +533,9 @@ fn conversation_scenario_with_event(revoke_stream: bool, revoke_after_start: boo
                 let peer=std::thread::spawn(move || -> io::Result<()> {
                     let mut socket=std::net::TcpStream::connect_timeout(&address,Duration::from_secs(5))?;
                     socket.set_read_timeout(Some(Duration::from_secs(5)))?;
-                    let mut request=HEAD.as_bytes().to_vec(); request.extend(frame(HELLO)); socket.write_all(&request)?;
+                    let mut request=HEAD.as_bytes().to_vec();
+                    if emit_event {request.extend(frame(EVENT));}
+                    request.extend(frame(HELLO)); socket.write_all(&request)?;
                     let mut header=Vec::new(); let mut byte=[0u8;1];
                     while !header.ends_with(b"\r\n\r\n") { socket.read_exact(&mut byte)?; header.push(byte[0]); if header.len()>4096 { return Err(io::Error::other("upgrade limit")); } }
                     if !header.starts_with(b"HTTP/1.1 101 ") { return Err(io::Error::other("upgrade refused")); }
@@ -595,9 +597,11 @@ fn conversation_scenario_with_event(revoke_stream: bool, revoke_after_start: boo
                     let mut last=[0u8;1];
                     match socket.read(&mut last) { Ok(0)=>Ok(()), _=>Err(io::Error::other("controller did not retire")) }
                 });
+                let startup_events=fss_reference::unifi_direct::events::StartupInbox::new(4,4*fss_reference::unifi_direct::MAX_MESSAGE_BYTES)?;
                 let (io,gate)=controller_listener.accept(4096,Duration::from_secs(5)).await?;
                 let controller=Controller::new(Identity::new("FSS","12345678-1234-4abc-9abc-123456789abc","1.20.0")?,1)?;
                 let mut session=owner::accept_guarded(io,ProtocolPolicy::RequireOffer,&FixtureAdmission,gate,controller,Duration::from_secs(5)).await?;
+                if emit_event {session.bind_startup_events(&startup_events)?;}
                 let guard=Guard { leases:&leases, clock };
                 let request=StreamStart::new(VideoChannel::Video2,SocketAddrV4::new(Ipv4Addr::LOCALHOST,17551),VideoCodec::H264,AudioCodec::Aac,"0123456789abcdef")?;
                 let config=conversation::Config { hello:&operations[0], agreement:&operations[1], stream:&operations[2], time_sync:&operations[3..6], management:conditions, stream_conditions, request:&request, wait:Duration::from_secs(5) };
@@ -643,6 +647,11 @@ fn conversation_scenario_with_event(revoke_stream: bool, revoke_after_start: boo
                         let retry_recorder=recording::Recorder::new(SourceKey {connection:9,generation:1},recording::Limits::default())?;
                         assert!(matches!(listener::start_before_reply_tracked(&mut owner,&mut session,&start,retry_framer,retry_recorder,&mut trace).await,Err(listener::StartError::Listener(listener::Error::Configuration))));
                         let _ = session.retire();
+                        if emit_event {
+                            let event=startup_events.take().ok_or("missing retained startup event")?;
+                            assert_eq!(event.source(),EVENT);
+                            assert!(startup_events.is_empty());
+                        }
                         peer.join().map_err(|_|"fixture peer panic")??;
                         return Ok(());
                     }
@@ -785,7 +794,7 @@ fn conversation_scenario_with_event(revoke_stream: bool, revoke_after_start: boo
                     }
                 }
                 assert_eq!(later_syncs,1);
-                assert_eq!(camera_events,usize::from(emit_event));
+                assert_eq!(camera_events,if emit_event {2} else {0});
                 assert_eq!(late_replies,if reply_after_media && !never_reply && !early_reply {1} else {0});
                 let retired=supervisor.retire();
                 assert_eq!(retired.controller.previous_phase, fss_reference::unifi_direct::Phase::AgreementReplyObserved);
@@ -882,6 +891,11 @@ fn settings_reply_before_media_is_returned_to_the_caller() -> Test {
 #[test]
 fn supervised_camera_event_preserves_source_and_interprets_claims() -> Test {
     conversation_scenario_with_event(false, false, false, false, false, false, 0, true)
+}
+
+#[test]
+fn startup_event_remains_owned_after_peer_closes() -> Test {
+    conversation_scenario_with_event(false, false, false, true, false, true, 1, true)
 }
 
 #[test]

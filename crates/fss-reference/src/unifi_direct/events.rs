@@ -9,10 +9,99 @@ use fss_core::{
     ContentDigest,
     json_input::{self, Value},
 };
-use std::fmt;
+use std::{
+    cell::{Cell, RefCell},
+    collections::VecDeque,
+    fmt,
+};
 
 const MAX_DESCRIPTORS: usize = 64;
 const MAX_LABEL_BYTES: usize = 128;
+const MAX_INBOX_FRAMES: usize = 64;
+const MAX_INBOX_BYTES: usize = 4 * 1024 * 1024;
+
+/// Caller-owned, bounded custody for event frames received during startup.
+///
+/// One session may bind it at a time. The owner retains this inbox after a
+/// session failure or cancellation and must apply its own privacy policy when
+/// accessing or disposing of retained frames. It does not establish identity.
+pub struct StartupInbox {
+    frames: RefCell<VecDeque<Frame>>,
+    bytes: Cell<usize>,
+    max_frames: usize,
+    max_bytes: usize,
+    bound: Cell<bool>,
+}
+
+impl StartupInbox {
+    /// Bound memory and frame count. The byte budget must admit a maximum-sized
+    /// management message so backpressure occurs before reading the next one.
+    pub fn new(max_frames: usize, max_bytes: usize) -> Result<Self, Error> {
+        if !(1..=MAX_INBOX_FRAMES).contains(&max_frames)
+            || !(super::MAX_MESSAGE_BYTES..=MAX_INBOX_BYTES).contains(&max_bytes)
+        {
+            return Err(Error::Limit);
+        }
+        let mut frames = VecDeque::new();
+        frames
+            .try_reserve_exact(max_frames)
+            .map_err(|_| Error::Limit)?;
+        Ok(Self {
+            frames: RefCell::new(frames),
+            bytes: Cell::new(0),
+            max_frames,
+            max_bytes,
+            bound: Cell::new(false),
+        })
+    }
+
+    /// Number of untransferred frames in this caller-owned inbox.
+    pub fn len(&self) -> usize {
+        self.frames.borrow().len()
+    }
+    /// Whether no source frames remain in the inbox.
+    pub fn is_empty(&self) -> bool {
+        self.frames.borrow().is_empty()
+    }
+    /// Number of untransferred source bytes, excluding queue overhead.
+    pub fn source_bytes(&self) -> usize {
+        self.bytes.get()
+    }
+    /// Transfer the oldest frame to the owner; this performs no I/O or policy grant.
+    pub fn take(&self) -> Option<Frame> {
+        let frame = self.frames.borrow_mut().pop_front()?;
+        self.bytes.set(self.bytes.get() - frame.source().len());
+        Some(frame)
+    }
+    pub(crate) fn bind(&self) -> bool {
+        if self.bound.get() || !self.is_empty() {
+            return false;
+        }
+        self.bound.set(true);
+        true
+    }
+    pub(crate) fn unbind(&self) {
+        self.bound.set(false);
+    }
+    pub(crate) fn can_receive(&self) -> bool {
+        self.len() < self.max_frames
+            && self.bytes.get() <= self.max_bytes - super::MAX_MESSAGE_BYTES
+    }
+    // Only the one bound session calls push, after can_receive and before any
+    // further await. The pre-reserved queue never allocates on this path.
+    pub(crate) fn push(&self, frame: Frame) {
+        self.bytes.set(self.bytes.get() + frame.source().len());
+        self.frames.borrow_mut().push_back(frame);
+    }
+}
+impl fmt::Debug for StartupInbox {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("StartupInbox")
+            .field("frames", &self.len())
+            .field("source_bytes", &self.source_bytes())
+            .finish_non_exhaustive()
+    }
+}
 
 /// A known camera function or an unknown `Event*` function.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
