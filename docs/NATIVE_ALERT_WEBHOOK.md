@@ -45,6 +45,10 @@ The owner must verify these against current authorization, disclosure policy,
 resource limits, cancellation and an independent live deadline clock. It also
 owns authorization for the canonical-authority and verified object reads supplied
 to this API. A caller-provided admission timestamp is not a post-syscall clock.
+`checkpoint` returns the actual timestamp checked by the owner. The transport
+rejects a returned time earlier than its input, or a non-record admission at or
+beyond the network deadline. Commitment and local recording use the owner's
+returned time.
 
 Commit, connection, socket configuration, every write/read and every post-I/O
 boundary are checked. The Record boundary is a **local cleanup** operation:
@@ -82,7 +86,11 @@ send: lack of a terminal receipt is not proof of no external effect.
 API call, then returns Pending or ReadyToRecord. There are no internal sleeps,
 read/write retry loops, reconnections, or workers. The caller's existing runtime
 owns scheduling. The single connection attempt has a timeout capped by the
-remaining lease and five seconds; all later operations are nonblocking.
+remaining lease and five seconds. The remaining lease is computed from the
+owner's latest admitted time **after** source validation, so slow metadata reads
+cannot enlarge the connection timeout. Platform scheduling may still overrun a
+requested timeout; the post-I/O owner check preserves that as an interruption.
+All later operations are nonblocking.
 
 `WebhookLimits` caps socket API attempts (including WouldBlock/Interrupted), bytes
 per operation and the complete retained response prefix. It counts API attempts,

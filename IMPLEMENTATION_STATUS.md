@@ -4,6 +4,29 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Webhook deadlines after source validation
+
+Native webhook dispatch now retains the monotonic timestamp returned by its
+explicit authority owner. After event/source-health reads, the connection timeout
+uses the remaining interval from the final admitted sample. Slow validation can
+no longer leave the blocking connector with the older, larger timeout allowance.
+Reversed or expired successful owner samples refuse before socket I/O.
+
+Successful commitment and local observation recording use the checked owner
+timestamp. Post-I/O samples are retained even when the socket operation fails.
+The existing original deadline, separately reserved cleanup allowance, one-time
+network charging and indeterminate-effect recovery remain in force. The stale
+event helper's automatic-cancellation timestamp API is outside this correction.
+See [the transport and authority contract](docs/NATIVE_ALERT_WEBHOOK.md).
+
+**Validation:** five regression contracts are authored. Injected connector cases
+perform no networking and check an exact seven-nanosecond remainder, zero I/O on
+expiry or invalid clock samples, post-error evidence and refreshed journal times.
+The native owner case checks measured time, one debit across revalidation and
+bounded cleanup. Independent source review found no concrete blocker; native
+compilation, formatting, Clippy and test execution remain pending while the
+execution workspace is unavailable.
+
 ## Native ONNX bounded activations
 
 The opset-13 importer now lowers Clip-13 for static F32 tensors from scalars
@@ -34,8 +57,8 @@ See [the supported profile](docs/onnx_import.md).
 execution, optional/runtime bounds, affine rounding and overflow boundaries,
 signed zeros, extrema, composition, resource limits and cancellation coverage.
 The new slice has received independent source review. Native compilation,
-rustfmt, Clippy and test execution remain pending: compiler attempts were killed
-for resource exhaustion before the execution workspace became unavailable.
+rustfmt, Clippy and test execution remain pending: compiler processes were terminated
+with SIGKILL before the execution workspace became unavailable.
 This does not qualify a trained model or close the full FSS-138 work package.
 
 ## Lossless playable local decoded output

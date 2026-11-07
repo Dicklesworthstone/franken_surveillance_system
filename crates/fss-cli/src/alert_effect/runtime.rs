@@ -240,7 +240,7 @@ impl<C: DispatchClock> WebhookAuthority for DispatchOwner<'_, '_, C> {
         boundary: WebhookBoundary,
         now_ns: u64,
         network_deadline_ns: u64,
-    ) -> Result<(), WebhookDenial> {
+    ) -> Result<u64, WebhookDenial> {
         if scope.endpoint.digest() != self.route
             || scope.effect_journal != self.journal
             || scope.operation.intent != self.prepared.intent
@@ -274,6 +274,7 @@ impl<C: DispatchClock> WebhookAuthority for DispatchOwner<'_, '_, C> {
                     timestamp(now),
                     &BudgetVector::ZERO,
                 )
+                .map(|()| now)
                 .map_err(denial);
         }
         if (boundary == WebhookBoundary::Commit && scope.operation != self.prepared)
@@ -312,7 +313,7 @@ impl<C: DispatchClock> WebhookAuthority for DispatchOwner<'_, '_, C> {
         if boundary == WebhookBoundary::AfterIo {
             self.pending_socket.set(None);
         }
-        Ok(())
+        Ok(now)
     }
 }
 

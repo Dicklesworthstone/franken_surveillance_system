@@ -147,18 +147,37 @@ pub struct WebhookScope<'a> {
 /// Implement with the owning Cx or equivalent explicit live authority. The check
 /// MUST independently verify actual elapsed time, principal, disclosure/route,
 /// journal scope, generation and cancellation, including AFTER a socket operation. The
-/// supplied time is caller admission time, not an inferred post-I/O clock reading.
+/// supplied time is caller admission time. Return the actual time checked by the owner,
+/// including time consumed by source validation or a socket operation. This sample bounds
+/// the following native call and becomes part of the retained observation.
 /// There is no permissive production implementation. Record is a cleanup boundary:
 /// a revoked network lease never grants local journal authority automatically.
 pub trait WebhookAuthority {
-    /// Fail closed without exposing secret policy/provider strings.
+    /// Fail closed without exposing secret policy/provider strings. The returned timestamp
+    /// must not precede `now_ns`; non-record admissions must precede the network deadline.
     fn checkpoint(
         &self,
         scope: WebhookScope<'_>,
         boundary: WebhookBoundary,
         now_ns: u64,
         network_deadline_ns: u64,
-    ) -> Result<(), WebhookDenial>;
+    ) -> Result<u64, WebhookDenial>;
+}
+
+// A successful owner check may have sampled a later time than the caller supplied. Keep
+// that sample, and reject a broken owner contract rather than extending the deadline.
+fn admit(
+    owner: &impl WebhookAuthority,
+    scope: WebhookScope<'_>,
+    boundary: WebhookBoundary,
+    now_ns: u64,
+    deadline_ns: u64,
+) -> Result<u64, WebhookDenial> {
+    let sampled = owner.checkpoint(scope, boundary, now_ns, deadline_ns)?;
+    if sampled < now_ns || boundary != WebhookBoundary::Record && sampled >= deadline_ns {
+        return Err(WebhookDenial::Deadline);
+    }
+    Ok(sampled)
 }
 
 /// Whole-attempt ceilings; no retries or budget refills occur internally.
@@ -418,9 +437,14 @@ impl<'a> WebhookAttempt<'a> {
             operation,
             effect_journal: journal.path(),
         };
-        owner
-            .checkpoint(scope, WebhookBoundary::Commit, now_ns, deadline_ns)
-            .map_err(WebhookError::Denied)?;
+        let mut now_ns = admit(
+            owner,
+            scope,
+            WebhookBoundary::Commit,
+            now_ns,
+            deadline_ns,
+        )
+        .map_err(WebhookError::Denied)?;
         let request = wire::request(plan, endpoint)?;
         let mut response = Vec::new();
         response
@@ -448,21 +472,22 @@ impl<'a> WebhookAttempt<'a> {
             TimestampNs(i128::from(now_ns)),
             journal,
             |operation| {
-                owner
-                    .checkpoint(
-                        WebhookScope {
-                            endpoint,
-                            operation,
-                            effect_journal: &journal_path,
-                        },
-                        WebhookBoundary::Commit,
-                        now_ns,
-                        deadline_ns,
-                    )
-                    .map_err(|reason| {
-                        cancellation_denial = Some(reason);
-                        ReferenceError::InvalidSpec("webhook_cancellation_authority_refused")
-                    })
+                admit(
+                    owner,
+                    WebhookScope {
+                        endpoint,
+                        operation,
+                        effect_journal: &journal_path,
+                    },
+                    WebhookBoundary::Commit,
+                    now_ns,
+                    deadline_ns,
+                )
+                .map(|_| ())
+                .map_err(|reason| {
+                    cancellation_denial = Some(reason);
+                    ReferenceError::InvalidSpec("webhook_cancellation_authority_refused")
+                })
             },
         );
         if let Err(error) = validation {
@@ -473,18 +498,18 @@ impl<'a> WebhookAttempt<'a> {
         let operation = journal
             .operation(&plan.intent.operation_id)
             .ok_or(WebhookError::EffectMismatch)?;
-        owner
-            .checkpoint(
-                WebhookScope {
-                    endpoint,
-                    operation,
-                    effect_journal: journal.path(),
-                },
-                WebhookBoundary::Commit,
-                now_ns,
-                deadline_ns,
-            )
-            .map_err(WebhookError::Denied)?;
+        now_ns = admit(
+            owner,
+            WebhookScope {
+                endpoint,
+                operation,
+                effect_journal: journal.path(),
+            },
+            WebhookBoundary::Commit,
+            now_ns,
+            deadline_ns,
+        )
+        .map_err(WebhookError::Denied)?;
         journal.transition(
             &plan.intent.operation_id,
             EffectState::Committed,
@@ -495,6 +520,8 @@ impl<'a> WebhookAttempt<'a> {
         // The cached root binds exactly the journal history/authority that committed.
         // No allocation or fallible work follows commitment before returning ownership.
         evidence.commitment_root = journal.last_root();
+        evidence.committed_ns = now_ns;
+        evidence.last_admission_ns = now_ns;
         Ok(Self {
             plan,
             endpoint,
@@ -527,6 +554,16 @@ impl<'a> WebhookAttempt<'a> {
         owner: &impl WebhookAuthority,
         read_payload: impl FnMut(ContentDigest) -> Result<Vec<u8>, E>,
     ) -> WebhookProgress {
+        self.poll_with_connect(now_ns, owner, read_payload, TcpStream::connect_timeout)
+    }
+
+    fn poll_with_connect<E: Into<ReferenceError>>(
+        &mut self,
+        now_ns: u64,
+        owner: &impl WebhookAuthority,
+        read_payload: impl FnMut(ContentDigest) -> Result<Vec<u8>, E>,
+        connect: impl FnOnce(&SocketAddr, Duration) -> io::Result<TcpStream>,
+    ) -> WebhookProgress {
         if let Some(outcome) = self.evidence.outcome {
             return WebhookProgress::ReadyToRecord(outcome);
         }
@@ -549,11 +586,14 @@ impl<'a> WebhookAttempt<'a> {
                 return self.finish(WebhookOutcome::Interrupted(WebhookInterruption::Retired));
             }
         };
-        if let Err(reason) = self.probe(owner, boundary, now_ns) {
-            return self.finish(WebhookOutcome::Interrupted(WebhookInterruption::Denied(
-                reason,
-            )));
-        }
+        let mut now_ns = match self.probe(owner, boundary, now_ns) {
+            Ok(sampled) => sampled,
+            Err(reason) => {
+                return self.finish(WebhookOutcome::Interrupted(WebhookInterruption::Denied(
+                    reason,
+                )));
+            }
+        };
         if matches!(self.phase, Phase::Connect | Phase::Send) {
             let obligation = self.journal.obligation(&self.plan.obligation_id);
             let valid = self
@@ -577,11 +617,14 @@ impl<'a> WebhookAttempt<'a> {
                 ));
             }
             // A source read can consume time or trigger revocation. Recheck immediately before send.
-            if let Err(reason) = self.probe(owner, boundary, now_ns) {
-                return self.finish(WebhookOutcome::Interrupted(WebhookInterruption::Denied(
-                    reason,
-                )));
-            }
+            now_ns = match self.probe(owner, boundary, now_ns) {
+                Ok(sampled) => sampled,
+                Err(reason) => {
+                    return self.finish(WebhookOutcome::Interrupted(WebhookInterruption::Denied(
+                        reason,
+                    )));
+                }
+            };
         }
         if self.evidence.calls == self.limits.io_calls {
             return self.finish(WebhookOutcome::Interrupted(WebhookInterruption::Limit));
@@ -598,8 +641,7 @@ impl<'a> WebhookAttempt<'a> {
                     .limits
                     .connect_timeout_ns
                     .min(self.deadline_ns - now_ns);
-                match TcpStream::connect_timeout(&self.endpoint.peer, Duration::from_nanos(timeout))
-                {
+                match connect(&self.endpoint.peer, Duration::from_nanos(timeout)) {
                     Ok(stream) => {
                         self.stream = Some(stream);
                         self.phase = Phase::Configure;
@@ -697,16 +739,17 @@ impl<'a> WebhookAttempt<'a> {
     }
 
     fn probe(
-        &self,
+        &mut self,
         owner: &impl WebhookAuthority,
         boundary: WebhookBoundary,
         now_ns: u64,
-    ) -> Result<(), WebhookDenial> {
+    ) -> Result<u64, WebhookDenial> {
         let operation = self
             .journal
             .operation(&self.plan.intent.operation_id)
             .ok_or(WebhookDenial::Unauthorized)?;
-        owner.checkpoint(
+        let sampled = admit(
+            owner,
             WebhookScope {
                 endpoint: self.endpoint,
                 operation,
@@ -715,7 +758,10 @@ impl<'a> WebhookAttempt<'a> {
             boundary,
             now_ns,
             self.deadline_ns,
-        )
+        )?;
+        self.last_ns = sampled;
+        self.evidence.last_admission_ns = sampled;
+        Ok(sampled)
     }
     fn finish(&mut self, outcome: WebhookOutcome) -> WebhookProgress {
         self.stream = None;
@@ -774,18 +820,18 @@ pub fn record_webhook_evidence<'a>(
     let operation = journal
         .operation(&evidence.intent.operation_id)
         .ok_or(WebhookError::EffectMismatch)?;
-    owner
-        .checkpoint(
-            WebhookScope {
-                endpoint,
-                operation,
-                effect_journal: journal.path(),
-            },
-            WebhookBoundary::Record,
-            now_ns,
-            evidence.deadline_ns,
-        )
-        .map_err(WebhookError::Denied)?;
+    let now_ns = admit(
+        owner,
+        WebhookScope {
+            endpoint,
+            operation,
+            effect_journal: journal.path(),
+        },
+        WebhookBoundary::Record,
+        now_ns,
+        evidence.deadline_ns,
+    )
+    .map_err(WebhookError::Denied)?;
     // No receipt laundering into another history with merely equal operation strings.
     if !journal
         .committed_roots()?

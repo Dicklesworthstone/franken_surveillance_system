@@ -328,7 +328,7 @@ impl WebhookAuthority for WebhookOwner {
         boundary: WebhookBoundary,
         now: u64,
         deadline: u64,
-    ) -> Result<(), WebhookDenial> {
+    ) -> Result<u64, WebhookDenial> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         if scope.operation.intent.operation_id != self.operation
             || scope.effect_journal != self.path
@@ -338,7 +338,7 @@ impl WebhookAuthority for WebhookOwner {
         {
             return Err(WebhookDenial::Unauthorized);
         }
-        Ok(())
+        Ok(now)
     }
 }
 #[test]

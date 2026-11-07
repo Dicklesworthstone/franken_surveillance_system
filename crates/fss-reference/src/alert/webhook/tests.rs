@@ -134,6 +134,7 @@ struct Owner {
     revoke_after_send: Cell<bool>,
     saw_send: Cell<bool>,
     checks: Cell<usize>,
+    sampled_ns: Cell<Option<u64>>,
 }
 impl Owner {
     fn new(endpoint: &WebhookEndpoint, path: &Path) -> Self {
@@ -144,6 +145,7 @@ impl Owner {
             revoke_after_send: Cell::new(false),
             saw_send: Cell::new(false),
             checks: Cell::new(0),
+            sampled_ns: Cell::new(None),
         }
     }
 }
@@ -154,8 +156,9 @@ impl WebhookAuthority for Owner {
         boundary: WebhookBoundary,
         now: u64,
         deadline: u64,
-    ) -> Result<(), WebhookDenial> {
+    ) -> Result<u64, WebhookDenial> {
         self.checks.set(self.checks.get() + 1);
+        let now = self.sampled_ns.get().unwrap_or(now);
         if scope.endpoint.digest() != self.route
             || scope.effect_journal != self.path
             || scope.operation.intent.effect_class != "alert.dispatch"
@@ -175,7 +178,7 @@ impl WebhookAuthority for Owner {
         {
             return Err(WebhookDenial::Revoked);
         }
-        Ok(())
+        Ok(now)
     }
 }
 /// Same-thread nonblocking loopback peer. No detached test work or sleeps.
@@ -276,6 +279,201 @@ fn drive(
         }
     }
     Err("bounded webhook fixture did not complete".into())
+}
+
+#[test]
+fn commitment_uses_the_owner_time_after_source_validation() -> Test {
+    let endpoint = endpoint("127.0.0.1:9".parse()?)?;
+    let mut f = fixture("commit-admission-time", &endpoint)?;
+    let owner = Owner::new(&endpoint, f.journal.path());
+    let reads = Cell::new(0);
+    let attempt = WebhookAttempt::begin(
+        &f.plan,
+        &endpoint,
+        &f.ledger,
+        &mut f.journal,
+        limits(4096),
+        101,
+        DEADLINE,
+        &owner,
+        |digest| {
+            reads.set(reads.get() + 1);
+            owner.sampled_ns.set(Some(250));
+            f.objects.read_verified(digest).map(|bytes| bytes.to_vec())
+        },
+    )?;
+    assert!(
+        reads.get() > 0,
+        "the clock must advance during actual source validation"
+    );
+    assert_eq!(
+        attempt.operation().ok_or("missing commitment")?.updated_at,
+        TimestampNs(250)
+    );
+    assert_eq!(attempt.evidence().committed_ns, 250);
+    assert_eq!(attempt.evidence().last_admission_ns, 250);
+    assert_eq!(attempt.evidence().io_calls(), 0);
+    let _evidence = attempt.retire();
+    Ok(())
+}
+
+#[test]
+fn connect_timeout_uses_revalidated_time_and_record_keeps_the_owner_sample() -> Test {
+    let endpoint = endpoint("127.0.0.1:9".parse()?)?;
+    let mut f = fixture("connect-admission-time", &endpoint)?;
+    let owner = Owner::new(&endpoint, f.journal.path());
+    let mut attempt = WebhookAttempt::begin(
+        &f.plan,
+        &endpoint,
+        &f.ledger,
+        &mut f.journal,
+        limits(4096),
+        101,
+        DEADLINE,
+        &owner,
+        |digest| f.objects.read_verified(digest).map(|bytes| bytes.to_vec()),
+    )?;
+    let timeout = Cell::new(None);
+    let reads = Cell::new(0);
+    let sampled = DEADLINE - 7;
+    let progress = attempt.poll_with_connect(
+        102,
+        &owner,
+        |digest| {
+            reads.set(reads.get() + 1);
+            owner.sampled_ns.set(Some(sampled));
+            f.objects.read_verified(digest).map(|bytes| bytes.to_vec())
+        },
+        |peer, remaining| {
+            assert_eq!(*peer, endpoint.peer());
+            timeout.set(Some(remaining));
+            owner.sampled_ns.set(Some(sampled + 1));
+            Err(io::Error::from(io::ErrorKind::ConnectionRefused))
+        },
+    );
+    assert!(
+        reads.get() > 0,
+        "the clock must advance during actual source validation"
+    );
+    assert_eq!(timeout.get(), Some(Duration::from_nanos(7)));
+    assert_eq!(
+        progress,
+        WebhookProgress::ReadyToRecord(WebhookOutcome::Interrupted(WebhookInterruption::Io))
+    );
+    assert_eq!(attempt.evidence().io_calls(), 1);
+    assert_eq!(attempt.evidence().last_admission_ns, sampled + 1);
+    owner.sampled_ns.set(Some(DEADLINE + 1));
+    let receipt = attempt.record(DEADLINE, &owner)?;
+    assert_eq!(receipt.updated_at, TimestampNs(i128::from(DEADLINE + 1)));
+    assert_eq!(receipt.state, EffectState::Indeterminate);
+    let evidence = attempt.retire();
+    assert_eq!(evidence.io_calls(), 1, "recording must never reconnect");
+    assert_eq!(
+        f.journal
+            .obligation(&f.plan.obligation_id)
+            .ok_or("missing obligation")?
+            .state,
+        ObligationState::Indeterminate
+    );
+    Ok(())
+}
+
+#[test]
+fn source_validation_expiring_the_deadline_never_calls_the_connector() -> Test {
+    let endpoint = endpoint("127.0.0.1:9".parse()?)?;
+    let mut f = fixture("connect-expired-source", &endpoint)?;
+    let owner = Owner::new(&endpoint, f.journal.path());
+    let mut attempt = WebhookAttempt::begin(
+        &f.plan,
+        &endpoint,
+        &f.ledger,
+        &mut f.journal,
+        limits(4096),
+        101,
+        DEADLINE,
+        &owner,
+        |digest| f.objects.read_verified(digest).map(|bytes| bytes.to_vec()),
+    )?;
+    let progress = attempt.poll_with_connect(
+        102,
+        &owner,
+        |digest| {
+            owner.sampled_ns.set(Some(DEADLINE));
+            f.objects.read_verified(digest).map(|bytes| bytes.to_vec())
+        },
+        |_, _| panic!("expired source validation must not admit a connect"),
+    );
+    assert_eq!(
+        progress,
+        WebhookProgress::ReadyToRecord(WebhookOutcome::Interrupted(WebhookInterruption::Denied(
+            WebhookDenial::Deadline
+        )))
+    );
+    assert_eq!(attempt.evidence().io_calls(), 0);
+    assert_eq!(
+        attempt.operation().ok_or("missing commitment")?.state,
+        EffectState::Committed
+    );
+    Ok(())
+}
+
+#[test]
+fn reversed_or_expired_successful_owner_samples_refuse_before_io() -> Test {
+    struct InvalidSample<'a> {
+        owner: &'a Owner,
+        sample: u64,
+    }
+    impl WebhookAuthority for InvalidSample<'_> {
+        fn checkpoint(
+            &self,
+            scope: WebhookScope<'_>,
+            boundary: WebhookBoundary,
+            now_ns: u64,
+            network_deadline_ns: u64,
+        ) -> Result<u64, WebhookDenial> {
+            self.owner
+                .checkpoint(scope, boundary, now_ns, network_deadline_ns)?;
+            Ok(self.sample)
+        }
+    }
+    for sample in [101, DEADLINE, DEADLINE + 1] {
+        let endpoint = endpoint("127.0.0.1:9".parse()?)?;
+        let mut f = fixture(&format!("invalid-owner-time-{sample}"), &endpoint)?;
+        let owner = Owner::new(&endpoint, f.journal.path());
+        let mut attempt = WebhookAttempt::begin(
+            &f.plan,
+            &endpoint,
+            &f.ledger,
+            &mut f.journal,
+            limits(4096),
+            101,
+            DEADLINE,
+            &owner,
+            |digest| f.objects.read_verified(digest).map(|bytes| bytes.to_vec()),
+        )?;
+        let invalid = InvalidSample {
+            owner: &owner,
+            sample,
+        };
+        let progress = attempt.poll_with_connect(
+            102,
+            &invalid,
+            |digest| f.objects.read_verified(digest).map(|bytes| bytes.to_vec()),
+            |_, _| panic!("invalid owner timestamp must not admit a connect"),
+        );
+        assert_eq!(
+            progress,
+            WebhookProgress::ReadyToRecord(WebhookOutcome::Interrupted(WebhookInterruption::Denied(
+                WebhookDenial::Deadline
+            )))
+        );
+        assert_eq!(attempt.evidence().io_calls(), 0);
+        assert_eq!(
+            attempt.operation().ok_or("missing commitment")?.state,
+            EffectState::Committed
+        );
+    }
+    Ok(())
 }
 
 #[test]

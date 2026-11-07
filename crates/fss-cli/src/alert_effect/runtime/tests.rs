@@ -190,6 +190,69 @@ fn native_network_deadline_keeps_the_original_ceiling_and_refuses_expiry() -> Te
 }
 
 #[test]
+fn checkpoints_return_actual_admission_time_after_source_reads_and_during_cleanup() -> Test {
+    let f = Fixture::new(allowance(), None)?;
+    let committed = f.committed();
+    let (consumed, _) = f.run(|owner| {
+        f.clock.elapsed.set(1_000_000);
+        assert_eq!(
+            owner.checkpoint(
+                f.scope(&f.prepared),
+                WebhookBoundary::Commit,
+                BASE,
+                NETWORK_DEADLINE
+            ),
+            Ok(BASE + 1_000_000)
+        );
+        f.clock.elapsed.set(4_000_000);
+        assert_eq!(
+            owner.checkpoint(
+                f.scope(&committed),
+                WebhookBoundary::Connect,
+                BASE + 1_000_000,
+                NETWORK_DEADLINE
+            ),
+            Ok(BASE + 4_000_000)
+        );
+        owner.source_read()?;
+        f.clock.elapsed.set(4_999_000);
+        owner.after_source_read()?;
+        assert_eq!(
+            owner.checkpoint(
+                f.scope(&committed),
+                WebhookBoundary::Connect,
+                BASE + 4_000_000,
+                NETWORK_DEADLINE
+            ),
+            Ok(NETWORK_DEADLINE - 1_000)
+        );
+        assert_eq!(owner.network_admissions.get(), 1);
+        assert_eq!(
+            owner.checkpoint(
+                f.scope(&committed),
+                WebhookBoundary::AfterIo,
+                NETWORK_DEADLINE - 1_000,
+                NETWORK_DEADLINE
+            ),
+            Ok(NETWORK_DEADLINE - 1_000)
+        );
+        f.clock.elapsed.set(5_000_100);
+        assert_eq!(
+            owner.checkpoint(
+                f.scope(&committed),
+                WebhookBoundary::Record,
+                NETWORK_DEADLINE,
+                NETWORK_DEADLINE
+            ),
+            Ok(NETWORK_DEADLINE + 100)
+        );
+        Ok(())
+    })?;
+    assert_eq!(consumed.network_bytes, IO_BYTES);
+    Ok(())
+}
+
+#[test]
 fn socket_admission_is_charged_once_across_source_recheck_and_never_refilled() -> Test {
     let f = Fixture::new(allowance(), None)?;
     let committed = f.committed();
@@ -263,7 +326,7 @@ fn network_deadline_leaves_only_prepaid_finite_recording_authority() -> Test {
                 NETWORK_DEADLINE,
                 NETWORK_DEADLINE
             ),
-            Ok(())
+            Ok(NETWORK_DEADLINE)
         );
         assert_eq!(
             owner.checkpoint(
