@@ -4,6 +4,51 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Bounded retained JPEG/MJPEG review ranges
+
+`fss-file decode`, `read-decoded` and `verify-decoded` now accept
+`--segment-count 1..1024` for retained MJPEG recordings. A complete range is
+admitted against retained source bounds before the first frame publication.
+PGM, MJPEG and lossless gray-Matroska output share one cancellable decode/replay
+allowance, one encode allowance, one selector and one output owner across the
+range. Current custody/privacy checks and individual frame receipts remain in
+place; source-time exclusions still require loading and validating every frame.
+
+Only successful full traversal can finalize the selection and output. Missing or
+corrupt later frames, stale privacy bindings, exhausted budgets, dimension drift,
+cancellation and write/sync failures never certify an earlier prefix as a complete
+range. Individual completed frame publications and private partial files may remain.
+Single-frame behavior is preserved, and multi-frame `--receipt-out` refuses because
+the existing option denotes one frame receipt. See
+[the retained JPEG range workflow](docs/RETAINED_DECODE_WORKFLOW.md#bounded-retained-jpeg-ranges).
+
+**Validation:** all eight tests in `file_jpeg_range_contract` passed on the pinned
+nightly: six new range/composition cases and two existing EBML unit cases. They run
+the exact production range owner, JPEG encoder/decoder, window selector and lossless
+stream core, checking exact samples, ordering, cumulative limits, excluded corrupt
+tails, empty/ambiguous windows, dimension changes, cancellation and preflight bounds.
+Seven full CLI process contracts and one parser contract are authored. Complete
+CLI process validation and Clippy have not completed in this session; the component
+run does not establish retained-store, current-policy-storage or filesystem-sync
+integration. Independent source/API reviews found no concrete blocker.
+
+## Restored model and lossless media verification
+
+At baseline `ef7972ad2f773fecc501a907dbc2f87bda21c8fa`, native execution passed
+72 focused container tests (50 library, six framing, sixteen streaming) and all
+36 tests in `onnx_batch_normalization_execution`. The model target includes twelve
+InstanceNormalization contracts, eight BatchNormalization contracts and sixteen
+included executor tests. These completed runs supersede the earlier pending-native
+notes below for those exact components; they are not whole-workspace qualification.
+
+An independent FFmpeg/FFprobe 6.1.1-3ubuntu5 comparison then decoded output from the
+actual production Matroska framing/writer: all 2,078 frames and 40,626 sample bytes
+matched, along with every packet timestamp, duration and count. Five cases covered
+fractional cadence, integer rounding, both admitted rate extremes and every gray
+sample value with odd row widths. See [the measured scope and binary identities](docs/LOSSLESS_MATROSKA_OUTPUT.md#completed-production-encoder-comparison).
+No foreign decoder was added to production. Full CLI and release qualification
+remain separate from these focused native and interoperability results.
+
 ## Queries across pinned recording catalogs
 
 The reference recording query now accepts one to eight explicitly pinned AVC or

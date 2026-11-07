@@ -8,6 +8,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+#[path = "decoded_media_cli_contract/range.rs"]
+mod range;
+
 const JPEG: &[u8] = include_bytes!("../../fss-codec-mjpeg/tests/fixtures/gray.jpg");
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 struct OwnedDirectory(PathBuf);

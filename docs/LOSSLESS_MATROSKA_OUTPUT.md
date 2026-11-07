@@ -88,8 +88,13 @@ fss-file decode --root DEPLOYMENT --site SITE --import-id sha256:HEX \
 
 Here `--segment 0` must be the range's valid decoder entry point (AVC IDR or
 HEVC IRAP). Existing source, decoder, pixel and segment bounds still apply.
-A retained JPEG/MJPEG segment produces one frame; its `decode`, `read-decoded`
-and `verify-decoded` commands share the same output owner. AVC/HEVC range
+A retained JPEG/MJPEG segment produces one frame. Its `decode`, `read-decoded`
+and `verify-decoded` commands also accept bounded `--segment-count` ranges and
+share one output owner and cumulative work/byte allowances. A range must fit
+the retained manifest, and `--receipt-out` remains single-frame-only. Later
+source/receipt/privacy failures fence completion even after earlier frames were
+written. See [the retained JPEG range workflow](RETAINED_DECODE_WORKFLOW.md#bounded-retained-jpeg-ranges).
+AVC/HEVC range
 receipts remain unpublished derivations and retain their existing command scope.
 
 `--output-rate` is mandatory for `gray-mkv` and refused for other formats.
@@ -263,12 +268,12 @@ resizing, dropping selected frames or substituting lossy encoding.
 
 ## Verification status
 
-**New production code and tests have not been executed natively.** The workspace
-disconnected during the first Matroska source write. The authored source was
-recovered into GitHub blobs, with independent source review of the arithmetic,
-fixed buffers, EBML sizes and public API. No Rust compilation, formatter pass,
-Clippy pass, complete-CLI test or final-encoder differential result is established
-for these new files.
+**The production framing and stream writer now have native execution results.**
+At source `ef7972ad2f773fecc501a907dbc2f87bda21c8fa`, the pinned nightly passed
+all 72 focused container tests: 50 library tests, six framing contracts and sixteen
+stream contracts. The independent production-encoder comparison below also
+passed. Complete CLI process validation and Clippy remain separate, incomplete
+checks; these results do not certify path authority, filesystem sync or deployment.
 
 The authored core tests comprise six public-API contracts and two internal
 EBML contracts. They cover:
@@ -292,7 +297,36 @@ cover exact screened bytes/source receipts, current masks, rational rate
 normalization, quota limits, source-time selection and late refusal. One retained
 JPEG contract exercises decode/reopen/replay, exact output caps and stable roots.
 One parser contract closes rate syntax and incompatible option combinations.
-These are authored tests, not native pass results.
+The core and stream tests are included in the completed native run. The eight
+CLI/process/parser contracts in this paragraph remain authored without a full
+CLI execution result in this session.
+
+### Completed production encoder comparison
+
+A pinned-native fixture compiled the actual `GrayMatroskaConfig`, EBML helper and
+streaming `Encoder` sources, then wrote the production output. FFmpeg/FFprobe
+6.1.1-3ubuntu5 independently decoded every sample and checked every packet's
+timestamp, duration and count. All 2,078 frames and 40,626 sample bytes matched;
+all streams were identified as full-range `rawvideo` / `Y800` / `gray` with a
+`1/1000000000` time base, with no decoder errors.
+
+| Case | Dimensions | Frames | Playback rate |
+|---|---:|---:|---:|
+| Fractional cadence | 7×5 | 1,024 | 30000/1001 |
+| Integer rounding alternation | 17×13 | 11 | 30/1 |
+| Maximum admitted rate | 7×5 | 16 | 1000000/1 |
+| Minimum admitted rate and long boundaries | 1×1 | 1,024 | 1/1000000 |
+| Every gray sample value and odd row width | 257×1 | 3 | 10/1 |
+
+The production encoder identity was
+`sha256:933c57c1664c781c2869824f36fca4bb7203acd4ea9670675424e9368feecc1b`.
+FFmpeg's binary SHA-256 was
+`ed16af623947494a72e284b6eb8ff225f2da22b38b5d5069c2fd4b4ba3384e41`;
+FFprobe's was
+`272f6ebc634a63d9c8b4ca68e964119d980f25154e5aa2c35e5487da48e9a58f`.
+This executes the production writer, unlike the earlier prototype below. It
+remains a bounded framing/interoperability result, not a full retained-media
+process or seeking/player-compatibility qualification.
 
 ### Completed format feasibility observation
 
@@ -313,7 +347,7 @@ That prototype establishes narrow format feasibility. It did not execute the
 recovered Rust core and does not qualify other players, seeking, capture-time
 accuracy, live sources or privacy-attestation validity.
 
-### Required restored checks
+### Reproduction and remaining integration checks
 
 On the pinned nightly and exact published source:
 
@@ -327,12 +361,12 @@ cargo test --locked --offline -p fss-cli --bin fss-file \
   --test decoded_media_cli_contract --test file_video_stream_cli
 ```
 
-Format the new source and contracts with the pinned formatter, then rerun after
-any repairs. A final laboratory comparison should generate bytes through this
-actual public API for 1×1, 7×5 and 65×37 synthetic frames at 1, 30 and
-30000/1001 fps. Compare every decoded sample, packet timestamp, duration, frame
-count and dimension independently. This nine-case run was planned but did not
-execute before the outage.
+The first command passed in the restored workspace. The full CLI check was
+stopped during shared-host memory pressure; no complete-CLI or Clippy success is
+claimed. Rerun those integration checks on a sufficiently provisioned host, using
+the exact final source and the new retained JPEG range contracts as applicable.
+The production comparison above replaces the earlier feasibility-only evidence;
+its five executed cases are the measured scope.
 
 Useful isolated-oracle commands are:
 

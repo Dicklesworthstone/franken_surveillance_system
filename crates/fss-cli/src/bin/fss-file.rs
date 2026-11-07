@@ -59,14 +59,14 @@ const HELP: &str = "fss-file <import|inspect|verify|extract|select-movie|decode|
           empty/unrepresented gaps and required decode ranges, without returning media.\n\
           [--selection-work-units N --max-selection-rows N --max-decode-samples N]\n\
           [--max-decode-bytes N --max-annex-b-bytes N]; source read bounds also apply.\n\
-  decode/read-decoded/verify-decoded: --import-id sha256:HEX --segment N\n\
+  decode/read-decoded/verify-decoded: --import-id sha256:HEX --segment N [--segment-count M]\n\
           --interpretation gray|ycbcr [--output FILE] [--receipt-out FILE]\n\
           Output defaults to pgm; --output-format pgm|mjpeg|gray-mkv requires --output.\n\
           MJPEG is a lossy grayscale JPEG frame stream, with no embedded rate or UTC.\n\
           [--jpeg-quality 1..100] (default 85) and [--encode-work-units N] (default 2B)\n\
           require mjpeg; encode work is cumulative and separate from decode work.\n\
           --max-output-bytes N caps the whole MJPEG stream (default 64 MiB, max 256 MiB);\n\
-          it also caps native video PGM and lossless gray-mkv output. New private files only.\n\
+          it also caps native video/JPEG range PGM and lossless gray-mkv output. New private files only.\n\
           gray-mkv requires --output-rate NUM/DEN (positive components <=1000000).\n\
           It stores exact screened luma in Matroska with explicit uniform presentation timing;\n\
           selected frames are retimed, not a preservation of capture times or gaps. No overwrite.\n\
@@ -74,6 +74,11 @@ const HELP: &str = "fss-file <import|inspect|verify|extract|select-movie|decode|
           Selects only fully contained retained capture intervals on that exact clock basis;\n\
           unknown timing, uncertain boundaries and empty results are refused. No UTC conversion.\n\
           File timing remains an operator assumption; codec preroll is decoded but never exported.\n\
+  JPEG/MJPEG ranges: --segment-count M (1..1024) reads N..N+M in source order on all three\n\
+          commands, with one cumulative decode/replay budget and one bounded output stream.\n\
+          Every requested frame is checked, including frames excluded by an output window;\n\
+          decode retains/reuses each frame's own receipt. A late refusal cannot complete a clip.\n\
+          --receipt-out requires one frame; use per-frame receipt/root report fields for ranges.\n\
   decode of an H.264 (annexb/mp4avc/mkvavc) or H.265 (hevc/mp4hevc/mkvhevc) import:\n\
           --segment N must be an IDR access unit (H.265: IDR,\n\
           CRA or BLA) and [--segment-count M] (1..1024) decodes N..N+M in display order;\n\
@@ -977,6 +982,52 @@ mod tests {
             ))
             .is_err()
         );
+    }
+    #[test]
+    fn jpeg_ranges_are_bounded_on_every_frame_command_and_refuse_single_receipt_output() {
+        for command in ["decode", "read-decoded", "verify-decoded"] {
+            let base = ["--segment", "0", "--interpretation", "gray"];
+            for count in ["1", "2", "1024"] {
+                let mut arguments = base.to_vec();
+                arguments.extend(["--segment-count", count]);
+                assert!(parse(&media_args(command, &arguments)).is_ok());
+            }
+            for count in ["0", "1025", "18446744073709551615"] {
+                let mut arguments = base.to_vec();
+                arguments.extend(["--segment-count", count]);
+                assert!(parse(&media_args(command, &arguments)).is_err());
+            }
+            assert!(
+                parse(&media_args(
+                    command,
+                    &[
+                        "--segment",
+                        "18446744073709551615",
+                        "--interpretation",
+                        "gray",
+                        "--segment-count",
+                        "2",
+                    ]
+                ))
+                .is_err()
+            );
+            let mut arguments = base.to_vec();
+            arguments.extend(["--segment-count", "2", "--receipt-out", "ambiguous.receipt"]);
+            assert!(parse(&media_args(command, &arguments)).is_err());
+            let mut arguments = base.to_vec();
+            arguments.extend([
+                "--segment-count",
+                "2",
+                "--output",
+                "range.pgm",
+                "--max-output-bytes",
+                "1",
+            ]);
+            assert!(parse(&media_args(command, &arguments)).is_ok());
+        }
+        for command in ["inspect", "verify", "extract", "motion", "select-movie"] {
+            assert!(parse(&media_args(command, &["--segment-count", "2"])).is_err());
+        }
     }
     #[test]
     fn motion_requires_bounded_range_thresholds_and_explicit_report() {

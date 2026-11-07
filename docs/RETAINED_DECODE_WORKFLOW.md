@@ -95,6 +95,52 @@ change the pixels or silently replace an existing result. The canonical object g
 both raw-pixel and compressed-source identities. PGM rendering is a separate export, with a
 separate byte digest, and does not change the underlying evidence.
 
+## Bounded retained JPEG ranges
+
+`decode`, `read-decoded` and `verify-decoded` accept `--segment-count 1..1024`
+for retained MJPEG recordings, starting at the zero-based `--segment`. The default
+remains one frame. The complete requested range must fit the retained manifest
+before the first frame is loaded or published. Each selected segment keeps its
+own authenticated source, privacy binding and decode receipt.
+
+For an already imported recording, this creates one lossless playable clip from
+eight consecutive JPEG frames:
+
+```sh
+fss-file decode --root DEPLOYMENT --site SITE --import-id sha256:HEX \
+  --segment 0 --segment-count 8 --interpretation ycbcr \
+  --output screened.mkv --output-format gray-mkv --output-rate 30/1 \
+  --work-units 1000000000 --max-output-bytes 67108864
+```
+
+After those derivatives are retained, replace `decode` with `read-decoded` and
+omit `--work-units` to reopen the same range under current custody/privacy checks
+without decoding. `verify-decoded` independently replays every frame using its
+one request-wide decode allowance. It also accepts `--segment-count` and can write
+the verified range to a new output path. `--receipt-out` is refused when the count
+exceeds one: the existing option represents one canonical frame receipt, not a
+new range-receipt format.
+
+The same range owner supports concatenated PGM frames, native lossy MJPEG, and
+lossless `gray-mkv`. PGM/MJPEG remain untimed; Matroska requires explicit playback
+cadence and constant dimensions. Existing byte ceilings cover the complete output,
+including all headers. JPEG encode work and decode/replay work are cumulative
+across the request and are never replenished per frame. Read/source-byte ceilings
+retain their existing per-read/per-segment meanings; this adds no claim of a
+cumulative source-I/O budget. Only one decoded frame is held by the traversal.
+
+Source-time windows below apply across the full requested range. Excluded frames
+are still loaded and validated; they are omitted before encoding or export. Empty
+selections, ambiguous capture intervals, missing later receipts, corrupt later
+sources, cancellation, budget exhaustion and output/sync failures all refuse
+completion. Earlier per-frame publications or a private partial file may remain;
+they are never certified as a shorter successful range.
+
+Success emits `jpeg_frames_processed`, `jpeg_frames_selected`, cumulative decode
+accounting and `decode_complete=true` only after full traversal, selection and
+output finalization. Reopening or verifying a range does not create new recording
+authority or authorize external reviewer delivery.
+
 ## Source-time windows for decoded output
 
 The decoded-frame commands accept paired
@@ -176,8 +222,8 @@ integration authored after the execution workspace disconnected.
 
 `fss-file decode`, `read-decoded` and `verify-decoded` also accept
 `--output-format gray-mkv --output-rate NUM/DEN` with `--output FILE`.
-JPEG/MJPEG commands write one retained segment; AVC/HEVC decode writes selected
-frames in native display order. PGM remains the default.
+JPEG/MJPEG commands write a retained frame or the requested bounded segment range;
+AVC/HEVC decode writes selected frames in native display order. PGM remains the default.
 
 ```sh
 fss-file decode --root DEPLOYMENT --site SITE --import-id sha256:HEX \

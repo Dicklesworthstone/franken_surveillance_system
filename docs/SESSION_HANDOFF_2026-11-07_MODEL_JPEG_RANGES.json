@@ -1,0 +1,256 @@
+{
+  "format": "engineering-session-handoff",
+  "date": "2026-11-07",
+  "timezone": "Etc/UTC",
+  "state": "features_implemented_scoped_native_contracts_passed_full_cli_resource_blocked",
+  "mission": {
+    "goal": "Prioritize substantial remaining model and retained-media functionality from the comprehensive plan and beads; publish meaningful direct-main GitHub checkpoints.",
+    "base_commit": "ef7972ad2f773fecc501a907dbc2f87bda21c8fa",
+    "basis": [
+      "AGENTS.md",
+      "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md",
+      ".beads/issues.jsonl"
+    ],
+    "bead_scope": [
+      "FSS-138 / fss-x4a.14.9: extend the existing deterministic importer",
+      "FSS-139 / fss-x4a.14.10: actual native execution compatibility; broad bead remains open",
+      "CAP file-ingest-first / local reviewer export: bounded retained MJPEG range functionality",
+      "VIT-023: external grant/attestation/custody/delivery requirements remain open"
+    ],
+    "second_checkpoint_parent": "909de0681866016ce21269310479094db3886135"
+  },
+  "authority": {
+    "git": "Explicit user authorization for meaningful direct-main commits, no PRs; preserve concurrent changes and use expected-head non-force updates.",
+    "live_device_execution": false,
+    "policy_activation": false,
+    "external_delivery": false
+  },
+  "completed": [
+    "Static NCHW ConvTranspose lowering through existing native Conv2d/layout operators, constant grouped filter transformation, true-zero stride expansion, explicit output sizing and bounded work/allocations.",
+    "Twelve new actual scalar/optimized execution and canonical graph/Safetensors reload contracts passed, including an independent scatter oracle and exact admission/cancellation boundaries.",
+    "JPEG/MJPEG segment ranges for decode, read-decoded and verify-decoded; shared budgets/selector/output owner, complete source admission, per-frame custody/privacy validation and late-prefix completion fencing.",
+    "Six new range/codec/window/Matroska component cases plus two included EBML cases passed; seven process contracts and one parser contract authored.",
+    "Restored native execution of previously pending Matroska framing/writer and InstanceNormalization components; independent decoder comparison used actual production output."
+  ],
+  "verification": {
+    "toolchain": "nightly-2026-08-31; rustc 1.100.0-nightly (908501772 2026-08-30)",
+    "baseline": {
+      "commit": "ef7972ad2f773fecc501a907dbc2f87bda21c8fa",
+      "container": {
+        "passed": 72,
+        "counts": {
+          "library": 50,
+          "framing": 6,
+          "streaming": 16
+        },
+        "command": "cargo test --locked --offline -p fss-container --lib --test matroska_gray_contract --test gray_matroska_stream_contract"
+      },
+      "normalization": {
+        "passed": 36,
+        "counts": {
+          "instance_normalization": 12,
+          "batch_normalization": 8,
+          "included_executor": 16
+        },
+        "command": "cargo test --locked --offline -p fss-model-ir --test onnx_batch_normalization_execution"
+      }
+    },
+    "conv_transpose": {
+      "passed": 12,
+      "failed": 0,
+      "command": "cargo test --locked --offline -p fss-model-ir --test onnx_conv_transpose_execution -j 1 transpose_ -- --test-threads=1",
+      "check": "cargo check --locked --offline -p fss-model-ir passed before subsequent upstream operator additions.",
+      "rerun": "All twelve passed again after integrating concurrent Clip source; later upstream HardSigmoid was preserved when publishing.",
+      "source_sha256": {
+        "crates/fss-model-ir/src/onnx/conv_transpose.rs": "408f495d740bb1857c0c4d4ea5aac49542a494c79e5ad9c5590683ad45d0cce2",
+        "crates/fss-model-ir/tests/onnx_conv_transpose_execution.rs": "fe7f8fd5799b882ceccf5c9c19811eaaf6ea1a821a2c3c8b1608c0246de1c8b0"
+      },
+      "clippy": "Attempted targeted Clippy; stopped with exit 130 during shared-host memory pressure while checking fss-core. No new-source diagnostics; not a pass."
+    },
+    "jpeg_range": {
+      "state": "source_stable_component_tests_passed_process_tests_pending",
+      "paths": {
+        "crates/fss-cli/src/bin/fss-file.rs": "eb1dff388a31a68d0a6c56177e76bd9795073155c9c757c47cb2cff9d8999087",
+        "crates/fss-cli/src/bin/fss-file/media.rs": "86df2bf5011c7178a0eb8f560557458fd270a7dc6d1e73feb15e53287fbcfad9",
+        "crates/fss-cli/src/bin/fss-file/frame_range.rs": "e2622727c45241d18bc85e4c36494df692e9c36fb095145e0641efa16dc0b6ef",
+        "crates/fss-cli/tests/decoded_media_cli_contract.rs": "5b7c65e0f2acd036ff912655f4a22e37cc16774cc37cdd9da1da961fc5ae7596",
+        "crates/fss-cli/tests/decoded_media_cli_contract/range.rs": "747beb2e34d5156a8bb465f99f477ac4681451e84f0af9561981f682096aa3b6",
+        "crates/fss-codec-jpeg-encode/tests/file_jpeg_range_contract.rs": "c0b40644a31e24eeb44ad69d5e55f2440a57746b85f6adaa363af5a0c37a9748"
+      },
+      "command": "CARGO_BUILD_JOBS=1 cargo test --locked --offline -p fss-codec-jpeg-encode --test file_jpeg_range_contract",
+      "passed": 8,
+      "new_range_tests": 6,
+      "included_existing_ebml_tests": 2,
+      "warnings": 0,
+      "process_contracts_authored": 7,
+      "parser_contracts_authored": 1,
+      "scope": "Exact production synchronous range owner + real JPEG encode/decode + source-time selector + Matroska stream, including cancellation and prefix failure fencing. Full CLI process/custody/current-mask/fs-sync contracts are authored, not claimed executed."
+    },
+    "production_matroska_oracle": {
+      "source_commit": "ef7972ad2f773fecc501a907dbc2f87bda21c8fa",
+      "toolchain": "nightly-2026-08-31 rustc 1.100.0-nightly (908501772 2026-08-30)",
+      "source_sha256": {
+        "crates/fss-container/src/matroska_gray.rs": "7f372d5892671c8f55621c5b0cacedab400e7d499b8902aeccb15cc8f41e1bf1",
+        "crates/fss-container/src/matroska_gray/ebml.rs": "c727c32e6e8cb91fe84644b1207f83ed2a48c4614b4fbd4f2c66116ec66e479b",
+        "crates/fss-cli/src/bin/fss-file/gray_matroska_stream/encoder.rs": "49027d91778305cc5c33b74a6c395a98661aa6b29a52cf75dc5dba382417ee18",
+        "crates/fss-cli/src/bin/fss-file/gray_matroska_stream.rs": "11161839765999c6ac5e644a7f2ad91892a264a246a537b53ffa596c46e64763",
+        "crates/fss-cli/src/bin/fss-file/media.rs": "faa80e08320502f9d4b7e5b09da74e98d367c46addb830337bf6e0cc20303fd8"
+      },
+      "oracles": {
+        "ffmpeg": "6.1.1-3ubuntu5",
+        "ffmpeg_sha256": "ed16af623947494a72e284b6eb8ff225f2da22b38b5d5069c2fd4b4ba3384e41",
+        "ffprobe_sha256": "272f6ebc634a63d9c8b4ca68e964119d980f25154e5aa2c35e5487da48e9a58f"
+      },
+      "fixture_sha256": "2c0744c5730346e618ed727dcf179a9cb5fadf3d751e69d82a0a5d629f72c90b",
+      "cases": [
+        {
+          "case": "fractional",
+          "dimensions": [
+            7,
+            5
+          ],
+          "frames": 1024,
+          "rate": [
+            30000,
+            1001
+          ],
+          "exact_pixels": true,
+          "pixel_bytes": 35840,
+          "final_boundary_ns": 34167466666,
+          "media_sha256": "b5f34b5063218155fdb7562f9aa4ef19d1a9507c5f42e425e06acff3612be80a"
+        },
+        {
+          "case": "integer",
+          "dimensions": [
+            17,
+            13
+          ],
+          "frames": 11,
+          "rate": [
+            30,
+            1
+          ],
+          "exact_pixels": true,
+          "pixel_bytes": 2431,
+          "final_boundary_ns": 366666666,
+          "media_sha256": "abc8cb7b4af40b5f7bb4bed679ec10ca9aa41fc0551a9bea430fe18790238170"
+        },
+        {
+          "case": "maximum-rate",
+          "dimensions": [
+            7,
+            5
+          ],
+          "frames": 16,
+          "rate": [
+            1000000,
+            1
+          ],
+          "exact_pixels": true,
+          "pixel_bytes": 560,
+          "final_boundary_ns": 16000,
+          "media_sha256": "8d1b9005bfe091c359730fe749778e6eee5d5314db2508322b3689775fd08f5d"
+        },
+        {
+          "case": "minimum-rate",
+          "dimensions": [
+            1,
+            1
+          ],
+          "frames": 1024,
+          "rate": [
+            1,
+            1000000
+          ],
+          "exact_pixels": true,
+          "pixel_bytes": 1024,
+          "final_boundary_ns": 1024000000000000000,
+          "media_sha256": "95735667fe60a4798bc58873d39ff40ef36f97d33e23630308fa6efa69e64722"
+        },
+        {
+          "case": "all-samples",
+          "dimensions": [
+            257,
+            1
+          ],
+          "frames": 3,
+          "rate": [
+            10,
+            1
+          ],
+          "exact_pixels": true,
+          "pixel_bytes": 771,
+          "final_boundary_ns": 300000000,
+          "media_sha256": "6912349528c963ca5464c348046508c7794b08274c561e998e7ee7e87d9c1523"
+        }
+      ],
+      "production_encoder_identity": "sha256:933c57c1664c781c2869824f36fca4bb7203acd4ea9670675424e9368feecc1b",
+      "frames": 2078,
+      "pixel_bytes": 40626,
+      "all_pixels_and_packet_timing_match": true,
+      "scope": "Actual production framing and streaming encoder, not a full retained-media CLI process, storage authority, sync, device or delivery qualification."
+    },
+    "full_cli": {
+      "initial_attempt": "cargo check --locked --offline -p fss-cli --lib --bin fss-file: stopped with exit 130 at the shared 8 GiB memory ceiling, no source error established.",
+      "bounded_attempt": {
+        "command": "CARGO_BUILD_JOBS=1 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 cargo check --locked --offline -p fss-cli --lib --bin fss-file --test decoded_media_cli_contract",
+        "per_process_virtual_memory_kib": 3145728,
+        "state": "failed_under_memory_cap_before_cli_typecheck",
+        "separate_target": true,
+        "exit_code": 101,
+        "dependency": "asupersync 0.5.0",
+        "diagnostic": "prost-derive shared object could not be mapped; a 6553616-byte allocation failed; rustc aborted with SIGABRT.",
+        "source_files_changed_during_check": []
+      },
+      "process_tests_executed": false
+    },
+    "repository_checks": {
+      "first_commit_selected_manifest_paths": 8,
+      "selected_manifest_gate": "Passed for all eight first-checkpoint feature paths and all eleven second-checkpoint feature paths; publication also verifies every changed file digest against the merged delta.",
+      "full_manifest": "Not passed: the baseline/current main contains unrelated stale/missing manifest entries and historical generated proof-state entries. Changed feature paths are maintained in the delta.",
+      "policy_lane": {
+        "state": "failed",
+        "exit_code": 1,
+        "failed_stage": "policy",
+        "findings": 144,
+        "scope": "Existing registry/allowlist/dependency-constitution drift, stale robot documentation, broken unrelated links and unregistered pre-existing digest domains. No gates or dependency policy were weakened.",
+        "network_seal": "OS namespace unavailable; environment-only seal, with network probe refused",
+        "capacity_preflight": "sbh unavailable; capacity unproven"
+      },
+      "second_commit_selected_manifest_paths": 11
+    },
+    "release_qualified": false
+  },
+  "important_boundaries": [
+    "ConvTranspose accepts static rank-four F32 data and finite constant filters; runtime filters, other ranks and negative inferred padding refuse. Native ordered F32 rounding/overflow is the numerical contract.",
+    "JPEG range source-byte limits retain per-read/per-segment meanings. Codec and encode work and output bytes are cumulative; no request-wide source-I/O measurement is asserted.",
+    "Only successful full traversal can finalize output. Individual retained frames and a private incomplete output file can remain after failure.",
+    "The synchronous command holds one ReferenceDeployment and its exclusive publisher lock. Supported competing writers cannot replace the active mask generation midrange; each frame is still validated against current policy.",
+    "No new runtime dependency, frozen operator ID, foreign runtime, device access, model activation or reviewer-delivery authority was introduced.",
+    "Full CLI process/custody/privacy-storage/filesystem-sync behavior is covered by authored contracts, not yet by an executed process suite in this session."
+  ],
+  "continuation": {
+    "highest_value_next": [
+      "Run the authored full CLI process suites on an adequately provisioned exact-source host; keep all existing gates and distinguish upstream failures from the new feature.",
+      "Connect verified retained MP4/MOV movie-time selections to native decode/export, including edit-list occurrences, prerequisites and presentation ordering.",
+      "Complete actual FLDT grants, payment-zone attestations, derivative custody/expiry and authenticated reviewer delivery for VIT-023.",
+      "Qualify supplied trained models against the expanded native importer rather than infer accuracy from operator tests."
+    ],
+    "commands": [
+      "cargo test --locked --offline -p fss-model-ir --test onnx_conv_transpose_execution -j 1 transpose_ -- --test-threads=1",
+      "cargo test --locked --offline -p fss-codec-jpeg-encode --test file_jpeg_range_contract",
+      "cargo test --locked --offline -p fss-cli --bin fss-file --test decoded_media_cli_contract --test file_video_stream_cli",
+      "scripts/qualify.sh --lane policy"
+    ]
+  },
+  "published_checkpoints": [
+    {
+      "commit": "b457e821ccdf414a2121a3cd1baf52436304ce99",
+      "change": "Bounded native ConvTranspose import and twelve passing actual-executor/artifact contracts, preserving concurrent model additions."
+    },
+    {
+      "commit": "this_commit",
+      "change": "Retained JPEG range decode/reopen/replay and streaming export, actual component contracts, process contracts, usage and honest restored-verification evidence."
+    }
+  ]
+}

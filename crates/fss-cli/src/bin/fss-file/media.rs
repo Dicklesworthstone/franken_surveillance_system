@@ -19,7 +19,7 @@ use fss_reference::ingest::recorded_decode::h265::{
 use fss_reference::ingest::recorded_decode::video_budget::{
     RecordedVideoDecodeBudget, VIDEO_DECODE_WORK_MODEL,
 };
-use fss_reference::ingest::recorded_decode::window::DecodedOutputWindow;
+use fss_reference::ingest::recorded_decode::window::{DecodedOutputWindow, FrameWindowSelector};
 use fss_reference::ingest::recorded_decode::{
     ComponentInterpretation, DecodeBudget, DecodeLimits, RecordedDecodeError,
     RecordedDecodeRequest, RecordedFrame,
@@ -37,6 +37,8 @@ mod jpeg_stream;
 mod output_window;
 #[path = "gray_matroska_stream.rs"]
 mod gray_matroska_stream;
+#[path = "frame_range.rs"]
+mod frame_range;
 
 const MAX_SCAN_FRAMES: usize = 128;
 
@@ -58,7 +60,7 @@ enum OutputFormat {
 pub(super) struct FrameAction {
     mode: FrameMode,
     request: RecordedDecodeRequest,
-    /// Annex-B only: contiguous access units decoded from the IDR at `request.segment_index`.
+    /// Contiguous JPEG frames, or native video access units beginning at an IDR/IRAP.
     segment_count: usize,
     work_units: u64,
     output: Option<PathBuf>,
@@ -123,13 +125,11 @@ pub(super) fn accepts_option(command: &str, option: &str) -> bool {
         || (command != "motion"
             && matches!(
                 option,
-                "--segment" | "--output" | "--receipt-out" | "--output-format"
+                "--segment" | "--segment-count" | "--output" | "--receipt-out" | "--output-format"
                     | "--jpeg-quality" | "--encode-work-units"
                     | "--output-window-ns" | "--output-clock-basis" | "--output-rate"
+                    | "--max-output-bytes"
             ))
-        || (command == "decode" && matches!(option, "--segment-count" | "--max-output-bytes"))
-        || (matches!(command, "read-decoded" | "verify-decoded")
-            && option == "--max-output-bytes")
         || (command == "motion"
             && matches!(
                 option,
@@ -235,6 +235,9 @@ pub(super) fn parse(
                 "segment count must be 1..1024 and its source range must not overflow",
             ));
         }
+        if segment_count > 1 && values.contains_key("--receipt-out") {
+            return Err(malformed("--receipt-out requires a single JPEG frame, not a range"));
+        }
         let output_format = if values.contains_key("--output-format") {
             if !values.contains_key("--output") {
                 return Err(malformed("--output-format requires --output"));
@@ -293,8 +296,10 @@ pub(super) fn parse(
                     "--max-output-bytes requires --output and a value in 1..268435456",
                 ));
             }
-            if !matches!(mode, FrameMode::Decode) && output_format == OutputFormat::Pgm {
-                return Err(malformed("read/verify output byte bounds require mjpeg or gray-mkv output"));
+            if !matches!(mode, FrameMode::Decode)
+                && output_format == OutputFormat::Pgm && segment_count == 1
+            {
+                return Err(malformed("read/verify output byte bounds require mjpeg, gray-mkv or a JPEG range"));
             }
             Some(maximum)
         } else {
@@ -342,6 +347,9 @@ pub(super) fn run(
         {
             run_video_decode(action, retained, true, deployment, root, cx, out)
         }
+        Action::Frame(action) if action.segment_count > 1 => {
+            run_jpeg_range(action, retained, deployment, root, cx, out)
+        }
         Action::Frame(action) => run_frame(action, retained, deployment, root, cx, out),
         Action::Motion(action) => run_motion(action, retained, deployment, root, cx, out),
     }
@@ -366,6 +374,23 @@ fn source_selection_lines(
     Ok(())
 }
 
+fn load_jpeg_frame(
+    mode: FrameMode,
+    deployment: &mut ReferenceDeployment,
+    request: &RecordedDecodeRequest,
+    budget: &mut DecodeBudget<'_>,
+    cx: &ReplayCx,
+) -> RunResult<RecordedFrame> {
+    let frame = match mode {
+        FrameMode::Decode => RecordedFrame::decode_and_publish(deployment, request, budget, cx)?,
+        FrameMode::Read | FrameMode::Verify => RecordedFrame::open(deployment, request, cx)?,
+    };
+    if matches!(mode, FrameMode::Verify) {
+        frame.verify_by_replay(deployment, request, budget, cx)?;
+    }
+    Ok(frame)
+}
+
 fn run_frame(
     action: &FrameAction,
     retained: &RetainedFileImport,
@@ -376,12 +401,9 @@ fn run_frame(
 ) -> RunResult<()> {
     if action.maximum_output_bytes.is_some() && action.output_format == OutputFormat::Pgm {
         return Err(std::io::Error::other(
-            "PGM --max-output-bytes applies only to native video decoding",
+            "PGM --max-output-bytes requires native video or a JPEG range",
         )
         .into());
-    }
-    if action.segment_count != 1 {
-        return Err(std::io::Error::other("--segment-count applies only to H.264 and H.265 imports; JPEG frames decode one segment").into());
     }
     let mut selection = output_window::prepare(action, retained)?;
     let mut image_export = if action.output_format != OutputFormat::Pgm {
@@ -390,17 +412,7 @@ fn run_frame(
         None
     };
     let mut budget = DecodeBudget::new(action.work_units);
-    let frame = match action.mode {
-        FrameMode::Decode => {
-            RecordedFrame::decode_and_publish(deployment, &action.request, &mut budget, cx)?
-        }
-        FrameMode::Read | FrameMode::Verify => {
-            RecordedFrame::open(deployment, &action.request, cx)?
-        }
-    };
-    if matches!(action.mode, FrameMode::Verify) {
-        frame.verify_by_replay(deployment, &action.request, &mut budget, cx)?;
-    }
+    let frame = load_jpeg_frame(action.mode, deployment, &action.request, &mut budget, cx)?;
     if let Some(selector) = &mut selection {
         let capsule = frame.receipt().capsule();
         selector.observe(
@@ -498,6 +510,183 @@ fn run_frame(
         matches!(action.mode, FrameMode::Verify)
     )?;
     writeln!(out, "decode_complete=true")?;
+    Ok(())
+}
+
+struct JpegRangeOutput<'a, W: Write> {
+    selection: Option<FrameWindowSelector>,
+    export: Option<FrameExport>,
+    out: &'a mut W,
+    selected: usize,
+}
+
+/// Each JPEG keeps its own custody/receipt. Only complete traversal can finalize the export;
+/// a later refusal leaves earlier retained frames valid but never certifies the private prefix.
+fn run_jpeg_range(
+    action: &FrameAction,
+    retained: &RetainedFileImport,
+    deployment: &mut ReferenceDeployment,
+    root: &Path,
+    cx: &ReplayCx,
+    out: &mut impl Write,
+) -> RunResult<()> {
+    let cancelled = || cx.is_cancelled();
+    let mut budget = DecodeBudget::with_cancellation_probe(action.work_units, &cancelled);
+    let mut encode_budget =
+        EncodeBudget::with_cancellation_probe(action.encode_work_units, &cancelled);
+    let result: RunResult<(usize, usize)> = (|| {
+        cx.checkpoint("file_cli:jpeg_range")?;
+        if retained.manifest().format != "mjpeg" {
+            return Err(RecordedDecodeError::UnsupportedMedia.into());
+        }
+        if action.receipt_output.is_some() {
+            return Err(std::io::Error::other(
+                "--receipt-out requires a single JPEG frame, not a range",
+            )
+            .into());
+        }
+        let range = frame_range::FrameRange::new(
+            action.request.segment_index,
+            action.segment_count,
+            retained.manifest().segment_spans.len(),
+        )?;
+        let state = JpegRangeOutput {
+            selection: output_window::prepare(action, retained)?,
+            export: prepare_video_export(action, root, cx)?,
+            out: &mut *out,
+            selected: 0,
+        };
+        range.run(
+            &mut budget,
+            state,
+            |segment, budget| {
+                cx.checkpoint("file_cli:jpeg_range_load")?;
+                let mut request = action.request.clone();
+                request.segment_index = segment;
+                load_jpeg_frame(action.mode, deployment, &request, budget, cx)
+            },
+            |state, ordinal, segment, frame| {
+                cx.checkpoint("file_cli:jpeg_range_frame")?;
+                let receipt = frame.receipt();
+                if let Some(selector) = &mut state.selection
+                    && !selector.observe(
+                        ordinal as u64,
+                        segment as u64,
+                        receipt.capsule(),
+                        ContentDigest::sha256(&receipt.capsule().try_canonical_bytes()?),
+                        cx.is_cancelled(),
+                    )?
+                {
+                    return Ok(());
+                }
+                if let Some(export) = &mut state.export {
+                    export.frame(
+                        jpeg_stream::FrameInput {
+                            dimensions: receipt.dimensions(),
+                            pixels: frame.pixels(),
+                            luma_sha256: receipt.codec().luma_sha256,
+                            decode_receipt: receipt.digest()?,
+                        },
+                        &mut encode_budget,
+                        cx,
+                    )?;
+                }
+                jpeg_range_frame_lines(action, &frame, ordinal, segment, state.out)?;
+                state.selected += 1;
+                Ok(())
+            },
+            |state, processed| {
+                cx.checkpoint("file_cli:jpeg_range_complete")?;
+                let selection_receipt =
+                    output_window::finish(state.selection, processed as u64, cx)?;
+                finish_video_export(state.export, cx, state.out)?;
+                output_window::report(
+                    action.output_window.as_ref(),
+                    selection_receipt.as_ref(),
+                    state.out,
+                )?;
+                Ok((processed, state.selected))
+            },
+        )
+    })();
+    encode_usage_lines(action, &encode_budget, result.is_ok(), out)?;
+    writeln!(
+        out,
+        "jpeg_range_first_segment={}",
+        action.request.segment_index
+    )?;
+    writeln!(out, "jpeg_range_segment_count={}", action.segment_count)?;
+    writeln!(out, "this_request_decode_work_units={}", budget.used())?;
+    writeln!(out, "maximum_decode_work_units={}", action.work_units)?;
+    writeln!(out, "remaining_decode_work_units={}", budget.remaining())?;
+    if let Ok((processed, selected)) = result.as_ref() {
+        writeln!(out, "jpeg_frames_processed={processed}")?;
+        writeln!(out, "jpeg_frames_selected={selected}")?;
+        writeln!(
+            out,
+            "replay_verified={}",
+            matches!(action.mode, FrameMode::Verify)
+        )?;
+    }
+    writeln!(out, "decode_complete={}", result.is_ok())?;
+    result.map(|_| ())
+}
+
+fn jpeg_range_frame_lines(
+    action: &FrameAction,
+    frame: &RecordedFrame,
+    ordinal: usize,
+    segment: usize,
+    out: &mut impl Write,
+) -> RunResult<()> {
+    let receipt = frame.receipt();
+    source_selection_lines(
+        out,
+        action.request.import_identity,
+        segment as u64,
+        receipt.capsule(),
+    )?;
+    writeln!(out, "frame_output_index={ordinal}\nframe_segment={segment}")?;
+    writeln!(out, "frame_decode_identity={}", receipt.identity())?;
+    writeln!(out, "frame_decode_root={}", frame.publication_root())?;
+    writeln!(out, "frame_receipt_digest={}", receipt.digest()?)?;
+    writeln!(
+        out,
+        "frame_decode_authority_sequence={}",
+        frame.authority_anchor().commit_sequence
+    )?;
+    let [width, height] = receipt.dimensions();
+    writeln!(out, "frame_width={width}\nframe_height={height}")?;
+    writeln!(out, "frame_pixel_format=jpeg_full_range_y")?;
+    writeln!(
+        out,
+        "frame_luma_sha256={}",
+        ContentDigest::new(
+            fss_core::DigestAlgorithm::Sha256,
+            receipt.codec().luma_sha256
+        )
+    )?;
+    writeln!(
+        out,
+        "frame_decoder_identity={}",
+        ContentDigest::new(fss_core::DigestAlgorithm::Sha256, receipt.codec().decoder)
+    )?;
+    writeln!(
+        out,
+        "frame_recorded_decode_work_units={}",
+        receipt.work_units()
+    )?;
+    writeln!(
+        out,
+        "frame_capture_earliest_ns={}",
+        receipt.capsule().capture.earliest.0
+    )?;
+    writeln!(
+        out,
+        "frame_capture_latest_ns={}",
+        receipt.capsule().capture.latest.0
+    )?;
+    privacy_lines(out, receipt.mask_policy(), receipt.mask_binding())?;
     Ok(())
 }
 
