@@ -20,12 +20,14 @@ mod broadcast;
 mod constants;
 mod dfl;
 mod export;
+mod gather;
 mod gemm;
 mod leaky_relu;
 mod pad;
 mod padding;
 mod pooling;
 mod preprocess;
+mod reduce;
 mod resize;
 mod resize_coordinates;
 mod shape_program;
@@ -962,6 +964,8 @@ pub fn import_onnx<'a>(
     for source in sources {
         if source.op == "Constant" {
             constants::lower(source, &mut lowering)?;
+        } else if gather::handles(&source, &lowering) {
+            gather::lower(source, &mut lowering)?;
         } else if shape_program::handles(&source, &lowering) {
             shape_program::lower(source, &mut lowering)?;
         } else if source.op == "Gemm" {
@@ -972,6 +976,8 @@ pub fn import_onnx<'a>(
             leaky_relu::lower(source, &mut lowering)?;
         } else if matches!(source.op.as_str(), "Expand" | "Tile") {
             broadcast::lower(source, &mut lowering)?;
+        } else if source.op == "ReduceMean" {
+            reduce::lower(source, &mut lowering)?;
         } else if matches!(source.op.as_str(), "AveragePool" | "GlobalAveragePool") {
             pooling::lower(source, &mut lowering)?;
         } else if source.op == "Resize" {

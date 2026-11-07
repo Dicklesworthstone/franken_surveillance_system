@@ -321,7 +321,7 @@ Supported operators and their restrictions are specified in [onnx_import.md](onn
 Add, Sub, Mul, Div, Relu, LeakyRelu, Sigmoid, Tanh, MatMul, Gemm, Softmax, Conv, BatchNormalization,
 MaxPool, AveragePool, GlobalAveragePool, Transpose,
 Concat, Constant, Reshape, Squeeze, Unsqueeze, Slice, Split, Resize, Expand, Tile,
-Identity and Flatten.
+Gather, ReduceMean, Identity and Flatten.
 Bounded static Shape/Gather/INT64 control programs can supply layout and partition controls;
 their values are evaluated during import and never require runtime integer execution.
 Runtime/data-dependent shapes, external tensors, custom operators, raw detector-head
@@ -341,6 +341,17 @@ repeat count per input axis. Both preserve exact F32 bits through existing
 Reshape/Concat operators and use logarithmic helper counts, subject to the
 ordinary graph, tensor, work and inference allocation limits. Zero-sized results
 and runtime controls refuse. See [static expansion and tiling](onnx_import.md#static-expansion-and-tiling).
+
+Static F32 Gather and ReduceMean add packed attention selection and pooled
+feature heads. Gather accepts bounded constant scalar/vector indices and copies
+selected samples exactly. ReduceMean uses deterministic row-major F32
+accumulation followed by division; finite inputs can overflow the intermediate
+sum, and this is not a higher-precision ONNX mean guarantee. Both use existing
+native operators, bounded helpers and ordinary resource limits. Native execution
+of the newly authored attention target remains pending because the development
+workspace became unavailable before Cargo started. See
+[static attention selection and pooled features](onnx_import.md#static-attention-selection-and-pooled-features)
+for the numerical and shape profile, controls, artifact identity and validation scope.
 
 Conv, MaxPool and AveragePool can use static `VALID`, `SAME_UPPER` or `SAME_LOWER`
 automatic padding. The importer freezes the exact spatial pads into the native

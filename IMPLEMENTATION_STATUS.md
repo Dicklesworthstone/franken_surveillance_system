@@ -4,6 +4,36 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Static attention selection and pooled features (2026-11-07; native execution pending)
+
+The opset-13 importer now admits runtime F32 `Gather` with bounded static INT64
+scalar/vector indices and `ReduceMean` with static axes. These join existing
+batched MatMul, Transpose, Softmax and dense operations to import packed Q/K/V
+selection, attention, residual, token pooling and feature-head graphs.
+
+Gather preserves selected F32 bits, including repeated/negative indices and
+scalar-versus-vector rank behavior. Consecutive ascending indices share a Slice;
+at most nine native helpers cover the existing one-to-eight-index profile.
+The separate INT64 shape-program Gather remains unchanged. ReduceMean uses two
+through five frozen operators, one column of exact ones and an exactly represented
+divisor. It visits reduced coordinates in row-major order with F32 accumulation
+and division; finite inputs can overflow that sum. No higher-precision repair or
+external-oracle bitwise equivalence is claimed.
+
+Both conversions preflight complete helper, tensor, name and parameter expansion,
+preserve existing runtime budgets and cancellation, and bind their new sources
+into importer identity. Frozen operator IDs, canonical IR encoding and dependencies
+are unchanged. See [the admitted profile](docs/onnx_import.md#static-attention-selection-and-pooled-features).
+
+**Validation:** twelve authored contracts include real scalar/optimized execution,
+canonical graph and Safetensors reload, independent coordinate/reduction oracles,
+a two-batch/two-head attention fixture with an independently bounded binary64
+comparison, practical token-count admission, refusals and resource/generation/
+cancellation cases. None ran: the execution workspace became unavailable before
+Cargo could start. Final recovered-source formatting, native tests and prior
+importer regressions remain required. This is an implemented import slice, not
+a trained detector, embedding-quality or full RF-DETR qualification.
+
 ## Native bounded JPEG encoder (2026-11-07; native execution pending)
 
 The new first-party `fss-codec-jpeg-encode` crate produces complete baseline JPEG

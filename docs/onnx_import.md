@@ -38,15 +38,16 @@ including hand-computed dense and convolution/pooling results.
 - F32 runtime inputs/outputs and finite embedded F32 initializers. Raw little-endian
   data and packed/unpacked `float_data` are supported, including signed zero.
 - Embedded INT64 initializers, Constant values and bounded static shape programs
-  may supply compile-time shape, axis, slice, partition and repetition controls. They never
+  may supply compile-time shape, axis, slice, partition, repetition and selection controls. They never
   become runtime integer inputs or exported weights.
 - Static positive dimensions, at most rank eight. Source-ordered acyclic graphs;
   declared outputs and intermediate value information must match native inference.
 - Add, Sub, Mul, Div, Relu, LeakyRelu, Sigmoid, Tanh, MatMul, Gemm, Softmax, Conv, BatchNormalization,
   MaxPool, AveragePool, GlobalAveragePool, Transpose,
   Concat, Constant, Reshape, Squeeze, Unsqueeze, Slice, Split, Resize, Pad, Expand, Tile,
-  Identity and Flatten.
-  Shape and constant-only INT64 Gather are admitted for the bounded shape programs below.
+  Gather, ReduceMean, Identity and Flatten.
+  Shape and INT64 Gather also support the bounded shape programs below; F32 data
+  selection uses the separate static Gather profile described below.
   Identity/Flatten lower to checked native Reshape
   nodes without changing the frozen operator set or canonical Model IR v1 encoding.
 - MatMul requires rank-two-or-higher inputs. Conv is 2-D; declared `kernel_shape`
@@ -153,6 +154,87 @@ controls, and exact import/execution quota and cancellation boundaries.
 
 ```sh
 cargo +nightly-2026-08-31 test --locked --offline -p fss-model-ir --test onnx_broadcast_execution
+```
+
+## Static attention selection and pooled features
+
+The importer adds [Gather-13](https://onnx.ai/onnx/operators/onnx__Gather.html#gather-13)
+over F32 data and [ReduceMean-13](https://onnx.ai/onnx/operators/onnx__ReduceMean.html#reducemean-13)
+over static axes. Together with the existing batched MatMul, Transpose, Softmax
+and elementwise operations, these express packed Q/K/V selection, attention,
+token or channel pooling, and fixed feature selection before a dense head.
+They add no native operator, dynamic integer executor or foreign runtime.
+
+Gather accepts positive F32 data shapes of rank one through eight and an
+embedded INT64 scalar or vector containing one through eight indices. Constant
+nodes and the existing static shape programs may produce those indices. Axis
+defaults to zero and accepts negative axes; each index must be within the
+selected axis, with negative values counting from its end. A scalar index
+removes the selected dimension, while a length-one vector keeps that dimension.
+Repeated indices and arbitrary index order remain intact. Empty indices,
+runtime indices, other control dtypes or ranks and out-of-range values refuse.
+The existing INT64-only shape-program Gather keeps its separate semantics.
+
+Selection lowers to one Slice per consecutive ascending index run, followed
+by Concat when necessary. Scalar selection adds a Reshape. At most nine native
+nodes are needed for the admitted vector; helper count does not grow with the
+size of a selected token or feature block. No generated F32 weight is required.
+These operators copy data without numerical changes, preserving signed zeros,
+subnormals and finite extrema.
+
+ReduceMean accepts static positive F32 shapes from scalars through rank eight.
+Its `axes` attribute may contain distinct positive or negative axes. Omitted
+or empty axes means all dimensions, as in the opset-13 reference; the later
+input-axes and `noop_with_empty_axes` forms are not admitted. `keepdims`
+defaults to one; zero removes reduced dimensions. Duplicate axes, invalid
+attribute types, unsupported attributes and conflicting output shapes refuse.
+
+The native numerical contract is an ordered F32 accumulation from positive
+zero followed by a separate F32 division. Reduced coordinates are visited in
+their original row-major order, independently of attribute axis order. The
+lowering puts kept dimensions before reduced dimensions, reshapes to a matrix,
+and multiplies by a generated column of exact ones. The divisor is the positive
+reduction width represented exactly in F32 under the existing tensor ceiling.
+Two through five native nodes and two parameters suffice. Generated parameter
+storage is `4 * reduction_width + 4` bytes, so the separate parameter quota
+can refuse a mean even when its input tensor fits.
+
+**This is not a higher-precision or overflow-repair mean.** A finite input can
+overflow the F32 sum before division; the low-level native tensor then retains
+that nonfinite result. No finite replacement or empty feature set is invented.
+Different reduction orders, wider accumulators or an upstream overflow repair
+may produce different results. Scalar and singleton reductions retain the same
+arithmetic, including positive zero from a negative-zero-only sum. Existing
+consumer nonfinite-output checks remain necessary.
+
+Both lowerings preflight complete node, named-value and parameter expansion.
+Every temporary has no more elements than the admitted input or output, and
+the ordinary cumulative inference work/allocation budget covers the complete
+lowered graph. Source names are reserved before helpers are created. Static
+controls remain quota-charged after removal from exported weights; generated
+mean parameters are generation-bound and exported normally. Cancellation is
+checked during import and parameter generation. The importer identity includes
+both implementation sources without changing frozen Model IR IDs or encoding.
+
+The twelve authored cases in `onnx_attention_execution` use the real scalar
+and optimized executors, canonical graph reload and the production Safetensors
+parser. They include a two-batch, two-head Q/K/V projection and selection,
+batched attention, residual, pooled features and dense head. Exact layout and
+ordered-mean oracles are separate from a binary64 oracle with a declared bound
+for the small ordinary attention fixtures. Additional cases cover scalar/vector
+selection, all admitted ranks, static control/data dispatch, rounding and
+overflow, constant helper counts, namespace collisions, resource limits,
+generation mismatch and cancellation.
+
+**Validation remains pending for this checkpoint:** the development workspace
+became unavailable before Cargo was invoked for this new target. The authored
+cases are not a passing proof, and no trained detector, embedding quality or
+full RF-DETR import qualification is claimed.
+
+```sh
+cargo +nightly-2026-08-31 test --locked --offline -p fss-model-ir \
+  --test onnx_attention_execution -- \
+  --test-threads=1 --skip scalar_executor:: --skip optimized_executor::
 ```
 
 ## Static constant padding and cropping

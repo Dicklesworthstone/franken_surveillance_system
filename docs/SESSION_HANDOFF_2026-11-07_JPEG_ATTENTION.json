@@ -18,13 +18,14 @@
     "deployed_storage_mutation": false
   },
   "implemented": [
-    "Independent first-party baseline JPEG encoder with grayscale/RGB 4:4:4, exact DC/fixed Q14 AC, complete source-bound receipts, bounded output/work and cancellation."
+    "Independent first-party baseline JPEG encoder with grayscale/RGB 4:4:4, exact DC/fixed Q14 AC, complete source-bound receipts, bounded output/work and cancellation.",
+    "Static F32 Gather and ReduceMean lowerings for imported attention, token pooling and feature heads without new native operators."
   ],
   "verification": {
     "native_tests": "Not executed. The execution environment disappeared before any new Cargo test process could start.",
     "locked_offline_metadata": "cargo metadata --locked --offline --no-deps succeeded with the new workspace member and CLI dependency before the outage.",
     "recovery": "Production files reconstructed from recorded edits into GitHub blobs; formatter-only layout from the unavailable worktree is not claimed byte-identical.",
-    "source_review": "Encoder/profile bounds and arithmetic reviewed; exact DC calculation repairs Q14 half-tie drift. Static inspection of all four Huffman tables confirms counts, unique symbols, prefix freedom and no all-ones code.",
+    "source_review": "Encoder/profile bounds and arithmetic reviewed; exact DC calculation repairs Q14 half-tie drift. Static inspection of all four Huffman tables confirms counts, unique symbols, prefix freedom and no all-ones code. Independent model review confirms ordered F32 overflow behavior, unchanged executor MAC/allocation accounting, helper bounds and Rust initializer cast forms; no native execution is claimed.",
     "release_qualified": false,
     "encoder_contracts_authored": {
       "inline": 6,
@@ -39,7 +40,18 @@
       "crates/fss-codec-jpeg-encode/src/entropy.rs": "72f9a97e24977405382b5a5188ca20bd9a2b412f6f56a692c5875834aadf4afc",
       "crates/fss-codec-jpeg-encode/src/tables.rs": "c7a3e95b2696910c631c661cc82e5b506444bdbd4436d9d5369ee825c6fb6832",
       "crates/fss-codec-jpeg-encode/tests/encode_contract.rs": "a6f64c9ac0a6e7319936531c321483f8404257e2fa421fc33a55fcf43c029264",
-      "docs/NATIVE_JPEG_ENCODING.md": "c5d71cd828c5fbbdda1454f9d3d50c1badf3018dbaa99589cf78e8859f71b9dd"
+      "docs/NATIVE_JPEG_ENCODING.md": "c5d71cd828c5fbbdda1454f9d3d50c1badf3018dbaa99589cf78e8859f71b9dd",
+      "crates/fss-model-ir/src/onnx.rs": "b67ddaebd17530cdd11b16b6bc2942c6aded46a307f1a0535b8ea196948c5c01",
+      "crates/fss-model-ir/src/onnx/export.rs": "ad7a06e1bc44368d08406ff124f8fdff2cc7e23b7a3a735f8b82d26001b1cd7c",
+      "crates/fss-model-ir/src/onnx/gather.rs": "cebfa4b8841f69820c55015b64e088e0de397b7de126a1525c0e32fdeb99bf49",
+      "crates/fss-model-ir/src/onnx/reduce.rs": "4cedceae2d76b41fce304e0a14f5b909e1451cd0a3d9631c97a251ebc4b8e75a",
+      "crates/fss-model-ir/tests/onnx_attention_execution.rs": "b94e8437572198e1d09b3b626e9d1bc08f902ba0402831d1d3e4866caece993b",
+      "docs/onnx_import.md": "796d6ca6998078823c33d6949f4ab2de4ad8c510a9d99bba03606db30ad81fc5",
+      "docs/ONNX_PACKAGE_IMPORT.md": "298012a48b327e9e0583e6a033f06148e1186923d6d9a7bdf702cf480da6ba7d"
+    },
+    "attention_contracts_authored": {
+      "authored": 12,
+      "executed": 0
     }
   },
   "unknowns": [
@@ -63,10 +75,6 @@
     {
       "work": "Connect native JPEG compression to existing privacy-screened fss-file decode output.",
       "state": "implemented_recovery_and_publication_in_progress"
-    },
-    {
-      "work": "Import F32 Gather and ReduceMean; exercise attention and pooled feature graphs.",
-      "state": "implemented_recovery_and_publication_in_progress"
     }
   ],
   "continuation": {
@@ -80,8 +88,12 @@
   },
   "published_checkpoints": [
     {
-      "commit": "this_commit",
+      "commit": "5003985f1931d9b927ff2501666b497187be105e",
       "change": "Bounded native JPEG encoder and its contracts."
+    },
+    {
+      "commit": "this_commit",
+      "change": "Static ONNX attention selection and pooled feature import."
     }
   ]
 }
