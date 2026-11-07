@@ -38,13 +38,14 @@ including hand-computed dense and convolution/pooling results.
 - F32 runtime inputs/outputs and finite embedded F32 initializers. Raw little-endian
   data and packed/unpacked `float_data` are supported, including signed zero.
 - Embedded INT64 initializers, Constant values and bounded static shape programs
-  may supply compile-time shape, axis, slice and partition controls. They never
+  may supply compile-time shape, axis, slice, partition and repetition controls. They never
   become runtime integer inputs or exported weights.
 - Static positive dimensions, at most rank eight. Source-ordered acyclic graphs;
   declared outputs and intermediate value information must match native inference.
 - Add, Sub, Mul, Div, Relu, LeakyRelu, Sigmoid, Tanh, MatMul, Gemm, Softmax, Conv, BatchNormalization,
   MaxPool, AveragePool, GlobalAveragePool, Transpose,
-  Concat, Constant, Reshape, Squeeze, Unsqueeze, Slice, Split, Resize, Pad, Identity and Flatten.
+  Concat, Constant, Reshape, Squeeze, Unsqueeze, Slice, Split, Resize, Pad, Expand, Tile,
+  Identity and Flatten.
   Shape and constant-only INT64 Gather are admitted for the bounded shape programs below.
   Identity/Flatten lower to checked native Reshape
   nodes without changing the frozen operator set or canonical Model IR v1 encoding.
@@ -106,6 +107,52 @@ do not qualify a trained detector or expand the supported ONNX profile.
 
 ```sh
 cargo +nightly-2026-08-31 test --locked --offline -p fss-model-ir --test onnx_leaky_relu_execution
+```
+
+## Static expansion and tiling
+
+[Expand-13](https://onnx.ai/onnx/operators/onnx__Expand.html#expand-13) and
+[Tile-13](https://onnx.ai/onnx/operators/onnx__Tile.html#tile-13) accept static F32
+data from scalars through rank eight. Their second input must be a rank-one
+INT64 constant with at most eight values, supplied by an initializer, Constant
+node or the bounded static shape programs below. Controls remain charged to
+the aggregate parameter allowance and are removed from runtime weights.
+
+Expand right-aligns input and requested dimensions, accepting equal dimensions
+or a dimension of one. Each result dimension is the larger one. The requested
+shape can have lower rank than the input and need not be the result shape:
+input `[3,1]` with target `[2,1,6]` produces `[2,3,6]`, while input `[2,3]`
+with target `[1]` remains `[2,3]`. Tile requires exactly one repeat count per
+input axis and repeats complete source blocks along those axes. An empty
+control vector is admitted for scalar Tile and for an identity Expand.
+
+Every control value must be positive. Zero-sized results, negative dimensions
+or repeats, dynamic controls, malformed control rank/type, incompatible Expand
+dimensions and conflicting output declarations refuse. Checked dimension and
+byte arithmetic applies before graph expansion.
+
+The lowering uses only existing Reshape and two-input Concat operators, so data
+bits survive unchanged, including signed zeros, subnormals and finite extrema.
+Binary prefix construction needs `floor(log2(r)) + popcount(r) - 1` Concat
+nodes for an axis with repeat factor `r`. Rank alignment adds one Reshape;
+an overall identity uses one Reshape. Large repeat factors therefore do not
+create a per-copy input list or generated constant tensor. Each intermediate
+contains no more elements than the final result. The complete node and named
+value expansion is checked before helpers are created, and ordinary inference
+work/allocation budgets still cover all intermediates. Reserved source names,
+generation bindings, import work and cancellation checks remain enforced.
+The importer identity includes this lowering source; native operator IDs and
+canonical Model IR encodings remain unchanged.
+
+The `onnx_broadcast_execution` target runs both production CPU executors before
+and after canonical graph and actual Safetensors reload. Its ten authored tests
+cover literal block tiling, an independent coordinate oracle across all admitted
+ranks, scalar and lower-target-rank expansion, shape-program/anchor composition,
+exact finite boundary bits, logarithmic expansion, name collisions, malformed
+controls, and exact import/execution quota and cancellation boundaries.
+
+```sh
+cargo +nightly-2026-08-31 test --locked --offline -p fss-model-ir --test onnx_broadcast_execution
 ```
 
 ## Static constant padding and cropping
@@ -356,7 +403,7 @@ and a length-one vector remain distinct. No runtime tensor values are read, no
 floating-point conversion rounds large integers, and no runtime INT64 graph or
 integer output is emitted. Dynamic controls, symbolic dimensions, mixed dtypes,
 rank-two integer controls, unsupported attributes and out-of-range indices refuse.
-Reshape, Slice, Split and Resize continue to enforce their own existing admission
+Reshape, Slice, Split, Resize, Pad, Expand and Tile enforce their own admission
 rules when consuming the computed controls.
 
 Every evaluated result consumes the same cumulative parameter/control byte quota,

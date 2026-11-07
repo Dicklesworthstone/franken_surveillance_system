@@ -4,6 +4,33 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Static ONNX Expand and Tile (2026-11-07; targeted native validation passed)
+
+The opset-13 importer now lowers bounded static F32 `Expand` and `Tile` from scalar
+through rank eight into existing Reshape and two-input Concat operators. Expand uses
+right-aligned multidirectional broadcasting, including lower-rank shape controls and
+requested dimensions of one. Tile repeats complete axis blocks with an exact-rank INT64
+control. Static initializers, Constant nodes and admitted shape programs are supported;
+dynamic, negative, zero-sized, incompatible or over-budget controls refuse explicitly.
+
+Binary prefix construction uses logarithmic helper counts per repeat factor and introduces
+no numerical parameters. Every intermediate fits within the admitted final tensor size;
+aggregate nodes, values, reserved names, work, cancellation and runtime memory limits
+remain enforced. Copies preserve finite F32 bits, including signed zeros and subnormals.
+The new source participates in importer identity; no frozen operator or dependency changed.
+See [the importer profile](docs/onnx_import.md).
+
+**Native validation:** the new target passed all 26 tests: ten authored import/artifact
+contracts and sixteen included unchanged scalar/optimized executor tests. After a comment
+clarification changed source identity, the exact final source rebuilt and all ten authored
+cases passed again. The nine authored LeakyRelu contracts also passed against that final
+combined importer/exporter. These runs exercise real production executors, independent
+coordinate oracles, canonical IR/Safetensors reload, scalar/ranks 0-8, large logical outputs,
+full block repetition, exact quotas, helper-name collisions and cancellation. Independent
+source review and scoped formatting passed. These are scoped model results, not full
+repository qualification. The broader native recording/retention/CLI check remains blocked
+by the unchanged Asupersync compilation resource failure described below.
+
 ## Conditional UTC recording metadata lookup (2026-11-07; native execution pending)
 
 The native archive query now accepts an independently pinned catalog and retained clock

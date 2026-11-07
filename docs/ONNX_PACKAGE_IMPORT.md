@@ -320,7 +320,8 @@ The command uses the existing ONNX IR 7–9, default-domain opset-13 static fini
 Supported operators and their restrictions are specified in [onnx_import.md](onnx_import.md):
 Add, Sub, Mul, Div, Relu, LeakyRelu, Sigmoid, Tanh, MatMul, Gemm, Softmax, Conv, BatchNormalization,
 MaxPool, AveragePool, GlobalAveragePool, Transpose,
-Concat, Constant, Reshape, Squeeze, Unsqueeze, Slice, Split, Resize, Identity and Flatten.
+Concat, Constant, Reshape, Squeeze, Unsqueeze, Slice, Split, Resize, Expand, Tile,
+Identity and Flatten.
 Bounded static Shape/Gather/INT64 control programs can supply layout and partition controls;
 their values are evaluated during import and never require runtime integer execution.
 Runtime/data-dependent shapes, external tensors, custom operators, raw detector-head
@@ -332,6 +333,14 @@ Its exact native lowering adds five nodes and one scalar, with a temporary
 containing twice the input elements; alpha one uses a single Reshape. Existing
 import limits still apply. See [exact leaky activations](onnx_import.md#exact-leaky-activations)
 for signed-zero, rounding, admitted-rank and source-identity semantics.
+
+Static Expand and Tile accept rank-one INT64 shape/repetition controls from
+constants or bounded shape programs. Expand uses multidirectional broadcasting,
+including lower-rank targets; Tile repeats complete axis blocks with one positive
+repeat count per input axis. Both preserve exact F32 bits through existing
+Reshape/Concat operators and use logarithmic helper counts, subject to the
+ordinary graph, tensor, work and inference allocation limits. Zero-sized results
+and runtime controls refuse. See [static expansion and tiling](onnx_import.md#static-expansion-and-tiling).
 
 Conv, MaxPool and AveragePool can use static `VALID`, `SAME_UPPER` or `SAME_LOWER`
 automatic padding. The importer freezes the exact spatial pads into the native

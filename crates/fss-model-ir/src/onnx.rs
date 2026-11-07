@@ -16,6 +16,7 @@ use fss_tensor::{DType, Shape, Tensor};
 use crate::{AttrValue, AttributeMap, GraphNode, ModelIrGraph, ModelIrVersion, OpCode, TensorPort};
 
 mod batch_normalization;
+mod broadcast;
 mod constants;
 mod dfl;
 mod export;
@@ -969,6 +970,8 @@ pub fn import_onnx<'a>(
             batch_normalization::lower(source, &mut lowering)?;
         } else if source.op == "LeakyRelu" {
             leaky_relu::lower(source, &mut lowering)?;
+        } else if matches!(source.op.as_str(), "Expand" | "Tile") {
+            broadcast::lower(source, &mut lowering)?;
         } else if matches!(source.op.as_str(), "AveragePool" | "GlobalAveragePool") {
             pooling::lower(source, &mut lowering)?;
         } else if source.op == "Resize" {

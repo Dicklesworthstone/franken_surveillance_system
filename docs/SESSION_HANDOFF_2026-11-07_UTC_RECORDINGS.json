@@ -1,7 +1,7 @@
 {
   "format": "engineering-session-handoff",
   "date": "2026-11-07",
-  "state": "active_checkpoint",
+  "state": "session_complete_scoped_validation",
   "mission": {
     "goal": "Deliver critically important remaining footage and inference functionality; meaningful direct-main GitHub commits, no PRs.",
     "basis": [
@@ -22,7 +22,8 @@
     "Separate sealed conditional clock metadata type; no packet replay or trusted-time promotion.",
     "Protected deployment metadata context with full catalog/clock closure deletion-authority checks.",
     "Earlier tick query rejects committed deletions of source children and unselected members.",
-    "Canonical query target recordings accepts exclusive UTC/clock flags through CLI and fixed-root MCP; H0 clock metadata joins catalog/window handles."
+    "Canonical query target recordings accepts exclusive UTC/clock flags through CLI and fixed-root MCP; H0 clock metadata joins catalog/window handles.",
+    "Static ONNX Expand/Tile through existing exact Reshape/Concat, logarithmic helper construction, complete bounds and source-bound importer identity."
   ],
   "verification": {
     "model_leaky_relu": {
@@ -59,30 +60,66 @@
       "max_depth": 15,
       "frame_sha256": "c3609778c65c89fa8577d4253c51e13fbb562cfef60f00dd0568b521ba6b17ef"
     },
-    "mcp_schema_script_sha256": "46c297d6a93a1f83eacc2cca8e5cf7d51e7a0549c531a26b0e6d27fbe64b1179"
+    "mcp_schema_script_sha256": "46c297d6a93a1f83eacc2cca8e5cf7d51e7a0549c531a26b0e6d27fbe64b1179",
+    "model_broadcast_runs": [
+      {
+        "log": "model-broadcast-verified.log",
+        "sha256": "98c4d826a26edf986b16d2aced9e39ea6143ae101ea2c9bd84c02f7c442349d3",
+        "passed": 26,
+        "failed": 0,
+        "ignored": 0,
+        "filtered": 0,
+        "test_seconds": 47.68,
+        "scope": "Full new target: ten authored cases plus sixteen included production executor tests, before comment-only source-identity clarification."
+      },
+      {
+        "log": "model-broadcast-final-source.log",
+        "sha256": "5ffeb0d87e41e470262e85143c2a802eb9f539bb039d717a0a9fb50f5c231486",
+        "passed": 10,
+        "failed": 0,
+        "ignored": 0,
+        "filtered": 16,
+        "test_seconds": 2.24,
+        "scope": "Exact final source rebuilt: every authored Expand/Tile contract passed."
+      },
+      {
+        "log": "model-leaky-final-integration.log",
+        "sha256": "9beaf773fb991389ec680963f0e73ccca4c5a464d6610fff9180dc8ca83f85a9",
+        "passed": 9,
+        "failed": 0,
+        "ignored": 0,
+        "filtered": 16,
+        "test_seconds": 4.34,
+        "scope": "Exact final combined importer/exporter: every authored LeakyRelu contract passed."
+      }
+    ],
+    "model_final_source_sha256": {
+      "crates/fss-model-ir/src/onnx.rs": "cfb35b1928d7c2377c33da40b35861279afad0d15cf7d887b82a9fb6c4a4f8b2",
+      "crates/fss-model-ir/src/onnx/export.rs": "30cd0f2ff4a8b3a29677c1882d2e5bb7129c8a496c3c764cfc7f5bc6a9ecd034",
+      "crates/fss-model-ir/src/onnx/broadcast.rs": "1d6a178cbf886fee69af623d5d159741a05207cdd7a99d4e7461aeac6bc6d499",
+      "crates/fss-model-ir/tests/onnx_broadcast_execution.rs": "9a86cdcc8a91d89a827b8ad38ce80b3291d4a00b0589237ec4cda3b8f3430d34",
+      "docs/onnx_import.md": "c19081d0a734e808ba181a509db868a5792ca66c58bb0ca505f7fe0f839a559c",
+      "docs/ONNX_PACKAGE_IMPORT.md": "1dfe4b616d3cbbfda7d8a64000b5e54a6e8be57af8b3525405bd4466c7561668"
+    },
+    "compiler_cache_diagnostic": "A same-version cache had additional features and different locked transitive versions; it was not substituted for the exact production closure. No known-failing build was repeated after this check."
   },
   "unknowns": [
     "Final native Rust typechecking and all UTC runtime/fault contracts are pending.",
     "NTP/host-clock/packet-coordinate metadata is supplied retained evidence; no source replay, trusted UTC, camera exposure time, payload availability or physical coverage is established.",
     "Archive and deployment reads do not form an atomic cross-owner snapshot."
   ],
-  "active_work": [
-    "Static ONNX Expand/Tile importer implementation and real executor/artifact contracts."
-  ],
+  "active_work": [],
   "obligations": [
     {
       "state": "blocked",
       "work": "Run pinned production compilation and native recording/retention/UTC contracts.",
       "reason": "Unchanged Asupersync dependency compilation exceeded available environment memory."
-    },
-    {
-      "state": "in_progress",
-      "work": "Complete independent native Expand/Tile model checkpoint."
     }
   ],
   "continuation": {
     "commands": [
       "cargo test --locked --offline -p fss-reference --test agent_recordings_utc_contract",
+      "cargo test --locked --offline -p fss-model-ir --test onnx_broadcast_execution",
       "cargo test --locked --offline -p fss-model-ir --test onnx_leaky_relu_execution",
       "cargo check --locked --offline -p fss-cli --lib --bin fss --bin fss-mcp --bin fss-event",
       "bash scripts/check_retention_reference.sh",
@@ -90,7 +127,7 @@
       "cargo test --locked --offline -p fss-cli --test recording_query_contract",
       "cargo test --locked --offline -p fss-cli --bin fss-mcp"
     ],
-    "next_affordance": "Finish canonical UTC CLI/MCP integration and compile/run the exact production targets when enough native memory is available; keep source-replayed and metadata-only clock claims separate."
+    "next_affordance": "On a host with enough memory, compile the exact production profile and run the authored native UTC/recording/retention/CLI/MCP contracts; fix concrete diagnostics before broadening archive operations. Cross-catalog discovery, source-replayed UTC agent reads and standing recorder/retention authority remain separate open work."
   },
   "published_checkpoints": [
     {
@@ -98,8 +135,13 @@
       "change": "Native UTC metadata core, complete-closure deployment deletion guards and verified LeakyRelu contract correction."
     },
     {
-      "commit": "this_commit",
+      "commit": "30288de47e798c17d580c6c81a82f4b0275cb4af",
       "change": "Canonical CLI/MCP UTC query, protected response projection, lossless numeric grammar and integration contracts."
+    },
+    {
+      "commit": "this_commit",
+      "change": "Bounded static ONNX Expand/Tile, real executor/artifact contracts, admitted-profile documentation and final combined-model regression."
     }
-  ]
+  ],
+  "concurrent_changes": "Preserved concurrent main updates including fleet reconciliation and UniFi/authentication/TLS fixture/docs; each successful ref update used exact expected head and force=false. A failed update was followed by a fresh head/diff read and a rebuilt child commit."
 }
