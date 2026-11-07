@@ -42,7 +42,7 @@ including hand-computed dense and convolution/pooling results.
   become runtime integer inputs or exported weights.
 - Static positive dimensions, at most rank eight. Source-ordered acyclic graphs;
   declared outputs and intermediate value information must match native inference.
-- Add, Sub, Mul, Div, Relu, LeakyRelu, Clip, Sigmoid, Tanh, MatMul, Gemm, Softmax, Conv,
+- Add, Sub, Mul, Div, Relu, LeakyRelu, Clip, Sigmoid, HardSigmoid, Tanh, MatMul, Gemm, Softmax, Conv,
   BatchNormalization, InstanceNormalization, MaxPool, AveragePool, GlobalAveragePool, Transpose,
   Concat, Constant, Reshape, Squeeze, Unsqueeze, Slice, Split, Resize, Pad, Expand, Tile,
   Gather, ReduceMean, Identity and Flatten.
@@ -118,6 +118,50 @@ failures. These fixtures do not qualify a trained detector.
 
 ```sh
 cargo +nightly-2026-08-31 test --locked --offline -p fss-model-ir --test onnx_clip_execution
+```
+
+## Hard sigmoid and exported HardSwish compositions
+
+[HardSigmoid-6](https://onnx.ai/onnx/operators/onnx__HardSigmoid.html#hardsigmoid-6)
+is the HardSigmoid version selected by opset 13. The importer accepts static F32
+tensors from scalars through rank eight, with optional finite F32 alpha and beta
+attributes. Their defaults preserve the exact F32 values of `0.2` and `0.5`.
+Execution first rounds alpha times the input to F32, then separately adds beta
+and rounds to F32, then clamps to zero through one. Zero saturation and
+zero-valued ties produce canonical positive zero. Signed-zero coefficient bits
+remain in the exported weights and importer provenance.
+
+Admission requires that both `f32::MAX * abs(alpha)` and that rounded F32
+product plus `abs(beta)` remain finite. This proves that every finite input
+has finite affine intermediates. Default coefficients, positive or negative
+one-sixth slopes, zero slopes and many other finite pairs are supported.
+A pair that could overflow an intermediate refuses, even if the final
+saturation would conceal that overflow. Unknown attributes and non-FLOAT
+coefficient attributes refuse.
+
+The implementation uses two native affine nodes and the shared two-sided Clip
+lowering: fifteen nodes, five scalar parameters occupying twenty bytes, and
+temporaries no larger than twice the input element count. The complete cost is
+reserved before any generated value. The new module participates in the
+source-bound importer identity; Model IR v1 and operator IDs remain unchanged.
+
+An exported HardSwish graph represented by HardSigmoid with alpha one-sixth and
+beta one-half followed by Mul now executes through the native path. The raw
+HardSwish operator belongs to newer opsets and remains outside this opset-13
+profile. The implementation does not rewrite or approximate an unsupported
+source operator.
+
+Twelve authored cases in `onnx_hard_sigmoid_execution` exercise both production
+CPU executors and real canonical graph/Safetensors reload. They cover every
+finite exponent, admitted coefficient extremes and the overflow admission
+boundary, a multiply/add rounding witness, zero bits, complete gated
+convolution/dense graphs, private-name collisions and exact resource,
+cancellation and source-digest checks. As with the Clip suite above, native
+compilation, formatting and execution remain pending while the workspace is
+unavailable; the source review is not a trained-model qualification.
+
+```sh
+cargo +nightly-2026-08-31 test --locked --offline -p fss-model-ir --test onnx_hard_sigmoid_execution
 ```
 
 ## Exact leaky activations

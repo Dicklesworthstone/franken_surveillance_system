@@ -4,7 +4,7 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
-## Native ONNX clipping and ReLU6
+## Native ONNX bounded activations
 
 The opset-13 importer now lowers Clip-13 for static F32 tensors from scalars
 through rank eight, including omitted bounds, empty optional input slots,
@@ -14,6 +14,13 @@ The finite-input lowering preserves bound bits on ties, including signed zero,
 and compares opposite extrema without overflowing an unselected arithmetic
 branch. It uses only frozen operators and one four-byte generated scalar.
 
+HardSigmoid-6 adds separately rounded F32 multiply/add and zero-to-one saturation.
+Its coefficient admission proves that the full finite F32 input domain cannot
+overflow either affine intermediate. Defaults and one-sixth slopes support
+exported HardSwish compositions through an ordinary following Mul. The fixed
+expansion adds fifteen nodes and twenty scalar parameter bytes. Raw HardSwish
+and newer opsets remain outside this closed profile.
+
 The entire expansion is admitted before helper allocation: one, seven, ten or
 thirteen nodes for zero, lower, upper or both bounds, with at most twice the input
 element count in an intermediate. Existing source custody, cancellation,
@@ -22,8 +29,9 @@ place. Low-level runtime operands must be finite; an imported runtime bound
 still needs a resolved binding under the existing camera-package contract.
 See [the supported profile](docs/onnx_import.md).
 
-**Validation:** execution and artifact regression contracts are authored in
-`onnx_clip_execution`, with scalar and optimized execution, optional/runtime bounds,
+**Validation:** 25 execution and artifact regression contracts are authored across
+`onnx_clip_execution` and `onnx_hard_sigmoid_execution`, with scalar and optimized
+execution, optional/runtime bounds, affine rounding and overflow boundaries,
 signed zeros, extrema, composition, resource limits and cancellation coverage.
 The new slice has received independent source review. Native compilation,
 rustfmt, Clippy and test execution remain pending: compiler attempts were killed
