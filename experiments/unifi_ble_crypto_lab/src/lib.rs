@@ -10,6 +10,8 @@
 mod existing_poly1305;
 #[path = "../../../crates/fss-tutk/src/x25519.rs"]
 mod existing_x25519;
+/// Offline, synthetic-only key exchange state machine.
+pub mod handshake;
 
 const SIGMA: [u32; 4] = [0x6170_7865, 0x3320_646e, 0x7962_2d32, 0x6b20_6574];
 
