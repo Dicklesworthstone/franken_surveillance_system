@@ -114,7 +114,21 @@ impl<IO: AsyncRead + AsyncWrite + Unpin> Server<IO> {
                     other => other,
                 };
             }
-            match self.write_tls(cx) {
+            let write = match self.write_tls(cx) {
+                Poll::Pending => {
+                    // A buffered transport may need an explicit flush before
+                    // another ciphertext write can make progress. Retry once
+                    // after a ready flush; a second Pending keeps the writer's
+                    // wake registration instead of spinning on ready flushes.
+                    match Pin::new(&mut self.io).poll_flush(cx) {
+                        Poll::Pending => return Poll::Pending,
+                        Poll::Ready(Err(error)) => return Poll::Ready(Err(self.failure(error))),
+                        Poll::Ready(Ok(())) => self.write_tls(cx),
+                    }
+                }
+                ready => ready,
+            };
+            match write {
                 Poll::Pending => return Poll::Pending,
                 Poll::Ready(Err(error)) => return Poll::Ready(Err(self.failure(error))),
                 Poll::Ready(Ok(0)) => {

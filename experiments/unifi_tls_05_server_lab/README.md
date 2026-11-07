@@ -17,6 +17,37 @@ complete dependency closure remain open. Rustls' provider accesses OS entropy
 outside the FSS task boundary. A same-provider fixture is not independent
 interoperability evidence.
 
+## Buffered transport regression
+
+The earlier adapter could park forever when its ciphertext writer became full
+and needed an explicit flush before accepting more bytes. A disposable TLS
+loopback reproduced the failure: the original adapter timed out at the
+700-millisecond handshake limit after one blocked write and zero completed
+flushes on its 32-byte transport buffer.
+The drain loop now attempts a flush when a ciphertext write parks and retries
+that write once; if it is still pending, it preserves the write's wake
+registration instead of looping on an immediately ready flush.
+
+On `vmi1264463`, strict-remote job `30098049032258006` compiled the scoped
+fixture; its terminal result was acknowledged and source lease released. The
+three ignored tests were explicitly executed with a disposable certificate and
+key: a same-provider client crossed the full buffer and exchanged application
+data, an independent OpenSSL client did the same, and a permanently blocked
+writer parked without spinning. All 3 passed. The separate task-owned
+OpenSSL trusted-server and wrong-CA controls also passed 2/2 after compilation
+in acknowledged, released job `30098049032258002`. The buffered tests use a
+purpose-built transport and do not themselves exercise FSS task authority.
+
+The adapter source SHA-256 was
+`5dc8e6cda63d9ed3a7ddc2cdd4422ba2874aa27e8de6cf87d142ce570631e7ee`;
+the buffered test source SHA-256 was
+`4acff81a2092bf15453e7adccc1f8cdf0e7e564be2569bb29d3c13963c626b14`;
+the corresponding Linux test binary SHA-256 was
+`e16f735e695e314869b64b5a45e58e3c91fd39af01a37b87a253b7d101a93b90`.
+The isolated fixture does not qualify the entire workspace, arbitrary
+full-duplex backpressure, the provider, or a physical camera. No camera or
+recorder was contacted or changed for this regression.
+
 The ignored tests require a disposable localhost certificate and PKCS#8 key in
 `FSS_LAB_CERT_DER` and `FSS_LAB_KEY_DER`; the OpenSSL controls additionally
 require `FSS_LAB_CERT_PEM` and `FSS_LAB_BAD_CERT_PEM`. They must never use

@@ -7,7 +7,7 @@ use asupersync::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
     runtime::RuntimeBuilder,
-    time::timeout,
+    time::{sleep, timeout},
 };
 mod auth;
 #[path = "../../../crates/fss-reference/src/unifi_direct/camera_api.rs"]
@@ -136,11 +136,15 @@ impl<F: Fn() -> Result<(), &'static str>> camera_http::Authority for LabAuthorit
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let args: Vec<_> = std::env::args().skip(1).collect();
+    let mut args: Vec<_> = std::env::args().skip(1).collect();
+    let three_snapshots = args.len() >= 2 && args[args.len() - 2] == "--three-snapshots";
+    if three_snapshots {
+        args.remove(args.len() - 2);
+    }
     if !(args.len() == 8 || args.len() == 9)
         || args.last().is_none_or(|s| s != "--owner-authorized")
     {
-        return Err("expected certificate path, private IPv4 address, tls12|tls13, match|mismatch|bad-key, scope-sha256, credential-file path, port, optional output path, --owner-authorized".into());
+        return Err("expected certificate path, private IPv4 address, tls12|tls13, match|mismatch|bad-key, scope-sha256, credential-file path, port, optional output path, optional --three-snapshots, --owner-authorized".into());
     }
     let output_path = if args.len() == 9 {
         let path = Path::new(&args[7]);
@@ -338,27 +342,43 @@ fn main() -> Result<(), Box<dyn Error>> {
             camera_api::ControllerAddress::Missing=>("missing","unknown"),
             camera_api::ControllerAddress::Unsupported=>("unsupported","unknown"),
         };
-        let snapshot=api.snapshot(Duration::from_secs(10)).await?;
-        task.checkpoint_for(RuntimeGrant::ReadMedia, &resource, clock.now()?, &BudgetVector::ZERO)?;
-        task.checkpoint_for(RuntimeGrant::MediaDecode, &resource, clock.now()?, &BudgetVector::ZERO)?;
-        let limits=fss_codec_mjpeg::DecodeLimits { maximum_bytes: 4*1024*1024, ..Default::default() };
-        let digest=snapshot.digest().bytes();
-        let mut decode_budget=fss_codec_mjpeg::DecodeBudget::new(limits.luma_work_bound().min(1_500_000_000));
-        let decoded=fss_codec_mjpeg::decode_luma(snapshot.bytes(),digest,fss_codec_mjpeg::ComponentInterpretation::YCbCr,limits,&mut decode_budget)?;
-        let [width,height]=decoded.dimensions();
-        if decoded.pixels().len() != width as usize * height as usize { return Err("decoded dimensions inconsistent".into()); }
-        if let Some(path)=output_path {
-            lease.revalidate(&policy.check)?;
-            task.checkpoint_for(RuntimeGrant::ReadMedia,&resource,clock.now()?,&BudgetVector::ZERO)?;
-            let mut cost=BudgetVector::ZERO;
-            cost.bytes=snapshot.bytes().len() as u64;
-            cost.storage_operations=3;
-            task.checkpoint_for(RuntimeGrant::ObjectStage,&path.to_string_lossy(),clock.now()?,&cost)?;
-            output::save(path,snapshot.bytes(),digest)?;
+        let count = if three_snapshots { 3 } else { 1 };
+        let mut previous_digest = None;
+        let mut changed = 0_u8;
+        let mut dimensions = None;
+        for index in 0..count {
+            if index != 0 {
+                cx.checkpoint().map_err(|_| "runtime cancelled")?;
+                sleep(cx.now(), Duration::from_secs(1)).await;
+                cx.checkpoint().map_err(|_| "runtime cancelled")?;
+            }
+            let snapshot=api.snapshot(Duration::from_secs(10)).await?;
+            task.checkpoint_for(RuntimeGrant::ReadMedia, &resource, clock.now()?, &BudgetVector::ZERO)?;
+            task.checkpoint_for(RuntimeGrant::MediaDecode, &resource, clock.now()?, &BudgetVector::ZERO)?;
+            let limits=fss_codec_mjpeg::DecodeLimits { maximum_bytes: 4*1024*1024, ..Default::default() };
+            let digest=snapshot.digest().bytes();
+            if previous_digest.is_some_and(|previous| previous != digest) { changed += 1; }
+            previous_digest = Some(digest);
+            let mut decode_budget=fss_codec_mjpeg::DecodeBudget::new(limits.luma_work_bound().min(1_500_000_000));
+            let decoded=fss_codec_mjpeg::decode_luma(snapshot.bytes(),digest,fss_codec_mjpeg::ComponentInterpretation::YCbCr,limits,&mut decode_budget)?;
+            let [width,height]=decoded.dimensions();
+            if decoded.pixels().len() != width as usize * height as usize { return Err("decoded dimensions inconsistent".into()); }
+            if dimensions.is_some_and(|previous| previous != [width, height]) { return Err("snapshot dimensions changed".into()); }
+            dimensions = Some([width, height]);
+            if index + 1 == count {
+                if let Some(path)=output_path {
+                    lease.revalidate(&policy.check)?;
+                    task.checkpoint_for(RuntimeGrant::ReadMedia,&resource,clock.now()?,&BudgetVector::ZERO)?;
+                    let mut cost=BudgetVector::ZERO;
+                    cost.bytes=snapshot.bytes().len() as u64;
+                    cost.storage_operations=3;
+                    task.checkpoint_for(RuntimeGrant::ObjectStage,&path.to_string_lossy(),clock.now()?,&cost)?;
+                    output::save(path,snapshot.bytes(),digest)?;
+                }
+            }
         }
-        let outcome=format!("observed_pin=matched signature=verified tls={:?} login_http_status=200 status_http_status=200 settings_http_status=200 controller_address={controller_claim} controller_matches_connection_source={controller_matches_route} snapshot_http_status=200 decoded_luma={}x{} board_object={} firmware_object={} controller_object={} identity=unverified media_persisted={} runtime=asupersync transport=fss_metered",protocol,width,height,shape.board,shape.firmware,shape.controller,output_path.is_some());
-        drop(decoded);
-        drop(snapshot);
+        let [width,height]=dimensions.ok_or("no decoded snapshots")?;
+        let outcome=format!("observed_pin=matched signature=verified tls={:?} login_http_status=200 status_http_status=200 settings_http_status=200 controller_address={controller_claim} controller_matches_connection_source={controller_matches_route} snapshot_http_status=200 snapshots_decoded={count} adjacent_digest_changes={changed} decoded_luma={}x{} board_object={} firmware_object={} controller_object={} identity=unverified media_persisted={} runtime=asupersync transport=fss_metered",protocol,width,height,shape.board,shape.firmware,shape.controller,output_path.is_some());
         drop(api);
         Ok(outcome)
         }.await;
