@@ -183,6 +183,7 @@ path = "src/bin/fss-fusion-profile.rs"
 [dependencies]
 asupersync = { version = "=0.5.0", default-features = false }
 fss-codec-mjpeg = { path = "../fss-codec-mjpeg" }
+fss-codec-jpeg-encode = { path = "../fss-codec-jpeg-encode" }
 fss-container = { path = "../fss-container" }
 fss-core = { path = "../fss-core" }
 fss-fusion = { path = "../fss-fusion" }

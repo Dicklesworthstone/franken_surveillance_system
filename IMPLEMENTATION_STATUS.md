@@ -4,6 +4,37 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Native bounded JPEG encoder (2026-11-07; native execution pending)
+
+The new first-party `fss-codec-jpeg-encode` crate produces complete baseline JPEG
+derivatives from independently pinned, tightly packed grayscale or RGB pixels.
+RGB uses explicit full-range Y/Cb/Cr 4:4:4; exact DC and fixed integer Q14 AC
+transforms, quality-scaled quantizers, canonical Huffman tables and edge repetition
+make the output deterministic. No metadata is forwarded and no foreign runtime
+or new external dependency enters production.
+
+The encoder has separate hard dimension, pixel, output-byte and cumulative work
+ceilings, bounded fallible output growth, cancellation probes and payload-free
+failures. Each completed result binds input pixels, encoder source generation,
+configuration, output bytes and charged work. It buffers one encoded frame and
+fixed block scratch, without a second full-image color buffer. The independent
+crate leaves all existing JPEG decoder source and replay identities unchanged.
+
+This supplies the missing native compression foundation for review derivatives
+(VIT-023 / DOC-052 / FSS-115). Quality 100 remains lossy. A pixel digest is not
+source custody, and masking before JPEG encoding does not guarantee exact black
+pixels after lossy reconstruction. FLDT grants, current payment-zone attestations,
+time-trimmed custody publication and a qualified reviewer clip remain open.
+See [the encoder contract](docs/NATIVE_JPEG_ENCODING.md).
+
+**Validation:** locked offline workspace metadata resolved successfully before the
+execution workspace became unavailable. Twenty-one encoder contracts were authored,
+but the outage prevented a native test process from starting. Source was recovered
+through the GitHub connector from recorded edits; formatting and native execution
+of the final published bytes remain required. Independent synthetic FFmpeg/Pillow
+verification was prepared but did not run. No native test pass or release
+qualification is claimed for this extension.
+
 ## Static ONNX Expand and Tile (2026-11-07; targeted native validation passed)
 
 The opset-13 importer now lowers bounded static F32 `Expand` and `Tile` from scalar

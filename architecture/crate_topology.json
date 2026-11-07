@@ -244,6 +244,11 @@
      "status": "implemented"
     },
     {
+     "name": "fss-codec-jpeg-encode",
+     "unsafe": "forbid",
+     "status": "implemented"
+    },
+    {
      "name": "fss-audio",
      "unsafe": "forbid",
      "status": "planned"
