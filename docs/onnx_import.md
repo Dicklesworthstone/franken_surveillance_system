@@ -42,8 +42,8 @@ including hand-computed dense and convolution/pooling results.
   become runtime integer inputs or exported weights.
 - Static positive dimensions, at most rank eight. Source-ordered acyclic graphs;
   declared outputs and intermediate value information must match native inference.
-- Add, Sub, Mul, Div, Relu, LeakyRelu, Sigmoid, Tanh, MatMul, Gemm, Softmax, Conv, BatchNormalization,
-  MaxPool, AveragePool, GlobalAveragePool, Transpose,
+- Add, Sub, Mul, Div, Relu, LeakyRelu, Sigmoid, Tanh, MatMul, Gemm, Softmax, Conv,
+  BatchNormalization, InstanceNormalization, MaxPool, AveragePool, GlobalAveragePool, Transpose,
   Concat, Constant, Reshape, Squeeze, Unsqueeze, Slice, Split, Resize, Pad, Expand, Tile,
   Gather, ReduceMean, Identity and Flatten.
   Shape and INT64 Gather also support the bounded shape programs below; F32 data
@@ -294,6 +294,75 @@ quota boundaries and cancellation at every import checkpoint. The importer
 identity includes this lowering source. Native results and their scope are
 recorded in `IMPLEMENTATION_STATUS.md`.
 
+## Instance and grouped feature normalization
+
+The importer admits [InstanceNormalization-6](https://onnx.ai/onnx/operators/onnx__InstanceNormalization.html#instancenormalization-6),
+the schema selected by opset 13. It computes fresh spatial population statistics
+independently for every batch/channel pair of a positive static F32 tensor
+`[N,C,D1,...,Dk]`, with rank three through eight. Scale and bias must each be a
+F32 vector of exactly `C` elements. Initializers, Constant outputs, runtime inputs
+and earlier runtime-node outputs retain their normal source bindings; runtime
+affine values are never silently frozen.
+
+One source node becomes exactly five existing native nodes: LayerNorm over
+`D1,...,Dk` with elementwise affine disabled, two channel-vector Reshapes to
+`[1,C,1,...,1]`, Mul by scale, and Add of bias. No weights are synthesized or repeated
+over image positions. Two distinct constant affine vectors occupy `8*C` bytes
+together, regardless of spatial area. The two reshapes contain only `C` elements,
+and every other intermediate has the same element count as the input. A static
+Shape/Reshape program can therefore group channels, normalize each group with this
+operation, restore the original shape and apply channel-wise affine parameters.
+The authored grouped-feature fixture exercises one, two and four groups; this is
+a composition of admitted opset-13 operators, not admission of a later ONNX
+GroupNormalization schema or qualification of a complete trained model.
+
+The source FLOAT epsilon is preserved exactly when widened to the native F64
+attribute. Omission means `f64::from(1e-5_f32)`, which differs from the native
+LayerNorm's F64 default. This profile requires finite, strictly positive epsilon.
+Zero and negative epsilon refuse; a non-FLOAT epsilon, unknown attributes, incorrect
+input/output arity, non-vector affine tensors, mismatched channel lengths, integer
+data and ranks outside the stated profile refuse before artifact emission.
+
+The numeric contract is the existing native LayerNorm contract: ordered F64 mean
+and centered population-variance accumulation over each spatial row, an F64 square
+root after adding epsilon, and normalized values rounded to F32. Scaling and bias
+then run as separate F32 Mul and Add operations. This supports finite extreme F32
+samples without the avoidable overflow of an F32 statistics accumulator, but does
+not assert bit parity with every framework's normalization kernel. A runtime NaN
+or infinity produces the existing canonical NaN row; other batch/channel rows
+remain independent. Overflow during subsequent F32 affine arithmetic remains
+nonfinite, and the retained inference owner's nonfinite-output checks remain in
+force.
+
+The importer preflights all five native nodes, five newly known output values and
+four generated names together. Ordinary tensor, parameter, work, name-reservation,
+generation and cancellation checks apply to every emitted operation. Source names
+cannot capture generated helpers or repair forward references. Original ONNX bytes
+remain intact; the new lowering module participates in the source-bound importer
+identity. Native operator IDs, canonical Model IR v1 and production dependencies
+are unchanged.
+
+**Validation status (2026-11-07): this new InstanceNormalization slice is authored
+and awaits native compile, rustfmt, Clippy and execution.** The execution environment
+disconnected before its first build; the 71 passing earlier model tests and earlier
+strict Clippy check do not cover this addition. Twelve new contracts in
+`onnx_batch_normalization_execution::instance` use the actual scalar and optimized
+executors and real canonical graph/Safetensors reload, together with the eight
+existing BatchNormalization contracts in the shared host. They cover literal
+batch/channel isolation; every spatial rank; exact epsilon defaults and extrema;
+runtime and Constant affine values; independent pairwise-difference population
+variance oracles; grouped normalization; Conv → InstanceNormalization → bilinear
+Resize → pooled dense features; constant helper/storage bounds; malformed profiles;
+exact quotas and every import cancellation point; future-name collisions; nonfinite
+rows; and actual execution budgets, generations and cancellation. This authored
+coverage is not a reported native pass. Run it when execution is restored:
+
+```sh
+cargo +nightly-2026-08-31 test --locked --offline -p fss-model-ir \
+  --test onnx_batch_normalization_execution -- --test-threads=1 \
+  --skip scalar_executor:: --skip optimized_executor::
+```
+
 ## Static automatic spatial padding
 
 Conv, MaxPool and AveragePool accept `auto_pad: "VALID"`, `"SAME_UPPER"`, and
@@ -465,8 +534,9 @@ both outputs before export and after actual canonical graph/Safetensors reload.
 shared Constant parameters and signed-zero bits; subnormal statistics; arithmetic
 order and overflow; namespace collisions; malformed, dynamic and training refusals;
 exact node/tensor/parameter/work ceilings; every import cancellation checkpoint;
-and native execution budgets, cancellation and generation checks. This target
-executes the production scalar and Safetensors sources. It does not compile the
+and native execution budgets, cancellation and generation checks. The InstanceNormalization
+extension adds actual optimized execution to this shared host; that expanded target
+awaits native validation as described below. It does not compile the
 asynchronous reference crate, run complete package/CLI qualification, or establish
 trained detector accuracy. The existing package importer automatically receives
 this source profile through `import_onnx`, with its separate licensing,
@@ -722,14 +792,16 @@ runtime dependency or model-activation authority changes. The new lowering/plann
 sources participate in the source-bound importer identity; original ONNX bytes remain
 intact.
 
-**Validation status (2026-11-07): new linear Rust execution is pending.** The execution
-environment became unavailable after the separate attention correction passed its
-13 attention, 10 broadcast and 9 leaky-activation contracts. The linear modules and
-integration received independent source review; they have not been compiled, formatted
-with rustfmt, or reported as passing native tests in this session.
+**Validation status (2026-11-07): the published linear Resize implementation passed
+native execution.** At source commit `edc1bb01247c341939a0fadbafdcb67f11537320`,
+the pinned nightly completed 71 focused tests with zero failures: 25 Resize execution
+cases (15 nearest and 10 linear), six nearest-coordinate cases, eight linear-coordinate
+cases, 13 attention cases, 10 broadcast cases and nine leaky-activation cases. The
+linear lowering required no semantic repair. These results precede the separate,
+not-yet-executed InstanceNormalization addition documented above.
 
-Ten new cases in `onnx_resize_execution::linear` are authored to run both unchanged
-production CPU executors before and after real canonical graph/Safetensors reload.
+The ten cases in `onnx_resize_execution::linear` ran both unchanged production CPU
+executors before and after real canonical graph/Safetensors reload.
 They cover literal coordinate/singleton profiles, direct four-neighbor binary64
 oracles across batches/channels and mixed axes, original scale versus size ratios,
 exact copy-only bits, practical coefficient/helper bounds, all quota/cancellation
@@ -739,7 +811,7 @@ canonical-byte contract; the old linear-refusal fixture is replaced by these tes
 The standalone linear target adds six planner contracts and includes two production
 coefficient-rounding tests, without replacing artifact or native executor coverage.
 
-Run these focused checks when the pinned execution environment is available:
+Reproduce the focused Resize checks with:
 
 ```sh
 cargo +nightly-2026-08-31 test --locked --offline -p fss-model-ir \

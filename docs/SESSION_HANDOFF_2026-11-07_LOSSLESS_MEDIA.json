@@ -1,7 +1,7 @@
 {
   "format": "engineering-session-handoff",
   "date": "2026-11-07",
-  "timezone": "America/New_York",
+  "timezone": "Etc/UTC",
   "state": "active_implementation_execution_workspace_unavailable",
   "mission": {
     "goal": "Implement playable lossless local derivatives and consequential native model coverage, with direct-main GitHub checkpoints.",
@@ -20,7 +20,8 @@
   },
   "completed": [
     "Ran 114 scoped native tests successfully against exact published edc1bb0 source.",
-    "Implemented bounded allocation-free Matroska Y800 framing and explicit rational presentation intervals."
+    "Implemented bounded allocation-free Matroska Y800 framing and explicit rational presentation intervals.",
+    "Implemented native InstanceNormalization lowering with constant affine storage and real scalar/optimized artifact contracts."
   ],
   "verification": {
     "baseline_commit": "edc1bb01247c341939a0fadbafdcb67f11537320",
@@ -46,13 +47,18 @@
       "authored_core_contracts": 8,
       "source_review": "Independent API, integer arithmetic, fixed-buffer and EBML layout audits found no concrete blocker.",
       "native_execution": "Not run: workspace disconnected during first source write.",
-      "prototype": "Separate 7x5 three-frame Y800 prototype: FFmpeg decoded all105sample bytes exactly; FFprobe reported explicit0/100M/200Mns starts and100Mns durations. Not the recovered Rust writer."
+      "prototype": "Separate 7x5 three-frame Y800 prototype: FFmpeg decoded all 105 sample bytes exactly; FFprobe reported explicit 0/100M/200M ns starts and 100M ns durations. Not the recovered Rust writer."
     },
-    "release_qualified": false
+    "release_qualified": false,
+    "instance_normalization": {
+      "authored_new_contracts": 12,
+      "expanded_existing_batch_normalization_contracts": 8,
+      "source_review": "Independent production/API/fixture reviews found no concrete blocker; no native result is inferred from review.",
+      "native_execution": "Pending: execution workspace disconnected before the first new build."
+    }
   },
   "active_work": [
-    "Finish lossless gray-mkv CLI integration, bounded output and ordered lineage contracts.",
-    "Finish reviewed InstanceNormalization import and actual-executor contracts."
+    "Finish lossless gray-mkv CLI integration, bounded output and ordered lineage contracts."
   ],
   "protected_limits": [
     "Presentation cadence is explicitly selected; it does not preserve or certify source capture timing or gaps.",
@@ -67,8 +73,12 @@
   },
   "published_checkpoints": [
     {
-      "commit": "this_commit",
+      "commit": "bc493d3ecf4d1d3fc73f68459dcab4ed0d1bef8d",
       "change": "Bounded lossless Matroska container foundation; restored native baseline verification and recovered test fixes."
+    },
+    {
+      "commit": "this_commit",
+      "change": "Native ONNX InstanceNormalization lowering, bounded affine storage, actual-executor/artifact contracts and explicit numerical scope."
     }
   ]
 }

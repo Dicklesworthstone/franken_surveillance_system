@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
-//! Inference BatchNormalization through the production importer, canonical graph,
-//! Safetensors loader and scalar executor. The retained detector fixture is
+//! Inference BatchNormalization and InstanceNormalization through the production
+//! importer, canonical graph, Safetensors loader and both CPU executors. The detector fixture is
 //! synthetic and untrained; this target does not qualify the full package CLI.
 
 use std::cell::Cell;
@@ -18,7 +18,13 @@ use fss_tensor::{Shape, Tensor};
 mod safetensors;
 #[path = "../../fss-reference/src/scalar_executor.rs"]
 pub mod scalar_executor;
-use scalar_executor::{ExecBudget, ExecError, ExecOutcome, ScalarExecCx, ScalarExecutor};
+pub use scalar_executor::{
+    ExecBudget, ExecError, ExecOutcome, ScalarExecCx, ScalarExecutor, deterministic_sigmoid_f32,
+};
+#[path = "../../fss-reference/src/optimized_executor.rs"]
+pub mod optimized_executor;
+#[path = "onnx_batch_normalization_execution/instance.rs"]
+mod instance;
 
 // Data-only host types; all actual decoding remains in the production parser.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -241,17 +247,35 @@ fn execute(
     mut weights: BTreeMap<String, Tensor>,
     input: &[(&str, Tensor)],
 ) -> Test<ExecOutcome> {
+    let constants = weights
+        .iter()
+        .map(|(name, value)| Ok((name.clone(), value.to_vec::<f32>()?)))
+        .collect::<Result<BTreeMap<_, _>, fss_tensor::TensorError>>()?;
+    let optimized =
+        optimized_executor::OptimizedGraph::prepare(graph, &constants, &ScalarExecCx::new())?;
+    let fast = optimized.run(input, ExecBudget::unlimited(), &ScalarExecCx::new())?;
     weights.extend(
         input
             .iter()
             .map(|(name, value)| ((*name).to_owned(), value.clone())),
     );
-    Ok(ScalarExecutor::run(
+    let scalar = ScalarExecutor::run(
         graph,
         &weights.into_iter().collect::<Vec<_>>(),
         ExecBudget::unlimited(),
         &ScalarExecCx::new(),
-    )?)
+    )?;
+    assert_eq!(fast.executed_macs(), scalar.executed_macs());
+    assert_eq!(fast.allocated_bytes(), scalar.allocated_bytes());
+    for port in graph.outputs() {
+        assert_eq!(
+            bits(&output(&fast, port.name())?),
+            bits(&output(&scalar, port.name())?),
+            "optimized output {}",
+            port.name()
+        );
+    }
+    Ok(scalar)
 }
 fn reloaded(artifacts: &OnnxArtifacts<'_>) -> Test<BTreeMap<String, Tensor>> {
     let weights = safetensors::Weights::parse(

@@ -22,6 +22,7 @@ mod dfl;
 mod export;
 mod gather;
 mod gemm;
+mod instance_normalization;
 mod leaky_relu;
 mod pad;
 mod padding;
@@ -978,6 +979,8 @@ pub fn import_onnx<'a>(
             gemm::lower(source, &mut lowering)?;
         } else if source.op == "BatchNormalization" {
             batch_normalization::lower(source, &mut lowering)?;
+        } else if source.op == "InstanceNormalization" {
+            instance_normalization::lower(source, &mut lowering)?;
         } else if source.op == "LeakyRelu" {
             leaky_relu::lower(source, &mut lowering)?;
         } else if matches!(source.op.as_str(), "Expand" | "Tile") {

@@ -318,8 +318,8 @@ use v1 or v2 recipes without a DFL conversion.
 
 The command uses the existing ONNX IR 7–9, default-domain opset-13 static finite F32 profile.
 Supported operators and their restrictions are specified in [onnx_import.md](onnx_import.md):
-Add, Sub, Mul, Div, Relu, LeakyRelu, Sigmoid, Tanh, MatMul, Gemm, Softmax, Conv, BatchNormalization,
-MaxPool, AveragePool, GlobalAveragePool, Transpose,
+Add, Sub, Mul, Div, Relu, LeakyRelu, Sigmoid, Tanh, MatMul, Gemm, Softmax, Conv,
+BatchNormalization, InstanceNormalization, MaxPool, AveragePool, GlobalAveragePool, Transpose,
 Concat, Constant, Reshape, Squeeze, Unsqueeze, Slice, Split, Resize, Expand, Tile,
 Gather, ReduceMean, Identity and Flatten.
 Bounded static Shape/Gather/INT64 control programs can supply layout and partition controls;
@@ -363,12 +363,32 @@ axis is bounded to 4,096 coordinates; generated coefficients occupy at most
 tensor, work and inference budgets remain enforced. Unsupported ROI, cubic,
 antialias and coordinate modes refuse. Source identity includes the new modules.
 
-The new linear slice has independent source review and authored scalar/optimized
-execution plus artifact-reload contracts. Its Rust compile, rustfmt and native test
-runs are **pending** after the execution environment became unavailable on
-2026-11-07. Passing earlier nearest/attention tests do not validate this addition.
+The published linear slice passed native scalar/optimized execution and actual
+artifact reload on 2026-11-07: all 25 Resize cases (15 nearest and 10 linear), six
+nearest-coordinate cases and eight linear-coordinate cases passed. Together with
+13 attention, 10 broadcast and nine leaky-activation cases, the focused run passed
+71 tests at source commit `edc1bb01247c341939a0fadbafdcb67f11537320`. These passes
+precede the new InstanceNormalization addition, whose native validation is pending.
 See [linear spatial resampling](onnx_import.md#linear-spatial-resampling) for exact
 coordinate, numerical, bound and validation details.
+
+InstanceNormalization admits static F32 `[N,C,D1,...]` inputs of rank three through
+eight, with exact `[C]` scale/bias vectors from constants or runtime graph values.
+It lowers into native spatial LayerNorm, two channel-affine reshapes, Mul and Add:
+five native nodes, no generated weights and no image-sized parameter replication. Source
+F32 epsilon is preserved exactly, including its default; finite positive values are
+required. Native F64 population statistics produce F32 normalized values before
+separate F32 affine operations. Static grouping/reshape programs can compose this
+into group-normalized feature blocks. Unknown attributes and unsupported shapes
+refuse. See [instance and grouped feature normalization](onnx_import.md#instance-and-grouped-feature-normalization)
+for numeric, resource and refusal contracts.
+
+The InstanceNormalization source and twelve actual-executor/artifact contracts are
+authored; native compile, rustfmt, Clippy and execution are **pending** because the
+environment disconnected before the new target's first build. The shared test host
+also now exercises its eight existing BatchNormalization contracts through the
+optimized executor. Earlier 71-test and Clippy successes do not validate this
+extension or establish trained detector accuracy.
 
 Conv, MaxPool and AveragePool can use static `VALID`, `SAME_UPPER` or `SAME_LOWER`
 automatic padding. The importer freezes the exact spatial pads into the native

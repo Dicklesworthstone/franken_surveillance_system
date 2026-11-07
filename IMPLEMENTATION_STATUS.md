@@ -4,6 +4,35 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Native ONNX instance normalization
+
+The opset-13 importer now lowers InstanceNormalization-6 for static positive F32
+`[N,C,D1,...]` tensors of rank three through eight. Each batch/channel pair uses
+independent spatial population statistics; exact `[C]` scale and bias may come
+from initializers, Constant nodes, runtime inputs or earlier runtime outputs.
+The lowering emits five existing native operators: spatial LayerNorm, two affine
+Reshapes, Mul and Add. It adds no operator IDs, generated weights or dependencies.
+Two distinct constant affine vectors occupy `8*C` bytes, independent of image area.
+
+Complete helper/value admission, existing work and cancellation budgets, source
+name collision protection, canonical graph/weight reload and source-bound importer
+identity remain enforced. The omitted ONNX epsilon preserves the exact binary32
+default. Statistics follow native ordered F64 population calculations; normalized
+values round to F32 before separate F32 affine operations. Nonfinite rows and
+overflow retain the native executor contract. This extends usable normalization
+compositions without qualifying an unprovided trained model.
+See [the admitted profile and numerical scope](docs/onnx_import.md).
+
+**Validation:** twelve new execution/artifact contracts are authored, and the eight
+existing BatchNormalization cases now share actual scalar and optimized execution.
+Coverage includes an independent pairwise-variance oracle, batch/channel isolation,
+ranks and extrema, runtime affine values, grouped normalization, a convolutional
+normalization/resampling/dense chain, malformed inputs, exact budgets, cancellation
+and source-name collisions. Independent source reviews found no concrete blocker.
+Native compilation, rustfmt, Clippy and execution of this new slice remain pending
+because the execution workspace is unavailable. The 71 completed model baseline
+tests below precede this addition.
+
 ## Lossless grayscale Matroska framing
 
 The new first-party `fss-container::matroska_gray` module frames unchanged,
