@@ -11,6 +11,7 @@ use fss_core::ContentDigest;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 type Test = Result<(), Box<dyn std::error::Error>>;
+type JpegSyntax<'a> = (Vec<(u8, &'a [u8])>, &'a [u8]);
 
 fn encode(width: u32, height: u32, pixels: &[u8], format: PixelFormat, quality: u8) -> Result<EncodedJpeg, EncodeError> {
     encode_jpeg(
@@ -43,7 +44,7 @@ fn decode(jpeg: &EncodedJpeg) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
 }
 
 /// Independent marker walker: the encoder does not export its framing or entropy helpers.
-fn syntax(bytes: &[u8]) -> Result<(Vec<(u8, &[u8])>, &[u8]), Box<dyn std::error::Error>> {
+fn syntax(bytes: &[u8]) -> Result<JpegSyntax<'_>, Box<dyn std::error::Error>> {
     if !bytes.starts_with(&[0xff, 0xd8]) || !bytes.ends_with(&[0xff, 0xd9]) {
         return Err("complete JPEG delimiters".into());
     }
@@ -114,12 +115,12 @@ fn headers_declare_only_bounded_baseline_gray_or_ycbcr444_without_metadata() -> 
         let count = if format == PixelFormat::Grayscale { 1 } else { 3 };
         let quantizers = headers[0].1;
         assert_eq!(quantizers.len(), if count == 1 { 65 } else { 130 });
-        for table in quantizers.chunks_exact(65) {
+        for table in quantizers.as_chunks::<65>().0 {
             assert!(table[1..].iter().all(|value| *value == 1));
         }
         let sof = headers[1].1;
         assert_eq!(&sof[..6], &[8, 0, 13, 0, 17, count]);
-        for (component, entry) in sof[6..].chunks_exact(3).enumerate() {
+        for (component, entry) in sof[6..].as_chunks::<3>().0.iter().enumerate() {
             assert_eq!(entry, &[component as u8 + 1, 0x11, u8::from(component != 0)]);
         }
         let decoded = decode(&jpeg)?;
@@ -173,12 +174,12 @@ fn quality_scaling_stays_baseline_and_preserves_real_color_components() -> Test 
     for quality in [1, 2, 25, 50, 75, 99, 100] {
         let jpeg = encode(32, 24, &pixels, PixelFormat::Rgb, quality)?;
         let (headers, _) = syntax(jpeg.bytes())?;
-        for table in headers[0].1.chunks_exact(65) {
+        for table in headers[0].1.as_chunks::<65>().0 {
             assert!(table[1..].iter().all(|value| *value != 0));
             if quality == 1 { assert!(table[1..].iter().all(|value| *value == 255)); }
         }
         let result = decode(&jpeg)?;
-        assert!(result.chunks_exact(3).any(|pixel| pixel[0] != pixel[1] && pixel[1] != pixel[2]));
+        assert!(result.as_chunks::<3>().0.iter().any(|pixel| pixel[0] != pixel[1] && pixel[1] != pixel[2]));
     }
     let gray = encode(8, 8, &[128; 64], PixelFormat::Grayscale, 50)?;
     assert_eq!(&syntax(gray.bytes())?.0[0].1[..9], &[0, 16, 11, 12, 14, 12, 10, 16, 14]);

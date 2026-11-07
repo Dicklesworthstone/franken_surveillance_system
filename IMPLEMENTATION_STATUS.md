@@ -4,6 +4,46 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Lossless grayscale Matroska framing
+
+The new first-party `fss-container::matroska_gray` module frames unchanged,
+packed gray8 samples as one progressive Matroska Y800 video track. It uses fixed
+256-byte initialization and 64-byte frame-prefix storage, without allocating or
+copying an image, changing sample values, seeking, or adding runtime dependencies.
+One finite Cluster/BlockGroup per frame carries an explicit duration.
+
+Playback cadence is explicitly selected as a bounded rational rate. Absolute
+nanosecond boundaries are floored independently, so fractional frame periods do
+not accumulate rounding drift. This is presentation timing, not inferred capture
+time or UTC. The source owner still enforces privacy, source/window lineage,
+aggregate budgets, cancellation, partial-write fencing and durable completion.
+CLI integration is the next active slice; this foundation alone does not
+complete VIT-023's grant-bound, attested, custody-tracked reviewer delivery.
+See [the profile and remaining authority boundary](docs/LOSSLESS_MATROSKA_OUTPUT.md).
+
+**Validation:** six public contracts and two internal EBML cases are authored;
+the new Rust has not compiled or run because the workspace disappeared during
+its first write. Independent source audits found no concrete layout/API blocker.
+A separate pre-outage 7x5, three-frame feasibility prototype was decoded by pinned
+FFmpeg with all 105 samples exact and explicit packet timestamps/durations.
+That probe did not execute the recovered production writer.
+
+## Restored native model and media execution
+
+The exact published `edc1bb01247c341939a0fadbafdcb67f11537320` source passed
+**114 focused native tests**: 43 encoder/stream/window contracts and 71 model
+attention/broadcast/activation/nearest/linear-resize contracts. This establishes
+the earlier recovered source-window and bilinear implementations' focused
+execution, including actual scalar/optimized executors and artifact reload.
+
+Later scoped formatting and targeted Clippy passed in the working tree. Five
+encoder-test lint issues were repaired with a type alias and exact array chunks.
+The workspace then disconnected; inaccessible formatter-only layouts were omitted
+from recovery. The recovered test repairs still need exact-byte reruns. A full
+CLI check was SIGKILLed in unchanged fss-core before CLI diagnostics, so no full
+reference/runtime or process-level qualification is established. New Matroska and
+InstanceNormalization work is separate from these completed baseline runs.
+
 ## Bounded bilinear ONNX feature-map resampling
 
 Static NCHW Resize-13 now admits linear interpolation with half-pixel, PyTorch

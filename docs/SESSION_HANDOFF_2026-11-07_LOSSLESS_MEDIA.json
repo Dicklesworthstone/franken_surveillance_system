@@ -1,0 +1,74 @@
+{
+  "format": "engineering-session-handoff",
+  "date": "2026-11-07",
+  "timezone": "America/New_York",
+  "state": "active_implementation_execution_workspace_unavailable",
+  "mission": {
+    "goal": "Implement playable lossless local derivatives and consequential native model coverage, with direct-main GitHub checkpoints.",
+    "base_commit": "edc1bb01247c341939a0fadbafdcb67f11537320",
+    "basis": [
+      "AGENTS.md",
+      "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md",
+      ".beads/issues.jsonl",
+      "docs/SESSION_HANDOFF_2026-11-06_REVIEW_WINDOWS.json"
+    ]
+  },
+  "authority": {
+    "git": "User explicitly authorized meaningful direct-main GitHub commits; expected-head non-force updates; no PRs.",
+    "live_device_execution": false,
+    "policy_activation": false
+  },
+  "completed": [
+    "Ran 114 scoped native tests successfully against exact published edc1bb0 source.",
+    "Implemented bounded allocation-free Matroska Y800 framing and explicit rational presentation intervals."
+  ],
+  "verification": {
+    "baseline_commit": "edc1bb01247c341939a0fadbafdcb67f11537320",
+    "media_native_passed": 43,
+    "media_counts": {
+      "encoder_unit": 8,
+      "encoder_contract": 15,
+      "frame_window": 12,
+      "mjpeg_stream": 8
+    },
+    "model_native_passed": 71,
+    "model_counts": {
+      "attention": 13,
+      "broadcast": 10,
+      "leaky_relu": 9,
+      "resize_execution": 25,
+      "nearest_planner": 6,
+      "linear_planner": 8
+    },
+    "later_working_tree": "Scoped formatting and targeted Clippy passed after test-only repairs. Inaccessible formatter-only layouts were omitted from recovery; recovered final test bytes require rerun.",
+    "full_cli": "cargo check --locked --offline -p fss-cli --bin fss-file --test decoded_media_cli_contract --test file_video_stream_cli exited 101 after unchanged fss-core rustc was killed by SIGKILL. No CLI diagnostics or process test pass.",
+    "matroska": {
+      "authored_core_contracts": 8,
+      "source_review": "Independent API, integer arithmetic, fixed-buffer and EBML layout audits found no concrete blocker.",
+      "native_execution": "Not run: workspace disconnected during first source write.",
+      "prototype": "Separate 7x5 three-frame Y800 prototype: FFmpeg decoded all105sample bytes exactly; FFprobe reported explicit0/100M/200Mns starts and100Mns durations. Not the recovered Rust writer."
+    },
+    "release_qualified": false
+  },
+  "active_work": [
+    "Finish lossless gray-mkv CLI integration, bounded output and ordered lineage contracts.",
+    "Finish reviewed InstanceNormalization import and actual-executor contracts."
+  ],
+  "protected_limits": [
+    "Presentation cadence is explicitly selected; it does not preserve or certify source capture timing or gaps.",
+    "Raw grayscale can preserve screened samples exactly; it does not attest source payment masks or authorize delivery.",
+    "VIT-023 remains open for actual FLDT grants, payment-zone protection attestations, derivative custody/expiry and authenticated reviewer delivery.",
+    "New Matroska and InstanceNormalization code has not been compiled or run; prior baseline passes do not qualify it.",
+    "No native execution probes while the environment is explicitly unavailable."
+  ],
+  "continuation": {
+    "next": "Finish separate meaningful direct-main feature checkpoints through GitHub, preserve concurrent changes, and record native verification limits.",
+    "restored_checks": "Run pinned rustfmt and focused container/model/CLI tests against exact final source after execution is restored. Preserve dependency versions, architecture and qualification gates."
+  },
+  "published_checkpoints": [
+    {
+      "commit": "this_commit",
+      "change": "Bounded lossless Matroska container foundation; restored native baseline verification and recovered test fixes."
+    }
+  ]
+}

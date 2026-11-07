@@ -1,9 +1,10 @@
 #![forbid(unsafe_code)]
-//! Deterministic AVC/HEVC fragmented MP4 without transcoding or ambient I/O (FSS-115).
+//! Deterministic bounded media containers without ambient I/O (FSS-115).
 //!
-//! Narrow IDR-led AVC/HEVC video writers and an explicit FLV AVC/AAC A/V
-//! derivative. Timing is supplied in track ticks, never guessed from RTP, VUI, or arrival
-//! clocks. Picture grouping is not decoding or a complete-picture certificate.
+//! Narrow IDR-led AVC/HEVC writers and an explicit FLV AVC/AAC A/V derivative,
+//! plus lossless gray8 Matroska framing. Remux timing is supplied in track ticks;
+//! grayscale playback uses an explicit rational cadence. Neither is guessed from
+//! RTP, VUI, or arrival clocks. Picture grouping is not decoding or a complete-picture certificate.
 //! Source custody, privacy, storage publication, and authentication remain with
 //! the owner. No codec, socket, filesystem, worker, or external runtime is used.
 
@@ -15,6 +16,8 @@ pub mod demux;
 pub mod flv_av;
 /// FLV-source-specific AVC fragmented MP4, preserving connection byte ranges.
 pub mod flv_avc;
+/// Allocation-free framing for timed, lossless grayscale Matroska derivatives.
+pub mod matroska_gray;
 mod hevc;
 mod init;
 mod mux;

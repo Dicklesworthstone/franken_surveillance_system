@@ -213,7 +213,9 @@ stream; playback cadence and source/capture timing remain separately declared.
 The encoder contracts comprise eight internal unit tests and fifteen
 `encode_contract` integration tests. Eight additional
 `mjpeg_stream_contract` tests exercise the actual CLI stream core without the
-runtime adapter. They cover hand-derived flat-block Huffman vectors, exact DC
+runtime adapter. Twelve `frame_window_contract` tests also cover the actual source-time
+selection core and its native MJPEG consumer. The encoder tests cover hand-derived
+flat-block Huffman vectors, exact DC
 half-ties, coefficient basis values, primary-color conversion, marker structure,
 native reconstruction, odd dimensions, quality extremes, exact and one-short
 limits, shared allowances, source mismatch, invalid shapes, cancellation at
@@ -259,17 +261,54 @@ measurement was interrupted by the workspace loss and has no completed result.
 
 The substantive transform and oracle tests were recovered through GitHub from
 the authored patch and the exact published baseline. Unrecoverable formatter-only
-changes to other files were omitted. Thus the passing optimized-workspace
-results do **not** establish byte identity or native qualification for these
-final recovered source bytes. Formatting and native reruns against the final
-commit remain required. A focused Clippy attempt was killed by SIGKILL while
-checking unchanged `fss-core`, before encoder diagnostics; it is not a lint pass.
-No release, camera, custody, timing or pixel-exact redaction qualification is
-implied.
+changes to other files were omitted. Those earlier optimized-workspace results
+therefore did not establish native qualification of the recovered source bytes.
+A focused Clippy attempt was also killed by SIGKILL while checking unchanged
+`fss-core`, before encoder diagnostics.
+
+### Restored native validation on 2026-11-07
+
+The clean published checkout at
+`edc1bb01247c341939a0fadbafdcb67f11537320` passed all **43** scoped native
+contracts: eight encoder unit tests, fifteen encoding contracts, eight stream
+contracts, and twelve frame-window contracts. This directly executed the
+recovered transform and window implementation that the earlier workspace loss
+had left unverified.
+
+The restored workspace was then formatted with the pinned Rust 2024 formatter.
+All 43 contracts passed again, and a final rerun after test-only Clippy repairs
+also passed. Scoped `rustfmt --check` and focused Clippy with
+`--no-deps -- -D warnings` passed. These runs used locked, offline dependencies,
+one build job, disabled debug information and incremental compilation, and
+`RUSTFLAGS=-Zthreads=1` on `nightly-2026-08-31`.
+
+The formatted workspace's runtime `encoder_identity()` was
+`451f08c1e500d5a8044a05c768e5da58765baa6c954520d7e33f89ae5c622767`;
+an independent calculation over its documented source preimage agreed. The
+execution environment then disappeared again. Its formatter-only source layouts
+could not be recovered exactly, so the published production encoder files are
+left unchanged. That formatted identity identifies the tested, unpublished
+workspace; it does not identify this recovered source checkpoint.
+
+The five test-only Clippy diagnostics were repaired again against the exact
+published test baseline: one tuple type alias and four constant-size chunk
+iterations. These recovered test bytes have not been rerun. The published
+baseline's 43-test pass is established; the later formatted-workspace test,
+Clippy and formatting passes must not be promoted to exact-byte qualification of
+the recovered edits. A native rerun and scoped formatting remain required.
+
+The independent decoder observations above remain scoped to their earlier
+synthetic run. No complete-encoder performance result, full CLI/runtime
+qualification, camera qualification, custody publication or pixel-exact JPEG
+redaction claim follows from these native core tests.
 
 ```sh
 cargo test --locked --offline -p fss-codec-jpeg-encode \
-  --lib --test encode_contract --test mjpeg_stream_contract
+  --lib --test encode_contract --test mjpeg_stream_contract --test frame_window_contract \
+  -- --test-threads=1
+cargo clippy --locked --offline -p fss-codec-jpeg-encode \
+  --lib --test encode_contract --test mjpeg_stream_contract --test frame_window_contract \
+  --no-deps -- -D warnings
 ```
 
 Independent laboratory verification should repeat the declared synthetic
