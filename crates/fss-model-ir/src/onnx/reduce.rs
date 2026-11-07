@@ -67,19 +67,46 @@ fn plan(source: &mut SourceNode<'_>, dims: &[usize]) -> Result<Plan> {
         return Err(OnnxError::Limit);
     }
     let permutation = kept.chain(axes).collect::<Vec<_>>();
-    let transpose = permutation.iter().enumerate().any(|(axis, &actual)| axis != actual);
-    let permuted_dims = permutation.iter().map(|&axis| dims[axis]).collect::<Vec<_>>();
+    let transpose = permutation
+        .iter()
+        .enumerate()
+        .any(|(axis, &actual)| axis != actual);
+    let permuted_dims = permutation
+        .iter()
+        .map(|&axis| dims[axis])
+        .collect::<Vec<_>>();
     let reshape = permuted_dims != [rows, width];
-    let output = dims.iter().enumerate().filter_map(|(axis, &dim)| {
-        if reduced[axis] { keepdims.then_some(1) } else { Some(dim) }
-    }).collect::<Vec<_>>();
+    let output = dims
+        .iter()
+        .enumerate()
+        .filter_map(|(axis, &dim)| {
+            if reduced[axis] {
+                keepdims.then_some(1)
+            } else {
+                Some(dim)
+            }
+        })
+        .collect::<Vec<_>>();
     let restore = output != [rows, 1];
     let nodes = 2 + usize::from(transpose) + usize::from(reshape) + usize::from(restore);
-    Ok(Plan { output, permutation, rows, width, transpose, reshape, restore, nodes })
+    Ok(Plan {
+        output,
+        permutation,
+        rows,
+        width,
+        transpose,
+        reshape,
+        restore,
+        nodes,
+    })
 }
 
 fn ints(dims: &[usize]) -> Result<AttrValue> {
-    Ok(AttrValue::IntList(dims.iter().map(|&dim| i64::try_from(dim).map_err(|_| OnnxError::Limit)).collect::<Result<Vec<_>>>()?))
+    Ok(AttrValue::IntList(
+        dims.iter()
+            .map(|&dim| i64::try_from(dim).map_err(|_| OnnxError::Limit))
+            .collect::<Result<Vec<_>>>()?,
+    ))
 }
 
 fn append(
@@ -92,9 +119,27 @@ fn append(
 ) -> Result<String> {
     let ordinal = *remaining;
     *remaining = remaining.checked_sub(1).ok_or(OnnxError::Graph)?;
-    let id = if *remaining == 0 { source.id.clone() } else { format!("{}-mean-{ordinal}", source.id) };
-    let output = if *remaining == 0 { source.outputs[0].clone() } else { lowering.fresh_name(&id)? };
-    lowering.append(GraphNode::new(id, op, source.label.clone(), inputs, vec![output.clone()], attrs).map_err(|_| OnnxError::Graph)?)?;
+    let id = if *remaining == 0 {
+        source.id.clone()
+    } else {
+        format!("{}-mean-{ordinal}", source.id)
+    };
+    let output = if *remaining == 0 {
+        source.outputs[0].clone()
+    } else {
+        lowering.fresh_name(&id)?
+    };
+    lowering.append(
+        GraphNode::new(
+            id,
+            op,
+            source.label.clone(),
+            inputs,
+            vec![output.clone()],
+            attrs,
+        )
+        .map_err(|_| OnnxError::Graph)?,
+    )?;
     Ok(output)
 }
 
@@ -102,57 +147,137 @@ pub(super) fn lower(mut source: SourceNode<'_>, lowering: &mut Lowering<'_, '_>)
     if source.inputs.len() != 1 || source.outputs.len() != 1 || source.inputs[0].is_empty() {
         return Err(OnnxError::Graph);
     }
-    let input = lowering.known.get(&source.inputs[0]).ok_or(OnnxError::Graph)?;
+    let input = lowering
+        .known
+        .get(&source.inputs[0])
+        .ok_or(OnnxError::Graph)?;
     if input.dtype() != DType::F32 || input.shape().dims().contains(&0) {
         return Err(OnnxError::Unsupported);
     }
     let dims = input.shape().dims().to_vec();
     lowering.admission.charge(1 + dims.len())?;
     let plan = plan(&mut source, &dims)?;
-    port(source.outputs[0].clone(), plan.output.clone(), lowering.generation, lowering.admission)?;
+    port(
+        source.outputs[0].clone(),
+        plan.output.clone(),
+        lowering.generation,
+        lowering.admission,
+    )?;
     let ones_bytes = plan.width.checked_mul(4).ok_or(OnnxError::Limit)?;
     let added_bytes = ones_bytes.checked_add(4).ok_or(OnnxError::Limit)?;
     let limits = lowering.admission.limits;
     // Reserve both parameters and the complete lowering before allocating any
     // vector or helper. Transpose/reshape preserve input size; the sum contracts it.
-    if lowering.nodes.len().checked_add(plan.nodes).ok_or(OnnxError::Limit)? > limits.nodes
-        || lowering.known.len().checked_add(plan.nodes + 2).ok_or(OnnxError::Limit)? > limits.tensors
-        || lowering.reserved.len().checked_add(plan.nodes + 1).ok_or(OnnxError::Limit)? > limits.tensors
-        || lowering.parameter_bytes.checked_add(added_bytes).ok_or(OnnxError::Limit)? > limits.parameter_bytes
+    if lowering
+        .nodes
+        .len()
+        .checked_add(plan.nodes)
+        .ok_or(OnnxError::Limit)?
+        > limits.nodes
+        || lowering
+            .known
+            .len()
+            .checked_add(plan.nodes + 2)
+            .ok_or(OnnxError::Limit)?
+            > limits.tensors
+        || lowering
+            .reserved
+            .len()
+            .checked_add(plan.nodes + 1)
+            .ok_or(OnnxError::Limit)?
+            > limits.tensors
+        || lowering
+            .parameter_bytes
+            .checked_add(added_bytes)
+            .ok_or(OnnxError::Limit)?
+            > limits.parameter_bytes
         || ones_bytes > limits.tensor_bytes
     {
         return Err(OnnxError::Limit);
     }
     let ones_name = lowering.fresh_name(&format!("{}-mean-ones", source.id))?;
-    let ones = port(ones_name.clone(), vec![plan.width, 1], lowering.generation, lowering.admission)?;
+    let ones = port(
+        ones_name.clone(),
+        vec![plan.width, 1],
+        lowering.generation,
+        lowering.admission,
+    )?;
     lowering.admission.charge(ones_bytes)?;
     let mut values = Vec::new();
-    values.try_reserve_exact(plan.width).map_err(|_| OnnxError::Limit)?;
+    values
+        .try_reserve_exact(plan.width)
+        .map_err(|_| OnnxError::Limit)?;
     for _ in 0..plan.width {
         lowering.admission.charge(1)?;
         values.push(1.0_f32);
     }
     lowering.admission.charge(ones_bytes)?;
-    let tensor = Tensor::from_values(ones.shape().clone(), &values, lowering.generation).map_err(|_| OnnxError::Limit)?;
+    let tensor = Tensor::from_values(ones.shape().clone(), &values, lowering.generation)
+        .map_err(|_| OnnxError::Limit)?;
     lowering.add_constant(ones, tensor)?;
     let divisor_name = lowering.fresh_name(&format!("{}-mean-divisor", source.id))?;
-    let divisor = port(divisor_name.clone(), Vec::new(), lowering.generation, lowering.admission)?;
+    let divisor = port(
+        divisor_name.clone(),
+        Vec::new(),
+        lowering.generation,
+        lowering.admission,
+    )?;
     lowering.admission.charge(4)?;
-    let tensor = Tensor::from_values(divisor.shape().clone(), &[plan.width as f32], lowering.generation).map_err(|_| OnnxError::Limit)?;
+    let tensor = Tensor::from_values(
+        divisor.shape().clone(),
+        &[plan.width as f32],
+        lowering.generation,
+    )
+    .map_err(|_| OnnxError::Limit)?;
     lowering.add_constant(divisor, tensor)?;
 
     let mut remaining = plan.nodes;
     let mut value = source.inputs[0].clone();
     if plan.transpose {
-        value = append(&source, lowering, &mut remaining, OpCode::Transpose, vec![value], AttributeMap::from([("permutation".into(), ints(&plan.permutation)?)]))?;
+        value = append(
+            &source,
+            lowering,
+            &mut remaining,
+            OpCode::Transpose,
+            vec![value],
+            AttributeMap::from([("permutation".into(), ints(&plan.permutation)?)]),
+        )?;
     }
     if plan.reshape {
-        value = append(&source, lowering, &mut remaining, OpCode::Reshape, vec![value], AttributeMap::from([("shape".into(), ints(&[plan.rows, plan.width])?)]))?;
+        value = append(
+            &source,
+            lowering,
+            &mut remaining,
+            OpCode::Reshape,
+            vec![value],
+            AttributeMap::from([("shape".into(), ints(&[plan.rows, plan.width])?)]),
+        )?;
     }
-    value = append(&source, lowering, &mut remaining, OpCode::MatMul, vec![value, ones_name], AttributeMap::new())?;
-    value = append(&source, lowering, &mut remaining, OpCode::Div, vec![value, divisor_name], AttributeMap::new())?;
+    value = append(
+        &source,
+        lowering,
+        &mut remaining,
+        OpCode::MatMul,
+        vec![value, ones_name],
+        AttributeMap::new(),
+    )?;
+    value = append(
+        &source,
+        lowering,
+        &mut remaining,
+        OpCode::Div,
+        vec![value, divisor_name],
+        AttributeMap::new(),
+    )?;
     if plan.restore {
-        append(&source, lowering, &mut remaining, OpCode::Reshape, vec![value], AttributeMap::from([("shape".into(), ints(&plan.output)?)]))?;
+        append(
+            &source,
+            lowering,
+            &mut remaining,
+            OpCode::Reshape,
+            vec![value],
+            AttributeMap::from([("shape".into(), ints(&plan.output)?)]),
+        )?;
     }
     if remaining != 0 {
         return Err(OnnxError::Graph);

@@ -188,6 +188,9 @@ or empty axes means all dimensions, as in the opset-13 reference; the later
 input-axes and `noop_with_empty_axes` forms are not admitted. `keepdims`
 defaults to one; zero removes reduced dimensions. Duplicate axes, invalid
 attribute types, unsupported attributes and conflicting output shapes refuse.
+An explicitly empty INTS attribute is accepted both as an absent repeated-field
+payload with its type discriminator and as an empty packed field. Scalar/list
+mixtures and missing or conflicting type discriminators still refuse.
 
 The native numerical contract is an ordered F32 accumulation from positive
 zero followed by a separate F32 division. Reduced coordinates are visited in
@@ -216,7 +219,7 @@ mean parameters are generation-bound and exported normally. Cancellation is
 checked during import and parameter generation. The importer identity includes
 both implementation sources without changing frozen Model IR IDs or encoding.
 
-The twelve authored cases in `onnx_attention_execution` use the real scalar
+The thirteen native cases in `onnx_attention_execution` use the real scalar
 and optimized executors, canonical graph reload and the production Safetensors
 parser. They include a two-batch, two-head Q/K/V projection and selection,
 batched attention, residual, pooled features and dense head. Exact layout and
@@ -224,12 +227,17 @@ ordered-mean oracles are separate from a binary64 oracle with a declared bound
 for the small ordinary attention fixtures. Additional cases cover scalar/vector
 selection, all admitted ranks, static control/data dispatch, rounding and
 overflow, constant helper counts, namespace collisions, resource limits,
-generation mismatch and cancellation.
+generation mismatch and cancellation. The empty-attribute case also checks both
+protobuf encodings through graph/weight reload while preserving their distinct
+source provenance.
 
-**Validation remains pending for this checkpoint:** the development workspace
-became unavailable before Cargo was invoked for this new target. The authored
-cases are not a passing proof, and no trained detector, embedding quality or
-full RF-DETR import qualification is claimed.
+**Native validation:** all thirteen attention contracts pass on pinned nightly
+`2026-08-31` with locked offline dependencies, together with all ten broadcast
+and nine leaky-activation contracts. The restored workspace exposed and repaired
+the parser's refusal of normally encoded empty INTS attributes; it also corrected
+the practical-token fixture's parameter-byte expectation to include the two Gemm
+scalars. These are native arithmetic, artifact and refusal checks; trained
+detector, embedding quality and full RF-DETR import qualification remain open.
 
 ```sh
 cargo +nightly-2026-08-31 test --locked --offline -p fss-model-ir \

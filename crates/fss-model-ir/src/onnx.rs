@@ -429,7 +429,11 @@ fn attribute(bytes: &[u8], a: &mut Admission<'_>) -> Result<(String, AttrValue)>
         (Some(1), Some(v @ AttrValue::Float(_)), false) => v,
         (Some(2), Some(v @ AttrValue::Int(_)), false) => v,
         (Some(3), Some(v @ AttrValue::String(_)), false) => v,
-        (Some(7), None, true) => AttrValue::IntList(list),
+        // A protobuf repeated field has no presence bit: an empty INTS value
+        // normally serializes only its type discriminator, without field 8.
+        // Accept that encoding just like an explicitly empty packed field;
+        // scalar/list mixtures and absent or conflicting types still refuse.
+        (Some(7), None, _) => AttrValue::IntList(list),
         _ => return Err(OnnxError::Malformed),
     };
     Ok((id.ok_or(OnnxError::Malformed)?, value))

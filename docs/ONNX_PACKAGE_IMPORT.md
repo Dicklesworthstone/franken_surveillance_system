@@ -347,9 +347,10 @@ feature heads. Gather accepts bounded constant scalar/vector indices and copies
 selected samples exactly. ReduceMean uses deterministic row-major F32
 accumulation followed by division; finite inputs can overflow the intermediate
 sum, and this is not a higher-precision ONNX mean guarantee. Both use existing
-native operators, bounded helpers and ordinary resource limits. Native execution
-of the newly authored attention target remains pending because the development
-workspace became unavailable before Cargo started. See
+native operators, bounded helpers and ordinary resource limits. All thirteen
+attention contracts now pass in the restored workspace, including real scalar
+and optimized execution, graph/weight reload and empty-axis protobuf encodings.
+This does not establish a trained model's quality or deployment qualification. See
 [static attention selection and pooled features](onnx_import.md#static-attention-selection-and-pooled-features)
 for the numerical and shape profile, controls, artifact identity and validation scope.
 

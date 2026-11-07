@@ -41,8 +41,15 @@ fn append(
         lowering.fresh_name(&id)?
     };
     lowering.append(
-        GraphNode::new(id, op, source.label.clone(), inputs, vec![output.clone()], attrs)
-            .map_err(|_| OnnxError::Graph)?,
+        GraphNode::new(
+            id,
+            op,
+            source.label.clone(),
+            inputs,
+            vec![output.clone()],
+            attrs,
+        )
+        .map_err(|_| OnnxError::Graph)?,
     )?;
     Ok(output)
 }
@@ -54,7 +61,10 @@ pub(super) fn lower(mut source: SourceNode<'_>, lowering: &mut Lowering<'_, '_>)
     {
         return Err(OnnxError::Graph);
     }
-    let input = lowering.known.get(&source.inputs[0]).ok_or(OnnxError::Graph)?;
+    let input = lowering
+        .known
+        .get(&source.inputs[0])
+        .ok_or(OnnxError::Graph)?;
     let dims = input.shape().dims().to_vec();
     if input.dtype() != DType::F32 || dims.is_empty() || dims.contains(&0) {
         return Err(OnnxError::Unsupported);
@@ -70,11 +80,17 @@ pub(super) fn lower(mut source: SourceNode<'_>, lowering: &mut Lowering<'_, '_>)
     if !source.attrs.is_empty() {
         return Err(OnnxError::Unsupported);
     }
-    let control = lowering.constants.get(&source.inputs[1]).ok_or(OnnxError::Unsupported)?;
+    let control = lowering
+        .constants
+        .get(&source.inputs[1])
+        .ok_or(OnnxError::Unsupported)?;
     if control.dtype() != DType::I64 || control.shape().rank() > 1 {
         return Err(OnnxError::Graph);
     }
-    let count = control.shape().num_elements().map_err(|_| OnnxError::Limit)?;
+    let count = control
+        .shape()
+        .num_elements()
+        .map_err(|_| OnnxError::Limit)?;
     if count == 0 {
         return Err(OnnxError::Unsupported);
     }
@@ -103,12 +119,32 @@ pub(super) fn lower(mut source: SourceNode<'_>, lowering: &mut Lowering<'_, '_>)
     } else {
         output_dims[axis] = count;
     }
-    port(source.outputs[0].clone(), output_dims.clone(), lowering.generation, lowering.admission)?;
+    port(
+        source.outputs[0].clone(),
+        output_dims.clone(),
+        lowering.generation,
+        lowering.admission,
+    )?;
     let nodes = runs.len() + usize::from(runs.len() > 1) + usize::from(scalar);
     let limits = lowering.admission.limits;
-    if lowering.nodes.len().checked_add(nodes).ok_or(OnnxError::Limit)? > limits.nodes
-        || lowering.known.len().checked_add(nodes).ok_or(OnnxError::Limit)? > limits.tensors
-        || lowering.reserved.len().checked_add(nodes - 1).ok_or(OnnxError::Limit)? > limits.tensors
+    if lowering
+        .nodes
+        .len()
+        .checked_add(nodes)
+        .ok_or(OnnxError::Limit)?
+        > limits.nodes
+        || lowering
+            .known
+            .len()
+            .checked_add(nodes)
+            .ok_or(OnnxError::Limit)?
+            > limits.tensors
+        || lowering
+            .reserved
+            .len()
+            .checked_add(nodes - 1)
+            .ok_or(OnnxError::Limit)?
+            > limits.tensors
     {
         return Err(OnnxError::Limit);
     }
@@ -139,7 +175,10 @@ pub(super) fn lower(mut source: SourceNode<'_>, lowering: &mut Lowering<'_, '_>)
             AttributeMap::from([("axis".into(), AttrValue::Int(axis as i64))]),
         )?;
     } else if scalar {
-        let shape = output_dims.iter().map(|&dim| i64::try_from(dim).map_err(|_| OnnxError::Limit)).collect::<Result<Vec<_>>>()?;
+        let shape = output_dims
+            .iter()
+            .map(|&dim| i64::try_from(dim).map_err(|_| OnnxError::Limit))
+            .collect::<Result<Vec<_>>>()?;
         append(
             &source,
             lowering,

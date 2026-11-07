@@ -4,6 +4,22 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Native attention import correction and resumed execution
+
+The pinned native attention tests exposed a protobuf admission error: a correctly
+typed empty ONNX INTS attribute can omit its repeated payload field entirely.
+The importer now admits that canonical empty-list encoding, including ReduceMean's
+reduce-all axes case, while preserving type and mixed-payload refusals. Empty and
+packed-empty encodings have an execution/artifact equivalence regression. The
+practical-token test also now counts the existing Gemm alpha/beta parameters.
+
+**Validation:** 13 attention, 10 broadcast and nine LeakyRelu contracts passed on
+the pinned nightly with locked offline dependencies. These exercise actual scalar
+and optimized executor source and canonical artifact reload without compiling the
+unrelated asynchronous runtime. Scoped formatting checks passed. The unchanged
+Asupersync dependency was still terminated by SIGKILL in the full CLI check; this
+does not qualify the complete reference application or a trained model artifact.
+
 ## Privacy-screened local MJPEG output (2026-11-07; native execution pending)
 
 `fss-file decode` now accepts `--output-format mjpeg` for retained JPEG and

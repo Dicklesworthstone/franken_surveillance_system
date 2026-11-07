@@ -1,0 +1,46 @@
+{
+  "format": "engineering-session-handoff",
+  "date": "2026-11-06",
+  "timezone": "America/New_York",
+  "state": "active_implementation_with_native_validation",
+  "mission": {
+    "goal": "Implement consequential review-output and model-import gaps, with meaningful direct-main GitHub checkpoints.",
+    "base_commit": "c0c3448e605b2c8036b3d4b8327b1cf5be3675f1",
+    "basis": ["AGENTS.md", "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md", ".beads/issues.jsonl", "docs/SESSION_HANDOFF_2026-11-07_JPEG_ATTENTION.json"]
+  },
+  "authority": {
+    "git": "User explicitly authorized direct-main GitHub commits; expected-head non-force updates; no PRs.",
+    "live_device_execution": false,
+    "policy_activation": false
+  },
+  "completed": [
+    "Admitted valid empty ONNX integer-list attributes while retaining malformed-type and mixed-payload refusal.",
+    "Corrected the practical attention fixture's parameter-byte accounting and verified empty-list artifact equivalence."
+  ],
+  "verification": {
+    "attention_native_passed": 13,
+    "broadcast_native_passed": 10,
+    "leaky_relu_native_passed": 9,
+    "attention_checkpoint_failed": 0,
+    "model_scope": "Pinned nightly, locked/offline Cargo; real scalar/optimized executor sources and real artifact parser; no full runtime or trained-model qualification.",
+    "model_formatting": "Scoped rustfmt --check passed.",
+    "published_encoder_baseline": "29 native contracts passed: 6 unit, 15 encoder, 8 MJPEG stream core. Independent 128-case Pillow and 16-case FFmpeg comparisons completed before optimization.",
+    "full_cli": "cargo check --locked --offline -p fss-cli --bin fss-file --test decoded_media_cli_contract --test file_video_stream_core --test file_video_stream_cli stopped in unchanged asupersync 0.5.0 with SIGKILL; jobs=1, debuginfo=0, incremental=0, -Zthreads=1.",
+    "release_qualified": false
+  },
+  "active_work": [
+    "Bounded source-time window selection and local PGM/MJPEG output integration, preserving exact clock and operator-assumption provenance.",
+    "Separable bilinear Resize lowering with bounded parameter/helper expansion and real executor tests.",
+    "Integer JPEG DCT factorization against the retained matrix oracle and end-to-end byte comparisons."
+  ],
+  "protected_limits": [
+    "VIT-023 remains open: signed FLDT access-grant and payment-mask attestation consumers are absent; local decode output cannot invent them.",
+    "Window selection is conditional on retained time assumptions, not a claim of UTC accuracy or complete coverage.",
+    "Lossy JPEG does not establish pixel-exact post-decode masks.",
+    "Full CLI/runtime execution remains blocked by dependency compiler termination."
+  ],
+  "continuation": {
+    "model_tests": "cargo test --locked --offline -p fss-model-ir --test onnx_attention_execution --test onnx_broadcast_execution --test onnx_leaky_relu_execution -- --test-threads=1 --skip scalar_executor:: --skip optimized_executor::",
+    "next": "Finish the active vertical extensions, run native pure-core contracts and independent media oracles, then publish separate meaningful direct-main checkpoints and retain exact validation limits."
+  }
+}

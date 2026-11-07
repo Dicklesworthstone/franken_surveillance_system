@@ -269,28 +269,74 @@ fn bits(values: &[f32]) -> Vec<u32> {
 }
 
 fn int_weight(name: &str, dimensions: &[usize], values: &[i64]) -> Vec<u8> {
-    bytes(5, &tensor(name, dimensions, 7, &values.iter().flat_map(|value| value.to_le_bytes()).collect::<Vec<_>>()))
+    bytes(
+        5,
+        &tensor(
+            name,
+            dimensions,
+            7,
+            &values
+                .iter()
+                .flat_map(|value| value.to_le_bytes())
+                .collect::<Vec<_>>(),
+        ),
+    )
 }
 fn data(dimensions: &[usize], values: &[f32]) -> Test<Tensor> {
-    Ok(Tensor::from_values(Shape::new(dimensions.to_vec())?, values, GENERATION)?)
+    Ok(Tensor::from_values(
+        Shape::new(dimensions.to_vec())?,
+        values,
+        GENERATION,
+    )?)
 }
-fn gather_model(input: &[usize], index_dims: &[usize], indices: &[i64], axis: i64, output: &[usize]) -> Vec<u8> {
-    model(&[
-        node("Gather", &["input", "indices"], &["output"], &int_attr("axis", axis)),
-        int_weight("indices", index_dims, indices),
-        bytes(11, &info("input", input, 1)),
-        bytes(12, &info("output", output, 1)),
-    ].concat())
+fn gather_model(
+    input: &[usize],
+    index_dims: &[usize],
+    indices: &[i64],
+    axis: i64,
+    output: &[usize],
+) -> Vec<u8> {
+    model(
+        &[
+            node(
+                "Gather",
+                &["input", "indices"],
+                &["output"],
+                &int_attr("axis", axis),
+            ),
+            int_weight("indices", index_dims, indices),
+            bytes(11, &info("input", input, 1)),
+            bytes(12, &info("output", output, 1)),
+        ]
+        .concat(),
+    )
 }
 fn mean_attrs(axes: Option<&[i64]>, keepdims: Option<i64>) -> Vec<u8> {
-    [axes.map_or_else(Vec::new, |axes| ints_attr("axes", axes)), keepdims.map_or_else(Vec::new, |keep| int_attr("keepdims", keep))].concat()
+    [
+        axes.map_or_else(Vec::new, |axes| ints_attr("axes", axes)),
+        keepdims.map_or_else(Vec::new, |keep| int_attr("keepdims", keep)),
+    ]
+    .concat()
 }
-fn mean_model(input: &[usize], axes: Option<&[i64]>, keepdims: Option<i64>, output: &[usize]) -> Vec<u8> {
-    model(&[
-        node("ReduceMean", &["input"], &["output"], &mean_attrs(axes, keepdims)),
-        bytes(11, &info("input", input, 1)),
-        bytes(12, &info("output", output, 1)),
-    ].concat())
+fn mean_model(
+    input: &[usize],
+    axes: Option<&[i64]>,
+    keepdims: Option<i64>,
+    output: &[usize],
+) -> Vec<u8> {
+    model(
+        &[
+            node(
+                "ReduceMean",
+                &["input"],
+                &["output"],
+                &mean_attrs(axes, keepdims),
+            ),
+            bytes(11, &info("input", input, 1)),
+            bytes(12, &info("output", output, 1)),
+        ]
+        .concat(),
+    )
 }
 
 // Direct source-coordinate selection, independent of Slice/Concat runs.
@@ -313,7 +359,12 @@ fn gather_oracle(values: &[f32], dims: &[usize], axis: usize, indices: &[i64]) -
 // Traverse the original tensor once, accumulating each output bucket in original
 // row-major order. No production permutation, MatMul or shape helper is reused.
 fn mean_oracle(values: &[f32], dims: &[usize], axes: &[usize]) -> Vec<f32> {
-    let output_count = dims.iter().enumerate().filter(|(axis, _)| !axes.contains(axis)).map(|(_, &dim)| dim).product();
+    let output_count = dims
+        .iter()
+        .enumerate()
+        .filter(|(axis, _)| !axes.contains(axis))
+        .map(|(_, &dim)| dim)
+        .product();
     let width: usize = axes.iter().map(|&axis| dims[axis]).product();
     let mut result = vec![0.0_f32; output_count];
     for (flat, &value) in values.iter().enumerate() {
@@ -330,7 +381,9 @@ fn mean_oracle(values: &[f32], dims: &[usize], axes: &[usize]) -> Vec<f32> {
         }
         result[output] += value;
     }
-    for value in &mut result { *value /= width as f32; }
+    for value in &mut result {
+        *value /= width as f32;
+    }
     result
 }
 
@@ -338,37 +391,75 @@ fn mean_oracle(values: &[f32], dims: &[usize], axes: &[usize]) -> Vec<f32> {
 fn gather_literals_distinguish_scalar_vector_and_repeated_indices() -> Test {
     let input = data(&[2, 3], &[1., 2., 3., 4., 5., 6.])?;
     let source = gather_model(&[2, 3], &[3], &[-1, 0, -1], -1, &[2, 3]);
-    assert_eq!(bits(&roundtrip(&source, &[("input", input.clone())])?["output"]), bits(&[3., 1., 3., 6., 4., 6.]));
+    assert_eq!(
+        bits(&roundtrip(&source, &[("input", input.clone())])?["output"]),
+        bits(&[3., 1., 3., 6., 4., 6.])
+    );
     for (index_dims, output) in [(vec![], vec![2]), (vec![1], vec![2, 1])] {
         let source = gather_model(&[2, 3], &index_dims, &[1], 1, &output);
         assert_eq!(import(&source)?.graph().outputs()[0].shape().dims(), output);
-        assert_eq!(bits(&roundtrip(&source, &[("input", input.clone())])?["output"]), bits(&[2., 5.]));
+        assert_eq!(
+            bits(&roundtrip(&source, &[("input", input.clone())])?["output"]),
+            bits(&[2., 5.])
+        );
     }
     let source = gather_model(&[2], &[], &[-1], 0, &[]);
-    assert_eq!(bits(&roundtrip(&source, &[("input", data(&[2], &[1., -0.])?)])?["output"]), bits(&[-0.]));
+    assert_eq!(
+        bits(&roundtrip(&source, &[("input", data(&[2], &[1., -0.])?)])?["output"]),
+        bits(&[-0.])
+    );
     // A contiguous selection is one range, including negative source indices.
     let source = gather_model(&[2, 3], &[3], &[-3, -2, -1], 1, &[2, 3]);
     assert_eq!(import(&source)?.graph().node_count(), 1);
-    assert_eq!(bits(&roundtrip(&source, &[("input", input)])?["output"]), bits(&[1., 2., 3., 4., 5., 6.]));
+    assert_eq!(
+        bits(&roundtrip(&source, &[("input", input)])?["output"]),
+        bits(&[1., 2., 3., 4., 5., 6.])
+    );
     Ok(())
 }
 
 #[test]
 fn gather_every_rank_and_axis_preserves_exact_finite_bits() -> Test {
-    let special = [-0.0_f32, 0., f32::from_bits(1), -f32::from_bits(1), f32::MIN, f32::MAX, f32::MIN_POSITIVE, -3.25];
+    let special = [
+        -0.0_f32,
+        0.,
+        f32::from_bits(1),
+        -f32::from_bits(1),
+        f32::MIN,
+        f32::MAX,
+        f32::MIN_POSITIVE,
+        -3.25,
+    ];
     for rank in 1..=8 {
         let dims = vec![2; rank];
-        let values = (0..dims.iter().product()).map(|index| special[index % special.len()]).collect::<Vec<_>>();
+        let values = (0..dims.iter().product())
+            .map(|index| special[index % special.len()])
+            .collect::<Vec<_>>();
         for axis in 0..rank {
             for (index_dims, indices) in [(vec![], vec![-1]), (vec![4], vec![1, 0, 1, -2])] {
                 let mut output = dims.clone();
-                if index_dims.is_empty() { output.remove(axis); } else { output[axis] = indices.len(); }
-                let source = gather_model(&dims, &index_dims, &indices, axis as i64 - rank as i64, &output);
+                if index_dims.is_empty() {
+                    output.remove(axis);
+                } else {
+                    output[axis] = indices.len();
+                }
+                let source = gather_model(
+                    &dims,
+                    &index_dims,
+                    &indices,
+                    axis as i64 - rank as i64,
+                    &output,
+                );
                 let imported = import(&source)?;
                 assert!(imported.parameters().is_empty());
                 assert_eq!(imported.runtime_inputs(), &["input"]);
                 let actual = roundtrip(&source, &[("input", data(&dims, &values)?)])?;
-                assert_eq!(bits(&actual["output"]), bits(&gather_oracle(&values, &dims, axis, &indices)), "rank={rank} axis={axis} scalar={}", index_dims.is_empty());
+                assert_eq!(
+                    bits(&actual["output"]),
+                    bits(&gather_oracle(&values, &dims, axis, &indices)),
+                    "rank={rank} axis={axis} scalar={}",
+                    index_dims.is_empty()
+                );
             }
         }
     }
@@ -377,28 +468,57 @@ fn gather_every_rank_and_axis_preserves_exact_finite_bits() -> Test {
 
 #[test]
 fn gather_static_shape_controls_and_constant_data_keep_distinct_dispatch() -> Test {
-    let source = model(&[
-        node("Shape", &["input"], &["shape"], &[]),
-        node("Gather", &["shape", "axis-index"], &["dimension"], &[]),
-        node("Sub", &["dimension", "one"], &["last"], &[]),
-        node("Gather", &["input", "last"], &["output"], &int_attr("axis", 1)),
-        int_weight("axis-index", &[], &[1]),
-        int_weight("one", &[], &[1]),
-        bytes(11, &info("input", &[2, 3], 1)),
-        bytes(12, &info("output", &[2], 1)),
-    ].concat());
+    let source = model(
+        &[
+            node("Shape", &["input"], &["shape"], &[]),
+            node("Gather", &["shape", "axis-index"], &["dimension"], &[]),
+            node("Sub", &["dimension", "one"], &["last"], &[]),
+            node(
+                "Gather",
+                &["input", "last"],
+                &["output"],
+                &int_attr("axis", 1),
+            ),
+            int_weight("axis-index", &[], &[1]),
+            int_weight("one", &[], &[1]),
+            bytes(11, &info("input", &[2, 3], 1)),
+            bytes(12, &info("output", &[2], 1)),
+        ]
+        .concat(),
+    );
     let imported = import(&source)?;
     assert!(imported.parameters().is_empty());
     assert_eq!(imported.graph().node_count(), 2);
-    assert_eq!(bits(&roundtrip(&source, &[("input", data(&[2, 3], &[1., 2., 3., 4., 5., 6.])?)])?["output"]), bits(&[3., 6.]));
-    let source = model(&[
-        node("Constant", &[], &["index"], &int_attr("value_int", -1)),
-        node("Gather", &["data", "index"], &["output"], &[]),
-        weight("data", &[3], &[1., 2., -f32::from_bits(1)]),
-        bytes(12, &info("output", &[], 1)),
-    ].concat());
-    assert_eq!(bits(&roundtrip(&source, &[])?["output"]), bits(&[-f32::from_bits(1)]));
-    assert_eq!(import(&source)?.parameters().keys().map(String::as_str).collect::<Vec<_>>(), ["data"]);
+    assert_eq!(
+        bits(
+            &roundtrip(
+                &source,
+                &[("input", data(&[2, 3], &[1., 2., 3., 4., 5., 6.])?)]
+            )?["output"]
+        ),
+        bits(&[3., 6.])
+    );
+    let source = model(
+        &[
+            node("Constant", &[], &["index"], &int_attr("value_int", -1)),
+            node("Gather", &["data", "index"], &["output"], &[]),
+            weight("data", &[3], &[1., 2., -f32::from_bits(1)]),
+            bytes(12, &info("output", &[], 1)),
+        ]
+        .concat(),
+    );
+    assert_eq!(
+        bits(&roundtrip(&source, &[])?["output"]),
+        bits(&[-f32::from_bits(1)])
+    );
+    assert_eq!(
+        import(&source)?
+            .parameters()
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["data"]
+    );
     Ok(())
 }
 
@@ -413,7 +533,11 @@ fn mean_noncontiguous_negative_axes_keepdims_and_empty_axes_are_exact() -> Test 
         (Some(vec![]), None, vec![1, 1, 1]),
     ] {
         let source = mean_model(&dims, axes.as_deref(), keep, &output);
-        let expected = if axes.as_ref().is_none_or(Vec::is_empty) { vec![0.5] } else { vec![-3.5, 0.5, 4.5] };
+        let expected = if axes.as_ref().is_none_or(Vec::is_empty) {
+            vec![0.5]
+        } else {
+            vec![-3.5, 0.5, 4.5]
+        };
         let actual = roundtrip(&source, &[("input", data(&dims, &values)?)])?;
         assert_eq!(bits(&actual["output"]), bits(&expected));
         assert_eq!(import(&source)?.graph().outputs()[0].shape().dims(), output);
@@ -422,10 +546,83 @@ fn mean_noncontiguous_negative_axes_keepdims_and_empty_axes_are_exact() -> Test 
 }
 
 #[test]
+fn empty_integer_attributes_accept_both_protobuf_encodings_without_type_confusion() -> Test {
+    let reference = mean_model(&[2, 3], None, None, &[1, 1]);
+    let reference = export(&import(&reference)?)?;
+    for payload in [Vec::new(), bytes(8, &[])] {
+        let source = model(
+            &[
+                node(
+                    "ReduceMean",
+                    &["input"],
+                    &["output"],
+                    &attribute("axes", 7, &payload),
+                ),
+                bytes(11, &info("input", &[2, 3], 1)),
+                bytes(12, &info("output", &[1, 1], 1)),
+            ]
+            .concat(),
+        );
+        let imported = import(&source)?;
+        let artifacts = export(&imported)?;
+        assert_eq!(artifacts.graph_bytes(), reference.graph_bytes());
+        // Parameter bits agree, while the Safetensors provenance header keeps
+        // the distinct original source bytes bound to each exported artifact.
+        let expected = reloaded(&reference)?;
+        let actual = reloaded(&artifacts)?;
+        assert_eq!(
+            actual.keys().collect::<Vec<_>>(),
+            expected.keys().collect::<Vec<_>>()
+        );
+        for (name, tensor) in actual {
+            assert_eq!(tensor.shape(), expected[&name].shape());
+            assert_eq!(
+                bits(&tensor.to_vec::<f32>()?),
+                bits(&expected[&name].to_vec::<f32>()?)
+            );
+        }
+        assert_ne!(artifacts.weights_digest(), reference.weights_digest());
+        assert_eq!(
+            roundtrip(
+                &source,
+                &[("input", data(&[2, 3], &[1., 2., 3., 4., 5., 6.])?)]
+            )?["output"],
+            [3.5]
+        );
+    }
+    for attrs in [
+        // A list discriminator cannot be paired with a scalar payload.
+        attribute("axes", 7, &integer(3, 0)),
+        // A scalar discriminator cannot be paired with an empty list payload.
+        attribute("axes", 2, &bytes(8, &[])),
+        // An empty list still requires the explicit INTS discriminator.
+        bytes(5, &bytes(1, b"axes")),
+        bytes(5, &[bytes(1, b"axes"), bytes(8, &[])].concat()),
+        // A mismatched scalar payload remains ambiguous even alongside a list.
+        attribute("axes", 7, &[integer(3, 0), bytes(8, &[])].concat()),
+    ] {
+        let source = model(
+            &[
+                node("ReduceMean", &["input"], &["output"], &attrs),
+                bytes(11, &info("input", &[2, 3], 1)),
+                bytes(12, &info("output", &[1, 1], 1)),
+            ]
+            .concat(),
+        );
+        assert_eq!(refusal(&source), Some(OnnxError::Malformed));
+    }
+    Ok(())
+}
+
+#[test]
 fn mean_every_admitted_rank_matches_independent_coordinate_accumulation() -> Test {
     for rank in 0..=8 {
-        let dims = (0..rank).map(|axis| if axis % 2 == 0 { 2 } else { 3 }).collect::<Vec<_>>();
-        let values = (0..dims.iter().product()).map(|index| ((index * 7 % 19) as f32 - 9.) / 8.).collect::<Vec<_>>();
+        let dims = (0..rank)
+            .map(|axis| if axis % 2 == 0 { 2 } else { 3 })
+            .collect::<Vec<_>>();
+        let values = (0..dims.iter().product())
+            .map(|index| ((index * 7 % 19) as f32 - 9.) / 8.)
+            .collect::<Vec<_>>();
         let selections = [
             (0..rank).collect::<Vec<_>>(),
             (0..rank).filter(|axis| axis % 2 == 0).collect::<Vec<_>>(),
@@ -433,13 +630,29 @@ fn mean_every_admitted_rank_matches_independent_coordinate_accumulation() -> Tes
         ];
         for axes in selections {
             for keep in [false, true] {
-                let raw = axes.iter().rev().map(|&axis| axis as i64 - rank as i64).collect::<Vec<_>>();
-                let output = dims.iter().enumerate().filter_map(|(axis, &dim)| {
-                    if axes.contains(&axis) { keep.then_some(1) } else { Some(dim) }
-                }).collect::<Vec<_>>();
+                let raw = axes
+                    .iter()
+                    .rev()
+                    .map(|&axis| axis as i64 - rank as i64)
+                    .collect::<Vec<_>>();
+                let output = dims
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(axis, &dim)| {
+                        if axes.contains(&axis) {
+                            keep.then_some(1)
+                        } else {
+                            Some(dim)
+                        }
+                    })
+                    .collect::<Vec<_>>();
                 let source = mean_model(&dims, Some(&raw), Some(i64::from(keep)), &output);
                 let actual = roundtrip(&source, &[("input", data(&dims, &values)?)])?;
-                assert_eq!(bits(&actual["output"]), bits(&mean_oracle(&values, &dims, &axes)), "rank={rank} axes={axes:?} keep={keep}");
+                assert_eq!(
+                    bits(&actual["output"]),
+                    bits(&mean_oracle(&values, &dims, &axes)),
+                    "rank={rank} axes={axes:?} keep={keep}"
+                );
             }
         }
     }
@@ -471,68 +684,115 @@ fn mean_signed_zeros_subnormal_rounding_and_overflow_follow_native_order() -> Te
     // feature, a clamped maximum, or an empty output. This is not a robust mean.
     assert_eq!(overflow["output"], [f32::INFINITY]);
     let source = mean_model(&[], None, None, &[]);
-    assert_eq!(bits(&roundtrip(&source, &[("input", data(&[], &[-0.])?)])?["output"]), bits(&[0.]));
+    assert_eq!(
+        bits(&roundtrip(&source, &[("input", data(&[], &[-0.])?)])?["output"]),
+        bits(&[0.])
+    );
     Ok(())
 }
 
 fn qkv_weights() -> Vec<f32> {
-    (0..48).map(|index| ((index * 5 % 13) as f32 - 6.) / 16.).collect()
+    (0..48)
+        .map(|index| ((index * 5 % 13) as f32 - 6.) / 16.)
+        .collect()
 }
 fn qkv_bias() -> Vec<f32> {
     (0..12).map(|index| (index as f32 - 6.) / 32.).collect()
 }
 fn output_weights() -> Vec<f32> {
-    (0..12).map(|index| ((index % 7) as f32 - 3.) / 8.).collect()
+    (0..12)
+        .map(|index| ((index % 7) as f32 - 3.) / 8.)
+        .collect()
 }
 
 // Two batches, two heads, four feature channels. Q/K/V are packed into one
 // projection, then selected from the permuted block with scalar Gather nodes.
 // A nontrivial residual and token mean feed selected features and a dense head.
 fn attention_model(tokens: usize) -> Vec<u8> {
-    model(&[
-        node("MatMul", &["input", "qkv-weight"], &["projected"], &[]),
-        node("Add", &["projected", "qkv-bias"], &["biased"], &[]),
-        node("Reshape", &["biased", "packed-shape"], &["packed"], &[]),
-        node("Transpose", &["packed"], &["qkv"], &ints_attr("perm", &[2, 0, 3, 1, 4])),
-        node("Gather", &["qkv", "query-index"], &["queries"], &[]),
-        node("Gather", &["qkv", "key-index"], &["keys"], &[]),
-        node("Gather", &["qkv", "value-index"], &["values"], &[]),
-        node("Mul", &["queries", "scale"], &["scaled"], &[]),
-        node("Transpose", &["keys"], &["transposed-keys"], &ints_attr("perm", &[0, 1, 3, 2])),
-        node("MatMul", &["scaled", "transposed-keys"], &["scores"], &[]),
-        node("Softmax", &["scores"], &["attention"], &int_attr("axis", -1)),
-        node("MatMul", &["attention", "values"], &["context"], &[]),
-        node("Transpose", &["context"], &["ordered"], &ints_attr("perm", &[0, 2, 1, 3])),
-        node("Reshape", &["ordered", "token-shape"], &["unpacked"], &[]),
-        node("Add", &["unpacked", "input"], &["tokens"], &[]),
-        node("ReduceMean", &["tokens"], &["features"], &mean_attrs(Some(&[1]), Some(0))),
-        node("Gather", &["features", "feature-indices"], &["selected"], &int_attr("axis", -1)),
-        node("Gemm", &["selected", "output-weight", "output-bias"], &["embedding"], &[]),
-        weight("qkv-weight", &[4, 12], &qkv_weights()),
-        weight("qkv-bias", &[12], &qkv_bias()),
-        weight("scale", &[], &[std::f32::consts::FRAC_1_SQRT_2]),
-        weight("output-weight", &[4, 3], &output_weights()),
-        weight("output-bias", &[3], &[0.125, -0.25, 0.5]),
-        int_weight("packed-shape", &[5], &[2, tokens as i64, 3, 2, 2]),
-        int_weight("token-shape", &[3], &[2, tokens as i64, 4]),
-        int_weight("query-index", &[], &[0]),
-        int_weight("key-index", &[], &[1]),
-        int_weight("value-index", &[], &[-1]),
-        int_weight("feature-indices", &[4], &[3, 1, 3, 0]),
-        bytes(11, &info("input", &[2, tokens, 4], 1)),
-        bytes(12, &info("queries", &[2, 2, tokens, 2], 1)),
-        bytes(12, &info("keys", &[2, 2, tokens, 2], 1)),
-        bytes(12, &info("values", &[2, 2, tokens, 2], 1)),
-        bytes(12, &info("attention", &[2, 2, tokens, tokens], 1)),
-        bytes(12, &info("tokens", &[2, tokens, 4], 1)),
-        bytes(12, &info("features", &[2, 4], 1)),
-        bytes(12, &info("selected", &[2, 4], 1)),
-        bytes(12, &info("embedding", &[2, 3], 1)),
-    ].concat())
+    model(
+        &[
+            node("MatMul", &["input", "qkv-weight"], &["projected"], &[]),
+            node("Add", &["projected", "qkv-bias"], &["biased"], &[]),
+            node("Reshape", &["biased", "packed-shape"], &["packed"], &[]),
+            node(
+                "Transpose",
+                &["packed"],
+                &["qkv"],
+                &ints_attr("perm", &[2, 0, 3, 1, 4]),
+            ),
+            node("Gather", &["qkv", "query-index"], &["queries"], &[]),
+            node("Gather", &["qkv", "key-index"], &["keys"], &[]),
+            node("Gather", &["qkv", "value-index"], &["values"], &[]),
+            node("Mul", &["queries", "scale"], &["scaled"], &[]),
+            node(
+                "Transpose",
+                &["keys"],
+                &["transposed-keys"],
+                &ints_attr("perm", &[0, 1, 3, 2]),
+            ),
+            node("MatMul", &["scaled", "transposed-keys"], &["scores"], &[]),
+            node(
+                "Softmax",
+                &["scores"],
+                &["attention"],
+                &int_attr("axis", -1),
+            ),
+            node("MatMul", &["attention", "values"], &["context"], &[]),
+            node(
+                "Transpose",
+                &["context"],
+                &["ordered"],
+                &ints_attr("perm", &[0, 2, 1, 3]),
+            ),
+            node("Reshape", &["ordered", "token-shape"], &["unpacked"], &[]),
+            node("Add", &["unpacked", "input"], &["tokens"], &[]),
+            node(
+                "ReduceMean",
+                &["tokens"],
+                &["features"],
+                &mean_attrs(Some(&[1]), Some(0)),
+            ),
+            node(
+                "Gather",
+                &["features", "feature-indices"],
+                &["selected"],
+                &int_attr("axis", -1),
+            ),
+            node(
+                "Gemm",
+                &["selected", "output-weight", "output-bias"],
+                &["embedding"],
+                &[],
+            ),
+            weight("qkv-weight", &[4, 12], &qkv_weights()),
+            weight("qkv-bias", &[12], &qkv_bias()),
+            weight("scale", &[], &[std::f32::consts::FRAC_1_SQRT_2]),
+            weight("output-weight", &[4, 3], &output_weights()),
+            weight("output-bias", &[3], &[0.125, -0.25, 0.5]),
+            int_weight("packed-shape", &[5], &[2, tokens as i64, 3, 2, 2]),
+            int_weight("token-shape", &[3], &[2, tokens as i64, 4]),
+            int_weight("query-index", &[], &[0]),
+            int_weight("key-index", &[], &[1]),
+            int_weight("value-index", &[], &[-1]),
+            int_weight("feature-indices", &[4], &[3, 1, 3, 0]),
+            bytes(11, &info("input", &[2, tokens, 4], 1)),
+            bytes(12, &info("queries", &[2, 2, tokens, 2], 1)),
+            bytes(12, &info("keys", &[2, 2, tokens, 2], 1)),
+            bytes(12, &info("values", &[2, 2, tokens, 2], 1)),
+            bytes(12, &info("attention", &[2, 2, tokens, tokens], 1)),
+            bytes(12, &info("tokens", &[2, tokens, 4], 1)),
+            bytes(12, &info("features", &[2, 4], 1)),
+            bytes(12, &info("selected", &[2, 4], 1)),
+            bytes(12, &info("embedding", &[2, 3], 1)),
+        ]
+        .concat(),
+    )
 }
 
 fn attention_input(tokens: usize) -> Vec<f32> {
-    (0..2 * tokens * 4).map(|index| ((index * 3 % 17) as f32 - 8.) / 8.).collect()
+    (0..2 * tokens * 4)
+        .map(|index| ((index * 3 % 17) as f32 - 8.) / 8.)
+        .collect()
 }
 
 fn attention_oracle(input: &[f32], tokens: usize) -> BTreeMap<String, Vec<f64>> {
@@ -544,7 +804,8 @@ fn attention_oracle(input: &[f32], tokens: usize) -> BTreeMap<String, Vec<f64>> 
             for field in 0..12 {
                 let mut value = f64::from(bias[field]);
                 for channel in 0..4 {
-                    value += f64::from(input[(batch * tokens + token) * 4 + channel]) * f64::from(weights[channel * 12 + field]);
+                    value += f64::from(input[(batch * tokens + token) * 4 + channel])
+                        * f64::from(weights[channel * 12 + field]);
                 }
                 projected[(batch * tokens + token) * 12 + field] = value;
             }
@@ -552,42 +813,95 @@ fn attention_oracle(input: &[f32], tokens: usize) -> BTreeMap<String, Vec<f64>> 
     }
     let mut qkv = [Vec::new(), Vec::new(), Vec::new()];
     for (kind, values) in qkv.iter_mut().enumerate() {
-        for batch in 0..2 { for head in 0..2 { for token in 0..tokens { for channel in 0..2 {
-            values.push(projected[(batch * tokens + token) * 12 + kind * 4 + head * 2 + channel]);
-        }}}}
+        for batch in 0..2 {
+            for head in 0..2 {
+                for token in 0..tokens {
+                    for channel in 0..2 {
+                        values.push(
+                            projected
+                                [(batch * tokens + token) * 12 + kind * 4 + head * 2 + channel],
+                        );
+                    }
+                }
+            }
+        }
     }
-    let offset = |batch: usize, head: usize, token: usize, channel: usize| ((batch * 2 + head) * tokens + token) * 2 + channel;
+    let offset = |batch: usize, head: usize, token: usize, channel: usize| {
+        ((batch * 2 + head) * tokens + token) * 2 + channel
+    };
     let mut probabilities = Vec::new();
     let mut contextual = vec![0.0_f64; 2 * tokens * 4];
-    for batch in 0..2 { for head in 0..2 { for query in 0..tokens {
-        let mut scores = Vec::new();
-        for key in 0..tokens {
-            let score = (0..2).map(|channel| qkv[0][offset(batch, head, query, channel)] * f64::from(std::f32::consts::FRAC_1_SQRT_2) * qkv[1][offset(batch, head, key, channel)]).sum::<f64>();
-            scores.push(score);
+    for batch in 0..2 {
+        for head in 0..2 {
+            for query in 0..tokens {
+                let mut scores = Vec::new();
+                for key in 0..tokens {
+                    let score = (0..2)
+                        .map(|channel| {
+                            qkv[0][offset(batch, head, query, channel)]
+                                * f64::from(std::f32::consts::FRAC_1_SQRT_2)
+                                * qkv[1][offset(batch, head, key, channel)]
+                        })
+                        .sum::<f64>();
+                    scores.push(score);
+                }
+                let max = scores.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+                let exponentials = scores
+                    .iter()
+                    .map(|score| (score - max).exp())
+                    .collect::<Vec<_>>();
+                let total: f64 = exponentials.iter().sum();
+                let row = exponentials
+                    .iter()
+                    .map(|value| value / total)
+                    .collect::<Vec<_>>();
+                probabilities.extend(&row);
+                for channel in 0..2 {
+                    contextual[(batch * tokens + query) * 4 + head * 2 + channel] = (0..tokens)
+                        .map(|key| row[key] * qkv[2][offset(batch, head, key, channel)])
+                        .sum::<f64>()
+                        + f64::from(input[(batch * tokens + query) * 4 + head * 2 + channel]);
+                }
+            }
         }
-        let max = scores.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-        let exponentials = scores.iter().map(|score| (score - max).exp()).collect::<Vec<_>>();
-        let total: f64 = exponentials.iter().sum();
-        let row = exponentials.iter().map(|value| value / total).collect::<Vec<_>>();
-        probabilities.extend(&row);
-        for channel in 0..2 {
-            contextual[(batch * tokens + query) * 4 + head * 2 + channel] = (0..tokens).map(|key| row[key] * qkv[2][offset(batch, head, key, channel)]).sum::<f64>() + f64::from(input[(batch * tokens + query) * 4 + head * 2 + channel]);
-        }
-    }}}
+    }
     let mut pooled = Vec::new();
-    for batch in 0..2 { for channel in 0..4 {
-        pooled.push((0..tokens).map(|token| contextual[(batch * tokens + token) * 4 + channel]).sum::<f64>() / tokens as f64);
-    }}
-    let selected = (0..2).flat_map(|batch| [3, 1, 3, 0].map(|channel| pooled[batch * 4 + channel])).collect::<Vec<_>>();
+    for batch in 0..2 {
+        for channel in 0..4 {
+            pooled.push(
+                (0..tokens)
+                    .map(|token| contextual[(batch * tokens + token) * 4 + channel])
+                    .sum::<f64>()
+                    / tokens as f64,
+            );
+        }
+    }
+    let selected = (0..2)
+        .flat_map(|batch| [3, 1, 3, 0].map(|channel| pooled[batch * 4 + channel]))
+        .collect::<Vec<_>>();
     let out_weights = output_weights();
     let mut embedding = Vec::new();
-    for batch in 0..2 { for field in 0..3 {
-        embedding.push((0..4).map(|channel| selected[batch * 4 + channel] * f64::from(out_weights[channel * 3 + field])).sum::<f64>() + [0.125, -0.25, 0.5][field]);
-    }}
+    for batch in 0..2 {
+        for field in 0..3 {
+            embedding.push(
+                (0..4)
+                    .map(|channel| {
+                        selected[batch * 4 + channel] * f64::from(out_weights[channel * 3 + field])
+                    })
+                    .sum::<f64>()
+                    + [0.125, -0.25, 0.5][field],
+            );
+        }
+    }
     BTreeMap::from([
-        ("queries".into(), qkv[0].clone()), ("keys".into(), qkv[1].clone()), ("values".into(), qkv[2].clone()),
-        ("attention".into(), probabilities), ("tokens".into(), contextual), ("features".into(), pooled),
-        ("selected".into(), selected), ("embedding".into(), embedding),
+        ("queries".into(), qkv[0].clone()),
+        ("keys".into(), qkv[1].clone()),
+        ("values".into(), qkv[2].clone()),
+        ("attention".into(), probabilities),
+        ("tokens".into(), contextual),
+        ("features".into(), pooled),
+        ("selected".into(), selected),
+        ("embedding".into(), embedding),
     ])
 }
 
@@ -606,13 +920,27 @@ fn attention_qkv_batched_softmax_and_pooled_features_run_through_real_artifacts(
                 // seven context terms and four head terms. This numerical test
                 // is separate from exact scalar/optimized/reload comparisons.
                 let bound = 32. * f64::from(f32::EPSILON) * expected.abs().max(1.);
-                assert!((f64::from(actual) - expected).abs() <= bound, "{name}[{index}] tokens={tokens}: {actual} vs {expected}, bound {bound}");
+                assert!(
+                    (f64::from(actual) - expected).abs() <= bound,
+                    "{name}[{index}] tokens={tokens}: {actual} vs {expected}, bound {bound}"
+                );
             }
         }
-        assert!(actual["attention"][..tokens].windows(2).any(|pair| pair[0].to_bits() != pair[1].to_bits()));
+        assert!(
+            actual["attention"][..tokens]
+                .windows(2)
+                .any(|pair| pair[0].to_bits() != pair[1].to_bits())
+        );
         let imported = import(&source)?;
         assert_eq!(imported.runtime_inputs(), &["input"]);
-        assert!(imported.parameters().keys().all(|name| !name.ends_with("index") && !name.ends_with("indices") && !name.ends_with("shape")));
+        assert!(
+            imported
+                .parameters()
+                .keys()
+                .all(|name| !name.ends_with("index")
+                    && !name.ends_with("indices")
+                    && !name.ends_with("shape"))
+        );
     }
     Ok(())
 }
@@ -625,55 +953,135 @@ fn attention_practical_token_sizes_have_constant_helper_count_and_checked_matrix
     let large = import(&large)?;
     assert_eq!(small.graph().node_count(), large.graph().node_count());
     assert!(large.graph().node_count() < 40);
-    assert_eq!(large.parameters().values().map(|tensor| tensor.shape().size_bytes(fss_tensor::DType::F32)).collect::<Result<Vec<_>, _>>()?.into_iter().sum::<usize>(), 8_500);
+    // QKV weights/bias (240), attention scale (4), output weights/bias (60),
+    // the Gemm alpha/beta scalars (8), and ReduceMean ones/divisor (8196).
+    assert_eq!(
+        large
+            .parameters()
+            .values()
+            .map(|tensor| tensor.shape().size_bytes(fss_tensor::DType::F32))
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .sum::<usize>(),
+        8_508
+    );
     assert_eq!(refusal(&attention_model(2049)), Some(OnnxError::Limit));
     // A full-input mean can require more ones than the separate parameter quota
     // permits. Refuse before allocating that generated column.
-    assert_eq!(refusal(&mean_model(&[4_194_304], None, Some(0), &[])), Some(OnnxError::Limit));
+    assert_eq!(
+        refusal(&mean_model(&[4_194_304], None, Some(0), &[])),
+        Some(OnnxError::Limit)
+    );
     Ok(())
 }
 
 #[test]
 fn gather_and_mean_refuse_invalid_controls_attributes_and_output_witnesses() {
     for index in [3, -4, i64::MIN, i64::MAX] {
-        assert_eq!(refusal(&gather_model(&[2, 3], &[], &[index], 1, &[2])), Some(OnnxError::Graph));
+        assert_eq!(
+            refusal(&gather_model(&[2, 3], &[], &[index], 1, &[2])),
+            Some(OnnxError::Graph)
+        );
     }
     for axis in [-3, 2, i64::MIN, i64::MAX] {
-        assert_eq!(refusal(&gather_model(&[2, 3], &[], &[0], axis, &[2])), Some(OnnxError::Graph));
+        assert_eq!(
+            refusal(&gather_model(&[2, 3], &[], &[0], axis, &[2])),
+            Some(OnnxError::Graph)
+        );
     }
-    assert_eq!(refusal(&gather_model(&[], &[], &[0], 0, &[])), Some(OnnxError::Unsupported));
-    assert_eq!(refusal(&gather_model(&[2, 3], &[0], &[], 1, &[2])), Some(OnnxError::Unsupported));
-    assert_eq!(refusal(&gather_model(&[2, 3], &[1, 1], &[0], 1, &[2, 1, 1])), Some(OnnxError::Unsupported));
-    assert_eq!(refusal(&gather_model(&[2, 3], &[9], &[0; 9], 1, &[2, 9])), Some(OnnxError::Limit));
-    assert_eq!(refusal(&gather_model(&[2, 3], &[], &[0], 1, &[2, 1])), Some(OnnxError::Graph));
-    let float_indices = model(&[
-        node("Gather", &["input", "indices"], &["output"], &[]),
-        weight("indices", &[], &[0.]),
-        bytes(11, &info("input", &[2], 1)), bytes(12, &info("output", &[], 1)),
-    ].concat());
+    assert_eq!(
+        refusal(&gather_model(&[], &[], &[0], 0, &[])),
+        Some(OnnxError::Unsupported)
+    );
+    assert_eq!(
+        refusal(&gather_model(&[2, 3], &[0], &[], 1, &[2])),
+        Some(OnnxError::Unsupported)
+    );
+    assert_eq!(
+        refusal(&gather_model(&[2, 3], &[1, 1], &[0], 1, &[2, 1, 1])),
+        Some(OnnxError::Unsupported)
+    );
+    assert_eq!(
+        refusal(&gather_model(&[2, 3], &[9], &[0; 9], 1, &[2, 9])),
+        Some(OnnxError::Limit)
+    );
+    assert_eq!(
+        refusal(&gather_model(&[2, 3], &[], &[0], 1, &[2, 1])),
+        Some(OnnxError::Graph)
+    );
+    let float_indices = model(
+        &[
+            node("Gather", &["input", "indices"], &["output"], &[]),
+            weight("indices", &[], &[0.]),
+            bytes(11, &info("input", &[2], 1)),
+            bytes(12, &info("output", &[], 1)),
+        ]
+        .concat(),
+    );
     assert_eq!(refusal(&float_indices), Some(OnnxError::Graph));
-    let dynamic_indices = model(&[
-        node("Gather", &["input", "indices"], &["output"], &[]),
-        bytes(11, &info("indices", &[], 1)),
-        bytes(11, &info("input", &[2], 1)), bytes(12, &info("output", &[], 1)),
-    ].concat());
+    let dynamic_indices = model(
+        &[
+            node("Gather", &["input", "indices"], &["output"], &[]),
+            bytes(11, &info("indices", &[], 1)),
+            bytes(11, &info("input", &[2], 1)),
+            bytes(12, &info("output", &[], 1)),
+        ]
+        .concat(),
+    );
     assert_eq!(refusal(&dynamic_indices), Some(OnnxError::Unsupported));
     for attrs in [ints_attr("axis", &[0]), int_attr("batch_dims", 1)] {
-        let expected = if attrs == ints_attr("axis", &[0]) { OnnxError::Graph } else { OnnxError::Unsupported };
-        let source = model(&[
-            node("Gather", &["input", "indices"], &["output"], &attrs), int_weight("indices", &[], &[0]),
-            bytes(11, &info("input", &[2], 1)), bytes(12, &info("output", &[], 1)),
-        ].concat());
+        let expected = if attrs == ints_attr("axis", &[0]) {
+            OnnxError::Graph
+        } else {
+            OnnxError::Unsupported
+        };
+        let source = model(
+            &[
+                node("Gather", &["input", "indices"], &["output"], &attrs),
+                int_weight("indices", &[], &[0]),
+                bytes(11, &info("input", &[2], 1)),
+                bytes(12, &info("output", &[], 1)),
+            ]
+            .concat(),
+        );
         assert_eq!(refusal(&source), Some(expected));
     }
-    for axes in [&[1, -1][..], &[2][..], &[-3][..], &[i64::MIN][..], &[i64::MAX][..]] {
-        assert_eq!(refusal(&mean_model(&[2, 3], Some(axes), None, &[2, 1])), Some(OnnxError::Graph));
+    for axes in [
+        &[1, -1][..],
+        &[2][..],
+        &[-3][..],
+        &[i64::MIN][..],
+        &[i64::MAX][..],
+    ] {
+        assert_eq!(
+            refusal(&mean_model(&[2, 3], Some(axes), None, &[2, 1])),
+            Some(OnnxError::Graph)
+        );
     }
-    assert_eq!(refusal(&mean_model(&[], Some(&[0]), None, &[])), Some(OnnxError::Graph));
-    assert_eq!(refusal(&mean_model(&[2, 3], Some(&[1]), Some(2), &[2, 1])), Some(OnnxError::Unsupported));
-    assert_eq!(refusal(&mean_model(&[2, 3], Some(&[1]), None, &[2])), Some(OnnxError::Graph));
-    for (attrs, expected) in [(int_attr("axes", 1), OnnxError::Graph), (int_attr("noop_with_empty_axes", 1), OnnxError::Unsupported)] {
-        let source = model(&[node("ReduceMean", &["input"], &["output"], &attrs), bytes(11, &info("input", &[2, 3], 1)), bytes(12, &info("output", &[1, 1], 1))].concat());
+    assert_eq!(
+        refusal(&mean_model(&[], Some(&[0]), None, &[])),
+        Some(OnnxError::Graph)
+    );
+    assert_eq!(
+        refusal(&mean_model(&[2, 3], Some(&[1]), Some(2), &[2, 1])),
+        Some(OnnxError::Unsupported)
+    );
+    assert_eq!(
+        refusal(&mean_model(&[2, 3], Some(&[1]), None, &[2])),
+        Some(OnnxError::Graph)
+    );
+    for (attrs, expected) in [
+        (int_attr("axes", 1), OnnxError::Graph),
+        (int_attr("noop_with_empty_axes", 1), OnnxError::Unsupported),
+    ] {
+        let source = model(
+            &[
+                node("ReduceMean", &["input"], &["output"], &attrs),
+                bytes(11, &info("input", &[2, 3], 1)),
+                bytes(12, &info("output", &[1, 1], 1)),
+            ]
+            .concat(),
+        );
         assert_eq!(refusal(&source), Some(expected));
     }
     for (op, inputs, expected) in [
@@ -684,7 +1092,14 @@ fn gather_and_mean_refuse_invalid_controls_attributes_and_output_witnesses() {
         ("ReduceMean", vec![""], OnnxError::Limit),
         ("ReduceMean", vec!["input", "input"], OnnxError::Graph),
     ] {
-        let source = model(&[node(op, &inputs, &["output"], &[]), bytes(11, &info("input", &[2], 1)), bytes(12, &info("output", &[1], 1))].concat());
+        let source = model(
+            &[
+                node(op, &inputs, &["output"], &[]),
+                bytes(11, &info("input", &[2], 1)),
+                bytes(12, &info("output", &[1], 1)),
+            ]
+            .concat(),
+        );
         assert_eq!(refusal(&source), Some(expected));
     }
 }
@@ -693,27 +1108,75 @@ fn gather_and_mean_refuse_invalid_controls_attributes_and_output_witnesses() {
 fn gather_and_mean_helpers_cannot_capture_future_source_names() -> Test {
     let dims = [2, 3, 4];
     let values = (0..24).map(|index| index as f32 - 10.).collect::<Vec<_>>();
-    for suffix in ["gather-4", "gather-3", "mean-ones", "mean-divisor", "mean-5"] {
+    for suffix in [
+        "gather-4",
+        "gather-3",
+        "mean-ones",
+        "mean-divisor",
+        "mean-5",
+    ] {
         let collision = format!("onnx-node-0000-{suffix}");
         let gather = suffix.starts_with("gather");
         let mut graph = if gather {
-            [node("Gather", &["input", "indices"], &["output"], &int_attr("axis", 1)), int_weight("indices", &[3], &[2, 0, 2])].concat()
-        } else { node("ReduceMean", &["input"], &["output"], &mean_attrs(Some(&[1]), Some(0))) };
+            [
+                node(
+                    "Gather",
+                    &["input", "indices"],
+                    &["output"],
+                    &int_attr("axis", 1),
+                ),
+                int_weight("indices", &[3], &[2, 0, 2]),
+            ]
+            .concat()
+        } else {
+            node(
+                "ReduceMean",
+                &["input"],
+                &["output"],
+                &mean_attrs(Some(&[1]), Some(0)),
+            )
+        };
         graph.extend(node("Identity", &["input"], &[&collision], &[]));
         graph.extend(bytes(11, &info("input", &dims, 1)));
-        graph.extend(bytes(12, &info("output", if gather { &dims[..] } else { &[2, 4][..] }, 1)));
+        graph.extend(bytes(
+            12,
+            &info("output", if gather { &dims[..] } else { &[2, 4][..] }, 1),
+        ));
         graph.extend(bytes(12, &info(&collision, &dims, 1)));
         let source = model(&graph);
         let actual = roundtrip(&source, &[("input", data(&dims, &values)?)])?;
-        let expected = if gather { gather_oracle(&values, &dims, 1, &[2, 0, 2]) } else { mean_oracle(&values, &dims, &[1]) };
+        let expected = if gather {
+            gather_oracle(&values, &dims, 1, &[2, 0, 2])
+        } else {
+            mean_oracle(&values, &dims, &[1])
+        };
         assert_eq!(bits(&actual["output"]), bits(&expected));
         assert_eq!(bits(&actual[&collision]), bits(&values));
         let mut forward = if gather {
-            [node("Gather", &[&collision, "indices"], &["output"], &int_attr("axis", 1)), int_weight("indices", &[3], &[2, 0, 2])].concat()
-        } else { node("ReduceMean", &[&collision], &["output"], &mean_attrs(Some(&[1]), Some(0))) };
+            [
+                node(
+                    "Gather",
+                    &[&collision, "indices"],
+                    &["output"],
+                    &int_attr("axis", 1),
+                ),
+                int_weight("indices", &[3], &[2, 0, 2]),
+            ]
+            .concat()
+        } else {
+            node(
+                "ReduceMean",
+                &[&collision],
+                &["output"],
+                &mean_attrs(Some(&[1]), Some(0)),
+            )
+        };
         forward.extend(node("Identity", &["input"], &[&collision], &[]));
         forward.extend(bytes(11, &info("input", &dims, 1)));
-        forward.extend(bytes(12, &info("output", if gather { &dims[..] } else { &[2, 4][..] }, 1)));
+        forward.extend(bytes(
+            12,
+            &info("output", if gather { &dims[..] } else { &[2, 4][..] }, 1),
+        ));
         assert_eq!(refusal(&model(&forward)), Some(OnnxError::Graph));
     }
     Ok(())
@@ -722,28 +1185,126 @@ fn gather_and_mean_helpers_cannot_capture_future_source_names() -> Test {
 #[test]
 fn gather_and_mean_aggregate_admission_work_and_cancellation_are_exact() -> Test {
     let cases = [
-        (gather_model(&[2, 3], &[3], &[2, 0, 2], 1, &[2, 3]), 4, 6, 24, 24),
-        (mean_model(&[2, 3, 4], Some(&[1]), Some(0), &[2, 4]), 5, 8, 16, 96),
+        (
+            gather_model(&[2, 3], &[3], &[2, 0, 2], 1, &[2, 3]),
+            4,
+            6,
+            24,
+            24,
+        ),
+        (
+            mean_model(&[2, 3, 4], Some(&[1]), Some(0), &[2, 4]),
+            5,
+            8,
+            16,
+            96,
+        ),
     ];
     for (source, nodes, tensors, parameter_bytes, tensor_bytes) in cases {
         let imported = import(&source)?;
         assert_eq!(imported.graph().node_count(), nodes);
-        let limits = OnnxLimits { nodes, tensors, parameter_bytes, tensor_bytes, work_units: imported.work_units(), ..OnnxLimits::default() };
-        assert!(import_onnx(&source, ContentDigest::sha256(&source), GENERATION, limits, &|| false).is_ok());
+        let limits = OnnxLimits {
+            nodes,
+            tensors,
+            parameter_bytes,
+            tensor_bytes,
+            work_units: imported.work_units(),
+            ..OnnxLimits::default()
+        };
+        assert!(
+            import_onnx(
+                &source,
+                ContentDigest::sha256(&source),
+                GENERATION,
+                limits,
+                &|| false
+            )
+            .is_ok()
+        );
         for limits in [
-            OnnxLimits { nodes: nodes - 1, ..limits }, OnnxLimits { tensors: tensors - 1, ..limits },
-            OnnxLimits { parameter_bytes: parameter_bytes - 1, ..limits }, OnnxLimits { tensor_bytes: tensor_bytes - 1, ..limits },
+            OnnxLimits {
+                nodes: nodes - 1,
+                ..limits
+            },
+            OnnxLimits {
+                tensors: tensors - 1,
+                ..limits
+            },
+            OnnxLimits {
+                parameter_bytes: parameter_bytes - 1,
+                ..limits
+            },
+            OnnxLimits {
+                tensor_bytes: tensor_bytes - 1,
+                ..limits
+            },
         ] {
-            assert_eq!(import_onnx(&source, ContentDigest::sha256(&source), GENERATION, limits, &|| false).err(), Some(OnnxError::Limit));
+            assert_eq!(
+                import_onnx(
+                    &source,
+                    ContentDigest::sha256(&source),
+                    GENERATION,
+                    limits,
+                    &|| false
+                )
+                .err(),
+                Some(OnnxError::Limit)
+            );
         }
-        assert_eq!(import_onnx(&source, ContentDigest::sha256(&source), GENERATION, OnnxLimits { work_units: limits.work_units - 1, ..limits }, &|| false).err(), Some(OnnxError::WorkBudget));
-        assert_eq!(import_onnx(&source, ContentDigest::sha256(b"wrong"), GENERATION, limits, &|| false).err(), Some(OnnxError::Digest));
+        assert_eq!(
+            import_onnx(
+                &source,
+                ContentDigest::sha256(&source),
+                GENERATION,
+                OnnxLimits {
+                    work_units: limits.work_units - 1,
+                    ..limits
+                },
+                &|| false
+            )
+            .err(),
+            Some(OnnxError::WorkBudget)
+        );
+        assert_eq!(
+            import_onnx(
+                &source,
+                ContentDigest::sha256(b"wrong"),
+                GENERATION,
+                limits,
+                &|| false
+            )
+            .err(),
+            Some(OnnxError::Digest)
+        );
         let calls = Cell::new(0);
-        import_onnx(&source, ContentDigest::sha256(&source), GENERATION, limits, &|| { calls.set(calls.get() + 1); false })?;
+        import_onnx(
+            &source,
+            ContentDigest::sha256(&source),
+            GENERATION,
+            limits,
+            &|| {
+                calls.set(calls.get() + 1);
+                false
+            },
+        )?;
         let total = calls.get();
         for stop in 1..=total {
             calls.set(0);
-            assert_eq!(import_onnx(&source, ContentDigest::sha256(&source), GENERATION, limits, &|| { calls.set(calls.get() + 1); calls.get() == stop }).err(), Some(OnnxError::Cancelled), "checkpoint {stop}/{total}");
+            assert_eq!(
+                import_onnx(
+                    &source,
+                    ContentDigest::sha256(&source),
+                    GENERATION,
+                    limits,
+                    &|| {
+                        calls.set(calls.get() + 1);
+                        calls.get() == stop
+                    }
+                )
+                .err(),
+                Some(OnnxError::Cancelled),
+                "checkpoint {stop}/{total}"
+            );
         }
     }
     Ok(())
@@ -754,30 +1315,79 @@ fn attention_real_execution_refuses_short_budgets_stale_inputs_and_cancellation(
     let source = attention_model(4);
     let imported = import(&source)?;
     let input = [("input", data(&[2, 4, 4], &attention_input(4))?)];
-    let constants = imported.parameters().iter().map(|(name, tensor)| Ok((name.clone(), tensor.to_vec::<f32>()?))).collect::<Result<BTreeMap<_, _>, fss_tensor::TensorError>>()?;
-    let optimized = optimized_executor::OptimizedGraph::prepare(imported.graph(), &constants, &ScalarExecCx::new())?;
+    let constants = imported
+        .parameters()
+        .iter()
+        .map(|(name, tensor)| Ok((name.clone(), tensor.to_vec::<f32>()?)))
+        .collect::<Result<BTreeMap<_, _>, fss_tensor::TensorError>>()?;
+    let optimized = optimized_executor::OptimizedGraph::prepare(
+        imported.graph(),
+        &constants,
+        &ScalarExecCx::new(),
+    )?;
     let mut bindings = imported.parameters().clone();
     bindings.insert("input".into(), input[0].1.clone());
     let bindings = bindings.into_iter().collect::<Vec<_>>();
-    let outcome = ScalarExecutor::run(imported.graph(), &bindings, ExecBudget::unlimited(), &ScalarExecCx::new())?;
+    let outcome = ScalarExecutor::run(
+        imported.graph(),
+        &bindings,
+        ExecBudget::unlimited(),
+        &ScalarExecCx::new(),
+    )?;
     for budget in [
         ExecBudget::new(outcome.executed_macs() - 1, outcome.allocated_bytes()),
         ExecBudget::new(outcome.executed_macs(), outcome.allocated_bytes() - 1),
     ] {
-        assert!(matches!(ScalarExecutor::run(imported.graph(), &bindings, budget, &ScalarExecCx::new()), Err(ExecError::BudgetExceeded { .. })));
-        assert!(matches!(optimized.run(&input, budget, &ScalarExecCx::new()), Err(ExecError::BudgetExceeded { .. })));
+        assert!(matches!(
+            ScalarExecutor::run(imported.graph(), &bindings, budget, &ScalarExecCx::new()),
+            Err(ExecError::BudgetExceeded { .. })
+        ));
+        assert!(matches!(
+            optimized.run(&input, budget, &ScalarExecCx::new()),
+            Err(ExecError::BudgetExceeded { .. })
+        ));
     }
-    let stale = Tensor::from_values(Shape::new(vec![2, 4, 4])?, &attention_input(4), Generation(GENERATION.0 + 1))?;
+    let stale = Tensor::from_values(
+        Shape::new(vec![2, 4, 4])?,
+        &attention_input(4),
+        Generation(GENERATION.0 + 1),
+    )?;
     let mut stale_bindings = bindings.clone();
-    let entry = stale_bindings.iter_mut().find(|(name, _)| name == "input").ok_or("input binding")?;
+    let entry = stale_bindings
+        .iter_mut()
+        .find(|(name, _)| name == "input")
+        .ok_or("input binding")?;
     entry.1 = stale.clone();
-    assert!(matches!(ScalarExecutor::run(imported.graph(), &stale_bindings, ExecBudget::unlimited(), &ScalarExecCx::new()), Err(ExecError::GenerationMismatch { .. })));
-    assert!(matches!(optimized.run(&[("input", stale)], ExecBudget::unlimited(), &ScalarExecCx::new()), Err(ExecError::GenerationMismatch { .. })));
-    let cx = ScalarExecCx::new(); cx.request_cancellation();
-    assert!(matches!(ScalarExecutor::run(imported.graph(), &bindings, ExecBudget::unlimited(), &cx), Err(ExecError::CancellationRequested { .. })));
+    assert!(matches!(
+        ScalarExecutor::run(
+            imported.graph(),
+            &stale_bindings,
+            ExecBudget::unlimited(),
+            &ScalarExecCx::new()
+        ),
+        Err(ExecError::GenerationMismatch { .. })
+    ));
+    assert!(matches!(
+        optimized.run(
+            &[("input", stale)],
+            ExecBudget::unlimited(),
+            &ScalarExecCx::new()
+        ),
+        Err(ExecError::GenerationMismatch { .. })
+    ));
+    let cx = ScalarExecCx::new();
+    cx.request_cancellation();
+    assert!(matches!(
+        ScalarExecutor::run(imported.graph(), &bindings, ExecBudget::unlimited(), &cx),
+        Err(ExecError::CancellationRequested { .. })
+    ));
     assert!(cx.is_drain_completed());
-    let cx = ScalarExecCx::new(); cx.request_cancellation();
-    assert!(matches!(optimized.run(&input, ExecBudget::unlimited(), &cx), Err(ExecError::CancellationRequested { .. })));
+    let cx = ScalarExecCx::new();
+    cx.request_cancellation();
+    assert!(matches!(
+        optimized.run(&input, ExecBudget::unlimited(), &cx),
+        Err(ExecError::CancellationRequested { .. })
+    ));
     assert!(cx.is_drain_completed());
     Ok(())
 }
