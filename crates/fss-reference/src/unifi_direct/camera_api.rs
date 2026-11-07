@@ -207,8 +207,8 @@ pub struct SettingsObservation {
 /// Values may contain private destinations or tokens. This is a semantic JSON
 /// projection, not the original response bytes, a durable recovery record, or
 /// evidence that sending the values back will restore the camera. Dropping it
-/// clears owned string buffers on a best-effort basis; allocators, parsers and
-/// transports may have retained other copies.
+/// clears owned value string buffers on a best-effort basis; object keys,
+/// allocators, parsers and transports may retain sensitive material.
 pub struct VideoSerializers {
     peer: Ipv4Addr,
     generation: u64,

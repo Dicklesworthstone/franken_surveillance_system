@@ -2125,6 +2125,37 @@ physical-device readback through the experimental Rust path, not independent
 identity, safe stream takeover, sustained native video, gap-free recording,
 or automatic camera setup.
 
+A further read-only authenticated settings inspection of this G4 distinguished
+explicit `null` destinations on `video1` and `video3` from absence; `video2`
+reported an array. All three reported `withOpus: false`. No destination value
+was printed or changed. This observation created one camera login session with
+unknown expiry, used the same-LAN pin, and left the recorder active with its
+restart count unchanged. It does not establish what command, if any, restores
+the camera's null state or that a second stream is non-disruptive.
+
+An opt-in `settings_serializers` HTTP operation now retains the three selected
+`avSerializer` JSON values under a distinct caller-supplied authority decision
+and the task's status grant, with authority rechecked during I/O and before
+return. The values have redacted debug output, are held in caller-owned memory,
+and require a separate caller-supplied disclosure check before inspection.
+String value buffers are cleared best-effort on drop; object keys and other
+copies may remain. The projection preserves JSON values, not original source
+bytes, physical identity, durable custody, write authority, or a proven rollback.
+Consumers must enforce the actual privacy and retention policy on every use.
+Strict-remote jobs `30098575685845206` and `30098575685845208` compiled the
+focused reduced workspace with terminal acknowledgment and source release. The
+separately executed camera API and task-owned HTTP executables passed **8/8**
+and **1/1** tests, including null versus absent, disclosure denial, redaction,
+and a task-owned loopback read. An initial API test failed because its synthetic
+JSON had an extra closing brace; it was corrected before the passing run. The
+tested camera API source SHA-256 was
+`5df308ede034065a77f75c829ed0fd47e3a1a157fe1698cd01ef685c6f429e1c`, and
+the HTTP source SHA-256 was
+`3e1033a39f64355ffcc42c6967ad13061f199b999e6b6dc81ddd98afea34db49`;
+the former later received only a documentation correction about object keys.
+This is not full-workspace or physical-camera qualification of the new capture
+path.
+
 ### Controller TCP listener
 
 The controller's default observation API still classifies event messages as
