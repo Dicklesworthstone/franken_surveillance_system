@@ -1593,8 +1593,22 @@ the next frame and refuses trace reuse. A missing local dispatch observation
 still does not establish that no effect occurred: the effect journal and
 independent reconciliation remain authoritative. The legacy convenience API
 still discards its private trace on failure. The standalone trial now reports
-payload-free trace counts when tracked startup fails. Focused build and fixture
-qualification of this revision is pending.
+payload-free trace counts when tracked startup fails. Strict-remote build job
+`30098575685845132` compiled the focused fixture, was acknowledged and released
+source custody; its executable SHA-256 was
+`720b03e868b29e90fb28d0e64e18fb6667cd3889f48cc9353539901b7f2511bd`.
+An explicit run of that executable on the worker passed 12/12 tests, including
+retention after peer close and caller cancellation and refusal to reuse the
+trace. An earlier run failed one cancellation test because its deadline fired
+before the fixture reached the intended state; the revised test coordinates
+with the synthetic peer. The current listener and test SHA-256 hashes were
+`2d31f3d52d22d590f8a07a94e13adc62288e551bbb9db61c6277a61d1af47fa7` and
+`62f9206e6b806f8ac85ae6ba8a91d11c6ed46bd03ba7e9c57cd33e1da3217f5f`.
+This is a synthetic scoped test, not a full-workspace qualification or a
+physical camera session. A separate strict-remote trial-binary build,
+`30098575685845133`, is running; inspect that exact job and release state before
+using its output. It includes trial source SHA-256
+`34f3213368136d8f476075a215d6ab37d922a1ebbe8aa75e589e1cbc759aef07`.
 Task-owned fixtures that delay the settings reply until after a media read,
 or never send it and retain the outstanding request at retirement, passed in
 the scoped run described below.

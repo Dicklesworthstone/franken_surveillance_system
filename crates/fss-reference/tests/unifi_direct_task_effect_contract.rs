@@ -518,6 +518,7 @@ fn conversation_scenario_with_stop(revoke_stream: bool, revoke_after_start: bool
                 }
                 let expected=wire.clone();
                 let (media_seen_tx,media_seen_rx)=std::sync::mpsc::channel();
+                let (ready_to_cancel_tx,ready_to_cancel_rx)=std::sync::mpsc::channel();
                 let peer=std::thread::spawn(move || -> io::Result<()> {
                     let mut socket=std::net::TcpStream::connect_timeout(&address,Duration::from_secs(5))?;
                     socket.set_read_timeout(Some(Duration::from_secs(5)))?;
@@ -551,6 +552,9 @@ fn conversation_scenario_with_stop(revoke_stream: bool, revoke_after_start: bool
                             if !receive_binary(&mut socket)?.windows(b"ubnt_avclient_timeSync".len()).any(|w|w==b"ubnt_avclient_timeSync") { return Err(io::Error::other("missing second pre-media time-sync reply")); }
                             if stop_mode == 1 { return Ok(()); }
                             if stop_mode == 2 {
+                                ready_to_cancel_tx.send(()).map_err(io::Error::other)?;
+                                // Wake a pending controller read after publishing the signal.
+                                socket.write_all(&frame(br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"fixture_notify","messageId":14}"#))?;
                                 let mut byte=[0u8;1];
                                 return match socket.read(&mut byte) { Ok(0)=>Ok(()), _=>Err(io::Error::other("cancelled controller did not close")) };
                             }
@@ -605,10 +609,15 @@ fn conversation_scenario_with_stop(revoke_stream: bool, revoke_after_start: bool
                     let mut trace=listener::StartTrace::default();
                     let future=listener::start_before_reply_tracked(&mut owner,&mut session,&start,framer,recorder,&mut trace);
                     let result=if stop_mode==2 {
-                        match timeout(cx.now(),Duration::from_millis(500),future).await {
-                            Err(_)=>None,
-                            Ok(result)=>Some(result),
-                        }
+                        let mut future=Box::pin(future);
+                        timeout(cx.now(),Duration::from_secs(5),poll_fn(|context| {
+                            if let Poll::Ready(result)=future.as_mut().poll(context) { return Poll::Ready(Some(result)); }
+                            match ready_to_cancel_rx.try_recv() {
+                                Ok(())=>Poll::Ready(None),
+                                Err(std::sync::mpsc::TryRecvError::Empty)=>Poll::Pending,
+                                Err(std::sync::mpsc::TryRecvError::Disconnected)=>Poll::Ready(None),
+                            }
+                        })).await?
                     } else { Some(future.await) };
                     if stop_mode != 0 {
                         if stop_mode == 1 { assert!(matches!(result,Some(Err(listener::StartError::Conversation(conversation::Error::SessionRetired {..}))))); }
@@ -617,7 +626,7 @@ fn conversation_scenario_with_stop(revoke_stream: bool, revoke_after_start: bool
                         assert!(trace.dispatched().is_some());
                         assert_eq!(trace.clock_requests(),2);
                         assert_eq!(trace.clock_replies_written(),2);
-                        assert!(matches!(trace.observations(),[Observation::StreamSettingsReply {request_id:4,..}]));
+                        assert!(matches!(trace.observations().first(),Some(Observation::StreamSettingsReply {request_id:4,..})));
                         let retry_framer=Framer::new(FlvLimits::default(),1024*1024)?;
                         let retry_recorder=recording::Recorder::new(SourceKey {connection:9,generation:1},recording::Limits::default())?;
                         assert!(matches!(listener::start_before_reply_tracked(&mut owner,&mut session,&start,retry_framer,retry_recorder,&mut trace).await,Err(listener::StartError::Listener(listener::Error::Configuration))));
