@@ -15,7 +15,12 @@ use asupersync::{
     time::timeout_at,
 };
 use fss_runtime::effect::CommittedEffect;
-use std::{fmt, time::Duration};
+use std::{
+    fmt,
+    future::{Future, poll_fn},
+    task::Poll,
+    time::Duration,
+};
 
 use super::{
     AudioCodec, Controller, Dispatch, MessageKind, Observation, Phase, Retirement, StreamStart,
@@ -564,12 +569,20 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Session<'scope, 'task, I
             refuse!(Error::Retired);
         };
         self.in_flight = Some(intent.message_id());
-        let outcome = timeout_at(
-            self.cx.now() + wait,
-            socket.send(self.cx, Message::binary(bytes)),
-        )
-        .await;
-        if matches!(outcome, Ok(Ok(())))
+        let outcome = {
+            let mut send = std::pin::pin!(socket.send(self.cx, Message::binary(bytes)));
+            timeout_at(
+                self.cx.now() + wait,
+                poll_fn(|task| {
+                    if !authority.permits(self.claimed_mac, intent, &permit) {
+                        return Poll::Ready(None);
+                    }
+                    send.as_mut().poll(task).map(Some)
+                }),
+            )
+            .await
+        };
+        if matches!(outcome, Ok(Some(Ok(()))))
             && self
                 .controller
                 .finish_dispatch(intent.message_id(), Dispatch::Written)
@@ -716,12 +729,23 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Session<'scope, 'task, I
             refuse!(Error::Retired);
         };
         self.in_flight = Some(intent.message_id());
-        let outcome = timeout_at(
-            self.cx.now() + wait,
-            socket.send(self.cx, Message::binary(bytes)),
-        )
-        .await;
-        if matches!(outcome, Ok(Ok(())))
+        let outcome = {
+            let mut send = std::pin::pin!(socket.send(self.cx, Message::binary(bytes)));
+            timeout_at(
+                self.cx.now() + wait,
+                poll_fn(|task| {
+                    if !authority.permits(self.claimed_mac, intent, &permit)
+                        || (matches!(intent.kind(), MessageKind::QuiesceStream(_))
+                            && !authority.permits_quiesce(self.claimed_mac, intent, &permit))
+                    {
+                        return Poll::Ready(None);
+                    }
+                    send.as_mut().poll(task).map(Some)
+                }),
+            )
+            .await
+        };
+        if matches!(outcome, Ok(Some(Ok(()))))
             && self
                 .controller
                 .finish_dispatch(intent.message_id(), Dispatch::Written)

@@ -2228,6 +2228,51 @@ stability, gap-free recording, safe restoration or successful native takeover.
 
 ### Controller TCP listener
 
+The controller can prepare a one-track `ChangeVideoSettings` request that routes
+the selected track to `file:///dev/null`, with the matching AAC or Opus profile.
+This is a quiesce request, not proof that the camera stopped streaming or that
+its earlier settings were restored. In particular, audio and the G4's previous
+null destinations still need physical-device investigation. Start and quiesce
+are distinct intent kinds: the receiver requires a matching journal-backed
+committed permit and separately authorized quiesce policy, which defaults to
+deny. Replies and retirement preserve the pending request's kind. A locally
+prepared request known not to be in flight can be abandoned without reusing its
+message ID; abandoning it does not settle a committed journal effect. An
+indeterminate write cannot be abandoned as known unwritten. The supervisor
+retains the media pipeline while checking the owner and camera bindings, and
+retains controller retirement on an indeterminate write. These checks are not
+automatic reconciliation or a guarantee of policy revalidation on each poll.
+
+A subsequent source revision rechecks the applicable management or stream
+authority whenever the WebSocket send future is polled. Revocation observed
+after dispatch has been claimed fences the connection and returns the effect
+as indeterminate. The WebSocket implementation can perform multiple underlying
+I/O calls within one future poll, so this does not yet guarantee revalidation
+before every write or flush. A new synthetic partial-write revocation fixture
+has been added, but the revision and fixture are **not yet qualified**; their
+remote build attempts stopped before compilation because of worker disk
+reservations or unavailable disk-monitor telemetry. Jobs
+`30098575685845316`, `30098575685845318`, `30098575685845322`, and
+`30098575685845325` returned 120 with terminal acknowledgment and source
+release. This is not a physical-camera result.
+
+Scope-filtered strict-remote job `30098575685845292` completed with terminal
+acknowledgment and source release. Its camera API, HTTP and controller contract
+executables passed **9/9**, **1/1** and **25/25**, respectively. Job
+`30098575685845307` built the subsequent supervisor fixture with exit 0 and
+released its sources; its wrapper returned 102 because Linux test artifacts
+were rejected for transfer to macOS. Running that worker's executable
+(`08aede876540e17b277868fa3a2e85e673db5595b5c325fa3d51138041f022a5`)
+on Linux passed **16/16**, including a default-denied request with no socket
+write, a separately authorized request and correlated reply, and two retained
+committed journal obligations. Earlier versions of this supervisor fixture
+failed because the fixture omitted media permission and then a byte budget;
+both fixture defects were corrected. A separate worker build ended 137 after a
+disk-guardian timeout and is not counted as a pass. These are synthetic tests
+in a reduced workspace, not a full-workspace or physical-camera qualification.
+No quiesce request was sent to the G4; safe restoration and native takeover
+remain unproven.
+
 The controller's default observation API still classifies event messages as
 `Other`. An opt-in event-claim parser and the established-session supervisor
 now recognize `Event*` messages and transfer the exact bounded WebSocket JSON

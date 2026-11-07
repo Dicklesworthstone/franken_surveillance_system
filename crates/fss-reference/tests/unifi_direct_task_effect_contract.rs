@@ -238,11 +238,20 @@ fn observed_hello_gets_its_own_durable_permit_inside_task() -> Test {
 
 #[test]
 fn quiesce_requires_separate_authority_before_any_wire_write() -> Test {
+    quiesce_authority_scenario(false)
+}
+
+#[test]
+fn quiesce_revoked_after_partial_write_fences_session() -> Test {
+    quiesce_authority_scenario(true)
+}
+
+fn quiesce_authority_scenario(revoke_during_write: bool) -> Test {
     use asupersync::io::{AsyncRead, AsyncWrite, ReadBuf};
     use fss_reference::unifi_direct::{AGREEMENT_DELAY_NS, Dispatch, MessageKind};
     use std::{pin::Pin, task::{Context, Poll}};
 
-    struct Counted<IO> { inner: IO, writes: Rc<Cell<usize>> }
+    struct Counted<IO> { inner: IO, writes: Rc<Cell<usize>>, armed: Rc<Cell<bool>>, revoked: Rc<Cell<bool>> }
     impl<IO: AsyncRead + Unpin> AsyncRead for Counted<IO> {
         fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context<'_>, out: &mut ReadBuf<'_>) -> Poll<io::Result<()>> {
             Pin::new(&mut self.inner).poll_read(cx, out)
@@ -250,28 +259,36 @@ fn quiesce_requires_separate_authority_before_any_wire_write() -> Test {
     }
     impl<IO: AsyncWrite + Unpin> AsyncWrite for Counted<IO> {
         fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, bytes: &[u8]) -> Poll<io::Result<usize>> {
-            let result = Pin::new(&mut self.inner).poll_write(cx, bytes);
+            if self.armed.get() && self.revoked.get() {
+                cx.waker().wake_by_ref();
+                return Poll::Pending;
+            }
+            let limited = self.armed.get();
+            let data = if limited { &bytes[..bytes.len().min(1)] } else { bytes };
+            let result = Pin::new(&mut self.inner).poll_write(cx, data);
             if matches!(&result, Poll::Ready(Ok(n)) if *n > 0) { self.writes.set(self.writes.get() + 1); }
+            if limited && matches!(&result, Poll::Ready(Ok(n)) if *n > 0) { self.revoked.set(true); }
             result
         }
         fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> { Pin::new(&mut self.inner).poll_flush(cx) }
         fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> { Pin::new(&mut self.inner).poll_shutdown(cx) }
     }
-    struct ExplicitQuiesce;
+    struct ExplicitQuiesce(Rc<Cell<bool>>);
     impl StreamAuthority for ExplicitQuiesce {
-        fn permits(&self, _: [u8; 6], _: intent::Intent, _: &CommittedEffect) -> bool { true }
+        fn permits(&self, _: [u8; 6], _: intent::Intent, _: &CommittedEffect) -> bool { !self.0.get() }
         fn permits_quiesce(&self, _: [u8; 6], intent: intent::Intent, _: &CommittedEffect) -> bool {
             intent.kind() == MessageKind::QuiesceStream(VideoChannel::Video3)
         }
     }
 
-    let path = std::fs::canonicalize(std::env::temp_dir())?.join(format!("fss-unifi-quiesce-effect-{}", std::process::id()));
+    let path = std::fs::canonicalize(std::env::temp_dir())?.join(format!("fss-unifi-quiesce-effect-{}-{revoke_during_write}", std::process::id()));
     std::fs::create_dir(&path)?;
     let temp = Temp(path);
     let store = FileEffectJournal::create(temp.0.join("journal"), EffectJournalLimits::default(), Arc::new(HostSpoolIo))?;
     let mut effects = EffectCoordinator::with_journal(Box::new(store))?;
     let mut budget = BudgetVector::ZERO;
     budget.network_bytes = 1_000_000;
+    budget.bytes = 1_000_000;
     let (mut authority, mut tree) = AuthorityCx::root(RootAuthoritySpec {
         trace_id: "trace:quiesce-fixture".into(), operation_id: OperationId::parse("operation:quiesce-owner")?,
         principal: "principal:fixture".into(), capabilities: vec![RuntimeGrant::AdapterNet.as_str().into(), RuntimeGrant::CameraSettingPrepare.as_str().into(), RuntimeGrant::CameraSettingCommit.as_str().into(), RuntimeGrant::ReadMedia.as_str().into()],
@@ -300,6 +317,11 @@ fn quiesce_requires_separate_authority_before_any_wire_write() -> Test {
                     let mut header = Vec::new(); let mut byte = [0_u8; 1];
                     while !header.ends_with(b"\r\n\r\n") { socket.read_exact(&mut byte)?; header.push(byte[0]); if header.len() > 4096 { return Err(io::Error::other("upgrade limit")); } }
                     if !header.starts_with(b"HTTP/1.1 101 ") { return Err(io::Error::other("upgrade refused")); }
+                    if revoke_during_write {
+                        socket.read_exact(&mut byte)?;
+                        if socket.read(&mut byte)? != 0 { return Err(io::Error::other("write continued after revocation")); }
+                        return Ok(());
+                    }
                     let request = receive_binary(&mut socket)?;
                     if !request.windows(b"file:///dev/null".len()).any(|w| w == b"file:///dev/null") || !request.windows(b"video3".len()).any(|w| w == b"video3") || request.windows(b"video2".len()).any(|w| w == b"video2") { return Err(io::Error::other("unexpected quiesce request")); }
                     socket.write_all(&frame(br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"ChangeVideoSettings","messageId":9,"inResponseTo":4,"payload":{}}"#))?;
@@ -308,8 +330,10 @@ fn quiesce_requires_separate_authority_before_any_wire_write() -> Test {
                 });
                 let (socket, _) = timeout(cx.now(), Duration::from_secs(5), listener.accept()).await??;
                 let writes = Rc::new(Cell::new(0));
+                let armed = Rc::new(Cell::new(false));
+                let revoked = Rc::new(Cell::new(false));
                 let clock = MeteredClock::new(task, cx, TimestampNs(4))?;
-                let io = MeteredIo::with_clock(Counted { inner: socket, writes: writes.clone() }, clock, "fixture:camera", 4096)?;
+                let io = MeteredIo::with_clock(Counted { inner: socket, writes: writes.clone(), armed: armed.clone(), revoked: revoked.clone() }, clock, "fixture:camera", 4096)?;
                 let mut controller = Controller::new(Identity::new("FSS", "12345678-1234-4abc-9abc-123456789abc", "1.20.0")?, 1)?;
                 controller.observe(HELLO)?;
                 controller.prepare_hello("2026-11-05T10:00:00.000Z")?;
@@ -328,7 +352,7 @@ fn quiesce_requires_separate_authority_before_any_wire_write() -> Test {
                 let management = Preconditions { camera, peer_admission: conditions.peer_admission, session_generation: 1, previous_association: None, previous_clock: None, lease_fence: fence };
                 let mut supervisor = supervisor::Supervisor::new(session, pipeline, management);
                 let guard = Guard { leases: &leases, clock };
-                let explicit = ExplicitQuiesce;
+                let explicit = ExplicitQuiesce(revoked.clone());
                 let policy = FixtureApproval { revoke_stream: None };
                 let wall = FixtureClock;
                 let mut runner = conversation::Owner { cx, task, clock, effects: &mut effects, leases: &leases, approval: &policy, management_authority: &guard, stream_authority: &guard, wall: &wall };
@@ -353,7 +377,18 @@ fn quiesce_requires_separate_authority_before_any_wire_write() -> Test {
                 let retry_approval = CommitApproval { prepared_digest: retry_prepared.digest(), current_precondition_digest: retry_intent.precondition_digest() };
                 let retry_permit = task.commit_effect(cx, &mut *runner.effects, &mut leases.borrow_mut(), retry_prepared, clock.now()?, retry_approval)?;
                 runner.stream_authority = &explicit;
+                armed.set(revoke_during_write);
                 let sent = supervisor.dispatch_quiesce(&runner, retry_intent, conditions, retry_permit, Duration::from_secs(5)).await.map_err(|_| "explicit quiesce refused")?;
+                if revoke_during_write {
+                    assert!(matches!(sent, fss_reference::unifi_direct::receive::StreamWrite::Indeterminate { .. }));
+                    assert!(revoked.get());
+                    assert_eq!(writes.get(), before + 1);
+                    let retirement = supervisor.retire();
+                    assert_eq!(retirement.controller.prepared, Some((4, MessageKind::QuiesceStream(VideoChannel::Video3))));
+                    peer.join().map_err(|_| "fixture peer panic")??;
+                    drop(media_peer);
+                    return Ok(());
+                }
                 assert!(matches!(sent, fss_reference::unifi_direct::receive::StreamWrite::Written { .. }));
                 assert!(writes.get() > before);
                 let reply = supervisor.step(&mut runner, &operation, Duration::from_secs(5)).await;
