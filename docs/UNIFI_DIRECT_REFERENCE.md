@@ -450,6 +450,15 @@ fresh login session with unknown expiry, not native recorder or onboarding
 qualification. See the [snapshot lab](../experiments/unifi_https_snapshot_lab/README.md)
 for binary/source identities and the initial clock-regression failure.
 
+On 2026-11-06, the same camera HTTP owner was exercised in an experimental
+three-snapshot sequence over one authenticated G4 connection. All three
+640×360 JPEGs decoded in memory, and each adjacent pair had different JPEG
+digests. An independent TLS fixture also tested a disconnect after the first
+response. The recorder service remained active. See the
+[snapshot lab](../experiments/unifi_https_snapshot_lab/README.md#repeated-direct-snapshots-2026-11-06)
+for exact evidence and limitations. This is repeated still-image access, not
+proof of capture timestamps, video continuity, native recording or discovery.
+
 The camera-local API now supports read-only settings observations after login
 and status. It returns only the claimed controller IPv4 address (or explicit
 unset, missing or unsupported state) and a local binding to the peer and
@@ -1148,6 +1157,19 @@ the module entry point and dependencies were deliberately filtered. Cargo build
 same-ID recovery later acknowledged the exit and release; the daemon had
 previously recorded exit 130. The fixture result is independent process
 evidence, not a physical-camera test.
+
+The opt-in pre-hello policy was subsequently extended to answer fresh
+uncorrelated clock requests as well as the latest correlated chain. The same
+32-reply quota, duplicate request-ID refusal, per-reply operation, admission
+and deadline remain in force; the conservative default is unchanged. An
+isolated source oracle evaluated the time-sync branch of the pinned reference
+controller and observed replies to three successive uncorrelated requests.
+This establishes a behavioral difference from the old Rust opt-in policy, not
+that the G4 sends this pattern or that it explains the physical timeout. The
+oracle did not contact the camera or the running recorder. In a scope-filtered
+strict-remote state-machine build, job `30098575685845025` passed all 23
+controller contracts, including the new uncorrelated quota and replay cases;
+terminal result and source release were acknowledged.
 
 A separate `discovery_observe_trial` laboratory binary connects a bounded UDP
 discovery result, an owner-selected address and MAC claim, a pinned TLS

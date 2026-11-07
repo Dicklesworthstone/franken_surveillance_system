@@ -404,8 +404,8 @@ pub enum TimeSyncPolicy {
     /// and at most eight replies are admitted. The owner must retain its
     /// existing effect, rate and message limits.
     ExplicitCorrelatedRequests,
-    /// Permit a bounded pre-hello clock exchange in which each message after
-    /// the first correlates to the preceding locally written reply. This is
+    /// Permit bounded, fresh uncorrelated pre-hello requests and a clock
+    /// exchange correlated to the preceding locally written reply. This is
     /// experimental, does not authenticate the peer, and grants no authority.
     /// A distinct operation and a live admission are still required for each
     /// reply. Duplicate camera message IDs and exchanges over 32 replies stop.
@@ -601,9 +601,6 @@ impl Controller {
                 } else {
                     self.time_sync_counts.uncorrelated =
                         self.time_sync_counts.uncorrelated.saturating_add(1);
-                    if pre_hello_exchange && self.time_sync_reply_count > 0 {
-                        return Ok(Observation::Other);
-                    }
                 }
                 if self.time_sync_policy == TimeSyncPolicy::ExplicitCorrelatedRequests
                     && self.time_sync_reply_count == MAX_OPT_IN_TIME_SYNC_REPLIES

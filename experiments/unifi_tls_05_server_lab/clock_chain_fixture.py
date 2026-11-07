@@ -17,7 +17,7 @@ import time
 from prehello_fixture import HEAD, exact, frame, message, received
 
 
-def run(binary, cert, key, root, quota):
+def run(binary, cert, key, root, quota, mixed=False, uncorrelated=False):
     reserve = socket.socket()
     reserve.bind(("127.0.0.1", 0))
     port = reserve.getsockname()[1]
@@ -54,7 +54,8 @@ def run(binary, cert, key, root, quota):
             correlation = 999
             count = 32 if quota else 12
             for index in range(count):
-                request = message("ubnt_avclient_timeSync", 100 + index, correlation)
+                response_to = 0 if uncorrelated or (mixed and index % 2 == 0) else correlation
+                request = message("ubnt_avclient_timeSync", 100 + index, response_to)
                 request["responseExpected"] = False
                 sock.sendall(frame(request))
                 reply = received(sock)
@@ -63,7 +64,7 @@ def run(binary, cert, key, root, quota):
                     raise ValueError("invalid clock reply")
                 correlation = reply["messageId"]
             if quota:
-                sock.sendall(frame(message("ubnt_avclient_timeSync", 132, correlation)))
+                sock.sendall(frame(message("ubnt_avclient_timeSync", 132, 0 if uncorrelated else correlation)))
                 try:
                     received(sock)
                 except (EOFError, ConnectionResetError, ssl.SSLEOFError):
@@ -85,7 +86,8 @@ def run(binary, cert, key, root, quota):
             out, err = child.communicate(timeout=10)
             if child.returncode == 0 or b"TimeSyncLimit" not in out + err:
                 raise ValueError("missing explicit time-sync quota stop")
-        print(f"clock_chain_fixture replies={count} result={'quota_stop' if quota else 'hello_agreement_stream'}")
+        mode = 'uncorrelated' if uncorrelated else 'mixed' if mixed else 'correlated'
+        print(f"clock_chain_fixture mode={mode} replies={count} result={'quota_stop' if quota else 'hello_agreement_stream'}")
     finally:
         if child.poll() is None:
             child.terminate()
@@ -111,6 +113,8 @@ def main():
         os.chmod(key, 0o600)
         run(sys.argv[1], cert, key, root / "handshake", False)
         run(sys.argv[1], cert, key, root / "quota", True)
+        run(sys.argv[1], cert, key, root / "mixed", False, mixed=True)
+        run(sys.argv[1], cert, key, root / "uncorrelated-quota", True, uncorrelated=True)
 
 
 if __name__ == "__main__":

@@ -293,17 +293,50 @@ fn bounded_pre_hello_exchange_rejects_replayed_ids_and_ignores_other_chains() ->
     );
     assert_eq!(
         c.observe(&message("ubnt_avclient_timeSync", 11, 0, "{}"))?,
-        Observation::Other
-    );
-    assert_eq!(
-        c.observe(&message("ubnt_avclient_timeSync", 11, first, "{}"))?,
         Observation::TimeSyncRequested
     );
     let second = c.prepare_time_sync(123_456, TIME)?.id();
     c.finish_dispatch(second, Dispatch::Written)?;
     assert_eq!(
-        c.observe(&message("ubnt_avclient_timeSync", 10, second, "{}")),
+        c.observe(&message("ubnt_avclient_timeSync", 12, first, "{}"))?,
+        Observation::Other
+    );
+    assert_eq!(
+        c.observe(&message("ubnt_avclient_timeSync", 12, second, "{}"))?,
+        Observation::TimeSyncRequested
+    );
+    let third = c.prepare_time_sync(123_456, TIME)?.id();
+    c.finish_dispatch(third, Dispatch::Written)?;
+    assert_eq!(
+        c.observe(&message("ubnt_avclient_timeSync", 10, 0, "{}")),
         Err(Error::UnexpectedMessage)
+    );
+    assert_eq!(
+        c.observe(&message("ubnt_avclient_timeSync", 11, third, "{}")),
+        Err(Error::UnexpectedMessage)
+    );
+    assert!(c.prepared().is_none());
+    Ok(())
+}
+
+#[test]
+fn bounded_pre_hello_uncorrelated_requests_share_the_reply_quota() -> TestResult {
+    let mut c = Controller::new_with_time_sync_policy(
+        Identity::new("FSS", "12345678-1234-4abc-9abc-123456789abc", "1.20.0")?,
+        1,
+        TimeSyncPolicy::BoundedPreHelloClockExchange,
+    )?;
+    for camera_id in 100..132 {
+        assert_eq!(
+            c.observe(&message("ubnt_avclient_timeSync", camera_id, 0, "{}"))?,
+            Observation::TimeSyncRequested
+        );
+        let reply = c.prepare_time_sync(123_456, TIME)?.id();
+        c.finish_dispatch(reply, Dispatch::Written)?;
+    }
+    assert_eq!(
+        c.observe(&message("ubnt_avclient_timeSync", 132, 0, "{}")),
+        Err(Error::TimeSyncLimit)
     );
     assert!(c.prepared().is_none());
     Ok(())

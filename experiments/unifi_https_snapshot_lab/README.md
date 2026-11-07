@@ -130,6 +130,38 @@ revalidates its private file synchronously, and this does not establish native
 continuous recording, automatic setup, physical device identity or camera
 session continuity.
 
+## Repeated direct snapshots (2026-11-06)
+
+With one task-owned HTTPS connection and one camera login, the optional
+three-snapshot mode received and decoded three 640×360 luma images from the
+owner's G4. Both adjacent JPEG digests changed. The mode stores no image by
+default, and this run did not request output. It created a login session with
+unknown expiry; the certificate had been observed on the same network and
+does not independently prove physical device identity. No camera settings
+were changed. Immediately afterward the recorder service and bulk fallback,
+upload and discovery timers were active; their active state alone does not prove
+uninterrupted recording or retention.
+
+Independent loopback TLS fixtures on the build worker and on `trj` verified
+three sequential requests and JPEG decodes, and a deliberately disconnected
+sequence failed without reporting or writing a complete output. The default
+single-image fixture also passed on the build worker. The tested Linux
+executable, after debug-symbol stripping, had SHA-256
+`6be3d97c92ff63d75b702fc6c901f73957c8312291eedc028d8266333517eb51`;
+the lab `main.rs` SHA-256 was
+`5ceea221b6a279789f3ffe2a8217b0eb159803a02e1a7c1a9687cd8bd9bc6fd5`,
+and the imported `camera_http.rs` SHA-256 was
+`bf8e8dff25b4cf6840b17a25769081524161c15b26f722c59de24908aeec317e`.
+Strict-remote build job `30098575685845009` initially failed artifact delivery;
+same-job recovery completed delivery and acknowledged source release. The
+isolated build used matching core, runtime, codec and camera source, with a
+reduced laboratory manifest. These observations establish repeated still
+reads, not native video, camera adoption, automatic setup or a recorder.
+The separate source-matched camera HTTP contract passed 1/1 test with three
+consecutive snapshot requests and its existing interruption/refusal controls
+in strict-remote job `30098575685845010`; the terminal result was acknowledged
+and its source released. That isolated contract build used a reduced manifest.
+
 ## Temporary controller handoff trial (2026-11-05)
 
 `src/bin/handoff_trial.rs` is an isolated Rust laboratory command for one

@@ -767,12 +767,21 @@ fn revoked_controller_withholds_pending_audio_and_returns_it_at_retirement() -> 
     conversation_scenario(false, false, true)
 }
 
-/// Exercise a correlated pre-hello chain through the real owned conversation,
-/// local TCP, per-reply effect journal and the camera-shaped peer.
 #[test]
 fn correlated_clock_chain_reaches_hello_and_stream_with_distinct_effects() -> Test {
+    clock_requests_reach_stream(false)
+}
+
+#[test]
+fn mixed_clock_requests_reach_hello_and_stream_with_distinct_effects() -> Test {
+    clock_requests_reach_stream(true)
+}
+
+/// Exercise clock requests through the owned conversation, local TCP,
+/// per-reply effect journal and the camera-shaped peer.
+fn clock_requests_reach_stream(mixed: bool) -> Test {
     let path = std::fs::canonicalize(std::env::temp_dir())?
-        .join(format!("fss-unifi-clock-chain-{}", std::process::id()));
+        .join(format!("fss-unifi-clock-chain-{}-{mixed}", std::process::id()));
     std::fs::create_dir(&path)?;
     let temp = Temp(path);
     let store = FileEffectJournal::create(
@@ -883,7 +892,8 @@ fn correlated_clock_chain_reaches_hello_and_stream_with_distinct_effects() -> Te
                         if !header.starts_with(b"HTTP/1.1 101 ") { return Err(io::Error::other("upgrade refused")); }
                         let mut correlation = 777u64;
                         for camera_id in 100..112u64 {
-                            let message = format!("{{\"from\":\"ubnt_avclient\",\"to\":\"UniFiVideo\",\"functionName\":\"ubnt_avclient_timeSync\",\"messageId\":{camera_id},\"inResponseTo\":{correlation}}}");
+                            let response_to = if mixed && camera_id % 2 == 0 { 0 } else { correlation };
+                            let message = format!("{{\"from\":\"ubnt_avclient\",\"to\":\"UniFiVideo\",\"functionName\":\"ubnt_avclient_timeSync\",\"messageId\":{camera_id},\"inResponseTo\":{response_to}}}");
                             socket.write_all(&frame(message.as_bytes()))?;
                             let reply = receive_binary(&mut socket)?;
                             if field(&reply, "inResponseTo")? != camera_id { return Err(io::Error::other("clock correlation")); }
