@@ -1,6 +1,6 @@
 ## CURRENT WAITS (auto-generated from the wait ledger — do not edit by hand)
 
-Generated: 2026-11-06T21:05:42-05:00  ·  source: /var/lib/fss-telemetry/waits.jsonl  ·  re-run: `wait_ledger.py show`
+Generated: 2026-11-07T00:24:52-05:00  ·  source: /var/lib/fss-telemetry/waits.jsonl  ·  re-run: `wait_ledger.py show`
 
 ### OPEN waits (alive — do not re-arm, do not double-run)
 
