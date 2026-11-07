@@ -318,7 +318,7 @@ use v1 or v2 recipes without a DFL conversion.
 
 The command uses the existing ONNX IR 7–9, default-domain opset-13 static finite F32 profile.
 Supported operators and their restrictions are specified in [onnx_import.md](onnx_import.md):
-Add, Sub, Mul, Div, Relu, LeakyRelu, Sigmoid, Tanh, MatMul, Gemm, Softmax, Conv,
+Add, Sub, Mul, Div, Relu, LeakyRelu, Clip, Sigmoid, HardSigmoid, Tanh, MatMul, Gemm, Softmax, Conv, ConvTranspose,
 BatchNormalization, InstanceNormalization, MaxPool, AveragePool, GlobalAveragePool, Transpose,
 Concat, Constant, Reshape, Squeeze, Unsqueeze, Slice, Split, Resize, Expand, Tile,
 Gather, ReduceMean, Identity and Flatten.
@@ -327,6 +327,16 @@ their values are evaluated during import and never require runtime integer execu
 Runtime/data-dependent shapes, external tensors, custom operators, raw detector-head
 profiles outside the explicit v3 DFL contract and unsupported operators refuse explicitly. The command does
 not claim that an arbitrary ONNX detector can be imported.
+
+Static NCHW ConvTranspose adds learned spatial upsampling with constant grouped
+filters, optional constant/runtime bias, stride, dilation, output padding and
+explicit or automatic output sizing. It lowers to existing layout operators and
+Conv2d with a transformed filter and at most one four-byte zero parameter.
+Complete intermediate/helper/parameter bounds apply before expansion, and runtime
+filters or negative inferred padding refuse. This does not add a new detector
+head, preprocessing policy or model activation authority. See
+[learned spatial upsampling](onnx_import.md#learned-spatial-upsampling) for the
+admitted shapes, cropping, numerical contract and artifact reload tests.
 
 LeakyRelu accepts the default F32 alpha `0.01` or a finite alpha in `[0, 1]`.
 Its exact native lowering adds five nodes and one scalar, with a temporary

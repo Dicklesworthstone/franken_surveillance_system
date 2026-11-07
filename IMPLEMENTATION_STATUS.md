@@ -61,6 +61,34 @@ rustfmt, Clippy and test execution remain pending: compiler processes were termi
 with SIGKILL before the execution workspace became unavailable.
 This does not qualify a trained model or close the full FSS-138 work package.
 
+## Native ONNX learned spatial upsampling
+
+The opset-13 importer now admits static NCHW ConvTranspose with constant grouped
+filters, optional constant/runtime bias, dilation, stride, output padding and
+explicit or automatic output sizing. This enables learned decoder/upsampling
+blocks through the existing native Conv2d and layout kernels. Filters are
+channel-transposed within groups and spatially reversed; input gaps use a true
+zero scalar expanded through logarithmic Concat helpers. No image-sized parameter,
+foreign runtime, new dependency or frozen operator ID is introduced.
+
+Complete helper/value/parameter costs and intermediate tensor sizes are admitted
+before expansion. Work, cancellation, generation, output-shape and runtime budget
+checks remain active. Shared source weights survive artifact export when another
+graph consumer needs them. Runtime filters and negative inferred padding refuse;
+native ordered F32 arithmetic defines rounding and overflow. See
+[the supported profile](docs/onnx_import.md#learned-spatial-upsampling).
+
+**Validation:** all twelve new `onnx_conv_transpose_execution` contracts passed on
+`nightly-2026-08-31`, running actual scalar and optimized executors and canonical
+graph/Safetensors reload. An independent binary64 scatter oracle covers asymmetric
+filters, grouped/multibatch data, dilation, padding, crops and output sizing. Other
+cases cover shared Constant filters, runtime bias, Conv/ConvTranspose/Sigmoid
+composition, nonfinite-independent zero insertion, malformed graphs, exact limits,
+every importer cancellation checkpoint, executor budgets/generations and helper
+name collisions. `cargo check --locked --offline -p fss-model-ir` also passed.
+This establishes the focused implementation contract, not trained-model quality,
+general ONNX compatibility, full CLI qualification or production release readiness.
+
 ## Lossless playable local decoded output
 
 `fss-file` now exposes `--output-format gray-mkv --output-rate NUM/DEN`

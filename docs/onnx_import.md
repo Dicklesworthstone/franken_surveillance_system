@@ -42,7 +42,7 @@ including hand-computed dense and convolution/pooling results.
   become runtime integer inputs or exported weights.
 - Static positive dimensions, at most rank eight. Source-ordered acyclic graphs;
   declared outputs and intermediate value information must match native inference.
-- Add, Sub, Mul, Div, Relu, LeakyRelu, Clip, Sigmoid, HardSigmoid, Tanh, MatMul, Gemm, Softmax, Conv,
+- Add, Sub, Mul, Div, Relu, LeakyRelu, Clip, Sigmoid, HardSigmoid, Tanh, MatMul, Gemm, Softmax, Conv, ConvTranspose,
   BatchNormalization, InstanceNormalization, MaxPool, AveragePool, GlobalAveragePool, Transpose,
   Concat, Constant, Reshape, Squeeze, Unsqueeze, Slice, Split, Resize, Pad, Expand, Tile,
   Gather, ReduceMean, Identity and Flatten.
@@ -200,6 +200,70 @@ do not qualify a trained detector or expand the supported ONNX profile.
 
 ```sh
 cargo +nightly-2026-08-31 test --locked --offline -p fss-model-ir --test onnx_leaky_relu_execution
+```
+
+## Learned spatial upsampling
+
+[ConvTranspose-11](https://onnx.ai/onnx/operators/onnx__ConvTranspose.html#convtranspose-11),
+selected by opset 13, accepts static positive rank-four NCHW F32 data and a
+constant filter with ONNX layout `[input_channels, output_channels/group, KH, KW]`.
+The filter may be an initializer or a Constant node. Groups must be positive and
+divide the input channel count. Optional bias has shape `[output_channels]` and
+may be constant, a runtime input or an earlier runtime result; an empty optional
+bias input is accepted. Runtime filters, other ranks/dtypes and unknown attributes
+refuse. A declared `kernel_shape` must match the actual filter.
+
+Positive two-axis strides and dilations, nonnegative four-axis `pads`, and
+two-axis `output_padding` are supported. Each output-padding value must be
+smaller than the greater of its stride and dilation. `auto_pad` may be `NOTSET`,
+`VALID`, `SAME_UPPER` or `SAME_LOWER`; nondefault modes cannot coexist with
+explicit pads. Per spatial axis, output size follows:
+
+```text
+stride * (input_size - 1) + output_padding
+    + dilation * (kernel_size - 1) + 1 - pad_begin - pad_end
+```
+
+An explicit positive two-axis `output_shape` overrides validly typed explicit
+pads. Otherwise SAME modes request `input_size * stride`. Inferred total padding
+is split with the extra odd element at the end for `SAME_UPPER`, and at the
+beginning otherwise, following the source operator's output-shape rule. Negative
+inferred padding is outside this profile and refuses; it is never silently
+clamped. Zero or conflicting output dimensions also refuse.
+
+The lowering converts each constant filter once: it transposes input/output
+channels within each group and reverses both spatial axes. Strided inputs are
+interleaved with exact positive zeros using existing Reshape, Concat and Slice
+operators, then processed by native Conv2d at stride one. Crops beyond the native
+padding margin use one final Slice. Zero gaps come from one four-byte scalar,
+expanded through logarithmic Concat construction; they are never computed by
+subtracting an input from itself, and there is no image-sized generated parameter.
+Singleton spatial axes need no interleaving.
+
+The transformed filter consumes the same byte count as the source filter. Both
+are charged to aggregate import parameter limits even when only the transformed
+one is retained for execution. A shared source filter remains in exported weights
+when another native node or graph output uses it. The full helper/value count,
+all spatial arithmetic, output/intermediate tensor sizes and parameter expansion
+are admitted before emission; work, cancellation and ordinary execution allocation
+budgets remain enforced. Source names are reserved before helper allocation.
+Native operator IDs and Model IR v1 stay unchanged, while the importer identity
+binds the new lowering source.
+
+Numerical behavior is the existing ordered F32 convolution, including its rounding
+and overflow behavior, followed by optional bias and cropping. The lowering does
+not promise bitwise equality with another framework's scatter accumulation order.
+The `onnx_conv_transpose_execution` contracts compare dyadic finite inputs with an
+independent binary64 scatter oracle and exercise both actual CPU executors before
+and after canonical graph/Safetensors reload. Cases include asymmetric filters,
+groups and batches, dilation, output padding and excess crops, automatic and
+explicit output sizing, shared constants, runtime bias, convolutional composition,
+true zero insertion, malformed sources, limits, cancellation and name collisions.
+This extends graph compatibility; it does not add a detector output profile or
+qualify a trained model.
+
+```sh
+cargo +nightly-2026-08-31 test --locked --offline -p fss-model-ir --test onnx_conv_transpose_execution
 ```
 
 ## Static expansion and tiling

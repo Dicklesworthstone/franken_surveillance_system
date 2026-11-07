@@ -19,6 +19,7 @@ mod batch_normalization;
 mod broadcast;
 mod clip;
 mod constants;
+mod conv_transpose;
 mod dfl;
 mod export;
 mod gather;
@@ -509,7 +510,7 @@ fn source_node<'a>(
     let id = format!("onnx-node-{ordinal:04}");
     if !matches!(
         op.as_str(),
-        "Gemm" | "Squeeze" | "Slice" | "Resize" | "Split" | "Pad" | "Clip"
+        "Gemm" | "ConvTranspose" | "Squeeze" | "Slice" | "Resize" | "Split" | "Pad" | "Clip"
     ) && inputs.iter().any(String::is_empty)
     {
         return Err(OnnxError::Limit);
@@ -981,6 +982,8 @@ pub fn import_onnx<'a>(
             shape_program::lower(source, &mut lowering)?;
         } else if source.op == "Gemm" {
             gemm::lower(source, &mut lowering)?;
+        } else if source.op == "ConvTranspose" {
+            conv_transpose::lower(source, &mut lowering)?;
         } else if source.op == "BatchNormalization" {
             batch_normalization::lower(source, &mut lowering)?;
         } else if source.op == "InstanceNormalization" {
