@@ -2058,6 +2058,39 @@ recording remain open. See the [trial notes](../experiments/unifi_tls_05_server_
 
 ### Controller TCP listener
 
+The controller's default observation API still classifies event messages as
+`Other`. An opt-in event-claim parser and the established-session supervisor
+now recognize `Event*` messages and transfer the exact bounded WebSocket JSON
+source to the caller with a digest and untrusted message metadata. A bounded
+view interprets selected motion edges and smart-detection descriptors without
+claiming detection truth or peer identity. The caller must retain or explicitly
+omit that source under its privacy policy. Capture is enabled only when the
+session enters the supervisor; events received during startup are still
+discarded as `Other`. A camera-requested event reply is exposed but not sent;
+the trial stops after explicitly omitting such a source. No event publication,
+motion-state lifecycle, audio linkage, physical G4 event, or complete Scrypted
+detection parity is claimed. Scope-filtered strict-remote job
+`30098575685845154` built the event, controller, receiver and task-owned
+contracts and released source custody. Its executables passed **3/3**, **23/23**
+and **5/5** event, controller and receiver tests. The first task-owned run
+passed 12/13 but its event fixture failed because its synthetic WebSocket
+encoder lacked extended lengths. After fixing that test helper, strict-remote
+job `30098575685845155` completed with terminal acknowledgment and source
+release; its executable SHA-256
+`a501fb1b1b04a4e8debf3dfeed2ef13bea58a3fd1f178c49e16bb6033d039da7`
+passed **13/13**, including the event and media supervisor path. A prior job
+`30098575685845146` failed to compile because the reduced snapshot was missing
+ten modules and the then-current receiver used the wrong WebSocket buffer type;
+both were corrected before the successful runs. The event and receiver source
+SHA-256 hashes were
+`efd761ccc9c3c69017c85863ff332dc61876296e119bbca13eafb248fc7a0ddb` and
+`c6835ee63edb745e72634bba9f9489c1d7679e684a2b4a80b547203d21ea78d1`.
+The filtered main module matched the checkout after only those ten omitted
+module declarations were removed; its filtered SHA-256 was
+`db23f1fe01165a619c92302537301b06bf934b2817ec3a635c242e631281496a`.
+The changed standalone trial has not yet been rebuilt or exercised for this
+revision. These are synthetic tests, not a full-workspace qualification or G4 event.
+
 `unifi_direct::controller_listener` binds an explicitly scoped IPv4 address,
 checks the task network grant and current listener and peer policies, and
 returns a task-metered socket. Its policy guard rechecks every raw socket poll

@@ -112,9 +112,15 @@ impl StreamAuthority for Guard<'_, '_, '_> {
     }
 }
 fn frame(payload: &[u8]) -> Vec<u8> {
-    assert!(payload.len() < 126);
+    assert!(payload.len() <= usize::from(u16::MAX));
     let mask = [1, 2, 3, 4];
-    let mut bytes = vec![0x82, 0x80 | payload.len() as u8];
+    let mut bytes = vec![0x82];
+    if payload.len() < 126 {
+        bytes.push(0x80 | payload.len() as u8);
+    } else {
+        bytes.push(0x80 | 126);
+        bytes.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+    }
     bytes.extend_from_slice(&mask);
     bytes.extend(payload.iter().enumerate().map(|(i, b)| b ^ mask[i % 4]));
     bytes
@@ -744,6 +750,7 @@ fn conversation_scenario_with_event(revoke_stream: bool, revoke_after_start: boo
                         supervisor::Step::CameraEvent(event) => {
                             assert_eq!(event.kind(),fss_reference::unifi_direct::events::Kind::SmartDetect);
                             assert_eq!(event.source(),EVENT);
+                            assert!(!format!("{event:?}").contains("person"));
                             assert_eq!(event.message_id(),20);
                             assert_eq!(event.digest(),ContentDigest::sha256(EVENT));
                             let parsed=event.interpret()?;
