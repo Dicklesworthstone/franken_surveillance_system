@@ -183,41 +183,41 @@ impl OwnedSink {
             if *video.configuration_sources() != segment.fragment().configuration_sources() {
                 return Err(BootstrapError::VideoBinding);
             }
-            let initialize =
-                |config: &aac::Configuration<'_>,
-                 bound: Option<&aac_track::BoundConfiguration<'_>>| {
-                    let origin = av_recording::segment_sender_clock_origin(
-                        segment,
+            let initialize = |config: &aac::Configuration<'_>,
+                              bound: Option<&aac_track::BoundConfiguration<'_>>|
+             -> Result<_, BootstrapError> {
+                let origin = av_recording::segment_sender_clock_origin(
+                    segment,
+                    config,
+                    inputs.policy.max_separation_ms,
+                )
+                .map_err(BootstrapError::Media)?;
+                let initialization = video
+                    .av_initialization(config)
+                    .map_err(BootstrapError::Video)?;
+                let muxer = match bound {
+                    Some(bound) => av_recording::Muxer::from_source(
+                        &initialization,
+                        bound,
+                        origin.audio_ticks,
+                        inputs.policy.jitter_ms,
+                        inputs.policy.max_epoch_frames,
+                        inputs.policy.max_audio_frames,
+                        inputs.policy.media_limits,
+                    ),
+                    None => av_recording::Muxer::new(
+                        &initialization,
                         config,
-                        inputs.policy.max_separation_ms,
-                    )
-                    .map_err(BootstrapError::Media)?;
-                    let initialization = video
-                        .av_initialization(config)
-                        .map_err(BootstrapError::Video)?;
-                    let muxer = match bound {
-                        Some(bound) => av_recording::Muxer::from_source(
-                            &initialization,
-                            bound,
-                            origin.audio_ticks,
-                            inputs.policy.jitter_ms,
-                            inputs.policy.max_epoch_frames,
-                            inputs.policy.max_audio_frames,
-                            inputs.policy.media_limits,
-                        ),
-                        None => av_recording::Muxer::new(
-                            &initialization,
-                            config,
-                            origin.audio_ticks,
-                            inputs.policy.jitter_ms,
-                            inputs.policy.max_epoch_frames,
-                            inputs.policy.max_audio_frames,
-                            inputs.policy.media_limits,
-                        ),
-                    }
-                    .map_err(BootstrapError::Media)?;
-                    Ok((initialization, muxer, origin))
-                };
+                        origin.audio_ticks,
+                        inputs.policy.jitter_ms,
+                        inputs.policy.max_epoch_frames,
+                        inputs.policy.max_audio_frames,
+                        inputs.policy.media_limits,
+                    ),
+                }
+                .map_err(BootstrapError::Media)?;
+                Ok((initialization, muxer, origin))
+            };
             let (initialization, muxer, origin) = match &inputs.audio {
                 Audio::InBand {
                     record,

@@ -4714,3 +4714,46 @@ checkout SHA-256 matched:
 `cbf29aa0248aeb1b70356cf7b4fce4e75b4e78e0640df1382bb0272dc96fd095`
 (`drained_blocking.rs`). The private local acquisition helper's SHA-256 was
 `070ec86585758dc1341ea3179099c77d6bbcf0665bbb88426317b5fd78d143cc`.
+
+`av_owned_sink::OwnedSink::bootstrap` now constructs an idle archive sink
+from the exact video configuration record, the first completed segment, an
+in-band or explicitly unverified AAC configuration, and a bounded policy. It
+checks first-segment sequence and video-source binding, derives the existing
+sender-clock hypothesis, and returns both the idle sink and the original first
+segment so the supervisor can retain that segment while independently
+justified capture bounds are obtained. A refusal returns every original
+input. This does not establish camera identity, AAC epoch, physical A/V
+synchronization or physical capture time.
+
+The supervisor loopback now exercises first-segment bootstrap into an owned
+worker, segment retention, control servicing, cancellation or denial, retry,
+and subsequent media progress. Strict-remote job `30099060530610450` passed
+17/17 ordinary recording contracts with the camera-input case ignored, and
+job `30099060530610453` passed all 27/27 task-effect contracts. Both ended
+with exit 0, terminal acknowledgment and source release. The ignored camera
+case was then run separately on `ts1` with a fresh bounded passive G4-derived
+sample and the exact tested executable SHA-256
+`d0df2d8c6916a5ec153f030d1da9ac34fa459f2079b9a3a6a0a99e101ec299f3`.
+The resulting private temporary archive reopened with 150 video samples and
+78 source-mapped AAC frames; three video frames decoded in Rust. The AAC was
+not independently decoded in this check. The relay-supplied configuration,
+synthetic header and boundary, zero-stream-ID framing hypothesis and fixture
+capture bounds have the same explicit limitations as the preceding passive
+replay. The temporary archive and transferred executable were removed, and
+the existing recorder remained active with its restart count unchanged.
+
+The initial targeted test in job `30099060530610440` failed: the old fixture
+asserted an audio origin of zero, while its first retained audio record is
+64 ms after the first video sample, or 1,024 ticks at 16 kHz. The fixture and
+its in-band archive oracle now use the observed sender-time hypothesis; the
+failing run is not a pass. Jobs `30099060530610437` and `30099060530610438`
+were refused before execution by worker disk admission. All five jobs above
+have terminal acknowledgments and source release. Worker and checkout
+SHA-256 matched:
+`7bf418fc8fffb3d5bfb6a15f17bd8a9f8f00a3a3032ae9c53b017466d5a341b3`
+(`av_owned_sink.rs`),
+`3c9a2eae71d6b87a0548c0361259abc5f5eda02c7403f888c87ca49039544bf8`
+(recording contract), and
+`b713a3a692d44216f2bd282faf8f0f112d5da788098b1794096a44a97a58962c`
+(task-effect contract). This is not direct camera control, automatic fleet
+setup, continuous recording, or verified retention.

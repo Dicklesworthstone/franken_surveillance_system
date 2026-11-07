@@ -3114,8 +3114,17 @@ fn av_evidence_publishes_and_reopens_exact_source_objects() -> TestResult {
     let av_init = recorder
         .av_initialization(bound.configuration())?
         .ok_or("missing A/V initialization")?;
-    let mut muxer =
-        av_recording::Muxer::from_source(&av_init, &bound, 0, 0, 8, 8, Mp4Limits::default())?;
+    let origin = av_recording::segment_sender_clock_origin(&segment, bound.configuration(), 5_000)?;
+    assert_eq!(origin.audio_minus_video_ms, 64);
+    let mut muxer = av_recording::Muxer::from_source(
+        &av_init,
+        &bound,
+        origin.audio_ticks,
+        0,
+        8,
+        8,
+        Mp4Limits::default(),
+    )?;
     let fragment = muxer.fragment(&av_init, &segment)?;
     let retention = ContentDigest::sha256(b"synthetic av retention");
     let capture = CaptureInterval::new(TimestampNs(1), TimestampNs(10))?;
@@ -3240,8 +3249,15 @@ fn av_evidence_publishes_and_reopens_exact_source_objects() -> TestResult {
 
     // In-band configuration must remain bound to the muxer and to the
     // published source graph; a provenance mismatch may not advance it.
-    let mut inband_muxer =
-        av_recording::Muxer::from_source(&av_init, &bound, 0, 0, 8, 8, Mp4Limits::default())?;
+    let mut inband_muxer = av_recording::Muxer::from_source(
+        &av_init,
+        &bound,
+        origin.audio_ticks,
+        0,
+        8,
+        8,
+        Mp4Limits::default(),
+    )?;
     let mut inband_target = ReferenceDeployment::open(
         &temp.0.join("transactional-inband"),
         "site:unifi-av-archive-test",
@@ -3833,22 +3849,27 @@ fn av_evidence_publishes_and_reopens_exact_source_objects() -> TestResult {
     };
     use fss_reference::unifi_direct::av_owned_sink;
     use std::sync::Arc;
-    let owned_muxer =
-        av_recording::Muxer::from_source(&av_init, &bound, 0, 0, 8, 8, Mp4Limits::default())?;
-    let mut owned = av_owned_sink::OwnedSink::new(av_owned_sink::Inputs {
+    let bootstrap = av_owned_sink::OwnedSink::bootstrap(av_owned_sink::BootstrapInputs {
         video_configuration: video_configuration.ok_or("missing owned video configuration")?,
-        av_initialization: av_init,
         audio: av_owned_sink::Audio::InBand {
             record: audio_record,
             observation,
         },
-        muxer: owned_muxer,
+        first_segment: segment,
         retention,
-        evidence_limits: EvidenceLimits::default(),
-        video_limits: Mp4Limits::default(),
+        policy: av_owned_sink::BootstrapPolicy {
+            max_separation_ms: 5_000,
+            jitter_ms: 0,
+            max_epoch_frames: 8,
+            max_audio_frames: 8,
+            media_limits: Mp4Limits::default(),
+            evidence_limits: EvidenceLimits::default(),
+        },
     })
-    .map_err(|_| "in-band owned sink construction failed")?;
-    assert!(owned.offer(segment, capture).is_ok());
+    .map_err(|_| "in-band owned sink bootstrap failed")?;
+    assert_eq!(bootstrap.origin.audio_ticks, 1024);
+    let mut owned = bootstrap.sink;
+    assert!(owned.offer(bootstrap.first_segment, capture).is_ok());
     let mut owned_target = ReferenceDeployment::open(
         &temp.0.join("owned-inband"),
         "site:unifi-av-archive-test",
@@ -3981,31 +4002,39 @@ fn worker_replay_bounded_input(wire: &[u8]) -> TestResult {
     let video_samples = segment.fragment().samples().len();
     let audio_bytes = [0x14, 0x08];
     let audio = aac::Configuration::parse_explicit(&audio_bytes)?;
-    let origin = av_recording::segment_sender_clock_origin(&segment, &audio, 5_000)?;
-    let initialization = recorder
-        .av_initialization(&audio)?
-        .ok_or("missing A/V initialization")?;
+    let expected_origin = av_recording::segment_sender_clock_origin(&segment, &audio, 5_000)?;
     let limits = Mp4Limits::default();
-    let muxer = av_recording::Muxer::new(
-        &initialization,
-        &audio,
-        origin.audio_ticks,
-        5,
-        1_000_000,
-        limits.max_samples,
-        limits,
-    )?;
     let retention = ContentDigest::sha256(b"private replay fixture retention");
-    let sink = av_owned_sink::OwnedSink::new(av_owned_sink::Inputs {
+    let inputs = av_owned_sink::BootstrapInputs {
         video_configuration: video_configuration.ok_or("missing configuration")?,
-        av_initialization: initialization,
-        audio: av_owned_sink::Audio::SuppliedUnverified(audio_bytes),
-        muxer,
+        audio: av_owned_sink::Audio::SuppliedUnverified([0, 0]),
+        first_segment: segment,
         retention,
-        evidence_limits: evidence::Limits::default(),
-        video_limits: limits,
-    })
-    .map_err(|_| "owned sink construction refused")?;
+        policy: av_owned_sink::BootstrapPolicy {
+            max_separation_ms: 5_000,
+            jitter_ms: 5,
+            max_epoch_frames: 1_000_000,
+            max_audio_frames: limits.max_samples,
+            media_limits: limits,
+            evidence_limits: evidence::Limits::default(),
+        },
+    };
+    let refusal = match av_owned_sink::OwnedSink::bootstrap(inputs) {
+        Err(refusal) => refusal,
+        Ok(_) => return Err("invalid configuration was accepted".into()),
+    };
+    if refusal.reason != av_owned_sink::BootstrapError::AudioConfiguration {
+        return Err("wrong bootstrap refusal".into());
+    }
+    let mut inputs = refusal.inputs;
+    inputs.audio = av_owned_sink::Audio::SuppliedUnverified(audio_bytes);
+    let bootstrap =
+        av_owned_sink::OwnedSink::bootstrap(inputs).map_err(|_| "owned sink bootstrap refused")?;
+    if bootstrap.origin != expected_origin {
+        return Err("sender-clock origin mismatch".into());
+    }
+    let sink = bootstrap.sink;
+    let segment = bootstrap.first_segment;
     let temp =
         Temp(std::env::temp_dir().join(format!("fss-g4-worker-replay-{}", std::process::id())));
     std::fs::create_dir(&temp.0)?;
@@ -4150,4 +4179,94 @@ fn owner_camera_worker_replay_from_stdin() -> TestResult {
         .take((8 * 1024 * 1024 + 1) as u64)
         .read_to_end(&mut wire)?;
     worker_replay_bounded_input(&wire)
+}
+
+#[test]
+fn owned_sink_bootstrap_rejects_late_or_mismatched_sources_without_losing_them() -> TestResult {
+    use fss_container::Mp4Limits;
+    use fss_core::{CaptureInterval, ContentDigest, TimestampNs};
+    use fss_reference::unifi_direct::{av_owned_sink, evidence};
+
+    let (_, records) = fixture_with_audio_intervals(0, false, false, false, Some(64))?;
+    let mut recorder = Recorder::new(KEY, Limits::default())?;
+    let mut header = None;
+    let mut video = None;
+    let mut segments = Vec::new();
+    for record in records {
+        match recorder.push(record).map_err(|refusal| refusal.reason)? {
+            Push::Source {
+                record,
+                disposition: SourceDisposition::Header,
+            } => header = Some(record),
+            Push::Source {
+                record,
+                disposition: SourceDisposition::Configuration,
+            } => video = Some(record),
+            Push::Segment(segment) => segments.push(segment),
+            _ => (),
+        }
+    }
+    let mut segments = segments.into_iter();
+    let first = segments.next().ok_or("first segment missing")?;
+    let second = segments.next().ok_or("second segment missing")?;
+    let first_digest = ContentDigest::sha256(first.fragment().bytes());
+    let second_digest = ContentDigest::sha256(second.fragment().bytes());
+    let mut inputs = av_owned_sink::BootstrapInputs {
+        video_configuration: video.ok_or("video configuration missing")?,
+        audio: av_owned_sink::Audio::SuppliedUnverified([0x14, 0x08]),
+        first_segment: second,
+        retention: ContentDigest::sha256(b"bootstrap fixture retention"),
+        policy: av_owned_sink::BootstrapPolicy {
+            max_separation_ms: 5_000,
+            jitter_ms: 0,
+            max_epoch_frames: 8,
+            max_audio_frames: 8,
+            media_limits: Mp4Limits::default(),
+            evidence_limits: evidence::Limits::default(),
+        },
+    };
+    let refusal = match av_owned_sink::OwnedSink::bootstrap(inputs) {
+        Err(refusal) => refusal,
+        Ok(_) => return Err("late segment was accepted".into()),
+    };
+    assert_eq!(refusal.reason, av_owned_sink::BootstrapError::Sequence);
+    inputs = refusal.inputs;
+    assert_eq!(
+        ContentDigest::sha256(inputs.first_segment.fragment().bytes()),
+        second_digest
+    );
+    let recovered_second = std::mem::replace(&mut inputs.first_segment, first);
+    assert_eq!(
+        ContentDigest::sha256(recovered_second.fragment().bytes()),
+        second_digest
+    );
+    let correct_video = std::mem::replace(
+        &mut inputs.video_configuration,
+        header.ok_or("header missing")?,
+    );
+    let refusal = match av_owned_sink::OwnedSink::bootstrap(inputs) {
+        Err(refusal) => refusal,
+        Ok(_) => return Err("mismatched video source was accepted".into()),
+    };
+    assert_eq!(refusal.reason, av_owned_sink::BootstrapError::VideoBinding);
+    inputs = refusal.inputs;
+    assert_eq!(
+        ContentDigest::sha256(inputs.first_segment.fragment().bytes()),
+        first_digest
+    );
+    inputs.video_configuration = correct_video;
+    let bootstrap =
+        av_owned_sink::OwnedSink::bootstrap(inputs).map_err(|_| "valid bootstrap refused")?;
+    assert_eq!(bootstrap.origin.audio_ticks, 1024);
+    assert!(!bootstrap.sink.has_pending());
+    let mut sink = bootstrap.sink;
+    let capture = CaptureInterval::new(TimestampNs(1), TimestampNs(2))?;
+    assert!(sink.offer(bootstrap.first_segment, capture).is_ok());
+    let (retained, bounds) = sink.retire().pending.ok_or("first segment lost")?;
+    assert_eq!(bounds, capture);
+    assert_eq!(
+        ContentDigest::sha256(retained.fragment().bytes()),
+        first_digest
+    );
+    Ok(())
 }

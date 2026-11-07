@@ -1359,13 +1359,26 @@ fn conversation_scenario_with_worker_guard(revoke_stream: bool, revoke_after_sta
                                     }
                                     struct Unblock(Arc<Retention>);
                                     impl Drop for Unblock { fn drop(&mut self) { self.0.block.store(false, Ordering::Release); } }
-                                    let muxer=av_recording::Muxer::new(&av_init,&audio_config,0,0,8,8,fss_container::Mp4Limits::default())?;
-                                    let sink=av_owned_sink::OwnedSink::new(av_owned_sink::Inputs {
-                                        video_configuration:record, av_initialization:av_init,
-                                        audio:av_owned_sink::Audio::SuppliedUnverified(audio_bytes), muxer,
-                                        retention:ContentDigest::sha256(b"worker guard retention"), evidence_limits:evidence::Limits::default(),
-                                        video_limits:fss_container::Mp4Limits::default(),
-                                    }).map_err(|_|"owned sink construction refused")?;
+                                    let mut first_segment=None;
+                                    for _ in 0..128 {
+                                        match supervisor.step(&mut owner,&operations[6],Duration::from_secs(5)).await {
+                                            supervisor::Step::Media(pipeline::Step::Recording(recording::Push::Segment(segment))) => {first_segment=Some(segment);break;},
+                                            supervisor::Step::Media(pipeline::Step::Recording(recording::Push::Source {record,..})) => originals.extend_from_slice(record.bytes()),
+                                            supervisor::Step::Media(pipeline::Step::Recording(recording::Push::Buffered)|pipeline::Step::Progress {..}) | supervisor::Step::TimeSyncWritten => (),
+                                            other => return Err(format!("unexpected bootstrap source result: {other:?}").into()),
+                                        }
+                                    }
+                                    let bootstrap=av_owned_sink::OwnedSink::bootstrap(av_owned_sink::BootstrapInputs {
+                                        video_configuration:record,
+                                        audio:av_owned_sink::Audio::SuppliedUnverified(audio_bytes),
+                                        first_segment:first_segment.ok_or("first source segment missing")?,
+                                        retention:ContentDigest::sha256(b"worker guard retention"),
+                                        policy:av_owned_sink::BootstrapPolicy { max_separation_ms:5_000, jitter_ms:0, max_epoch_frames:8, max_audio_frames:8,
+                                            media_limits:fss_container::Mp4Limits::default(), evidence_limits:evidence::Limits::default() },
+                                    }).map_err(|_|"owned sink bootstrap refused")?;
+                                    assert_eq!(bootstrap.origin.audio_ticks,1024);
+                                    let sink=bootstrap.sink;
+                                    let first_segment=bootstrap.first_segment;
                                     let replay_authority=fss_core::region::ContextAuthority::new_root(RootAuthoritySpec {
                                         trace_id:"trace:worker-guard-replay".into(), operation_id:OperationId::parse("operation:worker-guard-replay")?,
                                         principal:"principal:fixture".into(), capabilities:vec!["ADP-REPLAY-001".into()],
@@ -1384,16 +1397,8 @@ fn conversation_scenario_with_worker_guard(revoke_stream: bool, revoke_after_sta
                                     let authority:Arc<dyn archive::RetainAuthority + Send + Sync>=access.clone();
                                     let worker=av_worker::Worker::new(av_worker::Parts {sink,deployment,journal,keeper,replay,authority,limits:archive::Limits::default(),work_limit:4_000_000_000}).map_err(|_|"worker limits invalid")?;
                                     let mut guard=av_worker_guard::Guard::new(supervisor,worker).map_err(|_|"worker was not idle")?;
-                                    let mut captured=false;
-                                    for _ in 0..128 {
-                                        match guard.step(&mut owner,&operations[6],Duration::from_secs(5)).await {
-                                            av_sink::GuardStep::CaptureRequired => {captured=true;break;},
-                                            av_sink::GuardStep::Supervisor(supervisor::Step::Media(pipeline::Step::Recording(recording::Push::Source {record,..}))) => originals.extend_from_slice(record.bytes()),
-                                            av_sink::GuardStep::Supervisor(supervisor::Step::Media(pipeline::Step::Recording(recording::Push::Buffered)|pipeline::Step::Progress {..})) | av_sink::GuardStep::Supervisor(supervisor::Step::TimeSyncWritten) => (),
-                                            other => return Err(format!("unexpected async guard source result: {other:?}").into()),
-                                        }
-                                    }
-                                    if !captured {return Err("async guard did not retain a segment".into());}
+                                    guard.hold_segment(first_segment).map_err(|_|"guard refused first segment")?;
+                                    assert!(matches!(guard.step(&mut owner,&operations[6],Duration::from_secs(5)).await,av_sink::GuardStep::CaptureRequired));
                                     let segment=guard.awaiting_capture().ok_or("missing source")?;
                                     let source_digest=ContentDigest::sha256(segment.fragment().bytes());
                                     for source in segment.source() { originals.extend_from_slice(source.bytes()); }
