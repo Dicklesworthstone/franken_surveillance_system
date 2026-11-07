@@ -4,6 +4,29 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Exact integer JPEG transform factorization
+
+The native JPEG encoder factors the Q14 transform by mirrored input symmetry:
+22 integer multiplications per one-dimensional pass replace 64, reducing the
+two-pass block from 1,024 to 352. Exact DC, rounding, output bytes, block-work
+charges and cancellation boundaries are preserved. The original matrix path is
+retained as a test oracle, with basis checks and 56,064 adversarial block/quantizer
+comparisons. Source identity and its hashing charge change with the new source.
+
+**Validation:** the exact published baseline passed 29 scoped native contracts.
+The optimized working tree passed 31; all 128 synthetic JPEG streams matched the
+baseline bytes, Pillow decoded all 128 and FFmpeg independently decoded 16.
+The maximum native-versus-independent sample difference was two. A separate
+release block prototype was faster in all six alternating measurements; the
+complete 1080p encoder A/B was interrupted and has no completed throughput result.
+
+The workspace became unavailable again. The substantive transform was recovered
+through GitHub; inaccessible formatter-only layouts in other files were omitted.
+Final recovered-source formatting and native reruns remain pending. Clippy was
+SIGKILLed in unchanged fss-core before encoder diagnostics. These observations do
+not establish release, timing, custody or pixel-exact mask qualification.
+See [the encoder profile and evidence scope](docs/NATIVE_JPEG_ENCODING.md).
+
 ## Native attention import correction and resumed execution
 
 The pinned native attention tests exposed a protobuf admission error: a correctly

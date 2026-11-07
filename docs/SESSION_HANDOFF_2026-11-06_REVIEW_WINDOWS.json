@@ -2,11 +2,16 @@
   "format": "engineering-session-handoff",
   "date": "2026-11-06",
   "timezone": "America/New_York",
-  "state": "active_implementation_with_native_validation",
+  "state": "active_implementation_native_workspace_unavailable",
   "mission": {
     "goal": "Implement consequential review-output and model-import gaps, with meaningful direct-main GitHub checkpoints.",
     "base_commit": "c0c3448e605b2c8036b3d4b8327b1cf5be3675f1",
-    "basis": ["AGENTS.md", "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md", ".beads/issues.jsonl", "docs/SESSION_HANDOFF_2026-11-07_JPEG_ATTENTION.json"]
+    "basis": [
+      "AGENTS.md",
+      "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md",
+      ".beads/issues.jsonl",
+      "docs/SESSION_HANDOFF_2026-11-07_JPEG_ATTENTION.json"
+    ]
   },
   "authority": {
     "git": "User explicitly authorized direct-main GitHub commits; expected-head non-force updates; no PRs.",
@@ -15,7 +20,8 @@
   },
   "completed": [
     "Admitted valid empty ONNX integer-list attributes while retaining malformed-type and mixed-payload refusal.",
-    "Corrected the practical attention fixture's parameter-byte accounting and verified empty-list artifact equivalence."
+    "Corrected the practical attention fixture's parameter-byte accounting and verified empty-list artifact equivalence.",
+    "Factored native integer JPEG transform from 64 to 22 multiplications per pass, with original matrix oracle and unchanged compressed bytes."
   ],
   "verification": {
     "attention_native_passed": 13,
@@ -26,21 +32,50 @@
     "model_formatting": "Scoped rustfmt --check passed.",
     "published_encoder_baseline": "29 native contracts passed: 6 unit, 15 encoder, 8 MJPEG stream core. Independent 128-case Pillow and 16-case FFmpeg comparisons completed before optimization.",
     "full_cli": "cargo check --locked --offline -p fss-cli --bin fss-file --test decoded_media_cli_contract --test file_video_stream_core --test file_video_stream_cli stopped in unchanged asupersync 0.5.0 with SIGKILL; jobs=1, debuginfo=0, incremental=0, -Zthreads=1.",
-    "release_qualified": false
+    "release_qualified": false,
+    "encoder_optimized_working_tree": {
+      "native_passed": 31,
+      "matrix_block_comparisons": 56064,
+      "byte_identical_jpegs": 128,
+      "pillow_decoded": 128,
+      "ffmpeg_decoded": 16,
+      "maximum_independent_sample_difference": 2
+    },
+    "encoder_recovery": {
+      "source_identity": "5d9f1c655052186385f15b694623870837376d0a7a0d8e5a8b74342f67ebbb61",
+      "identity_scope": "Hash arithmetic over recovered bytes, not a native execution.",
+      "scope": "Substantive authored transform recovered against published baseline; other formatter-only changes omitted. Final exact-source native execution and formatting remain pending."
+    },
+    "encoder_performance": {
+      "block_prototype": "Six alternating 65,536-transform release runs: candidate approximately 17-27 ms versus matrix 32-77 ms on a shared host; 4096 block pairs agreed.",
+      "full_encoder": "Interrupted before completed A/B result; no complete-encoder speedup claimed.",
+      "clippy": "SIGKILL in unchanged fss-core before encoder diagnostics; no lint pass."
+    },
+    "window_tests": "Process returned exit 101 after last visible fss-core compilation; redirected diagnostics became inaccessible when the execution environment disconnected. No passing window test or failure cause is established."
   },
   "active_work": [
     "Bounded source-time window selection and local PGM/MJPEG output integration, preserving exact clock and operator-assumption provenance.",
-    "Separable bilinear Resize lowering with bounded parameter/helper expansion and real executor tests.",
-    "Integer JPEG DCT factorization against the retained matrix oracle and end-to-end byte comparisons."
+    "Separable bilinear Resize lowering with bounded parameter/helper expansion and real executor tests."
   ],
   "protected_limits": [
     "VIT-023 remains open: signed FLDT access-grant and payment-mask attestation consumers are absent; local decode output cannot invent them.",
     "Window selection is conditional on retained time assumptions, not a claim of UTC accuracy or complete coverage.",
     "Lossy JPEG does not establish pixel-exact post-decode masks.",
-    "Full CLI/runtime execution remains blocked by dependency compiler termination."
+    "Full CLI/runtime execution remains blocked by dependency compiler termination.",
+    "Execution environment is unavailable again; remaining feature code is being recovered through GitHub, with native verification explicitly pending."
   ],
   "continuation": {
     "model_tests": "cargo test --locked --offline -p fss-model-ir --test onnx_attention_execution --test onnx_broadcast_execution --test onnx_leaky_relu_execution -- --test-threads=1 --skip scalar_executor:: --skip optimized_executor::",
     "next": "Finish the active vertical extensions, run native pure-core contracts and independent media oracles, then publish separate meaningful direct-main checkpoints and retain exact validation limits."
-  }
+  },
+  "published_checkpoints": [
+    {
+      "commit": "ffb7fe739155293e59c60dde7df90d589b38da60",
+      "change": "Correct empty ONNX integer-list admission; 32 native focused tests passed."
+    },
+    {
+      "commit": "this_commit",
+      "change": "Exact integer JPEG transform factorization and equivalence contracts."
+    }
+  ]
 }

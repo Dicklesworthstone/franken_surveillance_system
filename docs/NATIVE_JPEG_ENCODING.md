@@ -46,6 +46,21 @@ and round once after division by `2^30 * quantizer`. Both signs use ties away
 from zero. Intermediate values are bounded in signed 64-bit integers, and the
 encoder refuses any coefficient outside the baseline category bounds.
 
+The production transform factors that same Q14 matrix by even/odd symmetry.
+Mirrored input samples are added for even frequencies and subtracted for odd
+frequencies; repeated constants in the even half factor once more. Each
+one-dimensional pass uses 22 multiplications instead of 64, or 352 instead of
+1024 across both passes of one 8x8 block. There is no intermediate rounding,
+floating-point arithmetic, changed quantizer or extra allocation. The original
+matrix implementation remains a test-only oracle, with exact basis-vector and
+adversarial block comparisons.
+
+The numerical profile, compressed bytes, per-block reference work charge and
+cancellation boundaries are preserved. Editing the implementation still changes
+its source-bound encoder identity and the exact source-byte hashing charge; an
+older receipt is not silently relabeled as the new implementation.
+
+
 RGB conversion uses these fixed Q16 expressions, rounded half up and saturated
 to 0 through 255:
 
@@ -195,27 +210,71 @@ stream; playback cadence and source/capture timing remain separately declared.
 
 ## Verification status and reproduction
 
-The authored core contracts comprise six internal unit tests and fifteen
-`encode_contract` integration tests. They include hand-derived flat-block
-Huffman vectors, exact DC half-ties, coefficient basis values, primary-color
-conversion, complete marker structure, native decoder checks, odd dimensions,
-quality extremes, exact and one-short work/output limits, shared allowance,
-source mismatch, invalid shapes and limits, cancellation at every actual
-checkpoint, receipt-field binding, and the difference between screened input and
-lossy reconstructed mask edges.
+The encoder contracts comprise eight internal unit tests and fifteen
+`encode_contract` integration tests. Eight additional
+`mjpeg_stream_contract` tests exercise the actual CLI stream core without the
+runtime adapter. They cover hand-derived flat-block Huffman vectors, exact DC
+half-ties, coefficient basis values, primary-color conversion, marker structure,
+native reconstruction, odd dimensions, quality extremes, exact and one-short
+limits, shared allowances, source mismatch, invalid shapes, cancellation at
+every actual checkpoint, receipt binding and lossy mask-edge behavior.
 
-At this checkpoint the executor became unavailable before a completed native
-encoder test run or the planned independent FFmpeg/Pillow comparison. Those
-gates remain pending; source presence and authored test vectors are not a runtime
-pass.
+The factored transform adds two independent equivalence contracts. The first
+compares each original matrix basis at both signs and the intermediate bounds.
+The second compares 56,064 complete block/quantizer pairs against the original
+matrix oracle: every constant byte at every quality for both quantizer families,
+every signed extreme impulse at six divisors, and 4,096 seeded mixed-frequency
+blocks with independently varied nonzero coefficient divisors. A zero-divisor
+refusal is checked separately.
+
+### Observed local validation and recovery boundary
+
+The exact published baseline at
+`c0c3448e605b2c8036b3d4b8327b1cf5be3675f1` passed all 29 then-existing scoped
+contracts on the pinned nightly with locked, offline dependencies. Its runtime
+encoder identity was
+`f6b0606030f5dd4ed80cd3fc653f65a8587f78e5736a71f0c3ac6f863d131a53`.
+
+The subsequently optimized working tree passed all 31 scoped contracts. An
+independent synthetic probe also completed before the execution workspace was
+lost again:
+
+- 128 outputs covered grayscale and RGB, dimensions 1x1, 8x8, 17x19 and 65x37,
+  constant, ramp, checker and seeded-noise inputs, and qualities 1, 50, 85 and 100.
+- Every optimized JPEG byte stream exactly matched the published matrix encoder.
+- Pillow 13.0.0 decoded all 128 outputs, with the expected shape and color mode
+  and no EXIF or ICC metadata.
+- FFmpeg 7.1.5 decoded 16 selected outputs independently. The maximum difference
+  between native and independent decoded pixels was two sample values for both
+  independent decoders.
+- The FFmpeg binary SHA-256 was
+  `e8a8d46f5225f3062cec7c07fb145d58ae73c603cb740dcd5bad34bfb54e455a`.
+
+A release-mode prototype separately compared 4,096 block/quantizer pairs and
+then timed six alternating runs of 65,536 transforms. Every output agreed; the
+factored runs took approximately 17-27 ms and the original matrix runs 32-77 ms
+on the shared host. These are local block-kernel observations, not complete
+encoder throughput or deployment SLO evidence. The complete 1080p encoder A/B
+measurement was interrupted by the workspace loss and has no completed result.
+
+The substantive transform and oracle tests were recovered through GitHub from
+the authored patch and the exact published baseline. Unrecoverable formatter-only
+changes to other files were omitted. Thus the passing optimized-workspace
+results do **not** establish byte identity or native qualification for these
+final recovered source bytes. Formatting and native reruns against the final
+commit remain required. A focused Clippy attempt was killed by SIGKILL while
+checking unchanged `fss-core`, before encoder diagnostics; it is not a lint pass.
+No release, camera, custody, timing or pixel-exact redaction qualification is
+implied.
 
 ```sh
-cargo test --locked --offline -p fss-codec-jpeg-encode --lib --test encode_contract
+cargo test --locked --offline -p fss-codec-jpeg-encode \
+  --lib --test encode_contract --test mjpeg_stream_contract
 ```
 
-Independent laboratory verification should decode deterministic grayscale,
-RGB, odd-edge, constant-extreme and high-frequency outputs with pinned FFmpeg or
-Pillow, inspect declared sampling/dimensions, and compare decoded pixels against
-the supplied inputs and native reconstruction. Any retained evidence must pin
-the exact source-bound encoder identity. These laboratory tools are not a
+Independent laboratory verification should repeat the declared synthetic
+matrix with pinned FFmpeg or Pillow, inspect sampling and dimensions, and compare
+decoded pixels against native reconstruction. Retained evidence must pin the
+exact source-bound encoder identity and distinguish comparison with the input
+from comparison with another decoder. These laboratory tools are never a
 production dependency or an automatic runtime fallback.
