@@ -70,6 +70,7 @@ impl Fixture {
                 ];
                 let leaves = first
                     .children()
+                    .into_iter()
                     .chain(second.children())
                     .map(|(_, digest, _)| digest)
                     .collect();
@@ -106,6 +107,7 @@ impl Fixture {
                 let leaves = first
                     .publication_plan()
                     .children()
+                    .into_iter()
                     .chain(second.publication_plan().children())
                     .map(|(_, digest, _)| digest)
                     .collect();

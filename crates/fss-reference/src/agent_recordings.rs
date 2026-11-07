@@ -10,6 +10,8 @@
 
 /// Conditional UTC candidates from independently pinned retained clock metadata.
 pub mod utc;
+/// Bounded discovery over an explicitly pinned catalog set in one decode-clock scope.
+pub mod set;
 
 use std::collections::BTreeSet;
 use std::fmt;

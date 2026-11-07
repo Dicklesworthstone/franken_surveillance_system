@@ -508,7 +508,7 @@ fn every_catalog_member_and_full_closure_remain_current_even_when_excluded_by_ut
                     .join(format!("{}.root", slot.as_str())),
             )?,
             1 => {
-                let leaf = excluded.plan().children().next().ok_or("source")?.1;
+                let leaf = excluded.plan().children().into_iter().next().ok_or("source")?.1;
                 fs::write(fixture.tombstone(leaf), b"tombstone denies unread original")?;
             }
             _ => fs::write(
