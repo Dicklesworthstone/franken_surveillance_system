@@ -1170,6 +1170,15 @@ oracle did not contact the camera or the running recorder. In a scope-filtered
 strict-remote state-machine build, job `30098575685845025` passed all 23
 controller contracts, including the new uncorrelated quota and replay cases;
 terminal result and source release were acknowledged.
+The corresponding owned-conversation contract was expanded to exercise a
+mixed sequence as well as the existing correlated sequence, but it has not yet
+passed on this revision. Initial job `30098575685845027` failed to compile an
+outdated isolated media dependency, which was refreshed; its next submission
+timed out before admission. Alternate job `30098575685845038` was refused
+before compilation by the worker's protected disk reservation. Both remote
+jobs reported terminal status and released their sources. The expanded
+independent TLS process fixture is also pending; neither attempt establishes
+physical G4 interoperability.
 
 A separate `discovery_observe_trial` laboratory binary connects a bounded UDP
 discovery result, an owner-selected address and MAC claim, a pinned TLS
