@@ -110,6 +110,10 @@ pub(crate) fn parse_query_command(tokens: &[ArgToken]) -> Result<FssCommand, Cli
             "--time-scale",
             "--start-tick",
             "--end-tick",
+            "--clock-slot",
+            "--clock-root",
+            "--start-utc-ns",
+            "--end-utc-ns",
             "--max-windows",
             "--max-hydration-bytes",
         ],
@@ -123,6 +127,18 @@ pub(crate) fn parse_query_command(tokens: &[ArgToken]) -> Result<FssCommand, Cli
             parse_footage_query_args(tokens).map(FssCommand::FootageQuery)
         }
         Some((_, target, _)) if target == "recordings" => {
+            if [
+                "--clock-slot",
+                "--clock-root",
+                "--start-utc-ns",
+                "--end-utc-ns",
+            ]
+            .iter()
+            .any(|name| take(&values, name).is_some())
+            {
+                return crate::recording_query_cmd::utc::parse_recording_utc_query_args(tokens)
+                    .map(FssCommand::RecordingUtcQuery);
+            }
             crate::recording_query_cmd::parse_recording_query_args(tokens)
                 .map(FssCommand::RecordingQuery)
         }

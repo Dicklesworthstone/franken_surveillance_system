@@ -10,6 +10,7 @@ const CATALOG: &str = "sha256:11111111111111111111111111111111111111111111111111
 const SOURCE: &str = "sha256:2222222222222222222222222222222222222222222222222222222222222222";
 const RECEIVE: &str = "sha256:3333333333333333333333333333333333333333333333333333333333333333";
 const DECODE: &str = "sha256:4444444444444444444444444444444444444444444444444444444444444444";
+const CLOCK: &str = "sha256:5555555555555555555555555555555555555555555555555555555555555555";
 const ANCHOR: &str = "anchor:aaaaaaaaaaaaaaaa:0:none:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
 fn ready(archive: bool) -> Server {
@@ -117,6 +118,63 @@ fn native(codec: &str, explicit: bool) -> Test<FssCommand> {
     Ok(parse_fss_args(argv)?)
 }
 
+fn native_utc(codec: &str, explicit: bool) -> Test<FssCommand> {
+    use fss_reference::agent_recording_context::utc::RecordingUtcContextRequest;
+    use fss_reference::agent_recordings::utc::RecordingUtcQueryRequest;
+    use fss_reference::rtsp::recording_clock::{RecordingClockCodec, clock_slot};
+
+    let FssCommand::RecordingQuery(base) = native(codec, explicit)? else {
+        return Err("legacy fixture command".into());
+    };
+    let source = base.request.recording;
+    let clock_codec = match codec {
+        "avc" => RecordingClockCodec::Avc,
+        "hevc" => RecordingClockCodec::Hevc,
+        _ => return Err("fixture codec".into()),
+    };
+    let clock_slot = clock_slot(clock_codec, &source.scope)?;
+    Ok(FssCommand::RecordingUtcQuery(
+        fss_cli::recording_query_cmd::utc::RecordingUtcQueryArgs {
+            root: base.root,
+            archive_root: base.archive_root,
+            request: RecordingUtcContextRequest {
+                recording: RecordingUtcQueryRequest {
+                    codec: source.codec,
+                    scope: source.scope,
+                    catalog_slot: source.catalog_slot,
+                    catalog_root: source.catalog_root,
+                    clock_slot,
+                    clock_root: fss_core::ContentDigest::parse(CLOCK)?,
+                    interval: 9_007_199_254_740_993..u64::MAX,
+                    max_windows: source.max_windows,
+                    max_hydration_bytes: source.max_hydration_bytes,
+                },
+                principal: base.request.principal,
+                expected_anchor: base.request.expected_anchor,
+            },
+        },
+    ))
+}
+
+fn utc_fields(codec: &str) -> Test<Fields> {
+    let FssCommand::RecordingUtcQuery(command) = native_utc(codec, false)? else {
+        return Err("UTC fixture command".into());
+    };
+    let mut values = fields(codec);
+    values.remove("start_tick");
+    values.remove("end_tick");
+    values.extend([
+        (
+            "clock_slot",
+            quote(command.request.recording.clock_slot.as_str()),
+        ),
+        ("clock_root", quote(CLOCK)),
+        ("start_utc_ns", quote("9007199254740993")),
+        ("end_utc_ns", quote("18446744073709551615")),
+    ]);
+    Ok(values)
+}
+
 fn response_text(response: &str) -> Test<(String, bool)> {
     use fss_cli::json_input::{self as input, Value as Input};
 
@@ -171,14 +229,107 @@ fn both_recording_codecs_equal_native_commands_and_preserve_response_bytes() -> 
             assert!(matches!(expected, FssCommand::RecordingQuery(_)));
             let bytes = "{\"schema\":\"fss.agent_response_envelope.v1\",\"payload\":{\"hydrationLevel\":\"H0\",\"mediaBytes\":false,\"quote\":\"\\\"\\\\\\t\",\"unknowns\":[\"clock ≠ UTC\"]}}\n";
             let mut calls = 0;
-            let response = server.handle_with(&request(&fields), |command| {
-                calls += 1;
-                assert_eq!(command, expected);
-                (bytes.to_owned(), ExitIdentity::SUCCESS)
-            }).ok_or("missing response")?;
+            let response = server
+                .handle_with(&request(&fields), |command| {
+                    calls += 1;
+                    assert_eq!(command, expected);
+                    (bytes.to_owned(), ExitIdentity::SUCCESS)
+                })
+                .ok_or("missing response")?;
             assert_eq!(calls, 1);
             assert_eq!(response_text(&response)?, (bytes.to_owned(), false));
         }
+    }
+    Ok(())
+}
+
+#[test]
+fn utc_recording_dispatch_is_lossless_and_preserves_native_unknowns_and_refusals() -> Test {
+    for codec in ["avc", "hevc"] {
+        for explicit in [false, true] {
+            let mut server = ready(true);
+            let mut fields = utc_fields(codec)?;
+            if explicit {
+                fields.insert("max_windows", "32".into());
+                fields.insert("max_hydration_bytes", quote("2147483648"));
+                fields.insert("anchor", quote(ANCHOR));
+            }
+            let expected = native_utc(codec, explicit)?;
+            for (bytes, exit) in [
+                (
+                    "{\"clock\":\"declared_node_observation\",\"unannotated\":\"clock_unavailable\",\"source_replayed\":false}\n",
+                    ExitIdentity::SUCCESS,
+                ),
+                (
+                    "{\"refusal\":\"retained_clock_unverifiable\",\"selection\":null}\n",
+                    ExitIdentity::AGENT_REFUSED,
+                ),
+            ] {
+                let mut calls = 0;
+                let response = server
+                    .handle_with(&request(&fields), |command| {
+                        calls += 1;
+                        assert_eq!(command, expected);
+                        (bytes.to_owned(), exit)
+                    })
+                    .ok_or("missing UTC response")?;
+                assert_eq!(calls, 1);
+                assert_eq!(
+                    response_text(&response)?,
+                    (bytes.to_owned(), exit != ExitIdentity::SUCCESS)
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn utc_missing_pins_mixed_modes_host_overrides_and_lossy_numbers_never_dispatch() -> Test {
+    for codec in ["avc", "hevc"] {
+        let values = utc_fields(codec)?;
+        let mut server = ready(false);
+        refused(&mut server, &values);
+        let mut server = ready(true);
+        for missing in values.keys() {
+            let mut reduced = values.clone();
+            reduced.remove(missing);
+            refused(&mut server, &reduced);
+        }
+        for (key, value) in [
+            ("start_tick", quote("0")),
+            ("end_tick", quote("1")),
+            ("from_ns", quote("0")),
+            ("through_ns", quote("1")),
+            ("root", quote("/other")),
+            ("archive_root", quote("/other/archive")),
+            ("principal", quote("principal:other")),
+            ("hydrate", quote("H3")),
+            ("clock_slot", quote("arbitrary-alias")),
+            ("clock_root", quote("latest")),
+            ("generation", quote("1")),
+            ("target", quote("footage")),
+            ("target", quote("events")),
+        ] {
+            let mut bad = values.clone();
+            bad.insert(key, value);
+            refused(&mut server, &bad);
+        }
+        for key in ["start_utc_ns", "end_utc_ns"] {
+            for value in ["9007199254740993", "1e18", "1.0", "null", "true"] {
+                let mut bad = values.clone();
+                bad.insert(key, value.to_owned());
+                refused(&mut server, &bad);
+            }
+            for value in ["+1", "01", "-1", "1e18", "1.0", "18446744073709551616"] {
+                let mut bad = values.clone();
+                bad.insert(key, quote(value));
+                refused(&mut server, &bad);
+            }
+        }
+        let mut reversed = values.clone();
+        reversed.insert("start_utc_ns", quote("18446744073709551615"));
+        refused(&mut server, &reversed);
     }
     Ok(())
 }
@@ -229,9 +380,18 @@ fn recording_and_existing_query_predicates_cannot_cross_targets() {
     let recording = fields("avc");
     for target in [None, Some("events"), Some("footage")] {
         for name in [
-            "codec", "catalog_slot", "catalog_root", "generation", "source_anchor",
-            "receive_clock", "decode_clock", "time_scale", "start_tick", "end_tick",
-            "max_windows", "max_hydration_bytes",
+            "codec",
+            "catalog_slot",
+            "catalog_root",
+            "generation",
+            "source_anchor",
+            "receive_clock",
+            "decode_clock",
+            "time_scale",
+            "start_tick",
+            "end_tick",
+            "max_windows",
+            "max_hydration_bytes",
         ] {
             let mut fields = Fields::new();
             if let Some(target) = target {
@@ -257,8 +417,24 @@ fn recording_pins_intervals_and_integer_budgets_are_strict() {
         fields.remove(name);
         refused(&mut server, &fields);
     }
-    for name in ["generation", "start_tick", "end_tick", "max_hydration_bytes"] {
-        for value in ["01", "-0", "-1", "+1", "1.0", "1e3", " 1", "1 ", "18446744073709551616", "١"] {
+    for name in [
+        "generation",
+        "start_tick",
+        "end_tick",
+        "max_hydration_bytes",
+    ] {
+        for value in [
+            "01",
+            "-0",
+            "-1",
+            "+1",
+            "1.0",
+            "1e3",
+            " 1",
+            "1 ",
+            "18446744073709551616",
+            "١",
+        ] {
             let mut fields = valid.clone();
             fields.insert(name, quote(value));
             refused(&mut server, &fields);
@@ -302,7 +478,12 @@ fn recording_pins_intervals_and_integer_budgets_are_strict() {
         fields.insert(name, value);
         refused(&mut server, &fields);
     }
-    for name in ["catalog_root", "source_anchor", "receive_clock", "decode_clock"] {
+    for name in [
+        "catalog_root",
+        "source_anchor",
+        "receive_clock",
+        "decode_clock",
+    ] {
         for value in [
             quote("sha256:abcd"),
             quote(&format!("sha256:{}", "A".repeat(64))),
@@ -328,20 +509,25 @@ fn zero_start_tick_and_minimal_positive_bounds_are_admitted_without_anchor() -> 
     fields.insert("max_windows", "1".into());
     fields.insert("max_hydration_bytes", quote("1"));
     let mut calls = 0;
-    let response = server.handle_with(&request(&fields), |command| {
-        calls += 1;
-        let FssCommand::RecordingQuery(args) = command else {
-            unreachable!("recordings must dispatch through the native command");
-        };
-        assert_eq!(args.archive_root, std::path::Path::new("/owner/archive with spaces"));
-        assert_eq!(args.request.recording.scope.recording.generation, 1);
-        assert_eq!(args.request.recording.scope.time_scale, 1);
-        assert_eq!(args.request.recording.interval, 0..1);
-        assert_eq!(args.request.recording.max_windows, 1);
-        assert_eq!(args.request.recording.max_hydration_bytes, 1);
-        assert!(args.request.expected_anchor.is_none());
-        ("metadata only".into(), ExitIdentity::SUCCESS)
-    }).ok_or("missing response")?;
+    let response = server
+        .handle_with(&request(&fields), |command| {
+            calls += 1;
+            let FssCommand::RecordingQuery(args) = command else {
+                unreachable!("recordings must dispatch through the native command");
+            };
+            assert_eq!(
+                args.archive_root,
+                std::path::Path::new("/owner/archive with spaces")
+            );
+            assert_eq!(args.request.recording.scope.recording.generation, 1);
+            assert_eq!(args.request.recording.scope.time_scale, 1);
+            assert_eq!(args.request.recording.interval, 0..1);
+            assert_eq!(args.request.recording.max_windows, 1);
+            assert_eq!(args.request.recording.max_hydration_bytes, 1);
+            assert!(args.request.expected_anchor.is_none());
+            ("metadata only".into(), ExitIdentity::SUCCESS)
+        })
+        .ok_or("missing response")?;
     assert_eq!(calls, 1);
     assert_eq!(response_text(&response)?, ("metadata only".into(), false));
     Ok(())
@@ -355,16 +541,21 @@ fn recording_notifications_never_execute_and_native_refusals_are_unchanged() -> 
             let mut server = ready(archive);
             let notification = request(&fields(codec)).replace("\"id\":81,", "");
             let mut calls = 0;
-            assert_eq!(server.handle_with(&notification, |_| {
-                calls += 1;
-                (String::new(), ExitIdentity::SUCCESS)
-            }), None);
+            assert_eq!(
+                server.handle_with(&notification, |_| {
+                    calls += 1;
+                    (String::new(), ExitIdentity::SUCCESS)
+                }),
+                None
+            );
             assert_eq!(calls, 0);
         }
         let mut server = ready(true);
-        let response = server.handle_with(&request(&fields(codec)), |_| {
-            (expected.into(), ExitIdentity::AGENT_REFUSED)
-        }).ok_or("missing refusal")?;
+        let response = server
+            .handle_with(&request(&fields(codec)), |_| {
+                (expected.into(), ExitIdentity::AGENT_REFUSED)
+            })
+            .ok_or("missing refusal")?;
         assert_eq!(response_text(&response)?, (expected.into(), true));
     }
     Ok(())
@@ -375,7 +566,8 @@ fn recording_discovery_exposes_pins_and_budgets_without_host_scope() -> Test {
     use fss_cli::json_input::{self as input, Value as Input};
 
     let value = input::parse(&tools_list())?;
-    let tool = value.object()
+    let tool = value
+        .object()
         .and_then(|value| value.get("tools"))
         .and_then(Input::array)
         .ok_or("tool list")?
@@ -383,35 +575,127 @@ fn recording_discovery_exposes_pins_and_budgets_without_host_scope() -> Test {
         .filter_map(Input::object)
         .find(|value| value.get("name").and_then(Input::text) == Some("query"))
         .ok_or("query discovery")?;
-    let schema = tool.get("inputSchema").and_then(Input::object).ok_or("query schema")?;
-    let properties = schema.get("properties").and_then(Input::object).ok_or("query properties")?;
-    for name in ["root", "archive_root", "archive-root", "principal", "hydrate", "discover"] {
+    let schema = tool
+        .get("inputSchema")
+        .and_then(Input::object)
+        .ok_or("query schema")?;
+    let properties = schema
+        .get("properties")
+        .and_then(Input::object)
+        .ok_or("query properties")?;
+    for name in [
+        "root",
+        "archive_root",
+        "archive-root",
+        "principal",
+        "hydrate",
+        "discover",
+    ] {
         assert!(!properties.contains_key(name), "host override {name}");
     }
-    for name in ["generation", "start_tick", "end_tick", "max_hydration_bytes"] {
-        let property = properties.get(name).and_then(Input::object).ok_or("integer-string pin")?;
+    for name in [
+        "generation",
+        "start_tick",
+        "end_tick",
+        "max_hydration_bytes",
+    ] {
+        let property = properties
+            .get(name)
+            .and_then(Input::object)
+            .ok_or("integer-string pin")?;
         assert_eq!(property.get("type").and_then(Input::text), Some("string"));
         assert_eq!(property.get("maxLength").and_then(Input::integer), Some(20));
     }
-    let codec = properties.get("codec").and_then(Input::object).ok_or("codec")?;
-    assert_eq!(codec.get("enum").and_then(Input::array), Some([
-        Input::Text("avc".into()), Input::Text("hevc".into())
-    ].as_slice()));
-    let windows = properties.get("max_windows").and_then(Input::object).ok_or("window budget")?;
+    let codec = properties
+        .get("codec")
+        .and_then(Input::object)
+        .ok_or("codec")?;
+    assert_eq!(
+        codec.get("enum").and_then(Input::array),
+        Some([Input::Text("avc".into()), Input::Text("hevc".into())].as_slice())
+    );
+    let windows = properties
+        .get("max_windows")
+        .and_then(Input::object)
+        .ok_or("window budget")?;
     assert_eq!(windows.get("maximum").and_then(Input::integer), Some(32));
     assert_eq!(windows.get("default").and_then(Input::integer), Some(32));
-    let scale = properties.get("time_scale").and_then(Input::object).ok_or("clock scale")?;
-    assert_eq!(scale.get("maximum").and_then(Input::integer), Some(i128::from(u32::MAX)));
-    let branches = schema.get("oneOf").and_then(Input::array).ok_or("target branches")?;
-    let recording = branches.iter().filter_map(Input::object).find(|branch| {
-        branch.get("properties").and_then(Input::object)
-            .and_then(|properties| properties.get("target")).and_then(Input::object)
-            .and_then(|target| target.get("const")).and_then(Input::text) == Some("recordings")
-    }).ok_or("recordings branch")?;
-    let required = recording.get("required").and_then(Input::array).ok_or("required pins")?;
+    let scale = properties
+        .get("time_scale")
+        .and_then(Input::object)
+        .ok_or("clock scale")?;
+    assert_eq!(
+        scale.get("maximum").and_then(Input::integer),
+        Some(i128::from(u32::MAX))
+    );
+    let branches = schema
+        .get("oneOf")
+        .and_then(Input::array)
+        .ok_or("target branches")?;
+    let recording = branches
+        .iter()
+        .filter_map(Input::object)
+        .find(|branch| {
+            branch
+                .get("properties")
+                .and_then(Input::object)
+                .and_then(|properties| properties.get("target"))
+                .and_then(Input::object)
+                .and_then(|target| target.get("const"))
+                .and_then(Input::text)
+                == Some("recordings")
+        })
+        .ok_or("recordings branch")?;
+    let required = recording
+        .get("required")
+        .and_then(Input::array)
+        .ok_or("required pins")?;
+    let modes = recording
+        .get("oneOf")
+        .and_then(Input::array)
+        .ok_or("recording clock modes")?;
+    let tick_required = modes
+        .iter()
+        .filter_map(Input::object)
+        .filter_map(|mode| mode.get("required").and_then(Input::array))
+        .find(|required| {
+            required
+                .iter()
+                .any(|value| value.text() == Some("start_tick"))
+        })
+        .ok_or("decode-clock bounds")?;
     for name in fields("avc").keys() {
-        assert!(required.iter().any(|value| value.text() == Some(*name)), "required {name}");
+        assert!(
+            required
+                .iter()
+                .chain(tick_required)
+                .any(|value| value.text() == Some(*name)),
+            "required {name}"
+        );
     }
+    let utc_required = modes
+        .iter()
+        .filter_map(Input::object)
+        .filter_map(|mode| mode.get("required").and_then(Input::array))
+        .find(|required| {
+            required
+                .iter()
+                .any(|value| value.text() == Some("start_utc_ns"))
+        })
+        .ok_or("UTC bounds and companion pins")?;
+    for name in ["clock_slot", "clock_root", "start_utc_ns", "end_utc_ns"] {
+        assert!(
+            utc_required.iter().any(|value| value.text() == Some(name)),
+            "required {name}"
+        );
+        assert!(!tick_required.iter().any(|value| value.text() == Some(name)));
+        let property = properties
+            .get(name)
+            .and_then(Input::object)
+            .ok_or("UTC property")?;
+        assert_eq!(property.get("type").and_then(Input::text), Some("string"));
+    }
+    assert_eq!(modes.len(), 2);
     assert!(!required.iter().any(|value| value.text() == Some("anchor")));
     Ok(())
 }

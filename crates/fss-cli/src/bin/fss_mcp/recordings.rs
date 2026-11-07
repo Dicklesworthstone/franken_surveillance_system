@@ -27,6 +27,10 @@ pub(super) fn arguments(
             "time_scale",
             "start_tick",
             "end_tick",
+            "clock_slot",
+            "clock_root",
+            "start_utc_ns",
+            "end_utc_ns",
             "max_windows",
             "max_hydration_bytes",
             "anchor",
@@ -39,6 +43,19 @@ pub(super) fn arguments(
         -32602,
         "Recording queries require an operator-bound archive root at launch",
     ))?;
+    let utc = ["clock_slot", "clock_root", "start_utc_ns", "end_utc_ns"]
+        .iter()
+        .any(|field| fields.contains_key(*field));
+    if utc
+        && ["start_tick", "end_tick"]
+            .iter()
+            .any(|field| fields.contains_key(*field))
+    {
+        return Err((
+            -32602,
+            "UTC and decode-clock query intervals are mutually exclusive",
+        ));
+    }
     argv.extend([
         "--target=recordings".into(),
         "--archive-root".into(),
@@ -54,8 +71,12 @@ pub(super) fn arguments(
         ("source_anchor", "source-anchor", 71, true),
         ("receive_clock", "receive-clock", 71, true),
         ("decode_clock", "decode-clock", 71, true),
-        ("start_tick", "start-tick", 20, true),
-        ("end_tick", "end-tick", 20, true),
+        ("start_tick", "start-tick", 20, !utc),
+        ("end_tick", "end-tick", 20, !utc),
+        ("clock_slot", "clock-slot", 128, utc),
+        ("clock_root", "clock-root", 71, utc),
+        ("start_utc_ns", "start-utc-ns", 20, utc),
+        ("end_utc_ns", "end-utc-ns", 20, utc),
         ("max_hydration_bytes", "max-hydration-bytes", 20, false),
         ("anchor", "anchor", 256, false),
     ] {
@@ -68,7 +89,10 @@ pub(super) fn arguments(
         let text = value
             .text()
             .filter(|value| !value.is_empty() && value.len() <= bound)
-            .ok_or((-32602, "Expected a bounded recording token or decimal string"))?;
+            .ok_or((
+                -32602,
+                "Expected a bounded recording token or decimal string",
+            ))?;
         // Inline values are data. A decimal string is never rounded, trimmed,
         // normalized or interpreted through floating point in this adapter.
         argv.push(format!("--{option}={text}").into());
@@ -87,7 +111,9 @@ pub(super) fn arguments(
             return Err((-32602, "Expected a positive recording integer"));
         };
         if !text.bytes().all(|byte| byte.is_ascii_digit())
-            || !text.parse::<u64>().is_ok_and(|number| number > 0 && number <= maximum)
+            || !text
+                .parse::<u64>()
+                .is_ok_and(|number| number > 0 && number <= maximum)
         {
             return Err((-32602, "Recording integer is outside the admitted range"));
         }

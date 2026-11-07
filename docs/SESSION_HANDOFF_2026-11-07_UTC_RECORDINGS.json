@@ -21,7 +21,8 @@
     "Pinned native AVC/HEVC UTC metadata candidates, complete clock/catalog descriptor binding, unknown-clock rows and atomic output bounds.",
     "Separate sealed conditional clock metadata type; no packet replay or trusted-time promotion.",
     "Protected deployment metadata context with full catalog/clock closure deletion-authority checks.",
-    "Earlier tick query rejects committed deletions of source children and unselected members."
+    "Earlier tick query rejects committed deletions of source children and unselected members.",
+    "Canonical query target recordings accepts exclusive UTC/clock flags through CLI and fixed-root MCP; H0 clock metadata joins catalog/window handles."
   ],
   "verification": {
     "model_leaky_relu": {
@@ -41,7 +42,24 @@
     "native_production_typecheck": "Two attempts killed compiling unchanged asupersync 0.5.0 before FSS diagnostics.",
     "second_build_flags": "-Zunstable-options --jobs-frontend=1 --jobs-backend=1 --jobs-linker=1 -Zmir-opt-level=0 -Zfewer-names=yes; jobs1; debug0; incremental0; asupersync codegen-units256",
     "source_review": "Independent native UTC/context review found no blocking semantic defect; scoped rustfmt parser checks pass.",
-    "release_qualified": false
+    "release_qualified": false,
+    "utc_cli_tests_authored": {
+      "grammar": 3,
+      "mcp": 2,
+      "process_and_context": 5
+    },
+    "mcp_schema_cases_passed": 47,
+    "mcp_schema_scope": "Standalone JSON Schema admission/refusal only; not a Rust MCP transport run.",
+    "native_discovery_parser": {
+      "passed": 5,
+      "failed": 0,
+      "scope": "Unchanged production MCP JSON parser: four existing parser contracts plus exact complete 14-tool discovery response; standalone pinned rustc test, not an MCP transport run.",
+      "frame_bytes": 48682,
+      "value_nodes": 2383,
+      "max_depth": 15,
+      "frame_sha256": "c3609778c65c89fa8577d4253c51e13fbb562cfef60f00dd0568b521ba6b17ef"
+    },
+    "mcp_schema_script_sha256": "46c297d6a93a1f83eacc2cca8e5cf7d51e7a0549c531a26b0e6d27fbe64b1179"
   },
   "unknowns": [
     "Final native Rust typechecking and all UTC runtime/fault contracts are pending.",
@@ -49,7 +67,6 @@
     "Archive and deployment reads do not form an atomic cross-owner snapshot."
   ],
   "active_work": [
-    "Canonical CLI/MCP UTC grammar, response projection and process contracts.",
     "Static ONNX Expand/Tile importer implementation and real executor/artifact contracts."
   ],
   "obligations": [
@@ -60,7 +77,7 @@
     },
     {
       "state": "in_progress",
-      "work": "Complete canonical UTC CLI/MCP integration and separate model checkpoint."
+      "work": "Complete independent native Expand/Tile model checkpoint."
     }
   ],
   "continuation": {
@@ -68,8 +85,21 @@
       "cargo test --locked --offline -p fss-reference --test agent_recordings_utc_contract",
       "cargo test --locked --offline -p fss-model-ir --test onnx_leaky_relu_execution",
       "cargo check --locked --offline -p fss-cli --lib --bin fss --bin fss-mcp --bin fss-event",
-      "bash scripts/check_retention_reference.sh"
+      "bash scripts/check_retention_reference.sh",
+      "cargo test --locked --offline -p fss-cli --lib recording_query_cmd",
+      "cargo test --locked --offline -p fss-cli --test recording_query_contract",
+      "cargo test --locked --offline -p fss-cli --bin fss-mcp"
     ],
     "next_affordance": "Finish canonical UTC CLI/MCP integration and compile/run the exact production targets when enough native memory is available; keep source-replayed and metadata-only clock claims separate."
-  }
+  },
+  "published_checkpoints": [
+    {
+      "commit": "005070340786e1d95d46d4f5375b28eac5e1752c",
+      "change": "Native UTC metadata core, complete-closure deployment deletion guards and verified LeakyRelu contract correction."
+    },
+    {
+      "commit": "this_commit",
+      "change": "Canonical CLI/MCP UTC query, protected response projection, lossless numeric grammar and integration contracts."
+    }
+  ]
 }

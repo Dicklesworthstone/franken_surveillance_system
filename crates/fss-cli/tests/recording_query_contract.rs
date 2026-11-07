@@ -10,6 +10,10 @@ mod hevc_catalog_support;
 mod hevc_recording_support;
 #[path = "../../fss-reference/tests/recording_support/mod.rs"]
 mod recording_support;
+#[path = "../../fss-reference/tests/recording_clock_contract/support.rs"]
+mod clock_support;
+#[path = "recording_query_contract/utc.rs"]
+mod utc;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;

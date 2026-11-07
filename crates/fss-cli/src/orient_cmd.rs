@@ -666,6 +666,33 @@ pub(crate) fn build_recording_response(
     )
 }
 
+/// UTC recording queries additionally disclose the explicitly pinned clock companion metadata.
+/// This profile does not broaden the existing decode-clock recording response.
+pub(crate) fn build_recording_utc_response(
+    parts: ResponseParts,
+) -> Result<String, Box<dyn std::error::Error>> {
+    if parts.operation != "query"
+        || parts.view != AgentView::Case
+        || parts.payload_schema != fss_core::AgentCognitiveEnvelope::SCHEMA
+    {
+        return Err(RenderError("invalid UTC recording query response profile").into());
+    }
+    let mut projection = privacy_projection(&parts.anchor);
+    projection.purpose =
+        "read-only agent query of pinned native recording and clock metadata".to_owned();
+    projection.visible_domains.extend([
+        "native-recording-catalog-metadata".to_owned(),
+        "native-recording-window-metadata".to_owned(),
+        "native-recording-clock-metadata".to_owned(),
+    ]);
+    build_response_for_basis_and_privacy(
+        parts,
+        false,
+        fss_core::reference_contract_basis(),
+        projection.envelope_json(),
+    )
+}
+
 fn build_response_for_basis_and_privacy(
     parts: ResponseParts,
     resnapshot_required: bool,

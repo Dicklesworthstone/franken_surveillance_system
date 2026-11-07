@@ -6,7 +6,7 @@ use std::ffi::OsString;
 use super::*;
 use crate::{FssCommand, parse_fss_args};
 
-type TestResult = Result<(), Box<dyn std::error::Error>>;
+type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
 fn pins() -> Vec<(String, String)> {
     [
@@ -15,7 +15,10 @@ fn pins() -> Vec<(String, String)> {
         ("--archive-root", "/owner/archive".to_owned()),
         ("--codec", "avc".to_owned()),
         ("--catalog-slot", "recordings-one".to_owned()),
-        ("--catalog-root", ContentDigest::sha256(b"catalog").to_text()),
+        (
+            "--catalog-root",
+            ContentDigest::sha256(b"catalog").to_text(),
+        ),
         ("--sensor", "sensor:front-door".to_owned()),
         ("--stream", "stream:primary".to_owned()),
         ("--generation", "1".to_owned()),
@@ -58,6 +61,167 @@ fn changed(name: &str, value: &str) -> Vec<(String, String)> {
         values.push((name.to_owned(), value.to_owned()));
     }
     values
+}
+
+fn utc_pins(codec: &str) -> TestResult<Vec<(String, String)>> {
+    use fss_reference::rtsp::recording_clock::{RecordingClockCodec, clock_slot};
+
+    let mut values = changed("--codec", codec);
+    let FssCommand::RecordingQuery(base) = parse(&values, false)? else {
+        return Err("expected legacy request for source pins".into());
+    };
+    let clock_codec = match codec {
+        "avc" => RecordingClockCodec::Avc,
+        "hevc" => RecordingClockCodec::Hevc,
+        _ => return Err("fixture codec".into()),
+    };
+    let slot = clock_slot(clock_codec, &base.request.recording.scope)?;
+    values.retain(|(key, _)| key != "--start-tick" && key != "--end-tick");
+    values.extend([
+        ("--clock-slot".to_owned(), slot.as_str().to_owned()),
+        (
+            "--clock-root".to_owned(),
+            ContentDigest::sha256(b"clock companion").to_text(),
+        ),
+        ("--start-utc-ns".to_owned(), "9007199254740993".to_owned()),
+        ("--end-utc-ns".to_owned(), u64::MAX.to_string()),
+    ]);
+    Ok(values)
+}
+
+#[test]
+fn utc_dispatch_preserves_exact_integers_and_never_fabricates_a_tick_query() -> TestResult {
+    for codec in ["avc", "hevc"] {
+        let values = utc_pins(codec)?;
+        let space = parse(&values, false)?;
+        assert_eq!(space, parse(&values, true)?);
+        let FssCommand::RecordingUtcQuery(args) = space else {
+            return Err("UTC request dispatched through another clock mode".into());
+        };
+        assert_eq!(args.root, PathBuf::from("/owner/deployment"));
+        assert_eq!(args.archive_root, PathBuf::from("/owner/archive"));
+        assert_eq!(args.request.recording.codec.as_str(), codec);
+        assert_eq!(
+            args.request.recording.interval,
+            9_007_199_254_740_993..u64::MAX
+        );
+        assert_eq!(
+            args.request.recording.clock_root,
+            ContentDigest::sha256(b"clock companion")
+        );
+        assert_eq!(
+            args.request.recording.catalog_root,
+            ContentDigest::sha256(b"catalog")
+        );
+        assert_eq!(args.request.recording.scope.time_scale, 90_000);
+        assert_eq!(args.request.recording.max_windows, 32);
+        assert!(args.request.expected_anchor.is_none());
+    }
+    Ok(())
+}
+
+#[test]
+fn utc_requires_every_pin_and_rejects_mixed_time_predicates_before_io() -> TestResult {
+    let values = utc_pins("avc")?;
+    for missing in values.iter().map(|(key, _)| key) {
+        let reduced: Vec<_> = values
+            .iter()
+            .filter(|(key, _)| key != missing)
+            .cloned()
+            .collect();
+        assert!(
+            parse(&reduced, false).is_err(),
+            "accepted missing {missing}"
+        );
+    }
+    for (option, value) in [
+        ("--start-tick", "0"),
+        ("--end-tick", "1"),
+        ("--from-ns", "0"),
+        ("--through-ns", "1"),
+        ("--at", "latest"),
+        ("--continuation", "cursor"),
+        ("--hydrate", "H1"),
+        ("--approve", "yes"),
+    ] {
+        let mut mixed = values.clone();
+        mixed.push((option.to_owned(), value.to_owned()));
+        assert!(parse(&mixed, false).is_err(), "accepted {option}");
+    }
+    for option in [
+        "--clock-slot",
+        "--clock-root",
+        "--start-utc-ns",
+        "--end-utc-ns",
+    ] {
+        let mut duplicate = values.clone();
+        duplicate.push(
+            values
+                .iter()
+                .find(|(key, _)| key == option)
+                .ok_or("fixture option")?
+                .clone(),
+        );
+        assert!(
+            parse(&duplicate, true).is_err(),
+            "accepted duplicate {option}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn utc_refuses_noncanonical_numbers_and_foreign_clock_namespaces() -> TestResult {
+    let values = utc_pins("avc")?;
+    for option in ["--start-utc-ns", "--end-utc-ns"] {
+        for value in [
+            "+1",
+            "01",
+            "-0",
+            "-1",
+            "1e9",
+            " 1",
+            "1.0",
+            "18446744073709551616",
+        ] {
+            let mut bad = values.clone();
+            bad.iter_mut()
+                .find(|(key, _)| key == option)
+                .ok_or("fixture option")?
+                .1 = value.to_owned();
+            assert!(parse(&bad, false).is_err(), "accepted {option}={value}");
+        }
+    }
+    for (option, value) in [
+        ("--start-utc-ns", u64::MAX.to_string()),
+        ("--end-utc-ns", "9007199254740993".to_owned()),
+        ("--clock-slot", "arbitrary-clock-alias".to_owned()),
+        ("--clock-root", format!("sha256:{}", "0".repeat(64))),
+        ("--generation", "2".to_owned()),
+        (
+            "--receive-clock",
+            ContentDigest::sha256(b"foreign-receive-clock").to_text(),
+        ),
+        (
+            "--decode-clock",
+            ContentDigest::sha256(b"foreign-decode-clock").to_text(),
+        ),
+        ("--codec", "hevc".to_owned()),
+        ("--time-scale", "1000".to_owned()),
+        ("--target", "events".to_owned()),
+        ("--target", "footage".to_owned()),
+    ] {
+        let mut bad = values.clone();
+        bad.iter_mut()
+            .find(|(key, _)| key == option)
+            .ok_or("fixture option")?
+            .1 = value;
+        assert!(
+            parse(&bad, false).is_err(),
+            "accepted incompatible {option}"
+        );
+    }
+    Ok(())
 }
 
 #[test]
@@ -109,7 +273,10 @@ fn every_source_and_catalog_pin_and_both_roots_are_required() {
             .filter(|(key, _)| key != missing)
             .cloned()
             .collect();
-        assert!(parse(&reduced, false).is_err(), "accepted missing {missing}");
+        assert!(
+            parse(&reduced, false).is_err(),
+            "accepted missing {missing}"
+        );
     }
 }
 
@@ -123,7 +290,16 @@ fn noncanonical_or_out_of_range_numeric_spellings_are_rejected() {
         "--max-windows",
         "--max-hydration-bytes",
     ] {
-        for value in ["+1", "01", "-0", "-1", "1e3", " 1", "1.0", "18446744073709551616"] {
+        for value in [
+            "+1",
+            "01",
+            "-0",
+            "-1",
+            "1e3",
+            " 1",
+            "1.0",
+            "18446744073709551616",
+        ] {
             assert!(
                 parse(&changed(option, value), false).is_err(),
                 "accepted {option}={value}"
@@ -148,7 +324,8 @@ fn noncanonical_or_out_of_range_numeric_spellings_are_rejected() {
 }
 
 #[test]
-fn foreign_targets_predicates_unpinned_clocks_and_effect_options_do_not_fall_through() -> TestResult {
+fn foreign_targets_predicates_unpinned_clocks_and_effect_options_do_not_fall_through() -> TestResult
+{
     for (option, value) in [
         ("--target", "events"),
         ("--target", "footage"),
@@ -179,10 +356,20 @@ fn foreign_targets_predicates_unpinned_clocks_and_effect_options_do_not_fall_thr
         );
     }
     let zero = format!("sha256:{}", "0".repeat(64));
-    for option in ["--catalog-root", "--source-anchor", "--receive-clock", "--decode-clock"] {
+    for option in [
+        "--catalog-root",
+        "--source-anchor",
+        "--receive-clock",
+        "--decode-clock",
+    ] {
         assert!(parse(&changed(option, &zero), false).is_err());
     }
-    for duplicate in ["--target", "--catalog-slot", "--catalog-root", "--archive-root"] {
+    for duplicate in [
+        "--target",
+        "--catalog-slot",
+        "--catalog-root",
+        "--archive-root",
+    ] {
         let mut values = pins();
         values.push(
             values
@@ -191,7 +378,10 @@ fn foreign_targets_predicates_unpinned_clocks_and_effect_options_do_not_fall_thr
                 .ok_or("fixture pin")?
                 .clone(),
         );
-        assert!(parse(&values, false).is_err(), "accepted repeated {duplicate}");
+        assert!(
+            parse(&values, false).is_err(),
+            "accepted repeated {duplicate}"
+        );
     }
     Ok(())
 }

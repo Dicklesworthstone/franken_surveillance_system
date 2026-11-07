@@ -25,7 +25,16 @@ Fifteen native adversarial contracts are authored. Two fresh checks of the uncha
 production dependency closure, including the recorded serialized low-memory configuration,
 were killed compiling Asupersync 0.5.0. Native UTC, earlier recording/retention integration
 and final CLI/MCP execution remain unverified; no qualification gate is weakened.
-CLI/MCP UTC integration is the next checkpoint. VIT-008/015/019 remain open.
+The existing `recordings` target now exposes this read through canonical CLI and MCP.
+The complete UTC flag set is mutually exclusive with decode-tick bounds; all exact source,
+catalog and clock pins remain mandatory. Nanoseconds cross MCP as canonical decimal
+strings. H0 clock metadata joins catalog/window handles, and protected situation cells,
+proof pointers, shared budgets and refusal semantics are preserved. Clients cannot change
+the server's archive/deployment roots or principal. Existing tick identities are unchanged.
+Three parser, two MCP adapter and five real-process/context contracts are authored, and
+47 standalone MCP schema admission/refusal cases passed. Five tests against the unchanged
+native JSON parser also passed, including the complete 14-tool discovery response within its
+existing byte/node/depth limits. Neither check replaces full Rust transport execution. See [usage](docs/AGENT_NATIVE_RECORDING_QUERY.md). VIT-008/015/019 remain open.
 
 The earlier LeakyRelu implementation has now passed its focused native target: **25 passed,
 zero failed or ignored**, including nine importer/artifact contracts and sixteen actual

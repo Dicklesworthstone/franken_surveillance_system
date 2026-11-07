@@ -64,8 +64,8 @@ The tick-based query uses the same complete-closure deletion check.
 Current protected situation knowledge remains part of the canonical AOP-005
 query/case response. The principal is an audit label. Separately verified archive
 and deployment observations are not an atomic snapshot or proof of source
-registration. CLI/MCP integration is documented in the native recording query guide
-when available.
+registration. CLI/MCP integration uses the same existing `recordings` target with mutually exclusive
+UTC flags; see [the native recording query guide](AGENT_NATIVE_RECORDING_QUERY.md).
 
 ## Validation scope
 
