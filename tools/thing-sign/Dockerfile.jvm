@@ -1,4 +1,4 @@
-FROM --platform=linux/arm64 eclipse-temurin:21-jdk-alpine
+FROM --platform=linux/arm64 eclipse-temurin:21-jdk-alpine@sha256:82801f9dcdcbad5a05082aba8c86d1da5b72ccb498e71318b1f91b5a477887b3
 RUN apk add -q --no-cache gcc musl-dev
 WORKDIR /w
 COPY libs/ /w/libs/
