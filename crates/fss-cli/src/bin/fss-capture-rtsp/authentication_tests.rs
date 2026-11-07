@@ -35,8 +35,11 @@ fn credential_record_is_exact_bounded_and_never_decodes_extra_lines() {
     }
 }
 
-#[cfg(target_os = "linux")]
-mod linux {
+/// The credential contract is unix-shared (macOS implementation added 2026-11-06);
+/// these tests exercise the fingerprint/revoke/entropy contract BOTH native
+/// modules must satisfy.
+#[cfg(unix)]
+mod unix_tests {
     use super::*;
     use std::fs;
     use std::os::unix::fs::{PermissionsExt, symlink};

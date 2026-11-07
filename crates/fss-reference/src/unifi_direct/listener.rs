@@ -342,7 +342,12 @@ pub async fn start<IO: asupersync::io::AsyncRead + asupersync::io::AsyncWrite + 
 /// Accept media after the local stream request write without waiting for a
 /// settings reply. The caller must supervise the same session for that reply,
 /// clock requests and admission changes, and reconcile the committed effects.
-pub async fn start_before_reply<IO: asupersync::io::AsyncRead + asupersync::io::AsyncWrite + Unpin>(
+/// Observations accumulated during accept are returned only on successful
+/// acceptance; a failed or cancelled accept can omit them and requires independent
+/// reconciliation of the effects.
+pub async fn start_before_reply<
+    IO: asupersync::io::AsyncRead + asupersync::io::AsyncWrite + Unpin,
+>(
     owner: &mut super::conversation::Owner<'_, '_, '_>,
     session: &mut super::receive::Session<'_, '_, IO>,
     cfg: &Start<'_>,
@@ -351,7 +356,11 @@ pub async fn start_before_reply<IO: asupersync::io::AsyncRead + asupersync::io::
 ) -> Result<StartedBeforeReply, StartError> {
     let (progress, pipeline) = start_inner(owner, session, cfg, framer, recorder, false).await?;
     match progress {
-        StartProgress::Dispatched { dispatched, time_syncs_during_accept, observations_during_accept } => Ok(StartedBeforeReply {
+        StartProgress::Dispatched {
+            dispatched,
+            time_syncs_during_accept,
+            observations_during_accept,
+        } => Ok(StartedBeforeReply {
             dispatched,
             time_syncs_during_accept,
             observations_during_accept,
@@ -437,51 +446,107 @@ async fn start_inner<IO: asupersync::io::AsyncRead + asupersync::io::AsyncWrite 
         wall: owner.wall,
     };
     if wait_for_reply {
-        let reply = guarded_owner.start(session, &conversation).await.map_err(StartError::Conversation)?;
-        let pipeline = listener.accept(framer, recorder, cfg.chunk_bytes, cfg.max_bytes, cfg.accept_wait)
-            .await.map_err(StartError::Listener)?;
+        let reply = guarded_owner
+            .start(session, &conversation)
+            .await
+            .map_err(StartError::Conversation)?;
+        let pipeline = listener
+            .accept(
+                framer,
+                recorder,
+                cfg.chunk_bytes,
+                cfg.max_bytes,
+                cfg.accept_wait,
+            )
+            .await
+            .map_err(StartError::Listener)?;
         return Ok((StartProgress::Confirmed(reply), pipeline));
     }
-    let dispatched = guarded_owner.start_dispatched(session, &conversation).await.map_err(StartError::Conversation)?;
+    let dispatched = guarded_owner
+        .start_dispatched(session, &conversation)
+        .await
+        .map_err(StartError::Conversation)?;
     let deadline = guarded_owner.cx.now() + cfg.accept_wait;
-    let mut accept = pin!(listener.accept(framer, recorder, cfg.chunk_bytes, cfg.max_bytes, cfg.accept_wait));
+    let mut accept = pin!(listener.accept(
+        framer,
+        recorder,
+        cfg.chunk_bytes,
+        cfg.max_bytes,
+        cfg.accept_wait
+    ));
     let mut observations = Vec::new();
     let mut accept_syncs = 0_usize;
     loop {
-        let left = deadline.as_nanos().checked_sub(guarded_owner.cx.now().as_nanos())
-            .filter(|v| *v > 0).map(Duration::from_nanos)
+        let left = deadline
+            .as_nanos()
+            .checked_sub(guarded_owner.cx.now().as_nanos())
+            .filter(|v| *v > 0)
+            .map(Duration::from_nanos)
             .ok_or(StartError::Listener(Error::Deadline))?;
         enum Ready {
             Media(Result<Pipeline, Error>),
             Control(Result<super::receive::Step, super::receive::Error>),
         }
-        let ready = timeout_at(deadline, poll_fn(|cx| {
-            let mut control = pin!(session.next(left));
-            if let Poll::Ready(result) = control.as_mut().poll(cx) {
-                return Poll::Ready(Ready::Control(result));
-            }
-            accept.as_mut().poll(cx).map(Ready::Media)
-        })).await.map_err(|_| StartError::Listener(Error::Deadline))?;
+        let ready = timeout_at(
+            deadline,
+            poll_fn(|cx| {
+                let mut control = pin!(session.next(left));
+                if let Poll::Ready(result) = control.as_mut().poll(cx) {
+                    return Poll::Ready(Ready::Control(result));
+                }
+                accept.as_mut().poll(cx).map(Ready::Media)
+            }),
+        )
+        .await
+        .map_err(|_| StartError::Listener(Error::Deadline))?;
         match ready {
-            Ready::Media(result) => return Ok((StartProgress::Dispatched {
-                dispatched,
-                time_syncs_during_accept: accept_syncs,
-                observations_during_accept: observations,
-            }, result.map_err(StartError::Listener)?)),
-            Ready::Control(Err(error)) => return Err(StartError::Conversation(super::conversation::Error::SessionDetail(error))),
-            Ready::Control(Ok(super::receive::Step::Retired { reason, controller })) => return Err(StartError::Conversation(super::conversation::Error::SessionRetired {
-                reason, phase: controller.previous_phase, rejected_message: controller.rejected_message,
-            })),
-            Ready::Control(Ok(super::receive::Step::WaitElapsed)) => return Err(StartError::Listener(Error::Deadline)),
-            Ready::Control(Ok(super::receive::Step::Observation(super::Observation::TimeSyncRequested))) => {
-                let index = dispatched.time_syncs.checked_add(accept_syncs)
+            Ready::Media(result) => {
+                return Ok((
+                    StartProgress::Dispatched {
+                        dispatched,
+                        time_syncs_during_accept: accept_syncs,
+                        observations_during_accept: observations,
+                    },
+                    result.map_err(StartError::Listener)?,
+                ));
+            }
+            Ready::Control(Err(error)) => {
+                return Err(StartError::Conversation(
+                    super::conversation::Error::SessionDetail(error),
+                ));
+            }
+            Ready::Control(Ok(super::receive::Step::Retired { reason, controller })) => {
+                return Err(StartError::Conversation(
+                    super::conversation::Error::SessionRetired {
+                        reason,
+                        phase: controller.previous_phase,
+                        rejected_message: controller.rejected_message,
+                    },
+                ));
+            }
+            Ready::Control(Ok(super::receive::Step::WaitElapsed)) => {
+                return Err(StartError::Listener(Error::Deadline));
+            }
+            Ready::Control(Ok(super::receive::Step::Observation(
+                super::Observation::TimeSyncRequested,
+            ))) => {
+                let index = dispatched
+                    .time_syncs
+                    .checked_add(accept_syncs)
                     .ok_or(StartError::Conversation(super::conversation::Error::Limit))?;
-                let operation = cfg.time_sync.get(index)
+                let operation = cfg
+                    .time_sync
+                    .get(index)
                     .ok_or(StartError::Conversation(super::conversation::Error::Limit))?;
-                let left = deadline.as_nanos().checked_sub(guarded_owner.cx.now().as_nanos())
-                    .filter(|v| *v > 0).map(Duration::from_nanos)
+                let left = deadline
+                    .as_nanos()
+                    .checked_sub(guarded_owner.cx.now().as_nanos())
+                    .filter(|v| *v > 0)
+                    .map(Duration::from_nanos)
                     .ok_or(StartError::Listener(Error::Deadline))?;
-                guarded_owner.answer_time_sync(session, operation, cfg.management, left).await
+                guarded_owner
+                    .answer_time_sync(session, operation, cfg.management, left)
+                    .await
                     .map_err(StartError::Conversation)?;
                 accept_syncs += 1;
             }

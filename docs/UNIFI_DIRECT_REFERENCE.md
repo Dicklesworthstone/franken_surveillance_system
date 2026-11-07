@@ -1582,7 +1582,10 @@ local write and a TCP connection do not prove the camera accepted the setting
 or produced valid video. While waiting for the initial media connection, the
 experimental path now polls the controller as well, answers authorized clock
 requests with distinct operations, and returns other bounded observations.
-This revision has not been qualified on the physical G4. Task-owned fixtures that delay the settings reply until after a
+Accumulated observations are returned only after media acceptance; if accept
+fails or is cancelled, they can be omitted and the effect requires independent
+reconciliation. This revision has not been qualified on the physical G4.
+Task-owned fixtures that delay the settings reply until after a
 media read, or never send it and retain the outstanding request at retirement,
 have been added; their test results are pending.
 The standalone controller trial also exposes the explicitly selected
@@ -1608,6 +1611,12 @@ released. The process fixture was extracted from the current test file and
 does not qualify the entire original test target. These were `cargo check`
 results: no fixture or clip was executed by those jobs. The full test remains
 unrun under the worker disk-reservation guards.
+After the accept loop gained concurrent controller polling, strict-remote job
+`30098575685845087` type-checked the source-matched trial binary and job
+`30098575685845092` type-checked the expanded task-owned fixture, including
+the pre-media clock, early-reply, late-reply and absent-reply cases. Both
+results were acknowledged and source release was confirmed. These are still
+type-checks, not executed tests or physical-camera evidence.
 
 A second unchanged owner replay produced two fragments with 300 video and 155
 audio frames. The independent decoder returned exit 0 but reported a
