@@ -17,7 +17,7 @@ import time
 from prehello_fixture import HEAD, exact, frame, message, received
 
 
-def run(binary, cert, key, root, quota, mixed=False, uncorrelated=False):
+def run(binary, cert, key, root, quota, mixed=False, uncorrelated=False, coalesced=False, startup_request=False):
     reserve = socket.socket()
     reserve.bind(("127.0.0.1", 0))
     port = reserve.getsockname()[1]
@@ -26,7 +26,10 @@ def run(binary, cert, key, root, quota, mixed=False, uncorrelated=False):
     command = [binary, f"127.0.0.1:{port}", "127.0.0.1", "001122aabbcc",
                str(cert), str(key), str(root / "journal"), str(root / "clip.mp4"),
                "12345678-1234-4abc-9abc-123456789abc", "60",
-               "--bounded-prehello-clock", "--owner-authorized"]
+               "--bounded-prehello-clock"]
+    if startup_request:
+        command.extend(["--media-before-reply", "--reply-startup-requests"])
+    command.append("--owner-authorized")
     child = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     try:
         deadline = time.monotonic() + 15
@@ -51,13 +54,34 @@ def run(binary, cert, key, root, quota, mixed=False, uncorrelated=False):
                     raise ValueError("upgrade limit")
             if not header.startswith(b"HTTP/1.1 101 "):
                 raise ValueError("upgrade refused")
+            if startup_request:
+                request = message("FutureCameraRequest", 80, payload={"synthetic": "fixture"})
+                request["responseExpected"] = True
+                sock.sendall(frame(request))
+                reply = received(sock)
+                if (reply.get("functionName") != "FutureCameraRequest"
+                        or reply.get("inResponseTo") != 80
+                        or reply.get("payload") != {"synthetic": "fixture"}):
+                    raise ValueError("invalid startup request reply")
             correlation = 999
             count = 32 if quota else 12
+            if coalesced:
+                # Real transports can deliver several camera frames in one
+                # read. Coalesce hello too, so buffered requests are drained
+                # before the controller can advance its handshake.
+                requests = []
+                for index in range(count):
+                    request = message("ubnt_avclient_timeSync", 100 + index, 0)
+                    request["responseExpected"] = False
+                    requests.append(frame(request))
+                requests.append(frame(message("ubnt_avclient_hello", 200, payload={})))
+                sock.sendall(b"".join(requests))
             for index in range(count):
                 response_to = 0 if uncorrelated or (mixed and index % 2 == 0) else correlation
                 request = message("ubnt_avclient_timeSync", 100 + index, response_to)
                 request["responseExpected"] = False
-                sock.sendall(frame(request))
+                if not coalesced:
+                    sock.sendall(frame(request))
                 reply = received(sock)
                 if (reply.get("functionName") != "ubnt_avclient_timeSync"
                         or reply.get("inResponseTo") != 100 + index):
@@ -72,7 +96,8 @@ def run(binary, cert, key, root, quota, mixed=False, uncorrelated=False):
                 else:
                     raise ValueError("33rd reply escaped quota")
             else:
-                sock.sendall(frame(message("ubnt_avclient_hello", 200, payload={})))
+                if not coalesced:
+                    sock.sendall(frame(message("ubnt_avclient_hello", 200, payload={})))
                 hello = received(sock)
                 agreement = received(sock)
                 if hello.get("functionName") != "ubnt_avclient_hello" or hello.get("inResponseTo") != 200:
@@ -86,7 +111,7 @@ def run(binary, cert, key, root, quota, mixed=False, uncorrelated=False):
             out, err = child.communicate(timeout=10)
             if child.returncode == 0 or b"TimeSyncLimit" not in out + err:
                 raise ValueError("missing explicit time-sync quota stop")
-        mode = 'uncorrelated' if uncorrelated else 'mixed' if mixed else 'correlated'
+        mode = 'startup_request' if startup_request else 'coalesced' if coalesced else 'uncorrelated' if uncorrelated else 'mixed' if mixed else 'correlated'
         print(f"clock_chain_fixture mode={mode} replies={count} result={'quota_stop' if quota else 'hello_agreement_stream'}")
     finally:
         if child.poll() is None:
@@ -115,6 +140,8 @@ def main():
         run(sys.argv[1], cert, key, root / "quota", True)
         run(sys.argv[1], cert, key, root / "mixed", False, mixed=True)
         run(sys.argv[1], cert, key, root / "uncorrelated-quota", True, uncorrelated=True)
+        run(sys.argv[1], cert, key, root / "coalesced", False, coalesced=True)
+        run(sys.argv[1], cert, key, root / "startup-request", False, startup_request=True)
 
 
 if __name__ == "__main__":

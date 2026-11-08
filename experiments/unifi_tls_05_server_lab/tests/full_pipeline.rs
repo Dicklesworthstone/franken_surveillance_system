@@ -482,7 +482,11 @@ fn conversation_scenario(revoke_stream: bool) -> Test {
                             if disposition == recording::SourceDisposition::Configuration { configuration=Some(record); }
                         },
                         supervisor::Step::Media(pipeline::Step::Recording(recording::Push::Buffered) | pipeline::Step::Progress {..}) => (),
-                        supervisor::Step::TimeSyncWritten => later_syncs+=1,
+                        supervisor::Step::TimeSyncWritten { mut trace } => {
+                            assert!(trace.dispatch_started());
+                            assert!(matches!(trace.take_written(),Some(fss_reference::unifi_direct::receive::ManagementWrite::Written {..})));
+                            later_syncs+=1;
+                        },
                         supervisor::Step::Media(pipeline::Step::Recording(recording::Push::Segment(segment))) => {
                             for record in segment.source() { originals.extend_from_slice(record.bytes()); }
                             let initialization=supervisor.initialization().ok_or("missing initialization")?;
@@ -992,6 +996,10 @@ fn direct_trial_process_clip(sync_before_hello: bool, media_before_reply: bool) 
         return Err(format!("trial failed: {}", String::from_utf8_lossy(&output.stderr)).into());
     }
     let report = String::from_utf8(output.stdout)?;
+    let expected_startup_clocks = if sync_before_hello { 2 } else { 1 };
+    if !report.contains(&format!("trial_stage=startup_protocol_trace clocks={expected_startup_clocks} effects_require_reconciliation=true")) {
+        return Err("startup protocol trace was not retained".into());
+    }
     if !report.contains("trial_complete")
         || !report.contains("trial_stage=tcp_accepted")
         || !report.contains("trial_stage=handshake_eof_retry")

@@ -71,7 +71,7 @@ def main():
                 if line != b"GET /api/1.1/status HTTP/1.1" or headers.get(b"cookie") != b"authId=" + token.encode() or body:
                     raise RuntimeError("incorrect status request")
                 requests.append("status")
-                reply = b'{"board":{},"fw":{},"controller":{}}'
+                reply = b'{"board":{},"fw":{},"controller":{"port":7442}}'
                 peer.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: " + str(len(reply)).encode() + b"\r\nConnection: keep-alive\r\n\r\n" + reply)
                 line, headers, body = request(peer)
                 if line != b"GET /api/1.1/settings HTTP/1.1" or headers.get(b"cookie") != b"authId=" + token.encode() or body:
@@ -128,7 +128,7 @@ def main():
             return
         if run.returncode:
             raise SystemExit("loopback fixture failed: client")
-        if "login_http_status=200" not in run.stdout or "status_http_status=200" not in run.stdout or "settings_http_status=200" not in run.stdout or "controller_address=reported" not in run.stdout or "controller_matches_connection_source=true" not in run.stdout or "video_destinations=[NotReported, TcpOnly, DiscardOnly]" not in run.stdout or 'serializer_fields=Some([("null", "unknown"), ("array", "false"), ("array", "unknown")])' not in run.stdout or "snapshot_http_status=200" not in run.stdout or f"snapshots_decoded={count}" not in run.stdout or "adjacent_digest_changes=0" not in run.stdout or "decoded_luma=16x16" not in run.stdout or "media_persisted=true" not in run.stdout:
+        if "login_http_status=200" not in run.stdout or "status_http_status=200" not in run.stdout or "settings_http_status=200" not in run.stdout or "controller_address=reported" not in run.stdout or "controller_matches_connection_source=true" not in run.stdout or "controller_port=Reported(7442)" not in run.stdout or "video_destinations=[NotReported, TcpOnly, DiscardOnly]" not in run.stdout or 'serializer_fields=Some([("null", "unknown"), ("array", "false"), ("array", "unknown")])' not in run.stdout or "snapshot_http_status=200" not in run.stdout or f"snapshots_decoded={count}" not in run.stdout or "adjacent_digest_changes=0" not in run.stdout or "decoded_luma=16x16" not in run.stdout or "media_persisted=true" not in run.stdout:
             raise SystemExit("loopback fixture did not decode the expected image")
         if repeat and ("serializer_binding_stable=Some(false)" if changed else "serializer_binding_stable=Some(true)") not in run.stdout:
             raise SystemExit("loopback fixture reported an incorrect serializer binding comparison")

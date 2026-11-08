@@ -56,7 +56,7 @@ use std::{
 use unifi_tls_05_server_lab::server::Server;
 
 type ResultBox<T> = Result<T, Box<dyn Error>>;
-const USAGE: &str = "usage: unifi_direct_trial LISTEN_IPV4:PORT CAMERA_IPV4 CAMERA_MAC_HEX CERT_DER KEY_DER JOURNAL_DIR OUTPUT_MP4 CONTROLLER_UUID [WAIT_SECONDS] [--allow-correlated-timesync|--bounded-prehello-clock] [--media-before-reply] [--reply-events] [--lab-aac-config=HEX|--lab-aac-source] [--lab-trailer16-av-flag|--lab-zero-stream-id] [--lab-segments=N] --owner-authorized";
+const USAGE: &str = "usage: unifi_direct_trial LISTEN_IPV4:PORT CAMERA_IPV4 CAMERA_MAC_HEX CERT_DER KEY_DER JOURNAL_DIR OUTPUT_MP4 CONTROLLER_UUID [WAIT_SECONDS] [--allow-correlated-timesync|--bounded-prehello-clock] [--media-before-reply] [--reply-events] [--reply-startup-requests] [--lab-aac-config=HEX|--lab-aac-source] [--lab-trailer16-av-flag|--lab-zero-stream-id] [--lab-segments=N] --owner-authorized";
 const MAX_SOURCE: u64 = 32 * 1024 * 1024;
 const MAX_CLIP: usize = 32 * 1024 * 1024;
 const MAX_INITIAL_CONNECTIONS: usize = 8;
@@ -75,6 +75,7 @@ struct Options {
     time_sync_policy: TimeSyncPolicy,
     media_before_reply: bool,
     reply_events: bool,
+    reply_startup_requests: bool,
     lab_aac_config: Option<[u8; 2]>,
     lab_aac_source: bool,
     lab_g4_trailer: bool,
@@ -134,6 +135,10 @@ fn options() -> ResultBox<Options> {
     if lab_aac_source && lab_aac_config.is_some() {
         return Err("choose one laboratory AAC configuration source".into());
     }
+    let reply_startup_requests = args.last().is_some_and(|s| s == "--reply-startup-requests");
+    if reply_startup_requests {
+        args.pop();
+    }
     let reply_events = args.last().is_some_and(|s| s == "--reply-events");
     if reply_events {
         args.pop();
@@ -142,8 +147,8 @@ fn options() -> ResultBox<Options> {
     if media_before_reply {
         args.pop();
     }
-    if reply_events && !media_before_reply {
-        return Err("event replies require --media-before-reply in this trial".into());
+    if (reply_events || reply_startup_requests) && !media_before_reply {
+        return Err("startup replies require --media-before-reply in this trial".into());
     }
     let time_sync_policy = match args.last().map(String::as_str) {
         Some("--allow-correlated-timesync") => {
@@ -208,6 +213,7 @@ fn options() -> ResultBox<Options> {
         time_sync_policy,
         media_before_reply,
         reply_events,
+        reply_startup_requests,
         lab_aac_config,
         lab_aac_source,
         lab_g4_trailer,
@@ -270,6 +276,7 @@ struct Guard<'a, 'scope, 'task> {
     mac: [u8; 6],
     management_gate_passed: Cell<bool>,
     reply_events: bool,
+    reply_startup_requests: bool,
 }
 impl receive::ManagementAuthority for Guard<'_, '_, '_> {
     fn permits(&self, mac: [u8; 6], intent: management::Intent, permit: &CommittedEffect) -> bool {
@@ -294,6 +301,16 @@ impl receive::ManagementAuthority for Guard<'_, '_, '_> {
         permit: &CommittedEffect,
     ) -> bool {
         self.reply_events
+            && intent.source_digest().is_some()
+            && receive::ManagementAuthority::permits(self, mac, intent, permit)
+    }
+    fn permits_startup_request_reply(
+        &self,
+        mac: [u8; 6],
+        intent: management::Intent,
+        permit: &CommittedEffect,
+    ) -> bool {
+        self.reply_startup_requests
             && intent.source_digest().is_some()
             && receive::ManagementAuthority::permits(self, mac, intent, permit)
     }
@@ -406,6 +423,7 @@ fn run(args: Options) -> ResultBox<()> {
     println!("trial_time_sync_policy={:?}", args.time_sync_policy);
     println!("trial_media_before_reply={}", args.media_before_reply);
     println!("trial_event_replies={}", args.reply_events);
+    println!("trial_startup_request_replies={}", args.reply_startup_requests);
     println!("trial_segment_limit={}", args.lab_segments);
     println!(
         "trial_framing={}",
@@ -496,7 +514,7 @@ fn run(args: Options) -> ResultBox<()> {
                 println!("controller_listener_ready identity=network_claim tls=experimental timeout_seconds={}",args.wait.as_secs());
                 let deadline=cx.now()+args.wait;
                 let config=Arc::new(config);
-                let guard=Guard {leases:&leases,clock,mac:args.mac,management_gate_passed:Cell::new(false),reply_events:args.reply_events};
+                let guard=Guard {leases:&leases,clock,mac:args.mac,management_gate_passed:Cell::new(false),reply_events:args.reply_events,reply_startup_requests:args.reply_startup_requests};
                 let wall=Wall {task,clock}; let approval=Approval(Cell::new(false));
                 let mut owner=conversation::Owner {cx,task,clock,effects:&mut effects,leases:&leases,approval:&approval,management_authority:&guard,stream_authority:&guard,wall:&wall};
                 let hello=OperationId::parse("operation:unifi-trial-hello")?; let agreement=OperationId::parse("operation:unifi-trial-agreement")?; let stream=OperationId::parse("operation:unifi-trial-stream")?;
@@ -506,7 +524,7 @@ fn run(args: Options) -> ResultBox<()> {
                 let startup_events=fss_reference::unifi_direct::events::StartupInbox::new(8,8*fss_reference::unifi_direct::MAX_MESSAGE_BYTES)?;
                 let startup_sync_limit=if args.time_sync_policy==TimeSyncPolicy::BoundedPreHelloClockExchange { fss_reference::unifi_direct::MAX_PRE_HELLO_TIME_SYNC_REPLIES } else { 8 };
                 let mut attempts=0;
-                let (session,started,event_trace)=loop {
+                let (session,started,event_trace,startup_trace)=loop {
                     let remaining=Duration::from_nanos(deadline.as_nanos().saturating_sub(cx.now().as_nanos()));
                     if remaining.is_zero() { return Err("controller TLS deadline elapsed".into()); }
                     let (raw,gate)=match controller_listener.accept_next(16*1024,remaining.min(MAX_IO_WAIT)).await {
@@ -528,7 +546,7 @@ fn run(args: Options) -> ResultBox<()> {
                     let remaining=Duration::from_nanos(deadline.as_nanos().saturating_sub(cx.now().as_nanos()));
                     if remaining.is_zero() {return Err("controller startup deadline elapsed".into());}
                     let mut session=owner::accept_guarded(plaintext,ProtocolPolicy::RequireOffer,&policy,gate,controller,remaining.min(MAX_IO_WAIT)).await?;
-                    session.bind_startup_events(&startup_events)?;
+                    if args.reply_startup_requests {session.bind_startup_events_and_requests(&startup_events)?;} else {session.bind_startup_events(&startup_events)?;}
                     println!("trial_stage=websocket_accepted");
                     let remaining=Duration::from_nanos(deadline.as_nanos().saturating_sub(cx.now().as_nanos()));
                     if remaining.is_zero() {return Err("controller startup deadline elapsed".into());}
@@ -540,7 +558,7 @@ fn run(args: Options) -> ResultBox<()> {
                     let mut event_trace=conversation::StartupEventTrace::default();
                     let startup=async {
                         if args.media_before_reply {
-                            let result=if args.reply_events {
+                            let result=if args.reply_events || args.reply_startup_requests {
                                 listener::start_before_reply_with_events_tracked(&mut owner,&mut session,&request,framer,recorder,&mut startup_trace,None,&event_replies,&mut event_trace).await
                             } else {
                                 listener::start_before_reply_tracked(&mut owner,&mut session,&request,framer,recorder,&mut startup_trace).await
@@ -555,7 +573,7 @@ fn run(args: Options) -> ResultBox<()> {
                                 Ok(started.pipeline)
                             })
                         } else {
-                            listener::start(&mut owner,&mut session,&request,framer,recorder).await.map(|started| started.pipeline)
+                            listener::start_tracked(&mut owner,&mut session,&request,framer,recorder,&mut startup_trace).await.map(|started| started.pipeline)
                         }
                     };
                     let startup_result=timeout_at(deadline,startup).await;
@@ -569,8 +587,10 @@ fn run(args: Options) -> ResultBox<()> {
                         let settings_replies=startup_trace.observations().iter().filter(|observation|matches!(observation,Observation::StreamSettingsReply {..})).count();
                         println!("trial_stage=startup_trace dispatch_observed={} clock_requests={} clock_replies_written={} settings_replies={} effects_require_reconciliation=true",startup_trace.dispatched().is_some(),startup_trace.clock_requests(),startup_trace.clock_replies_written(),settings_replies);
                     }
+                    let unhandled=session.unhandled_request_counts();
+                    println!("trial_stage=unhandled_response_requests pre_hello={} later={} correlated={} claims_unverified=true",unhandled.pre_hello,unhandled.later,unhandled.correlated);
                     match startup_result {
-                        Ok(Ok(pipeline))=>break (session,pipeline,event_trace),
+                        Ok(Ok(pipeline))=>break (session,pipeline,event_trace,startup_trace),
                         Ok(Err(error @ listener::StartError::Conversation(conversation::Error::Deadline)))=>{
                             let counts=session.time_sync_counts();
                             println!("trial_stage=conversation_deadline phase={:?} effect_prepared={} attempts={} management_gate_passed={} sync_uncorrelated={} sync_correlated={} sync_correlated_expected={}",session.phase(),approval.0.get(),attempts,guard.management_gate_passed.get(),counts.uncorrelated,counts.correlated,counts.correlated_response_expected);
@@ -591,10 +611,12 @@ fn run(args: Options) -> ResultBox<()> {
                     }
                 };
                 drop(controller_listener);
+                println!("trial_stage=startup_protocol_trace clocks={} effects_require_reconciliation=true",startup_trace.protocol().clocks().len());
                 let mut startup_answered:Vec<ContentDigest>=event_trace.attempts().iter().map(|attempt|attempt.source()).collect();
                 let mut event_index=event_trace.attempts().len();
                 let mut supervisor=supervisor::Supervisor::new(session,started,management);
                 let mut sync_index=startup_sync_limit; let mut source_omitted=0usize; let mut steps=0u32;
+                let mut sync_traces=Vec::new(); sync_traces.try_reserve_exact(syncs.len())?;
                 let mut audio_track=aac_track::Track::new(FlvLimits::default(),aac::Limits::default());
                 let mut in_band_config=None;
                 let mut assembled=Vec::new(); let mut av_owner:Option<TrialAv>=None;
@@ -604,7 +626,13 @@ fn run(args: Options) -> ResultBox<()> {
                         steps=steps.checked_add(1).ok_or("step count overflow")?; if steps>200_000 { return Err("step limit reached".into()); }
                         let operation=syncs.get(sync_index).ok_or("time-sync limit reached")?;
                         match supervisor.step(&mut owner,operation,args.wait.min(MAX_IO_WAIT)).await {
-                            supervisor::Step::TimeSyncWritten=>sync_index+=1,
+                            supervisor::Step::TimeSyncWritten { trace }=>{sync_traces.push(trace);sync_index+=1;},
+                            supervisor::Step::TimeSyncStopped {error,trace}=>{sync_traces.push(trace);return Err(format!("time sync stopped: {error:?}; reconcile its journaled effect").into());},
+                            supervisor::Step::TimeSyncInterrupted {trace}=>{sync_traces.push(trace);return Err("time sync interrupted; reconcile its journaled effect".into());},
+                            supervisor::Step::StartupRequest(frame)=>{
+                                println!("trial_stage=startup_request source_bytes_omitted={} identity=network_claim",frame.source().len());
+                                if let Some(index)=startup_answered.iter().position(|digest|*digest==frame.digest()) {startup_answered.remove(index);} else {return Err("unknown startup request requires reconciliation".into());}
+                            },
                             supervisor::Step::CameraEvent(frame)=>{
                                 println!("trial_stage=camera_event kind={:?} source_bytes_omitted={} response_expected={}",frame.kind(),frame.source().len(),frame.response_expected());
                                 if let Some(index)=startup_answered.iter().position(|digest|*digest==frame.digest()) {
@@ -705,6 +733,8 @@ fn run(args: Options) -> ResultBox<()> {
                     }
                 }.await;
                 let retirement=supervisor.retire();
+                if let Some(trace)=retirement.time_sync {sync_traces.push(trace);}
+                if !sync_traces.is_empty() {println!("trial_stage=time_sync_traces_retained count={} effects_require_reconciliation=true",sync_traces.len());}
                 if !startup_events.is_empty() {
                     println!("trial_stage=startup_events_omitted frames={} source_bytes={} identity=network_claim",startup_events.len(),startup_events.source_bytes());
                 }
