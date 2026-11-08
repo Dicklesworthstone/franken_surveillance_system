@@ -114,6 +114,36 @@ pub enum Indeterminate {
     Readback,
 }
 
+/// Caller-owned custody for an interrupted setup attempt. A dispatched permit
+/// may be inside the dropped write future; the journal then remains the source
+/// of the unresolved obligation. A retained permit never authorizes replay.
+#[derive(Default, Debug)]
+#[must_use = "reconcile any started setup effect and retain its journal"]
+pub struct Trace {
+    operation: Option<OperationId>,
+    dispatch_started: bool,
+    permit: Option<CommittedEffect>,
+    response: Option<camera_api::HandoffResponseObservation>,
+}
+impl Trace {
+    /// The operation being prepared or committed, if setup reached that point.
+    pub fn operation(&self) -> Option<&OperationId> {
+        self.operation.as_ref()
+    }
+    /// Whether handoff dispatch was entered; it does not prove any bytes were sent.
+    pub fn dispatch_started(&self) -> bool {
+        self.dispatch_started
+    }
+    /// Retained committed permit, if it has not moved into an in-flight write.
+    pub fn take_permit(&mut self) -> Option<CommittedEffect> {
+        self.permit.take()
+    }
+    /// Payload-free response shape retained after the response was read.
+    pub fn response(&self) -> Option<camera_api::HandoffResponseObservation> {
+        self.response
+    }
+}
+
 /// Setup results. A returned committed effect remains caller-owned and unsettled.
 #[must_use]
 #[derive(Debug)]
@@ -406,6 +436,22 @@ impl Owner<'_, '_, '_> {
         cfg: &Config<'_>,
         framing: handoff::Framing,
     ) -> Result<Outcome, Error> {
+        let mut trace = Trace::default();
+        self.run_when_listening_tracked(listener, expected_port, camera, cfg, framing, &mut trace)
+            .await
+    }
+
+    /// Listener-bound setup with caller-owned custody across cancellation.
+    /// A trace is single-use and must outlive the future.
+    pub async fn run_when_listening_tracked<IO: AsyncRead + AsyncWrite + Unpin>(
+        &mut self,
+        listener: &controller_listener::Listener<'_, '_, '_>,
+        expected_port: u16,
+        camera: &mut camera_http::Owner<'_, '_, '_, IO>,
+        cfg: &Config<'_>,
+        framing: handoff::Framing,
+        trace: &mut Trace,
+    ) -> Result<Outcome, Error> {
         let resource = format!("camera:{}", cfg.camera.to_text());
         let endpoint = SocketAddrV4::new(cfg.destination, expected_port);
         if !listener.ready_for(self.task, self.cx, &self.clock, &resource, endpoint) {
@@ -431,7 +477,7 @@ impl Owner<'_, '_, '_> {
             handoff_authority: self.handoff_authority,
         };
         owner
-            .run_inner(camera, cfg, framing, Some(expected_port))
+            .run_inner(camera, cfg, framing, Some(expected_port), trace)
             .await
     }
 
@@ -445,7 +491,21 @@ impl Owner<'_, '_, '_> {
         cfg: &Config<'_>,
         framing: handoff::Framing,
     ) -> Result<Outcome, Error> {
-        self.run_inner(camera, cfg, framing, None).await
+        let mut trace = Trace::default();
+        self.run_with_framing_tracked(camera, cfg, framing, &mut trace)
+            .await
+    }
+
+    /// Lower-level setup with caller-owned custody across cancellation.
+    /// This does not check a controller listener or port.
+    pub async fn run_with_framing_tracked<IO: AsyncRead + AsyncWrite + Unpin>(
+        &mut self,
+        camera: &mut camera_http::Owner<'_, '_, '_, IO>,
+        cfg: &Config<'_>,
+        framing: handoff::Framing,
+        trace: &mut Trace,
+    ) -> Result<Outcome, Error> {
+        self.run_inner(camera, cfg, framing, None, trace).await
     }
 
     async fn run_inner<IO: AsyncRead + AsyncWrite + Unpin>(
@@ -454,8 +514,10 @@ impl Owner<'_, '_, '_> {
         cfg: &Config<'_>,
         framing: handoff::Framing,
         expected_port: Option<u16>,
+        trace: &mut Trace,
     ) -> Result<Outcome, Error> {
-        if cfg.wait.is_zero()
+        if trace.operation.is_some()
+            || cfg.wait.is_zero()
             || cfg.wait > MAX_WAIT
             || cfg.generation == 0
             || cfg.fence == 0
@@ -576,6 +638,7 @@ impl Owner<'_, '_, '_> {
         }
         let key =
             IdempotencyKey::parse(cfg.operation.as_str()).map_err(|_| Error::Configuration)?;
+        trace.operation = Some(cfg.operation.clone());
         remaining(self.cx, deadline)?;
         let now = self.clock.now().map_err(|_| Error::Denied)?;
         let prepared = self
@@ -615,16 +678,19 @@ impl Owner<'_, '_, '_> {
                 approval,
             )
             .map_err(|_| Error::Effect)?;
+        trace.permit = Some(permit);
         let wait = match remaining(self.cx, deadline) {
             Ok(wait) if guard.current() => wait,
             _ => {
                 return Ok(Outcome::Indeterminate {
                     stage: Indeterminate::AuthorityOrDeadline,
                     response: None,
-                    permit,
+                    permit: trace.permit.take().ok_or(Error::Effect)?,
                 });
             }
         };
+        trace.dispatch_started = true;
+        let permit = trace.permit.take().ok_or(Error::Effect)?;
         let permit = match camera
             .dispatch_handoff(&plan, conditions, permit, &guard, wait)
             .await
@@ -644,33 +710,38 @@ impl Owner<'_, '_, '_> {
             }
             Ok(camera_api::HandoffWrite::Written { permit }) => permit,
         };
+        trace.permit = Some(permit);
         let wait = match remaining(self.cx, deadline) {
             Ok(wait) if guard.current() => wait,
             _ => {
                 return Ok(Outcome::Indeterminate {
                     stage: Indeterminate::AuthorityOrDeadline,
                     response: None,
-                    permit,
+                    permit: trace.permit.take().ok_or(Error::Effect)?,
                 });
             }
         };
-        let response = match camera.read_handoff_response_observed(&permit, wait).await {
+        let response = match camera
+            .read_handoff_response_observed(trace.permit.as_ref().ok_or(Error::Effect)?, wait)
+            .await
+        {
             Ok(response) => response,
             Err(_) => {
                 return Ok(Outcome::Indeterminate {
                     stage: Indeterminate::Response,
                     response: None,
-                    permit,
+                    permit: trace.permit.take().ok_or(Error::Effect)?,
                 });
             }
         };
+        trace.response = Some(response);
         let wait = match remaining(self.cx, deadline) {
             Ok(wait) if guard.current() => wait,
             _ => {
                 return Ok(Outcome::Indeterminate {
                     stage: Indeterminate::AuthorityOrDeadline,
                     response: Some(response),
-                    permit,
+                    permit: trace.permit.take().ok_or(Error::Effect)?,
                 });
             }
         };
@@ -680,7 +751,7 @@ impl Owner<'_, '_, '_> {
                 return Ok(Outcome::Indeterminate {
                     stage: Indeterminate::Readback,
                     response: Some(response),
-                    permit,
+                    permit: trace.permit.take().ok_or(Error::Effect)?,
                 });
             }
         };
@@ -688,7 +759,7 @@ impl Owner<'_, '_, '_> {
             return Ok(Outcome::Indeterminate {
                 stage: Indeterminate::AuthorityOrDeadline,
                 response: Some(response),
-                permit,
+                permit: trace.permit.take().ok_or(Error::Effect)?,
             });
         }
         let readback = match plan.classify_readback(observation) {
@@ -697,7 +768,7 @@ impl Owner<'_, '_, '_> {
                 return Ok(Outcome::Indeterminate {
                     stage: Indeterminate::Readback,
                     response: Some(response),
-                    permit,
+                    permit: trace.permit.take().ok_or(Error::Effect)?,
                 });
             }
         };
@@ -706,7 +777,7 @@ impl Owner<'_, '_, '_> {
             response,
             readback,
             observation,
-            permit,
+            permit: trace.permit.take().ok_or(Error::Effect)?,
         })
     }
 }

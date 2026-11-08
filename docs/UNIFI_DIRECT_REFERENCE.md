@@ -5648,4 +5648,39 @@ that scope; it was not independently verified by the CLI. The result does not
 identify which query elicited each datagram or establish device identity,
 automatic setup, or absence of other cameras. The existing discovery timer was
 left on its earlier explicitly scoped wrapper; the new command is not yet
-installed as the scheduled service.
+installed as the scheduled service at that point.
+
+The subsequent auto-discovery revision can be confined to a named interface,
+send the previously configured limited broadcast as well as a directed
+broadcast and the known unicast target, and emit the existing v2 report shape
+only when all windows completed. The limited-broadcast option requires an
+explicit interface; the current wrapper also requires exactly one global
+address on `eno1` and the previously approved /22 before each invocation.
+Strict-remote job `30099060530610862` passed eight CLI tests, exited zero,
+was acknowledged and released its source. Its clean-overlay fingerprint was
+`e9c1d5c7423c0b736fb2be9170cad0fb0c1b0e3d581d9a15bc933b39a7cb4615`;
+the CLI source SHA-256 was
+`3001c0e46b077ff9b45073af4e156ac0ec4177ae8ff692178d7417a66480e68e`.
+Linux build job `30099060530610863` completed Cargo compilation but the RCH
+wrapper exited 102 on the foreign artifact transfer. The stripped Linux
+binary SHA-256 was
+`235e1b5097d6aa41de0cfdb839a98c6908cc68395f0b1e1a91181687dd124515`.
+The exact binary passed five independent loopback CLI cases and a read-only
+G4 discovery check: three datagrams, one unverified G4 claim and no reported
+conflicts. Its root-owned versioned wrapper and authorization record pin both
+files by digest. The wrapper passed as the service user before a separate
+drop-in selected it, and a manual systemd service invocation exited zero with
+the same report shape and an unverified camera claim. The former binary,
+wrapper and drop-ins remain available for rollback. The timer itself remains
+active. At 22:24 EST on 2026-11-07 the timer independently triggered the new
+wrapper; systemd reported exit zero and the journal contained a completed
+window with three datagrams, one unverified G4 claim and no reported claim
+conflicts. This is an observed discovery result, not automatic adoption or
+evidence of uninterrupted recording.
+
+A separate bounded passive observation of the existing controller was started
+to look for a natural startup without changing the camera. Its process is no
+longer present, but its output handle was lost; no observation result can be
+claimed from that run. The observer's revised local source SHA-256 was
+`292ff9c27f79cc45ca129dd34f9b76ad8b7949211a46fb6755fb29554a36df69`;
+five synthetic classification checks passed. It is not part of the recorder.

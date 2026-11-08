@@ -1139,6 +1139,7 @@ fn run_discovered_setup(
         changed,
         None,
         0,
+        false,
     )
 }
 
@@ -1161,6 +1162,7 @@ fn run_discovered_setup_with_listener(
     changed: bool,
     ready: Option<(Ipv4Addr, bool)>,
     port_mode: u8,
+    drop_future: bool,
 ) -> Test {
     use fss_reference::unifi_direct::{controller_listener, discovery, setup};
     static SETUP_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -1344,6 +1346,22 @@ fn run_discovered_setup_with_listener(
                     }
                     assert_eq!(http.phase(), Phase::Login);
                     report.stop = discovery::Stop::WindowElapsed;
+                    if drop_future {
+                        let mut trace = setup::Trace::default();
+                        let cfg = config!(&report);
+                        let result = timeout(cx.now(), Duration::from_millis(1000),
+                            owner.run_with_framing_tracked(&mut http, &cfg, framing, &mut trace)).await;
+                        assert!(result.is_err(), "fixture should withhold the handoff response");
+                        assert_eq!(trace.operation(), Some(&operation));
+                        assert!(trace.dispatch_started());
+                        assert_eq!(trace.response(), None);
+                        let permit = trace.take_permit().ok_or("cancelled setup lost its permit")?;
+                        assert_eq!(permit.operation(), &operation);
+                        assert_eq!(http.phase(), Phase::Fenced);
+                        drop(http);
+                        peer.join().map_err(|_| "HTTP fixture panic")??;
+                        return Ok(());
+                    }
                     if observe {
                         let result = owner.observe(&mut http, &config!(&report)).await;
                         if changed {
@@ -1597,6 +1615,12 @@ fn run_discovered_setup_with_listener(
 }
 
 #[test]
+fn cancelled_setup_response_retains_permit_in_caller_trace() -> Test {
+    run_discovered_setup_with_listener(
+        true, false, false, Framing::ContentLength, false, false, None, 0, true,
+    )
+}
+#[test]
 fn discovered_candidate_runs_owned_setup_through_journal_and_readback() -> Test {
     run_discovered_setup(false, false, false, Framing::ContentLength, false, false)
 }
@@ -1653,6 +1677,7 @@ fn discovered_setup_requires_current_bound_controller_listener() -> Test {
         false,
         Some((ip, false)),
         0,
+        false,
     )?;
     run_discovered_setup_with_listener(
         false,
@@ -1663,6 +1688,7 @@ fn discovered_setup_requires_current_bound_controller_listener() -> Test {
         false,
         Some((ip, true)),
         0,
+        false,
     )?;
     for mode in [1, 2] {
         run_discovered_setup_with_listener(
@@ -1674,6 +1700,7 @@ fn discovered_setup_requires_current_bound_controller_listener() -> Test {
             false,
             Some((ip, false)),
             mode,
+            false,
         )?;
     }
     Ok(())

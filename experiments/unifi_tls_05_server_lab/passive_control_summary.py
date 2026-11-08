@@ -94,7 +94,7 @@ interval:s:DURATION { clear(@r); clear(@seq); exit(); }'''.replace("PID", str(pi
                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
     counts = collections.Counter()
     pending = {}
-    sequence = []
+    startup_events = []
     started = time.monotonic()
     assert trace.stdout is not None
     for line in trace.stdout:
@@ -122,10 +122,10 @@ interval:s:DURATION { clear(@r); clear(@seq); exit(); }'''.replace("PID", str(pi
                 if len(raw) == total:
                     label = f"{direction}:{classify(raw)}"
                     counts[label] += 1
-                    if (len(sequence) < 64 and
+                    if (len(startup_events) < 64 and
                             (label.split(":")[1] in ("time_sync", "hello", "param_agreement", "set_parameter", "video_settings")
                              or (label.startswith("R:other:") and label.endswith(":reply_requested")))):
-                        sequence.append((int((time.monotonic() - started) * 1000), label))
+                        startup_events.append((int((time.monotonic() - started) * 1000), label))
                 else:
                     counts["incomplete_chunks"] += 1
         except (ValueError, TypeError, struct.error):
@@ -134,7 +134,7 @@ interval:s:DURATION { clear(@r); clear(@seq); exit(); }'''.replace("PID", str(pi
     print("trace_exit", status, "incomplete_groups", len(pending))
     for key in sorted(counts):
         print(key, counts[key])
-    for elapsed_ms, label in sequence:
+    for elapsed_ms, label in startup_events:
         print("startup_candidate", elapsed_ms, label)
     return 0 if status == 0 else 1
 
