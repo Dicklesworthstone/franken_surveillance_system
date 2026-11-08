@@ -8,6 +8,117 @@ use fss_reference::unifi_direct::{
 };
 
 #[test]
+fn unknown_startup_request_is_opt_in_source_bound_and_replay_bounded()
+-> Result<(), Box<dyn std::error::Error>> {
+    use fss_core::{ContentDigest, json_input};
+    let source = br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"FutureCameraRequest","messageId":21,"responseExpected":true,"payload":{"private":"fixture"}}"#;
+    let changed = br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"FutureCameraRequest","messageId":21,"responseExpected":true,"payload":{}}"#;
+    let correlated = br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"FutureCameraRequest","messageId":22,"inResponseTo":9,"responseExpected":true}"#;
+    let new_controller = || {
+        Controller::new(
+            Identity::new("FSS", "12345678-1234-4abc-9abc-123456789abc", "1.20.0")?,
+            1,
+        )
+    };
+    let mut default = new_controller()?;
+    assert_eq!(default.observe_event_claims(source)?, Observation::Other);
+    assert!(
+        default
+            .prepare_event_reply(source, "2026-11-05T10:00:00.000Z")
+            .is_err()
+    );
+    let mut controller = new_controller()?;
+    assert_eq!(
+        controller.observe_startup_requests(correlated)?,
+        Observation::Other
+    );
+    assert_eq!(
+        controller.observe_startup_requests(source)?,
+        Observation::StartupRequest { message_id: 21 }
+    );
+    assert!(
+        controller
+            .prepare_event_reply(changed, "2026-11-05T10:00:00.000Z")
+            .is_err()
+    );
+    let prepared = controller.prepare_event_reply(source, "2026-11-05T10:00:00.000Z")?;
+    assert_eq!(prepared.kind(), MessageKind::StartupRequestReply);
+    assert_eq!(
+        prepared.source_digest(),
+        Some(ContentDigest::sha256(source))
+    );
+    assert!(!format!("{prepared:?}").contains("fixture"));
+    let reply = json_input::parse(std::str::from_utf8(prepared.bytes())?)?;
+    let fields = reply.object().ok_or("reply object")?;
+    assert_eq!(
+        fields.get("functionName").and_then(|v| v.text()),
+        Some("FutureCameraRequest")
+    );
+    assert_eq!(
+        fields.get("inResponseTo").and_then(|v| v.integer()),
+        Some(21)
+    );
+    assert_eq!(
+        fields
+            .get("payload")
+            .and_then(|v| v.object())
+            .and_then(|v| v.get("private"))
+            .and_then(|v| v.text()),
+        Some("fixture")
+    );
+    let id = prepared.id();
+    controller.finish_dispatch(id, Dispatch::Written)?;
+    assert!(controller.observe_startup_requests(source).is_err());
+    let retired = controller.close();
+    assert_eq!(retired.event_reply, None);
+    assert!(!retired.event_reply_is_startup_request);
+
+    let mut pending = new_controller()?;
+    pending.observe_startup_requests(source)?;
+    let retired = pending.close();
+    assert_eq!(
+        retired.event_reply,
+        Some((21, ContentDigest::sha256(source)))
+    );
+    assert!(retired.event_reply_is_startup_request);
+
+    let mut after_hello = new_controller()?;
+    after_hello.observe(br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"ubnt_avclient_hello","messageId":7,"payload":{}}"#)?;
+    assert_eq!(
+        after_hello.observe_startup_requests(source)?,
+        Observation::Other
+    );
+    assert_eq!(after_hello.close().event_reply, None);
+    Ok(())
+}
+
+#[test]
+fn unknown_startup_requests_stop_at_shared_reply_quota() -> Result<(), Box<dyn std::error::Error>> {
+    let mut controller = Controller::new(
+        Identity::new("FSS", "12345678-1234-4abc-9abc-123456789abc", "1.20.0")?,
+        1,
+    )?;
+    for id in 1..=64 {
+        let source = format!(
+            r#"{{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"FutureCameraRequest","messageId":{id},"responseExpected":true}}"#
+        );
+        assert_eq!(
+            controller.observe_startup_requests(source.as_bytes())?,
+            Observation::StartupRequest { message_id: id }
+        );
+        let reply =
+            controller.prepare_event_reply(source.as_bytes(), "2026-11-05T10:00:00.000Z")?;
+        assert_eq!(reply.kind(), MessageKind::StartupRequestReply);
+        let prepared_id = reply.id();
+        controller.finish_dispatch(prepared_id, Dispatch::Written)?;
+    }
+    let overflow = br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"FutureCameraRequest","messageId":65,"responseExpected":true}"#;
+    assert!(controller.observe_startup_requests(overflow).is_err());
+    assert_eq!(controller.close().event_reply, None);
+    Ok(())
+}
+
+#[test]
 fn event_reply_binds_exact_source_and_preserves_json_payload()
 -> Result<(), Box<dyn std::error::Error>> {
     use fss_core::{ContentDigest, json_input};

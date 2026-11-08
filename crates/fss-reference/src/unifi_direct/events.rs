@@ -20,7 +20,7 @@ const MAX_LABEL_BYTES: usize = 128;
 const MAX_INBOX_FRAMES: usize = 64;
 const MAX_INBOX_BYTES: usize = 4 * 1024 * 1024;
 
-/// Caller-owned, bounded custody for event frames received during startup.
+/// Caller-owned, bounded custody for event and opt-in request frames during startup.
 ///
 /// One session may bind it at a time. The owner retains this inbox after a
 /// session failure or cancellation and must apply its own privacy policy when
@@ -113,7 +113,7 @@ impl fmt::Debug for StartupInbox {
     }
 }
 
-/// A known camera function or an unknown `Event*` function.
+/// A known camera event, unknown `Event*`, or opt-in unknown startup request.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Kind {
     /// Smart object tracking event.
@@ -128,6 +128,8 @@ pub enum Kind {
     Analytics,
     /// Another event whose exact name remains in the source bytes.
     Other,
+    /// An unknown uncorrelated startup request; this is not an event claim.
+    StartupRequest,
 }
 
 impl Kind {
@@ -187,6 +189,9 @@ impl Frame {
     }
     /// Parse bounded optional fields. On refusal the original source remains owned.
     pub fn interpret(&self) -> Result<Parsed, Error> {
+        if self.kind == Kind::StartupRequest {
+            return Err(Error::Invalid);
+        }
         parse(&self.source)
     }
     /// Interpret bounded smart-audio claims without establishing their meaning.
@@ -208,7 +213,10 @@ pub(crate) struct ReplyParts {
 
 /// Recheck the source envelope and construct the reference's echo payload.
 /// The caller must separately bind these bytes to an observed session request.
-pub(crate) fn reply_parts(source: &[u8]) -> Result<ReplyParts, super::Error> {
+pub(crate) fn reply_parts(
+    source: &[u8],
+    startup_request: bool,
+) -> Result<ReplyParts, super::Error> {
     if source.len() > super::MAX_MESSAGE_BYTES {
         return Err(super::Error::InvalidJson);
     }
@@ -222,7 +230,8 @@ pub(crate) fn reply_parts(source: &[u8]) -> Result<ReplyParts, super::Error> {
         return Err(super::Error::InvalidEnvelope);
     }
     let name = super::text_field(fields, "functionName")?;
-    if !name.starts_with("Event")
+    if name.is_empty()
+        || name.starts_with("Event") == startup_request
         || name.len() > 96
         || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
     {

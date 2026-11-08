@@ -199,6 +199,9 @@ fss-tutk = { path = "../fss-tutk" }
 fss-tuya = { path = "../fss-tuya" }
 fss-twin = { path = "../fss-twin" }
 
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.31.3", default-features = false, features = ["net"] }
+
 [lints]
 workspace = true
 

@@ -12,10 +12,11 @@ use fss_core::{
 };
 use fss_runtime::effect_journal::{EffectJournalPin, EffectJournalStore, EffectPersistenceError};
 
-use super::Pin;
+use super::{Pin, UnknownTimePin};
 use crate::ReplayCx;
 
 const DOMAIN: &str = "fss.unifi-direct.av-publication-intent.v1";
+const UNKNOWN_TIME_DOMAIN: &str = "fss.unifi-direct.av-unknown-time-intent.v1";
 const MAX_RECORD_BYTES: usize = 256;
 const MAX_RECORDS: usize = 16_384;
 const ANCHOR_DOMAIN: &str = "fss.unifi-direct.av-publication-anchor.v1";
@@ -48,6 +49,7 @@ impl std::error::Error for Error {}
 /// Exclusive semantic owner for a dedicated publication-intent store.
 pub struct Journal {
     store: Box<dyn EffectJournalStore>,
+    domain: &'static str,
     scope: ContentDigest,
     pending: Option<Pin>,
     confirmed: Option<Pin>,
@@ -81,9 +83,14 @@ fn checkpoint(cx: &ReplayCx) -> Result<(), Error> {
     cx.checkpoint("unifi-av-publication-journal")
         .map_err(|_| Error::Cancelled)
 }
-fn encode(scope: ContentDigest, kind: u8, pin: Option<Pin>) -> Result<Vec<u8>, Error> {
+fn encode(
+    domain: &str,
+    scope: ContentDigest,
+    kind: u8,
+    pin: Option<Pin>,
+) -> Result<Vec<u8>, Error> {
     let mut out = CanonicalEncoder::new();
-    out.text(DOMAIN);
+    out.text(domain);
     out.digest(scope);
     out.u8(kind);
     if let Some(pin) = pin {
@@ -98,12 +105,12 @@ fn encode(scope: ContentDigest, kind: u8, pin: Option<Pin>) -> Result<Vec<u8>, E
     }
     Ok(bytes)
 }
-fn decode(bytes: &[u8], scope: ContentDigest) -> Result<(u8, Option<Pin>), Error> {
+fn decode(bytes: &[u8], domain: &str, scope: ContentDigest) -> Result<(u8, Option<Pin>), Error> {
     if bytes.len() > MAX_RECORD_BYTES {
         return Err(Error::Invalid);
     }
     let mut input = CanonicalDecoder::new(bytes);
-    if input.text().map_err(|_| Error::Invalid)? != DOMAIN
+    if input.text().map_err(|_| Error::Invalid)? != domain
         || input.digest().map_err(|_| Error::Invalid)? != scope
     {
         return Err(Error::Invalid);
@@ -137,9 +144,18 @@ impl Journal {
     /// Initialize a dedicated empty store with an immutable caller-selected scope.
     /// Retain the returned anchor independently before allowing publication.
     pub fn create(
+        store: Box<dyn EffectJournalStore>,
+        scope: ContentDigest,
+        cx: &ReplayCx,
+    ) -> Result<Self, Error> {
+        Self::create_in_domain(store, scope, cx, DOMAIN)
+    }
+
+    fn create_in_domain(
         mut store: Box<dyn EffectJournalStore>,
         scope: ContentDigest,
         cx: &ReplayCx,
+        domain: &'static str,
     ) -> Result<Self, Error> {
         if !valid_digest(scope) || store.head().is_some() || !store.records().is_empty() {
             return Err(Error::Invalid);
@@ -148,13 +164,14 @@ impl Journal {
         store
             .reserve_capacity(1, MAX_RECORD_BYTES)
             .map_err(Error::Storage)?;
-        let bytes = encode(scope, 0, None)?;
+        let bytes = encode(domain, scope, 0, None)?;
         let acknowledged = store.append(None, &bytes).map_err(Error::Storage)?;
         if acknowledged.sequence != 1 || !valid_digest(acknowledged.root) {
             return Err(Error::Invalid);
         }
         Ok(Self {
             store,
+            domain,
             scope,
             pending: None,
             confirmed: None,
@@ -172,6 +189,16 @@ impl Journal {
         minimum: EffectJournalPin,
         cx: &ReplayCx,
     ) -> Result<Self, Error> {
+        Self::reopen_in_domain(store, scope, minimum, cx, DOMAIN)
+    }
+
+    fn reopen_in_domain(
+        store: Box<dyn EffectJournalStore>,
+        scope: ContentDigest,
+        minimum: EffectJournalPin,
+        cx: &ReplayCx,
+        domain: &'static str,
+    ) -> Result<Self, Error> {
         checkpoint(cx)?;
         if !valid_digest(scope)
             || !store.contains(minimum)
@@ -184,7 +211,12 @@ impl Journal {
         let mut confirmed = None;
         for (index, bytes) in store.records().iter().enumerate() {
             checkpoint(cx)?;
-            let (kind, pin) = decode(bytes, scope)?;
+            let (kind, pin) = decode(bytes, domain, scope)?;
+            if domain == UNKNOWN_TIME_DOMAIN
+                && pin.is_some_and(|p| p.capture != super::unknown_ledger_validity())
+            {
+                return Err(Error::Invalid);
+            }
             match (index, kind, pin) {
                 (0, 0, None) => {}
                 (0, _, _) | (_, 0, _) => return Err(Error::Invalid),
@@ -207,6 +239,7 @@ impl Journal {
         let replay_pin = pending.or(confirmed);
         Ok(Self {
             store,
+            domain,
             scope,
             pending,
             confirmed,
@@ -252,7 +285,7 @@ impl Journal {
         if self.store.records().len() >= MAX_RECORDS {
             return Err(Error::Invalid);
         }
-        let bytes = encode(self.scope, kind, Some(pin))?;
+        let bytes = encode(self.domain, self.scope, kind, Some(pin))?;
         let expected = self.acknowledged;
         let next = match self.store.append(Some(expected), &bytes) {
             Ok(next) => next,
@@ -324,6 +357,129 @@ impl Journal {
         self.confirmed = Some(pin);
         self.replay_pin = None;
         Ok(())
+    }
+}
+
+/// Exclusive publication-intent history for explicitly unknown capture time.
+/// Its domain is distinct from [`Journal`]; no physical capture interval is
+/// exposed by its pins. Media and muxer state remain separately owned.
+pub struct UnknownTimeJournal {
+    pub(super) inner: Journal,
+}
+impl UnknownTimeJournal {
+    /// Create a dedicated empty unknown-time journal.
+    pub fn create(
+        store: Box<dyn EffectJournalStore>,
+        scope: ContentDigest,
+        cx: &ReplayCx,
+    ) -> Result<Self, Error> {
+        Ok(Self {
+            inner: Journal::create_in_domain(store, scope, cx, UNKNOWN_TIME_DOMAIN)?,
+        })
+    }
+
+    /// Reopen verified history against an independently retained minimum.
+    pub fn reopen(
+        store: Box<dyn EffectJournalStore>,
+        scope: ContentDigest,
+        minimum: EffectJournalPin,
+        cx: &ReplayCx,
+    ) -> Result<Self, Error> {
+        Ok(Self {
+            inner: Journal::reopen_in_domain(store, scope, minimum, cx, UNKNOWN_TIME_DOMAIN)?,
+        })
+    }
+
+    /// Last acknowledged journal prefix, to retain independently.
+    pub fn anchor(&self) -> EffectJournalPin {
+        self.inner.anchor()
+    }
+
+    /// Immutable caller-selected scope, not camera authentication.
+    pub fn scope(&self) -> ContentDigest {
+        self.inner.scope()
+    }
+
+    /// Candidate whose outcome requires reconciliation, if any.
+    pub fn pending(&self) -> Option<UnknownTimePin> {
+        self.inner.pending().map(unknown_pin)
+    }
+
+    /// Last root with journaled confirmation, if any.
+    pub fn confirmed(&self) -> Option<UnknownTimePin> {
+        self.inner.confirmed().map(unknown_pin)
+    }
+
+    /// After reopening, the exact candidate required for deterministic replay.
+    pub fn replay_pin(&self) -> Option<UnknownTimePin> {
+        self.inner.replay_pin().map(unknown_pin)
+    }
+
+    pub(super) fn prepare(&mut self, pin: UnknownTimePin, cx: &ReplayCx) -> Result<(), Error> {
+        self.inner.prepare(pin.access_pin(), cx)
+    }
+
+    pub(super) fn confirm(&mut self, pin: UnknownTimePin, cx: &ReplayCx) -> Result<(), Error> {
+        self.inner.confirm(pin.access_pin(), cx)
+    }
+}
+
+fn unknown_pin(pin: Pin) -> UnknownTimePin {
+    debug_assert_eq!(pin.capture, super::unknown_ledger_validity());
+    UnknownTimePin {
+        root: pin.root,
+        retention: pin.retention,
+    }
+}
+
+/// Independent anchor history for an unknown-time publication journal.
+pub struct UnknownTimeAnchorKeeper {
+    inner: AnchorKeeper,
+}
+impl UnknownTimeAnchorKeeper {
+    /// Bind a dedicated empty store to the current unknown-time journal prefix.
+    pub fn create(
+        store: Box<dyn EffectJournalStore>,
+        journal: &UnknownTimeJournal,
+        cx: &ReplayCx,
+    ) -> Result<Self, Error> {
+        Ok(Self {
+            inner: AnchorKeeper::create(store, &journal.inner, cx)?,
+        })
+    }
+
+    /// Reopen and verify the keeper against its independently retained minimum.
+    pub fn reopen(
+        store: Box<dyn EffectJournalStore>,
+        journal: &UnknownTimeJournal,
+        minimum: EffectJournalPin,
+        cx: &ReplayCx,
+    ) -> Result<Self, Error> {
+        Ok(Self {
+            inner: AnchorKeeper::reopen(store, &journal.inner, minimum, cx)?,
+        })
+    }
+
+    /// Last acknowledged keeper prefix for independent retention.
+    pub fn anchor(&self) -> EffectJournalPin {
+        self.inner.anchor()
+    }
+
+    /// Latest journal prefix durably retained by this keeper.
+    pub fn target(&self) -> EffectJournalPin {
+        self.inner.target()
+    }
+
+    pub(super) fn is_fenced(&self) -> bool {
+        self.inner.fenced
+    }
+
+    pub(super) fn retain(
+        &mut self,
+        journal: &UnknownTimeJournal,
+        cx: &ReplayCx,
+    ) -> Result<(), Error> {
+        self.inner.retain(&journal.inner, cx)
     }
 }
 

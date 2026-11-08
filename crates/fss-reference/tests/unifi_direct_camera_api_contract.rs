@@ -3,7 +3,8 @@
 use asupersync::http::h1::Response;
 use fss_core::ContentDigest;
 use fss_reference::unifi_direct::camera_api::{
-    ControllerAddress, Error, Phase, Session, StatusShape, VideoDestinationShape, WriteOutcome,
+    ControllerAddress, ControllerPort, Error, Phase, Session, StatusShape, VideoDestinationShape,
+    WriteOutcome,
 };
 use std::{error::Error as StdError, net::Ipv4Addr};
 
@@ -33,9 +34,54 @@ fn status(s: &mut Session) -> Test {
         StatusShape {
             board: true,
             firmware: true,
-            controller: true
+            controller: true,
+            controller_port: ControllerPort::Missing,
         }
     );
+    Ok(())
+}
+
+#[test]
+fn status_preserves_controller_port_claim_and_uncertainty() -> Test {
+    let cases: &[(&[u8], ControllerPort)] = &[
+        (
+            br#"{"controller":{"port":7442}}"#,
+            ControllerPort::Reported(7442),
+        ),
+        (
+            br#"{"controller":{"port":65535}}"#,
+            ControllerPort::Reported(65535),
+        ),
+        (br#"{"controller":{}}"#, ControllerPort::Missing),
+        (br#"{}"#, ControllerPort::Missing),
+        (br#"{"controller":{"port":null}}"#, ControllerPort::Unset),
+        (br#"{"controller":{"port":0}}"#, ControllerPort::Unsupported),
+        (
+            br#"{"controller":{"port":65536}}"#,
+            ControllerPort::Unsupported,
+        ),
+        (
+            br#"{"controller":{"port":-1}}"#,
+            ControllerPort::Unsupported,
+        ),
+        (
+            br#"{"controller":{"port":"7442"}}"#,
+            ControllerPort::Unsupported,
+        ),
+        (
+            br#"{"controller":{"port":1.5}}"#,
+            ControllerPort::Unsupported,
+        ),
+        (br#"{"controller":true}"#, ControllerPort::Unsupported),
+    ];
+    for (body, expected) in cases {
+        let mut session = Session::new(Ipv4Addr::LOCALHOST, 1)?;
+        login(&mut session)?;
+        let request = session.prepare_status()?;
+        session.finish_write(request, WriteOutcome::Written)?;
+        let observed = session.accept_status(Response::new(200, "OK", body.to_vec()))?;
+        assert_eq!(&observed.controller_port, expected);
+    }
     Ok(())
 }
 

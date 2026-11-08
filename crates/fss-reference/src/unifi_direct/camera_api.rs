@@ -135,7 +135,7 @@ impl fmt::Debug for Request {
     }
 }
 
-/// Sanitized shape only; all fields are untrusted remote claims.
+/// Sanitized status claims; all fields are untrusted remote claims.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StatusShape {
     /// The remote JSON contained a board object.
@@ -144,6 +144,21 @@ pub struct StatusShape {
     pub firmware: bool,
     /// The remote JSON contained a controller object.
     pub controller: bool,
+    /// The camera's claimed controller port; not a reachability observation.
+    pub controller_port: ControllerPort,
+}
+
+/// The untrusted camera status claim about its controller port.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ControllerPort {
+    /// A nonzero TCP port was reported as an integer.
+    Reported(u16),
+    /// The controller object or port field was absent.
+    Missing,
+    /// The port field was explicitly null.
+    Unset,
+    /// The value was malformed, zero, or outside the TCP port range.
+    Unsupported,
 }
 
 /// How the camera represented its current controller destination.
@@ -885,6 +900,22 @@ fn status_shape(body: &[u8]) -> Result<StatusShape, Error> {
             board: o.get("board").and_then(Value::object).is_some(),
             firmware: o.get("fw").and_then(Value::object).is_some(),
             controller: o.get("controller").and_then(Value::object).is_some(),
+            controller_port: match o.get("controller") {
+                None => ControllerPort::Missing,
+                Some(Value::Null) => ControllerPort::Unset,
+                Some(Value::Object(controller)) => match controller.get("port") {
+                    None => ControllerPort::Missing,
+                    Some(Value::Null) => ControllerPort::Unset,
+                    Some(Value::Number(_)) => controller
+                        .get("port")
+                        .and_then(Value::integer)
+                        .and_then(|n| u16::try_from(n).ok())
+                        .filter(|port| *port != 0)
+                        .map_or(ControllerPort::Unsupported, ControllerPort::Reported),
+                    Some(_) => ControllerPort::Unsupported,
+                },
+                Some(_) => ControllerPort::Unsupported,
+            },
         })
         .ok_or(Error::Status);
     clear_value(&mut value);

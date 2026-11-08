@@ -11,7 +11,7 @@ use fss_object::{
     effect_journal::{EffectJournalLimits, FileEffectJournal},
 };
 use fss_reference::unifi_direct::{
-    camera_api::{Session, SettingsObservation, WriteOutcome},
+    camera_api::{ControllerPort, Session, SettingsObservation, StatusShape, WriteOutcome},
     handoff::{Error, Plan, Preconditions, Readback},
 };
 use fss_runtime::{
@@ -93,6 +93,43 @@ fn plans_bind_exact_forward_prior_and_live_conditions() -> Test {
     assert!(Plan::new(Ipv4Addr::new(192, 168, 1, 31), target, c).is_err());
     let other = Plan::new(peer, Ipv4Addr::new(192, 168, 1, 41), c)?;
     assert_ne!(plan.request_digest(), other.request_digest());
+    Ok(())
+}
+
+#[test]
+fn reported_listener_port_changes_effect_preconditions() -> Test {
+    let peer = Ipv4Addr::new(192, 168, 1, 30);
+    let target = Ipv4Addr::new(192, 168, 1, 40);
+    let c = conditions(observed(
+        peer,
+        1,
+        br#"{"controller":{"addr":"192.168.1.10"}}"#,
+    )?);
+    let status = StatusShape {
+        board: true,
+        firmware: true,
+        controller: true,
+        controller_port: ControllerPort::Reported(7442),
+    };
+    let plain = Plan::new(peer, target, c)?;
+    let bound = Plan::new(peer, target, c)?.bind_reported_controller_port(status, 7442)?;
+    assert_eq!(plain.request_digest(), bound.request_digest());
+    assert_ne!(plain.precondition_digest(), bound.precondition_digest());
+    bound.check_current(c)?;
+    assert!(matches!(
+        Plan::new(peer, target, c)?.bind_reported_controller_port(status, 7443),
+        Err(Error::Preconditions)
+    ));
+    assert!(matches!(
+        Plan::new(peer, target, c)?.bind_reported_controller_port(
+            StatusShape {
+                controller_port: ControllerPort::Missing,
+                ..status
+            },
+            7442,
+        ),
+        Err(Error::Preconditions)
+    ));
     Ok(())
 }
 

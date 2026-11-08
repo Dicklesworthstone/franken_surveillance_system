@@ -230,6 +230,8 @@ pub enum GuardStep {
     CaptureRequired,
     /// An archive attempt or previously fenced muxer must be reconciled.
     ArchivePending,
+    /// Audio tracking or its configuration epoch requires reconciliation.
+    AudioFenced,
     /// The task's cancellation checkpoint was refused; retire the guard.
     Cancelled,
     /// Any other controller or media result, including explicit source custody.

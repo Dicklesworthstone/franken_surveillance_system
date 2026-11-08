@@ -223,7 +223,7 @@ fn failure(
     }
 }
 
-fn journal_reason(error: archive::journal::Error) -> FailureReason {
+pub(super) fn journal_reason(error: archive::journal::Error) -> FailureReason {
     use archive::journal::Error;
     match error {
         Error::Storage(_) => FailureReason::Storage,
@@ -232,7 +232,7 @@ fn journal_reason(error: archive::journal::Error) -> FailureReason {
     }
 }
 
-fn archive_reason(error: archive::Error, cancelled: bool) -> FailureReason {
+pub(super) fn archive_reason(error: archive::Error, cancelled: bool) -> FailureReason {
     use archive::Error;
     match error {
         Error::Denied if cancelled => FailureReason::CancelledOrDenied,
@@ -546,6 +546,392 @@ impl Worker {
         }
         match Arc::try_unwrap(state) {
             Ok(state) => Ok(Retirement {
+                parts: state
+                    .into_inner()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .parts,
+                fenced,
+            }),
+            Err(state) => Err(Self {
+                state,
+                running: None,
+                fenced,
+            }),
+        }
+    }
+}
+
+/// Exclusive owners transferred into an unknown-time archive worker.
+pub struct UnknownTimeParts {
+    /// Source, configuration and transactional muxer owners.
+    pub sink: av_owned_sink::UnknownTimeOwnedSink,
+    /// Exclusive archive deployment.
+    pub deployment: ReferenceDeployment,
+    /// Unknown-time publication intent history.
+    pub journal: archive::journal::UnknownTimeJournal,
+    /// Independently stored intent-anchor history.
+    pub keeper: archive::journal::UnknownTimeAnchorKeeper,
+    /// Explicit storage and cancellation authority.
+    pub replay: ReplayCx,
+    /// Revalidated original-byte retention decision.
+    pub authority: Arc<dyn archive::RetainAuthority + Send + Sync>,
+    /// Archive resource limits.
+    pub limits: archive::Limits,
+    /// Maximum work per publication attempt.
+    pub work_limit: u64,
+}
+
+/// A source returned unchanged when an unknown-time worker refuses it.
+#[must_use]
+pub enum UnknownTimeOfferRefusal {
+    /// A source or job is already outstanding.
+    Busy(recording::Segment),
+    /// State needs explicit retirement and reconciliation.
+    Fenced(recording::Segment),
+    /// The sink returned the original segment and a refusal reason.
+    Sink(av_owned_sink::UnknownTimeOfferRefusal),
+}
+
+/// Coarse stage of an unknown-time publication refusal.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UnknownTimeFailureStage {
+    /// Audio or source preparation failed.
+    Preparation,
+    /// Intent or its independent anchor was not confirmed.
+    BeforePublication,
+    /// Archive staging or publication did not complete cleanly.
+    Archive,
+    /// A receipt exists, but confirmation or its anchor is unresolved.
+    AfterPublication,
+}
+
+/// Actual publication outcome, independent of runtime task classification.
+pub enum UnknownTimePublication {
+    /// The archive and journal both returned receipts.
+    Published(archive::PublishedUnknownTimeAvSegment),
+    /// A refusal that leaves source and any pending candidate with the worker.
+    Refused {
+        /// Stage without sensitive source bytes.
+        stage: UnknownTimeFailureStage,
+        /// Payload-free cause classification.
+        reason: FailureReason,
+        /// Exact unknown-time root requiring reconciliation, if established.
+        pending: Option<archive::UnknownTimePin>,
+        /// Actual archive receipt, if failure occurred after publication.
+        receipt: Option<Box<RootLedgerReceipt>>,
+    },
+    /// No segment was available to flush.
+    Empty,
+}
+
+/// Joined blocking-attempt result for an unknown-time worker.
+pub enum UnknownTimeOutcome {
+    /// The closure did not start; its source remains pending.
+    NotStarted,
+    /// The closure returned a publication classification.
+    Publication(UnknownTimePublication),
+    /// The closure panicked; retirement and reconciliation are required.
+    Panicked,
+    /// Completion could not be reconciled; retirement is required.
+    Indeterminate,
+}
+
+/// Runtime and publication outcomes after the attempt has drained.
+pub struct UnknownTimeCompletion {
+    /// Runtime task result, distinct from the archive outcome.
+    pub runtime: Result<(), JoinError>,
+    /// Actual source and publication classification.
+    pub outcome: UnknownTimeOutcome,
+}
+
+/// Source and storage owners returned after all work has drained.
+#[must_use]
+pub struct UnknownTimeRetirement {
+    /// All exclusive owners for reconciliation.
+    pub parts: UnknownTimeParts,
+    /// A panic or uncertain coordinator outcome requires reconciliation.
+    pub fenced: bool,
+}
+
+struct UnknownTimeState {
+    parts: UnknownTimeParts,
+    report: Option<UnknownTimePublication>,
+}
+
+/// One region-owned, cancellation-drained unknown-time archive attempt.
+/// This is a worker building block, not an unattended camera service.
+#[must_use = "join any running attempt and retire its source and storage owners"]
+pub struct UnknownTimeWorker {
+    state: Arc<Mutex<UnknownTimeState>>,
+    running: Option<Drained<Job, ()>>,
+    fenced: bool,
+}
+
+fn classify_unknown_time(
+    error: av_owned_sink::UnknownTimeFlushError,
+    cancelled: bool,
+    pending: Option<archive::UnknownTimePin>,
+) -> UnknownTimePublication {
+    use archive::{UnknownTimePublishError as P, UnknownTimeSegmentError as S};
+    let (stage, reason, receipt) = match error {
+        av_owned_sink::UnknownTimeFlushError::Audio => (
+            UnknownTimeFailureStage::Preparation,
+            FailureReason::AudioConfiguration,
+            None,
+        ),
+        av_owned_sink::UnknownTimeFlushError::Archive(error) => match error {
+            S::Binding => (
+                UnknownTimeFailureStage::Preparation,
+                FailureReason::Binding,
+                None,
+            ),
+            S::JournalScope => (
+                UnknownTimeFailureStage::Preparation,
+                FailureReason::JournalScope,
+                None,
+            ),
+            S::PendingMismatch => (
+                UnknownTimeFailureStage::Preparation,
+                FailureReason::Recovery,
+                None,
+            ),
+            S::Media(error) => (
+                UnknownTimeFailureStage::Preparation,
+                FailureReason::Media(error),
+                None,
+            ),
+            S::Video(error) => (
+                UnknownTimeFailureStage::Preparation,
+                FailureReason::Video(error),
+                None,
+            ),
+            S::AudioVideo(error) => (
+                UnknownTimeFailureStage::Preparation,
+                FailureReason::AudioVideo(error),
+                None,
+            ),
+            S::Publication(P::Candidate) => (
+                UnknownTimeFailureStage::Preparation,
+                FailureReason::Recovery,
+                None,
+            ),
+            S::Publication(P::BeforePublication(error)) => (
+                UnknownTimeFailureStage::BeforePublication,
+                journal_reason(error),
+                None,
+            ),
+            S::Publication(P::Archive(error)) => (
+                UnknownTimeFailureStage::Archive,
+                archive_reason(error, cancelled),
+                None,
+            ),
+            S::Publication(P::AfterPublication { receipt, source }) => (
+                UnknownTimeFailureStage::AfterPublication,
+                journal_reason(source),
+                Some(receipt),
+            ),
+        },
+    };
+    UnknownTimePublication::Refused {
+        stage,
+        reason,
+        pending,
+        receipt,
+    }
+}
+
+impl UnknownTimeWorker {
+    /// Whether this owner has no running attempt, pending source or fence.
+    pub(crate) fn is_idle(&self) -> bool {
+        if self.fenced || self.running.is_some() {
+            return false;
+        }
+        self.state
+            .try_lock()
+            .is_ok_and(|state| !state.parts.sink.has_pending())
+    }
+
+    /// Construct an idle worker or return every original owner unchanged.
+    pub fn new(parts: UnknownTimeParts) -> Result<Self, UnknownTimeParts> {
+        if !(1..=100_000_000_000).contains(&parts.work_limit) {
+            return Err(parts);
+        }
+        Ok(Self {
+            state: Arc::new(Mutex::new(UnknownTimeState {
+                parts,
+                report: None,
+            })),
+            running: None,
+            fenced: false,
+        })
+    }
+
+    /// Admit a single original segment; refusal returns it unchanged.
+    pub fn offer(&mut self, segment: recording::Segment) -> Result<(), UnknownTimeOfferRefusal> {
+        if self.fenced {
+            return Err(UnknownTimeOfferRefusal::Fenced(segment));
+        }
+        if self.running.is_some() {
+            return Err(UnknownTimeOfferRefusal::Busy(segment));
+        }
+        match self.state.try_lock() {
+            Ok(mut state) => state
+                .parts
+                .sink
+                .offer(segment)
+                .map_err(UnknownTimeOfferRefusal::Sink),
+            Err(TryLockError::WouldBlock) => Err(UnknownTimeOfferRefusal::Busy(segment)),
+            Err(TryLockError::Poisoned(_)) => {
+                self.fenced = true;
+                Err(UnknownTimeOfferRefusal::Fenced(segment))
+            }
+        }
+    }
+
+    /// Admit one region-owned blocking operation under explicit task grants.
+    /// Cancellation is requested and drained before source ownership is released.
+    pub fn start<'scope, 'task>(
+        &mut self,
+        task: &'scope TaskCx<'task>,
+        cx: &'scope Cx,
+        clock: MeteredClock<'scope, 'task>,
+        resource: &str,
+        cost: &BudgetVector,
+    ) -> Result<(), StartError> {
+        if self.fenced {
+            return Err(StartError::Fenced);
+        }
+        if self.running.is_some() {
+            return Err(StartError::Running);
+        }
+        if !clock.matches(task, cx) {
+            return Err(StartError::Context);
+        }
+        let now = clock.now().map_err(|_| StartError::Clock)?;
+        match self.state.try_lock() {
+            Ok(state) if !state.parts.sink.has_pending() => return Err(StartError::Empty),
+            Ok(_) => (),
+            Err(_) => {
+                self.fenced = true;
+                return Err(StartError::Fenced);
+            }
+        }
+        task.checkpoint_for(
+            RuntimeGrant::ObjectPublish,
+            resource,
+            now,
+            &BudgetVector::ZERO,
+        )
+        .map_err(StartError::Task)?;
+        task.checkpoint_for(RuntimeGrant::ObjectStage, resource, now, cost)
+            .map_err(StartError::Task)?;
+        let state = Arc::clone(&self.state);
+        let work: Job = Box::new(move |child| {
+            let Ok(mut state) = state.lock() else {
+                return;
+            };
+            let UnknownTimeState { parts, report } = &mut *state;
+            let access = CurrentRetention {
+                cx: &child,
+                inner: parts.authority.as_ref(),
+            };
+            let cancel = || child.is_cancel_requested();
+            let mut budget = WorkBudget::with_cancellation_probe(parts.work_limit, &cancel);
+            let outcome = parts.sink.flush(
+                &mut parts.deployment,
+                &access,
+                parts.limits,
+                &mut budget,
+                &parts.replay,
+                &mut parts.journal,
+                &mut parts.keeper,
+            );
+            *report = Some(match outcome {
+                Ok(Some(receipt)) => UnknownTimePublication::Published(receipt),
+                Ok(None) => UnknownTimePublication::Empty,
+                Err(error) => classify_unknown_time(
+                    error,
+                    child.is_cancel_requested(),
+                    parts.sink.pending_publication(),
+                ),
+            });
+        });
+        match drained_blocking::start(cx, work) {
+            Ok(running) => {
+                self.running = Some(running);
+                Ok(())
+            }
+            Err(refusal) => Err(StartError::Runtime(refusal.reason)),
+        }
+    }
+
+    /// Request cancellation without claiming that the attempt has drained.
+    pub fn abort(&self) {
+        if let Some(running) = &self.running {
+            running.abort();
+        }
+    }
+
+    /// Whether the coordinator has observed cancellation.
+    pub fn cancellation_observed(&self) -> bool {
+        self.running
+            .as_ref()
+            .is_some_and(Drained::cancellation_observed)
+    }
+
+    /// Join the exact operation; dropping this wait leaves its owners intact.
+    pub async fn join(&mut self) -> Option<UnknownTimeCompletion> {
+        let receipt = self.running.as_mut()?.join().await?;
+        self.running.take();
+        let outcome = match receipt.work {
+            WorkOutcome::NotStarted(work) => {
+                drop(work);
+                UnknownTimeOutcome::NotStarted
+            }
+            WorkOutcome::Finished(()) => match self.state.try_lock() {
+                Ok(mut state) => match state.report.take() {
+                    Some(report) => UnknownTimeOutcome::Publication(report),
+                    None => {
+                        self.fenced = true;
+                        UnknownTimeOutcome::Indeterminate
+                    }
+                },
+                Err(_) => {
+                    self.fenced = true;
+                    UnknownTimeOutcome::Indeterminate
+                }
+            },
+            WorkOutcome::Panicked => {
+                self.fenced = true;
+                UnknownTimeOutcome::Panicked
+            }
+            WorkOutcome::Indeterminate => {
+                self.fenced = true;
+                UnknownTimeOutcome::Indeterminate
+            }
+        };
+        Some(UnknownTimeCompletion {
+            runtime: receipt.runtime,
+            outcome,
+        })
+    }
+
+    /// Recover every owner after a running attempt has been joined.
+    pub fn retire(self) -> Result<UnknownTimeRetirement, Self> {
+        let Self {
+            state,
+            running,
+            fenced,
+        } = self;
+        if running.is_some() {
+            return Err(Self {
+                state,
+                running,
+                fenced,
+            });
+        }
+        match Arc::try_unwrap(state) {
+            Ok(state) => Ok(UnknownTimeRetirement {
                 parts: state
                     .into_inner()
                     .unwrap_or_else(|error| error.into_inner())

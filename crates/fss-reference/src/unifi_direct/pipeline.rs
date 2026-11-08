@@ -142,6 +142,11 @@ impl Pipeline {
         self.pending_audio.is_some()
     }
 
+    /// Whether audio observation is enabled and has not fenced.
+    pub fn audio_tracking_active(&self) -> bool {
+        !self.stopped && self.audio.is_some()
+    }
+
     /// Transfer the one pending audio result without transferring source bytes.
     pub fn take_audio_event(&mut self) -> Option<AudioEvent> {
         self.pending_audio.take()

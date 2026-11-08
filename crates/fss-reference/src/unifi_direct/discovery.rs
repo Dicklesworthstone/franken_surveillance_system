@@ -19,6 +19,7 @@ use std::{
 
 const MAX_PACKETS: usize = 128;
 const MAX_TARGETS: usize = 64;
+const MAX_COMBINED_WINDOWS: usize = 4;
 const MAX_WINDOW: Duration = Duration::from_secs(30);
 const MAX_RESOURCE: usize = 1024;
 
@@ -221,6 +222,26 @@ pub struct Report {
     pub stop: Stop,
 }
 
+/// Payload-free refusal to combine discovery windows.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CombineError {
+    /// The input count is zero or exceeds the bounded multi-interface limit.
+    WindowCount,
+    /// A window did not finish naturally, so it is not eligible for setup.
+    Incomplete,
+    /// A report exceeds the bounds of a single discovery window.
+    InvalidReport,
+    /// Bounded output allocation failed.
+    Allocation,
+}
+
+impl fmt::Display for CombineError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "UniFi discovery combination refused: {self:?}")
+    }
+}
+impl std::error::Error for CombineError {}
+
 /// Potential inconsistencies among untrusted claims in one bounded window.
 /// Absence of a conflict does not authenticate a device or authorize setup.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -241,6 +262,51 @@ pub struct ClaimAssessment {
 }
 
 impl Report {
+    /// Combine completed bounded windows so claims can be checked across
+    /// interfaces before setup. The caller retains the original per-interface
+    /// reports and must independently bind their network scopes and authority.
+    /// Equal claims are deduplicated; conflicting claims remain separate.
+    /// A completed window does not establish absence or authenticate a device.
+    pub fn combine_completed(windows: &[&Self]) -> Result<Self, CombineError> {
+        if windows.is_empty() || windows.len() > MAX_COMBINED_WINDOWS {
+            return Err(CombineError::WindowCount);
+        }
+        let mut combined = Self {
+            cameras: Vec::new(),
+            datagrams: 0,
+            malformed: 0,
+            out_of_scope: 0,
+            stop: Stop::WindowElapsed,
+        };
+        combined
+            .cameras
+            .try_reserve_exact(windows.len() * MAX_PACKETS)
+            .map_err(|_| CombineError::Allocation)?;
+        for window in windows {
+            if window.stop != Stop::WindowElapsed {
+                return Err(CombineError::Incomplete);
+            }
+            if window.datagrams > MAX_PACKETS
+                || window.cameras.len() > window.datagrams
+                || window
+                    .malformed
+                    .checked_add(window.out_of_scope)
+                    .is_none_or(|count| count > window.datagrams)
+            {
+                return Err(CombineError::InvalidReport);
+            }
+            combined.datagrams += window.datagrams;
+            combined.malformed += window.malformed;
+            combined.out_of_scope += window.out_of_scope;
+            for candidate in &window.cameras {
+                if !combined.cameras.contains(candidate) {
+                    combined.cameras.push(candidate.clone());
+                }
+            }
+        }
+        Ok(combined)
+    }
+
     /// Assess one candidate against this report, without treating a MAC or IP
     /// as identity. A moving device can produce conflicts during a window;
     /// callers must preserve that uncertainty rather than choose a winner.

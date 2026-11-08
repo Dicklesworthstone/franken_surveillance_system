@@ -272,6 +272,86 @@ fn multi_target_discovery_collects_and_cross_checks_both_peers() -> TestResult {
 }
 
 #[test]
+fn completed_windows_detect_conflicts_that_each_window_alone_cannot() -> TestResult {
+    let server = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))?;
+    server.set_read_timeout(Some(Duration::from_secs(5)))?;
+    let destination = match server.local_addr()? {
+        std::net::SocketAddr::V4(address) => address,
+        _ => return Err("not IPv4".into()),
+    };
+    let worker = std::thread::spawn(move || -> std::io::Result<()> {
+        for reply in [
+            packet(),
+            packet_with(Some([0x12, 2, 3, 4, 5, 6]), b"UVC.v4.example", true),
+        ] {
+            let mut query = [0_u8; 32];
+            let (count, peer) = server.recv_from(&mut query)?;
+            if &query[..count] != fss_packet::unifi_discovery::V1_QUERY.as_slice() {
+                return Err(std::io::Error::other("unexpected discovery query"));
+            }
+            server.send_to(&reply, peer)?;
+        }
+        Ok(())
+    });
+    let config = Config::new(
+        Ipv4Addr::LOCALHOST,
+        8,
+        destination,
+        "fixture:discovery",
+        Duration::from_millis(300),
+        8,
+    )?;
+    let first = execute(&config)?;
+    let second = execute(&config)?;
+    worker.join().map_err(|_| "fixture thread panicked")??;
+    assert_eq!(first.assess_claims(0), Some(Default::default()));
+    assert_eq!(second.assess_claims(0), Some(Default::default()));
+    let combined = Report::combine_completed(&[&first, &first, &second])?;
+    assert_eq!(combined.datagrams, 3);
+    assert_eq!(combined.cameras.len(), 2);
+    assert!(
+        combined
+            .assess_claims(0)
+            .ok_or("missing combined claim")?
+            .conflicting_macs_at_address
+    );
+    assert!(
+        combined
+            .assess_claims(1)
+            .ok_or("missing combined claim")?
+            .conflicting_macs_at_address
+    );
+
+    let incomplete = Report {
+        cameras: Vec::new(),
+        datagrams: 0,
+        malformed: 0,
+        out_of_scope: 0,
+        stop: Stop::PacketLimit,
+    };
+    assert!(matches!(
+        Report::combine_completed(&[&first, &incomplete]),
+        Err(discovery::CombineError::Incomplete)
+    ));
+    assert!(matches!(
+        Report::combine_completed(&[]),
+        Err(discovery::CombineError::WindowCount)
+    ));
+    let invalid = Report {
+        cameras: Vec::new(),
+        datagrams: 1,
+        malformed: 1,
+        out_of_scope: 1,
+        stop: Stop::WindowElapsed,
+    };
+    assert!(matches!(
+        Report::combine_completed(&[&invalid]),
+        Err(discovery::CombineError::InvalidReport)
+    ));
+    Ok(())
+}
+
+#[test]
 fn discovery_advances_the_owned_task_clock_during_the_window() -> TestResult {
     let server = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))?;
     server.set_read_timeout(Some(Duration::from_secs(5)))?;

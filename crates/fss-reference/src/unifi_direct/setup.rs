@@ -81,6 +81,8 @@ pub enum Error {
     Changed,
     /// The expected controller socket is absent, mismatched or no longer admitted.
     ControllerUnavailable,
+    /// Camera status did not report the listener's nonzero controller port.
+    ControllerPort,
     /// Current admission or runtime authority refused setup.
     Denied,
     /// The bounded total deadline elapsed.
@@ -376,6 +378,9 @@ impl Owner<'_, '_, '_> {
     /// handoff and readback. No retry is performed after an indeterminate write.
     /// Dropping this future after preparation or commit leaves durable journal
     /// obligations for reconciliation, even if no outcome is returned.
+    /// This entry point does not check that a listener exists or that its port
+    /// matches the camera's status claim; use [`Self::run_when_listening`] when
+    /// the caller owns the target listener.
     pub async fn run<IO: AsyncRead + AsyncWrite + Unpin>(
         &mut self,
         camera: &mut camera_http::Owner<'_, '_, '_, IO>,
@@ -388,8 +393,10 @@ impl Owner<'_, '_, '_> {
     /// Run one setup attempt while retaining the already-bound controller
     /// listener. The caller supplies the camera's expected controller port;
     /// the exact task, clock, resource, destination and live listener policy
-    /// are rechecked throughout the handoff and every dispatch poll. Keeping
-    /// the socket bound does not establish peer identity or reachability.
+    /// are rechecked throughout the handoff and every dispatch poll. The
+    /// camera's untrusted status must report that port before a write is
+    /// prepared. This observation can become stale; keeping the socket bound
+    /// does not establish peer identity or reachability.
     /// The borrowed listener remains caller-owned on every return or drop.
     pub async fn run_when_listening<IO: AsyncRead + AsyncWrite + Unpin>(
         &mut self,
@@ -423,16 +430,30 @@ impl Owner<'_, '_, '_> {
             admission: &admitted,
             handoff_authority: self.handoff_authority,
         };
-        owner.run_with_framing(camera, cfg, framing).await
+        owner
+            .run_inner(camera, cfg, framing, Some(expected_port))
+            .await
     }
 
     /// Run setup with an explicit framing choice bound to the prepared effect.
     /// An indeterminate write is never retried using another framing mode.
+    /// This lower-level entry point does not validate a controller listener
+    /// or compare its port with camera status.
     pub async fn run_with_framing<IO: AsyncRead + AsyncWrite + Unpin>(
         &mut self,
         camera: &mut camera_http::Owner<'_, '_, '_, IO>,
         cfg: &Config<'_>,
         framing: handoff::Framing,
+    ) -> Result<Outcome, Error> {
+        self.run_inner(camera, cfg, framing, None).await
+    }
+
+    async fn run_inner<IO: AsyncRead + AsyncWrite + Unpin>(
+        &mut self,
+        camera: &mut camera_http::Owner<'_, '_, '_, IO>,
+        cfg: &Config<'_>,
+        framing: handoff::Framing,
+        expected_port: Option<u16>,
     ) -> Result<Outcome, Error> {
         if cfg.wait.is_zero()
             || cfg.wait > MAX_WAIT
@@ -497,6 +518,11 @@ impl Owner<'_, '_, '_> {
         if !guard.current() {
             return Err(Error::Denied);
         }
+        if expected_port.is_some_and(|port| {
+            status.controller_port != camera_api::ControllerPort::Reported(port)
+        }) {
+            return Err(Error::ControllerPort);
+        }
         let before = camera
             .settings(remaining(self.cx, deadline)?)
             .await
@@ -536,13 +562,18 @@ impl Owner<'_, '_, '_> {
             lease_fence: cfg.fence,
             settings: before,
         };
-        let plan = handoff::Plan::new_with_framing(
+        let mut plan = handoff::Plan::new_with_framing(
             *candidate.source().ip(),
             cfg.destination,
             conditions,
             framing,
         )
         .map_err(Error::Plan)?;
+        if let Some(port) = expected_port {
+            plan = plan
+                .bind_reported_controller_port(status, port)
+                .map_err(Error::Plan)?;
+        }
         let key =
             IdempotencyKey::parse(cfg.operation.as_str()).map_err(|_| Error::Configuration)?;
         remaining(self.cx, deadline)?;

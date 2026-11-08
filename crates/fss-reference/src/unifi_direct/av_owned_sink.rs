@@ -158,7 +158,122 @@ pub struct ResumeRefusal {
     pub retirement: Retirement,
 }
 
+/// Owned inputs for an unknown-capture-time archive sink.
+pub struct UnknownTimeInputs {
+    /// Exact original video-configuration record.
+    pub video_configuration: SourceRecord,
+    /// Initialization bound to the selected source and audio configuration.
+    pub av_initialization: flv_av::Initialization,
+    /// Original or explicitly unverified audio configuration.
+    pub audio: Audio,
+    /// Transactional muxer that never exposes an invented capture interval.
+    pub muxer: archive::UnknownTimeMuxer,
+    /// Identity of the separately authorized retention decision.
+    pub retention: ContentDigest,
+    /// Limits for source-evidence preparation.
+    pub evidence_limits: evidence::Limits,
+    /// Limits for reconstructing video initialization.
+    pub video_limits: Mp4Limits,
+}
+
+/// A source segment returned unchanged when the unknown-time sink refuses it.
+#[must_use]
+pub struct UnknownTimeOfferRefusal {
+    /// Payload-free refusal reason.
+    pub reason: av_sink::RefusalReason,
+    /// Original source segment still owned by the caller.
+    pub segment: recording::Segment,
+}
+
+/// Unknown-time publication failed; the sink retains its segment and fence.
+#[derive(Debug)]
+pub enum UnknownTimeFlushError {
+    /// The audio configuration could not be parsed or rebound.
+    Audio,
+    /// Publication was refused or may have taken effect.
+    Archive(archive::UnknownTimeSegmentError),
+}
+
+/// One owned unknown-time segment and its transactional muxer.
+#[must_use = "retire the sink to recover its owned source and muxer"]
+pub struct UnknownTimeOwnedSink {
+    inputs: UnknownTimeInputs,
+    video: flv_avc::Muxer,
+    pending: Option<recording::Segment>,
+}
+
+/// All owners returned when an unknown-time sink is retired.
+#[must_use]
+pub struct UnknownTimeRetirement {
+    /// Exact owned configuration and transactional muxer state.
+    pub inputs: UnknownTimeInputs,
+    /// Unpublished or indeterminate original segment, if any.
+    pub pending: Option<recording::Segment>,
+}
+
+/// A resume refusal retains all original owners and pending source.
+#[must_use]
+pub struct UnknownTimeResumeRefusal {
+    /// Video initialization could not be reconstructed.
+    pub reason: Mp4Error,
+    /// Unconsumed retirement.
+    pub retirement: UnknownTimeRetirement,
+}
+
 impl OwnedSink {
+    /// Transfer an idle, unbound sink to unknown-time publication. A sink
+    /// with a pending source, fence, or journal scope is returned unchanged.
+    pub fn into_unknown_time(self) -> Result<UnknownTimeOwnedSink, Self> {
+        if self.pending.is_some()
+            || self.inputs.muxer.pending_publication().is_some()
+            || self.inputs.muxer.publication_scope().is_some()
+        {
+            return Err(self);
+        }
+        let Self {
+            inputs,
+            video,
+            pending,
+        } = self;
+        let Inputs {
+            video_configuration,
+            av_initialization,
+            audio,
+            muxer,
+            retention,
+            evidence_limits,
+            video_limits,
+        } = inputs;
+        match archive::UnknownTimeMuxer::new(muxer) {
+            Ok(muxer) => Ok(UnknownTimeOwnedSink {
+                inputs: UnknownTimeInputs {
+                    video_configuration,
+                    av_initialization,
+                    audio,
+                    muxer,
+                    retention,
+                    evidence_limits,
+                    video_limits,
+                },
+                video,
+                pending: None,
+            }),
+            Err(muxer) => Err(Self {
+                inputs: Inputs {
+                    video_configuration,
+                    av_initialization,
+                    audio,
+                    muxer,
+                    retention,
+                    evidence_limits,
+                    video_limits,
+                },
+                video,
+                pending,
+            }),
+        }
+    }
+
     /// Initialize an idle owned sink from the first source segment. This
     /// derives an AAC sender-clock hypothesis under caller-supplied limits;
     /// it does not establish capture time, A/V synchronization, identity or
@@ -412,6 +527,128 @@ impl OwnedSink {
         Retirement {
             inputs: self.inputs,
             pending: self.pending.map(|p| (p.segment, p.capture)),
+        }
+    }
+}
+
+impl UnknownTimeOwnedSink {
+    /// Resume in-process ownership without discarding a pending source or fence.
+    pub fn resume(retirement: UnknownTimeRetirement) -> Result<Self, UnknownTimeResumeRefusal> {
+        let video = match flv_avc::Muxer::new(
+            retirement.inputs.av_initialization.source_key(),
+            &retirement.inputs.video_configuration,
+            retirement.inputs.video_limits,
+        ) {
+            Ok(video) => video,
+            Err(reason) => return Err(UnknownTimeResumeRefusal { reason, retirement }),
+        };
+        Ok(Self {
+            inputs: retirement.inputs,
+            video,
+            pending: retirement.pending,
+        })
+    }
+
+    /// Whether a segment or publication fence must be reconciled.
+    pub fn has_pending(&self) -> bool {
+        self.pending.is_some() || self.inputs.muxer.pending().is_some()
+    }
+
+    /// Exact unknown-time root requiring reconciliation, when established.
+    pub fn pending_publication(&self) -> Option<archive::UnknownTimePin> {
+        self.inputs.muxer.pending()
+    }
+
+    /// Admit one original source segment without inventing capture bounds.
+    /// A refusal returns that exact segment and leaves existing state unchanged.
+    pub fn offer(&mut self, segment: recording::Segment) -> Result<(), UnknownTimeOfferRefusal> {
+        let binding = segment.configuration();
+        let source = &self.inputs.video_configuration;
+        let reason = if self.has_pending() {
+            Some(av_sink::RefusalReason::Pending)
+        } else if binding.source_offset != source.offset()
+            || binding.source_bytes != source.bytes().len()
+            || binding.source_digest != ContentDigest::sha256(source.bytes())
+        {
+            Some(av_sink::RefusalReason::Configuration)
+        } else {
+            None
+        };
+        if let Some(reason) = reason {
+            return Err(UnknownTimeOfferRefusal { reason, segment });
+        }
+        self.pending = Some(segment);
+        Ok(())
+    }
+
+    /// Publish one pending source under an anchored unknown-time journal.
+    /// This performs synchronous I/O and must run on a supervised worker.
+    /// Failure retains the segment, muxer, and any unresolved publication fence.
+    pub fn flush(
+        &mut self,
+        deployment: &mut ReferenceDeployment,
+        authority: &dyn archive::RetainAuthority,
+        limits: archive::Limits,
+        work: &mut WorkBudget<'_>,
+        cx: &ReplayCx,
+        journal: &mut archive::journal::UnknownTimeJournal,
+        keeper: &mut archive::journal::UnknownTimeAnchorKeeper,
+    ) -> Result<Option<archive::PublishedUnknownTimeAvSegment>, UnknownTimeFlushError> {
+        let Some(segment) = self.pending.as_ref() else {
+            return Ok(None);
+        };
+        let mut publish = |audio| {
+            let input = archive::UnknownTimeAvSegment {
+                segment,
+                video_configuration: &self.inputs.video_configuration,
+                video_initialization: self.video.initialization(),
+                av_initialization: &self.inputs.av_initialization,
+                audio,
+                retention: self.inputs.retention,
+                evidence_limits: self.inputs.evidence_limits,
+            };
+            archive::publish_next_unknown_time_av_segment_anchored(
+                &input,
+                &mut self.inputs.muxer,
+                deployment,
+                authority,
+                limits,
+                work,
+                cx,
+                journal,
+                keeper,
+            )
+            .map_err(UnknownTimeFlushError::Archive)
+        };
+        let result = match &self.inputs.audio {
+            Audio::InBand {
+                record,
+                observation,
+            } => {
+                let bound = observation
+                    .bind_configuration(
+                        record,
+                        extended_flv::Limits::default(),
+                        aac::Limits::default(),
+                    )
+                    .map_err(|_| UnknownTimeFlushError::Audio)?;
+                publish(archive::AvSegmentAudio::InBand(&bound))?
+            }
+            Audio::SuppliedUnverified(bytes) => {
+                let config = aac::Configuration::parse_explicit(bytes)
+                    .map_err(|_| UnknownTimeFlushError::Audio)?;
+                publish(archive::AvSegmentAudio::SuppliedUnverified(&config))?
+            }
+        };
+        self.pending = None;
+        Ok(Some(result))
+    }
+
+    /// Return all source and muxer owners without classifying unresolved effects.
+    pub fn retire(self) -> UnknownTimeRetirement {
+        UnknownTimeRetirement {
+            inputs: self.inputs,
+            pending: self.pending,
         }
     }
 }

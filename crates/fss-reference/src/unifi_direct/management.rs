@@ -75,9 +75,13 @@ impl Intent {
                 | MessageKind::AgreementRequest
                 | MessageKind::TimeSyncReply
                 | MessageKind::EventReply
+                | MessageKind::StartupRequestReply
         ) || message.bytes().is_empty()
             || message.bytes().len() > MAX_MESSAGE_BYTES
-            || (kind == MessageKind::EventReply) != message.source_digest().is_some()
+            || matches!(
+                kind,
+                MessageKind::EventReply | MessageKind::StartupRequestReply
+            ) != message.source_digest().is_some()
         {
             return Err(Error::WrongMessage);
         }
@@ -87,7 +91,7 @@ impl Intent {
             camera: conditions.camera,
             fence: conditions.lease_fence,
             request: ContentDigest::sha256(message.bytes()),
-            preconditions: digest_with_source(conditions, message.source_digest())?,
+            preconditions: digest_with_source(conditions, message.source_digest(), kind)?,
             source: message.source_digest(),
         })
     }
@@ -127,7 +131,7 @@ impl Intent {
     }
     /// Compare freshly observed conditions without asserting their authenticity.
     pub fn check_preconditions(self, current: Preconditions) -> Result<(), Error> {
-        if digest_with_source(current, self.source)? != self.preconditions {
+        if digest_with_source(current, self.source, self.kind)? != self.preconditions {
             return Err(Error::Mismatch);
         }
         Ok(())
@@ -147,6 +151,7 @@ impl Intent {
 fn digest_with_source(
     value: Preconditions,
     source: Option<ContentDigest>,
+    kind: MessageKind,
 ) -> Result<ContentDigest, Error> {
     let base = digest_preconditions(value)?;
     let Some(source) = source else {
@@ -156,7 +161,11 @@ fn digest_with_source(
         return Err(Error::Preconditions);
     }
     let mut enc = CanonicalEncoder::new();
-    enc.text("fss.unifi-direct.event-reply-precondition.v1");
+    enc.text(if kind == MessageKind::StartupRequestReply {
+        "fss.unifi-direct.startup-request-reply-precondition.v1"
+    } else {
+        "fss.unifi-direct.event-reply-precondition.v1"
+    });
     enc.digest(base);
     enc.digest(source);
     Ok(ContentDigest::sha256(

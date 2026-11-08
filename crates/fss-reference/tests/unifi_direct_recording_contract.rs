@@ -595,6 +595,164 @@ fn consecutive_av_segments_publish_and_reopen_with_contiguous_audio() -> TestRes
         EffectJournalPin, EffectJournalStore, EffectPersistenceError,
     };
     use std::sync::Arc;
+    // Unknown capture time can advance across two segments, while a denied
+    // first attempt retains the exact candidate and leaves its clock intact.
+    let unknown_scope = ContentDigest::sha256(b"unknown-time transactional fixture");
+    let unknown_journal_path = temp.0.join("unknown-transaction-journal");
+    let unknown_keeper_path = temp.0.join("unknown-transaction-keeper");
+    let store = FileEffectJournal::create(
+        &unknown_journal_path,
+        EffectJournalLimits::default(),
+        Arc::new(HostSpoolIo),
+    )?;
+    let mut unknown_journal =
+        archive::journal::UnknownTimeJournal::create(Box::new(store), unknown_scope, &cx)?;
+    let journal_min = unknown_journal.anchor();
+    let store = FileEffectJournal::create(
+        &unknown_keeper_path,
+        EffectJournalLimits::default(),
+        Arc::new(HostSpoolIo),
+    )?;
+    let mut unknown_keeper =
+        archive::journal::UnknownTimeAnchorKeeper::create(Box::new(store), &unknown_journal, &cx)?;
+    let keeper_min = unknown_keeper.anchor();
+    let mut unknown_target = ReferenceDeployment::open(
+        &temp.0.join("unknown-transaction-target"),
+        "site:unifi-av-multisegment",
+        &cx,
+    )?;
+    let inner = av_recording::Muxer::new(&av_init, &config, 0, 0, 8, 8, Mp4Limits::default())?;
+    let mut unknown_muxer = archive::UnknownTimeMuxer::new(inner).map_err(|_| "muxer not idle")?;
+    let first_unknown_input = archive::UnknownTimeAvSegment {
+        segment: &segments[0],
+        video_configuration: video_source,
+        video_initialization: video_init,
+        av_initialization: &av_init,
+        audio: archive::AvSegmentAudio::SuppliedUnverified(&config),
+        retention,
+        evidence_limits: EvidenceLimits::default(),
+    };
+    let second_unknown_input = archive::UnknownTimeAvSegment {
+        segment: &segments[1],
+        video_configuration: video_source,
+        video_initialization: video_init,
+        av_initialization: &av_init,
+        audio: archive::AvSegmentAudio::SuppliedUnverified(&config),
+        retention,
+        evidence_limits: EvidenceLimits::default(),
+    };
+    let before = unknown_muxer.remaining_audio_frames();
+    assert!(matches!(
+        archive::publish_next_unknown_time_av_segment_anchored(
+            &first_unknown_input,
+            &mut unknown_muxer,
+            &mut unknown_target,
+            &DenyRetention,
+            archive::Limits::default(),
+            &mut WorkBudget::new(4_000_000_000),
+            &cx,
+            &mut unknown_journal,
+            &mut unknown_keeper,
+        ),
+        Err(archive::UnknownTimeSegmentError::Publication(
+            archive::UnknownTimePublishError::Archive(archive::Error::Denied)
+        ))
+    ));
+    let pending = unknown_muxer.pending().ok_or("unknown candidate missing")?;
+    assert_eq!(unknown_journal.pending(), Some(pending));
+    assert_eq!(unknown_muxer.remaining_audio_frames(), before);
+    assert!(
+        archive::publish_next_unknown_time_av_segment_anchored(
+            &second_unknown_input,
+            &mut unknown_muxer,
+            &mut unknown_target,
+            &access,
+            archive::Limits::default(),
+            &mut WorkBudget::new(4_000_000_000),
+            &cx,
+            &mut unknown_journal,
+            &mut unknown_keeper,
+        )
+        .is_err()
+    );
+    assert_eq!(unknown_muxer.pending(), Some(pending));
+    assert_eq!(unknown_muxer.remaining_audio_frames(), before);
+    let first_unknown = archive::publish_next_unknown_time_av_segment_anchored(
+        &first_unknown_input,
+        &mut unknown_muxer,
+        &mut unknown_target,
+        &access,
+        archive::Limits::default(),
+        &mut WorkBudget::new(4_000_000_000),
+        &cx,
+        &mut unknown_journal,
+        &mut unknown_keeper,
+    )?;
+    assert_eq!(first_unknown.pin, pending);
+    assert_eq!(unknown_muxer.pending(), None);
+    let second_unknown = archive::publish_next_unknown_time_av_segment_anchored(
+        &second_unknown_input,
+        &mut unknown_muxer,
+        &mut unknown_target,
+        &access,
+        archive::Limits::default(),
+        &mut WorkBudget::new(4_000_000_000),
+        &cx,
+        &mut unknown_journal,
+        &mut unknown_keeper,
+    )?;
+    assert_ne!(first_unknown.pin, second_unknown.pin);
+    for (index, pin) in [first_unknown.pin, second_unknown.pin]
+        .into_iter()
+        .enumerate()
+    {
+        let clip = archive::read_unknown_time_av_clip(
+            &mut unknown_target,
+            pin,
+            &access,
+            archive::Limits::default(),
+            &mut WorkBudget::new(20_000_000_000),
+            &cx,
+        )?;
+        assert_eq!(
+            clip.video_samples(),
+            segments[index].fragment().samples().len()
+        );
+        assert!(clip.audio().frames > 0);
+    }
+    assert_eq!(unknown_journal.confirmed(), Some(second_unknown.pin));
+    assert_eq!(unknown_keeper.target(), unknown_journal.anchor());
+    drop(unknown_keeper);
+    drop(unknown_journal);
+    let store = FileEffectJournal::open(
+        &unknown_journal_path,
+        EffectJournalLimits::default(),
+        Arc::new(HostSpoolIo),
+        journal_min,
+    )?;
+    let unknown_journal = archive::journal::UnknownTimeJournal::reopen(
+        Box::new(store),
+        unknown_scope,
+        journal_min,
+        &cx,
+    )?;
+    let store = FileEffectJournal::open(
+        &unknown_keeper_path,
+        EffectJournalLimits::default(),
+        Arc::new(HostSpoolIo),
+        keeper_min,
+    )?;
+    let unknown_keeper = archive::journal::UnknownTimeAnchorKeeper::reopen(
+        Box::new(store),
+        &unknown_journal,
+        keeper_min,
+        &cx,
+    )?;
+    assert_eq!(unknown_journal.replay_pin(), Some(second_unknown.pin));
+    assert_eq!(unknown_keeper.target(), unknown_journal.anchor());
+    drop(unknown_keeper);
+    drop(unknown_journal);
+
     let scope = ContentDigest::sha256(b"synthetic unifi intent scope");
     let journal_path = temp.0.join("av-intent-journal");
     let store = FileEffectJournal::create(
@@ -1629,6 +1787,215 @@ fn owned_archive_handoff_moves_source_and_reconciles_in_joined_worker() -> TestR
     })
     .map_err(|_| "owned worker panicked")?;
     result.map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
+    Ok(())
+}
+
+#[test]
+fn owned_unknown_time_sink_preserves_source_and_retries() -> TestResult {
+    use fss_container::Mp4Limits;
+    use fss_core::{
+        BudgetVector, CaptureInterval, ContentDigest, OperationId, RootAuthoritySpec, TimestampNs,
+        region::ContextAuthority,
+    };
+    use fss_geometry::WorkBudget;
+    use fss_object::{
+        HostSpoolIo,
+        effect_journal::{EffectJournalLimits, FileEffectJournal},
+    };
+    use fss_reference::{
+        ReferenceDeployment, ReplayCx,
+        unifi_direct::{archive, av_owned_sink, av_sink, evidence},
+    };
+    use std::{path::PathBuf, sync::Arc};
+    fn assert_send<T: Send>() {}
+    assert_send::<av_owned_sink::UnknownTimeOwnedSink>();
+    struct Temp(PathBuf);
+    impl Drop for Temp {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    struct Retention(bool);
+    impl archive::RetainAuthority for Retention {
+        fn permits(&self, _: ContentDigest, _: ContentDigest) -> bool {
+            self.0
+        }
+    }
+    impl archive::ReadAuthority for Retention {
+        fn permits(&self, _: ContentDigest, _: ContentDigest) -> bool {
+            self.0
+        }
+    }
+    let (_, records) = fixture_with_audio_intervals(0, false, false, false, Some(64))?;
+    let mut recorder = Recorder::new(KEY, Limits::default())?;
+    let mut video = None;
+    let mut segments = Vec::new();
+    for record in records {
+        match recorder.push(record).map_err(|r| r.reason)? {
+            Push::Source {
+                record,
+                disposition: SourceDisposition::Configuration,
+            } => video = Some(record),
+            Push::Segment(segment) => segments.push(segment),
+            _ => {}
+        }
+    }
+    let mut segments = segments.into_iter();
+    let first = segments.next().ok_or("missing first segment")?;
+    let second = segments.next().ok_or("missing second segment")?;
+    let first_digest = ContentDigest::sha256(first.fragment().bytes());
+    let bootstrap = av_owned_sink::OwnedSink::bootstrap(av_owned_sink::BootstrapInputs {
+        video_configuration: video.ok_or("missing video configuration")?,
+        audio: av_owned_sink::Audio::SuppliedUnverified([0x14, 0x08]),
+        first_segment: first,
+        retention: ContentDigest::sha256(b"unknown owned sink retention"),
+        policy: av_owned_sink::BootstrapPolicy {
+            max_separation_ms: 5_000,
+            jitter_ms: 0,
+            max_epoch_frames: 8,
+            max_audio_frames: 8,
+            media_limits: Mp4Limits::default(),
+            evidence_limits: evidence::Limits::default(),
+        },
+    })
+    .map_err(|_| "bootstrap refused")?;
+    // A known-time pending segment prevents changing modes and is returned intact.
+    let mut known = bootstrap.sink;
+    assert!(
+        known
+            .offer(
+                bootstrap.first_segment,
+                CaptureInterval::point(TimestampNs(1))
+            )
+            .is_ok()
+    );
+    let known = match known.into_unknown_time() {
+        Err(known) => known,
+        Ok(_) => return Err("converted a pending known-time sink".into()),
+    };
+    let retirement = known.retire();
+    let (first, _) = retirement.pending.ok_or("known source lost")?;
+    assert_eq!(
+        ContentDigest::sha256(first.fragment().bytes()),
+        first_digest
+    );
+    let known = av_owned_sink::OwnedSink::new(retirement.inputs).map_err(|_| "rebuild refused")?;
+    let mut sink = known
+        .into_unknown_time()
+        .map_err(|_| "unknown conversion refused")?;
+    assert!(sink.offer(first).is_ok());
+    let refused = match sink.offer(second) {
+        Err(refused) => refused,
+        Ok(()) => return Err("accepted a second pending source".into()),
+    };
+    assert_eq!(refused.reason, av_sink::RefusalReason::Pending);
+    let temp =
+        Temp(std::env::temp_dir().join(format!("fss-unifi-unknown-owned-{}", std::process::id())));
+    std::fs::create_dir(&temp.0)?;
+    let context = ContextAuthority::new_root(RootAuthoritySpec {
+        trace_id: "trace:unknown-owned".into(),
+        operation_id: OperationId::parse("operation:unknown-owned")?,
+        principal: "principal:fixture".into(),
+        capabilities: vec!["ADP-REPLAY-001".into()],
+        deadline: None,
+        priority: 1,
+        budgets: BudgetVector::builder().bytes(64 * 1024 * 1024).build()?,
+        privacy_scope: "privacy:test".into(),
+        retention_scope: "retention:test".into(),
+        anchor_universe: ContentDigest::sha256(b"site:unknown-owned"),
+        generation: 1,
+    })?;
+    let cx = ReplayCx::from_context_authority(&context, temp.0.clone())?;
+    let mut deployment =
+        ReferenceDeployment::open(&temp.0.join("deployment"), "site:unknown-owned", &cx)?;
+    let store = FileEffectJournal::create(
+        temp.0.join("journal"),
+        EffectJournalLimits::default(),
+        Arc::new(HostSpoolIo),
+    )?;
+    let mut journal = archive::journal::UnknownTimeJournal::create(
+        Box::new(store),
+        ContentDigest::sha256(b"unknown owned scope"),
+        &cx,
+    )?;
+    let store = FileEffectJournal::create(
+        temp.0.join("keeper"),
+        EffectJournalLimits::default(),
+        Arc::new(HostSpoolIo),
+    )?;
+    let mut keeper =
+        archive::journal::UnknownTimeAnchorKeeper::create(Box::new(store), &journal, &cx)?;
+    assert!(matches!(
+        sink.flush(
+            &mut deployment,
+            &Retention(false),
+            archive::Limits::default(),
+            &mut WorkBudget::new(4_000_000_000),
+            &cx,
+            &mut journal,
+            &mut keeper,
+        ),
+        Err(av_owned_sink::UnknownTimeFlushError::Archive(
+            archive::UnknownTimeSegmentError::Publication(
+                archive::UnknownTimePublishError::Archive(archive::Error::Denied)
+            )
+        ))
+    ));
+    let pending_pin = journal.pending().ok_or("missing pending pin")?;
+    let retirement = sink.retire();
+    assert_eq!(
+        ContentDigest::sha256(
+            retirement
+                .pending
+                .as_ref()
+                .ok_or("pending source lost")?
+                .fragment()
+                .bytes()
+        ),
+        first_digest
+    );
+    let mut sink =
+        av_owned_sink::UnknownTimeOwnedSink::resume(retirement).map_err(|_| "resume refused")?;
+    let first = sink
+        .flush(
+            &mut deployment,
+            &Retention(true),
+            archive::Limits::default(),
+            &mut WorkBudget::new(4_000_000_000),
+            &cx,
+            &mut journal,
+            &mut keeper,
+        )
+        .map_err(|e| format!("first publication: {e:?}"))?
+        .ok_or("first receipt missing")?;
+    assert_eq!(first.pin, pending_pin);
+    assert!(sink.offer(refused.segment).is_ok());
+    let second = sink
+        .flush(
+            &mut deployment,
+            &Retention(true),
+            archive::Limits::default(),
+            &mut WorkBudget::new(4_000_000_000),
+            &cx,
+            &mut journal,
+            &mut keeper,
+        )
+        .map_err(|e| format!("second publication: {e:?}"))?
+        .ok_or("second receipt missing")?;
+    assert_ne!(first.pin, second.pin);
+    for pin in [first.pin, second.pin] {
+        let clip = archive::read_unknown_time_av_clip(
+            &mut deployment,
+            pin,
+            &Retention(true),
+            archive::Limits::default(),
+            &mut WorkBudget::new(20_000_000_000),
+            &cx,
+        )?;
+        assert!(clip.video_samples() > 0 && clip.audio().frames > 0);
+    }
+    assert!(!sink.has_pending());
+    assert!(sink.retire().pending.is_none());
     Ok(())
 }
 
@@ -3032,7 +3399,10 @@ fn av_evidence_publishes_and_reopens_exact_source_objects() -> TestResult {
         RootAuthoritySpec, TimestampNs, region::ContextAuthority,
     };
     use fss_geometry::WorkBudget;
-    use fss_object::ObjectManifest;
+    use fss_object::{
+        HostSpoolIo, ObjectManifest,
+        effect_journal::{EffectJournalLimits, FileEffectJournal},
+    };
     use fss_packet::extended_flv::{aac, aac_track};
     use fss_publication::{RootLedgerOutcome, SlotName};
     use fss_reference::{
@@ -3044,7 +3414,10 @@ fn av_evidence_publishes_and_reopens_exact_source_objects() -> TestResult {
             evidence::{Limits as EvidenceLimits, Prepared},
         },
     };
-    use std::{cell::Cell, path::PathBuf};
+    use fss_runtime::effect_journal::{
+        EffectJournalPin, EffectJournalStore, EffectPersistenceError,
+    };
+    use std::{cell::Cell, path::PathBuf, sync::Arc};
     struct Temp(PathBuf);
     impl Drop for Temp {
         fn drop(&mut self) {
@@ -3244,6 +3617,540 @@ fn av_evidence_publishes_and_reopens_exact_source_objects() -> TestResult {
         read_calls: Cell::new(0),
         deny_read_at: Cell::new(usize::MAX),
     };
+    // Unknown physical time remains explicit through publication and cold
+    // reopening. The full ledger validity does not narrow that uncertainty.
+    let unknown_video = Prepared::new(
+        &segment,
+        video_configuration
+            .as_ref()
+            .ok_or("missing video configuration")?,
+        video_init,
+        retention,
+        EvidenceLimits::default(),
+    )?;
+    let unknown_av = PreparedAv::new(
+        &unknown_video,
+        &bound,
+        &av_init,
+        &fragment,
+        EvidenceLimits::default(),
+    )?;
+    let unknown_pin =
+        archive::UnknownTimePin::from_av_plan(&unknown_av).ok_or("missing unknown-time pin")?;
+    assert!(archive::Pin::from_av_plan(&unknown_av).is_none());
+    assert!(archive::UnknownTimePin::from_av_plan(&av).is_none());
+
+    // Interrupt after the original unknown-time source graph is staged, then
+    // reopen both journal chains and recover the exact originals before retry.
+    let journal_path = temp.0.join("unknown-time-journal");
+    let keeper_path = temp.0.join("unknown-time-keeper");
+    let target_path = temp.0.join("unknown-time-journal-target");
+    let scope = ContentDigest::sha256(b"unknown-time journal fixture");
+    let store = FileEffectJournal::create(
+        &journal_path,
+        EffectJournalLimits::default(),
+        Arc::new(HostSpoolIo),
+    )?;
+    let mut journal = archive::journal::UnknownTimeJournal::create(Box::new(store), scope, &cx)?;
+    let journal_genesis = journal.anchor();
+    let store = FileEffectJournal::create(
+        &keeper_path,
+        EffectJournalLimits::default(),
+        Arc::new(HostSpoolIo),
+    )?;
+    let mut keeper =
+        archive::journal::UnknownTimeAnchorKeeper::create(Box::new(store), &journal, &cx)?;
+    let keeper_genesis = keeper.anchor();
+    let mut journal_target =
+        ReferenceDeployment::open(&target_path, "site:unifi-av-archive-test", &cx)?;
+    let mut payload_count = 0usize;
+    unknown_av.visit_objects(|_, _| payload_count += 1);
+    struct DenyAfterStage {
+        calls: Cell<usize>,
+        allow: usize,
+    }
+    impl RetainAuthority for DenyAfterStage {
+        fn permits(&self, _: ContentDigest, _: ContentDigest) -> bool {
+            let calls = self.calls.get() + 1;
+            self.calls.set(calls);
+            calls <= self.allow
+        }
+    }
+    let stage_gate = DenyAfterStage {
+        calls: Cell::new(0),
+        allow: payload_count + 2,
+    };
+    assert!(matches!(
+        archive::publish_unknown_time_av_anchored(
+            &unknown_av,
+            &mut journal_target,
+            &stage_gate,
+            archive::Limits::default(),
+            &mut WorkBudget::new(4_000_000_000),
+            &cx,
+            &mut journal,
+            &mut keeper,
+        ),
+        Err(archive::UnknownTimePublishError::Archive(
+            archive::Error::Denied
+        ))
+    ));
+    assert_eq!(journal.pending(), Some(unknown_pin));
+    assert_eq!(keeper.target(), journal.anchor());
+    drop(keeper);
+    drop(journal);
+    drop(journal_target);
+
+    // Known-time journal readers must not accept an unknown-time domain.
+    let store = FileEffectJournal::open(
+        &journal_path,
+        EffectJournalLimits::default(),
+        Arc::new(HostSpoolIo),
+        journal_genesis,
+    )?;
+    assert!(
+        archive::journal::Journal::reopen(Box::new(store), scope, journal_genesis, &cx).is_err()
+    );
+    let store = FileEffectJournal::open(
+        &journal_path,
+        EffectJournalLimits::default(),
+        Arc::new(HostSpoolIo),
+        journal_genesis,
+    )?;
+    let mut journal =
+        archive::journal::UnknownTimeJournal::reopen(Box::new(store), scope, journal_genesis, &cx)?;
+    let store = FileEffectJournal::open(
+        &keeper_path,
+        EffectJournalLimits::default(),
+        Arc::new(HostSpoolIo),
+        keeper_genesis,
+    )?;
+    let mut keeper = archive::journal::UnknownTimeAnchorKeeper::reopen(
+        Box::new(store),
+        &journal,
+        keeper_genesis,
+        &cx,
+    )?;
+    assert_eq!(journal.pending(), Some(unknown_pin));
+    assert_eq!(keeper.target(), journal.anchor());
+    let mut journal_target =
+        ReferenceDeployment::open(&target_path, "site:unifi-av-archive-test", &cx)?;
+    access.allowed.set(true);
+    let candidate = archive::verify_staged_unknown_time_av_candidate(
+        &journal_target,
+        &journal,
+        &access,
+        archive::StagedAvLimits {
+            max_objects: 8192,
+            max_object_bytes: 1024 * 1024,
+            max_total_bytes: 8 * 1024 * 1024,
+        },
+        &mut WorkBudget::new(100_000_000_000),
+        &cx,
+    )?;
+    assert_eq!(candidate.pin(), unknown_pin);
+    for record in std::iter::once(
+        video_configuration
+            .as_ref()
+            .ok_or("missing video configuration")?,
+    )
+    .chain(segment.source())
+    .chain(segment.lookahead_copies())
+    {
+        assert_eq!(
+            archive::read_staged_unknown_time_av_object(
+                &journal_target,
+                &journal,
+                &candidate,
+                ContentDigest::sha256(record.bytes()),
+                &access,
+                &mut WorkBudget::new(100_000_000_000),
+                &cx,
+            )?,
+            record.bytes()
+        );
+    }
+    let receipt = archive::publish_unknown_time_av_anchored(
+        &unknown_av,
+        &mut journal_target,
+        &access,
+        archive::Limits::default(),
+        &mut WorkBudget::new(4_000_000_000),
+        &cx,
+        &mut journal,
+        &mut keeper,
+    )?;
+    assert_eq!(receipt.root, unknown_pin.root);
+    assert_eq!(journal.pending(), None);
+    assert_eq!(journal.confirmed(), Some(unknown_pin));
+    assert_eq!(keeper.target(), journal.anchor());
+    assert!(matches!(
+        archive::read_staged_unknown_time_av_object(
+            &journal_target,
+            &journal,
+            &candidate,
+            unknown_pin.root,
+            &access,
+            &mut WorkBudget::new(100_000_000_000),
+            &cx,
+        ),
+        Err(archive::Error::RecoveryRequired)
+    ));
+    // Lose each keeper acknowledgment after it is durably appended. A cold
+    // reopen must classify the already-stored prefix and replay the same root.
+    #[derive(Debug)]
+    struct LoseUnknownAnchorAck {
+        inner: FileEffectJournal,
+        lose_sequence: u64,
+        fenced: bool,
+    }
+    impl EffectJournalStore for LoseUnknownAnchorAck {
+        fn head(&self) -> Option<EffectJournalPin> {
+            self.inner.head()
+        }
+        fn records(&self) -> &[Vec<u8>] {
+            self.inner.records()
+        }
+        fn contains(&self, pin: EffectJournalPin) -> bool {
+            self.inner.contains(pin)
+        }
+        fn reserve_capacity(
+            &mut self,
+            count: usize,
+            bytes: usize,
+        ) -> Result<(), EffectPersistenceError> {
+            if self.fenced {
+                return Err(EffectPersistenceError::Poisoned);
+            }
+            self.inner.reserve_capacity(count, bytes)
+        }
+        fn append(
+            &mut self,
+            expected: Option<EffectJournalPin>,
+            record: &[u8],
+        ) -> Result<EffectJournalPin, EffectPersistenceError> {
+            if self.fenced {
+                return Err(EffectPersistenceError::Poisoned);
+            }
+            let pin = self.inner.append(expected, record)?;
+            if pin.sequence == self.lose_sequence {
+                self.fenced = true;
+                return Err(EffectPersistenceError::Storage(
+                    "synthetic lost acknowledgment".into(),
+                ));
+            }
+            Ok(pin)
+        }
+    }
+    for lost_sequence in [2_u64, 3] {
+        let jp = temp.0.join(format!("unknown-lost-journal-{lost_sequence}"));
+        let kp = temp.0.join(format!("unknown-lost-keeper-{lost_sequence}"));
+        let tp = temp.0.join(format!("unknown-lost-target-{lost_sequence}"));
+        let store =
+            FileEffectJournal::create(&jp, EffectJournalLimits::default(), Arc::new(HostSpoolIo))?;
+        let mut journal =
+            archive::journal::UnknownTimeJournal::create(Box::new(store), scope, &cx)?;
+        let jmin = journal.anchor();
+        let store =
+            FileEffectJournal::create(&kp, EffectJournalLimits::default(), Arc::new(HostSpoolIo))?;
+        let mut keeper = archive::journal::UnknownTimeAnchorKeeper::create(
+            Box::new(LoseUnknownAnchorAck {
+                inner: store,
+                lose_sequence: lost_sequence,
+                fenced: false,
+            }),
+            &journal,
+            &cx,
+        )?;
+        let kmin = keeper.anchor();
+        let mut target = ReferenceDeployment::open(&tp, "site:unifi-av-archive-test", &cx)?;
+        let result = archive::publish_unknown_time_av_anchored(
+            &unknown_av,
+            &mut target,
+            &access,
+            archive::Limits::default(),
+            &mut WorkBudget::new(4_000_000_000),
+            &cx,
+            &mut journal,
+            &mut keeper,
+        );
+        if lost_sequence == 2 {
+            assert!(matches!(
+                result,
+                Err(archive::UnknownTimePublishError::BeforePublication(_))
+            ));
+            assert_eq!(journal.pending(), Some(unknown_pin));
+        } else {
+            assert!(
+                matches!(result, Err(archive::UnknownTimePublishError::AfterPublication { receipt, .. })
+                if receipt.outcome == RootLedgerOutcome::Committed)
+            );
+            assert_eq!(journal.confirmed(), Some(unknown_pin));
+        }
+        drop(keeper);
+        drop(journal);
+        drop(target);
+        let store = FileEffectJournal::open(
+            &jp,
+            EffectJournalLimits::default(),
+            Arc::new(HostSpoolIo),
+            jmin,
+        )?;
+        let mut journal =
+            archive::journal::UnknownTimeJournal::reopen(Box::new(store), scope, jmin, &cx)?;
+        let store = FileEffectJournal::open(
+            &kp,
+            EffectJournalLimits::default(),
+            Arc::new(HostSpoolIo),
+            kmin,
+        )?;
+        let mut keeper = archive::journal::UnknownTimeAnchorKeeper::reopen(
+            Box::new(store),
+            &journal,
+            kmin,
+            &cx,
+        )?;
+        assert_eq!(keeper.target(), journal.anchor());
+        let mut target = ReferenceDeployment::open(&tp, "site:unifi-av-archive-test", &cx)?;
+        let receipt = archive::publish_unknown_time_av_anchored(
+            &unknown_av,
+            &mut target,
+            &access,
+            archive::Limits::default(),
+            &mut WorkBudget::new(4_000_000_000),
+            &cx,
+            &mut journal,
+            &mut keeper,
+        )?;
+        assert_eq!(receipt.root, unknown_pin.root);
+        assert_eq!(
+            receipt.outcome,
+            if lost_sequence == 2 {
+                RootLedgerOutcome::Committed
+            } else {
+                RootLedgerOutcome::AlreadyLedgered
+            }
+        );
+        assert_eq!(journal.confirmed(), Some(unknown_pin));
+        assert_eq!(journal.replay_pin(), None);
+        assert_eq!(keeper.target(), journal.anchor());
+    }
+    access.allowed.set(false);
+    let unknown_path = temp.0.join("unknown-time-deployment");
+    let mut unknown_target =
+        ReferenceDeployment::open(&unknown_path, "site:unifi-av-archive-test", &cx)?;
+    assert!(matches!(
+        archive::publish_unknown_time_av(
+            &unknown_av,
+            &mut unknown_target,
+            &access,
+            archive::Limits::default(),
+            &mut WorkBudget::new(4_000_000_000),
+            &cx,
+        ),
+        Err(archive::Error::Denied)
+    ));
+    assert!(unknown_target.ledger().batches().is_empty());
+    access.allowed.set(true);
+    let unknown_video_pin = archive::UnknownTimePin::from_plan(&unknown_video)
+        .ok_or("missing unknown-time video pin")?;
+    assert!(archive::Pin::from_plan(&unknown_video).is_none());
+    assert!(archive::UnknownTimePin::from_plan(&video).is_none());
+    assert!(matches!(
+        archive::publish_unknown_time(
+            &video,
+            &mut unknown_target,
+            &access,
+            archive::Limits::default(),
+            &mut WorkBudget::new(4_000_000_000),
+            &cx,
+        ),
+        Err(archive::Error::Mismatch)
+    ));
+    let video_receipt = archive::publish_unknown_time(
+        &unknown_video,
+        &mut unknown_target,
+        &access,
+        archive::Limits::default(),
+        &mut WorkBudget::new(4_000_000_000),
+        &cx,
+    )?;
+    assert_eq!(video_receipt.root, unknown_video_pin.root);
+    let config = video_configuration
+        .as_ref()
+        .ok_or("missing video configuration")?;
+    assert_eq!(
+        archive::read_unknown_time_object(
+            &mut unknown_target,
+            unknown_video_pin,
+            ContentDigest::sha256(config.bytes()),
+            &access,
+            archive::Limits::default(),
+            &mut WorkBudget::new(4_000_000_000),
+            &cx,
+        )?,
+        config.bytes()
+    );
+    // A root ledgered by another path with a narrow interval must not be
+    // silently accepted as a fully unknown-time recording on retry or read.
+    let mut narrowed = ReferenceDeployment::open(
+        &temp.0.join("unknown-time-narrowed"),
+        "site:unifi-av-archive-test",
+        &cx,
+    )?;
+    unknown_video.visit_objects(|digest, bytes| {
+        assert_eq!(narrowed.stage_payload(bytes).unwrap(), digest);
+    });
+    narrowed.ledgered_publisher().publish_and_commit(
+        &archive::slot(&unknown_video)?,
+        unknown_video.manifest(),
+        CaptureInterval::point(TimestampNs(1)),
+    )?;
+    assert!(matches!(
+        archive::read_unknown_time_object(
+            &mut narrowed,
+            unknown_video_pin,
+            ContentDigest::sha256(config.bytes()),
+            &access,
+            archive::Limits::default(),
+            &mut WorkBudget::new(4_000_000_000),
+            &cx,
+        ),
+        Err(archive::Error::Mismatch)
+    ));
+    assert!(matches!(
+        archive::publish_unknown_time(
+            &unknown_video,
+            &mut narrowed,
+            &access,
+            archive::Limits::default(),
+            &mut WorkBudget::new(4_000_000_000),
+            &cx,
+        ),
+        Err(archive::Error::Mismatch)
+    ));
+    assert!(matches!(
+        archive::publish_unknown_time_av(
+            &av,
+            &mut unknown_target,
+            &access,
+            archive::Limits::default(),
+            &mut WorkBudget::new(4_000_000_000),
+            &cx,
+        ),
+        Err(archive::Error::Mismatch)
+    ));
+    let first = archive::publish_unknown_time_av(
+        &unknown_av,
+        &mut unknown_target,
+        &access,
+        archive::Limits::default(),
+        &mut WorkBudget::new(4_000_000_000),
+        &cx,
+    )?;
+    let again = archive::publish_unknown_time_av(
+        &unknown_av,
+        &mut unknown_target,
+        &access,
+        archive::Limits::default(),
+        &mut WorkBudget::new(4_000_000_000),
+        &cx,
+    )?;
+    assert_eq!(first.root, unknown_pin.root);
+    assert_eq!(again.outcome, RootLedgerOutcome::AlreadyLedgered);
+    let batch = unknown_target
+        .ledger()
+        .batches()
+        .last()
+        .ok_or("missing ledger batch")?;
+    assert_eq!(batch.deltas.len(), 1);
+    assert_eq!(batch.deltas[0].validity.earliest, TimestampNs::MIN);
+    assert_eq!(batch.deltas[0].validity.latest, TimestampNs::MAX);
+    drop(unknown_target);
+    let mut unknown_target =
+        ReferenceDeployment::open(&unknown_path, "site:unifi-av-archive-test", &cx)?;
+    let fragment_digest = ContentDigest::sha256(fragment.bytes());
+    assert_eq!(
+        archive::read_unknown_time_av_object(
+            &mut unknown_target,
+            unknown_pin,
+            fragment_digest,
+            &access,
+            archive::Limits::default(),
+            &mut WorkBudget::new(4_000_000_000),
+            &cx,
+        )?,
+        fragment.bytes()
+    );
+    let unknown_clip = archive::read_unknown_time_av_clip(
+        &mut unknown_target,
+        unknown_pin,
+        &access,
+        archive::Limits::default(),
+        &mut WorkBudget::new(10_000_000_000),
+        &cx,
+    )?;
+    let mut expected_unknown = av_init.bytes().to_vec();
+    expected_unknown.extend_from_slice(fragment.bytes());
+    assert_eq!(unknown_clip.bytes(), expected_unknown);
+    assert_eq!(
+        unknown_clip.video_samples(),
+        segment.fragment().samples().len()
+    );
+    assert!(unknown_clip.audio().frames > 0);
+    let forged_known_pin = archive::Pin {
+        root: unknown_pin.root,
+        retention: unknown_pin.retention,
+        capture: CaptureInterval::new(TimestampNs::MIN, TimestampNs::MAX)?,
+    };
+    assert!(matches!(
+        archive::read_av_object(
+            &mut unknown_target,
+            forged_known_pin,
+            fragment_digest,
+            &access,
+            archive::Limits::default(),
+            &mut WorkBudget::new(4_000_000_000),
+            &cx,
+        ),
+        Err(archive::Error::Mismatch)
+    ));
+    assert!(matches!(
+        archive::read_av_clip(
+            &mut unknown_target,
+            forged_known_pin,
+            &access,
+            archive::Limits::default(),
+            &mut WorkBudget::new(10_000_000_000),
+            &cx,
+        ),
+        Err(archive::Error::Mismatch)
+    ));
+    access.allowed.set(false);
+    assert!(matches!(
+        archive::read_unknown_time_av_object(
+            &mut unknown_target,
+            unknown_pin,
+            fragment_digest,
+            &access,
+            archive::Limits::default(),
+            &mut WorkBudget::new(4_000_000_000),
+            &cx,
+        ),
+        Err(archive::Error::Denied)
+    ));
+    assert!(matches!(
+        archive::read_unknown_time_av_clip(
+            &mut unknown_target,
+            unknown_pin,
+            &access,
+            archive::Limits::default(),
+            &mut WorkBudget::new(10_000_000_000),
+            &cx,
+        ),
+        Err(archive::Error::Denied)
+    ));
+    access.allowed.set(false);
     let pin = archive::Pin::from_av_plan(&av).ok_or("missing pin")?;
     let supplied_pin = archive::Pin::from_av_plan(&supplied).ok_or("missing supplied pin")?;
 
@@ -3309,6 +4216,22 @@ fn av_evidence_publishes_and_reopens_exact_source_objects() -> TestResult {
     )?;
     assert_eq!(result.pin, pin);
     assert_eq!(result.receipt.outcome, RootLedgerOutcome::Committed);
+    let forged_unknown = archive::UnknownTimePin {
+        root: pin.root,
+        retention: pin.retention,
+    };
+    assert!(matches!(
+        archive::read_unknown_time_av_object(
+            &mut inband_target,
+            forged_unknown,
+            ContentDigest::sha256(fragment.bytes()),
+            &access,
+            archive::Limits::default(),
+            &mut WorkBudget::new(4_000_000_000),
+            &cx,
+        ),
+        Err(archive::Error::Mismatch)
+    ));
     let recovered_config = archive::read_av_audio_configuration(
         &mut inband_target,
         result.pin,
@@ -3843,12 +4766,7 @@ fn av_evidence_publishes_and_reopens_exact_source_objects() -> TestResult {
     );
     // Rebind the original in-band AAC configuration from fully owned inputs.
     // This proves the owned path preserves its provenance classification.
-    use fss_object::{
-        HostSpoolIo,
-        effect_journal::{EffectJournalLimits, FileEffectJournal},
-    };
     use fss_reference::unifi_direct::{av_bootstrap, av_owned_sink, pipeline};
-    use std::sync::Arc;
     let mut collector = av_bootstrap::Collector::new(
         None,
         retention,
@@ -3948,15 +4866,14 @@ fn av_evidence_publishes_and_reopens_exact_source_objects() -> TestResult {
 }
 
 // Laboratory replay only: the input may contain a synthetic header and codec
-// configuration, and the capture interval below is a fixture placeholder. The
-// private temporary archive must never be treated as physical camera evidence.
+// configuration. Capture time remains unknown; the private temporary archive
+// must never be treated as authenticated physical camera evidence.
 fn worker_replay_bounded_input(wire: &[u8]) -> TestResult {
     use asupersync::runtime::RuntimeBuilder;
     use fss_container::Mp4Limits;
     use fss_core::{
-        BudgetVector, CaptureInterval, ContentDigest, OperationId, RegionId, RegionKind,
-        RootAuthoritySpec, RuntimeGrant, TaskId, TaskOutcome, TimestampNs,
-        region::ContextAuthority,
+        BudgetVector, ContentDigest, OperationId, RegionId, RegionKind, RootAuthoritySpec,
+        RuntimeGrant, TaskId, TaskOutcome, TimestampNs, region::ContextAuthority,
     };
     use fss_geometry::WorkBudget;
     use fss_object::{
@@ -3970,8 +4887,8 @@ fn worker_replay_bounded_input(wire: &[u8]) -> TestResult {
     use fss_reference::{
         ReferenceDeployment, ReplayCx,
         unifi_direct::{
-            archive, av_evidence::AudioConfigurationOrigin, av_owned_sink, av_recording, av_worker,
-            evidence, metered::MeteredClock,
+            archive, av_bootstrap, av_evidence::AudioConfigurationOrigin, av_owned_sink,
+            av_recording, av_worker, evidence, metered::MeteredClock,
         },
     };
     use fss_runtime::{
@@ -4008,34 +4925,12 @@ fn worker_replay_bounded_input(wire: &[u8]) -> TestResult {
     )?;
     framer.append(0, wire)?;
     let mut recorder = Recorder::new(KEY, Limits::default())?;
-    let mut video_configuration = None;
-    let mut segment = None;
-    while let Next::Record(record) = framer.take()? {
-        match recorder.push(record).map_err(|refusal| refusal.reason)? {
-            Push::Source {
-                record,
-                disposition: SourceDisposition::Configuration,
-            } => video_configuration = Some(record),
-            Push::Segment(value) => {
-                segment = Some(value);
-                break;
-            }
-            _ => (),
-        }
-    }
-    let segment = segment.ok_or("no completed source segment")?;
-    let video_samples = segment.fragment().samples().len();
-    let audio_bytes = [0x14, 0x08];
-    let audio = aac::Configuration::parse_explicit(&audio_bytes)?;
-    let expected_origin = av_recording::segment_sender_clock_origin(&segment, &audio, 5_000)?;
     let limits = Mp4Limits::default();
     let retention = ContentDigest::sha256(b"private replay fixture retention");
-    let inputs = av_owned_sink::BootstrapInputs {
-        video_configuration: video_configuration.ok_or("missing configuration")?,
-        audio: av_owned_sink::Audio::SuppliedUnverified([0, 0]),
-        first_segment: segment,
+    let mut collector = av_bootstrap::Collector::new(
+        Some([0x14, 0x08]),
         retention,
-        policy: av_owned_sink::BootstrapPolicy {
+        av_owned_sink::BootstrapPolicy {
             max_separation_ms: 5_000,
             jitter_ms: 5,
             max_epoch_frames: 1_000_000,
@@ -4043,7 +4938,49 @@ fn worker_replay_bounded_input(wire: &[u8]) -> TestResult {
             media_limits: limits,
             evidence_limits: evidence::Limits::default(),
         },
-    };
+    );
+    let mut passthrough = Vec::new();
+    while let Next::Record(record) = framer.take()? {
+        let push = recorder.push(record).map_err(|refusal| refusal.reason)?;
+        match collector.collect(push, None) {
+            av_bootstrap::Collected::Retained => (),
+            av_bootstrap::Collected::Forward {
+                push: Push::Source { record, .. },
+                audio: None,
+            } => passthrough.push(record),
+            av_bootstrap::Collected::Forward {
+                push: Push::Buffered,
+                audio: None,
+            } => (),
+            _ => return Err("unexpected collector result".into()),
+        }
+        if collector.ready() {
+            break;
+        }
+    }
+    let mut inputs = collector
+        .into_inputs()
+        .map_err(|_| "no completed source segment")?;
+    for record in passthrough
+        .iter()
+        .chain(std::iter::once(&inputs.video_configuration))
+        .chain(inputs.first_segment.source())
+        .chain(inputs.first_segment.lookahead_copies())
+    {
+        let start = usize::try_from(record.offset())?;
+        let end = start
+            .checked_add(record.bytes().len())
+            .ok_or("source range overflow")?;
+        if wire.get(start..end) != Some(record.bytes()) {
+            return Err("original source mismatch".into());
+        }
+    }
+    let video_samples = inputs.first_segment.fragment().samples().len();
+    let audio_bytes = [0x14, 0x08];
+    let audio = aac::Configuration::parse_explicit(&audio_bytes)?;
+    let expected_origin =
+        av_recording::segment_sender_clock_origin(&inputs.first_segment, &audio, 5_000)?;
+    inputs.audio = av_owned_sink::Audio::SuppliedUnverified([0, 0]);
     let refusal = match av_owned_sink::OwnedSink::bootstrap(inputs) {
         Err(refusal) => refusal,
         Ok(_) => return Err("invalid configuration was accepted".into()),
@@ -4053,13 +4990,6 @@ fn worker_replay_bounded_input(wire: &[u8]) -> TestResult {
     }
     let mut inputs = refusal.inputs;
     inputs.audio = av_owned_sink::Audio::SuppliedUnverified(audio_bytes);
-    let bootstrap =
-        av_owned_sink::OwnedSink::bootstrap(inputs).map_err(|_| "owned sink bootstrap refused")?;
-    if bootstrap.origin != expected_origin {
-        return Err("sender-clock origin mismatch".into());
-    }
-    let sink = bootstrap.sink;
-    let segment = bootstrap.first_segment;
     let temp =
         Temp(std::env::temp_dir().join(format!("fss-g4-worker-replay-{}", std::process::id())));
     std::fs::create_dir(&temp.0)?;
@@ -4081,17 +5011,185 @@ fn worker_replay_bounded_input(wire: &[u8]) -> TestResult {
         generation: 1,
     })?;
     let replay = ReplayCx::from_context_authority(&replay_authority, temp.0.clone())?;
-    let deployment = ReferenceDeployment::open(
+    let mut deployment = ReferenceDeployment::open(
         &temp.0.join("deployment"),
         "site:private-camera-replay",
         &replay,
     )?;
+    // Exercise unknown-time publication with these same bounded source bytes.
+    // Configuration and framing provenance remain the fixture's limitations.
+    {
+        let video_init = recorder
+            .initialization()
+            .ok_or("missing video initialization")?;
+        let av_init = recorder
+            .av_initialization(&audio)?
+            .ok_or("missing A/V initialization")?;
+        let mut muxer = av_recording::Muxer::new(
+            &av_init,
+            &audio,
+            expected_origin.audio_ticks,
+            5,
+            1_000_000,
+            limits.max_samples,
+            limits,
+        )?;
+        let fragment = muxer.fragment(&av_init, &inputs.first_segment)?;
+        let video = evidence::Prepared::new(
+            &inputs.first_segment,
+            &inputs.video_configuration,
+            video_init,
+            retention,
+            evidence::Limits::default(),
+        )?;
+        let av = fss_reference::unifi_direct::av_evidence::PreparedAv::new_with_unverified_audio_configuration(
+            &video, &audio, &av_init, &fragment, evidence::Limits::default(),
+        )?;
+        let pin = archive::UnknownTimePin::from_av_plan(&av).ok_or("unknown-time pin missing")?;
+        let access = Access(retention);
+        let journal_path = temp.0.join("unknown-time-journal");
+        let keeper_path = temp.0.join("unknown-time-keeper");
+        let scope = ContentDigest::sha256(b"private unknown-time replay scope");
+        let store = FileEffectJournal::create(
+            &journal_path,
+            EffectJournalLimits::default(),
+            Arc::new(HostSpoolIo),
+        )?;
+        let mut journal =
+            archive::journal::UnknownTimeJournal::create(Box::new(store), scope, &replay)?;
+        let journal_genesis = journal.anchor();
+        let store = FileEffectJournal::create(
+            &keeper_path,
+            EffectJournalLimits::default(),
+            Arc::new(HostSpoolIo),
+        )?;
+        let mut keeper =
+            archive::journal::UnknownTimeAnchorKeeper::create(Box::new(store), &journal, &replay)?;
+        let keeper_genesis = keeper.anchor();
+        let inner = av_recording::Muxer::new(
+            &av_init,
+            &audio,
+            expected_origin.audio_ticks,
+            5,
+            1_000_000,
+            limits.max_samples,
+            limits,
+        )?;
+        let mut transactional =
+            archive::UnknownTimeMuxer::new(inner).map_err(|_| "unknown-time muxer not idle")?;
+        let input = archive::UnknownTimeAvSegment {
+            segment: &inputs.first_segment,
+            video_configuration: &inputs.video_configuration,
+            video_initialization: video_init,
+            av_initialization: &av_init,
+            audio: archive::AvSegmentAudio::SuppliedUnverified(&audio),
+            retention,
+            evidence_limits: evidence::Limits::default(),
+        };
+        let published = archive::publish_next_unknown_time_av_segment_anchored(
+            &input,
+            &mut transactional,
+            &mut deployment,
+            &access,
+            archive::Limits::default(),
+            &mut WorkBudget::new(100_000_000_000),
+            &replay,
+            &mut journal,
+            &mut keeper,
+        )?;
+        if published.pin != pin
+            || published.receipt.root != pin.root
+            || transactional.pending().is_some()
+        {
+            return Err("unknown-time root mismatch".into());
+        }
+        drop(keeper);
+        drop(journal);
+        let store = FileEffectJournal::open(
+            &journal_path,
+            EffectJournalLimits::default(),
+            Arc::new(HostSpoolIo),
+            journal_genesis,
+        )?;
+        let journal = archive::journal::UnknownTimeJournal::reopen(
+            Box::new(store),
+            scope,
+            journal_genesis,
+            &replay,
+        )?;
+        let store = FileEffectJournal::open(
+            &keeper_path,
+            EffectJournalLimits::default(),
+            Arc::new(HostSpoolIo),
+            keeper_genesis,
+        )?;
+        let keeper = archive::journal::UnknownTimeAnchorKeeper::reopen(
+            Box::new(store),
+            &journal,
+            keeper_genesis,
+            &replay,
+        )?;
+        if journal.confirmed() != Some(pin) || keeper.target() != journal.anchor() {
+            return Err("unknown-time journal recovery mismatch".into());
+        }
+        let digest = ContentDigest::sha256(fragment.bytes());
+        let recovered = archive::read_unknown_time_av_object(
+            &mut deployment,
+            pin,
+            digest,
+            &access,
+            archive::Limits::default(),
+            &mut WorkBudget::new(100_000_000_000),
+            &replay,
+        )?;
+        if recovered != fragment.bytes() {
+            return Err("unknown-time fragment mismatch".into());
+        }
+        let clip = archive::read_unknown_time_av_clip(
+            &mut deployment,
+            pin,
+            &access,
+            archive::Limits::default(),
+            &mut WorkBudget::new(100_000_000_000),
+            &replay,
+        )?;
+        if clip.video_samples() != video_samples || clip.audio().frames == 0 {
+            return Err("unknown-time source mapping mismatch".into());
+        }
+        let count = clip.video_samples().min(3);
+        let movie = AvcMp4::parse(clip.bytes(), None, DemuxLimits::default())?;
+        let annex = movie.annex_b(0, count)?;
+        let mut decoder = fss_codec_h264::Decoder::new(fss_codec_h264::DecoderLimits::default())?;
+        let mut frames = decoder.decode_annex_b(annex.bytes())?;
+        frames.extend(decoder.finish()?);
+        if frames.len() != count {
+            return Err("unknown-time decoded frame count mismatch".into());
+        }
+    }
+    // The asynchronous worker must commit a fresh root, not merely reopen the
+    // graph just published by the separate transactional replay above.
+    drop(deployment);
+    let deployment = ReferenceDeployment::open(
+        &temp.0.join("worker-deployment"),
+        "site:private-camera-replay",
+        &replay,
+    )?;
+    let bootstrap =
+        av_owned_sink::OwnedSink::bootstrap(inputs).map_err(|_| "owned sink bootstrap refused")?;
+    if bootstrap.origin != expected_origin {
+        return Err("sender-clock origin mismatch".into());
+    }
+    let sink = bootstrap
+        .sink
+        .into_unknown_time()
+        .map_err(|_| "unknown sink conversion failed")?;
+    let segment = bootstrap.first_segment;
     let store = FileEffectJournal::create(
         temp.0.join("journal"),
         EffectJournalLimits::default(),
         Arc::new(HostSpoolIo),
     )?;
-    let journal = archive::journal::Journal::create(
+    let journal = archive::journal::UnknownTimeJournal::create(
         Box::new(store),
         ContentDigest::sha256(b"private camera replay scope"),
         &replay,
@@ -4101,10 +5199,11 @@ fn worker_replay_bounded_input(wire: &[u8]) -> TestResult {
         EffectJournalLimits::default(),
         Arc::new(HostSpoolIo),
     )?;
-    let keeper = archive::journal::AnchorKeeper::create(Box::new(store), &journal, &replay)?;
+    let keeper =
+        archive::journal::UnknownTimeAnchorKeeper::create(Box::new(store), &journal, &replay)?;
     let access = Arc::new(Access(retention));
     let policy: Arc<dyn archive::RetainAuthority + Send + Sync> = access.clone();
-    let mut worker = av_worker::Worker::new(av_worker::Parts {
+    let mut worker = av_worker::UnknownTimeWorker::new(av_worker::UnknownTimeParts {
         sink,
         deployment,
         journal,
@@ -4115,11 +5214,7 @@ fn worker_replay_bounded_input(wire: &[u8]) -> TestResult {
         work_limit: 100_000_000_000,
     })
     .map_err(|_| "worker limits refused")?;
-    // Deliberately synthetic test values: never claim these as physical capture time.
-    let capture = CaptureInterval::new(TimestampNs(1), TimestampNs(2))?;
-    worker
-        .offer(segment, capture)
-        .map_err(|_| "source offer refused")?;
+    worker.offer(segment).map_err(|_| "source offer refused")?;
     let (mut authority, mut tree) = AuthorityCx::root(
         RootAuthoritySpec {
             trace_id: "trace:private-camera-worker".into(),
@@ -4157,14 +5252,15 @@ fn worker_replay_bounded_input(wire: &[u8]) -> TestResult {
                     let completion = worker.join().await.ok_or("missing worker completion")?;
                     if completion.runtime.is_err() { return Err("archive task failed".into()); }
                     let pin = match completion.outcome {
-                        av_worker::Outcome::Publication(av_worker::Publication::Published(value)) => value.pin,
-                        av_worker::Outcome::Publication(av_worker::Publication::Refused { stage, reason, .. }) => return Err(format!("archive refused: {stage:?} {reason:?}")),
+                        av_worker::UnknownTimeOutcome::Publication(av_worker::UnknownTimePublication::Published(value))
+                            if value.receipt.outcome == fss_publication::RootLedgerOutcome::Committed => value.pin,
+                        av_worker::UnknownTimeOutcome::Publication(av_worker::UnknownTimePublication::Refused { stage, reason, .. }) => return Err(format!("archive refused: {stage:?} {reason:?}")),
                         _ => return Err("archive outcome not confirmed".into()),
                     };
                     let retired = worker.retire().map_err(|_| "worker did not retire")?;
                     if retired.fenced { return Err("worker fenced".into()); }
                     let mut parts = retired.parts;
-                    let clip = archive::read_av_clip(&mut parts.deployment, pin, access.as_ref(), archive::Limits::default(),
+                    let clip = archive::read_unknown_time_av_clip(&mut parts.deployment, pin, access.as_ref(), archive::Limits::default(),
                         &mut WorkBudget::new(100_000_000_000), &parts.replay).map_err(|e|format!("readback: {e}"))?;
                     if clip.video_samples() != video_samples || clip.audio().frames == 0 || clip.audio().configuration_origin != AudioConfigurationOrigin::SuppliedUnverified {
                         return Err("recovered source mapping mismatch".into());
@@ -4176,7 +5272,7 @@ fn worker_replay_bounded_input(wire: &[u8]) -> TestResult {
                     let mut frames = decoder.decode_annex_b(annex.bytes()).map_err(|e| format!("video decode: {e}"))?;
                     frames.extend(decoder.finish().map_err(|e| format!("video finish: {e}"))?);
                     if frames.len() != count { return Err("decoded frame count mismatch".into()); }
-                    println!("worker_replay=passed video_samples={} audio_frames={} decoded_video_frames={} capture_bounds=fixture audio_configuration=unverified",clip.video_samples(),clip.audio().frames,frames.len());
+                    println!("worker_replay=passed video_samples={} audio_frames={} decoded_video_frames={} capture_bounds=unknown audio_configuration=unverified",clip.video_samples(),clip.audio().frames,frames.len());
                     Ok(())
                 }.await;
                 let outcome = if result.is_ok() { TaskOutcome::Success } else { TaskOutcome::Failed("private replay failed".into()) };
@@ -4432,5 +5528,356 @@ fn collector_preserves_mismatches_later_segments_and_interrupted_custody() -> Te
     let bootstrap =
         av_owned_sink::OwnedSink::bootstrap(inputs).map_err(|_| "collector inputs refused")?;
     assert_eq!(bootstrap.origin.audio_ticks, 1024);
+    Ok(())
+}
+
+#[test]
+fn async_unknown_time_worker_drains_cancelled_publication_and_retries() -> TestResult {
+    use asupersync::{
+        runtime::{RuntimeBuilder, yield_now},
+        time::timeout,
+    };
+    use fss_container::Mp4Limits;
+    use fss_core::{
+        BudgetVector, ContentDigest, OperationId, RegionId, RegionKind, RootAuthoritySpec,
+        RuntimeGrant, TaskId, TaskOutcome, TimestampNs, region::ContextAuthority,
+    };
+    use fss_geometry::WorkBudget;
+    use fss_object::{
+        HostSpoolIo,
+        effect_journal::{EffectJournalLimits, FileEffectJournal},
+    };
+    use fss_packet::extended_flv::aac;
+    use fss_reference::{
+        ReferenceDeployment, ReplayCx,
+        unifi_direct::{
+            archive, av_owned_sink, av_recording, av_worker, evidence, metered::MeteredClock,
+        },
+    };
+    use fss_runtime::{
+        authority::AuthorityCx,
+        execution::{TaskCompletion, TaskSpec, run_owned_async},
+    };
+    use std::{
+        future::{Future, poll_fn},
+        path::PathBuf,
+        pin::pin,
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+        task::Poll,
+        time::Duration,
+    };
+
+    struct Temp(PathBuf);
+    impl Drop for Temp {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    struct Retention {
+        allow: AtomicBool,
+        block: AtomicBool,
+        entered: AtomicBool,
+    }
+    impl archive::RetainAuthority for Retention {
+        fn permits(&self, _: ContentDigest, _: ContentDigest) -> bool {
+            self.entered.store(true, Ordering::Release);
+            for _ in 0..2500 {
+                if !self.block.load(Ordering::Acquire) {
+                    return self.allow.load(Ordering::Acquire);
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            false
+        }
+    }
+    impl archive::ReadAuthority for Retention {
+        fn permits(&self, _: ContentDigest, _: ContentDigest) -> bool {
+            self.allow.load(Ordering::Acquire)
+        }
+    }
+    struct Unblock(Arc<Retention>);
+    impl Drop for Unblock {
+        fn drop(&mut self) {
+            self.0.block.store(false, Ordering::Release);
+        }
+    }
+
+    let (_, records) = fixture_with_audio_intervals(0, false, false, false, Some(64))?;
+    let mut recorder = Recorder::new(KEY, Limits::default())?;
+    let mut configuration = None;
+    let mut segments = Vec::new();
+    for record in records {
+        match recorder.push(record).map_err(|refusal| refusal.reason)? {
+            Push::Source {
+                record,
+                disposition: SourceDisposition::Configuration,
+            } => configuration = Some(record),
+            Push::Segment(segment) => segments.push(segment),
+            _ => (),
+        }
+    }
+    assert_eq!(segments.len(), 2);
+    let audio = [0x14, 0x08];
+    let config = aac::Configuration::parse_explicit(&audio)?;
+    let init = recorder
+        .av_initialization(&config)?
+        .ok_or("missing initialization")?;
+    let muxer = av_recording::Muxer::new(&init, &config, 0, 0, 8, 8, Mp4Limits::default())?;
+    let retention = ContentDigest::sha256(b"async worker retention");
+    let sink = av_owned_sink::OwnedSink::new(av_owned_sink::Inputs {
+        video_configuration: configuration.ok_or("missing configuration")?,
+        av_initialization: init,
+        audio: av_owned_sink::Audio::SuppliedUnverified(audio),
+        muxer,
+        retention,
+        evidence_limits: evidence::Limits::default(),
+        video_limits: Mp4Limits::default(),
+    })
+    .map_err(|_| "owned sink construction failed")?
+    .into_unknown_time()
+    .map_err(|_| "unknown sink conversion failed")?;
+    let mut segments = segments.into_iter();
+    let first = segments.next().ok_or("missing first segment")?;
+    let second = segments.next().ok_or("missing second segment")?;
+    let temp = Temp(std::env::temp_dir().join(format!(
+        "fss-unifi-async-unknown-archive-{}",
+        std::process::id()
+    )));
+    std::fs::create_dir(&temp.0)?;
+    let budget = BudgetVector::builder()
+        .bytes(128 * 1024 * 1024)
+        .storage_operations(10_000)
+        .build()?;
+    let replay_context = ContextAuthority::new_root(RootAuthoritySpec {
+        trace_id: "trace:async-archive-replay".into(),
+        operation_id: OperationId::parse("operation:async-archive-replay")?,
+        principal: "principal:fixture".into(),
+        capabilities: vec!["ADP-REPLAY-001".into()],
+        deadline: None,
+        priority: 1,
+        budgets: budget,
+        privacy_scope: "privacy:test".into(),
+        retention_scope: "retention:test".into(),
+        anchor_universe: ContentDigest::sha256(b"site:async-archive"),
+        generation: 1,
+    })?;
+    let replay = ReplayCx::from_context_authority(&replay_context, temp.0.clone())?;
+    let deployment =
+        ReferenceDeployment::open(&temp.0.join("deployment"), "site:async-archive", &replay)?;
+    let store = FileEffectJournal::create(
+        temp.0.join("journal"),
+        EffectJournalLimits::default(),
+        Arc::new(HostSpoolIo),
+    )?;
+    let journal = archive::journal::UnknownTimeJournal::create(
+        Box::new(store),
+        ContentDigest::sha256(b"async worker scope"),
+        &replay,
+    )?;
+    let store = FileEffectJournal::create(
+        temp.0.join("keeper"),
+        EffectJournalLimits::default(),
+        Arc::new(HostSpoolIo),
+    )?;
+    let keeper =
+        archive::journal::UnknownTimeAnchorKeeper::create(Box::new(store), &journal, &replay)?;
+    let access = Arc::new(Retention {
+        allow: AtomicBool::new(false),
+        block: AtomicBool::new(true),
+        entered: AtomicBool::new(false),
+    });
+    let _unblock = Unblock(Arc::clone(&access));
+    let retain: Arc<dyn archive::RetainAuthority + Send + Sync> = access.clone();
+    let mut worker = av_worker::UnknownTimeWorker::new(av_worker::UnknownTimeParts {
+        sink,
+        deployment,
+        journal,
+        keeper,
+        replay,
+        authority: retain,
+        limits: archive::Limits::default(),
+        work_limit: 4_000_000_000,
+    })
+    .map_err(|_| "invalid worker limits")?;
+    assert!(worker.offer(first).is_ok());
+    let (mut authority, mut tree) = AuthorityCx::root(
+        RootAuthoritySpec {
+            trace_id: "trace:async-archive".into(),
+            operation_id: OperationId::parse("operation:async-archive")?,
+            principal: "principal:fixture".into(),
+            capabilities: vec![
+                RuntimeGrant::ObjectStage.as_str().into(),
+                RuntimeGrant::ObjectPublish.as_str().into(),
+            ],
+            deadline: None,
+            priority: 1,
+            budgets: budget,
+            privacy_scope: "privacy:test".into(),
+            retention_scope: "retention:test".into(),
+            anchor_universe: ContentDigest::sha256(b"site:async-archive"),
+            generation: 1,
+        },
+        RegionId::new("region:async-archive")?,
+        RegionKind::Process,
+        budget,
+        TimestampNs(1),
+    )?;
+    let runtime = RuntimeBuilder::current_thread()
+        .blocking_threads(1, 1)
+        .build()?;
+    runtime.block_on(async {
+        let cx = asupersync::Cx::current().ok_or("missing runtime")?;
+        let run = run_owned_async(
+            &mut authority,
+            &mut tree,
+            TaskSpec {
+                task_id: TaskId::new("task:async-archive")?,
+                started_at: TimestampNs(2),
+            },
+            &cx,
+            async |task, cx| {
+                let output: Result<(), String> = async {
+                    let clock =
+                        MeteredClock::new(task, cx, TimestampNs(3)).map_err(|e| e.to_string())?;
+                    let cost = BudgetVector::builder()
+                        .bytes(1024 * 1024)
+                        .storage_operations(1000)
+                        .build()
+                        .map_err(|e| e.to_string())?;
+                    let other_cx = cx.clone();
+                    if !matches!(
+                        worker.start(task, &other_cx, clock, "fixture:archive", &cost),
+                        Err(av_worker::StartError::Context)
+                    ) {
+                        return Err("foreign runtime context was accepted".into());
+                    }
+                    worker
+                        .start(task, cx, clock, "fixture:archive", &cost)
+                        .map_err(|e| format!("start: {e:?}"))?;
+                    timeout(cx.now(), Duration::from_secs(5), async {
+                        while !access.entered.load(Ordering::Acquire) {
+                            yield_now().await;
+                        }
+                    })
+                    .await
+                    .map_err(|_| "archive did not enter worker")?;
+                    let rejected = match worker.offer(second) {
+                        Err(av_worker::UnknownTimeOfferRefusal::Busy(segment)) => segment,
+                        _ => return Err("worker did not apply backpressure".into()),
+                    };
+                    worker.abort();
+                    timeout(cx.now(), Duration::from_secs(5), async {
+                        while !worker.cancellation_observed() {
+                            yield_now().await;
+                        }
+                    })
+                    .await
+                    .map_err(|_| "worker cancellation was not observed")?;
+                    let pending = poll_fn(|context| {
+                        let mut wait = pin!(worker.join());
+                        Poll::Ready(wait.as_mut().poll(context).is_pending())
+                    })
+                    .await;
+                    if !pending {
+                        return Err("worker joined before blocking retention released".into());
+                    }
+                    worker = match worker.retire() {
+                        Err(worker) => worker,
+                        Ok(_) => return Err("worker retired before its closure drained".into()),
+                    };
+                    access.block.store(false, Ordering::Release);
+                    let completion = timeout(cx.now(), Duration::from_secs(5), worker.join())
+                        .await
+                        .map_err(|_| "worker drain timed out")?
+                        .ok_or("worker completion missing")?;
+                    if completion.runtime.is_err() {
+                        return Err(
+                            "cancelled coordinator did not preserve its drained result".into()
+                        );
+                    }
+                    if !matches!(
+                        completion.outcome,
+                        av_worker::UnknownTimeOutcome::Publication(
+                            av_worker::UnknownTimePublication::Refused {
+                                stage: av_worker::UnknownTimeFailureStage::Archive,
+                                reason: av_worker::FailureReason::CancelledOrDenied,
+                                ..
+                            }
+                        )
+                    ) {
+                        return Err("cancelled archive outcome not retained".into());
+                    }
+                    access.allow.store(true, Ordering::Release);
+                    worker
+                        .start(task, cx, clock, "fixture:archive", &cost)
+                        .map_err(|e| format!("retry: {e:?}"))?;
+                    let completion = worker.join().await.ok_or("first receipt missing")?;
+                    if completion.runtime.is_err() {
+                        return Err("first coordinator failed".into());
+                    }
+                    let first = match completion.outcome {
+                        av_worker::UnknownTimeOutcome::Publication(
+                            av_worker::UnknownTimePublication::Published(value),
+                        ) => value.pin,
+                        _ => return Err("first archive retry failed".into()),
+                    };
+                    if worker.offer(rejected).is_err() {
+                        return Err("second source refused".into());
+                    }
+                    worker
+                        .start(task, cx, clock, "fixture:archive", &cost)
+                        .map_err(|e| format!("second start: {e:?}"))?;
+                    let completion = worker.join().await.ok_or("second receipt missing")?;
+                    if completion.runtime.is_err() {
+                        return Err("second coordinator failed".into());
+                    }
+                    let second = match completion.outcome {
+                        av_worker::UnknownTimeOutcome::Publication(
+                            av_worker::UnknownTimePublication::Published(value),
+                        ) => value.pin,
+                        _ => return Err("second archive failed".into()),
+                    };
+                    let retirement = worker.retire().map_err(|_| "worker failed to retire")?;
+                    if retirement.fenced {
+                        return Err("successful worker was fenced".into());
+                    }
+                    let mut parts = retirement.parts;
+                    for pin in [first, second] {
+                        let clip = archive::read_unknown_time_av_clip(
+                            &mut parts.deployment,
+                            pin,
+                            access.as_ref(),
+                            archive::Limits::default(),
+                            &mut WorkBudget::new(100_000_000_000),
+                            &parts.replay,
+                        )
+                        .map_err(|e| format!("readback: {e}"))?;
+                        if clip.video_samples() == 0 || clip.audio().frames == 0 {
+                            return Err("unknown-time clip incomplete".into());
+                        }
+                    }
+                    Ok(())
+                }
+                .await;
+                let outcome = if output.is_ok() {
+                    TaskOutcome::Success
+                } else {
+                    TaskOutcome::Failed("archive worker fixture failed".into())
+                };
+                TaskCompletion {
+                    output,
+                    outcome,
+                    completed_at: TimestampNs(60_000_000_000),
+                }
+            },
+        )
+        .await?;
+        run.receipt?;
+        run.output
+            .map_err(|e| -> Box<dyn std::error::Error> { e.into() })
+    })?;
     Ok(())
 }

@@ -708,6 +708,7 @@ fn http_fixture(
     setup_preflight: bool,
     destination: Ipv4Addr,
     revoke: Option<Arc<std::sync::atomic::AtomicBool>>,
+    reported_port: Option<(Arc<std::sync::atomic::AtomicU16>, u8)>,
 ) -> std::io::Result<()> {
     let target_body = format!(r#"{{"controller":{{"addr":"{destination}"}}}}"#);
     let mut socket = std::net::TcpStream::connect_timeout(&address, Duration::from_secs(5))?;
@@ -776,7 +777,19 @@ fn http_fixture(
         if index == handoff_index + 1 && fail_readback {
             return Ok(());
         }
+        let status_body = reported_port.as_ref().map(|(port, mode)| {
+            let port = port.load(std::sync::atomic::Ordering::Acquire);
+            match mode {
+                1 => format!(
+                    r#"{{"controller":{{"port":{}}}}}"#,
+                    if port == u16::MAX { port - 1 } else { port + 1 }
+                ),
+                2 => "{}".to_owned(),
+                _ => format!(r#"{{"controller":{{"port":{port}}}}}"#),
+            }
+        });
         let body: &[u8] = match index {
+            1 if status_body.is_some() => status_body.as_deref().unwrap_or("{}").as_bytes(),
             2 if already => target_body.as_bytes(),
             2 => br#"{"controller":{"addr":"192.168.1.10"}}"#,
             3 if double_read && changed => br#"{"controller":{"addr":"192.168.1.99"}}"#,
@@ -804,6 +817,16 @@ fn http_fixture(
         );
         socket.write_all(header.as_bytes())?;
         socket.write_all(body)?;
+        if index == 1 && reported_port.as_ref().is_some_and(|(_, mode)| *mode != 0) {
+            let mut byte = [0u8; 1];
+            return if socket.read(&mut byte)? == 0 {
+                Ok(())
+            } else {
+                Err(std::io::Error::other(
+                    "port mismatch allowed another request",
+                ))
+            };
+        }
         if index == 2 && already && !double_read {
             return Ok(());
         }
@@ -880,6 +903,7 @@ fn owned_http_handoff(cancel_reply: bool, framing: Framing) -> Test {
                             false,
                             false,
                             Ipv4Addr::new(192, 168, 1, 40),
+                            None,
                             None,
                         )
                     });
@@ -1114,6 +1138,7 @@ fn run_discovered_setup(
         observe,
         changed,
         None,
+        0,
     )
 }
 
@@ -1135,14 +1160,18 @@ fn run_discovered_setup_with_listener(
     observe: bool,
     changed: bool,
     ready: Option<(Ipv4Addr, bool)>,
+    port_mode: u8,
 ) -> Test {
     use fss_reference::unifi_direct::{controller_listener, discovery, setup};
+    static SETUP_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let destination = ready.map_or(Ipv4Addr::new(192, 168, 1, 40), |value| value.0);
     let revoked = ready.is_some_and(|value| value.1);
     let live = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let advertised_port = Arc::new(std::sync::atomic::AtomicU16::new(0));
     let path = std::fs::canonicalize(std::env::temp_dir())?.join(format!(
-        "fss-unifi-setup-{}-{cancel_reply}-{already}-{fail_readback}-{framing:?}-{observe}-{changed}",
-        std::process::id()
+        "fss-unifi-setup-{}-{cancel_reply}-{already}-{fail_readback}-{framing:?}-{observe}-{changed}-{}",
+        std::process::id(),
+        SETUP_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
     std::fs::create_dir(&path)?;
     let _temp = Temp(path.clone());
@@ -1229,6 +1258,7 @@ fn run_discovered_setup_with_listener(
                     let listener = TcpListener::bind("127.0.0.1:0").await?;
                     let address = listener.local_addr()?;
                     let revoke_policy = revoked.then(|| Arc::clone(&live));
+                    let port_claim = ready.map(|_| (Arc::clone(&advertised_port), port_mode));
                     let peer = std::thread::spawn(move || {
                         http_fixture(
                             address,
@@ -1241,6 +1271,7 @@ fn run_discovered_setup_with_listener(
                             true,
                             destination,
                             revoke_policy,
+                            port_claim,
                         )
                     });
                     let (socket, _) =
@@ -1343,6 +1374,7 @@ fn run_discovered_setup_with_listener(
                         .await
                         .map_err(|error| format!("controller listener bind: {error:?}"))?;
                         let port = control.local_addr().port();
+                        advertised_port.store(port, std::sync::atomic::Ordering::Release);
                         assert!(matches!(
                             owner
                                 .run_when_listening(
@@ -1409,6 +1441,12 @@ fn run_discovered_setup_with_listener(
                                 framing,
                             )
                             .await;
+                        if port_mode != 0 {
+                            assert!(matches!(outcome, Err(setup::Error::ControllerPort)));
+                            drop(http);
+                            peer.join().map_err(|_| "HTTP fixture panic")??;
+                            return Ok(());
+                        }
                         if !revoked {
                             if let Err(error) = &outcome {
                                 return Err(format!("listener-bound setup: {error:?}").into());
@@ -1526,7 +1564,9 @@ fn run_discovered_setup_with_listener(
                     Ok(())
                 }
                 .await;
-                let outcome = if output.is_ok() && (already || observe || changed || revoked) {
+                let outcome = if output.is_ok()
+                    && (already || observe || changed || revoked || port_mode != 0)
+                {
                     TaskOutcome::Success
                 } else if output.is_ok() {
                     TaskOutcome::Indeterminate("effect requires reconciliation".into())
@@ -1545,7 +1585,7 @@ fn run_discovered_setup_with_listener(
         run.output
     })?;
     let journal_entry = effects.journal().operation(&operation);
-    if already || observe || changed || revoked {
+    if already || observe || changed || revoked || port_mode != 0 {
         assert!(journal_entry.is_none());
     } else {
         assert_eq!(
@@ -1612,6 +1652,7 @@ fn discovered_setup_requires_current_bound_controller_listener() -> Test {
         false,
         false,
         Some((ip, false)),
+        0,
     )?;
     run_discovered_setup_with_listener(
         false,
@@ -1621,5 +1662,19 @@ fn discovered_setup_requires_current_bound_controller_listener() -> Test {
         false,
         false,
         Some((ip, true)),
-    )
+        0,
+    )?;
+    for mode in [1, 2] {
+        run_discovered_setup_with_listener(
+            false,
+            false,
+            false,
+            Framing::ContentLength,
+            false,
+            false,
+            Some((ip, false)),
+            mode,
+        )?;
+    }
+    Ok(())
 }

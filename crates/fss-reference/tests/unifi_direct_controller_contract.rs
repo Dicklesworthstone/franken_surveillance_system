@@ -5,7 +5,7 @@ use fss_core::json_input::{self, Value};
 use fss_reference::unifi_direct::{
     AGREEMENT_DELAY_NS, AudioCodec, Controller, Dispatch, Error, Identity, MAX_MESSAGE_BYTES,
     MAX_MESSAGE_ID, MessageKind, Observation, Phase, RejectedMessage, StreamStart, TimeSyncCounts,
-    TimeSyncPolicy, VideoChannel, VideoCodec,
+    TimeSyncPolicy, UnhandledRequestCounts, VideoChannel, VideoCodec,
 };
 use std::net::{Ipv4Addr, SocketAddrV4};
 
@@ -211,6 +211,36 @@ fn time_sync_counts_preserve_payload_free_correlation_observations() -> TestResu
             correlated_response_expected: 1
         }
     );
+    Ok(())
+}
+
+#[test]
+fn unhandled_response_requests_are_counted_without_echo_or_payload() -> TestResult {
+    let mut c = controller(1)?;
+    let request = br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"FixtureChallenge","messageId":41,"responseExpected":true,"payload":{"private":"do-not-retain"}}"#;
+    assert_eq!(c.observe(request)?, Observation::Other);
+    let correlated = br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"FixtureChallenge","messageId":42,"inResponseTo":8,"responseExpected":true}"#;
+    assert_eq!(c.observe(correlated)?, Observation::Other);
+    assert_eq!(c.observe(&message("FixtureNotification", 43, 0, "{}"))?, Observation::Other);
+    // A recognized correlated clock message remains a clock observation, not
+    // an unhandled-function count, even under the conservative policy.
+    let clock = br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"ubnt_avclient_timeSync","messageId":44,"inResponseTo":7,"responseExpected":true}"#;
+    assert_eq!(c.observe(clock)?, Observation::Other);
+    assert!(c.prepared().is_none());
+    assert_eq!(c.observe(&message("ubnt_avclient_hello", 45, 0, "{}"))?, Observation::Hello);
+    let later = br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"FixtureChallenge","messageId":46,"responseExpected":true}"#;
+    assert_eq!(c.observe(later)?, Observation::Other);
+    let malformed = br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"FixtureChallenge","messageId":47,"responseExpected":"yes"}"#;
+    assert_eq!(c.observe(malformed), Err(Error::InvalidEnvelope));
+    let expected = UnhandledRequestCounts { pre_hello: 2, later: 1, correlated: 1 };
+    assert_eq!(c.unhandled_request_counts(), expected);
+    let retired = c.close();
+    assert_eq!(retired.unhandled_requests, expected);
+    assert!(!format!("{retired:?}").contains("do-not-retain"));
+    let mut events = controller(1)?;
+    let event = br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"EventMotion","messageId":50,"responseExpected":true,"payload":{}}"#;
+    assert!(matches!(events.observe_event_claims(event)?, Observation::CameraEvent { .. }));
+    assert_eq!(events.unhandled_request_counts(), UnhandledRequestCounts::default());
     Ok(())
 }
 

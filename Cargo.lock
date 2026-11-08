@@ -530,6 +530,7 @@ dependencies = [
  "fss-tutk",
  "fss-tuya",
  "fss-twin",
+ "nix",
 ]
 
 [[package]]

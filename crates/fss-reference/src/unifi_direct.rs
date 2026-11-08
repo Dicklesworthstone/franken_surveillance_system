@@ -24,6 +24,8 @@ pub mod av_evidence;
 pub mod av_owned_sink;
 /// Source-preserving collection of the first A/V archive inputs.
 pub mod av_bootstrap;
+/// Task-owned supervisor-to-bootstrap collection and audio-event pairing.
+pub mod av_bootstrap_driver;
 /// Transactional, source-preserving A/V fragment derivation.
 pub mod av_recording;
 /// Bounded ownership and backpressure for A/V archive handoff.
@@ -32,6 +34,10 @@ pub mod av_sink;
 pub mod av_worker;
 /// Supervised camera-to-worker handoff with bounded backpressure.
 pub mod av_worker_guard;
+/// Supervisor bridge to the unknown-capture-time archive worker.
+pub mod av_unknown_worker_guard;
+/// Bounded ownership handoff from the session loop to its caller.
+pub mod av_session_inbox;
 /// Task-owned, bounded local D-Bus observation for future BlueZ transport.
 pub mod bluez_bus;
 /// Task-owned BlueZ scan and claim-projection lifecycle.
@@ -76,6 +82,12 @@ pub mod receive;
 pub mod recording;
 /// Task-owned discovery-candidate handoff orchestration.
 pub mod setup;
+/// Exact standalone source-record evidence for separately returned media.
+pub mod source_evidence;
+/// Custody-preserving handoff from session events to standalone source storage.
+pub mod source_handoff;
+/// Task-owned durable publication of separately returned source records.
+pub mod source_worker;
 pub mod supervisor;
 /// Bounded, untrusted camera WebSocket upgrade preparation.
 pub mod upgrade;
@@ -104,7 +116,7 @@ pub enum Error {
     InvalidState,
     /// The single pending time-sync slot or the opt-in reply bound is exhausted.
     TimeSyncLimit,
-    /// An event reply is pending, repeated, or exceeds this session's bound.
+    /// An event or startup-request reply is pending, repeated, or exceeds the bound.
     EventReplyLimit,
     /// Prepared message identity did not match the supplied dispatch receipt.
     WrongPreparedMessage,
@@ -202,6 +214,12 @@ pub enum Observation {
         /// The camera requested a reply; this observation does not send one.
         response_expected: bool,
     },
+    /// An opt-in, uncorrelated unknown startup request requiring a reply.
+    /// Its exact source must be retained by the caller before proceeding.
+    StartupRequest {
+        /// Untrusted camera message identifier.
+        message_id: u64,
+    },
     /// A different function was not interpreted or echoed.
     Other,
 }
@@ -217,6 +235,8 @@ pub enum MessageKind {
     TimeSyncReply,
     /// Correlated reply to a separately observed camera event.
     EventReply,
+    /// Correlated reply to an explicitly captured unknown startup request.
+    StartupRequestReply,
     /// Request to change one track's serializer destination.
     StartStream(VideoChannel),
     /// Request to route one track's serializer to the discard sink.
@@ -365,8 +385,12 @@ pub struct Retirement {
     pub stream_request_kind: Option<MessageKind>,
     /// Motion request whose reply has not been observed.
     pub motion_request: Option<(u64, bool)>,
-    /// Observed event request awaiting a reply or explicit omission.
+    /// Observed event or opt-in startup request awaiting a reply or omission.
     pub event_reply: Option<(u64, fss_core::ContentDigest)>,
+    /// Whether that outstanding source was an unknown startup request.
+    pub event_reply_is_startup_request: bool,
+    /// Payload-free counts of unhandled response-request claims on this session.
+    pub unhandled_requests: UnhandledRequestCounts,
 }
 
 /// Exact owner-supplied controller identity; strings are validated before use.
@@ -462,6 +486,18 @@ pub struct TimeSyncCounts {
     pub correlated_response_expected: u32,
 }
 
+/// Saturating counts of valid, uninterpreted messages that asked for a reply.
+/// These are untrusted claims and neither retain payloads nor authorize replies.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct UnhandledRequestCounts {
+    /// Requests seen before any hello was accepted.
+    pub pre_hello: u32,
+    /// Requests seen after the pre-hello phase.
+    pub later: u32,
+    /// Requests carrying a nonzero correlation ID, included in the totals above.
+    pub correlated: u32,
+}
+
 /// Explicit policy for ambiguous correlated camera time-sync messages.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum TimeSyncPolicy {
@@ -498,12 +534,14 @@ pub struct Controller {
     prepared: Option<PreparedMessage>,
     rejected_message: Option<RejectedMessage>,
     time_sync_counts: TimeSyncCounts,
+    unhandled_requests: UnhandledRequestCounts,
     time_sync_policy: TimeSyncPolicy,
     time_sync_reply_ids: [u64; MAX_PRE_HELLO_TIME_SYNC_REPLIES],
     time_sync_request_ids: [u64; MAX_PRE_HELLO_TIME_SYNC_REPLIES],
     time_sync_reply_count: usize,
     pending_pre_hello_sync: bool,
     event_reply: Option<(u64, fss_core::ContentDigest)>,
+    event_reply_is_startup_request: bool,
     replied_event_ids: [u64; MAX_EVENT_REPLIES],
     replied_event_count: usize,
 }
@@ -547,12 +585,14 @@ impl Controller {
             prepared: None,
             rejected_message: None,
             time_sync_counts: TimeSyncCounts::default(),
+            unhandled_requests: UnhandledRequestCounts::default(),
             time_sync_policy,
             time_sync_reply_ids: [0; MAX_PRE_HELLO_TIME_SYNC_REPLIES],
             time_sync_request_ids: [0; MAX_PRE_HELLO_TIME_SYNC_REPLIES],
             time_sync_reply_count: 0,
             pending_pre_hello_sync: false,
             event_reply: None,
+            event_reply_is_startup_request: false,
             replied_event_ids: [0; MAX_EVENT_REPLIES],
             replied_event_count: 0,
         })
@@ -566,6 +606,12 @@ impl Controller {
     /// Payload-free time-sync observations; these do not prove message delivery.
     pub fn time_sync_counts(&self) -> TimeSyncCounts {
         self.time_sync_counts
+    }
+
+    /// Counts of uninterpreted requests which asserted `responseExpected`.
+    /// These do not include recognized messages and confer no reply authority.
+    pub fn unhandled_request_counts(&self) -> UnhandledRequestCounts {
+        self.unhandled_requests
     }
 
     /// Whether an observed event requires an explicit reply or omission.
@@ -594,16 +640,28 @@ impl Controller {
 
     /// Parse one complete WebSocket message, never retaining its raw JSON or payload.
     pub fn observe(&mut self, bytes: &[u8]) -> Result<Observation, Error> {
-        self.observe_inner(bytes, false)
+        self.observe_inner(bytes, false, false)
     }
 
     /// Parse a message and classify event claims. The caller must separately
     /// retain source bytes if it needs event custody; no event is verified.
     pub fn observe_event_claims(&mut self, bytes: &[u8]) -> Result<Observation, Error> {
-        self.observe_inner(bytes, true)
+        self.observe_inner(bytes, true, false)
     }
 
-    fn observe_inner(&mut self, bytes: &[u8], event_claims: bool) -> Result<Observation, Error> {
+    /// Opt in to capturing uncorrelated, response-requesting unknown functions
+    /// before hello. The caller must retain the exact source and separately
+    /// authorize any reply; this does not authenticate the sender.
+    pub fn observe_startup_requests(&mut self, bytes: &[u8]) -> Result<Observation, Error> {
+        self.observe_inner(bytes, true, true)
+    }
+
+    fn observe_inner(
+        &mut self,
+        bytes: &[u8],
+        event_claims: bool,
+        startup_requests: bool,
+    ) -> Result<Observation, Error> {
         self.rejected_message = None;
         if matches!(self.phase, Phase::Indeterminate | Phase::Closed) {
             return Err(Error::InvalidState);
@@ -813,6 +871,7 @@ impl Controller {
                         return Err(Error::EventReplyLimit);
                     }
                     self.event_reply = Some((id, fss_core::ContentDigest::sha256(bytes)));
+                    self.event_reply_is_startup_request = false;
                 }
                 Ok(Observation::CameraEvent {
                     kind: events::Kind::from_name(name),
@@ -820,19 +879,48 @@ impl Controller {
                     response_expected,
                 })
             }
-            _ => Ok(Observation::Other),
+            _ if startup_requests
+                && self.phase == Phase::AwaitHello
+                && response_expected
+                && response_to == 0 =>
+            {
+                if self.event_reply.is_some()
+                    || self.replied_event_count == MAX_EVENT_REPLIES
+                    || self.replied_event_ids[..self.replied_event_count].contains(&id)
+                {
+                    return Err(Error::EventReplyLimit);
+                }
+                self.event_reply = Some((id, fss_core::ContentDigest::sha256(bytes)));
+                self.event_reply_is_startup_request = true;
+                Ok(Observation::StartupRequest { message_id: id })
+            }
+            _ => {
+                if response_expected {
+                    let counts = &mut self.unhandled_requests;
+                    if self.phase == Phase::AwaitHello {
+                        counts.pre_hello = counts.pre_hello.saturating_add(1);
+                    } else {
+                        counts.later = counts.later.saturating_add(1);
+                    }
+                    if response_to != 0 {
+                        counts.correlated = counts.correlated.saturating_add(1);
+                    }
+                }
+                Ok(Observation::Other)
+            }
         }
     }
 
-    /// Prepare an echo only for the exact event source observed by this
-    /// controller. This is inert and confers no authority to send private data.
+    /// Prepare an echo only for the exact event or explicitly captured startup
+    /// request observed by this controller. This is inert and confers no
+    /// authority to send private data.
     pub fn prepare_event_reply(
         &mut self,
         source: &[u8],
         timestamp: &str,
     ) -> Result<&PreparedMessage, Error> {
         let digest = fss_core::ContentDigest::sha256(source);
-        let parts = events::reply_parts(source)?;
+        let parts = events::reply_parts(source, self.event_reply_is_startup_request)?;
         if self.event_reply != Some((parts.message_id, digest)) {
             return Err(Error::InvalidState);
         }
@@ -847,7 +935,11 @@ impl Controller {
             return Err(Error::InvalidJson);
         }
         self.prepare(
-            MessageKind::EventReply,
+            if self.event_reply_is_startup_request {
+                MessageKind::StartupRequestReply
+            } else {
+                MessageKind::EventReply
+            },
             &parts.function,
             parts.message_id,
             false,
@@ -859,22 +951,27 @@ impl Controller {
         Ok(message)
     }
 
-    /// Explicitly omit a reply without claiming the camera received one.
+    /// Explicitly omit an event or startup reply without claiming receipt.
     pub fn omit_event_reply(&mut self, source: fss_core::ContentDigest) -> Result<(), Error> {
         if self.prepared.is_some() || self.event_reply.is_none_or(|(_, digest)| digest != source) {
             return Err(Error::InvalidState);
         }
         let (id, _) = self.event_reply.take().ok_or(Error::InvalidState)?;
+        self.event_reply_is_startup_request = false;
         self.replied_event_ids[self.replied_event_count] = id;
         self.replied_event_count += 1;
         Ok(())
     }
 
-    /// Abandon only a locally unwritten event reply. A committed permit still
-    /// belongs to the caller and must be reconciled separately.
+    /// Abandon only a locally unwritten event or startup reply. A committed
+    /// permit still belongs to the caller and must be reconciled separately.
     pub fn abandon_event_reply(&mut self, source: fss_core::ContentDigest) -> Result<u64, Error> {
         let message = self.prepared.as_ref().ok_or(Error::InvalidState)?;
-        if message.kind != MessageKind::EventReply || message.source != Some(source) {
+        if !matches!(
+            message.kind,
+            MessageKind::EventReply | MessageKind::StartupRequestReply
+        ) || message.source != Some(source)
+        {
             return Err(Error::InvalidState);
         }
         let mut message = self.prepared.take().ok_or(Error::InvalidState)?;
@@ -1132,8 +1229,9 @@ impl Controller {
                         self.pending_pre_hello_sync = false;
                         self.time_sync = None;
                     }
-                    MessageKind::EventReply => {
+                    MessageKind::EventReply | MessageKind::StartupRequestReply => {
                         let (request_id, _) = self.event_reply.take().ok_or(Error::InvalidState)?;
+                        self.event_reply_is_startup_request = false;
                         self.replied_event_ids[self.replied_event_count] = request_id;
                         self.replied_event_count += 1;
                     }
@@ -1167,6 +1265,8 @@ impl Controller {
             stream_request_kind: self.stream_request.map(|(_, kind)| kind),
             motion_request: self.motion_request,
             event_reply: self.event_reply,
+            event_reply_is_startup_request: self.event_reply_is_startup_request,
+            unhandled_requests: self.unhandled_requests,
         };
         self.prepared = None;
         self.hello = None;
@@ -1175,6 +1275,7 @@ impl Controller {
         self.stream_request = None;
         self.motion_request = None;
         self.event_reply = None;
+        self.event_reply_is_startup_request = false;
         self.rejected_message = None;
         self.phase = Phase::Closed;
         retirement

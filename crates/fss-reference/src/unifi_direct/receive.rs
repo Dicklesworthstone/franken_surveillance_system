@@ -176,6 +176,8 @@ pub enum Step {
     Observation(Observation),
     /// A source-preserving camera event transferred to the caller.
     CameraEvent(super::events::Frame),
+    /// A retained unknown startup request, transferred without calling it an event.
+    StartupRequest(super::events::Frame),
     /// The caller-owned startup event inbox must be drained before more input.
     StartupEventBackpressure,
     /// An observed event reply must be written or explicitly omitted.
@@ -273,6 +275,17 @@ pub trait ManagementAuthority {
     /// Separately authorize echoing the event source's potentially private
     /// payload to this peer. Existing authorities deny this by default.
     fn permits_event_reply(
+        &self,
+        _claimed_mac: [u8; 6],
+        _intent: management::Intent,
+        _permit: &CommittedEffect,
+    ) -> bool {
+        false
+    }
+
+    /// Separately authorize echoing an unknown startup request's potentially
+    /// private payload. Existing authorities deny this by default.
+    fn permits_startup_request_reply(
         &self,
         _claimed_mac: [u8; 6],
         _intent: management::Intent,
@@ -404,6 +417,7 @@ pub struct Session<'scope, 'task, IO> {
     in_flight: Option<u64>,
     admission: Option<AdmissionGate<'scope>>,
     capture_events: bool,
+    capture_startup_requests: bool,
     startup_events: Option<&'scope super::events::StartupInbox>,
 }
 impl<IO> fmt::Debug for Session<'_, '_, IO> {
@@ -453,6 +467,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Session<'scope, 'task, I
             in_flight: None,
             admission: None,
             capture_events: false,
+            capture_startup_requests: false,
             startup_events: None,
         })
     }
@@ -516,13 +531,28 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Session<'scope, 'task, I
         Ok(())
     }
 
+    /// Bind a startup inbox and explicitly opt in to retaining unknown,
+    /// uncorrelated response-requesting messages before hello. Replies still
+    /// require a distinct journaled operation and disclosure authority.
+    pub fn bind_startup_events_and_requests(
+        &mut self,
+        inbox: &'scope super::events::StartupInbox,
+    ) -> Result<(), Error> {
+        self.bind_startup_events(inbox)?;
+        self.capture_startup_requests = true;
+        Ok(())
+    }
+
     // Enabled only after startup has handed the session to its supervisor.
     pub(crate) fn enable_event_capture(&mut self) {
         self.capture_events = true;
+        self.capture_startup_requests = false;
     }
 
     fn observe_message(&mut self, bytes: asupersync::bytes::Bytes) -> Step {
-        let observed = if self.capture_events || self.startup_events.is_some() {
+        let observed = if self.capture_startup_requests && !self.capture_events {
+            self.controller.observe_startup_requests(&bytes)
+        } else if self.capture_events || self.startup_events.is_some() {
             self.controller.observe_event_claims(&bytes)
         } else {
             self.controller.observe(&bytes)
@@ -553,6 +583,19 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Session<'scope, 'task, I
                 }
                 Step::Observation(Observation::Other)
             }
+            Ok(Observation::StartupRequest { message_id }) => {
+                if let Some(inbox) = self.startup_events {
+                    inbox.push(super::events::Frame::new(
+                        super::events::Kind::StartupRequest,
+                        message_id,
+                        true,
+                        bytes,
+                    ));
+                    Step::Observation(Observation::Other)
+                } else {
+                    self.stop(Stop::Protocol(super::Error::InvalidState))
+                }
+            }
             Ok(value) => Step::Observation(value),
             Err(error) => self.stop(Stop::Protocol(error)),
         }
@@ -574,6 +617,11 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Session<'scope, 'task, I
     /// Payload-free counts of camera time-sync frames observed by this session.
     pub fn time_sync_counts(&self) -> super::TimeSyncCounts {
         self.controller.time_sync_counts()
+    }
+
+    /// Payload-free counts of uninterpreted response-request claims.
+    pub fn unhandled_request_counts(&self) -> super::UnhandledRequestCounts {
+        self.controller.unhandled_request_counts()
     }
 
     pub(crate) fn startup_time_sync_limit(&self) -> usize {
@@ -631,8 +679,9 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Session<'scope, 'task, I
         Ok((value.id(), value.kind()))
     }
 
-    /// Prepare a reply to the exact event received in this session. The
-    /// management authority must separately permit disclosure of its payload.
+    /// Prepare a reply to the exact event or opt-in startup request received
+    /// in this session. The applicable authority must separately permit
+    /// disclosure of its payload.
     pub fn prepare_event_reply(
         &mut self,
         frame: &super::events::Frame,
@@ -743,6 +792,8 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Session<'scope, 'task, I
         if !authority.permits(self.claimed_mac, intent, &permit)
             || (intent.kind() == MessageKind::EventReply
                 && !authority.permits_event_reply(self.claimed_mac, intent, &permit))
+            || (intent.kind() == MessageKind::StartupRequestReply
+                && !authority.permits_startup_request_reply(self.claimed_mac, intent, &permit))
         {
             refuse!(Error::Denied);
         }
@@ -769,6 +820,12 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Session<'scope, 'task, I
                     if !authority.permits(self.claimed_mac, intent, &permit)
                         || (intent.kind() == MessageKind::EventReply
                             && !authority.permits_event_reply(self.claimed_mac, intent, &permit))
+                        || (intent.kind() == MessageKind::StartupRequestReply
+                            && !authority.permits_startup_request_reply(
+                                self.claimed_mac,
+                                intent,
+                                &permit,
+                            ))
                     {
                         return Poll::Ready(None);
                     }
@@ -1128,7 +1185,11 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Session<'scope, 'task, I
         if let Some(inbox) = self.startup_events {
             if self.capture_events {
                 if let Some(frame) = inbox.take() {
-                    return Ok(Step::CameraEvent(frame));
+                    return Ok(if frame.kind() == super::events::Kind::StartupRequest {
+                        Step::StartupRequest(frame)
+                    } else {
+                        Step::CameraEvent(frame)
+                    });
                 }
             }
         }

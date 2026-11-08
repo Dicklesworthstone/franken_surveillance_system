@@ -8,6 +8,7 @@
 use std::{
     future::{Future, poll_fn},
     pin::pin,
+    sync::Arc,
     task::Poll,
     time::Duration,
 };
@@ -20,9 +21,11 @@ use fss_core::{BudgetVector, CaptureInterval, OperationId};
 use fss_runtime::{effect::CommittedEffect, execution::TaskCx};
 
 use super::{
-    AudioCodec, VideoChannel, av_sink, av_worker, conversation, events, intent, management,
-    metered::MeteredClock, motion, pipeline, receive, recording, supervisor,
+    AudioCodec, VideoChannel, archive, av_bootstrap_driver, av_owned_sink, av_recording, av_sink,
+    av_worker, conversation, events, intent, management, metered::MeteredClock, motion, pipeline,
+    receive, recording, supervisor,
 };
+use crate::{ReferenceDeployment, ReplayCx};
 
 /// The archive phase, separate from a segment awaiting capture bounds.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -40,6 +43,10 @@ pub enum ArchiveState {
 /// Refusal to transfer the retained segment into the worker.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CaptureError {
+    /// A pending audio observation must be transferred first.
+    AudioPending,
+    /// Audio tracking or its configuration epoch requires reconciliation.
+    AudioFenced,
     /// There is no segment waiting for capture bounds.
     NoSegment,
     /// The worker has an existing source or operation.
@@ -48,6 +55,23 @@ pub enum CaptureError {
     Fenced,
     /// The worker's sink rejected the segment configuration or state.
     Sink(av_sink::RefusalReason),
+}
+
+/// Refusal before starting an archive task; the source remains owned.
+#[derive(Debug)]
+pub enum StartError {
+    /// A pending audio observation must be transferred first.
+    AudioPending,
+    /// Audio tracking or its configuration epoch requires reconciliation.
+    AudioFenced,
+    /// The worker refused admission.
+    Worker(av_worker::StartError),
+}
+
+#[derive(Clone, Copy)]
+enum AudioError {
+    Pending,
+    Fenced,
 }
 
 /// One bounded scheduling decision while an archive attempt is active.
@@ -73,6 +97,7 @@ pub struct Guard<'scope, 'task, IO> {
     worker: av_worker::Worker,
     awaiting_capture: Option<recording::Segment>,
     archive: ArchiveState,
+    audio_fenced: bool,
 }
 
 /// Every owned component returned after all archival work has drained.
@@ -86,9 +111,157 @@ pub struct Retirement {
     pub supervisor: supervisor::Retirement,
     /// Archive state at retirement, including any recovery requirement.
     pub archive: ArchiveState,
+    /// A later audio configuration or parser failure requires reconciliation.
+    pub audio_fenced: bool,
+}
+
+/// Exclusive archive owners needed to construct an idle worker.
+pub struct BootstrapResources {
+    /// Exclusive local archive owner.
+    pub deployment: ReferenceDeployment,
+    /// Publication-intent journal.
+    pub journal: archive::journal::Journal,
+    /// Separate intent-anchor journal.
+    pub keeper: archive::journal::AnchorKeeper,
+    /// Explicit filesystem and cancellation authority.
+    pub replay: ReplayCx,
+    /// Revalidated original-byte retention decision.
+    pub authority: Arc<dyn archive::RetainAuthority + Send + Sync>,
+    /// Archive limits.
+    pub limits: archive::Limits,
+    /// Work allowance per publication attempt.
+    pub work_limit: u64,
+}
+
+/// An archive guard and its explicitly hypothesized sender-clock origin.
+#[must_use]
+pub struct BootstrapStarted<'scope, 'task, IO> {
+    /// The guard retains the original first segment pending capture bounds.
+    pub guard: Guard<'scope, 'task, IO>,
+    /// Sender-clock hypothesis, not physical capture-time evidence.
+    pub origin: av_recording::SenderClockOrigin,
+}
+
+/// A refused construction retains the supervisor, source and storage owners.
+#[must_use]
+pub struct BootstrapRefusal<'scope, 'task, IO> {
+    /// Original controller and media owner.
+    pub supervisor: supervisor::Supervisor<'scope, 'task, IO>,
+    /// Original sink and all supplied storage owners.
+    pub worker_parts: av_worker::Parts,
+    /// Original first segment awaiting capture bounds.
+    pub first_segment: recording::Segment,
+    /// Original sender-clock hypothesis.
+    pub origin: av_recording::SenderClockOrigin,
+}
+
+impl<'scope, 'task, IO> BootstrapRefusal<'scope, 'task, IO> {
+    /// Recover a handoff and resources for an explicit retry or retirement.
+    pub fn into_retry(
+        self,
+    ) -> (
+        av_bootstrap_driver::Handoff<'scope, 'task, IO>,
+        BootstrapResources,
+    ) {
+        let av_worker::Parts {
+            sink,
+            deployment,
+            journal,
+            keeper,
+            replay,
+            authority,
+            limits,
+            work_limit,
+        } = self.worker_parts;
+        (
+            av_bootstrap_driver::Handoff {
+                supervisor: self.supervisor,
+                bootstrap: av_owned_sink::Bootstrap {
+                    sink,
+                    first_segment: self.first_segment,
+                    origin: self.origin,
+                },
+            },
+            BootstrapResources {
+                deployment,
+                journal,
+                keeper,
+                replay,
+                authority,
+                limits,
+                work_limit,
+            },
+        )
+    }
 }
 
 impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Guard<'scope, 'task, IO> {
+    /// Build an idle archive worker directly from a bootstrap handoff and
+    /// retain its first segment pending independently justified capture bounds.
+    /// No task or I/O is started. Every input is returned on construction refusal.
+    pub fn from_bootstrap(
+        handoff: av_bootstrap_driver::Handoff<'scope, 'task, IO>,
+        resources: BootstrapResources,
+    ) -> Result<BootstrapStarted<'scope, 'task, IO>, BootstrapRefusal<'scope, 'task, IO>> {
+        let av_bootstrap_driver::Handoff {
+            supervisor,
+            bootstrap,
+        } = handoff;
+        let av_owned_sink::Bootstrap {
+            sink,
+            first_segment,
+            origin,
+        } = bootstrap;
+        let BootstrapResources {
+            deployment,
+            journal,
+            keeper,
+            replay,
+            authority,
+            limits,
+            work_limit,
+        } = resources;
+        let parts = av_worker::Parts {
+            sink,
+            deployment,
+            journal,
+            keeper,
+            replay,
+            authority,
+            limits,
+            work_limit,
+        };
+        if parts.sink.has_pending() {
+            return Err(BootstrapRefusal {
+                supervisor,
+                worker_parts: parts,
+                first_segment,
+                origin,
+            });
+        }
+        let worker = match av_worker::Worker::new(parts) {
+            Ok(worker) => worker,
+            Err(worker_parts) => {
+                return Err(BootstrapRefusal {
+                    supervisor,
+                    worker_parts,
+                    first_segment,
+                    origin,
+                });
+            }
+        };
+        Ok(BootstrapStarted {
+            guard: Self {
+                supervisor,
+                worker,
+                awaiting_capture: Some(first_segment),
+                archive: ArchiveState::Idle,
+                audio_fenced: false,
+            },
+            origin,
+        })
+    }
+
     /// Attach an idle worker. Both original owners are returned on refusal.
     /// The caller must bind their configuration and identity to the same camera.
     pub fn new(
@@ -103,6 +276,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Guard<'scope, 'task, IO>
             worker,
             awaiting_capture: None,
             archive: ArchiveState::Idle,
+            audio_fenced: false,
         })
     }
 
@@ -127,6 +301,10 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Guard<'scope, 'task, IO>
 
     /// Assign independent capture bounds; every refusal keeps the segment.
     pub fn supply_capture(&mut self, capture: CaptureInterval) -> Result<(), CaptureError> {
+        self.check_audio().map_err(|error| match error {
+            AudioError::Pending => CaptureError::AudioPending,
+            AudioError::Fenced => CaptureError::AudioFenced,
+        })?;
         let segment = self
             .awaiting_capture
             .take()
@@ -161,6 +339,15 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Guard<'scope, 'task, IO>
     ) -> av_sink::GuardStep {
         if owner.cx.checkpoint().is_err() {
             return av_sink::GuardStep::Cancelled;
+        }
+        if self.audio_fenced {
+            return av_sink::GuardStep::AudioFenced;
+        }
+        if self.supervisor.has_pending_audio() {
+            return av_sink::GuardStep::Supervisor(supervisor::Step::AudioPending);
+        }
+        if !self.supervisor.audio_tracking_active() {
+            return av_sink::GuardStep::AudioFenced;
         }
         if self.awaiting_capture.is_some() {
             return av_sink::GuardStep::CaptureRequired;
@@ -197,17 +384,27 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Guard<'scope, 'task, IO>
         clock: MeteredClock<'a, 'b>,
         resource: &str,
         cost: &BudgetVector,
-    ) -> Result<(), av_worker::StartError> {
+    ) -> Result<(), StartError> {
+        self.check_audio().map_err(|error| match error {
+            AudioError::Pending => StartError::AudioPending,
+            AudioError::Fenced => StartError::AudioFenced,
+        })?;
         match self.archive {
-            ArchiveState::Idle => return Err(av_worker::StartError::Empty),
-            ArchiveState::Running => return Err(av_worker::StartError::Running),
-            ArchiveState::Recovery => return Err(av_worker::StartError::Fenced),
+            ArchiveState::Idle => return Err(StartError::Worker(av_worker::StartError::Empty)),
+            ArchiveState::Running => {
+                return Err(StartError::Worker(av_worker::StartError::Running));
+            }
+            ArchiveState::Recovery => {
+                return Err(StartError::Worker(av_worker::StartError::Fenced));
+            }
             ArchiveState::Pending => (),
         }
         if !self.supervisor.matches_clock(&clock) {
-            return Err(av_worker::StartError::Context);
+            return Err(StartError::Worker(av_worker::StartError::Context));
         }
-        self.worker.start(task, cx, clock, resource, cost)?;
+        self.worker
+            .start(task, cx, clock, resource, cost)
+            .map_err(StartError::Worker)?;
         self.archive = ArchiveState::Running;
         Ok(())
     }
@@ -292,7 +489,27 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Guard<'scope, 'task, IO>
         &mut self,
         owner: &conversation::Owner<'_, '_, '_>,
     ) -> Option<pipeline::AudioEvent> {
-        self.supervisor.take_audio_event(owner)
+        let event = self.supervisor.take_audio_event(owner)?;
+        self.audio_fenced |= matches!(
+            event,
+            pipeline::AudioEvent::Fenced(_)
+                | pipeline::AudioEvent::Observed(
+                    fss_packet::extended_flv::aac_track::Observation::Configuration { .. }
+                )
+        );
+        Some(event)
+    }
+
+    fn check_audio(&self) -> Result<(), AudioError> {
+        if self.audio_fenced {
+            Err(AudioError::Fenced)
+        } else if self.supervisor.has_pending_audio() {
+            Err(AudioError::Pending)
+        } else if !self.supervisor.audio_tracking_active() {
+            Err(AudioError::Fenced)
+        } else {
+            Ok(())
+        }
     }
 
     /// Prepare a source-bound camera event reply under the supervisor's checks.
@@ -408,6 +625,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Guard<'scope, 'task, IO>
             worker,
             awaiting_capture,
             archive,
+            audio_fenced,
         } = self;
         match worker.retire() {
             Ok(worker) => Ok(Retirement {
@@ -415,12 +633,14 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Guard<'scope, 'task, IO>
                 worker,
                 supervisor: supervisor.retire(),
                 archive,
+                audio_fenced,
             }),
             Err(worker) => Err(Self {
                 supervisor,
                 worker,
                 awaiting_capture,
                 archive,
+                audio_fenced,
             }),
         }
     }

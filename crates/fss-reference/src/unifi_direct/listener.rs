@@ -303,6 +303,7 @@ pub struct StartTrace {
     clock_requests: usize,
     clock_replies_written: usize,
     observations: Vec<super::Observation>,
+    protocol: super::conversation::StartupProtocolTrace,
 }
 
 impl StartTrace {
@@ -331,12 +332,23 @@ impl StartTrace {
         &self.observations
     }
 
+    /// Startup management and stream facts retained for reconciliation.
+    pub fn protocol(&self) -> &super::conversation::StartupProtocolTrace {
+        &self.protocol
+    }
+
+    /// Transfer permits and local outcomes from the caller-owned trace.
+    pub fn protocol_mut(&mut self) -> &mut super::conversation::StartupProtocolTrace {
+        &mut self.protocol
+    }
+
     fn is_empty(&self) -> bool {
         !self.attempted
             && self.dispatched.is_none()
             && self.clock_requests == 0
             && self.clock_replies_written == 0
             && self.observations.is_empty()
+            && !self.protocol.attempted()
     }
 }
 
@@ -380,8 +392,25 @@ pub async fn start<IO: asupersync::io::AsyncRead + asupersync::io::AsyncWrite + 
     recorder: Recorder,
 ) -> Result<Started, StartError> {
     let mut trace = StartTrace::default();
+    start_tracked(owner, session, cfg, framer, recorder, &mut trace).await
+}
+
+/// Start while retaining protocol outcomes in the caller's trace, including
+/// when the future fails or is dropped before the media connection is accepted.
+pub async fn start_tracked<IO: asupersync::io::AsyncRead + asupersync::io::AsyncWrite + Unpin>(
+    owner: &mut super::conversation::Owner<'_, '_, '_>,
+    session: &mut super::receive::Session<'_, '_, IO>,
+    cfg: &Start<'_>,
+    framer: Framer,
+    recorder: Recorder,
+    trace: &mut StartTrace,
+) -> Result<Started, StartError> {
+    if !trace.is_empty() {
+        return Err(StartError::Listener(Error::Configuration));
+    }
+    trace.attempted = true;
     let (progress, pipeline) = start_inner(
-        owner, session, cfg, framer, recorder, true, &mut trace, None, None,
+        owner, session, cfg, framer, recorder, true, trace, None, None,
     )
     .await?;
     match progress {
@@ -634,7 +663,7 @@ async fn start_inner<IO: asupersync::io::AsyncRead + asupersync::io::AsyncWrite 
     };
     if wait_for_reply {
         let reply = guarded_owner
-            .start(session, &conversation)
+            .start_with_protocol_trace(session, &conversation, &mut trace.protocol)
             .await
             .map_err(StartError::Conversation)?;
         let pipeline = listener
@@ -650,13 +679,14 @@ async fn start_inner<IO: asupersync::io::AsyncRead + asupersync::io::AsyncWrite 
         return Ok((StartProgress::Confirmed(reply), pipeline));
     }
     let dispatched = guarded_owner
-        .start_dispatched_with_options(
+        .start_dispatched_with_protocol_trace(
             session,
             &conversation,
             startup_motion,
             event_replies
                 .as_mut()
                 .map(|(events, trace)| (*events, &mut **trace)),
+            &mut trace.protocol,
         )
         .await
         .map_err(StartError::Conversation)?;
@@ -718,6 +748,7 @@ async fn start_inner<IO: asupersync::io::AsyncRead + asupersync::io::AsyncWrite 
                 ));
             }
             Ready::Control(Ok(super::receive::Step::Retired { reason, controller })) => {
+                trace.protocol.retain_controller_retirement(controller);
                 return Err(StartError::Conversation(
                     super::conversation::Error::SessionRetired {
                         reason,
@@ -752,7 +783,9 @@ async fn start_inner<IO: asupersync::io::AsyncRead + asupersync::io::AsyncWrite 
                     .map_err(StartError::Conversation)?;
             }
             // This listener runs before the supervisor enables event capture.
-            Ready::Control(Ok(super::receive::Step::CameraEvent(_))) => {
+            Ready::Control(Ok(
+                super::receive::Step::CameraEvent(_) | super::receive::Step::StartupRequest(_),
+            )) => {
                 return Err(StartError::Conversation(
                     super::conversation::Error::Unexpected,
                 ));
@@ -778,8 +811,12 @@ async fn start_inner<IO: asupersync::io::AsyncRead + asupersync::io::AsyncWrite 
                     .filter(|v| *v > 0)
                     .map(Duration::from_nanos)
                     .ok_or(StartError::Listener(Error::Deadline))?;
+                let sync_trace = trace
+                    .protocol
+                    .next_clock()
+                    .map_err(StartError::Conversation)?;
                 guarded_owner
-                    .answer_time_sync(session, operation, cfg.management, left)
+                    .answer_time_sync_tracked(session, operation, cfg.management, left, sync_trace)
                     .await
                     .map_err(StartError::Conversation)?;
                 trace.clock_replies_written += 1;

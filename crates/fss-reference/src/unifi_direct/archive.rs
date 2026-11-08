@@ -1,7 +1,9 @@
 #![forbid(unsafe_code)]
 //! Explicitly authorized, ledgered publication of prepared FLV source evidence.
-//! Capture bounds must be independently established, not inferred from network
-//! arrival or the camera's media clock. No implicit policy grants exist here.
+//! Known capture bounds must be independently established, not inferred from
+//! network arrival or the camera's media clock. A separate unknown-time path
+//! retains that uncertainty and makes no physical-time or coverage claim.
+//! No implicit policy grants exist here.
 
 use std::fmt;
 
@@ -19,6 +21,7 @@ use super::{
     av_evidence::{self, AudioConfigurationOrigin, PreparedAv},
     av_recording,
     evidence::{DOMAIN, KIND, Prepared},
+    source_evidence,
 };
 use crate::{ReferenceDeployment, ReplayCx, reference_deployment::ReplayCancellationBridge};
 
@@ -79,6 +82,58 @@ impl Pin {
             return Err(Error::Mismatch);
         }
         slot_for_root(self.root)
+    }
+}
+
+/// Identity of a graph whose physical capture time is explicitly unknown.
+/// This is not a receipt or a grant, and cannot be converted to a known-time pin.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct UnknownTimePin {
+    /// Canonical manifest root.
+    pub root: ContentDigest,
+    /// Identity of the separately authorized retention decision.
+    pub retention: ContentDigest,
+}
+impl UnknownTimePin {
+    /// Obtain an unknown-time candidate only from a graph with no capture bounds.
+    pub fn from_plan(plan: &Prepared<'_>) -> Option<Self> {
+        plan.capture().is_none().then(|| Self {
+            root: plan.manifest().root(),
+            retention: plan.retention(),
+        })
+    }
+
+    /// Obtain an unknown-time candidate from an A/V graph with no capture bounds.
+    pub fn from_av_plan(plan: &PreparedAv<'_>) -> Option<Self> {
+        plan.capture().is_none().then(|| Self {
+            root: plan.manifest().root(),
+            retention: plan.retention(),
+        })
+    }
+
+    /// Candidate for one separately returned source record with unknown time.
+    pub fn from_source_plan(plan: &source_evidence::Prepared<'_>) -> Self {
+        Self {
+            root: plan.manifest().root(),
+            retention: plan.retention(),
+        }
+    }
+
+    // Existing spool and policy checks use only root and retention. The full
+    // range is an internal routing value, never returned as a physical bound.
+    fn access_pin(self) -> Pin {
+        Pin {
+            root: self.root,
+            retention: self.retention,
+            capture: unknown_ledger_validity(),
+        }
+    }
+}
+
+fn unknown_ledger_validity() -> CaptureInterval {
+    CaptureInterval {
+        earliest: TimestampNs::MIN,
+        latest: TimestampNs::MAX,
     }
 }
 
@@ -185,6 +240,336 @@ pub fn publish_av(
     cx: &ReplayCx,
 ) -> Result<RootLedgerReceipt, Error> {
     publish_graph(plan, deployment, authority, limits, work, cx)
+}
+
+/// Publish an explicitly unknown-time video graph. Its ledger validity covers
+/// the entire representable timeline, not an inferred capture or receipt time.
+/// This path does not journal intent or reconstruct source after a crash; retry
+/// and reconcile the same root after any indeterminate publication.
+pub fn publish_unknown_time(
+    plan: &Prepared<'_>,
+    deployment: &mut ReferenceDeployment,
+    authority: &dyn RetainAuthority,
+    limits: Limits,
+    work: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+) -> Result<RootLedgerReceipt, Error> {
+    publish_unknown_graph(plan, deployment, authority, limits, work, cx)
+}
+
+/// Publish an explicitly unknown-time A/V graph under the same authority and
+/// recovery constraints as [`publish_unknown_time`].
+pub fn publish_unknown_time_av(
+    plan: &PreparedAv<'_>,
+    deployment: &mut ReferenceDeployment,
+    authority: &dyn RetainAuthority,
+    limits: Limits,
+    work: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+) -> Result<RootLedgerReceipt, Error> {
+    publish_unknown_graph(plan, deployment, authority, limits, work, cx)
+}
+
+/// Failure in an anchored unknown-time publication. A failed write may
+/// have taken effect; reconcile the exact pin and journal before proceeding.
+#[derive(Debug)]
+pub enum UnknownTimePublishError {
+    /// The graph has known capture bounds or conflicts with a pending root.
+    Candidate,
+    /// Journal preparation or independent anchoring did not complete.
+    BeforePublication(journal::Error),
+    /// Source staging or root publication failed, possibly after an effect.
+    Archive(Error),
+    /// A receipt exists, but the journal or its anchor needs reconciliation.
+    AfterPublication {
+        /// Actual ledger receipt retained for reconciliation.
+        receipt: Box<RootLedgerReceipt>,
+        /// Journal or anchor refusal.
+        source: journal::Error,
+    },
+}
+impl fmt::Display for UnknownTimePublishError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Candidate => "unknown-time candidate conflicts with journal",
+            Self::BeforePublication(_) => "unknown-time intent requires recovery",
+            Self::Archive(_) => "unknown-time archive requires reconciliation",
+            Self::AfterPublication { .. } => "unknown-time confirmation requires recovery",
+        })
+    }
+}
+impl std::error::Error for UnknownTimePublishError {}
+
+/// Publish an already prepared unknown-time A/V graph with a separately
+/// anchored intent and confirmation. The caller still owns the source, graph,
+/// muxer reconstruction and independently retained keeper minimum. A failure
+/// after intent preparation must be reconciled against this exact root.
+pub fn publish_unknown_time_av_anchored(
+    plan: &PreparedAv<'_>,
+    deployment: &mut ReferenceDeployment,
+    authority: &dyn RetainAuthority,
+    limits: Limits,
+    work: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+    journal: &mut journal::UnknownTimeJournal,
+    keeper: &mut journal::UnknownTimeAnchorKeeper,
+) -> Result<RootLedgerReceipt, UnknownTimePublishError> {
+    let pin = UnknownTimePin::from_av_plan(plan).ok_or(UnknownTimePublishError::Candidate)?;
+    publish_unknown_time_anchored(
+        plan, pin, deployment, authority, limits, work, cx, journal, keeper,
+    )
+}
+
+/// Retain one separately returned source record using a dedicated unknown-time
+/// journal and independent anchor. The source remains caller-owned on every
+/// return; an indeterminate result must be reconciled against the same pin.
+pub fn publish_unknown_time_source_anchored(
+    plan: &source_evidence::Prepared<'_>,
+    deployment: &mut ReferenceDeployment,
+    authority: &dyn RetainAuthority,
+    limits: Limits,
+    work: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+    journal: &mut journal::UnknownTimeJournal,
+    keeper: &mut journal::UnknownTimeAnchorKeeper,
+) -> Result<RootLedgerReceipt, UnknownTimePublishError> {
+    let pin = UnknownTimePin::from_source_plan(plan);
+    publish_unknown_time_anchored(
+        plan, pin, deployment, authority, limits, work, cx, journal, keeper,
+    )
+}
+
+fn publish_unknown_time_anchored(
+    plan: &impl Graph,
+    pin: UnknownTimePin,
+    deployment: &mut ReferenceDeployment,
+    authority: &dyn RetainAuthority,
+    limits: Limits,
+    work: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+    journal: &mut journal::UnknownTimeJournal,
+    keeper: &mut journal::UnknownTimeAnchorKeeper,
+) -> Result<RootLedgerReceipt, UnknownTimePublishError> {
+    if journal
+        .pending()
+        .or(journal.replay_pin())
+        .is_some_and(|expected| expected != pin)
+    {
+        return Err(UnknownTimePublishError::Candidate);
+    }
+    journal
+        .prepare(pin, cx)
+        .map_err(UnknownTimePublishError::BeforePublication)?;
+    keeper
+        .retain(journal, cx)
+        .map_err(UnknownTimePublishError::BeforePublication)?;
+    stage_graph(plan, deployment, authority, limits, work, cx, true, true)
+        .map_err(UnknownTimePublishError::Archive)?;
+    let receipt = publish_unknown_graph(plan, deployment, authority, limits, work, cx)
+        .map_err(UnknownTimePublishError::Archive)?;
+    if receipt.root != pin.root {
+        return Err(UnknownTimePublishError::Archive(Error::Mismatch));
+    }
+    if let Err(source) = journal.confirm(pin, cx) {
+        return Err(UnknownTimePublishError::AfterPublication {
+            receipt: Box::new(receipt),
+            source,
+        });
+    }
+    if let Err(source) = keeper.retain(journal, cx) {
+        return Err(UnknownTimePublishError::AfterPublication {
+            receipt: Box::new(receipt),
+            source,
+        });
+    }
+    Ok(receipt)
+}
+
+/// Original source and initialization for an unknown-time A/V segment.
+/// The caller keeps ownership of all borrowed originals on every outcome.
+pub struct UnknownTimeAvSegment<'a> {
+    /// Completed source-linked video segment.
+    pub segment: &'a super::recording::Segment,
+    /// Original video-configuration record.
+    pub video_configuration: &'a fss_packet::extended_flv::stream::SourceRecord,
+    /// Initialization tied to the video configuration.
+    pub video_initialization: &'a fss_container::InitializationSegment,
+    /// Initialization tied to the video and audio configurations.
+    pub av_initialization: &'a fss_container::flv_av::Initialization,
+    /// Explicitly classified audio-configuration provenance.
+    pub audio: AvSegmentAudio<'a>,
+    /// Identity of the separately authorized retention decision.
+    pub retention: ContentDigest,
+    /// Bounds for candidate evidence construction.
+    pub evidence_limits: super::evidence::Limits,
+}
+
+/// A muxer exclusively bound to unknown-time publication. This wrapper does
+/// not expose the internal full-range ledger routing value as capture time.
+pub struct UnknownTimeMuxer {
+    inner: av_recording::Muxer,
+}
+impl UnknownTimeMuxer {
+    /// Transfer an idle, unbound muxer, or return it unchanged on refusal.
+    pub fn new(inner: av_recording::Muxer) -> Result<Self, av_recording::Muxer> {
+        if inner.pending_publication().is_some() || inner.publication_scope().is_some() {
+            return Err(inner);
+        }
+        Ok(Self { inner })
+    }
+
+    /// Candidate requiring reconciliation, without a physical capture bound.
+    pub fn pending(&self) -> Option<UnknownTimePin> {
+        self.inner.pending_publication().map(|pin| UnknownTimePin {
+            root: pin.root,
+            retention: pin.retention,
+        })
+    }
+
+    /// Remaining audio-frame allowance in the existing muxer epoch.
+    pub fn remaining_audio_frames(&self) -> u64 {
+        self.inner.remaining_audio_frames()
+    }
+
+    /// Extend the caller-authorized audio allowance without resetting clocks.
+    /// A pending publication is refused by the underlying muxer.
+    pub fn extend_audio_limit(
+        &mut self,
+        additional_frames: u64,
+    ) -> Result<(), av_recording::Error> {
+        self.inner.extend_audio_limit(additional_frames)
+    }
+}
+
+/// Refusal by the unknown-time transactional segment owner.
+#[derive(Debug)]
+pub enum UnknownTimeSegmentError {
+    /// Supplied audio provenance does not match the muxer.
+    Binding,
+    /// The muxer is already tied to another journal scope.
+    JournalScope,
+    /// A different candidate is awaiting reconciliation.
+    PendingMismatch,
+    /// Media derivation refused without advancing the muxer.
+    Media(av_recording::Error),
+    /// Video source evidence could not be prepared.
+    Video(super::evidence::Error),
+    /// A/V source evidence could not be prepared.
+    AudioVideo(av_evidence::Error),
+    /// Publication needs reconciliation against the retained exact input.
+    Publication(UnknownTimePublishError),
+}
+impl fmt::Display for UnknownTimeSegmentError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Binding => "unknown-time A/V audio binding refused",
+            Self::JournalScope => "unknown-time A/V journal scope refused",
+            Self::PendingMismatch => "unknown-time A/V prior publication needs reconciliation",
+            Self::Media(_) => "unknown-time A/V segment derivation refused",
+            Self::Video(_) => "unknown-time video evidence refused",
+            Self::AudioVideo(_) => "unknown-time A/V evidence refused",
+            Self::Publication(_) => "unknown-time A/V publication needs reconciliation",
+        })
+    }
+}
+impl std::error::Error for UnknownTimeSegmentError {}
+
+/// A committed unknown-time segment and its separately authorized read pin.
+pub struct PublishedUnknownTimeAvSegment {
+    /// Immutable unknown-time graph identity.
+    pub pin: UnknownTimePin,
+    /// Actual ledger receipt.
+    pub receipt: RootLedgerReceipt,
+}
+
+/// Derive and publish one unknown-time segment under an anchored journal.
+/// The muxer advances only after both publication and confirmation succeed;
+/// on failure it retains the exact candidate fence for reconciliation.
+pub fn publish_next_unknown_time_av_segment_anchored(
+    input: &UnknownTimeAvSegment<'_>,
+    muxer: &mut UnknownTimeMuxer,
+    deployment: &mut ReferenceDeployment,
+    authority: &dyn RetainAuthority,
+    limits: Limits,
+    work: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+    journal: &mut journal::UnknownTimeJournal,
+    keeper: &mut journal::UnknownTimeAnchorKeeper,
+) -> Result<PublishedUnknownTimeAvSegment, UnknownTimeSegmentError> {
+    if !muxer.inner.bind_publication_scope(journal.scope()) {
+        return Err(UnknownTimeSegmentError::JournalScope);
+    }
+    if let Some(expected) = journal.pending().or(journal.replay_pin()) {
+        if muxer.pending().is_some_and(|proposed| proposed != expected) {
+            return Err(UnknownTimeSegmentError::PendingMismatch);
+        }
+        muxer.inner.restore_publication_fence(expected.access_pin());
+    }
+    match (&input.audio, muxer.inner.source_binding()) {
+        (AvSegmentAudio::SuppliedUnverified(_), None) => {}
+        (AvSegmentAudio::InBand(bound), Some(binding)) => {
+            let record = bound.record();
+            if binding.epoch != bound.epoch()
+                || binding.record_offset != record.offset()
+                || binding.record_bytes != record.bytes().len()
+                || binding.record_digest != ContentDigest::sha256(record.bytes())
+                || binding.configuration_source != bound.source()
+            {
+                return Err(UnknownTimeSegmentError::Binding);
+            }
+        }
+        _ => return Err(UnknownTimeSegmentError::Binding),
+    }
+    muxer
+        .inner
+        .with_fragment(
+            input.av_initialization,
+            input.segment,
+            |fragment, pending| {
+                let video = Prepared::new(
+                    input.segment,
+                    input.video_configuration,
+                    input.video_initialization,
+                    input.retention,
+                    input.evidence_limits,
+                )
+                .map_err(UnknownTimeSegmentError::Video)?;
+                let av = match &input.audio {
+                    AvSegmentAudio::InBand(configuration) => PreparedAv::new(
+                        &video,
+                        configuration,
+                        input.av_initialization,
+                        fragment,
+                        input.evidence_limits,
+                    ),
+                    AvSegmentAudio::SuppliedUnverified(configuration) => {
+                        PreparedAv::new_with_unverified_audio_configuration(
+                            &video,
+                            configuration,
+                            input.av_initialization,
+                            fragment,
+                            input.evidence_limits,
+                        )
+                    }
+                }
+                .map_err(UnknownTimeSegmentError::AudioVideo)?;
+                let pin = UnknownTimePin::from_av_plan(&av)
+                    .ok_or(UnknownTimeSegmentError::PendingMismatch)?;
+                if pending.is_some_and(|expected| expected != pin.access_pin()) {
+                    return Err(UnknownTimeSegmentError::PendingMismatch);
+                }
+                *pending = Some(pin.access_pin());
+                let receipt = publish_unknown_time_av_anchored(
+                    &av, deployment, authority, limits, work, cx, journal, keeper,
+                )
+                .map_err(UnknownTimeSegmentError::Publication)?;
+                Ok(PublishedUnknownTimeAvSegment { pin, receipt })
+            },
+        )
+        .map_err(|error| match error {
+            av_recording::TransactionError::Media(error) => UnknownTimeSegmentError::Media(error),
+            av_recording::TransactionError::Consumer(error) => error,
+        })
 }
 
 /// Codec configuration with its explicit provenance for one publication.
@@ -497,7 +882,7 @@ fn publish_next_av_segment_inner(
                     // verified spool before attempting root publication. A crash
                     // before this completes leaves an unresolved intent, not a
                     // claim that every source object is recoverable.
-                    stage_graph(&av, deployment, authority, limits, work, cx, true)
+                    stage_graph(&av, deployment, authority, limits, work, cx, true, false)
                         .map_err(|source| AvSegmentPublishError::Archive { pin, source })?;
                 }
                 let receipt = publish_av(&av, deployment, authority, limits, work, cx)
@@ -569,6 +954,20 @@ impl Graph for PreparedAv<'_> {
         Box::new(self.payloads())
     }
 }
+impl Graph for source_evidence::Prepared<'_> {
+    fn manifest(&self) -> &ObjectManifest {
+        self.manifest()
+    }
+    fn capture(&self) -> Option<CaptureInterval> {
+        None
+    }
+    fn retention(&self) -> ContentDigest {
+        self.retention()
+    }
+    fn payloads(&self) -> Box<dyn Iterator<Item = &[u8]> + '_> {
+        Box::new(self.payloads())
+    }
+}
 
 fn publish_graph(
     plan: &impl Graph,
@@ -579,7 +978,7 @@ fn publish_graph(
     cx: &ReplayCx,
 ) -> Result<RootLedgerReceipt, Error> {
     let capture = plan.capture().ok_or(Error::UnknownCapture)?;
-    stage_graph(plan, deployment, authority, limits, work, cx, false)?;
+    stage_graph(plan, deployment, authority, limits, work, cx, false, false)?;
     let gate = Gate {
         plan,
         authority,
@@ -596,6 +995,69 @@ fn publish_graph(
         .map_err(storage)
 }
 
+fn publish_unknown_graph(
+    plan: &impl Graph,
+    deployment: &mut ReferenceDeployment,
+    authority: &dyn RetainAuthority,
+    limits: Limits,
+    work: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+) -> Result<RootLedgerReceipt, Error> {
+    if plan.capture().is_some() {
+        return Err(Error::Mismatch);
+    }
+    stage_graph(plan, deployment, authority, limits, work, cx, false, true)?;
+    let gate = Gate {
+        plan,
+        authority,
+        cx,
+    };
+    let receipt = deployment
+        .ledgered_publisher()
+        .publish_and_commit_cancellable(
+            &slot_for_root(plan.manifest().root())?,
+            plan.manifest(),
+            unknown_ledger_validity(),
+            &gate,
+        )
+        .map_err(storage)?;
+    check_unknown_ledger_validity(deployment, plan.manifest().root(), &receipt.batch_id, work)?;
+    Ok(receipt)
+}
+
+// Root publication can return an existing receipt. Recheck the actual
+// ledger delta so a previously committed narrow interval is never silently
+// represented as an unknown-time publication.
+fn check_unknown_ledger_validity(
+    deployment: &ReferenceDeployment,
+    root: ContentDigest,
+    batch_id: &fss_core::BatchId,
+    work: &mut WorkBudget<'_>,
+) -> Result<(), Error> {
+    let object =
+        fss_publication::root_reachability_object_id(&slot_for_root(root)?).map_err(storage)?;
+    for batch in deployment.ledger().batches() {
+        work.charge(1 + batch.deltas.len() as u64)?;
+        if &batch.batch_id != batch_id {
+            continue;
+        }
+        let mut matching = batch
+            .deltas
+            .iter()
+            .filter(|delta| delta.object_id == object);
+        let delta = matching.next().ok_or(Error::Mismatch)?;
+        if matching.next().is_some()
+            || delta.family != fss_publication::ROOT_REACHABILITY_FAMILY
+            || delta.payload_digest != root
+            || delta.validity != unknown_ledger_validity()
+        {
+            return Err(Error::Mismatch);
+        }
+        return Ok(());
+    }
+    Err(Error::Mismatch)
+}
+
 fn stage_graph(
     plan: &impl Graph,
     deployment: &mut ReferenceDeployment,
@@ -604,8 +1066,11 @@ fn stage_graph(
     work: &mut WorkBudget<'_>,
     cx: &ReplayCx,
     include_manifest: bool,
+    allow_unknown: bool,
 ) -> Result<(), Error> {
-    let _ = plan.capture().ok_or(Error::UnknownCapture)?;
+    if !allow_unknown && plan.capture().is_none() {
+        return Err(Error::UnknownCapture);
+    }
     authorize(plan, authority, cx)?;
     if !(1024..=64 * 1024 * 1024).contains(&limits.maximum_spool_object_bytes)
         || !(1..=262_144).contains(&limits.maximum_ledger_deltas)
@@ -727,6 +1192,317 @@ pub fn read_av_object(
     read_part(deployment, pin, object, authority, work, cx)
 }
 
+/// Read an authorized child of a ledgered unknown-time video graph. The
+/// graph's unknown marker is checked before any child bytes are returned.
+pub fn read_unknown_time_object(
+    deployment: &mut ReferenceDeployment,
+    pin: UnknownTimePin,
+    object: ContentDigest,
+    authority: &dyn ReadAuthority,
+    limits: Limits,
+    work: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+) -> Result<Vec<u8>, Error> {
+    read_unknown_time_object_kind(
+        deployment, pin, object, authority, limits, work, cx, KIND, DOMAIN,
+    )
+}
+
+/// Read an authorized child of a ledgered unknown-time A/V graph. This does
+/// not establish camera identity, synchronization, decoding or coverage.
+pub fn read_unknown_time_av_object(
+    deployment: &mut ReferenceDeployment,
+    pin: UnknownTimePin,
+    object: ContentDigest,
+    authority: &dyn ReadAuthority,
+    limits: Limits,
+    work: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+) -> Result<Vec<u8>, Error> {
+    read_unknown_time_object_kind(
+        deployment,
+        pin,
+        object,
+        authority,
+        limits,
+        work,
+        cx,
+        av_evidence::KIND,
+        av_evidence::DOMAIN,
+    )
+}
+
+/// Publication status of an authorized recovered source record.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SourcePublicationState {
+    /// The exact root was published and committed to the ledger.
+    Ledgered,
+    /// The exact pending root and objects were staged, not proven published.
+    Staged,
+}
+
+/// An authorized recovered source record and its untrusted connection claims.
+pub struct RecoveredSource {
+    /// Caller-supplied connection and generation, not authenticated identity.
+    pub(super) key: fss_container::flv_avc::SourceKey,
+    /// Caller-supplied camera claim, not an identity proof.
+    pub(super) camera_claim: ContentDigest,
+    /// Caller-supplied claim about why this record was returned separately.
+    pub(super) disposition: super::recording::SourceDisposition,
+    /// Original connection-relative offset.
+    pub(super) offset: u64,
+    /// Original parser boundary claim; it can remain provisional.
+    pub(super) kind: fss_packet::extended_flv::stream::RecordKind,
+    /// Exact original bytes, subject to the caller's disclosure policy.
+    pub(super) bytes: Vec<u8>,
+    pub(super) retention: ContentDigest,
+    pub(super) metadata: Vec<u8>,
+    pub(super) manifest: ObjectManifest,
+    pub(super) state: SourcePublicationState,
+}
+
+impl RecoveredSource {
+    /// Whether the source was ledgered or only verified as a staged candidate.
+    pub fn publication_state(&self) -> SourcePublicationState {
+        self.state
+    }
+    /// Caller-supplied connection and generation, not authenticated identity.
+    pub fn key(&self) -> fss_container::flv_avc::SourceKey {
+        self.key
+    }
+    /// Caller-supplied camera claim, not an identity proof.
+    pub fn camera_claim(&self) -> ContentDigest {
+        self.camera_claim
+    }
+    /// Caller-supplied claim about the source disposition.
+    pub fn disposition(&self) -> super::recording::SourceDisposition {
+        self.disposition
+    }
+    /// Original connection-relative offset.
+    pub fn offset(&self) -> u64 {
+        self.offset
+    }
+    /// Untrusted framing claim, including any provisional marker.
+    pub fn kind(&self) -> fss_packet::extended_flv::stream::RecordKind {
+        self.kind
+    }
+    /// Exact original bytes, subject to disclosure policy.
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+/// Reopen one ledgered standalone source record under current read authority.
+/// The returned bytes and claims do not establish peer identity or capture time.
+pub fn read_unknown_time_source(
+    deployment: &mut ReferenceDeployment,
+    pin: UnknownTimePin,
+    authority: &dyn ReadAuthority,
+    limits: Limits,
+    work: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+) -> Result<RecoveredSource, Error> {
+    let access = pin.access_pin();
+    let (manifest, metadata) = open_graph_kind_with_time(
+        deployment,
+        access,
+        authority,
+        limits,
+        work,
+        cx,
+        source_evidence::KIND,
+        source_evidence::DOMAIN,
+        false,
+    )?;
+    recover_source_components(
+        deployment,
+        pin,
+        manifest,
+        metadata,
+        authority,
+        limits,
+        work,
+        cx,
+        SourcePublicationState::Ledgered,
+    )
+}
+
+/// Recover a fully staged pending record without claiming it was published.
+/// The exact journal pin and independently anchored journal prefix are checked
+/// before and after recovery; each digest-verified read rechecks authority.
+pub fn read_staged_unknown_time_source(
+    deployment: &ReferenceDeployment,
+    journal: &journal::UnknownTimeJournal,
+    keeper: &journal::UnknownTimeAnchorKeeper,
+    authority: &dyn ReadAuthority,
+    limits: Limits,
+    work: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+) -> Result<RecoveredSource, Error> {
+    if journal.inner.is_fenced() || keeper.is_fenced() || keeper.target() != journal.anchor() {
+        return Err(Error::RecoveryRequired);
+    }
+    let pin = journal.pending().ok_or(Error::RecoveryRequired)?;
+    let access = pin.access_pin();
+    let _ = access.slot()?;
+    if !(1024..=64 * 1024 * 1024).contains(&limits.maximum_spool_object_bytes)
+        || deployment.publisher().limits().spool.max_object_bytes
+            > limits.maximum_spool_object_bytes
+        || deployment.publisher().is_poisoned()
+    {
+        return Err(Error::Limit);
+    }
+    let root = read_part(deployment, access, pin.root, authority, work, cx)?;
+    let manifest = ObjectManifest::from_canonical_bytes(&root).map_err(storage)?;
+    if manifest.root() != pin.root
+        || manifest.kind() != source_evidence::KIND
+        || manifest.children().len() != 2
+    {
+        return Err(Error::Mismatch);
+    }
+    let metadata_digest = manifest.metadata_digest().ok_or(Error::Mismatch)?;
+    require_child(&manifest, metadata_digest, work)?;
+    let metadata = read_part(deployment, access, metadata_digest, authority, work, cx)?;
+    let recovered = recover_source_components(
+        deployment,
+        pin,
+        manifest,
+        metadata,
+        authority,
+        limits,
+        work,
+        cx,
+        SourcePublicationState::Staged,
+    )?;
+    read_authorize(access, authority, cx)?;
+    if journal.inner.is_fenced()
+        || keeper.is_fenced()
+        || journal.pending() != Some(pin)
+        || keeper.target() != journal.anchor()
+    {
+        return Err(Error::RecoveryRequired);
+    }
+    Ok(recovered)
+}
+
+fn recover_source_components(
+    deployment: &ReferenceDeployment,
+    pin: UnknownTimePin,
+    manifest: ObjectManifest,
+    metadata: Vec<u8>,
+    authority: &dyn ReadAuthority,
+    limits: Limits,
+    work: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+    state: SourcePublicationState,
+) -> Result<RecoveredSource, Error> {
+    use super::recording::SourceDisposition;
+    use fss_packet::extended_flv::stream::RecordKind;
+
+    let access = pin.access_pin();
+    work.charge((metadata.len() as u64).checked_mul(4).ok_or(Error::Limit)?)?;
+    let mut decoder = CanonicalDecoder::new(&metadata);
+    check_prefix_kind_with_time(&mut decoder, access, source_evidence::DOMAIN, false)?;
+    let key = fss_container::flv_avc::SourceKey {
+        connection: decoder.u64().map_err(storage)?,
+        generation: decoder.u64().map_err(storage)?,
+    };
+    let camera_claim = decoder.digest().map_err(storage)?;
+    if key.connection == 0
+        || key.generation == 0
+        || camera_claim.algorithm() != DigestAlgorithm::Sha256
+        || camera_claim.is_laboratory()
+        || camera_claim.bytes() == [0; 32]
+    {
+        return Err(Error::Mismatch);
+    }
+    let disposition = match decoder.u8().map_err(storage)? {
+        0 => SourceDisposition::Header,
+        1 => SourceDisposition::Configuration,
+        2 => SourceDisposition::PreRoll,
+        _ => return Err(Error::Mismatch),
+    };
+    let offset = decoder.u64().map_err(storage)?;
+    let length = read_size(&mut decoder, limits.maximum_spool_object_bytes)?;
+    if length == 0 || offset.checked_add(length as u64).is_none() {
+        return Err(Error::Mismatch);
+    }
+    let digest = decoder.digest().map_err(storage)?;
+    let kind = match decoder.u8().map_err(storage)? {
+        0 => RecordKind::Header,
+        1 => RecordKind::FirstTag {
+            tag_kind: decoder.u8().map_err(storage)?,
+            timestamp_ms: decoder.u32().map_err(storage)?,
+        },
+        2 => {
+            let trailer_bytes = read_size(&mut decoder, length)?;
+            if trailer_bytes >= length {
+                return Err(Error::Mismatch);
+            }
+            RecordKind::Candidate {
+                trailer_bytes,
+                tag_kind: decoder.u8().map_err(storage)?,
+                timestamp_ms: decoder.u32().map_err(storage)?,
+                earlier_incomplete: decoder.bool().map_err(storage)?,
+                provisional: decoder.bool().map_err(storage)?,
+                policy: SearchMode::from_evidence_id(decoder.u8().map_err(storage)?)
+                    .ok_or(Error::Mismatch)?,
+            }
+        }
+        _ => return Err(Error::Mismatch),
+    };
+    decoder.ensure_finished().map_err(storage)?;
+    if matches!(kind, RecordKind::Header) != matches!(disposition, SourceDisposition::Header)
+        || (matches!(kind, RecordKind::Header) && offset != 0)
+    {
+        return Err(Error::Mismatch);
+    }
+    let metadata_digest = ContentDigest::sha256(&metadata);
+    if digest == metadata_digest
+        || manifest.metadata_digest() != Some(metadata_digest)
+        || manifest.children().len() != 2
+    {
+        return Err(Error::Mismatch);
+    }
+    require_child(&manifest, metadata_digest, work)?;
+    require_child(&manifest, digest, work)?;
+    let bytes = read_part_bounded(deployment, access, digest, length, authority, work, cx)?;
+    if bytes.len() != length {
+        return Err(Error::Mismatch);
+    }
+    Ok(RecoveredSource {
+        key,
+        camera_claim,
+        disposition,
+        offset,
+        kind,
+        bytes,
+        retention: pin.retention,
+        metadata,
+        manifest,
+        state,
+    })
+}
+
+fn read_unknown_time_object_kind(
+    deployment: &mut ReferenceDeployment,
+    pin: UnknownTimePin,
+    object: ContentDigest,
+    authority: &dyn ReadAuthority,
+    limits: Limits,
+    work: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+    kind: &str,
+    domain: &str,
+) -> Result<Vec<u8>, Error> {
+    let access = pin.access_pin();
+    let (manifest, _) = open_graph_kind_with_time(
+        deployment, access, authority, limits, work, cx, kind, domain, false,
+    )?;
+    require_child(&manifest, object, work)?;
+    read_part(deployment, access, object, authority, work, cx)
+}
+
 fn require_child(
     manifest: &ObjectManifest,
     child: ContentDigest,
@@ -762,9 +1538,21 @@ pub fn read_av_audio_configuration(
     work: &mut WorkBudget<'_>,
     cx: &ReplayCx,
 ) -> Result<AvAudioConfiguration, Error> {
+    read_av_audio_configuration_with_time(deployment, pin, authority, limits, work, cx, true)
+}
+
+fn read_av_audio_configuration_with_time(
+    deployment: &mut ReferenceDeployment,
+    pin: Pin,
+    authority: &dyn ReadAuthority,
+    limits: Limits,
+    work: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+    capture_known: bool,
+) -> Result<AvAudioConfiguration, Error> {
     use fss_packet::extended_flv::{self, Parse, Tag, aac};
 
-    let (manifest, metadata) = open_graph_kind(
+    let (manifest, metadata) = open_graph_kind_with_time(
         deployment,
         pin,
         authority,
@@ -773,10 +1561,11 @@ pub fn read_av_audio_configuration(
         cx,
         av_evidence::KIND,
         av_evidence::DOMAIN,
+        capture_known,
     )?;
     work.charge(metadata.len() as u64 * 4)?;
     let mut d = CanonicalDecoder::new(&metadata);
-    check_prefix_kind(&mut d, pin, av_evidence::DOMAIN)?;
+    check_prefix_kind_with_time(&mut d, pin, av_evidence::DOMAIN, capture_known)?;
     let video_root = d.digest().map_err(storage)?;
     require_child(&manifest, video_root, work)?;
     let (origin, claimed_epoch, source) = match d.u8().map_err(storage)? {
@@ -866,6 +1655,22 @@ fn open_graph_kind(
     kind: &str,
     domain: &str,
 ) -> Result<(ObjectManifest, Vec<u8>), Error> {
+    open_graph_kind_with_time(
+        deployment, pin, authority, limits, work, cx, kind, domain, true,
+    )
+}
+
+fn open_graph_kind_with_time(
+    deployment: &mut ReferenceDeployment,
+    pin: Pin,
+    authority: &dyn ReadAuthority,
+    limits: Limits,
+    work: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+    kind: &str,
+    domain: &str,
+    capture_known: bool,
+) -> Result<(ObjectManifest, Vec<u8>), Error> {
     read_authorize(pin, authority, cx)?;
     if !(1024..=64 * 1024 * 1024).contains(&limits.maximum_spool_object_bytes)
         || !(1..=262_144).contains(&limits.maximum_ledger_deltas)
@@ -889,7 +1694,11 @@ fn open_graph_kind(
         .state(&pin.slot()?)
         .map_err(storage)?
     {
-        RootLedgerState::Ledgered { root, .. } if root == pin.root => {}
+        RootLedgerState::Ledgered { root, batch_id, .. } if root == pin.root => {
+            if !capture_known {
+                check_unknown_ledger_validity(deployment, root, &batch_id, work)?;
+            }
+        }
         _ => return Err(Error::NotCommitted),
     }
     let root_bytes = read_part(deployment, pin, pin.root, authority, work, cx)?;
@@ -900,23 +1709,24 @@ fn open_graph_kind(
     let metadata = manifest.metadata_digest().ok_or(Error::Mismatch)?;
     let metadata_bytes = read_part(deployment, pin, metadata, authority, work, cx)?;
     let mut decoder = CanonicalDecoder::new(&metadata_bytes);
-    check_prefix_kind(&mut decoder, pin, domain)?;
+    check_prefix_kind_with_time(&mut decoder, pin, domain, capture_known)?;
     Ok((manifest, metadata_bytes))
 }
 
-fn check_prefix(decoder: &mut CanonicalDecoder<'_>, pin: Pin) -> Result<(), Error> {
-    check_prefix_kind(decoder, pin, DOMAIN)
-}
-fn check_prefix_kind(
+fn check_prefix_kind_with_time(
     decoder: &mut CanonicalDecoder<'_>,
     pin: Pin,
     domain: &str,
+    capture_known: bool,
 ) -> Result<(), Error> {
     if decoder.text().map_err(storage)? != domain
         || decoder.digest().map_err(storage)? != pin.retention
-        || !decoder.bool().map_err(storage)?
+        || decoder.bool().map_err(storage)? != capture_known
     {
         return Err(Error::Mismatch);
+    }
+    if !capture_known {
+        return Ok(());
     }
     let capture = CaptureInterval::new(
         TimestampNs(decoder.i128().map_err(storage)?),
@@ -1016,6 +1826,41 @@ pub struct StagedAvCandidate {
     source: StagedSourceIndex,
 }
 
+/// Verified pending unknown-time source graph, without a physical-time pin.
+#[must_use]
+pub struct StagedUnknownTimeAvCandidate {
+    inner: StagedAvCandidate,
+}
+impl StagedUnknownTimeAvCandidate {
+    /// Candidate root and retention decision, with capture time unknown.
+    pub fn pin(&self) -> UnknownTimePin {
+        UnknownTimePin {
+            root: self.inner.pin.root,
+            retention: self.inner.pin.retention,
+        }
+    }
+    /// Verified direct object identities in canonical order.
+    pub fn children(&self) -> &[ContentDigest] {
+        self.inner.children()
+    }
+    /// Total verified bytes, including the manifest.
+    pub fn total_bytes(&self) -> usize {
+        self.inner.total_bytes()
+    }
+    /// Original video-configuration source record descriptor.
+    pub fn configuration(&self) -> StagedSourceRecord {
+        self.inner.configuration()
+    }
+    /// Original source records in claimed connection order.
+    pub fn records(&self) -> &[StagedSourceRecord] {
+        self.inner.records()
+    }
+    /// Duplicated boundary witnesses in claimed connection order.
+    pub fn witness(&self) -> &[StagedSourceRecord] {
+        self.inner.witness()
+    }
+}
+
 /// One source object's claimed connection-relative position and exact digest.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StagedSourceRecord {
@@ -1082,6 +1927,41 @@ pub fn verify_staged_av_candidate(
     work: &mut WorkBudget<'_>,
     cx: &ReplayCx,
 ) -> Result<StagedAvCandidate, Error> {
+    verify_staged_av_candidate_with_time(deployment, journal, authority, limits, work, cx, true)
+}
+
+/// Verify an unknown-time journal's pending source graph without manufacturing
+/// capture bounds or asserting that publication has completed.
+pub fn verify_staged_unknown_time_av_candidate(
+    deployment: &ReferenceDeployment,
+    journal: &journal::UnknownTimeJournal,
+    authority: &dyn ReadAuthority,
+    limits: StagedAvLimits,
+    work: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+) -> Result<StagedUnknownTimeAvCandidate, Error> {
+    Ok(StagedUnknownTimeAvCandidate {
+        inner: verify_staged_av_candidate_with_time(
+            deployment,
+            &journal.inner,
+            authority,
+            limits,
+            work,
+            cx,
+            false,
+        )?,
+    })
+}
+
+fn verify_staged_av_candidate_with_time(
+    deployment: &ReferenceDeployment,
+    journal: &journal::Journal,
+    authority: &dyn ReadAuthority,
+    limits: StagedAvLimits,
+    work: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+    capture_known: bool,
+) -> Result<StagedAvCandidate, Error> {
     if journal.is_fenced() {
         return Err(Error::RecoveryRequired);
     }
@@ -1139,7 +2019,7 @@ pub fn verify_staged_av_candidate(
         lengths.push((digest, bytes.len()));
         if digest == metadata {
             let mut decoder = CanonicalDecoder::new(&bytes);
-            check_prefix_kind(&mut decoder, pin, av_evidence::DOMAIN)?;
+            check_prefix_kind_with_time(&mut decoder, pin, av_evidence::DOMAIN, capture_known)?;
         }
     }
     let source = staged_source_index(
@@ -1152,6 +2032,7 @@ pub fn verify_staged_av_candidate(
         authority,
         work,
         cx,
+        capture_known,
     )?;
     read_authorize(pin, authority, cx)?;
     if journal.is_fenced() || journal.pending() != Some(pin) {
@@ -1182,6 +2063,7 @@ fn staged_source_index(
     authority: &dyn ReadAuthority,
     work: &mut WorkBudget<'_>,
     cx: &ReplayCx,
+    capture_known: bool,
 ) -> Result<StagedSourceIndex, Error> {
     let metadata = read_part_bounded(
         deployment,
@@ -1193,7 +2075,7 @@ fn staged_source_index(
         cx,
     )?;
     let mut decoder = CanonicalDecoder::new(&metadata);
-    check_prefix_kind(&mut decoder, pin, av_evidence::DOMAIN)?;
+    check_prefix_kind_with_time(&mut decoder, pin, av_evidence::DOMAIN, capture_known)?;
     let video_root = decoder.digest().map_err(storage)?;
     if outer.children().binary_search(&video_root).is_err() {
         return Err(Error::Mismatch);
@@ -1231,7 +2113,7 @@ fn staged_source_index(
         cx,
     )?;
     let mut decoder = CanonicalDecoder::new(&bytes);
-    check_prefix(&mut decoder, pin)?;
+    check_prefix_kind_with_time(&mut decoder, pin, DOMAIN, capture_known)?;
     let connection = decoder.u64().map_err(storage)?;
     let generation = decoder.u64().map_err(storage)?;
     let sequence = decoder.u32().map_err(storage)?;
@@ -1385,6 +2267,28 @@ pub fn read_staged_av_object(
         return Err(Error::RecoveryRequired);
     }
     Ok(bytes)
+}
+
+/// Read a verified pending unknown-time object under current authority. This
+/// rechecks journal state and object integrity and does not assert publication.
+pub fn read_staged_unknown_time_av_object(
+    deployment: &ReferenceDeployment,
+    journal: &journal::UnknownTimeJournal,
+    candidate: &StagedUnknownTimeAvCandidate,
+    digest: ContentDigest,
+    authority: &dyn ReadAuthority,
+    work: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+) -> Result<Vec<u8>, Error> {
+    read_staged_av_object(
+        deployment,
+        &journal.inner,
+        &candidate.inner,
+        digest,
+        authority,
+        work,
+        cx,
+    )
 }
 
 /// A recovered, source-checked AVC fragmented MP4. Its capture bounds are the
@@ -1549,7 +2453,7 @@ pub fn read_clip(
 ) -> Result<RecoveredClip, Error> {
     let (manifest, metadata) = open_graph(deployment, pin, authority, limits, work, cx)?;
     recover_video_graph(
-        deployment, pin, &manifest, &metadata, authority, limits, work, cx,
+        deployment, pin, &manifest, &metadata, authority, limits, work, cx, true,
     )
 }
 
@@ -1575,6 +2479,7 @@ pub fn read_av_video_clip(
         limits,
         work,
         cx,
+        true,
     )
 }
 
@@ -1586,7 +2491,19 @@ fn open_av_video_graph(
     work: &mut WorkBudget<'_>,
     cx: &ReplayCx,
 ) -> Result<(ObjectManifest, Vec<u8>, ObjectManifest, Vec<u8>), Error> {
-    let (outer, metadata) = open_graph_kind(
+    open_av_video_graph_with_time(deployment, pin, authority, limits, work, cx, true)
+}
+
+fn open_av_video_graph_with_time(
+    deployment: &mut ReferenceDeployment,
+    pin: Pin,
+    authority: &dyn ReadAuthority,
+    limits: Limits,
+    work: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+    capture_known: bool,
+) -> Result<(ObjectManifest, Vec<u8>, ObjectManifest, Vec<u8>), Error> {
+    let (outer, metadata) = open_graph_kind_with_time(
         deployment,
         pin,
         authority,
@@ -1595,10 +2512,11 @@ fn open_av_video_graph(
         cx,
         av_evidence::KIND,
         av_evidence::DOMAIN,
+        capture_known,
     )?;
     work.charge(metadata.len() as u64 * 4)?;
     let mut decoder = CanonicalDecoder::new(&metadata);
-    check_prefix_kind(&mut decoder, pin, av_evidence::DOMAIN)?;
+    check_prefix_kind_with_time(&mut decoder, pin, av_evidence::DOMAIN, capture_known)?;
     let video_root = decoder.digest().map_err(storage)?;
     work.charge(u64::from(usize::BITS) + 1)?;
     if outer.children().binary_search(&video_root).is_err() {
@@ -1681,6 +2599,42 @@ impl fmt::Debug for RecoveredAvClip {
         f.debug_struct("RecoveredAvClip")
             .field("bytes", &"<redacted>")
             .field("capture", &self.capture)
+            .field("video_samples", &self.video_samples)
+            .field("audio", &self.audio)
+            .finish()
+    }
+}
+
+/// A source-checked A/V derivative whose physical capture time is unknown.
+/// No physical interval or temporal coverage is inferred from its ledger entry.
+#[must_use]
+pub struct RecoveredUnknownTimeAvClip {
+    bytes: Vec<u8>,
+    video_samples: usize,
+    audio: AvAudioSourceMapping,
+}
+impl RecoveredUnknownTimeAvClip {
+    /// Two-track initialization followed by the checked media fragment.
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+    /// Transfer the authorized media bytes to the caller.
+    pub fn into_bytes(self) -> Vec<u8> {
+        self.bytes
+    }
+    /// Structurally checked video samples, not a decoder guarantee.
+    pub fn video_samples(&self) -> usize {
+        self.video_samples
+    }
+    /// Checked audio source mapping and configuration provenance.
+    pub fn audio(&self) -> AvAudioSourceMapping {
+        self.audio
+    }
+}
+impl fmt::Debug for RecoveredUnknownTimeAvClip {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RecoveredUnknownTimeAvClip")
+            .field("bytes", &"<redacted>")
             .field("video_samples", &self.video_samples)
             .field("audio", &self.audio)
             .finish()
@@ -1885,7 +2839,47 @@ pub fn read_av_clip(
     work: &mut WorkBudget<'_>,
     cx: &ReplayCx,
 ) -> Result<RecoveredAvClip, Error> {
-    let verified = verify_av_graph(deployment, pin, authority, limits, work, cx)?;
+    read_av_clip_with_time(deployment, pin, authority, limits, work, cx, true)
+}
+
+/// Recover a source-checked A/V derivative without inventing capture bounds.
+/// Audio configuration provenance and structural mappings are retained; this
+/// does not establish device identity, decoding, coverage or synchronization.
+pub fn read_unknown_time_av_clip(
+    deployment: &mut ReferenceDeployment,
+    pin: UnknownTimePin,
+    authority: &dyn ReadAuthority,
+    limits: Limits,
+    work: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+) -> Result<RecoveredUnknownTimeAvClip, Error> {
+    let clip = read_av_clip_with_time(
+        deployment,
+        pin.access_pin(),
+        authority,
+        limits,
+        work,
+        cx,
+        false,
+    )?;
+    Ok(RecoveredUnknownTimeAvClip {
+        bytes: clip.bytes,
+        video_samples: clip.video_samples,
+        audio: clip.audio,
+    })
+}
+
+fn read_av_clip_with_time(
+    deployment: &mut ReferenceDeployment,
+    pin: Pin,
+    authority: &dyn ReadAuthority,
+    limits: Limits,
+    work: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+    capture_known: bool,
+) -> Result<RecoveredAvClip, Error> {
+    let verified =
+        verify_av_graph_with_time(deployment, pin, authority, limits, work, cx, capture_known)?;
     let media_len = verified
         .initialization_len
         .checked_add(verified.fragment_len)
@@ -1938,11 +2932,31 @@ fn verify_av_graph(
     work: &mut WorkBudget<'_>,
     cx: &ReplayCx,
 ) -> Result<VerifiedAvGraph, Error> {
+    verify_av_graph_with_time(deployment, pin, authority, limits, work, cx, true)
+}
+
+fn verify_av_graph_with_time(
+    deployment: &mut ReferenceDeployment,
+    pin: Pin,
+    authority: &dyn ReadAuthority,
+    limits: Limits,
+    work: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+    capture_known: bool,
+) -> Result<VerifiedAvGraph, Error> {
     use fss_packet::extended_flv::{self, Parse, Tag, aac};
 
-    let configuration = read_av_audio_configuration(deployment, pin, authority, limits, work, cx)?;
+    let configuration = read_av_audio_configuration_with_time(
+        deployment,
+        pin,
+        authority,
+        limits,
+        work,
+        cx,
+        capture_known,
+    )?;
     let (outer, metadata, video, video_metadata) =
-        open_av_video_graph(deployment, pin, authority, limits, work, cx)?;
+        open_av_video_graph_with_time(deployment, pin, authority, limits, work, cx, capture_known)?;
     let verified_video = recover_video_graph(
         deployment,
         pin,
@@ -1952,10 +2966,11 @@ fn verify_av_graph(
         limits,
         work,
         cx,
+        capture_known,
     )?;
     work.charge(metadata.len() as u64 * 4)?;
     let mut d = CanonicalDecoder::new(&metadata);
-    check_prefix_kind(&mut d, pin, av_evidence::DOMAIN)?;
+    check_prefix_kind_with_time(&mut d, pin, av_evidence::DOMAIN, capture_known)?;
     if d.digest().map_err(storage)? != video.root() {
         return Err(Error::Mismatch);
     }
@@ -2074,7 +3089,7 @@ fn verify_av_graph(
 
     work.charge(video_metadata.len() as u64 * 4)?;
     let mut source = CanonicalDecoder::new(&video_metadata);
-    check_prefix(&mut source, pin)?;
+    check_prefix_kind_with_time(&mut source, pin, DOMAIN, capture_known)?;
     if source.u64().map_err(storage)? == 0
         || source.u64().map_err(storage)? == 0
         || source.u32().map_err(storage)? == 0
@@ -2247,12 +3262,13 @@ fn recover_video_graph(
     limits: Limits,
     work: &mut WorkBudget<'_>,
     cx: &ReplayCx,
+    capture_known: bool,
 ) -> Result<RecoveredClip, Error> {
     use fss_container::demux::{AvcMp4, DemuxLimits};
     use std::collections::BTreeSet;
     work.charge(metadata.len() as u64 * 4)?;
     let mut d = CanonicalDecoder::new(metadata);
-    check_prefix(&mut d, pin)?;
+    check_prefix_kind_with_time(&mut d, pin, DOMAIN, capture_known)?;
     let connection = d.u64().map_err(storage)?;
     let generation = d.u64().map_err(storage)?;
     let sequence = d.u32().map_err(storage)?;

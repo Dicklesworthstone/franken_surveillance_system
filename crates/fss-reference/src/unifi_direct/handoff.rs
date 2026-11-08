@@ -90,6 +90,7 @@ pub struct Plan {
     preconditions: ContentDigest,
     reverse_preview: ContentDigest,
     framing: Framing,
+    controller_port: Option<u16>,
 }
 impl fmt::Debug for Plan {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -138,7 +139,27 @@ impl Plan {
             preconditions,
             reverse_preview,
             framing,
+            controller_port: None,
         })
+    }
+    /// Bind the reported listener port to this plan's effect preconditions.
+    ///
+    /// This records one caller-supplied status claim; it does not authenticate
+    /// the camera or establish that its port remains unchanged.
+    pub fn bind_reported_controller_port(
+        mut self,
+        status: camera_api::StatusShape,
+        expected: u16,
+    ) -> Result<Self, Error> {
+        if expected == 0
+            || self.controller_port.is_some()
+            || status.controller_port != camera_api::ControllerPort::Reported(expected)
+        {
+            return Err(Error::Preconditions);
+        }
+        self.preconditions = listener_preconditions_digest(self.preconditions, expected)?;
+        self.controller_port = Some(expected);
+        Ok(self)
     }
     /// Exact semantic request digest for management-effect preparation.
     pub fn request_digest(&self) -> ContentDigest {
@@ -162,7 +183,12 @@ impl Plan {
     }
     /// Refuse stale, mismatched or unrepresentable current claims before commit.
     pub fn check_current(&self, current: Preconditions) -> Result<(), Error> {
-        if preconditions_digest(self.peer, current)? != self.preconditions
+        let base = preconditions_digest(self.peer, current)?;
+        let current_digest = match self.controller_port {
+            Some(port) => listener_preconditions_digest(base, port)?,
+            None => base,
+        };
+        if current_digest != self.preconditions
             || current.settings.controller != ControllerAddress::Reported(self.prior)
             || self.destination == self.prior
         {
@@ -205,6 +231,15 @@ impl Plan {
         }
         Ok(body)
     }
+}
+fn listener_preconditions_digest(base: ContentDigest, port: u16) -> Result<ContentDigest, Error> {
+    let mut e = CanonicalEncoder::new();
+    e.text("fss.unifi-direct.controller-handoff-listener-precondition.v1");
+    e.digest(base);
+    e.u64(u64::from(port));
+    Ok(ContentDigest::sha256(
+        &e.finish_checked().map_err(|_| Error::Encoding)?,
+    ))
 }
 
 fn valid_peer(ip: Ipv4Addr) -> bool {

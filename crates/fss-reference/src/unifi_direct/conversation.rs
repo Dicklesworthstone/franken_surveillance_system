@@ -13,7 +13,7 @@ use super::{
     motion,
     receive::{
         ManagementAuthority, ManagementRefusal, ManagementWrite, MotionAuthority, MotionRefusal,
-        MotionWrite, Session, Step, StreamAuthority, StreamWrite,
+        MotionWrite, Session, Step, StreamAuthority, StreamRefusal, StreamWrite,
     },
 };
 use asupersync::{
@@ -82,7 +82,8 @@ pub struct StartupMotion<'a> {
 }
 
 /// Distinct, caller-provided operation identities for bounded startup replies.
-/// The session must already have a caller-owned startup inbox bound.
+/// The session must already have a caller-owned startup inbox bound. Unknown
+/// requests require the session's separate capture opt-in and disclosure gate.
 pub struct StartupEventReplies<'a> {
     /// One unique journal operation per requested reply, at most 64.
     pub operations: &'a [OperationId],
@@ -103,7 +104,7 @@ impl StartupEventAttempt {
     pub fn operation(&self) -> &OperationId {
         &self.operation
     }
-    /// Digest of the original event retained by the startup inbox owner.
+    /// Digest of the original event or request retained by the startup inbox owner.
     pub fn source(&self) -> ContentDigest {
         self.source
     }
@@ -129,7 +130,7 @@ impl StartupEventAttempt {
     }
 }
 
-/// Caller-owned event effects and their outcomes across startup cancellation.
+/// Caller-owned startup reply effects and outcomes across cancellation.
 #[derive(Default)]
 pub struct StartupEventTrace {
     attempted: bool,
@@ -196,6 +197,184 @@ impl StartupMotionTrace {
     /// Transfer a refused committed permit for independent reconciliation.
     pub fn take_refusal(&mut self) -> Option<MotionRefusal> {
         self.refusal.take()
+    }
+}
+
+/// Caller-owned facts for one management reply or request.
+///
+/// The journal remains authoritative. If a dispatch future is cancelled after
+/// it takes the permit, `dispatch_started` remains true with no local outcome;
+/// that uncertainty must be reconciled and must not trigger an automatic retry.
+#[derive(Default)]
+#[must_use = "retain the attempt and reconcile any committed effect"]
+pub struct ManagementTrace {
+    operation: Option<OperationId>,
+    intent: Option<management::Intent>,
+    dispatch_started: bool,
+    pending_permit: Option<CommittedEffect>,
+    written: Option<ManagementWrite>,
+    refusal: Option<ManagementRefusal>,
+}
+impl fmt::Debug for ManagementTrace {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ManagementTrace")
+            .field("attempted", &self.operation.is_some())
+            .field("intent_prepared", &self.intent.is_some())
+            .field("dispatch_started", &self.dispatch_started)
+            .field("pending_permit", &self.pending_permit.is_some())
+            .field("local_outcome", &self.written.is_some())
+            .field("refused", &self.refusal.is_some())
+            .finish_non_exhaustive()
+    }
+}
+impl ManagementTrace {
+    /// Exact caller-supplied operation, if the attempt was initialized.
+    pub fn operation(&self) -> Option<&OperationId> {
+        self.operation.as_ref()
+    }
+    /// Inert management intent, if preparation reached that point.
+    pub fn intent(&self) -> Option<management::Intent> {
+        self.intent
+    }
+    /// Whether the one-use permit was handed to the dispatch future.
+    pub fn dispatch_started(&self) -> bool {
+        self.dispatch_started
+    }
+    /// Transfer a committed permit that was never handed to dispatch.
+    pub fn take_pending_permit(&mut self) -> Option<CommittedEffect> {
+        self.pending_permit.take()
+    }
+    /// Transfer the local write outcome and its committed permit.
+    pub fn take_written(&mut self) -> Option<ManagementWrite> {
+        self.written.take()
+    }
+    /// Transfer a pre-write refusal and its committed permit.
+    pub fn take_refusal(&mut self) -> Option<ManagementRefusal> {
+        self.refusal.take()
+    }
+    pub(crate) fn indeterminate_retirement(&self) -> Option<super::Retirement> {
+        match self.written.as_ref() {
+            Some(ManagementWrite::Indeterminate { controller, .. }) => Some(*controller),
+            _ => None,
+        }
+    }
+}
+
+/// The management trace used for a single camera-requested clock reply.
+pub type TimeSyncTrace = ManagementTrace;
+
+/// Caller-owned facts for a startup stream-setting attempt.
+#[derive(Default)]
+#[must_use = "retain the attempt and reconcile any committed effect"]
+pub struct StartupStreamTrace {
+    operation: Option<OperationId>,
+    intent: Option<intent::Intent>,
+    dispatch_started: bool,
+    pending_permit: Option<CommittedEffect>,
+    written: Option<StreamWrite>,
+    refusal: Option<StreamRefusal>,
+}
+impl fmt::Debug for StartupStreamTrace {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("StartupStreamTrace")
+            .field("attempted", &self.operation.is_some())
+            .field("intent_prepared", &self.intent.is_some())
+            .field("dispatch_started", &self.dispatch_started)
+            .field("pending_permit", &self.pending_permit.is_some())
+            .field("local_outcome", &self.written.is_some())
+            .field("refused", &self.refusal.is_some())
+            .finish_non_exhaustive()
+    }
+}
+impl StartupStreamTrace {
+    /// Exact caller-supplied operation, when initialized.
+    pub fn operation(&self) -> Option<&OperationId> {
+        self.operation.as_ref()
+    }
+    /// Inert stream intent, when prepared.
+    pub fn intent(&self) -> Option<intent::Intent> {
+        self.intent
+    }
+    /// Whether the permit was handed to the dispatch future.
+    pub fn dispatch_started(&self) -> bool {
+        self.dispatch_started
+    }
+    /// Transfer a committed permit that was not handed to dispatch.
+    pub fn take_pending_permit(&mut self) -> Option<CommittedEffect> {
+        self.pending_permit.take()
+    }
+    /// Transfer a local write result and permit.
+    pub fn take_written(&mut self) -> Option<StreamWrite> {
+        self.written.take()
+    }
+    /// Transfer a pre-write refusal and permit.
+    pub fn take_refusal(&mut self) -> Option<StreamRefusal> {
+        self.refusal.take()
+    }
+}
+
+/// Caller-owned management and stream outcomes for one startup attempt.
+#[derive(Debug, Default)]
+#[must_use = "retain startup effects for independent reconciliation"]
+pub struct StartupProtocolTrace {
+    attempted: bool,
+    hello: ManagementTrace,
+    agreement: ManagementTrace,
+    clocks: Vec<ManagementTrace>,
+    clock_limit: usize,
+    stream: StartupStreamTrace,
+    controller_retirement: Option<super::Retirement>,
+}
+impl StartupProtocolTrace {
+    /// Whether this trace was bound to a startup attempt.
+    pub fn attempted(&self) -> bool {
+        self.attempted
+    }
+    /// Hello reply facts.
+    pub fn hello(&self) -> &ManagementTrace {
+        &self.hello
+    }
+    /// Hello reply facts and retained permit.
+    pub fn hello_mut(&mut self) -> &mut ManagementTrace {
+        &mut self.hello
+    }
+    /// Parameter-agreement request facts.
+    pub fn agreement(&self) -> &ManagementTrace {
+        &self.agreement
+    }
+    /// Parameter-agreement request facts and retained permit.
+    pub fn agreement_mut(&mut self) -> &mut ManagementTrace {
+        &mut self.agreement
+    }
+    /// Clock attempts in observed order, including any incomplete attempt.
+    pub fn clocks(&self) -> &[ManagementTrace] {
+        &self.clocks
+    }
+    /// Clock attempts and their retained permits.
+    pub fn clocks_mut(&mut self) -> &mut [ManagementTrace] {
+        &mut self.clocks
+    }
+    /// Stream-setting attempt and retained permit.
+    pub fn stream(&self) -> &StartupStreamTrace {
+        &self.stream
+    }
+    /// Stream-setting attempt and retained permit.
+    pub fn stream_mut(&mut self) -> &mut StartupStreamTrace {
+        &mut self.stream
+    }
+    /// Original controller retirement if the peer closed during startup.
+    pub fn controller_retirement(&self) -> Option<super::Retirement> {
+        self.controller_retirement
+    }
+    pub(crate) fn retain_controller_retirement(&mut self, retirement: super::Retirement) {
+        self.controller_retirement = Some(retirement);
+    }
+    pub(crate) fn next_clock(&mut self) -> Result<&mut ManagementTrace, Error> {
+        if self.clocks.len() == self.clock_limit {
+            return Err(Error::Limit);
+        }
+        self.clocks.push(ManagementTrace::default());
+        self.clocks.last_mut().ok_or(Error::Limit)
     }
 }
 
@@ -362,6 +541,53 @@ impl Owner<'_, '_, '_> {
         }
     }
 
+    async fn send_management_tracked<IO: AsyncRead + AsyncWrite + Unpin>(
+        &mut self,
+        session: &mut Session<'_, '_, IO>,
+        operation: &OperationId,
+        conditions: management::Preconditions,
+        deadline: u64,
+        trace: &mut ManagementTrace,
+    ) -> Result<(), Error> {
+        if trace.operation.as_ref() != Some(operation) || trace.intent.is_some() {
+            return Err(Error::Configuration);
+        }
+        let intent = session
+            .management_intent(conditions)
+            .map_err(Error::SessionDetail)?;
+        trace.intent = Some(intent);
+        let permit = self.permit(
+            operation,
+            intent.request_digest(),
+            intent.precondition_digest(),
+            &intent.resource(),
+            intent.fence(),
+            RuntimeGrant::CameraManagementPrepare,
+            RuntimeGrant::CameraManagementCommit,
+        )?;
+        trace.pending_permit = Some(permit);
+        let left = self.remaining(deadline)?;
+        let permit = trace.pending_permit.take().ok_or(Error::Effect)?;
+        trace.dispatch_started = true;
+        match session
+            .dispatch_management(intent, conditions, permit, self.management_authority, left)
+            .await
+        {
+            Ok(result @ ManagementWrite::Written { .. }) => {
+                trace.written = Some(result);
+                Ok(())
+            }
+            Ok(result @ ManagementWrite::Indeterminate { .. }) => {
+                trace.written = Some(result);
+                Err(Error::Indeterminate)
+            }
+            Err(refusal) => {
+                trace.refusal = Some(refusal);
+                Err(Error::Effect)
+            }
+        }
+    }
+
     fn remaining(&self, deadline: u64) -> Result<Duration, Error> {
         self.cx.checkpoint().map_err(|_| Error::Clock)?;
         let left = deadline
@@ -465,6 +691,7 @@ impl Owner<'_, '_, '_> {
         syncs: &mut usize,
         messages: &mut usize,
         event_replies: &mut Option<(&StartupEventReplies<'_>, &mut StartupEventTrace)>,
+        protocol_trace: &mut Option<&mut StartupProtocolTrace>,
     ) -> Result<Option<Observation>, Error> {
         let wait = self.remaining(deadline)?.min(slice);
         match session.next(wait).await.map_err(Error::SessionDetail)? {
@@ -480,12 +707,17 @@ impl Owner<'_, '_, '_> {
                 None => Err(Error::EventBackpressure),
             },
             // Event capture is enabled only after this startup owner is retired.
-            Step::CameraEvent(_) => Err(Error::Unexpected),
-            Step::Retired { reason, controller } => Err(Error::SessionRetired {
-                reason,
-                phase: controller.previous_phase,
-                rejected_message: controller.rejected_message,
-            }),
+            Step::CameraEvent(_) | Step::StartupRequest(_) => Err(Error::Unexpected),
+            Step::Retired { reason, controller } => {
+                if let Some(trace) = protocol_trace.as_mut() {
+                    trace.retain_controller_retirement(controller);
+                }
+                Err(Error::SessionRetired {
+                    reason,
+                    phase: controller.previous_phase,
+                    rejected_message: controller.rejected_message,
+                })
+            }
             Step::Observation(observation) => {
                 *messages += 1;
                 if *messages > MAX_MESSAGES {
@@ -493,12 +725,30 @@ impl Owner<'_, '_, '_> {
                 }
                 if observation == Observation::TimeSyncRequested {
                     let operation = cfg.time_sync.get(*syncs).ok_or(Error::Limit)?;
+                    let trace = if let Some(protocol) = protocol_trace.as_mut() {
+                        let trace = protocol.next_clock()?;
+                        trace.operation = Some(operation.clone());
+                        Some(trace)
+                    } else {
+                        None
+                    };
                     let wall = self.wall.observe().ok_or(Error::Clock)?;
                     session
                         .prepare_time_sync(wall.unix_ms, &wall.timestamp)
                         .map_err(Error::SessionDetail)?;
-                    self.send_management(session, operation, cfg.management, deadline)
+                    if let Some(trace) = trace {
+                        self.send_management_tracked(
+                            session,
+                            operation,
+                            cfg.management,
+                            deadline,
+                            trace,
+                        )
                         .await?;
+                    } else {
+                        self.send_management(session, operation, cfg.management, deadline)
+                            .await?;
+                    }
                     *syncs += 1;
                     Ok(None)
                 } else {
@@ -539,6 +789,41 @@ impl Owner<'_, '_, '_> {
             .await
     }
 
+    /// Answer one observed clock request while retaining the journaled permit
+    /// and local dispatch outcome in caller-owned state. A cancelled future
+    /// leaves this trace available to the caller for explicit reconciliation.
+    pub async fn answer_time_sync_tracked<IO: AsyncRead + AsyncWrite + Unpin>(
+        &mut self,
+        session: &mut Session<'_, '_, IO>,
+        operation: &OperationId,
+        conditions: management::Preconditions,
+        wait: Duration,
+        trace: &mut TimeSyncTrace,
+    ) -> Result<(), Error> {
+        if trace.operation.is_some()
+            || wait.is_zero()
+            || wait > Duration::from_secs(30)
+            || !self.clock.matches(self.task, self.cx)
+            || !session.matches_clock(&self.clock)
+        {
+            return Err(Error::Configuration);
+        }
+        trace.operation = Some(operation.clone());
+        let nanos = u64::try_from(wait.as_nanos()).map_err(|_| Error::Configuration)?;
+        let deadline = self
+            .cx
+            .now()
+            .as_nanos()
+            .checked_add(nanos)
+            .ok_or(Error::Configuration)?;
+        let wall = self.wall.observe().ok_or(Error::Clock)?;
+        session
+            .prepare_time_sync(wall.unix_ms, &wall.timestamp)
+            .map_err(Error::SessionDetail)?;
+        self.send_management_tracked(session, operation, conditions, deadline, trace)
+            .await
+    }
+
     /// Drive hello, delayed agreement and one stream request on an existing
     /// admitted session. All effects remain open after success. A successful
     /// reply is a protocol observation, not a stream or recording receipt.
@@ -547,7 +832,10 @@ impl Owner<'_, '_, '_> {
         session: &mut Session<'_, '_, IO>,
         cfg: &Config<'_>,
     ) -> Result<Reply, Error> {
-        match self.start_inner(session, cfg, true, None, None).await? {
+        match self
+            .start_inner(session, cfg, true, None, None, None)
+            .await?
+        {
             StartResult::Reply(reply) => Ok(reply),
             StartResult::Dispatched(_) => Err(Error::Configuration),
         }
@@ -561,7 +849,10 @@ impl Owner<'_, '_, '_> {
         session: &mut Session<'_, '_, IO>,
         cfg: &Config<'_>,
     ) -> Result<Dispatched, Error> {
-        match self.start_inner(session, cfg, false, None, None).await? {
+        match self
+            .start_inner(session, cfg, false, None, None, None)
+            .await?
+        {
             StartResult::Dispatched(dispatched) => Ok(dispatched),
             StartResult::Reply(_) => Err(Error::Configuration),
         }
@@ -578,7 +869,7 @@ impl Owner<'_, '_, '_> {
         trace: &mut StartupMotionTrace,
     ) -> Result<Dispatched, Error> {
         match self
-            .start_inner(session, cfg, false, Some((motion, trace)), None)
+            .start_inner(session, cfg, false, Some((motion, trace)), None, None)
             .await?
         {
             StartResult::Dispatched(dispatched) => Ok(dispatched),
@@ -596,7 +887,42 @@ impl Owner<'_, '_, '_> {
         events: Option<(&StartupEventReplies<'_>, &mut StartupEventTrace)>,
     ) -> Result<Dispatched, Error> {
         match self
-            .start_inner(session, cfg, false, motion, events)
+            .start_inner(session, cfg, false, motion, events, None)
+            .await?
+        {
+            StartResult::Dispatched(dispatched) => Ok(dispatched),
+            StartResult::Reply(_) => Err(Error::Configuration),
+        }
+    }
+
+    /// Run startup and retain management and stream effects in caller-owned
+    /// state, including when the future is dropped or returns an error.
+    pub async fn start_with_protocol_trace<IO: AsyncRead + AsyncWrite + Unpin>(
+        &mut self,
+        session: &mut Session<'_, '_, IO>,
+        cfg: &Config<'_>,
+        trace: &mut StartupProtocolTrace,
+    ) -> Result<Reply, Error> {
+        match self
+            .start_inner(session, cfg, true, None, None, Some(trace))
+            .await?
+        {
+            StartResult::Reply(reply) => Ok(reply),
+            StartResult::Dispatched(_) => Err(Error::Configuration),
+        }
+    }
+
+    /// Start without awaiting the stream reply, retaining all protocol effects.
+    pub async fn start_dispatched_with_protocol_trace<IO: AsyncRead + AsyncWrite + Unpin>(
+        &mut self,
+        session: &mut Session<'_, '_, IO>,
+        cfg: &Config<'_>,
+        motion: Option<(&StartupMotion<'_>, &mut StartupMotionTrace)>,
+        events: Option<(&StartupEventReplies<'_>, &mut StartupEventTrace)>,
+        trace: &mut StartupProtocolTrace,
+    ) -> Result<Dispatched, Error> {
+        match self
+            .start_inner(session, cfg, false, motion, events, Some(trace))
             .await?
         {
             StartResult::Dispatched(dispatched) => Ok(dispatched),
@@ -611,6 +937,7 @@ impl Owner<'_, '_, '_> {
         wait_for_reply: bool,
         mut startup_motion: Option<(&StartupMotion<'_>, &mut StartupMotionTrace)>,
         mut event_replies: Option<(&StartupEventReplies<'_>, &mut StartupEventTrace)>,
+        mut protocol_trace: Option<&mut StartupProtocolTrace>,
     ) -> Result<StartResult, Error> {
         if cfg.wait.is_zero()
             || cfg.wait > Duration::from_secs(30)
@@ -652,6 +979,16 @@ impl Owner<'_, '_, '_> {
                 .map_err(|_| Error::Limit)?;
             ids.extend(events.operations.iter());
         }
+        if let Some(trace) = protocol_trace.as_mut() {
+            if trace.attempted || !trace.clocks.is_empty() {
+                return Err(Error::Configuration);
+            }
+            trace
+                .clocks
+                .try_reserve_exact(cfg.time_sync.len())
+                .map_err(|_| Error::Limit)?;
+            trace.clock_limit = cfg.time_sync.len();
+        }
         for (i, id) in ids.iter().enumerate() {
             if ids[..i].contains(id) {
                 return Err(Error::Configuration);
@@ -661,6 +998,9 @@ impl Owner<'_, '_, '_> {
             trace.attempted = true;
         }
         if let Some((_, trace)) = event_replies.as_mut() {
+            trace.attempted = true;
+        }
+        if let Some(trace) = protocol_trace.as_mut() {
             trace.attempted = true;
         }
         let nanos = u64::try_from(cfg.wait.as_nanos()).map_err(|_| Error::Configuration)?;
@@ -681,6 +1021,7 @@ impl Owner<'_, '_, '_> {
                     &mut syncs,
                     &mut messages,
                     &mut event_replies,
+                    &mut protocol_trace,
                 )
                 .await?
             {
@@ -689,12 +1030,26 @@ impl Owner<'_, '_, '_> {
                 Some(_) => return Err(Error::Unexpected),
             }
         }
+        if let Some(trace) = protocol_trace.as_mut() {
+            trace.hello.operation = Some(cfg.hello.clone());
+        }
         let wall = self.wall.observe().ok_or(Error::Clock)?;
         session
             .prepare_hello(&wall.timestamp)
             .map_err(Error::SessionDetail)?;
-        self.send_management(session, cfg.hello, cfg.management, deadline)
+        if let Some(trace) = protocol_trace.as_mut() {
+            self.send_management_tracked(
+                session,
+                cfg.hello,
+                cfg.management,
+                deadline,
+                &mut trace.hello,
+            )
             .await?;
+        } else {
+            self.send_management(session, cfg.hello, cfg.management, deadline)
+                .await?;
+        }
         let sent = self.cx.now().as_nanos();
         loop {
             let elapsed = self
@@ -716,6 +1071,7 @@ impl Owner<'_, '_, '_> {
                     &mut syncs,
                     &mut messages,
                     &mut event_replies,
+                    &mut protocol_trace,
                 )
                 .await?
             {
@@ -729,12 +1085,26 @@ impl Owner<'_, '_, '_> {
             .as_nanos()
             .checked_sub(sent)
             .ok_or(Error::Clock)?;
+        if let Some(trace) = protocol_trace.as_mut() {
+            trace.agreement.operation = Some(cfg.agreement.clone());
+        }
         let wall = self.wall.observe().ok_or(Error::Clock)?;
         session
             .prepare_agreement(&wall.timestamp, elapsed)
             .map_err(Error::SessionDetail)?;
-        self.send_management(session, cfg.agreement, cfg.management, deadline)
+        if let Some(trace) = protocol_trace.as_mut() {
+            self.send_management_tracked(
+                session,
+                cfg.agreement,
+                cfg.management,
+                deadline,
+                &mut trace.agreement,
+            )
             .await?;
+        } else {
+            self.send_management(session, cfg.agreement, cfg.management, deadline)
+                .await?;
+        }
         loop {
             match self
                 .observe(
@@ -745,6 +1115,7 @@ impl Owner<'_, '_, '_> {
                     &mut syncs,
                     &mut messages,
                     &mut event_replies,
+                    &mut protocol_trace,
                 )
                 .await?
             {
@@ -787,10 +1158,16 @@ impl Owner<'_, '_, '_> {
                 }
             }
         }
+        if let Some(trace) = protocol_trace.as_mut() {
+            trace.stream.operation = Some(cfg.stream.clone());
+        }
         let wall = self.wall.observe().ok_or(Error::Clock)?;
         let intent = session
             .prepare_stream_start(cfg.request, &wall.timestamp, cfg.stream_conditions)
             .map_err(Error::SessionDetail)?;
+        if let Some(trace) = protocol_trace.as_mut() {
+            trace.stream.intent = Some(intent);
+        }
         let permit = self.permit(
             cfg.stream,
             intent.request_digest(),
@@ -800,20 +1177,47 @@ impl Owner<'_, '_, '_> {
             RuntimeGrant::CameraSettingPrepare,
             RuntimeGrant::CameraSettingCommit,
         )?;
-        let wait = self.remaining(deadline)?;
-        match session
-            .dispatch_stream(
-                intent,
-                cfg.stream_conditions,
-                permit,
-                self.stream_authority,
-                wait,
-            )
-            .await
-            .map_err(|_| Error::Effect)?
-        {
-            StreamWrite::Written { .. } => (),
-            StreamWrite::Indeterminate { .. } => return Err(Error::Indeterminate),
+        if let Some(trace) = protocol_trace.as_mut() {
+            trace.stream.pending_permit = Some(permit);
+            let wait = self.remaining(deadline)?;
+            let permit = trace.stream.pending_permit.take().ok_or(Error::Effect)?;
+            trace.stream.dispatch_started = true;
+            match session
+                .dispatch_stream(
+                    intent,
+                    cfg.stream_conditions,
+                    permit,
+                    self.stream_authority,
+                    wait,
+                )
+                .await
+            {
+                Ok(result @ StreamWrite::Written { .. }) => trace.stream.written = Some(result),
+                Ok(result @ StreamWrite::Indeterminate { .. }) => {
+                    trace.stream.written = Some(result);
+                    return Err(Error::Indeterminate);
+                }
+                Err(refusal) => {
+                    trace.stream.refusal = Some(refusal);
+                    return Err(Error::Effect);
+                }
+            }
+        } else {
+            let wait = self.remaining(deadline)?;
+            match session
+                .dispatch_stream(
+                    intent,
+                    cfg.stream_conditions,
+                    permit,
+                    self.stream_authority,
+                    wait,
+                )
+                .await
+                .map_err(|_| Error::Effect)?
+            {
+                StreamWrite::Written { .. } => (),
+                StreamWrite::Indeterminate { .. } => return Err(Error::Indeterminate),
+            }
         }
         if !wait_for_reply {
             return Ok(StartResult::Dispatched(Dispatched { time_syncs: syncs }));
@@ -828,6 +1232,7 @@ impl Owner<'_, '_, '_> {
                     &mut syncs,
                     &mut messages,
                     &mut event_replies,
+                    &mut protocol_trace,
                 )
                 .await?
             {

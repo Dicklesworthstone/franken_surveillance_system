@@ -30,11 +30,28 @@ pub enum Step {
     /// A single media processing result.
     Media(pipeline::Step),
     /// Camera requested a clock update; the journaled local write completed.
-    TimeSyncWritten,
+    TimeSyncWritten {
+        /// The local outcome and permit remain available for reconciliation.
+        trace: conversation::TimeSyncTrace,
+    },
+    /// The clock reply stopped with its caller-owned reconciliation facts.
+    TimeSyncStopped {
+        /// Payload-free failure.
+        error: conversation::Error,
+        /// Original attempt and any retained permit or local outcome.
+        trace: conversation::TimeSyncTrace,
+    },
+    /// A previous step future was dropped during the clock reply.
+    TimeSyncInterrupted {
+        /// Retained attempt; an in-flight dispatch remains indeterminate.
+        trace: conversation::TimeSyncTrace,
+    },
     /// A different, untrusted management observation.
     Observation(Observation),
     /// Camera event with exact source bytes; this is an unverified claim.
     CameraEvent(super::events::Frame),
+    /// Unknown startup request with exact source bytes; this is not an event.
+    StartupRequest(super::events::Frame),
     /// Startup event custody must be drained before more input is read.
     StartupEventBackpressure,
     /// The observed event reply needs a write or an explicit omission.
@@ -62,6 +79,8 @@ pub struct Retirement {
     pub controller: ControllerRetirement,
     /// Untransferred media source and recorder state.
     pub media: pipeline::Retirement,
+    /// A clock-reply attempt retained after its step future was dropped.
+    pub time_sync: Option<conversation::TimeSyncTrace>,
 }
 
 /// Owns a single admitted management connection and its corresponding pipeline.
@@ -70,6 +89,7 @@ pub struct Supervisor<'scope, 'task, IO> {
     pipeline: pipeline::Pipeline,
     management: management::Preconditions,
     controller_retirement: Option<ControllerRetirement>,
+    pending_time_sync: Option<conversation::TimeSyncTrace>,
     media_first: bool,
     stopped: bool,
 }
@@ -94,6 +114,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Supervisor<'scope, 'task
             pipeline,
             management,
             controller_retirement: None,
+            pending_time_sync: None,
             media_first: false,
             stopped: false,
         }
@@ -133,6 +154,11 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Supervisor<'scope, 'task
     /// and controller admission through [`Self::take_audio_event`].
     pub fn has_pending_audio(&self) -> bool {
         self.pipeline.has_pending_audio()
+    }
+
+    /// Whether audio observation is enabled and has not fenced.
+    pub fn audio_tracking_active(&self) -> bool {
+        !self.stopped && self.pipeline.audio_tracking_active()
     }
 
     /// Transfer a pending audio result only while the bound task and controller
@@ -433,6 +459,10 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Supervisor<'scope, 'task
         wait: Duration,
         allow_media: bool,
     ) -> Step {
+        if let Some(trace) = self.pending_time_sync.take() {
+            self.stopped = true;
+            return Step::TimeSyncInterrupted { trace };
+        }
         if self.stopped {
             return Step::Stopped;
         }
@@ -521,14 +551,28 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Supervisor<'scope, 'task
             Ok(Ready::Controller(Ok(receive::Step::Observation(
                 Observation::TimeSyncRequested,
             )))) => {
-                match owner
-                    .answer_time_sync(&mut self.session, operation, self.management, wait)
-                    .await
-                {
-                    Ok(()) => Step::TimeSyncWritten,
+                self.pending_time_sync = Some(conversation::TimeSyncTrace::default());
+                let result = owner
+                    .answer_time_sync_tracked(
+                        &mut self.session,
+                        operation,
+                        self.management,
+                        wait,
+                        self.pending_time_sync
+                            .as_mut()
+                            .expect("time-sync trace installed"),
+                    )
+                    .await;
+                let trace = self
+                    .pending_time_sync
+                    .take()
+                    .expect("time-sync trace retained");
+                match result {
+                    Ok(()) => Step::TimeSyncWritten { trace },
                     Err(error) => {
                         self.stopped = true;
-                        Step::ConversationError(error)
+                        self.controller_retirement = trace.indeterminate_retirement();
+                        Step::TimeSyncStopped { error, trace }
                     }
                 }
             }
@@ -537,6 +581,9 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Supervisor<'scope, 'task
             }
             Ok(Ready::Controller(Ok(receive::Step::CameraEvent(frame)))) => {
                 Step::CameraEvent(frame)
+            }
+            Ok(Ready::Controller(Ok(receive::Step::StartupRequest(frame)))) => {
+                Step::StartupRequest(frame)
             }
             Ok(Ready::Media(Err(error))) => {
                 self.stopped = true;
@@ -557,6 +604,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Supervisor<'scope, 'task
         Retirement {
             controller: self.controller_retirement.unwrap_or(closed),
             media: self.pipeline.retire(),
+            time_sync: self.pending_time_sync,
         }
     }
 }
