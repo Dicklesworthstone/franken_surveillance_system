@@ -40,7 +40,7 @@ export OTA_ENC="${OTA_ENC:-3}"
 export OTA_ENR="${OTA_ENR:-Tt6RL78/0V0Pe1y2}"
 export OTA_ACTIONS="${OTA_ACTIONS:-start,upgrade,cmd}"
 export PROC_NAME="${PROC_NAME:-wyzeedgeai_cam_v4_test_protocol}"
-export CAP_DIR CAP_PATH="${CAP_PATH:-wuv2/upgrade/HL_CAM4/firmware/4.52.17.32.tar}"
+export CAP_DIR CAP_PATH="${CAP_PATH:-wuv2/upgrade/HL_CAM4/firmware/4.52.17.99.tar}"
 export FOREGROUND=1
 echo "arm: cam=$CAM_MAC path=$CAP_PATH md5=${OTA_MD5:-<from file>}" 2>/dev/null \
   | sudo -n tee -a /tmp/ota/arm.log >/dev/null || true

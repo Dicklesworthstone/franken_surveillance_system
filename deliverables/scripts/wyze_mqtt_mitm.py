@@ -75,7 +75,7 @@ def _rewrite(d):
         except Exception as e:
             print("rewrite accepted:", e, flush=True)
             return None
-    if topic.endswith("/update/delta") and "/wyze-service/" in topic:
+    if topic.endswith("/update/delta") and ("/wyze-service/" in topic or "/wyze-secure/" in topic):
         # the cloud's own shadow delta is plain JSON; point it at our capsule so the
         # device acts on the delivery it already trusts
         try:
@@ -83,6 +83,11 @@ def _rewrite(d):
             des = doc.setdefault("state", {}).setdefault("desired", {})
             des["url"] = os.environ["OTA_URL"]
             des["md5"] = os.environ["OTA_MD5"]
+            # APPPushOTA is a separate OTA push that carries a stale trycloudflare URL —
+            # it poisons the delta with a dead download target. Rewrite it to our capsule.
+            if "APPPushOTA" in des and isinstance(des["APPPushOTA"], dict):
+                des["APPPushOTA"]["url"] = os.environ["OTA_URL"]
+                des["APPPushOTA"]["md5"] = os.environ["OTA_MD5"]
             # iCamera's silent-upgrade handler (fcn.00433680) compares the desired
             # firmware version against the camera's reported version — without this
             # field the handler may skip the 0x1fe (no version to compare).
