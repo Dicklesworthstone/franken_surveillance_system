@@ -6350,3 +6350,11 @@ running setup cases. These latest test changes have not yet been compiled or
 run. The listener's production peer policy has not been relaxed. A further
 strict-remote run needs an enabled worker that both preserves the fixture
 source and has sufficient headroom for its normal reservation.
+
+In a separate read-only host-network check, a one-connection listener on the
+selected `ts1` LAN address and controller port accepted a connection from
+`trj` and observed its expected source address. The listener then exited.
+This establishes host-to-host reachability for that route only; it does not
+show that the physical G4 can reach the listener or authenticate any camera.
+The source-owned fixture run on `trj` is in progress with the corrected leaf
+certificate and the latest fixture overlay.
