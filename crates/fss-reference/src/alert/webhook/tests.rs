@@ -394,6 +394,7 @@ fn source_validation_expiring_the_deadline_never_calls_the_connector() -> Test {
         &owner,
         |digest| f.objects.read_verified(digest).map(|bytes| bytes.to_vec()),
     )?;
+    let connector_calls = Cell::new(0);
     let progress = attempt.poll_with_connect(
         102,
         &owner,
@@ -401,7 +402,10 @@ fn source_validation_expiring_the_deadline_never_calls_the_connector() -> Test {
             owner.sampled_ns.set(Some(DEADLINE));
             f.objects.read_verified(digest).map(|bytes| bytes.to_vec())
         },
-        |_, _| panic!("expired source validation must not admit a connect"),
+        |_, _| {
+            connector_calls.set(connector_calls.get() + 1);
+            Err(io::Error::from(io::ErrorKind::ConnectionRefused))
+        },
     );
     assert_eq!(
         progress,
@@ -409,6 +413,7 @@ fn source_validation_expiring_the_deadline_never_calls_the_connector() -> Test {
             WebhookDenial::Deadline
         )))
     );
+    assert_eq!(connector_calls.get(), 0);
     assert_eq!(attempt.evidence().io_calls(), 0);
     assert_eq!(
         attempt.operation().ok_or("missing commitment")?.state,
@@ -455,18 +460,23 @@ fn reversed_or_expired_successful_owner_samples_refuse_before_io() -> Test {
             owner: &owner,
             sample,
         };
+        let connector_calls = Cell::new(0);
         let progress = attempt.poll_with_connect(
             102,
             &invalid,
             |digest| f.objects.read_verified(digest).map(|bytes| bytes.to_vec()),
-            |_, _| panic!("invalid owner timestamp must not admit a connect"),
+            |_, _| {
+                connector_calls.set(connector_calls.get() + 1);
+                Err(io::Error::from(io::ErrorKind::ConnectionRefused))
+            },
         );
         assert_eq!(
             progress,
-            WebhookProgress::ReadyToRecord(WebhookOutcome::Interrupted(WebhookInterruption::Denied(
-                WebhookDenial::Deadline
-            )))
+            WebhookProgress::ReadyToRecord(WebhookOutcome::Interrupted(
+                WebhookInterruption::Denied(WebhookDenial::Deadline)
+            ))
         );
+        assert_eq!(connector_calls.get(), 0);
         assert_eq!(attempt.evidence().io_calls(), 0);
         assert_eq!(
             attempt.operation().ok_or("missing commitment")?.state,

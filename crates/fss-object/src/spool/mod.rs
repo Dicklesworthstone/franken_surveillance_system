@@ -837,12 +837,35 @@ impl StagingSpool {
         digest: ContentDigest,
         maximum_payload_bytes: usize,
     ) -> Result<Vec<u8>, SpoolError> {
+        self.read_bounded_preserving(digest, maximum_payload_bytes, 0, 0)
+    }
+
+    /// Reads while leaving explicit headroom in the owner's cumulative indexed-read cap.
+    ///
+    /// Each admission atomically charges only if the corresponding headroom will remain.
+    /// An effect owner can reserve capacity for retaining its outcome before source validation
+    /// or network I/O spends the shared cap. The headroom is not charged, refunded, or a new
+    /// allowance: later ordinary reads consume the original cap. Failed admitted reads remain
+    /// spent, including an attempt whose byte admission fails. Install a finite cap with
+    /// `Self::tighten_read_budget` first; without one, indexed-read accounting stays inactive.
+    pub fn read_bounded_preserving(
+        &self,
+        digest: ContentDigest,
+        maximum_payload_bytes: usize,
+        reserved_bytes: u64,
+        reserved_read_attempts: u64,
+    ) -> Result<Vec<u8>, SpoolError> {
         self.require_live()?;
-        self.load_indexed_classified_bounded(digest, maximum_payload_bytes)
-            .map_err(|outcome| match outcome {
-                ReadOutcome::Spool(error) => error,
-                ReadOutcome::Corrupt { kind, .. } => SpoolError::Corrupt { digest, kind },
-            })
+        self.load_indexed_classified_bounded(
+            digest,
+            maximum_payload_bytes,
+            reserved_bytes,
+            reserved_read_attempts,
+        )
+        .map_err(|outcome| match outcome {
+            ReadOutcome::Spool(error) => error,
+            ReadOutcome::Corrupt { kind, .. } => SpoolError::Corrupt { digest, kind },
+        })
     }
 
     /// Removes exactly the orphaned staging files classified on open.
@@ -1308,15 +1331,19 @@ impl StagingSpool {
     }
 
     fn load_indexed_classified(&self, digest: ContentDigest) -> Result<Vec<u8>, ReadOutcome> {
-        self.load_indexed_classified_bounded(digest, self.limits.max_object_bytes)
+        self.load_indexed_classified_bounded(digest, self.limits.max_object_bytes, 0, 0)
     }
 
     fn load_indexed_classified_bounded(
         &self,
         digest: ContentDigest,
         maximum_payload_bytes: usize,
+        reserved_bytes: u64,
+        reserved_read_attempts: u64,
     ) -> Result<Vec<u8>, ReadOutcome> {
-        self.read_budget.attempt().map_err(ReadOutcome::Spool)?;
+        self.read_budget
+            .attempt_preserving(reserved_read_attempts)
+            .map_err(ReadOutcome::Spool)?;
         let entry = self
             .index
             .get(&digest)
@@ -1336,7 +1363,7 @@ impl StagingSpool {
                 .and_then(|n| n.checked_add(1))
                 .ok_or(ReadOutcome::Spool(SpoolError::AccountingOverflow))?;
             self.read_budget
-                .reserve_bytes(reserved)
+                .reserve_bytes_preserving(reserved, reserved_bytes)
                 .map_err(ReadOutcome::Spool)?;
             maximum
         } else {

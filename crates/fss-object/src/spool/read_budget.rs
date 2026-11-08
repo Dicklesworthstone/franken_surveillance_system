@@ -46,6 +46,7 @@ impl ReadBudget {
             &self.used_attempts,
             self.attempts,
             0,
+            0,
             "indexed_read_attempts",
         )?;
         Ok(self.usage())
@@ -66,20 +67,30 @@ impl ReadBudget {
         self.bytes.is_some()
     }
 
-    pub(super) fn attempt(&self) -> Result<(), SpoolError> {
+    pub(super) fn attempt_preserving(&self, reserved: u64) -> Result<(), SpoolError> {
         reserve(
             &self.used_attempts,
             self.attempts,
             1,
+            reserved,
             "indexed_read_attempts",
         )
     }
 
     pub(super) fn reserve_bytes(&self, bytes: u64) -> Result<(), SpoolError> {
+        self.reserve_bytes_preserving(bytes, 0)
+    }
+
+    pub(super) fn reserve_bytes_preserving(
+        &self,
+        bytes: u64,
+        reserved: u64,
+    ) -> Result<(), SpoolError> {
         reserve(
             &self.used_bytes,
             self.bytes,
             bytes,
+            reserved,
             "stored_object_read_bytes",
         )
     }
@@ -89,15 +100,17 @@ fn reserve(
     used: &AtomicU64,
     maximum: Option<u64>,
     requested: u64,
+    reserved: u64,
     resource: &'static str,
 ) -> Result<(), SpoolError> {
     let Some(maximum) = maximum else {
         return Ok(());
     };
     used.try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-        current
-            .checked_add(requested)
-            .filter(|next| *next <= maximum)
+        current.checked_add(requested).filter(|next| {
+            next.checked_add(reserved)
+                .is_some_and(|total| total <= maximum)
+        })
     })
     .map(|_| ())
     .map_err(|current| SpoolError::ReadBudgetExceeded {

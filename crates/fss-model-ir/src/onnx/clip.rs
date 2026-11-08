@@ -70,11 +70,7 @@ pub(super) fn reserve(
     Ok(())
 }
 
-pub(super) fn scalar(
-    lowering: &mut Lowering<'_, '_>,
-    base: &str,
-    value: f32,
-) -> Result<String> {
+pub(super) fn scalar(lowering: &mut Lowering<'_, '_>, base: &str, value: f32) -> Result<String> {
     if !value.is_finite() {
         return Err(OnnxError::NonFinite);
     }
@@ -169,11 +165,7 @@ pub(super) fn append(
             .iter()
             .try_fold(1_usize, |n, &dim| n.checked_mul(dim))
             .ok_or(OnnxError::Limit)?;
-        let negative_one = scalar(
-            lowering,
-            &format!("{}-clip-negative-one", source.id),
-            -1.0,
-        )?;
+        let negative_one = scalar(lowering, &format!("{}-clip-negative-one", source.id), -1.0)?;
         value = emit(
             lowering,
             source,

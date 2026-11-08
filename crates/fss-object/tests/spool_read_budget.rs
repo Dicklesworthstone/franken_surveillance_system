@@ -280,3 +280,111 @@ fn concurrent_borrowed_readers_cannot_spend_the_same_remaining_bytes() -> TestRe
     assert_eq!(io.call_count(SpoolIoCall::Read), calls_before + 4);
     Ok(())
 }
+
+#[test]
+fn source_reads_leave_exact_byte_headroom_for_outcome_custody() -> TestResult {
+    let directory = TempDirectory::new()?;
+    let io = Arc::new(RecordingSpoolIo::new(Arc::new(HostSpoolIo)));
+    let mut spool = StagingSpool::open_with_io(&directory.0, limits(), io.clone())?;
+    let payload = b"source plus durable outcome";
+    let digest = spool.stage_bytes(payload)?.digest;
+    let unit = reservation(payload);
+    spool.tighten_read_budget(2 * unit, 3)?;
+    assert_eq!(
+        spool.read_bounded_preserving(digest, payload.len(), unit, 1)?,
+        payload,
+    );
+    let calls_before = io.calls().len();
+    assert!(matches!(
+        spool.read_bounded_preserving(digest, payload.len(), unit, 1),
+        Err(SpoolError::ReadBudgetExceeded {
+            resource: "stored_object_read_bytes",
+            ..
+        })
+    ));
+    assert_eq!(io.calls().len(), calls_before);
+    assert_eq!(spool.read_budget_usage().remaining_bytes, Some(unit));
+    assert_eq!(spool.read_budget_usage().remaining_read_attempts, Some(1));
+    // The dedicated custody read consumes the original allowance, without refilling it.
+    assert_eq!(spool.read(digest)?, payload);
+    assert_eq!(spool.read_budget_usage().remaining_bytes, Some(0));
+    assert_eq!(spool.read_budget_usage().remaining_read_attempts, Some(0));
+    Ok(())
+}
+
+#[test]
+fn source_reads_cannot_consume_reserved_attempts_or_overflow_headroom() -> TestResult {
+    let directory = TempDirectory::new()?;
+    let io = Arc::new(RecordingSpoolIo::new(Arc::new(HostSpoolIo)));
+    let mut spool = StagingSpool::open_with_io(&directory.0, limits(), io.clone())?;
+    let payload = b"finite custody attempts";
+    let digest = spool.stage_bytes(payload)?.digest;
+    let unit = reservation(payload);
+    spool.tighten_read_budget(3 * unit, 2)?;
+    let calls_before = io.calls().len();
+    assert!(
+        spool
+            .read_bounded_preserving(digest, payload.len(), 0, u64::MAX)
+            .is_err()
+    );
+    assert_eq!(spool.read_budget_usage().used_read_attempts, 0);
+    assert!(
+        spool
+            .read_bounded_preserving(digest, payload.len(), u64::MAX, 0)
+            .is_err()
+    );
+    assert_eq!(spool.read_budget_usage().used_bytes, 0);
+    assert_eq!(io.calls().len(), calls_before);
+    // The failed byte admission spent one attempt. The last one belongs to custody.
+    assert!(matches!(
+        spool.read_bounded_preserving(digest, payload.len(), 0, 1),
+        Err(SpoolError::ReadBudgetExceeded {
+            resource: "indexed_read_attempts",
+            ..
+        })
+    ));
+    assert_eq!(io.calls().len(), calls_before);
+    assert_eq!(spool.read(digest)?, payload);
+    assert_eq!(spool.read_budget_usage().remaining_read_attempts, Some(0));
+    Ok(())
+}
+
+#[test]
+fn concurrent_source_readers_preserve_custody_headroom() -> TestResult {
+    let directory = TempDirectory::new()?;
+    let io = Arc::new(RecordingSpoolIo::new(Arc::new(HostSpoolIo)));
+    let mut spool = StagingSpool::open_with_io(&directory.0, limits(), io.clone())?;
+    let payload = b"concurrent evidence source";
+    let digest = spool.stage_bytes(payload)?.digest;
+    let unit = reservation(payload);
+    spool.tighten_read_budget(4 * unit, 8)?;
+    let calls_before = io.call_count(SpoolIoCall::Read);
+    let successful = std::thread::scope(|scope| -> TestResult<usize> {
+        let readers: Vec<_> = (0..8)
+            .map(|_| scope.spawn(|| spool.read_bounded_preserving(digest, payload.len(), unit, 1)))
+            .collect();
+        let mut successful = 0;
+        for reader in readers {
+            let result = reader
+                .join()
+                .map_err(|_| io::Error::other("reader panicked"))?;
+            match result {
+                Ok(bytes) => {
+                    assert_eq!(bytes, payload);
+                    successful += 1;
+                }
+                Err(SpoolError::ReadBudgetExceeded { .. }) => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Ok(successful)
+    })?;
+    assert_eq!(successful, 3);
+    assert_eq!(spool.read_budget_usage().remaining_bytes, Some(unit));
+    assert_eq!(spool.read_budget_usage().remaining_read_attempts, Some(1));
+    assert_eq!(io.call_count(SpoolIoCall::Read), calls_before + 3);
+    assert_eq!(spool.read(digest)?, payload);
+    assert_eq!(spool.read_budget_usage().remaining_bytes, Some(0));
+    assert_eq!(spool.read_budget_usage().remaining_read_attempts, Some(0));
+    Ok(())
+}

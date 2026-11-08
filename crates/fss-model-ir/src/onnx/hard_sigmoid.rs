@@ -84,21 +84,9 @@ pub(super) fn lower(mut source: SourceNode<'_>, lowering: &mut Lowering<'_, '_>)
         &format!("{}-hard-sigmoid-alpha", source.id),
         alpha,
     )?;
-    let beta_name = clip::scalar(
-        lowering,
-        &format!("{}-hard-sigmoid-beta", source.id),
-        beta,
-    )?;
-    let lower = clip::scalar(
-        lowering,
-        &format!("{}-hard-sigmoid-min", source.id),
-        0.0,
-    )?;
-    let upper = clip::scalar(
-        lowering,
-        &format!("{}-hard-sigmoid-max", source.id),
-        1.0,
-    )?;
+    let beta_name = clip::scalar(lowering, &format!("{}-hard-sigmoid-beta", source.id), beta)?;
+    let lower = clip::scalar(lowering, &format!("{}-hard-sigmoid-min", source.id), 0.0)?;
+    let upper = clip::scalar(lowering, &format!("{}-hard-sigmoid-max", source.id), 1.0)?;
     let scaled = affine(
         &source,
         lowering,
@@ -107,20 +95,6 @@ pub(super) fn lower(mut source: SourceNode<'_>, lowering: &mut Lowering<'_, '_>)
         OpCode::Mul,
         "scaled",
     )?;
-    let shifted = affine(
-        &source,
-        lowering,
-        scaled,
-        beta_name,
-        OpCode::Add,
-        "shifted",
-    )?;
-    clip::append(
-        &source,
-        lowering,
-        shifted,
-        &dims,
-        Some(lower),
-        Some(upper),
-    )
+    let shifted = affine(&source, lowering, scaled, beta_name, OpCode::Add, "shifted")?;
+    clip::append(&source, lowering, shifted, &dims, Some(lower), Some(upper))
 }

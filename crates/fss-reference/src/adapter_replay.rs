@@ -755,6 +755,15 @@ impl<G: ReplayAdmission> ReplayCx<G> {
     pub const fn io_authority(&self) -> &ReplayIoAuthority<G> {
         &self.io
     }
+
+    /// Whether a live owner callback narrows this context at every admission boundary.
+    ///
+    /// A finite deadline cannot be enforced by a replay context's cancellation bit alone.
+    /// Native custody operations use this check before accepting a deadline-bearing owner.
+    #[must_use]
+    pub fn has_owner_admission(&self) -> bool {
+        self.io.admission.is_some()
+    }
 }
 
 /// Maximum retry attempts to create a collision-free scoped directory.

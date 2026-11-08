@@ -43,6 +43,8 @@ use crate::{
 ))]
 mod backup_restore;
 
+mod webhook_evidence;
+
 type TestResult = Result<(), Box<dyn Error>>;
 
 const SITE: &str = "site:alert-recovery";

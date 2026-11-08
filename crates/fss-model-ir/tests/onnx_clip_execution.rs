@@ -380,11 +380,7 @@ fn defaults_and_one_or_two_bounds_preserve_all_admitted_ranks() -> Test {
 #[test]
 fn omitted_and_empty_optional_ports_share_default_semantics() -> Test {
     let values = [-f32::MAX, -0.0_f32, 0.0, f32::from_bits(1), f32::MAX];
-    for inputs in [
-        vec!["input"],
-        vec!["input", ""],
-        vec!["input", "", ""],
-    ] {
+    for inputs in [vec!["input"], vec!["input", ""], vec!["input", "", ""]] {
         let source = model(
             &[
                 node("Clip", &inputs, &["output"], &[]),
@@ -489,7 +485,10 @@ fn runtime_scalar_bounds_remain_live_after_artifact_export() -> Test {
     for (lower, upper) in [(true, false), (false, true), (true, true)] {
         let source = runtime_clip_model(&[8], lower, upper);
         let imported = import(&source)?;
-        assert_eq!(imported.runtime_inputs().len(), 1 + usize::from(lower) + usize::from(upper));
+        assert_eq!(
+            imported.runtime_inputs().len(),
+            1 + usize::from(lower) + usize::from(upper)
+        );
         for (min, max) in [(-2.0, 6.0), (-0.0, -0.0), (4.0, -3.0)] {
             let mut inputs = vec![("input", data(&[8], &values)?)];
             if lower {
@@ -526,7 +525,10 @@ fn constant_nodes_and_earlier_native_scalar_results_supply_bounds() -> Test {
     for ceiling in [5.0_f32, -2.0] {
         let result = roundtrip(
             &source,
-            &[("input", data(&[6], &values)?), ("ceiling", data(&[], &[ceiling])?)],
+            &[
+                ("input", data(&[6], &values)?),
+                ("ceiling", data(&[], &[ceiling])?),
+            ],
         )?;
         assert_eq!(
             bits(&result["output"]),
@@ -540,7 +542,14 @@ fn constant_nodes_and_earlier_native_scalar_results_supply_bounds() -> Test {
                 "Constant",
                 &[],
                 &["max"],
-                &attribute("value", 4, &bytes(5, &tensor("metadata-only-name", &[], 1, &6.0_f32.to_le_bytes()))),
+                &attribute(
+                    "value",
+                    4,
+                    &bytes(
+                        5,
+                        &tensor("metadata-only-name", &[], 1, &6.0_f32.to_le_bytes()),
+                    ),
+                ),
             ),
             node("Clip", &["input", "", "max"], &["output"], &[]),
             bytes(11, &info("input", &[6], 1)),
@@ -574,7 +583,10 @@ fn constant_input_and_multiple_clips_keep_distinct_bound_uses() -> Test {
     let result = roundtrip(&source, &[])?;
     let middle = oracle(&values, Some(-1.0), Some(1.0));
     assert_eq!(bits(&result["middle"]), bits(&middle));
-    assert_eq!(bits(&result["output"]), bits(&oracle(&middle, None, Some(0.5))));
+    assert_eq!(
+        bits(&result["output"]),
+        bits(&oracle(&middle, None, Some(0.5)))
+    );
     Ok(())
 }
 
@@ -590,12 +602,21 @@ fn conv_relu6_flatten_dense_chain_preserves_unclipped_branch() -> Test {
             ),
             node("Clip", &["raw", "min", "max"], &["activated"], &[]),
             node("Flatten", &["activated"], &["flat"], &[]),
-            node("Gemm", &["flat", "dense-weight", "dense-bias"], &["output"], &[]),
+            node(
+                "Gemm",
+                &["flat", "dense-weight", "dense-bias"],
+                &["output"],
+                &[],
+            ),
             weight("conv-weight", &[1, 1, 1, 1], &[2.0]),
             weight("conv-bias", &[1], &[1.0]),
             weight("min", &[], &[0.0]),
             weight("max", &[], &[6.0]),
-            weight("dense-weight", &[4, 2], &[1., -1., 2., 1., 3., 0.5, 4., -2.]),
+            weight(
+                "dense-weight",
+                &[4, 2],
+                &[1., -1., 2., 1., 3., 0.5, 4., -2.],
+            ),
             weight("dense-bias", &[2], &[-1., 0.25]),
             bytes(11, &info("input", &[1, 1, 2, 2], 1)),
             bytes(12, &info("raw", &[1, 1, 2, 2], 1)),
@@ -640,13 +661,21 @@ fn future_source_names_cannot_alias_generated_clip_values() -> Test {
             .concat(),
         );
         let result = roundtrip(&source, &[("input", data(&dims, &values)?)])?;
-        assert_eq!(bits(&result["output"]), bits(&oracle(&values, Some(0.0), Some(6.0))));
+        assert_eq!(
+            bits(&result["output"]),
+            bits(&oracle(&values, Some(0.0), Some(6.0)))
+        );
         assert_eq!(bits(&result[&collision]), bits(&values));
 
         let forward = model(
             &[
                 node("Clip", &["input", &collision], &["output"], &[]),
-                node("Constant", &[], &[&collision], &float_attr("value_float", 0.0)),
+                node(
+                    "Constant",
+                    &[],
+                    &[&collision],
+                    &float_attr("value_float", 0.0),
+                ),
                 bytes(11, &info("input", &dims, 1)),
                 bytes(12, &info("output", &dims, 1)),
             ]
@@ -683,8 +712,14 @@ fn nonscalar_nonfloat_nonfinite_bounds_attributes_and_bad_shapes_refuse() {
     );
     assert!(refusal(&integer_bound).is_some());
     for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
-        assert_eq!(refusal(&clip_model(&[2], Some(value), None)), Some(OnnxError::NonFinite));
-        assert_eq!(refusal(&clip_model(&[2], None, Some(value))), Some(OnnxError::NonFinite));
+        assert_eq!(
+            refusal(&clip_model(&[2], Some(value), None)),
+            Some(OnnxError::NonFinite)
+        );
+        assert_eq!(
+            refusal(&clip_model(&[2], None, Some(value))),
+            Some(OnnxError::NonFinite)
+        );
     }
     for attrs in [
         float_attr("min", 0.0),
@@ -738,14 +773,25 @@ fn nonscalar_nonfloat_nonfinite_bounds_attributes_and_bad_shapes_refuse() {
 
 #[test]
 fn helper_graph_and_scalar_parameter_cost_do_not_scale_with_pixels() -> Test {
-    for (lower, upper, nodes) in [(false, false, 1), (true, false, 7), (false, true, 10), (true, true, 13)] {
+    for (lower, upper, nodes) in [
+        (false, false, 1),
+        (true, false, 7),
+        (false, true, 10),
+        (true, true, 13),
+    ] {
         for elements in [8_usize, 4096] {
             let source = runtime_clip_model(&[elements], lower, upper);
             let imported = import(&source)?;
             assert_eq!(imported.graph().node_count(), nodes);
             let parameter_bytes = usize::from(lower || upper) * 4;
             assert_eq!(
-                imported.parameters().values().map(|v| v.to_vec::<f32>().map(|x| x.len() * 4)).collect::<Result<Vec<_>, _>>()?.iter().sum::<usize>(),
+                imported
+                    .parameters()
+                    .values()
+                    .map(|v| v.to_vec::<f32>().map(|x| x.len() * 4))
+                    .collect::<Result<Vec<_>, _>>()?
+                    .iter()
+                    .sum::<usize>(),
                 parameter_bytes
             );
             let limits = OnnxLimits {
@@ -756,19 +802,50 @@ fn helper_graph_and_scalar_parameter_cost_do_not_scale_with_pixels() -> Test {
                 tensor_bytes: elements * if lower || upper { 8 } else { 4 },
                 work_units: imported.work_units(),
             };
-            assert!(import_onnx(&source, ContentDigest::sha256(&source), GENERATION, limits, &|| false).is_ok());
+            assert!(
+                import_onnx(
+                    &source,
+                    ContentDigest::sha256(&source),
+                    GENERATION,
+                    limits,
+                    &|| false
+                )
+                .is_ok()
+            );
             let mut insufficient = vec![
-                OnnxLimits { source_bytes: source.len() - 1, ..limits },
-                OnnxLimits { tensors: limits.tensors - 1, ..limits },
-                OnnxLimits { tensor_bytes: limits.tensor_bytes - 1, ..limits },
+                OnnxLimits {
+                    source_bytes: source.len() - 1,
+                    ..limits
+                },
+                OnnxLimits {
+                    tensors: limits.tensors - 1,
+                    ..limits
+                },
+                OnnxLimits {
+                    tensor_bytes: limits.tensor_bytes - 1,
+                    ..limits
+                },
             ];
             if nodes > 1 {
-                insufficient.push(OnnxLimits { nodes: nodes - 1, ..limits });
-                insufficient.push(OnnxLimits { parameter_bytes: parameter_bytes - 1, ..limits });
+                insufficient.push(OnnxLimits {
+                    nodes: nodes - 1,
+                    ..limits
+                });
+                insufficient.push(OnnxLimits {
+                    parameter_bytes: parameter_bytes - 1,
+                    ..limits
+                });
             }
             for limit in insufficient {
                 assert_eq!(
-                    import_onnx(&source, ContentDigest::sha256(&source), GENERATION, limit, &|| false).err(),
+                    import_onnx(
+                        &source,
+                        ContentDigest::sha256(&source),
+                        GENERATION,
+                        limit,
+                        &|| false
+                    )
+                    .err(),
                     Some(OnnxError::Limit)
                 );
             }
@@ -786,28 +863,52 @@ fn exact_import_work_digest_and_every_cancellation_checkpoint_fail_closed() -> T
             &source,
             ContentDigest::sha256(&source),
             GENERATION,
-            OnnxLimits { work_units: imported.work_units() - 1, ..OnnxLimits::default() },
+            OnnxLimits {
+                work_units: imported.work_units() - 1,
+                ..OnnxLimits::default()
+            },
             &|| false,
-        ).err(),
+        )
+        .err(),
         Some(OnnxError::WorkBudget)
     );
     assert_eq!(
-        import_onnx(&source, ContentDigest::sha256(b"wrong source"), GENERATION, OnnxLimits::default(), &|| false).err(),
+        import_onnx(
+            &source,
+            ContentDigest::sha256(b"wrong source"),
+            GENERATION,
+            OnnxLimits::default(),
+            &|| false
+        )
+        .err(),
         Some(OnnxError::Digest)
     );
     let calls = Cell::new(0);
-    import_onnx(&source, ContentDigest::sha256(&source), GENERATION, OnnxLimits::default(), &|| {
-        calls.set(calls.get() + 1);
-        false
-    })?;
+    import_onnx(
+        &source,
+        ContentDigest::sha256(&source),
+        GENERATION,
+        OnnxLimits::default(),
+        &|| {
+            calls.set(calls.get() + 1);
+            false
+        },
+    )?;
     let total = calls.get();
     for stop in 1..=total {
         calls.set(0);
         assert_eq!(
-            import_onnx(&source, ContentDigest::sha256(&source), GENERATION, OnnxLimits::default(), &|| {
-                calls.set(calls.get() + 1);
-                calls.get() == stop
-            }).err(),
+            import_onnx(
+                &source,
+                ContentDigest::sha256(&source),
+                GENERATION,
+                OnnxLimits::default(),
+                &|| {
+                    calls.set(calls.get() + 1);
+                    calls.get() == stop
+                }
+            )
+            .err(),
             Some(OnnxError::Cancelled),
             "checkpoint {stop}/{total}"
         );
@@ -829,11 +930,24 @@ fn both_executors_observe_exact_budgets_generation_and_cancellation() -> Test {
         .iter()
         .map(|(name, value)| Ok((name.clone(), value.to_vec::<f32>()?)))
         .collect::<Result<BTreeMap<_, _>, fss_tensor::TensorError>>()?;
-    let optimized = optimized_executor::OptimizedGraph::prepare(imported.graph(), &constants, &ScalarExecCx::new())?;
+    let optimized = optimized_executor::OptimizedGraph::prepare(
+        imported.graph(),
+        &constants,
+        &ScalarExecCx::new(),
+    )?;
     let mut bindings = imported.parameters().clone();
-    bindings.extend(input.iter().map(|(name, value)| ((*name).to_owned(), value.clone())));
+    bindings.extend(
+        input
+            .iter()
+            .map(|(name, value)| ((*name).to_owned(), value.clone())),
+    );
     let bindings = bindings.into_iter().collect::<Vec<_>>();
-    let outcome = ScalarExecutor::run(imported.graph(), &bindings, ExecBudget::unlimited(), &ScalarExecCx::new())?;
+    let outcome = ScalarExecutor::run(
+        imported.graph(),
+        &bindings,
+        ExecBudget::unlimited(),
+        &ScalarExecCx::new(),
+    )?;
     let exact = ExecBudget::new(outcome.executed_macs(), outcome.allocated_bytes());
     assert!(ScalarExecutor::run(imported.graph(), &bindings, exact, &ScalarExecCx::new()).is_ok());
     assert!(optimized.run(&input, exact, &ScalarExecCx::new()).is_ok());
@@ -841,26 +955,52 @@ fn both_executors_observe_exact_budgets_generation_and_cancellation() -> Test {
         ExecBudget::new(exact.max_macs - 1, exact.max_bytes),
         ExecBudget::new(exact.max_macs, exact.max_bytes - 1),
     ] {
-        assert!(matches!(ScalarExecutor::run(imported.graph(), &bindings, budget, &ScalarExecCx::new()), Err(ExecError::BudgetExceeded { .. })));
-        assert!(matches!(optimized.run(&input, budget, &ScalarExecCx::new()), Err(ExecError::BudgetExceeded { .. })));
+        assert!(matches!(
+            ScalarExecutor::run(imported.graph(), &bindings, budget, &ScalarExecCx::new()),
+            Err(ExecError::BudgetExceeded { .. })
+        ));
+        assert!(matches!(
+            optimized.run(&input, budget, &ScalarExecCx::new()),
+            Err(ExecError::BudgetExceeded { .. })
+        ));
     }
 
     let wrong_generation = Tensor::from_values(Shape::new(vec![])?, &[0.0_f32], Generation(42))?;
     let mut invalid = input.to_vec();
     invalid[1].1 = wrong_generation.clone();
     let mut invalid_bindings = bindings.clone();
-    let bound = invalid_bindings.iter_mut().find(|(name, _)| name == "min").ok_or("min binding")?;
+    let bound = invalid_bindings
+        .iter_mut()
+        .find(|(name, _)| name == "min")
+        .ok_or("min binding")?;
     bound.1 = wrong_generation;
-    assert!(matches!(ScalarExecutor::run(imported.graph(), &invalid_bindings, exact, &ScalarExecCx::new()), Err(ExecError::GenerationMismatch { .. })));
-    assert!(matches!(optimized.run(&invalid, exact, &ScalarExecCx::new()), Err(ExecError::GenerationMismatch { .. })));
+    assert!(matches!(
+        ScalarExecutor::run(
+            imported.graph(),
+            &invalid_bindings,
+            exact,
+            &ScalarExecCx::new()
+        ),
+        Err(ExecError::GenerationMismatch { .. })
+    ));
+    assert!(matches!(
+        optimized.run(&invalid, exact, &ScalarExecCx::new()),
+        Err(ExecError::GenerationMismatch { .. })
+    ));
 
     let scalar_cx = ScalarExecCx::new();
     scalar_cx.request_cancellation();
-    assert!(matches!(ScalarExecutor::run(imported.graph(), &bindings, exact, &scalar_cx), Err(ExecError::CancellationRequested { .. })));
+    assert!(matches!(
+        ScalarExecutor::run(imported.graph(), &bindings, exact, &scalar_cx),
+        Err(ExecError::CancellationRequested { .. })
+    ));
     assert!(scalar_cx.is_drain_completed());
     let fast_cx = ScalarExecCx::new();
     fast_cx.request_cancellation();
-    assert!(matches!(optimized.run(&input, exact, &fast_cx), Err(ExecError::CancellationRequested { .. })));
+    assert!(matches!(
+        optimized.run(&input, exact, &fast_cx),
+        Err(ExecError::CancellationRequested { .. })
+    ));
     assert!(fast_cx.is_drain_completed());
     Ok(())
 }

@@ -558,11 +558,75 @@ impl DurableEffectJournal {
         Ok(report)
     }
 
+    /// Strict, bounded history for custody inspection.
+    ///
+    /// The opened committed length is the actual read ceiling, further narrowed by maximum.
+    /// Growth visible to metadata refuses before reading; growth racing that check can consume
+    /// at most one extra byte. An incomplete suffix is an external mutation, not an admitted
+    /// custody snapshot. This reads no ambient policy or clock.
+    pub(crate) fn verified_history_bounded(
+        &self,
+        maximum: usize,
+    ) -> Result<RecoveryReport, DurableEffectError> {
+        let expected =
+            usize::try_from(self.committed_len()).map_err(|_| DurableEffectError::OverBudget {
+                limit: maximum,
+                actual: usize::MAX,
+            })?;
+        if expected > maximum {
+            return Err(DurableEffectError::OverBudget {
+                limit: maximum,
+                actual: expected,
+            });
+        }
+        let io = HostJournalReadIo;
+        let metadata = io.symlink_metadata(self.path())?;
+        if metadata.is_symlink || !metadata.is_file {
+            return Err(DurableEffectError::InvalidLayout {
+                path: self.path().to_path_buf(),
+            });
+        }
+        if metadata.len != self.committed_len() {
+            return Err(JournalError::ExternalMutation {
+                expected_len: self.committed_len(),
+                observed_len: metadata.len,
+                kind: ExternalMutationKind::LengthDivergence,
+            }
+            .into());
+        }
+        let bound = expected
+            .checked_add(1)
+            .ok_or(DurableEffectError::OverBudget {
+                limit: maximum,
+                actual: usize::MAX,
+            })?;
+        let bytes = io.read_bounded(self.path(), bound)?;
+        let observed_len = bytes.len() as u64;
+        if observed_len != self.committed_len() {
+            return Err(JournalError::ExternalMutation {
+                expected_len: self.committed_len(),
+                observed_len,
+                kind: ExternalMutationKind::LengthDivergence,
+            }
+            .into());
+        }
+        let report = fss_ledger::recover_bytes(&bytes)?;
+        if report.last_root() != self.last_root() || report.incomplete_tail().is_some() {
+            return Err(JournalError::ExternalMutation {
+                expected_len: self.committed_len(),
+                observed_len,
+                kind: ExternalMutationKind::ContentDivergence,
+            }
+            .into());
+        }
+        Ok(report)
+    }
+
     /// Roots of every committed record of this handle's verified history, in commit order: the
     /// history a sealed journal root must belong to (fss-mnlz1).
     pub(crate) fn committed_roots(&self) -> Result<Vec<ContentDigest>, DurableEffectError> {
         Ok(self
-            .verified_history()?
+            .verified_history_bounded(crate::alert_control::MAX_CONTROL_JOURNAL_BYTES as usize)?
             .records()
             .iter()
             .map(JournalRecord::root)

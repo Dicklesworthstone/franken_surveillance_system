@@ -22,6 +22,9 @@ use std::time::Duration;
 
 mod wire;
 
+/// Durable local custody and read-only inspection of completed wire observations.
+pub mod retained;
+
 /// Frozen relay route. A nonzero approval handle is evidence to the live authority,
 /// not authorization by itself. Debug intentionally omits the network address/path.
 #[derive(Clone, Eq, PartialEq)]
@@ -437,14 +440,8 @@ impl<'a> WebhookAttempt<'a> {
             operation,
             effect_journal: journal.path(),
         };
-        let mut now_ns = admit(
-            owner,
-            scope,
-            WebhookBoundary::Commit,
-            now_ns,
-            deadline_ns,
-        )
-        .map_err(WebhookError::Denied)?;
+        let mut now_ns = admit(owner, scope, WebhookBoundary::Commit, now_ns, deadline_ns)
+            .map_err(WebhookError::Denied)?;
         let request = wire::request(plan, endpoint)?;
         let mut response = Vec::new();
         response

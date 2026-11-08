@@ -403,7 +403,14 @@ fn multiply_then_add_rounding_is_not_replaced_by_a_fused_affine() -> Test {
 
 #[test]
 fn signed_zero_coefficients_are_retained_while_clamp_ties_choose_positive_zero() -> Test {
-    let values = [-f32::MAX, -f32::from_bits(1), -0.0_f32, 0.0, f32::from_bits(1), f32::MAX];
+    let values = [
+        -f32::MAX,
+        -f32::from_bits(1),
+        -0.0_f32,
+        0.0,
+        f32::from_bits(1),
+        f32::MAX,
+    ];
     let mut weight_digests = Vec::new();
     for alpha in [-0.0_f32, 0.0] {
         for beta in [-0.0_f32, 0.0] {
@@ -418,16 +425,52 @@ fn signed_zero_coefficients_are_retained_while_clamp_ties_choose_positive_zero()
     }
     let implicit = hard_model(&[6], &[6], &[]);
     let explicit = hard_model(&[6], &[6], &coefficients(Some(0.2), Some(0.5)));
+    let implicit = import(&implicit)?;
+    let explicit = import(&explicit)?;
     assert_eq!(
-        export(&import(&implicit)?)?.weights_digest(),
-        export(&import(&explicit)?)?.weights_digest()
+        encode_canonical_model_ir(implicit.graph())?,
+        encode_canonical_model_ir(explicit.graph())?
     );
+    let implicit = export(&implicit)?;
+    let explicit = export(&explicit)?;
+    // The numerical defaults agree, while each artifact still binds its exact
+    // source bytes through the Safetensors source_sha256 metadata.
+    assert_ne!(implicit.source_digest(), explicit.source_digest());
+    assert_ne!(implicit.weights_digest(), explicit.weights_digest());
+    let implicit = reloaded(&implicit)?;
+    let explicit = reloaded(&explicit)?;
+    assert_eq!(
+        implicit.keys().collect::<Vec<_>>(),
+        explicit.keys().collect::<Vec<_>>()
+    );
+    for (name, value) in &implicit {
+        let other = explicit
+            .get(name)
+            .ok_or("missing explicit-default parameter")?;
+        assert_eq!(value.shape(), other.shape(), "parameter shape {name}");
+        assert_eq!(
+            bits(&value.to_vec::<f32>()?),
+            bits(&other.to_vec::<f32>()?),
+            "parameter bits {name}"
+        );
+    }
     Ok(())
 }
 
 #[test]
 fn exported_hardswish_composition_executes_without_admitting_newer_opsets() -> Test {
-    let values = [-f32::MAX, -4.0_f32, -3.0, -2.0, -0.0, 0.0, 2.0, 3.0, 4.0, f32::MAX];
+    let values = [
+        -f32::MAX,
+        -4.0_f32,
+        -3.0,
+        -2.0,
+        -0.0,
+        0.0,
+        2.0,
+        3.0,
+        4.0,
+        f32::MAX,
+    ];
     let alpha = 1.0_f32 / 6.0;
     let source = model(
         &[
@@ -446,7 +489,11 @@ fn exported_hardswish_composition_executes_without_admitting_newer_opsets() -> T
     );
     let result = roundtrip(&source, &[("input", data(&[10], &values)?)])?;
     let gate = oracle(&values, alpha, 0.5);
-    let expected = values.iter().zip(&gate).map(|(x, gate)| x * gate).collect::<Vec<_>>();
+    let expected = values
+        .iter()
+        .zip(&gate)
+        .map(|(x, gate)| x * gate)
+        .collect::<Vec<_>>();
     assert_eq!(bits(&result["gate"]), bits(&gate));
     assert_eq!(bits(&result["output"]), bits(&expected));
     assert_eq!(result["output"][0].to_bits(), (-0.0_f32).to_bits());
@@ -482,10 +529,19 @@ fn conv_gated_activation_flatten_dense_chain_is_complete() -> Test {
             ),
             node("Mul", &["raw", "gate"], &["activated"], &[]),
             node("Flatten", &["activated"], &["flat"], &[]),
-            node("Gemm", &["flat", "dense-weight", "dense-bias"], &["output"], &[]),
+            node(
+                "Gemm",
+                &["flat", "dense-weight", "dense-bias"],
+                &["output"],
+                &[],
+            ),
             weight("conv-weight", &[1, 1, 1, 1], &[2.0]),
             weight("conv-bias", &[1], &[0.0]),
-            weight("dense-weight", &[4, 2], &[1., -1., 2., 1., 3., 0.5, 4., -2.]),
+            weight(
+                "dense-weight",
+                &[4, 2],
+                &[1., -1., 2., 1., 3., 0.5, 4., -2.],
+            ),
             weight("dense-bias", &[2], &[-1., 0.25]),
             bytes(11, &info("input", &[1, 1, 2, 2], 1)),
             bytes(12, &info("raw", &[1, 1, 2, 2], 1)),
@@ -515,7 +571,10 @@ fn initializer_inputs_and_all_generated_value_name_collisions_are_isolated() -> 
         ]
         .concat(),
     );
-    assert_eq!(bits(&roundtrip(&source, &[])?["output"]), bits(&oracle(&values, 0.2, 0.5)));
+    assert_eq!(
+        bits(&roundtrip(&source, &[])?["output"]),
+        bits(&oracle(&values, 0.2, 0.5))
+    );
 
     let baseline = hard_model(&[4], &[4], &[]);
     let imported = import(&baseline)?;
@@ -569,7 +628,11 @@ fn full_finite_safety_envelope_is_checked_before_execution() -> Test {
         (1.0, f32::from_bits(0x7300_0000)),
     ] {
         let source = hard_model(&[1], &[1], &coefficients(Some(alpha), Some(beta)));
-        assert_eq!(refusal(&source), Some(OnnxError::Unsupported), "alpha={alpha:?}, beta={beta:?}");
+        assert_eq!(
+            refusal(&source),
+            Some(OnnxError::Unsupported),
+            "alpha={alpha:?}, beta={beta:?}"
+        );
     }
     // Just below the overflow-rounding threshold, the worst affine still rounds
     // to finite MAX; refusing every positive beta with alpha=1 is too strict.
@@ -585,17 +648,34 @@ fn full_finite_safety_envelope_is_checked_before_execution() -> Test {
 fn nonfinite_wrong_attributes_bad_arity_and_shape_mismatch_refuse() {
     for key in ["alpha", "beta"] {
         for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
-            assert_eq!(refusal(&hard_model(&[2], &[2], &float_attr(key, value))), Some(OnnxError::NonFinite));
+            assert_eq!(
+                refusal(&hard_model(&[2], &[2], &float_attr(key, value))),
+                Some(OnnxError::NonFinite)
+            );
         }
-        for attrs in [int_attr(key, 1), text_attr(key, "0.2"), ints_attr(key, &[1])] {
-            assert_eq!(refusal(&hard_model(&[2], &[2], &attrs)), Some(OnnxError::Graph));
+        for attrs in [
+            int_attr(key, 1),
+            text_attr(key, "0.2"),
+            ints_attr(key, &[1]),
+        ] {
+            assert_eq!(
+                refusal(&hard_model(&[2], &[2], &attrs)),
+                Some(OnnxError::Graph)
+            );
         }
         assert_eq!(
-            refusal(&hard_model(&[2], &[2], &[float_attr(key, 0.2), float_attr(key, 0.3)].concat())),
+            refusal(&hard_model(
+                &[2],
+                &[2],
+                &[float_attr(key, 0.2), float_attr(key, 0.3)].concat()
+            )),
             Some(OnnxError::Malformed)
         );
     }
-    assert_eq!(refusal(&hard_model(&[2], &[2], &float_attr("gamma", 0.2))), Some(OnnxError::Unsupported));
+    assert_eq!(
+        refusal(&hard_model(&[2], &[2], &float_attr("gamma", 0.2))),
+        Some(OnnxError::Unsupported)
+    );
     for inputs in [vec![], vec![""], vec!["input", "input"]] {
         let source = model(
             &[
@@ -607,7 +687,10 @@ fn nonfinite_wrong_attributes_bad_arity_and_shape_mismatch_refuse() {
         );
         assert!(refusal(&source).is_some());
     }
-    assert_eq!(refusal(&hard_model(&[2], &[3], &[])), Some(OnnxError::Graph));
+    assert_eq!(
+        refusal(&hard_model(&[2], &[3], &[])),
+        Some(OnnxError::Graph)
+    );
     assert!(refusal(&hard_model(&[0], &[0], &[])).is_some());
     assert!(refusal(&hard_model(&[1; 9], &[1; 9], &[])).is_some());
 }
@@ -631,16 +714,47 @@ fn helpers_reserve_fixed_graph_weights_and_exact_tensor_bounds() -> Test {
             tensor_bytes: elements * 8,
             work_units: imported.work_units(),
         };
-        assert!(import_onnx(&source, ContentDigest::sha256(&source), GENERATION, limits, &|| false).is_ok());
+        assert!(
+            import_onnx(
+                &source,
+                ContentDigest::sha256(&source),
+                GENERATION,
+                limits,
+                &|| false
+            )
+            .is_ok()
+        );
         for limits in [
-            OnnxLimits { source_bytes: source.len() - 1, ..limits },
-            OnnxLimits { nodes: 14, ..limits },
-            OnnxLimits { tensors: 20, ..limits },
-            OnnxLimits { parameter_bytes: 19, ..limits },
-            OnnxLimits { tensor_bytes: elements * 8 - 1, ..limits },
+            OnnxLimits {
+                source_bytes: source.len() - 1,
+                ..limits
+            },
+            OnnxLimits {
+                nodes: 14,
+                ..limits
+            },
+            OnnxLimits {
+                tensors: 20,
+                ..limits
+            },
+            OnnxLimits {
+                parameter_bytes: 19,
+                ..limits
+            },
+            OnnxLimits {
+                tensor_bytes: elements * 8 - 1,
+                ..limits
+            },
         ] {
             assert_eq!(
-                import_onnx(&source, ContentDigest::sha256(&source), GENERATION, limits, &|| false).err(),
+                import_onnx(
+                    &source,
+                    ContentDigest::sha256(&source),
+                    GENERATION,
+                    limits,
+                    &|| false
+                )
+                .err(),
                 Some(OnnxError::Limit)
             );
         }
@@ -657,28 +771,52 @@ fn import_work_source_digest_and_every_cancellation_checkpoint_are_enforced() ->
             &source,
             ContentDigest::sha256(&source),
             GENERATION,
-            OnnxLimits { work_units: imported.work_units() - 1, ..OnnxLimits::default() },
+            OnnxLimits {
+                work_units: imported.work_units() - 1,
+                ..OnnxLimits::default()
+            },
             &|| false,
-        ).err(),
+        )
+        .err(),
         Some(OnnxError::WorkBudget)
     );
     assert_eq!(
-        import_onnx(&source, ContentDigest::sha256(b"wrong source"), GENERATION, OnnxLimits::default(), &|| false).err(),
+        import_onnx(
+            &source,
+            ContentDigest::sha256(b"wrong source"),
+            GENERATION,
+            OnnxLimits::default(),
+            &|| false
+        )
+        .err(),
         Some(OnnxError::Digest)
     );
     let calls = Cell::new(0);
-    import_onnx(&source, ContentDigest::sha256(&source), GENERATION, OnnxLimits::default(), &|| {
-        calls.set(calls.get() + 1);
-        false
-    })?;
+    import_onnx(
+        &source,
+        ContentDigest::sha256(&source),
+        GENERATION,
+        OnnxLimits::default(),
+        &|| {
+            calls.set(calls.get() + 1);
+            false
+        },
+    )?;
     let total = calls.get();
     for stop in 1..=total {
         calls.set(0);
         assert_eq!(
-            import_onnx(&source, ContentDigest::sha256(&source), GENERATION, OnnxLimits::default(), &|| {
-                calls.set(calls.get() + 1);
-                calls.get() == stop
-            }).err(),
+            import_onnx(
+                &source,
+                ContentDigest::sha256(&source),
+                GENERATION,
+                OnnxLimits::default(),
+                &|| {
+                    calls.set(calls.get() + 1);
+                    calls.get() == stop
+                }
+            )
+            .err(),
             Some(OnnxError::Cancelled),
             "checkpoint {stop}/{total}"
         );
@@ -690,17 +828,32 @@ fn import_work_source_digest_and_every_cancellation_checkpoint_are_enforced() ->
 fn scalar_and_optimized_execution_enforce_exact_budget_and_quiescence() -> Test {
     let source = hard_model(&[8], &[8], &[]);
     let imported = import(&source)?;
-    let input = [("input", data(&[8], &[-f32::MAX, -2.5, -1.0, -0.0, 0.0, 1.0, 2.5, f32::MAX])?)];
+    let input = [(
+        "input",
+        data(
+            &[8],
+            &[-f32::MAX, -2.5, -1.0, -0.0, 0.0, 1.0, 2.5, f32::MAX],
+        )?,
+    )];
     let constants = imported
         .parameters()
         .iter()
         .map(|(name, value)| Ok((name.clone(), value.to_vec::<f32>()?)))
         .collect::<Result<BTreeMap<_, _>, fss_tensor::TensorError>>()?;
-    let optimized = optimized_executor::OptimizedGraph::prepare(imported.graph(), &constants, &ScalarExecCx::new())?;
+    let optimized = optimized_executor::OptimizedGraph::prepare(
+        imported.graph(),
+        &constants,
+        &ScalarExecCx::new(),
+    )?;
     let mut bindings = imported.parameters().clone();
     bindings.insert("input".into(), input[0].1.clone());
     let bindings = bindings.into_iter().collect::<Vec<_>>();
-    let outcome = ScalarExecutor::run(imported.graph(), &bindings, ExecBudget::unlimited(), &ScalarExecCx::new())?;
+    let outcome = ScalarExecutor::run(
+        imported.graph(),
+        &bindings,
+        ExecBudget::unlimited(),
+        &ScalarExecCx::new(),
+    )?;
     let exact = ExecBudget::new(outcome.executed_macs(), outcome.allocated_bytes());
     assert!(ScalarExecutor::run(imported.graph(), &bindings, exact, &ScalarExecCx::new()).is_ok());
     assert!(optimized.run(&input, exact, &ScalarExecCx::new()).is_ok());
@@ -708,16 +861,28 @@ fn scalar_and_optimized_execution_enforce_exact_budget_and_quiescence() -> Test 
         ExecBudget::new(exact.max_macs - 1, exact.max_bytes),
         ExecBudget::new(exact.max_macs, exact.max_bytes - 1),
     ] {
-        assert!(matches!(ScalarExecutor::run(imported.graph(), &bindings, budget, &ScalarExecCx::new()), Err(ExecError::BudgetExceeded { .. })));
-        assert!(matches!(optimized.run(&input, budget, &ScalarExecCx::new()), Err(ExecError::BudgetExceeded { .. })));
+        assert!(matches!(
+            ScalarExecutor::run(imported.graph(), &bindings, budget, &ScalarExecCx::new()),
+            Err(ExecError::BudgetExceeded { .. })
+        ));
+        assert!(matches!(
+            optimized.run(&input, budget, &ScalarExecCx::new()),
+            Err(ExecError::BudgetExceeded { .. })
+        ));
     }
     let scalar_cx = ScalarExecCx::new();
     scalar_cx.request_cancellation();
-    assert!(matches!(ScalarExecutor::run(imported.graph(), &bindings, exact, &scalar_cx), Err(ExecError::CancellationRequested { .. })));
+    assert!(matches!(
+        ScalarExecutor::run(imported.graph(), &bindings, exact, &scalar_cx),
+        Err(ExecError::CancellationRequested { .. })
+    ));
     assert!(scalar_cx.is_drain_completed());
     let fast_cx = ScalarExecCx::new();
     fast_cx.request_cancellation();
-    assert!(matches!(optimized.run(&input, exact, &fast_cx), Err(ExecError::CancellationRequested { .. })));
+    assert!(matches!(
+        optimized.run(&input, exact, &fast_cx),
+        Err(ExecError::CancellationRequested { .. })
+    ));
     assert!(fast_cx.is_drain_completed());
     Ok(())
 }
