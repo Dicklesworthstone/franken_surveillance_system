@@ -15,6 +15,7 @@ use super::{
 use asupersync::{
     Cx,
     io::{AsyncRead, AsyncWrite},
+    net::TcpStream,
 };
 use fss_core::{ContentDigest, DigestAlgorithm, IdempotencyKey, OperationId, RuntimeGrant};
 use fss_runtime::{
@@ -187,6 +188,63 @@ pub enum Outcome {
     },
 }
 
+/// Caller-owned setup and accept state. A returned setup outcome remains here
+/// even if accepting the connection times out or its future is dropped.
+#[derive(Default, Debug)]
+#[must_use = "retain the setup outcome and reconcile any committed effect"]
+pub struct AcceptTrace {
+    started: bool,
+    setup: Trace,
+    outcome: Option<Outcome>,
+    accept_started: bool,
+}
+impl AcceptTrace {
+    /// The tracked setup attempt, including any retained permit.
+    pub fn setup_mut(&mut self) -> &mut Trace {
+        &mut self.setup
+    }
+    /// Whether controller accept was entered, not proof of connection.
+    pub fn accept_started(&self) -> bool {
+        self.accept_started
+    }
+    /// The untrusted setup outcome, retained even after accept failure.
+    pub fn outcome(&self) -> Option<&Outcome> {
+        self.outcome.as_ref()
+    }
+    /// Transfer the original outcome and its permit for reconciliation.
+    pub fn take_outcome(&mut self) -> Option<Outcome> {
+        self.outcome.take()
+    }
+}
+
+/// A peer socket, subject to the same listener policy on every I/O poll.
+/// A caller must still perform TLS and independently verify identity.
+pub struct Accepted<'scope, 'task, 'policy> {
+    /// Metered, guarded raw socket. This is not an authenticated session.
+    pub io: super::metered::MeteredIo<
+        'scope,
+        'task,
+        controller_listener::GuardedIo<'policy, TcpStream>,
+    >,
+    /// Apply this same connection gate above TLS before reading or writing.
+    pub gate: controller_listener::AdmissionGate<'policy>,
+}
+
+/// Failure to complete the setup-to-accept transition.
+#[derive(Debug)]
+pub enum AcceptError {
+    /// Invalid accept bounds or a previously used trace.
+    Configuration,
+    /// Setup stopped; trace retains any interrupted setup state.
+    Setup(Error),
+    /// The response or settings do not permit even an untrusted accept attempt.
+    Unconfirmed,
+    /// Listener acceptance failed; the setup outcome remains in the trace.
+    Listener(super::listener::Error),
+    /// Accepted source differed from the selected discovery claim.
+    PeerMismatch,
+}
+
 /// Two matching read-only observations of one discovered camera.
 ///
 /// The camera's claims and discovery identity remain untrusted; this does not
@@ -306,6 +364,77 @@ fn valid_claims(report: &discovery::Report, index: usize) -> bool {
 }
 
 impl Owner<'_, '_, '_> {
+    /// Set up an admitted candidate and accept its controller connection on
+    /// the same pre-bound listener. This does not authenticate the accepted
+    /// peer, drive TLS or WebSocket, settle the effect, or retry a handoff.
+    /// A caller-owned trace preserves the result across an interrupted accept.
+    /// A previous-controller readback permits waiting for a connection, but
+    /// the committed handoff remains unresolved and must be reconciled.
+    pub async fn setup_and_accept<'scope, 'task, 'policy, IO: AsyncRead + AsyncWrite + Unpin>(
+        &mut self,
+        listener: &mut controller_listener::Listener<'scope, 'task, 'policy>,
+        expected_port: u16,
+        camera: &mut camera_http::Owner<'_, '_, '_, IO>,
+        cfg: &Config<'_>,
+        framing: handoff::Framing,
+        max_poll: usize,
+        accept_wait: Duration,
+        trace: &mut AcceptTrace,
+    ) -> Result<Accepted<'scope, 'task, 'policy>, AcceptError> {
+        if trace.started
+            || !(1..=super::metered::MAX_POLL_BYTES).contains(&max_poll)
+            || accept_wait.is_zero()
+            || accept_wait > MAX_WAIT
+        {
+            return Err(AcceptError::Configuration);
+        }
+        trace.started = true;
+        let outcome = self
+            .run_when_listening_tracked(
+                listener,
+                expected_port,
+                camera,
+                cfg,
+                framing,
+                &mut trace.setup,
+            )
+            .await
+            .map_err(AcceptError::Setup)?;
+        let eligible_for_accept = match &outcome {
+            Outcome::AlreadyAssociated { .. } => true,
+            Outcome::Observed {
+                readback: handoff::Readback::Requested | handoff::Readback::Previous,
+                response,
+                ..
+            } => !matches!(
+                response,
+                camera_api::HandoffResponseObservation::Object {
+                    success: Some(false),
+                    ..
+                }
+            ),
+            _ => false,
+        };
+        trace.outcome = Some(outcome);
+        if !eligible_for_accept {
+            return Err(AcceptError::Unconfirmed);
+        }
+        trace.accept_started = true;
+        let (io, gate) = listener
+            .accept_next(max_poll, accept_wait)
+            .await
+            .map_err(AcceptError::Listener)?;
+        if cfg
+            .report
+            .cameras
+            .get(cfg.index)
+            .is_none_or(|candidate| candidate.source().ip() != gate.source().ip())
+        {
+            return Err(AcceptError::PeerMismatch);
+        }
+        Ok(Accepted { io, gate })
+    }
+
     /// Observe one admitted discovered camera without preparing or sending a
     /// management effect. Settings are read twice and must agree.
     pub async fn observe<IO: AsyncRead + AsyncWrite + Unpin>(

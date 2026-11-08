@@ -5758,3 +5758,113 @@ remains experimental. Afterward the recorder and discovery timer were active,
 the recorder restart count remained 70, and three recent fallback files were
 present. This is direct still-image access, not native video, automatic setup,
 continuous recording, source custody, or 30-day Rust retention.
+
+A subsequent working-tree draft connects the tracked setup owner to the same
+pre-bound controller listener. It retains the setup outcome in caller-owned
+state before waiting for a peer and declines to accept after an explicitly
+negative handoff response. The listener source must match the selected
+untrusted discovery claim; that comparison does not authenticate the camera.
+The accompanying synthetic fixture is intended to exercise an existing
+association, explicit refusal, and listener timeout. Neither the draft nor
+those new cases has been compiled or run: the strict-remote request on `ts1`
+timed out in the queue before starting, and two alternative workers failed
+RCH disk-headroom admission. No camera handoff was attempted for this draft.
+At the later read-only check, the existing recorder was running with restart
+count 70 and the discovery timer was active. The setup source SHA-256 was
+`a13b38425940b2b206108ca78e4b485630eb19d74ad79bf6da79db6ae33f1e23`
+and its test source SHA-256 was
+`2b454a9a3b9e8a8bb50ba97dbd8d5da9fe909797066735f465ea9e51494a7b2c`,
+on base `09338dbb4e0ac4b2e0310ba36be4377f7c4bb4ec`. Rust formatting and
+`git diff --check` completed; neither is a compilation or runtime test.
+
+The draft fixture was extended to cover a mismatched accepted source and a
+dropped accept future after a synthetic positive handoff and requested-address
+readback. In that cancellation case it is intended to verify that the
+committed permit remains available to the caller for reconciliation. These are
+additional unexecuted test cases, not proof of cancellation safety. The revised
+test source SHA-256 is
+`4d3ab8d4f1625c6eb61eced9c07c5387c4647cc7a944e20a691317f85004f6d6`.
+A new strict-remote test request was queued on `ts1`; its eventual terminal
+result must be checked before treating the draft as compiled or tested.
+That `ts1` request ended before execution with RCH exit 103: active build disk
+reservations exceeded available headroom. It did not produce a compile or test
+result. A separate read-only check found `mac-mini-max` had about 18 GiB free,
+so it was not used for this build. The `trj` recorder remained active and its
+restart count was unchanged at 70 at the read-only check.
+
+A bounded local rust-analyzer investigation loaded the workspace without
+build scripts or procedural macros. Its targeted inference statistics showed
+no unknown expression or pattern types for `setup_and_accept` or the synthetic
+setup fixture, but its intermediate-representation lowering failed for each
+analyzed body. A separate language-server observation published zero
+diagnostics for both edited files over a 40-second window, but did not report
+that the server had reached quiescence. These are incomplete IDE observations,
+not a compiler check, a test pass, or evidence that the code can run.
+A repeat observation with the language-server status capability enabled did
+report a healthy, quiescent workspace and the latest published diagnostics for
+both edited files were empty. Build scripts and procedural macros remained
+disabled, so this narrows the earlier IDE uncertainty but is still not a Rust
+compiler check or execution of the fixture. A strict-remote attempt on `hz3`
+was refused before execution because the worker was draining or unreachable;
+no test was run there.
+
+For comparison, the same bounded rust-analyzer analysis was run on the existing,
+previously compiled `run_when_listening_tracked` async method and on synchronous
+`valid_digest` methods. MIR lowering failed for the former and succeeded for
+the latter. This comparison shows the failure is not unique to the new method;
+it does not establish its cause or substitute for compiler and runtime proof.
+
+The unexecuted fixture now also covers a positive synthetic handoff followed by
+a matching accepted connection, and interruption while the synthetic camera
+withholds its handoff response. The cases are intended to verify custody of the
+same committed permit after acceptance and after cancellation respectively.
+The revised fixture source SHA-256 is
+`cd6cd89a1203a6f2412026f77af9e3c9a06ecb05a25d3dbf55ba6b5f31d78e73`.
+Formatting and `git diff --check` passed; no compilation or test run has yet
+validated this revision.
+
+The installed RCH 2.1.36 client refused the optional source-content receipt
+before execution in jobs `30099060530610968` and `30099060530610970`.
+Inspection found that its clean-overlay namespace comparison preserves manifest
+string ordering while comparing against path-component ordering. A scratch
+Git-archive/rsync skeleton reproduced the complete baseline with equal file and
+directory sets, and the installed client lacks the later RCH source fix
+`e8f9c674`, which sorts the temporary expected path vector. This explains the
+observed refusal as an ordering mismatch, not proof that no other source issue
+exists. A normal strict-remote clean-overlay compiler check was subsequently
+started as job `30099060530610976` on `hz2`; while it ran, both worker-side
+edited Rust file hashes matched the local hashes in the preceding entry. The
+job's terminal result and source-release state still need to be verified.
+A subsequent read-only recorder check found `/bulk` mounted and two fallback
+MP4 files modified within five minutes. One segment aged between 90 seconds and
+five minutes reported H.264 at 1280×720; an FFmpeg command requesting up to three
+frames completed to a null sink without errors. The command did not count output
+frames, and this point-in-time check establishes neither gap-free coverage nor
+a 30-day retention outcome. The active recorder's restart count remained 70.
+
+The working-tree setup-to-accept bridge now also permits a bounded connection
+attempt when a successful or non-explicitly-negative handoff response is
+followed by the previously observed controller address. A prior physical G4
+trial observed an incoming connection despite a previous-controller readback;
+that observation did not establish which write caused it or authenticate its
+peer. The new branch preserves the original `Previous` readback and committed
+permit for reconciliation, and does not classify the effect as successful.
+Explicit refusal and a different reported controller still prevent accept.
+The synthetic fixture now includes both a previous-controller connection and
+a different-controller refusal. This revision has only been formatted and has
+not been compiled or executed. Its setup source SHA-256 is
+`b4f97ac710ac0c1370eb67b70f5d2cf7cafafb11a9cc26c04521705086040f92`
+and its test source SHA-256 is
+`15b1a233746b511cc68c065e0022a11645f2f0cc6e545eb8ba131b8e6fe80c4d`.
+The currently running check `30099060530610976` predates this revision and
+cannot establish compilation or test results for these hashes.
+The fixture's readback selector was corrected immediately afterward; the
+current test source SHA-256 is
+`13e87979b6257774afc8274a428ccaffd00bec7169157220bf3cc50bf6e0075b`.
+This corrected revision is also uncompiled and unexecuted.
+The different-controller fixture now also rejects a worker bind address equal
+to the synthetic different address. Its current source SHA-256 is
+`9d6699305cab82371bed29cf7c4481b6789d81550d7c5d2215868a776ae426ef`.
+A language-server pass on this revision reported healthy quiescence and zero
+published diagnostics for both edited files, with build scripts and procedural
+macros disabled. It is not a compiler check or test execution.

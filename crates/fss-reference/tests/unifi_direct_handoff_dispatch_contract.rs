@@ -709,6 +709,8 @@ fn http_fixture(
     destination: Ipv4Addr,
     revoke: Option<Arc<std::sync::atomic::AtomicBool>>,
     reported_port: Option<(Arc<std::sync::atomic::AtomicU16>, u8)>,
+    handoff_success: bool,
+    readback_mode: u8,
 ) -> std::io::Result<()> {
     let target_body = format!(r#"{{"controller":{{"addr":"{destination}"}}}}"#);
     let mut socket = std::net::TcpStream::connect_timeout(&address, Duration::from_secs(5))?;
@@ -795,8 +797,15 @@ fn http_fixture(
             3 if double_read && changed => br#"{"controller":{"addr":"192.168.1.99"}}"#,
             3 if double_read && already => target_body.as_bytes(),
             3 if double_read => br#"{"controller":{"addr":"192.168.1.10"}}"#,
+            i if i == handoff_index && handoff_success => br#"{"success":true}"#,
             i if i == handoff_index => {
                 br#"{"success":false,"statusCode":17,"secret":"fixture-private"}"#
+            }
+            i if i == handoff_index + 1 && readback_mode == 1 => {
+                br#"{"controller":{"addr":"192.168.1.10"}}"#
+            }
+            i if i == handoff_index + 1 && readback_mode == 2 => {
+                br#"{"controller":{"addr":"192.168.1.99"}}"#
             }
             i if i == handoff_index + 1 => target_body.as_bytes(),
             _ => b"{}",
@@ -905,6 +914,8 @@ fn owned_http_handoff(cancel_reply: bool, framing: Framing) -> Test {
                             Ipv4Addr::new(192, 168, 1, 40),
                             None,
                             None,
+                            false,
+                            0,
                         )
                     });
                     let (socket, _) =
@@ -1140,6 +1151,7 @@ fn run_discovered_setup(
         None,
         0,
         false,
+        0,
     )
 }
 
@@ -1163,6 +1175,7 @@ fn run_discovered_setup_with_listener(
     ready: Option<(Ipv4Addr, bool)>,
     port_mode: u8,
     drop_future: bool,
+    integrated_mode: u8,
 ) -> Test {
     use fss_reference::unifi_direct::{controller_listener, discovery, setup};
     static SETUP_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -1274,6 +1287,8 @@ fn run_discovered_setup_with_listener(
                             destination,
                             revoke_policy,
                             port_claim,
+                            matches!(integrated_mode, 5 | 6 | 8 | 9),
+                            if integrated_mode == 8 { 1 } else if integrated_mode == 9 { 2 } else { 0 },
                         )
                     });
                     let (socket, _) =
@@ -1349,13 +1364,22 @@ fn run_discovered_setup_with_listener(
                     if drop_future {
                         let mut trace = setup::Trace::default();
                         let cfg = config!(&report);
-                        let result = timeout(cx.now(), Duration::from_millis(1000),
-                            owner.run_with_framing_tracked(&mut http, &cfg, framing, &mut trace)).await;
-                        assert!(result.is_err(), "fixture should withhold the handoff response");
+                        let result = timeout(
+                            cx.now(),
+                            Duration::from_millis(1000),
+                            owner.run_with_framing_tracked(&mut http, &cfg, framing, &mut trace),
+                        )
+                        .await;
+                        assert!(
+                            result.is_err(),
+                            "fixture should withhold the handoff response"
+                        );
                         assert_eq!(trace.operation(), Some(&operation));
                         assert!(trace.dispatch_started());
                         assert_eq!(trace.response(), None);
-                        let permit = trace.take_permit().ok_or("cancelled setup lost its permit")?;
+                        let permit = trace
+                            .take_permit()
+                            .ok_or("cancelled setup lost its permit")?;
                         assert_eq!(permit.operation(), &operation);
                         assert_eq!(http.phase(), Phase::Fenced);
                         drop(http);
@@ -1450,6 +1474,166 @@ fn run_discovered_setup_with_listener(
                         ));
                         assert_eq!(http.phase(), Phase::Login);
                         live.store(true, std::sync::atomic::Ordering::Release);
+                        if integrated_mode != 0 {
+                            let mut trace = setup::AcceptTrace::default();
+                            let client = if matches!(integrated_mode, 1 | 4 | 6 | 8) {
+                                let socket = asupersync::net::TcpSocket::new_v4()?;
+                                let source = if integrated_mode == 4 { destination } else { Ipv4Addr::LOCALHOST };
+                                socket.bind(SocketAddr::V4(std::net::SocketAddrV4::new(source, 0)))?;
+                                Some(
+                                    timeout(
+                                        cx.now(),
+                                        Duration::from_secs(5),
+                                        socket.connect(SocketAddr::V4(control.local_addr())),
+                                    )
+                                    .await??,
+                                )
+                            } else {
+                                None
+                            };
+                            let cfg = config!(&report);
+                            if integrated_mode == 7 {
+                                let interrupted = timeout(
+                                    cx.now(), Duration::from_secs(1),
+                                    owner.setup_and_accept(
+                                        &mut control, port, &mut http, &cfg, framing, 4096,
+                                        Duration::from_secs(5), &mut trace,
+                                    ),
+                                ).await;
+                                assert!(interrupted.is_err(), "fixture should withhold the handoff response");
+                                assert!(!trace.accept_started());
+                                assert!(trace.outcome().is_none());
+                                let setup_trace = trace.setup_mut();
+                                assert!(setup_trace.dispatch_started());
+                                let permit = setup_trace.take_permit().ok_or("cancelled setup lost its permit")?;
+                                assert_eq!(permit.operation(), &operation);
+                                drop(interrupted);
+                                assert_eq!(http.phase(), Phase::Fenced);
+                                drop(http);
+                                peer.join().map_err(|_| "HTTP fixture panic")??;
+                                return Ok(());
+                            }
+                            if integrated_mode == 5 {
+                                let interrupted = timeout(
+                                    cx.now(), Duration::from_secs(1),
+                                    owner.setup_and_accept(
+                                        &mut control, port, &mut http, &cfg, framing, 4096,
+                                        Duration::from_secs(5), &mut trace,
+                                    ),
+                                ).await;
+                                assert!(interrupted.is_err(), "fixture should cancel during accept");
+                                assert!(trace.accept_started());
+                                match trace.take_outcome() {
+                                    Some(setup::Outcome::Observed { permit, readback, .. }) => {
+                                        assert_eq!(permit.operation(), &operation);
+                                        assert_eq!(readback, fss_reference::unifi_direct::handoff::Readback::Requested);
+                                    }
+                                    _ => return Err("cancelled accept lost committed handoff".into()),
+                                }
+                                drop(interrupted);
+                                drop(http);
+                                peer.join().map_err(|_| "HTTP fixture panic")??;
+                                return Ok(());
+                            }
+                            let result = owner
+                                .setup_and_accept(
+                                    &mut control,
+                                    port,
+                                    &mut http,
+                                    &cfg,
+                                    framing,
+                                    4096,
+                                    if integrated_mode == 3 {
+                                        Duration::from_millis(100)
+                                    } else {
+                                        Duration::from_secs(5)
+                                    },
+                                    &mut trace,
+                                )
+                                .await;
+                            match integrated_mode {
+                                1 => {
+                                    let accepted =
+                                        result.map_err(|e| format!("integrated accept: {e:?}"))?;
+                                    assert_eq!(*accepted.gate.source().ip(), Ipv4Addr::LOCALHOST);
+                                    assert!(trace.accept_started());
+                                    assert!(matches!(
+                                        trace.take_outcome(),
+                                        Some(setup::Outcome::AlreadyAssociated { .. })
+                                    ));
+                                    drop(accepted);
+                                }
+                                2 => {
+                                    assert!(matches!(result, Err(setup::AcceptError::Unconfirmed)));
+                                    assert!(!trace.accept_started());
+                                    assert!(matches!(
+                                        trace.take_outcome(),
+                                        Some(setup::Outcome::Observed {
+                                            response: HandoffResponseObservation::Object {
+                                                success: Some(false),
+                                                ..
+                                            },
+                                            ..
+                                        })
+                                    ));
+                                }
+                                3 => {
+                                    assert!(matches!(result, Err(setup::AcceptError::Listener(_))));
+                                    assert!(trace.accept_started());
+                                    assert!(matches!(
+                                        trace.take_outcome(),
+                                        Some(setup::Outcome::AlreadyAssociated { .. })
+                                    ));
+                                }
+                                4 => {
+                                    assert!(matches!(result, Err(setup::AcceptError::PeerMismatch)));
+                                    assert!(trace.accept_started());
+                                    assert!(matches!(trace.take_outcome(), Some(setup::Outcome::AlreadyAssociated { .. })));
+                                }
+                                6 => {
+                                    let accepted = result.map_err(|e| format!("integrated handoff accept: {e:?}"))?;
+                                    assert_eq!(*accepted.gate.source().ip(), Ipv4Addr::LOCALHOST);
+                                    assert!(trace.accept_started());
+                                    match trace.take_outcome() {
+                                        Some(setup::Outcome::Observed { permit, readback, .. }) => {
+                                            assert_eq!(permit.operation(), &operation);
+                                            assert_eq!(readback, fss_reference::unifi_direct::handoff::Readback::Requested);
+                                        }
+                                        _ => return Err("successful accept lost committed handoff".into()),
+                                    }
+                                    drop(accepted);
+                                }
+                                8 => {
+                                    let accepted = result.map_err(|e| format!("previous-readback accept: {e:?}"))?;
+                                    assert_eq!(*accepted.gate.source().ip(), Ipv4Addr::LOCALHOST);
+                                    assert!(trace.accept_started());
+                                    match trace.take_outcome() {
+                                        Some(setup::Outcome::Observed { permit, readback, .. }) => {
+                                            assert_eq!(permit.operation(), &operation);
+                                            assert_eq!(readback, fss_reference::unifi_direct::handoff::Readback::Previous);
+                                        }
+                                        _ => return Err("previous-readback accept lost its unresolved handoff".into()),
+                                    }
+                                    drop(accepted);
+                                }
+                                9 => {
+                                    assert!(matches!(result, Err(setup::AcceptError::Unconfirmed)));
+                                    assert!(!trace.accept_started());
+                                    match trace.take_outcome() {
+                                        Some(setup::Outcome::Observed { permit, readback, .. }) => {
+                                            assert_eq!(permit.operation(), &operation);
+                                            assert_eq!(readback, fss_reference::unifi_direct::handoff::Readback::Different);
+                                        }
+                                        _ => return Err("different readback lost its unresolved handoff".into()),
+                                    }
+                                }
+                                _ => return Err("unknown integrated test mode".into()),
+                            }
+                            drop(client);
+                            drop(http);
+                            peer.join().map_err(|_| "HTTP fixture panic")??;
+                            return Ok(());
+                        }
                         let outcome = owner
                             .run_when_listening(
                                 &control,
@@ -1617,7 +1801,16 @@ fn run_discovered_setup_with_listener(
 #[test]
 fn cancelled_setup_response_retains_permit_in_caller_trace() -> Test {
     run_discovered_setup_with_listener(
-        true, false, false, Framing::ContentLength, false, false, None, 0, true,
+        true,
+        false,
+        false,
+        Framing::ContentLength,
+        false,
+        false,
+        None,
+        0,
+        true,
+        0,
     )
 }
 #[test]
@@ -1678,6 +1871,7 @@ fn discovered_setup_requires_current_bound_controller_listener() -> Test {
         Some((ip, false)),
         0,
         false,
+        0,
     )?;
     run_discovered_setup_with_listener(
         false,
@@ -1689,6 +1883,7 @@ fn discovered_setup_requires_current_bound_controller_listener() -> Test {
         Some((ip, true)),
         0,
         false,
+        0,
     )?;
     for mode in [1, 2] {
         run_discovered_setup_with_listener(
@@ -1701,6 +1896,35 @@ fn discovered_setup_requires_current_bound_controller_listener() -> Test {
             Some((ip, false)),
             mode,
             false,
+            0,
+        )?;
+    }
+    Ok(())
+}
+
+/// Exercises the full setup-to-accept boundary on an isolated worker.
+#[test]
+#[ignore = "requires FSS_TEST_CONTROLLER_BIND_IP on the test worker"]
+fn setup_accept_retains_outcome_across_handoff_and_accept_boundaries() -> Test {
+    let ip: Ipv4Addr = std::env::var("FSS_TEST_CONTROLLER_BIND_IP")?.parse()?;
+    if !(ip.is_private() || ip.is_link_local())
+        || ip == Ipv4Addr::new(192, 168, 1, 10)
+        || ip == Ipv4Addr::new(192, 168, 1, 99)
+    {
+        return Err("test controller interface is not a suitable private address".into());
+    }
+    for mode in 1..=9 {
+        run_discovered_setup_with_listener(
+            mode == 7,
+            !matches!(mode, 2 | 5 | 6 | 7 | 8 | 9),
+            false,
+            Framing::ContentLength,
+            false,
+            false,
+            Some((ip, false)),
+            0,
+            false,
+            mode,
         )?;
     }
     Ok(())
