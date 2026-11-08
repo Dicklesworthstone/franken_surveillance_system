@@ -484,6 +484,10 @@ pub struct TimeSyncCounts {
     pub correlated: u32,
     /// Correlated messages explicitly asserting `responseExpected: true`.
     pub correlated_response_expected: u32,
+    /// Correlated messages referring to the most recent locally written reply.
+    pub correlated_to_last_written_reply: u32,
+    /// Such messages that also explicitly assert `responseExpected: true`.
+    pub correlated_expected_to_last_written_reply: u32,
 }
 
 /// Saturating counts of valid, uninterpreted messages that asked for a reply.
@@ -539,6 +543,7 @@ pub struct Controller {
     time_sync_reply_ids: [u64; MAX_PRE_HELLO_TIME_SYNC_REPLIES],
     time_sync_request_ids: [u64; MAX_PRE_HELLO_TIME_SYNC_REPLIES],
     time_sync_reply_count: usize,
+    last_written_time_sync_reply: Option<u64>,
     pending_pre_hello_sync: bool,
     event_reply: Option<(u64, fss_core::ContentDigest)>,
     event_reply_is_startup_request: bool,
@@ -590,6 +595,7 @@ impl Controller {
             time_sync_reply_ids: [0; MAX_PRE_HELLO_TIME_SYNC_REPLIES],
             time_sync_request_ids: [0; MAX_PRE_HELLO_TIME_SYNC_REPLIES],
             time_sync_reply_count: 0,
+            last_written_time_sync_reply: None,
             pending_pre_hello_sync: false,
             event_reply: None,
             event_reply_is_startup_request: false,
@@ -728,11 +734,24 @@ impl Controller {
                 if response_to != 0 {
                     self.time_sync_counts.correlated =
                         self.time_sync_counts.correlated.saturating_add(1);
+                    let to_last_written = self.last_written_time_sync_reply == Some(response_to);
+                    if to_last_written {
+                        self.time_sync_counts.correlated_to_last_written_reply = self
+                            .time_sync_counts
+                            .correlated_to_last_written_reply
+                            .saturating_add(1);
+                    }
                     if response_expected {
                         self.time_sync_counts.correlated_response_expected = self
                             .time_sync_counts
                             .correlated_response_expected
                             .saturating_add(1);
+                        if to_last_written {
+                            self.time_sync_counts.correlated_expected_to_last_written_reply = self
+                                .time_sync_counts
+                                .correlated_expected_to_last_written_reply
+                                .saturating_add(1);
+                        }
                     }
                     if pre_hello_exchange {
                         if self.time_sync_reply_count > 0
@@ -1220,6 +1239,7 @@ impl Controller {
                         self.phase = Phase::AwaitAgreementReply;
                     }
                     MessageKind::TimeSyncReply => {
+                        self.last_written_time_sync_reply = Some(id);
                         if self.time_sync_policy == TimeSyncPolicy::ExplicitCorrelatedRequests
                             || self.pending_pre_hello_sync
                         {

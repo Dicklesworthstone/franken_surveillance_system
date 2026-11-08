@@ -1666,6 +1666,17 @@ fn direct_trial_does_not_retry_after_a_clock_effect() -> Test {
 }
 
 #[test]
+#[ignore = "requires disposable TLS certificate and key"]
+fn direct_trial_reports_correlated_request_to_its_written_clock_reply() -> Test {
+    direct_trial_retirement_case(
+        "correlated-after-effect",
+        &[],
+        "SessionRetired { reason: TransportDetail(Io(UnexpectedEof)), phase: AwaitHello, rejected_message: None }",
+        true,
+    )
+}
+
+#[test]
 #[cfg(target_os = "linux")]
 #[ignore = "requires disposable TLS certificate and key"]
 fn direct_trial_setup_does_not_retry_after_a_clock_effect() -> Test {
@@ -1824,6 +1835,17 @@ fn direct_trial_retirement_case(
         {
             return Err("missing committed time-sync response".into());
         }
+        if case == "correlated-after-effect" {
+            let reply_id = response_fields
+                .get("messageId")
+                .and_then(|v| v.integer())
+                .ok_or("missing time-sync reply ID")?;
+            let correlated = format!(
+                r#"{{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"ubnt_avclient_timeSync","messageId":11,"inResponseTo":{reply_id},"responseExpected":true}}"#
+            );
+            socket.write_all(&frame(correlated.as_bytes()))?;
+            socket.flush()?;
+        }
         if case == "deadline" {
             std::thread::sleep(Duration::from_secs(31));
         }
@@ -1874,6 +1896,8 @@ fn direct_trial_retirement_case(
             && !stdout.contains("management_gate_passed=true"))
         || ((case == "deadline" || case == "short-deadline")
             && !stdout.contains("sync_uncorrelated=1 sync_correlated=1 sync_correlated_expected=1"))
+        || (case == "correlated-after-effect"
+            && !stdout.contains("sync_uncorrelated=1 sync_correlated=1 sync_correlated_expected=1 sync_to_last_written=1 sync_expected_to_last_written=1"))
     {
         return Err(format!("retirement was not reported: {stderr}").into());
     }

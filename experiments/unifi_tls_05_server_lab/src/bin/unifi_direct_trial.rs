@@ -751,19 +751,19 @@ fn run(args: Options) -> ResultBox<()> {
                         Ok(Ok(pipeline))=>break (session,pipeline,event_trace,startup_trace),
                         Ok(Err(error @ listener::StartError::Conversation(conversation::Error::Deadline)))=>{
                             let counts=session.time_sync_counts();
-                            println!("trial_stage=conversation_deadline phase={:?} effect_prepared={} attempts={} management_gate_passed={} sync_uncorrelated={} sync_correlated={} sync_correlated_expected={}",session.phase(),approval.0.get(),attempts,guard.management_gate_passed.get(),counts.uncorrelated,counts.correlated,counts.correlated_response_expected);
+                            println!("trial_stage=conversation_deadline phase={:?} effect_prepared={} attempts={} management_gate_passed={} sync_uncorrelated={} sync_correlated={} sync_correlated_expected={} sync_to_last_written={} sync_expected_to_last_written={}",session.phase(),approval.0.get(),attempts,guard.management_gate_passed.get(),counts.uncorrelated,counts.correlated,counts.correlated_response_expected,counts.correlated_to_last_written_reply,counts.correlated_expected_to_last_written_reply);
                             return Err(error.into());
                         },
                         Ok(Err(listener::StartError::Conversation(conversation::Error::SessionRetired {reason:receive::Stop::TransportDetail(receive::TransportFailure::Io(std::io::ErrorKind::UnexpectedEof)),phase:fss_reference::unifi_direct::Phase::AwaitHello,..}))) if !approval.0.get() && startup_events.is_empty() && attempts<MAX_INITIAL_CONNECTIONS && cx.now()<deadline=>println!("trial_stage=pre_effect_websocket_eof_retry"),
                         Ok(Err(error @ listener::StartError::Conversation(conversation::Error::SessionRetired {reason:receive::Stop::TransportDetail(receive::TransportFailure::Io(std::io::ErrorKind::UnexpectedEof)),phase:fss_reference::unifi_direct::Phase::AwaitHello,..})))=>{
                             let counts=session.time_sync_counts();
-                            println!("trial_stage=pre_hello_eof_stop effect_prepared={} attempts={} deadline_elapsed={} sync_uncorrelated={} sync_correlated={} sync_correlated_expected={}",approval.0.get(),attempts,cx.now()>=deadline,counts.uncorrelated,counts.correlated,counts.correlated_response_expected);
+                            println!("trial_stage=pre_hello_eof_stop effect_prepared={} attempts={} deadline_elapsed={} sync_uncorrelated={} sync_correlated={} sync_correlated_expected={} sync_to_last_written={} sync_expected_to_last_written={}",approval.0.get(),attempts,cx.now()>=deadline,counts.uncorrelated,counts.correlated,counts.correlated_response_expected,counts.correlated_to_last_written_reply,counts.correlated_expected_to_last_written_reply);
                             return Err(error.into());
                         },
                         Ok(Err(error))=>return Err(error.into()),
                         Err(_)=>{
                             let counts=session.time_sync_counts();
-                            println!("trial_stage=startup_deadline phase={:?} effect_prepared={} attempts={} management_gate_passed={} sync_uncorrelated={} sync_correlated={} sync_correlated_expected={}",session.phase(),approval.0.get(),attempts,guard.management_gate_passed.get(),counts.uncorrelated,counts.correlated,counts.correlated_response_expected);
+                            println!("trial_stage=startup_deadline phase={:?} effect_prepared={} attempts={} management_gate_passed={} sync_uncorrelated={} sync_correlated={} sync_correlated_expected={} sync_to_last_written={} sync_expected_to_last_written={}",session.phase(),approval.0.get(),attempts,guard.management_gate_passed.get(),counts.uncorrelated,counts.correlated,counts.correlated_response_expected,counts.correlated_to_last_written_reply,counts.correlated_expected_to_last_written_reply);
                             return Err("controller startup deadline elapsed; effects may require reconciliation".into());
                         },
                     }

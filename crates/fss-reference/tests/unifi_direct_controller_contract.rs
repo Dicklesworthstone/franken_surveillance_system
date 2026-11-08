@@ -198,7 +198,9 @@ fn time_sync_counts_preserve_payload_free_correlation_observations() -> TestResu
         TimeSyncCounts {
             uncorrelated: 2,
             correlated: 2,
-            correlated_response_expected: 1
+            correlated_response_expected: 1,
+            correlated_to_last_written_reply: 0,
+            correlated_expected_to_last_written_reply: 0,
         }
     );
     let malformed = br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"ubnt_avclient_timeSync","messageId":44,"inResponseTo":99,"responseExpected":"yes"}"#;
@@ -208,9 +210,32 @@ fn time_sync_counts_preserve_payload_free_correlation_observations() -> TestResu
         TimeSyncCounts {
             uncorrelated: 2,
             correlated: 2,
-            correlated_response_expected: 1
+            correlated_response_expected: 1,
+            correlated_to_last_written_reply: 0,
+            correlated_expected_to_last_written_reply: 0,
         }
     );
+    Ok(())
+}
+
+#[test]
+fn conservative_time_sync_counts_correlation_to_written_reply_without_answering() -> TestResult {
+    let mut c = controller(1)?;
+    assert_eq!(
+        c.observe(&message("ubnt_avclient_timeSync", 40, 0, "{}"))?,
+        Observation::TimeSyncRequested
+    );
+    c.prepare_time_sync(123_456, TIME)?;
+    c.finish_dispatch(1, Dispatch::Written)?;
+    let correlated = br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"ubnt_avclient_timeSync","messageId":41,"inResponseTo":1,"responseExpected":true}"#;
+    assert_eq!(c.observe(correlated)?, Observation::Other);
+    assert!(c.prepared().is_none());
+    let counts = c.time_sync_counts();
+    assert_eq!(counts.uncorrelated, 1);
+    assert_eq!(counts.correlated, 1);
+    assert_eq!(counts.correlated_response_expected, 1);
+    assert_eq!(counts.correlated_to_last_written_reply, 1);
+    assert_eq!(counts.correlated_expected_to_last_written_reply, 1);
     Ok(())
 }
 
@@ -278,6 +303,12 @@ fn explicit_correlated_time_sync_policy_answers_only_an_explicit_request() -> Te
     );
     assert_eq!(c.prepare_time_sync(123_456, TIME), Err(Error::InvalidState));
     assert_eq!(c.time_sync_counts().correlated_response_expected, 3);
+    assert_eq!(c.time_sync_counts().correlated_to_last_written_reply, 2);
+    assert_eq!(
+        c.time_sync_counts()
+            .correlated_expected_to_last_written_reply,
+        1
+    );
     Ok(())
 }
 

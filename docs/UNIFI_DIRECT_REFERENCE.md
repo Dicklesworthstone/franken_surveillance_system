@@ -6429,3 +6429,28 @@ archive. No automatic second handoff or reuse of those effect identities is
 authorized by the current evidence. A recovery workflow needs to retain and
 reconcile the exact journal state and its independent pin before another
 management attempt can be treated as safe.
+
+After both processes had exited, a read-only inventory of each journal hashed
+sorted `(relative path, byte length, SHA-256)` tuples encoded as compact JSON.
+The five-file forward-journal manifest SHA-256 was
+`fa94566200090a7d4b58b5c49733b6906ed5935e0a682e1d25a87fe2087bfeac`;
+the five-file time-sync journal manifest was
+`8484cb6be55fd66bc8ea6287ebcb0db3a31b14d09f8091afc49ff713e7aaf251`.
+These are late observations, useful for detecting subsequent changes. They
+are not the runtime's independently retained minimum journal pins, do not
+prove that no earlier history was lost, and do not settle either effect.
+
+The local controller revision now counts, without retaining message payloads
+or IDs in its output, whether a correlated time-sync claim refers to the most
+recent locally written time-sync reply, and whether that claim also requests a
+response. The conservative policy still does not answer correlated messages.
+Synthetic controller and process cases were added for this distinction. This
+diagnostic was not present in the physical attempt above, so it cannot tell
+whether that G4 message referred to the preceding reply; the revised code has
+not yet been compiled or exercised against a camera.
+
+Two focused strict-remote requests for the new diagnostic timed out in the
+queues for `vmi1152480` and `hz4`, respectively, before admission. Neither
+compiled or ran the revised code. The earlier 15/15 result applies to the
+preceding revision only. The diagnostic and its controller/process fixtures
+remain unqualified, and the two physical-trial journals remain unresolved.
