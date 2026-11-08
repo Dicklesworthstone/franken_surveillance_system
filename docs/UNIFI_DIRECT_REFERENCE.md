@@ -6358,3 +6358,29 @@ This establishes host-to-host reachability for that route only; it does not
 show that the physical G4 can reach the listener or authenticate any camera.
 The source-owned fixture run on `trj` is in progress with the corrected leaf
 certificate and the latest fixture overlay.
+
+A later bounded unicast UniFi discovery query from the selected `ts1`
+interface received a 208-byte response from the G4's observed address. A
+second query yielded one MAC claim that matched `ts1`'s local neighbor entry.
+No settings were written and no discovery payload was retained. This
+establishes a bidirectional UDP discovery path for this observation; the
+network and MAC claims are not independent cryptographic identity proof, and
+camera-to-listener TCP or native video remain untested.
+
+From the same `ts1` interface, a separate read-only TLS connection to the
+G4's HTTPS endpoint negotiated TLS 1.3 and presented a certificate whose
+SHA-256 matched the certificate previously retained on `trj`. No credential
+was sent and no HTTP request was made. This verifies the observed HTTPS path
+and matching network pin from `ts1`; the pin still lacks independent identity
+provenance and this is not a camera-to-controller connection or video test.
+
+The previously qualified Rust discovery executable with SHA-256
+`235e1b5097d6aa41de0cfdb839a98c6908cc68395f0b1e1a91181687dd124515` was
+copied to `ts1`, verified there, and run against the owner's observed G4
+address. A private, create-only authorization record scoped this specific
+one-shot unicast observation to the owner's request to try `ts1`; its digest
+was supplied to the laboratory command. The completed window returned one
+datagram and one matching camera claim, which the command labeled unverified;
+it did not claim absence or attempt login, setup, or a management write. This
+is an actual-camera Rust discovery observation from `ts1`, not automatic
+enrollment, physical identity proof, or video.
