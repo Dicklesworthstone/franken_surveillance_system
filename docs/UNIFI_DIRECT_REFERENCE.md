@@ -5868,3 +5868,359 @@ to the synthetic different address. Its current source SHA-256 is
 A language-server pass on this revision reported healthy quiescence and zero
 published diagnostics for both edited files, with build scripts and procedural
 macros disabled. It is not a compiler check or test execution.
+
+Strict-remote compiler check `30099060530611007` was started on `ts1` for the
+latest previous-readback revision, separately from the still-running older
+check on `hz2`. During execution, the worker's setup and fixture SHA-256 values
+matched the latest hashes recorded above, and its Cargo manifest and lockfile
+matched the selected base revision. This is a normal clean-overlay transfer,
+not an RCH source-content receipt. Its terminal result, acknowledgment and
+source release remain pending.
+
+The latest-source strict-remote check `30099060530611007` completed with exit
+zero on `ts1`, was acknowledged and released all source custody. Cargo checked
+both the library and the handoff-dispatch test target, with 64 warnings in
+other existing code. The clean-overlay fingerprint was
+`6998c902b4ff5dea92f6bd7a0c04a5cf8b994c8f67dcc7b29eb8789fcdf71008`;
+worker-side hashes for both changed source files, the manifest and lockfile
+matched the values described above. This verifies compilation, not execution.
+A subsequent strict-remote `cargo test` request was refused before execution:
+`ts1` reported about 31 GiB free against the 40 GiB reservation requirement.
+The older `hz2` check remains a separate job against the earlier revision.
+The same source-matched test request was then attempted on `trj` as job
+`30099060530611023`. Its wrapper reached the worker, but the remote disk-budget
+admission reported `started:false` because existing reservations and the
+protected floor consumed available headroom. It returned 120, was acknowledged
+and released its sources; no test ran. The recorder remained active with
+restart count 70, and two fallback MP4 files had been modified within five
+minutes. The older `hz2` check was still active at the last observation.
+A concurrent workspace commit `a8bf1e8a795b80096e4c9a9e834a09efbce4bcc7`
+contains the same checked setup and fixture hashes under an unrelated fleet
+commit title. The commit itself does not establish a test pass, and it was not
+amended or rewritten by this session.
+
+Strict-remote test job `30099060530611029` was admitted on `vmi1152480` for
+the source previously checked on `ts1`. The two edited Rust files, Cargo
+manifest and lockfile matched their expected SHA-256 values on the worker
+during execution. A separate local socket probe on that worker established
+that a loopback-source client can reach a bound private or link-local interface,
+which is required for the ignored listener fixture. The test job is still
+running; its terminal output, acknowledgment and source release are pending.
+
+Strict-remote test job `30099060530611029` completed on `vmi1152480` with
+16 passed and two private-interface cases ignored; it exited zero, was
+acknowledged and released its sources. The clean-overlay fingerprint was
+`6998c902b4ff5dea92f6bd7a0c04a5cf8b994c8f67dcc7b29eb8789fcdf71008`,
+and worker hashes for the changed sources, Cargo manifest and lockfile matched.
+The exact executable SHA-256 was
+`fa2e68d998facdca919587a9b5e6675927130577186b71268ae5e76a3584cefe`.
+A direct run of its two ignored cases on that worker failed both. A separate
+socket probe showed that a connection bound to the selected private source was
+translated to a different non-private source; this is consistent with the
+listener's denied result and the mismatch-case failure, but the latter did not
+print its actual error. These failures remain failures.
+
+The identical executable was copied to `ts1`, hash-verified, and its two
+ignored cases passed there on a private interface selected after verifying
+that connections retained the bound source address. Those cases exercise nine
+synthetic setup-to-accept scenarios, including a previous-controller readback,
+a different-controller refusal, and cancellation with a retained permit.
+Taken together the ordinary and separate ignored runs cover 18 tests, with
+zero failures on their respective passing runs. They do not exercise the
+physical G4, authenticate camera identity, settle handoff effects, or prove a
+native live stream or recorder.
+The verified test-binary copies remain in task-specific temporary directories
+on the Mac and `ts1` (about 677 MB each). An attempted hash-checked cleanup was
+rejected by the automatic command review because it contained file deletion;
+the copies were retained and no alternate deletion was attempted.
+The older `hz2` compiler check `30099060530610976` subsequently exited zero,
+was acknowledged and released its source. It checked the earlier hashes,
+not the later previous-controller readback revision.
+
+The listener fixture now uses two distinct loopback source addresses for its
+matching and mismatch cases, instead of binding the client to the worker's
+private interface. Independent socket probes on `vmi1152480` confirmed both
+loopback sources were preserved when connecting to its private listener. This
+is a test-only portability change; the controller implementation is unchanged.
+The revised fixture SHA-256 is
+`57df2685a2bb5ef8fa88bb7723a72c9ceb65cee043827e992b6c1b6dba255fcb`.
+Strict-remote job `30099060530611069` reached that worker but returned 120 at
+the remote disk-reservation guard before the build began; it was acknowledged
+and released sources. The revised fixture has not yet run.
+The revised fixture was subsequently admitted on `ts1` as strict-remote job
+`30099060530611080`. During execution, the worker-side setup source, revised
+fixture, Cargo manifest and lockfile matched their expected hashes. The job is
+still running; its terminal result, acknowledgment and source release remain
+pending. The implementation is unchanged from the separately passing prior
+fixture runs.
+
+The experimental TLS server laboratory now has a draft `setup_and_upgrade`
+composition: it passes an admitted discovered camera through the existing
+listener-bound setup, preserves its caller-owned handoff trace, completes TLS
+on the accepted socket and performs the guarded WebSocket upgrade. TLS and
+upgrade share a bounded deadline, and the same listener admission gate wraps
+the wire and plaintext. The function does not authenticate physical identity,
+settle handoff effects, start media, or install a service. The provider remains
+experimental. The current source SHA-256 is
+`7b0251bcee74716e7641379a63d8e38bcf792ee68f3a5f40f1c5304c0c3bf864`.
+A new private-interface synthetic fixture attempts a previous-controller
+readback followed by TLS and hello, plus a TLS-EOF case with the unresolved
+permit retained; its source SHA-256 is
+`c902e1dfb0edd8c9060718611c6d3de6b0ac5d7a04e8d6b1ba6184bb3a815070`.
+Neither new source has been compiled or executed yet. A language-server pass
+reported quiescence and zero diagnostics with procedural macros and build
+scripts disabled; that is not a compiler or test result. Strict-remote job
+`30099060530611095` is checking the library source on `vmi1152480` and does not
+include the later fixture; its terminal result and source release are pending.
+The synthetic fixture was extended with an invalid-deadline preflight that
+must stop before camera login or acceptance. Its current source SHA-256 is
+`c68e404c0a796cbe8f06a633c399a44fba67f95db1d0e6d23e3be01a6300d8f7`;
+this revision is not yet compiled or executed.
+Strict-remote job `30099060530611095` checked the new laboratory library on
+`vmi1152480`, exited zero, was acknowledged and released source custody. During
+that job the worker-side composition and existing setup source hashes matched
+the values recorded above. Job `30099060530611101` subsequently checked the
+new fixture target with clean-overlay fingerprint
+`b1084b807a5e1909a93a023cca8582eb2dfc91fd057686757d35df0eeb56e319`,
+exited zero, was acknowledged and released its sources. These are compilation
+checks only; no composed setup/TLS/WebSocket fixture has run, and the newer
+fixture's worker-side bytes were not separately hash-read before source release.
+The revised listener fixture subsequently passed on `ts1`: strict-remote job
+`30099060530611080` exited zero with 16 ordinary tests passed and two ignored,
+was acknowledged and released sources. Its clean-overlay fingerprint was
+`1580cd45d58179f43635652c4e09e9323500d1df37d663684495da44d256d149`.
+The resulting executable SHA-256 was
+`05fa30d44d910c1d4957592279f5c231af17a826811f226bce5d4184fd19379f`;
+its two ignored listener cases then passed directly on `ts1`, for 18 passing
+tests across the two runs. The revised tests have not themselves been rerun
+on the address-translating worker, so the independent loopback-source probe
+there is not an end-to-end test pass on that host.
+The combined setup/TLS/WebSocket fixture was submitted separately on `ts1`
+with disposable certificate files and an owner-scoped private test interface;
+its result remains pending.
+
+The first composed setup/TLS/WebSocket runtime job, `30099060530611116`,
+finished with exit 101 and was acknowledged with source released. Its output
+stream was lost across a turn boundary and the completed target was no longer
+present on the worker; the failing stage is unknown. The failure is not a pass.
+`ts1` is now operator-disabled, and it was not re-enabled.
+
+The synthetic fixture was revised to bind its fake camera-side sockets to
+loopback and its controller listener to a private interface, avoiding the
+source translation observed on `vmi1152480`. It uses `socket2` only as a dev
+dependency to bind the synthetic TLS peer; production code is unchanged.
+The revised fixture SHA-256 is
+`270371e6ca01a62b332e0365b2315200e3f1a0a6c99eadc6e9bdf3c613b8511d`,
+and the updated lab lockfile SHA-256 is
+`20b32588cd08723ff4d24ad7b1bd03efa308c845cfed767ab3a1dbc9e0f1e8da`.
+The test-only dependency update was resolved offline. The revised fixture has
+not yet compiled or run; its first strict-remote test request was refused
+before execution because the worker had no free slots. The original failed
+run remains unresolved and is not explained by this fixture adjustment.
+The adapted fixture was further changed so its fake camera listener has a
+bounded accept loop and joins its test threads on early failure. Its current
+source SHA-256 is
+`aa7b61ab94eddd7775b7032f92f0c38912b34c4c952b22271821a4e962776c81`.
+A queued compiler check was refused before execution because the fixture
+changed after admission; no result from that request applies to this revision.
+Strict-remote compiler job `30100509981409773` and synthetic runtime job
+`30100509981409774` were then started on separate workers. While the runtime
+job was executing on `trj`, its worker-side manifest, lockfile, library,
+composition and fixture hashes matched the local inputs. The runtime result
+remains pending. The existing G4 recorder remained active and had recent files
+while the low-priority synthetic build was running. Compiler job
+`30100509981409773` exited zero, was acknowledged and released its sources;
+its clean-overlay fingerprint was
+`97e3b8320ec13adaf42bff6cc3b5f8f3ad0ee49e6de0e76694781b31014f9f8d`.
+This is a compile check, not a fixture execution or physical-camera result.
+The disposable certificate selected for the pending runtime job was found to
+have `CA:TRUE`, which could cause TLS client rejection; a separate
+`CA:FALSE`, server-auth certificate was prepared for a later run. Runtime job
+`30100509981409774` exited 101, was acknowledged and released its sources;
+the single fixture failed with a generic setup/upgrade error, so its precise
+failure stage and cause are unknown. It did not pass.
+
+The fixture was changed to report the error variant and rerun with the
+`CA:FALSE` certificate as strict-remote job `30100509981409778`. Its fixture
+source SHA-256 was
+`b746255882b8d1b235256e4aecc5e175569ed94c0743c38d846b47209947a404` and its
+clean-overlay fingerprint was
+`1f436b433dfcdfc6fad2380a14ca8ed614e07770583e1ee6b2ce6162773dce5a`.
+The job exited zero, was acknowledged and released sources: one ignored test
+passed, covering both successful setup/TLS/WebSocket hello and a TLS EOF that
+retains the unresolved handoff permit. This run cannot establish the previous
+failure's precise cause. All peers and credentials in the fixture were
+synthetic; it does not establish physical identity, start live media, reconcile
+the handoff, or provide a continuous recorder.
+
+The synthetic fixture was then extended through the existing listener-owned
+media startup and recording pipeline. Its first run, strict-remote job
+`30100509981409782`, failed at agreement negotiation because the simulated
+camera replied with a fixed request ID; the fixture also shadowed the intended
+media bytes. Both fixture defects were corrected. Job `30100509981409783`
+then passed the joined setup-to-media-segment path. Job `30100509981409785`
+extended that check to parse the resulting MP4 fragment and decode video
+frames with the first-party H.264 decoder; it passed one ignored test covering
+the media scenario and the separate TLS-EOF permit-retention scenario. All
+three jobs reached terminal state, were acknowledged and released sources.
+For the final run the fixture SHA-256 was
+`94a658c6d5cfcbdf0d831282167247b4956f13bcd55dff1a005ae0dfc3046711`, verified
+on the worker during execution, and the clean-overlay fingerprint was
+`38d5a3bd866495872a69b5ca202e70fc78e5568a44ee1463c49c3079bc5f14bd`.
+This proves the composed path with synthetic peers and synthetic video; it is
+not a physical G4 handoff, persisted recording, unattended service or
+retention qualification. The existing G4 recorder was active with recent
+files and no change to its restart count during the run.
+
+An experimental camera-side TLS adapter and an opt-in Linux setup path in the
+bounded direct trial are now under development. The adapter requires a
+caller-supplied DER certificate pin and verifies the TLS 1.3 P-256 handshake
+signature; the pin's provenance is not established by discovery. It reuses the
+existing experimental client transport and provider, neither of which is
+production-qualified. The trial reads camera credentials from a private-file
+lease, performs a bounded discovery and journaled handoff, then supplies the
+accepted controller session to its existing media path. It is a one-shot lab
+and is not a continuous recorder or an automatic fleet-enrollment service.
+Strict-remote jobs `30100509981409788` and `30100509981409795` compiled the
+adapter library and an initial trial revision, respectively. In-process job
+`30100509981409793` passed one ignored synthetic test through pinned HTTPS,
+discovery, setup, TLS/WebSocket, media negotiation and video decoding; it also
+checked rejection of a mismatched pin and preservation of the unresolved
+handoff permit after controller TLS EOF. Worker-side adapter and fixture hashes
+matched their local inputs. The adapter SHA-256 was
+`f7ebf2aef89b84c4b42ecb27a288c7f18cedf408cd579de5bbb444bdc391b015`.
+
+The first process fixture job `30100509981409797` failed with a connection
+reset; the trial's error output was not retained. Its loopback controller
+destination was ineligible for handoff, but the exact cause of that failed
+run is not established. A corrected private-interface fixture passed in job
+`30100509981409799`. After clarifying the trial's identity and handoff status
+labels, job `30100509981409802` passed four targeted ignored process cases,
+including discovery, pinned camera HTTPS, handoff, negotiation and a private
+decodable synthetic clip, plus three existing trial modes. Ten other tests
+were filtered out. That run's clean-overlay fingerprint was
+`b4222237c80cd2d5b548b66a281231c1b8316217b7a855c821305b7dcebc81fd`;
+the final trial and process-fixture SHA-256 values were respectively
+`e7143c99497b46a562f91d9d07578fb1a209f95c2bbcb4b358417b215ac0a269` and
+`07bd9622127d3ea2714777c2dc98719a73bb241ec79a25a145ec6524aaea639c`.
+All named jobs reached terminal state, were acknowledged and released their
+sources. An earlier process-test request to a separate worker was refused
+before execution for insufficient disk headroom.
+
+These tests use synthetic peers and credentials, and the process fixture uses
+an owner-supplied pin rather than proving its provenance. No physical-camera
+setup has been attempted with this path. The existing recorder remained active
+with recent files and an unchanged restart count during the tests.
+
+The new `unifi_camera_probe` uses the same experimental pinned HTTPS client
+for a read-only login, status request and snapshot, then decodes JPEG luma in
+memory. It does not issue settings writes or persist the image. A strict-remote
+synthetic process fixture, strict-remote job `30100509981409807`, passed its
+one ignored test containing two scenarios:
+successful snapshot decode and refusal of a changed certificate before access
+to a deliberately absent credential file. Its clean-overlay fingerprint was
+`c13fa1fcc4da37f8d9a616008fdd01f0478f03f308076798fedc88bc6baa2971`;
+the probe source and fixture SHA-256 values were respectively
+`98a77ff1d16a9b0cd73ff4f58ca3715b07f76cc36d95d9be6f296ffa2fa377cc` and
+`21faab6c9b0f0b1a203444a5c549bea17d8c4284ac140495215aa37778ee03ab`.
+The two worker-side copies of the probe executable matched SHA-256
+`a51645b57efd1d931eed9c858e668d49876c31b2f8378766a007e80fa8ccfcca`.
+
+The job exited zero, was acknowledged and released sources. The same
+hash-checked executable then connected directly to the owner's G4 on
+`trj`, matched the previously network-observed certificate, logged in, read
+status and decoded a 640×360 snapshot in memory. The command reported that it
+neither persisted media nor wrote settings. This creates a camera-local login
+session whose expiry is not established. The pin's provenance is not an
+independent physical identity proof, and this result is not a live video,
+handoff, continuous recording or retention test. Afterward the existing
+recorder and discovery timer were active, the recorder restart count remained
+70, and two fallback files had been modified within five minutes.
+After that physical read, the probe was adjusted so non-Linux builds report
+the unsupported private-file boundary at runtime instead of failing to compile
+the entire laboratory target. The updated Linux source SHA-256 is
+`67afede0afedefb7f55055c68e212c866ee81216f602487231afef7210ed4028`.
+Strict-remote job `30100509981409810` passed the same synthetic two-scenario
+probe test, exited zero, was acknowledged and released sources; its
+clean-overlay fingerprint was
+`5aa129a324cde99fb6b56da7ce3a5d0d0b212a5fe5f9b08ee0248403e9c01d1f`.
+This revision has not been run against the physical G4, and its non-Linux
+build has not been separately checked.
+
+The setup trial now accepts an explicit chunked handoff framing option, in
+addition to its fixed-length default. This follows the earlier physical
+observation of a chunked request but does not establish which prior write, if
+any, caused a camera transition. Strict-remote job `30100509981409809` passed
+five targeted ignored process tests: synthetic fixed-length and chunked setup
+each reached a decodable clip, and the three pre-existing trial modes passed.
+Ten other tests were filtered out. The job exited zero, was acknowledged and
+released sources; its clean-overlay fingerprint was
+`7021230aec86bd2ca68e96e95551cc6d1e65d20828dc877dbe80bc444cf93d8c`.
+The trial and process-fixture SHA-256 values,
+`7da0d585468b0c70455c44d40c2ba84bc3839276ec85134e19d0db6951e32266` and
+`d7e0a2a0fcfa0089b49b2b0bf5bf533b453ff1c343b76fa1311bdca53182c7ef`,
+matched the worker copies during execution. No physical handoff was made.
+
+The setup-to-upgrade path now allows a bounded number of new controller
+connections after an early TLS EOF, without repeating the journaled camera
+handoff. Every retried connection must still pass the listener policy and
+match the selected discovery source; all attempts share one deadline. The
+standalone trial also separates setup approval from later controller-effect
+approval, allowing an early WebSocket EOF reconnect only before any controller
+effect has started. Once an effect starts, it stops and leaves reconciliation
+to the owner. None of these source-address checks authenticate a camera.
+
+Strict-remote job `30100509981409814` passed one ignored setup fixture with
+normal setup/media, TLS EOF without retry, an early EOF followed by a
+successful reconnect, a mismatched retry source, and invalid retry bounds; the
+handoff permit remained available in the traced cases. Job
+`30100509981409816` passed five targeted ignored process tests, including
+fixed-length and chunked setup followed by an early TLS EOF, an early
+WebSocket EOF, reconnection and a decodable synthetic clip. Job
+`30100509981409820` passed two targeted ignored process tests establishing
+that a clock effect followed by EOF stops without reconnecting, with and
+without setup. All three jobs exited zero, were acknowledged and released
+sources; respectively 0, 10 and 14 other tests were filtered out. The process
+job `30100509981409816` used clean-overlay fingerprint
+`9f778c6007920e8cfb5e80adebe7803048f12ec5b1182199520c61367cbe4cd1`;
+the later negative-effect fixture used
+`f740658ae8a89e147bfc9447306b01c914de8457cc404659b81c70b4b3b3b6f6`.
+The setup bridge and trial source hashes were
+`75d42c2eef5b1caefff73dbd38f8ec644cf63623d7bf6dc4b20efd52191b9457` and
+`f926a24011e4f7c6aaf8b59b52eeaad4d2cd09cb4752f4011e3f8c5a4df96f16`;
+both matched the process worker during execution. This evidence is synthetic;
+the new retry path has not been exercised with the physical G4.
+
+An experimental Linux `unifi_controller_restore` command now uses the new
+pinned HTTPS client and the existing journaled handoff machinery to restore an
+explicitly supplied original controller only when two settings observations
+agree on the expected temporary controller. An already-original claim produces
+no effect or journal; a different or changing claim stops before a write. The
+destination is operator-supplied, and the command does not itself verify that
+the original controller is listening. A committed or uncertain write requires
+independent reconciliation and is never automatically replayed. Synchronous
+journal and credential-file operations, network-observed pin provenance and
+the experimental TLS provider remain limitations.
+
+The first synthetic process test, strict-remote job `30100509981409841`,
+failed its already-original case with `InvalidCompletion`: the no-effect path
+had incorrectly claimed an indeterminate effect. The command was corrected,
+and strict-remote job `30100509981409848` passed one ignored test containing
+11 cases: no-op, three observation-only outcomes, unexpected and changing
+claims, fixed-length and chunked restoration, unconfirmed readback, dropped
+response and wrong pin before credential access. The job exited zero, was
+acknowledged and released sources; its clean-overlay fingerprint was
+`ce638194c00d9246bae441957fe7d2230affcff9c2a549ea20e23a2a536d7d8b`.
+The command and fixture SHA-256 values were
+`5154d648dd644dfbb06bcce5722413bafb22a571f8a46ef964f57fe689c96f5f` and
+`b2a1f330c755fc896d633fc8923c4dfafd6d5e196510f26a4f040b6a73e7c712`.
+
+The resulting hash-checked Linux executable, SHA-256
+`64d892850c129cc946a4ca1293073544f56003343d90fb464ba0a8d632d024db`, ran
+in `--observe-only` mode against the owner's G4. Two settings observations
+reported the currently configured original controller; no write or journal was
+created. This creates a login session with unknown expiry, and the same-LAN
+certificate pin does not independently authenticate physical identity. The
+existing recorder was active, its restart count remained 70, and two recent
+fallback files were present afterward. This is not proof that a real restore
+write, scheduled restoration, or camera reconnection will succeed.

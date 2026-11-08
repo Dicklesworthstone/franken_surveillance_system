@@ -779,32 +779,255 @@ fn revocation_stops_buffered_tls_plaintext_and_fences_connection() -> Test {
 struct TrialChild(Option<std::process::Child>);
 impl Drop for TrialChild {
     fn drop(&mut self) {
-        if let Some(child) = &mut self.0 {
-            let _ = child.kill();
-            let _ = child.wait();
+        if let Some(mut child) = self.0.take() {
+            if child.try_wait().ok().flatten().is_none() {
+                let _ = child.kill();
+            }
+            if let Ok(output) = child.wait_with_output() {
+                eprintln!(
+                    "trial fixture child status: {}\n{}\n{}",
+                    output.status,
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
         }
     }
+}
+
+/// A bounded synthetic discovery and HTTPS camera owned by one test.
+struct SetupFixture {
+    discovery: Option<std::thread::JoinHandle<io::Result<()>>>,
+    camera: Option<std::thread::JoinHandle<io::Result<()>>>,
+    discovery_port: u16,
+    https_port: u16,
+}
+impl Drop for SetupFixture {
+    fn drop(&mut self) {
+        if let Some(handle) = self.discovery.take() {
+            let _ = handle.join();
+        }
+        if let Some(handle) = self.camera.take() {
+            let _ = handle.join();
+        }
+    }
+}
+impl SetupFixture {
+    fn finish(mut self) -> Test {
+        self.discovery
+            .take()
+            .ok_or("missing discovery fixture")?
+            .join()
+            .map_err(|_| "discovery fixture panicked")??;
+        self.camera
+            .take()
+            .ok_or("missing camera fixture")?
+            .join()
+            .map_err(|_| "camera fixture panicked")??;
+        Ok(())
+    }
+}
+
+fn setup_process_fixture(
+    cert: &[u8],
+    key: &[u8],
+    controller_port: u16,
+    bind: Ipv4Addr,
+    chunked: bool,
+) -> Result<SetupFixture, Box<dyn Error>> {
+    let udp = std::net::UdpSocket::bind((bind, 0))?;
+    udp.set_read_timeout(Some(Duration::from_secs(15)))?;
+    let discovery_port = udp.local_addr()?.port();
+    let camera_listener = std::net::TcpListener::bind((bind, 0))?;
+    camera_listener.set_nonblocking(true)?;
+    let https_port = camera_listener.local_addr()?.port();
+    let server = Arc::new(
+        ServerConfig::builder_with_provider(Arc::new(rustls_pure::provider()))
+            .with_protocol_versions(&[&rustls::version::TLS13])?
+            .with_no_client_auth()
+            .with_single_cert(
+                vec![CertificateDer::from(cert.to_vec())],
+                PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key.to_vec())),
+            )?,
+    );
+    let discovery = std::thread::spawn(move || -> io::Result<()> {
+        let mut query = [0u8; 64];
+        let (_, source) = udp.recv_from(&mut query)?;
+        let mac = [0, 0x11, 0x22, 0xaa, 0xbb, 0xcc];
+        let mut address = Vec::from(mac);
+        address.extend_from_slice(&bind.octets());
+        let mut body = Vec::new();
+        for (kind, value) in [
+            (1, mac.as_slice()),
+            (2, address.as_slice()),
+            (3, b"UVC.fixture".as_slice()),
+            (12, b"UVC G4 Instant".as_slice()),
+        ] {
+            body.push(kind);
+            body.extend_from_slice(&(value.len() as u16).to_be_bytes());
+            body.extend_from_slice(value);
+        }
+        let mut packet = vec![1, 0];
+        packet.extend_from_slice(&(body.len() as u16).to_be_bytes());
+        packet.extend_from_slice(&body);
+        udp.send_to(&packet, source)?;
+        Ok(())
+    });
+    let camera = std::thread::spawn(move || -> io::Result<()> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        let (raw, _) = loop {
+            match camera_listener.accept() {
+                Ok(peer) => break peer,
+                Err(e)
+                    if e.kind() == io::ErrorKind::WouldBlock
+                        && std::time::Instant::now() < deadline =>
+                {
+                    std::thread::sleep(Duration::from_millis(10))
+                }
+                Err(e) => return Err(e),
+            }
+        };
+        raw.set_nonblocking(false)?;
+        raw.set_read_timeout(Some(Duration::from_secs(15)))?;
+        raw.set_write_timeout(Some(Duration::from_secs(15)))?;
+        let mut tls = StreamOwned::new(
+            ServerConnection::new(server).map_err(io::Error::other)?,
+            raw,
+        );
+        let routes = [
+            "POST /api/1.1/login ",
+            "GET /api/1.1/status ",
+            "GET /api/1.1/settings ",
+            "GET /api/1.1/settings ",
+            "PUT /api/1.1/settings ",
+            "GET /api/1.1/settings ",
+        ];
+        for (index, route) in routes.iter().enumerate() {
+            let mut request = Vec::new();
+            let mut byte = [0u8; 1];
+            while !request.ends_with(b"\r\n\r\n") {
+                tls.read_exact(&mut byte)?;
+                request.push(byte[0]);
+                if request.len() > 8192 {
+                    return Err(io::Error::other("header limit"));
+                }
+            }
+            let text = std::str::from_utf8(&request).map_err(io::Error::other)?;
+            if !text.starts_with(route) {
+                return Err(io::Error::other("camera route mismatch"));
+            }
+            let is_chunked = text.contains("Transfer-Encoding: chunked\r\n");
+            if index == 4 && is_chunked != chunked {
+                return Err(io::Error::other("handoff framing mismatch"));
+            }
+            let n = if is_chunked {
+                let mut size = Vec::new();
+                while !size.ends_with(b"\r\n") {
+                    tls.read_exact(&mut byte)?;
+                    size.push(byte[0]);
+                    if size.len() > 16 {
+                        return Err(io::Error::other("chunk header limit"));
+                    }
+                }
+                usize::from_str_radix(
+                    std::str::from_utf8(&size[..size.len() - 2]).map_err(io::Error::other)?,
+                    16,
+                )
+                .map_err(io::Error::other)?
+            } else {
+                text.lines()
+                    .find_map(|s| s.strip_prefix("Content-Length: "))
+                    .map_or(Ok(0), str::parse::<usize>)
+                    .map_err(io::Error::other)?
+            };
+            if n > 4096 {
+                return Err(io::Error::other("body limit"));
+            }
+            let mut body = vec![0; n];
+            tls.read_exact(&mut body)?;
+            if is_chunked {
+                let mut end = [0u8; 7];
+                tls.read_exact(&mut end)?;
+                if &end != b"\r\n0\r\n\r\n" {
+                    return Err(io::Error::other("invalid chunk terminator"));
+                }
+            }
+            if index == 4 && body != format!(r#"{{"controller":{{"addr":"{bind}"}}}}"#).as_bytes() {
+                return Err(io::Error::other("handoff destination mismatch"));
+            }
+            let reply = match index {
+                1 => format!(r#"{{"controller":{{"port":{controller_port}}}}}"#),
+                2 | 3 | 5 => {
+                    let prior = if bind == Ipv4Addr::new(192, 168, 1, 10) {
+                        "192.168.1.11"
+                    } else {
+                        "192.168.1.10"
+                    };
+                    format!(r#"{{"controller":{{"addr":"{prior}"}}}}"#)
+                }
+                4 => r#"{"success":true}"#.into(),
+                _ => "{}".into(),
+            };
+            let cookie = if index == 0 {
+                "Set-Cookie: authId=fixture-cookie\r\n"
+            } else {
+                ""
+            };
+            write!(
+                tls,
+                "HTTP/1.1 200 OK\r\n{cookie}Content-Length: {}\r\nConnection: keep-alive\r\n\r\n{reply}",
+                reply.len()
+            )?;
+            tls.flush()?;
+        }
+        Ok(())
+    });
+    Ok(SetupFixture {
+        discovery: Some(discovery),
+        camera: Some(camera),
+        discovery_port,
+        https_port,
+    })
 }
 
 #[test]
 #[ignore = "requires disposable TLS certificate and key"]
 fn direct_trial_process_produces_a_private_decodable_clip() -> Test {
-    direct_trial_process_clip(false, false)
+    direct_trial_process_clip(false, false, false, false)
 }
 
 #[test]
 #[ignore = "requires disposable TLS certificate and key"]
 fn direct_trial_process_handles_time_sync_before_hello_and_produces_clip() -> Test {
-    direct_trial_process_clip(true, false)
+    direct_trial_process_clip(true, false, false, false)
 }
 
 #[test]
 #[ignore = "requires disposable TLS certificate and key"]
 fn direct_trial_process_receives_media_without_settings_reply() -> Test {
-    direct_trial_process_clip(true, true)
+    direct_trial_process_clip(true, true, false, false)
 }
 
-fn direct_trial_process_clip(sync_before_hello: bool, media_before_reply: bool) -> Test {
+#[test]
+#[cfg(target_os = "linux")]
+#[ignore = "requires disposable TLS certificate and key"]
+fn direct_trial_process_discovers_sets_up_and_records_fixture() -> Test {
+    direct_trial_process_clip(false, false, true, false)
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+#[ignore = "requires disposable TLS certificate and key"]
+fn direct_trial_process_discovers_chunked_setup_and_records_fixture() -> Test {
+    direct_trial_process_clip(false, false, true, true)
+}
+
+fn direct_trial_process_clip(
+    sync_before_hello: bool,
+    media_before_reply: bool,
+    with_setup: bool,
+    setup_chunked: bool,
+) -> Test {
     use std::{
         os::unix::fs::{DirBuilderExt, PermissionsExt},
         process::{Command, Stdio},
@@ -812,25 +1035,70 @@ fn direct_trial_process_clip(sync_before_hello: bool, media_before_reply: bool) 
     };
     let cert_path = PathBuf::from(std::env::var("FSS_LAB_CERT_DER")?);
     let key_path = PathBuf::from(std::env::var("FSS_LAB_KEY_DER")?);
-    let root =
-        std::env::temp_dir().join(format!("fss-direct-trial-process-{}-{sync_before_hello}-{media_before_reply}", std::process::id()));
+    let root = std::env::temp_dir().join(format!(
+        "fss-direct-trial-process-{}-{sync_before_hello}-{media_before_reply}-{with_setup}-{setup_chunked}",
+        std::process::id()
+    ));
     std::fs::DirBuilder::new().mode(0o700).create(&root)?;
     let temp = Temp(root);
-    let reserve = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
+    let bind = if with_setup {
+        let addr: Ipv4Addr = std::env::var("FSS_TEST_CONTROLLER_BIND_IP")?.parse()?;
+        if !(addr.is_private() || addr.is_link_local()) {
+            return Err("private fixture interface required".into());
+        }
+        addr
+    } else {
+        Ipv4Addr::LOCALHOST
+    };
+    let reserve = std::net::TcpListener::bind((bind, 0))?;
     let port = reserve.local_addr()?.port();
     drop(reserve);
     let journal = temp.0.join("journal");
     let clip = temp.0.join("clip.mp4");
+    let setup_fixture = if with_setup {
+        Some(setup_process_fixture(
+            &std::fs::read(&cert_path)?,
+            &std::fs::read(&key_path)?,
+            port,
+            bind,
+            setup_chunked,
+        )?)
+    } else {
+        None
+    };
     let mut command = Command::new(env!("CARGO_BIN_EXE_unifi_direct_trial"));
-    command.arg(format!("127.0.0.1:{port}"))
-        .args(["127.0.0.1", "001122aabbcc"])
+    command
+        .arg(format!("{bind}:{port}"))
+        .arg(bind.to_string())
+        .arg("001122aabbcc")
         .arg(&cert_path)
         .arg(&key_path)
         .arg(&journal)
         .arg(&clip)
         .arg("12345678-1234-4abc-9abc-123456789abc");
-    if media_before_reply { command.arg("--media-before-reply"); }
-    let child = command.arg("--owner-authorized")
+    if media_before_reply {
+        command.arg("--media-before-reply");
+    }
+    if let Some(fixture) = &setup_fixture {
+        use std::os::unix::fs::OpenOptionsExt;
+        let credential = temp.0.join("fixture-credential.json");
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&credential)?;
+        file.write_all(br#"{"username":"fixture","password":"synthetic"}"#)?;
+        command.arg(format!(
+            "--setup-camera={},{},{},{}{}",
+            fixture.discovery_port,
+            fixture.https_port,
+            cert_path.display(),
+            credential.display(),
+            if setup_chunked { ",chunked" } else { "" }
+        ));
+    }
+    let child = command
+        .arg("--owner-authorized")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()?;
@@ -843,39 +1111,43 @@ fn direct_trial_process_clip(sync_before_hello: bool, media_before_reply: bool) 
             .with_root_certificates(roots)
             .with_no_client_auth(),
     );
-    let address = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
+    let address = SocketAddr::from((bind, port));
     let deadline = Instant::now() + Duration::from_secs(15);
-    let initial = loop {
-        match std::net::TcpStream::connect_timeout(&address, Duration::from_millis(300)) {
-            Ok(socket) => break socket,
-            Err(_) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(30)),
-            Err(error) => return Err(error.into()),
+    {
+        let initial = loop {
+            match std::net::TcpStream::connect_timeout(&address, Duration::from_millis(300)) {
+                Ok(socket) => break socket,
+                Err(_) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(30))
+                }
+                Err(error) => return Err(error.into()),
+            }
+        };
+        drop(initial);
+        // A camera can upgrade and then disconnect before sending hello. No
+        // management effect has been prepared, so one bounded reconnect is safe.
+        let early_raw = std::net::TcpStream::connect_timeout(&address, Duration::from_secs(5))?;
+        early_raw.set_read_timeout(Some(Duration::from_secs(10)))?;
+        early_raw.set_write_timeout(Some(Duration::from_secs(10)))?;
+        let early_connection =
+            ClientConnection::new(client_config.clone(), ServerName::try_from("localhost")?)?;
+        let mut early = StreamOwned::new(early_connection, early_raw);
+        early.write_all(HEAD.as_bytes())?;
+        early.flush()?;
+        let mut early_header = Vec::new();
+        let mut early_byte = [0u8; 1];
+        while !early_header.ends_with(b"\r\n\r\n") {
+            early.read_exact(&mut early_byte)?;
+            early_header.push(early_byte[0]);
+            if early_header.len() > 4096 {
+                return Err("early upgrade limit".into());
+            }
         }
-    };
-    drop(initial);
-    // A camera can upgrade and then disconnect before sending hello. No
-    // management effect has been prepared, so one bounded reconnect is safe.
-    let early_raw = std::net::TcpStream::connect_timeout(&address, Duration::from_secs(5))?;
-    early_raw.set_read_timeout(Some(Duration::from_secs(10)))?;
-    early_raw.set_write_timeout(Some(Duration::from_secs(10)))?;
-    let early_connection =
-        ClientConnection::new(client_config.clone(), ServerName::try_from("localhost")?)?;
-    let mut early = StreamOwned::new(early_connection, early_raw);
-    early.write_all(HEAD.as_bytes())?;
-    early.flush()?;
-    let mut early_header = Vec::new();
-    let mut early_byte = [0u8; 1];
-    while !early_header.ends_with(b"\r\n\r\n") {
-        early.read_exact(&mut early_byte)?;
-        early_header.push(early_byte[0]);
-        if early_header.len() > 4096 {
-            return Err("early upgrade limit".into());
+        if !early_header.starts_with(b"HTTP/1.1 101 ") {
+            return Err("early upgrade refused".into());
         }
+        drop(early);
     }
-    if !early_header.starts_with(b"HTTP/1.1 101 ") {
-        return Err("early upgrade refused".into());
-    }
-    drop(early);
     let raw = loop {
         match std::net::TcpStream::connect_timeout(&address, Duration::from_millis(300)) {
             Ok(socket) => break socket,
@@ -935,8 +1207,7 @@ fn direct_trial_process_clip(sync_before_hello: bool, media_before_reply: bool) 
     {
         return Err("time sync response did not correlate to the camera request".into());
     }
-    let agreement = receive_binary(&mut socket)
-        .map_err(|e| format!("agreement request: {e}"))?;
+    let agreement = receive_binary(&mut socket).map_err(|e| format!("agreement request: {e}"))?;
     if !agreement
         .windows(b"ubnt_avclient_paramAgreement".len())
         .any(|w| w == b"ubnt_avclient_paramAgreement")
@@ -944,8 +1215,14 @@ fn direct_trial_process_clip(sync_before_hello: bool, media_before_reply: bool) 
         return Err("missing agreement".into());
     }
     let agreement_json = fss_core::json_input::parse(std::str::from_utf8(&agreement)?)?;
-    let agreement_id = agreement_json.object().and_then(|v| v.get("messageId")).and_then(|v| v.integer()).ok_or("missing agreement ID")?;
-    let agreement_reply = format!(r#"{{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"ubnt_avclient_paramAgreement","messageId":8,"inResponseTo":{agreement_id}}}"#);
+    let agreement_id = agreement_json
+        .object()
+        .and_then(|v| v.get("messageId"))
+        .and_then(|v| v.integer())
+        .ok_or("missing agreement ID")?;
+    let agreement_reply = format!(
+        r#"{{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"ubnt_avclient_paramAgreement","messageId":8,"inResponseTo":{agreement_id}}}"#
+    );
     socket.write_all(&frame(agreement_reply.as_bytes()))?;
     socket.flush()?;
     let setting = receive_binary(&mut socket)?;
@@ -962,12 +1239,18 @@ fn direct_trial_process_clip(sync_before_hello: bool, media_before_reply: bool) 
         .map(|(address, _)| address)
         .ok_or("missing stream address")?;
     let destination: SocketAddr = destination.parse()?;
-    if !destination.ip().is_loopback() {
-        return Err("stream destination escaped loopback".into());
+    if destination.ip() != std::net::IpAddr::V4(bind) {
+        return Err("stream destination escaped fixture interface".into());
     }
     let setting_json = fss_core::json_input::parse(std::str::from_utf8(&setting)?)?;
-    let setting_id = setting_json.object().and_then(|v| v.get("messageId")).and_then(|v| v.integer()).ok_or("missing setting ID")?;
-    let setting_reply = format!(r#"{{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"ChangeVideoSettings","messageId":9,"inResponseTo":{setting_id}}}"#);
+    let setting_id = setting_json
+        .object()
+        .and_then(|v| v.get("messageId"))
+        .and_then(|v| v.integer())
+        .ok_or("missing setting ID")?;
+    let setting_reply = format!(
+        r#"{{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"ChangeVideoSettings","messageId":9,"inResponseTo":{setting_id}}}"#
+    );
     if !media_before_reply {
         socket.write_all(&frame(setting_reply.as_bytes()))?;
         socket.flush()?;
@@ -1002,9 +1285,10 @@ fn direct_trial_process_clip(sync_before_hello: bool, media_before_reply: bool) 
     }
     if !report.contains("trial_complete")
         || !report.contains("trial_stage=tcp_accepted")
-        || !report.contains("trial_stage=handshake_eof_retry")
+        || (!with_setup && !report.contains("trial_stage=handshake_eof_retry"))
         || !report.contains("trial_stage=pre_effect_websocket_eof_retry")
         || !report.contains("trial_stage=tls_handshake_completed")
+        || (with_setup && !report.contains("trial_stage=setup_websocket_accepted"))
         || !report.contains("trial_stage=websocket_accepted")
         || !report.contains("effects=reconciliation_required")
         || !report.contains("continuous_recording=false")
@@ -1037,6 +1321,9 @@ fn direct_trial_process_clip(sync_before_hello: bool, media_before_reply: bool) 
     }
     if !journal.is_dir() {
         return Err("missing effect journal".into());
+    }
+    if let Some(fixture) = setup_fixture {
+        fixture.finish()?;
     }
     Ok(())
 }
@@ -1222,14 +1509,21 @@ fn direct_trial_does_not_retry_after_a_clock_effect() -> Test {
 }
 
 #[test]
+#[cfg(target_os = "linux")]
 #[ignore = "requires disposable TLS certificate and key"]
-fn direct_trial_reports_phase_on_deadline_after_clock_effect() -> Test {
+fn direct_trial_setup_does_not_retry_after_a_clock_effect() -> Test {
     direct_trial_retirement_case(
-        "deadline",
+        "effect-after-setup",
         &[],
-        "Conversation(Deadline)",
+        "SessionRetired { reason: TransportDetail(Io(UnexpectedEof)), phase: AwaitHello, rejected_message: None }",
         true,
     )
+}
+
+#[test]
+#[ignore = "requires disposable TLS certificate and key"]
+fn direct_trial_reports_phase_on_deadline_after_clock_effect() -> Test {
+    direct_trial_retirement_case("deadline", &[], "Conversation(Deadline)", true)
 }
 
 #[test]
@@ -1255,31 +1549,79 @@ fn direct_trial_retirement_case(
     ));
     std::fs::DirBuilder::new().mode(0o700).create(&root)?;
     let temp = Temp(root);
-    let reserve = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
+    let with_setup = case == "effect-after-setup";
+    let bind = if with_setup {
+        let addr: Ipv4Addr = std::env::var("FSS_TEST_CONTROLLER_BIND_IP")?.parse()?;
+        if !(addr.is_private() || addr.is_link_local()) {
+            return Err("private fixture interface required".into());
+        }
+        addr
+    } else {
+        Ipv4Addr::LOCALHOST
+    };
+    let reserve = std::net::TcpListener::bind((bind, 0))?;
     let port = reserve.local_addr()?.port();
     drop(reserve);
     let cert_path = PathBuf::from(std::env::var("FSS_LAB_CERT_DER")?);
+    let key_path = PathBuf::from(std::env::var("FSS_LAB_KEY_DER")?);
     let clip = temp.0.join("clip.mp4");
+    let setup_fixture = if with_setup {
+        Some(setup_process_fixture(
+            &std::fs::read(&cert_path)?,
+            &std::fs::read(&key_path)?,
+            port,
+            bind,
+            false,
+        )?)
+    } else {
+        None
+    };
     let mut command = Command::new(env!("CARGO_BIN_EXE_unifi_direct_trial"));
-    command.arg(format!("127.0.0.1:{port}"))
-        .args(["127.0.0.1", "001122aabbcc"])
+    command
+        .arg(format!("{bind}:{port}"))
+        .arg(bind.to_string())
+        .arg("001122aabbcc")
         .arg(&cert_path)
-        .arg(std::env::var("FSS_LAB_KEY_DER")?)
+        .arg(&key_path)
         .arg(temp.0.join("journal"))
         .arg(&clip)
         .arg("12345678-1234-4abc-9abc-123456789abc");
-    if case == "deadline" { command.arg("40"); }
-    if case == "short-deadline" { command.arg("10"); }
-    let child = command.arg("--owner-authorized")
-        .stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+    if case == "deadline" {
+        command.arg("40");
+    }
+    if case == "short-deadline" {
+        command.arg("10");
+    }
+    if let Some(fixture) = &setup_fixture {
+        use std::os::unix::fs::OpenOptionsExt;
+        let credential = temp.0.join("fixture-credential.json");
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&credential)?;
+        file.write_all(br#"{"username":"fixture","password":"synthetic"}"#)?;
+        command.arg(format!(
+            "--setup-camera={},{},{},{}",
+            fixture.discovery_port,
+            fixture.https_port,
+            cert_path.display(),
+            credential.display()
+        ));
+    }
+    let child = command
+        .arg("--owner-authorized")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
     let mut child = TrialChild(Some(child));
     let mut roots = RootCertStore::empty();
-    roots.add(CertificateDer::from(std::fs::read(cert_path)?))?;
+    roots.add(CertificateDer::from(std::fs::read(&cert_path)?))?;
     let config = ClientConfig::builder_with_provider(Arc::new(rustls_pure::provider()))
         .with_protocol_versions(&[&rustls::version::TLS13])?
         .with_root_certificates(roots)
         .with_no_client_auth();
-    let address = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
+    let address = SocketAddr::from((bind, port));
     let deadline = Instant::now() + Duration::from_secs(if case == "deadline" { 45 } else { 20 });
     let raw = loop {
         match std::net::TcpStream::connect_timeout(&address, Duration::from_millis(300)) {
@@ -1315,12 +1657,21 @@ fn direct_trial_retirement_case(
         let response = receive_binary(&mut socket)?;
         let response_json = fss_core::json_input::parse(std::str::from_utf8(&response)?)?;
         let response_fields = response_json.object().ok_or("invalid time-sync reply")?;
-        if response_fields.get("functionName").and_then(|v| v.text()) != Some("ubnt_avclient_timeSync")
-            || response_fields.get("inResponseTo").and_then(|v| v.integer()) != Some(10) {
+        if response_fields.get("functionName").and_then(|v| v.text())
+            != Some("ubnt_avclient_timeSync")
+            || response_fields
+                .get("inResponseTo")
+                .and_then(|v| v.integer())
+                != Some(10)
+        {
             return Err("missing committed time-sync response".into());
         }
-        if case == "deadline" { std::thread::sleep(Duration::from_secs(31)); }
-        if case == "short-deadline" { std::thread::sleep(Duration::from_secs(11)); }
+        if case == "deadline" {
+            std::thread::sleep(Duration::from_secs(31));
+        }
+        if case == "short-deadline" {
+            std::thread::sleep(Duration::from_secs(11));
+        }
         drop(socket);
     } else {
         socket.write_all(bad_frame)?;
@@ -1348,13 +1699,25 @@ fn direct_trial_retirement_case(
         || !stderr.contains(expected)
         || clip.exists()
         || stdout.contains("pre_effect_websocket_eof_retry")
-        || (after_effect && case != "deadline" && case != "short-deadline" && !stdout.contains("trial_stage=pre_hello_eof_stop effect_prepared=true"))
-        || (case == "deadline" && !stdout.contains("trial_stage=conversation_deadline phase=AwaitHello effect_prepared=true"))
-        || (case == "short-deadline" && !stdout.contains("deadline phase=AwaitHello effect_prepared=true"))
-        || ((case == "deadline" || case == "short-deadline") && !stdout.contains("management_gate_passed=true"))
-        || ((case == "deadline" || case == "short-deadline") && !stdout.contains("sync_uncorrelated=1 sync_correlated=1 sync_correlated_expected=1"))
+        || (after_effect
+            && case != "deadline"
+            && case != "short-deadline"
+            && !stdout.contains("trial_stage=pre_hello_eof_stop effect_prepared=true"))
+        || (case == "deadline"
+            && !stdout.contains(
+                "trial_stage=conversation_deadline phase=AwaitHello effect_prepared=true",
+            ))
+        || (case == "short-deadline"
+            && !stdout.contains("deadline phase=AwaitHello effect_prepared=true"))
+        || ((case == "deadline" || case == "short-deadline")
+            && !stdout.contains("management_gate_passed=true"))
+        || ((case == "deadline" || case == "short-deadline")
+            && !stdout.contains("sync_uncorrelated=1 sync_correlated=1 sync_correlated_expected=1"))
     {
         return Err(format!("retirement was not reported: {stderr}").into());
+    }
+    if let Some(fixture) = setup_fixture {
+        fixture.finish()?;
     }
     Ok(())
 }

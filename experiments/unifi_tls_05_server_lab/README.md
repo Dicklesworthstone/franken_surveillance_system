@@ -282,9 +282,12 @@ binds a caller-selected interface, admits an expected source address and MAC
 claim, runs the experimental TLS/controller exchange and Asupersync media
 pipeline, and writes one private, create-only MP4 after in-memory FSS decode.
 It prints aggregate counts and explicitly reports omitted source bytes and
-unreconciled camera effects. Its inputs are a local TLS certificate and
-mode-600 private key; it does not read camera credentials or set the camera's
-controller address. It is not continuous recording, automatic enrollment,
+unreconciled camera effects. Its inputs include a local TLS certificate and
+mode-600 private key. An optional Linux-only setup mode also reads an
+owner-supplied camera certificate and private credential file, performs scoped
+discovery, and can send one journaled controller-address handoff. That mode
+must not be used against a working recorder until a separately verified
+restoration path is ready. It is not continuous recording, automatic enrollment,
 source custody, independently authenticated identity, or a production TLS
 service. File I/O and effect journaling remain synchronous. The caller must
 supply a private output directory and a new journal path; an interrupted write
@@ -389,7 +392,7 @@ abstained and created no reboot marker. Fresh recorder segments were verified
 and uploaded after the attempt.
 
 ```text
-unifi_direct_trial LISTEN_IPV4:PORT CAMERA_IPV4 CAMERA_MAC_HEX CERT_DER KEY_DER JOURNAL_DIR OUTPUT_MP4 CONTROLLER_UUID [WAIT_SECONDS] [--allow-correlated-timesync|--bounded-prehello-clock] [--media-before-reply] [--reply-events] [--lab-aac-config=HEX|--lab-aac-source] [--lab-trailer16-av-flag|--lab-zero-stream-id] [--lab-segments=N] --owner-authorized
+unifi_direct_trial LISTEN_IPV4:PORT CAMERA_IPV4 CAMERA_MAC_HEX CERT_DER KEY_DER JOURNAL_DIR OUTPUT_MP4 CONTROLLER_UUID [WAIT_SECONDS] [--allow-correlated-timesync|--bounded-prehello-clock] [--media-before-reply] [--reply-events] [--reply-startup-requests] [--lab-aac-config=HEX|--lab-aac-source] [--lab-trailer16-av-flag|--lab-zero-stream-id] [--lab-segments=N] [--setup-camera=DISCOVERY_PORT,HTTPS_PORT,CAMERA_CERT_DER,CREDENTIAL_FILE[,chunked]] --owner-authorized
 ```
 
 The key and clip can contain private material; use an owner-controlled private

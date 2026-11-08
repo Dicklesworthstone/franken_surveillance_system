@@ -4,6 +4,9 @@
 //! This is a laboratory executable, not a continuous recorder or enrolled
 //! service. It uses experimental TLS and unverified IP/MAC admission.
 use asupersync::{runtime::RuntimeBuilder, time::timeout_at};
+#[cfg(target_os = "linux")]
+#[path = "../../../unifi_https_snapshot_lab/src/auth.rs"]
+mod auth;
 use fss_container::{
     Mp4Limits,
     demux::{AvcMp4, DemuxLimits},
@@ -22,6 +25,8 @@ use fss_packet::extended_flv::{
     Limits as FlvLimits, aac, aac_track,
     stream::{Framer, SearchMode},
 };
+#[cfg(target_os = "linux")]
+use fss_reference::unifi_direct::{camera_api, camera_http, discovery, handoff, setup};
 use fss_reference::{
     onvif::wire::UtcDateTime,
     unifi_direct::{
@@ -54,9 +59,11 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use unifi_tls_05_server_lab::server::Server;
+#[cfg(target_os = "linux")]
+use unifi_tls_05_server_lab::{camera_tls, setup_upgrade};
 
 type ResultBox<T> = Result<T, Box<dyn Error>>;
-const USAGE: &str = "usage: unifi_direct_trial LISTEN_IPV4:PORT CAMERA_IPV4 CAMERA_MAC_HEX CERT_DER KEY_DER JOURNAL_DIR OUTPUT_MP4 CONTROLLER_UUID [WAIT_SECONDS] [--allow-correlated-timesync|--bounded-prehello-clock] [--media-before-reply] [--reply-events] [--reply-startup-requests] [--lab-aac-config=HEX|--lab-aac-source] [--lab-trailer16-av-flag|--lab-zero-stream-id] [--lab-segments=N] --owner-authorized";
+const USAGE: &str = "usage: unifi_direct_trial LISTEN_IPV4:PORT CAMERA_IPV4 CAMERA_MAC_HEX CERT_DER KEY_DER JOURNAL_DIR OUTPUT_MP4 CONTROLLER_UUID [WAIT_SECONDS] [--allow-correlated-timesync|--bounded-prehello-clock] [--media-before-reply] [--reply-events] [--reply-startup-requests] [--lab-aac-config=HEX|--lab-aac-source] [--lab-trailer16-av-flag|--lab-zero-stream-id] [--lab-segments=N] [--setup-camera=DISCOVERY_PORT,HTTPS_PORT,CAMERA_CERT_DER,CREDENTIAL_FILE[,chunked]] --owner-authorized";
 const MAX_SOURCE: u64 = 32 * 1024 * 1024;
 const MAX_CLIP: usize = 32 * 1024 * 1024;
 const MAX_INITIAL_CONNECTIONS: usize = 8;
@@ -81,12 +88,51 @@ struct Options {
     lab_g4_trailer: bool,
     lab_zero_stream_id: bool,
     lab_segments: usize,
+    setup: Option<SetupOptions>,
+}
+struct SetupOptions {
+    discovery_port: u16,
+    https_port: u16,
+    cert: PathBuf,
+    credential: PathBuf,
+    chunked: bool,
 }
 fn options() -> ResultBox<Options> {
     let mut args: Vec<_> = std::env::args().skip(1).collect();
     if args.pop().as_deref() != Some("--owner-authorized") {
         return Err(USAGE.into());
     }
+    let setup = if let Some(value) = args.last().and_then(|s| s.strip_prefix("--setup-camera=")) {
+        if !cfg!(target_os = "linux") {
+            return Err("camera setup trial requires Linux".into());
+        }
+        let fields: Vec<_> = value.split(',').collect();
+        if !(fields.len() == 4 || (fields.len() == 5 && fields[4] == "chunked")) {
+            return Err(USAGE.into());
+        }
+        let discovery_port = fields[0].parse::<u16>()?;
+        let https_port = fields[1].parse::<u16>()?;
+        let cert = PathBuf::from(fields[2]);
+        let credential = PathBuf::from(fields[3]);
+        if discovery_port == 0
+            || https_port == 0
+            || !cert.is_absolute()
+            || !credential.is_absolute()
+        {
+            return Err("invalid camera setup arguments".into());
+        }
+        let value = SetupOptions {
+            discovery_port,
+            https_port,
+            cert,
+            credential,
+            chunked: fields.len() == 5,
+        };
+        args.pop();
+        Some(value)
+    } else {
+        None
+    };
     let lab_segments =
         if let Some(value) = args.last().and_then(|s| s.strip_prefix("--lab-segments=")) {
             let count = value
@@ -219,6 +265,7 @@ fn options() -> ResultBox<Options> {
         lab_g4_trailer,
         lab_zero_stream_id,
         lab_segments,
+        setup,
     })
 }
 fn bounded_read(path: &Path, private: bool) -> ResultBox<Vec<u8>> {
@@ -256,6 +303,53 @@ impl listener::Admission for Policy {
 impl owner::PeerAdmission for Policy {
     fn permits(&self, mac: [u8; 6]) -> bool {
         mac == self.mac
+    }
+}
+#[cfg(target_os = "linux")]
+struct SetupPolicy<'a, F> {
+    base: &'a Policy,
+    lease: &'a auth::Lease,
+    check: F,
+    camera: ContentDigest,
+    peer_admission: ContentDigest,
+    fence: u64,
+}
+#[cfg(target_os = "linux")]
+impl<F: Fn() -> Result<(), &'static str>> camera_http::Authority for SetupPolicy<'_, F> {
+    fn permits(&self, peer: Ipv4Addr, generation: u64, _: camera_http::Operation) -> bool {
+        peer == self.base.camera && generation == 1 && self.lease.revalidate(&self.check).is_ok()
+    }
+}
+#[cfg(target_os = "linux")]
+impl<F: Fn() -> Result<(), &'static str>> setup::Admission for SetupPolicy<'_, F> {
+    fn permits(
+        &self,
+        candidate: &discovery::CameraCandidate,
+        camera: ContentDigest,
+        admission: ContentDigest,
+        generation: u64,
+        fence: u64,
+    ) -> bool {
+        *candidate.source().ip() == self.base.camera
+            && candidate.mac() == Some(self.base.mac)
+            && camera == self.camera
+            && admission == self.peer_admission
+            && generation == 1
+            && fence == self.fence
+            && self.lease.revalidate(&self.check).is_ok()
+    }
+}
+#[cfg(target_os = "linux")]
+impl<F: Fn() -> Result<(), &'static str>> camera_api::HandoffAuthority for SetupPolicy<'_, F> {
+    fn permits(
+        &self,
+        plan: &handoff::Plan,
+        current: handoff::Preconditions,
+        permit: &CommittedEffect,
+    ) -> bool {
+        plan.check_current(current).is_ok()
+            && permit.fence() == self.fence
+            && self.lease.revalidate(&self.check).is_ok()
     }
 }
 struct Approval(Cell<bool>);
@@ -423,7 +517,10 @@ fn run(args: Options) -> ResultBox<()> {
     println!("trial_time_sync_policy={:?}", args.time_sync_policy);
     println!("trial_media_before_reply={}", args.media_before_reply);
     println!("trial_event_replies={}", args.reply_events);
-    println!("trial_startup_request_replies={}", args.reply_startup_requests);
+    println!(
+        "trial_startup_request_replies={}",
+        args.reply_startup_requests
+    );
     println!("trial_segment_limit={}", args.lab_segments);
     println!(
         "trial_framing={}",
@@ -459,6 +556,7 @@ fn run(args: Options) -> ResultBox<()> {
     let caps = [
         RuntimeGrant::AdapterNet,
         RuntimeGrant::AdapterAuth,
+        RuntimeGrant::ObserveStatus,
         RuntimeGrant::ReadMedia,
         RuntimeGrant::MediaDecode,
         RuntimeGrant::ObjectStage,
@@ -506,16 +604,49 @@ fn run(args: Options) -> ResultBox<()> {
                 let mut leases=LeaseRegistry::new();
                 let fence=leases.acquire(&resource,"region:unifi-direct-trial",None,clock.now()?)?.fence;
                 let leases=RefCell::new(leases);
-                let admission=ContentDigest::sha256(b"owner-selected network address and camera MAC; not cryptographic identity");
+                let camera_pin=match &args.setup {Some(setup)=>Some(bounded_read(&setup.cert,false)?),None=>None};
+                let admission=match &camera_pin {Some(pin)=>ContentDigest::sha256(pin),None=>ContentDigest::sha256(b"owner-selected network address and camera MAC; not cryptographic identity")};
                 let management=management::Preconditions {camera,peer_admission:admission,session_generation:1,previous_association:None,previous_clock:None,lease_fence:fence};
                 let stream_conditions=intent::Preconditions {camera,peer_admission:admission,stream_generation:1,previous_settings:None,lease_fence:fence};
                 let policy=Policy {local:*args.listen.ip(),camera:args.camera,mac:args.mac};
                 let mut controller_listener=controller_listener::Listener::bind(task,cx,clock,&policy,args.listen,&resource,args.wait.min(MAX_IO_WAIT)).await?;
                 println!("controller_listener_ready identity=network_claim tls=experimental timeout_seconds={}",args.wait.as_secs());
-                let deadline=cx.now()+args.wait;
                 let config=Arc::new(config);
                 let guard=Guard {leases:&leases,clock,mac:args.mac,management_gate_passed:Cell::new(false),reply_events:args.reply_events,reply_startup_requests:args.reply_startup_requests};
-                let wall=Wall {task,clock}; let approval=Approval(Cell::new(false));
+                let wall=Wall {task,clock}; let setup_approval=Approval(Cell::new(false));
+                #[cfg(target_os="linux")]
+                let mut setup_session=if let Some(setup_args)=&args.setup {
+                    let prefix=(u32::from(*args.listen.ip()) ^ u32::from(args.camera)).leading_zeros().min(32) as u8;
+                    if prefix==0 {return Err("camera and listener are outside the scoped discovery network".into());}
+                    let discovery_config=discovery::Config::new(*args.listen.ip(),prefix,SocketAddrV4::new(args.camera,setup_args.discovery_port),"unifi:discovery",Duration::from_secs(2),64)?;
+                    let report=discovery::discover(task,cx,clock.now()?,&discovery_config).await?;
+                    let matching:Vec<_>=report.cameras.iter().enumerate().filter(|(_,c)| *c.source().ip()==args.camera && c.mac()==Some(args.mac)).map(|(i,_)| i).collect();
+                    if matching.len()!=1 || report.stop!=discovery::Stop::WindowElapsed || report.assess_claims(matching[0])!=Some(discovery::ClaimAssessment::default()) {return Err("selected discovery claim unavailable or conflicted".into());}
+                    let pin=camera_pin.as_ref().ok_or("missing camera certificate pin")?;
+                    let tls=camera_tls::connect(cx,task,clock,SocketAddrV4::new(args.camera,setup_args.https_port),pin,&resource,Duration::from_secs(10)).await?;
+                    let check_auth=||->Result<(), &'static str> {
+                        cx.checkpoint().map_err(|_| "runtime cancelled")?;
+                        task.checkpoint_for(RuntimeGrant::AdapterAuth,&resource,clock.now().map_err(|_| "clock unavailable")?,&BudgetVector::ZERO).map_err(|_| "camera authorization unavailable")
+                    };
+                    let lease=auth::Lease::load(&setup_args.credential,&check_auth)?;
+                    let setup_policy=SetupPolicy {base:&policy,lease:&lease,check:check_auth,camera,peer_admission:admission,fence};
+                    let plaintext=MeteredIo::with_clock(tls,clock,&resource,4096)?;
+                    let mut http=camera_http::Owner::new(plaintext,task,cx,clock,&setup_policy,args.camera,1,&resource)?;
+                    let operation=OperationId::parse("operation:unifi-trial-handoff")?;
+                    let setup_config=setup::Config {report:&report,index:matching[0],camera,peer_admission:admission,generation:1,fence,destination:*args.listen.ip(),operation:&operation,credential:&lease.secret.0,wait:Duration::from_secs(20)};
+                    let mut trace=setup::AcceptTrace::default();
+                    let controller=Controller::new_with_time_sync_policy(Identity::new("FSS",&args.uuid,"1.20.0")?,1,args.time_sync_policy)?;
+                    let mut setup_owner=setup::Owner {cx,task,clock,effects:&mut effects,leases:&leases,approval:&setup_approval,admission:&setup_policy,handoff_authority:&setup_policy};
+                    let framing=if setup_args.chunked {handoff::Framing::Chunked} else {handoff::Framing::ContentLength};
+                    let session=setup_upgrade::setup_and_upgrade_with_retries(cx,&mut setup_owner,&mut controller_listener,args.listen.port(),&mut http,&setup_config,framing,16*1024,Duration::from_secs(10),Duration::from_secs(20),MAX_INITIAL_CONNECTIONS,&mut trace,config.clone(),ProtocolPolicy::RequireOffer,&policy,controller).await?;
+                    let handoff=if matches!(trace.outcome(),Some(setup::Outcome::AlreadyAssociated {..})) {"no_effect_observed"} else {"requires_reconciliation"};
+                    println!("trial_stage=setup_websocket_accepted https_pin=matched controller_peer=network_claim handoff={handoff}");
+                    Some(session)
+                } else {None};
+                #[cfg(not(target_os="linux"))]
+                let mut setup_session:Option<unifi_tls_05_server_lab::setup_upgrade::Session<'_, '_, '_>>=None;
+                let deadline=cx.now()+args.wait;
+                let approval=Approval(Cell::new(false));
                 let mut owner=conversation::Owner {cx,task,clock,effects:&mut effects,leases:&leases,approval:&approval,management_authority:&guard,stream_authority:&guard,wall:&wall};
                 let hello=OperationId::parse("operation:unifi-trial-hello")?; let agreement=OperationId::parse("operation:unifi-trial-agreement")?; let stream=OperationId::parse("operation:unifi-trial-stream")?;
                 let syncs:Vec<_>=(0..128).map(|i|OperationId::parse(format!("operation:unifi-trial-sync-{i:04}"))).collect::<Result<_,_>>()?;
@@ -527,6 +658,11 @@ fn run(args: Options) -> ResultBox<()> {
                 let (session,started,event_trace,startup_trace)=loop {
                     let remaining=Duration::from_nanos(deadline.as_nanos().saturating_sub(cx.now().as_nanos()));
                     if remaining.is_zero() { return Err("controller TLS deadline elapsed".into()); }
+                    let mut session=if let Some(session)=setup_session.take() {
+                        attempts+=1;
+                        session
+                    } else {
+                    if args.setup.is_some() && approval.0.get() {return Err("controller effect started; reconcile before another attempt".into());}
                     let (raw,gate)=match controller_listener.accept_next(16*1024,remaining.min(MAX_IO_WAIT)).await {
                         Ok(connection)=>connection,
                         Err(listener::Error::Deadline) if cx.now()<deadline=>{println!("trial_stage=accept_window_elapsed"); continue},
@@ -545,7 +681,8 @@ fn run(args: Options) -> ResultBox<()> {
                     let controller=Controller::new_with_time_sync_policy(Identity::new("FSS",&args.uuid,"1.20.0")?,1,args.time_sync_policy)?;
                     let remaining=Duration::from_nanos(deadline.as_nanos().saturating_sub(cx.now().as_nanos()));
                     if remaining.is_zero() {return Err("controller startup deadline elapsed".into());}
-                    let mut session=owner::accept_guarded(plaintext,ProtocolPolicy::RequireOffer,&policy,gate,controller,remaining.min(MAX_IO_WAIT)).await?;
+                    owner::accept_guarded(plaintext,ProtocolPolicy::RequireOffer,&policy,gate,controller,remaining.min(MAX_IO_WAIT)).await?
+                    };
                     if args.reply_startup_requests {session.bind_startup_events_and_requests(&startup_events)?;} else {session.bind_startup_events(&startup_events)?;}
                     println!("trial_stage=websocket_accepted");
                     let remaining=Duration::from_nanos(deadline.as_nanos().saturating_sub(cx.now().as_nanos()));

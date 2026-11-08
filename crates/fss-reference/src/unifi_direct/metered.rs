@@ -37,7 +37,8 @@ pub struct MeteredClock<'scope, 'task> {
 }
 
 impl<'scope, 'task> MeteredClock<'scope, 'task> {
-    pub(crate) fn matches(&self, owner: &TaskCx<'task>, cx: &Cx) -> bool {
+    /// Check that a caller uses the exact task and runtime which own this clock.
+    pub fn matches(&self, owner: &TaskCx<'task>, cx: &Cx) -> bool {
         std::ptr::eq(self.owner, owner) && std::ptr::eq(self.cx, cx)
     }
 

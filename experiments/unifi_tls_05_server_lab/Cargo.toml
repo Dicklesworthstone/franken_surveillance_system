@@ -9,6 +9,7 @@ edition = "2024"
 asupersync = { version = "=0.5.0", default-features = false }
 rustls = { version = "=0.23.46", default-features = false, features = ["std"] }
 rustls-pure = "=0.15.4"
+x509-cert = { version = "=0.2.5", default-features = false, features = ["std"] }
 fss-core = { path = "../../crates/fss-core" }
 fss-runtime = { path = "../../crates/fss-runtime" }
 fss-reference = { path = "../../crates/fss-reference" }
@@ -16,6 +17,8 @@ fss-object = { path = "../../crates/fss-object" }
 fss-container = { path = "../../crates/fss-container" }
 fss-packet = { path = "../../crates/fss-packet" }
 fss-codec-h264 = { path = "../../crates/fss-codec-h264" }
+fss-codec-mjpeg = { path = "../../crates/fss-codec-mjpeg" }
 
 [dev-dependencies]
 fss-geometry = { path = "../../crates/fss-geometry" }
+socket2 = "=0.6.5"

@@ -1478,7 +1478,7 @@ fn run_discovered_setup_with_listener(
                             let mut trace = setup::AcceptTrace::default();
                             let client = if matches!(integrated_mode, 1 | 4 | 6 | 8) {
                                 let socket = asupersync::net::TcpSocket::new_v4()?;
-                                let source = if integrated_mode == 4 { destination } else { Ipv4Addr::LOCALHOST };
+                                let source = if integrated_mode == 4 { Ipv4Addr::new(127, 0, 0, 2) } else { Ipv4Addr::LOCALHOST };
                                 socket.bind(SocketAddr::V4(std::net::SocketAddrV4::new(source, 0)))?;
                                 Some(
                                     timeout(
@@ -1656,7 +1656,7 @@ fn run_discovered_setup_with_listener(
                             let address = SocketAddr::V4(control.local_addr());
                             let client = asupersync::net::TcpSocket::new_v4()?;
                             client.bind(SocketAddr::V4(std::net::SocketAddrV4::new(
-                                destination,
+                                Ipv4Addr::LOCALHOST,
                                 0,
                             )))?;
                             let client =
