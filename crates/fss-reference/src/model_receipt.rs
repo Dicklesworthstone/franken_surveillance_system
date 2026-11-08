@@ -22,8 +22,8 @@ use std::fmt::{self, Write as _};
 use fss_core::CanonicalEncoder;
 use fss_core::{ContentDigest, ContractError, Generation};
 use fss_model_ir::{
-    ModelIrError, ModelIrGraph, OPERATOR_TABLE_FREEZE_DIGEST, compute_model_ir_digest,
-    verify_operator_table_frozen,
+    ModelIrError, ModelIrGraph, compute_model_ir_digest, compute_operator_table_digest_for_version,
+    verify_operator_table_frozen_for_version,
 };
 use fss_tensor::Tensor;
 
@@ -1148,9 +1148,10 @@ pub(crate) fn record_run_receipt(
         source_roots,
         preprocess_resize,
     } = context;
-    // 1. Operator table freeze verification
-    let op_registry_gen = match verify_operator_table_frozen() {
-        Ok(()) => match ContentDigest::parse(OPERATOR_TABLE_FREEZE_DIGEST) {
+    // 1. Verify and bind the operator table admitted by this graph's IR version. The receipt
+    // envelope stays v1; its registry identity must not label a v2 graph with the v1 table.
+    let op_registry_gen = match verify_operator_table_frozen_for_version(graph.version()) {
+        Ok(()) => match compute_operator_table_digest_for_version(graph.version()) {
             Ok(d) => ReceiptDigest::Content(d),
             Err(_) => {
                 ReceiptDigest::not_applicable("operatorRegistryGeneration", "invalid_freeze_digest")

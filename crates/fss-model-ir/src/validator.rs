@@ -66,7 +66,7 @@ pub struct GraphValidator;
 
 impl GraphValidator {
     /// Validates all semantic and topological rules of a `ModelIrGraph`:
-    /// 1. IR version compatibility (strictly V1).
+    /// 1. IR version compatibility (the exact frozen V1 or V2 universe).
     /// 2. Graph is non-empty (at least one node and one output).
     /// 3. Valid graph ID.
     /// 4. Generation uniformity (all inputs/outputs match graph generation).
@@ -82,14 +82,14 @@ impl GraphValidator {
     /// Returns a typed [`ModelIrError`] detailing the exact violation.
     pub fn validate(graph: &ModelIrGraph) -> Result<(), ModelIrError> {
         // 0. Operator table freeze digest verification
-        crate::op::verify_operator_table_frozen()?;
+        crate::op::verify_operator_table_frozen_for_version(graph.version())?;
 
         // 1. IR version compatibility
         match graph.version() {
-            ModelIrVersion::V1 => {}
+            ModelIrVersion::V1 | ModelIrVersion::V2 => {}
             ModelIrVersion::Unsupported(other) => {
                 return Err(ModelIrError::VersionMismatch {
-                    expected: ModelIrVersion::V1.as_u32(),
+                    expected: ModelIrVersion::V2.as_u32(),
                     actual: other.as_u32(),
                 });
             }
@@ -134,6 +134,11 @@ impl GraphValidator {
         // 5. Node ID uniqueness
         let mut seen_node_ids = BTreeSet::new();
         for node in graph.nodes() {
+            if !node.op().is_admitted_in(graph.version()) {
+                return Err(ModelIrError::UnknownOperator {
+                    op_id: node.op().stable_id().to_string(),
+                });
+            }
             if !seen_node_ids.insert(node.id()) {
                 return Err(ModelIrError::DuplicateNodeId {
                     node_id: node.id().to_string(),

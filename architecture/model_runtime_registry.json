@@ -9,6 +9,55 @@
     "foreignRuntimePolicy": "laboratory-oracle-only",
     "activationPrimitive": "PUB-MODEL-001"
   },
+  "operatorIrVersions": [
+    {
+      "version": 1,
+      "graphDigestDomain": "fss.model_ir.v1",
+      "operatorTableDigestDomain": "fss.model_ir.operator_table.v1",
+      "operatorTableDigest": "sha256:ea84259adbccf747c847b53629fe9176dea0f6cc1874bd5379066d32d30211be",
+      "operatorCount": 22,
+      "compatibility": "Existing canonical bytes, operator identifiers, schemas and versionless lookup APIs remain frozen."
+    },
+    {
+      "version": 2,
+      "graphDigestDomain": "fss.model_ir.v2",
+      "operatorTableDigestDomain": "fss.model_ir.operator_table.v2",
+      "operatorTableDigest": "sha256:eaed9b966265f3655bb0053bbf145b6d01799a5fd26d5e39c0d0bcbeca3fe365",
+      "operatorCount": 24,
+      "inheritsUnchangedVersion": 1,
+      "compatibility": "Explicit graph version only; no automatic upgrade of existing graphs, generation substitution, model activation or quality qualification.",
+      "operatorExtensions": [
+        {
+          "id": "OP-SQRT-001",
+          "opcode": 22,
+          "name": "sqrt",
+          "inputs": 1,
+          "outputs": 1,
+          "attributes": [],
+          "dtype": "f32-only",
+          "shape": "input shape and model generation preserved",
+          "layout": "logical element order; materialized output with no input alias",
+          "numeric": "Correctly rounded IEEE F32 square root; signed zero and positive infinity preserved; negative finite values, negative infinity and NaN produce canonical F32 NaN.",
+          "resourceFormula": "For N output elements: 8*N checked logical work units, 8*N temporary payload bytes and 4*N output bytes; live input counted separately by the liveness schedule. Arithmetic-loop cancellation polls every 64 elements; input and output materialization are bounded by admitted tensor bytes.",
+          "referenceOwner": "crates/fss-reference/src/scalar_executor.rs"
+        },
+        {
+          "id": "OP-ERF-001",
+          "opcode": 23,
+          "name": "erf",
+          "inputs": 1,
+          "outputs": 1,
+          "attributes": [],
+          "dtype": "f32-only",
+          "shape": "input shape and model generation preserved",
+          "layout": "logical element order; materialized output with no input alias",
+          "numeric": "First-party bounded deterministic error function, finite F32 envelope at most 2 ULP; odd signed-zero-preserving evaluation, infinities map to signed one and NaN to canonical F32 NaN. Ordered integrated Taylor series with 24 fixed updates for abs(x)<=1, bounded normal-tail evaluation for 1<abs(x)<4, signed one for abs(x)>=4.",
+          "resourceFormula": "For N output elements: 896*N checked logical work units, 8*N temporary payload bytes and 4*N output bytes; live input counted separately by the liveness schedule. Arithmetic-loop cancellation polls every 64 elements; input and output materialization are bounded by admitted tensor bytes.",
+          "referenceOwner": "crates/fss-reference/src/scalar_executor.rs"
+        }
+      ]
+    }
+  ],
   "contracts": [
     {
       "id": "MODEL-PACKAGE-001",

@@ -5,6 +5,7 @@ use core::fmt;
 use fss_core::{ContentDigest, DigestAlgorithm, Sha256Hasher};
 
 use crate::error::ModelIrError;
+use crate::graph::ModelIrVersion;
 
 /// Domain tag for canonical operator table freeze digest computation.
 pub const OPERATOR_TABLE_DIGEST_DOMAIN: &[u8] = b"fss.model_ir.operator_table.v1\0";
@@ -15,6 +16,13 @@ pub const OPERATOR_TABLE_DIGEST_DOMAIN: &[u8] = b"fss.model_ir.operator_table.v1
 /// and requires an explicit IR generation bump.
 pub const OPERATOR_TABLE_FREEZE_DIGEST: &str =
     "sha256:ea84259adbccf747c847b53629fe9176dea0f6cc1874bd5379066d32d30211be";
+
+/// Domain tag for the separately frozen Model IR v2 operator universe.
+pub const OPERATOR_TABLE_DIGEST_DOMAIN_V2: &[u8] = b"fss.model_ir.operator_table.v2\0";
+
+/// Pinned canonical freeze digest for the v1 operators plus F32 Sqrt and Erf.
+pub const OPERATOR_TABLE_FREEZE_DIGEST_V2: &str =
+    "sha256:eaed9b966265f3655bb0053bbf145b6d01799a5fd26d5e39c0d0bcbeca3fe365";
 
 /// Stable baseline operator identifiers for Model IR v1.
 ///
@@ -575,7 +583,55 @@ pub const OPERATOR_SPECS: &[OperatorSpec] = &[
     },
 ];
 
-/// Stable, closed set of first-party model operators for Model IR v1.
+/// Normative v2 table. The first 22 records are copied unchanged from v1.
+pub const OPERATOR_SPECS_V2: &[OperatorSpec] = &operator_specs_v2();
+
+const fn operator_specs_v2() -> [OperatorSpec; 24] {
+    let mut specs = [OPERATOR_SPECS[0]; 24];
+    let mut index = 0;
+    while index < OPERATOR_SPECS.len() {
+        specs[index] = OPERATOR_SPECS[index];
+        index += 1;
+    }
+    specs[22] = OperatorSpec {
+        opcode: OpCode::Sqrt,
+        stable_id: "OP-SQRT-001",
+        name: "sqrt",
+        min_inputs: 1,
+        max_inputs: 1,
+        output_count: 1,
+        allowed_attributes: &[],
+    };
+    specs[23] = OperatorSpec {
+        opcode: OpCode::Erf,
+        stable_id: "OP-ERF-001",
+        name: "erf",
+        min_inputs: 1,
+        max_inputs: 1,
+        output_count: 1,
+        allowed_attributes: &[],
+    };
+    specs
+}
+
+/// Returns the closed operator universe owned by exactly this IR version.
+///
+/// # Errors
+/// Returns [`ModelIrError::VersionMismatch`] for an unsupported version.
+pub fn operator_specs_for_version(
+    version: ModelIrVersion,
+) -> Result<&'static [OperatorSpec], ModelIrError> {
+    match version {
+        ModelIrVersion::V1 => Ok(OPERATOR_SPECS),
+        ModelIrVersion::V2 => Ok(OPERATOR_SPECS_V2),
+        ModelIrVersion::Unsupported(other) => Err(ModelIrError::VersionMismatch {
+            expected: 2,
+            actual: other.as_u32(),
+        }),
+    }
+}
+
+/// Stable, closed set of first-party model operators across supported IR versions.
 ///
 /// Every operator has a canonical `OP-...-001` identifier that is never renumbered.
 /// The set is closed; unadmitted operators must be rejected by the graph validator.
@@ -625,6 +681,10 @@ pub enum OpCode {
     MaxPool2d,
     /// Lookup table embedding (OP-EMBEDDING-001).
     Embedding,
+    /// Elementwise F32 square root (OP-SQRT-001), admitted only in Model IR v2.
+    Sqrt,
+    /// Elementwise F32 error function (OP-ERF-001), admitted only in Model IR v2.
+    Erf,
 }
 
 impl OpCode {
@@ -632,7 +692,7 @@ impl OpCode {
     #[must_use]
     pub const fn spec(&self) -> &'static OperatorSpec {
         let idx = *self as usize;
-        &OPERATOR_SPECS[idx]
+        &OPERATOR_SPECS_V2[idx]
     }
 
     /// Returns the stable, normative identifier for this operator.
@@ -665,12 +725,66 @@ impl OpCode {
         self.spec().is_attribute_allowed(attr_name)
     }
 
-    /// Resolves an `OpCode` from its stable `OP-...-001` identifier.
+    /// Returns the first frozen IR version that admits this operator.
+    #[must_use]
+    pub const fn minimum_ir_version(self) -> ModelIrVersion {
+        match self {
+            Self::Sqrt | Self::Erf => ModelIrVersion::V2,
+            Self::Add
+            | Self::Sub
+            | Self::Mul
+            | Self::Div
+            | Self::Relu
+            | Self::Gelu
+            | Self::Silu
+            | Self::Sigmoid
+            | Self::Tanh
+            | Self::MatMul
+            | Self::Reshape
+            | Self::Transpose
+            | Self::Squeeze
+            | Self::Unsqueeze
+            | Self::Concat
+            | Self::Slice
+            | Self::LayerNorm
+            | Self::RMSNorm
+            | Self::Softmax
+            | Self::Conv2d
+            | Self::MaxPool2d
+            | Self::Embedding => ModelIrVersion::V1,
+        }
+    }
+
+    /// Reports admission in the selected closed operator universe.
+    #[must_use]
+    pub const fn is_admitted_in(self, version: ModelIrVersion) -> bool {
+        match version {
+            ModelIrVersion::V1 => matches!(self.minimum_ir_version(), ModelIrVersion::V1),
+            ModelIrVersion::V2 => matches!(
+                self.minimum_ir_version(),
+                ModelIrVersion::V1 | ModelIrVersion::V2
+            ),
+            ModelIrVersion::Unsupported(_) => false,
+        }
+    }
+
+    /// Resolves a v1 `OpCode` from its stable `OP-...-001` identifier.
     ///
     /// # Errors
     /// Returns [`ModelIrError::UnknownOperator`] if the identifier is not recognized.
     pub fn from_stable_id(id: &str) -> Result<Self, ModelIrError> {
-        for spec in OPERATOR_SPECS {
+        Self::from_stable_id_for_version(id, ModelIrVersion::V1)
+    }
+
+    /// Resolves an operator identifier in exactly the selected IR version.
+    ///
+    /// # Errors
+    /// Refuses unsupported versions and identifiers absent from that version's table.
+    pub fn from_stable_id_for_version(
+        id: &str,
+        version: ModelIrVersion,
+    ) -> Result<Self, ModelIrError> {
+        for spec in operator_specs_for_version(version)? {
             if spec.stable_id == id {
                 return Ok(spec.opcode);
             }
@@ -680,12 +794,23 @@ impl OpCode {
         })
     }
 
-    /// Resolves an `OpCode` from its canonical name.
+    /// Resolves a v1 `OpCode` from its canonical name.
     ///
     /// # Errors
     /// Returns [`ModelIrError::UnknownOperator`] if the name is not recognized.
     pub fn from_name(name: &str) -> Result<Self, ModelIrError> {
-        for spec in OPERATOR_SPECS {
+        Self::from_name_for_version(name, ModelIrVersion::V1)
+    }
+
+    /// Resolves an operator name in exactly the selected IR version.
+    ///
+    /// # Errors
+    /// Refuses unsupported versions and names absent from that version's table.
+    pub fn from_name_for_version(
+        name: &str,
+        version: ModelIrVersion,
+    ) -> Result<Self, ModelIrError> {
+        for spec in operator_specs_for_version(version)? {
             if spec.name == name {
                 return Ok(spec.opcode);
             }
@@ -724,6 +849,30 @@ impl OpCode {
         ]
     }
 
+    /// Returns all operators admitted in exactly the selected IR version.
+    ///
+    /// # Errors
+    /// Returns [`ModelIrError::VersionMismatch`] for an unsupported version.
+    pub fn all_for_version(version: ModelIrVersion) -> Result<&'static [Self], ModelIrError> {
+        const V2: [OpCode; 24] = {
+            let mut ops = [OpCode::Add; 24];
+            let mut index = 0;
+            while index < OPERATOR_SPECS_V2.len() {
+                ops[index] = OPERATOR_SPECS_V2[index].opcode;
+                index += 1;
+            }
+            ops
+        };
+        match version {
+            ModelIrVersion::V1 => Ok(Self::all()),
+            ModelIrVersion::V2 => Ok(&V2),
+            ModelIrVersion::Unsupported(other) => Err(ModelIrError::VersionMismatch {
+                expected: 2,
+                actual: other.as_u32(),
+            }),
+        }
+    }
+
     /// Returns `true` if `identifier` matches a known stable op ID or canonical name.
     #[must_use]
     pub fn is_admitted(identifier: &str) -> bool {
@@ -742,10 +891,31 @@ impl fmt::Display for OpCode {
 /// # Errors
 /// Returns [`ModelIrError::ArithmeticOverflow`] if hasher exceeds message length bounds.
 pub fn compute_operator_table_digest() -> Result<ContentDigest, ModelIrError> {
+    compute_operator_table_digest_for_version(ModelIrVersion::V1)
+}
+
+/// Computes the freeze digest of exactly the selected version's operator table.
+///
+/// # Errors
+/// Refuses unsupported versions and reports checked digest-size overflow.
+pub fn compute_operator_table_digest_for_version(
+    version: ModelIrVersion,
+) -> Result<ContentDigest, ModelIrError> {
+    let specs = operator_specs_for_version(version)?;
+    let domain = match version {
+        ModelIrVersion::V1 => OPERATOR_TABLE_DIGEST_DOMAIN,
+        ModelIrVersion::V2 => OPERATOR_TABLE_DIGEST_DOMAIN_V2,
+        ModelIrVersion::Unsupported(other) => {
+            return Err(ModelIrError::VersionMismatch {
+                expected: 2,
+                actual: other.as_u32(),
+            });
+        }
+    };
     let mut buf = Vec::new();
-    buf.extend_from_slice(OPERATOR_TABLE_DIGEST_DOMAIN);
-    buf.extend_from_slice(&(OPERATOR_SPECS.len() as u32).to_be_bytes());
-    for spec in OPERATOR_SPECS {
+    buf.extend_from_slice(domain);
+    buf.extend_from_slice(&(specs.len() as u32).to_be_bytes());
+    for spec in specs {
         buf.extend_from_slice(&(spec.opcode as u32).to_be_bytes());
         buf.extend_from_slice(&(spec.stable_id.len() as u32).to_be_bytes());
         buf.extend_from_slice(spec.stable_id.as_bytes());
@@ -809,13 +979,31 @@ pub fn verify_operator_table_digest(
 /// # Errors
 /// Returns [`ModelIrError::InvalidAttribute`] if the digest has diverged.
 pub fn verify_operator_table_frozen() -> Result<(), ModelIrError> {
-    let computed = compute_operator_table_digest()?;
-    let expected = ContentDigest::parse(OPERATOR_TABLE_FREEZE_DIGEST).map_err(|e| {
-        ModelIrError::InvalidAttribute {
-            node_id: "operator_table".to_string(),
-            attr_name: "freeze_digest".to_string(),
-            reason: format!("invalid pinned freeze digest: {e}"),
+    verify_operator_table_frozen_for_version(ModelIrVersion::V1)
+}
+
+/// Verifies the selected operator table against its immutable freeze digest.
+///
+/// # Errors
+/// Refuses unsupported versions and any divergence from the selected frozen table.
+pub fn verify_operator_table_frozen_for_version(
+    version: ModelIrVersion,
+) -> Result<(), ModelIrError> {
+    let computed = compute_operator_table_digest_for_version(version)?;
+    let pinned = match version {
+        ModelIrVersion::V1 => OPERATOR_TABLE_FREEZE_DIGEST,
+        ModelIrVersion::V2 => OPERATOR_TABLE_FREEZE_DIGEST_V2,
+        ModelIrVersion::Unsupported(other) => {
+            return Err(ModelIrError::VersionMismatch {
+                expected: 2,
+                actual: other.as_u32(),
+            });
         }
+    };
+    let expected = ContentDigest::parse(pinned).map_err(|e| ModelIrError::InvalidAttribute {
+        node_id: "operator_table".to_string(),
+        attr_name: "freeze_digest".to_string(),
+        reason: format!("invalid pinned freeze digest: {e}"),
     })?;
     verify_operator_table_digest(&expected, &computed)
 }

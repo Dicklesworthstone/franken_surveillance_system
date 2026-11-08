@@ -165,7 +165,13 @@ pub fn infer_operator_outputs(
             Ok(vec![port])
         }
 
-        OpCode::Relu | OpCode::Gelu | OpCode::Silu | OpCode::Sigmoid | OpCode::Tanh => {
+        OpCode::Relu
+        | OpCode::Gelu
+        | OpCode::Silu
+        | OpCode::Sigmoid
+        | OpCode::Tanh
+        | OpCode::Sqrt
+        | OpCode::Erf => {
             if inputs.len() != 1 {
                 return Err(ModelIrError::InvalidPortCount {
                     node_id: node_id.to_string(),
@@ -183,7 +189,9 @@ pub fn infer_operator_outputs(
                 });
             }
             let in0 = inputs[0];
-            if !in0.dtype().is_floating_point() {
+            if !in0.dtype().is_floating_point()
+                || (matches!(op, OpCode::Sqrt | OpCode::Erf) && in0.dtype() != DType::F32)
+            {
                 return Err(ModelIrError::DTypeMismatch {
                     node_id: node_id.to_string(),
                     op_id: op.stable_id(),

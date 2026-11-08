@@ -18,7 +18,10 @@ use fss_core::{
     CanonicalEncoder, CapsuleId, CaptureInterval, ClockBasis, ContentDigest, Generation,
     SensorCapsule, SensorId, SensorSourceBytesSpec, StreamId, TimestampNs,
 };
-use fss_model_ir::{AttributeMap, GraphNode, ModelIrGraph, OpCode, TensorPort};
+use fss_model_ir::{
+    AttributeMap, GraphNode, ModelIrGraph, ModelIrVersion, OpCode, TensorPort,
+    compute_operator_table_digest_for_version,
+};
 use fss_reference::executor_activity::{
     ACTIVITY_FRAME_INPUT, ACTIVITY_REFERENCE_INPUT, ACTIVITY_SCORE_OUTPUT,
     ACTIVITY_TENSOR_GENERATION, ACTIVITY_WEIGHTS_INPUT, ActivityExecutorModel,
@@ -91,6 +94,77 @@ fn context(job_id: &str) -> ReceiptRecordContext<'_> {
         source_roots: &[],
         preprocess_resize: None,
     }
+}
+
+#[test]
+fn receipt_registry_tracks_graph_version_without_changing_the_receipt_schema() -> TestResult {
+    let legacy = compute_operator_table_digest_for_version(ModelIrVersion::V1)?;
+    let extended = compute_operator_table_digest_for_version(ModelIrVersion::V2)?;
+    assert_ne!(legacy, extended);
+    let generation = Generation::from_u64(17);
+    for (version, op, expected_registry, expected_values) in [
+        (
+            ModelIrVersion::V1,
+            OpCode::Relu,
+            legacy,
+            [0.0_f32, 1.0, 4.0, 9.0],
+        ),
+        (
+            ModelIrVersion::V2,
+            OpCode::Sqrt,
+            extended,
+            [0.0_f32, 1.0, 2.0, 3.0],
+        ),
+    ] {
+        let shape = Shape::new(vec![1, 4])?;
+        let graph = ModelIrGraph::new_validated(
+            "receipt-version-contract",
+            version,
+            generation,
+            vec![TensorPort::new("x", DType::F32, shape.clone(), generation)?],
+            vec![TensorPort::new("y", DType::F32, shape.clone(), generation)?],
+            vec![GraphNode::new(
+                "node:unary",
+                op,
+                "receipt version contract",
+                vec!["x".into()],
+                vec!["y".into()],
+                AttributeMap::new(),
+            )?],
+        )?;
+        let inputs = [(
+            "x",
+            Tensor::from_values(shape, &[0.0_f32, 1.0, 4.0, 9.0], generation)?,
+        )];
+        let (run, receipt) = execute_and_record_receipt(
+            &graph,
+            &inputs,
+            ExecBudget::unlimited(),
+            &ScalarExecCx::new(),
+            context("job:receipt-version-contract"),
+        );
+        let outcome = run?;
+        assert_eq!(
+            outcome
+                .outputs()
+                .get("y")
+                .ok_or("missing unary output")?
+                .to_vec::<f32>()?,
+            expected_values,
+        );
+        assert_eq!(receipt.outcome, ReceiptOutcome::Ok);
+        assert_eq!(receipt.schema, "fss.model_execution_receipt.v1");
+        assert_eq!(receipt.generation, generation);
+        assert_eq!(
+            receipt.operator_registry_generation,
+            ReceiptDigest::Content(expected_registry)
+        );
+        receipt.verify(generation, &receipt.compute_canonical_digest())?;
+        assert!(receipt.to_json_canonical().contains(&format!(
+            "\"operatorRegistryGeneration\":\"{expected_registry}\"",
+        )));
+    }
+    Ok(())
 }
 
 fn relu_input() -> TestResult<Vec<(&'static str, Tensor)>> {

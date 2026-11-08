@@ -1782,25 +1782,27 @@ fn test_version_helper_contract() -> Result<(), Box<dyn Error>> {
     let start = Instant::now();
     let g = gen1();
 
-    // 1. from_u32(2) gives VersionMismatch
-    let from_u32_2 = match ModelIrVersion::from_u32(2) {
+    // 1. from_u32(3) gives VersionMismatch
+    let from_u32_3 = match ModelIrVersion::from_u32(3) {
         Err(ModelIrError::VersionMismatch { expected, actual }) => {
-            assert_eq!(expected, 1);
-            assert_eq!(actual, 2);
+            assert_eq!(expected, 2);
+            assert_eq!(actual, 3);
             (expected, actual)
         }
-        Ok(_) => return Err("Expected VersionMismatch for from_u32(2), got Ok".into()),
+        Ok(_) => return Err("Expected VersionMismatch for from_u32(3), got Ok".into()),
         Err(other) => {
-            return Err(format!("Expected VersionMismatch for from_u32(2), got {other:?}").into());
+            return Err(format!("Expected VersionMismatch for from_u32(3), got {other:?}").into());
         }
     };
 
     // 2. ModelIrVersion::unsupported(1) is an error
     assert!(ModelIrVersion::unsupported(1).is_err());
+    assert!(ModelIrVersion::unsupported(2).is_err());
+    assert_eq!(ModelIrVersion::from_u32(2)?, ModelIrVersion::V2);
 
-    // 3. Graph built with unsupported(2)? is refused by validate
-    let v2 = ModelIrVersion::unsupported(2)?;
-    assert_eq!(v2.as_u32(), 2);
+    // 3. Graph built with unsupported(3)? is refused by validate
+    let v3 = ModelIrVersion::unsupported(3)?;
+    assert_eq!(v3.as_u32(), 3);
 
     let p_in = TensorPort::new("x", DType::F32, Shape::new(vec![2])?, g)?;
     let p_out = TensorPort::new("y", DType::F32, Shape::new(vec![2])?, g)?;
@@ -1813,32 +1815,32 @@ fn test_version_helper_contract() -> Result<(), Box<dyn Error>> {
         AttributeMap::new(),
     )?;
 
-    let graph = ModelIrGraph::new("g_unsupported_v2", v2, g, vec![p_in], vec![p_out], vec![n])?;
-    let validate_v2 = match graph.validate() {
+    let graph = ModelIrGraph::new("g_unsupported_v3", v3, g, vec![p_in], vec![p_out], vec![n])?;
+    let validate_v3 = match graph.validate() {
         Err(ModelIrError::VersionMismatch { expected, actual }) => {
-            assert_eq!(expected, 1);
-            assert_eq!(actual, 2);
+            assert_eq!(expected, 2);
+            assert_eq!(actual, 3);
             (expected, actual)
         }
-        Ok(_) => return Err("Expected validate() to fail on unsupported version 2, got Ok".into()),
+        Ok(_) => return Err("Expected validate() to fail on unsupported version 3, got Ok".into()),
         Err(other) => {
             return Err(format!("Expected VersionMismatch from validate(), got {other:?}").into());
         }
     };
 
-    // 4. ScalarExecutor::run on graph with version 2 is refused
+    // 4. ScalarExecutor::run on graph with version 3 is refused
     let in_t = Tensor::from_values(Shape::new(vec![2])?, &[1.0_f32, 2.0], g)?;
     let cx = ScalarExecCx::new();
     let res = ScalarExecutor::run(&graph, &[("x", in_t)], ExecBudget::unlimited(), &cx);
-    let run_v2 = match res {
+    let run_v3 = match res {
         Err(ExecError::UnsupportedVersion { expected, actual }) => {
-            assert_eq!(expected, 1);
-            assert_eq!(actual, 2);
+            assert_eq!(expected, 2);
+            assert_eq!(actual, 3);
             (expected, actual)
         }
         Err(ExecError::Ir(ModelIrError::VersionMismatch { expected, actual })) => {
-            assert_eq!(expected, 1);
-            assert_eq!(actual, 2);
+            assert_eq!(expected, 2);
+            assert_eq!(actual, 3);
             (expected, actual)
         }
         Ok(_) => return Err("Expected UnsupportedVersion or Ir error, got Ok".into()),
@@ -1848,15 +1850,15 @@ fn test_version_helper_contract() -> Result<(), Box<dyn Error>> {
     let dur = start.elapsed().as_millis();
     // Each version pair is (expected, actual) as carried by the typed refusal.
     Record::new("version_helper_contract")
-        .check_eq("from_u32_2_mismatch", (1, 2), from_u32_2)
+        .check_eq("from_u32_3_mismatch", (2, 3), from_u32_3)
         .check(
             "unsupported_1_err",
             true,
             ModelIrVersion::unsupported(1).is_err(),
         )
-        .check_eq("unsupported_2_as_u32", 2, v2.as_u32())
-        .check_eq("validate_v2_mismatch", (1, 2), validate_v2)
-        .check_eq("run_v2_refused", (1, 2), run_v2)
+        .check_eq("unsupported_3_as_u32", 3, v3.as_u32())
+        .check_eq("validate_v3_mismatch", (2, 3), validate_v3)
+        .check_eq("run_v3_refused", (2, 3), run_v3)
         .emit_checked(dur, true);
 
     Ok(())
@@ -3175,7 +3177,7 @@ mod reviewer_probes {
     #[test]
     fn p16_unsupported_version_is_typed_error() -> R {
         let gr = ModelIrGraph::builder("p16", g())
-            .version(ModelIrVersion::unsupported(2)?)
+            .version(ModelIrVersion::unsupported(3)?)
             .add_input(f("x", &[4])?)
             .add_output(f("y", &[4])?)
             .add_node(node(
@@ -3191,7 +3193,7 @@ mod reviewer_probes {
         assert!(
             matches!(
                 r,
-                Err(ExecError::UnsupportedVersion { actual: 2, .. }) | Err(ExecError::Ir(_))
+                Err(ExecError::UnsupportedVersion { actual: 3, .. }) | Err(ExecError::Ir(_))
             ),
             "{r:?}"
         );

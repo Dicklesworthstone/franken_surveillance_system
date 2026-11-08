@@ -1,4 +1,4 @@
-//! Canonical encoding and content digest computation for Model IR v1 graphs.
+//! Canonical encoding and content digests for frozen Model IR v1 and v2 graphs.
 
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
@@ -16,6 +16,24 @@ use crate::validator::GraphValidator;
 /// Registered digest domain tag for Model IR v1 graphs from `registries/DIGEST_DOMAINS.md`.
 pub const MODEL_IR_DIGEST_DOMAIN: &[u8] = b"fss.model_ir.v1\0";
 
+/// Registered graph domain for the separately frozen Model IR v2 universe.
+pub const MODEL_IR_DIGEST_DOMAIN_V2: &[u8] = b"fss.model_ir.v2\0";
+
+/// Returns the canonical digest domain owned by exactly the selected IR version.
+///
+/// # Errors
+/// Returns [`ModelIrError::VersionMismatch`] for an unsupported version.
+pub fn model_ir_digest_domain(version: ModelIrVersion) -> Result<&'static [u8], ModelIrError> {
+    match version {
+        ModelIrVersion::V1 => Ok(MODEL_IR_DIGEST_DOMAIN),
+        ModelIrVersion::V2 => Ok(MODEL_IR_DIGEST_DOMAIN_V2),
+        ModelIrVersion::Unsupported(other) => Err(ModelIrError::VersionMismatch {
+            expected: 2,
+            actual: other.as_u32(),
+        }),
+    }
+}
+
 /// Encodes a `ModelIrGraph` into a deterministic, canonical byte representation.
 ///
 /// Nodes are ordered in deterministic topological order with stable tie-breaking on `node.id()`.
@@ -30,22 +48,15 @@ pub fn encode_canonical_model_ir(graph: &ModelIrGraph) -> Result<Vec<u8>, ModelI
     let mut buf = Vec::new();
 
     // Domain tag
-    buf.extend_from_slice(MODEL_IR_DIGEST_DOMAIN);
+    buf.extend_from_slice(model_ir_digest_domain(graph.version())?);
 
-    // Version with distinct tags: Tag 1 for V1, Tag 2 for Unsupported(v)
-    match graph.version() {
-        ModelIrVersion::V1 => {
-            buf.push(1);
-            buf.extend_from_slice(&1u32.to_be_bytes());
-        }
-        ModelIrVersion::Unsupported(v) => {
-            buf.push(2);
-            buf.extend_from_slice(&v.as_u32().to_be_bytes());
-        }
-    }
+    // Tag 1 is the supported-version variant. V1 bytes are unchanged; the V2
+    // domain, numerical version and operator table must all agree on decode.
+    buf.push(1);
+    buf.extend_from_slice(&graph.version().as_u32().to_be_bytes());
 
     // Operator table freeze digest binding
-    let op_table_digest = crate::op::compute_operator_table_digest()?;
+    let op_table_digest = crate::op::compute_operator_table_digest_for_version(graph.version())?;
     buf.extend_from_slice(&op_table_digest.bytes());
 
     // Graph ID
@@ -140,7 +151,7 @@ pub(crate) fn canonical_model_ir_size(graph: &ModelIrGraph) -> Result<usize, Mod
                 })?,
         )
     }
-    let mut size = MODEL_IR_DIGEST_DOMAIN.len() + 5 + 32 + 8 + 12;
+    let mut size = model_ir_digest_domain(graph.version())?.len() + 5 + 32 + 8 + 12;
     text(&mut size, graph.id())?;
     for port in graph.inputs().iter().chain(graph.outputs()) {
         text(&mut size, port.name())?;

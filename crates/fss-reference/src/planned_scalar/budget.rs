@@ -123,6 +123,8 @@ pub(super) fn node_resources(
             mul(count, if tanh { 96 } else { 896 })?
         }
         OpCode::Silu | OpCode::Tanh => mul(count, 80)?,
+        OpCode::Sqrt => mul(count, 8)?,
+        OpCode::Erf => mul(count, 896)?,
         OpCode::Embedding => {
             // The embedding kernel reads strided indices/weights directly and transfers
             // its output byte Vec into TensorStorage; it makes no payload scratch copy.

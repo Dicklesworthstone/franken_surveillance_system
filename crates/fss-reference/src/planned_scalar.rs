@@ -10,11 +10,12 @@
 use crate::{ExecBudget, ExecError, ExecOutcome, ScalarExecCx, ScalarExecutor};
 use fss_core::{CanonicalEncoder, ContentDigest};
 use fss_model_ir::{
-    MemoryPlan, MemoryPlanError, MemoryPlanLimits, ModelIrGraph, ModelIrVersion, OpCode, TensorPort,
+    MemoryPlan, MemoryPlanError, MemoryPlanLimits, ModelIrGraph, OpCode, TensorPort,
 };
 use fss_tensor::{DType, Tensor};
 use std::collections::BTreeMap;
 
+#[path = "planned_scalar/budget.rs"]
 mod budget;
 
 /// Versioned compilation, backend and scratch-accounting policy.
@@ -242,7 +243,7 @@ impl CompiledScalarPlan {
             }
             let program = ModelIrGraph::new_validated(
                 "fss:scalar:node-program:v1",
-                ModelIrVersion::V1,
+                graph.version(),
                 graph.generation(),
                 unique.into_values().collect(),
                 output_ports,

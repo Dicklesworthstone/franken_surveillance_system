@@ -30,7 +30,7 @@ use std::num::NonZeroUsize;
 
 use fss_core::{CanonicalEncoder, ContentDigest, Generation};
 use fss_model_ir::{
-    GraphNode, GraphValidator, ModelIrGraph, ModelIrVersion, OpCode, ProducerId, TensorPort,
+    GraphNode, GraphValidator, ModelIrGraph, OpCode, ProducerId, TensorPort,
     encode_canonical_model_ir, infer_operator_outputs,
 };
 use fss_tensor::{DType, Tensor};
@@ -348,10 +348,9 @@ impl OptimizedGraph {
         cx: &ScalarExecCx,
     ) -> Result<Self, ExecError> {
         cx.checkpoint("optimized:prepare")?;
-        let expected_version = ModelIrVersion::from_u32(1).map_err(ExecError::Ir)?;
-        if graph.version() != expected_version {
+        if !graph.version().is_supported() {
             return Err(ExecError::UnsupportedVersion {
-                expected: 1,
+                expected: 2,
                 actual: graph.version().as_u32(),
             });
         }
@@ -578,6 +577,8 @@ impl OptimizedGraph {
                 OpCode::Reshape | OpCode::Squeeze | OpCode::Unsqueeze => Kernel::Copy,
                 OpCode::Gelu
                 | OpCode::Tanh
+                | OpCode::Sqrt
+                | OpCode::Erf
                 | OpCode::MatMul
                 | OpCode::LayerNorm
                 | OpCode::RMSNorm
@@ -1031,7 +1032,7 @@ fn reference(
         .ok_or_else(|| mismatch(node.id(), node.op().stable_id(), "single output required"))?;
     let program = ModelIrGraph::new_validated(
         "fss:optimized:reference-node:v1",
-        ModelIrVersion::V1,
+        graph.version(),
         graph.generation(),
         unique.into_values().collect(),
         outputs,

@@ -76,10 +76,11 @@ fn test_version_pin_and_mismatch() -> Result<(), Box<dyn Error>> {
     assert_eq!(ModelIrVersion::V1.as_u32(), 1);
     assert_eq!(ModelIrVersion::from_u32(1)?, ModelIrVersion::V1);
 
-    match ModelIrVersion::from_u32(2) {
+    assert_eq!(ModelIrVersion::from_u32(2)?, ModelIrVersion::V2);
+    match ModelIrVersion::from_u32(3) {
         Err(ModelIrError::VersionMismatch { expected, actual }) => {
-            assert_eq!(expected, 1);
-            assert_eq!(actual, 2);
+            assert_eq!(expected, 2);
+            assert_eq!(actual, 3);
         }
         other => return Err(format!("expected VersionMismatch, got {other:?}").into()),
     }
@@ -441,6 +442,12 @@ fn test_owned_digest_domains_match_frozen_identities() -> Result<(), Box<dyn Err
                 "authority/model-ir",
             ],
             [
+                "`SCHEMA-DOMAIN-MODEL-IR-002`",
+                "`fss.model_ir.v2`",
+                "Pure-Rust model operator IR",
+                "authority/model-ir",
+            ],
+            [
                 "`SCHEMA-DOMAIN-MODEL-IR-MATERIALIZED-LIVENESS-001`",
                 "`fss.model_ir.materialized_liveness.v1`",
                 "Pure-Rust model operator IR",
@@ -449,6 +456,12 @@ fn test_owned_digest_domains_match_frozen_identities() -> Result<(), Box<dyn Err
             [
                 "`SCHEMA-DOMAIN-MODEL-IR-OPERATOR-TABLE-001`",
                 "`fss.model_ir.operator_table.v1`",
+                "Pure-Rust model operator IR",
+                "authority/model-ir",
+            ],
+            [
+                "`SCHEMA-DOMAIN-MODEL-IR-OPERATOR-TABLE-002`",
+                "`fss.model_ir.operator_table.v2`",
                 "Pure-Rust model operator IR",
                 "authority/model-ir",
             ],
@@ -1363,7 +1376,7 @@ fn test_graph_validator_rejects_unsupported_version() -> Result<(), Box<dyn Erro
 
     let graph = ModelIrGraph::new(
         "unsupported_version_graph",
-        ModelIrVersion::unsupported(2)?,
+        ModelIrVersion::unsupported(3)?,
         g,
         vec![in_port],
         vec![out_port],
@@ -1372,8 +1385,8 @@ fn test_graph_validator_rejects_unsupported_version() -> Result<(), Box<dyn Erro
 
     match graph.validate() {
         Err(ModelIrError::VersionMismatch { expected, actual }) => {
-            assert_eq!(expected, 1);
-            assert_eq!(actual, 2);
+            assert_eq!(expected, 2);
+            assert_eq!(actual, 3);
         }
         other => return Err(format!("expected VersionMismatch, got {other:?}").into()),
     }
@@ -1993,6 +2006,7 @@ fn test_finding_9_graph_validator_duplicate_outputs_rejected() -> Result<(), Box
 #[test]
 fn test_finding_10_model_ir_version_unsupported_mapping() -> Result<(), Box<dyn Error>> {
     assert!(ModelIrVersion::unsupported(1).is_err());
+    assert!(ModelIrVersion::unsupported(2).is_err());
     let v_unsupported = ModelIrVersion::unsupported(99)?;
     assert_eq!(v_unsupported.as_u32(), 99);
     assert!(!v_unsupported.is_supported());
@@ -2020,7 +2034,7 @@ fn test_finding_10_model_ir_version_unsupported_mapping() -> Result<(), Box<dyn 
 
     match graph.validate() {
         Err(ModelIrError::VersionMismatch { expected, actual }) => {
-            assert_eq!(expected, 1);
+            assert_eq!(expected, 2);
             assert_eq!(actual, 99);
         }
         other => return Err(format!("expected VersionMismatch, got {other:?}").into()),

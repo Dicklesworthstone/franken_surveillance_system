@@ -2,7 +2,7 @@
 #![deny(clippy::wildcard_enum_match_arm)]
 //! Deterministic scalar reference executor over `fss_model_ir::ModelIrGraph`.
 //!
-//! Evaluates frozen Model IR v1 graphs over typed `fss_tensor::Tensor` instances with
+//! Evaluates frozen Model IR v1/v2 graphs over typed `fss_tensor::Tensor` instances with
 //! bit-reproducible numerical accumulation, checked resource budgeting, cooperative cancellation,
 //! and F32 arithmetic. Exact integer inputs are admitted only as embedding indices.
 
@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use fss_core::{ContentDigest, Generation};
 use fss_model_ir::{
-    GraphValidator, ModelIrError, ModelIrGraph, ModelIrVersion, OpCode, ProducerId, TensorPort,
+    GraphValidator, ModelIrError, ModelIrGraph, OpCode, ProducerId, TensorPort,
     infer_operator_outputs,
 };
 use fss_tensor::{DType, Shape, Tensor, TensorError};
@@ -772,7 +772,9 @@ pub(crate) fn compute_node_macs(
             Ok(out_ports[0].shape().num_elements()? as u64)
         }
         OpCode::LayerNorm | OpCode::RMSNorm => normalization_work(node, in_ports, &out_ports[0]),
-        OpCode::Gelu | OpCode::Silu | OpCode::Tanh => activation_work(node, &out_ports[0]),
+        OpCode::Gelu | OpCode::Silu | OpCode::Tanh | OpCode::Sqrt | OpCode::Erf => {
+            activation_work(node, &out_ports[0])
+        }
         OpCode::Reshape => Ok(0),
         OpCode::Embedding => {
             // Bound logical index traversal/validation and strided table reads/copies.
@@ -797,7 +799,7 @@ pub(crate) fn compute_node_macs(
 pub struct ScalarExecutor;
 
 impl ScalarExecutor {
-    /// Executes a validated Model IR v1 graph deterministically with scalar math.
+    /// Executes a validated Model IR v1/v2 graph deterministically with scalar math.
     ///
     /// # Errors
     /// Returns [`ExecError`] if graph validation fails, dtypes are unsupported, shapes mismatch,
@@ -810,11 +812,11 @@ impl ScalarExecutor {
     ) -> Result<ExecOutcome, ExecError> {
         cx.checkpoint("pre-execution")?;
 
-        // 1. Version gate: only ModelIrVersion::V1 (from_u32(1)) is admitted
-        let expected_version = ModelIrVersion::from_u32(1).map_err(ExecError::Ir)?;
-        if graph.version() != expected_version {
+        // 1. Admit only explicit supported versions. The validator below checks
+        // the frozen table and per-operator membership for this graph's version.
+        if !graph.version().is_supported() {
             return Err(ExecError::UnsupportedVersion {
-                expected: 1,
+                expected: 2,
                 actual: graph.version().as_u32(),
             });
         }
@@ -1110,13 +1112,15 @@ impl ScalarExecutor {
                     graph.generation(),
                     cx,
                 )?,
-                OpCode::Gelu | OpCode::Silu | OpCode::Tanh => Self::execute_activation(
-                    node,
-                    node_in_tensors[0],
-                    &out_ports[0],
-                    graph.generation(),
-                    cx,
-                )?,
+                OpCode::Gelu | OpCode::Silu | OpCode::Tanh | OpCode::Sqrt | OpCode::Erf => {
+                    Self::execute_activation(
+                        node,
+                        node_in_tensors[0],
+                        &out_ports[0],
+                        graph.generation(),
+                        cx,
+                    )?
+                }
                 OpCode::Embedding => Self::execute_embedding(
                     node,
                     node_in_tensors[0],
@@ -1827,6 +1831,8 @@ impl ScalarExecutor {
             | OpCode::Silu
             | OpCode::Sigmoid
             | OpCode::Tanh
+            | OpCode::Sqrt
+            | OpCode::Erf
             | OpCode::MatMul
             | OpCode::Reshape
             | OpCode::LayerNorm
@@ -2154,10 +2160,52 @@ fn activation_tanh_mode(node: &fss_model_ir::GraphNode) -> Result<bool, ExecErro
     }
 }
 
+// Model IR v2 unary math. IEEE square root is correctly rounded to binary32;
+// canonicalize all invalid/NaN cases without disturbing either signed zero.
+fn unary_sqrt(x: f32) -> f32 {
+    if x.is_nan() || x < 0.0 {
+        f32::from_bits(0x7fc0_0000)
+    } else {
+        x.sqrt()
+    }
+}
+
+// Evaluate erf directly near zero, where 1 - 2*Q(x*sqrt(2)) would lose small
+// values to cancellation. The integrated odd Taylor series has a fixed depth:
+// on |x| <= 1 its next omitted term is at most 1/(25!*51), below 1.3e-27.
+// Outside that interval the existing bounded first-party normal-tail algorithm
+// is well conditioned. At |x| >= 4 the tail is below half an ulp at one in F32.
+// No host erf/exp, data-dependent iterations, or fused multiply-add are used.
+fn unary_erf(x: f32) -> f32 {
+    if x.is_nan() {
+        return f32::from_bits(0x7fc0_0000);
+    }
+    let a = f64::from(x).abs();
+    let value = if a >= 4.0 {
+        1.0
+    } else if a <= 1.0 {
+        let square = -a * a;
+        let mut term = a;
+        let mut integral = a;
+        for n in 1..=24 {
+            term = term * square / f64::from(n);
+            integral += term / f64::from(2 * n + 1);
+        }
+        1.1283791670955126 * integral
+    } else {
+        1.0 - 2.0 * activation_normal_tail(a * std::f64::consts::SQRT_2)
+    };
+    (value as f32).copysign(x)
+}
+
 fn activation_work(node: &fss_model_ir::GraphNode, output: &TensorPort) -> Result<u64, ExecError> {
     // Conservatively bound the fixed scalar arithmetic, not hardware MACs or time.
     let per_element = if node.op() == OpCode::Gelu {
         if activation_tanh_mode(node)? { 96 } else { 896 }
+    } else if node.op() == OpCode::Erf {
+        896
+    } else if node.op() == OpCode::Sqrt {
+        8
     } else {
         80
     };
@@ -2190,6 +2238,8 @@ impl ScalarExecutor {
                 OpCode::Silu => activation_silu(value),
                 OpCode::Tanh => activation_tanh(value),
                 OpCode::Gelu => activation_gelu(value, approximate_tanh),
+                OpCode::Sqrt => unary_sqrt(value),
+                OpCode::Erf => unary_erf(value),
                 OpCode::Add
                 | OpCode::Sub
                 | OpCode::Mul

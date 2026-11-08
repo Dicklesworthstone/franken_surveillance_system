@@ -110,6 +110,8 @@ impl BinaryOp {
             | OpCode::Silu
             | OpCode::Sigmoid
             | OpCode::Tanh
+            | OpCode::Sqrt
+            | OpCode::Erf
             | OpCode::MatMul
             | OpCode::Reshape
             | OpCode::Transpose

@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! Bounded inverse of the existing frozen Model IR v1 canonical writer.
+//! Bounded inverse of the frozen Model IR v1 and v2 canonical writers.
 //!
 //! This module loads data, not executable plugins. A supplied digest pins bytes; it does not
 //! establish publisher trust, a license, model quality, or permission to activate a model.
@@ -8,9 +8,10 @@ use fss_core::{ContentDigest, Generation};
 use fss_tensor::{DType, MAX_TENSOR_RANK, Shape};
 
 use crate::{
-    AttrValue, AttributeMap, GraphNode, MODEL_IR_DIGEST_DOMAIN, ModelIrError, ModelIrGraph,
-    ModelIrVersion, OPERATOR_SPECS, TensorPort, compute_operator_table_digest,
-    encode_canonical_model_ir,
+    AttrValue, AttributeMap, GraphNode, MODEL_IR_DIGEST_DOMAIN, MODEL_IR_DIGEST_DOMAIN_V2,
+    ModelIrError, ModelIrGraph, ModelIrVersion, TensorPort,
+    compute_operator_table_digest_for_version, encode_canonical_model_ir,
+    operator_specs_for_version,
 };
 
 /// Maximum encoded graph bytes accepted by this reader.
@@ -56,7 +57,7 @@ impl From<ModelIrError> for ModelIrDecodeError {
     }
 }
 
-/// Loads one complete existing `fss.model_ir.v1` object by its exact expected digest.
+/// Loads one complete frozen `fss.model_ir.v1` or `fss.model_ir.v2` object by its exact digest.
 ///
 /// Counts are checked against both hard ceilings and remaining wire bytes before allocation.
 /// The existing semantic validator checks topology, shapes and generations. Re-encoding then
@@ -74,13 +75,23 @@ pub fn decode_canonical_model_ir(
         return Err(ModelIrDecodeError::DigestMismatch);
     }
     let mut r = Reader { bytes, position: 0 };
-    if r.take(MODEL_IR_DIGEST_DOMAIN.len())? != MODEL_IR_DIGEST_DOMAIN
-        || r.byte()? != 1
-        || r.u32()? != 1
-    {
+    let version = if bytes.starts_with(MODEL_IR_DIGEST_DOMAIN) {
+        r.take(MODEL_IR_DIGEST_DOMAIN.len())?;
+        ModelIrVersion::V1
+    } else if bytes.starts_with(MODEL_IR_DIGEST_DOMAIN_V2) {
+        r.take(MODEL_IR_DIGEST_DOMAIN_V2.len())?;
+        ModelIrVersion::V2
+    } else {
+        return Err(ModelIrDecodeError::Unsupported);
+    };
+    if r.byte()? != 1 || r.u32()? != version.as_u32() {
         return Err(ModelIrDecodeError::Unsupported);
     }
-    if r.take(32)? != compute_operator_table_digest()?.bytes().as_slice() {
+    if r.take(32)?
+        != compute_operator_table_digest_for_version(version)?
+            .bytes()
+            .as_slice()
+    {
         return Err(ModelIrDecodeError::Unsupported);
     }
     let id = r.text()?;
@@ -92,7 +103,7 @@ pub fn decode_canonical_model_ir(
     for _ in 0..count {
         let node_id = r.text()?;
         let operator_id = r.text()?;
-        let op = OPERATOR_SPECS
+        let op = operator_specs_for_version(version)?
             .iter()
             .find(|spec| spec.stable_id == operator_id)
             .ok_or(ModelIrDecodeError::Unsupported)?
@@ -118,8 +129,7 @@ pub fn decode_canonical_model_ir(
     if r.position != bytes.len() {
         return Err(ModelIrDecodeError::NonCanonical);
     }
-    let graph =
-        ModelIrGraph::new_validated(id, ModelIrVersion::V1, generation, inputs, outputs, nodes)?;
+    let graph = ModelIrGraph::new_validated(id, version, generation, inputs, outputs, nodes)?;
     if encode_canonical_model_ir(&graph)? != bytes {
         return Err(ModelIrDecodeError::NonCanonical);
     }

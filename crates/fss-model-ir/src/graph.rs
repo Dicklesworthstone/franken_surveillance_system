@@ -1,4 +1,4 @@
-//! Frozen Model IR v1 computation graph definition.
+//! Frozen, explicitly versioned Model IR computation graph definition.
 
 use core::fmt;
 
@@ -10,7 +10,7 @@ use crate::node::GraphNode;
 use crate::port::TensorPort;
 use crate::validator::GraphValidator;
 
-/// An unsupported Model IR version tag (guaranteed != 1).
+/// An unsupported Model IR version tag (guaranteed not to be 1 or 2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct UnsupportedVersion {
     version: u32,
@@ -20,14 +20,15 @@ impl UnsupportedVersion {
     /// Constructs an unsupported version tag.
     ///
     /// # Errors
-    /// Returns [`ModelIrError::InvalidAttribute`] if `version == 1` (which is supported V1).
+    /// Returns [`ModelIrError::InvalidAttribute`] for the supported versions 1 and 2.
     pub fn new(version: u32) -> Result<Self, ModelIrError> {
-        if version == 1 {
+        if version == 1 || version == 2 {
             return Err(ModelIrError::InvalidAttribute {
                 node_id: "version".to_string(),
                 attr_name: "version".to_string(),
-                reason: "version 1 is supported (V1) and cannot be constructed as unsupported"
-                    .to_string(),
+                reason: format!(
+                    "version {version} is supported and cannot be constructed as unsupported"
+                ),
             });
         }
         Ok(Self { version })
@@ -51,6 +52,8 @@ impl fmt::Display for UnsupportedVersion {
 pub enum ModelIrVersion {
     /// Version 1 of the Model Operator IR.
     V1,
+    /// Version 2: the unchanged v1 operators plus F32 Sqrt and Erf.
+    V2,
     /// Unsupported or future Model Operator IR version.
     Unsupported(UnsupportedVersion),
 }
@@ -61,6 +64,7 @@ impl ModelIrVersion {
     pub const fn as_u32(self) -> u32 {
         match self {
             Self::V1 => 1,
+            Self::V2 => 2,
             Self::Unsupported(v) => v.as_u32(),
         }
     }
@@ -72,8 +76,9 @@ impl ModelIrVersion {
     pub fn from_u32(version: u32) -> Result<Self, ModelIrError> {
         match version {
             1 => Ok(Self::V1),
+            2 => Ok(Self::V2),
             other => Err(ModelIrError::VersionMismatch {
-                expected: 1,
+                expected: 2,
                 actual: other,
             }),
         }
@@ -82,15 +87,15 @@ impl ModelIrVersion {
     /// Constructs an explicit unsupported version tag for compatibility validation.
     ///
     /// # Errors
-    /// Returns [`ModelIrError::InvalidAttribute`] if `version == 1`.
+    /// Returns [`ModelIrError::InvalidAttribute`] for the supported versions 1 and 2.
     pub fn unsupported(version: u32) -> Result<Self, ModelIrError> {
         Ok(Self::Unsupported(UnsupportedVersion::new(version)?))
     }
 
-    /// Returns `true` if this version is supported by the v1 runtime.
+    /// Returns `true` if this version is supported by this runtime.
     #[must_use]
     pub const fn is_supported(self) -> bool {
-        matches!(self, Self::V1)
+        matches!(self, Self::V1 | Self::V2)
     }
 }
 
@@ -98,6 +103,7 @@ impl fmt::Display for ModelIrVersion {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::V1 => write!(f, "v1"),
+            Self::V2 => write!(f, "v2"),
             Self::Unsupported(v) => write!(f, "unsupported_v{v}"),
         }
     }

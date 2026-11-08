@@ -1,9 +1,9 @@
-//! Deterministic, frozen Model Operator Intermediate Representation (IR) v1.
+//! Deterministic, frozen Model Operator Intermediate Representation (IR) v1 and v2.
 //!
 //! Part of the Franken Surveillance System (FSS) pure-Rust model pipeline.
 //! Enforces a closed, stable operator set, typed attributes, checked dtype/shape
 //! inference over `fss-tensor` types, cycle-free DAG validation, and deterministic
-//! canonical encoding under the registered `fss.model_ir.v1` digest domain.
+//! canonical encoding under each version's registered digest domain.
 
 #![forbid(unsafe_code)]
 
@@ -29,8 +29,8 @@ pub mod validator;
 
 pub use attribute::{AttrValue, AttributeMap};
 pub use canonical::{
-    MODEL_IR_DIGEST_DOMAIN, compute_model_ir_digest, encode_canonical_attr_value,
-    encode_canonical_model_ir,
+    MODEL_IR_DIGEST_DOMAIN, MODEL_IR_DIGEST_DOMAIN_V2, compute_model_ir_digest,
+    encode_canonical_attr_value, encode_canonical_model_ir, model_ir_digest_domain,
 };
 pub use decode::{
     MAX_MODEL_IR_BYTES, MAX_MODEL_IR_ITEMS, MAX_MODEL_IR_TEXT_BYTES, ModelIrDecodeError,
@@ -46,10 +46,12 @@ pub use onnx::{
     import_onnx, onnx_importer_identity, transform_onnx_image,
 };
 pub use op::{
-    AttributeSpec, AttributeType, OPERATOR_BASELINE_IDS, OPERATOR_SPECS,
-    OPERATOR_TABLE_DIGEST_DOMAIN, OPERATOR_TABLE_FREEZE_DIGEST, OPERATOR_TOMBSTONES, OpCode,
-    OperatorSpec, compute_operator_table_digest, verify_operator_baseline,
-    verify_operator_table_digest, verify_operator_table_frozen,
+    AttributeSpec, AttributeType, OPERATOR_BASELINE_IDS, OPERATOR_SPECS, OPERATOR_SPECS_V2,
+    OPERATOR_TABLE_DIGEST_DOMAIN, OPERATOR_TABLE_DIGEST_DOMAIN_V2, OPERATOR_TABLE_FREEZE_DIGEST,
+    OPERATOR_TABLE_FREEZE_DIGEST_V2, OPERATOR_TOMBSTONES, OpCode, OperatorSpec,
+    compute_operator_table_digest, compute_operator_table_digest_for_version,
+    operator_specs_for_version, verify_operator_baseline, verify_operator_table_digest,
+    verify_operator_table_frozen, verify_operator_table_frozen_for_version,
 };
 pub use port::TensorPort;
 pub use shape_inference::{broadcast_shapes, infer_operator_outputs};
