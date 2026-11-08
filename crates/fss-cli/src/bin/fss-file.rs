@@ -37,7 +37,7 @@ mod media;
 #[path = "fss-file/movie.rs"]
 mod movie;
 
-const HELP: &str = "fss-file <import|inspect|verify|extract|select-movie|decode|read-decoded|verify-decoded|motion|localize|read-localization|verify-localization> [options]\n\
+const HELP: &str = "fss-file <import|inspect|verify|extract|select-movie|export-movie|decode|read-decoded|verify-decoded|motion|localize|read-localization|verify-localization> [options]\n\
   All commands: --root DIR --site SITE [--principal ID]\n\
   Source commands also accept --manifest-out FILE.\n\
   import: --input FILE --sensor ID --stream ID --receive-time-ns N\n\
@@ -59,6 +59,17 @@ const HELP: &str = "fss-file <import|inspect|verify|extract|select-movie|decode|
           empty/unrepresented gaps and required decode ranges, without returning media.\n\
           [--selection-work-units N --max-selection-rows N --max-decode-samples N]\n\
           [--max-decode-bytes N --max-annex-b-bytes N]; source read bounds also apply.\n\
+  export-movie: --import-id sha256:HEX --start-movie-tick N --end-movie-tick N\n\
+          --interpretation ycbcr --output FILE [--output-format pgm|mjpeg|gray-mkv]\n\
+          Natively decodes the verified MP4/MOV prerequisite spans, then exports only selected\n\
+          masked pictures in movie presentation order, including repeated/backward edits.\n\
+          Shared selection/decode/source-read/output bounds; at most 1024 coded samples and\n\
+          1024 output occurrences. Selected luma is cached only until complete native EOF.\n\
+          [--max-cached-luma-bytes N] (default 64 MiB, max 256 MiB)\n\
+          [--max-decode-read-bytes N] (default 512 MiB, max 4 GiB), cumulative across spans,\n\
+          separate from the complete original-source verification read. Decode work, pixels,\n\
+          selection, output and encode options above/below apply. gray-mkv requires a rate.\n\
+          Movie edits and gaps remain exact report metadata; output playback retimes pictures.\n\
   decode/read-decoded/verify-decoded: --import-id sha256:HEX --segment N [--segment-count M]\n\
           --interpretation gray|ycbcr [--output FILE] [--receipt-out FILE]\n\
           Output defaults to pgm; --output-format pgm|mjpeg|gray-mkv requires --output.\n\
@@ -212,7 +223,7 @@ fn parse(args: &[OsString]) -> ParseResult<Option<Options>> {
     {
         return Err((
             ERR_CLI_UNKNOWN_COMMAND,
-            "expected import, inspect, verify, extract, select-movie or a decoded-media command"
+            "expected import, inspect, verify, extract, select-movie, export-movie or a decoded-media command"
                 .to_owned(),
         ));
     }
@@ -249,7 +260,8 @@ fn parse(args: &[OsString]) -> ParseResult<Option<Options>> {
             )
         })?;
         let replay = localization_replay::is_command(command);
-        let allowed = (common.contains(&key) && !(replay && key == "--manifest-out"))
+        let allowed = (common.contains(&key)
+            && !((replay || command == "export-movie") && key == "--manifest-out"))
             || (command == "import" && import.contains(&key))
             || (command != "import" && !replay && key == "--import-id")
             || (command == "extract" && matches!(key, "--segment" | "--output"))
@@ -936,6 +948,50 @@ mod tests {
         assert!(parse(&media_args("inspect", &valid)).is_err());
     }
     #[test]
+    fn movie_export_requires_destination_and_separate_bounded_decode_options() {
+        let valid = [
+            "--start-movie-tick",
+            "400",
+            "--end-movie-tick",
+            "800",
+            "--interpretation",
+            "ycbcr",
+            "--output",
+            "/unused-output.pgm",
+        ];
+        let parsed = parse(&media_args("export-movie", &valid)).unwrap().unwrap();
+        assert!(
+            matches!(parsed.action, Action::Media(ref action) if action.name() == "export-movie")
+        );
+        assert!(parse(&media_args("export-movie", &valid[..6])).is_err());
+        for (key, bad) in [
+            ("--max-decode-samples", "1025"),
+            ("--max-cached-luma-bytes", "0"),
+            ("--max-cached-luma-bytes", "268435457"),
+            ("--max-decode-read-bytes", "0"),
+            ("--max-decode-read-bytes", "4294967297"),
+            ("--segment", "0"),
+            ("--segment-count", "1"),
+            ("--receipt-out", "/unused-receipt"),
+            ("--manifest-out", "/unused-manifest"),
+            ("--output-window-ns", "0:1"),
+            ("--output-clock-basis", "estimated"),
+        ] {
+            let mut extra = valid.to_vec();
+            extra.extend([key, bad]);
+            assert!(parse(&media_args("export-movie", &extra)).is_err(), "{key}");
+        }
+        let mut gray = valid;
+        gray[5] = "gray";
+        assert!(parse(&media_args("export-movie", &gray)).is_err());
+        let mut matroska = valid.to_vec();
+        matroska.extend(["--output-format", "gray-mkv"]);
+        assert!(parse(&media_args("export-movie", &matroska)).is_err());
+        matroska.extend(["--output-rate", "30000/1001"]);
+        assert!(parse(&media_args("export-movie", &matroska)).is_ok());
+    }
+
+    #[test]
     fn decode_commands_require_explicit_interpretation_and_bound_every_axis() {
         for command in ["decode", "read-decoded", "verify-decoded"] {
             assert!(
@@ -1060,14 +1116,25 @@ mod tests {
     #[test]
     fn mjpeg_export_options_are_explicit_bounded_and_command_scoped() {
         let base = [
-            "--segment", "0", "--interpretation", "gray", "--output", "frames.mjpeg",
+            "--segment",
+            "0",
+            "--interpretation",
+            "gray",
+            "--output",
+            "frames.mjpeg",
         ];
         for command in ["decode", "read-decoded", "verify-decoded"] {
             for quality in ["1", "85", "100"] {
                 let mut args = base.to_vec();
                 args.extend([
-                    "--output-format", "mjpeg", "--jpeg-quality", quality,
-                    "--encode-work-units", "0", "--max-output-bytes", "1",
+                    "--output-format",
+                    "mjpeg",
+                    "--jpeg-quality",
+                    quality,
+                    "--encode-work-units",
+                    "0",
+                    "--max-output-bytes",
+                    "1",
                 ]);
                 assert!(parse(&media_args(command, &args)).is_ok());
             }
@@ -1076,9 +1143,19 @@ mod tests {
                 vec!["--output-format", "mjpeg", "--jpeg-quality", "0"],
                 vec!["--output-format", "mjpeg", "--jpeg-quality", "101"],
                 vec!["--output-format", "mjpeg", "--jpeg-quality", "256"],
-                vec!["--output-format", "mjpeg", "--encode-work-units", "18446744073709551616"],
+                vec![
+                    "--output-format",
+                    "mjpeg",
+                    "--encode-work-units",
+                    "18446744073709551616",
+                ],
                 vec!["--output-format", "mjpeg", "--max-output-bytes", "0"],
-                vec!["--output-format", "mjpeg", "--max-output-bytes", "268435457"],
+                vec![
+                    "--output-format",
+                    "mjpeg",
+                    "--max-output-bytes",
+                    "268435457",
+                ],
                 vec!["--jpeg-quality", "85"],
                 vec!["--encode-work-units", "1000"],
                 vec!["--output-format", "pgm", "--jpeg-quality", "85"],
@@ -1087,9 +1164,20 @@ mod tests {
                 args.extend(extra);
                 assert!(parse(&media_args(command, &args)).is_err());
             }
-            assert!(parse(&media_args(command, &[
-                "--segment", "0", "--interpretation", "gray", "--output-format", "mjpeg",
-            ])).is_err());
+            assert!(
+                parse(&media_args(
+                    command,
+                    &[
+                        "--segment",
+                        "0",
+                        "--interpretation",
+                        "gray",
+                        "--output-format",
+                        "mjpeg",
+                    ]
+                ))
+                .is_err()
+            );
         }
         for command in ["inspect", "verify", "extract", "motion", "select-movie"] {
             assert!(parse(&media_args(command, &["--output-format", "mjpeg"])).is_err());
@@ -1099,22 +1187,42 @@ mod tests {
     #[test]
     fn output_windows_require_paired_clock_and_output_and_exact_signed_bounds() {
         let base = [
-            "--segment", "0", "--interpretation", "gray", "--output", "selected.pgm",
+            "--segment",
+            "0",
+            "--interpretation",
+            "gray",
+            "--output",
+            "selected.pgm",
         ];
         for command in ["decode", "read-decoded", "verify-decoded"] {
             for interval in ["0:1", "-20:-10", "100000000:200000000"] {
                 let mut args = base.to_vec();
                 args.extend([
-                    "--output-window-ns", interval, "--output-clock-basis", "estimated",
+                    "--output-window-ns",
+                    interval,
+                    "--output-clock-basis",
+                    "estimated",
                 ]);
                 assert!(parse(&media_args(command, &args)).is_ok());
             }
-            for interval in ["", "1", "1:1", "2:1", "1:2:3", "+1:2", "1.0:2", " 1:2",
+            for interval in [
+                "",
+                "1",
+                "1:1",
+                "2:1",
+                "1:2:3",
+                "+1:2",
+                "1.0:2",
+                " 1:2",
                 "0:170141183460469231731687303715884105728",
-                "-170141183460469231731687303715884105728:170141183460469231731687303715884105727"] {
+                "-170141183460469231731687303715884105728:170141183460469231731687303715884105727",
+            ] {
                 let mut args = base.to_vec();
                 args.extend([
-                    "--output-window-ns", interval, "--output-clock-basis", "estimated",
+                    "--output-window-ns",
+                    interval,
+                    "--output-clock-basis",
+                    "estimated",
                 ]);
                 assert!(parse(&media_args(command, &args)).is_err());
             }
@@ -1127,30 +1235,84 @@ mod tests {
                 args.extend(extra);
                 assert!(parse(&media_args(command, &args)).is_err());
             }
-            assert!(parse(&media_args(command, &[
-                "--segment", "0", "--interpretation", "gray",
-                "--output-window-ns", "0:1", "--output-clock-basis", "estimated",
-            ])).is_err());
+            assert!(
+                parse(&media_args(
+                    command,
+                    &[
+                        "--segment",
+                        "0",
+                        "--interpretation",
+                        "gray",
+                        "--output-window-ns",
+                        "0:1",
+                        "--output-clock-basis",
+                        "estimated",
+                    ]
+                ))
+                .is_err()
+            );
         }
         for command in ["inspect", "verify", "extract", "motion", "select-movie"] {
-            assert!(parse(&media_args(command, &[
-                "--output-window-ns", "0:1", "--output-clock-basis", "estimated",
-            ])).is_err());
+            assert!(
+                parse(&media_args(
+                    command,
+                    &[
+                        "--output-window-ns",
+                        "0:1",
+                        "--output-clock-basis",
+                        "estimated",
+                    ]
+                ))
+                .is_err()
+            );
         }
     }
 
     #[test]
     fn lossless_matroska_requires_explicit_bounded_presentation_rate() {
         for command in ["decode", "read-decoded", "verify-decoded"] {
-            let base = ["--segment", "0", "--interpretation", "gray", "--output", "clip.mkv"];
-            for rate in ["1/1", "30/1", "30000/1001", "1000000/1", "1/1000000", "20/2"] {
+            let base = [
+                "--segment",
+                "0",
+                "--interpretation",
+                "gray",
+                "--output",
+                "clip.mkv",
+            ];
+            for rate in [
+                "1/1",
+                "30/1",
+                "30000/1001",
+                "1000000/1",
+                "1/1000000",
+                "20/2",
+            ] {
                 let mut arguments = base.to_vec();
-                arguments.extend(["--output-format", "gray-mkv", "--output-rate", rate,
-                    "--max-output-bytes", "1"]);
+                arguments.extend([
+                    "--output-format",
+                    "gray-mkv",
+                    "--output-rate",
+                    rate,
+                    "--max-output-bytes",
+                    "1",
+                ]);
                 assert!(parse(&media_args(command, &arguments)).is_ok(), "{rate}");
             }
-            for rate in ["", "30", "0/1", "1/0", "1/1/1", "+1/1", "-1/1", "1.0/1",
-                " 1/1", "1000001/1", "1/1000001", "4294967296/1", "0000000000000001/1"] {
+            for rate in [
+                "",
+                "30",
+                "0/1",
+                "1/0",
+                "1/1/1",
+                "+1/1",
+                "-1/1",
+                "1.0/1",
+                " 1/1",
+                "1000001/1",
+                "1/1000001",
+                "4294967296/1",
+                "0000000000000001/1",
+            ] {
                 let mut arguments = base.to_vec();
                 arguments.extend(["--output-format", "gray-mkv", "--output-rate", rate]);
                 assert!(parse(&media_args(command, &arguments)).is_err(), "{rate}");
@@ -1160,22 +1322,52 @@ mod tests {
                 vec!["--output-rate", "30/1"],
                 vec!["--output-format", "pgm", "--output-rate", "30/1"],
                 vec!["--output-format", "mjpeg", "--output-rate", "30/1"],
-                vec!["--output-format", "gray-mkv", "--output-rate", "30/1", "--jpeg-quality", "85"],
-                vec!["--output-format", "gray-mkv", "--output-rate", "30/1", "--encode-work-units", "1"],
+                vec![
+                    "--output-format",
+                    "gray-mkv",
+                    "--output-rate",
+                    "30/1",
+                    "--jpeg-quality",
+                    "85",
+                ],
+                vec![
+                    "--output-format",
+                    "gray-mkv",
+                    "--output-rate",
+                    "30/1",
+                    "--encode-work-units",
+                    "1",
+                ],
             ] {
                 let mut arguments = base.to_vec();
                 arguments.extend(extra);
                 assert!(parse(&media_args(command, &arguments)).is_err());
             }
-            assert!(parse(&media_args(command, &[
-                "--segment", "0", "--interpretation", "gray",
-                "--output-format", "gray-mkv", "--output-rate", "30/1",
-            ])).is_err());
+            assert!(
+                parse(&media_args(
+                    command,
+                    &[
+                        "--segment",
+                        "0",
+                        "--interpretation",
+                        "gray",
+                        "--output-format",
+                        "gray-mkv",
+                        "--output-rate",
+                        "30/1",
+                    ]
+                ))
+                .is_err()
+            );
         }
         for command in ["inspect", "verify", "extract", "motion", "select-movie"] {
-            assert!(parse(&media_args(command, &[
-                "--output-format", "gray-mkv", "--output-rate", "30/1",
-            ])).is_err());
+            assert!(
+                parse(&media_args(
+                    command,
+                    &["--output-format", "gray-mkv", "--output-rate", "30/1",]
+                ))
+                .is_err()
+            );
         }
     }
 }

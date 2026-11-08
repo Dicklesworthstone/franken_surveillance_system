@@ -3,7 +3,6 @@
 
 use super::{ParseResult, RunResult, Values, malformed, number, text, value, write_new};
 use fss_codec_jpeg_encode::EncodeBudget;
-use fss_container::matroska_gray::PlaybackRate;
 use fss_core::{CanonicalEncode, ContentDigest, SensorCapsule};
 use fss_reference::ingest::pixel_change::{
     PixelChangeConfig, PixelChangeDetector, PixelChangeError, PixelChangeObservation,
@@ -29,16 +28,24 @@ use fss_reference::{ReferenceDeployment, ReplayCx};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-#[path = "pgm_stream.rs"]
-mod pgm_stream;
+#[path = "frame_range.rs"]
+mod frame_range;
+#[path = "gray_matroska_stream.rs"]
+mod gray_matroska_stream;
 #[path = "jpeg_stream.rs"]
 mod jpeg_stream;
 #[path = "output_window.rs"]
 mod output_window;
-#[path = "gray_matroska_stream.rs"]
-mod gray_matroska_stream;
-#[path = "frame_range.rs"]
-mod frame_range;
+#[path = "pgm_stream.rs"]
+mod pgm_stream;
+
+#[path = "export_options.rs"]
+mod export_options;
+#[path = "movie_export.rs"]
+mod movie_export;
+#[path = "movie_output.rs"]
+mod movie_output;
+use export_options::ExportOptions;
 
 const MAX_SCAN_FRAMES: usize = 128;
 
@@ -63,13 +70,8 @@ pub(super) struct FrameAction {
     /// Contiguous JPEG frames, or native video access units beginning at an IDR/IRAP.
     segment_count: usize,
     work_units: u64,
-    output: Option<PathBuf>,
+    export: ExportOptions,
     receipt_output: Option<PathBuf>,
-    maximum_output_bytes: Option<u64>,
-    output_format: OutputFormat,
-    output_rate: Option<PlaybackRate>,
-    jpeg_quality: u8,
-    encode_work_units: u64,
     output_window: Option<DecodedOutputWindow>,
 }
 
@@ -87,12 +89,14 @@ pub(super) struct MotionAction {
 pub(super) enum Action {
     Frame(FrameAction),
     Motion(MotionAction),
+    MovieExport(movie_export::Action),
 }
 impl Action {
     pub(super) fn identity(&self) -> ContentDigest {
         match self {
             Self::Frame(a) => a.request.import_identity,
             Self::Motion(a) => a.request.import_identity,
+            Self::MovieExport(a) => a.identity(),
         }
     }
     pub(super) fn name(&self) -> &'static str {
@@ -103,6 +107,7 @@ impl Action {
                 FrameMode::Verify => "verify-decoded",
             },
             Self::Motion(_) => "motion",
+            Self::MovieExport(_) => "export-movie",
         }
     }
 }
@@ -110,11 +115,14 @@ impl Action {
 pub(super) fn is_command(command: &str) -> bool {
     matches!(
         command,
-        "decode" | "read-decoded" | "verify-decoded" | "motion"
+        "decode" | "read-decoded" | "verify-decoded" | "motion" | "export-movie"
     )
 }
 
 pub(super) fn accepts_option(command: &str, option: &str) -> bool {
+    if command == "export-movie" {
+        return movie_export::accepts_option(option);
+    }
     if !is_command(command) {
         return false;
     }
@@ -125,9 +133,16 @@ pub(super) fn accepts_option(command: &str, option: &str) -> bool {
         || (command != "motion"
             && matches!(
                 option,
-                "--segment" | "--segment-count" | "--output" | "--receipt-out" | "--output-format"
-                    | "--jpeg-quality" | "--encode-work-units"
-                    | "--output-window-ns" | "--output-clock-basis" | "--output-rate"
+                "--segment"
+                    | "--segment-count"
+                    | "--output"
+                    | "--receipt-out"
+                    | "--output-format"
+                    | "--jpeg-quality"
+                    | "--encode-work-units"
+                    | "--output-window-ns"
+                    | "--output-clock-basis"
+                    | "--output-rate"
                     | "--max-output-bytes"
             ))
         || (command == "motion"
@@ -149,34 +164,15 @@ pub(super) fn parse(
     read_limits: RetainedReadLimits,
     values: &Values,
 ) -> ParseResult<Action> {
+    if command == "export-movie" {
+        return movie_export::parse(identity, read_limits, values).map(Action::MovieExport);
+    }
     let interpretation = match text(values, "--interpretation")? {
         "gray" => ComponentInterpretation::Grayscale,
         "ycbcr" => ComponentInterpretation::YCbCr,
         _ => return Err(malformed("interpretation must be explicitly gray or ycbcr")),
     };
-    let defaults = DecodeLimits::default();
-    let decode_limits = DecodeLimits {
-        maximum_bytes: usize::try_from(
-            read_limits
-                .max_segment_bytes
-                .min(defaults.maximum_bytes as u64),
-        )
-        .map_err(|_| malformed("compressed segment limit cannot be represented"))?,
-        maximum_dimension: number(values, "--max-dimension", Some(defaults.maximum_dimension))?,
-        maximum_pixels: number(values, "--max-pixels", Some(defaults.maximum_pixels))?,
-        maximum_markers: number(values, "--max-markers", Some(defaults.maximum_markers))?,
-    };
-    if decode_limits.maximum_dimension == 0
-        || decode_limits.maximum_dimension > 4096
-        || decode_limits.maximum_pixels == 0
-        || decode_limits.maximum_pixels > 4_194_304
-        || decode_limits.maximum_markers == 0
-        || decode_limits.maximum_markers > 4096
-    {
-        return Err(malformed(
-            "positive codec limits required: dimension <=4096, pixels <=4194304, markers <=4096",
-        ));
-    }
+    let decode_limits = parse_decode_limits(read_limits, values)?;
     let request = RecordedDecodeRequest {
         import_identity: identity,
         segment_index: number(
@@ -236,90 +232,60 @@ pub(super) fn parse(
             ));
         }
         if segment_count > 1 && values.contains_key("--receipt-out") {
-            return Err(malformed("--receipt-out requires a single JPEG frame, not a range"));
+            return Err(malformed(
+                "--receipt-out requires a single JPEG frame, not a range",
+            ));
         }
-        let output_format = if values.contains_key("--output-format") {
-            if !values.contains_key("--output") {
-                return Err(malformed("--output-format requires --output"));
-            }
-            match text(values, "--output-format")? {
-                "pgm" => OutputFormat::Pgm,
-                "mjpeg" => OutputFormat::Mjpeg,
-                "gray-mkv" => OutputFormat::GrayMatroska,
-                _ => return Err(malformed("output format must be pgm, mjpeg or gray-mkv")),
-            }
-        } else {
-            OutputFormat::Pgm
-        };
-        let output_rate = if output_format == OutputFormat::GrayMatroska {
-            let value = text(values, "--output-rate")?;
-            if value.len() > 15 {
-                return Err(malformed("output rate requires NUM/DEN with components in 1..1000000"));
-            }
-            let (numerator, denominator) = value.split_once('/')
-                .ok_or_else(|| malformed("output rate requires NUM/DEN"))?;
-            let integer = |part: &str| {
-                if part.is_empty() || !part.bytes().all(|byte| byte.is_ascii_digit()) {
-                    return Err(malformed("output rate requires positive decimal components"));
-                }
-                part.parse::<u32>().map_err(|_| malformed("output rate component exceeds limit"))
-            };
-            Some(PlaybackRate::new(integer(numerator)?, integer(denominator)?)
-                .map_err(|_| malformed("output rate components must be in 1..1000000"))?)
-        } else {
-            if values.contains_key("--output-rate") {
-                return Err(malformed("--output-rate requires --output-format gray-mkv"));
-            }
-            None
-        };
-        if output_format != OutputFormat::Mjpeg
-            && (values.contains_key("--jpeg-quality") || values.contains_key("--encode-work-units"))
+        let export = ExportOptions::parse(values)?;
+        if export.maximum_output_bytes.is_some()
+            && !matches!(mode, FrameMode::Decode)
+            && export.output_format == OutputFormat::Pgm
+            && segment_count == 1
         {
-            return Err(malformed("JPEG quality and encode work require --output-format mjpeg"));
+            return Err(malformed(
+                "read/verify output byte bounds require mjpeg, gray-mkv or a JPEG range",
+            ));
         }
-        let jpeg_quality: u8 = number(values, "--jpeg-quality", Some(jpeg_stream::DEFAULT_QUALITY))?;
-        if !(1..=100).contains(&jpeg_quality) {
-            return Err(malformed("JPEG quality must be 1..100"));
-        }
-        let encode_work_units = number(
-            values,
-            "--encode-work-units",
-            Some(jpeg_stream::DEFAULT_ENCODE_WORK_UNITS),
-        )?;
-        let maximum_output_bytes = if values.contains_key("--max-output-bytes") {
-            let maximum: u64 = number(values, "--max-output-bytes", None)?;
-            if !values.contains_key("--output")
-                || maximum == 0
-                || maximum > pgm_stream::MAX_OUTPUT_BYTES
-            {
-                return Err(malformed(
-                    "--max-output-bytes requires --output and a value in 1..268435456",
-                ));
-            }
-            if !matches!(mode, FrameMode::Decode)
-                && output_format == OutputFormat::Pgm && segment_count == 1
-            {
-                return Err(malformed("read/verify output byte bounds require mjpeg, gray-mkv or a JPEG range"));
-            }
-            Some(maximum)
-        } else {
-            None
-        };
         Ok(Action::Frame(FrameAction {
             mode,
             request,
             segment_count,
             work_units,
-            output: values.get("--output").map(PathBuf::from),
+            export,
             receipt_output: values.get("--receipt-out").map(PathBuf::from),
-            maximum_output_bytes,
-            output_format,
-            output_rate,
-            jpeg_quality,
-            encode_work_units,
             output_window: output_window::parse(values)?,
         }))
     }
+}
+
+fn parse_decode_limits(
+    read_limits: RetainedReadLimits,
+    values: &Values,
+) -> ParseResult<DecodeLimits> {
+    let defaults = DecodeLimits::default();
+    let decode_limits = DecodeLimits {
+        maximum_bytes: usize::try_from(
+            read_limits
+                .max_segment_bytes
+                .min(defaults.maximum_bytes as u64),
+        )
+        .map_err(|_| malformed("compressed segment limit cannot be represented"))?,
+        maximum_dimension: number(values, "--max-dimension", Some(defaults.maximum_dimension))?,
+        maximum_pixels: number(values, "--max-pixels", Some(defaults.maximum_pixels))?,
+        maximum_markers: number(values, "--max-markers", Some(defaults.maximum_markers))?,
+    };
+    if decode_limits.maximum_dimension == 0
+        || decode_limits.maximum_dimension > 4096
+        || decode_limits.maximum_pixels == 0
+        || decode_limits.maximum_pixels > 4_194_304
+        || decode_limits.maximum_markers == 0
+        || decode_limits.maximum_markers > 4096
+    {
+        return Err(malformed(
+            "positive codec limits required: dimension <=4096, pixels <=4194304, markers <=4096",
+        ));
+    }
+    Ok(decode_limits)
 }
 
 pub(super) fn run(
@@ -352,6 +318,9 @@ pub(super) fn run(
         }
         Action::Frame(action) => run_frame(action, retained, deployment, root, cx, out),
         Action::Motion(action) => run_motion(action, retained, deployment, root, cx, out),
+        Action::MovieExport(action) => {
+            movie_export::run(action, retained, deployment, root, cx, out)
+        }
     }
 }
 
@@ -399,14 +368,16 @@ fn run_frame(
     cx: &ReplayCx,
     out: &mut impl Write,
 ) -> RunResult<()> {
-    if action.maximum_output_bytes.is_some() && action.output_format == OutputFormat::Pgm {
+    if action.export.maximum_output_bytes.is_some()
+        && action.export.output_format == OutputFormat::Pgm
+    {
         return Err(std::io::Error::other(
             "PGM --max-output-bytes requires native video or a JPEG range",
         )
         .into());
     }
     let mut selection = output_window::prepare(action, retained)?;
-    let mut image_export = if action.output_format != OutputFormat::Pgm {
+    let mut image_export = if action.export.output_format != OutputFormat::Pgm {
         prepare_video_export(action, root, cx)?
     } else {
         None
@@ -426,10 +397,10 @@ fn run_frame(
     // A single JPEG outside the requested interval is an empty selection, not a successful
     // zero-frame output. Finalize this decision before any image or receipt file is created.
     let selection_receipt = output_window::finish(selection, 1, cx)?;
-    if action.output_format != OutputFormat::Pgm {
+    if action.export.output_format != OutputFormat::Pgm {
         let cancelled = || cx.is_cancelled();
         let mut encode_budget =
-            EncodeBudget::with_cancellation_probe(action.encode_work_units, &cancelled);
+            EncodeBudget::with_cancellation_probe(action.export.encode_work_units, &cancelled);
         let result = (|| {
             if let Some(export) = &mut image_export {
                 export.frame(
@@ -445,9 +416,9 @@ fn run_frame(
             }
             finish_video_export(image_export, cx, out)
         })();
-        encode_usage_lines(action, &encode_budget, result.is_ok(), out)?;
+        encode_usage_lines(&action.export, &encode_budget, result.is_ok(), out)?;
         result?;
-    } else if let Some(path) = &action.output {
+    } else if let Some(path) = &action.export.output {
         let bytes = frame.pgm_bytes();
         write_new(path, &bytes, root, cx)?;
         writeln!(out, "pgm_sha256={}", ContentDigest::sha256(&bytes))?;
@@ -455,7 +426,11 @@ fn run_frame(
     if let Some(path) = &action.receipt_output {
         write_new(path, &frame.receipt().encoded()?, root, cx)?;
     }
-    output_window::report(action.output_window.as_ref(), selection_receipt.as_ref(), out)?;
+    output_window::report(
+        action.output_window.as_ref(),
+        selection_receipt.as_ref(),
+        out,
+    )?;
     let receipt = frame.receipt();
     let [width, height] = receipt.dimensions();
     writeln!(out, "decode_identity={}", receipt.identity())?;
@@ -533,7 +508,7 @@ fn run_jpeg_range(
     let cancelled = || cx.is_cancelled();
     let mut budget = DecodeBudget::with_cancellation_probe(action.work_units, &cancelled);
     let mut encode_budget =
-        EncodeBudget::with_cancellation_probe(action.encode_work_units, &cancelled);
+        EncodeBudget::with_cancellation_probe(action.export.encode_work_units, &cancelled);
     let result: RunResult<(usize, usize)> = (|| {
         cx.checkpoint("file_cli:jpeg_range")?;
         if retained.manifest().format != "mjpeg" {
@@ -609,7 +584,7 @@ fn run_jpeg_range(
             },
         )
     })();
-    encode_usage_lines(action, &encode_budget, result.is_ok(), out)?;
+    encode_usage_lines(&action.export, &encode_budget, result.is_ok(), out)?;
     writeln!(
         out,
         "jpeg_range_first_segment={}",
@@ -713,13 +688,29 @@ fn run_video_decode(
     let mut budget = RecordedVideoDecodeBudget::new(action.work_units);
     let cancelled = || cx.is_cancelled();
     let mut encode_budget =
-        EncodeBudget::with_cancellation_probe(action.encode_work_units, &cancelled);
+        EncodeBudget::with_cancellation_probe(action.export.encode_work_units, &cancelled);
     let result = if hevc {
-        run_h265(action, retained, deployment, root, cx, out, (&mut budget, &mut encode_budget))
+        run_h265(
+            action,
+            retained,
+            deployment,
+            root,
+            cx,
+            out,
+            (&mut budget, &mut encode_budget),
+        )
     } else {
-        run_h264(action, retained, deployment, root, cx, out, (&mut budget, &mut encode_budget))
+        run_h264(
+            action,
+            retained,
+            deployment,
+            root,
+            cx,
+            out,
+            (&mut budget, &mut encode_budget),
+        )
     };
-    encode_usage_lines(action, &encode_budget, result.is_ok(), out)?;
+    encode_usage_lines(&action.export, &encode_budget, result.is_ok(), out)?;
     writeln!(out, "decode_work_units={}", budget.used())?;
     writeln!(out, "decode_work_unit_model={VIDEO_DECODE_WORK_MODEL}")?;
     writeln!(out, "maximum_decode_work_units={}", action.work_units)?;
@@ -729,15 +720,23 @@ fn run_video_decode(
 }
 
 fn encode_usage_lines(
-    action: &FrameAction,
+    action: &ExportOptions,
     budget: &EncodeBudget<'_>,
     complete: bool,
     out: &mut impl Write,
 ) -> RunResult<()> {
     if action.output_format == OutputFormat::Mjpeg {
         writeln!(out, "encode_work_units={}", budget.used())?;
-        writeln!(out, "encode_work_unit_model={}", fss_codec_jpeg_encode::ENCODE_WORK_MODEL)?;
-        writeln!(out, "maximum_encode_work_units={}", action.encode_work_units)?;
+        writeln!(
+            out,
+            "encode_work_unit_model={}",
+            fss_codec_jpeg_encode::ENCODE_WORK_MODEL
+        )?;
+        writeln!(
+            out,
+            "maximum_encode_work_units={}",
+            action.encode_work_units
+        )?;
         writeln!(out, "remaining_encode_work_units={}", budget.remaining())?;
         writeln!(out, "mjpeg_export_complete={complete}")?;
     } else if action.output_format == OutputFormat::GrayMatroska && !complete {
@@ -780,28 +779,52 @@ fn prepare_video_export(
     root: &Path,
     cx: &ReplayCx,
 ) -> RunResult<Option<FrameExport>> {
+    prepare_output_export(&action.export, action.segment_count, root, cx)
+}
+
+fn prepare_output_export(
+    action: &ExportOptions,
+    maximum_frames: usize,
+    root: &Path,
+    cx: &ReplayCx,
+) -> RunResult<Option<FrameExport>> {
     // With no export requested there is no output buffer, destination, or output hash.
     Ok(action
         .output
         .as_deref()
         .map(|path| {
-            let maximum = action.maximum_output_bytes.unwrap_or(match action.output_format {
-                OutputFormat::Pgm => pgm_stream::DEFAULT_OUTPUT_BYTES,
-                OutputFormat::Mjpeg => jpeg_stream::DEFAULT_OUTPUT_BYTES,
-                OutputFormat::GrayMatroska => gray_matroska_stream::DEFAULT_OUTPUT_BYTES,
-            });
+            let maximum = action
+                .maximum_output_bytes
+                .unwrap_or(match action.output_format {
+                    OutputFormat::Pgm => pgm_stream::DEFAULT_OUTPUT_BYTES,
+                    OutputFormat::Mjpeg => jpeg_stream::DEFAULT_OUTPUT_BYTES,
+                    OutputFormat::GrayMatroska => gray_matroska_stream::DEFAULT_OUTPUT_BYTES,
+                });
             match action.output_format {
                 OutputFormat::Pgm => {
-                    pgm_stream::PgmExport::prepare(path, root, maximum, action.segment_count, cx)
+                    pgm_stream::PgmExport::prepare(path, root, maximum, maximum_frames, cx)
                         .map(FrameExport::Pgm)
                 }
                 OutputFormat::Mjpeg => jpeg_stream::JpegExport::prepare(
-                    path, root, maximum, action.segment_count, action.jpeg_quality, cx,
-                ).map(FrameExport::Mjpeg),
+                    path,
+                    root,
+                    maximum,
+                    maximum_frames,
+                    action.jpeg_quality,
+                    cx,
+                )
+                .map(FrameExport::Mjpeg),
                 OutputFormat::GrayMatroska => gray_matroska_stream::MatroskaExport::prepare(
-                    path, root, maximum, action.segment_count,
-                    action.output_rate.ok_or_else(|| std::io::Error::other("missing Matroska playback rate"))?, cx,
-                ).map(FrameExport::GrayMatroska),
+                    path,
+                    root,
+                    maximum,
+                    maximum_frames,
+                    action
+                        .output_rate
+                        .ok_or_else(|| std::io::Error::other("missing Matroska playback rate"))?,
+                    cx,
+                )
+                .map(FrameExport::GrayMatroska),
             }
         })
         .transpose()?)
@@ -816,14 +839,30 @@ fn finish_video_export(
         Some(FrameExport::Pgm(export)) => {
             let receipt = export.finish(cx)?;
             writeln!(out, "pgm_sha256={}", receipt.digest)?;
-            writeln!(out, "pgm_bytes={}\npgm_frames={}", receipt.bytes, receipt.frames)?;
+            writeln!(
+                out,
+                "pgm_bytes={}\npgm_frames={}",
+                receipt.bytes, receipt.frames
+            )?;
         }
         Some(FrameExport::Mjpeg(export)) => {
             let receipt = export.finish(cx)?;
             writeln!(out, "mjpeg_sha256={}", receipt.digest)?;
-            writeln!(out, "mjpeg_bytes={}\nmjpeg_frames={}", receipt.bytes, receipt.frames)?;
-            writeln!(out, "mjpeg_frame_receipts_sha256={}", receipt.frame_receipts_digest)?;
-            writeln!(out, "mjpeg_frame_receipts_domain={}", jpeg_stream::FRAME_RECEIPTS_DOMAIN)?;
+            writeln!(
+                out,
+                "mjpeg_bytes={}\nmjpeg_frames={}",
+                receipt.bytes, receipt.frames
+            )?;
+            writeln!(
+                out,
+                "mjpeg_frame_receipts_sha256={}",
+                receipt.frame_receipts_digest
+            )?;
+            writeln!(
+                out,
+                "mjpeg_frame_receipts_domain={}",
+                jpeg_stream::FRAME_RECEIPTS_DOMAIN
+            )?;
             writeln!(out, "mjpeg_encoder_identity={}", receipt.encoder)?;
             writeln!(out, "mjpeg_quality={}", receipt.quality)?;
             writeln!(out, "mjpeg_recorded_work_units={}", receipt.work_units)?;
@@ -937,7 +976,11 @@ fn run_h264(
     }
     let selection_receipt = output_window::finish(selection, range.decoded(), cx)?;
     finish_video_export(export, cx, out)?;
-    output_window::report(action.output_window.as_ref(), selection_receipt.as_ref(), out)?;
+    output_window::report(
+        action.output_window.as_ref(),
+        selection_receipt.as_ref(),
+        out,
+    )?;
     writeln!(
         out,
         "pixel_format=h264_yuv420p_luma\ndecoder_identity={}",
@@ -1061,7 +1104,11 @@ fn run_h265(
     }
     let selection_receipt = output_window::finish(selection, range.decoded(), cx)?;
     finish_video_export(export, cx, out)?;
-    output_window::report(action.output_window.as_ref(), selection_receipt.as_ref(), out)?;
+    output_window::report(
+        action.output_window.as_ref(),
+        selection_receipt.as_ref(),
+        out,
+    )?;
     writeln!(
         out,
         "pixel_format=h265_yuv420p_luma\ndecoder_identity={}",

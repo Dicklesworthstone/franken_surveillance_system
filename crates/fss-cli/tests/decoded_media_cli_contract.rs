@@ -10,6 +10,8 @@ use std::process::{Command, Output};
 
 #[path = "decoded_media_cli_contract/range.rs"]
 mod range;
+#[path = "decoded_media_cli_contract/movie_export.rs"]
+mod movie_export;
 
 const JPEG: &[u8] = include_bytes!("../../fss-codec-mjpeg/tests/fixtures/gray.jpg");
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;

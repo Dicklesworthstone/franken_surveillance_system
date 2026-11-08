@@ -4,6 +4,42 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Native export of selected MP4/MOV movie intervals
+
+`fss-file export-movie` now connects authenticated movie-time selection to native
+AVC/HEVC decode and private PGM, MJPEG or lossless gray-Matroska output. It decodes
+every prerequisite span through EOF, caches only requested current-mask luma,
+and emits the exact presentation occurrences, including repeated/backward edits.
+Coding order, decoder display order and edited movie order remain distinct.
+Missing desired HEVC RASL output refuses the complete export before file creation.
+
+One decode-work budget and one pre-I/O source-read owner cover all spans; separate
+bounds cover 1024 aggregate coded samples, 1024 output occurrences, selected luma
+(default 64 MiB / hard 256 MiB), JPEG encode work and whole output bytes. Original
+custody is verified before selection; exact source/query/edit/gap/receipt/pixel
+pins enter the ordered movie lineage digest. Output completion follows full source
+traversal and durable writer finalization. The metadata-only `select-movie` command
+is unchanged. Uniform gray-Matroska output explicitly retimes the selected frames;
+source movie durations/gaps remain exact report metadata.
+
+This advances VIT-008/FSS-068 and local review output under VIT-023. Remote reviewer
+grants, payment-zone attestations, derivative custody/expiry and delivery remain
+open. See [the movie-time export workflow](docs/RETAINED_DECODE_WORKFLOW.md#exporting-an-exact-movie-time-selection).
+
+**Validation:** ten native `movie_output_contract` tests pass on the pinned nightly,
+using actual MP4 demux, production sample drivers, native AVC/HEVC, the exact movie
+materializer and lossless Matroska writer. Real AVC selection `[3,1]` is checked
+against the frozen I420 oracle; HEVC success and selected skipped-RASL refusal,
+repeated/backward edits, sparse source indices, memory limits, pin/plan failures,
+cancellation and lineage are covered. Eight complete CLI process contracts plus
+one parser contract are authored. A one-job, locked/offline production CLI check,
+with debug/incremental disabled and a 6 GiB virtual-memory cap, ended when the
+unchanged Asupersync 0.5.0 metadata compiler received SIGKILL (Cargo exit 101),
+before the CLI was reached. No source diagnostic was emitted and the signal's
+cause is not established. Process/custody/privacy-storage/durability execution
+and release qualification remain unverified. No production dependency or gate
+was changed; the CLI test oracle adds only the existing first-party H264 dev edge.
+
 ## Bounded retained JPEG/MJPEG review ranges
 
 `fss-file decode`, `read-decoded` and `verify-decoded` now accept

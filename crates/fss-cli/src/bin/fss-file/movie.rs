@@ -6,6 +6,7 @@ use fss_container::demux::{
     MovieGapKind, MovieInterval, MovieSelection, MovieSelectionLimits, VideoCodec,
 };
 use fss_core::ContentDigest;
+use fss_reference::ingest::retained::RetainedMovieSelection;
 use fss_reference::ingest::{RetainedFileImport, RetainedReadLimits};
 use fss_reference::{ReferenceDeployment, ReplayCx};
 use std::io::Write;
@@ -21,6 +22,22 @@ pub(super) struct Action {
 impl Action {
     pub(super) fn identity(&self) -> ContentDigest {
         self.identity
+    }
+
+    pub(super) fn select(
+        &self,
+        retained: &RetainedFileImport,
+        deployment: &ReferenceDeployment,
+        read_limits: RetainedReadLimits,
+        cx: &ReplayCx,
+    ) -> RunResult<RetainedMovieSelection> {
+        Ok(retained.select_movie_interval(
+            deployment,
+            self.query.clone(),
+            read_limits,
+            self.limits,
+            cx,
+        )?)
     }
 }
 
@@ -39,6 +56,19 @@ pub(super) fn accepts_option(command: &str, option: &str) -> bool {
 }
 
 pub(super) fn parse(identity: ContentDigest, values: &Values) -> ParseResult<Action> {
+    parse_with_decode_limit(
+        identity,
+        values,
+        MovieSelectionLimits::default().max_decode_samples,
+    )
+}
+
+/// Export has a tighter aggregate native-decoder ceiling than byte-free timeline inspection.
+pub(super) fn parse_with_decode_limit(
+    identity: ContentDigest,
+    values: &Values,
+    maximum_decode_samples: usize,
+) -> ParseResult<Action> {
     let start = number(values, "--start-movie-tick", None)?;
     let end = number(values, "--end-movie-tick", None)?;
     if start >= end {
@@ -53,7 +83,7 @@ pub(super) fn parse(identity: ContentDigest, values: &Values) -> ParseResult<Act
         max_decode_samples: number(
             values,
             "--max-decode-samples",
-            Some(defaults.max_decode_samples),
+            Some(defaults.max_decode_samples.min(maximum_decode_samples)),
         )?,
         max_source_bytes: number(
             values,
@@ -69,6 +99,11 @@ pub(super) fn parse(identity: ContentDigest, values: &Values) -> ParseResult<Act
     limits
         .validate()
         .map_err(|_| malformed("movie selection limits must be positive and within hard bounds"))?;
+    if limits.max_decode_samples > maximum_decode_samples {
+        return Err(malformed(
+            "movie export decodes at most 1024 aggregate source samples",
+        ));
+    }
     Ok(Action {
         identity,
         query: start..end,
@@ -84,14 +119,22 @@ pub(super) fn run(
     cx: &ReplayCx,
     out: &mut impl Write,
 ) -> RunResult<()> {
-    let result = retained.select_movie_interval(
-        deployment,
-        action.query.clone(),
-        read_limits,
-        action.limits,
-        cx,
-    )?;
+    let result = action.select(retained, deployment, read_limits, cx)?;
     cx.checkpoint("file_cli:movie_selection_release")?;
+    report(&result, cx, out)?;
+    writeln!(out, "selection_decoded_frames=0")?;
+    writeln!(out, "selection_media_exported=false")?;
+    writeln!(out, "selection_absence_certifiable=false")?;
+    cx.checkpoint("file_cli:movie_report_complete")?;
+    writeln!(out, "selection_complete=true")?;
+    Ok(())
+}
+
+pub(super) fn report(
+    result: &RetainedMovieSelection,
+    cx: &ReplayCx,
+    out: &mut impl Write,
+) -> RunResult<()> {
     writeln!(out, "selection_time_basis=container_movie_timeline")?;
     writeln!(out, "selection_interval=half_open")?;
     writeln!(out, "selection_track_id={}", result.track_id)?;
@@ -115,11 +158,6 @@ pub(super) fn run(
         result.source_bytes_read
     )?;
     write_selection(&result.selection, cx, out)?;
-    writeln!(out, "selection_decoded_frames=0")?;
-    writeln!(out, "selection_media_exported=false")?;
-    writeln!(out, "selection_absence_certifiable=false")?;
-    cx.checkpoint("file_cli:movie_report_complete")?;
-    writeln!(out, "selection_complete=true")?;
     Ok(())
 }
 

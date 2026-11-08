@@ -1,0 +1,112 @@
+{
+  "format": "engineering-session-handoff",
+  "date": "2026-11-07",
+  "timezone": "America/New_York",
+  "state": "native_movie_export_implemented_component_verified_full_cli_resource_blocked",
+  "mission": {
+    "goal": "Implement the most consequential remaining functionality and publish meaningful checkpoints directly to main through GitHub, without PRs.",
+    "base_commit": "c493cbf67aeae49d124bf91a10e2ba1b9975583a",
+    "concurrent_head_preserved": "56146fab5ec9525d900cc63f59c5d9df408e664c",
+    "basis": [
+      "AGENTS.md",
+      "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md",
+      ".beads/issues.jsonl"
+    ],
+    "bead_scope": [
+      "VIT-008 / fss-vit-je36t.8: selected footage to usable output",
+      "FSS-068 / fss-x4a.13.8: retained video decode/export",
+      "VIT-023 / fss-vit023-review-export-w8aai: local review-output foundation; broader delivery bead remains open"
+    ]
+  },
+  "authority": {
+    "git": "User explicitly authorized meaningful direct-main GitHub commits. Use expected-head non-force ref updates and preserve concurrent edits.",
+    "live_device_execution": false,
+    "policy_activation": false,
+    "external_delivery": false
+  },
+  "completed": [
+    "Explicit export-movie command reuses authenticated retained MP4/MOV selection, original custody, current privacy screening and real native AVC/HEVC range owners.",
+    "All prerequisite coding spans must reach EOF; only unique selected luma is cached and exact selected presentation occurrences are exported, including repeated/backward edits.",
+    "One cumulative decode-work budget and one pre-I/O source-chunk read budget cover all spans. Separate limits bound metadata, aggregate coded samples, occurrences, luma cache, output bytes and MJPEG encode work.",
+    "PGM/MJPEG/gray-Matroska use existing private create-only output owners. Completion follows durable output; a selected unavailable RASL picture, cache/decode/source failure or empty selection creates no output.",
+    "Movie lineage binds original source pins, exact query/timescales/edits/gaps, selected occurrences and native receipt/pixel pins. No capture clock is rewritten.",
+    "Shared output-option parsing preserves existing frame/range output behavior. export-movie rejects trailing --manifest-out so a later write cannot follow its terminal completion marker."
+  ],
+  "verification": {
+    "component": {
+      "status": "passed",
+      "command": "CARGO_BUILD_JOBS=1 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline -p fss-container --test movie_output_contract",
+      "toolchain": "nightly-2026-08-31",
+      "tests_passed": 10,
+      "tests_failed": 0,
+      "scope": "Actual demux, production sample driver, native codecs, movie materializer and lossless stream core. Test source/receipt pins are fixture metadata, not retained-custody receipts.",
+      "observed_cases": [
+        "AVC movie query400..800 selects[3,1] from native display[0,2,3,1]; decoded I420 matches frozen oracle.",
+        "HEVC query0..400 exports[0,2]; query600..800 selects5 but CRA decoder skips[4,5], so missing required output refuses.",
+        "Repeated/backward edits, source index65000, exact cache limits, duplicate/missing/malformed/pin refusals, cancellation checkpoints and lineage changes."
+      ],
+      "source_sha256": {
+        "crates/fss-cli/src/bin/fss-file/movie_output.rs": "3fb9a72bbe8bd8baeec0063e97ace59c4f0faa553ce3332ac38f289fdbafd680",
+        "crates/fss-container/tests/movie_output_contract.rs": "3145db4e519b11bca0f33edbe179360e8049b8ab9911a97748f38a22667405bc",
+        "crates/fss-cli/src/bin/fss-file/gray_matroska_stream/encoder.rs": "49027d91778305cc5c33b74a6c395a98661aa6b29a52cf75dc5dba382417ee18",
+        "crates/fss-container/src/matroska_gray.rs": "7f372d5892671c8f55621c5b0cacedab400e7d499b8902aeccb15cc8f41e1bf1",
+        "crates/fss-reference/src/ingest/recorded_decode/video_access_unit.rs": "83e53554bd46e88bc98f1000e9d4ed388534596d10063798f82f3cbd9810941d",
+        "Cargo.lock": "5729c32d870c9086d738ed9291db02964ce25a20d5f52f510300b84c1fe31ad6",
+        "rust-toolchain.toml": "d34a84f364eb0446833610d9835b48a36a2c8519eba5e0c769858a0cd816e1c8"
+      },
+      "runs": 2,
+      "final_run_reason": "Restored incidental formatting of the existing stream encoder so the old encoder generation does not change in this feature; added the existing H264 test-only dependency edge and verified final locked source.",
+      "captured_log_sha256": "a210a6e6dd5a0578a5103523e6c5151683f05640bb858e73808c97c94ec9b541"
+    },
+    "cli_process_contracts": {
+      "status": "authored_not_executed",
+      "count": 8,
+      "target": "crates/fss-cli/tests/decoded_media_cli_contract/movie_export.rs"
+    },
+    "cli_parser_contract": {
+      "status": "authored_not_executed",
+      "count": 1
+    },
+    "cli_typecheck": {
+      "status": "failed_before_cli_target",
+      "command": "cargo check --locked --offline -p fss-cli --lib --bin fss-file",
+      "resource_bounds": "One job; debug0; incremental disabled; 6 GiB per-process virtual memory cap; pinned nightly; no injected compiler flags.",
+      "elapsed_seconds": 195.31,
+      "cargo_exit": 101,
+      "stage": "unchanged asupersync 0.5.0 library metadata",
+      "termination": "rustc signal9/SIGKILL; log does not establish sender or cause",
+      "source_diagnostics": false,
+      "cli_target_reached": false,
+      "source_drift_during_run": [],
+      "child_peak_rss_kib": 3261532,
+      "process_monitor_limit": "/proc PID namespace mismatch; those observations discarded.",
+      "result_record_sha256": "bf1e5425ed62eb78a7616b3fc5d9703f849084d293642b1c19af127e3e8255b5"
+    },
+    "independent_review": {
+      "status": "completed",
+      "finding_fixed": "Rejected --manifest-out, including media destination aliases, to preserve terminal completion order."
+    }
+  },
+  "important_boundaries": [
+    "Original ADP-FILE-001 MP4/MOV imports only; reconstructed RTSP/catalog origins are not admitted by this selector.",
+    "Per-operation maximums are1024 coded samples and1024 output occurrences. Cached tight luma defaults64MiB/max256MiB; native frame/DPB/chunk memory has separate existing limits.",
+    "Full-original verification and native source-chunk read accounting are separate bounded phases. Native source reads default512MiB/max4GiB and do not renew at random-access boundaries.",
+    "PGM and gray-Matroska preserve screened luma; MJPEG is lossy. Gray-Matroska remains explicit uniform retiming, so source movie timing and gaps are metadata, not embedded playback timing.",
+    "Only completed export reports success; output-stage failures may leave a private incomplete file. No derivative publication, remote delivery, policy activation, UTC precision or physical-absence claim.",
+    "The synchronous command holds the existing exclusive deployment/publisher owner; supported competing writers cannot replace privacy authority during the operation.",
+    "No external or production dependency, gate or foreign runtime was added or weakened. The CLI native test oracle adds only an existing first-party fss-codec-h264 dev-dependency and corresponding lock edge."
+  ],
+  "continuation": {
+    "highest_value_next": [
+      "Finish native CLI typecheck and execute process contracts on a capable exact-source host.",
+      "Assess source-timed movie output and actual retained/granted reviewer delivery as distinct follow-on capabilities.",
+      "Keep broad VIT/FSS beads open until their complete acceptance scope is met."
+    ]
+  },
+  "published_checkpoints": [
+    {
+      "commit": "this_commit",
+      "change": "Native bounded movie-time selection export with actual codec/component proofs and process contracts."
+    }
+  ]
+}

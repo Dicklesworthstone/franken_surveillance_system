@@ -761,7 +761,7 @@ fn verified_chunk(
 /// Reservations happen before reads and are never refunded, including for invalid codec input.
 /// Cloning preserves the same allowance; it cannot reset accounting on a decoder restart.
 #[derive(Clone)]
-pub(crate) struct SourceReadBudget {
+pub struct SourceReadBudget {
     maximum: u64,
     used: Arc<AtomicU64>,
     cancelled: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
@@ -778,7 +778,9 @@ impl std::fmt::Debug for SourceReadBudget {
 }
 
 impl SourceReadBudget {
-    pub(crate) fn new(maximum: u64) -> Self {
+    /// Bound actual source-chunk reads across every range using this owner. Zero admits none.
+    #[must_use]
+    pub fn new(maximum: u64) -> Self {
         Self {
             maximum,
             used: Arc::new(AtomicU64::new(0)),
@@ -806,7 +808,9 @@ impl SourceReadBudget {
         }
     }
 
-    pub(crate) fn used(&self) -> u64 {
+    /// Bytes reserved before source I/O, including failed reads and repeated chunk loads.
+    #[must_use]
+    pub fn used(&self) -> u64 {
         self.used.load(Ordering::Relaxed)
     }
 

@@ -450,6 +450,26 @@ impl<const LEGACY: bool> ProfiledRecordedH264Range<LEGACY> {
         )
     }
 
+    /// Bounded range with separate cumulative source-read and pre-codec work allowances.
+    /// Reuse both owners for every span of one movie selection; opening a new random-access
+    /// range must not renew either allowance. The source owner also follows cached reads.
+    pub fn open_with_budgets(
+        deployment: &ReferenceDeployment,
+        request: RecordedH264Request,
+        source_budget: &SourceReadBudget,
+        budget: &mut RecordedVideoDecodeBudget,
+        cx: &ReplayCx,
+    ) -> Result<Self, RecordedDecodeError> {
+        Self::open_bounded(
+            deployment,
+            request,
+            cx,
+            MAX_H264_RANGE_SEGMENTS,
+            Some(budget),
+            Some(source_budget),
+        )
+    }
+
     /// [`Self::open`] for whole-recording streaming analysis: up to
     /// [`MAX_H264_STREAM_SEGMENTS`] segments, decoded one access unit at a time with the same
     /// custody, mask and refusal semantics. Memory grows only with per-segment bookkeeping.

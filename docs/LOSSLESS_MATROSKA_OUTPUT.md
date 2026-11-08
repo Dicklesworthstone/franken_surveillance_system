@@ -98,6 +98,16 @@ AVC/HEVC range
 receipts remain unpublished derivations and retain their existing command scope.
 
 `--output-rate` is mandatory for `gray-mkv` and refused for other formats.
+
+For an exact MP4/MOV movie-time interval, `fss-file export-movie` automatically
+decodes the prerequisite AVC/HEVC spans and feeds only the selected presentation
+occurrences to this writer. Repeated/backward edits reuse screened luma; preroll
+does not appear in the clip. The frame ceiling applies to output occurrences,
+and the separate movie lineage digest binds their original intervals and native
+decode receipts. This profile's explicit rate still retimes those pictures; it
+does not encode source movie durations or gaps. See
+[movie-time export](RETAINED_DECODE_WORKFLOW.md#exporting-an-exact-movie-time-selection)
+for the complete CLI, memory and cumulative-work contract.
 Its syntax is two positive decimal components separated by one slash, each
 bounded to 1,000,000 before reduction; signs, whitespace and decimal rates are
 refused. `--jpeg-quality` and `--encode-work-units` remain JPEG-only options.

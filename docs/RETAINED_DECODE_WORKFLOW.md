@@ -404,6 +404,85 @@ approximate pixels), `ERR-DECODE-BOUNDS-001`, `ERR-DECODE-SOURCE-UNAVAILABLE-001
 before it remain valid. `fss-file decode --segment N [--segment-count M] --interpretation
 ycbcr [--output FILE.pgm]` exposes the same path and writes one binary PGM luma image per frame.
 
+## Exporting an exact movie-time selection
+
+`fss-file export-movie` connects the authenticated MP4/MOV timeline selector to
+the production AVC and HEVC range decoders. It writes only the selected, current
+privacy-screened luma pictures in movie presentation order. Use `select-movie`
+first to inspect the source's movie timescale, exact rational intervals, edits,
+gaps and prerequisite coding spans; that command still returns metadata only.
+
+For a retained file whose movie timescale is 1000, this selects the half-open
+movie interval from 0.4 to 0.8 seconds and creates a local lossless review clip:
+
+```sh
+fss-file select-movie --root DEPLOYMENT --site SITE --import-id sha256:HEX \
+  --start-movie-tick 400 --end-movie-tick 800
+
+fss-file export-movie --root DEPLOYMENT --site SITE --import-id sha256:HEX \
+  --start-movie-tick 400 --end-movie-tick 800 --interpretation ycbcr \
+  --output selected.mkv --output-format gray-mkv --output-rate 25/1 \
+  --work-units 1000000000 --max-cached-luma-bytes 67108864 \
+  --max-output-bytes 67108864
+```
+
+The tick arguments always use the source's **movie timescale**. They are not
+media ticks, capture timestamps or UTC. A picture whose presentation interval
+overlaps the query is selected with its exact clipped interval in the report;
+the image itself remains a complete native decoded picture.
+
+The command verifies the complete retained original and its sample index before
+decoding. Each prerequisite span begins at its admitted IDR/IRAP entry point.
+One cumulative codec-work owner covers parameter sets, preroll, intervening
+pictures, decode-ahead and skipped HEVC RASL inputs across all spans. Every range
+must reach successful EOF. Native display order is mapped back to original source
+segments, then the selected movie occurrences determine output order. Repeated
+or backward edits reuse the same screened luma without decoding it again.
+
+Only unique selected luma is cached. The cache is checked before allocation and
+copied/hashed with cancellation checkpoints. All selected frames must be present
+before the first output byte is created. In particular, selecting a RASL picture
+that a CRA/BLA entry point skips refuses the export; it cannot silently shorten
+the requested movie sequence. Empty selections also refuse media output, while
+their gaps remain inspectable with `select-movie`.
+
+| Allowance | Default and hard limit | Accounting |
+|---|---|---|
+| `--max-decode-samples` | Default/max 1024 | Aggregate coded source samples over every span, including preroll |
+| Output occurrences | Hard limit 1024 | Every selected occurrence, including repeated edits |
+| `--max-cached-luma-bytes` | Default 64 MiB, max 256 MiB | Sum of unique selected tight luma planes; chroma is not retained in this cache |
+| `--max-decode-read-bytes` | Default 512 MiB, max 4 GiB | Actual custody chunk reads across all decode spans, reserved before I/O; reloads count again |
+| `--work-units` | Default 100 million | One shared native encoded-byte plus coded-luma-capacity allowance |
+| `--max-output-bytes` | Default 64 MiB, max 256 MiB | Whole output, including container/frame headers |
+| `--encode-work-units` | Default 2 billion, MJPEG only | One shared JPEG encoding allowance, including repeated occurrences |
+
+The existing selection-work, row, quoted source/Annex-B byte, source-file,
+per-frame pixel/dimension and marker limits also apply. Complete-original
+verification is a separate bounded read reported as `selection_source_bytes_read`;
+`movie_decode_source_bytes_read` accounts for subsequent native decode reads.
+Neither allowance is refreshed by a new random-access span.
+
+Output formats are `pgm` (default), `mjpeg`, and `gray-mkv`. PGM and gray-Matroska
+preserve exact screened sample values; MJPEG is a lossy grayscale derivative.
+Gray-Matroska requires an explicit rational `--output-rate`. Its playback cadence
+retimes the selected pictures: source movie intervals, edit durations and gaps
+remain exact report metadata rather than embedded timing. No black frames or
+absence evidence are invented for gaps. PGM/MJPEG embed no playback timing.
+
+The report pairs `movie_output_index` and original `frame_segment` with native
+decode receipts, source capsules, pixel hashes and the existing exact `movie_sample`
+rows. `movie_output_lineage_sha256`, under `fss.file_movie_output.v1`, binds the
+authenticated source pins, query/timescales, selection intervals, edits/gaps,
+occurrence order and decoded-frame pins. Keep this report with the output file
+to retain its source mapping. This is a local derivation, not a retained export
+package, remote reviewer grant or coverage certificate.
+
+The destination must be a new private file outside the deployment. Output owners
+recheck the path and synchronize the complete file before completion. A write,
+encode or sync failure can leave an incomplete private file; only
+`movie_export_complete=true` certifies successful completion of the entire request.
+The command does not change source capture assumptions or publication authority.
+
 ## Retained MP4 (H.264 and H.265) import
 
 **Import.** `FileIngestAdapter` retains an ISO-BMFF/MP4 or QuickTime (`.mov`, `qt  ` brand:
