@@ -1,9 +1,11 @@
 # Offline event evaluation
 
 `fss-evaluate` exposes the existing `fss_reference::evaluation` event-level scorer as a
-bounded, read-only command. It compares explicitly supplied candidate events with labelled
-clips and emits one JSON report. It does not run inference, read deployment authority,
-certify camera coverage, send alerts, or activate a threshold.
+bounded command. The interchange mode compares explicitly supplied candidate events with
+labelled clips. The `retained-package` mode derives candidates from actual retained native
+detector tracks and verifies their source custody before returning scores. Both emit one
+derived JSON report without running inference, certifying camera coverage, sending alerts,
+or activating a threshold.
 
 ## Run the synthetic example
 
@@ -67,7 +69,7 @@ Each input file is limited to 16 MiB and must be a regular file; each row is lim
 bytes. The library's clip, truth-event, candidate, interval, and identifier limits still apply.
 Inputs are treated as immutable snapshots, not streams. The adapter adds no dependencies.
 
-## Report and authority boundary
+## Interchange report and authority boundary
 
 The JSON schema is `fss.evaluation.cli.v1`. Reports retain pipeline/model/policy generation
 labels, normalized label-set and candidate-set digests, the canonical report digest, full-set
@@ -79,32 +81,130 @@ that use floating-point JSON numbers. Counts and ppm values are JSON numbers. Un
 carry a reason; they are not converted to zero or perfect performance. Full-set counts are
 separate from the selected operating-point counts.
 
-Coverage and generation labels are **caller declarations**, not independently verified evidence.
+In interchange mode, coverage and generation labels are **caller declarations**, not independently verified evidence.
 The report explicitly says `derived_only: true`, `threshold_activated: false`, and
 `coverage_basis: "caller_declared"`. Digests bind the normalized evaluator inputs and result;
 they are not signatures or attestations of the label source. Omitting a real coverage gap from
 the labels can invalidate the interpretation. This command does not create a `CoverageWitness`
 or provide negative evidence to the authority ledger.
 
-There is no automatic import from `fss-event watch` or `fss-infer package-detect` reports yet.
-Supply event candidates in the explicit interchange format; do not treat per-frame detections
-as distinct ground-truth events or claim this adapter closes the real-labelled-corpus gap.
-Threshold selection here is descriptive only and does not change notification policy.
+For existing native package output, use the source-verified workflow below. Other pipelines,
+including `fss-event watch`, still use the explicit candidate interchange format. Per-frame
+detections are not independent ground-truth events. Threshold selection is descriptive and
+does not change notification policy; neither mode supplies a real labelled quality corpus.
 
 Success exits 0 and writes a report to stdout. Input, validation, and scoring failures exit 2,
 leave stdout empty, and write a single `fss.evaluation.cli_error.v1` diagnostic to stderr with
 an error code, an optional source line, and `effect_started: false`. Diagnostics omit source
 rows and local file paths. Output-write failure exits 1. `--help` alone prints usage and exits 0.
 
+## Evaluate retained native package tracks
+
+First retain a complete native detection report using the existing `fss-file import` and
+`fss-infer package-detect --retain yes` workflow. Use the exact report digest printed in
+`package_detection_retained`. Evaluation reopens that report from the deployment; it accepts
+neither a loose exported report nor caller-supplied track or candidate rows. The original
+loose recording and model package are unnecessary once their native results and source
+custody are retained.
+
+```sh
+fss-evaluate retained-package \
+  --root /absolute/deployment --site site:home \
+  --package-report sha256:EXACT_RETAINED_DETECTION_REPORT \
+  --label person --labels garden-labels.tsv --clip-id garden-01 \
+  --clip-origin-ns 1000000000 --stream-id stream:garden-recording \
+  --clock-basis estimated \
+  --confirmation-hits 2 --maximum-missed-frames 1 --minimum-iou-ppm 100000 \
+  --max-false-alerts 1 --per-observed-ns 3600000000000
+```
+
+The uppercase digest is a placeholder. The stream generation, clock basis, origin, and class
+must match the actual retained recording. Valid clock tokens are `utc_disciplined`,
+`device_monotonic`, `host_monotonic`, and `estimated`; choosing a token never converts or
+certifies the source clock. `--clip-origin-ns` is a signed integer on that clock. It is
+subtracted from the native first-confirmation capture instant using checked arithmetic.
+
+Use the existing labels TSV schema with exactly one matching `clip` row. Truth rows must use
+the exact selected native label and `-` for the zone. A class-only track cannot establish
+zone quality, so zoned or different-class truths are refused. Negative clips are supported:
+provide the clip row and any declared gaps, with no truth rows. An empty native track set
+still retains that clip's declared observed-time denominator.
+
+### Timing and candidate policy
+
+This initial native profile requires at least two analysed frames with strictly increasing,
+singleton capture instants in actual native display order. The original import must label
+its capture timing `operator_assumption`; unknown time, nonzero capture uncertainty,
+non-container source omissions, or source/sequence gaps affecting the analysed range are
+refused. Explicit file-import capture hints remain operator assumptions. In particular,
+setting `--capture-uncertainty-ns 0` is a declaration, not a hardware-clock measurement.
+
+The caller-declared half-open clip interval must fit inside
+`[first_analysed_capture, last_analysed_capture + 1)`. A shorter subwindow is allowed. For
+example, a one-second labelled clip may use a longer analysed recording containing a sample
+at or after the clip's exclusive end. The owner does not guess cadence or add a final-frame
+tail to make a longer clip fit. It reports the exact analysed sample hull and chosen window.
+Label gaps still determine observability; sample timestamps do not create a `CoverageWitness`.
+
+Every native track is accounted for. A track emits at most one candidate, at its **first
+actually confirmed observation**, using that observation's actual assigned detection row.
+Its score is `floor(exact_binary32_score * 1000000)`; the original F32 bits are also retained.
+No later maximum score or retrospective confirmation changes the candidate. If the first
+confirmation lies outside the selected clip, the track is reported as excluded and no later
+observation replaces it. Tentative tracks are reported explicitly. Native tracking epoch
+boundaries and IDs are preserved; tracks are not stitched across a reset.
+
+The curve is conditional on the retained detector floor, native head/NMS contract, selected
+class, and tracker recipe. It cannot recover detections already discarded by the detector.
+Scores remain uncalibrated. This mode deliberately accepts no caller generation labels,
+manual track selection, candidate file, or calibration-generation flags. Model, pipeline,
+and extraction-policy identities are derived from the actual immutable package/model/graph/
+head generation pins and the exact applied recipe.
+
+### Native result, bounds, and authority
+
+The outer schema is `fss.retained_package_evaluation.v1`. Its `evaluation` field contains the
+unchanged `fss.evaluation.cli.v1` scoring report. Full provenance includes the current and
+retention authority anchors, principal and site, import/manifest/package/model/graph/head
+digests, current privacy binding, complete source frame facts, clock mapping, original scores,
+and the disposition of every native track. Nanoseconds and 64-bit counters are decimal JSON
+strings. The result digest binds the canonical projection digest, evaluator digest, and
+source-read accounting; digests are not signatures or attestations of the label source.
+
+The limits are 64 analysed frames, 128 tracks, 128 truth events, 128 declared gaps, 16,384
+candidate-by-truth matching cells, and 1 MiB of complete JSON output. Excess input is refused,
+not truncated. `--maximum-source-bytes` may reduce the default 4 GiB allowance; one shared,
+nonrenewing counter covers both the initial source verification and the final independent
+source pass, including upstream original-byte reads. Cancellation, missing/deleted/corrupt
+source, changed current privacy, and final revalidation failure return no successful report.
+
+The root must be an existing complete deployment at an absolute path. Its absence never
+creates a store. The local process and filesystem authorize access; `--principal` is its
+audit label, not remote authentication. Opening retains the publisher's existing local
+housekeeping/recovery behavior, so this mode is not a promise of zero filesystem writes.
+It skips pending-effect restart reconciliation and never returns that internal deployment to
+the caller. Evaluation publishes no event, score, calibration, threshold, or external effect.
+The output is a verified derived snapshot at its recorded authority anchor, not a continuing
+claim that source custody or privacy can never change after completion.
+
 ## Regression entrypoints
 
 ```sh
 cargo test -p fss-cli --bin fss-evaluate
 cargo test -p fss-cli --test evaluation_cli
+cargo test -p fss-core --test evaluation_budget_contract
+cargo test -p fss-core --test package_evaluation_contract
+cargo test -p fss-reference --test retained_package_evaluation_contract
+cargo test -p fss-cli --test retained_package_evaluation_cli
 ```
 
-The binary contains seven parser/scorer/report tests; the integration target contains six
-executable tests covering fixture scoring, deterministic read-only execution, complete coverage
-loss, invalid numbers/budgets, dangling references/missing input, and help. These are test
+The existing interchange tests cover scoring, deterministic execution, coverage loss, invalid
+numbers/budgets, dangling references, missing input, and help. The core-only targets embed the
+actual production extraction, record, confirmation, and evaluation sources without the async
+runtime dependency; they establish pure policy behavior, not retained custody. The native
+integration targets use a real first-party numeric package and actual file import, retention,
+source reads, privacy withdrawal, cancellation, and process execution. These are test
 entrypoints, not retained qualification receipts. A successful synthetic run cannot establish
-real-world recall, camera compatibility, source authenticity, or release readiness.
+real-world recall, camera compatibility, or release readiness. Run status must identify which
+targets were actually executed; authored native custody tests are not implied by a passing
+core-only lane.

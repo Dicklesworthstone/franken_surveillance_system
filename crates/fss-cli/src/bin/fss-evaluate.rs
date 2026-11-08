@@ -1,8 +1,12 @@
 #![forbid(unsafe_code)]
 //! Offline, read-only adapter for the reference event-level evaluator.
 //!
-//! This command scores caller-declared labels and candidates. It does not run a detector,
-//! certify coverage, activate thresholds, publish authority, or send alerts.
+//! The legacy mode scores caller-declared labels and candidates. `retained-package` derives
+//! candidates from existing native custody. Neither mode runs a detector, certifies coverage,
+//! activates thresholds, publishes evaluation authority, or sends alerts.
+
+#[path = "fss-evaluate/retained_package.rs"]
+mod retained_package;
 
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
@@ -44,7 +48,8 @@ Candidates header: fss-evaluation-candidates.v1\n\
 Intervals are closed; clips span [0,duration). Scores are integers 0..1000000.\n\
 Gap reasons: sensor_down, occluded, uncalibrated, other. Blank lines and # comments\n\
 after the header are allowed. Files are limited to 16 MiB; rows to 1024 bytes.\n\
-Coverage and generations are caller declarations, not independently verified evidence.\n";
+Coverage and generations in this interchange mode are caller declarations.\n\
+For native source-verified candidates: fss-evaluate retained-package --help\n";
 
 #[derive(Debug)]
 struct Failure {
@@ -653,6 +658,14 @@ fn report_json(report: &EvaluationReport) -> String {
 }
 
 fn run(args: impl IntoIterator<Item = OsString>) -> Result<String> {
+    let mut args = args.into_iter().peekable();
+    if args
+        .peek()
+        .is_some_and(|arg| arg == OsStr::new("retained-package"))
+    {
+        args.next();
+        return retained_package::run(args);
+    }
     let Some(options) = parse_options(args)? else {
         return Ok(HELP.to_owned());
     };

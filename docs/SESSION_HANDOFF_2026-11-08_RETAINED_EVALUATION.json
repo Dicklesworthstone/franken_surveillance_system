@@ -1,0 +1,176 @@
+{
+  "format": "engineering-session-handoff",
+  "date": "2026-11-08",
+  "scope": "Retained native package tracks to bounded event-quality evaluation",
+  "state": "implemented_pure_native_contracts_passed_custody_and_cli_unexecuted_not_qualified",
+  "mission": {
+    "goal": "Close the native-output-to-quality-evaluation gap without hand-authored candidate scores or invented timing.",
+    "basis": [
+      "AGENTS.md",
+      "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md",
+      ".beads/issues.jsonl"
+    ],
+    "base_commit": "f0710136b301c2689da297b1b7af1cfa28ddade8",
+    "requirements": [
+      "FSS-076",
+      "FSS-080",
+      "TEST-MODEL-QUALITY-001",
+      "GATE-050"
+    ]
+  },
+  "authority": {
+    "git": "User explicitly authorized meaningful direct-main GitHub commits without PRs; expected-head non-force updates preserve concurrent work.",
+    "live_device_execution": false,
+    "external_notifications": false,
+    "model_activation": false,
+    "calibration_activation": false
+  },
+  "situation_roots": {
+    "implementation_base": "f0710136b301c2689da297b1b7af1cfa28ddade8",
+    "preserved_concurrent_main": "131834199a857e1c3aa76b8b07e2ffbd3145e5a8",
+    "native_owner": "crates/fss-reference/src/ingest/package_evaluation.rs",
+    "production_projection": "crates/fss-reference/src/ingest/package_evaluation/contract.rs",
+    "source_custody": "Retained PackageAnalysisReport, original RetainedFileImport, authenticated per-frame capsules, current privacy and ledger head.",
+    "assumptions": "Capture hints and labelled coverage are caller declarations; neither becomes a clock or CoverageWitness attestation."
+  },
+  "published_checkpoints": [
+    {
+      "commit": "b756bade20244357662a5ea4b9812a26343c8e6c",
+      "change": "Bounded cancellable evaluator, production native-track projection, custody owner, existing-store opening mode, contracts and digest domains."
+    },
+    {
+      "commit": "this_commit",
+      "change": "Retained-package CLI, complete metadata/provenance output, parser/process contracts, product documentation and verification handoff."
+    }
+  ],
+  "cases": [
+    {
+      "question": "Can retained native outputs enter quality evaluation without hand-authored score/timing candidate TSV?",
+      "finding": "Implemented a direct complete-track projection from retained detections using actual tracker confirmation semantics.",
+      "evidence": [
+        "crates/fss-core/tests/package_evaluation_contract.rs",
+        "crates/fss-reference/tests/retained_package_evaluation_contract.rs"
+      ],
+      "qualification": "Production-source pure projection tests execute; native custody tests remain unexecuted.",
+      "stop_rule": "No guessed clocks/cadence, selected track subset, class upgrades, zone semantics or activation authority."
+    },
+    {
+      "question": "Can evaluation reopen an existing deployment without reconciling unrelated pending external effects?",
+      "finding": "Added a crate-private existing-store mode which keeps publisher locking/recovery and journal/layout checks while skipping effect reconciliation.",
+      "evidence": [
+        "crates/fss-reference/src/reference_deployment.rs",
+        "crates/fss-reference/src/reference_deployment_existing_tests.rs"
+      ],
+      "qualification": "Source-reviewed only; local publisher recovery can still write housekeeping state.",
+      "stop_rule": "Never initialize absent roots or missing required journals."
+    }
+  ],
+  "contracts": {
+    "command": "fss-evaluate retained-package",
+    "schema": "fss.retained_package_evaluation.v1",
+    "nested_evaluator_schema": "fss.evaluation.cli.v1",
+    "candidate": "First actually confirmed assigned observation; exact detector row, capture instant and F32 score bits. No later substitution.",
+    "score": "floor(f64(exact_binary32_score) * 1000000), with original bits retained.",
+    "scope": "One clip, one native class, unzoned labels; every track accounted for including unconfirmed and out-of-window tracks.",
+    "time": "At least two strictly increasing singleton capture instants; matching stream and clock; operator_assumption source label; clip within [first capture,last capture+1ns).",
+    "continuity": "Reject source/sequence gaps and non-container omissions affecting the analysed range; preserve native dimension epochs and forbid cross-epoch tracks.",
+    "revalidation": "Two complete source observations and identical derived projections, current privacy and final authority anchor under one cumulative source allowance.",
+    "identities": "Derived from retained package/model/graph/head pins, exact tracking recipe and production projection/tracker/evaluator source identities.",
+    "output": "Metadata-only completed native owner, not inference, calibration, event publication or effect dispatch.",
+    "legacy": "Existing manual TSV evaluator behavior and successful report digests remain unchanged."
+  },
+  "budgets": {
+    "frames": 64,
+    "tracks": 128,
+    "truths": 128,
+    "declared_gaps": 128,
+    "detections_per_frame": 256,
+    "matching_cells": 16384,
+    "projection_bytes": 1048576,
+    "json_bytes": 1048576,
+    "cumulative_source_bytes": 4294967296,
+    "cancellation": "ReplayCx checkpoints own lifecycle finalization; pure extraction and matching poll cooperatively. Bounded sort/hash operations remain indivisible."
+  },
+  "digest_domains": [
+    "fss.package_evaluation_projection.v1",
+    "fss.package_evaluation_policy.v1",
+    "fss.package_evaluation_candidate.v1",
+    "fss.package_evaluation_model.v1",
+    "fss.package_evaluation_pipeline.v1",
+    "fss.retained_package_evaluation.v1"
+  ],
+  "validation": {
+    "toolchain": "nightly-2026-08-31",
+    "native_passed": 32,
+    "new_executable_tests_passed": 21,
+    "existing_evaluator_tests_passed": 11,
+    "repeated_embedded_tests_filtered": 11,
+    "targets": {
+      "fss-core --test evaluation_budget_contract": 16,
+      "fss-core --test package_evaluation_contract": 16
+    },
+    "tested_sources": "Actual production evaluator, extracted package record/observation types and sample-confirmation helper, and pure native package projection.",
+    "unexecuted_test_counts": {
+      "retained_package_evaluation_contract": 7,
+      "reference_deployment_existing_tests": 4,
+      "fss-evaluate retained_package parser": 3,
+      "retained_package_evaluation_cli": 4
+    },
+    "source_review": "Independent reviews of the production owner, opening mode, shared real JPEG/numeric package fixture, integration/process tests, dependencies and module paths found no blocking API issue.",
+    "formatting": "Changed Rust files formatted with the pinned toolchain; git diff --check completed.",
+    "limitation": "Full reference/CLI execution remains blocked by the unchanged Asupersync 0.5.0 compilation limitation. Earlier full and bounded metadata builds received SIGKILL; this session did not retry that dependency or weaken gates.",
+    "qualification": "Passing pure-source contracts do not establish custody/CLI execution, trained model quality or production readiness."
+  },
+  "findings": [
+    "First-confirmation semantics prevent hindsight selection of better later scores.",
+    "Negative clips and all excluded/tentative tracks remain visible in evaluation accounting.",
+    "Matching work is admitted before class/coverage filtering and cancellation never returns a successful partial report.",
+    "Legacy closed-gap and hand-computed event metrics remain preserved under the bounded entrypoint."
+  ],
+  "active_work": [],
+  "open_beads": [
+    "fss-x4a.15.1",
+    "fss-x4a.15.5",
+    "fss-x4a.28.11",
+    "fss-x4a.2.6"
+  ],
+  "obligations": [
+    {
+      "state": "blocked_on_capable_host",
+      "work": "Run pinned native custody, deployment-opening, CLI parser/process and legacy evaluation integration targets."
+    },
+    {
+      "state": "open",
+      "work": "Qualify exact trained model generations against retained labelled real corpora, including slice metrics and calibration."
+    }
+  ],
+  "unknowns": [
+    "Full dependency closure has not compiled here; source review is not executable integration proof.",
+    "The initial bounded profile does not evaluate zones, identities, arbitrary clocks, sparse uncertain timestamps, or multi-clip collections.",
+    "Retained detector threshold and NMS already discard some detections; the curve cannot reconstruct lower-threshold results.",
+    "No new CoverageWitness, camera clock attestation, calibrated confidence or release qualification is created."
+  ],
+  "invalidations": [
+    "Changed source/capsule bytes, missing custody, privacy changes, inconsistent tracking facts or failed revalidation refuse.",
+    "Any later source/privacy/authority change invalidates treating an old snapshot as current authority.",
+    "Broad beads remain open until their registered qualification evidence exists."
+  ],
+  "plans": [],
+  "continuations": [
+    {
+      "action": "Run native integration on a host that can build the unchanged pinned dependency closure.",
+      "authority": "Local test fixtures only.",
+      "expected_proof": "Passing custody/opening/CLI tests and legacy regression targets."
+    },
+    {
+      "action": "Evaluate an exact retained trained model generation against a labelled real corpus.",
+      "authority": "Read/evaluate existing authorized data; no automatic model or threshold activation.",
+      "expected_proof": "Retained raw candidate outcomes, coverage assumptions, slice metrics and calibration evidence."
+    },
+    {
+      "action": "Implement provider-authenticated terminal alert delivery/failure reconciliation as a separate feature.",
+      "authority": "Requires a concrete provider protocol and existing explicit effect authority.",
+      "expected_proof": "Authenticated delivery/failure and lost-ack reconciliation contracts."
+    }
+  ]
+}

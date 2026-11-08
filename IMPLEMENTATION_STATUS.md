@@ -1,8 +1,48 @@
 # Implementation status
 
-**As of:** 2026-11-07 (dated feature sections retain their original verification scope)
+**As of:** 2026-11-08 (dated feature sections retain their original verification scope)
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
+
+## Native retained-package quality evaluation
+
+`fss-evaluate retained-package` now connects retained native package detections
+and reconstructed tracks to the event evaluator. The caller pins one native class,
+one labelled clip, a tracker recipe, and an explicit source-clock mapping. The
+candidate policy uses each track's first actual confirmed observation and that
+observation's assigned detector row, F32 score bits and capture instant. It does
+not substitute a later maximum score or promote an earlier tentative observation.
+All tracks remain accounted for, including tentative tracks and first confirmations
+outside the selected subwindow; negative clips retain their observed-time denominator.
+
+The native owner reopens the retained report and original source custody, binds
+current privacy and the authority anchor, and independently rechecks both source
+and complete candidate projection before returning. Both passes consume one
+nonrenewing source-byte allowance. An internal existing-deployment open mode
+preserves normal publisher housekeeping while skipping pending-effect reconciliation;
+missing deployments are never initialized. The output binds exact model, graph,
+head, tracker and evaluator generations. Evaluation does not publish events,
+activate calibration, or dispatch effects. See [the command and exact profile](docs/EVENT_EVALUATION_CLI.md#evaluate-retained-native-package-tracks).
+
+The initial profile admits one unzoned native class, at most 64 analysed frames,
+128 tracks, 128 truths, 128 declared label gaps, 16,384 matching cells, 1 MiB of
+projection and 1 MiB of JSON. Capture instants must be strictly increasing and
+singleton-valued, with an explicit matching stream and clock. The selected window
+must fit the authenticated sample hull; no cadence or final-frame duration is
+invented. Scores remain uncalibrated and conditional on the retained detector
+floor and NMS. Operator-declared capture hints and label coverage remain assumptions.
+
+**Validation:** 32 native tests pass on the pinned nightly: 16 evaluator-budget
+contracts (including 11 existing hand-computed evaluator cases) and 16 native-track
+projection contracts. These embed the actual production evaluator, record types,
+confirmation helper and projection sources; 11 duplicate embedded cases were
+filtered. Eighteen additional tests are authored and source-reviewed but unexecuted:
+seven native custody, four existing-deployment opening, three CLI parser and four
+CLI process contracts. The unchanged Asupersync build limitation prevents the
+full reference/CLI lane here; it was not retried and no gate or dependency was
+weakened. Real-corpus quality, calibration, native integration execution and
+production qualification remain open, as do FSS-076/FSS-080, TEST-MODEL-QUALITY-001
+and GATE-050. See the [typed handoff](docs/SESSION_HANDOFF_2026-11-08_RETAINED_EVALUATION.json).
 
 ## Movie review across native RTSP windows and pages
 
