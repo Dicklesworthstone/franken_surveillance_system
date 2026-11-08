@@ -6,10 +6,11 @@
 //!    journal (nothing durable) and its plan digest is reported with the exact command to prepare.
 //! 2. `--approve PLAN` durably prepares the intent in the deployment's effect journal (idempotency
 //!    key, operation and terminal-proof obligation recorded) and reports the dispatch digest, which
-//!    binds the prepared record, the relay route, the principal and the explicit deadline.
+//!    binds the prepared record, relay route, principal, deadline and local wire-retention policy.
 //! 3. `--approve PLAN --dispatch DISPATCH` commits the prepared operation durably BEFORE any network
 //!    I/O and sends one request through `WebhookAttempt` under the shared runtime-owned
-//!    `WebhookAuthority`, then records the local observation. A complete 2xx head is recorded as
+//!    `WebhookAuthority`, then retains the exact wire evidence root-last before recording the
+//!    local observation. A complete 2xx head with durable local custody is recorded as
 //!    `adapter_accepted`: relay acceptance only, never human delivery. A lost acknowledgement,
 //!    timeout, refusal or malformed response is recorded as `indeterminate` and exits nonzero.
 //!
@@ -23,15 +24,16 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 use fss_cli::alert_effect::{
-    AlertIdentities, AlertRuntimeSummary, alert_identities, check_alert_source_health,
-    dispatch_approval_digest, dispatch_prepared_alert, not_eligible, obligation_state,
-    outcome_text, plan_approval_digest, wall_ns,
+    AlertIdentities, AlertRuntimeSummary, WIRE_RETENTION_POLICY, alert_identities,
+    check_alert_source_health, dispatch_approval_digest, dispatch_prepared_alert, not_eligible,
+    obligation_state, outcome_text, plan_approval_digest, wall_ns,
 };
 use fss_core::region::ContextAuthority;
 use fss_core::{
     ContentDigest, DigestAlgorithm, EffectJournal, EffectState, EventId, ObligationState,
     OperationReceipt, PrincipalId, TimestampNs,
 };
+use fss_reference::webhook::retained::RetainedWebhookEvidence;
 use fss_reference::webhook::{WebhookEndpoint, WebhookEvidence, WebhookOutcome};
 use fss_reference::{
     PrepareAlertParams, ReferenceDeployment, ReferencePolicyAction, ReferencePolicyDecision,
@@ -169,6 +171,7 @@ struct Report<'a> {
     operation: Option<&'a OperationReceipt>,
     obligation: Option<ObligationState>,
     evidence: Option<&'a WebhookEvidence>,
+    retained_evidence: Option<&'a RetainedWebhookEvidence>,
     runtime: Option<&'a AlertRuntimeSummary>,
     next: Option<String>,
 }
@@ -257,6 +260,15 @@ impl Report<'_> {
                 )
             },
         );
+        let wire_evidence = self.retained_evidence.map_or_else(
+            || "null".to_owned(),
+            |wire| {
+                fss_cli::alert_effect::report::wire_json(
+                    wire,
+                    operation.is_some_and(|receipt| receipt.result_digest == Some(wire.digest())),
+                )
+            },
+        );
         format!(
             concat!(
                 "{{\"format\":\"fss.alert_operation_report.v1\",\"stage\":\"{}\",",
@@ -266,6 +278,7 @@ impl Report<'_> {
                 "\"plan_digest\":{},\"dispatch_digest\":{},\"effect_state\":{},",
                 "\"obligation_state\":{},\"result_digest\":{},\"delivery_claim\":\"{}\",",
                 "\"deadline_ms\":{},\"retries\":0,\"resend\":false,\"evidence\":{},\"runtime\":{},",
+                "\"wire_retention_policy\":\"{}\",\"wire_evidence\":{},",
                 "\"next_command\":{}}}"
             ),
             self.stage,
@@ -290,6 +303,8 @@ impl Report<'_> {
             evidence,
             self.runtime
                 .map_or_else(|| "null".to_owned(), fss_cli::alert_effect::report::json),
+            WIRE_RETENTION_POLICY,
+            wire_evidence,
             self.next
                 .as_deref()
                 .map_or_else(|| "null".to_owned(), json_string),
@@ -346,6 +361,7 @@ pub(super) fn run(
         operation: None,
         obligation: None,
         evidence: None,
+        retained_evidence: None,
         runtime: None,
         next: None,
     };
@@ -490,6 +506,7 @@ pub(super) fn run(
     let outcome = dispatched.outcome;
     let recorded = dispatched.recorded;
     let evidence = dispatched.evidence;
+    let retained_evidence = dispatched.retained_evidence;
     let runtime = dispatched.runtime;
     report.stage = "dispatched";
     report.operation = Some(&recorded);
@@ -498,11 +515,14 @@ pub(super) fn run(
         .obligation(&ids.obligation)
         .map(|o| o.state);
     report.evidence = Some(&evidence);
+    report.retained_evidence = retained_evidence.as_ref();
     report.runtime = Some(&runtime);
     emit(&report, root, cx, out)?;
     match outcome {
         WebhookOutcome::ReceiverAccepted(_)
-            if recorded.state == EffectState::AdapterAccepted && !runtime.recovery_required =>
+            if recorded.state == EffectState::AdapterAccepted
+                && retained_evidence.is_some()
+                && !runtime.recovery_required =>
         {
             Ok(())
         }

@@ -1,0 +1,102 @@
+{
+  "format": "engineering-session-handoff",
+  "date": "2026-11-07",
+  "scope": "Durable native webhook evidence and cold inspection",
+  "foundation_commit": "299ca4463f67c9c17786e29b15628cfd5120d6b1",
+  "implemented": [
+    "Immutable root-last wire-evidence custody before local result recording",
+    "Whole-attempt bounded history reservation and atomic source-read custody headroom",
+    "Original preparation and historical Committed/result binding across restart and reconciliation",
+    "Read-only fss-alert evidence with physical metadata/read budgets and corruption/retraction refusal",
+    "Shared fss-event and canonical fss commit runtime/report integration",
+    "Version-two dispatch approvals explicitly bind local exact-wire retention"
+  ],
+  "validation": {
+    "activation_targets": {
+      "clip_passed": 29,
+      "hard_sigmoid_passed": 28,
+      "total_passed": 57
+    },
+    "authored_new_contracts": {
+      "core_retention": 8,
+      "spool_headroom": 3,
+      "cli_cold_reader": 8,
+      "cleanup_authority": 2,
+      "total": 21
+    },
+    "new_contracts_executed": false,
+    "reason": "Required asupersync 0.5.0 compilation received SIGKILL, including a bounded one-worker metadata check; workspace subsequently recovered.",
+    "formatting": "Pinned nightly rustfmt and diff checks completed on changed Rust files.",
+    "review": "Independent source/API reviews completed; storage accounting and publication tombstone naming findings fixed.",
+    "qualification": "implemented_not_qualified"
+  },
+  "open_beads": [
+    "fss-x4a.16.5",
+    "fss-x4a.16.6",
+    "fss-x4a.2.7"
+  ],
+  "next_execution": [
+    "Run cargo test -p fss-object --test spool_read_budget --test bounded_spool_read_contract on the pinned toolchain with enough compiler memory.",
+    "Run cargo test -p fss-reference --lib alert_recovery_tests::webhook_evidence and the existing alert::webhook::tests.",
+    "Run the fss-cli alert lifecycle and alert runtime contract targets, then the repository-owned qualification gate as required."
+  ],
+  "invariants": [
+    "No automatic retry or resend of committed/indeterminate alerts.",
+    "Wire observations remain local transport evidence; plaintext relay acceptance is not authenticated provider identity or human delivery.",
+    "RetainedWebhookEvidence is a read-only type and cannot be converted into live WebhookEvidence.",
+    "Immediate AlertDispatch custody snapshot predates result append; reports derive the later flag from the receipt, and cold inspection verifies history.",
+    "Cold inspection takes bounded non-atomic filesystem observations and refuses detected changes."
+  ],
+  "state": "implementation_complete_native_alert_validation_blocked",
+  "mission": {
+    "goal": "Implement consequential remaining alert functionality from the comprehensive plan and beads through direct-main commits.",
+    "basis": [
+      "AGENTS.md",
+      "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md",
+      ".beads/issues.jsonl"
+    ],
+    "base_commit": "c493cbf67aeae49d124bf91a10e2ba1b9975583a",
+    "requirements": [
+      "FSS-085",
+      "FSS-086",
+      "GATE-060"
+    ]
+  },
+  "authority": {
+    "git": "User explicitly authorized direct-main GitHub commits without PRs; non-force expected-head updates.",
+    "live_device_execution": false,
+    "external_notifications": false
+  },
+  "published_checkpoints": [
+    {
+      "commit": "299ca4463f67c9c17786e29b15628cfd5120d6b1",
+      "change": "Durable core custody, historical binding, bounded history and atomic spool headroom."
+    },
+    {
+      "commit": "this_commit",
+      "change": "Shared native dispatch integration, policy-bound approval, cold CLI inspection, reports and focused contracts."
+    }
+  ],
+  "budgets": {
+    "wire_observation_max_bytes": 32768,
+    "response_prefix_max_bytes": 16384,
+    "manifest_max_bytes": 512,
+    "custody_byte_reservation": 262144,
+    "custody_logical_storage_reservation": 32,
+    "history_reads_reserved": 4,
+    "cold_cli_physical_io_calls": 512,
+    "cold_journal_max_bytes": 67108864
+  },
+  "active_work": [],
+  "obligations": [
+    {
+      "state": "blocked",
+      "work": "Execute new native alert/spool/CLI contracts and required qualification on a host that can compile the dependency closure.",
+      "reason": "asupersync rustc received SIGKILL before application typechecking; no gate was weakened."
+    }
+  ],
+  "unknowns": [
+    "New alert/spool/runtime/CLI changes remain uncompiled and unexecuted; source review and formatting are not native test evidence.",
+    "Provider-authenticated delivery reconciliation, live camera operation and production qualification remain open."
+  ]
+}

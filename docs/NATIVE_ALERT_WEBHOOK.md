@@ -35,6 +35,31 @@ relay supports it and never uses it as permission to retry a committed request.
 A relay that needs more event detail must hydrate it through a separately
 authorized evidence reader.
 
+## Approve local wire retention with the dispatch
+
+Both `fss-event alert` and the canonical `fss commit` path use the fixed policy
+`local-root-last-exact-http-wire-v1`. The dispatch preview names that policy, and
+the `fss.cli_alert_dispatch_approval.v2` digest binds it together with the exact
+plan, operation, actor and deadline. Obtain a fresh approval from the current
+preview: an earlier v1 dispatch approval does not authorize this additional
+retained-byte footprint. Retention is part of the approved native attempt; there
+is no separate flag that silently drops its wire evidence.
+
+The retained object contains the complete bounded request, the number of bytes
+accepted by socket writes, and the exact response prefix returned by the socket,
+including any body suffix received with the response head. It also binds the
+intent, route digest, original commitment root, admitted times, I/O count and
+outcome. Response bytes can include untrusted headers or body text. Default CLI
+reports and Debug output expose digests, counts and outcome metadata, not those
+arbitrary bytes.
+
+Before network commitment, the shared runtime checks the explicit retention
+authority and configured capacity for two objects and one publication root. It
+reserves bounded cleanup work, effect-history reads and 256 KiB of custody byte
+headroom. Source validation cannot consume that reserved custody headroom. These
+checks refuse known insufficient allowances or configured capacity before sending;
+later operating-system storage failures still require recovery.
+
 ## Explicit live authority
 
 Implement `WebhookAuthority` using the owning Cx or equivalent capability owner.
@@ -114,7 +139,7 @@ retained as bytes, never interpreted as human delivery proof.
 | Complete 2xx response head | AdapterAccepted | Still Pending |
 | Non-2xx response, including redirect/error | Indeterminate | Indeterminate |
 | Lost acknowledgement, timeout, revocation, cancellation or malformed response | Indeterminate | Indeterminate |
-| Owner lost before recording | Committed remains durable | Still unresolved |
+| Retention or local recording fails after commitment | Last confirmed state preserved; an uncertain append requires recovery | Still unresolved |
 
 `record(now_ns, owner)` performs only local journal work. It hashes the complete
 opaque `WebhookEvidence`, including request bytes, sent prefix, received bytes,
@@ -130,13 +155,91 @@ evidence under newly granted cleanup authority, including after journal reopen.
 Neither method transitions to Observed or Verified, synthesizes a provider nonce,
 closes the terminal-proof obligation, or publishes a canonical alert outcome.
 
-`WebhookEvidence::encoded()` is the complete bounded evidence object to retain
-through an existing authorized custody owner. The effect journal stores its digest,
-not those full wire bytes. The application must persist them separately before
-releasing this owner when future wire-level hydration is required. This slice
-adds no second journal, automatic evidence checkpoint, terminal-proof verifier, or
-canonical-publication shortcut. Never feed its local hash to the in-memory
-provider oracle as invented independent delivery proof.
+### Native dispatch retains bytes before recording the result
+
+The shared `fss-event alert` / `fss commit` runtime performs these steps after
+network progress finishes:
+
+1. Retire the attempt and release its socket, taking ownership of the exact
+   finalized `WebhookEvidence`.
+2. Pass it to `retain_webhook_evidence` under explicit local cleanup authority.
+   The existing object spool retains the observation and a canonical one-child
+   manifest. The existing publisher commits the root last, then appends canonical
+   reachability to the authority ledger.
+3. Call `record_webhook_evidence` only after that custody has been verified. The
+   effect journal records the observation digest and the local transport outcome.
+
+The publication slot binds the site, operation and **original prepared-record
+digest**. One preparation has one immutable wire-evidence slot. An exact retention
+retry rechecks its root record, manifest, bytes and committed-history binding
+without appending a second publication. A different observation, missing custody
+or retracted publication refuses the retry. Later operator reconciliation may
+replace the operation's latest result digest, but it cannot replace the original
+wire-evidence slot.
+
+The effect journal continues to store a digest, while the exact
+`WebhookEvidence::encoded()` bytes now have their own root-last custody. The
+low-level `WebhookAttempt::record` and `record_webhook_evidence` APIs do not
+perform that publication themselves. Library integrations should use the same
+preflight, retire, retain, then record sequence as the shared native runtime.
+The [retention module](../crates/fss-reference/src/alert/webhook/retained.rs)
+requires `CAP-ALERT-COMMIT-001` and explicit bounded context authority; a finite
+deadline requires the original live owner admission callback.
+Cold inspection returns the separate `RetainedWebhookEvidence` type. It cannot
+reconstruct the opaque live evidence accepted by the recording API.
+
+A crash before publication can leave staged bytes without admitted wire custody.
+A durable root whose reachability was not committed remains an unresolved
+publication and refuses custody inspection. A fully ledgered root published
+before the effect result was appended remains inspectable, with
+`journal_observation_recorded: false`. None of these cases authorizes another
+send. Ordinary deployment recovery may classify the outstanding operation as
+Indeterminate; the read-only evidence command does not perform that transition.
+
+The immediate `AlertDispatch.retained_evidence` value is a snapshot taken during
+retention, **before** the following result append. Its
+`journal_observation_recorded()` getter can therefore still be false after
+recording succeeds. To inspect the completed dispatch, compare
+`AlertDispatch.recorded.result_digest` with the retained digest or perform a cold
+evidence read. Immediate CLI reporting derives its flag from the later receipt;
+the cold reader checks the verified historical journal transitions.
+
+Local wire custody never proves human delivery. A complete 2xx head still leaves
+the independent delivery obligation pending. Never feed an observation's local
+hash to the in-memory provider oracle as invented independent delivery proof.
+
+## Inspect retained wire metadata after restart
+
+```sh
+fss-alert evidence --root /path/to/deployment --site site:home \
+  --operation-id operation:example
+```
+
+This command reports the original observation digest, publication slot and root,
+prepared-record and commitment digests, route digest, outcome, request hash,
+request/sent/response-prefix lengths, I/O count and exact admission times. It
+does not print raw request or response bytes. It opens no deployment mutation
+owner, acquires no deployment lock, rewrites no journal and contacts no relay.
+
+`journal_observation_recorded` is true only when a matching local result transition
+is present in verified history. It remains true after a later owner attestation
+changes the latest result digest. It remains false across a crash between wire
+publication and result recording. It is not provider authentication or delivery
+proof. An operator attestation that cites a digest cannot create wire custody.
+
+For an existing alert operation with no admitted published wire observation, the
+report contains `wire_evidence: null`; inspect the operation with `fss-alert status`
+before deciding what recovery it needs. Damaged objects, missing or mismatched
+root records, retracted reachability, pending publication/deletion markers and
+incomplete or corrupt journal input refuse the evidence command with no partial
+JSON report. They are not reported as an ordinary absent observation.
+
+The cold reader verifies bounded journals and the selected root, manifest,
+observation and verification holds. It charges every actual metadata/read call
+before I/O and rechecks observed files and absences before returning. These checks
+detect observed changes; they do not claim an atomic filesystem snapshot or
+perform durability resynchronization. See [operator lifecycle control](alert_lifecycle.md)
+for status, cancellation and independently approved owner reconciliation.
 
 HTTP semantics/framing references: RFC 9110 section 15.3.3 (202 is acceptance,
 not completed processing) and RFC 9112 sections 2, 4, 5 and 6.3. The supported
@@ -144,7 +247,7 @@ reader profile is intentionally narrower than the complete HTTP specifications.
 
 ## Validation status
 
-Sixteen Rust contracts were authored. They cover native loopback POSTs under
+The existing webhook contracts cover native loopback POSTs under
 1/7/4096-byte operation limits, durable-before-connect ordering, restart/no-resend,
 acknowledgement versus delivery, route/request forgery, cross-history receipt
 refusal, current-ledger invalidation between commit and send, post-write revocation,
@@ -152,8 +255,24 @@ local recording refusal, every early socket allowance, response corruption/limit
 and response-head fragment boundaries. Event fixtures are synthetic and labelled
 as such; they test authorization plumbing, not real-camera detection quality.
 
-The Rust tests, compilation, rustfmt, Clippy and controlled native qualification
-have NOT run in this sandbox: cargo/rustc are unavailable. The bundle's Python/h11
-checks exercise independent wire fixtures and a transcribed response profile, not
-the Rust sender. No real operator notification, remote provider account, TLS,
-physical camera, human delivery or production qualification was exercised.
+The durable-custody change adds sixteen tests: eight
+[reference recovery tests](../crates/fss-reference/src/alert_recovery_tests/webhook_evidence.rs)
+and eight [CLI/cold-reader tests](../crates/fss-cli/tests/alert_lifecycle_cli/webhook_evidence.rs).
+They cover exact wire retention, crash cuts, no resend, historical observation
+lookup after reconciliation, metadata-only inspection without writes, corruption,
+real publication tombstone names, finite physical I/O budgets and changing input.
+The new tests were authored and source-reviewed; formatting and diff checks passed.
+They have **not run natively**: the compiler was killed by `SIGKILL` while building
+`asupersync`, before these suites could run. The separately reported 57 passing
+activation tests cover different model work and do not validate this webhook path.
+
+```sh
+cargo test -p fss-reference --lib alert_recovery_tests::webhook_evidence --locked --offline
+cargo test -p fss-cli --test alert_lifecycle_cli webhook_evidence --locked --offline
+```
+
+The implementation remains `implemented_not_qualified`. Source review, earlier
+independent Python/h11 wire-fixture checks and unrelated test runs do not replace
+native execution or controlled qualification. No real operator notification,
+remote provider account, TLS, physical camera, human delivery or production
+qualification was exercised by this change.

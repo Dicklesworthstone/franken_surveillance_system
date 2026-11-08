@@ -52,9 +52,9 @@ use fss_reference::{
 
 use crate::agent_json;
 use crate::alert_effect::{
-    AlertEffectError, CAP_ALERT_COMMIT, CAP_ALERT_PREPARE, MAX_DEADLINE_MS, alert_identities,
-    check_alert_source_health, dispatch_approval_digest, dispatch_prepared_alert, not_eligible,
-    obligation_state, outcome_text, plan_approval_digest, wall_ns,
+    AlertEffectError, CAP_ALERT_COMMIT, CAP_ALERT_PREPARE, MAX_DEADLINE_MS, WIRE_RETENTION_POLICY,
+    alert_identities, check_alert_source_health, dispatch_approval_digest, dispatch_prepared_alert,
+    not_eligible, obligation_state, outcome_text, plan_approval_digest, wall_ns,
 };
 use crate::error::{CliError, ExitIdentity};
 use crate::orient_cmd::{
@@ -1364,6 +1364,14 @@ fn plan_answer(args: &PlanArgs) -> Result<Result<String, Box<dyn std::error::Err
             ids.operation
         )];
         let mut not_started = Vec::new();
+        if state.is_none() || state == Some(EffectState::Prepared) {
+            completed.push(format!(
+                "The dispatch approval includes wire retention policy {WIRE_RETENTION_POLICY}: \
+                 retain the exact request and bounded response prefix locally in root-last \
+                 custody before recording the local result. This custody does not authenticate \
+                 the provider or prove human delivery."
+            ));
+        }
         match (state, dispatch) {
             (None, _) => {
                 completed.push(format!(
@@ -1725,8 +1733,15 @@ fn commit_answer(args: &CommitArgs) -> Result<Answered, Failure> {
             .map(|obligation| obligation_state(obligation.state))
             .unwrap_or("absent");
         let evidence = &dispatched.evidence;
+        let journal_observation_recorded = evidence
+            .digest()
+            .is_ok_and(|digest| dispatched.recorded.result_digest == Some(digest));
+        let custody = crate::alert_effect::report::wire_custody_statement(
+            dispatched.retained_evidence.as_ref(),
+            journal_observation_recorded,
+        );
         let observation = format!(
-            "Outcome {}: request {} ({} bytes, {} sent, {} I/O calls), commitment root {}.",
+            "Outcome {}: request {} ({} bytes, {} sent, {} I/O calls), commitment root {}. {custody}",
             dispatched
                 .evidence
                 .outcome()
@@ -1774,6 +1789,17 @@ fn commit_answer(args: &CommitArgs) -> Result<Answered, Failure> {
                 "Local runtime retirement requires recovery: {error}."
             ));
         }
+        let mut proof_pointers = vec![
+            plan_root.to_text(),
+            dispatched.recorded.receipt_digest().to_text(),
+            evidence.commitment_root().to_text(),
+        ];
+        if let Some(retained) = &dispatched.retained_evidence {
+            proof_pointers.extend([
+                retained.manifest_root().to_text(),
+                retained.digest().to_text(),
+            ]);
+        }
         let rendered_answer = receipt_response(ReceiptAnswer {
             operation: "commit",
             capability: CAPABILITY_PLAN_COMMIT,
@@ -1789,11 +1815,7 @@ fn commit_answer(args: &CommitArgs) -> Result<Answered, Failure> {
             },
             error_id: (!accepted).then_some(ERR_EFFECT_INDETERMINATE),
             degradation,
-            proof_pointers: vec![
-                plan_root.to_text(),
-                dispatched.recorded.receipt_digest().to_text(),
-                evidence.commitment_root().to_text(),
-            ],
+            proof_pointers,
             request_digest,
             recovery_class: if accepted {
                 "never_unchanged"

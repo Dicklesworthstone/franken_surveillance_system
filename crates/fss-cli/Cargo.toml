@@ -206,7 +206,7 @@ nix = { version = "0.31.3", default-features = false, features = ["net"] }
 workspace = true
 
 [dev-dependencies]
-fss-codec-h264 = { path = "../fss-codec-h264" }
 fss-codec-h265 = { path = "../fss-codec-h265" }
+fss-ledger = { path = "../fss-ledger" }
 fss-model-ir = { path = "../fss-model-ir" }
 fss-tensor = { path = "../fss-tensor" }

@@ -492,3 +492,43 @@ fn translated_runtime_grants_remain_scoped_to_the_exact_private_dispatch_resourc
     })?;
     Ok(())
 }
+
+#[test]
+fn retained_wire_cleanup_cannot_extend_the_original_owner_deadline() -> Test {
+    let f = Fixture::new(allowance(), Some(timestamp(BASE + 7_000_000)))?;
+    f.run(|owner| {
+        let custody =
+            ReplayCx::from_context_authority_read_only(&f.source, f.cx.root_dir().to_path_buf())?
+                .with_admission(|_| owner.custody_checkpoint(true));
+        f.clock.elapsed.set(5_000_000);
+        assert_eq!(owner.active_time(), Err(WebhookDenial::Deadline));
+        // Only local custody may drain after the network ceiling, within the original grant.
+        custody.checkpoint("test:wire-custody:within-original-deadline")?;
+        assert_eq!(owner.network_admissions.get(), 0);
+        f.clock.elapsed.set(7_000_000);
+        assert!(
+            custody
+                .checkpoint("test:wire-custody:original-deadline")
+                .is_err()
+        );
+        assert_eq!(owner.network_admissions.get(), 0);
+        Ok(())
+    })?;
+    Ok(())
+}
+
+#[test]
+fn a_fresh_retention_context_cannot_revive_revoked_dispatch_authority() -> Test {
+    let f = Fixture::new(allowance(), None)?;
+    f.run(|owner| {
+        let custody =
+            ReplayCx::from_context_authority_read_only(&f.source, f.cx.root_dir().to_path_buf())?
+                .with_admission(|_| owner.custody_checkpoint(true));
+        f.cx.request_cancellation();
+        assert!(custody.checkpoint("test:wire-custody:revoked").is_err());
+        assert_eq!(f.clock.reads.get(), 0, "revocation precedes the clock read");
+        assert_eq!(owner.network_admissions.get(), 0);
+        Ok(())
+    })?;
+    Ok(())
+}

@@ -1,10 +1,13 @@
 #![forbid(unsafe_code)]
 //! Metadata-only presentation of the runtime that owns a single alert attempt.
 
+use fss_core::ContentDigest;
 use fss_core::region::TaskOutcome;
+use fss_reference::webhook::retained::RetainedWebhookEvidence;
 
-use super::AlertRuntimeSummary;
+use super::{AlertRuntimeSummary, WIRE_RETENTION_POLICY, outcome_text};
 use crate::agent_json;
+use crate::agent_json::{object, string};
 
 fn outcome(value: &TaskOutcome) -> (&'static str, Option<&str>) {
     match value {
@@ -112,4 +115,79 @@ pub fn audit_statement(summary: &AlertRuntimeSummary) -> String {
         summary.consumed.storage_operations,
         summary.recovery_required,
     )
+}
+
+/// Verified local custody metadata; arbitrary request and response bytes are never formatted.
+/// The journal flag is supplied by the caller's later receipt or its cold verified snapshot.
+#[must_use]
+pub fn wire_json(evidence: &RetainedWebhookEvidence, journal_observation_recorded: bool) -> String {
+    object(&[
+        ("observation_digest", string(&evidence.digest().to_text())),
+        ("manifest_root", string(&evidence.manifest_root().to_text())),
+        ("publication_slot", string(evidence.slot().as_str())),
+        (
+            "prepared_record_digest",
+            string(&evidence.prepared_record_digest().to_text()),
+        ),
+        (
+            "commitment_root",
+            string(&evidence.commitment_root().to_text()),
+        ),
+        ("route_digest", string(&evidence.route_digest().to_text())),
+        ("outcome", string(&outcome_text(evidence.outcome()))),
+        (
+            "request_sha256",
+            string(&ContentDigest::sha256(evidence.request()).to_text()),
+        ),
+        ("request_bytes", evidence.request().len().to_string()),
+        ("sent_bytes", evidence.sent_bytes().to_string()),
+        (
+            "response_prefix_bytes",
+            evidence.response_prefix().len().to_string(),
+        ),
+        ("io_calls", evidence.io_calls().to_string()),
+        (
+            "committed_at_ns",
+            string(&evidence.committed_ns().to_string()),
+        ),
+        (
+            "network_deadline_ns",
+            string(&evidence.deadline_ns().to_string()),
+        ),
+        (
+            "last_admission_ns",
+            string(&evidence.last_admission_ns().to_string()),
+        ),
+        (
+            "journal_observation_recorded",
+            journal_observation_recorded.to_string(),
+        ),
+        ("custody", string("locally_verified_root_last")),
+        (
+            "human_delivery",
+            string("not_inferred_from_wire_observation"),
+        ),
+    ])
+}
+
+/// Compact local custody evidence for the canonical agent response boundary.
+#[must_use]
+pub fn wire_custody_statement(
+    retained: Option<&RetainedWebhookEvidence>,
+    journal_observation_recorded: bool,
+) -> String {
+    match retained {
+        Some(wire) => format!(
+            "Local wire custody: root {}, observation {}, slot {}; journal observation recorded={}. Retention policy {}. This is local transport evidence, not human delivery proof.",
+            wire.root(),
+            wire.digest(),
+            wire.slot(),
+            journal_observation_recorded,
+            WIRE_RETENTION_POLICY,
+        ),
+        None => format!(
+            "Local wire custody was not verified; recovery is required before reconciliation, never resend. Retention policy {}.",
+            WIRE_RETENTION_POLICY,
+        ),
+    }
 }

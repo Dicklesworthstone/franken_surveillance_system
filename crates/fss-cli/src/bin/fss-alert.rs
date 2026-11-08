@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! Local alert status, cancellation and owner-attested reconciliation without dispatch.
+//! Local alert status, retained wire inspection, cancellation and reconciliation without dispatch.
 
 use std::collections::BTreeMap;
 use std::error::Error;
@@ -30,11 +30,14 @@ use fss_reference::alert_reconcile::{
 };
 use fss_reference::{DeploymentLayout, ReferenceDeployment, ReplayCx};
 
+#[path = "fss-alert/evidence.rs"]
+mod evidence;
 #[path = "fss-alert/reconcile.rs"]
 mod reconcile;
 
 const MAX_REPORT_BYTES: usize = 8 * 1024 * 1024;
 const HELP: &str = "fss-alert status --root DIR --site SITE [--operation-id ID]\n\
+  fss-alert evidence --root DIR --site SITE --operation-id ID [--principal ID]\n\
   fss-alert cancel --root DIR --site SITE --operation-id ID\n\
     [--principal ID] [--approve sha256:APPROVAL]\n\
   fss-alert reconcile --root DIR --site SITE --operation-id ID\n\
@@ -45,6 +48,11 @@ const HELP: &str = "fss-alert status --root DIR --site SITE [--operation-id ID]\
   proof digests, and explicit uncommitted-tail warnings. An absent journal is UNKNOWN.\n\
   It reads LAYOUT and the two journals; source and terminal-proof custody are not\n\
   inspected. Lost event or media objects do not hide recoverable operation identities.\n\
+  evidence verifies the original retained webhook observation, its publication root,\n\
+  and its historical journal binding without locks, writes or restart reclassification.\n\
+  Reports contain digests, byte counts and local transport outcomes; raw requests and\n\
+  responses are not printed. Missing custody is explicit; damaged custody refuses.\n\
+  Later operator reconciliation cannot replace the original wire-evidence slot.\n\
   cancel previews an exact approval unless --approve is supplied. Only a prepared,\n\
   never-committed alert can be cancelled. The old event, source media and relay route\n\
   are not needed. Approval binds the full preparation, actor and physical journals.\n\
@@ -81,6 +89,7 @@ struct Options {
 #[derive(Debug)]
 enum Action {
     Status,
+    Evidence,
     Cancel,
     Reconcile(AlertAttestation),
 }
@@ -89,19 +98,20 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
     let command = args
         .first()
         .and_then(|s| s.to_str())
-        .ok_or("expected status, cancel or reconcile")?;
-    if !matches!(command, "status" | "cancel" | "reconcile")
+        .ok_or("expected status, evidence, cancel or reconcile")?;
+    if !matches!(command, "status" | "evidence" | "cancel" | "reconcile")
         || args.len() > if command == "reconcile" { 17 } else { 11 }
     {
-        return Err("expected bounded status, cancel or reconcile arguments".into());
+        return Err("expected bounded status, evidence, cancel or reconcile arguments".into());
     }
-    let mutating = command != "status";
+    let mutating = matches!(command, "cancel" | "reconcile");
     let mut values = BTreeMap::new();
     let mut index = 1;
     while index < args.len() {
         let key = args[index].to_str().ok_or("option names require UTF-8")?;
         if !matches!(key, "--root" | "--site" | "--operation-id")
             && !(mutating && matches!(key, "--principal" | "--approve"))
+            && !(command == "evidence" && key == "--principal")
             && !(command == "reconcile"
                 && matches!(key, "--outcome" | "--evidence" | "--statement"))
         {
@@ -146,7 +156,7 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
         return Err("principal exceeds its bound or contains whitespace/controls".into());
     }
     PrincipalId::parse(&principal).map_err(|_| "invalid principal")?;
-    let operation = if mutating || values.contains_key("--operation-id") {
+    let operation = if mutating || command == "evidence" || values.contains_key("--operation-id") {
         Some(OperationId::parse(text("--operation-id")?).map_err(|_| "invalid operation ID")?)
     } else {
         None
@@ -163,6 +173,7 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
     };
     let action = match command {
         "status" => Action::Status,
+        "evidence" => Action::Evidence,
         "cancel" => Action::Cancel,
         _ => {
             let outcome = match text("--outcome")? {
@@ -566,7 +577,7 @@ fn cancel(options: &Options) -> RunResult<String> {
 fn main() -> ExitCode {
     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
     let help = matches!(args.as_slice(), [flag] if matches!(flag.to_str(), Some("--help" | "-h" | "help")))
-        || matches!(args.as_slice(), [command, flag] if matches!(command.to_str(), Some("status" | "cancel" | "reconcile")) && matches!(flag.to_str(), Some("--help" | "-h")));
+        || matches!(args.as_slice(), [command, flag] if matches!(command.to_str(), Some("status" | "evidence" | "cancel" | "reconcile")) && matches!(flag.to_str(), Some("--help" | "-h")));
     if help {
         return if io::stdout().lock().write_all(HELP.as_bytes()).is_ok() {
             ExitCode::from(ExitIdentity::SUCCESS.code)
@@ -583,6 +594,7 @@ fn main() -> ExitCode {
     };
     let result = match &options.action {
         Action::Status => status(&options),
+        Action::Evidence => evidence::run(&options),
         Action::Cancel => cancel(&options),
         Action::Reconcile(attestation) => reconcile::run(&options, attestation),
     };
@@ -605,6 +617,11 @@ fn main() -> ExitCode {
             }
             if let Some(reconciliation) = error.downcast_ref::<AlertReconcileError>() {
                 eprintln!("refusal_id={}", reconciliation.stable_id());
+            }
+            if let Some(custody) =
+                error.downcast_ref::<fss_reference::webhook::retained::WebhookRetentionError>()
+            {
+                eprintln!("refusal_id={}", custody.stable_id());
             }
             ExitCode::from(ExitIdentity::RUNTIME_FAILURE.code)
         }

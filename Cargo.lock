@@ -511,7 +511,6 @@ name = "fss-cli"
 version = "0.0.1"
 dependencies = [
  "asupersync",
- "fss-codec-h264",
  "fss-codec-h265",
  "fss-codec-jpeg-encode",
  "fss-codec-mjpeg",
@@ -520,6 +519,7 @@ dependencies = [
  "fss-fusion",
  "fss-geometry",
  "fss-graph-algorithms",
+ "fss-ledger",
  "fss-model-ir",
  "fss-object",
  "fss-packet",

@@ -22,6 +22,11 @@ use crate::alert_control::{CAP_ALERT_STATUS, MAX_CONTROL_JOURNAL_BYTES};
 use crate::{DurableEffectError, ReferenceDeployment, ReferenceError, ReplayAdmission, ReplayCx};
 
 mod codec;
+mod read_only;
+
+pub use read_only::{
+    read_retained_webhook_evidence_from_root, read_retained_webhook_evidence_from_root_with_io,
+};
 
 /// Dispatch authority for its explicitly approved local wire retention.
 pub const CAP_WEBHOOK_RETENTION: &str = "CAP-ALERT-COMMIT-001";

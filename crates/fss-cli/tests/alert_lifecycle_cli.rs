@@ -26,6 +26,9 @@ const OPERATION: &str = "operation:alert:cli";
 #[path = "alert_lifecycle_cli/reconcile.rs"]
 mod reconcile;
 
+#[path = "alert_lifecycle_cli/webhook_evidence.rs"]
+mod webhook_evidence;
+
 struct Directory(PathBuf);
 impl Directory {
     fn new(label: &str) -> TestResult<Self> {

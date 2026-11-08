@@ -8,7 +8,8 @@
 //! obligation) through the other, and neither can prepare or send it twice.
 //!
 //! Commitment is durable before any network I/O. A complete 2xx head is recorded as
-//! `adapter_accepted` (relay acceptance only, never human delivery); a lost acknowledgement,
+//! `adapter_accepted` after exact wire evidence reaches durable local custody (relay acceptance
+//! only, never human delivery); a lost acknowledgement,
 //! timeout, refusal, or malformed response is recorded as `indeterminate`. Nothing is retried.
 
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -18,6 +19,7 @@ use fss_core::{
     EventHypothesis, IdempotencyKey, ObligationId, ObligationState, OperationId, OperationReceipt,
 };
 use fss_publication::LocalPublicationError;
+use fss_reference::webhook::retained::RetainedWebhookEvidence;
 use fss_reference::webhook::{
     WebhookEndpoint, WebhookEvidence, WebhookInterruption, WebhookOutcome,
 };
@@ -41,11 +43,13 @@ pub const MAX_DEADLINE_MS: u64 = 60_000;
 pub const MAX_DISPATCH_NETWORK_BYTES: u64 = 4096 * 4096;
 /// Local outcome-recording allowance; never extends the network deadline.
 pub const DISPATCH_CLEANUP_MS: u64 = 5_000;
-/// Source-read admissions and prepaid durable journal transitions.
+/// Source-read admissions and prepaid durable journal transitions and wire custody.
 pub const MAX_DISPATCH_STORAGE_OPERATIONS: u64 = 8192;
 const OPERATION_DOMAIN: &str = "fss.cli_alert_operation.v1";
 const PLAN_APPROVAL_DOMAIN: &str = "fss.cli_alert_plan_approval.v1";
-const DISPATCH_APPROVAL_DOMAIN: &str = "fss.cli_alert_dispatch_approval.v1";
+/// Exact local evidence retention approved by a dispatch, including untrusted response bytes.
+pub const WIRE_RETENTION_POLICY: &str = "local-root-last-exact-http-wire-v1";
+const DISPATCH_APPROVAL_DOMAIN: &str = "fss.cli_alert_dispatch_approval.v2";
 
 /// Typed refusals of an alert stage, with registered identities.
 #[derive(Debug)]
@@ -208,7 +212,8 @@ pub fn plan_approval_digest(
 }
 
 /// Exact approval identity of one dispatch: the plan approval, the durable prepared record, the
-/// explicit deadline and the principal.
+/// explicit deadline, principal, and exact local wire-retention policy. Version two prevents
+/// an older approval from silently authorizing the additional retained byte footprint.
 #[must_use]
 pub fn dispatch_approval_digest(
     plan: ContentDigest,
@@ -218,6 +223,7 @@ pub fn dispatch_approval_digest(
 ) -> ContentDigest {
     let mut e = CanonicalEncoder::new();
     e.text(DISPATCH_APPROVAL_DOMAIN);
+    e.text(WIRE_RETENTION_POLICY);
     e.digest(plan);
     operation.intent.encode_canonical(&mut e);
     e.text(operation.state.as_str());
@@ -273,21 +279,27 @@ pub struct AlertDispatch {
     pub recorded: OperationReceipt,
     /// The retired attempt's evidence (request bytes digest, I/O counts, observation).
     pub evidence: WebhookEvidence,
+    /// Locally verified root-last custody of the exact retired observation, captured before
+    /// appending its result. Its historical-record flag reflects that earlier snapshot; consult
+    /// `recorded` for the later result. Missing custody requires recovery and never a resend.
+    pub retained_evidence: Option<RetainedWebhookEvidence>,
     /// Resource reservations, terminal task receipt and honest subtree closure.
     pub runtime: AlertRuntimeSummary,
 }
 
 impl AlertDispatch {
-    /// True only for a complete 2xx head recorded as `adapter_accepted`.
+    /// True only for a complete 2xx head retained locally and recorded as `adapter_accepted`.
     #[must_use]
     pub fn accepted(&self) -> bool {
         matches!(self.outcome, WebhookOutcome::ReceiverAccepted(_))
             && self.recorded.state == EffectState::AdapterAccepted
+            && self.retained_evidence.is_some()
     }
 }
 
 /// Commits `operation` (which must still be prepared) durably, then sends exactly one webhook
-/// request to `endpoint` under a restrictive owner and records the local observation.
+/// request to `endpoint` under a restrictive owner, retains the exact wire observation
+/// root-last, and only then records the local result in the effect journal.
 ///
 /// `commit_granted` is the caller's verdict that the exact dispatch approval and the commit
 /// capability are present; without it the owner refuses before any write or I/O.

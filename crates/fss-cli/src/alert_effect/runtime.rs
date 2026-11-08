@@ -13,13 +13,18 @@ use fss_core::{
     TaskOutcome, TaskReceipt, TimestampNs,
 };
 use fss_publication::LocalPublicationError;
+use fss_reference::webhook::retained::{
+    RetainedWebhookEvidence, WEBHOOK_CUSTODY_BYTES, WEBHOOK_CUSTODY_STORAGE_OPERATIONS,
+    check_webhook_retention, retain_webhook_evidence, webhook_retention_history_bytes,
+};
 use fss_reference::webhook::{
     WebhookAttempt, WebhookAuthority, WebhookBoundary, WebhookDenial, WebhookEndpoint,
     WebhookError, WebhookEvidence, WebhookLimits, WebhookOutcome, WebhookProgress, WebhookScope,
+    record_webhook_evidence,
 };
 use fss_reference::{
     MAX_ALERT_HEALTH_OBJECT_BYTES, ReferenceAlertPlan, ReferenceDeployment, ReferenceError,
-    ReplayCx,
+    ReplayAdmissionError, ReplayCx,
 };
 use fss_runtime::authority::AuthorityCx;
 use fss_runtime::execution::{ExecutionError, TaskCompletion, TaskCx, TaskSpec, run_owned};
@@ -33,14 +38,16 @@ use super::{
 const SOURCE_BYTES: u64 = 64 * 1024 * 1024;
 const IO_BYTES: u64 = 4096;
 const JOURNAL_OPERATIONS: u64 = 2;
+const HISTORY_READS: u64 = 4;
 const RESOURCE: &str = "alert-dispatch:approved-operation";
 const LOCAL_OBLIGATION: &str = "obligation:alert-dispatch:local-retirement";
 
 /// Execution accounting is independent of relay acknowledgement and human delivery.
 /// Byte/latency values are conservative prepaid reservations. Each native socket admission
 /// reserves a complete 4096-byte envelope, including failed/blocked calls. Storage counts source
-/// admissions and two prepaid journal transitions, not filesystem syscalls. Opening recovery,
-/// CPU, allocator peaks and journal serialization bytes are outside these meters.
+/// admissions, bounded history reads, and prepaid journal/custody operations, not filesystem
+/// syscalls. Opening recovery, CPU, allocator peaks and journal serialization bytes are outside
+/// these meters. Exact wire custody is required before recording the local outcome.
 #[derive(Debug)]
 pub struct AlertRuntimeSummary {
     /// Present only after native resources retired and `run_owned` accepted the classification.
@@ -213,6 +220,45 @@ impl<C: DispatchClock> DispatchOwner<'_, '_, C> {
         self.active_time()
             .map(|_| ())
             .map_err(|_| ReferenceError::InvalidSpec("owned_alert_source_interrupted"))
+    }
+    /// Prepaid local custody keeps the original owner's clock, cancellation and cleanup grant.
+    /// The fresh replay context cannot renew any of the source context's authority.
+    fn custody_checkpoint(&self, cleanup: bool) -> Result<(), ReplayAdmissionError> {
+        self.cx
+            .checkpoint("alert:dispatch:custody")
+            .map_err(|_| ReplayAdmissionError::Cancelled)?;
+        if !self.cx.io_authority().is_valid() {
+            return Err(ReplayAdmissionError::Authority);
+        }
+        let result = if cleanup {
+            self.drain_time().and_then(|now| {
+                self.task.cleanup_checkpoint_for(
+                    RuntimeGrant::AlertCommit,
+                    RESOURCE,
+                    timestamp(now),
+                    &BudgetVector::ZERO,
+                )
+            })
+        } else {
+            let now = self.active_time().map_err(|reason| match reason {
+                WebhookDenial::Cancelled => ReplayAdmissionError::Cancelled,
+                WebhookDenial::Deadline => ReplayAdmissionError::Deadline,
+                WebhookDenial::Budget => ReplayAdmissionError::Budget,
+                _ => ReplayAdmissionError::Authority,
+            })?;
+            self.task.checkpoint_for(
+                RuntimeGrant::AlertCommit,
+                RESOURCE,
+                timestamp(now),
+                &BudgetVector::ZERO,
+            )
+        };
+        result.map_err(|error| match denial(error) {
+            WebhookDenial::Cancelled => ReplayAdmissionError::Cancelled,
+            WebhookDenial::Deadline => ReplayAdmissionError::Deadline,
+            WebhookDenial::Budget => ReplayAdmissionError::Budget,
+            _ => ReplayAdmissionError::Authority,
+        })
     }
     fn wait(&self) -> Result<(), WebhookDenial> {
         let now = self.active_time()?;
@@ -496,13 +542,16 @@ fn validate(
             .storage_operations
             .min(MAX_DISPATCH_STORAGE_OPERATIONS),
     );
-    if allowance.bytes == 0
+    let history_bytes =
+        webhook_retention_history_bytes(deployment).map_err(|error| refusal(error.to_string()))?;
+    if allowance.bytes <= WEBHOOK_CUSTODY_BYTES.saturating_add(history_bytes)
         || allowance.network_bytes < IO_BYTES
-        || allowance.storage_operations <= JOURNAL_OPERATIONS
+        || allowance.storage_operations
+            <= JOURNAL_OPERATIONS + HISTORY_READS + WEBHOOK_CUSTODY_STORAGE_OPERATIONS
         || source.budgets.latency_ms < allowance.latency_ms
     {
         return Err(refusal(
-            "finite source, network, journal, or cleanup allowance insufficient",
+            "finite source, network, journal, wire custody, or cleanup allowance insufficient",
         ));
     }
     Ok(allowance)
@@ -512,6 +561,7 @@ struct NativeResult {
     outcome: WebhookOutcome,
     recorded: OperationReceipt,
     evidence: WebhookEvidence,
+    retained_evidence: Option<RetainedWebhookEvidence>,
     recording_error: Option<String>,
 }
 struct OwnedResult {
@@ -530,6 +580,7 @@ fn execute<C: DispatchClock>(
     plan: &ReferenceAlertPlan,
     endpoint: &WebhookEndpoint,
     prepared: &OperationReceipt,
+    source: &ContextAuthority,
     cx: &ReplayCx,
     clock: &C,
     base: u64,
@@ -538,6 +589,7 @@ fn execute<C: DispatchClock>(
 ) -> TaskCompletion<OwnedResult> {
     let mut runtime_error = None;
     let mut registered: Option<ObligationId> = None;
+    let mut sources_finished = None;
     let before = deployment.publisher().spool().read_budget_usage();
     let path = deployment.effects().path().to_path_buf();
     let owner = DispatchOwner {
@@ -563,90 +615,140 @@ fn execute<C: DispatchClock>(
             RuntimeGrant::AlertCommit,
             RESOURCE,
             timestamp(now),
-            &cost(allowance.bytes, allowance.latency_ms, 0, JOURNAL_OPERATIONS),
+            &cost(
+                allowance.bytes,
+                allowance.latency_ms,
+                0,
+                JOURNAL_OPERATIONS + HISTORY_READS + WEBHOOK_CUSTODY_STORAGE_OPERATIONS,
+            ),
         )
         .map_err(|error| refusal(error.to_string()))?;
         let obligation = new_obligation(
             LOCAL_OBLIGATION,
             task.context().operation_id.clone(),
-            "native alert resources retired and local observation durably recorded",
+            "native alert resources retired, wire evidence retained and local observation recorded",
         )
         .map_err(|error| refusal(error.to_string()))?;
         let obligation_id = obligation.obligation_id.clone();
         task.register_obligation(obligation, timestamp(now))
             .map_err(|error| refusal(error.to_string()))?;
         registered = Some(obligation_id);
+        let history_bytes = webhook_retention_history_bytes(deployment)
+            .map_err(|error| refusal(error.to_string()))?;
+        let spool_bytes = allowance
+            .bytes
+            .checked_sub(history_bytes)
+            .filter(|bytes| *bytes > WEBHOOK_CUSTODY_BYTES)
+            .ok_or_else(|| refusal("finite wire custody and source allowance insufficient"))?;
+        let history_length_ceiling = history_bytes / HISTORY_READS - 1;
         deployment
             .publisher_mut()
             .tighten_read_budget(
-                allowance.bytes,
-                allowance.storage_operations - JOURNAL_OPERATIONS,
+                spool_bytes,
+                allowance.storage_operations - JOURNAL_OPERATIONS - HISTORY_READS,
             )
             .map_err(|error| refusal(error.to_string()))?;
-        let (journal, ledger, publisher) = deployment.effect_dispatch_parts();
-        let limits = WebhookLimits {
-            io_calls: 4096,
-            io_bytes: IO_BYTES as usize,
-            response_bytes: 16384,
-            connect_timeout_ns: network_deadline.saturating_sub(base).min(5_000_000_000),
-        };
-        let read = |digest: ContentDigest| -> Result<Vec<u8>, ReferenceError> {
-            owner.source_read()?;
-            cx.checkpoint("alert:dispatch:read").map_err(|_| {
-                ReferenceError::CancellationRequested {
-                    stage: "alert:dispatch:read",
-                }
+        {
+            let retention_cx =
+                ReplayCx::from_context_authority_read_only(source, deployment.root().to_path_buf())
+                    .map_err(|error| refusal(error.to_string()))?
+                    .with_admission(|_| owner.custody_checkpoint(false));
+            check_webhook_retention(
+                deployment,
+                &prepared.intent.operation_id,
+                source,
+                &retention_cx,
+            )
+            .map_err(|error| refusal(error.to_string()))?;
+        }
+        let (outcome, evidence) = {
+            let (journal, ledger, publisher) = deployment.effect_dispatch_parts();
+            let limits = WebhookLimits {
+                io_calls: 4096,
+                io_bytes: IO_BYTES as usize,
+                response_bytes: 16384,
+                connect_timeout_ns: network_deadline.saturating_sub(base).min(5_000_000_000),
+            };
+            let read = |digest: ContentDigest| -> Result<Vec<u8>, ReferenceError> {
+                owner.source_read()?;
+                cx.checkpoint("alert:dispatch:read").map_err(|_| {
+                    ReferenceError::CancellationRequested {
+                        stage: "alert:dispatch:read",
+                    }
+                })?;
+                let result = publisher
+                    .spool()
+                    .read_bounded_preserving(
+                        digest,
+                        MAX_ALERT_HEALTH_OBJECT_BYTES,
+                        WEBHOOK_CUSTODY_BYTES,
+                        WEBHOOK_CUSTODY_STORAGE_OPERATIONS,
+                    )
+                    .map_err(|error| ReferenceError::from(LocalPublicationError::Spool(error)));
+                owner.after_source_read()?;
+                result
+            };
+            let mut attempt = WebhookAttempt::begin(
+                plan,
+                endpoint,
+                ledger,
+                journal,
+                limits,
+                now,
+                network_deadline,
+                &owner,
+                read,
+            )
+            .map_err(|error| match error {
+                WebhookError::Authority(error) => not_eligible(error),
+                other => refusal(other.to_string()),
             })?;
-            let result = publisher
-                .spool()
-                .read_bounded(digest, MAX_ALERT_HEALTH_OBJECT_BYTES)
-                .map_err(|error| ReferenceError::from(LocalPublicationError::Spool(error)));
-            owner.after_source_read()?;
-            result
-        };
-        let mut attempt = WebhookAttempt::begin(
-            plan,
-            endpoint,
-            ledger,
-            journal,
-            limits,
-            now,
-            network_deadline,
-            &owner,
-            read,
-        )
-        .map_err(|error| match error {
-            WebhookError::Authority(error) => not_eligible(error),
-            other => refusal(other.to_string()),
-        })?;
-        let outcome = loop {
-            let now = owner.active_time().unwrap_or_else(|_| owner.last_ns.get());
-            match attempt.poll(now, &owner, read) {
-                WebhookProgress::ReadyToRecord(outcome) => break outcome,
-                WebhookProgress::Pending => {
-                    let _ = owner.wait();
+            let outcome = loop {
+                let now = owner.active_time().unwrap_or_else(|_| owner.last_ns.get());
+                match attempt.poll(now, &owner, read) {
+                    WebhookProgress::ReadyToRecord(outcome) => break outcome,
+                    WebhookProgress::Pending => {
+                        let _ = owner.wait();
+                    }
                 }
+            };
+            (outcome, attempt.retire())
+        };
+        sources_finished = Some(deployment.publisher().spool().read_budget_usage());
+        let mut retained_evidence = None;
+        let result = (|| -> Result<OperationReceipt, String> {
+            if deployment.effects().committed_len() > history_length_ceiling {
+                return Err("committed history exceeds its prepaid read reservation".to_owned());
             }
-        };
-        let recorded_at = owner.drain_time().map_err(|error| error.to_string());
-        let result = match recorded_at {
-            Ok(now) => attempt
-                .record(now, &owner)
+            let retention_cx =
+                ReplayCx::from_context_authority_read_only(source, deployment.root().to_path_buf())
+                    .map_err(|error| error.to_string())?
+                    .with_admission(|_| owner.custody_checkpoint(true));
+            let retained = retain_webhook_evidence(deployment, &evidence, source, &retention_cx)
+                .map_err(|error| error.to_string())?;
+            retained_evidence = Some(retained);
+            let now = owner.drain_time().map_err(|error| error.to_string())?;
+            record_webhook_evidence(&evidence, endpoint, deployment.effects_mut(), now, &owner)
                 .cloned()
-                .map_err(|error| error.to_string()),
-            Err(error) => Err(error),
-        };
-        // The journal never deletes its committed operation. Preserve its actual current
-        // receipt even if recording failed, then retire all socket resources before returning.
+                .map_err(|error| error.to_string())
+        })();
+        // All socket resources are already retired. Custody or recording failure preserves the
+        // actual durable state, requires recovery, and cannot authorize another network attempt.
         let (recorded, recording_error) = match result {
             Ok(receipt) => (Some(receipt), None),
-            Err(error) => (attempt.operation().cloned(), Some(error)),
+            Err(error) => (
+                deployment
+                    .effects()
+                    .operation(&prepared.intent.operation_id)
+                    .cloned(),
+                Some(error),
+            ),
         };
-        let evidence = attempt.retire();
         Ok(NativeResult {
             outcome,
             recorded: recorded.ok_or_else(|| refusal("committed operation disappeared"))?,
             evidence,
+            retained_evidence,
             recording_error,
         })
     })();
@@ -654,7 +756,8 @@ fn execute<C: DispatchClock>(
         runtime_error = Some(error.to_string());
     }
     let finished_ns = owner.last_ns.get();
-    let after = deployment.publisher().spool().read_budget_usage();
+    let after =
+        sources_finished.unwrap_or_else(|| deployment.publisher().spool().read_budget_usage());
     let local_deadline_reached = task
         .context()
         .deadline
@@ -783,6 +886,7 @@ pub(super) fn dispatch(
             plan,
             endpoint,
             operation,
+            source,
             cx,
             &clock,
             base,
@@ -815,6 +919,7 @@ pub(super) fn dispatch(
         outcome: native.outcome,
         recorded: native.recorded,
         evidence: native.evidence,
+        retained_evidence: native.retained_evidence,
         runtime: AlertRuntimeSummary {
             task_receipt,
             quiescence,

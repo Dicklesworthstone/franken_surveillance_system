@@ -1,8 +1,9 @@
 # Operator alert lifecycle control
 
 `fss-alert` exposes the durable operation/obligation identities independently of the original
-`fss-event alert` dispatch arguments. It provides **read-only status**, **exact-approved
-cancellation before commitment**, and **owner-attested reconciliation after dispatch**.
+`fss-event alert` dispatch arguments. It provides **read-only status and retained-wire
+inspection**, **exact-approved cancellation before commitment**, and **owner-attested
+reconciliation after dispatch**.
 Reconciliation records an explicit operator assertion; independent provider verification remains
 a separate capability.
 
@@ -23,17 +24,30 @@ deadline, including the native connection timeout. A separate finite cleanup all
 reserved before commitment for recording the result, intersected with any earlier original
 authority deadline; it never extends network authority or overrides revoked I/O authority.
 
+Dispatch approval now uses `fss.cli_alert_dispatch_approval.v2` and binds the fixed
+`local-root-last-exact-http-wire-v1` retention policy shown in the preview. Obtain the current
+preview's approval digest; a v1 dispatch approval cannot silently authorize the added retained
+bytes. The prepared route and event authority remain bound to their original operation.
+
+The shared native path retires the socket, retains the exact finalized wire observation through
+the existing root-last publisher and canonical reachability ledger, then records its digest and
+outcome in the effect journal. Preflight reserves custody work and bounded history reads before
+network commitment and refuses known insufficient configured object/root capacity. Source
+validation preserves 256 KiB of custody byte headroom and its storage-read allowance. A later
+storage failure leaves an explicit recovery requirement; it never authorizes a resend.
+
 The native dispatched report includes `runtime` metadata: the task receipt, subtree quiescence
 proof when available, consumed and remaining budgets, network admissions, source-read
 reservations and attempts, and any local recording or retirement error. The canonical commit
 envelope includes the dispatch's budget consumption and runtime accounting in its execution
-boundary. Source byte and latency amounts are conservative reservations; storage counts source
-read admissions and prepaid journal transitions, not filesystem syscalls. Deployment opening,
-CPU, allocation peaks and journal serialization bytes are outside these meters. These fields
-do not claim whole-process resource accounting.
+boundary. Source byte and latency amounts are conservative reservations; dispatch storage
+accounting includes source-read admissions, bounded history reads, the custody allowance and
+prepaid journal transitions. It does not count every filesystem syscall. Deployment opening,
+CPU, allocation peaks and journal serialization bytes remain outside these meters. These
+fields do not claim whole-process resource accounting.
 
-If the operation committed but recording or runtime retirement fails, the command preserves the
-original operation receipt and observed network evidence, reports recovery as required, and
+If the operation committed but custody, recording or runtime retirement fails, the command
+preserves the original operation receipt and observed network evidence, reports recovery as required, and
 exits nonzero. A cold retry reads the durable operation and never resends it. A missing receipt
 or quiescence proof is explicit; neither is fabricated from an HTTP response. Runtime closure
 only proves that the local attempt retired. Relay acceptance still leaves the independent
@@ -44,6 +58,13 @@ using the explicitly marked pre-dispatch anchor and an overall indeterminate res
 recovery. A valid local runtime proof does not resolve that later snapshot failure. For native
 dispatch, the result is written and flushed to stdout before optional report export; an export
 collision or storage failure still exits nonzero, while preserving the available dispatch report.
+
+The immediate `AlertDispatch.retained_evidence` value records the custody snapshot taken
+**before** the following effect-result append. Its `journal_observation_recorded()` getter can
+remain false even when that append succeeds. Code handling the completed dispatch should use
+`AlertDispatch.recorded.result_digest` to check the later receipt against the retained digest,
+or use the cold evidence command below. The immediate CLI report uses the later receipt for
+its flag; cold inspection checks matching transitions in the verified historical journal.
 
 ```sh
 cargo test -p fss-cli --lib alert_effect --locked --offline
@@ -80,6 +101,48 @@ refuse the command with no JSON prefix; a genuinely incomplete final record rema
 outside the committed inventory. Every input file is read again before returning,
 and a changed layout or history refuses the read. This does not acquire a deployment lock,
 perform restart recovery, inspect source custody, or authorize a mutation.
+
+## Inspect the original retained webhook observation
+
+```sh
+fss-alert evidence --root /path/to/deployment --site site:home \
+  --operation-id operation:example
+```
+
+The command requires one operation identity and emits metadata-only JSON. Its `wire_evidence`
+contains the observation digest, manifest root, publication slot, original prepared-record
+digest, commitment root, route digest, outcome, request hash, request/sent/response-prefix byte
+counts, I/O count and exact admission times. Raw HTTP request/response bytes, including arbitrary
+response headers or body text, are not printed. The optional `--principal` identifies the
+authorized local inspection actor; it does not grant a new dispatch capability.
+
+The reader does not open the deployment's mutation/recovery owner, create lock files, fsync,
+rewrite journals, contact the relay, or change `Committed` to `Indeterminate`. It verifies the
+complete bounded authority and effect histories and the selected canonical publication, exact
+root record, manifest, observation envelope and verification holds. Every metadata/read call is
+charged before I/O. Observed files and absences are rechecked before returning; this detects
+observed changes without claiming an atomic filesystem snapshot.
+
+The publication slot is bound to the site, operation and original preparation. Its identity
+survives later owner reconciliation, even when the latest result digest now names an attestation.
+`journal_observation_recorded: true` means a matching local observation transition exists in
+verified history. `false` identifies a retained observation that has not been matched to that
+transition, including a crash after root-last publication but before result recording. The
+command suggests inspecting and reconciling the existing obligation; neither value authorizes
+a resend or proves human delivery. An operator assertion that merely cites a digest cannot
+manufacture a retained transport observation.
+
+`wire_evidence: null` means this existing alert operation has no admitted published wire
+observation. Staged bytes alone are insufficient. Use `fss-alert status` to inspect the durable
+operation before acting. A published root missing its canonical reachability, missing or corrupt
+custody, a retracted publication, pending root/tombstone markers, or an incomplete/corrupt
+journal instead refuses the command with nonzero exit and no partial JSON. The command does not
+repair evidence or silently report these failures as absence.
+
+Cold inspection admits a 4096-byte layout, at most 64 MiB per journal, a 512-byte manifest and a
+32 KiB encoded observation. The CLI also imposes finite cumulative read-byte and physical I/O
+budgets. The retained response prefix itself is at most 16 KiB. Details of the dispatch policy,
+authority boundaries and crash ordering are in [native HTTP alert dispatch](NATIVE_ALERT_WEBHOOK.md).
 
 ## Cancel an unsent prepared alert
 
@@ -240,3 +303,27 @@ those tests.
 
 The implementation remains `implemented_not_qualified`; production qualification and native
 provider reconciliation remain open.
+
+### Durable wire retention and cold-inspection validation
+
+The wire-retention change adds sixteen tests: eight reference recovery cases in
+[`alert_recovery_tests/webhook_evidence.rs`](../crates/fss-reference/src/alert_recovery_tests/webhook_evidence.rs)
+and eight CLI/cold-reader cases in
+[`alert_lifecycle_cli/webhook_evidence.rs`](../crates/fss-cli/tests/alert_lifecycle_cli/webhook_evidence.rs).
+They cover actual bounded loopback observations, root-last crash gaps, restart without resend,
+exact custody retries, historical lookup after terminal owner reconciliation, metadata-only
+inspection without writes, corrupt bytes and real publication tombstones, exact physical I/O
+budget exhaustion, and input changes during the final read pass. Fixtures use local journals
+and synthetic events; the CLI inspection fixture retires its attempt before any socket I/O.
+
+```sh
+cargo test -p fss-reference --lib alert_recovery_tests::webhook_evidence --locked --offline
+cargo test -p fss-cli --test alert_lifecycle_cli webhook_evidence --locked --offline
+```
+
+These sixteen new cases were authored and source-reviewed, and formatting/diff checks passed.
+They have **not run natively**: compilation was killed by `SIGKILL` while building `asupersync`,
+before these suites could run. The separately reported 57 passing activation tests
+validate different model work and do not establish webhook execution or qualification. The
+retention and inspection workflow remains `implemented_not_qualified`; real provider delivery,
+physical-camera operation and production qualification were not exercised by this change.

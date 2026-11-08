@@ -4,6 +4,48 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Durable webhook wire evidence and cold inspection
+
+The shared native alert owner used by `fss-event alert` and canonical `fss commit`
+now reserves bounded custody/history capacity before commitment, retires the socket,
+publishes the exact request/response observation through the existing root-last
+publisher and canonical reachability ledger, and only then records the local result.
+A custody or result-append failure preserves the actual unresolved operation and its
+recovery obligation; it never starts another send. The v2 dispatch approval binds
+the fixed `local-root-last-exact-http-wire-v1` retention policy. Previously issued
+v1 dispatch approvals must be regenerated through the existing preview workflow.
+
+One immutable slot binds the site, operation and original prepared-record digest.
+The original wire observation remains inspectable after terminal reconciliation
+replaces the operation's latest proof digest. Decoding produces a separate read-only
+type and cannot manufacture live recording authority. Source reads cannot consume
+the reserved custody headroom; known object/root quota exhaustion refuses before
+network commitment.
+
+`fss-alert evidence --root DIR --site SITE --operation-id ID` verifies bounded
+complete journals, root/manifest/child linkage, current spool bytes, verification
+holds and retraction markers without opening a writer, creating locks, performing
+restart recovery or accessing the network. Every metadata/read call is charged,
+and observed files and absences are checked again before returning. Reports show
+digests, byte counts and the historical observation-recorded flag; arbitrary
+request/response bytes are excluded. Missing publication is explicit, while
+corruption, incomplete histories, retraction and detected changes refuse.
+These are bounded observations, not an atomic filesystem snapshot or provider
+authentication. See [native dispatch](docs/NATIVE_ALERT_WEBHOOK.md) and
+[alert lifecycle](docs/alert_lifecycle.md).
+
+**Validation:** 21 focused contracts are authored: eight core crash/custody cases,
+three atomic spool headroom cases, eight CLI/cold-reader cases, and two borrowed
+cleanup-authority cases. Pinned formatting and source/API reviews completed.
+These new paths have not been compiled or executed in this session: required
+`asupersync 0.5.0` compilation received SIGKILL both during the webhook build and
+a bounded single-worker metadata-only check. No further dependency build was
+attempted after the workspace interruption. Separately, the native activation
+targets passed all 57 tests (Clip 29; HardSigmoid 28), with the provenance assertion
+corrected to compare parameter tensors while preserving distinct source-bound
+artifact digests. This feature remains implemented, not production-qualified;
+the broad FSS-085/FSS-086 and GATE-060 beads remain open.
+
 ## Complete native recording archive discovery
 
 `fss query --target recordings --discover-catalogs yes` and MCP
