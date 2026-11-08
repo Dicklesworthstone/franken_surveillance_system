@@ -11,9 +11,7 @@ use crate::ingest::detector_cascade::iou_ppm;
 use crate::ingest::tracker::{Detection, MultiObjectTracker, TrackStatus, TrackerLimits};
 use fss_core::ContentDigest;
 
-pub(super) fn sample_confirmed(config: PackageTrackingConfig, observation: usize) -> bool {
-    observation >= config.confirmation_hits.saturating_sub(1) as usize
-}
+pub(super) use super::types::sample_confirmed;
 
 /// Pure bounded frame composition. `checkpoint` is supplied by the authority-owning caller;
 /// tests can exercise the same computation without filesystem or model dependencies.

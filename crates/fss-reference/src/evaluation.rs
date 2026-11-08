@@ -101,6 +101,7 @@ use std::fmt;
 use fss_core::{CanonicalEncoder, ContentDigest};
 
 #[cfg(test)]
+#[path = "evaluation/tests.rs"]
 mod tests;
 
 /// Canonical digest domain for evaluation reports; sub-tags `/labels`, `/candidates` and
@@ -356,6 +357,8 @@ pub enum EvaluationLimit {
     Candidates,
     /// [`MAX_EVALUATION_NOT_OBSERVABLE_INTERVALS`].
     NotObservableIntervals,
+    /// Caller-admitted candidate by truth matching cells.
+    MatchingCells,
 }
 
 /// Why an identifier or identity string was refused.
@@ -436,6 +439,8 @@ pub enum EvaluationError {
     InvalidBudget,
     /// Canonical encoding failed.
     Encoding,
+    /// The caller cancelled; no partial successful report is returned.
+    Cancelled,
 }
 
 impl EvaluationError {
@@ -453,6 +458,7 @@ impl EvaluationError {
             Self::ScoreOutOfRange { .. } => "evaluation.score_out_of_range",
             Self::InvalidBudget => "evaluation.invalid_budget",
             Self::Encoding => "evaluation.encoding",
+            Self::Cancelled => "evaluation.cancelled",
         }
     }
 }
@@ -500,6 +506,7 @@ impl fmt::Display for EvaluationError {
                 formatter.write_str("false-alert budget window must be non-zero")
             }
             Self::Encoding => formatter.write_str("canonical encoding failed"),
+            Self::Cancelled => formatter.write_str("evaluation cancelled before publication"),
         }
     }
 }
@@ -960,11 +967,19 @@ struct ClipState {
 
 impl ClipState {
     fn gap_contains(&self, at_ns: u64) -> bool {
-        self.gaps.iter().any(|gap| gap.contains(at_ns))
+        // Merging produces sorted, disjoint intervals. Inspect only the last gap
+        // starting at or before the instant, avoiding candidate-by-gap scans.
+        self.gaps
+            .partition_point(|gap| gap.start_ns <= at_ns)
+            .checked_sub(1)
+            .is_some_and(|index| self.gaps[index].contains(at_ns))
     }
 
     fn gap_contains_interval(&self, interval: &ClosedIntervalNs) -> bool {
-        self.gaps.iter().any(|gap| gap.contains_interval(interval))
+        self.gaps
+            .partition_point(|gap| gap.start_ns <= interval.start_ns)
+            .checked_sub(1)
+            .is_some_and(|index| self.gaps[index].contains_interval(interval))
     }
 }
 
@@ -985,6 +1000,35 @@ pub fn evaluate(
     labels: &LabelSet,
     candidates: &CandidateSet,
 ) -> Result<EvaluationReport, EvaluationError> {
+    evaluate_cancellable(identity, policy, labels, candidates, usize::MAX, &|| false)
+}
+
+/// Scores the same canonical report with an explicit matching bound and cancellation.
+///
+/// The complete candidate-count times truth-count product is checked before
+/// matching or allocating derived outcome arrays. The bound is conservative:
+/// class filtering, coverage gaps and early matches never buy additional work.
+/// Zero cells admit a negative clip or an empty candidate set. Successful reports
+/// and their digests are identical to [`evaluate`]; this API adds no scoring policy.
+/// Cancellation is checked at input, item and matching-cell boundaries and again
+/// after final digest construction. Bounded sorts and canonical hashing remain
+/// indivisible operations under the existing input and text-size limits.
+pub fn evaluate_cancellable(
+    identity: &EvaluationIdentity,
+    policy: &EvaluationPolicy,
+    labels: &LabelSet,
+    candidates: &CandidateSet,
+    maximum_matching_cells: usize,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<EvaluationReport, EvaluationError> {
+    let checkpoint = || {
+        if cancelled() {
+            Err(EvaluationError::Cancelled)
+        } else {
+            Ok(())
+        }
+    };
+    checkpoint()?;
     // ---- bounds and identity ------------------------------------------------------------
     check_limit(
         EvaluationLimit::Clips,
@@ -1009,6 +1053,20 @@ pub fn evaluate(
         MAX_EVALUATION_NOT_OBSERVABLE_INTERVALS,
         gap_total,
     )?;
+    let matching_cells = candidates
+        .candidates
+        .len()
+        .checked_mul(labels.events.len())
+        .ok_or(EvaluationError::LimitExceeded {
+            limit: EvaluationLimit::MatchingCells,
+            max: maximum_matching_cells,
+            actual: usize::MAX,
+        })?;
+    check_limit(
+        EvaluationLimit::MatchingCells,
+        maximum_matching_cells,
+        matching_cells,
+    )?;
     for (field, value) in [
         ("pipeline_generation", &identity.pipeline_generation),
         ("model_generation", &identity.model_generation),
@@ -1026,6 +1084,7 @@ pub fn evaluate(
     sorted_clips.sort_unstable_by(|a, b| a.clip_id.cmp(&b.clip_id));
     let mut durations = ObservedDurations::default();
     for clip in &sorted_clips {
+        checkpoint()?;
         check_id("clip_id", &clip.clip_id)?;
         if clip.duration_ns == 0 {
             return Err(EvaluationError::ZeroClipDuration {
@@ -1034,6 +1093,7 @@ pub fn evaluate(
         }
         let mut gaps = Vec::with_capacity(clip.not_observable.len());
         for gap in &clip.not_observable {
+            checkpoint()?;
             check_interval(&clip.clip_id, gap.interval)?;
             check_inside_clip(&clip.clip_id, gap.interval.end_ns, clip.duration_ns)?;
             gaps.push(gap.interval);
@@ -1066,6 +1126,7 @@ pub fn evaluate(
     let mut event_not_observable = Vec::with_capacity(events.len());
     let mut previous_event: Option<&str> = None;
     for event in &events {
+        checkpoint()?;
         check_id("event_id", &event.event_id)?;
         if previous_event == Some(event.event_id.as_str()) {
             return Err(EvaluationError::DuplicateId {
@@ -1097,6 +1158,7 @@ pub fn evaluate(
     let mut candidate_inside_gap = Vec::with_capacity(by_id.len());
     let mut previous_candidate: Option<&str> = None;
     for candidate in &by_id {
+        checkpoint()?;
         check_id("candidate_id", &candidate.candidate_id)?;
         if previous_candidate == Some(candidate.candidate_id.as_str()) {
             return Err(EvaluationError::DuplicateId {
@@ -1135,12 +1197,14 @@ pub fn evaluate(
     // (clip, class) -> truth indices ordered by (start_ns, event_id).
     let mut truth_index: BTreeMap<(&str, &str), Vec<usize>> = BTreeMap::new();
     for (index, event) in events.iter().enumerate() {
+        checkpoint()?;
         truth_index
             .entry((event.clip_id.as_str(), event.class.as_str()))
             .or_default()
             .push(index);
     }
     for indices in truth_index.values_mut() {
+        checkpoint()?;
         indices.sort_unstable_by(|&a, &b| {
             (events[a].interval.start_ns, &events[a].event_id)
                 .cmp(&(events[b].interval.start_ns, &events[b].event_id))
@@ -1165,9 +1229,11 @@ pub fn evaluate(
     let mut false_positives = 0_u64;
     let mut position = 0;
     while position < scoring_order.len() {
+        checkpoint()?;
         let score = by_id[scoring_order[position]].score_ppm;
         let mut group_scored = false;
         while position < scoring_order.len() && by_id[scoring_order[position]].score_ppm == score {
+            checkpoint()?;
             let candidate_index = scoring_order[position];
             let candidate = by_id[candidate_index];
             let mut observable_choice = None;
@@ -1176,6 +1242,7 @@ pub fn evaluate(
                 truth_index.get(&(candidate.clip_id.as_str(), candidate.class.as_str()))
             {
                 for &truth in indices {
+                    checkpoint()?;
                     let event = events[truth];
                     let eligible = truth_match[truth].is_none()
                         && zones_compatible(event.zone.as_deref(), candidate.zone.as_deref())
@@ -1251,6 +1318,7 @@ pub fn evaluate(
         let mut sum_atto: u128 = 0;
         let mut previous_tp = 0_u64;
         for point in &pr_curve {
+            checkpoint()?;
             let delta = u128::from(point.true_positives - previous_tp);
             let alerts = u128::from(point.true_positives + point.false_positives);
             sum_atto += delta * u128::from(point.true_positives) * ATTO_PER_UNIT
@@ -1274,6 +1342,7 @@ pub fn evaluate(
     let mut truth_outcomes = Vec::with_capacity(events.len());
     let mut all_ttd = Vec::new();
     for (index, event) in events.iter().enumerate() {
+        checkpoint()?;
         let disposition = match (event_not_observable[index], truth_match[index]) {
             (true, matched) => TruthDisposition::NotObservable {
                 matched_candidate_id: matched.map(|c| by_id[c].candidate_id.clone()),
@@ -1300,6 +1369,7 @@ pub fn evaluate(
     }
     let mut candidate_outcomes = Vec::with_capacity(by_id.len());
     for (index, candidate) in by_id.iter().enumerate() {
+        checkpoint()?;
         let disposition = match candidate_match[index] {
             None => {
                 counts.candidates_inside_not_observable += 1;
@@ -1367,6 +1437,7 @@ pub fn evaluate(
         UndefinedReason::NoObservableTruthEvents,
     );
 
+    checkpoint()?;
     let label_set_digest = label_set_digest(&sorted_clips, &events)?;
     let candidate_set_digest = candidate_set_digest(&by_id)?;
     let mut report = EvaluationReport {
@@ -1387,6 +1458,7 @@ pub fn evaluate(
         digest: label_set_digest,
     };
     report.digest = report.compute_digest()?;
+    checkpoint()?;
     Ok(report)
 }
 

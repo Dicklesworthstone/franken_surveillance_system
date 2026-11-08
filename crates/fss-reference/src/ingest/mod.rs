@@ -199,6 +199,8 @@ pub mod package_detect;
 pub mod detector_cascade;
 mod detector_cascade_engine;
 
+/// Native retained tracks evaluated against an explicit labelled clip with source-derived pins.
+pub mod package_evaluation;
 /// Retained package detections tracked into unresolved recorded events (report/prepare/publish).
 pub mod package_event;
 /// Source-authenticated package tracks projected into conditional anonymous handoff queries.

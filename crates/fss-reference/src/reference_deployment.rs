@@ -363,6 +363,47 @@ fn require_journals_or_empty_skeleton(root: &Path) -> Result<(), ReferenceError>
     Ok(())
 }
 
+/// An evaluation may inspect an established deployment, but cannot complete initialization or
+/// replace lost history. Check this before opening the publisher and again under its lock.
+fn require_existing_layout_and_journals(root: &Path) -> Result<(), ReferenceError> {
+    match fs::symlink_metadata(root.join(DEPLOYMENT_LAYOUT_FILENAME)) {
+        Ok(metadata) if metadata.is_file() => {}
+        Ok(_) => {
+            return Err(ReferenceError::NotADeployment {
+                path: root.to_path_buf(),
+            });
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Err(ReferenceError::NotADeployment {
+                path: root.to_path_buf(),
+            });
+        }
+        Err(error) => return Err(error.into()),
+    }
+    for relative in [RELATIVE_PATH_LEDGER, RELATIVE_PATH_EFFECTS] {
+        let path = root.join(relative);
+        match fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.is_file() => {}
+            Ok(_) => {
+                return Err(ReferenceError::NotADeployment {
+                    path: root.to_path_buf(),
+                });
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return Err(ReferenceError::MissingDeploymentJournal { path });
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DeploymentOpenMode {
+    InitializeAndReconcile,
+    ExistingWithoutEffectReconciliation,
+}
+
 const ROOT_DOMAIN: &[u8] = b"FSS-JOURNAL-RECORD-ROOT-V1\0";
 const RECORD_MAGIC: [u8; 8] = *b"FSSJRN01";
 const COMMIT_MAGIC: [u8; 8] = *b"FSSCMT01";
@@ -1024,6 +1065,24 @@ impl ReferenceDeployment {
         Self::open(root, site_lineage, cx)
     }
 
+    /// Opens an established deployment for retained-package evaluation without changing effect
+    /// states. Local publisher recovery and the exclusive deployment lock still apply. This is
+    /// deliberately crate-private: the evaluation wrapper owns the handle and never returns it.
+    pub(crate) fn open_existing_without_effect_reconciliation(
+        root: &Path,
+        site_lineage: &str,
+        cx: &ReplayCx<impl ReplayAdmission>,
+    ) -> Result<Self, ReferenceError> {
+        Self::open_with_mode(
+            root,
+            site_lineage,
+            DeploymentLimits::standard(),
+            cx,
+            &|_: &Path| {},
+            DeploymentOpenMode::ExistingWithoutEffectReconciliation,
+        )
+    }
+
     /// Opens or reopens a reference deployment with explicit capacity limits.
     pub fn open_with_limits(
         root: &Path,
@@ -1045,6 +1104,24 @@ impl ReferenceDeployment {
         limits: DeploymentLimits,
         cx: &ReplayCx<impl ReplayAdmission>,
         after_lock: &dyn Fn(&Path),
+    ) -> Result<Self, ReferenceError> {
+        Self::open_with_mode(
+            root,
+            site_lineage,
+            limits,
+            cx,
+            after_lock,
+            DeploymentOpenMode::InitializeAndReconcile,
+        )
+    }
+
+    fn open_with_mode(
+        root: &Path,
+        site_lineage: &str,
+        limits: DeploymentLimits,
+        cx: &ReplayCx<impl ReplayAdmission>,
+        after_lock: &dyn Fn(&Path),
+        mode: DeploymentOpenMode,
     ) -> Result<Self, ReferenceError> {
         if cx.is_cancelled() {
             cx.drain_and_finalize();
@@ -1077,12 +1154,19 @@ impl ReferenceDeployment {
 
         // Advisory pre-check before anything is created, so a foreign directory is refused with
         // zero side effects. The authoritative check is repeated under the deployment lock below.
-        if root.exists() && !layout_path.exists() && !is_skeleton_or_empty(root)? {
-            return Err(ReferenceError::NotADeployment { path: root_buf });
+        match mode {
+            DeploymentOpenMode::InitializeAndReconcile => {
+                if root.exists() && !layout_path.exists() && !is_skeleton_or_empty(root)? {
+                    return Err(ReferenceError::NotADeployment { path: root_buf });
+                }
+                require_journals_or_empty_skeleton(root)?;
+            }
+            DeploymentOpenMode::ExistingWithoutEffectReconciliation => {
+                require_existing_layout_and_journals(root)?;
+            }
         }
-        require_journals_or_empty_skeleton(root)?;
 
-        if !root.exists() {
+        if mode == DeploymentOpenMode::InitializeAndReconcile && !root.exists() {
             fs::create_dir_all(root)?;
         }
         fs::create_dir_all(&objects_dir)?;
@@ -1107,10 +1191,17 @@ impl ReferenceDeployment {
         // 2. Initialize or verify layout descriptor atomically.
         // Authoritative classification under the lock, before any cleanup or write: a root without
         // LAYOUT must still be empty or a bare deployment skeleton.
-        if !layout_path.exists() && !is_skeleton_or_empty(root)? {
-            return Err(ReferenceError::NotADeployment { path: root_buf });
+        match mode {
+            DeploymentOpenMode::InitializeAndReconcile => {
+                if !layout_path.exists() && !is_skeleton_or_empty(root)? {
+                    return Err(ReferenceError::NotADeployment { path: root_buf });
+                }
+                require_journals_or_empty_skeleton(root)?;
+            }
+            DeploymentOpenMode::ExistingWithoutEffectReconciliation => {
+                require_existing_layout_and_journals(root)?;
+            }
         }
-        require_journals_or_empty_skeleton(root)?;
         for entry in fs::read_dir(root)? {
             let entry = entry?;
             let name = entry.file_name();
@@ -1135,17 +1226,21 @@ impl ReferenceDeployment {
                 });
             }
             parsed
-        } else {
+        } else if mode == DeploymentOpenMode::InitializeAndReconcile {
             let new_layout = DeploymentLayout::new(site_lineage, limits_digest);
             write_layout_atomic(root, &new_layout, &HostLayoutIo)?;
             new_layout
+        } else {
+            return Err(ReferenceError::NotADeployment { path: root_buf });
         };
 
-        if let Some(parent) = ledger_path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        if let Some(parent) = effects_path.parent() {
-            fs::create_dir_all(parent)?;
+        if mode == DeploymentOpenMode::InitializeAndReconcile {
+            if let Some(parent) = ledger_path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            if let Some(parent) = effects_path.parent() {
+                fs::create_dir_all(parent)?;
+            }
         }
 
         // 3. Open durable authority ledger: reject incomplete tails on open.
@@ -1192,9 +1287,12 @@ impl ReferenceDeployment {
         // process; whatever dispatch it began died with the process that committed it. It becomes
         // explicitly `Indeterminate` (`restart_reconciliation_pending_observation`) and is never
         // re-dispatched. The deployment lock is held, so no live dispatch can own it.
-        let restart_reclassified = effects
-            .reclassify_committed_without_provider_record(&alert_provider)
-            .map_err(|error| ReferenceError::DurableEffect(Box::new(error)))?;
+        let restart_reclassified = match mode {
+            DeploymentOpenMode::InitializeAndReconcile => effects
+                .reclassify_committed_without_provider_record(&alert_provider)
+                .map_err(|error| ReferenceError::DurableEffect(Box::new(error)))?,
+            DeploymentOpenMode::ExistingWithoutEffectReconciliation => Vec::new(),
+        };
 
         Ok(Self {
             root: root_buf,
@@ -2554,3 +2652,7 @@ impl ReferenceDeployment {
         &self.ledger.current().anchor
     }
 }
+
+#[cfg(test)]
+#[path = "reference_deployment_existing_tests.rs"]
+mod existing_open_tests;

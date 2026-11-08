@@ -7,7 +7,7 @@ use fss_core::{DigestAlgorithm, SensorId};
 
 use super::{
     MAX_DETECTIONS, MAX_LABELS, MAX_PACKAGE_DETECT_FRAMES, MAX_TEXT, PackageDetectionRecord,
-    PackageEventError, ReferenceDeployment, ReplayCx, Result, checkpoint,
+    PackageEventError, PackageTrackingBoundary, ReferenceDeployment, ReplayCx, Result, checkpoint,
 };
 use crate::ingest::recorded_decode::{RecordedDecodeError, source_capsule};
 use crate::ingest::{RetainedFileImport, RetainedReadLimits};
@@ -86,20 +86,6 @@ pub(in crate::ingest) fn verify_report_privacy(
         return Err(PrivacyMaskError::UnmaskedAccessRefused.into());
     }
     Ok(())
-}
-
-/// A source-coordinate boundary that starts a fresh package-tracking epoch.
-/// Reasons are independent: one boundary may carry several of them.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct PackageTrackingBoundary {
-    /// First segment of the new epoch, in retained source coordinates.
-    pub before_segment: u64,
-    /// The authoritative source capsule explicitly declares missing preceding bytes.
-    pub source_gap: bool,
-    /// Capsule sequence is not the checked successor of the previous source capsule.
-    pub sequence_gap: bool,
-    /// The decoded image dimensions changed; image coordinates cannot be carried across it.
-    pub dimensions_changed: bool,
 }
 
 impl PackageDetectionRecord {
