@@ -420,6 +420,17 @@ impl<C: ArchiveCodec> CodecArchiveNamespace<C> {
     pub fn digest(&self) -> ContentDigest {
         self.digest
     }
+
+    /// Full canonical slot namespace prefix, without the role/ordinal separator.
+    #[must_use]
+    pub fn prefix(&self) -> &str {
+        &self.prefix
+    }
+
+    /// Classify an archive member using the archive owner's canonical slot grammar.
+    pub(crate) fn classify_slot(&self, slot: &SlotName) -> ArchiveResult<Option<(char, usize)>> {
+        self.parse_slot(slot)
+    }
     /// Bounded deterministic slot for a zero-based recording ordinal.
     pub fn window_slot(&self, ordinal: usize) -> ArchiveResult<SlotName> {
         self.slot('w', ordinal)

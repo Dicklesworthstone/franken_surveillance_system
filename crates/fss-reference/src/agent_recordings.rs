@@ -12,6 +12,8 @@
 pub mod utc;
 /// Bounded discovery over an explicitly pinned catalog set in one decode-clock scope.
 pub mod set;
+/// Bounded metadata discovery within an exact native archive source namespace.
+pub mod discover;
 
 use std::collections::BTreeSet;
 use std::fmt;

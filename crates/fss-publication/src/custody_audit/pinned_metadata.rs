@@ -1,11 +1,14 @@
 #![forbid(unsafe_code)]
-//! Read-only metadata from exact published slots, without scanning or hydrating a spool.
+//! Read-only metadata from exact published slots, with optional bounded namespace discovery.
 //!
 //! A root record admits one canonical manifest. Only that manifest and its typed metadata
 //! may be read; its other children are checked for local deletion markers, never hydrated.
 //! All admitted metadata and slot bindings are checked again before a result is released.
 //! These bounded observations detect observed changes, not an atomic filesystem snapshot,
 //! successful source retrieval, durability, or permission to disclose source bytes.
+
+mod namespace;
+pub use namespace::{NamespaceObservation, NamespaceRootRecord};
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -18,8 +21,7 @@ use fss_object::{ObjectManifest, SpoolIo};
 use super::{CustodyAuditError, CustodyAuditLimits, io::AuditIo, root_record, sha, small_read};
 use crate::{
     LOCAL_ROOTS_DIR, LOCAL_TOMBSTONES_DIR, MAX_ROOT_RECORD_BYTES, ROOT_INDETERMINATE_SUFFIX,
-    ROOT_RECORD_SUFFIX, ROOT_TEMP_SUFFIX, SlotName, TOMBSTONE_RECORD_SUFFIX,
-    read_verified_with_io,
+    ROOT_RECORD_SUFFIX, ROOT_TEMP_SUFFIX, SlotName, TOMBSTONE_RECORD_SUFFIX, read_verified_with_io,
 };
 
 /// One request's aggregate work, including the final revalidation pass.
@@ -98,6 +100,7 @@ pub struct PinnedMetadataReader<'a, F> {
     objects: BTreeSet<ContentDigest>,
     references: BTreeSet<ContentDigest>,
     edges: usize,
+    namespace: Option<Result<namespace::NamespaceWitness>>,
 }
 impl<F> fmt::Debug for PinnedMetadataReader<'_, F> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -126,6 +129,7 @@ impl<'a, F: Fn() -> bool + Sync> PinnedMetadataReader<'a, F> {
             objects: BTreeSet::new(),
             references: BTreeSet::new(),
             edges: 0,
+            namespace: None,
         };
         let result = reader.layout();
         reader.io.check()?;
@@ -155,7 +159,7 @@ impl<'a, F: Fn() -> bool + Sync> PinnedMetadataReader<'a, F> {
         result
     }
 
-    /// Rehash admitted metadata and repeat every exact slot and tombstone observation.
+    /// Rehash admitted metadata and repeat every exact slot, tombstone and namespace observation.
     /// Consumes the capability so a caller cannot refill or reuse its request budget.
     pub fn finish(self) -> Result<MetadataReadUsage> {
         let result = self.revalidate();
@@ -262,18 +266,18 @@ impl<'a, F: Fn() -> bool + Sync> PinnedMetadataReader<'a, F> {
     }
 
     fn verified_payload(&self, digest: ContentDigest) -> Result<Vec<u8>> {
-        let result = read_verified_with_io(
-            self.root,
-            digest,
-            self.limits.max_object_bytes,
-            &self.io,
-        )
-        .map_err(|_| PinnedMetadataError::MetadataUnavailable);
+        let result =
+            read_verified_with_io(self.root, digest, self.limits.max_object_bytes, &self.io)
+                .map_err(|_| PinnedMetadataError::MetadataUnavailable);
         self.io.check()?;
         result
     }
 
-    fn read_manifest(&mut self, slot: &SlotName, expected: ContentDigest) -> Result<ObjectManifest> {
+    fn read_manifest(
+        &mut self,
+        slot: &SlotName,
+        expected: ContentDigest,
+    ) -> Result<ObjectManifest> {
         self.io.check()?;
         if !sha(expected) {
             return Err(CustodyAuditError::InvalidRequest.into());
@@ -317,6 +321,9 @@ impl<'a, F: Fn() -> bool + Sync> PinnedMetadataReader<'a, F> {
     }
 
     fn revalidate(&self) -> Result<()> {
+        if let Some(Err(error)) = &self.namespace {
+            return Err(error.clone());
+        }
         self.layout()?;
         for digest in &self.objects {
             self.io.check()?;
@@ -330,6 +337,7 @@ impl<'a, F: Fn() -> bool + Sync> PinnedMetadataReader<'a, F> {
                 return Err(PinnedMetadataError::Changed);
             }
         }
+        self.revalidate_namespace()?;
         self.layout()?;
         self.io.check()?;
         Ok(())
