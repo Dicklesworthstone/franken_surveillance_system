@@ -274,6 +274,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         RuntimeGrant::AdapterNet.as_str().into(),
         RuntimeGrant::AdapterAuth.as_str().into(),
         RuntimeGrant::ObserveStatus.as_str().into(),
+        RuntimeGrant::ReadMedia.as_str().into(),
+        RuntimeGrant::MediaDecode.as_str().into(),
     ];
     let (mut owner, mut tree) = AuthorityCx::root(
         RootAuthoritySpec {
@@ -308,7 +310,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         .with_scope(
             RuntimeGrant::ObserveStatus,
             BTreeSet::from([resource.clone()]),
-        );
+        )
+        .with_scope(RuntimeGrant::ReadMedia, BTreeSet::from([resource.clone()]))
+        .with_scope(RuntimeGrant::MediaDecode, BTreeSet::from([resource.clone()]));
     owner.narrow_grants(grants)?;
     let runtime = RuntimeBuilder::current_thread().build()?;
     runtime.block_on(async {
@@ -400,7 +404,15 @@ fn main() -> Result<(), Box<dyn Error>> {
             camera_api::ControllerAddress::Missing => "missing",
             camera_api::ControllerAddress::Unsupported => "unsupported",
         };
-        Ok(format!("discovery=selected controller_claim={claim} effect=none identity=unverified"))
+        let snapshot=api.snapshot(Duration::from_secs(10)).await?;
+        task.checkpoint_for(RuntimeGrant::ReadMedia,&resource,clock.now()?,&BudgetVector::ZERO)?;
+        task.checkpoint_for(RuntimeGrant::MediaDecode,&resource,clock.now()?,&BudgetVector::ZERO)?;
+        let limits=fss_codec_mjpeg::DecodeLimits { maximum_bytes: 4*1024*1024, ..Default::default() };
+        let mut decode_budget=fss_codec_mjpeg::DecodeBudget::new(limits.luma_work_bound().min(1_500_000_000));
+        let image=fss_codec_mjpeg::decode_luma(snapshot.bytes(),snapshot.digest().bytes(),fss_codec_mjpeg::ComponentInterpretation::YCbCr,limits,&mut decode_budget)?;
+        let [width,height]=image.dimensions();
+        if image.pixels().len()!=width as usize*height as usize {return Err("decoded dimensions inconsistent".into());}
+        Ok(format!("discovery=selected controller_claim={claim} effect=none identity=unverified snapshot_decoded={}x{} media_persisted=false",width,height))
         }.await;
         let outcome = if output.is_ok() { TaskOutcome::Success } else { TaskOutcome::Failed("read-only discovery observation stopped".into()) };
         TaskCompletion { output, outcome, completed_at: observed(start) }

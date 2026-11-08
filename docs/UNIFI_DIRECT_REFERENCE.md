@@ -5704,9 +5704,26 @@ use local traces and do not return them after a dropped future. This draft and
 its new cancellation contract are not yet compiled or tested: strict-remote
 job `30099060530610874` stopped on unavailable disk-monitor telemetry and
 reported completion unconfirmed. Two same-ID recoveries timed out. RCH still
-reports the job running, although source release is recorded; its completion
-file was absent and no matching reference compiler process was observed.
-Do not replay the job until its ownership and terminal state are reconciled.
+reported the job running at that point, although source release was recorded;
+its completion file was absent and no matching compiler process was observed.
 Draft setup and test source SHA-256 values are respectively
 `be27e8a947fad54c9b594a2df7758fb54e4cbc67cce5779a1fb7c0005b7e24e0`
 and `787ce8054a2e2af61eab6f1fbe27a005067aefc6fce3db978860c0020599ed35`.
+
+Same-ID recovery subsequently acknowledged job `30099060530610874` with
+delivery exit 255 and released sources; that job did not prove a test pass.
+A clean strict-remote run on `ts1`, job `30099060530610885`, then passed the
+new cancellation contract, exited zero, was acknowledged and released its
+sources. The test holds the synthetic handoff response, drops the setup
+future, and verifies the caller trace retains the committed permit and the
+HTTP session is fenced. The same executable, SHA-256
+`a4a3c2d9c7a2ab5834c27428b26f2f156c68fd03a777d72ea3da1db499366dc0`,
+then passed the full handoff-dispatch suite directly on `ts1`: 16 passed and
+one private-interface listener case was ignored. The clean base was
+`703a66bcde2dd9e7225fe47039607a93b4d85211`. This is synthetic evidence; it
+does not prove cancellation recovery during an in-flight write, a physical
+handoff, or a production recorder. The retained permit still needs independent
+reconciliation and the legacy convenience calls still discard their traces.
+The same executable then passed that ignored case separately on a `ts1`
+private interface. It exercised a bound local listener and synthetic camera,
+not the physical G4.

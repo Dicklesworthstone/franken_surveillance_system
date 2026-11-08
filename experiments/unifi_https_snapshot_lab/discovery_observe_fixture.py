@@ -13,7 +13,7 @@ import tempfile
 import threading
 
 
-def run_case(binary, cert_der, cert_pem, key_pem, directory, mode):
+def run_case(binary, cert_der, cert_pem, key_pem, jpeg, directory, mode):
     username, password, token = (secrets.token_hex(12) for _ in range(3))
     secret = pathlib.Path(directory) / (mode + '-credential.json')
     fd = os.open(secret, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -56,6 +56,9 @@ def run_case(binary, cert_der, cert_pem, key_pem, directory, mode):
                 requests.append('settings')
                 current = '192.168.1.99' if mode == 'changed' and requests.count('settings') == 2 else '192.168.1.10'
                 self.body(json.dumps({'controller': {'addr': current}}).encode())
+            elif self.path == '/snap.jpeg':
+                requests.append('snapshot')
+                self.body(b'\xff\xd8invalid\xff\xd9' if mode == 'bad-image' else pathlib.Path(jpeg).read_bytes())
             else:
                 self.send_error(404)
 
@@ -109,8 +112,11 @@ def run_case(binary, cert_der, cert_pem, key_pem, directory, mode):
     if journal.exists() or 'PUT' in requests:
         raise RuntimeError(mode + ': unexpected management effect')
     if mode == 'ok':
-        if result.returncode or requests != ['login', 'status', 'settings', 'settings'] or 'discovery=selected controller_claim=expected effect=none identity=unverified' not in result.stdout:
+        if result.returncode or requests != ['login', 'status', 'settings', 'settings', 'snapshot'] or 'snapshot_decoded=' not in result.stdout or 'media_persisted=false' not in result.stdout:
             raise RuntimeError(mode + ': setup failed: ' + result.stderr[-500:])
+    elif mode == 'bad-image':
+        if not result.returncode or requests != ['login', 'status', 'settings', 'settings', 'snapshot'] or 'snapshot_decoded=' in result.stdout:
+            raise RuntimeError(mode + ': invalid image was accepted')
     elif mode == 'changed':
         if not result.returncode or requests != ['login', 'status', 'settings', 'settings'] or 'Changed' not in result.stderr:
             raise RuntimeError(mode + ': changed settings not refused')
@@ -123,12 +129,12 @@ def run_case(binary, cert_der, cert_pem, key_pem, directory, mode):
 
 
 def main():
-    if len(sys.argv) != 5:
-        raise SystemExit('discovery_observe_fixture.py BINARY CERT_DER CERT_PEM KEY_PEM')
+    if len(sys.argv) != 6:
+        raise SystemExit('discovery_observe_fixture.py BINARY CERT_DER CERT_PEM KEY_PEM JPEG')
     with tempfile.TemporaryDirectory(prefix='fss-unifi-discovery-observe-') as directory:
-        for mode in ('ok', 'changed', 'bad-pin', 'wrong-mac'):
+        for mode in ('ok', 'bad-image', 'changed', 'bad-pin', 'wrong-mac'):
             run_case(*sys.argv[1:], directory, mode)
-    print('discovery observation fixture: 4/4 passed')
+    print('discovery observation fixture: 5/5 passed')
 
 if __name__ == '__main__':
     main()
