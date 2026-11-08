@@ -56,6 +56,30 @@ use std::{
 use unifi_tls_05_server_lab::server::Server;
 
 type Test = Result<(), Box<dyn Error>>;
+fn connect_fixture_from(
+    source: Ipv4Addr,
+    destination: SocketAddr,
+    timeout: Duration,
+) -> io::Result<std::net::TcpStream> {
+    use socket2::{Domain, Protocol, Socket, Type};
+    let socket = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP))?;
+    socket.bind(&SocketAddrV4::new(source, 0).into())?;
+    socket.connect_timeout(&destination.into(), timeout)?;
+    Ok(socket.into())
+}
+fn require_fixture_source_preserved(address: Ipv4Addr) -> io::Result<()> {
+    let listener = std::net::TcpListener::bind((address, 0))?;
+    let destination = listener.local_addr()?;
+    let client = connect_fixture_from(address, destination, Duration::from_secs(2))?;
+    let (_, peer) = listener.accept()?;
+    drop(client);
+    if peer.ip() != std::net::IpAddr::V4(address) {
+        return Err(io::Error::other(
+            "fixture host rewrites the claimed source address",
+        ));
+    }
+    Ok(())
+}
 const HEAD: &str = "GET / HTTP/1.1\r\nHost: camera.local\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nCamera-Mac: 001122aabbcc\r\nSec-WebSocket-Protocol: secure_transfer\r\n\r\n";
 const HELLO:&[u8]=br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"ubnt_avclient_hello","messageId":7,"payload":{}}"#;
 struct Temp(PathBuf);
@@ -1046,6 +1070,7 @@ fn direct_trial_setup_timeout_preserves_handoff_trace_and_indeterminate_receipt(
     if !(bind.is_private() || bind.is_link_local()) {
         return Err("private fixture interface required".into());
     }
+    require_fixture_source_preserved(bind)?;
     let reserve = std::net::TcpListener::bind((bind, 0))?;
     let port = reserve.local_addr()?.port();
     drop(reserve);
@@ -1147,6 +1172,7 @@ fn direct_trial_process_clip(
         if !(addr.is_private() || addr.is_link_local()) {
             return Err("private fixture interface required".into());
         }
+        require_fixture_source_preserved(addr)?;
         addr
     } else {
         Ipv4Addr::LOCALHOST
@@ -1234,7 +1260,7 @@ fn direct_trial_process_clip(
     let deadline = Instant::now() + Duration::from_secs(15);
     {
         let initial = loop {
-            match std::net::TcpStream::connect_timeout(&address, Duration::from_millis(300)) {
+            match connect_fixture_from(bind, address, Duration::from_millis(300)) {
                 Ok(socket) => break socket,
                 Err(_) if Instant::now() < deadline => {
                     std::thread::sleep(Duration::from_millis(30))
@@ -1245,7 +1271,7 @@ fn direct_trial_process_clip(
         drop(initial);
         // A camera can upgrade and then disconnect before sending hello. No
         // management effect has been prepared, so one bounded reconnect is safe.
-        let early_raw = std::net::TcpStream::connect_timeout(&address, Duration::from_secs(5))?;
+        let early_raw = connect_fixture_from(bind, address, Duration::from_secs(5))?;
         early_raw.set_read_timeout(Some(Duration::from_secs(10)))?;
         early_raw.set_write_timeout(Some(Duration::from_secs(10)))?;
         let early_connection =
@@ -1268,7 +1294,7 @@ fn direct_trial_process_clip(
         drop(early);
     }
     let raw = loop {
-        match std::net::TcpStream::connect_timeout(&address, Duration::from_millis(300)) {
+        match connect_fixture_from(bind, address, Duration::from_millis(300)) {
             Ok(socket) => break socket,
             Err(_) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(30)),
             Err(error) => return Err(error.into()),
@@ -1374,7 +1400,7 @@ fn direct_trial_process_clip(
         socket.write_all(&frame(setting_reply.as_bytes()))?;
         socket.flush()?;
     }
-    let mut media = std::net::TcpStream::connect_timeout(&destination, Duration::from_secs(5))?;
+    let mut media = connect_fixture_from(bind, destination, Duration::from_secs(5))?;
     media.write_all(&media_fixture()?)?;
     drop(media);
     let deadline = Instant::now() + Duration::from_secs(20);
@@ -1556,9 +1582,18 @@ fn direct_trial_waits_across_a_single_accept_window() -> Test {
         .take()
         .ok_or("missing stdout")?;
     let mut stdout = BufReader::new(output);
-    let mut first = String::new();
-    stdout.read_line(&mut first)?;
-    if !first.contains("controller_listener_ready") {
+    let mut ready = false;
+    for _ in 0..32 {
+        let mut line = String::new();
+        if stdout.read_line(&mut line)? == 0 {
+            break;
+        }
+        if line.contains("controller_listener_ready") {
+            ready = true;
+            break;
+        }
+    }
+    if !ready {
         return Err("listener was not ready".into());
     }
     std::thread::sleep(Duration::from_millis(30_250));
@@ -1677,6 +1712,7 @@ fn direct_trial_retirement_case(
         if !(addr.is_private() || addr.is_link_local()) {
             return Err("private fixture interface required".into());
         }
+        require_fixture_source_preserved(addr)?;
         addr
     } else {
         Ipv4Addr::LOCALHOST
@@ -1746,7 +1782,7 @@ fn direct_trial_retirement_case(
     let address = SocketAddr::from((bind, port));
     let deadline = Instant::now() + Duration::from_secs(if case == "deadline" { 45 } else { 20 });
     let raw = loop {
-        match std::net::TcpStream::connect_timeout(&address, Duration::from_millis(300)) {
+        match connect_fixture_from(bind, address, Duration::from_millis(300)) {
             Ok(socket) => break socket,
             Err(_) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(30)),
             Err(error) => return Err(error.into()),

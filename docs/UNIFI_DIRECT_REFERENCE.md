@@ -6294,3 +6294,59 @@ the fallback timer was active, and a recent archive run copied a file with no
 reported error. The fallback archive code specifies a 30-day age threshold for
 matching complete recordings under `/bulk/unifi_camera_recordings`; a live
 30-day retention outcome and uninterrupted coverage remain unproven.
+
+The laboratory direct trial has since been revised to keep its separate setup
+and controller approval indicators through task completion. An error after a
+successfully approved preparation now requests an indeterminate receipt instead
+of an ordinary failed receipt. Before-approval failures remain failed and still
+require inspection if preparation itself failed. A payload-free setup trace
+reports whether dispatch and accept began and what the untrusted readback
+claimed, including when accepting or upgrading the controller socket fails.
+The listener's setup accept interval now follows the requested trial wait,
+bounded by 30 seconds, instead of always stopping after 10 seconds. Process
+fixtures have been added for a setup timeout and for a synthetic camera that
+connects more than 10 seconds after the setup response. Existing process
+fixtures now also inspect the completion class. These changes are not yet
+qualified or tested against the physical G4.
+
+An initial strict-remote fixture request was refused before execution because
+the selected fixture source changed after admission. A corrected request to
+`trj` and a request to `hz4` each timed out in their queues before admission.
+Job `30100509981409899` on a third worker transferred the source but was
+refused before Cargo started by the worker's active disk reservations. It
+returned 120, was terminally acknowledged and released source custody. No
+test pass is implied by these attempts. Another exact-source `trj` request is
+pending under the normal reservation; the existing recorder has been left in
+place.
+
+The `trj` retry, job `30100509981409906`, compiled the changed trial and test
+fixture, then failed the fixture run: 2 passed, 13 failed, and 3 were filtered
+out. Twelve of the failed TLS-client paths explicitly reported
+`CaUsedAsEndEntity`; the selected disposable certificate was subsequently
+confirmed to have `CA:TRUE`. The long-accept fixture also failed because it
+read only the first startup line while the trial emits several before the
+listener-ready line. The job exited 101, was acknowledged and released its
+sources. The passing no-camera and setup-timeout cases do not qualify the
+delayed-connect or successful-media cases. A fresh `CA:FALSE` laboratory
+certificate was generated and validated, and the long-accept fixture was
+changed to scan a bounded number of startup lines. A new exact-source run is
+pending; no camera settings were changed by either fixture run.
+
+The corrected-certificate run, strict-remote job `30100509981409956`, compiled
+and executed 15 selected process cases: 11 passed, 4 failed, and 3 were
+filtered out. The no-camera, setup-timeout, ordinary synthetic-video,
+retirement, and long-accept cases passed. All four failures were setup-plus-
+controller-connection cases, with the delayed case reporting listener denial.
+Independent socket observations on that worker showed that even a client
+explicitly bound to the chosen private interface reached a same-host listener
+with a different peer address. On `trj` the same check preserved the source.
+The worker behavior explains the address-policy failure but does not prove
+the other three connection errors had precisely the same cause. The job exited
+101, was acknowledged, and released source custody.
+
+The synthetic client fixture has been changed to bind its claimed source
+explicitly and to reject a fixture host that rewrites that source before
+running setup cases. These latest test changes have not yet been compiled or
+run. The listener's production peer policy has not been relaxed. A further
+strict-remote run needs an enabled worker that both preserves the fixture
+source and has sufficient headroom for its normal reservation.
