@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.jeffreyemanuel.fleet-readiness</string>
+  <key>ProgramArguments</key><array>
+    <string>/opt/homebrew/bin/python3</string>
+    <string>/Users/jemanuel/projects/franken_surveillance_system/deliverables/scripts/fleet_reconcile.py</string>
+    <string>--execute</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/jemanuel/projects/franken_surveillance_system</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>StartInterval</key>
+  <integer>900</integer>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/tmp/fleet_reconcile_launchd.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/fleet_reconcile_launchd.log</string>
+</dict></plist>
